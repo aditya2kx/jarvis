@@ -1,0 +1,31 @@
+# Personal tax data (PII, financials, account numbers)
+knowledge-base/*.json
+2025/
+extracted/
+config.yaml
+
+# One-time scripts with hardcoded personal data
+scripts/personal/
+
+# Credential storage
+credentials/
+
+# Browser automation profile (session cookies)
+browser-profile/
+
+# Downloaded documents
+*.pdf
+*.csv
+*.mp4
+*.xlsx
+*.eml
+
+# OS / IDE
+.DS_Store
+__pycache__/
+*.pyc
+
+# Allow schema docs and examples (override the *.json exclusion)
+!knowledge-base/schema/
+!knowledge-base/examples/
+!knowledge-base/portal-playbooks/

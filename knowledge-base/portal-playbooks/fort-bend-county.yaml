@@ -1,0 +1,20 @@
+portal: fort_bend_county
+name: "Fort Bend County"
+url: "https://www.fortbendcountytx.gov"
+login_required: false
+otp_method: null
+automated: true
+documents:
+  - type: "Property Tax Bill"
+    nav_steps:
+      - "Open the county site and find Property Taxes, Tax Office, or Property Search."
+      - "Open the property tax lookup or search tool."
+      - "Enter parcel number or street address for the property (use placeholder values in automation configs)."
+      - "Open the current or selected tax year bill detail."
+      - "Download PDF, print to PDF, or use the site’s export if available."
+    expected_files:
+      - "*property*tax*bill*.pdf"
+      - "*tax*statement*.pdf"
+    drive_folder: "04 - Primary Residence/"
+    naming: "{YYYY} Property Tax Bill - Fort Bend County - Parcel {parcel_id}.pdf"
+notes: "Public access; no login. Exact navigation depends on current county site layout—search for tax office links if homepage structure changes."

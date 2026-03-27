@@ -1,0 +1,20 @@
+portal: robinhood
+name: "Robinhood"
+url: "https://robinhood.com"
+login_required: true
+otp_method: "sms"
+automated: true
+documents:
+  - type: "Consolidated 1099 (securities + crypto; includes 1099-DA)"
+    nav_steps:
+      - "Open the portal URL and sign in (app or web)."
+      - "Complete SMS OTP when prompted."
+      - "Go to Account, Statements, or Taxes / Tax Documents."
+      - "Select tax year {YYYY}."
+      - "Download the Consolidated 1099 PDF covering securities and crypto; confirm 1099-DA sections if applicable."
+    expected_files:
+      - "*1099*.pdf"
+      - "*Consolidated*.pdf"
+    drive_folder: "02 - Brokerage 1099s/{Broker}/"
+    naming: "{YYYY} Form Consolidated 1099 - Robinhood - Acct {suffix}.pdf"
+notes: "Single consolidated package typically includes brokerage and crypto; verify year and account before filing."

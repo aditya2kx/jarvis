@@ -1,0 +1,20 @@
+portal: wells_fargo
+name: "Wells Fargo"
+url: "https://connect.secure.wellsfargo.com"
+login_required: true
+otp_method: "sms"
+automated: true
+documents:
+  - type: "Form 1098"
+    nav_steps:
+      - "Open the portal URL and sign in with username and password."
+      - "Complete SMS OTP when prompted."
+      - "Navigate to Accounts, Mortgage, or Loans."
+      - "Open Documents, Statements, or Tax Documents."
+      - "Select tax year {YYYY} and locate Form 1098 (Mortgage Interest Statement)."
+      - "Download the 1098 PDF."
+    expected_files:
+      - "*1098*.pdf"
+    drive_folder: "03 - Partnerships & Rental Properties/{Property}/"
+    naming: "{YYYY} Form 1098 - Wells Fargo - Loan {suffix}.pdf"
+notes: "Labeling may appear under mortgage loan servicing; use loan identifier in filename pattern."

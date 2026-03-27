@@ -1,0 +1,20 @@
+portal: san_mateo_county
+name: "San Mateo County"
+url: "https://sanmateo.taxcollector.com"
+login_required: false
+otp_method: null
+automated: true
+documents:
+  - type: "Property Tax Bill"
+    nav_steps:
+      - "Open the tax collector portal URL."
+      - "Locate property search or bill lookup."
+      - "Enter parcel number (APN) for the property."
+      - "Open the bill or account detail for the desired tax year {YYYY}."
+      - "View the bill and save or print to PDF using browser print-to-PDF if no direct download."
+    expected_files:
+      - "*tax*bill*.pdf"
+      - "*secured*unsecured*bill*.pdf"
+    drive_folder: "03 - Partnerships & Rental Properties/{Property}/"
+    naming: "{YYYY} Property Tax Bill - San Mateo County - Parcel {parcel_id}.pdf"
+notes: "Public access; no login. Prefer official PDF download when offered; otherwise use print-to-PDF for a clean copy."

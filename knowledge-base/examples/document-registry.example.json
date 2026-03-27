@@ -1,0 +1,120 @@
+{
+  "taxYear": 2025,
+  "basedOn": "Drive scan + manual audit",
+  "lastUpdated": "2026-03-15",
+  "driveInventoryFile": "extracted/drive-2025-inventory.json",
+  "driveFolderStructure": {
+    "01 - W-2s & Employment": "DRIVE_FOLDER_ID_01",
+    "02 - Brokerage 1099s": "DRIVE_FOLDER_ID_02",
+    "03 - Partnerships & Rental Properties": "DRIVE_FOLDER_ID_03",
+    "04 - Primary Residence": "DRIVE_FOLDER_ID_04",
+    "05 - Charitable": "DRIVE_FOLDER_ID_05",
+    "06 - Retirement Accounts": "DRIVE_FOLDER_ID_06",
+    "07 - HSA & Health Insurance": "DRIVE_FOLDER_ID_07",
+    "08 - Business": "DRIVE_FOLDER_ID_08",
+    "09 - Tax Payments & Extensions": "DRIVE_FOLDER_ID_09",
+    "10 - Carryovers & Prior Year": "DRIVE_FOLDER_ID_10"
+  },
+  "documents": [
+    {
+      "id": 1,
+      "docType": "W-2",
+      "issuer": "Example Corp",
+      "for": "Taxpayer A",
+      "category": "Income",
+      "availabilityMonth": "Jan",
+      "status": "received",
+      "driveFileId": "DRIVE_FILE_ID_001",
+      "driveFileName": "2025 W-2 - Example Corp - Taxpayer A.pdf",
+      "drivePath": "Taxes/2025/01 - W-2s & Employment/Taxpayer A - Example Corp/",
+      "extractedData": {
+        "wages": 0,
+        "federalWithholding": 0,
+        "ssWages": 0,
+        "ssTax": 0,
+        "medicareWages": 0,
+        "medicareTax": 0,
+        "box12Codes": [],
+        "state": "TX"
+      },
+      "notes": "Received Jan 15. RSU income reported in Box 12c."
+    },
+    {
+      "id": 2,
+      "docType": "K-1 (Partnership)",
+      "issuer": "Sample Investment LLC",
+      "for": "Taxpayer A",
+      "category": "Income",
+      "availabilityMonth": "Mar",
+      "status": "not_received",
+      "drivePath": "Taxes/2025/03 - Partnerships & Rental Properties/Sample Investment LLC [NEED K-1]/",
+      "contact": {
+        "name": "Fund Admin Person",
+        "email": "admin@example.com",
+        "company": "Fund Admin Co",
+        "portal": "https://portal.example.com"
+      },
+      "correspondence": [
+        {
+          "date": "2026-02-15",
+          "from": "Fund Admin Co",
+          "summary": "K-1 expected by end of March"
+        }
+      ],
+      "nextFollowUp": "2026-04-01",
+      "notes": "K-1 typically arrives late. Check portal monthly."
+    },
+    {
+      "id": 3,
+      "docType": "Form 1098 (Mortgage)",
+      "issuer": "National Bank",
+      "for": "Joint",
+      "category": "Deduction",
+      "availabilityMonth": "Jan",
+      "status": "received",
+      "driveFileId": "DRIVE_FILE_ID_003",
+      "driveFileName": "2025 Form 1098 - National Bank - Rental Property Mortgage.pdf",
+      "drivePath": "Taxes/2025/03 - Partnerships & Rental Properties/Rental Property/",
+      "extractedData": {
+        "mortgageInterest": 0,
+        "outstandingPrincipal": {"jan1": 0, "dec31": 0},
+        "originationDate": "2020-06-01",
+        "realEstateTaxesPaid": 0,
+        "propertyAddress": "Rental property address",
+        "accountNumber": "XXXX1234"
+      },
+      "notes": "Rental property mortgage — deductible on Schedule E."
+    },
+    {
+      "id": 4,
+      "docType": "IUL/Insurance Statement",
+      "issuer": "Insurance Co",
+      "for": "Taxpayer A",
+      "category": "Other",
+      "availabilityMonth": "N/A",
+      "status": "n/a",
+      "notes": "Confirmed: no tax documents issued. No withdrawals, surrenders, or policy loan lapses."
+    }
+  ],
+  "emptyFolders": [
+    "Taxes/2025/09 - Tax Payments & Extensions"
+  ],
+  "majorDiscoveries": [
+    "Brokerage consolidation: 4 accounts across 3 brokers. TOD account has no activity.",
+    "K-1 from Sample Investment LLC will not arrive until August — extension required."
+  ],
+  "cpaQuestions": {
+    "overall": [
+      "Extension payment amount recommendation given pending K-1s?",
+      "Charitable instrument tax treatment — deduction vs other?"
+    ],
+    "bySection": {
+      "capitalGains": [
+        "ISO disposition AMT basis adjustment — confirm 1099-B uses strike price, not FMV at exercise"
+      ],
+      "rentalProperty": [
+        "Insurance proration across two policy years — confirm methodology"
+      ]
+    }
+  }
+}

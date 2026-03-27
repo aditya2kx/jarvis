@@ -1,0 +1,58 @@
+{
+  "portals": [
+    {
+      "name": "Brokerage A",
+      "url": "https://www.broker-a.com/login",
+      "documents": ["Consolidated 1099", "Realized Gain/Loss CSV"],
+      "availabilityMonth": "Feb",
+      "loginMethod": "username + password + OTP (SMS)",
+      "steps": [
+        "Log in at portal URL",
+        "Navigate to Tax Documents section",
+        "Select tax year",
+        "Download PDF for each account"
+      ],
+      "notes": "Multiple accounts possible. Check each account separately."
+    },
+    {
+      "name": "Mortgage Lender",
+      "url": "https://www.lender.com/login",
+      "documents": ["Form 1098"],
+      "availabilityMonth": "Jan",
+      "loginMethod": "username + password",
+      "steps": [
+        "Log in at portal URL",
+        "Go to Documents > Tax Documents",
+        "Download 1098 PDF"
+      ],
+      "notes": "Separate logins for primary and rental mortgages if different lenders."
+    },
+    {
+      "name": "County Tax Assessor",
+      "url": "https://www.county.gov/tax-lookup",
+      "documents": ["Property Tax Bill"],
+      "availabilityMonth": "Oct",
+      "loginMethod": "none (public lookup)",
+      "steps": [
+        "Go to property tax lookup page",
+        "Enter parcel number or property address",
+        "Download or print tax bill"
+      ],
+      "notes": "No login required. Save as PDF."
+    },
+    {
+      "name": "Property Manager",
+      "url": "https://www.propmanager.com/login",
+      "documents": ["1099-MISC", "Transaction History"],
+      "availabilityMonth": "Jan",
+      "loginMethod": "username + password",
+      "steps": [
+        "Log in as property owner",
+        "Navigate to Tax Documents",
+        "Download 1099-MISC",
+        "Export full year transaction history as CSV"
+      ],
+      "notes": "1099-MISC amount may differ from bank deposit total — reconcile."
+    }
+  ]
+}

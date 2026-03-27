@@ -1,0 +1,34 @@
+{
+  "taxYear": 2025,
+  "filingStatus": "Married Filing Jointly",
+  "taxpayer": {
+    "name": "Taxpayer A",
+    "ssn": "XXX-XX-XXXX",
+    "occupation": "Software Engineer"
+  },
+  "spouse": {
+    "name": "Taxpayer B",
+    "ssn": "XXX-XX-XXXX",
+    "occupation": "Healthcare Professional"
+  },
+  "address": {
+    "street": "123 Main Street",
+    "city": "Anytown",
+    "state": "TX",
+    "zip": "77000"
+  },
+  "stateReturn": "None (TX has no state income tax)",
+  "preparer": {
+    "name": "CPA Name",
+    "email": "cpa@example.com",
+    "firm": "CPA Firm LLC",
+    "firmContact": "Partner Name <partner@firm.com>",
+    "note": "New CPA for 2025. Prior firm handled 2020-2024."
+  },
+  "extensionFiled": false,
+  "extensionDeadline": "2026-10-15",
+  "digitalAssets": false,
+  "dependents": [],
+  "foreignAccounts": false,
+  "foreignTrust": false
+}

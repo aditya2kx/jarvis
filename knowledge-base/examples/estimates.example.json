@@ -1,0 +1,65 @@
+{
+  "taxYear": 2025,
+  "lastUpdated": "2026-03-01",
+  "baseline": {
+    "source": "2024 filed return (profile-2024.json)",
+    "summary": {
+      "totalIncome": 0,
+      "agi": 0,
+      "taxableIncome": 0,
+      "totalTax": 0,
+      "totalPayments": 0,
+      "refundOrOwed": 0
+    }
+  },
+  "professionalEstimate": {
+    "preparedBy": "CPA Firm Name",
+    "preparedDate": "2025-10-15",
+    "scenarios": [
+      {
+        "name": "Without charitable deduction",
+        "totalIncome": 0,
+        "capitalGains": 0,
+        "wages": 0,
+        "deductions": 0,
+        "totalTax": 0,
+        "credits": 0,
+        "balanceDue": 0
+      },
+      {
+        "name": "With charitable deduction",
+        "totalIncome": 0,
+        "capitalGains": 0,
+        "wages": 0,
+        "deductions": 0,
+        "charitableDeduction": 0,
+        "totalTax": 0,
+        "credits": 0,
+        "refund": 0
+      }
+    ]
+  },
+  "current": {
+    "lastModified": "2026-03-01",
+    "summary": {
+      "totalIncome": 0,
+      "agi": 0,
+      "taxableIncome": 0,
+      "totalTax": 0,
+      "totalPayments": 0,
+      "refundOrOwed": 0
+    },
+    "adjustments": [
+      {
+        "date": "2026-01-15",
+        "description": "Updated wages from W-2 (actual vs estimate)",
+        "source": "W-2 from employer"
+      },
+      {
+        "date": "2026-02-20",
+        "description": "Added capital gains from brokerage 1099",
+        "source": "Consolidated 1099"
+      }
+    ]
+  }
+}

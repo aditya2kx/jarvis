@@ -3,10 +3,12 @@
 
 import json
 import os
+import sys
 import urllib.request
 import urllib.parse
 
-from config_loader import get_sheet_id, refresh_access_token, project_dir, kb_path
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..'))
+from core.config_loader import get_sheet_id, refresh_access_token, project_dir, kb_path
 
 SPREADSHEET_ID = get_sheet_id("tax_tracker_id")
 

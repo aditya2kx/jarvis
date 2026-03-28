@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Delete a file on Google Drive by ID (same OAuth as other scripts)."""
 
+import os
 import sys
 import urllib.request
 
-from config_loader import refresh_access_token
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+from core.config_loader import refresh_access_token
 
 
 def delete_file(token, file_id):

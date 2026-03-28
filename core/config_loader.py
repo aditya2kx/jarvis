@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared configuration loader for all CHITRA scripts.
+"""Shared configuration loader for all Jarvis agents and skills.
 
 Reads config.yaml (gitignored, user-specific) and provides helpers for
 Google API authentication and resource IDs. Falls back to config.template.yaml

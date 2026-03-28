@@ -6,7 +6,8 @@ import sys
 import urllib.request
 import pdfplumber
 
-from config_loader import refresh_access_token, project_dir
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+from core.config_loader import refresh_access_token, project_dir
 
 
 def download_pdf(file_id, dest_path, access_token):

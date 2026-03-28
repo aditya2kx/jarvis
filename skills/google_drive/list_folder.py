@@ -7,7 +7,8 @@ import sys
 import urllib.request
 import urllib.parse
 
-from config_loader import refresh_access_token, get_drive_id, project_dir
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+from core.config_loader import refresh_access_token, get_drive_id, project_dir
 
 
 def list_folder(token, folder_id, page_token=None):

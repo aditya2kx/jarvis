@@ -1,24 +1,17 @@
-# CHITRA Configuration Template
+# Jarvis Configuration Template
 # Copy to config.yaml and fill in your values. config.yaml is gitignored.
 
 auth:
-  # Path to Google MCP OAuth credentials (created by Cursor's Google Drive MCP setup)
   credentials_path: "~/Library/Application Support/Cursor-Personal/User/google-mcp-auth/.gdrive-server-credentials.json"
-  # Path to .env with CLIENT_ID and CLIENT_SECRET
   env_path: "~/Library/Application Support/Cursor-Personal/User/google-mcp-auth/.env"
 
 google_sheets:
-  # CHITRA Tax Tracker spreadsheet (Document Checklist, Return Summary, etc.)
   tax_tracker_id: "YOUR_TAX_TRACKER_SPREADSHEET_ID"
-  # ISO disposition tracker spreadsheet
   iso_tracker_id: "YOUR_ISO_TRACKER_SPREADSHEET_ID"
 
 google_drive:
-  # Top-level Taxes folder
   taxes_root_id: "YOUR_TAXES_ROOT_FOLDER_ID"
-  # Taxes/{year} folder (the one you zip and send to CPA)
   taxes_year_id: "YOUR_TAXES_YEAR_FOLDER_ID"
-  # Subfolder IDs for specific upload targets (optional, can also be read from document-registry.json)
   subfolder_ids:
     schwab: "YOUR_SCHWAB_SUBFOLDER_ID"
 
@@ -27,11 +20,14 @@ profile:
   taxpayer_names:
     - "Taxpayer Name"
     - "Spouse Name"
-  filing_status: "MFJ"  # MFJ, MFS, Single, HOH, QSS
+  filing_status: "MFJ"
 
 paths:
-  # Relative to repo root
-  knowledge_base: "knowledge-base"
+  knowledge_base: "agents/chitra/knowledge-base"
   extracted: "extracted"
-  year_data: "2025"
-  scripts: "scripts"
+  year_data: "agents/chitra/data/2025"
+
+slack:
+  workspace: "your-workspace-name"
+  bot_token_cmd: "security find-generic-password -a SLACK_BOT_TOKEN -s jarvis -w"
+  notification_channel: "#general"

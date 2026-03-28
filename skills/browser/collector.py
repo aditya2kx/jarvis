@@ -25,7 +25,8 @@ import os
 import subprocess
 import sys
 
-from config_loader import (
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+from core.config_loader import (
     project_dir,
     kb_path,
     refresh_access_token,
@@ -141,7 +142,7 @@ def ensure_downloads_dir():
 
 def upload_downloaded_file(local_path, drive_folder_id, drive_name=None):
     """Upload a downloaded file to Google Drive."""
-    from upload_to_drive import upload_file
+    from skills.google_drive.upload import upload_file
 
     token = refresh_access_token()
     return upload_file(token, local_path, drive_folder_id, drive_name)

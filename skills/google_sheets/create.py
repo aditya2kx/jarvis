@@ -2,9 +2,12 @@
 """Create the CHITRA Tax Tracker Google Sheet with 3 tabs."""
 
 import json
+import os
+import sys
 import urllib.request
 
-from config_loader import refresh_access_token
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+from core.config_loader import refresh_access_token
 
 
 def api_request(url, token, method="GET", data=None):

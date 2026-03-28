@@ -8,7 +8,8 @@ import sys
 import urllib.request
 import mimetypes
 
-from config_loader import refresh_access_token, get_drive_id
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+from core.config_loader import refresh_access_token, get_drive_id
 
 __all__ = ["upload_file"]
 

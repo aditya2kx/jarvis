@@ -8,12 +8,6 @@
         "--caps=pdf",
         "--output-dir", "./extracted/downloads"
       ]
-    },
-    "slack": {
-      "url": "https://mcp.slack.com/mcp",
-      "headers": {
-        "Authorization": "Bearer ${SLACK_BOT_TOKEN}"
-      }
     }
   }
 }

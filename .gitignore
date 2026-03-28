@@ -1,5 +1,6 @@
 # Agent-specific data (PII, financials, account numbers)
 agents/*/knowledge-base/*.json
+agents/*/knowledge-base/questionnaire-*.md
 agents/*/data/
 extracted/
 config.yaml

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Recursively list all files in a Google Drive folder."""
 
+import argparse
 import json
 import os
 import sys
@@ -9,6 +10,8 @@ import urllib.parse
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 from core.config_loader import refresh_access_token, get_drive_id, project_dir
+
+__all__ = ["list_folder", "walk_folder", "inventory_folder", "save_inventory"]
 
 
 def list_folder(token, folder_id, page_token=None):
@@ -58,29 +61,69 @@ def walk_folder(token, folder_id, path="", depth=0):
     return all_items
 
 
-def main():
-    folder_id = sys.argv[1] if len(sys.argv) > 1 else get_drive_id("taxes_root_id")
+def inventory_folder(token, folder_id):
+    """Return a recursive inventory for a Drive folder."""
+    return walk_folder(token, folder_id)
 
-    token = refresh_access_token()
 
-    # First, show the top-level Taxes folder contents
-    print("=== Taxes folder (top level) ===")
-    items = walk_folder(token, folder_id)
-
-    for item in items:
-        indent = "  " * item["depth"]
-        icon = "📁" if item["isFolder"] else "📄"
-        size = f" ({int(item['size']):,} bytes)" if item.get("size") else ""
-        print(f"{indent}{icon} {item['name']}{size}  [{item['id']}]")
-
-    print(f"\n=== Total: {len(items)} items ===")
-
-    # Output as JSON for programmatic use
-    out_path = os.path.join(project_dir(), "extracted", "drive-2025-inventory.json")
+def save_inventory(out_path, folder_id, items):
+    """Write a Drive inventory JSON file to disk."""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w") as f:
         json.dump({"folder_id": folder_id, "items": items}, f, indent=2)
-    print(f"Saved inventory to extracted/drive-2025-inventory.json")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Recursively list all files in a Google Drive folder.",
+    )
+    parser.add_argument(
+        "folder_id",
+        nargs="?",
+        help="Google Drive folder ID (defaults to config key taxes_root_id)",
+    )
+    parser.add_argument(
+        "--folder-key",
+        dest="folder_key",
+        default=None,
+        help="Config key for a folder ID, e.g. taxes_year_id",
+    )
+    parser.add_argument(
+        "--json-out",
+        dest="json_out",
+        default=os.path.join(project_dir(), "extracted", "drive-2025-inventory.json"),
+        help="Where to write the inventory JSON output",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Skip printing the tree; only write the JSON inventory",
+    )
+    args = parser.parse_args()
+
+    if args.folder_key:
+        folder_id = get_drive_id(args.folder_key)
+        if not folder_id:
+            print(f"Error: no folder ID for key {args.folder_key!r} in config.", file=sys.stderr)
+            sys.exit(1)
+    else:
+        folder_id = args.folder_id if args.folder_id else get_drive_id("taxes_root_id")
+
+    token = refresh_access_token()
+    items = inventory_folder(token, folder_id)
+
+    if not args.quiet:
+        print("=== Drive folder inventory ===")
+        for item in items:
+            indent = "  " * item["depth"]
+            icon = "[DIR]" if item["isFolder"] else "[FILE]"
+            size = f" ({int(item['size']):,} bytes)" if item.get("size") else ""
+            print(f"{indent}{icon} {item['name']}{size}  [{item['id']}]")
+        print(f"\n=== Total: {len(items)} items ===")
+
+    out_path = os.path.expanduser(args.json_out)
+    save_inventory(out_path, folder_id, items)
+    print(f"Saved inventory to {out_path}")
 
 
 if __name__ == "__main__":

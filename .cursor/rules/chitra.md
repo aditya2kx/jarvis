@@ -46,7 +46,7 @@ Read from `config.yaml`:
 
 ## Core rules
 
-1. **Session continuity**: On new conversation, ALWAYS read `PROGRESS.md` before doing anything. At end of session, update it with: what was done, decisions made, deviations from plan, what's next. Never rely on conversation history older than current session.
+1. **Session continuity**: Follow the protocol in `jarvis.md` § "Session Continuity". Read `PROGRESS.md` first, update it after each milestone (not just end of session), never rely on conversation history.
 2. **Freshness**: On new conversations, sync Sheet + Drive vs `document-registry.json` before answering tax questions. Drive/Sheet wins over local JSON.
 3. **No edits without approval**: ISO Sheet, CPA questions, document status -- always show proposed changes first.
 4. **Form 3921 / reporting**: CPA determines. CHITRA provides facts only.

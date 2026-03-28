@@ -32,13 +32,36 @@ Create or duplicate the prior-year **CHITRA Tax Tracker** spreadsheet and set ta
 
 Wire `google_sheets.tax_tracker_id` in `config.yaml` to the new sheet ID.
 
-### 1.3 `document-registry.json` initialization
+### 1.3 Prior-Year Return Analysis (PRIMARY INPUT)
 
-- **Start from prior year** as a template: copy structure, not personal values.
-- **Reset every document status** to `not_received` (or equivalent).
-- **Clear `extractedData`** (or nested extraction blobs) for all entries so the new year does not inherit stale figures.
-- **Preserve** stable metadata shape: `docType`, `issuer`, `for` (entity / property tag), `category`, IDs, and folder hints—so scripts and the Sheet stay aligned.
-- **Bump `taxYear`** everywhere it appears in the registry root and per-document metadata.
+The prior-year federal and state tax returns are the **single most important input** for bootstrapping a new tax year. They tell CHITRA what existed last year, which drives what to expect this year.
+
+**Step 1 — Parse the prior-year return:**
+- Extract every schedule, form, and line item from the filed federal and state returns.
+- For each: identify the issuer, document type, portal/source, and whether it's likely to recur.
+- Map each line item to a document category (W-2, 1099, K-1, 1098, property tax, etc.).
+
+**Step 2 — Derive the document checklist:**
+- Every recurring issuer/document from last year becomes a `not_received` entry in the new registry.
+- Preserve issuer names, EINs, portal credentials references, and folder conventions.
+- Reset `extractedData` and `status` for all entries.
+- Bump `taxYear` everywhere.
+
+**Step 3 — Derive the folder structure:**
+- Build the Drive folder tree from the derived checklist categories, not from a manual template.
+- Use `drive-folder-convention.md` for naming rules.
+
+**Step 4 — Identify gaps and ask the user:**
+- "Any new employers, brokerages, rental properties, or investments this year?"
+- "Any life changes (marriage, move, new business, property sale)?"
+- "Any entities or K-1s that won't recur?"
+
+**Step 5 — Pull documents autonomously:**
+- For every portal where credentials are stored (Keychain + `portals.yaml`), attempt automated retrieval.
+- For portals requiring OTP, use the Slack OTP flow.
+- For documents that can't be pulled (CPA-provided, user-uploaded), mark as `not_received` and notify.
+
+This replaces the old approach of manually maintaining the registry. The return is the source of truth; the registry is derived from it.
 
 ### 1.4 `estimates.json` initialization
 

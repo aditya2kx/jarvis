@@ -1,13 +1,3 @@
 {
-  "mcpServers": {
-    "playwright": {
-      "command": "npx",
-      "args": [
-        "@playwright/mcp@latest",
-        "--profile", "./browser-profile",
-        "--caps=pdf",
-        "--output-dir", "./extracted/downloads"
-      ]
-    }
-  }
+  "mcpServers": {}
 }

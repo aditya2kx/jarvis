@@ -59,7 +59,7 @@ The cardinal rule: **never ask the user what you can check yourself.** Triage ev
 |--------|--------|----------|
 | **Self-check** | Use Playwright to check portals, download docs | Broker 1099s, bank 1098s, county property tax, HSA forms |
 | **Bank-derived** | Analyze bank transactions to identify recurring payees | Insurance provider (monthly premium), property manager (monthly deposit) |
-| **Address-derived** | From a street address, derive county, state, tax portal URLs | "Missouri City TX" → Fort Bend County → fbctx.gov, fbcad.org |
+| **Address-derived** | From a street address, derive county, state, tax portal URLs | "{City} {State}" → {County} → county CAD/tax sites |
 | **Must-ask** | Only the user can tell you | Life events, new arrangements, employer changes, CPA identity |
 | **User-provides** | Portal auth is too complex to automate | Employer W-2s, 1095-Cs from HR portals with heavy SSO/MFA |
 
@@ -73,14 +73,17 @@ Principles for the questionnaire conversation:
    - Ask only what you can't derive: "Who's the mortgage lender?" (to know where the 1098 comes from)
 4. **Ask about employees for Schedule C businesses** — triggers 4 employer tax docs (W-2, W-3, 941, 940) plus "which payroll service?" to know the portal
 5. **Ask about health insurance dependency** — who's the primary policyholder can change year to year
-6. **Match the user's tone** — casual user gets casual CHITRA. Use names ("Aditya", "Kajri") not "taxpayer" and "spouse". If user says "wifey", mirror that warmth.
+6. **Match the user's tone** — casual user gets casual CHITRA. Use first names not "taxpayer" and "spouse". If user uses nicknames, mirror that warmth.
 7. **Explain WHY you're asking** — non-tax-professionals need context: "The property manager issues a 1099-MISC for your rental income. We need to know who to expect it from."
 8. **Gmail is a document source** — CPA correspondence, charitable arrangements, and K-1 notifications often arrive by email. Build Gmail skill as priority.
 
 **Step 6 — Pull documents autonomously:**
-- For every portal where credentials are stored (Keychain + `portals.yaml`), attempt automated retrieval.
-- For portals requiring OTP, use the Slack OTP flow.
-- For documents that can't be pulled (CPA-provided, user-uploaded), mark as `not_received` and notify.
+- For every portal where credentials are stored (Keychain + `portals.yaml`), attempt automated retrieval via Playwright.
+- **MFA/OTP rule (CRITICAL):** When a portal requires a verification code, **ALWAYS notify the user via Slack DM** using `skills.slack.adapter.request_otp()`. NEVER rely on the user seeing a message in the IDE — they may not be at their computer. The Slack DM is the primary communication channel for time-sensitive requests.
+  - If the portal offers email-based OTP, prefer that option — once Gmail skill is built, Chitra can read OTP emails autonomously.
+  - If only SMS/phone is available, send the Slack DM explaining which portal and what phone number received the code, then poll for the user's reply.
+  - User Slack ID and DM channel are in `config.yaml` under `slack.primary_user_id` / `slack.dm_channel`.
+- For documents that can't be pulled (CPA-provided, user-uploaded), mark as `not_received` and notify via Slack.
 - Come back to the user with a **status report**, not more questions: "Downloaded Schwab 1099, Robinhood 1099, and Wells Fargo 1098. Lincoln Way K-1 isn't on Yardi yet — want me to email Kevin?"
 
 This replaces the old approach of manually maintaining the registry. The return is the source of truth; the registry is derived from it.

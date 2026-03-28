@@ -170,28 +170,45 @@ def find_user(display_name=None, email=None):
     return None
 
 
-def request_otp(user_id, portal_name, timeout_seconds=300, poll_interval=10):
-    """Send an OTP request via DM and wait for the user's reply.
+def request_otp(user_id, portal_name, timeout_seconds=300, poll_interval=10, phone_hint=None):
+    """Send an OTP request via Slack DM and wait for the user's reply.
+
+    Tries Socket Mode (push) first for instant delivery, falls back to polling.
 
     Args:
         user_id: Slack user ID to DM
         portal_name: Name of the portal requesting OTP (e.g. 'Schwab')
         timeout_seconds: How long to wait for a reply (default 5 min)
         poll_interval: Seconds between polling for replies
+        phone_hint: Optional masked phone number (e.g. '+1-XXX-XXX-XXXX')
 
     Returns:
         The OTP code as a string, or None if timed out
     """
     dm_channel = open_dm(user_id)
 
+    phone_line = f"\nA verification code was sent to your phone ({phone_hint})." if phone_hint else ""
     msg = send_message(
         dm_channel,
         f":key: *OTP Required — {portal_name}*\n\n"
-        f"Jarvis is logging into {portal_name} and needs your verification code.\n"
-        f"Please reply to this message with the OTP code within {timeout_seconds // 60} minutes.",
+        f"Chitra is logging into {portal_name} and needs your verification code.{phone_line}\n"
+        f"Please reply here with the code within {timeout_seconds // 60} minutes.",
     )
     sent_ts = msg["ts"]
 
+    try:
+        from skills.slack.listener import is_socket_mode_available, read_otp
+        if is_socket_mode_available():
+            print(f"[otp] Using Socket Mode (push) for {portal_name}")
+            otp = read_otp(portal_name, timeout=timeout_seconds)
+            if otp:
+                return otp
+            send_message(dm_channel, f":x: Timed out waiting for {portal_name} OTP after {timeout_seconds // 60} minutes.")
+            return None
+    except ImportError:
+        pass
+
+    print(f"[otp] Socket Mode not available, falling back to polling for {portal_name}")
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         time.sleep(poll_interval)

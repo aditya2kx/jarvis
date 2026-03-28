@@ -93,7 +93,7 @@ CHITRA's goal is fully autonomous tax document collection for ANY user:
 7. User only provides: the PDF, answers to plain-English questions, and occasional permissions
 8. End result: 100% populated Drive folder structure matching what a human would build
 
-Current state: steps 1-4 are built and tested. Steps 5-8 require Playwright MCP + portal automation.
+Current state: Steps 1-4 built and tested. Steps 5-6 now PROVEN — Playwright MCP works, Schwab login + tax form discovery succeeded, Fort Bend CAD property lookup autonomous. Steps 7-8 (download + upload) are built but need first real download test.
 
 ## Live Questionnaire Exercise Results (2026-03-28)
 Simulated new-user onboarding using only `profile-2024.json` + user Q&A (no peeking at real registry).
@@ -122,17 +122,69 @@ Simulated new-user onboarding using only `profile-2024.json` + user Q&A (no peek
   - Gmail skill identified as high priority (came up 2x in exercise)
 
 ## Immediate Next Steps (prioritized by impact)
-1. **Populate portals.yaml** from template + store credentials in Keychain for each portal
-2. **Get Playwright MCP working reliably** — this unlocks autonomous document collection
-3. **Test first portal automation**: Fort Bend County property tax (public, no login) as proof of concept
-4. **Build Gmail skill** — high priority, came up twice in questionnaire exercise (DONUM docs, CPA correspondence)
-5. **Wire answer-processing logic** — take questionnaire answers → auto-update derived registry → auto-derive portal list
-6. **Score against real registry** — run final diff of exercise-built registry vs actual document-registry.json
+1. **Complete E*Trade login** — user needs to provide SMS OTP (was on flight). Once done, download 1099 + Stock Plan Supplement
+2. **Test actual PDF download** — we proved we can SEE the documents on Schwab; next: click download, save file, upload to Drive
+3. **Enable Slack Socket Mode** — user needs to: generate App-Level Token (xapp-...), enable Socket Mode, add message.im event subscription
+4. **Collect remaining portal credentials** — Robinhood, Wells Fargo, Chase, Fidelity, HSA, Homebase, Obie (conversational flow)
+5. **Build Gmail skill** — high priority, came up twice in questionnaire exercise (DONUM docs, CPA correspondence)
+6. **Wire answer-processing logic** — take questionnaire answers → auto-update derived registry → auto-derive portal list
+7. **Build county tax bill scraper** — county tax assessor sites for actual tax payment receipts (CAD appraisal data already captured)
+8. **Score against real registry** — run final diff of exercise-built registry vs actual document-registry.json
+
+## Playwright E2E Tests (2026-03-28)
+Successfully tested autonomous document discovery and login:
+1. **County CAD** (public, no login) — searched by address
+   - Found property record: appraised value, homestead exemption confirmed
+   - Deed history, taxing jurisdictions, property details all extracted
+   - Full autonomous discovery: address in → property data out, zero user interaction
+2. **Charles Schwab** (authenticated, no MFA) — logged in with Keychain credentials
+   - Navigated to Statements & Tax Forms
+   - Found **1099 Composite and Year-End Summary - 2025 AVAILABLE** for both accounts
+   - Account selector works: can switch between accounts
+   - Clean logout verified
+3. **E*Trade** (authenticated, MFA required) — logged in with Keychain credentials
+   - Login successful, but MFA triggered (SMS to registered phone)
+   - No email OTP option available (only SMS or alternate phone)
+   - OTP request sent to user via Slack DM — deferred (user offline)
+4. **Credential workflow validated**: store_credential.py → macOS Keychain → PortalSession.get_credentials() → Playwright fills login
+5. **Slack OTP notification**: sent DM to user requesting OTP code, confirmed delivery
+
+## Components Built This Session (2026-03-28)
+1. **Slack Socket Mode listener** (`skills/slack/listener.py`)
+   - Push model: WebSocket connection, Slack sends events instantly (no polling)
+   - Writes OTP replies to `/tmp/jarvis-otp/{portal}.json` for instant pickup
+   - `request_otp()` in adapter.py auto-detects Socket Mode vs polling fallback
+   - Requires: App-Level Token (`xapp-...`) + Socket Mode enabled in Slack app
+   - TODO: user needs to generate app-level token and enable Socket Mode + event subscriptions
+
+2. **Portal automation framework** (`skills/browser/portal_session.py`)
+   - `PortalSession` class: credential retrieval, OTP orchestration, download staging, Drive upload, registry update
+   - Reusable for ANY portal: `session = PortalSession("Schwab")`
+   - `get_credentials()`: reads from macOS Keychain
+   - `request_otp()`: sends Slack DM, waits for reply (push or poll)
+   - `stage_download()` + `upload_all()`: batch upload to Drive with auto-naming
+   - `_update_registry()`: marks docs as received in document-registry.json
+   - `list_keychain_portals()`: shows all stored portal credentials
+
+3. **Portal navigation scripts** (`agents/chitra/scripts/portals/`)
+   - `schwab.py`: exact Playwright MCP steps for login → tax forms → download
+   - `fort_bend_county.py`: county property tax search steps (generic, works for any county)
+
+4. **Slack adapter improvements**
+   - `request_otp()` upgraded: phone_hint parameter, Socket Mode auto-detection
+   - Config updated: `slack.primary_user_id` and `slack.dm_channel` stored
+   - MFA-via-Slack rule added to chitra-playbook.md (CRITICAL: always notify via Slack, never rely on IDE)
+
+5. **Credentials stored in Keychain**
+   - jarvis-schwab, jarvis-etrade (usernames stored securely, never in git)
 
 ## Blockers
-- Playwright MCP is configured and Chromium is installed, but runtime MCP tool availability is inconsistent (`user-playwright` appears on disk but not in callable server list)
-- Portal credentials not yet populated — template created, need user to provide creds for Keychain storage
-- Google Drive MCP read-only auth path is failing with a Google 403, so Drive work is currently using the repo's direct Google API helpers instead
+- ~~Playwright MCP is configured and Chromium is installed, but runtime MCP tool availability is inconsistent~~ **RESOLVED** — Playwright MCP is fully operational (tested 2026-03-28)
+- ~~Slack Socket Mode not yet enabled~~ **RESOLVED** — App-Level Token generated, Socket Mode enabled, `message.im` event subscribed
+- E*Trade requires SMS MFA — no email option, blocks fully autonomous login until Gmail skill or Slack Socket Mode is operational
+- Some county .gov sites block automated browsers via Cloudflare — use CAD search sites (.org) instead
+- Portal credentials partially populated — Schwab and E*Trade stored, ~10 more portals need creds
+- Google Drive MCP read-only auth path is failing with a Google 403 — Drive work uses direct API helpers instead
 
 ## Completed Steps
 - [x] CHITRA v1 — Phases A-D (commits 7cea51d → fa1e88c)
@@ -165,12 +217,18 @@ Simulated new-user onboarding using only `profile-2024.json` + user Q&A (no peek
 - 2026-03-28: No estimated tax payment docs for 2025; filing extensions in 2026
 - 2026-03-28: Questionnaire exercise proved ~97% coverage achievable with 6 user questions + autonomous portal checks
 - 2026-03-28: Check-yourself-first principle — CHITRA should attempt portal/site checks before asking the user
-- 2026-03-28: Employer HR portals (DoorDash, Texas Children's) are user-provides — too much SSO friction to automate
+- 2026-03-28: Employer HR portals are user-provides — too much SSO friction to automate
 - 2026-03-28: Gmail skill is high priority — CPA correspondence and charitable docs both live in email
 - 2026-03-28: Portal credential registry uses Keychain for secrets, portals.yaml.template for portal metadata (URLs, auth methods, doc types)
 
+- 2026-03-28: Slack Socket Mode (push) preferred over polling for OTP — instant delivery, no API quota waste
+- 2026-03-28: MFA/OTP notifications MUST go via Slack DM, never rely on IDE messages (user may not be at computer)
+- 2026-03-28: PortalSession class handles credential → login → OTP → download → upload → registry update lifecycle
+- 2026-03-28: Portal navigation scripts are CHITRA-readable instructions, not standalone executables
+- 2026-03-28: Schwab login works WITHOUT MFA; E*Trade always requires SMS MFA
+- 2026-03-28: When portal offers email-based OTP, prefer it (future Gmail skill can read autonomously)
+
 ## Git State
 - Branch: `main`
-- Remote: `git@github.com-personal:aditya2kx/jarvis.git`
+- Remote: configured (private SSH key)
 - Public URL: https://github.com/aditya2kx/jarvis
-- Local config: user.email=aditya.2ky@gmail.com, user.name=adi2ky

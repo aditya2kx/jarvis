@@ -84,7 +84,7 @@ Principles for the questionnaire conversation:
   - If only SMS/phone is available, send the Slack DM explaining which portal and what phone number received the code, then poll for the user's reply.
   - User Slack ID and DM channel are in `config.yaml` under `slack.primary_user_id` / `slack.dm_channel`.
 - For documents that can't be pulled (CPA-provided, user-uploaded), mark as `not_received` and notify via Slack.
-- Come back to the user with a **status report**, not more questions: "Downloaded Schwab 1099, Robinhood 1099, and Wells Fargo 1098. Lincoln Way K-1 isn't on Yardi yet — want me to email Kevin?"
+- Come back to the user with a **status report**, not more questions: "Downloaded brokerage 1099s from 3 portals. Partnership K-1 isn't on the portal yet — want me to email the CPA?"
 
 This replaces the old approach of manually maintaining the registry. The return is the source of truth; the registry is derived from it.
 

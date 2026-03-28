@@ -54,11 +54,11 @@ Jarvis architecture restructure complete. Slack skill operational.
 ### Prior Sessions (2026-03-27)
 - Completed CHITRA v1: Phases A-D (git init, knowledge capture, browser automation, README)
 - CPA email drafting and Homebase document handling
-- Uploaded Palmetto employer tax docs (W-2, W-3, Form 941, Form 940) to Drive
+- Uploaded employer tax docs (W-2, W-3, Form 941, Form 940) to Drive
 
 ## What's Next (v2 backlog)
 1. ~~Add channels:join scope~~ DONE — bot invited to #all-jarvis manually
-2. Install Playwright MCP and test with Fort Bend County (public, no login) — IN PROGRESS
+2. Install Playwright MCP and test with a county CAD site (public, no login) — IN PROGRESS
    - Fixed: `--profile` → `--user-data-dir`, added env PATH for nvm, moved to user-level MCP config
    - Chromium browser binary installed
    - Remaining issue: Playwright MCP descriptors appear on disk, but runtime MCP tool list has not exposed `user-playwright` yet
@@ -93,7 +93,7 @@ CHITRA's goal is fully autonomous tax document collection for ANY user:
 7. User only provides: the PDF, answers to plain-English questions, and occasional permissions
 8. End result: 100% populated Drive folder structure matching what a human would build
 
-Current state: Steps 1-4 built and tested. Steps 5-6 now PROVEN — Playwright MCP works, Schwab login + tax form discovery succeeded, Fort Bend CAD property lookup autonomous. Steps 7-8 (download + upload) are built but need first real download test.
+Current state: Steps 1-4 built and tested. Steps 5-6 now PROVEN — Playwright MCP works, Schwab login + tax form discovery succeeded, county CAD property lookup autonomous. Steps 7-8 (download + upload) are built but need first real download test.
 
 ## Live Questionnaire Exercise Results (2026-03-28)
 Simulated new-user onboarding using only `profile-2024.json` + user Q&A (no peeking at real registry).
@@ -122,14 +122,13 @@ Simulated new-user onboarding using only `profile-2024.json` + user Q&A (no peek
   - Gmail skill identified as high priority (came up 2x in exercise)
 
 ## Immediate Next Steps (prioritized by impact)
-1. **Complete E*Trade login** — user needs to provide SMS OTP (was on flight). Once done, download 1099 + Stock Plan Supplement
+1. **Complete E*Trade login** — user needs to provide SMS OTP. Once done, download 1099 + Stock Plan Supplement
 2. **Test actual PDF download** — we proved we can SEE the documents on Schwab; next: click download, save file, upload to Drive
-3. **Enable Slack Socket Mode** — user needs to: generate App-Level Token (xapp-...), enable Socket Mode, add message.im event subscription
-4. **Collect remaining portal credentials** — Robinhood, Wells Fargo, Chase, Fidelity, HSA, Homebase, Obie (conversational flow)
-5. **Build Gmail skill** — high priority, came up twice in questionnaire exercise (DONUM docs, CPA correspondence)
-6. **Wire answer-processing logic** — take questionnaire answers → auto-update derived registry → auto-derive portal list
-7. **Build county tax bill scraper** — county tax assessor sites for actual tax payment receipts (CAD appraisal data already captured)
-8. **Score against real registry** — run final diff of exercise-built registry vs actual document-registry.json
+3. **Verify Slack Socket Mode** — App-Level Token generated, Socket Mode enabled, needs stable network to test WebSocket connection
+4. **Collect remaining portal credentials** — conversational flow as each portal is needed
+5. **Build Gmail skill** — high priority, came up twice in questionnaire exercise (charitable docs, CPA correspondence)
+6. **Build county tax bill scraper** — county tax assessor sites for actual tax payment receipts (CAD appraisal data already captured)
+7. **Score against real registry** — run final diff of exercise-built registry vs actual document-registry.json
 
 ## Playwright E2E Tests (2026-03-28)
 Successfully tested autonomous document discovery and login:
@@ -166,19 +165,37 @@ Successfully tested autonomous document discovery and login:
    - `_update_registry()`: marks docs as received in document-registry.json
    - `list_keychain_portals()`: shows all stored portal credentials
 
-3. **Portal navigation modules** (`agents/chitra/scripts/portals/`)
-   - `schwab.py`: iframe login quirk, 1099 Dashboard SPA, account selector pattern
-   - `etrade.py`: mandatory SMS MFA, no email option, device trust flow
-   - `county_property_tax.py`: CAD search, data extraction, tax bill lookup
-   - These are generic navigation knowledge (like DB drivers) — checked in, no PII
-   - User's portal manifest (which portals they use) stays in config.yaml (gitignored)
+3. **Portal navigation framework** (`agents/chitra/scripts/portals/`)
+   - `base.py`: portal loader, plan generator, registry — discovers all modules, generates step-by-step AI plans
+   - 9 structured portal modules, each exporting `PORTAL_CONFIG` dict:
+     - `schwab.py`: iframe login, 1099 Dashboard SPA, multi-account selector
+     - `etrade.py`: mandatory SMS MFA, stock plan + brokerage sections
+     - `county_property_tax.py`: public CAD search, address → county derivation
+     - `robinhood.py`: React SPA, hCaptcha risk, 1099-DA for crypto
+     - `fidelity.py`: brokerage + retirement + HSA, NetBenefits split
+     - `wells_fargo.py`: mortgage 1098, transaction export, email MFA
+     - `chase.py`: hash-based SPA routing, email MFA available
+     - `hsa_bank.py`: generic multi-provider (HealthEquity, Optum, Fidelity, etc.)
+     - `homebase.py`: payroll forms (W-2, W-3, 941 quarterly, 940)
+   - Architecture: navigation knowledge (like DB drivers) is checked in; user's portal manifest (which ones they use) stays in config.yaml (gitignored)
+   - `list_portals()` discovers all modules; `generate_plan()` produces step-by-step AI execution plans from any config
+   - `format_plan_markdown()` renders a human/AI-readable plan with quirks, selectors, and code snippets
 
-4. **Slack adapter improvements**
+4. **Answer-processing pipeline** (`agents/chitra/scripts/process_answers.py`)
+   - `AnswerProcessor` class: takes derived registry + questionnaire answers → final registry + portal task list
+   - `apply_confirmation()`: process yes/no answers for prior-year items
+   - `add_from_life_event()`: one answer triggers multiple documents (e.g. "new home" → mortgage 1098 + property tax + homestead + HUD-1)
+   - 12 life event handlers: new_home, home_sold, new_employer, employer_left, new_brokerage, new_rental, rental_sold, business_employee, new_partnership, state_move, new_charity, homestead_exemption
+   - `generate_portal_tasks()`: matches each document to available navigation modules, produces prioritized task list
+   - Automation levels: fully_automated, check_then_ask, needs_module, email_skill, user_provides
+   - Tested: 22 derived docs + 3 life events → 31 docs, 12 portal tasks (5 fully automated, 1 check-then-ask, 3 need modules, 1 email, 2 user-provides)
+
+6. **Slack adapter improvements**
    - `request_otp()` upgraded: phone_hint parameter, Socket Mode auto-detection
    - Config updated: `slack.primary_user_id` and `slack.dm_channel` stored
    - MFA-via-Slack rule added to chitra-playbook.md (CRITICAL: always notify via Slack, never rely on IDE)
 
-5. **Credentials stored in Keychain**
+7. **Credentials stored in Keychain**
    - jarvis-schwab, jarvis-etrade (usernames stored securely, never in git)
 
 ## Blockers
@@ -230,6 +247,10 @@ Successfully tested autonomous document discovery and login:
 - 2026-03-28: Portal navigation scripts are CHITRA-readable instructions, not standalone executables
 - 2026-03-28: Schwab login works WITHOUT MFA; E*Trade always requires SMS MFA
 - 2026-03-28: When portal offers email-based OTP, prefer it (future Gmail skill can read autonomously)
+- 2026-03-28: Portal navigation modules are structured PORTAL_CONFIG dicts — not prose docstrings, not executable scripts
+- 2026-03-28: Navigation knowledge (how to use Schwab) is checked in like DB drivers; user's portal manifest (which portals they use) is gitignored
+- 2026-03-28: portals.yaml.template sanitized to generic examples — user-specific portal list lives in portals.yaml (gitignored)
+- 2026-03-28: Answer-processing pipeline maps life events to multi-document expansions (e.g. "new home" → 4 docs)
 
 ## Git State
 - Branch: `main`

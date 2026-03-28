@@ -28,7 +28,7 @@ def derive_folder_tree(registry):
     """Derive the set of folders needed from the registry's driveFolderStructure.
 
     Returns a dict of {relative_path: None} where relative_path is like
-    '01 - W-2s & Employment/Aditya - DoorDash'. The top two levels
+    '01 - W-2s & Employment/Person - Employer'. The top two levels
     ('Taxes' and 'Taxes/{year}') are excluded since the shadow root replaces them.
     """
     structure = registry.get("driveFolderStructure", {})

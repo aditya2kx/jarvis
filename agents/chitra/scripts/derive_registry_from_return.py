@@ -161,7 +161,7 @@ def derive_documents(profile, target_year):
             "docType": "K-1 (Form 1065)",
             "issuer": partnership["name"],
             "ein": partnership.get("ein"),
-            "for": "Aditya",
+            "for": emp.get("for", "Primary"),
             "category": "Income",
             "source": "partnership_portal_or_cpa",
             "recurring": True,
@@ -283,13 +283,13 @@ def _normalize_issuer(name):
     """Reduce an issuer name to fuzzy-matchable tokens.
 
     Strips EINs, account numbers, parenthetical suffixes, common legal
-    suffixes, and punctuation so that 'DoorDash FKA Palo Alto Delivery'
-    and 'DoorDash Inc (EIN 46-2852392)' both reduce to 'doordash'.
+    suffixes, and punctuation so that 'Acme FKA Old Name Corp'
+    and 'Acme Inc (EIN 12-3456789)' both reduce to 'acme'.
     """
     s = name.lower()
     s = re.sub(r"\(.*?\)", "", s)                   # (EIN ...), (Box A), etc.
     s = re.sub(r"\bein\s*[\d-]+", "", s)
-    s = re.sub(r"\bacct?\s*#?\s*[\w-]+", "", s)     # acct -3771, account 1965
+    s = re.sub(r"\bacct?\s*#?\s*[\w-]+", "", s)     # acct -XXXX, account YYYY
     s = re.sub(r"\b(inc|llc|llp|lp|corp|co|n\.?a\.?|fka|dba)\b", "", s)
     s = re.sub(r"[.,&*'\"-]", " ", s)
     return " ".join(s.split())                       # collapse whitespace
@@ -311,14 +311,14 @@ def _normalize_doctype(dtype):
         "property insurance declaration": "insurance",
         "property insurance declaration rental": "insurance",
         "schedule c records": "schedule c",
-        "schedule c records palmetto superfoods": "schedule c",
+        "schedule c records": "schedule c",
         "prior year carryover summary": "prior year return",
         "prior year federal tax return": "prior year return",
         "form 5498-sa / 1099-sa hsa": "hsa",
         "hsa records": "hsa",
         "1099-misc": "1099-misc rental",
         "form 1099-misc": "1099-misc rental",
-        "schwab account -3771 tax form": "1099",
+        "brokerage account tax form": "1099",
     }
     return TYPE_ALIASES.get(s, s)
 

@@ -1,123 +1,140 @@
 #!/usr/bin/env python3
-"""County property tax navigation module — Playwright MCP steps.
+"""County property tax navigation module — structured config.
 
-Generic navigation logic for county appraisal district (CAD) and tax assessor
-websites. Works for any US county. Contains zero user-specific data.
+Generic navigation logic for US county appraisal district (CAD) and tax
+assessor websites. Works for any county. Contains zero user-specific data.
 
 Most counties have two separate sites:
 1. Appraisal District (CAD) — property values, exemptions, ownership records
 2. Tax Assessor/Collector — tax bills, payment history, receipts
 
-Quirks discovered during testing:
-- County .gov main sites often use Cloudflare bot protection (403 errors)
-- CAD search sites (.org) are typically less protected and work with Playwright
-- Property data is public record — no login required
-- Address search is the most reliable lookup method
+This module handles both with a parameterized config. The AI agent fills in
+the county-specific URLs at runtime based on the user's address.
 """
 
-PORTAL = "County Property Tax"
-LOGIN_REQUIRED = False
+PORTAL_CONFIG = {
+    "name": "County Property Tax",
+    "keychain_service": None,
+    "login_required": False,
 
-# Common URL patterns (substitute county name):
-# CAD: https://esearch.{county}cad.org/
-# Tax: https://www.{county}tax.org/
-# Some counties use: https://propaccess.{county}cad.org/
+    "urls": {
+        # These are patterns — the AI fills in the actual county name at runtime
+        # Texas pattern: esearch.{county}cad.org, {county}tax.org
+        # California pattern: varies by county assessor
+        "cad_search": "https://esearch.{county}cad.org/",
+        "tax_assessor": "https://www.{county}tax.org/",
+    },
 
-SEARCH_STEPS = """
-## Step 1: Determine the county
-- User provides their address
-- Map city/ZIP to county name
-- Common resources: census.gov geocoder, USPS ZIP lookup
-- Texas example pattern: {county}cad.org for appraisal, {county}tax.org for bills
+    "login": {
+        "method": "none",
+        "quirks": ["Property data is public record — no login required"],
+    },
 
-## Step 2: Find the CAD search URL
-- Search for "{County Name} appraisal district property search"
-- Most Texas CADs use BIS Consultants (esearch.{county}cad.org)
-- California uses county assessor sites
-- Other states vary — some use statewide portals
+    "mfa": {
+        "likelihood": "never",
+    },
 
-## Step 3: Search by address
-1. browser_navigate → county CAD search URL
-2. Click "By Address" tab (most CAD sites have Search | By Owner | By Address | By ID)
-3. Fill fields:
-   - Street Number (e.g. "1234")
-   - Street Name (e.g. "Main")
-   - Leave other fields blank for broadest match
-4. Click Search button
-5. Wait 3s for results
+    "search": {
+        "method": "address",
+        "fields": {
+            "street_number": "Street Number field (just the number, e.g. '1234')",
+            "street_name": "Street Name field (just the name, e.g. 'Main')",
+        },
+        "submit_hint": "Search button",
+        "results_hint": "Results table with columns: Property ID | Geo ID | Type | Owner | Address | Appraised Value",
+        "select_hint": "Click matching property row to see detail page",
+    },
 
-## Step 4: Select property from results
-- Results table shows: Property ID | Geo ID | Type | Owner | Address | Appraised Value
-- Click on the matching property row
-- Property detail page loads with full information
-"""
+    "documents": [
+        {
+            "type": "Property Tax Bill",
+            "name_pattern": "Property Tax Bill - {county} County - {year}",
+            "location_hint": "Tax Assessor site → search by Property ID or address → Tax Statement",
+            "per_account": False,
+            "download_format": "PDF",
+            "download_hint": "Download or Print tax statement link",
+            "availability": "October-November (bills), January-March (receipts)",
+        },
+        {
+            "type": "Homestead Exemption",
+            "name_pattern": "Homestead Exemption - {county} County - {year}",
+            "location_hint": "CAD property detail page → Exemptions section",
+            "per_account": False,
+            "download_format": "HTML",
+            "download_hint": "Screenshot or extract from property detail page (usually not downloadable)",
+            "availability": "Year-round (reflects current exemption status)",
+        },
+    ],
 
-EXTRACT_STEPS = """
-## Data to extract from property detail page
+    "data_to_extract": {
+        "account_info": [
+            "Property ID / Quick Ref ID",
+            "Geographic ID",
+            "Property Type (Residential, Commercial)",
+        ],
+        "location": [
+            "Situs Address",
+            "Legal Description",
+            "Subdivision",
+        ],
+        "ownership": [
+            "Owner name(s)",
+            "Ownership percentage",
+            "Mailing address",
+        ],
+        "values": [
+            "Improvement Homesite Value",
+            "Land Homesite Value",
+            "Market Value (total)",
+            "Appraised Value",
+            "Value history (multi-year table)",
+        ],
+        "exemptions": [
+            "Homestead (HS)",
+            "Over-65",
+            "Disability",
+            "Other exemptions",
+        ],
+        "taxing_jurisdictions": [
+            "Entity | Description | Market Value | Taxable Value",
+            "Common: County, City, ISD, MUD, Drainage, Parks",
+        ],
+        "deed_history": [
+            "Deed dates, types, grantor/grantee",
+            "Useful for confirming purchase date",
+        ],
+    },
 
-### Account info
-- Property ID / Quick Ref ID
-- Geographic ID
-- Property Type (Residential, Commercial, etc.)
+    "county_url_patterns": {
+        "texas_cad": "https://esearch.{county}cad.org/",
+        "texas_tax": "https://www.{county}tax.org/",
+        "texas_propaccess": "https://propaccess.{county}cad.org/",
+        "california_assessor": "https://www.{county}county.gov/assessor/",
+        "bis_consultants": "https://esearch.{county}cad.org/",
+    },
 
-### Location
-- Situs Address
-- Legal Description
-- Subdivision
+    "address_to_county_method": (
+        "Given a street address, determine the county via: "
+        "1) census.gov geocoder API, 2) USPS ZIP lookup, or "
+        "3) direct web search for '{city} {state} county'. "
+        "Then construct the CAD/tax URLs from county_url_patterns."
+    ),
 
-### Ownership
-- Owner name(s)
-- Ownership percentage
-- Mailing address
+    "quirks": [
+        "County .gov main sites often use Cloudflare bot protection (403 errors)",
+        "CAD search sites (.org) are typically less protected and work with Playwright",
+        "BIS Consultants sites (common in TX) have consistent UI across counties",
+        "California uses county-specific assessor sites — less standardized",
+        "Address search is the most reliable lookup method (better than owner name)",
+        "Multi-county properties are rare but possible — check all applicable counties",
+        "New construction may not appear in CAD until next assessment cycle",
+        "Homestead exemptions filed mid-year may not show until next year's tax roll",
+        "Some tax assessor sites require a free account to download tax bills as PDF",
+        "Tax bills vs receipts: bills available Oct-Nov, receipts after Jan payment deadline",
+    ],
 
-### Values
-- Improvement Homesite Value
-- Land Homesite Value
-- Market Value (total)
-- Appraised Value
-- Value history (multi-year table)
-
-### Exemptions
-- Homestead (HS)
-- Over-65
-- Disability
-- Other exemptions
-
-### Taxing jurisdictions
-- Table showing: Entity | Description | Market Value | Taxable Value
-- Common entities: County, City, ISD (school district), MUD, Drainage, Parks
-
-### Deed history
-- Deed dates, types, grantor/grantee
-- Useful for confirming purchase date
-
-### Improvements
-- Building type, class, year built, sqft
-- Number of stories, attached structures
-"""
-
-TAX_BILL_STEPS = """
-## Step 5: Get tax bill from Tax Assessor site
-1. Navigate to the county tax assessor website
-2. Search by Property ID (from CAD) or address
-3. Find tax statement for the relevant tax year
-4. Download as PDF if available
-5. Note payment status (paid/unpaid) and amounts
-
-## Common tax assessor features
-- Tax bill lookup by account number or property ID
-- Payment history showing all years
-- PDF download of tax statement/receipt
-- Some require creating a free account to download
-"""
-
-KNOWN_ISSUES = """
-- Cloudflare protection: Many .gov sites block automated browsers
-  - Workaround: Use .org CAD search sites instead
-  - Some sites work after a brief wait (Cloudflare challenge auto-solves)
-- BIS Consultants sites (common in TX): reliable, consistent UI across counties
-- California: uses county-specific assessor sites, less standardized
-- Multi-county properties: rare but possible — check all applicable counties
-- New construction: may not appear in CAD until next assessment cycle
-- Exemption lag: homestead exemptions filed mid-year may not show until next year's roll
-"""
+    "logout": {
+        "url": None,
+        "confirm_text": None,
+    },
+}

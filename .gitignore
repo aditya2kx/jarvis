@@ -31,11 +31,8 @@ __pycache__/
 !agents/*/knowledge-base/schema/
 !agents/*/knowledge-base/examples/
 
-# Portal playbooks and scripts are user-specific (reveal which portals you use)
-# Only generic templates are tracked; actual portal files are gitignored
-agents/*/knowledge-base/portal-playbooks/*.yaml
-!agents/*/knowledge-base/portal-playbooks/_template.yaml
-agents/*/scripts/portals/*.py
-!agents/*/scripts/portals/__init__.py
-!agents/*/scripts/portals/_brokerage_template.py
-!agents/*/scripts/portals/_county_tax_template.py
+# Portal navigation modules are checked in (generic knowledge, no PII).
+# The user's portal manifest (which portals they use + account details)
+# lives in config.yaml (already gitignored).
+!agents/*/knowledge-base/portal-playbooks/
+!agents/*/scripts/portals/

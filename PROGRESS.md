@@ -166,10 +166,12 @@ Successfully tested autonomous document discovery and login:
    - `_update_registry()`: marks docs as received in document-registry.json
    - `list_keychain_portals()`: shows all stored portal credentials
 
-3. **Portal navigation scripts** (`agents/chitra/scripts/portals/`)
-   - `_brokerage_template.py`: generic Playwright MCP steps for brokerage login → tax forms → download
-   - `_county_tax_template.py`: generic county property tax search steps
-   - User-specific portal scripts are gitignored (filenames reveal which portals you use)
+3. **Portal navigation modules** (`agents/chitra/scripts/portals/`)
+   - `schwab.py`: iframe login quirk, 1099 Dashboard SPA, account selector pattern
+   - `etrade.py`: mandatory SMS MFA, no email option, device trust flow
+   - `county_property_tax.py`: CAD search, data extraction, tax bill lookup
+   - These are generic navigation knowledge (like DB drivers) — checked in, no PII
+   - User's portal manifest (which portals they use) stays in config.yaml (gitignored)
 
 4. **Slack adapter improvements**
    - `request_otp()` upgraded: phone_hint parameter, Socket Mode auto-detection

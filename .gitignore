@@ -27,7 +27,15 @@ browser-profile/
 __pycache__/
 *.pyc
 
-# Allow schema docs, examples, and playbooks (override *.json exclusion)
+# Allow schema docs and examples (override *.json exclusion)
 !agents/*/knowledge-base/schema/
 !agents/*/knowledge-base/examples/
-!agents/*/knowledge-base/portal-playbooks/
+
+# Portal playbooks and scripts are user-specific (reveal which portals you use)
+# Only generic templates are tracked; actual portal files are gitignored
+agents/*/knowledge-base/portal-playbooks/*.yaml
+!agents/*/knowledge-base/portal-playbooks/_template.yaml
+agents/*/scripts/portals/*.py
+!agents/*/scripts/portals/__init__.py
+!agents/*/scripts/portals/_brokerage_template.py
+!agents/*/scripts/portals/_county_tax_template.py

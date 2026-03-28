@@ -167,8 +167,9 @@ Successfully tested autonomous document discovery and login:
    - `list_keychain_portals()`: shows all stored portal credentials
 
 3. **Portal navigation scripts** (`agents/chitra/scripts/portals/`)
-   - `schwab.py`: exact Playwright MCP steps for login → tax forms → download
-   - `fort_bend_county.py`: county property tax search steps (generic, works for any county)
+   - `_brokerage_template.py`: generic Playwright MCP steps for brokerage login → tax forms → download
+   - `_county_tax_template.py`: generic county property tax search steps
+   - User-specific portal scripts are gitignored (filenames reveal which portals you use)
 
 4. **Slack adapter improvements**
    - `request_otp()` upgraded: phone_hint parameter, Socket Mode auto-detection

@@ -1,0 +1,40 @@
+# Portal Playbook Template
+# Copy this file and rename to {portal-name}.yaml for each portal you use.
+# These files are gitignored — they stay local since they reveal your accounts.
+
+portal: example-broker          # lowercase, hyphenated key
+name: "Example Broker"          # human-readable name
+url: "https://example.com"      # login page URL
+login_required: true            # false for public sites (county tax lookups)
+otp_method: "sms"               # sms | app_based | email | none
+automated: true                 # false if CHITRA can't automate (e.g. employer SSO)
+keychain_service: "jarvis-example-broker"  # macOS Keychain service name
+
+documents:
+  - type: "1099 Composite"
+    nav_steps:
+      - "Open the portal URL and sign in with username and password."
+      - "Complete OTP when prompted."
+      - "Navigate to Statements, Tax Documents, or 1099 section."
+      - "Select tax year {YYYY} from the year filter or dropdown."
+      - "Locate the 1099 for the account and download the PDF."
+    expected_files:
+      - "{YYYY} Form 1099 Composite - {Broker} Acct {suffix}.pdf"
+    drive_folder: "02 - Brokerage 1099s/{Broker}/"
+    naming: "{YYYY} Form 1099 Composite - {Broker} Acct {suffix}.pdf"
+
+  - type: "Realized Gain/Loss CSV"
+    nav_steps:
+      - "After login (same session), go to Accounts or Reports."
+      - "Open Realized Gain/Loss or Tax Lot Details."
+      - "Set date range to full tax year {YYYY} (Jan 1–Dec 31)."
+      - "Export or download as CSV."
+    expected_files:
+      - "*realized*gain*loss*.csv"
+    drive_folder: "02 - Brokerage 1099s/{Broker}/"
+    naming: "{YYYY} Realized Gain Loss - {Broker} Acct {suffix}.csv"
+
+notes: |
+  Use account suffix in filenames to distinguish multiple accounts.
+  Adapt nav_steps based on the portal's actual UI.
+  Common sections: Tax Center, Documents, Statements & Tax Forms, 1099 Dashboard.

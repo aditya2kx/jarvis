@@ -51,15 +51,37 @@ The prior-year federal and state tax returns are the **single most important inp
 - Build the Drive folder tree from the derived checklist categories, not from a manual template.
 - Use `drive-folder-convention.md` for naming rules.
 
-**Step 4 — Identify gaps and ask the user:**
-- "Any new employers, brokerages, rental properties, or investments this year?"
-- "Any life changes (marriage, move, new business, property sale)?"
-- "Any entities or K-1s that won't recur?"
+**Step 4 — Check yourself first, ask second:**
 
-**Step 5 — Pull documents autonomously:**
+The cardinal rule: **never ask the user what you can check yourself.** Triage every gap:
+
+| Triage | Action | Examples |
+|--------|--------|----------|
+| **Self-check** | Use Playwright to check portals, download docs | Broker 1099s, bank 1098s, county property tax, HSA forms |
+| **Bank-derived** | Analyze bank transactions to identify recurring payees | Insurance provider (monthly premium), property manager (monthly deposit) |
+| **Address-derived** | From a street address, derive county, state, tax portal URLs | "Missouri City TX" → Fort Bend County → fbctx.gov, fbcad.org |
+| **Must-ask** | Only the user can tell you | Life events, new arrangements, employer changes, CPA identity |
+| **User-provides** | Portal auth is too complex to automate | Employer W-2s, 1095-Cs from HR portals with heavy SSO/MFA |
+
+**Step 5 — Ask smart questions (learnings from live testing):**
+
+Principles for the questionnaire conversation:
+1. **Batch by category** — group related questions, don't send a numbered list of 35
+2. **Start with highest-impact** — life events and business changes discover the most new docs
+3. **Follow up intelligently** — when user says "bought a house at [address]":
+   - Auto-derive: address → county → property tax portal URL → homestead eligibility
+   - Ask only what you can't derive: "Who's the mortgage lender?" (to know where the 1098 comes from)
+4. **Ask about employees for Schedule C businesses** — triggers 4 employer tax docs (W-2, W-3, 941, 940) plus "which payroll service?" to know the portal
+5. **Ask about health insurance dependency** — who's the primary policyholder can change year to year
+6. **Match the user's tone** — casual user gets casual CHITRA. Use names ("Aditya", "Kajri") not "taxpayer" and "spouse". If user says "wifey", mirror that warmth.
+7. **Explain WHY you're asking** — non-tax-professionals need context: "The property manager issues a 1099-MISC for your rental income. We need to know who to expect it from."
+8. **Gmail is a document source** — CPA correspondence, charitable arrangements, and K-1 notifications often arrive by email. Build Gmail skill as priority.
+
+**Step 6 — Pull documents autonomously:**
 - For every portal where credentials are stored (Keychain + `portals.yaml`), attempt automated retrieval.
 - For portals requiring OTP, use the Slack OTP flow.
 - For documents that can't be pulled (CPA-provided, user-uploaded), mark as `not_received` and notify.
+- Come back to the user with a **status report**, not more questions: "Downloaded Schwab 1099, Robinhood 1099, and Wells Fargo 1098. Lincoln Way K-1 isn't on Yardi yet — want me to email Kevin?"
 
 This replaces the old approach of manually maintaining the registry. The return is the source of truth; the registry is derived from it.
 

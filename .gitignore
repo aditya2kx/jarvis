@@ -8,8 +8,9 @@ config.yaml
 # One-time scripts with hardcoded personal data
 agents/*/scripts/personal/
 
-# Credential storage
+# Credential storage (actual creds in Keychain, never files)
 credentials/
+!credentials/portals.yaml.template
 
 # Browser automation profile (session cookies)
 browser-profile/

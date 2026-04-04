@@ -11,6 +11,7 @@ Prerequisites:
     - Slack app created and installed to workspace
     - Bot token stored in Keychain: security add-generic-password -a SLACK_BOT_TOKEN -s jarvis -w "xoxb-..."
     - Bot scopes: chat:write, channels:read, im:write, im:read, im:history, users:read
+    - chat:write also covers chat.delete (for removing credential messages after storage)
 """
 
 import json

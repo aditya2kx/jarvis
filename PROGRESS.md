@@ -122,10 +122,10 @@ Simulated new-user onboarding using only `profile-2024.json` + user Q&A (no peek
   - Gmail skill identified as high priority (came up 2x in exercise)
 
 ## Immediate Next Steps (prioritized by impact)
-1. **Complete E*Trade login** — user needs to provide SMS OTP. Once done, download 1099 + Stock Plan Supplement
-2. **Test actual PDF download** — we proved we can SEE the documents on Schwab; next: click download, save file, upload to Drive
-3. **Verify Slack Socket Mode** — App-Level Token generated, Socket Mode enabled, needs stable network to test WebSocket connection
-4. **Collect remaining portal credentials** — conversational flow as each portal is needed
+1. **Run the full task runner** — `python run_portal_tasks.py --prepare --interactive` to collect missing creds via Slack and prepare all plans
+2. **Complete E*Trade login** — user needs to provide SMS OTP. Once done, download 1099 + Stock Plan Supplement
+3. **Test actual PDF download** — we proved we can SEE the documents on Schwab; next: click download, save file, upload to Drive
+4. **Verify Slack Socket Mode** — needs stable network to test WebSocket connection
 5. **Build Gmail skill** — high priority, came up twice in questionnaire exercise (charitable docs, CPA correspondence)
 6. **Build county tax bill scraper** — county tax assessor sites for actual tax payment receipts (CAD appraisal data already captured)
 7. **Score against real registry** — run final diff of exercise-built registry vs actual document-registry.json
@@ -198,6 +198,17 @@ Successfully tested autonomous document discovery and login:
 7. **Credentials stored in Keychain**
    - jarvis-schwab, jarvis-etrade (usernames stored securely, never in git)
 
+8. **Portal task runner** (`agents/chitra/scripts/run_portal_tasks.py`)
+   - `TaskRunner` class: full orchestration loop for credential → plan → execute → status
+   - `check_all_credentials()`: shows which portals have creds stored vs missing
+   - `ensure_credentials()`: checks Keychain → if missing, asks user via Slack DM
+   - `request_credentials_via_slack()`: sends DM asking for username then password, stores in Keychain, deletes credential messages from Slack history
+   - `prepare_task()` / `prepare_all()`: checks creds + generates execution plans for all portal tasks
+   - `resolve_portal()`: fuzzy-matches issuer names to portal modules (e.g. "Charles Schwab & Co" → schwab)
+   - `mark_complete()` / `send_status_summary()`: Slack notifications for progress tracking
+   - CLI: `--check` (cred status), `--plan <module>` (single plan), `--prepare` (all tasks), `--interactive` (ask for missing creds)
+   - Tested: 3 ready (schwab, etrade, county), 7 blocked (missing creds) — exactly matches Keychain state
+
 ## Blockers
 - ~~Playwright MCP is configured and Chromium is installed, but runtime MCP tool availability is inconsistent~~ **RESOLVED** — Playwright MCP is fully operational (tested 2026-03-28)
 - ~~Slack Socket Mode not yet enabled~~ **RESOLVED** — App-Level Token generated, Socket Mode enabled, `message.im` event subscribed
@@ -251,6 +262,8 @@ Successfully tested autonomous document discovery and login:
 - 2026-03-28: Navigation knowledge (how to use Schwab) is checked in like DB drivers; user's portal manifest (which portals they use) is gitignored
 - 2026-03-28: portals.yaml.template sanitized to generic examples — user-specific portal list lives in portals.yaml (gitignored)
 - 2026-03-28: Answer-processing pipeline maps life events to multi-document expansions (e.g. "new home" → 4 docs)
+- 2026-03-28: Credential collection is conversational via Slack DM (ask username, then password), stored in Keychain, messages deleted from chat after storage
+- 2026-03-28: TaskRunner orchestrates the full loop: task list → cred check → Slack ask → plan gen → AI execution → status notify
 
 ## Git State
 - Branch: `main`

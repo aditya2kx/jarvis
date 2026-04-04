@@ -200,9 +200,18 @@ class TaskRunner:
     def request_credentials_via_slack(self, portal_module):
         """Ask the user for credentials via Slack DM.
 
-        Sends a DM asking for username and password for the specified portal.
-        Waits for two replies: first username, then password.
-        Stores in Keychain and deletes the messages containing credentials.
+        Username is collected via Slack (low sensitivity).
+        Password NEVER transits through Slack — instead, the bot sends a
+        one-liner Keychain command that the user pastes into any terminal.
+        This avoids passwords sitting in Slack chat history.
+
+        Flow:
+          1. Bot DMs: "I need Chase creds. Reply with your username."
+          2. User replies: "aditya2kx"
+          3. Bot DMs: "Got it. Now run this command in any terminal:
+                       security add-generic-password -s jarvis-chase -a aditya2kx -w 'YOUR_PASSWORD'"
+          4. User runs the command (terminal, SSH, whatever)
+          5. Bot polls Keychain to confirm storage, then DMs: "All set!"
 
         Args:
             portal_module: Module name (e.g. "schwab")
@@ -230,8 +239,7 @@ class TaskRunner:
             f":key: *Credentials Needed — {portal_name}*\n\n"
             f"I need to log into {portal_name} to download your tax documents.\n"
             f"Login URL: {login_url}\n\n"
-            f"Please reply with your *username* first, then I'll ask for the password.\n"
-            f"_(I'll delete these messages after storing securely in Keychain)_",
+            f"Please reply with your *username* for this portal.",
         )
         sent_ts = msg["ts"]
 
@@ -240,39 +248,34 @@ class TaskRunner:
             send_message(dm_channel, f":x: Timed out waiting for {portal_name} username.")
             return None
 
-        username_ts = username["ts"]
         username_text = username["text"].strip()
 
-        pw_msg = send_message(
+        send_message(
             dm_channel,
-            f":lock: Got username: `{username_text}`\n"
-            f"Now please reply with your *password* for {portal_name}.\n"
-            f"_(Will be stored in macOS Keychain as `{service}`, never in any file)_",
+            f":lock: Got username: `{username_text}`\n\n"
+            f"Now I need the password — but *passwords never go through Slack*.\n"
+            f"Run this in any terminal (Mac, SSH, etc.):\n\n"
+            f"```security add-generic-password -s {service} -a {username_text} -w 'YOUR_PASSWORD_HERE'```\n\n"
+            f"Replace `YOUR_PASSWORD_HERE` with your actual password.\n"
+            f"I'll confirm once I detect it in Keychain.",
         )
 
-        password = self._wait_for_reply(dm_channel, user_id, pw_msg["ts"], timeout=600)
-        if not password:
-            send_message(dm_channel, f":x: Timed out waiting for {portal_name} password.")
-            return None
-
-        password_ts = password["ts"]
-        password_text = password["text"].strip()
-
-        stored = self.store_credentials(portal_module, username_text, password_text)
-
-        self._delete_message(dm_channel, username_ts)
-        self._delete_message(dm_channel, password_ts)
+        stored = self._poll_keychain(service, timeout=600, poll_interval=5)
 
         if stored:
             send_message(
                 dm_channel,
-                f":white_check_mark: Credentials for *{portal_name}* stored securely in Keychain.\n"
-                f"Username: `{username_text}` | Service: `{service}`\n"
-                f"_(Your password messages have been deleted from this chat)_",
+                f":white_check_mark: *{portal_name}* credentials confirmed in Keychain!\n"
+                f"Username: `{username_text}` | Service: `{service}`",
             )
             return {"username": username_text, "stored": True, "service": service}
         else:
-            send_message(dm_channel, f":x: Failed to store credentials for {portal_name}.")
+            send_message(
+                dm_channel,
+                f":x: Timed out waiting for {portal_name} password in Keychain.\n"
+                f"You can store it later:\n"
+                f"```security add-generic-password -s {service} -a {username_text} -w 'YOUR_PASSWORD'```",
+            )
             return {"username": username_text, "stored": False}
 
     def _wait_for_reply(self, channel, user_id, after_ts, timeout=600, poll_interval=5):
@@ -293,15 +296,17 @@ class TaskRunner:
                 print(f"[runner] Poll error: {e}")
         return None
 
-    def _delete_message(self, channel, ts):
-        """Delete a message from Slack (to remove credential text from history)."""
-        from skills.slack.adapter import _api_call
-        try:
-            result = _api_call("chat.delete", json_body={"channel": channel, "ts": ts})
-            if not result.get("ok"):
-                print(f"[runner] Could not delete message {ts}: {result.get('error')}")
-        except Exception as e:
-            print(f"[runner] Delete message error: {e}")
+    def _poll_keychain(self, service, timeout=600, poll_interval=5):
+        """Poll macOS Keychain until a credential appears for the given service."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(poll_interval)
+            cmd = f"security find-generic-password -s {service} 2>&1"
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+            combined = result.stdout + result.stderr
+            if "could not be found" not in combined and result.returncode == 0:
+                return True
+        return False
 
     def ensure_credentials(self, portal_module, interactive=True):
         """Ensure credentials exist for a portal, requesting them if needed.

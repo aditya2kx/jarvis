@@ -161,10 +161,18 @@ class AnswerProcessor:
     # --- Life event handlers ---
 
     def _handle_new_home(self, details):
-        """New primary residence → mortgage 1098, property tax, homestead."""
+        """New primary residence → mortgage 1098, property tax, homestead.
+
+        Also updates any existing PRIMARY RESIDENCE docs with the new address
+        so they land in the same folder (no duplicate 04 - Primary Residence).
+        """
         docs = []
         address = details.get("address", "new primary residence")
         lender = details.get("lender")
+
+        for doc in self.docs:
+            if "PRIMARY RESIDENCE" in doc.get("docType", ""):
+                doc.setdefault("details", {})["address"] = address
 
         if lender:
             docs.append(self.add_new_document(
@@ -175,19 +183,18 @@ class AnswerProcessor:
 
         docs.append(self.add_new_document(
             "Property Tax Bill - PRIMARY RESIDENCE",
-            f"County Tax Assessor",
+            "County Tax Assessor",
             "Deduction", "county_website",
-            details={"address": address, "auto_derive": "address → county → CAD URL"},
+            details={"address": address, "auto_derive": "address -> county -> CAD URL"},
         ))
 
         docs.append(self.add_new_document(
             "Homestead Exemption Application/Approval",
-            f"County Appraisal District",
+            "County Appraisal District",
             "Deduction", "county_website",
             details={"address": address},
         ))
 
-        # HUD-1 closing statement for the purchase
         docs.append(self.add_new_document(
             "HUD-1 Closing Statement (Purchase)",
             details.get("title_company", "Title Company"),
@@ -327,12 +334,13 @@ class AnswerProcessor:
         payroll = details.get("payroll_provider")
         source = "payroll_portal" if payroll else "user_records"
         issuer = payroll or business
+        doc_details = {"business": business}
 
         return [
-            self.add_new_document("W-2 (Employee)", issuer, "Other", source),
-            self.add_new_document("W-3 (Transmittal)", issuer, "Other", source),
-            self.add_new_document("Form 941 (Quarterly)", issuer, "Other", source),
-            self.add_new_document("Form 940 (FUTA)", issuer, "Other", source),
+            self.add_new_document("W-2 (Employee)", issuer, "Other", source, details=doc_details),
+            self.add_new_document("W-3 (Transmittal)", issuer, "Other", source, details=doc_details),
+            self.add_new_document("Form 941 (Quarterly)", issuer, "Other", source, details=doc_details),
+            self.add_new_document("Form 940 (FUTA)", issuer, "Other", source, details=doc_details),
         ]
 
     def _handle_new_partnership(self, details):
@@ -404,6 +412,7 @@ class AnswerProcessor:
         if not hasattr(self, "_folder_tree"):
             self.rebuild_folder_tree(target_year)
         return {
+            "taxYear": target_year,
             "documents": active_docs,
             "driveFolderStructure": self._folder_tree,
             "total": len(active_docs),

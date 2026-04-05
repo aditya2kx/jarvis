@@ -522,6 +522,17 @@ def derive_folder_tree(docs, target_year):
             if biz_name:
                 category = f"08 - Business - {biz_name} [NEED DOCS]"
 
+        if dtype in ("W-2 (Employee)", "W-3 (Transmittal)",
+                     "Form 941 (Quarterly)", "Form 940 (FUTA)"):
+            biz_name = doc.get("details", {}).get("business", "")
+            if not biz_name:
+                for other in docs:
+                    if other.get("docType") == "Schedule C Records":
+                        biz_name = other.get("issuer", "")
+                        break
+            if biz_name:
+                category = f"08 - Business - {biz_name} [NEED DOCS]"
+
         subfolder = _derive_subfolder(doc)
         if subfolder:
             path = f"{category}/{subfolder}"

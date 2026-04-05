@@ -109,7 +109,7 @@ def step2_print_parsing_prompt(txt_path):
 def step3_derive_registry(profile_path, target_year=None):
     """Derive registry and questionnaire from a profile."""
     from agents.chitra.scripts.derive_registry_from_return import (
-        load_json, derive_documents, derive_folder_structure,
+        load_json, derive_documents, derive_folder_tree,
     )
     from agents.chitra.scripts.generate_questionnaire import (
         load_json as load_q,
@@ -123,15 +123,18 @@ def step3_derive_registry(profile_path, target_year=None):
     year = target_year or (prior_year + 1)
 
     docs = derive_documents(profile, year)
-    folders = derive_folder_structure(docs, year)
+    folder_tree = derive_folder_tree(docs, year)
 
     print(f"\n{'=' * 70}")
     print(f"STEP 3: DERIVED REGISTRY FOR {year}")
     print(f"{'=' * 70}")
+    top_folders = sorted(set(p.split("/")[0] for p in folder_tree.keys()))
     print(f"\n  Documents expected: {len(docs)}")
-    print(f"  Folder categories:  {len(folders)}")
+    print(f"  Top-level folders:  {len(top_folders)}")
+    print(f"  Total folder paths: {len(folder_tree)}")
     for d in docs:
-        print(f"    [{d['id']:2d}] {d['docType']:40s} | {d['issuer']}")
+        path = d.get("drivePath", "")
+        print(f"    [{d['id']:2d}] {d['docType']:40s} | {d['issuer'][:35]:35s} | {path}")
 
     registry_out = kb_path(f"derived-registry-{year}.json")
     os.makedirs(os.path.dirname(registry_out), exist_ok=True)
@@ -140,7 +143,7 @@ def step3_derive_registry(profile_path, target_year=None):
             "taxYear": year,
             "derivedFrom": f"profile-{prior_year}.json",
             "documents": docs,
-            "driveFolderStructure": {folder: "" for folder in folders},
+            "driveFolderStructure": folder_tree,
         }, f, indent=2)
     print(f"\n  Registry saved: {registry_out}")
 

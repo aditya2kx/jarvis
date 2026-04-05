@@ -27,6 +27,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 from core.config_loader import kb_path, project_dir
+from agents.chitra.scripts.derive_registry_from_return import derive_folder_tree
 
 
 class AnswerProcessor:
@@ -382,13 +383,29 @@ class AnswerProcessor:
             details=details,
         )]
 
+    # --- Folder tree derivation ---
+
+    def rebuild_folder_tree(self, target_year=2025):
+        """Re-derive the full folder tree from all current documents.
+
+        This must be called after all answers are processed so that newly
+        added documents get drivePath fields and the folder structure
+        includes their subfolders.
+        """
+        active_docs = [d for d in self.docs if d.get("status") != "removed"]
+        self._folder_tree = derive_folder_tree(active_docs, target_year)
+        return self._folder_tree
+
     # --- Output generation ---
 
-    def get_registry(self):
+    def get_registry(self, target_year=2025):
         """Return the current registry as a JSON-serializable dict."""
         active_docs = [d for d in self.docs if d.get("status") != "removed"]
+        if not hasattr(self, "_folder_tree"):
+            self.rebuild_folder_tree(target_year)
         return {
             "documents": active_docs,
+            "driveFolderStructure": self._folder_tree,
             "total": len(active_docs),
             "by_status": self._count_by("status", active_docs),
             "by_source": self._count_by("source", active_docs),

@@ -223,6 +223,90 @@ def request_otp(user_id, portal_name, timeout_seconds=300, poll_interval=10, pho
     return None
 
 
+def check_for_user_messages(since_ts=None, dm_channel=None, user_id=None):
+    """Check for new messages from the user in the DM channel.
+
+    Args:
+        since_ts: Only return messages newer than this timestamp.
+                  If None, reads the last 5 messages.
+        dm_channel: Override DM channel (default: from config)
+        user_id: Override user ID (default: from config)
+
+    Returns:
+        List of message dicts from the user (newest first), each with
+        'text', 'ts', 'user'. Empty list if no new messages.
+    """
+    cfg = load_config()
+    channel = dm_channel or cfg.get("slack", {}).get("dm_channel")
+    uid = user_id or cfg.get("slack", {}).get("primary_user_id")
+
+    if not channel:
+        return []
+
+    messages = read_replies(channel, limit=10, oldest=since_ts)
+    user_msgs = [
+        m for m in messages
+        if m.get("user") == uid and not m.get("bot_id")
+    ]
+    return user_msgs
+
+
+def send_progress(text, dm_channel=None):
+    """Send a progress update to the user's DM. Convenience wrapper."""
+    cfg = load_config()
+    channel = dm_channel or cfg.get("slack", {}).get("dm_channel")
+    if channel:
+        return send_message(channel, text)
+
+
+def ask_user(question, dm_channel=None, poll_interval=20):
+    """Send a question and wait indefinitely for the user's reply.
+
+    HARD LESSON: Never timebox user input. Wait forever — the user
+    will reply when they can.
+
+    Args:
+        question: The question text to send
+        dm_channel: Override DM channel
+        poll_interval: Seconds between polls (default 20)
+
+    Returns:
+        The user's reply text (never returns None — waits indefinitely)
+    """
+    cfg = load_config()
+    channel = dm_channel or cfg.get("slack", {}).get("dm_channel")
+    uid = cfg.get("slack", {}).get("primary_user_id")
+
+    if not channel:
+        raise RuntimeError("No DM channel configured")
+
+    msg = send_message(channel, question)
+    sent_ts = msg["ts"]
+
+    while True:
+        time.sleep(poll_interval)
+        replies = read_replies(channel, oldest=sent_ts, limit=5)
+        for reply in replies:
+            if reply["ts"] != sent_ts and reply.get("user") == uid:
+                return reply["text"].strip()
+
+
+def read_inbox(mark_read=True):
+    """Read unread messages from the Socket Mode listener's inbox.
+
+    The listener runs as a background daemon and queues all non-command
+    user messages to /tmp/jarvis-slack-inbox.json. This function reads them.
+
+    Returns:
+        List of message dicts with 'text', 'user', 'ts'. Empty if no unread.
+    """
+    try:
+        from skills.slack.listener import read_inbox as _read
+        return _read(mark_read)
+    except ImportError:
+        return []
+
+
 def test_connection():
     """Verify the Slack bot token works by calling auth.test.
 

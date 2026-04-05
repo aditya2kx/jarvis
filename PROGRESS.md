@@ -1,7 +1,60 @@
 # Jarvis Build Progress
 
+## Recurring Mistakes (read before every task)
+
+| Mistake | Where the fix lives | Pre-check |
+|---------|---------------------|-----------|
+| Compared `2025` folder against itself (0 diffs = meaningless) | `orchestrator.py` `validate_against_benchmark()` | Verify shadow_folder_id != benchmark_folder_id |
+| Copied folder structure from sealed `2025` benchmark | `derive_registry_from_return.py` | Never read `Taxes/2025` to decide what to create in `2025-test` |
+| User correction acknowledged in conversation but not persisted | `.cursor/rules/jarvis.md` Hard Lessons + skill-evolution protocol | Every correction = a file write. Name the file or it didn't happen. |
+| Asked user what could be self-checked (county, portal availability) | `chitra-playbook.md` Step 4 triage table | Derive from address/portal before asking |
+| Validation done once at end instead of after each action | `orchestrator.py` `upload_and_validate()` | After each upload/folder creation, re-inventory and diff |
+
 ## Current Phase
-Collaborative browser model built. Chrome → Keychain credential pipeline operational. 8/9 portals credentialed.
+Derive-first autonomous pipeline built. Folder structure derived from profile data (not copied from benchmark). Orchestrator fixed to validate 2025-test vs 2025 (not 2025 vs itself). Ready for end-to-end execution.
+
+**Slack communication architecture (3 layers):**
+1. Socket Mode Listener (`skills/slack/listener.py`) — instant WebSocket receive, auto-handles commands
+2. Inbox Processor (`skills/slack/inbox_processor.py`) — polls every 2 min for 4h, classifies messages, acknowledges on Slack, writes to `/tmp/jarvis-pending-actions.json`
+3. AI Agent — reads pending-actions.json at start of every turn + between major actions
+
+**On session start:** Check `cat /tmp/jarvis-inbox-processor.pid` and restart if needed. Also restart listener if needed.
+
+## Last Session (2026-04-05, continued)
+- **Slack long-polling loop** — AI agent stays alive and responsive to Slack
+  - `skills/slack/wait_for_input.py` — blocks until Slack message arrives (checks every 5s) or timeout
+  - `skills/slack/inbox_processor.py` — background daemon (4h), polls inbox every 2min, classifies messages, acknowledges on Slack, writes to `/tmp/jarvis-pending-actions.json`
+  - 3-layer architecture: Listener (instant) → Processor (2min) → AI (active polling)
+  - Rule in `jarvis.md`: always check pending-actions + inbox before every action
+- **Derivation code fixes** — reduced folder diffs from 14 missing/11 extra to 7 missing/5 extra
+  - `_parse_address()` / `_abbreviate_street()` — proper address parsing: "211 Golden Eagle Lane, Brisbane, CA" → "Brisbane Rental - 211 Golden Eagle Ln CA"
+  - `_short_address()` — produces "1414 Crown Forest Dr TX" format for primary residence
+  - K-1 subfolders get `[NEED K-1]` suffix
+  - "Expenses" → "Expenses Partnership" renaming
+  - Category status suffixes: `[NEED DOCS]`, `[NEED FROM CPA]`
+  - New categories: `09 - Tax Payments & Extensions` (from Form 4868/2210), `06 - Retirement Accounts` (from Q&A)
+  - Remaining 7 diffs = all need questionnaire answers (address, retirement, employer change, partnership cities)
+- **2025-test folder recreated** — 21 folders created from updated derived registry, validated against benchmark
+
+## Prior Session (2026-03-28, continued)
+- **Derive-first pipeline refactor** — all folder paths now derived from user data, never from benchmark
+  - `derive_folder_tree()` + `ISSUER_BRAND_MAP` added to `derive_registry_from_return.py`
+  - 19 nested folder paths derived from 22 documents (was: 8 flat categories)
+  - `drivePath` field set on every document during derivation
+  - Subfolder naming: `{person} - {brand}` for W-2s, `{brand}` for 1099s, `{city} Rental - {address}` for properties, entity name for K-1s, business name embedded in category
+  - `ISSUER_BRAND_MAP` normalizes legal entities to brands (e.g. `Charles Schwab & Co., Inc` → `Schwab`)
+- **`create_shadow_folders.py`** — rewritten to accept `--registry` flag, support N-level folder nesting (was limited to 2)
+- **`orchestrator.py`** — critical validation fix
+  - `validate_against_benchmark()` now inventories `2025-test` (shadow) and compares against `2025` (benchmark)
+  - Safety check: rejects if shadow_folder_id == benchmark_folder_id
+  - `resolve_folder_id()` maps drivePath to shadow folder IDs
+  - `run_pipeline()` wires full sequence: registry → create folders → init tasks → Slack notification
+- **`process_answers.py`** — imports `derive_folder_tree`, `rebuild_folder_tree()` method re-derives paths after answers
+- **`onboard_from_return.py`** — updated to use `derive_folder_tree()` instead of flat folder list
+- **Hard Lessons codified** to persistent files:
+  - `.cursor/rules/jarvis.md` — Hard Lessons section + concrete feedback routing table + skill-evolution hook
+  - `.cursor/rules/chitra-playbook.md` — subfolder derivation rules in Section 1.3
+  - `PROGRESS.md` — Recurring Mistakes table at top
 
 ## Last Session (2026-04-05)
 - Built collaborative browser session framework (`skills/browser/collaborative.py`)

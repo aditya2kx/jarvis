@@ -47,9 +47,15 @@ The prior-year federal and state tax returns are the **single most important inp
 - Reset `extractedData` and `status` for all entries.
 - Bump `taxYear` everywhere.
 
-**Step 3 — Derive the folder structure:**
-- Build the Drive folder tree from the derived checklist categories, not from a manual template.
+**Step 3 — Derive the folder structure (NEVER copy from benchmark):**
+- Build the Drive folder tree from the derived checklist categories and document fields, not from a manual template or existing Drive tree.
 - Use `drive-folder-convention.md` for naming rules.
+- **Category folders** (top-level) come from `CATEGORY_FOLDERS` map in `derive_registry_from_return.py`, keyed by `docType`.
+- **Subfolders** come from document fields: `issuer` (normalized via `ISSUER_BRAND_MAP`), `for` (person name), `address` (property tag), `businessName`.
+- Naming patterns: `{category}/{person} - {employer}` for W-2s, `{category}/{broker_brand}` for 1099s, `{category}/{city} Rental - {address}` for properties, `{category} - {short_address}` for primary residence.
+- `ISSUER_BRAND_MAP` normalizes legal entity names to common brands (`Charles Schwab & Co., Inc` → `Schwab`, `E*Trade from Morgan Stanley` → `E-Trade`). This map is extensible config, not per-user data.
+- When a derived folder name doesn't match the benchmark during validation: **update the naming rules or brand map** in code — never peek at the real `Taxes/2025` folder to see the "right answer".
+- Every document in the registry carries a `drivePath` field set during derivation. Upload uses this path, not a runtime lookup against existing Drive folders.
 
 **Step 4 — Check yourself first, ask second:**
 

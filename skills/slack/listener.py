@@ -36,6 +36,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 OTP_DIR = pathlib.Path("/tmp/jarvis-otp")
 OTP_DIR.mkdir(exist_ok=True)
 
+INBOX_FILE = pathlib.Path("/tmp/jarvis-slack-inbox.json")
+COMMAND_LOG = pathlib.Path("/tmp/jarvis-slack-commands.json")
+
 _app_token_cache = None
 
 
@@ -301,6 +304,165 @@ class SocketModeClient:
         self._running = False
 
 
+def _queue_message(text, user_id, ts):
+    """Add a user message to the inbox file for the AI agent to process."""
+    inbox = []
+    if INBOX_FILE.exists():
+        try:
+            inbox = json.loads(INBOX_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            inbox = []
+
+    inbox.append({"text": text, "user": user_id, "ts": ts, "read": False})
+
+    # Keep last 50 messages
+    if len(inbox) > 50:
+        inbox = inbox[-50:]
+
+    INBOX_FILE.write_text(json.dumps(inbox, indent=2))
+
+
+def _log_command(command, response, user_id):
+    """Log a handled command for debugging."""
+    log = []
+    if COMMAND_LOG.exists():
+        try:
+            log = json.loads(COMMAND_LOG.read_text())
+        except (json.JSONDecodeError, OSError):
+            log = []
+
+    log.append({
+        "command": command,
+        "response": response,
+        "user": user_id,
+        "ts": time.time(),
+    })
+
+    if len(log) > 100:
+        log = log[-100:]
+    COMMAND_LOG.write_text(json.dumps(log, indent=2))
+
+
+def _get_dm_channel():
+    """Get the DM channel from config."""
+    try:
+        cfg_module = __import__("core.config_loader", fromlist=["load_config"])
+        cfg = cfg_module.load_config()
+        return cfg.get("slack", {}).get("dm_channel")
+    except Exception:
+        return None
+
+
+def _reply(text):
+    """Send a reply to the user's DM."""
+    try:
+        from skills.slack.adapter import send_message
+        channel = _get_dm_channel()
+        if channel:
+            send_message(channel, text)
+    except Exception as e:
+        print(f"[listener] Reply failed: {e}")
+
+
+def _handle_command(text, user_id):
+    """Handle known commands and return True if handled, False if queued."""
+    cmd = text.strip().lower()
+
+    if cmd == "status":
+        try:
+            base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+            orch_state_path = os.path.join(base_dir, "extracted", "orchestrator-state.json")
+            benchmark_path = os.path.join(base_dir, "extracted", "drive-2025-benchmark.json")
+            shadow_inv_path = os.path.join(base_dir, "extracted", "drive-2025-test-current.json")
+            registry_path = os.path.join(base_dir, "agents", "chitra",
+                                         "knowledge-base", "derived-registry-2025.json")
+
+            lines = [":bar_chart: *Progress Report*"]
+
+            # Document counts from registry
+            if os.path.exists(registry_path):
+                with open(registry_path) as f:
+                    reg = json.load(f)
+                total_docs = len(reg.get("documents", []))
+                total_folders = len(reg.get("driveFolderStructure", {}))
+                lines.append(f"\n*Documents:* {total_docs} expected")
+                lines.append(f"*Folders:* {total_folders} to create")
+
+            # Benchmark file count (target)
+            benchmark_files = 0
+            if os.path.exists(benchmark_path):
+                with open(benchmark_path) as f:
+                    bm = json.load(f)
+                benchmark_files = sum(1 for i in bm.get("items", []) if not i.get("isFolder"))
+                benchmark_folders = sum(1 for i in bm.get("items", []) if i.get("isFolder"))
+                lines.append(f"*Benchmark:* {benchmark_files} files in {benchmark_folders} folders")
+
+            # Shadow (2025-test) progress
+            if os.path.exists(shadow_inv_path):
+                with open(shadow_inv_path) as f:
+                    shadow = json.load(f)
+                shadow_files = sum(1 for i in shadow.get("items", []) if not i.get("isFolder"))
+                shadow_folders = sum(1 for i in shadow.get("items", []) if i.get("isFolder"))
+                pct = round(shadow_files / benchmark_files * 100, 1) if benchmark_files else 0
+                lines.append(f"\n*2025-test progress:* {shadow_files}/{benchmark_files} files ({pct}%)")
+                lines.append(f"  Folders created: {shadow_folders}")
+
+            # Task status from orchestrator
+            if os.path.exists(orch_state_path):
+                with open(orch_state_path) as f:
+                    state = json.load(f)
+                tasks = state.get("tasks", [])
+                by_status = {}
+                for t in tasks:
+                    s = t["status"]
+                    by_status.setdefault(s, []).append(t.get("portal", t["id"]))
+                lines.append("\n*Portal tasks:*")
+                for s in ["complete", "uploaded", "in_progress", "pending", "failed", "skipped"]:
+                    if s in by_status:
+                        lines.append(f"  {s}: {', '.join(by_status[s])}")
+
+                vhist = state.get("validationHistory", [])
+                if vhist:
+                    last = vhist[-1].get("summary", {})
+                    lines.append(f"\n*Last validation:*")
+                    lines.append(f"  Missing: {last.get('missingFiles', '?')} files | "
+                                 f"Extra: {last.get('extraFiles', '?')} files")
+                    lines.append(f"  Missing folders: {last.get('missingFolders', '?')} | "
+                                 f"Extra folders: {last.get('extraFolders', '?')}")
+            elif not os.path.exists(registry_path):
+                lines.append("\n:information_source: Pipeline not yet initialized.")
+
+            _reply("\n".join(lines))
+        except Exception as e:
+            _reply(f":warning: Couldn't read status: {e}")
+        _log_command(cmd, "status sent", user_id)
+        return True
+
+    if cmd in ("pause", "stop", "hold"):
+        _reply(":pause_button: Pause requested. Jarvis will pause after the current action.")
+        _queue_message("__CMD_PAUSE__", user_id, str(time.time()))
+        _log_command(cmd, "pause queued", user_id)
+        return True
+
+    if cmd in ("resume", "continue", "go"):
+        _reply(":arrow_forward: Resume requested. Jarvis will continue.")
+        _queue_message("__CMD_RESUME__", user_id, str(time.time()))
+        _log_command(cmd, "resume queued", user_id)
+        return True
+
+    if cmd == "help":
+        _reply(":robot_face: *Jarvis Slack Commands*\n"
+               "  `status` — current pipeline state\n"
+               "  `pause` / `stop` — pause execution\n"
+               "  `resume` / `continue` — resume execution\n"
+               "  `help` — this message\n"
+               "  Anything else → queued for Jarvis to read and act on")
+        _log_command(cmd, "help sent", user_id)
+        return True
+
+    return False
+
+
 def _handle_event(event_type, payload, envelope_id):
     """Process incoming Socket Mode events."""
     if event_type == "events_api":
@@ -308,27 +470,65 @@ def _handle_event(event_type, payload, envelope_id):
         if event.get("type") == "message" and event.get("channel_type") == "im":
             user_id = event.get("user")
             text = event.get("text", "")
+            ts = event.get("ts", "")
 
-            if event.get("bot_id"):
+            if event.get("bot_id") or event.get("subtype"):
                 return
 
             print(f"[listener] DM from {user_id}: {text}")
 
+            # OTP codes get priority handling
             if _is_otp_reply(text):
                 portal = _find_pending_portal()
                 if portal:
                     _write_otp(portal, text.strip(), user_id)
-                    from skills.slack.adapter import send_message
-                    cfg_module = __import__("core.config_loader", fromlist=["load_config"])
-                    cfg = cfg_module.load_config()
-                    dm_channel = cfg.get("slack", {}).get("dm_channel")
-                    if dm_channel:
-                        send_message(dm_channel, f":white_check_mark: Got it — using code `{text.strip()}` for {portal}")
-                else:
-                    print(f"[listener] OTP-like message but no pending portal request")
+                    _reply(f":white_check_mark: Got it — using code `{text.strip()}` for {portal}")
+                    return
+
+            # Try known commands
+            if _handle_command(text, user_id):
+                return
+
+            # Everything else → queue for the AI agent
+            _queue_message(text, user_id, ts)
+            _reply(f":inbox_tray: Got it — queued for Jarvis to process: _{text[:100]}_")
 
     elif event_type == "disconnect":
         print("[listener] Received disconnect event, will reconnect")
+
+
+def read_inbox(mark_read=True):
+    """Read all unread messages from the inbox file.
+
+    Returns list of message dicts. If mark_read=True, marks them as read.
+    """
+    if not INBOX_FILE.exists():
+        return []
+
+    try:
+        inbox = json.loads(INBOX_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    unread = [m for m in inbox if not m.get("read")]
+
+    if mark_read and unread:
+        for m in inbox:
+            m["read"] = True
+        INBOX_FILE.write_text(json.dumps(inbox, indent=2))
+
+    return unread
+
+
+def has_unread_messages():
+    """Quick check if there are unread messages in the inbox."""
+    if not INBOX_FILE.exists():
+        return False
+    try:
+        inbox = json.loads(INBOX_FILE.read_text())
+        return any(not m.get("read") for m in inbox)
+    except (json.JSONDecodeError, OSError):
+        return False
 
 
 def is_socket_mode_available():

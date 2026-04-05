@@ -1,9 +1,36 @@
 # Jarvis Build Progress
 
 ## Current Phase
-Jarvis architecture restructure complete. Slack skill operational.
+Collaborative browser model built. Chrome → Keychain credential pipeline operational. 8/9 portals credentialed.
 
-## Last Session (2026-03-28)
+## Last Session (2026-04-05)
+- Built collaborative browser session framework (`skills/browser/collaborative.py`)
+  - JS credential interceptor: captures form fields on submit, stores in sessionStorage+localStorage to survive redirects
+  - Slack-based user notification: AI navigates browser, notifies user via Slack to enter creds
+  - Takeover flow: AI can request user help, watch for "done" signal, learn navigation patterns
+  - Learning persistence: stores navigation patterns in `agents/chitra/knowledge-base/learnings/`
+- Added `collaborative_login` step type to portal plan generator (`base.py`)
+  - `generate_plan()` now accepts `credential_mode="collaborative"|"keychain"`
+  - Plan markdown renders collaborative login sub-steps for AI execution
+- Wired `CollaborativeSession` into `TaskRunner` (`run_portal_tasks.py`)
+  - `ensure_credentials()` now supports `method="collaborative"|"slack"`
+  - When creds missing + collaborative mode: marks task as ready with `credential_mode=collaborative`
+  - Plan generation passes credential_mode through to step generator
+- Built Chrome Password Manager → Keychain import pipeline (`credentials/import_from_chrome.py`)
+  - Reads Chrome CSV export, matches URLs to known Jarvis portal patterns
+  - Shows matches table with existing Keychain status, asks for confirmation
+  - Bulk stores all confirmed entries in Keychain, deletes CSV immediately
+  - Mapped 9 portals with URL patterns for matching
+- Imported 7 portal credentials from Chrome in one shot:
+  - Schwab, E*Trade, Wells Fargo, Fidelity, Robinhood, Homebase, Chase
+  - HSA provider still missing (need to identify which provider user has)
+- Attempted collaborative browser credential capture for Wells Fargo:
+  - Learned: JS interceptor loses state on SAML redirects (cross-origin navigation)
+  - Learned: Polling form fields directly via Playwright is more reliable than event listeners
+  - Learned: Chrome CSV import is far more efficient for bulk credential collection
+  - Collaborative browser model still valuable for: first-time logins, stuck navigation, CAPTCHA handling
+
+## Session (2026-03-28)
 - Restructured repo from flat CHITRA layout to Jarvis agent/skill hierarchy
 - Renamed workspace: Tax Strategies -> Jarvis
 - Renamed GitHub repo: chitragupta -> jarvis
@@ -122,12 +149,12 @@ Simulated new-user onboarding using only `profile-2024.json` + user Q&A (no peek
   - Gmail skill identified as high priority (came up 2x in exercise)
 
 ## Immediate Next Steps (prioritized by impact)
-1. **Run the full task runner** — `python run_portal_tasks.py --prepare --interactive` to collect missing creds via Slack and prepare all plans
-2. **Complete E*Trade login** — user needs to provide SMS OTP. Once done, download 1099 + Stock Plan Supplement
-3. **Test actual PDF download** — we proved we can SEE the documents on Schwab; next: click download, save file, upload to Drive
-4. **Verify Slack Socket Mode** — needs stable network to test WebSocket connection
-5. **Build Gmail skill** — high priority, came up twice in questionnaire exercise (charitable docs, CPA correspondence)
-6. **Build county tax bill scraper** — county tax assessor sites for actual tax payment receipts (CAD appraisal data already captured)
+1. **Run full portal automation** — 8/9 portals have creds; run `prepare_all()` and execute plans via Playwright
+2. **Test actual PDF download** — click download on Schwab/E*Trade, save file, upload to Drive
+3. **Identify HSA provider** — last missing credential; add URL pattern to import script
+4. **Build Gmail skill** — high priority, came up twice in questionnaire exercise (charitable docs, CPA correspondence)
+5. **Build county tax bill scraper** — county tax assessor sites for actual tax payment receipts
+6. **Verify Slack Socket Mode** — test WebSocket connection for real-time OTP delivery
 7. **Score against real registry** — run final diff of exercise-built registry vs actual document-registry.json
 
 ## Playwright E2E Tests (2026-03-28)
@@ -209,12 +236,27 @@ Successfully tested autonomous document discovery and login:
    - CLI: `--check` (cred status), `--plan <module>` (single plan), `--prepare` (all tasks), `--interactive` (ask for missing creds)
    - Tested: 3 ready (schwab, etrade, county), 7 blocked (missing creds) — exactly matches Keychain state
 
+9. **Collaborative browser session** (`skills/browser/collaborative.py`)
+   - `CollaborativeSession` class: AI drives browser, user assists when needed
+   - JS credential interceptor: captures form fields on submit/click/Enter, persists to sessionStorage+localStorage
+   - Slack notifications: notify user to enter creds, request takeover when stuck, resume after user helps
+   - Learning persistence: stores navigation patterns in per-portal JSON files
+   - Plan generation: `generate_login_plan()` produces step-by-step instructions for AI agent
+   - Integrated into `TaskRunner` via `credential_mode="collaborative"` parameter
+
+10. **Chrome → Keychain import pipeline** (`credentials/import_from_chrome.py`)
+    - Reads Chrome Password Manager CSV export
+    - Matches URLs against 9 known portal patterns (extensible)
+    - Shows confirmation table with existing Keychain status
+    - Bulk stores in Keychain, securely deletes CSV
+    - One user action (Chrome export) → all portal creds stored
+
 ## Blockers
 - ~~Playwright MCP is configured and Chromium is installed, but runtime MCP tool availability is inconsistent~~ **RESOLVED** — Playwright MCP is fully operational (tested 2026-03-28)
 - ~~Slack Socket Mode not yet enabled~~ **RESOLVED** — App-Level Token generated, Socket Mode enabled, `message.im` event subscribed
 - E*Trade requires SMS MFA — no email option, blocks fully autonomous login until Gmail skill or Slack Socket Mode is operational
 - Some county .gov sites block automated browsers via Cloudflare — use CAD search sites (.org) instead
-- Portal credentials partially populated — Schwab and E*Trade stored, ~10 more portals need creds
+- ~~Portal credentials partially populated~~ **RESOLVED** — 8/9 portals credentialed via Chrome CSV import (only HSA provider missing)
 - Google Drive MCP read-only auth path is failing with a Google 403 — Drive work uses direct API helpers instead
 
 ## Completed Steps
@@ -264,6 +306,12 @@ Successfully tested autonomous document discovery and login:
 - 2026-03-28: Answer-processing pipeline maps life events to multi-document expansions (e.g. "new home" → 4 docs)
 - 2026-03-28: Credential collection is conversational via Slack DM (ask username, then password), stored in Keychain, messages deleted from chat after storage
 - 2026-03-28: TaskRunner orchestrates the full loop: task list → cred check → Slack ask → plan gen → AI execution → status notify
+- 2026-04-05: Collaborative browser model: AI navigates, user enters creds in visible browser, AI captures via JS interceptor + stores in Keychain
+- 2026-04-05: JS credential interceptor must store in sessionStorage/localStorage to survive page redirects (window variables are destroyed)
+- 2026-04-05: SAML login flows (Wells Fargo) cross origins, wiping even localStorage — direct form field polling via Playwright is more reliable
+- 2026-04-05: Chrome CSV export → Keychain bulk import is the most efficient credential collection method (Google has no API for Password Manager)
+- 2026-04-05: Collaborative browser model is still the right approach for: first-time portal logins without saved passwords, stuck navigation, CAPTCHA handling, MFA flows
+- 2026-04-05: Learnings directory (`agents/chitra/knowledge-base/learnings/`) stores per-portal navigation patterns from collaborative sessions
 
 ## Git State
 - Branch: `main`

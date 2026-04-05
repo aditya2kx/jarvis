@@ -308,77 +308,96 @@ class TaskRunner:
                 return True
         return False
 
-    def ensure_credentials(self, portal_module, interactive=True):
+    def ensure_credentials(self, portal_module, interactive=True, method="collaborative"):
         """Ensure credentials exist for a portal, requesting them if needed.
 
         Args:
             portal_module: Module name
-            interactive: If True, ask via Slack when missing. If False, just report.
+            interactive: If True, engage user when missing. If False, just report.
+            method: "collaborative" (user enters in browser, AI captures) |
+                    "slack" (ask via Slack DM + Keychain CLI)
 
         Returns:
-            dict with 'ready' bool and status info
+            dict with 'ready' bool, 'credential_mode' for plan generation, and status info
         """
         cred = self.check_credentials(portal_module)
 
         if cred.get("reason") == "no login required":
-            return {"ready": True, "reason": "no login required"}
+            return {"ready": True, "reason": "no login required", "credential_mode": "keychain"}
 
         if cred["exists"]:
             return {
                 "ready": True,
                 "username": cred.get("username"),
                 "service": cred.get("keychain_service"),
+                "credential_mode": "keychain",
             }
 
         if not interactive:
             return {
                 "ready": False,
-                "reason": "credentials missing",
+                "reason": "credentials missing — needs collaborative login",
                 "service": cred.get("keychain_service"),
                 "portal_name": cred.get("portal_name"),
+                "credential_mode": "collaborative",
+            }
+
+        if method == "collaborative":
+            print(f"[runner] Credentials missing for {portal_module} — will use collaborative browser login")
+            return {
+                "ready": True,
+                "reason": "collaborative login required",
+                "service": cred.get("keychain_service"),
+                "portal_name": cred.get("portal_name"),
+                "credential_mode": "collaborative",
             }
 
         print(f"[runner] Credentials missing for {portal_module} — requesting via Slack")
         result = self.request_credentials_via_slack(portal_module)
         if result and result.get("stored"):
-            return {"ready": True, "username": result["username"], "service": result["service"]}
+            return {"ready": True, "username": result["username"], "service": result["service"], "credential_mode": "keychain"}
 
-        return {"ready": False, "reason": "user did not provide credentials"}
+        return {"ready": False, "reason": "user did not provide credentials", "credential_mode": "collaborative"}
 
     # ── Plan generation & task preparation ─────────────────────────
 
-    def prepare_task(self, portal_module, interactive=True):
+    def prepare_task(self, portal_module, interactive=True, method="collaborative"):
         """Prepare a single portal task: check creds + generate plan.
 
         Args:
             portal_module: Module name (e.g. "schwab")
-            interactive: Ask for creds via Slack if missing
+            interactive: Engage user when creds missing
+            method: "collaborative" (browser capture) | "slack" (DM + Keychain CLI)
 
         Returns:
             dict with 'ready', 'plan', 'config', 'creds' info
         """
         from agents.chitra.scripts.portals.base import load_portal, generate_plan, format_plan_markdown
 
-        cred_result = self.ensure_credentials(portal_module, interactive=interactive)
+        cred_result = self.ensure_credentials(portal_module, interactive=interactive, method=method)
         if not cred_result.get("ready"):
             return {
                 "portal": portal_module,
                 "ready": False,
                 "reason": cred_result.get("reason", "unknown"),
+                "credential_mode": cred_result.get("credential_mode", "collaborative"),
                 "plan": None,
             }
+
+        credential_mode = cred_result.get("credential_mode", "keychain")
 
         try:
             config = load_portal(portal_module)
         except ValueError as e:
             return {"portal": portal_module, "ready": False, "reason": str(e), "plan": None}
 
-        steps = generate_plan(config)
+        steps = generate_plan(config, credential_mode=credential_mode)
         markdown = format_plan_markdown(config, steps)
 
         return {
             "portal": portal_module,
             "ready": True,
+            "credential_mode": credential_mode,
             "config": config,
             "plan_steps": steps,
             "plan_markdown": markdown,
@@ -386,7 +405,7 @@ class TaskRunner:
             "keychain_service": cred_result.get("service"),
         }
 
-    def prepare_all(self, task_list=None, interactive=True):
+    def prepare_all(self, task_list=None, interactive=True, method="collaborative"):
         """Prepare all portal tasks from a task list.
 
         If no task_list is provided, generates one from the default registry
@@ -394,7 +413,8 @@ class TaskRunner:
 
         Args:
             task_list: Output from AnswerProcessor.generate_portal_tasks()
-            interactive: Ask for creds via Slack if missing
+            interactive: Engage user when creds missing
+            method: "collaborative" (browser capture) | "slack" (DM + Keychain CLI)
 
         Returns:
             list of prepared task dicts, sorted by readiness (ready first)
@@ -424,18 +444,17 @@ class TaskRunner:
                     continue
                 seen_modules.add(module_name)
 
-                result = self.prepare_task(module_name, interactive=interactive)
+                result = self.prepare_task(module_name, interactive=interactive, method=method)
                 result["documents"] = task["documents"]
                 result["action"] = task.get("action", "")
                 prepared.append(result)
 
-            # If no modules matched, try resolving from issuer names
             if not task.get("portal_modules"):
                 for doc in task["documents"]:
                     module = self.resolve_portal(doc.get("issuer", ""))
                     if module and module not in seen_modules:
                         seen_modules.add(module)
-                        result = self.prepare_task(module, interactive=interactive)
+                        result = self.prepare_task(module, interactive=interactive, method=method)
                         result["documents"] = [doc]
                         prepared.append(result)
 
@@ -505,9 +524,11 @@ def main():
     parser.add_argument("--check", action="store_true", help="Check credential status for all portals")
     parser.add_argument("--plan", type=str, help="Generate execution plan for a portal module")
     parser.add_argument("--prepare", action="store_true", help="Prepare all tasks (non-interactive)")
-    parser.add_argument("--interactive", action="store_true", help="Ask for missing creds via Slack")
+    parser.add_argument("--interactive", action="store_true", help="Engage user when creds missing")
+    parser.add_argument("--collaborative", action="store_true", help="Use collaborative browser login for missing creds")
     args = parser.parse_args()
 
+    method = "collaborative" if args.collaborative else "slack"
     runner = TaskRunner()
 
     if args.check:
@@ -523,17 +544,18 @@ def main():
             print(f"  {c['module']:25s} {c['name']:25s} {status}")
 
     elif args.plan:
-        result = runner.prepare_task(args.plan, interactive=False)
+        result = runner.prepare_task(args.plan, interactive=False, method=method)
         if result.get("ready"):
             print(result["plan_markdown"])
         else:
             print(f"Not ready: {result.get('reason')}")
 
     elif args.prepare:
-        prepared = runner.prepare_all(interactive=args.interactive)
+        prepared = runner.prepare_all(interactive=args.interactive, method=method)
         print(f"Prepared {len(prepared)} tasks:\n")
         for t in prepared:
-            status = "READY" if t.get("ready") else f"BLOCKED ({t.get('reason', '?')})"
+            mode = t.get("credential_mode", "?")
+            status = f"READY ({mode})" if t.get("ready") else f"BLOCKED ({t.get('reason', '?')})"
             portal = t.get("portal", "?")
             docs = len(t.get("documents", []))
             print(f"  {portal:25s} [{status:40s}]  {docs} docs")

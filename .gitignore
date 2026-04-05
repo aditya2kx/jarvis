@@ -1,6 +1,7 @@
 # Agent-specific data (PII, financials, account numbers)
 agents/*/knowledge-base/*.json
 agents/*/knowledge-base/questionnaire-*.md
+agents/*/knowledge-base/learnings/*.json
 agents/*/data/
 extracted/
 config.yaml
@@ -11,6 +12,8 @@ agents/*/scripts/personal/
 # Credential storage (actual creds in Keychain, never files)
 credentials/
 !credentials/portals.yaml.template
+!credentials/import_from_chrome.py
+!credentials/store_credential.py
 
 # Browser automation profile (session cookies)
 browser-profile/

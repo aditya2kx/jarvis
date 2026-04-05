@@ -167,7 +167,7 @@ def list_portals():
     return portals
 
 
-def generate_plan(config, action="download_tax_docs"):
+def generate_plan(config, action="download_tax_docs", credential_mode="keychain"):
     """Generate a step-by-step execution plan from a PORTAL_CONFIG.
 
     This is what the AI agent reads to know exactly what to do.
@@ -175,6 +175,8 @@ def generate_plan(config, action="download_tax_docs"):
     Args:
         config: PORTAL_CONFIG dict
         action: "download_tax_docs" | "search_property" | "check_status"
+        credential_mode: "keychain" (auto-fill from stored creds) |
+                        "collaborative" (user enters creds in browser, AI captures)
 
     Returns:
         list of step dicts: [{"step": int, "action": str, "details": str, ...}, ...]
@@ -194,54 +196,81 @@ def generate_plan(config, action="download_tax_docs"):
 
     # Login flow
     if config.get("login_required", True):
-        steps.append({
-            "step": step_num,
-            "action": "get_credentials",
-            "description": "Retrieve credentials from Keychain",
-            "code": "creds = session.get_credentials()",
-        })
-        step_num += 1
-
         login = config.get("login", {})
-        steps.append({
-            "step": step_num,
-            "action": "navigate",
-            "description": f"Go to login page",
-            "url": config.get("urls", {}).get("login", ""),
-            "quirks": login.get("quirks", []),
-        })
-        step_num += 1
+        login_url = config.get("urls", {}).get("login", "")
+        has_iframe = any("iframe" in q.lower() for q in login.get("quirks", []))
 
-        for field_name, field_info in login.get("fields", {}).items():
-            hint = field_info if isinstance(field_info, str) else field_info.get("hint", field_name)
-            context = field_info.get("context", "") if isinstance(field_info, dict) else ""
+        if credential_mode == "collaborative":
             steps.append({
                 "step": step_num,
-                "action": "fill_field",
-                "field": field_name,
-                "selector_hint": hint,
-                "context": context,
-                "value_from": f"creds['{field_name}']",
+                "action": "collaborative_login",
+                "description": (
+                    f"Collaborative login: navigate to {name} login page, "
+                    f"inject credential interceptor, notify user via Slack, "
+                    f"wait for user to log in, capture and store credentials."
+                ),
+                "login_url": login_url,
+                "has_iframe": has_iframe,
+                "quirks": login.get("quirks", []),
+                "sub_steps": [
+                    "browser_navigate to login URL",
+                    "browser_wait_for 3 seconds",
+                    "browser_evaluate: inject INTERCEPTOR_JS (or IFRAME variant)",
+                    "collab.notify_credential_needed(login_url)",
+                    "Poll: browser_evaluate POLL_STATE_JS every 5s until login completes",
+                    "browser_evaluate: READ_CREDS_JS to get captured credentials",
+                    "collab.store_captured_credentials(username, password)",
+                ],
+            })
+            step_num += 1
+        else:
+            steps.append({
+                "step": step_num,
+                "action": "get_credentials",
+                "description": "Retrieve credentials from Keychain",
+                "code": "creds = session.get_credentials()",
             })
             step_num += 1
 
-        submit = login.get("submit", {})
-        steps.append({
-            "step": step_num,
-            "action": "click",
-            "selector_hint": submit.get("hint", "Submit / Log in button") if isinstance(submit, dict) else submit,
-            "context": submit.get("context", "") if isinstance(submit, dict) else "",
-        })
-        step_num += 1
+            steps.append({
+                "step": step_num,
+                "action": "navigate",
+                "description": f"Go to login page",
+                "url": login_url,
+                "quirks": login.get("quirks", []),
+            })
+            step_num += 1
 
-        wait = login.get("post_submit_wait", 10)
-        steps.append({
-            "step": step_num,
-            "action": "wait",
-            "seconds": wait,
-            "reason": "Login processing and redirects",
-        })
-        step_num += 1
+            for field_name, field_info in login.get("fields", {}).items():
+                hint = field_info if isinstance(field_info, str) else field_info.get("hint", field_name)
+                context = field_info.get("context", "") if isinstance(field_info, dict) else ""
+                steps.append({
+                    "step": step_num,
+                    "action": "fill_field",
+                    "field": field_name,
+                    "selector_hint": hint,
+                    "context": context,
+                    "value_from": f"creds['{field_name}']",
+                })
+                step_num += 1
+
+            submit = login.get("submit", {})
+            steps.append({
+                "step": step_num,
+                "action": "click",
+                "selector_hint": submit.get("hint", "Submit / Log in button") if isinstance(submit, dict) else submit,
+                "context": submit.get("context", "") if isinstance(submit, dict) else "",
+            })
+            step_num += 1
+
+            wait = login.get("post_submit_wait", 10)
+            steps.append({
+                "step": step_num,
+                "action": "wait",
+                "seconds": wait,
+                "reason": "Login processing and redirects",
+            })
+            step_num += 1
 
         # MFA handling
         mfa = config.get("mfa", {})
@@ -393,6 +422,19 @@ def format_plan_markdown(config, steps):
         action = s["action"]
         desc = s.get("description", action)
         lines.append(f"### Step {s['step']}: {desc}")
+
+        if action == "collaborative_login":
+            lines.append(f"  Login URL: `{s.get('login_url', '')}`")
+            if s.get("has_iframe"):
+                lines.append(f"  **Uses iframe interceptor** (login form is in an iframe)")
+            if s.get("quirks"):
+                for q in s["quirks"]:
+                    lines.append(f"  **Quirk:** {q}")
+            lines.append(f"  Sub-steps:")
+            for sub in s.get("sub_steps", []):
+                lines.append(f"    1. {sub}")
+            lines.append("")
+            continue
 
         if s.get("url"):
             lines.append(f"  URL: `{s['url']}`")

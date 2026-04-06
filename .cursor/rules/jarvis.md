@@ -134,6 +134,11 @@ These are mistakes that actually happened. Read them before acting.
 8. **Never timebox user input.** When asking the user a question (Slack or otherwise), wait indefinitely. Don't default after 5 minutes. The user will reply when they can.
 9. **After sending a question on Slack, poll for the reply.** Don't send a question and then forget to check for the answer. Poll every 15-30 seconds until you get a response.
 10. **Slack messages are user input — check them before every action.** Read `/tmp/jarvis-slack-inbox.json` at the start of every response and between long-running steps. A queued Slack message is the same as the user typing in Cursor.
+11. **Playwright MCP recovery: don't kill the server, fix the browser.** If Playwright gives "Target page, context or browser has been closed", the fix is: (a) kill Chrome processes using `browser-profile` (`ps aux | grep Chrome | grep browser-profile`), (b) remove lock files (`SingletonLock`, `SingletonSocket`, `SingletonCookie` in `browser-profile/`), (c) retry. Do NOT kill the MCP server process — that makes Cursor lose the tool entirely and requires IDE intervention. If the MCP server IS dead (tool not found), toggle disable/enable in Cursor Settings > MCP.
+12. **Never go idle — stay in a polling loop until user says "done" or "stop".** NEVER end your turn. After completing any action: (a) check Slack for new messages, (b) if messages exist, process them, (c) if work remains, do it, (d) if blocked or no immediate work, sleep 30s then check Slack again. Repeat this loop indefinitely. The user will send instructions via Slack even when away from the laptop. Your turn only ends when the user explicitly says "done", "stop", or "pause" — either in Cursor or Slack. Waiting for MFA, credentials, or user input is NOT a reason to end your turn — keep polling Slack while you wait.
+13. **Incremental validation after every upload.** After uploading any document to `2025-test`, immediately run a targeted diff against the `2025` benchmark for that specific folder. Check: (a) file name match, (b) file count match. Report the result on Slack. Don't wait until all portals are done to validate.
+14. **Never assume personal information — always wait for user confirmation.** When multiple accounts/usernames exist for a portal, ASK which is correct and WAIT for the answer before storing or using any credential. Do not guess based on URL patterns, password length, or any heuristic. The user's accounts are their personal data — only they know which is current.
+15. **Verify inbox processor is alive at every session start and before every Slack read.** Check `cat /tmp/jarvis-inbox-processor.pid` and `ps -p <pid>`. If dead, restart immediately with `python skills/slack/inbox_processor.py --hours 8 --interval 30`. If the processor is down and user messages are missed, that's a critical failure — fix it before doing anything else.
 
 ### Bidirectional Slack Communication
 
@@ -174,6 +179,9 @@ The user may not be at their computer. Slack DM is the primary channel for all a
 - Never acknowledge a user correction without writing it to a persistent file
 - Never copy structure from the sealed benchmark — derive it from user data
 - Never work silently for long — send Slack updates at least every few minutes
+- **Never go idle after sending a Slack message.** Sending an update is a checkpoint, not a stopping point. Always check for replies + continue working on remaining tasks.
+- **Never end a turn without checking Slack.** The last thing before ending a turn must be: read pending-actions.json + inbox. If anything is there, process it before stopping.
+- **Never skip incremental validation.** After every file upload to Drive, diff that folder against the benchmark immediately.
 
 ## Conventions
 

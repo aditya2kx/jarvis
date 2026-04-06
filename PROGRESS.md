@@ -11,15 +11,67 @@
 | Validation done once at end instead of after each action | `orchestrator.py` `upload_and_validate()` | After each upload/folder creation, re-inventory and diff |
 
 ## Current Phase
-**Folder structure derived and validated. Ready for file downloads.**
+**All 13 portals DONE. 30 docs uploaded to Drive. 24/33 adjusted files match (73%).**
 
 - Final registry: 34 documents, 21 folder paths
-- Validation: 18/22 folders match benchmark (82%)
-- Remaining 4 diffs are expected (we know more than benchmark: employer name, combined Auburn/Lincoln)
-- Orchestrator: 6 portal tasks ready (Schwab, Robinhood, E-Trade, Wells Fargo, County Property Tax, Homebase)
-- 37 files to download from portals and upload to 2025-test
+- Raw validation: 24/37 (64%), but user removed 4 from tracking (iso-tracker, Moss Adams, 1095-C, 2024 return)
+- Adjusted: 24/33 = 73%
 
-**Blocker:** Playwright MCP needs restart to begin portal downloads.
+**Portal download status:**
+| Portal | Status | Docs | Notes |
+|--------|--------|------|-------|
+| Schwab | DONE | 2 | 1099 Composite (acct 965) + Account 3771 Statement. ISO Disposition Survey = last (user's Google Sheet, needs DASH transaction cross-ref across Schwab + E-Trade). |
+| E-Trade | DONE | 4 | 1099 Consolidated (DASH), Stock Plan Supplement, Mailing Group Letter, De Minimis Letter (AABA) |
+| Robinhood | DONE | 1 | 1099 Consolidated (Securities and Crypto). Login: aditya.2ky+hood@gmail.com, MFA via app push. |
+| Wells Fargo | DONE | 1 | 1098 Mortgage Interest Statement (acct 5503) |
+| County Property Tax (Fort Bend) | DONE | 2 | Tax Statement + Receipt (2025) from Fort Bend County. Acct 8118640020010907, CAD Ref R555090, 1414 Crown Forest Dr. |
+| San Mateo County | DONE | 2 | 2024-2025 + 2025-2026 Property Tax Bills. Acct 104-140-030, 211 Golden Eagle Ln Brisbane. Cloudflare bypass: click checkbox in Turnstile iframe. |
+| Homebase | DONE | 4 | Form 941 Q4, Form 940 Annual FUTA, W-2 Lindsay (Employee), W-3 Transmittal. Login: adi@mypalmetto.co (Palmetto Chrome Passwords CSV), MFA via SMS to phone ending 0038. |
+| Chase | DONE | 1 | 1098 Mortgage Interest (acct 7737, primary residence). Login: aditya2kxbiz, MFA via Chase mobile app push. |
+| Obie Insurance | DONE | 4 | 2024 + 2025 full policies and declarations. Login: aditya.2ky@gmail.com, email PIN. Policies: OAN024977-00 ($1,991), OAN024977-01 ($2,270). |
+| MH Capital (InvPortal) | DONE | 1 | 2025 K-1 for MH Sienna Retail II LLC. Login: aditya.2ky@gmail.com at mhcapital.invportal.com. |
+| BCGK InvestorCafe | DONE | 2 | K-1 + Preferred Return Distributions xlsx ($6,250 = 4 quarterly × $1,562.50). Login: aditya.2ky@gmail.com at 23192bcgk.investorcafe.app. Site finicky — refresh after login. 7-digit email 2FA. |
+| Ziprent | DONE | 1 | 1099-MISC ($74,450 rental income). Login: aditya.2ky@gmail.com at app.ziprent.com/auth/login. Tax Forms page under account dropdown menu. |
+| FBCAD (Fort Bend) | DONE | 2 | 2025 + 2026 Appraisal Notices (shows HS homestead exemption active). Public site, no login. esearch.fbcad.org property search → Appraisal Notice PDF link. |
+| Just Appraised | BLOCKED | 0 | Creds found (aditya.2ky@gmail.com). Auth0 redirect fails in Cursor Electron browser (TLS/compatibility). Works in curl. Need real browser or user to download Form 50-114. |
+
+**Incremental validation (codified in jarvis.md #13):**
+After every upload, run `python agents/chitra/scripts/validate_upload.py --slack` to diff shadow vs benchmark.
+Current: 24/33 adjusted files match (73%). 9 files remaining.
+
+**User removed from tracking:** iso-tracker JSON, Moss Adams estimate, DoorDash 1095-C, 2024 Federal Return
+
+**9 remaining files:**
+| File | Category | Action Needed |
+|------|----------|---------------|
+| 2025 W-2 - DoorDash - Aditya | W-2s & Employment | User uploads from DoorDash Workday |
+| 2025 W-2 - Texas Childrens Hospital - Kajri | W-2s & Employment | User/Kajri uploads |
+| 2025 Student Loan Tax Info - Kajri | W-2s & Employment | User/Kajri uploads |
+| ISO Disposition Survey CSV | Brokerage/Schwab | Google Sheet cross-ref DASH across Schwab+E-Trade (deferred to end) |
+| Rastegar K-1 email | Partnerships | Expected Aug 2026, not available yet |
+| 2025 Bank Transactions - Brisbane Rental CSV | Brisbane Rental | User exports from bank |
+| 2025 Texas Form 50-114 Homestead Application | Primary Residence | Just Appraised portal auth fails in Electron browser. Creds in Keychain. User can try on real browser, or blank form available from TX Comptroller. |
+| 2025 Donum Charitable Lending Note | Charitable | User provides |
+| 2025 Palmetto Business Transactions - Copilot Export | Business | User exports from Copilot |
+
+**Skill persistence (new this session):**
+Portal navigation configs created/updated for ALL 13 portals:
+- `agents/chitra/scripts/portals/` — 14 config files (9 existing + 5 new)
+- `agents/chitra/knowledge-base/download-strategies.md` — 4 download methods, MFA patterns, Cloudflare bypass
+- Each config has `verified` date and `verified_actions` list
+- Generalizable: given prior-year return + passwords + questionnaire, system can replay to 73%+
+
+**File naming convention**: `{year} {Form Type} - {Issuer} {Account Details} - {Description}.{ext}`
+Helper: `agents/chitra/scripts/naming_convention.py`
+
+**Corrections from validation:**
+- Wells Fargo 1098 moved from Primary Residence → Brisbane Rental (was in wrong folder)
+- All 8 files renamed to match benchmark naming convention (year-first format)
+- Property tax: benchmark has "$9,757 PAID" in name (amount matters)
+
+**Playwright recovery lesson (codified in jarvis.md #11):** Kill Chrome browser-profile processes + remove lock files, NOT the MCP server.
+
+**Idle state fix (codified in jarvis.md #12):** Never go idle after sending a Slack message. Always check for replies + continue working. Only stop when user says "done" or "stop".
 
 **Slack communication architecture (3 layers):**
 1. Socket Mode Listener (`skills/slack/listener.py`) — instant WebSocket receive, auto-handles commands

@@ -35,18 +35,20 @@ PORTAL_CONFIG = {
     },
 
     "mfa": {
-        "likelihood": "conditional",
-        "methods": ["sms", "phone_call", "email"],
-        "preferred": "email",
+        "likelihood": "always",
+        "methods": ["mobile_app_push", "sms", "phone_call", "email"],
+        "preferred": "mobile_app_push",
         "device_trust": True,
         "trigger_hint": "Identity verification page: 'We don't recognize this device'",
         "flow": [
             "Shows 'We don't recognize this device or location'",
-            "Options: send text, call, or email a code",
-            "Select preferred method, enter received code",
-            "'Remember this device' — check the box",
+            "Default is Chase mobile app push notification",
+            "User approves on their phone — wait for page to auto-advance",
+            "If expired, 'Get another notification' link appears — click it",
+            "Alternative: select text, call, or email for code-based verification",
+            "'Remember this device' — check the box if available",
         ],
-        "notes": "Chase supports email MFA — prefer for future Gmail skill autonomy.",
+        "notes": "In practice, Chase defaulted to mobile app push notification, not email/SMS. User must approve on Chase mobile app. If approval times out, click 'Get another notification'.",
     },
 
     "documents": [
@@ -93,4 +95,7 @@ PORTAL_CONFIG = {
         "url": "https://secure.chase.com/web/auth/#/logon/logon/signoff",
         "confirm_text": "You have been signed off",
     },
+
+    "verified": "2026-04-06",
+    "verified_actions": ["login", "mfa_mobile_push", "navigate_tax_docs", "download_1098"],
 }

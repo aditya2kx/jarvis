@@ -344,6 +344,7 @@ ISSUER_BRAND_MAP = {
     "palo alto delivery": "DoorDash",
     "lucile salter packard childrens hospital": "Stanford Childrens",
     "texas childrens hospital": "Texas Childrens Hospital",
+    "rpc 5402 south congress partners llc": "RPC 5402 South Congress LLC",
 }
 
 
@@ -481,9 +482,11 @@ def _derive_subfolder(doc):
     if dtype == "K-1 (Form 1065)":
         city = details.get("city", "")
         state = details.get("state", "")
+        brand = _brand(issuer)
+        suffix = "" if doc.get("k1_status") == "received" else " [NEED K-1]"
         if city and state:
-            return f"{city} {state} - {issuer} [NEED K-1]"
-        return f"{issuer} [NEED K-1]"
+            return f"{city} {state} - {brand}{suffix}"
+        return f"{brand}{suffix}"
 
     if dtype == "Schedule C Records":
         return None  # business name is embedded in category folder name

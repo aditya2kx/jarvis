@@ -71,6 +71,8 @@ class AnswerProcessor:
 
         if confirmed:
             doc["status"] = "expected"
+            if details and details.get("k1_received"):
+                doc["k1_status"] = "received"
         else:
             doc["status"] = "changed"
             if details:

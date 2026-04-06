@@ -158,7 +158,7 @@ def step3_derive_registry(profile_path, target_year=None):
     print(f"  Total questions: {len(confirmation) + len(discovery)} "
           f"({len(confirmation)} confirmation + {len(discovery)} discovery)")
 
-    return docs, folders, md
+    return docs, folder_tree, md
 
 
 def main():

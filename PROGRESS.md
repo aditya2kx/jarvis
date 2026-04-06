@@ -11,7 +11,15 @@
 | Validation done once at end instead of after each action | `orchestrator.py` `upload_and_validate()` | After each upload/folder creation, re-inventory and diff |
 
 ## Current Phase
-Derive-first autonomous pipeline built. Folder structure derived from profile data (not copied from benchmark). Orchestrator fixed to validate 2025-test vs 2025 (not 2025 vs itself). Ready for end-to-end execution.
+**Folder structure derived and validated. Ready for file downloads.**
+
+- Final registry: 34 documents, 21 folder paths
+- Validation: 18/22 folders match benchmark (82%)
+- Remaining 4 diffs are expected (we know more than benchmark: employer name, combined Auburn/Lincoln)
+- Orchestrator: 6 portal tasks ready (Schwab, Robinhood, E-Trade, Wells Fargo, County Property Tax, Homebase)
+- 37 files to download from portals and upload to 2025-test
+
+**Blocker:** Playwright MCP needs restart to begin portal downloads.
 
 **Slack communication architecture (3 layers):**
 1. Socket Mode Listener (`skills/slack/listener.py`) — instant WebSocket receive, auto-handles commands
@@ -20,21 +28,39 @@ Derive-first autonomous pipeline built. Folder structure derived from profile da
 
 **On session start:** Check `cat /tmp/jarvis-inbox-processor.pid` and restart if needed. Also restart listener if needed.
 
-## Last Session (2026-04-05, continued)
+## Last Session (2026-04-05, session 3)
+- **Questionnaire answers processed** — user-answers-2025.json created and applied
+  - Kajri left Stanford Childrens → Texas Childrens Hospital (new employer)
+  - Primary residence: 1414 Crown Forest Drive, Missouri City, TX
+  - Homestead exemption filed and approved
+  - Business employee (Homebase payroll) for Palmetto Superfoods
+  - Charity: Donum replaces prior
+  - Retirement: 403b through Texas Childrens (provider TBD)
+- **Partnership cities added** — Auburn CA, Houston TX, Austin TX from user input
+- **K-1 status tracking** — k1_received flag: MH Sienna received, only Austin TX pending
+- **RPC name normalization** — ISSUER_BRAND_MAP: "RPC 5402 South Congress Partners LLC" → "RPC 5402 South Congress LLC"
+- **Folder derivation fixes** — 5 validation iterations, 8/22 → 18/22 folder match
+  - new_home updates existing PRIMARY RESIDENCE docs (no folder duplication)
+  - Business employee docs mapped to correct "08 - Business - {name}" folder
+  - taxYear field added to final registry
+- **2025-test recreated** 5 times during iterative validation
+- **Remaining diffs analyzed** — all 4 are expected:
+  1. `Kajri - Texas Childrens Hospital` vs `Kajri [NEED W-2s]` (we know employer)
+  2. `Auburn CA - Lincoln Way` combined vs benchmark split (user confirmed same)
+  3. `Texas Childrens Hospital [NEED DOCS]` vs `Fidelity [NEED DOCS]` (skipped)
+
+## Prior Session (2026-04-05, session 2)
 - **Slack long-polling loop** — AI agent stays alive and responsive to Slack
   - `skills/slack/wait_for_input.py` — blocks until Slack message arrives (checks every 5s) or timeout
   - `skills/slack/inbox_processor.py` — background daemon (4h), polls inbox every 2min, classifies messages, acknowledges on Slack, writes to `/tmp/jarvis-pending-actions.json`
   - 3-layer architecture: Listener (instant) → Processor (2min) → AI (active polling)
   - Rule in `jarvis.md`: always check pending-actions + inbox before every action
 - **Derivation code fixes** — reduced folder diffs from 14 missing/11 extra to 7 missing/5 extra
-  - `_parse_address()` / `_abbreviate_street()` — proper address parsing: "211 Golden Eagle Lane, Brisbane, CA" → "Brisbane Rental - 211 Golden Eagle Ln CA"
-  - `_short_address()` — produces "1414 Crown Forest Dr TX" format for primary residence
+  - `_parse_address()` / `_abbreviate_street()` — proper address parsing
   - K-1 subfolders get `[NEED K-1]` suffix
   - "Expenses" → "Expenses Partnership" renaming
-  - Category status suffixes: `[NEED DOCS]`, `[NEED FROM CPA]`
-  - New categories: `09 - Tax Payments & Extensions` (from Form 4868/2210), `06 - Retirement Accounts` (from Q&A)
-  - Remaining 7 diffs = all need questionnaire answers (address, retirement, employer change, partnership cities)
-- **2025-test folder recreated** — 21 folders created from updated derived registry, validated against benchmark
+  - New categories: `09 - Tax Payments & Extensions`, `06 - Retirement Accounts`
+  - Remaining 7 diffs = all need questionnaire answers
 
 ## Prior Session (2026-03-28, continued)
 - **Derive-first pipeline refactor** — all folder paths now derived from user data, never from benchmark

@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Robinhood navigation module — structured config for tax document retrieval.
 
-Generic navigation logic for robinhood.com. Contains zero user-specific data.
+Verified end-to-end 2026-04-05: keychain login, Robinhood app push MFA, tax documents
+page, 1099 Consolidated PDF via direct link. Operator Gmail uses +hood plus-address
+(see verified_login_email in PORTAL_CONFIG).
 """
 
 PORTAL_CONFIG = {
     "name": "Robinhood",
     "keychain_service": "jarvis-robinhood",
+    "verified_login_email": "aditya.2ky+hood@gmail.com",
+    "verified_login_email_note": (
+        "Gmail +hood alias is required — same mailbox as base email but Robinhood "
+        "account is tied to this exact address."
+    ),
     "login_required": True,
 
     "urls": {
@@ -17,6 +24,12 @@ PORTAL_CONFIG = {
 
     "login": {
         "method": "form",
+        "flow": [
+            "Open https://robinhood.com/login",
+            "Enter email (verified_login_email — +hood matters for the correct account)",
+            "Enter password from macOS Keychain item for service jarvis-robinhood",
+            "Submit — wait for React SPA; MFA follows via app push (no typed code)",
+        ],
         "quirks": [
             "Login is a React SPA — wait for elements to be interactive",
             "May show a CAPTCHA (hCaptcha) on suspicious logins",
@@ -27,48 +40,48 @@ PORTAL_CONFIG = {
         },
         "submit": {"hint": "Log In button", "context": "main page"},
         "post_submit_wait": 10,
-        "success_indicator": "url contains /account or shows portfolio view",
+        "success_indicator": "url contains /account or shows portfolio view after MFA approval",
     },
 
     "mfa": {
         "likelihood": "always",
-        "methods": ["app", "sms"],
-        "preferred": "app",
+        "methods": ["app_push", "sms", "authenticator_app"],
+        "preferred": "app_push",
         "device_trust": True,
-        "trigger_hint": "Two-factor authentication prompt after password entry",
+        "trigger_hint": "After password submit — Robinhood prompts for second factor",
         "flow": [
-            "After login, shows 'Enter your authenticator app code' or 'Enter the code sent to your phone'",
-            "If using authenticator app: user reads code from their auth app",
-            "If using SMS: 6-digit code sent to registered phone",
-            "Enter code and submit",
-            "'Keep me logged in' checkbox may appear",
+            "Robinhood sends a push notification to the Robinhood app on the user's phone",
+            "User opens the app and approves the login — browser advances automatically",
+            "No 6-digit code to paste when using app push (unlike SMS or TOTP)",
         ],
         "notes": (
-            "Robinhood strongly encourages authenticator app over SMS. "
-            "If user has app-based 2FA, there's no way to get the code via Slack — "
-            "user must provide it manually. Consider asking user to switch to SMS for automation."
+            "Verified 2026-04-05: MFA is mobile app push approval, not SMS/TOTP for this account. "
+            "Automation must pause until the user approves on device. "
+            "Robinhood may still offer SMS or authenticator for other users or fallback."
         ),
     },
 
     "documents": [
         {
-            "type": "Consolidated 1099",
-            "name_pattern": "Consolidated 1099 - {year}",
-            "location_hint": "Tax Documents page, listed by year",
+            "type": "1099 Consolidated (Securities and Crypto)",
+            "name_pattern": "1099 Consolidated (Securities and Crypto) - {year}",
+            "location_hint": "Tax Documents — listed by year (direct URL: urls.tax_docs)",
             "per_account": False,
             "download_format": "PDF",
-            "download_hint": "Download button next to the 1099 entry",
+            "download_method": "direct_pdf_url",
+            "download_hint": "Row for the tax year exposes a direct PDF link (not only an in-app viewer)",
             "availability": "mid-February (may have corrections through March)",
+            "verified_year": 2025,
         },
         {
             "type": "1099-DA",
             "name_pattern": "Form 1099-DA - Digital Assets - {year}",
-            "location_hint": "Tax Documents page (new for 2025 — crypto transactions)",
+            "location_hint": "Tax Documents page (crypto — separate from consolidated when applicable)",
             "per_account": False,
             "download_format": "PDF",
-            "download_hint": "Download button",
+            "download_hint": "Download button or direct link",
             "availability": "February",
-            "conditional": "Only if user traded cryptocurrency",
+            "conditional": "Only if user had reportable digital asset activity",
         },
         {
             "type": "Year-End Summary",
@@ -90,8 +103,8 @@ PORTAL_CONFIG = {
         "React SPA — page loads are not traditional navigations, wait for content rendering",
         "hCaptcha may block automated logins — may need to use existing browser session",
         "1099 corrections are common — Robinhood often issues corrected 1099s in March",
-        "Tax documents page directly accessible via URL (don't navigate through menus)",
-        "Crypto transactions now get separate Form 1099-DA (starting 2025)",
+        "After login, go to Tax Documents (menu or urls.tax_docs)",
+        "Verified 2026-04-05: 1099 Consolidated (Securities and Crypto) for 2025 downloads via direct PDF URL",
         "Robinhood Cash (savings) interest may appear on a separate 1099-INT",
     ],
 
@@ -99,4 +112,12 @@ PORTAL_CONFIG = {
         "url": "https://robinhood.com/account/settings",
         "confirm_text": "",
     },
+
+    "verified": "2026-04-05",
+    "verified_actions": [
+        "login",
+        "mfa_app_push",
+        "navigate_tax_docs",
+        "download_1099",
+    ],
 }

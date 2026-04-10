@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Wells Fargo navigation module — structured config for tax document retrieval.
 
-Generic navigation logic for wellsfargo.com. Contains zero user-specific data.
-Covers: mortgage (Form 1098), bank accounts (1099-INT), transaction exports.
+Generic URLs and field hints apply to any Wells Fargo Online user. Verified run notes
+(document picking, MFA path) reflect a successful 2026-04-05 session and may include
+property/account disambiguation for multi-mortgage households.
 """
 
 PORTAL_CONFIG = {
@@ -21,6 +22,9 @@ PORTAL_CONFIG = {
     "login": {
         "method": "form",
         "quirks": [
+            "Login uses SAML and cross-origin redirects during sign-on — JS credential "
+            "interceptors (e.g. wrapping fetch/XHR for autofill) often lose state across "
+            "those navigations; prefer native Playwright fill/submit on the live page DOM.",
             "Login page has been modernized — uses React-based SPA",
             "May show a 'Sign on to Wells Fargo Online' page with username first, then password on next step",
             "Some flows show username + password on the same page",
@@ -34,20 +38,28 @@ PORTAL_CONFIG = {
         "success_indicator": "url contains 'accounts/start' or shows account summary",
     },
 
+    "post_login_navigation": {
+        "target": "Tax Documents / Statements",
+        "steps": [
+            "After sign-on completes, go to Tax Documents for IRS forms (1098, 1099-INT, etc.)",
+            "Deep link: urls.tax_docs — or use Statements (urls.statements) for year-end mortgage statements",
+        ],
+    },
+
     "mfa": {
         "likelihood": "conditional",
-        "methods": ["sms", "phone_call", "email"],
+        "methods": ["email", "sms", "phone_call"],
         "preferred": "email",
+        "verified_method": "email",
         "device_trust": True,
         "trigger_hint": "Identity verification page asking how to receive a code",
         "flow": [
             "Shows 'We need to verify your identity' with delivery options",
-            "Options: text message, phone call, or email",
-            "Select preferred method and click 'Continue'",
-            "Enter the received code",
-            "'Save this computer' option — select Yes",
+            "Verified path: choose email — Wells Fargo sends a verification code to the registered email address",
+            "Enter the code from email",
+            "Optional: 'Save this computer' — select Yes when appropriate",
         ],
-        "notes": "Wells Fargo supports email-based MFA — good for future Gmail autonomy.",
+        "notes": "Email MFA verified 2026-04-05. Other channels (SMS, call) may still appear depending on profile.",
     },
 
     "documents": [
@@ -57,8 +69,16 @@ PORTAL_CONFIG = {
             "location_hint": "Tax Documents section, listed under Mortgage",
             "per_account": True,
             "download_format": "PDF",
-            "download_hint": "Download or View PDF button",
+            "download_method": "direct_pdf_link",
+            "download_hint": "Open the correct mortgage row, then use the direct PDF download link (not a fragile embedded viewer-only path)",
             "availability": "January 31",
+            "verified_selection": {
+                "note": "Households with multiple mortgages: pick the 1098 for the rental property, not the primary residence.",
+                "example": {
+                    "property": "Brisbane rental — 211 Golden Eagle Ln",
+                    "account_suffix": "5503",
+                },
+            },
         },
         {
             "type": "1099-INT",
@@ -97,17 +117,19 @@ PORTAL_CONFIG = {
     },
 
     "quirks": [
+        "SAML-heavy login: avoid credential injection patterns that assume a single origin through the whole flow",
         "Tax documents page organizes forms by account type (Banking, Mortgage, etc.)",
-        "Mortgage 1098 is the primary tax document for most users",
+        "Mortgage 1098 is the primary tax document for most users; multiple mortgages appear as separate rows — match account/address to the intended property",
         "Transaction export is useful for rental expense documentation",
         "Wells Fargo may show interstitial security pages ('We noticed unusual activity')",
-        "Multiple mortgages show as separate entries under the Mortgage section",
         "Session timeout is relatively short (~10 minutes)",
-        "Wells Fargo supports email MFA — prefer this for future Gmail skill autonomy",
     ],
 
     "logout": {
         "url": "https://connect.secure.wellsfargo.com/auth/logout",
         "confirm_text": "You have been signed off",
     },
+
+    "verified": "2026-04-05",
+    "verified_actions": ["login", "mfa_email", "navigate_tax_docs", "download_1098"],
 }

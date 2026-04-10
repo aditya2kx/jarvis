@@ -35,9 +35,9 @@ async (page) => {
 **Playwright**: Click the Export button — Playwright captures the download.
 **Pitfall**: Export includes ALL data (all years). May need to filter or document that.
 
-### 4. Fetch-Based Download (Inline PDF Workaround)
-**Portals**: Ziprent
-**How it works**: Download URL returns a PDF with `Content-Disposition: inline`, which Chrome's PDF viewer wraps in HTML. Playwright captures the viewer HTML, not the actual PDF.
+### 4. Fetch-Based Download (Inline PDF / S3 Signed URL)
+**Portals**: Ziprent, Just Appraised (S3 signed URLs)
+**How it works**: Download URL returns a PDF with `Content-Disposition: inline` or opens in browser's PDF viewer. Playwright captures the viewer HTML, not the actual PDF. Just Appraised serves PDFs from `ja-file-uploads.s3.amazonaws.com` with time-limited signed URLs.
 **Playwright**: Use `page.evaluate(fetch())` to get raw PDF bytes, then create a data: URL download link:
 ```js
 async (page) => {
@@ -100,6 +100,23 @@ async (page) => {
 - Look for Turnstile iframe (URL contains 'challenges.cloudflare.com')
 - Click checkbox or body inside the iframe using `browser_run_code`
 - Wait for page to reload after verification
+
+## Browser Selection
+
+**cursor-ide-browser** (Cursor's built-in Electron Chromium):
+- Works for most portals
+- Faster to launch (already running)
+- FAILS on Auth0 redirects (Just Appraised — returns "sent an invalid response")
+- FAILS when site requires specific Chrome/Chromium version or TLS features
+
+**user-playwright** (standalone Playwright Chrome):
+- Works for ALL portals tested including Auth0
+- Requires MCP to be enabled in Cursor Settings
+- Browser profile at `browser-profile/` — may need lock file cleanup if Chrome crashes
+- Recovery: kill Chrome processes using `browser-profile`, remove `SingletonLock`/`SingletonSocket`/`SingletonCookie`, retry
+- If MCP server itself is dead: toggle disable/enable in Cursor Settings > MCP (requires user action)
+
+**Rule**: Try cursor-ide-browser first. If auth/redirect fails, switch to user-playwright.
 
 ## General Patterns
 1. **Tax forms are often hidden** — not in main nav. Check: account dropdown menu, profile/settings, separate "Tax" or "Documents" section

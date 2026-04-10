@@ -11,11 +11,11 @@
 | Validation done once at end instead of after each action | `orchestrator.py` `upload_and_validate()` | After each upload/folder creation, re-inventory and diff |
 
 ## Current Phase
-**All 13 portals DONE. 30 docs uploaded to Drive. 24/33 adjusted files match (73%).**
+**14 portals DONE. 31 docs uploaded to Drive. 25/33 adjusted files match (76%).**
 
 - Final registry: 34 documents, 21 folder paths
 - Raw validation: 24/37 (64%), but user removed 4 from tracking (iso-tracker, Moss Adams, 1095-C, 2024 return)
-- Adjusted: 24/33 = 73%
+- Adjusted: 25/33 = 76%
 
 **Portal download status:**
 | Portal | Status | Docs | Notes |
@@ -33,11 +33,11 @@
 | BCGK InvestorCafe | DONE | 2 | K-1 + Preferred Return Distributions xlsx ($6,250 = 4 quarterly × $1,562.50). Login: aditya.2ky@gmail.com at 23192bcgk.investorcafe.app. Site finicky — refresh after login. 7-digit email 2FA. |
 | Ziprent | DONE | 1 | 1099-MISC ($74,450 rental income). Login: aditya.2ky@gmail.com at app.ziprent.com/auth/login. Tax Forms page under account dropdown menu. |
 | FBCAD (Fort Bend) | DONE | 2 | 2025 + 2026 Appraisal Notices (shows HS homestead exemption active). Public site, no login. esearch.fbcad.org property search → Appraisal Notice PDF link. |
-| Just Appraised | BLOCKED | 0 | Creds found (aditya.2ky@gmail.com). Auth0 redirect fails in Cursor Electron browser (TLS/compatibility). Works in curl. Need real browser or user to download Form 50-114. |
+| Just Appraised | DONE | 1 | 2025 Texas Form 50-114 Homestead Exemption Application (#27782044, R555090). Login: aditya.2ky@gmail.com at taxpayer.justappraised.com. Auth0 fails in Cursor Electron browser but works in Playwright Chrome. |
 
 **Incremental validation (codified in jarvis.md #13):**
 After every upload, run `python agents/chitra/scripts/validate_upload.py --slack` to diff shadow vs benchmark.
-Current: 24/33 adjusted files match (73%). 9 files remaining.
+Current: 25/33 adjusted files match (76%). 8 files remaining.
 
 **User removed from tracking:** iso-tracker JSON, Moss Adams estimate, DoorDash 1095-C, 2024 Federal Return
 
@@ -50,7 +50,7 @@ Current: 24/33 adjusted files match (73%). 9 files remaining.
 | ISO Disposition Survey CSV | Brokerage/Schwab | Google Sheet cross-ref DASH across Schwab+E-Trade (deferred to end) |
 | Rastegar K-1 email | Partnerships | Expected Aug 2026, not available yet |
 | 2025 Bank Transactions - Brisbane Rental CSV | Brisbane Rental | User exports from bank |
-| 2025 Texas Form 50-114 Homestead Application | Primary Residence | Just Appraised portal auth fails in Electron browser. Creds in Keychain. User can try on real browser, or blank form available from TX Comptroller. |
+| ~~2025 Texas Form 50-114 Homestead Application~~ | ~~Primary Residence~~ | DONE — Downloaded from Just Appraised portal (Playwright Chrome). |
 | 2025 Donum Charitable Lending Note | Charitable | User provides |
 | 2025 Palmetto Business Transactions - Copilot Export | Business | User exports from Copilot |
 

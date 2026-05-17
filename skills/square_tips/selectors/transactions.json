@@ -1,0 +1,146 @@
+{
+  "_doc": "Calibrated selectors for skills/square_tips/transactions_backend.py against the Square Dashboard Transactions report (app.squareup.com/dashboard/sales/transactions). Per-transaction CSV export. Mirrors dashboard.json structure.",
+  "last_verified": "2026-05-16",
+  "verified_by": "Cursor AI agent driving user-playwright MCP, fresh from-scratch flow",
+  "page_urls": {
+    "login": "https://app.squareup.com/login",
+    "logout": "https://app.squareup.com/logout",
+    "dashboard_home": "https://app.squareup.com/dashboard/",
+    "transactions_report": "https://app.squareup.com/dashboard/sales/transactions"
+  },
+  "login": {
+    "_doc": "Login selectors are identical to dashboard.json. Same Square login page.",
+    "see": "skills/square_tips/selectors/dashboard.json#login"
+  },
+  "transactions_page": {
+    "date_range_pill": {
+      "primary_text_pattern": "button matching MM/DD/YYYY\u2013MM/DD/YYYY in the filter bar",
+      "playwright_text_match": "getByRole('button', {name: /\\d{2}\\/\\d{2}\\/\\d{4}/}).first()",
+      "notes": "Click to open the date picker popover. The visible text is the current range. Currently positioned right after the 'Select previous date interval' button (which has aria-label='Select previous date interval')."
+    },
+    "date_picker": {
+      "panel_dialog_indicator": "Calendar popover containing 'Start' and 'End' labels + month nav buttons",
+      "start_date_input": {
+        "primary_position": "first text input inside the date-picker popover",
+        "fallback": "input[type='text']:near(:text('Start'))",
+        "notes": "Direct text input. Format: MM/DD/YYYY. Calibrated 2026-05-16 with ember66 dynamic id (not stable). Type the value then press Enter to commit (or click outside the picker)."
+      },
+      "end_date_input": {
+        "primary_position": "second text input inside the date-picker popover",
+        "fallback": "input[type='text']:near(:text('End'))",
+        "notes": "Direct text input. Format: MM/DD/YYYY. Press Enter to apply range."
+      },
+      "quick_range_buttons": [
+        "Today", "Yesterday", "This week", "Last week",
+        "This month", "Last month", "This year", "Last year"
+      ],
+      "notes": "Square supports arbitrarily large ranges via direct date typing. Confirmed 55 days (Mar 22 \u2192 May 15) works in a single export request."
+    },
+    "status_filter_complete": {
+      "primary": "button:has-text('Complete')",
+      "notes": "Default filter is 'Complete' (excludes pending/failed). Leave as-is for production runs. Other values: 'All Types'."
+    },
+    "export_trigger_button": {
+      "primary": "button[aria-expanded][has-text('Export')]",
+      "fallback_role": "getByRole('button', {name: 'Export'}).first()",
+      "notes": "Top-right of the report header. Click to expand the Export panel (does NOT immediately download)."
+    },
+    "export_panel": {
+      "panel_indicator": "heading text 'Export' (h2)",
+      "transactions_csv_row_label": "paragraph 'Transactions CSV'",
+      "generate_button": {
+        "primary": "button[aria-label='Generate Transactions CSV']",
+        "fallback_role": "getByRole('button', {name: 'Generate Transactions CSV'})",
+        "notes": "Click to start async generation. The row's status changes to '500/N Rows' progress, then to 'Generated a few seconds ago' when done."
+      },
+      "download_button": {
+        "primary": "button[aria-label='Download Transactions CSV']",
+        "fallback_role": "getByRole('button', {name: 'Download Transactions CSV'})",
+        "notes": "Appears in place of the Generate button once generation completes. Click triggers actual file download."
+      },
+      "generation_status_text_patterns": {
+        "in_progress": "regex: /(\\d+)\\/(\\d+) Rows/",
+        "ready_in": "regex: /Ready in \\d+ minutes?/",
+        "complete": "Generated a few seconds ago"
+      },
+      "toast_when_ready": {
+        "primary": "[role='alert']:has-text('You may now download Transactions CSV')",
+        "download_button_in_toast": "[role='alert'] button[aria-label='Download']",
+        "notes": "A toast also appears at the bottom with a Download shortcut. Either button works."
+      }
+    },
+    "summary_kpis": {
+      "complete_transactions_count": "page h4 sibling text shows '{N} Complete Transactions'",
+      "total_collected": "page h4 sibling text shows '${X} Total Collected'",
+      "net_sales": "page h4 sibling text shows '${X} Net Sales'",
+      "notes": "Use these to sanity-check the downloaded CSV \u2014 sum of Total Collected column must equal the on-page 'Total Collected' figure (exact match validated 2026-05-16: $47,946.77)."
+    }
+  },
+  "polling": {
+    "_doc": "Async generation polling pattern for the orchestrator",
+    "approach": "After clicking generate_button, poll the export-panel row text every 5 seconds. Generation is complete when (a) Download button appears in place of Generate button, OR (b) row text contains 'Generated' instead of 'Ready in'.",
+    "estimated_duration_seconds": {
+      "55_days_3000_transactions": 60,
+      "notes": "Roughly 1 second per 50 transactions. A typical daily scrape (~50 tx) should complete in 1-2 seconds. Single-day scrapes may not even render the progress text."
+    },
+    "max_wait_seconds": 300,
+    "on_timeout": "DM via skills/slack and exit non-zero \u2014 don't silently retry, could indicate Square-side outage."
+  },
+  "csv_format": {
+    "filename_pattern": "transactions-{start_yyyy}-{start_mm}-{start_dd}-{end_yyyy}-{end_mm}-{end_dd}.csv",
+    "save_directory": "extracted/downloads/",
+    "filename_end_date_note": "Square names the file with end_date+1 (exclusive end). Range Mar 22 \u2192 May 15 produces filename ending in 2026-05-16. Don't infer date range from filename \u2014 use the data inside.",
+    "total_columns": 55,
+    "header_columns_in_order": [
+      "Date", "Time", "Time Zone", "Gross Sales", "Discounts", "Service Charges",
+      "Net Sales", "Gift Card Sales", "Tax", "Tip", "Partial Refunds", "Total Collected",
+      "Source", "Card", "Card Entry Methods", "Cash", "Square Gift Card", "Other Tender",
+      "Other Tender Type", "Tender Note", "Fees", "Net Total", "Transaction ID",
+      "Payment ID", "Card Brand", "PAN Suffix", "Device Name", "Staff Name", "Staff ID",
+      "Details", "Description", "Event Type", "Location", "Dining Option", "Customer ID",
+      "Customer Name", "Customer Reference ID", "Device Nickname", "Third Party Fees",
+      "Deposit ID", "Deposit Date", "Deposit Details", "Fee Percentage Rate",
+      "Fee Fixed Rate", "Refund Reason", "Discount Name", "Transaction Status",
+      "Cash App", "Order Reference ID", "Fulfillment Note", "Free Processing Applied",
+      "Channel", "Unattributed Tips", "Table Info", "International Fee"
+    ],
+    "money_format": "Strings like '$13.50', '-$3.45', '$0.00'. Negatives are leading-minus, NOT parens (different from Sales Summary Days CSV which used parens).",
+    "row_grain": "ONE ROW PER TRANSACTION (Transaction ID is unique). Confirmed 2026-05-16: 2,956 rows = 2,956 unique transaction IDs.",
+    "event_types": ["Payment", "Refund"],
+    "transaction_status_values": ["Complete"],
+    "timezone_quirk": {
+      "issue": "The Time Zone column shows the Square ACCOUNT's display timezone (currently 'Eastern Time (US & Canada)'), NOT the shop's local timezone. Austin shop is America/Chicago (CT). Late-night CT transactions roll into the next ET day.",
+      "fix": "In parse_csv(), construct the timestamp as Eastern Time, then convert to America/Chicago via zoneinfo. Derive date_local, hour_local, dow_local from the converted timestamp. Date column from CSV is NOT trustworthy for shop-day bucketing.",
+      "example": "Transaction at 23:30 CT on May 14 will appear in CSV as Date=2026-05-15, Time=00:30:00, Time Zone='Eastern Time (US & Canada)'. After conversion: 2026-05-14 23:30 America/Chicago."
+    },
+    "tip_handling": {
+      "tip_column_index": 9,
+      "negative_tips_on_refunds": "Refund rows have negative Tip values (e.g. -$3.45). When summing daily tip pools, REFUND rows reduce the pool. This is correct \u2014 the tipped employee for the original payment effectively gives the tip back via the refund.",
+      "zero_tip_rate": "About 57% of transactions have $0 tip (1,701/2,956 in calibration data). Sum of nonzero tips matches the on-page Tips total."
+    }
+  },
+  "field_mapping_to_raw_sheet": {
+    "_doc": "Recommended mapping from CSV columns to bhaga-square-raw.transactions_raw tab columns (per the bhaga-daily-refresh plan).",
+    "transaction_id": "CSV col 'Transaction ID' (index 22)",
+    "event_type": "CSV col 'Event Type' (index 31). Values: Payment | Refund",
+    "created_at_et_iso": "Combine 'Date' + 'Time' as 'YYYY-MM-DDThh:mm:ss-04:00' or -05:00 (DST-aware). Preserve raw for audit.",
+    "created_at_local_iso": "Convert to America/Chicago. Format: 'YYYY-MM-DDThh:mm:ss-05:00' or -06:00.",
+    "date_local": "Date portion of created_at_local_iso. KEY for daily aggregation.",
+    "hour_local": "Hour (0-23) of created_at_local_iso. KEY for dow_hour heatmap.",
+    "dow_local": "Day of week (0=Monday) of created_at_local_iso.",
+    "gross_sales_cents": "CSV col 'Gross Sales' (index 3) \u2192 parse_money_cents()",
+    "discount_cents": "CSV col 'Discounts' (index 4) \u2192 parse_money_cents() (typically negative)",
+    "tip_cents": "CSV col 'Tip' (index 9) \u2192 parse_money_cents()",
+    "net_total_cents": "CSV col 'Net Total' (index 21) \u2192 parse_money_cents() (after fees)",
+    "total_collected_cents": "CSV col 'Total Collected' (index 11) \u2192 parse_money_cents() (before Square fees)",
+    "source": "CSV col 'Source' (index 12). Values: Register | Square Kiosk | Uber Eats | DoorDash | Grubhub | etc.",
+    "staff_name": "CSV col 'Staff Name' (index 27). Often empty (kiosk, third-party). When present, valuable for cross-check vs ADP shifts.",
+    "location": "CSV col 'Location' (index 32). Currently always 'Austin Mueller Lake'.",
+    "scraped_at": "Wall-clock UTC ISO timestamp when the orchestrator ran."
+  },
+  "calibration_session_notes": [
+    "2026-05-16: Calibrated against Palmetto Superfoods Square account. Logged in with adi@mypalmetto.co (Keychain: jarvis-square-palmetto).",
+    "2026-05-16: Validated end-to-end with 55-day backfill (Mar 22 - May 15, 2026): 2,956 transactions, $47,946.77 Total Collected, $2,527.21 in tips, 6 refunds. CSV totals match on-page summary exactly.",
+    "2026-05-16: Account display TZ is ET but shop is in Austin (CT). All downstream date logic MUST convert to America/Chicago before bucketing by day."
+  ]
+}

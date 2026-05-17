@@ -1,7 +1,10 @@
-# Agent-specific data (PII, financials, account numbers)
-agents/*/knowledge-base/*.json
-agents/*/knowledge-base/questionnaire-*.md
-agents/*/knowledge-base/learnings/*.json
+# Agent-specific data (PII, financials, account numbers, store IDs).
+# Recursive: nothing under any knowledge-base/ folder ships to GitHub.
+# README.md files are explicitly allowed back in for repo navigation.
+agents/*/knowledge-base/**
+!agents/*/knowledge-base/
+!agents/*/knowledge-base/**/
+!agents/*/knowledge-base/**/README.md
 agents/*/data/
 extracted/
 config.yaml
@@ -15,8 +18,16 @@ credentials/
 !credentials/import_from_chrome.py
 !credentials/store_credential.py
 
+# Credential registry metadata (account names, service names)
+skills/credentials/registry.json
+
 # Browser automation profile (session cookies)
 browser-profile/
+
+# user_model raw corpus — append-only log of every user turn.
+# The distilled, curated preferences live at .cursor/rules/user-preferences.md
+# (gittracked + auto-loads). The raw corpus is private + never shared.
+skills/user_model/data/
 
 # Downloaded documents
 *.pdf

@@ -29,9 +29,28 @@ import time
 os.environ["PYTHONUNBUFFERED"] = "1"
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
-INBOX_FILE = pathlib.Path("/tmp/jarvis-slack-inbox.json")
+INBOX_FILE = pathlib.Path("/tmp/jarvis-slack-inbox.json")  # legacy / default
 PENDING_FILE = pathlib.Path("/tmp/jarvis-pending-actions.json")
 PID_FILE = pathlib.Path("/tmp/jarvis-inbox-processor.pid")
+
+
+def _all_inbox_files():
+    """Return every inbox file path: the legacy default + every per-agent file."""
+    import glob
+    paths = [INBOX_FILE] if INBOX_FILE.exists() else []
+    for p in glob.glob("/tmp/jarvis-slack-inbox-*.json"):
+        paths.append(pathlib.Path(p))
+    return paths
+
+
+def _agent_for_inbox(path):
+    """Derive agent name from an inbox file path. Returns None for legacy default."""
+    name = path.name
+    if name == "jarvis-slack-inbox.json":
+        return None
+    if name.startswith("jarvis-slack-inbox-") and name.endswith(".json"):
+        return name[len("jarvis-slack-inbox-"):-len(".json")]
+    return None
 
 # Patterns the processor can handle without AI
 DECISION_PATTERN = re.compile(
@@ -58,13 +77,17 @@ def _save_json(path, data):
     path.write_text(json.dumps(data, indent=2))
 
 
-def _slack_reply(text):
-    """Send a DM reply via Slack."""
+def _slack_reply(text, agent=None):
+    """Send a DM reply via Slack as the specified agent's bot.
+
+    agent=None routes through the default (CHITRA) bot for backward compat.
+    agent="bhaga" routes through BHAGA's bot using the BHAGA DM channel.
+    """
     try:
         from skills.slack.adapter import send_progress
-        send_progress(text)
+        send_progress(text, agent=agent)
     except Exception as e:
-        print(f"[processor] Reply failed: {e}")
+        print(f"[processor] Reply failed (agent={agent}): {e}")
 
 
 def _classify_message(text):
@@ -96,13 +119,14 @@ def _classify_message(text):
     return ("instruction", text)
 
 
-def _queue_pending(action_type, value, original_text, ts):
+def _queue_pending(action_type, value, original_text, ts, agent=None):
     """Write an action to the pending-actions file for the AI."""
     pending = _load_json(PENDING_FILE)
     pending.append({
         "type": action_type,
         "value": value,
         "original_text": original_text,
+        "agent": agent,  # which agent's DM the message came from (None = default/CHITRA)
         "ts": ts,
         "queued_at": time.time(),
         "processed_by_ai": False,
@@ -112,9 +136,10 @@ def _queue_pending(action_type, value, original_text, ts):
     _save_json(PENDING_FILE, pending)
 
 
-def process_once():
-    """Check inbox, process unread messages, return count processed."""
-    inbox = _load_json(INBOX_FILE)
+def _process_inbox_file(path):
+    """Process unread messages from one inbox file. Returns count processed."""
+    agent = _agent_for_inbox(path)
+    inbox = _load_json(path)
     unread = [m for m in inbox if not m.get("read")]
 
     if not unread:
@@ -127,36 +152,51 @@ def process_once():
         msg["read"] = True
 
         if text.startswith("__CMD_"):
-            _queue_pending("internal", text, text, ts)
+            _queue_pending("internal", text, text, ts, agent=agent)
             continue
 
         action_type, value = _classify_message(text)
-
-        _queue_pending(action_type, value, text, ts)
+        _queue_pending(action_type, value, text, ts, agent=agent)
         count += 1
 
+        agent_tag = f" ({agent.upper()})" if agent else ""
         if action_type == "decision":
             _slack_reply(
-                f":white_check_mark: Noted your choice: *option {value}*. "
-                f"Will execute on next action cycle."
+                f":white_check_mark: Noted your choice{agent_tag}: *option {value}*. "
+                f"Will execute on next action cycle.",
+                agent=agent,
             )
         elif action_type == "yes_no":
             _slack_reply(
-                f":white_check_mark: Got your answer: *{value}*. "
-                f"Will proceed accordingly."
+                f":white_check_mark: Got your answer{agent_tag}: *{value}*. "
+                f"Will proceed accordingly.",
+                agent=agent,
             )
         elif action_type == "skip":
             _slack_reply(
-                f":fast_forward: Will skip *{value}*. Noted."
+                f":fast_forward: Will skip *{value}*{agent_tag}. Noted.",
+                agent=agent,
             )
         elif action_type == "instruction":
             _slack_reply(
-                f":memo: Received your instruction. "
-                f"Will act on it in my next cycle:\n> _{text[:200]}_"
+                f":memo: Received your instruction{agent_tag}. "
+                f"Will act on it in my next cycle:\n> _{text[:200]}_",
+                agent=agent,
             )
 
-    _save_json(INBOX_FILE, inbox)
+    _save_json(path, inbox)
     return count
+
+
+def process_once():
+    """Scan ALL agent inbox files and process unread messages from each.
+
+    Returns total count processed across all inboxes.
+    """
+    total = 0
+    for path in _all_inbox_files():
+        total += _process_inbox_file(path)
+    return total
 
 
 def read_pending(mark_processed=True):

@@ -1,0 +1,30 @@
+{
+  "_doc": "Calibrated selectors for the Square Item Sales report (https://app.squareup.com/dashboard/sales/reports/item-sales), used by AKSHAYA's refresh pipeline. Sibling of dashboard.json (Sales Summary). Login flow is identical and is owned by dashboard.json's `login` section.",
+  "last_verified": "2026-05-12",
+  "verified_by": "AKSHAYA refresh, end-to-end via user-playwright MCP",
+  "page_urls": {
+    "item_sales": "https://app.squareup.com/dashboard/sales/reports/item-sales"
+  },
+  "date_picker": {
+    "pill_button_role": "button with name like 'May 2026' (current month label). Has [expanded] attribute when picker is open.",
+    "pill_button_accessible_name_pattern": "(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) YYYY",
+    "start_textbox_format": "MM/DD/YYYY — e.g. '04/22/2026'. Element resolves to '#ember<NN>'; ref changes per snapshot. Use the textbox role under the 'Start' label inside the open picker.",
+    "end_textbox_format": "MM/DD/YYYY — e.g. '05/11/2026'. Element resolves to '#ember<NN+2>' (NN+2 because of an interleaved separator element).",
+    "submission": "After filling both textboxes, press Enter on the keyboard. The picker closes, the report header updates to e.g. 'Apr 22, 2026 \u2013 May 11, 2026', and the table reloads.",
+    "quick_presets": ["Today", "Yesterday", "This week", "Last week", "This month", "Last month", "This year", "Last year"],
+    "notes": "End date is INCLUSIVE \u2014 a range of 04/22/2026 \u2192 05/11/2026 captures through end-of-day 5/11. The downloaded CSV filename embeds the exclusive end as `items-2026-04-22-2026-05-12.csv` (Square's convention)."
+  },
+  "export": {
+    "trigger_button_role": "button with name 'Export', collapsed by default. Located in top-right of the report header area.",
+    "menu_options_after_click": [
+      "Summary CSV \u2014 daily/weekly aggregates only; NOT what AKSHAYA needs",
+      "Detail CSV Export \u2014 row-per-transaction, has Date/Time/Item/Qty/Transaction ID/Payment ID columns. This is what `forecast_v2.load_square_orders` expects."
+    ],
+    "csv_naming_pattern": "items-{start_yyyy_mm_dd}-{end_plus_1_yyyy_mm_dd}.csv (Square uses exclusive end date in the filename)",
+    "save_directory": "Jarvis/extracted/downloads/ (default Playwright profile download dir); move to `get open/playground/` for forecast pipeline pickup"
+  },
+  "table_layout_reference": {
+    "columns": ["Item", "GTIN", "SKU", "Category Rollup", "Category", "Unit", "Items Sold", "Units Sold", "Gross Sales"],
+    "total_row_position": "bottom of the table, separate generic with 'Total' first cell"
+  }
+}

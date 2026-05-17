@@ -36,23 +36,60 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 OTP_DIR = pathlib.Path("/tmp/jarvis-otp")
 OTP_DIR.mkdir(exist_ok=True)
 
-INBOX_FILE = pathlib.Path("/tmp/jarvis-slack-inbox.json")
-COMMAND_LOG = pathlib.Path("/tmp/jarvis-slack-commands.json")
+# Per-agent state files: when AGENT is set, files become
+# /tmp/jarvis-slack-inbox-<agent>.json and /tmp/jarvis-slack-commands-<agent>.json
+# When AGENT is None (legacy / default CHITRA), files keep their original names
+# for backward compatibility with the inbox processor and any external readers.
+_DEFAULT_INBOX_FILE = pathlib.Path("/tmp/jarvis-slack-inbox.json")
+_DEFAULT_COMMAND_LOG = pathlib.Path("/tmp/jarvis-slack-commands.json")
 
-_app_token_cache = None
+# Active agent for this listener process. Set by start_listener(agent=...) or
+# the --agent CLI flag. Determines which app token to use, which inbox file
+# to write to, and which bot identity to reply through.
+AGENT = None
+INBOX_FILE = _DEFAULT_INBOX_FILE
+COMMAND_LOG = _DEFAULT_COMMAND_LOG
+
+_app_token_cache = {}
 
 
-def _get_app_token():
-    """Retrieve Slack App-Level Token (xapp-...) from macOS Keychain."""
-    global _app_token_cache
-    if _app_token_cache:
-        return _app_token_cache
-    cmd = "security find-generic-password -a SLACK_APP_TOKEN -s jarvis -w"
+def _set_agent_globals(agent):
+    """Configure module-level paths and identity for the active listener agent."""
+    global AGENT, INBOX_FILE, COMMAND_LOG
+    AGENT = agent.lower() if agent else None
+    if AGENT:
+        INBOX_FILE = pathlib.Path(f"/tmp/jarvis-slack-inbox-{AGENT}.json")
+        COMMAND_LOG = pathlib.Path(f"/tmp/jarvis-slack-commands-{AGENT}.json")
+    else:
+        INBOX_FILE = _DEFAULT_INBOX_FILE
+        COMMAND_LOG = _DEFAULT_COMMAND_LOG
+
+
+def _get_app_token(agent=None):
+    """Retrieve a Slack App-Level Token (xapp-...) from macOS Keychain.
+
+    Per-agent tokens live under service `jarvis-<agent>` with account
+    `SLACK_APP_TOKEN_<AGENT>` (matches the convention used by
+    `skills/slack_app_provisioning/register.py`). The default (no agent)
+    keeps the legacy `jarvis` service / `SLACK_APP_TOKEN` account so existing
+    CHITRA infrastructure is unaffected.
+    """
+    key = (agent or AGENT or "_default").lower()
+    if key in _app_token_cache:
+        return _app_token_cache[key]
+
+    if key == "_default":
+        cmd = "security find-generic-password -a SLACK_APP_TOKEN -s jarvis -w"
+    else:
+        cmd = (
+            f"security find-generic-password -a SLACK_APP_TOKEN_{key.upper()} "
+            f"-s jarvis-{key} -w"
+        )
     try:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
         if result.returncode == 0 and result.stdout.strip():
-            _app_token_cache = result.stdout.strip()
-            return _app_token_cache
+            _app_token_cache[key] = result.stdout.strip()
+            return _app_token_cache[key]
         return None
     except subprocess.TimeoutExpired:
         return None
@@ -132,15 +169,27 @@ def _is_otp_reply(text):
 
 
 def _find_pending_portal():
-    """Find which portal is waiting for an OTP based on recent bot messages."""
+    """Find which portal is waiting for an OTP based on recent bot messages.
+
+    Agent-aware: when this listener was started with `--agent bhaga`, look up
+    the BHAGA DM channel (cfg.slack.agents.bhaga.dm_channel), not the
+    top-level CHITRA DM. Otherwise, an OTP reply in the BHAGA DM never
+    matches a pending portal — `read_otp()` then blocks forever even though
+    the user did reply.
+    """
     from skills.slack.adapter import _api_call, load_config
 
     cfg = load_config()
-    dm_channel = cfg.get("slack", {}).get("dm_channel")
+    slack_cfg = cfg.get("slack", {}) or {}
+    if AGENT:
+        agent_cfg = (slack_cfg.get("agents", {}) or {}).get(AGENT, {}) or {}
+        dm_channel = agent_cfg.get("dm_channel") or slack_cfg.get("dm_channel")
+    else:
+        dm_channel = slack_cfg.get("dm_channel")
     if not dm_channel:
         return None
 
-    result = _api_call("conversations.history", params={"channel": dm_channel, "limit": 5})
+    result = _api_call("conversations.history", params={"channel": dm_channel, "limit": 5}, agent=AGENT)
     if not result.get("ok"):
         return None
 
@@ -344,22 +393,28 @@ def _log_command(command, response, user_id):
 
 
 def _get_dm_channel():
-    """Get the DM channel from config."""
+    """Get the DM channel for the active agent (falls back to default)."""
     try:
         cfg_module = __import__("core.config_loader", fromlist=["load_config"])
         cfg = cfg_module.load_config()
-        return cfg.get("slack", {}).get("dm_channel")
+        slack_cfg = cfg.get("slack", {})
+        if AGENT:
+            agent_cfg = slack_cfg.get("agents", {}).get(AGENT, {})
+            ch = agent_cfg.get("dm_channel")
+            if ch:
+                return ch
+        return slack_cfg.get("dm_channel")
     except Exception:
         return None
 
 
 def _reply(text):
-    """Send a reply to the user's DM."""
+    """Send a reply to the user's DM as the active agent's bot."""
     try:
         from skills.slack.adapter import send_message
         channel = _get_dm_channel()
         if channel:
-            send_message(channel, text)
+            send_message(channel, text, agent=AGENT)
     except Exception as e:
         print(f"[listener] Reply failed: {e}")
 
@@ -497,16 +552,26 @@ def _handle_event(event_type, payload, envelope_id):
         print("[listener] Received disconnect event, will reconnect")
 
 
-def read_inbox(mark_read=True):
-    """Read all unread messages from the inbox file.
+def _agent_inbox_path(agent=None):
+    if agent is None:
+        return INBOX_FILE
+    if agent == "_default":
+        return _DEFAULT_INBOX_FILE
+    return pathlib.Path(f"/tmp/jarvis-slack-inbox-{agent.lower()}.json")
 
-    Returns list of message dicts. If mark_read=True, marks them as read.
+
+def read_inbox(mark_read=True, agent=None):
+    """Read all unread messages from one agent's inbox file.
+
+    agent=None → uses the active listener agent (or default if not set)
+    agent="bhaga" → reads /tmp/jarvis-slack-inbox-bhaga.json
     """
-    if not INBOX_FILE.exists():
+    path = _agent_inbox_path(agent)
+    if not path.exists():
         return []
 
     try:
-        inbox = json.loads(INBOX_FILE.read_text())
+        inbox = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return []
 
@@ -515,17 +580,39 @@ def read_inbox(mark_read=True):
     if mark_read and unread:
         for m in inbox:
             m["read"] = True
-        INBOX_FILE.write_text(json.dumps(inbox, indent=2))
+        path.write_text(json.dumps(inbox, indent=2))
 
     return unread
 
 
-def has_unread_messages():
-    """Quick check if there are unread messages in the inbox."""
-    if not INBOX_FILE.exists():
+def read_all_inboxes(mark_read=True):
+    """Read unread messages from EVERY agent's inbox file.
+
+    Returns list of dicts with an extra 'agent' field (None for the default
+    legacy inbox). Useful for the inbox processor to handle multi-agent fan-in.
+    """
+    out = []
+    # Default / legacy inbox first
+    for m in read_inbox(mark_read=mark_read, agent="_default"):
+        m["agent"] = None
+        out.append(m)
+    # Per-agent inboxes (any /tmp/jarvis-slack-inbox-*.json)
+    import glob
+    for path in glob.glob("/tmp/jarvis-slack-inbox-*.json"):
+        agent = pathlib.Path(path).stem.replace("jarvis-slack-inbox-", "")
+        for m in read_inbox(mark_read=mark_read, agent=agent):
+            m["agent"] = agent
+            out.append(m)
+    return out
+
+
+def has_unread_messages(agent=None):
+    """Quick check if there are unread messages in one agent's inbox."""
+    path = _agent_inbox_path(agent)
+    if not path.exists():
         return False
     try:
-        inbox = json.loads(INBOX_FILE.read_text())
+        inbox = json.loads(path.read_text())
         return any(not m.get("read") for m in inbox)
     except (json.JSONDecodeError, OSError):
         return False
@@ -536,31 +623,55 @@ def is_socket_mode_available():
     return _get_app_token() is not None
 
 
-def start_listener():
-    """Start the Socket Mode listener. Blocks forever."""
+def start_listener(agent=None):
+    """Start the Socket Mode listener for the given agent. Blocks forever.
+
+    agent=None  → legacy default CHITRA-shaped behavior (uses jarvis/SLACK_APP_TOKEN)
+    agent="bhaga" → uses jarvis-bhaga/SLACK_APP_TOKEN_BHAGA, writes to
+                    /tmp/jarvis-slack-inbox-bhaga.json, replies via BHAGA bot
+    """
+    _set_agent_globals(agent)
     app_token = _get_app_token()
     if not app_token:
-        print("[listener] No app-level token found in Keychain (SLACK_APP_TOKEN).")
-        print("[listener] Store it: security add-generic-password -a SLACK_APP_TOKEN -s jarvis -w 'xapp-...'")
+        if AGENT:
+            print(f"[listener:{AGENT}] No app-level token in Keychain "
+                  f"(SLACK_APP_TOKEN_{AGENT.upper()} under jarvis-{AGENT}).")
+        else:
+            print("[listener] No app-level token found in Keychain (SLACK_APP_TOKEN).")
+            print("[listener] Store it: security add-generic-password -a SLACK_APP_TOKEN -s jarvis -w 'xapp-...'")
         sys.exit(1)
 
+    label = f"listener:{AGENT}" if AGENT else "listener"
     client = SocketModeClient(app_token, on_message=_handle_event)
-    print("[listener] Starting Slack Socket Mode listener...")
-    print("[listener] OTP files will be written to /tmp/jarvis-otp/")
+    print(f"[{label}] Starting Slack Socket Mode listener...")
+    print(f"[{label}] Inbox file: {INBOX_FILE}")
+    print(f"[{label}] OTP files: {OTP_DIR}/")
     client.start()
 
 
-def start_listener_background():
+def start_listener_background(agent=None):
     """Start the listener in a background thread. Non-blocking."""
+    _set_agent_globals(agent)
     app_token = _get_app_token()
     if not app_token:
         return False
 
     client = SocketModeClient(app_token, on_message=_handle_event)
-    thread = threading.Thread(target=client.start, daemon=True, name="slack-listener")
+    thread_name = f"slack-listener-{AGENT}" if AGENT else "slack-listener"
+    thread = threading.Thread(target=client.start, daemon=True, name=thread_name)
     thread.start()
     return True
 
 
 if __name__ == "__main__":
-    start_listener()
+    import argparse
+    parser = argparse.ArgumentParser(description="Slack Socket Mode listener")
+    parser.add_argument(
+        "--agent",
+        default=None,
+        help="Agent name (e.g. bhaga). Uses jarvis-<agent>/SLACK_APP_TOKEN_<AGENT> "
+             "from Keychain and writes to /tmp/jarvis-slack-inbox-<agent>.json. "
+             "Omit for legacy default behavior.",
+    )
+    args = parser.parse_args()
+    start_listener(agent=args.agent)

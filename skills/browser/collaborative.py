@@ -107,6 +107,13 @@ INTERCEPTOR_JS = """
 })()
 """
 
+# For multi-step logins (Square, ADP RUN, etc. — email/ID → Next → password),
+# prefer the multi-step-aware interceptor + fast polling loop in
+# `skills/browser/fast_capture.py`. The INTERCEPTOR_JS above captures both fields
+# at SUBMIT time, which fails when the email input is unmounted on step transition.
+# Lesson learned 2026-04-20: single-step interceptor + slow (30s) polling races
+# against page navigation and wipes captured creds before readout. fast_capture
+# polls every 1-2s once user input appears and drains storage atomically on read.
 IFRAME_INTERCEPTOR_JS = """
 (function() {
   window.__jarvis_captured_creds = null;

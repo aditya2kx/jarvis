@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  BHAGA daily refresh launch agent.
+
+  Fires every 15 minutes during the laptop's LOCAL hours 19, 20, 21, 22, 23
+  (i.e. an 'evening window'). The wrapper script inside enforces the
+  Central-Time gate (only proceeds during CT hour 21) and idempotency,
+  so the actual scrape runs at most once per CT day no matter how many
+  times launchd wakes it.
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │ INSTALL                                                      │
+  ├─────────────────────────────────────────────────────────────┤
+  │ cp .../com.aditya.bhaga.daily.plist ~/Library/LaunchAgents/ │
+  │ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/... │
+  │ launchctl enable gui/$(id -u)/com.aditya.bhaga.daily        │
+  │ launchctl kickstart gui/$(id -u)/com.aditya.bhaga.daily     │
+  ├─────────────────────────────────────────────────────────────┤
+  │ INSPECT                                                      │
+  ├─────────────────────────────────────────────────────────────┤
+  │ launchctl print gui/$(id -u)/com.aditya.bhaga.daily | less  │
+  │ tail -f ~/.bhaga/state/wrapper.log                          │
+  │ tail -f ~/.bhaga/state/refresh.log                          │
+  ├─────────────────────────────────────────────────────────────┤
+  │ UNINSTALL                                                    │
+  ├─────────────────────────────────────────────────────────────┤
+  │ launchctl bootout gui/$(id -u)/com.aditya.bhaga.daily       │
+  │ rm ~/Library/LaunchAgents/com.aditya.bhaga.daily.plist      │
+  └─────────────────────────────────────────────────────────────┘
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aditya.bhaga.daily</string>
+
+    <!-- Invoke the wrapper script by absolute path. We INTENTIONALLY do NOT
+         set WorkingDirectory because launchd's cwd-setup-then-exec pattern
+         interacts badly with Conda Python's startup on this Mac: Python's
+         _Py_wgetcwd() syscall hangs indefinitely when the cwd is the Jarvis
+         project root, but works fine from /tmp or other dirs. The wrapper
+         script does its own sys.path setup using the script's __file__ so
+         cwd doesn't matter for imports. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/miniconda3/bin/python3</string>
+        <string>/Users/adityaparikh/Documents/current-workspace/Jarvis/agents/bhaga/scripts/daily_refresh_wrapper.py</string>
+    </array>
+
+    <!-- Wake every 15 min during the local evening window 19:00-23:45.
+         The wrapper's CT gate rejects all wakes outside CT hour 21. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Hour</key><integer>23</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>23</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Hour</key><integer>23</integer><key>Minute</key><integer>45</integer></dict>
+    </array>
+
+    <!-- If laptop was asleep at a fire time, run as soon as it wakes. -->
+    <key>StartCalendarIntervalRunAtLoad</key>
+    <false/>
+
+    <!-- Wake the laptop briefly to run the job (only if power is connected). -->
+    <key>WakeFromSleep</key>
+    <true/>
+
+    <!-- Log launchd-level stderr separately so we can see process-spawn errors. -->
+    <key>StandardOutPath</key>
+    <string>/Users/adityaparikh/.bhaga/state/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/adityaparikh/.bhaga/state/launchd.err.log</string>
+
+    <!-- Inherit user environment so PATH, conda, etc. resolve. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/miniconda3/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/adityaparikh</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <!-- If a wakeup overlaps the previous run, skip rather than queue. -->
+    <key>AbandonProcessGroup</key>
+    <false/>
+</dict>
+</plist>

@@ -11,75 +11,14 @@ import os
 import urllib.parse
 import urllib.request
 
+import yaml
+
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_DIR = os.path.dirname(_SCRIPT_DIR)
 _CONFIG_PATH = os.path.join(_PROJECT_DIR, "config.yaml")
 _TEMPLATE_PATH = os.path.join(_PROJECT_DIR, "config.template.yaml")
 
 _config = None
-
-
-def _load_yaml_simple(path):
-    """Minimal YAML-subset parser (avoids PyYAML dependency).
-    Handles flat and one-level nested key: value pairs, plus lists with '- ' prefix."""
-    result = {}
-    current_section = None
-    current_list_key = None
-
-    with open(path) as f:
-        for line in f:
-            stripped = line.rstrip()
-            if not stripped or stripped.startswith("#"):
-                continue
-
-            indent = len(line) - len(line.lstrip())
-
-            if indent == 0 and stripped.endswith(":"):
-                current_section = stripped[:-1]
-                result[current_section] = {}
-                current_list_key = None
-                continue
-
-            if indent == 0 and ": " in stripped:
-                key, val = stripped.split(": ", 1)
-                result[key] = _parse_value(val)
-                current_section = None
-                current_list_key = None
-                continue
-
-            if current_section is not None:
-                if stripped.lstrip().startswith("- "):
-                    item = stripped.lstrip()[2:].strip()
-                    if current_list_key:
-                        result[current_section][current_list_key].append(_parse_value(item))
-                    continue
-
-                if ": " in stripped.lstrip():
-                    key, val = stripped.lstrip().split(": ", 1)
-                    parsed = _parse_value(val)
-                    result[current_section][key] = parsed
-                    current_list_key = None
-                elif stripped.lstrip().endswith(":"):
-                    key = stripped.lstrip()[:-1]
-                    result[current_section][key] = []
-                    current_list_key = key
-
-    return result
-
-
-def _parse_value(val):
-    val = val.strip()
-    if val.startswith('"') and val.endswith('"'):
-        return val[1:-1]
-    if val.startswith("'") and val.endswith("'"):
-        return val[1:-1]
-    if val.isdigit():
-        return int(val)
-    if val.lower() in ("true", "yes"):
-        return True
-    if val.lower() in ("false", "no"):
-        return False
-    return val
 
 
 def load_config():
@@ -89,7 +28,8 @@ def load_config():
         return _config
 
     if os.path.exists(_CONFIG_PATH):
-        _config = _load_yaml_simple(_CONFIG_PATH)
+        with open(_CONFIG_PATH) as f:
+            _config = yaml.safe_load(f) or {}
     elif os.path.exists(_TEMPLATE_PATH):
         raise FileNotFoundError(
             f"config.yaml not found. Copy config.template.yaml to config.yaml and fill in your values.\n"
@@ -101,13 +41,43 @@ def load_config():
     return _config
 
 
-def get_auth_paths():
-    """Return (credentials_path, env_path) from config."""
+def get_auth_paths(account=None):
+    """Return (credentials_path, env_path) from config.
+
+    If account is given, looks up the named account under the 'accounts'
+    section.  Otherwise falls back to the legacy 'auth' section for
+    backward compatibility with CHITRA and other existing callers.
+    """
     cfg = load_config()
+
+    if account is not None:
+        accounts = cfg.get("accounts", {})
+        if account not in accounts:
+            raise KeyError(
+                f"Account '{account}' not found in config.yaml accounts section. "
+                f"Available: {list(accounts.keys())}"
+            )
+        acct = accounts[account]
+        creds = os.path.expanduser(acct.get("credentials_path", ""))
+        env = os.path.expanduser(acct.get("env_path", ""))
+        return creds, env
+
     auth = cfg.get("auth", {})
     creds = os.path.expanduser(auth.get("credentials_path", ""))
     env = os.path.expanduser(auth.get("env_path", ""))
     return creds, env
+
+
+def get_account_config(account):
+    """Return the full config dict for a named account."""
+    cfg = load_config()
+    accounts = cfg.get("accounts", {})
+    if account not in accounts:
+        raise KeyError(
+            f"Account '{account}' not found in config.yaml accounts section. "
+            f"Available: {list(accounts.keys())}"
+        )
+    return accounts[account]
 
 
 def get_sheet_id(name):
@@ -155,10 +125,17 @@ def load_env(path):
     return env
 
 
-def refresh_access_token():
-    """Refresh and return a Google API access token using config credentials."""
-    creds_path, env_path = get_auth_paths()
-    creds = json.load(open(creds_path))
+def refresh_access_token(account=None):
+    """Refresh and return a Google API access token.
+
+    Args:
+        account: Named account from the 'accounts' config section
+                 (e.g. 'personal', 'palmetto').  None falls back to
+                 the legacy 'auth' section for backward compatibility.
+    """
+    creds_path, env_path = get_auth_paths(account)
+    with open(creds_path) as f:
+        creds = json.load(f)
     env = load_env(env_path)
     data = urllib.parse.urlencode({
         "client_id": env["CLIENT_ID"],

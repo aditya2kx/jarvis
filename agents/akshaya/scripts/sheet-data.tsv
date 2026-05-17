@@ -1,0 +1,39 @@
+AKSHAYA — HQ Inventory Forecast							
+Last updated: 2026-04-16 09:23							
+							
+CONFIG							
+Weekly Growth Rate (%)	5	← Change this to your expected weekly growth %					
+Months of HQ Buffer	2.5	← How many months of HQ inventory to keep on hand					
+Current Daily Avg Orders	41.9	← From 20 days of data					
+							
+WEEKLY ORDER VOLUME							
+Week Starting	Days	Total Orders	Daily Avg	WoW Growth			
+2026-03-23	7	325	46.4	N/A			
+2026-03-30	7	231	33.0	-28.9%			
+2026-04-06	6	282	47.0	+42.4%			
+							
+							
+HQ ITEM FORECAST							
+Inventory as of: 2026-04-15							
+Item	Type	Current Stock	Avg Use/Day	Days of Supply (current)	Days of Supply (with growth)	Need for Buffer Period	Order Quantity
+Açaí	Base	23.6	1.55	15	13	151.7	128.1
+Coconut	Base	12.0	5.04	2	2	493.7	481.7
+Mango	Base	13.7	0.55	25	21	54.3	40.6
+Pitaya	Base	12.2	0.90	13	11	88.4	76.2
+Tropical	Base	12.1	0.56	22	18	54.8	42.7
+Matcha	Base	3.8	0.18	21	18	18.0	14.2
+Ube	Base	4.2	0.19	23	19	18.3	14.1
+Pog	Base	3.9	0.18	21	18	17.8	13.9
+Blade	Base	4.0	0.50	8	7	49.0	45.0
+Honey Almond	Granola	4.1	0.10	42	36	9.6	5.5
+GF Maple Hemp-Flax	Granola	6.8	0.71	10	8	69.7	62.9
+Choco-Churro	Granola	3.3	0.16	21	18	15.4	12.1
+Roasted Coffee	Granola	3.7	0.10	38	32	9.6	5.9
+							
+							
+NOTES							
+• Stock units = packs/bags. "23.6" means 23 full packs + one at 60%.							
+• Avg Use/Day = net daily consumption from 22 days of ClickUp closing reports.							
+• Order Qty = how much to order to reach your buffer target.							
+• Change B5 (growth %) and B6 (buffer months) to adjust the forecast.							
+• Phase 2: Add recipe decomposition to sharpen per-ingredient consumption rates.							

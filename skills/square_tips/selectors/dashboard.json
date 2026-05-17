@@ -1,0 +1,89 @@
+{
+  "_doc": "Calibrated selectors for skills/square_tips/dashboard_backend.py against app.squareup.com Sales Summary (Beta). Each entry: stable selector + last_verified date + notes on UI fragility.",
+  "last_verified": "2026-04-19",
+  "verified_by": "Cursor AI agent driving user-playwright MCP, fresh from-scratch flow",
+  "page_urls": {
+    "login": "https://app.squareup.com/login",
+    "logout": "https://app.squareup.com/logout",
+    "dashboard_home": "https://app.squareup.com/dashboard/",
+    "sales_summary": "https://app.squareup.com/dashboard/sales/reports/sales-summary"
+  },
+  "login": {
+    "email_input": {
+      "primary": "input[data-testid=\"username-input\"]",
+      "fallback": "input[type=\"email\"], input[name=\"email\"], input[autocomplete=\"username\"]",
+      "notes": "Step 1 of 2-step login"
+    },
+    "continue_button": {
+      "primary": "button:has-text(\"Continue\")",
+      "fallback": "button[type=\"submit\"]",
+      "notes": "After typing email, click to advance to password page"
+    },
+    "password_input": {
+      "primary": "input[data-testid=\"login-password-input\"]",
+      "fallback": "input[type=\"password\"][name=\"password\"]",
+      "notes": "Step 2; appears after Continue. Email field is removed from DOM."
+    },
+    "signin_button": {
+      "primary": "button:has-text(\"Sign in\")",
+      "fallback": "button[type=\"submit\"]",
+      "notes": "Final submit; redirects to /dashboard/"
+    },
+    "post_login_url_match": "/dashboard"
+  },
+  "sales_summary": {
+    "export_trigger_button": {
+      "primary": "[aria-label=\"Export\"] button",
+      "fallback_role_query": "generic with aria-label Export, find inner button",
+      "fallback_coords_top_right": {
+        "x_fraction": 0.911,
+        "y_pixels": 32,
+        "viewport_width_when_calibrated": 2169
+      },
+      "notes": "Icon-only button (down-arrow into tray) in top-right of report header. No aria-label on the button itself; the wrapping generic has aria-label=Export. Coords are a last-resort fallback if the role-based selector breaks."
+    },
+    "export_confirm_button": {
+      "primary": "button:has-text(\"Export\"):not([aria-label=\"Export\"])",
+      "fallback": "[role=\"button\"]:has-text(\"Export\"):visible:nth=1",
+      "notes": "Inside the Export popover that opens after clicking export_trigger_button. Has visible 'Export' text and an icon."
+    },
+    "report_type_pill": {
+      "primary": "text=\"Report type \"",
+      "fallback": "[data-test-id=\"report-type-pill\"]",
+      "notes": "Text content: 'Report type Summary' or 'Report type Days' depending on current setting. Click opens the report-type slide-out panel."
+    },
+    "report_type_panel": {
+      "panel_dialog": "[role=\"dialog\"]:has-text(\"Report type\")",
+      "days_option_label": "label:has-text(\"Days\"):below(:text(\"Individual increments\"))",
+      "days_option_text_only": "label:text-is(\"Days\")",
+      "apply_button": "[role=\"dialog\"] >> button:has-text(\"Apply\")",
+      "notes": "Two listboxes: 'Summaries' (Summary, Summary by hour, Summary by day) and 'Individual increments' (Hours, Days, Weeks, Months). For BHAGA daily tip pulls, always pick Days under Individual increments."
+    },
+    "date_range_pill": {
+      "primary": "button[aria-label*=\"Previous 7 days\"]:has-text(\",\")",
+      "fallback": "button:has-text(\"Mon, \"), button:has-text(\"Sun, \")",
+      "prev_week_button": "button[aria-label=\"Previous 7 days\"]",
+      "next_week_button": "button[aria-label=\"Next 7 days\"], button[aria-label*=\"Next\"]",
+      "notes": "TODO 2026-04-19: explicit date picker not yet calibrated. For now, navigate by Previous/Next 7-day buttons from the current default range. Date range persists across sessions for the same Square account."
+    },
+    "tips_row_in_table": {
+      "primary": "[role=\"row\"]:has-text(\"Tips\"):has-text(\"orders\")",
+      "amount_cell": "[role=\"row\"]:has-text(\"Tips\") >> [role=\"cell\"] >> nth=1",
+      "notes": "DOM verification — row has 'Tips' label, an order count button, and an amount cell. Used for sanity check, not the primary data source (CSV is)."
+    }
+  },
+  "csv_format": {
+    "filename_pattern": "sales-summary-{start_yyyy}-{start_mm}-{start_dd}-{end_yyyy}-{end_mm}-{end_dd}.csv",
+    "save_directory": "extracted/downloads/",
+    "header_in_days_mode": [
+      "First column header: 'Sales summary - Daily\\nAll day (12:00 AM-11:59 PM CT)'",
+      "Subsequent columns: '\"3/23/2026\",\"3/24/2026\",\"3/25/2026\",\"3/26/2026\",\"3/27/2026\",\"3/28/2026\",\"3/29/2026\"' (dates as M/D/YYYY)"
+    ],
+    "header_in_summary_mode": [
+      "First column header: 'Sales summary - Summary\\nAll day (12:00 AM-11:59 PM CT)'",
+      "Single value column"
+    ],
+    "tips_row": "Row label = 'Tips'; values are dollar strings ('$57.51', '$0.00', '($36.75)' for negative)",
+    "transactions_row": "Row label = 'Tips transactions' — daily order counts per day"
+  }
+}

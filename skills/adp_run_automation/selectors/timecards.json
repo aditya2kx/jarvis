@@ -1,0 +1,167 @@
+{
+  "_doc": "Calibrated selectors for skills/adp_run_automation/shift_backend.py against ADP RUN's Reports > Time reports > Timecard report. Produces an .xlsx export with one row per punch (split-shift aware), covering all employees across selected pay periods.",
+  "last_verified": "2026-05-16",
+  "verified_by": "Cursor AI agent driving user-playwright MCP, fresh from-scratch flow against Palmetto Superfoods account.",
+  "discovery_path": [
+    "Initially navigated to Time > Timecards (modal opens with per-employee, per-pay-period UI). Single-employee-at-a-time, would have required iterating ~14 employees x N pay periods.",
+    "User redirected: opened Reports > Single reports modal > expanded 'Time reports' category.",
+    "Clicked 'Timecard' report (the single-report entry). Opens a separate modal that renders all employees at once with filters for Year / Pay Frequency / Report Period / Pay Period (multi-select) / Employees (defaults to All) / Format.",
+    "Found 'Export To Excel' button (visible only after the report renders) -- produces a clean .xlsx with a flat 'Details' sheet. Use this instead of HTML scraping."
+  ],
+  "page_urls": {
+    "login": "https://runpayroll.adp.com",
+    "post_login_pattern": "https://runpayrollmain.adp.com/@{tenant_uuid}/v2/",
+    "main_dashboard": "https://runpayrollmain.adp.com/@{tenant_uuid}/v2/"
+  },
+  "login": {
+    "username_field": {
+      "notes": "ADP shows username first OR recognizes the user from prior session and skips straight to password. When prior session exists, the page displays 'Hello, {FirstName}.' and 'User ID:{email}' as plain text (no input). When fresh: TBD -- not yet calibrated for a fresh-login flow.",
+      "fresh_login_calibration": "PENDING -- to be captured during M3 playwright-profile seeding."
+    },
+    "password_field": {
+      "primary_role": "getByRole('textbox', { name: 'Password' })",
+      "fallback": "input[type='password']"
+    },
+    "submit": {
+      "notes": "Pressing Enter in the password field submits the form. The dedicated Sign in button has [disabled] until input is valid, so prefer Enter."
+    },
+    "credential_handle": "adp_palmetto_login",
+    "post_login_url_match": "/runpayrollmain.adp.com/.*/v2/"
+  },
+  "navigation": {
+    "_doc": "Two paths to the Timecard report. Reports path is what we use; Time > Timecards path is documented for reference only (we used to think it was the answer; it's not -- single-employee-at-a-time and requires iteration).",
+    "via_reports": [
+      "Click top-nav button 'Reports' -- selector data-test-id='Reports-btn' (deduced from data-test-id='Time-btn' pattern on adjacent buttons)",
+      "On the Reports landing or 'Single reports' modal, expand the 'Time reports' category accordion (button with aria-expanded toggle)",
+      "Click the 'Timecard' link in the expanded list -- text 'Timecard' + description 'Review timecard details for your employees.'"
+    ],
+    "via_time_module_DO_NOT_USE": [
+      "Click top-nav 'Time' (data-test-id='Time-btn'). Lands on Time module landing page.",
+      "Click 'Timecards' link. Opens modal with single-employee view (iframe[name='timePartnerFrame']).",
+      "REASON DEPRECATED: Single-employee, single-pay-period view. Requires iterating employees x pay periods. Use Reports > Time reports > Timecard instead."
+    ]
+  },
+  "timecard_report_modal": {
+    "modal_dialog_indicator": "dialog with banner heading 'Timecard'",
+    "iframe": {
+      "name_attr": "mdfTimeFrame",
+      "playwright_locator": "page.locator('iframe[name=\"mdfTimeFrame\"]').contentFrame()",
+      "notes": "All filter controls + report body are inside this iframe. Every browser interaction must traverse into it."
+    },
+    "filters": {
+      "year": {
+        "combobox_aria_pattern": "Year {YYYY}",
+        "default": "current calendar year",
+        "notes": "We've not needed to change this -- defaults to 2026 which is correct for all current scrapes."
+      },
+      "pay_frequency": {
+        "combobox_aria_pattern": "Pay Frequency {Weekly|Biweekly|Monthly|...}",
+        "default": "Biweekly",
+        "notes": "Palmetto uses Biweekly. Other shops may differ -- read from store profile."
+      },
+      "report_period": {
+        "combobox_aria_pattern": "Report Period {Pay Period|Date Range|...}",
+        "default": "Pay Period",
+        "notes": "Multi-select Pay Period mode works for our needs (we just pick the pay periods covering our date window). 'Date Range' alternative may exist (worth testing if a fully arbitrary date range is needed) but Pay Period mode is more aligned with how the data is stored anyway."
+      },
+      "pay_period_multiselect": {
+        "combobox_aria_match": "regex /Pay Period.*Select All.*results available/",
+        "listbox_when_expanded": "[role='listbox'] containing option[aria-label] matching /\\d{4}-\\d{2}-\\d{2} - \\d{4}-\\d{2}-\\d{2}/",
+        "option_match_pattern": "Option text format: 'YYYY-MM-DD - YYYY-MM-DD' (e.g. '2026-03-09 - 2026-03-22'). Sorted newest first.",
+        "select_all_option": "option[name='Select All'] -- checks every available pay period (typically the last 8 periods are listed).",
+        "notes": "Pay periods end on Sundays (Palmetto's biweekly cycle). To cover a given date window, select every pay period whose end date >= window_start_date AND start date <= window_end_date. Picker remembers selection across Apply Changes invocations within the session."
+      },
+      "employees_multiselect": {
+        "default": "All",
+        "notes": "Leave at All for daily refresh. Multi-select if you ever need a single employee scrape (not used by BHAGA M1)."
+      },
+      "format": {
+        "combobox_aria_pattern": "Format {Page break after each timecard|Continuous}",
+        "options": ["Page break after each timecard", "Continuous"],
+        "recommended": "Continuous",
+        "notes": "Format affects HTML rendering for print. Does NOT affect the Excel export (both options export the same Details sheet shape). Choose Continuous so the inline HTML render is simpler if you ever need to fall back to DOM scraping."
+      }
+    },
+    "apply_changes_button": {
+      "playwright_locator": "iframe('mdfTimeFrame').getByRole('button', { name: 'Apply Changes' })",
+      "notes": "Click after any filter change. The report body re-renders inside the iframe (takes 2-6 seconds for a 5-pay-period x 14-employee report). Apply Changes does NOT trigger a download; you still need to click Export To Excel afterwards."
+    },
+    "export_to_excel_button": {
+      "primary_id": "#report-excel-button",
+      "playwright_eval": "iframe('mdfTimeFrame').contentDocument.getElementById('report-excel-button').click()",
+      "aria_label": "Export To Excel",
+      "custom_element_tag": "SDF-BUTTON",
+      "notes": "Stable id! Use this. The button only renders AFTER the report body has loaded -- so always Apply Changes (or land on the page with prior filters) before reaching for it. Click triggers an immediate xlsx download (no async generation, unlike Square)."
+    },
+    "print_report_button": {
+      "notes": "Alternative path -- opens browser print dialog. Not used by us; Export To Excel is strictly better for parsing."
+    }
+  },
+  "xlsx_format": {
+    "filename_pattern": "Timecard .xlsx  (NOTE: has a trailing space in the original filename!)",
+    "browser_mcp_renames_to": "Timecard-.xlsx  (trailing space replaced with -)",
+    "save_directory": "extracted/downloads/",
+    "sheets": ["Summary", "Details"],
+    "summary_sheet": {
+      "shape": "Repeating blocks. Each block: row of column headers ('Employee Name', 'Pay Period', 'Date Range', 'Total Paid Hours') + 1 data row, then row of punch column headers ('Date', 'Start Work', 'End Work', 'Regular', 'Overtime', 'Doubletime', 'Details', 'Notes') + N punch rows, then a blank separator row. One block per (employee, pay_period) combination.",
+      "notes": "Harder to parse than Details sheet. Skip it -- parse Details only."
+    },
+    "details_sheet": {
+      "shape": "FLAT table. Row 1 = header (12 columns). Rows 2+ = data. Every row repeats Employee Name + Pay Period + Total Paid Hours, plus the 8 punch-row columns. ONE ROW PER PUNCH (split shifts emit 2 rows for the same day).",
+      "total_columns": 12,
+      "header_columns_in_order": [
+        "Employee Name",
+        "Pay Period",
+        "Date Range",
+        "Total Paid Hours",
+        "Date",
+        "Start Work",
+        "End Work",
+        "Regular",
+        "Overtime",
+        "Doubletime",
+        "Details",
+        "Notes"
+      ],
+      "date_format": "'Day MM/DD/YYYY' (e.g. 'Fri 05/15/2026'). The 3-letter weekday prefix is consistent.",
+      "time_format": "'h:mm AM' or 'h:mm PM' (no zero-padding on hour).",
+      "hours_format": "'H:MM' notation (HOURS:MINUTES, NOT decimal). E.g. '4:09' means 4 hours 9 minutes = 4.15 decimal hours.",
+      "empty_cells": "Blank string '' or None. Overtime/Doubletime/Details/Notes are empty for the vast majority of rows.",
+      "pay_period_format": "'YYYY-MM-DD to YYYY-MM-DD'  (date_range column appears unused, always empty).",
+      "open_shift_handling": "Open shifts (employee currently clocked in, no End Work) are EXCLUDED from the Excel export. Confirmed 2026-05-16: a Sebastian Alvarez open punch at 10:01 AM visible in the Timecards UI did NOT appear in the exported Details sheet. Implication: schedule daily refresh AFTER all employees have clocked out. T-1 daily refresh is safe.",
+      "timezone": "All times are in the shop's local timezone (no TZ stored in the file). For Palmetto Austin this is America/Chicago. Unlike Square (which exports in account TZ regardless of shop), ADP times match the punch device's TZ which IS the shop TZ.",
+      "row_count_calibration": "Calibration sample (5 pay periods, 14 employees, Mar 9 - May 16 2026): 606 data rows. Roughly 10-15 punches per employee per pay period."
+    }
+  },
+  "employee_roster_calibration_sample": {
+    "_doc": "Snapshot of roster on 2026-05-16. NOT a stable list -- people join/leave. Used only to spot-check the parser; production code should NOT hardcode names.",
+    "employees": [
+      "Krause Lindsay",
+      "Pascone Kayah A",
+      "Garcia Jacob",
+      "Johnson Dolce",
+      "Saldana Daniel",
+      "Alvarez Sebastian",
+      "Browning Skyler",
+      "Guerrero Amy",
+      "Majdinasab Tina",
+      "Johnson Dolce J",
+      "Steele Isabel",
+      "Urrutia Emely",
+      "Flores Juan",
+      "Latham Aubree N"
+    ],
+    "known_aliases": {
+      "_doc": "Some employees appear under multiple name spellings as ADP records were edited mid-period. The parser should normalize via this map. SOURCE OF TRUTH for production should be agents/bhaga/knowledge-base/store-profiles/austin.json (employee_aliases section).",
+      "Johnson Dolce J": "Johnson Dolce"
+    },
+    "excluded_from_tip_pool_and_labor_pct": ["Krause Lindsay"]
+  },
+  "calibration_session_notes": [
+    "2026-05-16 11:43 ET: Live navigation, Cursor AI driving user-playwright. ADP recognized prior session cookies, asked only for password (Keychain-resolved).",
+    "2026-05-16 11:44 ET: User redirected me from Time module to Reports > Time reports > Timecard. Critical -- the Time > Timecards modal is the WRONG entry point.",
+    "2026-05-16 11:46 ET: Selected 5 pay periods (2026-03-09 to 2026-03-22 through 2026-05-04 to 2026-05-17) covering the desired Mar 22 -> May 15 window plus over-coverage at both ends.",
+    "2026-05-16 11:46 ET: Found Export To Excel button via DOM query (was missed in initial role-based snapshot because it's inside a custom element SDF-BUTTON). Clicked, downloaded 100KB xlsx in 1 second.",
+    "2026-05-16 11:47 ET: Parsed Details sheet: 606 rows = 605 punches, 14 employees, date range 2026-03-09 to 2026-05-16, ZERO open shifts (open punches excluded from export)."
+  ]
+}

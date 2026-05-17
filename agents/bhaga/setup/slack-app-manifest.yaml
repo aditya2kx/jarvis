@@ -1,0 +1,40 @@
+display_information:
+  name: BHAGA
+  description: Tip allocation & payroll prep agent — fairly apportions tips by hours worked
+  background_color: "#7B1FA2"
+  long_description: "BHAGA (भग) is the Jarvis agent for tip pool fair division and payroll prep. Named after the Vedic Aditya whose name derives from the Sanskrit root *bhaj* (to apportion, divide, share). BHAGA pulls daily card tips from Square, daily clock-in/out hours per employee from ADP RUN (Playwright — no API for RUN), computes pool-by-day fair allocation, and writes a Google Sheet that doubles as the working tip ledger and produces a paste-ready block for ADP Time Sheet Import."
+features:
+  bot_user:
+    display_name: BHAGA
+    always_online: true
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - channels:read
+      - chat:write
+      - chat:write.customize
+      - im:history
+      - im:read
+      - im:write
+      - users:read
+      - users:read.email
+      - groups:history
+      - groups:read
+      - mpim:history
+      - mpim:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.im
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

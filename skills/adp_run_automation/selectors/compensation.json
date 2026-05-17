@@ -1,0 +1,177 @@
+{
+  "_doc": "Calibrated selectors for skills/adp_run_automation/compensation_backend.py against ADP RUN's Reports > My saved custom reports > 'Earnings and Hours V1' report. Produces an .xlsx with one row per paycheck-earning-line, from which we infer current wage rate per employee.",
+  "last_verified": "2026-05-16",
+  "verified_by": "Cursor AI agent driving user-playwright MCP, fresh from-scratch flow against Palmetto Superfoods account.",
+  "discovery_path": [
+    "Originally planned to scrape Employees > Compensation (per-employee detail page). Would have required iterating ~12-14 employees x 1 page each.",
+    "User redirected: Reports > scroll to 'My saved custom reports' > 'Earnings and Hours V1' custom report.",
+    "The custom report opens the 'Custom report builder' modal: date range picker, employment-status filter, employees filter (defaults to All), report name/description.",
+    "Setting Custom date range + clicking 'Preview report' renders a paginated grid (subset only). To get ALL rows we click 'Download' > 'Excel (.xlsx)'. ADP then queues generation (~3-10s) and shows a 'Your report is ready to download' dialog with a 'Download report' button.",
+    "Generated reports are also archived for 30 days under Reports > Generated custom reports (useful as a fallback if the daily generation fails)."
+  ],
+  "report_portability_caveat": [
+    "'Earnings and Hours V1' is a SAVED CUSTOM REPORT in the Palmetto account, not a system standard report. Other stores onboarding to BHAGA must create the equivalent before this backend will work.",
+    "Custom-report column composition (used by parser): Employee Name, Payroll Check Date, Period Start Date, Period End Date, Payroll Earning Hours, Payroll Hourly Earning Rate, Payroll Earning Amount, Payroll Earning Description.",
+    "Creation flow (manual, one-time per store): Reports > '+ Create custom report' (TBD calibration). Until that flow is documented, treat the report as a per-store prerequisite captured in the store profile."
+  ],
+  "page_urls": {
+    "login": "https://runpayroll.adp.com",
+    "post_login_pattern": "https://runpayrollmain.adp.com/@{tenant_uuid}/v2/",
+    "main_dashboard": "https://runpayrollmain.adp.com/@{tenant_uuid}/v2/"
+  },
+  "login": {
+    "notes": "Same flow as Timecard report -- see selectors/timecards.json#login. Reuses adp_{store}_login Keychain credential.",
+    "credential_handle": "adp_palmetto_login"
+  },
+  "navigation": {
+    "via_my_saved_custom_reports": [
+      "Click top-nav button 'Reports' (data-test-id='Reports-btn').",
+      "Reports page renders categories. Scroll down to 'My saved custom reports' section.",
+      "Click the row/link labeled 'Earnings and Hours V1' (or whatever the store's saved report is called -- read from store profile key `adp_wage_rate_report_name`).",
+      "Opens the 'Custom report builder' dialog with prior filters pre-populated (likely a date range from the last run -- always overwrite explicitly)."
+    ]
+  },
+  "custom_report_builder_modal": {
+    "modal_dialog_indicator": "dialog with banner heading 'Custom report builder', subheading '{Company Name}'",
+    "no_iframe": "Unlike the Timecard modal, the Custom report builder runs in the main page DOM. No iframe traversal required.",
+    "filters": {
+      "date_range_preset_combobox": {
+        "combobox_aria_pattern": "Date range {Custom date range|This week|Last week|...}",
+        "required_value": "Custom date range",
+        "notes": "When 'Custom date range' is selected, the From/To textboxes appear below. ADP enforces 'Can be a max of 12 months' on the range."
+      },
+      "from_date_textbox": {
+        "playwright_locator": "getByRole('textbox', { name: 'From *' })",
+        "format": "MM/DD/YYYY (e.g. 03/22/2026)",
+        "notes": "Type-and-blur works (fill() sets value then implicit change event). The adjacent 'Choose a date.' button opens a calendar widget that's harder to drive."
+      },
+      "to_date_textbox": {
+        "playwright_locator": "getByRole('textbox', { name: 'To *' })",
+        "format": "MM/DD/YYYY (e.g. 05/15/2026)"
+      },
+      "employment_status_combobox": {
+        "combobox_aria_pattern": "Employment status {Active|Inactive|All}",
+        "default": "Active",
+        "notes": "Leave at Active for daily refresh. If you ever need historical wage data for terminated employees, switch to 'All'."
+      },
+      "people_in_report_radio": {
+        "radiogroup_name": "People in this report",
+        "options": ["All", "Let me select"],
+        "default": "All",
+        "notes": "Always 'All' for BHAGA -- we want every employee's current rate."
+      }
+    },
+    "preview_report_button": {
+      "playwright_locator": "[data-test-id='view-custom-report']",
+      "aria_name": "Preview report",
+      "notes": "Renders a TRUNCATED preview grid in the modal (subset of rows only). Does NOT replace the Download flow."
+    },
+    "after_preview_renders": {
+      "download_button": {
+        "playwright_locator": "getByRole('button', { name: 'Download' })",
+        "notes": "Dropdown trigger. Expanding it reveals a 2-item menu: 'Excel (.xlsx)' and 'PDF (.pdf)'. Use Excel."
+      },
+      "download_menu_excel_option": {
+        "menuitem_aria": "Excel (.xlsx)",
+        "playwright_locator": "getByRole('menuitem', { name: 'Excel (.xlsx)' })",
+        "notes": "Clicking does NOT trigger an immediate download. ADP queues report generation and opens a 'Your report is ready to download' confirmation dialog when generation finishes (~3-10s)."
+      },
+      "download_menu_pdf_option": {
+        "menuitem_aria": "PDF (.pdf)",
+        "playwright_locator": "getByRole('menuitem', { name: 'PDF (.pdf)' })",
+        "notes": "Do NOT use -- parser only handles xlsx."
+      }
+    },
+    "ready_to_download_dialog": {
+      "dialog_aria_name": "Your report is ready to download",
+      "download_report_button": {
+        "playwright_locator": "[data-test-id='download-report']",
+        "aria_name": "Download report",
+        "notes": "Triggers the actual file save. File arrives at extracted/downloads/Earnings-and-Hours-V1.xlsx."
+      },
+      "download_later_button": {
+        "aria_name": "Download later",
+        "notes": "Closes the dialog without downloading. The file remains queued in Reports > Generated custom reports for 30 days."
+      }
+    }
+  },
+  "xlsx_format": {
+    "filename_pattern": "Earnings and Hours V1.xlsx (or the saved-report name verbatim)",
+    "browser_mcp_renames_to": "Earnings-and-Hours-V1.xlsx (spaces replaced with -)",
+    "save_directory": "extracted/downloads/",
+    "sheets": ["Sheet"],
+    "metadata_rows": {
+      "row_count": 5,
+      "shape": "Rows 1-5 are metadata (Report title, Company, IID, DateRange, Generated timestamp). Row 6 is the column header. Rows 7+ are data.",
+      "rows": [
+        "Row 1: Report title (e.g. 'Earnings and Hours V1')",
+        "Row 2: 'Company: {LEGAL ENTITY NAME}' (e.g. AK JUICY BOWLS LLC for Palmetto)",
+        "Row 3: 'IID: {ADP_INSTANCE_ID}'",
+        "Row 4: 'DateRange : M/D/YYYY to M/D/YYYY' (note the space-colon-space before the range)",
+        "Row 5: 'Report Generated On: MM/DD/YYYY HH:MM'"
+      ]
+    },
+    "header_columns_in_order": [
+      "Employee Name",
+      "Payroll Check Date",
+      "Period Start Date",
+      "Period End Date",
+      "Payroll Earning Hours",
+      "Payroll Hourly Earning Rate",
+      "Payroll Earning Amount",
+      "Payroll Earning Description"
+    ],
+    "employee_name_sparseness": "Employee Name is populated ONLY on the first row of each employee's block. Subsequent rows for the same employee leave it blank. Parser MUST forward-fill.",
+    "date_format": "openpyxl returns these as datetime.datetime at midnight (sheet stores them as Excel date serials).",
+    "hours_format": "DECIMAL hours (e.g. 30.18 means 30 hours 11 minutes). Distinct from the Timecard XLSX which uses 'H:MM' notation.",
+    "rate_format": "Decimal dollars per hour (e.g. 15.25). Cell is formatted '$15.2500' in the UI but openpyxl returns the raw 15.25.",
+    "amount_format": "Decimal dollars. Negative values appear on reversal/void rows.",
+    "description_taxonomy_calibrated_2026_05_16": [
+      "Regular -- hourly work (has hours + rate)",
+      "Overtime -- OT hours (has hours + rate)",
+      "Bonus -- one-time flat amount (no hours)",
+      "Credit Card Tips Owed -- tips paid through paycheck (amount only)",
+      "Cash tips -- TAX TRACKING ONLY. Always appears as a +$X and -$X pair on the same check that nets to $0. The actual cash was paid out at the shop; this is for IRS reporting only.",
+      "Misc reimbursement non-taxable -- the actual disbursement equivalent of the cash tips on that paycheck (paid out as a non-taxable reimbursement so the employee gets the dollars without double-taxation)."
+    ],
+    "reversal_pattern": "Voided/reissued checks emit a triplet on the same Check Date: ($X) + (-$X) + ($X) for the same Description (often 'Regular'). The parser preserves all three rows; downstream callers can net them out by summing per (employee, check_date, description) if needed. For wage-rate inference this doesn't matter -- we filter to positive-hours Regular rows."
+  },
+  "wage_rate_inference_rules": {
+    "_doc": "How compensation_backend.py converts the per-line earnings table into one wage rate per employee.",
+    "step1_filter_to_hourly_rows": "Keep rows where Description in {'Regular', 'Overtime'} AND Hours > 0 AND Hourly Earning Rate > 0.",
+    "step2_separate_overtime_rate": "Overtime rate is typically 1.5x Regular. We track BOTH but the canonical wage_rate_dollars uses Regular only.",
+    "step3_pick_most_recent": "Sort by Payroll Check Date desc. Use the rate from the most recent Regular row.",
+    "step4_flag_multi_rate": "If multiple DISTINCT Regular rates seen for the same employee in the window, set multi_rate=True so the orchestrator can alert. (Calibrated 2026-05-16 on Palmetto: zero multi-rate cases across all 12 employees.)",
+    "step5_salaried_handling": "If an employee has ZERO Regular rows with hours>0 across the entire 2-month window AND has non-zero amounts under other Descriptions, mark is_salaried=True with wage_rate_dollars=null. The orchestrator/labor-cost calc must exclude these employees from labor% (and they're typically also in store_profile.excluded_from_tip_pool_and_labor_pct).",
+    "step6_palmetto_specifics": "Lindsay Krause IS paid hourly at $25/hr in this account (not salaried), so is_salaried=False for her too. Exclusion from labor% is by NAME via the store profile's excluded_from_tip_pool_and_labor_pct list, NOT by the salaried flag."
+  },
+  "employee_roster_calibration_sample": {
+    "_doc": "Snapshot of roster on 2026-05-16. NOT a stable list -- use as parser sanity check only. Production should NOT hardcode names.",
+    "employees_with_rates": {
+      "Alvarez, Sebastian": 15.25,
+      "Browning, Skyler": 15.25,
+      "Garcia, Jacob": 15.25,
+      "Guerrero, Amy": 15.25,
+      "Johnson, Dolce": 15.25,
+      "Krause, Lindsay": 25.00,
+      "Latham, Aubree N": 15.25,
+      "Majdinasab, Tina": 15.25,
+      "Pascone, Kayah A": 15.25,
+      "Saldana, Daniel": 15.25,
+      "Steele, Isabel": 15.25,
+      "Urrutia, Emely": 15.25
+    },
+    "notes": [
+      "Earnings report uses 'LastName, FirstName' format (comma-separated) whereas the Timecard report uses 'LastName FirstName' (space-separated). The two backends produce DIFFERENT raw_name spellings for the same person.",
+      "When joining wages with shift hours in the model sheet, normalize via skills/adp_run_automation/name_utils.canonicalize_adp_name() (TODO: create this helper, or apply the same employee_aliases map to both forms).",
+      "Active roster is 12 here vs 14 in the Timecard export. The Timecard export over-covers (selected pay periods reach back to Mar 9 which is before some employees' first paycheck in the wages window). Don't assume row count parity."
+    ]
+  },
+  "calibration_session_notes": [
+    "2026-05-16 12:30 ET: Live navigation, Cursor AI driving user-playwright. ADP recognized prior session cookies (Keychain-resolved password).",
+    "2026-05-16 12:32 ET: User intervened with better navigation -- went straight to Reports > My saved custom reports > Earnings and Hours V1 (we were about to start clicking through the Employees module instead).",
+    "2026-05-16 12:33 ET: Set date range 03/22/2026 to 05/15/2026 (BHAGA M1 backfill window). Clicked Preview report; saw the 8-column report shape and confirmed it has everything we need.",
+    "2026-05-16 12:35 ET: Downloaded Excel via Download > Excel (.xlsx) > confirmation dialog > Download report. File: Earnings-and-Hours-V1.xlsx, 10516 bytes, 122 rows (5 metadata + 1 header + 116 data).",
+    "2026-05-16 12:36 ET: Parsed XLSX with openpyxl. 12 employees, descriptions = {Regular: 57, CC Tips Owed: 25, Cash tips: 16, Misc reimbursement: 12, Overtime: 5, Bonus: 1}. All 11 line-staff @ $15.25/hr; Lindsay Krause @ $25/hr (hourly, not salaried)."
+  ]
+}

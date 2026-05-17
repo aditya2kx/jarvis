@@ -9,15 +9,31 @@ Jarvis/
 ├── .cursor/rules/       Cursor rules (coordinator + agent-specific)
 ├── core/                Shared infrastructure (config, auth)
 ├── skills/              Modular capabilities shared across agents
-│   ├── slack/           Send messages, receive replies, OTP flows
-│   ├── google_drive/    Upload, list, delete files
-│   ├── google_sheets/   Create and populate spreadsheets
-│   ├── browser/         Playwright-based portal automation
-│   └── pdf/             Download and extract text from PDFs
+│   ├── slack/                   Send messages, receive replies, OTP flows
+│   ├── google_drive/            Upload, list, delete files
+│   ├── google_sheets/           Create and populate spreadsheets
+│   ├── browser/                 Playwright-based portal automation
+│   ├── credentials/             macOS Keychain registry
+│   ├── gmail/                   Read, search, send Gmail messages
+│   ├── pdf/                     Download and extract text from PDFs
+│   ├── square_tips/             Daily tip totals from Square Payments API (BHAGA)
+│   ├── adp_run_automation/      Per-employee daily hours from ADP RUN (BHAGA)
+│   ├── tip_pool_allocation/     Pure-function pool-by-day fair share math (BHAGA)
+│   └── tip_ledger_writer/       Tip ledger + ADP paste-block writer (BHAGA)
 ├── agents/              Domain-specific agents
-│   └── chitra/          Tax preparation agent
-│       ├── knowledge-base/  Schemas, examples, portal playbooks
-│       ├── scripts/         Agent-specific scripts
+│   ├── chitra/          Tax preparation agent
+│   │   ├── knowledge-base/  Schemas, examples, portal playbooks
+│   │   ├── scripts/         Agent-specific scripts
+│   │   └── README.md
+│   ├── chanakya/        Product research & strategy agent
+│   │   └── README.md
+│   ├── akshaya/         Inventory forecasting & ordering agent
+│   │   ├── knowledge-base/  Vendor data, store profiles, schemas
+│   │   ├── scripts/         Forecasting and extraction scripts
+│   │   └── README.md
+│   └── bhaga/           Tip allocation & payroll prep agent
+│       ├── knowledge-base/  Schemas, store profiles, ADP selectors, learnings
+│       ├── scripts/         Tip pull + allocation + sheet write orchestration
 │       └── README.md
 ├── config.template.yaml Configuration template (tracked)
 ├── config.yaml          Your config (gitignored)
@@ -39,6 +55,22 @@ Jarvis/
 
 Automates US federal/state tax document collection, organization, and CPA communication. See [agents/chitra/README.md](agents/chitra/README.md).
 
+### CHANAKYA (Product Research & Strategy)
+
+Researches markets, gathers operational data, builds financial models, and synthesizes strategic proposals. See [agents/chanakya/README.md](agents/chanakya/README.md).
+
+### AKSHAYA (Inventory Forecasting & Ordering)
+
+Pulls inventory data from ClickUp, order/recipe data from Square, cross-references with HQ supplies, forecasts demand, and outputs a living Google Sheet with reorder quantities and timing. See [agents/akshaya/README.md](agents/akshaya/README.md).
+
+### BHAGA (Tip Allocation & Payroll Prep)
+
+Pulls daily card tips from Square, daily clock-in/out hours per employee from ADP RUN (Playwright — no API for RUN), computes pool-by-day fair allocation, and writes a Google Sheet that doubles as the working ledger and produces a paste-ready block for ADP Time Sheet Import. See [agents/bhaga/README.md](agents/bhaga/README.md).
+
+### Agent Naming Convention
+
+Agents are named after figures from Sanskrit/Hindu mythology and Indian history whose role matches the agent's purpose (Chitragupta = divine record-keeper → tax agent; Chanakya = economist-strategist → research agent).
+
 ## Skills
 
 | Skill | What it does | Setup |
@@ -47,7 +79,13 @@ Automates US federal/state tax document collection, organization, and CPA commun
 | **Google Drive** | File upload, listing, deletion | Configured via `config.yaml` auth section |
 | **Google Sheets** | Spreadsheet creation and population | Same auth as Drive |
 | **Browser** | Playwright portal automation | Requires Playwright MCP in `.cursor/mcp.json` |
+| **Credentials** | macOS Keychain registry for portal/API secrets | [skills/credentials/](skills/credentials/) |
+| **Gmail** | Read, search, send Gmail messages | OAuth (same flow as Drive) |
 | **PDF** | Download from Drive + text extraction | Requires `pdfplumber` (`pip install pdfplumber`) |
+| **Square Tips** | Daily tip totals from Square Payments API | [skills/square_tips/README.md](skills/square_tips/README.md) — requires Square access token in Keychain |
+| **ADP RUN Automation** | Per-employee daily hours from ADP RUN Time Tracker | [skills/adp_run_automation/README.md](skills/adp_run_automation/README.md) — Playwright + ADP login in Keychain |
+| **Tip Pool Allocation** | Pure-function pool-by-day fair share math | [skills/tip_pool_allocation/README.md](skills/tip_pool_allocation/README.md) |
+| **Tip Ledger Writer** | Tip ledger + ADP paste-block writer for Google Sheets | [skills/tip_ledger_writer/README.md](skills/tip_ledger_writer/README.md) |
 
 ## Quick Start
 

@@ -1,0 +1,1934 @@
+[
+  {
+    "range": "Sheet1!A1",
+    "value": "AKSHAYA — HQ Base Inventory Forecast"
+  },
+  {
+    "range": "Sheet1!A2",
+    "value": "Data through 2026-05-11  |  All values below are formula-driven from CONFIG"
+  },
+  {
+    "range": "Sheet1!A4",
+    "value": "CONFIG (edit B6/B7/B12; entire forecast recomputes)"
+  },
+  {
+    "range": "Sheet1!B4",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C4",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D4",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E4",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F4",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G4",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H4",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I4",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A5",
+    "value": "Trailing Growth Rate (% per week)"
+  },
+  {
+    "range": "Sheet1!B5",
+    "value": "=IF($B$7<=1, 0, IFERROR(ROUND((POWER(INDEX($D$15:$D$21, COUNT($D$15:$D$21)) / INDEX($D$15:$D$21, COUNT($D$15:$D$21) - $B$7 + 1), 1/($B$7-1)) - 1) * 100, 1), 0))"
+  },
+  {
+    "range": "Sheet1!C5",
+    "value": "← Derived from B7 + the Weekly table (geometric mean). Edit B7 to retune."
+  },
+  {
+    "range": "Sheet1!D5",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E5",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F5",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G5",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H5",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I5",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A6",
+    "value": "Total Tub Capacity (units)"
+  },
+  {
+    "range": "Sheet1!B6",
+    "value": "130"
+  },
+  {
+    "range": "Sheet1!C6",
+    "value": "← Absolute total tubs you can fit. v1.9 default bumped 120→130 when Blade was dropped (one fewer item to share capacity)."
+  },
+  {
+    "range": "Sheet1!D6",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E6",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F6",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G6",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H6",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I6",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A7",
+    "value": "Trailing Growth Window (weeks)"
+  },
+  {
+    "range": "Sheet1!B7",
+    "value": "3"
+  },
+  {
+    "range": "Sheet1!C7",
+    "value": "← How many recent full weeks to use for B5. Default 3. Integer ≥ 2."
+  },
+  {
+    "range": "Sheet1!D7",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E7",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F7",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G7",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H7",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I7",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A8",
+    "value": "Initial Inventory Anchor Date"
+  },
+  {
+    "range": "Sheet1!B8",
+    "value": "2026-04-19"
+  },
+  {
+    "range": "Sheet1!C8",
+    "value": "← Closing report used for B28:B36 — Sunday before the trend window starts."
+  },
+  {
+    "range": "Sheet1!D8",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E8",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F8",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G8",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H8",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I8",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A9",
+    "value": "Inventory Snapshot Date"
+  },
+  {
+    "range": "Sheet1!B9",
+    "value": "2026-05-11"
+  },
+  {
+    "range": "Sheet1!C9",
+    "value": "← Latest closing-report date; \"as-of\" for Current Stock (C col)."
+  },
+  {
+    "range": "Sheet1!D9",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E9",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F9",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G9",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H9",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I9",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A10",
+    "value": "Current Daily Orders (info)"
+  },
+  {
+    "range": "Sheet1!B10",
+    "value": "125.0"
+  },
+  {
+    "range": "Sheet1!C10",
+    "value": "← Latest full-week avg (Square through 2026-05-11)"
+  },
+  {
+    "range": "Sheet1!D10",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E10",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F10",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G10",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H10",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I10",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A11",
+    "value": "First-Report Date (info)"
+  },
+  {
+    "range": "Sheet1!B11",
+    "value": "2026-03-25"
+  },
+  {
+    "range": "Sheet1!C11",
+    "value": "← Earliest ClickUp closing report in the data set (reference only)."
+  },
+  {
+    "range": "Sheet1!D11",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E11",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F11",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G11",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H11",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I11",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A12",
+    "value": "Min Order per Free Item"
+  },
+  {
+    "range": "Sheet1!B12",
+    "value": "5"
+  },
+  {
+    "range": "Sheet1!C12",
+    "value": "← Min order qty per item that's NOT stuck (v1.8). Stuck items (C > D×T_init) skip this floor; let them drain."
+  },
+  {
+    "range": "Sheet1!D12",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E12",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F12",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G12",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H12",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I12",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A13",
+    "value": "WEEKLY ORDER VOLUME (from Square)"
+  },
+  {
+    "range": "Sheet1!B13",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C13",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D13",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E13",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F13",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G13",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H13",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I13",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A14",
+    "value": "Week Starting"
+  },
+  {
+    "range": "Sheet1!B14",
+    "value": "Days"
+  },
+  {
+    "range": "Sheet1!C14",
+    "value": "Total Orders"
+  },
+  {
+    "range": "Sheet1!D14",
+    "value": "Daily Avg"
+  },
+  {
+    "range": "Sheet1!E14",
+    "value": "WoW Growth"
+  },
+  {
+    "range": "Sheet1!F14",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G14",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H14",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I14",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A15",
+    "value": "2026-03-23"
+  },
+  {
+    "range": "Sheet1!B15",
+    "value": "7"
+  },
+  {
+    "range": "Sheet1!C15",
+    "value": "307"
+  },
+  {
+    "range": "Sheet1!D15",
+    "value": "43.9"
+  },
+  {
+    "range": "Sheet1!E15",
+    "value": "N/A"
+  },
+  {
+    "range": "Sheet1!F15",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G15",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H15",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I15",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A16",
+    "value": "2026-03-30"
+  },
+  {
+    "range": "Sheet1!B16",
+    "value": "7"
+  },
+  {
+    "range": "Sheet1!C16",
+    "value": "226"
+  },
+  {
+    "range": "Sheet1!D16",
+    "value": "32.3"
+  },
+  {
+    "range": "Sheet1!E16",
+    "value": "-26.4%"
+  },
+  {
+    "range": "Sheet1!F16",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G16",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H16",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I16",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A17",
+    "value": "2026-04-06"
+  },
+  {
+    "range": "Sheet1!B17",
+    "value": "7"
+  },
+  {
+    "range": "Sheet1!C17",
+    "value": "344"
+  },
+  {
+    "range": "Sheet1!D17",
+    "value": "49.1"
+  },
+  {
+    "range": "Sheet1!E17",
+    "value": "+52.2%"
+  },
+  {
+    "range": "Sheet1!F17",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G17",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H17",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I17",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A18",
+    "value": "2026-04-13"
+  },
+  {
+    "range": "Sheet1!B18",
+    "value": "7"
+  },
+  {
+    "range": "Sheet1!C18",
+    "value": "475"
+  },
+  {
+    "range": "Sheet1!D18",
+    "value": "67.9"
+  },
+  {
+    "range": "Sheet1!E18",
+    "value": "+38.1%"
+  },
+  {
+    "range": "Sheet1!F18",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G18",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H18",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I18",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A19",
+    "value": "2026-04-20"
+  },
+  {
+    "range": "Sheet1!B19",
+    "value": "7"
+  },
+  {
+    "range": "Sheet1!C19",
+    "value": "532"
+  },
+  {
+    "range": "Sheet1!D19",
+    "value": "76.0"
+  },
+  {
+    "range": "Sheet1!E19",
+    "value": "+12.0%"
+  },
+  {
+    "range": "Sheet1!F19",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G19",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H19",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I19",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A20",
+    "value": "2026-04-27"
+  },
+  {
+    "range": "Sheet1!B20",
+    "value": "7"
+  },
+  {
+    "range": "Sheet1!C20",
+    "value": "529"
+  },
+  {
+    "range": "Sheet1!D20",
+    "value": "75.6"
+  },
+  {
+    "range": "Sheet1!E20",
+    "value": "-0.6%"
+  },
+  {
+    "range": "Sheet1!F20",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G20",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H20",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I20",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A21",
+    "value": "2026-05-04"
+  },
+  {
+    "range": "Sheet1!B21",
+    "value": "7"
+  },
+  {
+    "range": "Sheet1!C21",
+    "value": "875"
+  },
+  {
+    "range": "Sheet1!D21",
+    "value": "125.0"
+  },
+  {
+    "range": "Sheet1!E21",
+    "value": "+65.4%"
+  },
+  {
+    "range": "Sheet1!F21",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G21",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H21",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I21",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A22",
+    "value": "Square data through 2026-05-10 (last full week)  |  ClickUp closing reports through 2026-05-11"
+  },
+  {
+    "range": "Sheet1!B22",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C22",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D22",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E22",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F22",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G22",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H22",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I22",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!B23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A23",
+    "value": "HQ BASE FORECAST — Equalize-DoS allocation (capacity = B6, target T = ($B$6 − stuck) / SUM(D_free), B12 = min order per free item)"
+  },
+  {
+    "range": "Sheet1!B23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I23",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A24",
+    "value": "Tub Capacity (B6): 130 tubs  |  Post-Order (F36): 130.5 tubs (⚠ OVER CAPACITY (130.5 > 130 by 0.5 tubs))  |  Current Total: 74.5 tubs  |  Anchor-Date Initial: 77.5 (info)"
+  },
+  {
+    "range": "Sheet1!A25",
+    "value": "Equalize-DoS Target: 36.0d  |  In-band (±4d): 5 of 8  |  Outliers: Açaí (50d), Ube (0d), Pog (69d)  |  Order Total: 56  |  Trailing Growth: +28.2%/wk"
+  },
+  {
+    "range": "Sheet1!B24",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!B25",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C24",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C25",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D24",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D25",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E24",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E25",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F24",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F25",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G24",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G25",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H24",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H25",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I24",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I25",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A26",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!B26",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C26",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D26",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E26",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F26",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G26",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H26",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I26",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A27",
+    "value": "Item"
+  },
+  {
+    "range": "Sheet1!B27",
+    "value": "Initial Inventory"
+  },
+  {
+    "range": "Sheet1!C27",
+    "value": "Current Stock"
+  },
+  {
+    "range": "Sheet1!D27",
+    "value": "Avg Use/Day"
+  },
+  {
+    "range": "Sheet1!E27",
+    "value": "Order Qty"
+  },
+  {
+    "range": "Sheet1!F27",
+    "value": "Post-Order Stock"
+  },
+  {
+    "range": "Sheet1!G27",
+    "value": "Δ Adjust"
+  },
+  {
+    "range": "Sheet1!H27",
+    "value": "Days of Supply"
+  },
+  {
+    "range": "Sheet1!I27",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A28",
+    "value": "Açaí"
+  },
+  {
+    "range": "Sheet1!B28",
+    "value": "22.4"
+  },
+  {
+    "range": "Sheet1!C28",
+    "value": "32.5"
+  },
+  {
+    "range": "Sheet1!D28",
+    "value": "0.656"
+  },
+  {
+    "range": "Sheet1!E28",
+    "value": "=IF($C28 > $D28 * $K$28, MAX(0, ROUND($G28, 0)), MAX($B$12, MAX(0, ROUND($D28 * $K$31 - $C28 + $G28, 0))))"
+  },
+  {
+    "range": "Sheet1!F28",
+    "value": "=ROUND(C28+E28, 2)"
+  },
+  {
+    "range": "Sheet1!G28",
+    "value": "0"
+  },
+  {
+    "range": "Sheet1!H28",
+    "value": "=IF(D28=0,\"—\",ARRAYFORMULA(LET(ws,$B$9-WEEKDAY($B$9,2)+1,dsnap,$B$9-ws,days,SEQUENCE(400,1,1,1),dabs,dsnap+days,wk,INT(dabs/7),gm,POWER(1+$B$5/100,wk),r,D28*gm,cum,SCAN(0,r,LAMBDA(a,b,a+b)),IFERROR(XMATCH(F28,cum,1),400))))"
+  },
+  {
+    "range": "Sheet1!I28",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A29",
+    "value": "Coconut"
+  },
+  {
+    "range": "Sheet1!B29",
+    "value": "9.4"
+  },
+  {
+    "range": "Sheet1!C29",
+    "value": "5.7"
+  },
+  {
+    "range": "Sheet1!D29",
+    "value": "0.646"
+  },
+  {
+    "range": "Sheet1!E29",
+    "value": "=IF($C29 > $D29 * $K$28, MAX(0, ROUND($G29, 0)), MAX($B$12, MAX(0, ROUND($D29 * $K$31 - $C29 + $G29, 0))))"
+  },
+  {
+    "range": "Sheet1!F29",
+    "value": "=ROUND(C29+E29, 2)"
+  },
+  {
+    "range": "Sheet1!G29",
+    "value": "0"
+  },
+  {
+    "range": "Sheet1!H29",
+    "value": "=IF(D29=0,\"—\",ARRAYFORMULA(LET(ws,$B$9-WEEKDAY($B$9,2)+1,dsnap,$B$9-ws,days,SEQUENCE(400,1,1,1),dabs,dsnap+days,wk,INT(dabs/7),gm,POWER(1+$B$5/100,wk),r,D29*gm,cum,SCAN(0,r,LAMBDA(a,b,a+b)),IFERROR(XMATCH(F29,cum,1),400))))"
+  },
+  {
+    "range": "Sheet1!I29",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A30",
+    "value": "Tropical"
+  },
+  {
+    "range": "Sheet1!B30",
+    "value": "11.8"
+  },
+  {
+    "range": "Sheet1!C30",
+    "value": "3.85"
+  },
+  {
+    "range": "Sheet1!D30",
+    "value": "0.43"
+  },
+  {
+    "range": "Sheet1!E30",
+    "value": "=IF($C30 > $D30 * $K$28, MAX(0, ROUND($G30, 0)), MAX($B$12, MAX(0, ROUND($D30 * $K$31 - $C30 + $G30, 0))))"
+  },
+  {
+    "range": "Sheet1!F30",
+    "value": "=ROUND(C30+E30, 2)"
+  },
+  {
+    "range": "Sheet1!G30",
+    "value": "0"
+  },
+  {
+    "range": "Sheet1!H30",
+    "value": "=IF(D30=0,\"—\",ARRAYFORMULA(LET(ws,$B$9-WEEKDAY($B$9,2)+1,dsnap,$B$9-ws,days,SEQUENCE(400,1,1,1),dabs,dsnap+days,wk,INT(dabs/7),gm,POWER(1+$B$5/100,wk),r,D30*gm,cum,SCAN(0,r,LAMBDA(a,b,a+b)),IFERROR(XMATCH(F30,cum,1),400))))"
+  },
+  {
+    "range": "Sheet1!I30",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A31",
+    "value": "Mango"
+  },
+  {
+    "range": "Sheet1!B31",
+    "value": "12.55"
+  },
+  {
+    "range": "Sheet1!C31",
+    "value": "13.8"
+  },
+  {
+    "range": "Sheet1!D31",
+    "value": "0.556"
+  },
+  {
+    "range": "Sheet1!E31",
+    "value": "=IF($C31 > $D31 * $K$28, MAX(0, ROUND($G31, 0)), MAX($B$12, MAX(0, ROUND($D31 * $K$31 - $C31 + $G31, 0))))"
+  },
+  {
+    "range": "Sheet1!F31",
+    "value": "=ROUND(C31+E31, 2)"
+  },
+  {
+    "range": "Sheet1!G31",
+    "value": "0"
+  },
+  {
+    "range": "Sheet1!H31",
+    "value": "=IF(D31=0,\"—\",ARRAYFORMULA(LET(ws,$B$9-WEEKDAY($B$9,2)+1,dsnap,$B$9-ws,days,SEQUENCE(400,1,1,1),dabs,dsnap+days,wk,INT(dabs/7),gm,POWER(1+$B$5/100,wk),r,D31*gm,cum,SCAN(0,r,LAMBDA(a,b,a+b)),IFERROR(XMATCH(F31,cum,1),400))))"
+  },
+  {
+    "range": "Sheet1!I31",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A32",
+    "value": "Pitaya"
+  },
+  {
+    "range": "Sheet1!B32",
+    "value": "10.2"
+  },
+  {
+    "range": "Sheet1!C32",
+    "value": "7.35"
+  },
+  {
+    "range": "Sheet1!D32",
+    "value": "0.618"
+  },
+  {
+    "range": "Sheet1!E32",
+    "value": "=IF($C32 > $D32 * $K$28, MAX(0, ROUND($G32, 0)), MAX($B$12, MAX(0, ROUND($D32 * $K$31 - $C32 + $G32, 0))))"
+  },
+  {
+    "range": "Sheet1!F32",
+    "value": "=ROUND(C32+E32, 2)"
+  },
+  {
+    "range": "Sheet1!G32",
+    "value": "0"
+  },
+  {
+    "range": "Sheet1!H32",
+    "value": "=IF(D32=0,\"—\",ARRAYFORMULA(LET(ws,$B$9-WEEKDAY($B$9,2)+1,dsnap,$B$9-ws,days,SEQUENCE(400,1,1,1),dabs,dsnap+days,wk,INT(dabs/7),gm,POWER(1+$B$5/100,wk),r,D32*gm,cum,SCAN(0,r,LAMBDA(a,b,a+b)),IFERROR(XMATCH(F32,cum,1),400))))"
+  },
+  {
+    "range": "Sheet1!I32",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A33",
+    "value": "Matcha"
+  },
+  {
+    "range": "Sheet1!B33",
+    "value": "3.2"
+  },
+  {
+    "range": "Sheet1!C33",
+    "value": "0.95"
+  },
+  {
+    "range": "Sheet1!D33",
+    "value": "0.168"
+  },
+  {
+    "range": "Sheet1!E33",
+    "value": "=IF($C33 > $D33 * $K$28, MAX(0, ROUND($G33, 0)), MAX($B$12, MAX(0, ROUND($D33 * $K$31 - $C33 + $G33, 0))))"
+  },
+  {
+    "range": "Sheet1!F33",
+    "value": "=ROUND(C33+E33, 2)"
+  },
+  {
+    "range": "Sheet1!G33",
+    "value": "0"
+  },
+  {
+    "range": "Sheet1!H33",
+    "value": "=IF(D33=0,\"—\",ARRAYFORMULA(LET(ws,$B$9-WEEKDAY($B$9,2)+1,dsnap,$B$9-ws,days,SEQUENCE(400,1,1,1),dabs,dsnap+days,wk,INT(dabs/7),gm,POWER(1+$B$5/100,wk),r,D33*gm,cum,SCAN(0,r,LAMBDA(a,b,a+b)),IFERROR(XMATCH(F33,cum,1),400))))"
+  },
+  {
+    "range": "Sheet1!I33",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A34",
+    "value": "Ube"
+  },
+  {
+    "range": "Sheet1!B34",
+    "value": "4.0"
+  },
+  {
+    "range": "Sheet1!C34",
+    "value": "5.5"
+  },
+  {
+    "range": "Sheet1!D34",
+    "value": "0.0"
+  },
+  {
+    "range": "Sheet1!E34",
+    "value": "=IF($C34 > $D34 * $K$28, MAX(0, ROUND($G34, 0)), MAX($B$12, MAX(0, ROUND($D34 * $K$31 - $C34 + $G34, 0))))"
+  },
+  {
+    "range": "Sheet1!F34",
+    "value": "=ROUND(C34+E34, 2)"
+  },
+  {
+    "range": "Sheet1!G34",
+    "value": "0"
+  },
+  {
+    "range": "Sheet1!H34",
+    "value": "=IF(D34=0,\"—\",ARRAYFORMULA(LET(ws,$B$9-WEEKDAY($B$9,2)+1,dsnap,$B$9-ws,days,SEQUENCE(400,1,1,1),dabs,dsnap+days,wk,INT(dabs/7),gm,POWER(1+$B$5/100,wk),r,D34*gm,cum,SCAN(0,r,LAMBDA(a,b,a+b)),IFERROR(XMATCH(F34,cum,1),400))))"
+  },
+  {
+    "range": "Sheet1!I34",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A35",
+    "value": "Pog"
+  },
+  {
+    "range": "Sheet1!B35",
+    "value": "3.9"
+  },
+  {
+    "range": "Sheet1!C35",
+    "value": "4.9"
+  },
+  {
+    "range": "Sheet1!D35",
+    "value": "0.071"
+  },
+  {
+    "range": "Sheet1!E35",
+    "value": "=IF($C35 > $D35 * $K$28, MAX(0, ROUND($G35, 0)), MAX($B$12, MAX(0, ROUND($D35 * $K$31 - $C35 + $G35, 0))))"
+  },
+  {
+    "range": "Sheet1!F35",
+    "value": "=ROUND(C35+E35, 2)"
+  },
+  {
+    "range": "Sheet1!G35",
+    "value": "0"
+  },
+  {
+    "range": "Sheet1!H35",
+    "value": "=IF(D35=0,\"—\",ARRAYFORMULA(LET(ws,$B$9-WEEKDAY($B$9,2)+1,dsnap,$B$9-ws,days,SEQUENCE(400,1,1,1),dabs,dsnap+days,wk,INT(dabs/7),gm,POWER(1+$B$5/100,wk),r,D35*gm,cum,SCAN(0,r,LAMBDA(a,b,a+b)),IFERROR(XMATCH(F35,cum,1),400))))"
+  },
+  {
+    "range": "Sheet1!I35",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!J28",
+    "value": "T_init (days)"
+  },
+  {
+    "range": "Sheet1!K28",
+    "value": "=$B$6 / MAX(0.001, SUM($D$28:$D$35))"
+  },
+  {
+    "range": "Sheet1!J29",
+    "value": "SUM(C) of stuck items"
+  },
+  {
+    "range": "Sheet1!K29",
+    "value": "=SUMPRODUCT(($C$28:$C$35 > $D$28:$D$35 * $K$28) * $C$28:$C$35)"
+  },
+  {
+    "range": "Sheet1!J30",
+    "value": "SUM(D) of free items"
+  },
+  {
+    "range": "Sheet1!K30",
+    "value": "=SUMPRODUCT(($C$28:$C$35 <= $D$28:$D$35 * $K$28) * $D$28:$D$35)"
+  },
+  {
+    "range": "Sheet1!J31",
+    "value": "T_refined (equalize target, days)"
+  },
+  {
+    "range": "Sheet1!K31",
+    "value": "=IF($K$30 > 0, ($B$6 - $K$29) / $K$30, $K$28)"
+  },
+  {
+    "range": "Sheet1!A36",
+    "value": "TOTAL"
+  },
+  {
+    "range": "Sheet1!B36",
+    "value": "=ROUND(SUM($B$28:$B$35),1)"
+  },
+  {
+    "range": "Sheet1!C36",
+    "value": "=ROUND(SUM($C$28:$C$35),1)"
+  },
+  {
+    "range": "Sheet1!D36",
+    "value": "=ROUND(SUM($D$28:$D$35),2)"
+  },
+  {
+    "range": "Sheet1!E36",
+    "value": "=ROUND(SUM($E$28:$E$35),0)"
+  },
+  {
+    "range": "Sheet1!F36",
+    "value": "=ROUND(SUM($F$28:$F$35),1)"
+  },
+  {
+    "range": "Sheet1!G36",
+    "value": "=ROUND(SUM($G$28:$G$35),1)"
+  },
+  {
+    "range": "Sheet1!H36",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I36",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A37",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!B37",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C37",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D37",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E37",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F37",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G37",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H37",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I37",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!J37",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!K37",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A38",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!B38",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C38",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D38",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E38",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F38",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G38",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H38",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I38",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!J38",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!K38",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A39",
+    "value": "NOTES"
+  },
+  {
+    "range": "Sheet1!B39",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C39",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D39",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E39",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F39",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G39",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H39",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I39",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A40",
+    "value": "• Data window: closing reports 2026-03-25 → 2026-05-11 (48 days). Rate window = last 14 days (restock-aware)."
+  },
+  {
+    "range": "Sheet1!B40",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C40",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D40",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E40",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F40",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G40",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H40",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I40",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A41",
+    "value": "• Trailing growth (B5): +28.2%/week, geometric mean over the last 3 full weeks (2026-04-20 → 2026-05-04). Edit B7 to retune (e.g. 2 to react faster, 4 for more smoothing). "
+  },
+  {
+    "range": "Sheet1!B41",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C41",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D41",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E41",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F41",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G41",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H41",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I41",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A42",
+    "value": "• Initial Inventory (B col) = per-item stock as of the Sunday-closing BEFORE the trailing window starts. Current anchor date: 2026-04-19. INFORMATIONAL only in v1.7+: B no longer drives the target — that comes from B6 (absolute capacity). B stays as a useful \"where were we 3 weeks ago\" sanity check."
+  },
+  {
+    "range": "Sheet1!B42",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C42",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D42",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E42",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F42",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G42",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H42",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I42",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A43",
+    "value": "• Current Stock (C) = raw latest closing report. No more auto-denoising — restocks make the \"monotone-decrease\" invariant invalid, so we can't reliably tell typos from real upward moves. Manually override any C-cell if you spot a clear data-entry error."
+  },
+  {
+    "range": "Sheet1!B43",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C43",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D43",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E43",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F43",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G43",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H43",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I43",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A44",
+    "value": "• Avg Use/Day (D) = STATIC VALUE computed in Python from sum-of-downward-moves over the last 14 days / 14. NOT a formula (would need the full timeseries in-sheet). Editing C does NOT recompute D. To re-derive, re-run the refresh procedure. You can override any D-cell manually; E, F, H will recompute."
+  },
+  {
+    "range": "Sheet1!B44",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C44",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D44",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E44",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F44",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G44",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H44",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I44",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A45",
+    "value": "• ALLOCATION (v1.8, equalize-DoS): T_init = B6/SUM(D) → stuck = items where C > D×T_init → T_refined = (B6 − SUM(C_stuck)) / SUM(D_free) (cell K31) → for STUCK items E = MAX(0, ROUND(G)) (no B12 floor; let them drain); for FREE items E = MAX(B12, MAX(0, ROUND(D×T_refined − C + G))) → F = C + E. Goal: maximize items within ±4d of T_refined. Summary row 2 lists outliers."
+  },
+  {
+    "range": "Sheet1!B45",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C45",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D45",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E45",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F45",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G45",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H45",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I45",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A46",
+    "value": "• B12 = minimum units per base (default 6), hard floor applied to every item unconditionally WHEN Δ=0. CEILING on the order qty ensures the floor is never clipped by rounding. Edit B12 to change the safety floor."
+  },
+  {
+    "range": "Sheet1!B46",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C46",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D46",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E46",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F46",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G46",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H46",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I46",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A47",
+    "value": "• Δ Adjust (G col) = manual override per item, default 0. Type +2 to order 2 more units; type -3 to order 3 fewer. Δ is applied AFTER the floor, so a negative Δ intentionally can take F below B12 (explicit user decision)."
+  },
+  {
+    "range": "Sheet1!B47",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C47",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D47",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E47",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F47",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G47",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H47",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I47",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A48",
+    "value": "• User-tuneable CONFIG cells (preserved across refreshes): B6 (Tub Capacity, abs), B7 (Window weeks), B12 (Floor), G28:G36 (per-item Δ). B5/B8/B9/B10/B11 are refreshed every push."
+  },
+  {
+    "range": "Sheet1!B48",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C48",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D48",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E48",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F48",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G48",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H48",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I48",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A49",
+    "value": "• Days of Supply (H col): weekly-compounding growth from B5; event-bump term removed in v1.6 since the trailing-window rate absorbs sustained shifts naturally."
+  },
+  {
+    "range": "Sheet1!B49",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C49",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D49",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E49",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F49",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G49",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H49",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I49",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A50",
+    "value": "• ⚠ Low DoS items indicate per-item rate is high relative to post-order stock — consider raising B6, B12, or the per-item Δ."
+  },
+  {
+    "range": "Sheet1!B50",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C50",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D50",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E50",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F50",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G50",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H50",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I50",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A51",
+    "value": "• 🚚 RESTOCKS detected in the 14-day rate window: Açaí (1 restock(s), biggest +28.1 on 2026-04-30); Coconut (1 restock(s), biggest +4.8 on 2026-04-30); Tropical (1 restock(s), biggest +3.1 on 2026-04-30); Mango (2 restock(s), biggest +10.5 on 2026-04-30); Pitaya (1 restock(s), biggest +9.1 on 2026-04-30); Matcha (1 restock(s), biggest +2.1 on 2026-04-30); Ube (2 restock(s), biggest +1.1 on 2026-04-30); Pog (2 restock(s), biggest +1.6 on 2026-04-30). Each upward jump is excluded from the consumption sum, so the rate reflects real usage, not net stock change."
+  },
+  {
+    "range": "Sheet1!B51",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C51",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D51",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E51",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F51",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G51",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H51",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I51",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A52",
+    "value": "• ⚠ NOISY items (rate ≈ 0 — no consumption detected in 14d window): Ube. Likely fully-restocked-and-idle, untracked in closing reports, or data gap."
+  },
+  {
+    "range": "Sheet1!B52",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C52",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D52",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E52",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F52",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G52",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H52",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I52",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A53",
+    "value": "• Phase 2 backlog: Square recipes for per-item demand, Square API for auto-refresh, ClickUp Chat MCP for closing reports."
+  },
+  {
+    "range": "Sheet1!B53",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C53",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D53",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E53",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F53",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G53",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H53",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I53",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!A54",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!B54",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!C54",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!D54",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!E54",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!F54",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!G54",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!H54",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!I54",
+    "value": ""
+  },
+  {
+    "range": "Sheet1!K1",
+    "value": ""
+  }
+]

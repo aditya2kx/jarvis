@@ -50,6 +50,7 @@ from core.config_loader import project_dir, refresh_access_token
 from skills.adp_run_automation import compensation_backend
 from skills.square_tips import transactions_backend
 from skills.tip_ledger_writer import (
+    read_raw_adp_rates,
     read_raw_adp_shifts,
     read_raw_square_transactions,
 )
@@ -501,6 +502,111 @@ def build_daily_rows(
     return rows, summary
 
 
+def build_labor_daily_rows(
+    *,
+    txns: list[dict],
+    shifts: list[dict],
+    wage_rates: list[dict],
+    excluded_from_tip_pool: set[str],
+) -> list[list]:
+    """One row per day with labor cost / labor% computed from ADP wage rates.
+
+    Exclusion union (any of these flags excludes an employee from BOTH the
+    numerator and denominator of labor_pct — they show up under
+    excluded_hours/cost instead):
+
+      1. Listed in `config.excluded_from_tip_pool` (same employees that are
+         excluded from the tip pool — Lindsay today, the policy explicitly
+         couples these two filters).
+      2. `wage_rates.is_salaried == True` (auto-exclude salaried staff;
+         currently no one).
+      3. `wage_rates.excluded_from_labor_pct == True` (explicit override
+         baked into the ADP-rate scrape from the store profile — Lindsay).
+
+    All three resolve to {Lindsay} today; the union keeps it future-proof
+    when a second manager / salaried hire shows up.
+
+    Labor cost per shift = regular_hours * wage_rate
+                         + ot_hours * (ot_rate or wage_rate*1.5)
+                         + doubletime_hours * wage_rate * 2.
+
+    Columns:
+      date | dow | gross_sales
+      | eligible_hours | eligible_labor_cost | labor_pct
+      | excluded_hours | excluded_labor_cost
+      | total_labor_cost | tip_pool | tips_pct_of_sales | all_in_cost_pct
+    """
+    sales = transactions_backend.aggregate_daily_sales(txns)
+    rates_by_emp = {r["employee_name"]: r for r in wage_rates}
+
+    def _is_excluded(emp_name: str) -> bool:
+        if emp_name in excluded_from_tip_pool:
+            return True
+        r = rates_by_emp.get(emp_name, {})
+        return bool(r.get("is_salaried")) or bool(r.get("excluded_from_labor_pct"))
+
+    # day -> {"el_h", "el_c", "ex_h", "ex_c"}
+    daily: dict[str, dict[str, float]] = {}
+    missing_rate: set[str] = set()
+    for s in shifts:
+        d = s["date"]
+        emp = s["employee_name"]
+        rate_row = rates_by_emp.get(emp)
+        if not rate_row:
+            missing_rate.add(emp)
+            continue
+        rate = float(rate_row.get("wage_rate_dollars") or 0)
+        ot_rate = float(rate_row.get("ot_rate_dollars") or 0) or (rate * 1.5)
+        reg_h = float(s.get("regular_hours") or 0)
+        ot_h = float(s.get("ot_hours") or 0)
+        dt_h = float(s.get("doubletime_hours") or 0)
+        cost = reg_h * rate + ot_h * ot_rate + dt_h * rate * 2
+        h = reg_h + ot_h + dt_h
+        b = daily.setdefault(d, {"el_h": 0.0, "el_c": 0.0, "ex_h": 0.0, "ex_c": 0.0})
+        if _is_excluded(emp):
+            b["ex_h"] += h
+            b["ex_c"] += cost
+        else:
+            b["el_h"] += h
+            b["el_c"] += cost
+    if missing_rate:
+        print(f"# WARN: labor_daily skipped shifts with no wage_rate row: "
+              f"{sorted(missing_rate)}")
+
+    all_dates = sorted(set(sales.keys()) | set(daily.keys()))
+    header = [
+        "date", "dow", "gross_sales",
+        "eligible_hours", "eligible_labor_cost", "labor_pct",
+        "excluded_hours", "excluded_labor_cost",
+        "total_labor_cost", "tip_pool", "tips_pct_of_sales", "all_in_cost_pct",
+    ]
+    rows: list[list] = [header]
+    for d in all_dates:
+        s_d = sales.get(d, {"gross_sales_cents": 0, "tip_cents": 0})
+        b = daily.get(d, {"el_h": 0.0, "el_c": 0.0, "ex_h": 0.0, "ex_c": 0.0})
+        sales_d = s_d["gross_sales_cents"] / 100
+        pool_d = s_d["tip_cents"] / 100
+        total_cost = b["el_c"] + b["ex_c"]
+        labor_pct = (b["el_c"] / sales_d) if sales_d > 0 else 0
+        tips_pct = (pool_d / sales_d) if sales_d > 0 else 0
+        all_in_pct = ((total_cost + pool_d) / sales_d) if sales_d > 0 else 0
+        dow = datetime.date.fromisoformat(d).strftime("%a")
+        rows.append([
+            d, dow,
+            round(sales_d, 2),
+            round(b["el_h"], 2),
+            round(b["el_c"], 2),
+            f"{labor_pct:.2%}",
+            round(b["ex_h"], 2),
+            round(b["ex_c"], 2),
+            round(total_cost, 2),
+            round(pool_d, 2),
+            f"{tips_pct:.2%}",
+            f"{all_in_pct:.2%}",
+        ])
+    return rows
+
+
 def build_period_results(
     *,
     periods: list[dict],
@@ -739,6 +845,8 @@ def main() -> int:
 
     print(f"# loading shifts from raw sheet {adp_raw_sid} (BHAGA ADP Raw > shifts)")
     shifts = read_raw_adp_shifts(adp_raw_sid, account=args.store)
+    print(f"# loading wage_rates from raw sheet {adp_raw_sid} (BHAGA ADP Raw > wage_rates)")
+    wage_rates = read_raw_adp_rates(adp_raw_sid, account=args.store)
     print(f"#   → {len(shifts)} shift rows")
 
     print(f"# loading transactions from raw sheet {square_raw_sid} (BHAGA Square Raw > transactions)")
@@ -832,16 +940,21 @@ def main() -> int:
     daily_rows, daily_summary = build_daily_rows(
         txns=txns, shifts=shifts, excluded=excluded, training_through=training_through,
     )
+    labor_daily_rows = build_labor_daily_rows(
+        txns=txns, shifts=shifts, wage_rates=wage_rates,
+        excluded_from_tip_pool=excluded,
+    )
     period_rows = build_tip_alloc_period_rows(period_results)
     day_alloc_rows = build_tip_alloc_daily_rows(period_results, daily_summary)
     summary_rows = build_period_summary_rows(period_results)
 
     tab_payloads = [
-        {"tab": "config",            "rows": config_rows,    "currency_cols": []},
-        {"tab": "daily",             "rows": daily_rows,     "currency_cols": [2, 3, 7]},  # sales, pool, $/hr
-        {"tab": "tip_alloc_period",  "rows": period_rows,    "currency_cols": [6, 7, 8, 10, 11]},  # our, adp, diff, /hr both
-        {"tab": "tip_alloc_daily",   "rows": day_alloc_rows, "currency_cols": [6, 9]},  # day_pool, our_share
-        {"tab": "period_summary",    "rows": summary_rows,   "currency_cols": [7, 8, 9, 10]},  # pool, ours, adp, diff
+        {"tab": "config",            "rows": config_rows,      "currency_cols": []},
+        {"tab": "daily",             "rows": daily_rows,       "currency_cols": [2, 3, 7]},
+        {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": [2, 4, 7, 8, 9]},
+        {"tab": "tip_alloc_period",  "rows": period_rows,      "currency_cols": [6, 7, 8, 10, 11]},
+        {"tab": "tip_alloc_daily",   "rows": day_alloc_rows,   "currency_cols": [6, 9]},
+        {"tab": "period_summary",    "rows": summary_rows,     "currency_cols": [7, 8, 9, 10]},
     ]
 
     print()

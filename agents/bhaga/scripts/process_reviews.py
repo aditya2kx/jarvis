@@ -163,9 +163,48 @@ def _read_training_excluded(spreadsheet_id: str, token: str) -> dict[str, dateti
 
 
 _FIELD_RE = re.compile(
-    r"^\*\s+\*\*(?P<key>[^:*]+?):\*\*\s*(?P<val>.+?)\s*$",
+    r"^\*\s+\*\*(?P<key>[^:*]+?):\*\*\s*(?P<val>.*?)$",
     re.MULTILINE,
 )
+
+
+def _extract_fields(content: str) -> dict[str, str]:
+    """Parse `*   **<key>:** <value>` blocks where the value may span multiple lines.
+
+    The ClickUp review-poster sometimes formats reviews like:
+
+        *   **Comment:** Great bowl choices! I loved it
+
+        Thank you Emily, Miles and Lavette. Really sweet girls
+
+        *   **Google Reviews Page:** [...]
+
+    The single-line `_FIELD_RE` would capture only "Great bowl choices! I loved it"
+    and drop the second paragraph (where the named-shoutouts live!). This
+    function instead finds each field-marker and treats the value as the span
+    from that marker to the NEXT field-marker (or end of message), with
+    blank-line and stray-* stripping.
+    """
+    matches = list(_FIELD_RE.finditer(content))
+    out: dict[str, str] = {}
+    for i, m in enumerate(matches):
+        key = m.group("key").strip().lower()
+        first_line_val = m.group("val").strip()
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+        continuation = content[start:end]
+        # Strip stray markdown bullets / horizontal rules on continuation lines
+        # so we don't pollute the captured value.
+        cont_lines = [
+            ln.strip() for ln in continuation.split("\n")
+            if ln.strip() and not ln.strip().startswith(("---", "===", "***"))
+        ]
+        if first_line_val:
+            parts = [first_line_val] + cont_lines
+        else:
+            parts = cont_lines
+        out[key] = " ".join(p for p in parts if p).strip()
+    return out
 
 
 def _is_review_message(content: str) -> bool:
@@ -181,11 +220,7 @@ def parse_review_message(
     Returns a dict on success, or None if any required field is missing
     (caller should route that message to the unparseable tab).
     """
-    fields: dict[str, str] = {}
-    for m in _FIELD_RE.finditer(content):
-        key = m.group("key").strip().lower()
-        val = m.group("val").strip()
-        fields[key] = val
+    fields = _extract_fields(content)
 
     time_str = fields.get("time of comment")
     rating_str = fields.get("rating")
@@ -338,6 +373,82 @@ def _build_first_name_index(aliases: dict[str, str]) -> dict[str, list[str]]:
     return {k: sorted(v) for k, v in out.items()}
 
 
+# Common English words that look like names but should never trigger a fuzzy
+# match. Add to this list as false positives surface in production.
+_FUZZY_MATCH_STOPWORDS = frozenset({
+    "the", "and", "but", "for", "with", "from", "into", "very", "good", "great",
+    "love", "loved", "nice", "best", "they", "this", "that", "here", "were",
+    "have", "been", "will", "your", "their", "them", "made", "make", "menu",
+    "well", "back", "down", "over", "much", "just", "more", "also", "some",
+    "perfect", "amazing", "really", "always", "thanks", "thank",
+})
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Iterative DP edit distance. Small strings only — comment tokens vs first names."""
+    if a == b:
+        return 0
+    if len(a) < len(b):
+        a, b = b, a
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            ins = cur[j - 1] + 1
+            dele = prev[j] + 1
+            sub = prev[j - 1] + (ca != cb)
+            cur.append(min(ins, dele, sub))
+        prev = cur
+    return prev[-1]
+
+
+def _fuzzy_first_name_lookup(
+    token: str, first_name_index: dict[str, list[str]],
+) -> list[str]:
+    """Return canonical-name candidates for a token that doesn't exact-match.
+
+    Uses Levenshtein distance with a 25%-of-longer-string threshold:
+
+      - max(token_len, name_len) <= 4 -> threshold 1
+      - max ... 5-7                    -> threshold 2
+      - max ... 8+                     -> threshold 3
+
+    Examples (all real misspellings seen in production):
+      "miles"   vs "Myles"   (max=5, dist=1)            -> match
+      "Lizet"   vs "Lisette" (max=7, dist=2)            -> match
+      "Lavette" vs "Lisette" (max=7, dist=2)            -> match
+      "Emily"   vs "Emely"   (max=5, dist=2)            -> match
+      "great"   vs "kate"    (max=5, dist=2; stopword)  -> rejected by _FUZZY_MATCH_STOPWORDS
+      "amy"     vs "Amy"     (exact, handled by pass 1)
+
+    Drops common English stopwords up front to avoid trivially-close noise.
+    """
+    if token in _FUZZY_MATCH_STOPWORDS or len(token) < 3:
+        return []
+    found: list[str] = []
+    for first, canonicals in first_name_index.items():
+        # Strong gate: same first letter. Misspellings of names virtually
+        # always preserve the leading sound/letter ("Lizet"->"Lisette",
+        # "miles"->"Myles", "Emily"->"Emely"). Drops the false-positive
+        # surface drastically before we run edit-distance.
+        if token[0] != first[0]:
+            continue
+        max_len = max(len(token), len(first))
+        if max_len <= 4:
+            threshold = 1
+        elif max_len <= 6:
+            threshold = 2
+        else:
+            threshold = 3
+        if abs(len(token) - len(first)) > threshold:
+            continue
+        if _levenshtein(token, first) <= threshold:
+            found.extend(canonicals)
+    return list(dict.fromkeys(found))
+
+
 def match_named_baristas(
     comment: str,
     *,
@@ -345,6 +456,14 @@ def match_named_baristas(
     first_name_index: dict[str, list[str]],
 ) -> tuple[list[str], list[str]]:
     """Scan a comment for first-name mentions of employees who worked the shift date.
+
+    Two-pass match:
+      1. Exact case-insensitive first-name match (e.g. "Sebastian" -> "Alvarez, Sebastian").
+      2. Fuzzy fallback (Levenshtein) for misspellings the customer typed
+         (e.g. "Lizet"/"Lavette" -> "Padron, Lisette", "miles" -> "Mata, Myles",
+         "Emily" -> "Urrutia, Emely"). Fuzzy matches are still restricted to
+         employees who actually worked the relevant shift date, so the
+         false-positive rate stays low.
 
     Returns (named_canonical_names, ambiguities).
       - named_canonical_names: resolved canonical names credited at $20.
@@ -354,7 +473,6 @@ def match_named_baristas(
     if not comment:
         return [], []
 
-    # Tokenize the comment loosely — words made of letters (and apostrophes).
     tokens = re.findall(r"[A-Za-z']{2,}", comment)
     eligible_set = set(eligible_employees)
 
@@ -366,20 +484,36 @@ def match_named_baristas(
         first = tok.lower()
         if first in seen_first_names:
             continue
+
+        # Pass 1: exact match.
         candidates = first_name_index.get(first, [])
+        match_mode = "exact"
+
+        # Pass 2: fuzzy fallback if exact didn't find anyone on-shift.
+        if not candidates or not any(c in eligible_set for c in candidates):
+            fuzzy = _fuzzy_first_name_lookup(first, first_name_index)
+            if fuzzy:
+                candidates = fuzzy
+                match_mode = "fuzzy"
+
         if not candidates:
             continue
-        # Restrict to employees who actually worked the relevant shift date.
+
         on_shift_candidates = [c for c in candidates if c in eligible_set]
         if not on_shift_candidates:
             continue
         seen_first_names.add(first)
         if len(on_shift_candidates) == 1:
             named.add(on_shift_candidates[0])
+            if match_mode == "fuzzy":
+                ambiguities.append(
+                    f"fuzzy match: {tok!r} -> {on_shift_candidates[0]} "
+                    f"(verify in case of misspelling)"
+                )
         else:
             ambiguities.append(
                 f"{tok.title()} matches {len(on_shift_candidates)} on-shift "
-                f"employees: {', '.join(on_shift_candidates)}"
+                f"employees ({match_mode}): {', '.join(on_shift_candidates)}"
             )
 
     return sorted(named), ambiguities

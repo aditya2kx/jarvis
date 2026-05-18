@@ -761,8 +761,12 @@ def main() -> int:
         os.environ["BHAGA_SLACK_DISABLED"] = "1"
 
     profile = _load_profile(args.store)
-    aliases = profile["employees"]["aliases"]
-    excluded_permanent = set(profile["employees"]["excluded_from_tip_pool_and_labor_pct"])
+    # Aliases + exclusions now come from the sheet (bhaga_model > employees +
+    # bhaga_model > config). The local JSON is only the bootstrap pointer.
+    from skills.store_profile import load_aliases, load_exclusions  # local import to avoid module-load circulars
+    aliases = load_aliases(args.store)
+    _excl_sheet = load_exclusions(args.store)
+    excluded_permanent = set(_excl_sheet["permanent"])
     model_sid = profile["google_sheets"]["bhaga_model"]["spreadsheet_id"]
 
     raw_sheet_cfg = profile["google_sheets"].get("bhaga_review_raw")

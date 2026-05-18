@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Jarvis Slack listener (always-on) launch agent.
+
+  Runs `ensure_listening.py` which idempotently spawns:
+    - The CHITRA default Socket Mode listener
+    - One per-agent listener (CHANAKYA, BHAGA, ...) for every agent in
+      config.yaml whose identity_mode = "real"
+    - The shared inbox processor that acknowledges DMs on Slack
+
+  Why a separate agent (not bundled with com.aditya.bhaga.daily):
+    The nightly BHAGA refresh fires once per day and exits, but Slack OTP
+    flows need a listener running BEFORE the request_otp call so the user
+    can reply and have it picked up. This agent keeps the listener alive
+    24/7 — both for nightly OTP rescue and any ad-hoc DM interactions
+    with any Jarvis agent.
+
+  How it stays alive:
+    KeepAlive=true (always restart if it exits)
+    ThrottleInterval=60 (don't restart in a tight loop if it keeps dying)
+
+  INSTALL
+    cp .../com.aditya.jarvis.slack-listener.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aditya.jarvis.slack-listener.plist
+    launchctl enable gui/$(id -u)/com.aditya.jarvis.slack-listener
+    launchctl kickstart gui/$(id -u)/com.aditya.jarvis.slack-listener
+
+  INSPECT
+    launchctl print gui/$(id -u)/com.aditya.jarvis.slack-listener | less
+    tail -f /tmp/jarvis-listener-bhaga.log
+    python3 skills/slack/ensure_listening.py --status
+
+  UNINSTALL
+    launchctl bootout gui/$(id -u)/com.aditya.jarvis.slack-listener
+    rm ~/Library/LaunchAgents/com.aditya.jarvis.slack-listener.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aditya.jarvis.slack-listener</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/miniconda3/bin/python3</string>
+        <string>/Users/adityaparikh/Documents/current-workspace/Jarvis/skills/slack/ensure_listening.py</string>
+        <string>--hours</string>
+        <string>24</string>
+        <string>--interval</string>
+        <string>30</string>
+    </array>
+
+    <!-- Run at login + restart automatically if it ever exits. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- If the script keeps dying, back off so we don't burn CPU restarting. -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <!-- Wake the laptop briefly so listeners are alive during night hours
+         (only takes effect if power is connected). -->
+    <key>WakeFromSleep</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/adityaparikh/.bhaga/state/slack-listener.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/adityaparikh/.bhaga/state/slack-listener.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/miniconda3/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/adityaparikh</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+</dict>
+</plist>

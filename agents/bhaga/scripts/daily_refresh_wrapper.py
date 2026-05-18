@@ -149,11 +149,11 @@ def run_refresh(refresh_date: datetime.date) -> int:
         sys.executable, "-m", "agents.bhaga.scripts.daily_refresh",
         "--date", refresh_date.isoformat(),
         "--store", "palmetto",
-        # TEMP (2026-05-16): ADP Timecard iframe selectors still need ~30 min
-        # of tuning. Skip until that's complete to keep nightly Slacks clean.
-        # When unblocked, drop these two flags so all 3 scrapes fire.
-        "--skip-timecard",
-        "--skip-rates",
+        # Full refresh: Square + ADP Timecard + ADP Earnings (Mon/Tue only,
+        # gated by daily_refresh's --include-rates=auto default) + raw-sheet
+        # mirroring + model rebuild + Google review bonuses.
+        # No --skip-* flags — the orchestrator's own logic decides what to
+        # run based on the day of week and gap detection.
     ]
     _log(f"running: {' '.join(cmd)}")
     with REFRESH_LOG.open("a") as logf:

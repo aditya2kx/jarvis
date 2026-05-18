@@ -360,16 +360,47 @@ def find_shift_for_post(
 def _build_first_name_index(aliases: dict[str, str]) -> dict[str, list[str]]:
     """{first_name_lower: [canonical_names_with_that_first_name]}.
 
-    Used to resolve "Sebastian was great" -> ["Alvarez, Sebastian"].
+    Two-source build:
+
+    1. Each canonical's own first name (e.g. "Guerrero, Amy" -> "amy").
+    2. Each alias KEY's first token (e.g. raw "Miles" -> "Guerrero, Amy"
+       contributes "miles" -> ["Guerrero, Amy"]). This is how nicknames,
+       alternative spellings, and ADP raw-name variants get matched — used to
+       resolve "Sebastian was great" -> ["Alvarez, Sebastian"] AND
+       "Myles was nice" -> ["Guerrero, Amy"] when an alias "Myles"->"Guerrero,
+       Amy" exists in the store profile.
     """
     out: dict[str, set[str]] = {}
+
+    def _add(first_token: str, canonical: str) -> None:
+        first = first_token.lower().strip(",.")
+        if first:
+            out.setdefault(first, set()).add(canonical)
+
     for canonical in set(aliases.values()):
         # canonical is "Last, First" -> first = "First"
         if "," in canonical:
-            first = canonical.split(",", 1)[1].strip().split()[0].lower()
+            first = canonical.split(",", 1)[1].strip().split()[0]
         else:
-            first = canonical.split()[0].lower()
-        out.setdefault(first, set()).add(canonical)
+            first = canonical.split()[0]
+        _add(first, canonical)
+
+    # Pass 2: alias keys. Raw alias keys can be "Guerrero Amy" (no comma -
+    # use first token = "Guerrero" → BUT that's the last name, useless here),
+    # or just a nickname like "Miles" (use the whole thing). Strategy:
+    #   - If the alias key has a comma: skip last-name extraction here,
+    #     canonical was already indexed by first name in pass 1.
+    #   - If the alias key has no comma AND only one token: treat it as a
+    #     nickname/alt-spelling (e.g. "Miles", "Myles", "Z").
+    #   - If multi-token without comma: skip (it's likely ADP raw "Last First"
+    #     which would pollute the index with last-names).
+    for raw, canonical in aliases.items():
+        if "," in raw:
+            continue
+        tokens = raw.split()
+        if len(tokens) == 1:
+            _add(tokens[0], canonical)
+
     return {k: sorted(v) for k, v in out.items()}
 
 

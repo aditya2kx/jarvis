@@ -703,9 +703,11 @@ def main() -> int:
                      help="Print row counts per tab and the first few rows but do not write to Sheets.")
     args = cli.parse_args()
 
+    # Bootstrap pointer + sheet-derived aliases/exclusions.
     profile = json.loads((STORE_PROFILE_DIR / f"{args.store}.json").read_text())
-    aliases = profile["employees"]["aliases"]
-    excluded = set(profile["employees"]["excluded_from_tip_pool_and_labor_pct"])
+    from skills.store_profile import load_aliases, load_exclusions
+    aliases = load_aliases(args.store)
+    excluded = set(load_exclusions(args.store)["permanent"])
     shop_tz = profile["timezone"]["shop_tz"]
     model_sid = profile["google_sheets"]["bhaga_model"]["spreadsheet_id"]
     model_url = profile["google_sheets"]["bhaga_model"]["url"]

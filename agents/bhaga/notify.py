@@ -122,17 +122,19 @@ def info_ping(text: str) -> Optional[dict]:
 def new_employee_alert(
     new_pairs: list[tuple[str, str]],
     *,
-    profile_path: str = "agents/bhaga/knowledge-base/store-profiles/palmetto.json",
+    profile_path: str = "bhaga_model > employees (sheet)",
 ) -> Optional[dict]:
     """DM the operator whenever an ADP scrape introduces a never-before-seen
-    employee. The aliases have already been auto-added to the profile JSON
-    using the "one-token-then-comma" rule; this message is the human
-    confirmation step. Operator should eyeball each derived canonical and
-    correct any compound last names (e.g. "Van Der Berg") via a quick edit.
+    employee. The aliases have already been auto-added to bhaga_model >
+    employees (canonical SOT) using the "one-token-then-comma" rule. This
+    message is the human confirmation step. Operator should eyeball each
+    derived canonical and correct any compound last names (e.g. "Van Der
+    Berg") via a quick edit to the sheet.
 
     Args:
         new_pairs: list of (raw_name_as_seen_in_xlsx, derived_canonical)
         profile_path: shown in message so the operator knows where to edit
+            (defaults to the sheet location; legacy callers may pass a path)
     """
     if not new_pairs:
         return None
@@ -142,9 +144,10 @@ def new_employee_alert(
         f"👋 BHAGA detected *{len(new_pairs)} new employee(s)* in today's ADP scrape on {_host_tag()}.\n"
         f"Auto-added to `{profile_path}` (both raw + canonical forms).\n\n"
         f"*New aliases:*\n{body}\n\n"
-        f"_If any canonical above is wrong (e.g. compound last name), edit the profile JSON. "
-        f"Don't forget to also add the employee to `excluded_from_tip_pool_and_labor_pct` if they're a manager, "
-        f"or to `training_excluded:<name>` rows in the model sheet's `config` tab if they're in training._"
+        f"_If any canonical above is wrong (e.g. compound last name), edit the row directly in "
+        f"the `bhaga_model > employees` tab. Also add the employee to `excluded_from_tip_pool` "
+        f"in `bhaga_model > config` if they're a manager, or add a `training_excluded:<name>` "
+        f"row in the config tab if they're in training._"
     )
     return _safe_send(text)
 

@@ -31,7 +31,7 @@ from core.config_loader import project_dir
 from skills.adp_run_automation import compensation_backend, shift_backend
 from skills.adp_run_automation.employee_aliases import (
     detect_new_employees,
-    update_profile_with_new_aliases,
+    update_sheet_with_new_aliases,
 )
 from skills.square_tips import transactions_backend
 from skills.tip_ledger_writer import (
@@ -109,8 +109,11 @@ def main() -> int:
     args = cli.parse_args()
 
     profile = load_store_profile(args.store)
-    aliases = profile["employees"]["aliases"]
-    excluded = profile["employees"]["excluded_from_tip_pool_and_labor_pct"]
+    # Aliases + exclusions now live in bhaga_model > employees + > config.
+    # The local JSON is just a bootstrap pointer for sheet IDs.
+    from skills.store_profile import load_aliases, load_exclusions
+    aliases = load_aliases(args.store)
+    excluded = load_exclusions(args.store)["permanent"]
     adp_raw_sid = profile["google_sheets"]["bhaga_adp_raw"]["spreadsheet_id"]
     square_raw_sid = profile["google_sheets"]["bhaga_square_raw"]["spreadsheet_id"]
     shop_tz = profile["timezone"]["shop_tz"]
@@ -150,10 +153,16 @@ def main() -> int:
             if new_pairs:
                 print(f"  detected {len(new_pairs)} new employee(s): "
                       + ", ".join(f"{r!r}→{c!r}" for r, c in new_pairs))
-                profile_path = STORE_PROFILE_DIR / f"{args.store}.json"
-                profile = update_profile_with_new_aliases(profile_path, new_pairs)
-                aliases = profile["employees"]["aliases"]
-                new_employee_alert(new_pairs, profile_path=str(profile_path.relative_to(PROJECT)))
+                # Write the new aliases to bhaga_model > employees (canonical SOT).
+                # No more local JSON mutation — the sheet survives laptop loss.
+                added = update_sheet_with_new_aliases(args.store, new_pairs)
+                print(f"  wrote {added} new alias entries to bhaga_model > employees")
+                from skills.store_profile import load_aliases as _reload_aliases
+                aliases = _reload_aliases(args.store)
+                new_employee_alert(
+                    new_pairs,
+                    profile_path="bhaga_model > employees (sheet)",
+                )
                 # Re-parse with the now-complete alias map.
                 punches = shift_backend.parse_xlsx(timecard_xlsx, employee_aliases=aliases)
                 print(f"  re-parsed with updated aliases: {len(punches)} punches")

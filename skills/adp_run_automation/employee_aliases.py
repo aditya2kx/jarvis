@@ -98,15 +98,18 @@ def update_profile_with_new_aliases(
     profile_path: pathlib.Path,
     new_pairs: list[tuple[str, str]],
 ) -> dict:
-    """Write new aliases into the store profile JSON. Returns updated profile dict.
+    """LEGACY: write new aliases into the store profile JSON.
+
+    Kept for backward compatibility. New code should call
+    `update_sheet_with_new_aliases(store, new_pairs)` instead, which writes
+    to bhaga_model > employees (the canonical SOT). This local file is now
+    just a bootstrap pointer.
 
     For each (raw, canonical) pair, adds both forms to aliases:
-        raw       -> canonical    (the raw form we just observed)
-        canonical -> canonical    (so the canonical form is also stable)
+        raw       -> canonical
+        canonical -> canonical
 
-    Idempotent: skips pairs already present. Preserves existing JSON
-    formatting via json.dump(indent=2) — should match the prettified style
-    palmetto.json already uses.
+    Idempotent: skips pairs already present.
     """
     profile = json.loads(profile_path.read_text())
     aliases = profile.setdefault("employees", {}).setdefault("aliases", {})
@@ -121,3 +124,36 @@ def update_profile_with_new_aliases(
     if added:
         profile_path.write_text(json.dumps(profile, indent=2) + "\n")
     return profile
+
+
+def update_sheet_with_new_aliases(
+    store: str,
+    new_pairs: list[tuple[str, str]],
+) -> int:
+    """Write new aliases into `bhaga_model > employees` (canonical SOT).
+
+    For each (raw_name, canonical) pair, this either:
+      - Adds `raw_name` to the existing row's aliases cell if canonical is
+        already on the roster, OR
+      - Appends a new row `[canonical, raw_name, ""]` if canonical is new.
+
+    Returns the count of new alias additions (NOT new rows — both updates
+    and new-row inserts count toward this).
+
+    Idempotent: skipping a (raw, canonical) pair where the raw_name already
+    appears in that row's aliases is a no-op.
+    """
+    if not new_pairs:
+        return 0
+    # Local import — keep this module dependency-light for unit tests.
+    from skills.store_profile import write_alias
+
+    added = 0
+    for raw, canonical in new_pairs:
+        try:
+            write_alias(store, raw, canonical)
+            added += 1
+        except Exception as exc:
+            print(f"[employee_aliases] WARN: failed to write alias {raw!r} -> "
+                  f"{canonical!r} to sheet: {exc!r}")
+    return added

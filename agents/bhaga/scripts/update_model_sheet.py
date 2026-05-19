@@ -511,17 +511,18 @@ def build_labor_daily_rows(
 ) -> list[list]:
     """One row per day with labor cost / labor% computed from ADP wage rates.
 
-    Exclusion union (any of these flags excludes an employee from BOTH the
-    numerator and denominator of labor_pct — they show up under
-    excluded_hours/cost instead):
+    Buckets the workforce into "hourly" (tipped staff) and "fulltime"
+    (salaried / manager / anyone excluded from the tip pool). The union
+    of three flags decides the bucket:
 
       1. Listed in `config.excluded_from_tip_pool` (same employees that are
          excluded from the tip pool — Lindsay today, the policy explicitly
-         couples these two filters).
+         couples these two filters). → fulltime bucket.
       2. `wage_rates.is_salaried == True` (auto-exclude salaried staff;
-         currently no one).
+         currently no one). → fulltime bucket.
       3. `wage_rates.excluded_from_labor_pct == True` (explicit override
-         baked into the ADP-rate scrape from the store profile — Lindsay).
+         baked into the ADP-rate scrape from the store profile — Lindsay). →
+         fulltime bucket.
 
     All three resolve to {Lindsay} today; the union keeps it future-proof
     when a second manager / salaried hire shows up.
@@ -530,11 +531,25 @@ def build_labor_daily_rows(
                          + ot_hours * (ot_rate or wage_rate*1.5)
                          + doubletime_hours * wage_rate * 2.
 
-    Columns:
-      date | dow | gross_sales
-      | eligible_hours | eligible_labor_cost | labor_pct
-      | excluded_hours | excluded_labor_cost
-      | total_labor_cost | tip_pool | tips_pct_of_sales | all_in_cost_pct
+    Two denominators for every labor % so the operator can see both views
+    side-by-side without flipping between tabs:
+      • `total_sales` = gross_sales + tip_pool (what the customer paid
+        in total — useful as "what share of every dollar walking through
+        the door goes to labor")
+      • `gross_sales` = item revenue only (Square's gross_sales already
+        excludes tips — this is the industry-standard restaurant labor%
+        denominator since tips are a customer-to-staff pass-through)
+
+    Columns (18 total):
+      date | dow
+      | gross_sales | tip_pool | total_sales
+      | hourly_hours | hourly_labor_cost
+      | fulltime_hours | fulltime_labor_cost
+      | total_labor_cost
+      | hourly_pct_of_total_sales   | hourly_pct_of_gross_sales
+      | fulltime_pct_of_total_sales | fulltime_pct_of_gross_sales
+      | total_labor_pct_of_total_sales | total_labor_pct_of_gross_sales
+      | tips_pct_of_gross_sales | all_in_cost_pct
     """
     sales = transactions_backend.aggregate_daily_sales(txns)
     rates_by_emp = {r["employee_name"]: r for r in wage_rates}
@@ -575,34 +590,48 @@ def build_labor_daily_rows(
 
     all_dates = sorted(set(sales.keys()) | set(daily.keys()))
     header = [
-        "date", "dow", "gross_sales",
-        "eligible_hours", "eligible_labor_cost", "labor_pct",
-        "excluded_hours", "excluded_labor_cost",
-        "total_labor_cost", "tip_pool", "tips_pct_of_sales", "all_in_cost_pct",
+        "date", "dow",
+        "gross_sales", "tip_pool", "total_sales",
+        "hourly_hours", "hourly_labor_cost",
+        "fulltime_hours", "fulltime_labor_cost",
+        "total_labor_cost",
+        "hourly_pct_of_total_sales", "hourly_pct_of_gross_sales",
+        "fulltime_pct_of_total_sales", "fulltime_pct_of_gross_sales",
+        "total_labor_pct_of_total_sales", "total_labor_pct_of_gross_sales",
+        "tips_pct_of_gross_sales", "all_in_cost_pct",
     ]
     rows: list[list] = [header]
     for d in all_dates:
         s_d = sales.get(d, {"gross_sales_cents": 0, "tip_cents": 0})
         b = daily.get(d, {"el_h": 0.0, "el_c": 0.0, "ex_h": 0.0, "ex_c": 0.0})
-        sales_d = s_d["gross_sales_cents"] / 100
-        pool_d = s_d["tip_cents"] / 100
-        total_cost = b["el_c"] + b["ex_c"]
-        labor_pct = (b["el_c"] / sales_d) if sales_d > 0 else 0
-        tips_pct = (pool_d / sales_d) if sales_d > 0 else 0
-        all_in_pct = ((total_cost + pool_d) / sales_d) if sales_d > 0 else 0
-        dow = datetime.date.fromisoformat(d).strftime("%a")
+        gross = s_d["gross_sales_cents"] / 100
+        pool = s_d["tip_cents"] / 100
+        total = gross + pool
+        hourly_cost = b["el_c"]
+        fulltime_cost = b["ex_c"]
+        total_cost = hourly_cost + fulltime_cost
+
+        def _pct(num: float, denom: float) -> float:
+            return (num / denom) if denom > 0 else 0.0
+
         rows.append([
-            d, dow,
-            round(sales_d, 2),
+            d, datetime.date.fromisoformat(d).strftime("%a"),
+            round(gross, 2),
+            round(pool, 2),
+            round(total, 2),
             round(b["el_h"], 2),
-            round(b["el_c"], 2),
-            f"{labor_pct:.2%}",
+            round(hourly_cost, 2),
             round(b["ex_h"], 2),
-            round(b["ex_c"], 2),
+            round(fulltime_cost, 2),
             round(total_cost, 2),
-            round(pool_d, 2),
-            f"{tips_pct:.2%}",
-            f"{all_in_pct:.2%}",
+            f"{_pct(hourly_cost, total):.2%}",
+            f"{_pct(hourly_cost, gross):.2%}",
+            f"{_pct(fulltime_cost, total):.2%}",
+            f"{_pct(fulltime_cost, gross):.2%}",
+            f"{_pct(total_cost, total):.2%}",
+            f"{_pct(total_cost, gross):.2%}",
+            f"{_pct(pool, gross):.2%}",
+            f"{_pct(total_cost + pool, total):.2%}",
         ])
     return rows
 
@@ -951,7 +980,7 @@ def main() -> int:
     tab_payloads = [
         {"tab": "config",            "rows": config_rows,      "currency_cols": []},
         {"tab": "daily",             "rows": daily_rows,       "currency_cols": [2, 3, 7]},
-        {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": [2, 4, 7, 8, 9]},
+        {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": [2, 3, 4, 6, 8, 9]},
         {"tab": "tip_alloc_period",  "rows": period_rows,      "currency_cols": [6, 7, 8, 10, 11]},
         {"tab": "tip_alloc_daily",   "rows": day_alloc_rows,   "currency_cols": [6, 9]},
         {"tab": "period_summary",    "rows": summary_rows,     "currency_cols": [7, 8, 9, 10]},

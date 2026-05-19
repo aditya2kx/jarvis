@@ -798,6 +798,127 @@ def build_labor_period_rows(
     return rows
 
 
+def build_labor_weekly_rows(
+    *,
+    labor_daily_rows: list[list],
+) -> list[list]:
+    """Aggregate labor_daily rows by ISO calendar week (Monday → Sunday).
+
+    Why Monday-Sunday: Square's dashboard defaults to this convention, ISO
+    8601 mandates it, and most restaurant industry "weekly labor%" reports
+    use it (Sunday is part of the week ending that day, not the start of
+    the next one). To flip to Sunday-Saturday, change `cursor.weekday()`
+    to `(cursor.weekday() + 1) % 7` and adjust the +6 offset.
+
+    Like build_labor_period_rows: aggregates raw $ totals and recomputes
+    percentages from those sums. Never averages per-day percentages.
+
+    Includes the current (potentially partial) week as the last row with
+    `is_partial=Y` and `days_covered < 7` so the operator can see the
+    week-to-date trend. Closed weeks have `is_partial=N`.
+
+    Columns (23 total):
+      iso_week | week_start | week_end | is_partial | days_covered
+      gross_sales | discounts | net_sales | tip_pool | net_sales_plus_tips
+      hourly_hours | hourly_labor_cost
+      fulltime_hours | fulltime_labor_cost
+      total_labor_cost
+      hourly_pct_of_net_sales | hourly_pct_of_net_sales_plus_tips
+      fulltime_pct_of_net_sales | fulltime_pct_of_net_sales_plus_tips
+      total_labor_pct_of_net_sales | total_labor_pct_of_net_sales_plus_tips
+      tips_pct_of_net_sales | all_in_cost_pct_of_net_sales_plus_tips
+    """
+    header = [
+        "iso_week", "week_start", "week_end", "is_partial", "days_covered",
+        "gross_sales", "discounts", "net_sales", "tip_pool", "net_sales_plus_tips",
+        "hourly_hours", "hourly_labor_cost",
+        "fulltime_hours", "fulltime_labor_cost",
+        "total_labor_cost",
+        "hourly_pct_of_net_sales", "hourly_pct_of_net_sales_plus_tips",
+        "fulltime_pct_of_net_sales", "fulltime_pct_of_net_sales_plus_tips",
+        "total_labor_pct_of_net_sales", "total_labor_pct_of_net_sales_plus_tips",
+        "tips_pct_of_net_sales", "all_in_cost_pct_of_net_sales_plus_tips",
+    ]
+    if len(labor_daily_rows) <= 1:
+        return [header]
+
+    # Same field positions as labor_period (see build_labor_period_rows).
+    daily_by_date: dict[str, dict[str, float]] = {}
+    for row in labor_daily_rows[1:]:
+        daily_by_date[row[0]] = {
+            "gross": float(row[2]),
+            "disc": float(row[3]),
+            "net": float(row[4]),
+            "pool": float(row[5]),
+            "hourly_h": float(row[7]),
+            "hourly_c": float(row[8]),
+            "fulltime_h": float(row[9]),
+            "fulltime_c": float(row[10]),
+        }
+
+    if not daily_by_date:
+        return [header]
+
+    all_dates = sorted(daily_by_date.keys())
+    max_data_date = datetime.date.fromisoformat(all_dates[-1])
+
+    # Group dates by their ISO week's Monday.
+    weeks: dict[datetime.date, list[str]] = {}
+    for iso in all_dates:
+        d = datetime.date.fromisoformat(iso)
+        monday = d - datetime.timedelta(days=d.weekday())  # weekday(): Mon=0 .. Sun=6
+        weeks.setdefault(monday, []).append(iso)
+
+    rows: list[list] = [header]
+    for monday in sorted(weeks):
+        sunday = monday + datetime.timedelta(days=6)
+        iso_year, iso_week, _ = monday.isocalendar()
+        iso_label = f"{iso_year}-W{iso_week:02d}"
+        is_partial = "Y" if sunday > max_data_date else "N"
+
+        gross = disc = net = pool = h_hours = h_cost = ft_hours = ft_cost = 0.0
+        days = 0
+        for iso_date in weeks[monday]:
+            bucket = daily_by_date[iso_date]
+            gross += bucket["gross"]
+            disc += bucket["disc"]
+            net += bucket["net"]
+            pool += bucket["pool"]
+            h_hours += bucket["hourly_h"]
+            h_cost += bucket["hourly_c"]
+            ft_hours += bucket["fulltime_h"]
+            ft_cost += bucket["fulltime_c"]
+            days += 1
+        net_plus_tips = net + pool
+        total_cost = h_cost + ft_cost
+
+        def _pct(num: float, denom: float) -> float:
+            return (num / denom) if denom > 0 else 0.0
+
+        rows.append([
+            iso_label, monday.isoformat(), sunday.isoformat(), is_partial, days,
+            round(gross, 2),
+            round(disc, 2),
+            round(net, 2),
+            round(pool, 2),
+            round(net_plus_tips, 2),
+            round(h_hours, 2),
+            round(h_cost, 2),
+            round(ft_hours, 2),
+            round(ft_cost, 2),
+            round(total_cost, 2),
+            f"{_pct(h_cost, net):.2%}",
+            f"{_pct(h_cost, net_plus_tips):.2%}",
+            f"{_pct(ft_cost, net):.2%}",
+            f"{_pct(ft_cost, net_plus_tips):.2%}",
+            f"{_pct(total_cost, net):.2%}",
+            f"{_pct(total_cost, net_plus_tips):.2%}",
+            f"{_pct(pool, net):.2%}",
+            f"{_pct(total_cost + pool, net_plus_tips):.2%}",
+        ])
+    return rows
+
+
 def build_period_results(
     *,
     periods: list[dict],
@@ -1138,6 +1259,7 @@ def main() -> int:
     labor_period_rows = build_labor_period_rows(
         periods=periods, labor_daily_rows=labor_daily_rows,
     )
+    labor_weekly_rows = build_labor_weekly_rows(labor_daily_rows=labor_daily_rows)
     period_rows = build_tip_alloc_period_rows(period_results)
     day_alloc_rows = build_tip_alloc_daily_rows(period_results, daily_summary)
     summary_rows = build_period_summary_rows(period_results)
@@ -1146,6 +1268,7 @@ def main() -> int:
         {"tab": "config",            "rows": config_rows,      "currency_cols": []},
         {"tab": "daily",             "rows": daily_rows,       "currency_cols": [2, 3, 7]},
         {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": [2, 3, 4, 5, 6, 8, 10, 11]},
+        {"tab": "labor_weekly",      "rows": labor_weekly_rows, "currency_cols": [5, 6, 7, 8, 9, 11, 13, 14]},
         {"tab": "labor_period",      "rows": labor_period_rows, "currency_cols": [4, 5, 6, 7, 8, 10, 12, 13]},
         {"tab": "tip_alloc_period",  "rows": period_rows,      "currency_cols": [6, 7, 8, 10, 11]},
         {"tab": "tip_alloc_daily",   "rows": day_alloc_rows,   "currency_cols": [6, 9]},

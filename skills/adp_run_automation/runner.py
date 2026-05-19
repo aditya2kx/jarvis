@@ -325,6 +325,29 @@ def _handle_adp_two_factor(page, *, store: str) -> None:
     page.wait_for_timeout(1_500)
 
 
+def _mark_run_step_done(step_name: str, *, note: str = "") -> None:
+    """Best-effort write of ~/.bhaga/state/run-<today_ct>/{step_name}.done.
+
+    Mirrors agents.bhaga.scripts.daily_refresh.mark_step_done so the bundle
+    helper can record per-component completion (adp_timecard, adp_earnings)
+    even though the orchestrator's run_step only sees the bundle-level call
+    (adp_reports). Preserves per-component granularity for the wrapper
+    roll-up alert and operator-facing debugging.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        ct = ZoneInfo("America/Chicago")
+        today_ct = datetime.datetime.now(ct).date()
+        d = pathlib.Path.home() / ".bhaga" / "state" / f"run-{today_ct.isoformat()}"
+        d.mkdir(parents=True, exist_ok=True)
+        body = datetime.datetime.now(ct).isoformat()
+        if note:
+            body += f"\nnote: {note}"
+        (d / f"{step_name}.done").write_text(body)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_bundle] WARN: could not write {step_name} marker: {exc}")
+
+
 def _raise_with_evidence(page, *, store: str, reason: str) -> None:
     """Save screenshot + URL alongside the raise so failures are debuggable.
 
@@ -349,12 +372,19 @@ def _raise_with_evidence(page, *, store: str, reason: str) -> None:
 def download_timecard(
     *,
     store: str = "palmetto",
+    target_date: Optional[datetime.date] = None,
     headed: bool = True,
     slow_mo_ms: int = 50,
     keep_open_on_error: bool = False,
 ) -> pathlib.Path:
-    """Open Reports > Time reports > Timecard, select all available pay periods,
-    apply changes, click Export to Excel, save .xlsx.
+    """Open Reports > Time reports > Timecard, select pay periods, apply
+    changes, click Export to Excel, save .xlsx.
+
+    Args:
+        target_date: if provided, only the single pay period whose date range
+            contains this date is selected (nightly-incremental mode). If
+            None, ALL pay periods are selected (backfill mode — backwards
+            compatible with the original behavior).
 
     Idempotency: if today's Timecard XLSX is already on disk (CT-today mtime),
     skip the browser entirely and return the cached path. Eliminates
@@ -372,60 +402,116 @@ def download_timecard(
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
         _ensure_logged_in(page, store=store)
+        return _timecard_within_session(page, target_date=target_date)
 
-        # Navigate to Timecard: Reports-btn → Reports landing → "View all
-        # reports" opens the Single Reports modal → expand "Time reports"
-        # accordion → click "Timecard". ADP dashboard maintains persistent
-        # connections so 'networkidle' never fires; use targeted waits.
-        page.locator('[data-test-id="Reports-btn"]').first.click()
-        # After Reports-btn click ADP can land on either:
-        #   (a) the Reports landing page (test-id="view-all-reports") OR
-        #   (b) the homepage Reports widget (test-id="reports-tile-view-all-reports-button")
-        # Try both via a CSS-OR selector.
-        view_all = page.locator(
-            '[data-test-id="view-all-reports"], [data-test-id="reports-tile-view-all-reports-button"]'
-        ).first
-        view_all.wait_for(state="visible", timeout=20_000)
-        view_all.scroll_into_view_if_needed(timeout=5_000)
-        view_all.click()
-        # Single Reports modal: ensure the "Time" section header is loaded, then
-        # click the Timecard report tile. The section accordion is often already
-        # expanded by default; if not, clicking the header expands it.
-        time_section_header = page.locator('[data-test-id="Time-section_Head_HeaderLabel"]').first
-        time_section_header.wait_for(state="visible", timeout=15_000)
-        timecard_tile = page.locator('[data-test-id="Time-tile-list-item-Timecard"]').first
+
+def _timecard_within_session(
+    page, *, target_date: Optional[datetime.date] = None
+) -> pathlib.Path:
+    """Run the Timecard scrape on an already-authenticated ADP dashboard page.
+
+    Extracted from download_timecard so the bundle helper can drive both
+    Timecard and Earnings within a single browser session (one login, one
+    OTP cost). Caller owns the browser context lifecycle.
+
+    Pre-condition: `page` is on the v2 ADP RUN dashboard (POST_LOGIN_URL_RE).
+    """
+    # Navigate to Timecard: Reports-btn → Reports landing → "View all
+    # reports" opens the Single Reports modal → expand "Time reports"
+    # accordion → click "Timecard". ADP dashboard maintains persistent
+    # connections so 'networkidle' never fires; use targeted waits.
+    page.locator('[data-test-id="Reports-btn"]').first.click()
+    # After Reports-btn click ADP can land on either:
+    #   (a) the Reports landing page (test-id="view-all-reports") OR
+    #   (b) the homepage Reports widget (test-id="reports-tile-view-all-reports-button")
+    view_all = page.locator(
+        '[data-test-id="view-all-reports"], [data-test-id="reports-tile-view-all-reports-button"]'
+    ).first
+    view_all.wait_for(state="visible", timeout=20_000)
+    view_all.scroll_into_view_if_needed(timeout=5_000)
+    view_all.click()
+    # Single Reports modal: ensure the "Time" section header is loaded, then
+    # click the Timecard report tile. The section accordion is often already
+    # expanded by default; if not, clicking the header expands it.
+    time_section_header = page.locator('[data-test-id="Time-section_Head_HeaderLabel"]').first
+    time_section_header.wait_for(state="visible", timeout=15_000)
+    timecard_tile = page.locator('[data-test-id="Time-tile-list-item-Timecard"]').first
+    try:
+        timecard_tile.wait_for(state="visible", timeout=3_000)
+    except Exception:
+        time_section_header.click()
+        page.wait_for_timeout(500)
+        timecard_tile.wait_for(state="visible", timeout=10_000)
+    timecard_tile.scroll_into_view_if_needed(timeout=5_000)
+    timecard_tile.click()
+    # Timecard report iframe rendering — wait for the iframe directly.
+    page.locator("iframe[name='mdfTimeFrame']").wait_for(state="attached", timeout=20_000)
+    page.wait_for_timeout(2_500)
+
+    # All Timecard report controls live inside iframe[name="mdfTimeFrame"].
+    page.wait_for_timeout(4_000)
+    frame = page.frame_locator("iframe[name='mdfTimeFrame']")
+
+    # Pay Period selection. There are TWO comboboxes with "Pay Period" in
+    # their name — "Report Period" (single-select; its current value is
+    # "Pay P..." which a permissive regex matches) and the actual "Pay Period"
+    # multi-select. Anchor on exact name to disambiguate.
+    # Accessible name format on these sdf-inputs is "{Label} {Value}", e.g.
+    # "Report Period Pay P..." or "Pay Period 1 Selected". Anchor START so we
+    # don't accidentally match Report Period (whose value contains "Pay P").
+    pp_combobox = frame.get_by_role(
+        "combobox", name=re.compile(r"^Pay Period\b", re.I)
+    ).first
+    pp_combobox.click()
+    page.wait_for_timeout(800)
+
+    if target_date is not None:
+        # Nightly-incremental mode: pick exactly the one pay period whose
+        # date range contains target_date. Cuts XLSX size by ~26x and skips
+        # re-pulling already-mirrored periods.
+        date_range_re = re.compile(
+            r"(\d{1,2})/(\d{1,2})/(\d{4})\s*-\s*(\d{1,2})/(\d{1,2})/(\d{4})"
+        )
+        opts = frame.get_by_role("option", name=date_range_re)
         try:
-            timecard_tile.wait_for(state="visible", timeout=3_000)
-        except Exception:
-            time_section_header.click()
-            page.wait_for_timeout(500)
-            timecard_tile.wait_for(state="visible", timeout=10_000)
-        timecard_tile.scroll_into_view_if_needed(timeout=5_000)
-        timecard_tile.click()
-        # Timecard report iframe rendering — wait for the iframe directly.
-        page.locator("iframe[name='mdfTimeFrame']").wait_for(state="attached", timeout=20_000)
-        page.wait_for_timeout(2_500)
-
-        # All Timecard report controls live inside iframe[name="mdfTimeFrame"].
-        # Iframe loads its content async, give it a beat.
-        page.wait_for_timeout(4_000)
-        frame = page.frame_locator("iframe[name='mdfTimeFrame']")
-
-        # Select All pay periods. There are TWO comboboxes with "Pay Period" in
-        # their name — "Report Period" (single-select; its current value is
-        # "Pay P..." which a permissive regex matches) and the actual "Pay Period"
-        # multi-select. Anchor on exact name to disambiguate.
-        # Accessible name format on these sdf-inputs is "{Label} {Value}", e.g.
-        # "Report Period Pay P..." or "Pay Period 1 Selected". Anchor START so we
-        # don't accidentally match Report Period (whose value contains "Pay P").
-        pp_combobox = frame.get_by_role(
-            "combobox", name=re.compile(r"^Pay Period\b", re.I)
-        ).first
-        pp_combobox.click()
-        page.wait_for_timeout(800)
-        # The multi-select listbox has a "Select All" checkbox at the top.
-        # Falls back to clicking every "Pay Period: …" option if the listbox
-        # implementation doesn't expose a Select All.
+            n = opts.count()
+        except Exception:  # noqa: BLE001
+            n = 0
+        matched = False
+        for i in range(n):
+            opt = opts.nth(i)
+            try:
+                name = opt.get_attribute("aria-label") or opt.inner_text()
+            except Exception:  # noqa: BLE001
+                name = ""
+            m = date_range_re.search(name or "")
+            if not m:
+                continue
+            start = datetime.date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
+            end = datetime.date(int(m.group(6)), int(m.group(4)), int(m.group(5)))
+            if start <= target_date <= end:
+                opt.click()
+                matched = True
+                print(f"[adp_timecard] selected pay period "
+                      f"{start.isoformat()} → {end.isoformat()} "
+                      f"(contains target_date={target_date.isoformat()})")
+                break
+        if not matched:
+            # No pay period covers target_date — likely a calibration drift.
+            # Fall back to Select All so we still ship a useful XLSX rather
+            # than an empty one.
+            print(f"[adp_timecard] WARN: no pay period contains "
+                  f"{target_date.isoformat()}; falling back to Select All")
+            try:
+                frame.get_by_role(
+                    "option", name=re.compile(r"^Select All$", re.I)
+                ).first.click()
+            except Exception:  # noqa: BLE001
+                pass
+    else:
+        # Backfill / default mode: select every pay period exposed in the
+        # dropdown. The multi-select listbox has a "Select All" checkbox at
+        # the top; fall back to per-option clicks if not exposed.
         try:
             select_all = frame.get_by_role(
                 "option", name=re.compile(r"^Select All$", re.I)
@@ -433,56 +519,51 @@ def download_timecard(
             select_all.wait_for(state="visible", timeout=5_000)
             select_all.click()
         except Exception:
-            # Fallback: click each pay-period option individually.
             opts = frame.get_by_role(
                 "option", name=re.compile(r"\d{1,2}/\d{1,2}/\d{4}\s*-\s*\d{1,2}/\d{1,2}/\d{4}", re.I)
             )
             n = opts.count()
             for i in range(n):
                 opts.nth(i).click()
-        page.wait_for_timeout(500)
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
+    page.wait_for_timeout(500)
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(300)
 
-        # Format: must be "Continuous" — "Page Layout" only exposes Print (PDF)
-        # and hides the Excel export button entirely.
-        fmt_combobox = frame.get_by_role(
-            "combobox", name=re.compile(r"^Format\b", re.I)
-        ).first
-        fmt_combobox.click()
-        page.wait_for_timeout(500)
-        try:
-            frame.get_by_role(
-                "option", name=re.compile(r"^Continuous$", re.I)
-            ).first.click()
-        except Exception:
-            # Fallback: keyboard nav
-            page.keyboard.press("ArrowDown")
-            page.keyboard.press("Enter")
-        page.wait_for_timeout(400)
+    # Format: must be "Continuous" — "Page Layout" only exposes Print (PDF)
+    # and hides the Excel export button entirely.
+    fmt_combobox = frame.get_by_role(
+        "combobox", name=re.compile(r"^Format\b", re.I)
+    ).first
+    fmt_combobox.click()
+    page.wait_for_timeout(500)
+    try:
+        frame.get_by_role(
+            "option", name=re.compile(r"^Continuous$", re.I)
+        ).first.click()
+    except Exception:
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("Enter")
+    page.wait_for_timeout(400)
 
-        # Apply Changes
-        frame.get_by_role("button", name=re.compile(r"^Apply Changes$", re.I)).first.click()
-        # Report body re-renders; takes a few seconds.
-        page.wait_for_timeout(8_000)
+    frame.get_by_role("button", name=re.compile(r"^Apply Changes$", re.I)).first.click()
+    page.wait_for_timeout(8_000)
 
-        # Export To Excel — the SDF-BUTTON custom element. Try selector first, then JS.
-        excel_btn_selector = "#report-excel-button"
-        try:
-            frame.locator(excel_btn_selector).first.wait_for(state="visible", timeout=10_000)
-        except Exception:
-            # Wait longer if report is still rendering.
-            page.wait_for_timeout(5_000)
-            frame.locator(excel_btn_selector).first.wait_for(state="visible", timeout=10_000)
+    # Export To Excel — the SDF-BUTTON custom element.
+    excel_btn_selector = "#report-excel-button"
+    try:
+        frame.locator(excel_btn_selector).first.wait_for(state="visible", timeout=10_000)
+    except Exception:
+        page.wait_for_timeout(5_000)
+        frame.locator(excel_btn_selector).first.wait_for(state="visible", timeout=10_000)
 
-        rename = f"Timecard-{datetime.date.today().isoformat()}.xlsx"
-        path = download_to(
-            page,
-            trigger=lambda: frame.locator(excel_btn_selector).first.click(),
-            rename_to=rename,
-            timeout_ms=60_000,
-        )
-        return path
+    rename = f"Timecard-{datetime.date.today().isoformat()}.xlsx"
+    path = download_to(
+        page,
+        trigger=lambda: frame.locator(excel_btn_selector).first.click(),
+        rename_to=rename,
+        timeout_ms=60_000,
+    )
+    return path
 
 
 # ── Earnings scrape ────────────────────────────────────────────────
@@ -528,55 +609,239 @@ def download_earnings(
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
         _ensure_logged_in(page, store=store)
-
-        page.locator('[data-test-id="Reports-btn"]').first.click()
-        page.wait_for_load_state("networkidle", timeout=15_000)
-        page.wait_for_timeout(1_500)
-
-        # Scroll to "My saved custom reports" section and click the report.
-        # The link's accessible name matches the saved-report title.
-        report_link = page.get_by_role("link", name=re.compile(rf"^{re.escape(report_name)}$", re.I)).first
-        report_link.scroll_into_view_if_needed()
-        report_link.click()
-        page.wait_for_load_state("networkidle", timeout=15_000)
-        page.wait_for_timeout(2_000)
-
-        # Custom report builder modal opens (NO iframe).
-        # 1. Set Date range = "Custom date range"
-        date_range_combo = page.get_by_role("combobox", name=re.compile(r"Date range", re.I)).first
-        date_range_combo.click()
-        page.wait_for_timeout(300)
-        page.get_by_role("option", name=re.compile(r"Custom date range", re.I)).first.click()
-        page.wait_for_timeout(500)
-
-        # 2. From / To textboxes
-        page.get_by_role("textbox", name=re.compile(r"From", re.I)).first.fill(start.strftime("%m/%d/%Y"))
-        page.get_by_role("textbox", name=re.compile(r"To", re.I)).first.fill(end.strftime("%m/%d/%Y"))
-        page.keyboard.press("Tab")
-        page.wait_for_timeout(500)
-
-        # 3. Click "Preview report"
-        page.locator("[data-test-id='view-custom-report']").first.click()
-        # Wait for preview grid to render
-        page.wait_for_timeout(4_000)
-
-        # 4. Open Download dropdown
-        page.get_by_role("button", name=re.compile(r"^Download$", re.I)).first.click()
-        page.wait_for_timeout(500)
-        page.get_by_role("menuitem", name=re.compile(r"Excel \(\.xlsx\)", re.I)).first.click()
-
-        # 5. Wait for "Your report is ready to download" dialog (~3-10s)
-        ready_dialog_btn = page.locator("[data-test-id='download-report']").first
-        ready_dialog_btn.wait_for(state="visible", timeout=30_000)
-
-        rename = f"Earnings-and-Hours-V1-{datetime.date.today().isoformat()}.xlsx"
-        path = download_to(
-            page,
-            trigger=lambda: ready_dialog_btn.click(),
-            rename_to=rename,
-            timeout_ms=60_000,
+        return _earnings_within_session(
+            page, store=store, start=start, end=end
         )
-        return path
+
+
+def _earnings_within_session(
+    page,
+    *,
+    store: str,
+    start: datetime.date,
+    end: datetime.date,
+) -> pathlib.Path:
+    """Run the Earnings & Hours scrape on an already-authenticated page.
+
+    Pre-condition: `page` is on the v2 ADP RUN dashboard. Caller owns the
+    browser context.
+
+    Selector strategy (changed 2026-05-19): the original implementation used
+    `page.wait_for_load_state("networkidle", timeout=15_000)` after the
+    Reports-btn click and again after the report-link click. ADP's dashboard
+    holds long-poll connections open indefinitely, so networkidle NEVER
+    fires and the call always hits the 15s timeout. download_timecard had
+    the same bug and was fixed earlier — this helper now mirrors that
+    pattern (wait for the next-step landmark element directly instead of
+    a global load-state).
+    """
+    profile = _load_store_profile(store)
+    report_name = profile["adp_run"].get("wage_rate_report_name", "Earnings and Hours V1")
+
+    page.locator('[data-test-id="Reports-btn"]').first.click()
+
+    # Wait for the saved-report link itself to appear on the Reports landing
+    # page — it's a stable landmark and avoids networkidle's long-poll trap.
+    report_link = page.get_by_role(
+        "link", name=re.compile(rf"^{re.escape(report_name)}$", re.I)
+    ).first
+    report_link.wait_for(state="visible", timeout=20_000)
+    report_link.scroll_into_view_if_needed(timeout=5_000)
+    report_link.click()
+
+    # Custom report builder opens (NO iframe). Wait for the Date range
+    # combobox to be visible — that's the first control we need to drive.
+    date_range_combo = page.get_by_role(
+        "combobox", name=re.compile(r"Date range", re.I)
+    ).first
+    date_range_combo.wait_for(state="visible", timeout=20_000)
+    date_range_combo.click()
+    page.wait_for_timeout(300)
+    page.get_by_role("option", name=re.compile(r"Custom date range", re.I)).first.click()
+    page.wait_for_timeout(500)
+
+    page.get_by_role("textbox", name=re.compile(r"From", re.I)).first.fill(start.strftime("%m/%d/%Y"))
+    page.get_by_role("textbox", name=re.compile(r"To", re.I)).first.fill(end.strftime("%m/%d/%Y"))
+    page.keyboard.press("Tab")
+    page.wait_for_timeout(500)
+
+    page.locator("[data-test-id='view-custom-report']").first.click()
+    page.wait_for_timeout(4_000)
+
+    page.get_by_role("button", name=re.compile(r"^Download$", re.I)).first.click()
+    page.wait_for_timeout(500)
+    page.get_by_role("menuitem", name=re.compile(r"Excel \(\.xlsx\)", re.I)).first.click()
+
+    # "Your report is ready to download" dialog (~3-10s).
+    ready_dialog_btn = page.locator("[data-test-id='download-report']").first
+    ready_dialog_btn.wait_for(state="visible", timeout=30_000)
+
+    rename = f"Earnings-and-Hours-V1-{datetime.date.today().isoformat()}.xlsx"
+    path = download_to(
+        page,
+        trigger=lambda: ready_dialog_btn.click(),
+        rename_to=rename,
+        timeout_ms=60_000,
+    )
+    return path
+
+
+# ── Bundle: one browser session, one login, both scrapes ───────────
+
+
+def download_adp_bundle(
+    *,
+    store: str = "palmetto",
+    target_date: Optional[datetime.date] = None,
+    include_earnings: bool = True,
+    earnings_window_days: int = 90,
+    headed: bool = True,
+    slow_mo_ms: int = 50,
+    keep_open_on_error: bool = False,
+) -> dict:
+    """Run BOTH ADP scrapes in a single browser session.
+
+    Motivation: the standalone `download_timecard` and `download_earnings`
+    functions each open their own context → each runs `_ensure_logged_in`
+    → each can trigger ADP 2FA → operator gets TWO SMS OTPs per nightly
+    run. This bundle opens ONE context, logs in ONCE, and runs both
+    scrapes within that session, so the operator pays at most one OTP
+    cost per refresh.
+
+    Layered idempotency:
+        - Layer A (file on disk): if today's XLSX is already on disk for a
+          given component, that component is skipped and the cached path
+          is returned without launching the browser.
+        - Layer B (per-component markers): success of each scrape writes
+          `~/.bhaga/state/run-<today_ct>/{adp_timecard,adp_earnings}.done`
+          so the orchestrator's per-step granularity is preserved even
+          though it now invokes a single `adp_reports` step.
+
+    Partial-success contract: if Timecard succeeds but Earnings fails (or
+    vice versa), we DO NOT raise mid-flight. Both attempts run, the
+    successful XLSX is returned in the result dict, and the caller can
+    decide how to handle the partial failure (the orchestrator wraps this
+    by raising AFTER inspecting `errors`, so the partial success is
+    captured on disk + in markers before the exception propagates).
+
+    Args:
+        store: store profile name (Keychain entry key).
+        target_date: date contained by the Timecard pay period to scrape.
+            Passed through to `_timecard_within_session`. None = backfill.
+        include_earnings: if False, only Timecard runs (orchestrator sets
+            this off Mon/Tue per `_should_run_rates`).
+        earnings_window_days: how far back the earnings scrape's "From"
+            date should go (default 90 — enough for current rates + the
+            most recent pay period's Credit Card Tips Owed).
+
+    Returns:
+        {
+            "timecard_xlsx": pathlib.Path | None,
+            "earnings_xlsx": pathlib.Path | None,
+            "errors":        {step_name: "ExcType: msg"},   # empty on full success
+        }
+    """
+    today = datetime.date.today()
+    tc_expected = DOWNLOADS_DIR / f"Timecard-{today.isoformat()}.xlsx"
+    er_expected = DOWNLOADS_DIR / f"Earnings-and-Hours-V1-{today.isoformat()}.xlsx"
+
+    tc_fresh = is_fresh_download(tc_expected, min_bytes=10_000)
+    er_fresh = is_fresh_download(er_expected, min_bytes=5_000) if include_earnings else False
+
+    result: dict = {
+        "timecard_xlsx": tc_expected if tc_fresh else None,
+        "earnings_xlsx": er_expected if (include_earnings and er_fresh) else None,
+        "errors": {},
+    }
+
+    needs_timecard = not tc_fresh
+    needs_earnings = include_earnings and not er_fresh
+
+    if not needs_timecard and not needs_earnings:
+        print("[adp_bundle] SKIP browser — Layer A: required XLSX files already fresh on disk.")
+        if tc_fresh:
+            _mark_run_step_done("adp_timecard", note="layer_a_skip (file fresh on disk)")
+        if include_earnings and er_fresh:
+            _mark_run_step_done("adp_earnings", note="layer_a_skip (file fresh on disk)")
+        return result
+
+    print(f"[adp_bundle] needs_timecard={needs_timecard} needs_earnings={needs_earnings}; "
+          f"opening single browser session (one login, one OTP cost).")
+
+    with launch_persistent(
+        portal="adp",
+        headed=headed,
+        slow_mo_ms=slow_mo_ms,
+        keep_open_on_error=keep_open_on_error,
+    ) as (ctx, page):
+        _ensure_logged_in(page, store=store)
+
+        if needs_timecard:
+            try:
+                path = _timecard_within_session(page, target_date=target_date)
+                result["timecard_xlsx"] = path
+                _mark_run_step_done(
+                    "adp_timecard",
+                    note=f"target_date={target_date.isoformat() if target_date else 'none'}",
+                )
+                print(f"[adp_bundle] timecard OK → {path}")
+            except Exception as exc:  # noqa: BLE001
+                result["errors"]["adp_timecard"] = f"{type(exc).__name__}: {exc}"
+                print(f"[adp_bundle] timecard FAILED (continuing to earnings): "
+                      f"{type(exc).__name__}: {exc}")
+                # Per-component evidence — the launch_persistent global capture
+                # only fires if the whole context with-block raises; here we
+                # swallow to allow earnings to attempt.
+                try:
+                    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                    page.screenshot(
+                        path=str(pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
+                                 / f"adp-bundle-timecard-fail-{ts}.png"),
+                        full_page=True,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+        if needs_earnings:
+            try:
+                # Reset to the v2 dashboard so the earnings flow starts from a
+                # known state. Timecard left the page deep inside the iframe
+                # report (or in a partial-failure state); the Reports-btn lives
+                # on the dashboard chrome.
+                page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30_000)
+                try:
+                    page.wait_for_url(POST_LOGIN_URL_RE, timeout=20_000)
+                except Exception:  # noqa: BLE001
+                    # Session may have lapsed between scrapes (rare but ADP
+                    # has been observed to expire mid-flow); re-login.
+                    print("[adp_bundle] earnings: session lapsed after timecard; re-running login")
+                    _ensure_logged_in(page, store=store)
+
+                window_end = target_date or today
+                window_start = window_end - datetime.timedelta(days=earnings_window_days)
+                path = _earnings_within_session(
+                    page, store=store, start=window_start, end=window_end
+                )
+                result["earnings_xlsx"] = path
+                _mark_run_step_done(
+                    "adp_earnings",
+                    note=f"window={window_start.isoformat()}..{window_end.isoformat()}",
+                )
+                print(f"[adp_bundle] earnings OK → {path}")
+            except Exception as exc:  # noqa: BLE001
+                result["errors"]["adp_earnings"] = f"{type(exc).__name__}: {exc}"
+                print(f"[adp_bundle] earnings FAILED: {type(exc).__name__}: {exc}")
+                try:
+                    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                    page.screenshot(
+                        path=str(pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
+                                 / f"adp-bundle-earnings-fail-{ts}.png"),
+                        full_page=True,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+        return result
 
 
 # ── CLI ────────────────────────────────────────────────────────────

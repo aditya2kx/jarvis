@@ -159,6 +159,54 @@ def write_marker(today_ct: datetime.date, *, status: str = "success",
     MARKER_FILE.write_text("\n".join(lines) + "\n")
 
 
+def _extract_failed_steps(refresh_date: datetime.date) -> list[str]:
+    """Return the names of steps that failed in today's daily_refresh run.
+
+    Two signals, in priority order:
+
+    1. **Primary — refresh.log tail**: daily_refresh.py emits a
+       `=== N step(s) failed: <comma-list> ===` summary at the end of every
+       failed run (see daily_refresh.py near the bottom of main()). We grep
+       for the LAST such line. This is the most reliable signal because it's
+       written in the same process that owns the truth.
+
+    2. **Fallback — marker comparison**: if the log doesn't have a summary
+       line (e.g. daily_refresh was SIGKILL'd before it could emit one), we
+       compare the per-step .done markers in
+       ~/.bhaga/state/run-<refresh_date>/ against an expected superset and
+       report missing markers. Note: some steps are conditionally skipped
+       (square_transactions when gap is empty, process_reviews when
+       --skip-reviews, etc.), so this fallback can over-report; it's only
+       used when the primary signal is unavailable.
+    """
+    try:
+        if REFRESH_LOG.exists():
+            body = REFRESH_LOG.read_text(errors="replace")
+            import re  # noqa: PLC0415
+            matches = re.findall(
+                r"===\s*\d+\s+step\(s\)\s+failed:\s*(.+?)\s*===",
+                body,
+            )
+            if matches:
+                return [s.strip() for s in matches[-1].split(",") if s.strip()]
+    except Exception:  # noqa: BLE001
+        pass
+
+    expected = {
+        "square_transactions",
+        "consolidate_csv",
+        "adp_reports",
+        "write_raw_sheets",
+        "update_model_sheet",
+        "process_reviews",
+    }
+    run_dir = pathlib.Path.home() / ".bhaga" / "state" / f"run-{refresh_date.isoformat()}"
+    if not run_dir.is_dir():
+        return []
+    completed = {p.stem for p in run_dir.glob("*.done")}
+    return sorted(expected - completed)
+
+
 def run_refresh(refresh_date: datetime.date) -> int:
     """Spawn daily_refresh.py as a subprocess.
 
@@ -269,9 +317,17 @@ def main() -> int:
             # roll-up notification that today's run is parked.
             try:
                 from agents.bhaga.notify import failure_alert  # noqa: PLC0415
+                failed_steps = _extract_failed_steps(refresh_date)
+                if failed_steps:
+                    step_label = (
+                        f"[DAILY ROLL-UP] {len(failed_steps)} step(s) failed: "
+                        f"{', '.join(failed_steps)}"
+                    )
+                else:
+                    step_label = "[DAILY ROLL-UP] refresh failed (no per-step summary captured)"
                 failure_alert(
-                    step="daily_refresh (wrapper summary)",
-                    exception=RuntimeError(f"refresh exited rc={rc}"),
+                    step=step_label,
+                    exception=RuntimeError(f"rc={rc}"),
                     date=refresh_date.isoformat(),
                     extra=(
                         "Strict 1-attempt: cron will NOT auto-retry tonight. "

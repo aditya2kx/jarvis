@@ -60,7 +60,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
 from agents.bhaga.notify import failure_alert, info_ping, success_heartbeat
 from core.config_loader import refresh_access_token
-from skills.adp_run_automation.runner import download_earnings, download_timecard
+from skills.adp_run_automation.runner import download_adp_bundle
 from skills.square_tips.runner import download_transactions
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -230,6 +230,37 @@ def cleanup_old_run_dirs(*, keep_days: int = 7) -> None:
                 print(f"[cleanup] pruned old run dir: {child}")
             except Exception as exc:  # noqa: BLE001
                 print(f"[cleanup] could not prune {child}: {exc}")
+
+
+def _adp_bundle_then_raise(
+    *,
+    store: str,
+    target_date: datetime.date,
+    include_earnings: bool,
+    headed: bool,
+) -> dict:
+    """Wrap download_adp_bundle so the orchestrator's run_step sees a clean
+    success/exception contract.
+
+    The bundle deliberately swallows per-component exceptions so that a
+    Timecard failure doesn't prevent Earnings from running (and vice versa).
+    Once BOTH attempts have completed and per-component markers + screenshots
+    have been written, this wrapper inspects `result["errors"]` and raises a
+    summary RuntimeError if anything failed. By this point the partial
+    success is durable on disk and run-state markers; the exception just
+    surfaces it to the orchestrator + Slack alert path.
+    """
+    result = download_adp_bundle(
+        store=store,
+        target_date=target_date,
+        include_earnings=include_earnings,
+        headed=headed,
+    )
+    errs = result.get("errors") or {}
+    if errs:
+        summary = "; ".join(f"{name}: {msg}" for name, msg in errs.items())
+        raise RuntimeError(f"adp_bundle partial failure ({len(errs)} component(s)): {summary}")
+    return result
 
 
 def run_step(
@@ -409,31 +440,34 @@ def main() -> int:
     elif not args.skip_square:
         print("[square_transactions] SKIPPED — already covered through refresh_date.")
 
-    # Step 2: ADP Timecard
+    # Step 2 + 3 (combined): ADP Reports bundle.
+    # Both Timecard and Earnings now run in a SINGLE browser session via
+    # download_adp_bundle — one login, at most one OTP cost per nightly run.
+    # The bundle returns a partial-success dict (timecard_xlsx / earnings_xlsx
+    # / errors); per-component .done markers are written inside the bundle so
+    # operator-facing granularity is preserved. We raise here AFTER both
+    # attempts have run so the partial success lands on disk + in markers
+    # before the exception propagates.
     if not args.skip_timecard:
         ok, val = run_step(
-            "adp_timecard",
-            lambda: download_timecard(store=args.store, headed=headed),
+            "adp_reports",
+            lambda: _adp_bundle_then_raise(
+                store=args.store,
+                target_date=refresh_date,
+                include_earnings=include_rates,
+                headed=headed,
+            ),
             refresh_date=refresh_date.isoformat(),
             dry_run=args.dry_run,
         )
-        if ok:
-            artifacts["adp_timecard_xlsx"] = val
-        else:
-            failures.append(("adp_timecard", val))
-
-    # Step 3: ADP Earnings (conditional)
-    if include_rates:
-        ok, val = run_step(
-            "adp_earnings",
-            lambda: download_earnings(store=args.store, headed=headed),
-            refresh_date=refresh_date.isoformat(),
-            dry_run=args.dry_run,
-        )
-        if ok:
-            artifacts["adp_earnings_xlsx"] = val
-        else:
-            failures.append(("adp_earnings", val))
+        if ok and isinstance(val, dict):
+            artifacts["adp_timecard_xlsx"] = val.get("timecard_xlsx")
+            artifacts["adp_earnings_xlsx"] = val.get("earnings_xlsx")
+        elif not ok:
+            # The bundle raised (one or both components failed). Translate
+            # into the legacy failure list shape so downstream gating logic
+            # (square_ok / raw_sheets_ok) keeps working unchanged.
+            failures.append(("adp_reports", val))
 
     # Step 3b: Push scraped data into the three RAW Google Sheets. The model
     # sheet's contract (per architecture) is: read only from raw sheets, never

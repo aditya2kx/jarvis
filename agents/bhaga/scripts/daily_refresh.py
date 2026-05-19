@@ -14,7 +14,9 @@ End-to-end nightly flow:
     6. Mirror local scrapes into the canonical raw Google Sheets
        (bhaga_adp_raw, bhaga_square_raw) via backfill_from_downloads. Per
        architecture contract, all downstream code reads only from these.
-    7. Run update_model_sheet to refresh the 5 Model workbook tabs.
+    7. Run update_model_sheet to refresh the 8 Model workbook tabs:
+       config, daily, labor_daily, labor_weekly, labor_period,
+       tip_alloc_period, tip_alloc_daily, period_summary.
        (Reads from raw sheets, NOT local files.)
     8. Run process_reviews to fetch Google reviews from ClickUp, allocate
        bonuses, and rebuild review_bonus_period on the Model sheet.

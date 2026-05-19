@@ -48,6 +48,7 @@ import pathlib
 import subprocess
 import sys
 import traceback
+from typing import Optional
 
 # When launched by launchd without WorkingDirectory set, our cwd is /. Move
 # off that immediately so any later relative-path operations are well-defined
@@ -113,18 +114,49 @@ def gate(*, force: bool, simulate_ct: str | None) -> tuple[bool, str, datetime.d
         ), refresh_date
 
     if MARKER_FILE.exists():
-        last_run = MARKER_FILE.read_text().strip()
-        if last_run == today_ct.isoformat():
+        # Marker is multi-line: first line is the ISO date, subsequent lines
+        # may contain status/attempted_at/rerun hint (see write_marker).
+        body = MARKER_FILE.read_text()
+        first_line = body.split("\n", 1)[0].strip()
+        if first_line == today_ct.isoformat():
+            # Surface the marker body's status (if present) so the wrapper
+            # log shows whether the prior attempt succeeded or failed.
+            status_line = next(
+                (ln for ln in body.splitlines() if ln.lower().startswith("status:")),
+                "",
+            )
             return False, (
-                f"marker file shows already ran today_ct={today_ct.isoformat()}; skipping."
+                f"marker file shows already ran today_ct={today_ct.isoformat()}"
+                f"{' (' + status_line.strip() + ')' if status_line else ''}; skipping."
             ), refresh_date
 
     return True, f"GO: now_ct={now_ct.isoformat()}, target hour matched, no marker for today.", refresh_date
 
 
-def write_marker(today_ct: datetime.date) -> None:
+def write_marker(today_ct: datetime.date, *, status: str = "success",
+                 attempted_at: Optional[datetime.datetime] = None,
+                 rc: Optional[int] = None) -> None:
+    """Write the day marker so subsequent cron wakes gate off.
+
+    Strict-1-attempt: this is called on BOTH success and failure of the
+    refresh. The marker body records the outcome so the wrapper log + a
+    quick `cat` shows whether intervention is needed.
+    """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    MARKER_FILE.write_text(today_ct.isoformat())
+    when = (attempted_at or datetime.datetime.now(datetime.timezone.utc)).isoformat()
+    lines = [today_ct.isoformat(), f"status: {status}", f"attempted_at: {when}"]
+    if rc is not None:
+        lines.append(f"rc: {rc}")
+    if status != "success":
+        lines.append(
+            "rerun: python3 /Users/adityaparikh/Documents/current-workspace/Jarvis/"
+            "agents/bhaga/scripts/daily_refresh_wrapper.py --force"
+        )
+        lines.append(
+            "note: completed steps will be skipped via per-step markers in "
+            "~/.bhaga/state/run-<date>/*.done"
+        )
+    MARKER_FILE.write_text("\n".join(lines) + "\n")
 
 
 def run_refresh(refresh_date: datetime.date) -> int:
@@ -207,14 +239,49 @@ def main() -> int:
         if not should_run:
             return 0
 
+        # Best-effort cleanup of old per-run state dirs (>7 days). Failure
+        # here is non-fatal — we just log and continue.
+        try:
+            sys.path.insert(0, str(PROJECT_ROOT))
+            from agents.bhaga.scripts.daily_refresh import cleanup_old_run_dirs  # noqa: PLC0415
+            cleanup_old_run_dirs(keep_days=7)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"cleanup_old_run_dirs failed (non-fatal): {exc}")
+
         rc = run_refresh(refresh_date)
+        today_ct = _now_ct().date()
+        # STRICT 1-ATTEMPT: write the day marker on ANY exit (success or
+        # failure). Subsequent cron wakes this night will see the marker and
+        # gate off. Operator can manually re-trigger with --force; per-step
+        # markers in ~/.bhaga/state/run-<date>/ ensure already-completed
+        # steps are skipped on the rerun (no duplicate OTPs).
         if rc == 0:
-            today_ct = _now_ct().date()
-            write_marker(today_ct)
-            _log(f"marker written: {today_ct.isoformat()}")
+            write_marker(today_ct, status="success", rc=rc)
+            _log(f"marker written: {today_ct.isoformat()} (success)")
             return 0
         else:
-            _log(f"refresh failed (rc={rc}); NOT writing marker so next 15min wakeup retries.")
+            write_marker(today_ct, status="failed", rc=rc)
+            _log(f"refresh failed (rc={rc}); marker written so no auto-retry. "
+                 f"Manual rerun: python3 /Users/adityaparikh/Documents/current-workspace/"
+                 f"Jarvis/agents/bhaga/scripts/daily_refresh_wrapper.py --force")
+            # Wrapper-level summary alert (per-step alerts already fired
+            # inside daily_refresh.py). This gives the operator a single
+            # roll-up notification that today's run is parked.
+            try:
+                from agents.bhaga.notify import failure_alert  # noqa: PLC0415
+                failure_alert(
+                    step="daily_refresh (wrapper summary)",
+                    exception=RuntimeError(f"refresh exited rc={rc}"),
+                    date=refresh_date.isoformat(),
+                    extra=(
+                        "Strict 1-attempt: cron will NOT auto-retry tonight. "
+                        "Per-step alerts above show which step failed. "
+                        "Re-run when ready: python3 .../daily_refresh_wrapper.py --force "
+                        "(completed steps will skip via per-step markers)."
+                    ),
+                )
+            except Exception as alert_exc:  # noqa: BLE001
+                _log(f"wrapper failure_alert failed (non-fatal): {alert_exc}")
             return rc
 
     except Exception as exc:  # noqa: BLE001

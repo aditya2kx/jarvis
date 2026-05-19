@@ -29,6 +29,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from skills._browser_runtime.runtime import (
     DOWNLOADS_DIR,
     download_to,
+    is_fresh_download,
     launch_persistent,
 )
 from skills.square_tips.transactions_backend import parse_csv, get_credentials
@@ -400,7 +401,21 @@ def download_transactions(
     scrape while a first is in flight would fire a second 2FA SMS to the
     operator and waste their OTP reply — so the second invocation hard-fails
     immediately instead. The lock auto-reclaims if its owning PID is dead.
+
+    Idempotency: if `extracted/downloads/transactions-{start}-{end+1}.csv`
+    already exists with today's mtime (CT) and is non-empty, return it
+    without launching the browser. Eliminates the duplicate-SMS storm when
+    a downstream step failed and the wrapper re-fires the cron. Caller
+    can force a re-download by deleting the file or with --force.
     """
+    expected = DOWNLOADS_DIR / (
+        f"transactions-{start_date.isoformat()}-"
+        f"{(end_date + datetime.timedelta(days=1)).isoformat()}.csv"
+    )
+    if is_fresh_download(expected):
+        print(f"[square_transactions] SKIP browser — fresh CSV already on disk: {expected}")
+        return expected
+
     _acquire_scrape_lock(store)
     try:
         with launch_persistent(

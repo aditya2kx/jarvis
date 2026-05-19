@@ -1095,10 +1095,25 @@ def main() -> int:
         print(f"# review_bonus_period: {len(rollup_rows) - 1} data rows.")
 
     # ── Slack summary ──
-    summary = (
-        f"Reviews: +{len(new_review_rows)} (master now {len(all_reviews)}); "
-        f"unparseable: +{len(unparseable_rows)}; anomalies: {len(anomalies)}"
-    )
+    # Build the summary line-by-line so HELD-BACK is prominent. The
+    # `held_back` count comes from messages that parsed cleanly but landed
+    # AFTER the model's data_window_end — they're correct reviews waiting on
+    # ADP/Square data to advance the window. Surfacing the count here is
+    # essential because the previous "+0" summary made it look like nothing
+    # was missed even when 17 reviews were dropped.
+    parts = [f"Reviews: +{len(new_review_rows)} (master now {len(all_reviews)})"]
+    if held_back > 0:
+        parts.append(
+            f"HELD-BACK: {held_back} "
+            f"(model.data_window_end={end_of_window_dt.date().isoformat()} — "
+            f"upstream data didn't advance; reviews will land on next "
+            f"successful daily refresh)"
+        )
+    if unparseable_rows:
+        parts.append(f"unparseable: +{len(unparseable_rows)}")
+    if anomalies:
+        parts.append(f"anomalies: {len(anomalies)}")
+    summary = "; ".join(parts)
     review_anomaly_alert(anomalies)
     success_heartbeat(
         date=datetime.date.today().isoformat(),

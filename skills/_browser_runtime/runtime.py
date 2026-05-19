@@ -51,6 +51,55 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 DOWNLOADS_DIR = PROJECT_ROOT / "extracted" / "downloads"
 SCREENSHOT_DIR = pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
 
+# Central Time anchor for "today's mtime" checks. We use CT (not UTC) because
+# the daily refresh is scheduled at 9 PM CT and operators reason about
+# "today's scrape" in CT.
+try:
+    from zoneinfo import ZoneInfo  # py3.9+
+    _CT_TZ = ZoneInfo("America/Chicago")
+except ImportError:  # pragma: no cover
+    _CT_TZ = None
+
+
+def today_ct_midnight_epoch() -> float:
+    """Return the epoch-seconds timestamp for CT-today's 00:00:00.
+
+    Used by `is_fresh_download` to decide whether a previously-downloaded
+    file was produced "today" in CT terms (the operator's mental model).
+    Files written before this timestamp are considered stale and will be
+    re-downloaded.
+    """
+    import datetime as _dt
+    if _CT_TZ is None:
+        # Fallback: local midnight. On the production laptop local is CT
+        # so this matches; on a CI host it might not, which is fine since
+        # this code only runs in BHAGA's nightly path.
+        now = _dt.datetime.now()
+        midnight = _dt.datetime.combine(now.date(), _dt.time.min)
+        return midnight.timestamp()
+    now_ct = _dt.datetime.now(tz=_CT_TZ)
+    midnight_ct = _dt.datetime.combine(now_ct.date(), _dt.time.min, tzinfo=_CT_TZ)
+    return midnight_ct.timestamp()
+
+
+def is_fresh_download(path: pathlib.Path, *, min_bytes: int = 100) -> bool:
+    """True if `path` exists, was modified after CT-midnight today, and is non-trivial.
+
+    `min_bytes` filters out empty/error stubs (Square's CSV header alone is
+    ~70 bytes, so 100 is the floor for a meaningful file). Caller is
+    responsible for any further parse-validation; this check is cheap and
+    suitable for the pre-scrape skip-shortcut in download_* functions.
+    """
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return False
+    if st.st_size < min_bytes:
+        return False
+    if st.st_mtime < today_ct_midnight_epoch():
+        return False
+    return True
+
 DEFAULT_VIEWPORT = {"width": 1440, "height": 900}
 # A real-Chrome user-agent so ADP and Square don't flag us as headless/automation.
 REAL_UA = (

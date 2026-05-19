@@ -172,6 +172,66 @@ def _should_run_rates(*, override: str | None) -> bool:
     return today.weekday() in {0, 1}
 
 
+# ── Per-day step markers (Layer B idempotency) ─────────────────────
+#
+# When the wrapper fires and a step partially succeeds, we don't want the
+# next manual --force re-run (or recovery attempt) to redo the already-done
+# work. Each step writes a success marker to
+#   ~/.bhaga/state/run-{today_ct}/{step_name}.done
+# and run_step short-circuits on entry if its marker is present.
+#
+# Layer A (file-based, in download_* functions) handles the cron-storm case:
+# if the CSV/XLSX is on disk for today, skip the browser entirely.
+# Layer B (here) handles non-download steps and any cross-process recovery
+# the operator does. Cleanup: dirs older than 7 days are pruned at wrapper
+# start.
+
+
+def _run_state_dir() -> pathlib.Path:
+    today_ct = datetime.datetime.now(CT).date()
+    return pathlib.Path.home() / ".bhaga" / "state" / f"run-{today_ct.isoformat()}"
+
+
+def step_already_done(step_name: str) -> bool:
+    return (_run_state_dir() / f"{step_name}.done").exists()
+
+
+def mark_step_done(step_name: str, *, note: str = "") -> None:
+    d = _run_state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    body = datetime.datetime.now(CT).isoformat()
+    if note:
+        body += f"\nnote: {note}"
+    (d / f"{step_name}.done").write_text(body)
+
+
+def cleanup_old_run_dirs(*, keep_days: int = 7) -> None:
+    """Prune ~/.bhaga/state/run-YYYY-MM-DD/ dirs older than keep_days.
+
+    Safe no-op if the parent dir doesn't exist or no dirs match.
+    """
+    parent = pathlib.Path.home() / ".bhaga" / "state"
+    if not parent.is_dir():
+        return
+    today = datetime.datetime.now(CT).date()
+    cutoff = today - datetime.timedelta(days=keep_days)
+    for child in parent.iterdir():
+        if not child.is_dir() or not child.name.startswith("run-"):
+            continue
+        try:
+            d = datetime.date.fromisoformat(child.name[len("run-"):])
+        except ValueError:
+            continue
+        if d < cutoff:
+            try:
+                for f in child.iterdir():
+                    f.unlink(missing_ok=True)
+                child.rmdir()
+                print(f"[cleanup] pruned old run dir: {child}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[cleanup] could not prune {child}: {exc}")
+
+
 def run_step(
     step_name: str,
     fn,
@@ -181,7 +241,15 @@ def run_step(
 ) -> tuple[bool, object]:
     """Run a step; on exception, send Slack failure_alert and return (False, exc).
 
+    Idempotency: if the step's success marker already exists in today's run
+    state dir, skip execution entirely. Use --force-step (TODO) or delete
+    the marker file to force a re-run.
+
     Returns (success, return_value_or_exception)."""
+    if step_already_done(step_name) and not dry_run:
+        print(f"\n[{step_name}] SKIPPED — already completed today (marker: "
+              f"{_run_state_dir() / f'{step_name}.done'})")
+        return True, None
     print(f"\n[{step_name}] starting...")
     t0 = time.monotonic()
     if dry_run:
@@ -191,6 +259,10 @@ def run_step(
         result = fn()
         dt = time.monotonic() - t0
         print(f"[{step_name}] OK ({dt:.1f}s) -> {result}")
+        try:
+            mark_step_done(step_name, note=f"runtime={dt:.1f}s, refresh_date={refresh_date}")
+        except Exception as mark_exc:  # noqa: BLE001
+            print(f"[{step_name}] WARN: could not write step marker: {mark_exc}")
         return True, result
     except Exception as exc:  # noqa: BLE001
         dt = time.monotonic() - t0
@@ -201,9 +273,11 @@ def run_step(
                 exception=exc,
                 date=refresh_date,
                 extra=(
-                    f"This step failed after {dt:.1f}s. The next 15-min launchd "
-                    "wakeup will retry. If 3+ consecutive failures, re-seed the "
-                    "relevant Playwright profile manually."
+                    f"This step failed after {dt:.1f}s. With strict-1-attempt "
+                    "enabled, the wrapper writes the day marker and stops. "
+                    "Re-run manually: python3 -m agents.bhaga.scripts.daily_refresh_wrapper --force "
+                    f"(steps already completed today will skip via marker in "
+                    f"{_run_state_dir()})."
                 ),
             )
         except Exception:  # noqa: BLE001, S110

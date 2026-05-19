@@ -41,6 +41,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from skills._browser_runtime.runtime import (
     DOWNLOADS_DIR,
     download_to,
+    is_fresh_download,
     launch_persistent,
 )
 
@@ -152,13 +153,24 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 30_000) -> None:
     except Exception:
         # Diagnose: incorrect creds, 2FA, or unexpected redirect.
         url = page.url.lower()
-        if any(t in url for t in ("verify", "challenge", "step-up", "mfa")):
-            _raise_with_evidence(
-                page, store=store,
-                reason="ADP demanded a verification / 2FA step. OTP flow is not wired. "
-                       "Either complete 2FA manually in your own Chrome to renew the trust window, "
-                       "or migrate ADP to a TOTP method we can read programmatically.",
-            )
+        on_2fa_url = any(t in url for t in ("verify", "challenge", "step-up", "mfa"))
+        # Fallback: ADP sometimes serves 2FA on the bare login origin without a
+        # URL marker — check the visible body for the "Verify your identity"
+        # headline before deciding it's not 2FA.
+        on_2fa_body = False
+        if not on_2fa_url:
+            try:
+                on_2fa_body = page.get_by_text(
+                    re.compile(r"verify your identity|verification code|text message", re.I)
+                ).first.is_visible(timeout=1_000)
+            except Exception:  # noqa: BLE001
+                pass
+        if on_2fa_url or on_2fa_body:
+            print(f"[adp 2fa] detected challenge at {page.url}; engaging Slack-OTP handler...")
+            _handle_adp_two_factor(page, store=store)
+            # Handler returned: re-confirm we reached the dashboard.
+            page.wait_for_url(POST_LOGIN_URL_RE, timeout=timeout_ms)
+            return
         # Check for the inline "incorrect credentials" banner.
         try:
             banner = page.get_by_text(re.compile(r"user ID and/or password are incorrect", re.I)).first
@@ -175,6 +187,142 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 30_000) -> None:
             page, store=store,
             reason=f"ADP login did not reach dashboard. Current URL: {page.url}",
         )
+
+
+def _handle_adp_two_factor(page, *, store: str) -> None:
+    """Drive ADP RUN's SMS-OTP 2FA flow with operator-in-the-loop via Slack.
+
+    Mirrors skills/square_tips/runner.py::_handle_square_two_factor. ADP's
+    challenge page is built with custom <sdf-*> Web Components ("Secure
+    Design Framework") and tends to drift in attribute structure, so this
+    code prefers role/text matching over sdf-tag CSS selectors.
+
+    Flow:
+        1. Pick the "Text message" delivery option (radio or button).
+        2. Click Continue/Send -> ADP sends SMS to the phone on file
+           (per operator policy: number ending 0038 is first preference).
+        3. Wait for the 6-digit code input on the next screen.
+        4. Call skills.slack.adapter.request_otp(agent="bhaga") -> blocks
+           up to 30 min waiting for the operator to reply with the code
+           in the BHAGA DM (Socket-Mode listener picks it up).
+        5. Fill the code, submit (Enter / Verify / Continue).
+
+    Raises with screenshot+html evidence if any step's selector chain fails
+    so we don't end up in a silent infinite wait.
+    """
+    print(f"[adp 2fa] starting handler; URL={page.url}")
+
+    # Step 1: pick text-message delivery. ADP's picker varies between sdf-radio
+    # and clickable sdf-card. Try several patterns.
+    sms_picked = False
+    for selector_fn in (
+        lambda: page.get_by_role("radio", name=re.compile(r"text\s*message|SMS|text\b", re.I)).first,
+        lambda: page.get_by_role("button", name=re.compile(r"text\s*message|SMS", re.I)).first,
+        lambda: page.get_by_text(re.compile(r"text\s*message", re.I)).first,
+    ):
+        try:
+            loc = selector_fn()
+            loc.wait_for(state="visible", timeout=4_000)
+            try:
+                loc.check()
+            except Exception:  # noqa: BLE001 — non-radio elements need click
+                loc.click()
+            sms_picked = True
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    if not sms_picked:
+        # ADP may have already moved straight to the code-entry screen (some
+        # accounts skip the delivery picker). Don't fail — proceed and let
+        # the code-input wait below confirm where we are.
+        print("[adp 2fa] no delivery picker found; assuming code-entry screen already shown")
+
+    # Step 2: click Continue / Send / Next to trigger SMS send. Skip if we
+    # never found a picker — we're already on the code screen.
+    if sms_picked:
+        try:
+            page.get_by_role(
+                "button", name=re.compile(r"^continue$|^next$|^send$|^send code$", re.I)
+            ).first.click(timeout=4_000)
+        except Exception:  # noqa: BLE001
+            try:
+                page.keyboard.press("Enter")
+            except Exception:  # noqa: BLE001
+                pass
+
+    # Step 3: wait for the code-entry input. ADP uses either a single text
+    # input or a 6-digit-box widget. Cover both.
+    page.wait_for_timeout(2_500)  # let the next screen render
+    code_input = None
+    for css in [
+        "input[autocomplete='one-time-code']",
+        "input[name='code']",
+        "input[name='otp']",
+        "input[inputmode='numeric']",
+        "input[type='text'][maxlength='6']",
+        "input[type='tel'][maxlength='6']",
+    ]:
+        try:
+            loc = page.locator(css).first
+            loc.wait_for(state="visible", timeout=4_000)
+            code_input = loc
+            break
+        except Exception:  # noqa: BLE001
+            continue
+
+    six_digit_boxes = None
+    if code_input is None:
+        # Try the per-digit input widget.
+        digit_inputs = page.locator("input[type='text'][maxlength='1'], input[type='tel'][maxlength='1']")
+        try:
+            count = digit_inputs.count()
+        except Exception:  # noqa: BLE001
+            count = 0
+        if count >= 4:
+            six_digit_boxes = digit_inputs
+        else:
+            _raise_with_evidence(
+                page, store=store,
+                reason=f"ADP 2FA code-entry input not found. Selector drift. "
+                       f"Current URL: {page.url}",
+            )
+
+    # Step 4: request OTP via Slack DM, block until operator replies.
+    from skills.slack.adapter import request_otp  # local import: optional dep
+
+    print(f"[adp 2fa] requesting OTP via Slack for store={store!r}; SMS expected at +1-XXX-XXX-0038")
+    code = request_otp(
+        user_id="U0APJRE5DC4",       # operator (primary_user_id from config.yaml)
+        portal_name="ADP",
+        timeout_seconds=1800,         # 30 min — operator may be away from phone
+        phone_hint="+1-XXX-XXX-0038",
+        agent="bhaga",
+    )
+    if not code:
+        raise RuntimeError(
+            "ADP 2FA: operator did not reply with the OTP within 30 minutes. "
+            "Either retry the scrape (a new SMS will fire) or complete login manually."
+        )
+    code = code.strip().replace(" ", "").replace("-", "")
+    print(f"[adp 2fa] got code (len={len(code)}); submitting.")
+
+    # Step 5: fill the code and submit.
+    if code_input is not None:
+        code_input.fill(code)
+    else:
+        for i, ch in enumerate(code):
+            six_digit_boxes.nth(i).fill(ch)
+
+    try:
+        page.get_by_role(
+            "button", name=re.compile(r"^verify$|^continue$|^submit$|^next$|^sign in$", re.I)
+        ).first.click(timeout=4_000)
+    except Exception:  # noqa: BLE001
+        page.keyboard.press("Enter")
+
+    # Brief wait so the post-submit nav has a chance to start before the
+    # caller's wait_for_url runs (avoids racing on stale `page.url`).
+    page.wait_for_timeout(1_500)
 
 
 def _raise_with_evidence(page, *, store: str, reason: str) -> None:
@@ -206,7 +354,17 @@ def download_timecard(
     keep_open_on_error: bool = False,
 ) -> pathlib.Path:
     """Open Reports > Time reports > Timecard, select all available pay periods,
-    apply changes, click Export to Excel, save .xlsx."""
+    apply changes, click Export to Excel, save .xlsx.
+
+    Idempotency: if today's Timecard XLSX is already on disk (CT-today mtime),
+    skip the browser entirely and return the cached path. Eliminates
+    duplicate ADP 2FA SMS on cron retries.
+    """
+    expected = DOWNLOADS_DIR / f"Timecard-{datetime.date.today().isoformat()}.xlsx"
+    if is_fresh_download(expected, min_bytes=10_000):
+        print(f"[adp_timecard] SKIP browser — fresh Timecard XLSX already on disk: {expected}")
+        return expected
+
     with launch_persistent(
         portal="adp",
         headed=headed,
@@ -347,10 +505,19 @@ def download_earnings(
     set Custom date range, preview, download Excel.
 
     Default date range: last 90 days (more than enough to infer current rates
-    AND capture the most recent pay-period's Credit Card Tips Owed)."""
+    AND capture the most recent pay-period's Credit Card Tips Owed).
+
+    Idempotency: if today's Earnings-and-Hours XLSX is already on disk
+    (CT-today mtime), skip the browser entirely and return the cached path.
+    """
+    today = datetime.date.today()
+    expected = DOWNLOADS_DIR / f"Earnings-and-Hours-V1-{today.isoformat()}.xlsx"
+    if is_fresh_download(expected, min_bytes=5_000):
+        print(f"[adp_earnings] SKIP browser — fresh Earnings XLSX already on disk: {expected}")
+        return expected
+
     profile = _load_store_profile(store)
     report_name = profile["adp_run"].get("wage_rate_report_name", "Earnings and Hours V1")
-    today = datetime.date.today()
     start = start_date or (today - datetime.timedelta(days=90))
     end = end_date or today
 

@@ -560,33 +560,67 @@ def build_labor_daily_rows(
         r = rates_by_emp.get(emp_name, {})
         return bool(r.get("is_salaried")) or bool(r.get("excluded_from_labor_pct"))
 
-    # day -> {"el_h", "el_c", "ex_h", "ex_c"}
+    # Fallback rate for employees missing from wage_rates (typically new hires
+    # whose first paycheck hasn't posted, like Juan Flores and Lisette Padron).
+    # Use the MEDIAN wage_rate across the existing hourly bucket — the
+    # "what other hourly employees commonly get" approach. Median is more
+    # robust than mean against a single high outlier (e.g. shift lead). OT
+    # falls back to 1.5x the fallback rate (FLSA default).
+    hourly_rates = [
+        float(r["wage_rate_dollars"])
+        for r in wage_rates
+        if r.get("wage_rate_dollars")
+        and not r.get("is_salaried")
+        and not r.get("excluded_from_labor_pct")
+    ]
+    if hourly_rates:
+        srt = sorted(hourly_rates)
+        n = len(srt)
+        fallback_rate = (srt[n // 2] if n % 2 else (srt[n // 2 - 1] + srt[n // 2]) / 2)
+    else:
+        fallback_rate = 0.0
+
     daily: dict[str, dict[str, float]] = {}
-    missing_rate: set[str] = set()
+    fallback_used: set[str] = set()
+    fallback_dropped: set[str] = set()
     for s in shifts:
         d = s["date"]
         emp = s["employee_name"]
         rate_row = rates_by_emp.get(emp)
-        if not rate_row:
-            missing_rate.add(emp)
+        if rate_row:
+            rate = float(rate_row.get("wage_rate_dollars") or 0)
+            ot_rate = float(rate_row.get("ot_rate_dollars") or 0) or (rate * 1.5)
+            bucket_excluded = _is_excluded(emp)
+        elif fallback_rate > 0:
+            # Apply fallback to UNTIL-NOW-UNSEEN employees. Treat as hourly
+            # (the fallback rate IS the hourly median — anyone in the
+            # fulltime bucket would already have a wage_rates row).
+            rate = fallback_rate
+            ot_rate = rate * 1.5
+            bucket_excluded = emp in excluded_from_tip_pool  # only honor explicit config flag
+            fallback_used.add(emp)
+        else:
+            fallback_dropped.add(emp)
             continue
-        rate = float(rate_row.get("wage_rate_dollars") or 0)
-        ot_rate = float(rate_row.get("ot_rate_dollars") or 0) or (rate * 1.5)
+
         reg_h = float(s.get("regular_hours") or 0)
         ot_h = float(s.get("ot_hours") or 0)
         dt_h = float(s.get("doubletime_hours") or 0)
         cost = reg_h * rate + ot_h * ot_rate + dt_h * rate * 2
         h = reg_h + ot_h + dt_h
         b = daily.setdefault(d, {"el_h": 0.0, "el_c": 0.0, "ex_h": 0.0, "ex_c": 0.0})
-        if _is_excluded(emp):
+        if bucket_excluded:
             b["ex_h"] += h
             b["ex_c"] += cost
         else:
             b["el_h"] += h
             b["el_c"] += cost
-    if missing_rate:
-        print(f"# WARN: labor_daily skipped shifts with no wage_rate row: "
-              f"{sorted(missing_rate)}")
+    if fallback_used:
+        print(f"# NOTE: labor_daily used fallback wage rate ${fallback_rate:.2f}/hr "
+              f"(median of {len(hourly_rates)} hourly rates) for: {sorted(fallback_used)}")
+    if fallback_dropped:
+        print(f"# WARN: labor_daily skipped shifts with no wage_rate AND no fallback available: "
+              f"{sorted(fallback_dropped)}")
 
     all_dates = sorted(set(sales.keys()) | set(daily.keys()))
     header = [
@@ -628,6 +662,120 @@ def build_labor_daily_rows(
             f"{_pct(hourly_cost, gross):.2%}",
             f"{_pct(fulltime_cost, total):.2%}",
             f"{_pct(fulltime_cost, gross):.2%}",
+            f"{_pct(total_cost, total):.2%}",
+            f"{_pct(total_cost, gross):.2%}",
+            f"{_pct(pool, gross):.2%}",
+            f"{_pct(total_cost + pool, total):.2%}",
+        ])
+    return rows
+
+
+def build_labor_period_rows(
+    *,
+    periods: list[dict],
+    labor_daily_rows: list[list],
+) -> list[list]:
+    """Aggregate labor_daily rows by pay period.
+
+    Sums the raw $/hour columns across the days in each period, then
+    recomputes percentages from those sums (NOT an average of per-day
+    percentages — that would mis-weight low-sales days against high-sales
+    ones and produce a meaningless number).
+
+    `periods` come from discover_periods() + append_open_period() so the
+    open in-progress period is included as the last row, flagged via
+    `is_open=Y`. Helps the operator see "where we're trending" before
+    the period closes.
+
+    Columns (20 total):
+      pay_period_start | pay_period_end | is_open | days_covered
+      gross_sales | tip_pool | total_sales
+      hourly_hours | hourly_labor_cost
+      fulltime_hours | fulltime_labor_cost
+      total_labor_cost
+      hourly_pct_of_total_sales | hourly_pct_of_gross_sales
+      fulltime_pct_of_total_sales | fulltime_pct_of_gross_sales
+      total_labor_pct_of_total_sales | total_labor_pct_of_gross_sales
+      tips_pct_of_gross_sales | all_in_cost_pct
+    """
+    if len(labor_daily_rows) <= 1:
+        return [[
+            "pay_period_start", "pay_period_end", "is_open", "days_covered",
+            "gross_sales", "tip_pool", "total_sales",
+            "hourly_hours", "hourly_labor_cost",
+            "fulltime_hours", "fulltime_labor_cost",
+            "total_labor_cost",
+            "hourly_pct_of_total_sales", "hourly_pct_of_gross_sales",
+            "fulltime_pct_of_total_sales", "fulltime_pct_of_gross_sales",
+            "total_labor_pct_of_total_sales", "total_labor_pct_of_gross_sales",
+            "tips_pct_of_gross_sales", "all_in_cost_pct",
+        ]]
+
+    # Index labor_daily by date for fast period-bucketing. Source-of-truth
+    # for the field positions is the header in build_labor_daily_rows above.
+    daily_by_date: dict[str, dict[str, float]] = {}
+    for row in labor_daily_rows[1:]:
+        daily_by_date[row[0]] = {
+            "gross": float(row[2]),
+            "pool": float(row[3]),
+            "hourly_h": float(row[5]),
+            "hourly_c": float(row[6]),
+            "fulltime_h": float(row[7]),
+            "fulltime_c": float(row[8]),
+        }
+
+    header = [
+        "pay_period_start", "pay_period_end", "is_open", "days_covered",
+        "gross_sales", "tip_pool", "total_sales",
+        "hourly_hours", "hourly_labor_cost",
+        "fulltime_hours", "fulltime_labor_cost",
+        "total_labor_cost",
+        "hourly_pct_of_total_sales", "hourly_pct_of_gross_sales",
+        "fulltime_pct_of_total_sales", "fulltime_pct_of_gross_sales",
+        "total_labor_pct_of_total_sales", "total_labor_pct_of_gross_sales",
+        "tips_pct_of_gross_sales", "all_in_cost_pct",
+    ]
+    rows: list[list] = [header]
+    for p in periods:
+        start = p["start"]
+        end = p["end"]
+        is_open = "Y" if p.get("is_open") else "N"
+        gross = pool = h_hours = h_cost = ft_hours = ft_cost = 0.0
+        days = 0
+        cursor = datetime.date.fromisoformat(start)
+        end_d = datetime.date.fromisoformat(end)
+        while cursor <= end_d:
+            iso = cursor.isoformat()
+            if iso in daily_by_date:
+                bucket = daily_by_date[iso]
+                gross += bucket["gross"]
+                pool += bucket["pool"]
+                h_hours += bucket["hourly_h"]
+                h_cost += bucket["hourly_c"]
+                ft_hours += bucket["fulltime_h"]
+                ft_cost += bucket["fulltime_c"]
+                days += 1
+            cursor += datetime.timedelta(days=1)
+        total = gross + pool
+        total_cost = h_cost + ft_cost
+
+        def _pct(num: float, denom: float) -> float:
+            return (num / denom) if denom > 0 else 0.0
+
+        rows.append([
+            start, end, is_open, days,
+            round(gross, 2),
+            round(pool, 2),
+            round(total, 2),
+            round(h_hours, 2),
+            round(h_cost, 2),
+            round(ft_hours, 2),
+            round(ft_cost, 2),
+            round(total_cost, 2),
+            f"{_pct(h_cost, total):.2%}",
+            f"{_pct(h_cost, gross):.2%}",
+            f"{_pct(ft_cost, total):.2%}",
+            f"{_pct(ft_cost, gross):.2%}",
             f"{_pct(total_cost, total):.2%}",
             f"{_pct(total_cost, gross):.2%}",
             f"{_pct(pool, gross):.2%}",
@@ -973,6 +1121,9 @@ def main() -> int:
         txns=txns, shifts=shifts, wage_rates=wage_rates,
         excluded_from_tip_pool=excluded,
     )
+    labor_period_rows = build_labor_period_rows(
+        periods=periods, labor_daily_rows=labor_daily_rows,
+    )
     period_rows = build_tip_alloc_period_rows(period_results)
     day_alloc_rows = build_tip_alloc_daily_rows(period_results, daily_summary)
     summary_rows = build_period_summary_rows(period_results)
@@ -981,6 +1132,7 @@ def main() -> int:
         {"tab": "config",            "rows": config_rows,      "currency_cols": []},
         {"tab": "daily",             "rows": daily_rows,       "currency_cols": [2, 3, 7]},
         {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": [2, 3, 4, 6, 8, 9]},
+        {"tab": "labor_period",      "rows": labor_period_rows, "currency_cols": [4, 5, 6, 8, 10, 11]},
         {"tab": "tip_alloc_period",  "rows": period_rows,      "currency_cols": [6, 7, 8, 10, 11]},
         {"tab": "tip_alloc_daily",   "rows": day_alloc_rows,   "currency_cols": [6, 9]},
         {"tab": "period_summary",    "rows": summary_rows,     "currency_cols": [7, 8, 9, 10]},

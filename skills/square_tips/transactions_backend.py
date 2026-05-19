@@ -313,20 +313,37 @@ def aggregate_daily_tip_pool(records: list[dict]) -> dict[str, int]:
 def aggregate_daily_sales(records: list[dict]) -> dict[str, dict]:
     """Sum sales metrics by date_local.
 
-    Returns {'YYYY-MM-DD': {'gross_sales_cents', 'net_sales_cents',
-    'total_collected_cents', 'transaction_count', 'refund_count'}}.
+    All amounts are in cents. Naming mirrors Square's CSV columns exactly
+    so the operator can cross-reference Square reports:
+      gross_sales_cents     — Square "Gross Sales" (pre-discount item revenue)
+      discount_cents        — Square "Discounts" (typically negative)
+      net_sales_cents       — Square "Net Sales" (post-discount item revenue,
+                              the standard restaurant labor% denominator)
+      tip_cents             — Square "Tip" (separate from sales)
+      total_collected_cents — Square "Total Collected" (net_sales + tax +
+                              service charges + tip)
     """
     by_day: dict[str, dict] = {}
     for r in records:
         d = r["date_local"]
         bucket = by_day.setdefault(d, {
             "gross_sales_cents": 0,
+            "discount_cents": 0,
+            "net_sales_cents": 0,
             "total_collected_cents": 0,
             "tip_cents": 0,
             "transaction_count": 0,
             "refund_count": 0,
         })
-        bucket["gross_sales_cents"] += r["gross_sales_cents"]
+        gross_c = r["gross_sales_cents"]
+        disc_c = r["discount_cents"]
+        bucket["gross_sales_cents"] += gross_c
+        bucket["discount_cents"] += disc_c
+        # Square's Net Sales = Gross Sales + Discounts (discounts are stored
+        # as negative numbers, so the addition yields the post-discount
+        # figure). Derive here so historical raw-sheet rows (which don't
+        # carry net_sales_cents) get the right value too.
+        bucket["net_sales_cents"] += gross_c + disc_c
         bucket["total_collected_cents"] += r["total_collected_cents"]
         bucket["tip_cents"] += r["tip_cents"]
         bucket["transaction_count"] += 1

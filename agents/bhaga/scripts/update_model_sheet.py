@@ -531,25 +531,33 @@ def build_labor_daily_rows(
                          + ot_hours * (ot_rate or wage_rate*1.5)
                          + doubletime_hours * wage_rate * 2.
 
-    Two denominators for every labor % so the operator can see both views
-    side-by-side without flipping between tabs:
-      • `total_sales` = gross_sales + tip_pool (what the customer paid
-        in total — useful as "what share of every dollar walking through
-        the door goes to labor")
-      • `gross_sales` = item revenue only (Square's gross_sales already
-        excludes tips — this is the industry-standard restaurant labor%
-        denominator since tips are a customer-to-staff pass-through)
+    Sales columns mirror Square's terminology exactly so they cross-
+    reference the Square dashboard reports without translation:
+      • `gross_sales`         — Square's "Gross Sales" (pre-discount item revenue)
+      • `discounts`           — Square's "Discounts" (negative numbers)
+      • `net_sales`           — Square's "Net Sales" = gross_sales + discounts
+                                (post-discount item revenue, ex-tax, ex-tips,
+                                ex-service-charges). THIS is the industry-
+                                standard restaurant labor% denominator since
+                                tips are a customer-to-staff pass-through.
+      • `tip_pool`            — Square's "Tip" (separate from sales)
+      • `net_sales_plus_tips` — net_sales + tip_pool (total customer revenue
+                                ex-tax, ex-SC). Used for the "what share of
+                                every dollar walking in goes to labor" view.
 
-    Columns (18 total):
+    Each labor bucket gets TWO percentage columns so both views sit side-
+    by-side without flipping tabs.
+
+    Columns (20 total):
       date | dow
-      | gross_sales | tip_pool | total_sales
+      | gross_sales | discounts | net_sales | tip_pool | net_sales_plus_tips
       | hourly_hours | hourly_labor_cost
       | fulltime_hours | fulltime_labor_cost
       | total_labor_cost
-      | hourly_pct_of_total_sales   | hourly_pct_of_gross_sales
-      | fulltime_pct_of_total_sales | fulltime_pct_of_gross_sales
-      | total_labor_pct_of_total_sales | total_labor_pct_of_gross_sales
-      | tips_pct_of_gross_sales | all_in_cost_pct
+      | hourly_pct_of_net_sales | hourly_pct_of_net_sales_plus_tips
+      | fulltime_pct_of_net_sales | fulltime_pct_of_net_sales_plus_tips
+      | total_labor_pct_of_net_sales | total_labor_pct_of_net_sales_plus_tips
+      | tips_pct_of_net_sales | all_in_cost_pct_of_net_sales_plus_tips
     """
     sales = transactions_backend.aggregate_daily_sales(txns)
     rates_by_emp = {r["employee_name"]: r for r in wage_rates}
@@ -625,22 +633,27 @@ def build_labor_daily_rows(
     all_dates = sorted(set(sales.keys()) | set(daily.keys()))
     header = [
         "date", "dow",
-        "gross_sales", "tip_pool", "total_sales",
+        "gross_sales", "discounts", "net_sales", "tip_pool", "net_sales_plus_tips",
         "hourly_hours", "hourly_labor_cost",
         "fulltime_hours", "fulltime_labor_cost",
         "total_labor_cost",
-        "hourly_pct_of_total_sales", "hourly_pct_of_gross_sales",
-        "fulltime_pct_of_total_sales", "fulltime_pct_of_gross_sales",
-        "total_labor_pct_of_total_sales", "total_labor_pct_of_gross_sales",
-        "tips_pct_of_gross_sales", "all_in_cost_pct",
+        "hourly_pct_of_net_sales", "hourly_pct_of_net_sales_plus_tips",
+        "fulltime_pct_of_net_sales", "fulltime_pct_of_net_sales_plus_tips",
+        "total_labor_pct_of_net_sales", "total_labor_pct_of_net_sales_plus_tips",
+        "tips_pct_of_net_sales", "all_in_cost_pct_of_net_sales_plus_tips",
     ]
     rows: list[list] = [header]
     for d in all_dates:
-        s_d = sales.get(d, {"gross_sales_cents": 0, "tip_cents": 0})
+        s_d = sales.get(d, {
+            "gross_sales_cents": 0, "discount_cents": 0,
+            "net_sales_cents": 0, "tip_cents": 0,
+        })
         b = daily.get(d, {"el_h": 0.0, "el_c": 0.0, "ex_h": 0.0, "ex_c": 0.0})
         gross = s_d["gross_sales_cents"] / 100
+        disc = s_d["discount_cents"] / 100
+        net = s_d["net_sales_cents"] / 100
         pool = s_d["tip_cents"] / 100
-        total = gross + pool
+        net_plus_tips = net + pool
         hourly_cost = b["el_c"]
         fulltime_cost = b["ex_c"]
         total_cost = hourly_cost + fulltime_cost
@@ -651,21 +664,23 @@ def build_labor_daily_rows(
         rows.append([
             d, datetime.date.fromisoformat(d).strftime("%a"),
             round(gross, 2),
+            round(disc, 2),
+            round(net, 2),
             round(pool, 2),
-            round(total, 2),
+            round(net_plus_tips, 2),
             round(b["el_h"], 2),
             round(hourly_cost, 2),
             round(b["ex_h"], 2),
             round(fulltime_cost, 2),
             round(total_cost, 2),
-            f"{_pct(hourly_cost, total):.2%}",
-            f"{_pct(hourly_cost, gross):.2%}",
-            f"{_pct(fulltime_cost, total):.2%}",
-            f"{_pct(fulltime_cost, gross):.2%}",
-            f"{_pct(total_cost, total):.2%}",
-            f"{_pct(total_cost, gross):.2%}",
-            f"{_pct(pool, gross):.2%}",
-            f"{_pct(total_cost + pool, total):.2%}",
+            f"{_pct(hourly_cost, net):.2%}",
+            f"{_pct(hourly_cost, net_plus_tips):.2%}",
+            f"{_pct(fulltime_cost, net):.2%}",
+            f"{_pct(fulltime_cost, net_plus_tips):.2%}",
+            f"{_pct(total_cost, net):.2%}",
+            f"{_pct(total_cost, net_plus_tips):.2%}",
+            f"{_pct(pool, net):.2%}",
+            f"{_pct(total_cost + pool, net_plus_tips):.2%}",
         ])
     return rows
 
@@ -687,60 +702,55 @@ def build_labor_period_rows(
     `is_open=Y`. Helps the operator see "where we're trending" before
     the period closes.
 
-    Columns (20 total):
+    Columns (22 total):
       pay_period_start | pay_period_end | is_open | days_covered
-      gross_sales | tip_pool | total_sales
+      gross_sales | discounts | net_sales | tip_pool | net_sales_plus_tips
       hourly_hours | hourly_labor_cost
       fulltime_hours | fulltime_labor_cost
       total_labor_cost
-      hourly_pct_of_total_sales | hourly_pct_of_gross_sales
-      fulltime_pct_of_total_sales | fulltime_pct_of_gross_sales
-      total_labor_pct_of_total_sales | total_labor_pct_of_gross_sales
-      tips_pct_of_gross_sales | all_in_cost_pct
+      hourly_pct_of_net_sales | hourly_pct_of_net_sales_plus_tips
+      fulltime_pct_of_net_sales | fulltime_pct_of_net_sales_plus_tips
+      total_labor_pct_of_net_sales | total_labor_pct_of_net_sales_plus_tips
+      tips_pct_of_net_sales | all_in_cost_pct_of_net_sales_plus_tips
     """
+    header = [
+        "pay_period_start", "pay_period_end", "is_open", "days_covered",
+        "gross_sales", "discounts", "net_sales", "tip_pool", "net_sales_plus_tips",
+        "hourly_hours", "hourly_labor_cost",
+        "fulltime_hours", "fulltime_labor_cost",
+        "total_labor_cost",
+        "hourly_pct_of_net_sales", "hourly_pct_of_net_sales_plus_tips",
+        "fulltime_pct_of_net_sales", "fulltime_pct_of_net_sales_plus_tips",
+        "total_labor_pct_of_net_sales", "total_labor_pct_of_net_sales_plus_tips",
+        "tips_pct_of_net_sales", "all_in_cost_pct_of_net_sales_plus_tips",
+    ]
     if len(labor_daily_rows) <= 1:
-        return [[
-            "pay_period_start", "pay_period_end", "is_open", "days_covered",
-            "gross_sales", "tip_pool", "total_sales",
-            "hourly_hours", "hourly_labor_cost",
-            "fulltime_hours", "fulltime_labor_cost",
-            "total_labor_cost",
-            "hourly_pct_of_total_sales", "hourly_pct_of_gross_sales",
-            "fulltime_pct_of_total_sales", "fulltime_pct_of_gross_sales",
-            "total_labor_pct_of_total_sales", "total_labor_pct_of_gross_sales",
-            "tips_pct_of_gross_sales", "all_in_cost_pct",
-        ]]
+        return [header]
 
     # Index labor_daily by date for fast period-bucketing. Source-of-truth
     # for the field positions is the header in build_labor_daily_rows above.
+    # Header positions (0-indexed): date=0, dow=1, gross_sales=2, discounts=3,
+    # net_sales=4, tip_pool=5, net_sales_plus_tips=6, hourly_hours=7,
+    # hourly_labor_cost=8, fulltime_hours=9, fulltime_labor_cost=10.
     daily_by_date: dict[str, dict[str, float]] = {}
     for row in labor_daily_rows[1:]:
         daily_by_date[row[0]] = {
             "gross": float(row[2]),
-            "pool": float(row[3]),
-            "hourly_h": float(row[5]),
-            "hourly_c": float(row[6]),
-            "fulltime_h": float(row[7]),
-            "fulltime_c": float(row[8]),
+            "disc": float(row[3]),
+            "net": float(row[4]),
+            "pool": float(row[5]),
+            "hourly_h": float(row[7]),
+            "hourly_c": float(row[8]),
+            "fulltime_h": float(row[9]),
+            "fulltime_c": float(row[10]),
         }
 
-    header = [
-        "pay_period_start", "pay_period_end", "is_open", "days_covered",
-        "gross_sales", "tip_pool", "total_sales",
-        "hourly_hours", "hourly_labor_cost",
-        "fulltime_hours", "fulltime_labor_cost",
-        "total_labor_cost",
-        "hourly_pct_of_total_sales", "hourly_pct_of_gross_sales",
-        "fulltime_pct_of_total_sales", "fulltime_pct_of_gross_sales",
-        "total_labor_pct_of_total_sales", "total_labor_pct_of_gross_sales",
-        "tips_pct_of_gross_sales", "all_in_cost_pct",
-    ]
     rows: list[list] = [header]
     for p in periods:
         start = p["start"]
         end = p["end"]
         is_open = "Y" if p.get("is_open") else "N"
-        gross = pool = h_hours = h_cost = ft_hours = ft_cost = 0.0
+        gross = disc = net = pool = h_hours = h_cost = ft_hours = ft_cost = 0.0
         days = 0
         cursor = datetime.date.fromisoformat(start)
         end_d = datetime.date.fromisoformat(end)
@@ -749,6 +759,8 @@ def build_labor_period_rows(
             if iso in daily_by_date:
                 bucket = daily_by_date[iso]
                 gross += bucket["gross"]
+                disc += bucket["disc"]
+                net += bucket["net"]
                 pool += bucket["pool"]
                 h_hours += bucket["hourly_h"]
                 h_cost += bucket["hourly_c"]
@@ -756,7 +768,7 @@ def build_labor_period_rows(
                 ft_cost += bucket["fulltime_c"]
                 days += 1
             cursor += datetime.timedelta(days=1)
-        total = gross + pool
+        net_plus_tips = net + pool
         total_cost = h_cost + ft_cost
 
         def _pct(num: float, denom: float) -> float:
@@ -765,21 +777,23 @@ def build_labor_period_rows(
         rows.append([
             start, end, is_open, days,
             round(gross, 2),
+            round(disc, 2),
+            round(net, 2),
             round(pool, 2),
-            round(total, 2),
+            round(net_plus_tips, 2),
             round(h_hours, 2),
             round(h_cost, 2),
             round(ft_hours, 2),
             round(ft_cost, 2),
             round(total_cost, 2),
-            f"{_pct(h_cost, total):.2%}",
-            f"{_pct(h_cost, gross):.2%}",
-            f"{_pct(ft_cost, total):.2%}",
-            f"{_pct(ft_cost, gross):.2%}",
-            f"{_pct(total_cost, total):.2%}",
-            f"{_pct(total_cost, gross):.2%}",
-            f"{_pct(pool, gross):.2%}",
-            f"{_pct(total_cost + pool, total):.2%}",
+            f"{_pct(h_cost, net):.2%}",
+            f"{_pct(h_cost, net_plus_tips):.2%}",
+            f"{_pct(ft_cost, net):.2%}",
+            f"{_pct(ft_cost, net_plus_tips):.2%}",
+            f"{_pct(total_cost, net):.2%}",
+            f"{_pct(total_cost, net_plus_tips):.2%}",
+            f"{_pct(pool, net):.2%}",
+            f"{_pct(total_cost + pool, net_plus_tips):.2%}",
         ])
     return rows
 
@@ -1131,8 +1145,8 @@ def main() -> int:
     tab_payloads = [
         {"tab": "config",            "rows": config_rows,      "currency_cols": []},
         {"tab": "daily",             "rows": daily_rows,       "currency_cols": [2, 3, 7]},
-        {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": [2, 3, 4, 6, 8, 9]},
-        {"tab": "labor_period",      "rows": labor_period_rows, "currency_cols": [4, 5, 6, 8, 10, 11]},
+        {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": [2, 3, 4, 5, 6, 8, 10, 11]},
+        {"tab": "labor_period",      "rows": labor_period_rows, "currency_cols": [4, 5, 6, 7, 8, 10, 12, 13]},
         {"tab": "tip_alloc_period",  "rows": period_rows,      "currency_cols": [6, 7, 8, 10, 11]},
         {"tab": "tip_alloc_daily",   "rows": day_alloc_rows,   "currency_cols": [6, 9]},
         {"tab": "period_summary",    "rows": summary_rows,     "currency_cols": [7, 8, 9, 10]},

@@ -614,75 +614,260 @@ def download_earnings(
         )
 
 
+def _assert_earnings_xlsx_has_rows(path: pathlib.Path) -> int:
+    """Assert that the downloaded Earnings & Hours XLSX contains data rows.
+
+    The ADP report layout (verified 2026-05-19) has a 5-line preamble
+    followed by a header row, e.g.:
+        row 0: "Earnings and Hours V1"
+        row 1: "Company: <name>"
+        row 2: "IID: <num>"
+        row 3: "DateRange : <start> to <end>"
+        row 4: "Report Generated On: <ts>"
+        row 5: "Employee Name" "Payroll Check Date" ... (header row)
+        row 6+: data rows
+    We count anything with a non-null first-column value AFTER the header
+    row, plus any row whose 7th column ("Payroll Earning Amount") has a
+    numeric value — that catches the continuation rows where
+    Employee Name is blank (same employee, additional earning lines like
+    "Credit Card Tips Owed" or "Cash tips") but the row is still a
+    legitimate earnings entry we must keep.
+
+    Returns the data-row count. Raises RuntimeError if 0.
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    data_rows = 0
+    seen_header = False
+    for row in ws.iter_rows(values_only=True):
+        if not seen_header:
+            if row and row[0] == "Employee Name":
+                seen_header = True
+            continue
+        # After header: a row counts as data if column[0] (employee name)
+        # is set OR if column[6] (Payroll Earning Amount) is a number.
+        # This handles ADP's "blank-employee-name continuation row"
+        # pattern for multi-line earnings within a single employee+period.
+        first = row[0] if len(row) > 0 else None
+        amount = row[6] if len(row) > 6 else None
+        if first or isinstance(amount, (int, float)):
+            data_rows += 1
+    wb.close()
+    if data_rows == 0:
+        raise RuntimeError(
+            f"Earnings & Hours export was empty (0 data rows) — "
+            f"pay-period selector may have failed (open / in-flight "
+            f"payroll has no closed-payroll data). XLSX: {path}"
+        )
+    return data_rows
+
+
 def _earnings_within_session(
     page,
     *,
     store: str,
-    start: datetime.date,
-    end: datetime.date,
+    target_date: Optional[datetime.date] = None,
+    # NOTE: `start`/`end` are accepted for caller-API stability and
+    # diagnostic logging only — the actual date filter is ALWAYS the
+    # "Last payroll" preset (see DECISION LOCK-IN in
+    # ~/.bhaga/state/earnings-flow-recipe.md). Custom date ranges that
+    # fall inside an open / in-flight payroll return 0 rows because ADP
+    # only materializes earnings on payroll close.
+    start: Optional[datetime.date] = None,
+    end: Optional[datetime.date] = None,
 ) -> pathlib.Path:
     """Run the Earnings & Hours scrape on an already-authenticated page.
 
     Pre-condition: `page` is on the v2 ADP RUN dashboard. Caller owns the
     browser context.
 
-    Selector strategy (changed 2026-05-19): the original implementation used
-    `page.wait_for_load_state("networkidle", timeout=15_000)` after the
-    Reports-btn click and again after the report-link click. ADP's dashboard
-    holds long-poll connections open indefinitely, so networkidle NEVER
-    fires and the call always hits the 15s timeout. download_timecard had
-    the same bug and was fixed earlier — this helper now mirrors that
-    pattern (wait for the next-step landmark element directly instead of
-    a global load-state).
+    Flow (verified end-to-end 2026-05-19 via user-driven walkthrough,
+    recipe at ~/.bhaga/state/earnings-flow-recipe.md):
+
+        1.  Click Reports-btn (top nav).
+        2.  Click view-all-reports (or its homepage-widget twin).
+        3.  Expand the "Custom" accordion section — tiles are CSS-hidden
+            until the header is clicked, despite being in the DOM.
+        4.  Click the saved "Earnings and Hours V1" tile (per-store
+            numeric suffix; anchor on the label).
+        5.  In the "Custom report builder" modal (no iframe), open the
+            date-range-field dropdown and select "Last payroll" — the
+            only preset that's guaranteed non-empty (Custom date ranges
+            inside an open payroll return 0 rows).
+        6.  Click view-custom-report (Preview).
+        7.  Pre-flight: check the AG-Grid for "No Rows To Show" and
+            raise early if empty (cheaper than waiting for the export).
+        8.  Click Download → Excel (.xlsx) → Download report.
+        9.  Wait for the file to land via `download_to`.
+        10. Post-flight: open the XLSX with openpyxl and assert ≥1 data
+            row. Raise RuntimeError if 0 (hard guardrail — never ship
+            an empty earnings file).
     """
     profile = _load_store_profile(store)
     report_name = profile["adp_run"].get("wage_rate_report_name", "Earnings and Hours V1")
 
+    print(f"[earnings] step=pre-reports url={page.url} "
+          f"target_date={target_date.isoformat() if target_date else 'none'} "
+          f"(filter=Last payroll regardless)")
     page.locator('[data-test-id="Reports-btn"]').first.click()
+    # The Reports landing page takes a beat to render even after the SPA
+    # navigation completes — give it a moment so visibility waits don't
+    # race against the initial paint.
+    page.wait_for_timeout(2_000)
+    print(f"[earnings] step=after-reports-click url={page.url}")
 
-    # Wait for the saved-report link itself to appear on the Reports landing
-    # page — it's a stable landmark and avoids networkidle's long-poll trap.
-    report_link = page.get_by_role(
-        "link", name=re.compile(rf"^{re.escape(report_name)}$", re.I)
+    # MUST go through "View all reports" first. The Reports-btn click can
+    # land on either (a) the Reports landing page directly or (b) the
+    # homepage's Reports widget showing tax-forms / upcoming-payroll tiles.
+    # In case (b) the "Custom" section is NOT on the page — we have to
+    # click View All to get to the landing where saved reports live.
+    view_all = page.locator(
+        '[data-test-id="view-all-reports"], '
+        '[data-test-id="reports-tile-view-all-reports-button"]'
     ).first
-    report_link.wait_for(state="visible", timeout=20_000)
-    report_link.scroll_into_view_if_needed(timeout=5_000)
-    report_link.click()
+    view_all.wait_for(state="visible", timeout=15_000)
+    view_all.scroll_into_view_if_needed(timeout=5_000)
+    view_all.click()
+    page.wait_for_timeout(2_000)
+    print(f"[earnings] step=after-view-all-reports url={page.url}")
 
-    # Custom report builder opens (NO iframe). Wait for the Date range
-    # combobox to be visible — that's the first control we need to drive.
-    date_range_combo = page.get_by_role(
-        "combobox", name=re.compile(r"Date range", re.I)
+    # The Reports landing has accordion sections (verified 2026-05-19):
+    #   Time / Custom / Benefits / H-R / Misc / Payroll / Taxes
+    # Saved-reports tiles ([data-test-id="Custom-tile-list-item-<id>"]) live
+    # inside the Custom section and start collapsed/hidden — Playwright
+    # resolves them in the DOM but reports `hidden` until the header is
+    # clicked. Mirrors download_timecard's expand-if-needed pattern.
+    custom_header = page.locator(
+        '[data-test-id="Custom-section_Head_HeaderLabel"]'
     ).first
-    date_range_combo.wait_for(state="visible", timeout=20_000)
-    date_range_combo.click()
-    page.wait_for_timeout(300)
-    page.get_by_role("option", name=re.compile(r"Custom date range", re.I)).first.click()
+    custom_header.wait_for(state="visible", timeout=15_000)
+
+    # Tile selector: parent card filtered by an exact-text label child.
+    # The label's data-test-id has a per-store numeric suffix (6358 on
+    # palmetto) so anchor on the prefix and the label text — never the
+    # literal id.
+    report_tile = page.locator(
+        '[data-test-id^="Custom-tile-list-item-"]'
+    ).filter(
+        has=page.locator('[data-test-id^="custom-report-label-"]').filter(
+            has_text=re.compile(rf"^{re.escape(report_name)}$", re.I)
+        )
+    ).first
+    try:
+        report_tile.wait_for(state="visible", timeout=3_000)
+        print("[earnings] step=custom-section already-expanded; "
+              "tile visible without click")
+    except Exception:  # noqa: BLE001
+        print("[earnings] step=expand-custom-section "
+              "(tile not visible until accordion expanded)")
+        custom_header.scroll_into_view_if_needed(timeout=3_000)
+        custom_header.click()
+        page.wait_for_timeout(800)
+
+    try:
+        report_tile.wait_for(state="visible", timeout=15_000)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[earnings] tile STILL not visible after expanding Custom "
+              f"section ({type(exc).__name__}); saving diagnostic snapshot")
+        try:
+            ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            shot_dir = pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
+            shot_dir.mkdir(parents=True, exist_ok=True)
+            page.screenshot(
+                path=str(shot_dir / f"adp-earnings-tile-missing-{ts}.png"),
+                full_page=True,
+            )
+            (shot_dir / f"adp-earnings-tile-missing-{ts}.html").write_text(page.content())
+            print(f"[earnings] saved diagnostic snapshot: "
+                  f"adp-earnings-tile-missing-{ts}.{{png,html}}")
+        except Exception as exc3:  # noqa: BLE001
+            print(f"[earnings] could not save diagnostic snapshot: {exc3}")
+        raise exc
+
+    report_tile.scroll_into_view_if_needed(timeout=5_000)
+    print(f"[earnings] step=click-saved-report name={report_name!r}")
+    report_tile.click()
+
+    # Custom report builder modal opens (NO iframe — main frame
+    # `<dialog data-test-id="modal-dialog">`). Wait for the modal-level
+    # date-range select to be ready, then select "Last payroll".
+    date_range_select = page.locator('[data-test-id="date-range-field"]').first
+    date_range_select.wait_for(state="visible", timeout=20_000)
+    date_range_select.click()
     page.wait_for_timeout(500)
+    print("[earnings] step=open-date-range-dropdown")
 
-    page.get_by_role("textbox", name=re.compile(r"From", re.I)).first.fill(start.strftime("%m/%d/%Y"))
-    page.get_by_role("textbox", name=re.compile(r"To", re.I)).first.fill(end.strftime("%m/%d/%Y"))
-    page.keyboard.press("Tab")
-    page.wait_for_timeout(500)
+    # Listbox options exposed: Last month / Last year / Last quarter /
+    # Custom date range / Last payroll. We always pick "Last payroll"
+    # — see DECISION LOCK-IN in the recipe. Custom date ranges inside
+    # an open payroll return 0 rows; "Last payroll" = ADP's notion of
+    # the most-recently-CLOSED payroll, which is what we need for
+    # wage rates + Credit-Card-Tips-Owed lines.
+    page.get_by_role(
+        "option", name=re.compile(r"^Last payroll$", re.I)
+    ).first.click()
+    page.wait_for_timeout(800)
+    print("[earnings] step=selected-last-payroll")
 
-    page.locator("[data-test-id='view-custom-report']").first.click()
-    page.wait_for_timeout(4_000)
+    # Preview report — populates the AG-Grid. Wait ≥6s before checking
+    # for empty-grid sentinel (network round-trip can be slow).
+    page.locator('[data-test-id="view-custom-report"]').first.click()
+    print("[earnings] step=clicked-preview-report")
+    page.wait_for_timeout(7_000)
 
+    # Pre-flight empty-grid check — raise BEFORE we trigger the heavier
+    # async report generation. If "Last payroll" itself returned empty
+    # (e.g. a brand-new store with no closed payrolls yet), surface that
+    # immediately rather than letting the file land empty.
+    grid_locator = page.locator('[data-test-id="custom-reporting-ag-grid"]').first
+    try:
+        grid_locator.wait_for(state="visible", timeout=10_000)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"Earnings preview grid never rendered ({type(exc).__name__}). "
+            f"URL={page.url}"
+        )
+    try:
+        grid_text = grid_locator.inner_text(timeout=4_000)
+    except Exception:  # noqa: BLE001
+        grid_text = ""
+    if "No Rows To Show" in grid_text:
+        raise RuntimeError(
+            "Earnings preview grid shows 'No Rows To Show' even with "
+            "'Last payroll' filter — the most recent payroll appears empty "
+            f"for store={store!r}. Aborting before download to avoid "
+            f"shipping a zero-row XLSX."
+        )
+
+    # Download → Excel (.xlsx) submenu → confirmation modal.
     page.get_by_role("button", name=re.compile(r"^Download$", re.I)).first.click()
     page.wait_for_timeout(500)
-    page.get_by_role("menuitem", name=re.compile(r"Excel \(\.xlsx\)", re.I)).first.click()
+    page.locator('[data-test-id="exportExcel"]').first.click()
+    print("[earnings] step=clicked-export-excel")
 
-    # "Your report is ready to download" dialog (~3-10s).
-    ready_dialog_btn = page.locator("[data-test-id='download-report']").first
-    ready_dialog_btn.wait_for(state="visible", timeout=30_000)
+    # "Your report is ready to download" focus-pane (~3-10s after
+    # exportExcel). The actual download fires on download-report click.
+    ready_dialog_btn = page.locator('[data-test-id="download-report"]').first
+    ready_dialog_btn.wait_for(state="visible", timeout=45_000)
+    print("[earnings] step=download-report-button-ready")
 
     rename = f"Earnings-and-Hours-V1-{datetime.date.today().isoformat()}.xlsx"
     path = download_to(
         page,
         trigger=lambda: ready_dialog_btn.click(),
         rename_to=rename,
-        timeout_ms=60_000,
+        timeout_ms=90_000,
     )
+    print(f"[earnings] step=downloaded path={path}")
+
+    # Hard row-count guard — fail loudly rather than ship an empty file.
+    # The pre-flight grid check above usually catches empties, but we
+    # double-check the actual XLSX (defense in depth: ADP has been known
+    # to serve a header-only XLSX even when the preview grid rendered).
+    data_rows = _assert_earnings_xlsx_has_rows(path)
+    print(f"[earnings] step=row-count-guard OK rows={data_rows} file={path}")
+
     return path
 
 
@@ -804,23 +989,43 @@ def download_adp_bundle(
 
         if needs_earnings:
             try:
-                # Reset to the v2 dashboard so the earnings flow starts from a
-                # known state. Timecard left the page deep inside the iframe
-                # report (or in a partial-failure state); the Reports-btn lives
-                # on the dashboard chrome.
-                page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30_000)
-                try:
-                    page.wait_for_url(POST_LOGIN_URL_RE, timeout=20_000)
-                except Exception:  # noqa: BLE001
-                    # Session may have lapsed between scrapes (rare but ADP
-                    # has been observed to expire mid-flow); re-login.
-                    print("[adp_bundle] earnings: session lapsed after timecard; re-running login")
-                    _ensure_logged_in(page, store=store)
+                # We only need to reset to v2 chrome if we LEFT it (timecard
+                # ended deep inside the report iframe). If we came straight
+                # from initial login (needs_timecard=False), the page is
+                # already on v2 — skipping the redundant goto avoids killing
+                # our session and forcing a wasteful re-login. The redundant
+                # goto-relogin was burning 2 logins per --force when only
+                # earnings was needed (fixed 2026-05-20).
+                if POST_LOGIN_URL_RE.search(page.url):
+                    print(f"[adp_bundle] earnings prep: already on v2 "
+                          f"(url={page.url}); skipping goto/relogin")
+                else:
+                    print(f"[adp_bundle] earnings prep: pre-goto url={page.url}")
+                    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30_000)
+                    print(f"[adp_bundle] earnings prep: post-goto url={page.url}")
+                    try:
+                        # Probe aggressively (5s, not 20s) — if the session is
+                        # alive ADP redirects to v2 in <2s; if not, fail fast
+                        # so we can re-login.
+                        page.wait_for_url(POST_LOGIN_URL_RE, timeout=5_000)
+                        print(f"[adp_bundle] earnings prep: session alive (url={page.url})")
+                    except Exception:  # noqa: BLE001
+                        print(f"[adp_bundle] earnings: session lapsed after timecard "
+                              f"(url={page.url}); re-running login")
+                        _ensure_logged_in(page, store=store)
+                        print(f"[adp_bundle] earnings: post-relogin url={page.url}")
+                        page.wait_for_timeout(2_000)
 
+                # NOTE: window_start / window_end are passed through for
+                # diagnostic logging only — the runner always selects the
+                # "Last payroll" preset (see _earnings_within_session
+                # docstring + ~/.bhaga/state/earnings-flow-recipe.md
+                # DECISION LOCK-IN). target_date is the canonical knob.
                 window_end = target_date or today
                 window_start = window_end - datetime.timedelta(days=earnings_window_days)
                 path = _earnings_within_session(
-                    page, store=store, start=window_start, end=window_end
+                    page, store=store, target_date=target_date,
+                    start=window_start, end=window_end,
                 )
                 result["earnings_xlsx"] = path
                 _mark_run_step_done(

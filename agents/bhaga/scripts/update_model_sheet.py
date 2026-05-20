@@ -63,6 +63,41 @@ STORE_PROFILE_DIR = PROJECT / "agents" / "bhaga" / "knowledge-base" / "store-pro
 SHEETS_API = "https://sheets.googleapis.com/v4"
 
 
+# ---------- A1 helpers ----------
+
+
+def _a1_col(idx0: int) -> str:
+    """0-indexed column → A1 column letter (0=A, 25=Z, 26=AA, 27=AB, …)."""
+    if idx0 < 0:
+        raise ValueError(f"negative column index: {idx0}")
+    s = ""
+    n = idx0
+    while True:
+        s = chr(ord("A") + n % 26) + s
+        n = n // 26 - 1
+        if n < 0:
+            break
+    return s
+
+
+# Named range that points at the value cell of `saturation_orders_per_labor_hour`
+# on the config tab. labor_daily / labor_period / labor_weekly reference this
+# by name (no sheet qualifier) so editing the config cell recalculates every
+# `over_saturation` flag instantly without a model rebuild.
+SATURATION_THRESHOLD_NAMED_RANGE = "saturation_threshold"
+
+
+def _over_saturation_formula(orders_per_labor_hour_a1: str) -> str:
+    """Formula written into each over_saturation cell. ISBLANK guards the
+    no-orders-yet rows (where orders_per_labor_hour is empty) so they stay
+    blank instead of comparing "" > threshold and emitting a false 'ok'."""
+    return (
+        f'=IF(ISBLANK({orders_per_labor_hour_a1}), "", '
+        f'IF({orders_per_labor_hour_a1} > {SATURATION_THRESHOLD_NAMED_RANGE}, '
+        f'"OVER", "ok"))'
+    )
+
+
 # ---------- Sheets HTTP helpers ----------
 
 
@@ -219,6 +254,62 @@ def bold_header_row(spreadsheet_id: str, token: str, *, sheet_id: int) -> None:
                 "fields": "userEnteredFormat.textFormat.bold",
             }
         }]},
+    )
+
+
+def upsert_named_range(
+    spreadsheet_id: str,
+    token: str,
+    *,
+    name: str,
+    sheet_id: int,
+    row_0idx: int,
+    col_0idx: int,
+) -> None:
+    """Add or update a SPREADSHEET-scoped single-cell named range.
+
+    Named ranges in Sheets are workbook-wide regardless of which sheet's
+    cell they point at, so a formula in any other tab can reference them
+    by `name` without a sheet qualifier. Idempotent: if a named range with
+    `name` already exists we updateNamedRange in place (preserves any
+    formulas that already reference it); otherwise we addNamedRange.
+    """
+    meta = get_spreadsheet_meta(spreadsheet_id, token)
+    existing_id: Optional[str] = None
+    for nr in meta.get("namedRanges", []) or []:
+        if nr.get("name") == name:
+            existing_id = nr.get("namedRangeId")
+            break
+    grid_range = {
+        "sheetId": sheet_id,
+        "startRowIndex": row_0idx,
+        "endRowIndex": row_0idx + 1,
+        "startColumnIndex": col_0idx,
+        "endColumnIndex": col_0idx + 1,
+    }
+    if existing_id:
+        request = {
+            "updateNamedRange": {
+                "namedRange": {
+                    "namedRangeId": existing_id,
+                    "name": name,
+                    "range": grid_range,
+                },
+                "fields": "name,range",
+            }
+        }
+    else:
+        request = {
+            "addNamedRange": {
+                "namedRange": {
+                    "name": name,
+                    "range": grid_range,
+                }
+            }
+        }
+    _api(
+        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
+        token, method="POST", data={"requests": [request]},
     )
 
 
@@ -422,10 +513,13 @@ LABOR_TUNABLE_KEYS = (
     "saturation_orders_per_labor_hour",
 )
 
-# Seed value for the saturation threshold (orders / labor-hour). Tune from gut
-# by watching busy vs slow days; default 10 ≈ one completed order every six
-# labor-minutes across the whole team.
-DEFAULT_SATURATION_THRESHOLD = 10.0
+# Seed value for the saturation threshold (orders / labor-hour). Calibrated
+# from week-1 data: Friday's busy day landed at orders/labor-hr ≈ 4.0, so 4
+# represents a "fully-loaded bar" — orders_per_labor_hour ≥ threshold means
+# we're at capacity. Operators can re-tune in-sheet via the named range
+# `saturation_threshold` (config!B<row>); the over_saturation cells in
+# labor_daily/period/weekly are live formulas that recompute on edit.
+DEFAULT_SATURATION_THRESHOLD = 4.0
 
 
 def build_config_rows(
@@ -485,10 +579,12 @@ def build_config_rows(
              "saturation_orders_per_labor_hour",
              str(DEFAULT_SATURATION_THRESHOLD),
          ),
-         "Orders/labor-hour above which the day is considered saturated. "
-         "Default 10 = ~1 completed order every 6 labor-minutes across the "
-         "whole team. Raise if staff have idle time at this rate; lower if "
-         "lines/wait grow at this rate."],
+         "Orders/labor-hour above which the day is flagged OVER on "
+         "labor_daily/period/weekly. Default 4 ≈ a fully-loaded bar — at or "
+         "above this rate, every barista is order-bound. Edit this cell to "
+         "retune: the over_saturation column is a live formula keyed to the "
+         "named range `saturation_threshold` so every flag cell recomputes "
+         "instantly without re-running the model build."],
     ]
     # Echo training exclusions verbatim so they survive the config-tab rewrite.
     # USERS: edit these rows directly in Google Sheets. Set the date to the
@@ -631,7 +727,6 @@ def build_labor_daily_rows(
     shifts: list[dict],
     wage_rates: list[dict],
     excluded_from_tip_pool: set[str],
-    saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD,
 ) -> list[list]:
     """One row per day with labor cost / labor% computed from ADP wage rates.
 
@@ -699,10 +794,18 @@ def build_labor_daily_rows(
     the actionable column for "add a shift during the 11am-1pm rush"
     decisions — a day with a flat 6 average can hide a 14 peak.
 
-    `over_saturation` flips to "OVER" when orders_per_labor_hour exceeds
-    the threshold from config (`saturation_orders_per_labor_hour`). Blank
-    ("") when there's no hourly labor or no orders that day, rather than
-    div-by-zero or stale "ok".
+    `over_saturation` is a LIVE Google Sheets formula (not a precomputed
+    value) keyed to the spreadsheet-scoped named range `saturation_threshold`,
+    which points at the value cell of `saturation_orders_per_labor_hour` on
+    the config tab. The cell reads:
+
+        =IF(ISBLANK(<orders_per_labor_hour>), "",
+            IF(<orders_per_labor_hour> > saturation_threshold, "OVER", "ok"))
+
+    Editing the threshold in config flips every flag cell across
+    labor_daily/period/weekly instantly without re-running the model build.
+    The ISBLANK guard preserves the existing blank-when-no-orders behavior
+    (no false 'ok' on a day with empty orders_per_labor_hour).
     """
     sales = transactions_backend.aggregate_daily_sales(txns)
     rates_by_emp = {r["employee_name"]: r for r in wage_rates}
@@ -822,6 +925,7 @@ def build_labor_daily_rows(
         "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
         "over_saturation",
     ]
+    opl_col_letter = _a1_col(header.index("orders_per_labor_hour"))
     rows: list[list] = [header]
     for d in all_dates:
         s_d = sales.get(d, {
@@ -855,10 +959,12 @@ def build_labor_daily_rows(
             hourly_labor_by_clock_hour=hourly_labor_by_date_hour.get(d, {}),
             orders_by_clock_hour=orders_by_date_hour.get(d, {}),
         )
-        if isinstance(orders_per_hr, (int, float)) and saturation_threshold > 0:
-            over = "OVER" if orders_per_hr > saturation_threshold else "ok"
-        else:
-            over = ""
+        # over_saturation is a live formula keyed to the spreadsheet-scoped
+        # named range `saturation_threshold` so editing the config cell
+        # recalculates every flag without re-running the model build. The
+        # next row to be appended will land at 1-indexed sheet row
+        # len(rows)+1 (header is rows[0] at sheet row 1).
+        over = _over_saturation_formula(f"{opl_col_letter}{len(rows) + 1}")
 
         rows.append([
             d, datetime.date.fromisoformat(d).strftime("%a"),
@@ -895,7 +1001,6 @@ def build_labor_period_rows(
     *,
     periods: list[dict],
     labor_daily_rows: list[list],
-    saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD,
 ) -> list[list]:
     """Aggregate labor_daily rows by pay period.
 
@@ -935,6 +1040,7 @@ def build_labor_period_rows(
         "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
         "over_saturation",
     ]
+    opl_col_letter = _a1_col(header.index("orders_per_labor_hour"))
     if len(labor_daily_rows) <= 1:
         return [header]
 
@@ -1001,10 +1107,7 @@ def build_labor_period_rows(
 
         orders_per_hr = round(orders / h_hours, 1) if h_hours > 0 else ""
         peak_out = round(peak_max, 1) if peak_max is not None else ""
-        if isinstance(orders_per_hr, (int, float)) and saturation_threshold > 0:
-            over = "OVER" if orders_per_hr > saturation_threshold else "ok"
-        else:
-            over = ""
+        over = _over_saturation_formula(f"{opl_col_letter}{len(rows) + 1}")
 
         rows.append([
             start, end, is_open, days,
@@ -1040,7 +1143,6 @@ def build_labor_period_rows(
 def build_labor_weekly_rows(
     *,
     labor_daily_rows: list[list],
-    saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD,
 ) -> list[list]:
     """Aggregate labor_daily rows by ISO calendar week (Monday → Sunday).
 
@@ -1083,6 +1185,7 @@ def build_labor_weekly_rows(
         "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
         "over_saturation",
     ]
+    opl_col_letter = _a1_col(header.index("orders_per_labor_hour"))
     if len(labor_daily_rows) <= 1:
         return [header]
 
@@ -1152,10 +1255,7 @@ def build_labor_weekly_rows(
 
         orders_per_hr = round(orders / h_hours, 1) if h_hours > 0 else ""
         peak_out = round(peak_max, 1) if peak_max is not None else ""
-        if isinstance(orders_per_hr, (int, float)) and saturation_threshold > 0:
-            over = "OVER" if orders_per_hr > saturation_threshold else "ok"
-        else:
-            over = ""
+        over = _over_saturation_formula(f"{opl_col_letter}{len(rows) + 1}")
 
         rows.append([
             iso_label, monday.isoformat(), sunday.isoformat(), is_partial, days,
@@ -1519,6 +1619,19 @@ def main() -> int:
         for k in LABOR_TUNABLE_KEYS
     }
     labor_tunables = {k: v for k, v in labor_tunables.items() if v is not None}
+    # One-shot calibration: the historical default was 10 orders/labor-hour
+    # but week-1 data shows Friday's busy day at ~4 — the "fully-loaded bar"
+    # is around 4, not 10. If the live config still has the legacy default,
+    # drop it so the new DEFAULT_SATURATION_THRESHOLD (4) flows through.
+    # Subsequent runs round-trip preserve whatever the operator has set.
+    raw_threshold = labor_tunables.get("saturation_orders_per_labor_hour")
+    if raw_threshold in ("10", "10.0", "10.00"):
+        print(
+            "# one-shot calibration: replacing legacy default "
+            f"saturation_orders_per_labor_hour={raw_threshold!r} → "
+            f"{DEFAULT_SATURATION_THRESHOLD} (week-1 data: busy Friday ≈ 4)"
+        )
+        labor_tunables.pop("saturation_orders_per_labor_hour")
     try:
         saturation_threshold = float(
             labor_tunables.get(
@@ -1533,7 +1646,10 @@ def main() -> int:
             f"falling back to default {DEFAULT_SATURATION_THRESHOLD}."
         )
         saturation_threshold = float(DEFAULT_SATURATION_THRESHOLD)
-    print(f"# saturation threshold = {saturation_threshold} orders/labor-hour")
+    print(
+        f"# saturation threshold = {saturation_threshold} orders/labor-hour "
+        f"(now lives only in config; over_saturation cells are live formulas)"
+    )
 
     config_rows = build_config_rows(
         profile, last_data_date,
@@ -1547,15 +1663,12 @@ def main() -> int:
     labor_daily_rows = build_labor_daily_rows(
         txns=txns, shifts=shifts, wage_rates=wage_rates,
         excluded_from_tip_pool=excluded,
-        saturation_threshold=saturation_threshold,
     )
     labor_period_rows = build_labor_period_rows(
         periods=periods, labor_daily_rows=labor_daily_rows,
-        saturation_threshold=saturation_threshold,
     )
     labor_weekly_rows = build_labor_weekly_rows(
         labor_daily_rows=labor_daily_rows,
-        saturation_threshold=saturation_threshold,
     )
     period_rows = build_tip_alloc_period_rows(period_results)
     day_alloc_rows = build_tip_alloc_daily_rows(period_results, daily_summary)
@@ -1595,11 +1708,14 @@ def main() -> int:
     token = refresh_access_token(account=args.store)
     print(f"\n# Got token (len={len(token)}); writing to Model sheet {model_sid}...")
 
+    config_sheet_id: Optional[int] = None
     for p in tab_payloads:
         col_count = max(20, len(p["rows"][0]) + 2)
         sheet_id = add_sheet_if_missing(
             model_sid, token, tab_name=p["tab"], column_count=col_count,
         )
+        if p["tab"] == "config":
+            config_sheet_id = sheet_id
         clear_and_write_tab(model_sid, token, tab_name=p["tab"], values=p["rows"])
         # Wipe stale numberFormat / borders / colors from any prior layout
         # before re-applying the targeted bold-header + currency styling.
@@ -1616,6 +1732,35 @@ def main() -> int:
             )
         auto_resize_columns(model_sid, token, sheet_id=sheet_id, num_cols=len(p["rows"][0]))
         print(f"    wrote {p['tab']:<22} ({len(p['rows'])-1} rows)")
+
+    # Upsert the spreadsheet-scoped named range `saturation_threshold` so the
+    # over_saturation formulas in labor_daily / labor_period / labor_weekly
+    # reference the live config cell. Idempotent: updates in place if the
+    # range already exists so we don't churn its ID across runs.
+    if config_sheet_id is not None:
+        sat_row_0idx: Optional[int] = None
+        for idx, row in enumerate(config_rows):
+            if row and row[0] == "saturation_orders_per_labor_hour":
+                sat_row_0idx = idx
+                break
+        if sat_row_0idx is None:
+            print(
+                "# WARN: saturation_orders_per_labor_hour row missing from "
+                "config_rows; skipping named-range upsert (over_saturation "
+                "formulas will #NAME? until this is restored)."
+            )
+        else:
+            upsert_named_range(
+                model_sid, token,
+                name=SATURATION_THRESHOLD_NAMED_RANGE,
+                sheet_id=config_sheet_id,
+                row_0idx=sat_row_0idx,
+                col_0idx=1,  # column B = value column
+            )
+            print(
+                f"# upserted named range {SATURATION_THRESHOLD_NAMED_RANGE!r} "
+                f"→ config!B{sat_row_0idx + 1}"
+            )
 
     print(f"\nDone. {model_url}")
     return 0

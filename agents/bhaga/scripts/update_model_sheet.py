@@ -171,44 +171,6 @@ def format_currency_columns(
     )
 
 
-def format_date_columns(
-    spreadsheet_id: str,
-    token: str,
-    *,
-    sheet_id: int,
-    column_indices: list[int],
-    start_row: int = 1,
-) -> None:
-    """Apply ISO date format (yyyy-mm-dd) to specified columns (0-indexed).
-
-    Needed because reset_user_entered_format() wipes Sheets' auto-detection
-    of date-like values, leaving them rendered as raw serial numbers
-    (e.g. 46155 instead of 2026-05-13). Explicit DATE formatting restores
-    human-readable rendering.
-    """
-    if not column_indices:
-        return
-    requests = [
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": start_row,
-                    "startColumnIndex": col,
-                    "endColumnIndex": col + 1,
-                },
-                "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}},
-                "fields": "userEnteredFormat.numberFormat",
-            }
-        }
-        for col in column_indices
-    ]
-    _api(
-        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
-        token, method="POST", data={"requests": requests},
-    )
-
-
 def reset_user_entered_format(
     spreadsheet_id: str,
     token: str,
@@ -457,7 +419,7 @@ REVIEW_TUNABLE_KEYS = (
 # Labor-saturation tunables. Same round-trip-preserve pattern as the review
 # tunables — operator edits in-sheet, subsequent refreshes echo back the value.
 LABOR_TUNABLE_KEYS = (
-    "saturation_orders_per_labor_hour_threshold",
+    "saturation_orders_per_labor_hour",
 )
 
 # Seed value for the saturation threshold (orders / labor-hour). Tune from gut
@@ -516,11 +478,11 @@ def build_config_rows(
          review_tunables.get("review_named_bonus_dollars", "20"),
          "Per-person bonus on a shoutout review (only the named people; overrides exclusions)."],
         # Labor saturation tuning. labor_daily / labor_period / labor_weekly
-        # emit a `saturation` column = total_orders_per_labor_hour / threshold.
+        # emit an `over_saturation` flag — "OVER" iff orders_per_labor_hour
         # >=1.0 = at/over capacity; <1.0 = headroom. Tune in-sheet.
-        ["saturation_orders_per_labor_hour_threshold",
+        ["saturation_orders_per_labor_hour",
          labor_tunables.get(
-             "saturation_orders_per_labor_hour_threshold",
+             "saturation_orders_per_labor_hour",
              str(DEFAULT_SATURATION_THRESHOLD),
          ),
          "Orders/labor-hour above which the day is considered saturated. "
@@ -602,6 +564,67 @@ def build_daily_rows(
     return rows, summary
 
 
+def _spread_shift_minutes_by_hour(in_time: str, out_time: str) -> dict[int, float]:
+    """Spread a single shift's minutes across clock-hour buckets.
+
+    Used for the peak-hour saturation view: a 06:27 → 13:48 shift contributes
+    0.55 hr to hour-6, 1.0 hr to hours 7-12, and 0.80 hr to hour-13.
+
+    Returns {clock_hour: labor_hours_in_that_hour}. Returns {} for malformed
+    inputs (empty strings, unparseable HH:MM) so a single bad row doesn't
+    nuke the day. BHAGA closes well before midnight, so overnight wraps are
+    treated as "ignore" rather than +24h.
+    """
+    try:
+        h1, m1 = map(int, in_time.split(":")[:2])
+        h2, m2 = map(int, out_time.split(":")[:2])
+    except (ValueError, AttributeError):
+        return {}
+    start = h1 * 60 + m1
+    end = h2 * 60 + m2
+    if end <= start:
+        return {}
+    by_hour: dict[int, float] = {}
+    cur = start
+    while cur < end:
+        hour = cur // 60
+        next_boundary = (hour + 1) * 60
+        slice_end = min(end, next_boundary)
+        by_hour[hour] = by_hour.get(hour, 0.0) + (slice_end - cur) / 60.0
+        cur = slice_end
+    return by_hour
+
+
+def _peak_hour_orders_per_labor_hour(
+    *,
+    hourly_labor_by_clock_hour: dict[int, float],
+    orders_by_clock_hour: dict[int, int],
+):
+    """For one date: worst hour's orders/hourly-labor-hour saturation.
+
+    "Worst" = max ratio over clock hours where hourly labor > 0. Hours with
+    zero hourly labor are skipped (we're not open or no hourly staff was on;
+    div-by-zero would be misleading). Hours with zero orders contribute 0
+    to the max (still considered, just not peaks).
+
+    Returns "" when no hour qualifies (no hourly labor scheduled all day),
+    matching the blank-cell convention used throughout this module.
+    """
+    best = 0.0
+    seen_any = False
+    for hour, labor_h in hourly_labor_by_clock_hour.items():
+        if labor_h <= 0:
+            continue
+        orders_h = orders_by_clock_hour.get(hour, 0)
+        ratio = orders_h / labor_h
+        if ratio > best:
+            best = ratio
+        seen_any = True
+    if not seen_any:
+        return ""
+    return round(best, 1)
+
+
 def build_labor_daily_rows(
     *,
     txns: list[dict],
@@ -649,9 +672,10 @@ def build_labor_daily_rows(
     Each labor bucket gets TWO percentage columns so both views sit side-
     by-side without flipping tabs.
 
-    Columns (20 total):
+    Columns:
       date | dow
       | gross_sales | discounts | net_sales | tip_pool | net_sales_plus_tips
+      | orders                                      ← completed Square txns
       | hourly_hours | hourly_labor_cost
       | fulltime_hours | fulltime_labor_cost
       | total_labor_cost
@@ -659,6 +683,26 @@ def build_labor_daily_rows(
       | fulltime_pct_of_net_sales | fulltime_pct_of_net_sales_plus_tips
       | total_labor_pct_of_net_sales | total_labor_pct_of_net_sales_plus_tips
       | tips_pct_of_net_sales | all_in_cost_pct_of_net_sales_plus_tips
+      | hourly_labor_per_order | fulltime_labor_per_order | total_labor_per_order
+      | orders_per_labor_hour                       ← orders / hourly_hours
+      | peak_hour_orders_per_labor_hour             ← worst-hour saturation
+      | over_saturation                             ← "OVER" iff >threshold
+
+    `orders_per_labor_hour` uses HOURLY labor only as the denominator —
+    full-timers like managers don't add bar throughput, so they're excluded
+    from the saturation view. The numerator is completed Square
+    transactions (event_type=="Payment"; refunds excluded).
+
+    `peak_hour_orders_per_labor_hour` spreads each hourly shift across the
+    clock hours it covered (06:27→13:48 → 0.55h to hour-6, 1.0h to hours
+    7-12, 0.80h to hour-13) and reports the worst hour's ratio. This is
+    the actionable column for "add a shift during the 11am-1pm rush"
+    decisions — a day with a flat 6 average can hide a 14 peak.
+
+    `over_saturation` flips to "OVER" when orders_per_labor_hour exceeds
+    the threshold from config (`saturation_orders_per_labor_hour`). Blank
+    ("") when there's no hourly labor or no orders that day, rather than
+    div-by-zero or stale "ok".
     """
     sales = transactions_backend.aggregate_daily_sales(txns)
     rates_by_emp = {r["employee_name"]: r for r in wage_rates}
@@ -690,6 +734,11 @@ def build_labor_daily_rows(
         fallback_rate = 0.0
 
     daily: dict[str, dict[str, float]] = {}
+    # Per-date map of {clock_hour: hourly-bucket labor-hours in that hour}.
+    # Only hourly-bucket shifts contribute — peak-hour saturation uses the
+    # same denominator as the daily orders_per_labor_hour column for
+    # consistency. Built from shift in_time/out_time (HH:MM from ADP).
+    hourly_labor_by_date_hour: dict[str, dict[int, float]] = {}
     fallback_used: set[str] = set()
     fallback_dropped: set[str] = set()
     for s in shifts:
@@ -724,12 +773,38 @@ def build_labor_daily_rows(
         else:
             b["el_h"] += h
             b["el_c"] += cost
+            # Spread this hourly-bucket shift across clock hours for the
+            # peak-hour view. ADP only tracks one in/out pair per shift row;
+            # split shifts would underrepresent labor hours mid-day but in
+            # practice BHAGA shifts are contiguous, and the punches tab
+            # (where split shifts ARE separated) would be overkill here.
+            for hour, mins in _spread_shift_minutes_by_hour(
+                s.get("in_time", ""), s.get("out_time", "")
+            ).items():
+                day_map = hourly_labor_by_date_hour.setdefault(d, {})
+                day_map[hour] = day_map.get(hour, 0.0) + mins
     if fallback_used:
         print(f"# NOTE: labor_daily used fallback wage rate ${fallback_rate:.2f}/hr "
               f"(median of {len(hourly_rates)} hourly rates) for: {sorted(fallback_used)}")
     if fallback_dropped:
         print(f"# WARN: labor_daily skipped shifts with no wage_rate AND no fallback available: "
               f"{sorted(fallback_dropped)}")
+
+    # Aggregate completed orders by (date, clock_hour) for peak-hour view.
+    # event_type=="Refund" is excluded so the numerator matches the daily
+    # `orders` column (Payments only).
+    orders_by_date_hour: dict[str, dict[int, int]] = {}
+    for t in txns:
+        if t.get("event_type") == "Refund":
+            continue
+        d_iso = t.get("date_local") or ""
+        if not d_iso:
+            continue
+        hour = t.get("hour_local")
+        if hour is None or hour == "":
+            continue
+        day_map = orders_by_date_hour.setdefault(d_iso, {})
+        day_map[int(hour)] = day_map.get(int(hour), 0) + 1
 
     all_dates = sorted(set(sales.keys()) | set(daily.keys()))
     header = [
@@ -744,8 +819,8 @@ def build_labor_daily_rows(
         "total_labor_pct_of_net_sales", "total_labor_pct_of_net_sales_plus_tips",
         "tips_pct_of_net_sales", "all_in_cost_pct_of_net_sales_plus_tips",
         "hourly_labor_per_order", "fulltime_labor_per_order", "total_labor_per_order",
-        "hourly_orders_per_labor_hour", "total_orders_per_labor_hour",
-        "saturation",
+        "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
+        "over_saturation",
     ]
     rows: list[list] = [header]
     for d in all_dates:
@@ -770,15 +845,20 @@ def build_labor_daily_rows(
             return (num / denom) if denom > 0 else 0.0
 
         def _per_order(cost: float):
-            return round(cost / orders, 4) if orders > 0 else ""
+            return round(cost / orders, 2) if orders > 0 else ""
 
-        def _per_hour(num_orders: int, hours: float):
-            return round(num_orders / hours, 4) if hours > 0 else ""
-
-        if total_h > 0 and saturation_threshold > 0:
-            saturation = round((orders / total_h) / saturation_threshold, 2)
+        # orders_per_labor_hour denominator = HOURLY-bucket labor only.
+        # Full-timers don't add bar throughput, so excluding them from the
+        # denominator is the whole point of the saturation view.
+        orders_per_hr = round(orders / hourly_h, 1) if hourly_h > 0 else ""
+        peak_hour = _peak_hour_orders_per_labor_hour(
+            hourly_labor_by_clock_hour=hourly_labor_by_date_hour.get(d, {}),
+            orders_by_clock_hour=orders_by_date_hour.get(d, {}),
+        )
+        if isinstance(orders_per_hr, (int, float)) and saturation_threshold > 0:
+            over = "OVER" if orders_per_hr > saturation_threshold else "ok"
         else:
-            saturation = ""
+            over = ""
 
         rows.append([
             d, datetime.date.fromisoformat(d).strftime("%a"),
@@ -804,9 +884,9 @@ def build_labor_daily_rows(
             _per_order(hourly_cost),
             _per_order(fulltime_cost),
             _per_order(total_cost),
-            _per_hour(orders, hourly_h),
-            _per_hour(orders, total_h),
-            saturation,
+            orders_per_hr,
+            peak_hour,
+            over,
         ])
     return rows
 
@@ -852,8 +932,8 @@ def build_labor_period_rows(
         "total_labor_pct_of_net_sales", "total_labor_pct_of_net_sales_plus_tips",
         "tips_pct_of_net_sales", "all_in_cost_pct_of_net_sales_plus_tips",
         "hourly_labor_per_order", "fulltime_labor_per_order", "total_labor_per_order",
-        "hourly_orders_per_labor_hour", "total_orders_per_labor_hour",
-        "saturation",
+        "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
+        "over_saturation",
     ]
     if len(labor_daily_rows) <= 1:
         return [header]
@@ -862,8 +942,11 @@ def build_labor_period_rows(
     # match the header in build_labor_daily_rows: date=0, dow=1, gross=2,
     # disc=3, net=4, pool=5, net_plus_tips=6, orders=7, hourly_hours=8,
     # hourly_cost=9, fulltime_hours=10, fulltime_cost=11.
-    daily_by_date: dict[str, dict[str, float]] = {}
+    daily_by_date: dict[str, dict] = {}
     for row in labor_daily_rows[1:]:
+        # column positions match build_labor_daily_rows header:
+        # peak_hour_orders_per_labor_hour=25 (was numeric saturation pre-rename).
+        peak_cell = row[25]
         daily_by_date[row[0]] = {
             "gross": float(row[2]),
             "disc": float(row[3]),
@@ -874,6 +957,9 @@ def build_labor_period_rows(
             "hourly_c": float(row[9]),
             "fulltime_h": float(row[10]),
             "fulltime_c": float(row[11]),
+            # peak is "" on no-orders/no-labor days; treat as None so the
+            # max-of-peaks aggregation skips them.
+            "peak": (float(peak_cell) if peak_cell not in ("", None) else None),
         }
 
     rows: list[list] = [header]
@@ -884,6 +970,7 @@ def build_labor_period_rows(
         gross = disc = net = pool = h_hours = h_cost = ft_hours = ft_cost = 0.0
         orders = 0
         days = 0
+        peak_max = None
         cursor = datetime.date.fromisoformat(start)
         end_d = datetime.date.fromisoformat(end)
         while cursor <= end_d:
@@ -899,25 +986,25 @@ def build_labor_period_rows(
                 h_cost += bucket["hourly_c"]
                 ft_hours += bucket["fulltime_h"]
                 ft_cost += bucket["fulltime_c"]
+                if bucket["peak"] is not None:
+                    peak_max = bucket["peak"] if peak_max is None else max(peak_max, bucket["peak"])
                 days += 1
             cursor += datetime.timedelta(days=1)
         net_plus_tips = net + pool
         total_cost = h_cost + ft_cost
-        total_h = h_hours + ft_hours
 
         def _pct(num: float, denom: float) -> float:
             return (num / denom) if denom > 0 else 0.0
 
         def _per_order(cost: float):
-            return round(cost / orders, 4) if orders > 0 else ""
+            return round(cost / orders, 2) if orders > 0 else ""
 
-        def _per_hour(o: int, hours: float):
-            return round(o / hours, 4) if hours > 0 else ""
-
-        if total_h > 0 and saturation_threshold > 0:
-            saturation = round((orders / total_h) / saturation_threshold, 2)
+        orders_per_hr = round(orders / h_hours, 1) if h_hours > 0 else ""
+        peak_out = round(peak_max, 1) if peak_max is not None else ""
+        if isinstance(orders_per_hr, (int, float)) and saturation_threshold > 0:
+            over = "OVER" if orders_per_hr > saturation_threshold else "ok"
         else:
-            saturation = ""
+            over = ""
 
         rows.append([
             start, end, is_open, days,
@@ -943,9 +1030,9 @@ def build_labor_period_rows(
             _per_order(h_cost),
             _per_order(ft_cost),
             _per_order(total_cost),
-            _per_hour(orders, h_hours),
-            _per_hour(orders, total_h),
-            saturation,
+            orders_per_hr,
+            peak_out,
+            over,
         ])
     return rows
 
@@ -993,15 +1080,16 @@ def build_labor_weekly_rows(
         "total_labor_pct_of_net_sales", "total_labor_pct_of_net_sales_plus_tips",
         "tips_pct_of_net_sales", "all_in_cost_pct_of_net_sales_plus_tips",
         "hourly_labor_per_order", "fulltime_labor_per_order", "total_labor_per_order",
-        "hourly_orders_per_labor_hour", "total_orders_per_labor_hour",
-        "saturation",
+        "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
+        "over_saturation",
     ]
     if len(labor_daily_rows) <= 1:
         return [header]
 
     # Same field positions as labor_period (see build_labor_period_rows).
-    daily_by_date: dict[str, dict[str, float]] = {}
+    daily_by_date: dict[str, dict] = {}
     for row in labor_daily_rows[1:]:
+        peak_cell = row[25]
         daily_by_date[row[0]] = {
             "gross": float(row[2]),
             "disc": float(row[3]),
@@ -1012,6 +1100,7 @@ def build_labor_weekly_rows(
             "hourly_c": float(row[9]),
             "fulltime_h": float(row[10]),
             "fulltime_c": float(row[11]),
+            "peak": (float(peak_cell) if peak_cell not in ("", None) else None),
         }
 
     if not daily_by_date:
@@ -1037,6 +1126,7 @@ def build_labor_weekly_rows(
         gross = disc = net = pool = h_hours = h_cost = ft_hours = ft_cost = 0.0
         orders = 0
         days = 0
+        peak_max = None
         for iso_date in weeks[monday]:
             bucket = daily_by_date[iso_date]
             gross += bucket["gross"]
@@ -1048,24 +1138,24 @@ def build_labor_weekly_rows(
             h_cost += bucket["hourly_c"]
             ft_hours += bucket["fulltime_h"]
             ft_cost += bucket["fulltime_c"]
+            if bucket["peak"] is not None:
+                peak_max = bucket["peak"] if peak_max is None else max(peak_max, bucket["peak"])
             days += 1
         net_plus_tips = net + pool
         total_cost = h_cost + ft_cost
-        total_h = h_hours + ft_hours
 
         def _pct(num: float, denom: float) -> float:
             return (num / denom) if denom > 0 else 0.0
 
         def _per_order(cost: float):
-            return round(cost / orders, 4) if orders > 0 else ""
+            return round(cost / orders, 2) if orders > 0 else ""
 
-        def _per_hour(o: int, hours: float):
-            return round(o / hours, 4) if hours > 0 else ""
-
-        if total_h > 0 and saturation_threshold > 0:
-            saturation = round((orders / total_h) / saturation_threshold, 2)
+        orders_per_hr = round(orders / h_hours, 1) if h_hours > 0 else ""
+        peak_out = round(peak_max, 1) if peak_max is not None else ""
+        if isinstance(orders_per_hr, (int, float)) and saturation_threshold > 0:
+            over = "OVER" if orders_per_hr > saturation_threshold else "ok"
         else:
-            saturation = ""
+            over = ""
 
         rows.append([
             iso_label, monday.isoformat(), sunday.isoformat(), is_partial, days,
@@ -1091,9 +1181,9 @@ def build_labor_weekly_rows(
             _per_order(h_cost),
             _per_order(ft_cost),
             _per_order(total_cost),
-            _per_hour(orders, h_hours),
-            _per_hour(orders, total_h),
-            saturation,
+            orders_per_hr,
+            peak_out,
+            over,
         ])
     return rows
 
@@ -1432,14 +1522,14 @@ def main() -> int:
     try:
         saturation_threshold = float(
             labor_tunables.get(
-                "saturation_orders_per_labor_hour_threshold",
+                "saturation_orders_per_labor_hour",
                 DEFAULT_SATURATION_THRESHOLD,
             )
         )
     except (TypeError, ValueError):
         print(
-            "# WARN: saturation_orders_per_labor_hour_threshold in config is "
-            f"not a number ({labor_tunables.get('saturation_orders_per_labor_hour_threshold')!r}); "
+            "# WARN: saturation_orders_per_labor_hour in config is "
+            f"not a number ({labor_tunables.get('saturation_orders_per_labor_hour')!r}); "
             f"falling back to default {DEFAULT_SATURATION_THRESHOLD}."
         )
         saturation_threshold = float(DEFAULT_SATURATION_THRESHOLD)
@@ -1472,22 +1562,22 @@ def main() -> int:
     summary_rows = build_period_summary_rows(period_results)
 
     tab_payloads = [
-        {"tab": "config",            "rows": config_rows,      "currency_cols": [], "date_cols": []},
-        {"tab": "daily",             "rows": daily_rows,       "currency_cols": [2, 3, 7], "date_cols": [0]},
+        {"tab": "config",            "rows": config_rows,      "currency_cols": []},
+        {"tab": "daily",             "rows": daily_rows,       "currency_cols": [2, 3, 7]},
         # labor_daily currency cols (0-indexed against build_labor_daily_rows
         # header): 2=gross_sales, 3=discounts, 4=net_sales, 5=tip_pool,
         # 6=net_sales_plus_tips, 9=hourly_labor_cost, 11=fulltime_labor_cost,
         # 12=total_labor_cost, 21=hourly_labor_per_order,
         # 22=fulltime_labor_per_order, 23=total_labor_per_order. (orders=7 is
         # a count; saturation/per-hour cols are ratios, not currency.)
-        {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": [2, 3, 4, 5, 6, 9, 11, 12, 21, 22, 23], "date_cols": [0]},
+        {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": [2, 3, 4, 5, 6, 9, 11, 12, 21, 22, 23]},
         # labor_weekly inserts 5 lead cols before labor_daily layout → +3 shift.
-        {"tab": "labor_weekly",      "rows": labor_weekly_rows, "currency_cols": [5, 6, 7, 8, 9, 12, 14, 15, 24, 25, 26], "date_cols": [1, 2]},
+        {"tab": "labor_weekly",      "rows": labor_weekly_rows, "currency_cols": [5, 6, 7, 8, 9, 12, 14, 15, 24, 25, 26]},
         # labor_period inserts 4 lead cols before labor_daily layout → +2 shift.
-        {"tab": "labor_period",      "rows": labor_period_rows, "currency_cols": [4, 5, 6, 7, 8, 11, 13, 14, 23, 24, 25], "date_cols": [0, 1]},
-        {"tab": "tip_alloc_period",  "rows": period_rows,      "currency_cols": [6, 7, 8, 10, 11], "date_cols": [0, 1]},
-        {"tab": "tip_alloc_daily",   "rows": day_alloc_rows,   "currency_cols": [6, 9], "date_cols": [0, 2, 3]},
-        {"tab": "period_summary",    "rows": summary_rows,     "currency_cols": [7, 8, 9, 10], "date_cols": [0, 1]},
+        {"tab": "labor_period",      "rows": labor_period_rows, "currency_cols": [4, 5, 6, 7, 8, 11, 13, 14, 23, 24, 25]},
+        {"tab": "tip_alloc_period",  "rows": period_rows,      "currency_cols": [6, 7, 8, 10, 11]},
+        {"tab": "tip_alloc_daily",   "rows": day_alloc_rows,   "currency_cols": [6, 9]},
+        {"tab": "period_summary",    "rows": summary_rows,     "currency_cols": [7, 8, 9, 10]},
     ]
 
     print()
@@ -1523,11 +1613,6 @@ def main() -> int:
             format_currency_columns(
                 model_sid, token, sheet_id=sheet_id,
                 column_indices=p["currency_cols"], start_row=1,
-            )
-        if p.get("date_cols"):
-            format_date_columns(
-                model_sid, token, sheet_id=sheet_id,
-                column_indices=p["date_cols"], start_row=1,
             )
         auto_resize_columns(model_sid, token, sheet_id=sheet_id, num_cols=len(p["rows"][0]))
         print(f"    wrote {p['tab']:<22} ({len(p['rows'])-1} rows)")

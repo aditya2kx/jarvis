@@ -123,9 +123,14 @@ _HEADER_COLUMNS = [
     "Payroll Earning Description",
 ]
 
-# Rows 1-5 are metadata (title, company, IID, date range, generated timestamp);
-# row 6 is the column header; data starts at row 7.
-_HEADER_ROW = 6
+# Rows 1-N are metadata (title, company, IID, date range, generated timestamp,
+# and in newer exports also "Pay Period: …"); the column header lives somewhere
+# in [4..10]. ADP has shifted this row by ±1 over time so we locate it by
+# searching for the row whose first cell is "Employee Name" instead of hard-
+# coding the index. If ADP ever renames the leftmost column we'll hit the
+# 'header not found' path with a clear error.
+_FIRST_HEADER_CELL = "Employee Name"
+_MAX_HEADER_SCAN_ROW = 15
 
 
 def _coerce_date(v) -> Optional[datetime.date]:
@@ -189,10 +194,22 @@ def parse_xlsx(
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
     ws = wb.active
 
-    header = [c.value for c in ws[_HEADER_ROW]]
+    header_row_idx = None
+    for r in range(1, _MAX_HEADER_SCAN_ROW + 1):
+        if ws.cell(row=r, column=1).value == _FIRST_HEADER_CELL:
+            header_row_idx = r
+            break
+    if header_row_idx is None:
+        raise ValueError(
+            f"Earnings xlsx: could not find header row (cell A=='{_FIRST_HEADER_CELL}') "
+            f"within first {_MAX_HEADER_SCAN_ROW} rows. ADP may have renamed the "
+            f"leftmost column."
+        )
+
+    header = [c.value for c in ws[header_row_idx]]
     if header[: len(_HEADER_COLUMNS)] != _HEADER_COLUMNS:
         raise ValueError(
-            f"Earnings xlsx header mismatch at row {_HEADER_ROW}. "
+            f"Earnings xlsx header mismatch at row {header_row_idx}. "
             f"Expected {_HEADER_COLUMNS}, got {header[: len(_HEADER_COLUMNS)]}. "
             f"ADP may have changed the saved-report column layout, or the wrong "
             f"saved report was downloaded."
@@ -201,7 +218,7 @@ def parse_xlsx(
     records: list[dict] = []
     current_raw_name: Optional[str] = None
 
-    for raw_row in ws.iter_rows(min_row=_HEADER_ROW + 1, values_only=True):
+    for raw_row in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
         row = dict(zip(header, raw_row))
 
         raw_name = row.get("Employee Name")

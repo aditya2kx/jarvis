@@ -41,7 +41,7 @@ _INT_COLUMNS = {
     "gross_sales_cents", "discount_cents", "tip_cents",
     "net_total_cents", "total_collected_cents",
     "net_sales_cents", "refund_cents",
-    "txn_count", "transaction_count",
+    "txn_count", "transaction_count", "order_count",
     "hour_local", "dow_local",
     "punch_idx_in_day", "punch_count",
 }

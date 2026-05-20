@@ -322,6 +322,11 @@ def aggregate_daily_sales(records: list[dict]) -> dict[str, dict]:
       tip_cents             — Square "Tip" (separate from sales)
       total_collected_cents — Square "Total Collected" (net_sales + tax +
                               service charges + tip)
+      transaction_count     — count of ALL CSV rows (Payments + Refunds).
+      refund_count          — count of rows with event_type == "Refund".
+      order_count           — count of rows with event_type != "Refund"
+                              (completed Payment events; labor-saturation
+                              throughput denominator).
     """
     by_day: dict[str, dict] = {}
     for r in records:
@@ -334,6 +339,7 @@ def aggregate_daily_sales(records: list[dict]) -> dict[str, dict]:
             "tip_cents": 0,
             "transaction_count": 0,
             "refund_count": 0,
+            "order_count": 0,
         })
         gross_c = r["gross_sales_cents"]
         disc_c = r["discount_cents"]
@@ -349,6 +355,10 @@ def aggregate_daily_sales(records: list[dict]) -> dict[str, dict]:
         bucket["transaction_count"] += 1
         if r["event_type"] == "Refund":
             bucket["refund_count"] += 1
+        else:
+            # Completed orders only (Payment events) — matches the throughput
+            # denominator used by labor saturation columns in the model sheet.
+            bucket["order_count"] += 1
     return by_day
 
 

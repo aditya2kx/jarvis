@@ -74,7 +74,10 @@ from agents.bhaga.scripts.update_model_sheet import (  # noqa: E402
     format_currency_columns,
 )
 from core.config_loader import refresh_access_token  # noqa: E402
-from skills.bhaga_config.dates import coerce_iso_date  # noqa: E402
+from skills.bhaga_config.dates import (  # noqa: E402
+    _iso_date_for_sheet_cell,
+    coerce_iso_date,
+)
 from skills.tip_ledger_writer import read_raw_adp_punches  # noqa: E402
 from skills.clickup_chat import fetch_messages  # noqa: E402
 
@@ -795,7 +798,9 @@ def build_period_rollup(
             else:
                 reason = "Mixed (named + base)"
             rows.append([
-                pstart, pend, "yes" if is_open else "no", emp,
+                _iso_date_for_sheet_cell(pstart),
+                _iso_date_for_sheet_cell(pend),
+                "yes" if is_open else "no", emp,
                 s["reviews_credited"], s["named_count"],
                 s["base_dollars"], s["named_dollars"], total, reason,
             ])

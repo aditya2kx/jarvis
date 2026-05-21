@@ -595,7 +595,7 @@ def build_daily_rows(
         tips_pct = (pool_dollars / sales_dollars) if sales_dollars > 0 else 0.0
         dow = datetime.date.fromisoformat(d).strftime("%a")
         rows.append([
-            d, dow,
+            _iso_date_for_sheet_cell(d), dow,
             round(sales_dollars, 2),
             round(pool_dollars, 2),
             f"{tips_pct:.2%}",
@@ -929,7 +929,8 @@ def build_labor_daily_rows(
             over = ""
 
         rows.append([
-            d, datetime.date.fromisoformat(d).strftime("%a"),
+            _iso_date_for_sheet_cell(d),
+            datetime.date.fromisoformat(d).strftime("%a"),
             round(gross, 2),
             round(disc, 2),
             round(net, 2),
@@ -1025,9 +1026,13 @@ def build_labor_period_rows(
     # disc=3, net=4, pool=5, net_plus_tips=6, orders=7, hourly_hours=8,
     # hourly_cost=9, fulltime_hours=10, fulltime_cost=11,
     # peak_hour_orders_per_labor_hour=25.
+    # `row[0]` is apostrophe-prefixed for Sheets text-literal rendering
+    # (`'2026-05-20`); route through coerce_iso_date so the key matches
+    # the plain ISO produced by `cursor.isoformat()` below.
     daily_by_date: dict[str, dict[str, float]] = {}
     for row in labor_daily_rows[1:]:
-        daily_by_date[row[0]] = {
+        key = coerce_iso_date(row[0]) or row[0]
+        daily_by_date[key] = {
             "gross": float(row[2]),
             "disc": float(row[3]),
             "net": float(row[4]),
@@ -1087,7 +1092,9 @@ def build_labor_period_rows(
             over = ""
 
         rows.append([
-            start, end, is_open, days,
+            _iso_date_for_sheet_cell(start),
+            _iso_date_for_sheet_cell(end),
+            is_open, days,
             round(gross, 2),
             round(disc, 2),
             round(net, 2),
@@ -1163,9 +1170,13 @@ def build_labor_weekly_rows(
         return [header]
 
     # Same field positions as labor_period (see build_labor_period_rows).
+    # `row[0]` is apostrophe-prefixed; normalize back to plain ISO for the
+    # dict key so the lookup against `cursor.isoformat()` / iso strings
+    # downstream matches.
     daily_by_date: dict[str, dict[str, float]] = {}
     for row in labor_daily_rows[1:]:
-        daily_by_date[row[0]] = {
+        key = coerce_iso_date(row[0]) or row[0]
+        daily_by_date[key] = {
             "gross": float(row[2]),
             "disc": float(row[3]),
             "net": float(row[4]),
@@ -1232,8 +1243,16 @@ def build_labor_weekly_rows(
         else:
             over = ""
 
+        # iso_label (e.g. "2026-W21") is left as a bare string: verified
+        # via the Sheets MCP that "2026-Wnn" survives USER_ENTERED without
+        # date-serial coercion (the "W" breaks any date parser). week_start
+        # and week_end ARE plain ISO dates and DO get coerced, so they go
+        # through _iso_date_for_sheet_cell.
         rows.append([
-            iso_label, monday.isoformat(), sunday.isoformat(), is_partial, days,
+            iso_label,
+            _iso_date_for_sheet_cell(monday.isoformat()),
+            _iso_date_for_sheet_cell(sunday.isoformat()),
+            is_partial, days,
             round(gross, 2),
             round(disc, 2),
             round(net, 2),
@@ -1379,7 +1398,9 @@ def build_tip_alloc_period_rows(period_results: list[dict]) -> list[list]:
             diff_c = ours_c - adp_c
             pct = (diff_c / adp_c) if adp_c else None
             rows.append([
-                p["start"], p["end"], p["coverage"], "yes" if p["is_open"] else "no",
+                _iso_date_for_sheet_cell(p["start"]),
+                _iso_date_for_sheet_cell(p["end"]),
+                p["coverage"], "yes" if p["is_open"] else "no",
                 emp, round(hrs, 2),
                 round(ours_c / 100, 2),
                 round(adp_c / 100, 2),
@@ -1413,7 +1434,10 @@ def build_tip_alloc_daily_rows(
             pct = (a["hours"] / team_hrs) if team_hrs > 0 else 0.0
             dow = datetime.date.fromisoformat(a["date"]).strftime("%a")
             rows.append([
-                a["date"], dow, p["start"], p["end"],
+                _iso_date_for_sheet_cell(a["date"]),
+                dow,
+                _iso_date_for_sheet_cell(p["start"]),
+                _iso_date_for_sheet_cell(p["end"]),
                 a["employee"], round(a["hours"], 2),
                 round(pool_c / 100, 2),
                 round(team_hrs, 2),
@@ -1442,7 +1466,9 @@ def build_period_summary_rows(period_results: list[dict]) -> list[list]:
             if abs(p["per_period_ours"].get(emp, 0) - p["per_period_adp"].get(emp, 0)) >= 100
         )
         rows.append([
-            p["start"], p["end"], p["coverage"], "yes" if p["is_open"] else "no",
+            _iso_date_for_sheet_cell(p["start"]),
+            _iso_date_for_sheet_cell(p["end"]),
+            p["coverage"], "yes" if p["is_open"] else "no",
             ", ".join(p["check_dates"]) or ("(not yet paid)" if p["is_open"] else ""),
             len(set(p["per_period_ours"]) | set(p["per_period_adp"])),
             round(team_hrs, 2),
@@ -1670,8 +1696,16 @@ def main() -> int:
         ("labor_daily", labor_daily_rows),
     ):
         for r in rows[1:]:
+            # `r[0]` is now apostrophe-prefixed (e.g. "'2026-05-20") so the
+            # builders' output renders as plain text in Sheets instead of
+            # being coerced to date-serials. Route through coerce_iso_date
+            # so the sentinel's filter still works against the underlying
+            # ISO date.
+            iso = coerce_iso_date(r[0])
+            if iso is None:
+                continue
             try:
-                d = datetime.date.fromisoformat(r[0])
+                d = datetime.date.fromisoformat(iso)
             except (ValueError, TypeError):
                 continue
             if not is_refresh_date_complete(d):

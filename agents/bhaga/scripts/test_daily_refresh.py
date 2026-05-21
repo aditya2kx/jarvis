@@ -4,14 +4,27 @@
 Run:
     python3 agents/bhaga/scripts/test_daily_refresh.py
 
-Covers Layer C of the seamless_bhaga_refresh fix:
-``compute_gap_window`` must refuse to silently fall back to "fresh
-install" when the ``data_window_end`` config cell is non-empty but
-unparseable, because doing so would burn ~60 days of Square API budget
-plus a fresh 2FA challenge.
+Covers:
 
-These tests target the pure extracted function — no Sheets, Playwright,
-or Slack side effects.
+  1. ``compute_gap_window`` — Layer C of the seamless_bhaga_refresh fix:
+     refuses to silently fall back to "fresh install" when the
+     ``data_window_end`` config cell is non-empty but unparseable,
+     because doing so would burn ~60 days of Square API budget plus a
+     fresh 2FA challenge.
+
+  2. ``_run_state_dir`` / ``step_already_done`` / ``mark_step_done`` —
+     marker-dir keying by ``refresh_date`` (NOT today_ct). Recovery
+     runs for past dates must not pollute today's marker namespace.
+
+  3. ``is_refresh_date_complete`` — completeness gate boundaries
+     (past day, today-pre-21:00, today-at-21:00, today-post-21:00,
+     future). Boundary inclusive at 21:00 CT.
+
+  4. ``main()`` hard-refuse path — invoking with --date <today> at
+     13:00 CT raises SystemExit; --date <yesterday> does not.
+
+These tests target the pure extracted functions plus an argv-mocked
+``main()`` — no Sheets, Playwright, or Slack side effects.
 """
 
 from __future__ import annotations
@@ -19,11 +32,23 @@ from __future__ import annotations
 import datetime
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
-from agents.bhaga.scripts.daily_refresh import compute_gap_window
+from agents.bhaga.scripts import daily_refresh
+from agents.bhaga.scripts.daily_refresh import (
+    CT,
+    _SHOP_CLOSE_BUFFER_HOUR_CT,
+    _run_state_dir,
+    compute_gap_window,
+    is_refresh_date_complete,
+    mark_step_done,
+    step_already_done,
+)
 
 
 class ComputeGapWindowTests(unittest.TestCase):
@@ -92,6 +117,193 @@ class ComputeGapWindowTests(unittest.TestCase):
             refresh_date=datetime.date(2026, 5, 21),
         )
         self.assertGreater(gap_start, datetime.date(2026, 5, 21))
+
+
+class RunStateDirKeyingTests(unittest.TestCase):
+    """The marker dir MUST be keyed by refresh_date, not today_ct.
+
+    Recovery scenario that motivated the fix (2026-05-21 13:20 CT):
+      Operator runs `--date 2026-05-20`. Markers should land under
+      run-2026-05-20/, NOT run-2026-05-21/. The previous keying
+      collided with the upcoming 21:00 CT cron's namespace and either
+      (a) caused the cron to skip everything, or (b) caused the
+      recovery run to re-pull today's partial data.
+    """
+
+    def test_run_state_dir_uses_refresh_date_yesterday(self):
+        d = _run_state_dir(datetime.date(2026, 5, 20))
+        self.assertTrue(
+            str(d).endswith("run-2026-05-20"),
+            f"expected path to end with 'run-2026-05-20', got {d}",
+        )
+
+    def test_run_state_dir_uses_refresh_date_today(self):
+        d = _run_state_dir(datetime.date(2026, 5, 21))
+        self.assertTrue(
+            str(d).endswith("run-2026-05-21"),
+            f"expected path to end with 'run-2026-05-21', got {d}",
+        )
+
+    def test_run_state_dir_different_dates_yield_different_paths(self):
+        a = _run_state_dir(datetime.date(2026, 5, 20))
+        b = _run_state_dir(datetime.date(2026, 5, 21))
+        self.assertNotEqual(a, b)
+
+    def test_mark_and_check_use_passed_refresh_date_not_today(self):
+        # Sandbox HOME so the test doesn't pollute the operator's real
+        # ~/.bhaga/state/ dir.
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                rd_past = datetime.date(2026, 5, 20)
+                rd_other = datetime.date(2026, 5, 21)
+                self.assertFalse(step_already_done(rd_past, "consolidate_csv"))
+                mark_step_done(rd_past, "consolidate_csv", note="test")
+                self.assertTrue(step_already_done(rd_past, "consolidate_csv"))
+                # The marker for refresh_date=2026-05-20 must NOT be
+                # visible to refresh_date=2026-05-21 (the namespaces are
+                # independent — this is the whole point of the fix).
+                self.assertFalse(step_already_done(rd_other, "consolidate_csv"))
+
+
+class IsRefreshDateCompleteTests(unittest.TestCase):
+    """Boundary tests for the completeness gate.
+
+    `now_ct` is injected so tests are stable regardless of when the
+    suite is run (don't depend on wall-clock).
+    """
+
+    TODAY = datetime.date(2026, 5, 21)
+    YESTERDAY = datetime.date(2026, 5, 20)
+    TOMORROW = datetime.date(2026, 5, 22)
+
+    def _now(self, hour: int, minute: int = 0, second: int = 0) -> datetime.datetime:
+        return datetime.datetime(
+            self.TODAY.year, self.TODAY.month, self.TODAY.day,
+            hour, minute, second, tzinfo=CT,
+        )
+
+    def test_past_date_is_complete(self):
+        # Mid-day "now" — past dates are still complete regardless.
+        self.assertTrue(
+            is_refresh_date_complete(self.YESTERDAY, now_ct=self._now(13, 0))
+        )
+
+    def test_today_at_13_00_is_incomplete(self):
+        self.assertFalse(
+            is_refresh_date_complete(self.TODAY, now_ct=self._now(13, 0))
+        )
+
+    def test_today_at_20_59_is_incomplete(self):
+        self.assertFalse(
+            is_refresh_date_complete(self.TODAY, now_ct=self._now(20, 59, 59))
+        )
+
+    def test_today_at_21_00_boundary_is_complete(self):
+        # This is the canonical nightly-cron firing time. The cron
+        # invokes daily_refresh with --date today_ct; the gate MUST
+        # pass at 21:00 sharp or we just broke the production cron.
+        self.assertTrue(
+            is_refresh_date_complete(self.TODAY, now_ct=self._now(21, 0))
+        )
+
+    def test_today_at_23_00_is_complete(self):
+        self.assertTrue(
+            is_refresh_date_complete(self.TODAY, now_ct=self._now(23, 0))
+        )
+
+    def test_future_date_is_incomplete(self):
+        # Even after the buffer hour, a future date is incomplete.
+        self.assertFalse(
+            is_refresh_date_complete(self.TOMORROW, now_ct=self._now(23, 59))
+        )
+
+    def test_buffer_constant_is_21(self):
+        # Pin the boundary so a future tweak to the constant forces a
+        # cron schedule review at the same time.
+        self.assertEqual(_SHOP_CLOSE_BUFFER_HOUR_CT, 21)
+
+
+class MainHardRefuseTests(unittest.TestCase):
+    """`main()` must SystemExit when refresh_date is in-progress.
+
+    We patch the wall-clock so the test pins now_ct to 2026-05-21 13:00
+    CT (the same hour the bug surfaced in production). We also patch
+    argv so --date can be tested without touching real arg parsing.
+
+    The gate runs BEFORE any data fetches, so no Sheets / Playwright /
+    Slack patches are needed — but we patch _today_ct defensively in
+    case main() ever inspects it pre-gate.
+    """
+
+    NOW = datetime.datetime(2026, 5, 21, 13, 0, 0, tzinfo=CT)
+    TODAY_ISO = "2026-05-21"
+    YESTERDAY_ISO = "2026-05-20"
+
+    # Sentinel raised by the patched _load_profile when the gate passes.
+    # Lets us distinguish "gate passed and main() proceeded" (we hit the
+    # sentinel) from "gate failed" (we hit SystemExit with the gate
+    # message) WITHOUT ever touching real Sheets / Playwright / Slack.
+    class _PostGateSentinel(Exception):
+        pass
+
+    def _run_main_with(self, date_arg: str):
+        argv = ["daily_refresh", "--store", "palmetto", "--date", date_arg,
+                "--no-slack", "--skip-square", "--skip-timecard",
+                "--skip-reviews", "--skip-model"]
+
+        # Patch datetime.datetime.now(CT) to return self.NOW. Because
+        # `datetime.datetime` is C-implemented and its `now` classmethod
+        # cannot be patched directly, swap the datetime CLASS the module
+        # bound at import time with a subclass that pins `now()`. We
+        # leave all other datetime APIs untouched.
+        class _FixedNowDateTime(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return self.NOW if tz is not None else self.NOW.replace(tzinfo=None)
+
+        def _explode(*_args, **_kwargs):
+            # Sentinel for the yesterday-path: prove the gate passed by
+            # raising as soon as main() tries to touch the store profile.
+            # Any work past the gate goes through _load_profile first.
+            raise self._PostGateSentinel(
+                "gate passed; _load_profile was reached"
+            )
+
+        return _patch_then_run(
+            self, _FixedNowDateTime, argv, _explode,
+        )
+
+    def test_today_at_13_00_raises_systemexit(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._run_main_with(self.TODAY_ISO)
+        msg = str(cm.exception)
+        self.assertIn("not yet complete", msg)
+        self.assertIn(self.TODAY_ISO, msg)
+
+    def test_yesterday_passes_gate(self):
+        # Yesterday is past → complete → gate passes. The patched
+        # _load_profile raises a sentinel as soon as main() steps past
+        # the gate, so we never run any real Sheets / Playwright work.
+        # Test passes iff the SystemExit (gate) is NOT raised AND the
+        # sentinel IS raised. Anything else is a regression.
+        with self.assertRaises(self._PostGateSentinel):
+            self._run_main_with(self.YESTERDAY_ISO)
+
+
+def _patch_then_run(test_self, fixed_dt_cls, argv, load_profile_stub):
+    """Helper shared by MainHardRefuseTests cases.
+
+    Centralizes the patch stack so the test bodies stay focused on the
+    boundary they're asserting. The patches:
+      * daily_refresh.datetime.datetime  → fixed-now subclass
+      * daily_refresh._load_profile      → raise post-gate sentinel
+      * sys.argv                         → caller-supplied
+    """
+    with mock.patch.object(daily_refresh.datetime, "datetime", fixed_dt_cls), \
+         mock.patch.object(daily_refresh, "_load_profile", side_effect=load_profile_stub), \
+         mock.patch.object(sys, "argv", argv):
+        return daily_refresh.main()
 
 
 if __name__ == "__main__":

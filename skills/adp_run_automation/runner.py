@@ -333,20 +333,30 @@ def _handle_adp_two_factor(page, *, store: str) -> None:
     page.wait_for_timeout(1_500)
 
 
-def _mark_run_step_done(step_name: str, *, note: str = "") -> None:
-    """Best-effort write of ~/.bhaga/state/run-<today_ct>/{step_name}.done.
+def _mark_run_step_done(
+    step_name: str,
+    *,
+    refresh_date: Optional[datetime.date] = None,
+    note: str = "",
+) -> None:
+    """Best-effort write of ~/.bhaga/state/run-<refresh_date>/{step_name}.done.
 
     Mirrors agents.bhaga.scripts.daily_refresh.mark_step_done so the bundle
     helper can record per-component completion (adp_timecard, adp_earnings)
     even though the orchestrator's run_step only sees the bundle-level call
     (adp_reports). Preserves per-component granularity for the wrapper
     roll-up alert and operator-facing debugging.
+
+    The marker dir is keyed by ``refresh_date`` (the business date whose
+    data we're publishing), NOT by today_ct. See daily_refresh._run_state_dir
+    for the rationale. Falls back to today_ct only when refresh_date is
+    None (e.g. legacy callers that haven't been threaded yet).
     """
     try:
         from zoneinfo import ZoneInfo
         ct = ZoneInfo("America/Chicago")
-        today_ct = datetime.datetime.now(ct).date()
-        d = pathlib.Path.home() / ".bhaga" / "state" / f"run-{today_ct.isoformat()}"
+        key_date = refresh_date if refresh_date is not None else datetime.datetime.now(ct).date()
+        d = pathlib.Path.home() / ".bhaga" / "state" / f"run-{key_date.isoformat()}"
         d.mkdir(parents=True, exist_ok=True)
         body = datetime.datetime.now(ct).isoformat()
         if note:
@@ -925,9 +935,11 @@ def download_adp_bundle(
           given component, that component is skipped and the cached path
           is returned without launching the browser.
         - Layer B (per-component markers): success of each scrape writes
-          `~/.bhaga/state/run-<today_ct>/{adp_timecard,adp_earnings}.done`
-          so the orchestrator's per-step granularity is preserved even
-          though it now invokes a single `adp_reports` step.
+          `~/.bhaga/state/run-<refresh_date>/{adp_timecard,adp_earnings}.done`
+          (keyed by ``target_date`` = refresh_date, NOT today_ct — same
+          rationale as daily_refresh._run_state_dir) so the orchestrator's
+          per-step granularity is preserved even though it now invokes a
+          single `adp_reports` step.
 
     Partial-success contract: if Timecard succeeds but Earnings fails (or
     vice versa), we DO NOT raise mid-flight. Both attempts run, the
@@ -972,9 +984,15 @@ def download_adp_bundle(
     if not needs_timecard and not needs_earnings:
         print("[adp_bundle] SKIP browser — Layer A: required XLSX files already fresh on disk.")
         if tc_fresh:
-            _mark_run_step_done("adp_timecard", note="layer_a_skip (file fresh on disk)")
+            _mark_run_step_done(
+                "adp_timecard", refresh_date=target_date,
+                note="layer_a_skip (file fresh on disk)",
+            )
         if include_earnings and er_fresh:
-            _mark_run_step_done("adp_earnings", note="layer_a_skip (file fresh on disk)")
+            _mark_run_step_done(
+                "adp_earnings", refresh_date=target_date,
+                note="layer_a_skip (file fresh on disk)",
+            )
         return result
 
     print(f"[adp_bundle] needs_timecard={needs_timecard} needs_earnings={needs_earnings}; "
@@ -993,7 +1011,7 @@ def download_adp_bundle(
                 path = _timecard_within_session(page, target_date=target_date)
                 result["timecard_xlsx"] = path
                 _mark_run_step_done(
-                    "adp_timecard",
+                    "adp_timecard", refresh_date=target_date,
                     note=f"target_date={target_date.isoformat() if target_date else 'none'}",
                 )
                 print(f"[adp_bundle] timecard OK → {path}")
@@ -1056,7 +1074,7 @@ def download_adp_bundle(
                 )
                 result["earnings_xlsx"] = path
                 _mark_run_step_done(
-                    "adp_earnings",
+                    "adp_earnings", refresh_date=target_date,
                     note=f"window={window_start.isoformat()}..{window_end.isoformat()}",
                 )
                 print(f"[adp_bundle] earnings OK → {path}")

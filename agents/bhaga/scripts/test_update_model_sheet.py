@@ -22,9 +22,14 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
+from zoneinfo import ZoneInfo
+
+from agents.bhaga.scripts.daily_refresh import CT
 from agents.bhaga.scripts.update_model_sheet import (
     _DATE_CONFIG_KEYS,
     build_config_rows,
+    build_daily_rows,
+    build_labor_daily_rows,
 )
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
 
@@ -173,6 +178,120 @@ class IsoDateHelperDirectTests(unittest.TestCase):
         # If for some reason a caller hands us an already-prefixed value
         # (e.g. round-trip through the sheet), we must NOT add a second '.
         self.assertEqual(_iso_date_for_sheet_cell("'2026-05-20"), "'2026-05-20")
+
+
+class InProgressDateFilterTests(unittest.TestCase):
+    """labor_daily and daily must NOT emit rows for in-progress dates.
+
+    The production failure mode: a mid-day refresh on 2026-05-21 wrote a
+    partial 5/21 row into labor_daily / labor_weekly / labor_period.
+    With the filter wired in, the builders drop the in-progress date
+    before constructing rows; downstream weekly/period tabs naturally
+    inherit the filter because they reduce over labor_daily rows.
+
+    `now_ct` is injected so tests are stable regardless of wall-clock.
+    """
+
+    NOW_MID_DAY = datetime.datetime(2026, 5, 21, 13, 0, 0, tzinfo=CT)
+    NOW_POST_CLOSE = datetime.datetime(2026, 5, 21, 21, 30, 0, tzinfo=CT)
+
+    def _txns(self, dates: list[str]) -> list[dict]:
+        """Minimum txn shape consumed by transactions_backend.aggregate_daily_sales.
+
+        Mirrors every key the aggregator dereferences: date_local, hour_local,
+        event_type, gross_sales_cents, discount_cents, total_collected_cents,
+        tip_cents. One $5.00 sale + $1.00 tip per date.
+        """
+        out = []
+        for d in dates:
+            out.append({
+                "date_local": d,
+                "hour_local": 10,
+                "event_type": "Payment",
+                "gross_sales_cents": 500,
+                "discount_cents": 0,
+                "total_collected_cents": 600,
+                "tip_cents": 100,
+            })
+        return out
+
+    def _shifts(self, dates: list[str]) -> list[dict]:
+        out = []
+        for d in dates:
+            out.append({
+                "date": d,
+                "employee_name": "Test Barista",
+                "employee_id": "barista-1",
+                "in_time": "08:00",
+                "out_time": "14:00",
+                "regular_hours": 6.0,
+                "ot_hours": 0.0,
+                "doubletime_hours": 0.0,
+                "total_hours": 6.0,
+            })
+        return out
+
+    def _wage_rates(self) -> list[dict]:
+        return [{
+            "employee_name": "Test Barista",
+            "wage_rate_dollars": "12.00",
+            "ot_rate_dollars": "18.00",
+            "is_salaried": False,
+            "excluded_from_labor_pct": False,
+        }]
+
+    def test_labor_daily_drops_in_progress_date(self):
+        # 5/20 is complete (past), 5/21 is in-progress (today, before 21:00 CT).
+        rows = build_labor_daily_rows(
+            txns=self._txns(["2026-05-20", "2026-05-21"]),
+            shifts=self._shifts(["2026-05-20", "2026-05-21"]),
+            wage_rates=self._wage_rates(),
+            excluded_from_tip_pool=set(),
+            now_ct=self.NOW_MID_DAY,
+        )
+        date_col = [r[0] for r in rows[1:]]
+        self.assertIn("2026-05-20", date_col)
+        self.assertNotIn(
+            "2026-05-21", date_col,
+            f"in-progress 5/21 row leaked into labor_daily: {date_col}",
+        )
+
+    def test_labor_daily_emits_all_complete_dates(self):
+        # Two past dates → both must be present.
+        rows = build_labor_daily_rows(
+            txns=self._txns(["2026-05-19", "2026-05-20"]),
+            shifts=self._shifts(["2026-05-19", "2026-05-20"]),
+            wage_rates=self._wage_rates(),
+            excluded_from_tip_pool=set(),
+            now_ct=self.NOW_MID_DAY,
+        )
+        date_col = [r[0] for r in rows[1:]]
+        self.assertEqual(sorted(date_col), ["2026-05-19", "2026-05-20"])
+
+    def test_labor_daily_emits_today_after_21_00(self):
+        # At 21:30 CT today_ct is complete — the cron's nightly path.
+        # Regression guard: do NOT silently drop today's row at the
+        # canonical cron firing time.
+        rows = build_labor_daily_rows(
+            txns=self._txns(["2026-05-20", "2026-05-21"]),
+            shifts=self._shifts(["2026-05-20", "2026-05-21"]),
+            wage_rates=self._wage_rates(),
+            excluded_from_tip_pool=set(),
+            now_ct=self.NOW_POST_CLOSE,
+        )
+        date_col = [r[0] for r in rows[1:]]
+        self.assertIn("2026-05-21", date_col)
+
+    def test_daily_tab_drops_in_progress_date(self):
+        rows, _summary = build_daily_rows(
+            txns=self._txns(["2026-05-20", "2026-05-21"]),
+            shifts=self._shifts(["2026-05-20", "2026-05-21"]),
+            excluded=set(),
+            now_ct=self.NOW_MID_DAY,
+        )
+        date_col = [r[0] for r in rows[1:]]
+        self.assertIn("2026-05-20", date_col)
+        self.assertNotIn("2026-05-21", date_col)
 
 
 if __name__ == "__main__":

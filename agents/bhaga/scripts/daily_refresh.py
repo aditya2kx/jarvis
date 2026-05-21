@@ -246,8 +246,17 @@ def _should_run_rates(*, override: str | None) -> bool:
 # When the wrapper fires and a step partially succeeds, we don't want the
 # next manual --force re-run (or recovery attempt) to redo the already-done
 # work. Each step writes a success marker to
-#   ~/.bhaga/state/run-{today_ct}/{step_name}.done
+#   ~/.bhaga/state/run-{refresh_date}/{step_name}.done
 # and run_step short-circuits on entry if its marker is present.
+#
+# IMPORTANT: the marker dir is keyed by REFRESH_DATE (the business date
+# whose data we're publishing), NOT by today_ct (wall-clock CT date). This
+# matters for recovery runs — if at 13:20 CT on 5/21 an operator invokes
+# `--date 2026-05-20` to retry yesterday's failure, the markers must land
+# under run-2026-05-20/ so tonight's 21:00 CT cron (which runs --date
+# 2026-05-21) starts with a fresh marker set. The previous keying-by-
+# today_ct caused exactly this collision: the 5/20 recovery wrote markers
+# under run-2026-05-21/ and the 21:00 CT cron then short-circuited.
 #
 # Layer A (file-based, in download_* functions) handles the cron-storm case:
 # if the CSV/XLSX is on disk for today, skip the browser entirely.
@@ -256,22 +265,52 @@ def _should_run_rates(*, override: str | None) -> bool:
 # start.
 
 
-def _run_state_dir() -> pathlib.Path:
-    today_ct = datetime.datetime.now(CT).date()
-    return pathlib.Path.home() / ".bhaga" / "state" / f"run-{today_ct.isoformat()}"
+def _run_state_dir(refresh_date: datetime.date) -> pathlib.Path:
+    return pathlib.Path.home() / ".bhaga" / "state" / f"run-{refresh_date.isoformat()}"
 
 
-def step_already_done(step_name: str) -> bool:
-    return (_run_state_dir() / f"{step_name}.done").exists()
+def step_already_done(refresh_date: datetime.date, step_name: str) -> bool:
+    return (_run_state_dir(refresh_date) / f"{step_name}.done").exists()
 
 
-def mark_step_done(step_name: str, *, note: str = "") -> None:
-    d = _run_state_dir()
+def mark_step_done(refresh_date: datetime.date, step_name: str, *, note: str = "") -> None:
+    d = _run_state_dir(refresh_date)
     d.mkdir(parents=True, exist_ok=True)
     body = datetime.datetime.now(CT).isoformat()
     if note:
         body += f"\nnote: {note}"
     (d / f"{step_name}.done").write_text(body)
+
+
+# Cron triggers at 21:00 CT; the shop closes by ~20:00 CT so the +1h buffer
+# guarantees end-of-day Square + ADP data is settled before we touch it.
+# Tune by editing this constant — see is_refresh_date_complete().
+_SHOP_CLOSE_BUFFER_HOUR_CT = 21
+
+
+def is_refresh_date_complete(
+    refresh_date: datetime.date,
+    *,
+    now_ct: datetime.datetime | None = None,
+) -> bool:
+    """Return True iff refresh_date's data sources are expected to be complete.
+
+    A date X is "complete" when:
+      - X < today_ct (any past calendar day in CT), OR
+      - X == today_ct AND now_ct.hour >= _SHOP_CLOSE_BUFFER_HOUR_CT
+
+    Otherwise X is in-progress (today before 21:00 CT) or in the future.
+
+    Pure function; tests pass a fixed ``now_ct`` to stay deterministic.
+    """
+    if now_ct is None:
+        now_ct = datetime.datetime.now(CT)
+    today_ct = now_ct.date()
+    if refresh_date < today_ct:
+        return True
+    if refresh_date > today_ct:
+        return False
+    return now_ct.hour >= _SHOP_CLOSE_BUFFER_HOUR_CT
 
 
 def cleanup_old_run_dirs(*, keep_days: int = 7) -> None:
@@ -336,19 +375,24 @@ def run_step(
     step_name: str,
     fn,
     *,
-    refresh_date: str,
+    refresh_date: datetime.date,
     dry_run: bool,
 ) -> tuple[bool, object]:
     """Run a step; on exception, send Slack failure_alert and return (False, exc).
 
-    Idempotency: if the step's success marker already exists in today's run
-    state dir, skip execution entirely. Use --force-step (TODO) or delete
-    the marker file to force a re-run.
+    Idempotency: if the step's success marker already exists in the
+    refresh_date's run state dir, skip execution entirely. Use
+    --force-step (TODO) or delete the marker file to force a re-run.
+
+    ``refresh_date`` is the BUSINESS date being published (not today_ct);
+    markers are keyed off it so a recovery run for a past date never
+    collides with the upcoming nightly cron's marker namespace.
 
     Returns (success, return_value_or_exception)."""
-    if step_already_done(step_name) and not dry_run:
-        print(f"\n[{step_name}] SKIPPED — already completed today (marker: "
-              f"{_run_state_dir() / f'{step_name}.done'})")
+    if step_already_done(refresh_date, step_name) and not dry_run:
+        print(f"\n[{step_name}] SKIPPED — already completed for "
+              f"refresh_date={refresh_date.isoformat()} (marker: "
+              f"{_run_state_dir(refresh_date) / f'{step_name}.done'})")
         return True, None
     print(f"\n[{step_name}] starting...")
     t0 = time.monotonic()
@@ -360,7 +404,10 @@ def run_step(
         dt = time.monotonic() - t0
         print(f"[{step_name}] OK ({dt:.1f}s) -> {result}")
         try:
-            mark_step_done(step_name, note=f"runtime={dt:.1f}s, refresh_date={refresh_date}")
+            mark_step_done(
+                refresh_date, step_name,
+                note=f"runtime={dt:.1f}s, refresh_date={refresh_date.isoformat()}",
+            )
         except Exception as mark_exc:  # noqa: BLE001
             print(f"[{step_name}] WARN: could not write step marker: {mark_exc}")
         return True, result
@@ -371,13 +418,13 @@ def run_step(
             failure_alert(
                 step=step_name,
                 exception=exc,
-                date=refresh_date,
+                date=refresh_date.isoformat(),
                 extra=(
                     f"This step failed after {dt:.1f}s. With strict-1-attempt "
                     "enabled, the wrapper writes the day marker and stops. "
                     "Re-run manually: python3 -m agents.bhaga.scripts.daily_refresh_wrapper --force "
-                    f"(steps already completed today will skip via marker in "
-                    f"{_run_state_dir()})."
+                    f"(steps already completed for refresh_date will skip via marker in "
+                    f"{_run_state_dir(refresh_date)})."
                 ),
             )
         except Exception:  # noqa: BLE001, S110
@@ -420,6 +467,27 @@ def main() -> int:
     refresh_date = (
         datetime.date.fromisoformat(args.date) if args.date else _today_ct()
     )
+
+    # ── Completeness gate ────────────────────────────────────────────
+    # Refuse to run for a refresh_date whose data sources are still in
+    # flight (today before 21:00 CT, or any future date). Without this
+    # gate, an operator who runs `--date <past>` at 13:00 CT to recover
+    # from yesterday's failure would still trigger a partial today-pull
+    # AND write markers under run-<today_ct>/ that block the nightly
+    # cron. See the marker-dir refactor above for the other half of the
+    # fix. Place BEFORE any data fetches / step runs / marker writes.
+    if not is_refresh_date_complete(refresh_date):
+        now_ct = datetime.datetime.now(CT)
+        raise SystemExit(
+            f"ERROR: refresh_date={refresh_date.isoformat()} is not yet complete.\n"
+            f"  Now (CT): {now_ct.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+            f"  Required: today_ct > refresh_date OR "
+            f"(today_ct == refresh_date AND hour >= "
+            f"{_SHOP_CLOSE_BUFFER_HOUR_CT}:00 CT)\n"
+            f"  Fix: wait until {_SHOP_CLOSE_BUFFER_HOUR_CT}:00 CT for today's "
+            f"run, or pass --date <past-date> for backfill."
+        )
+
     profile = _load_profile(args.store)
     data_start = datetime.date.fromisoformat(profile["calibration"]["first_data_window"]["start"])
     spreadsheet_id = profile["google_sheets"]["bhaga_model"]["spreadsheet_id"]
@@ -486,7 +554,7 @@ def main() -> int:
                 start_date=gap_start, end_date=refresh_date,
                 store=args.store, headed=headed,
             ),
-            refresh_date=refresh_date.isoformat(),
+            refresh_date=refresh_date,
             dry_run=args.dry_run,
         )
         if ok:
@@ -495,7 +563,7 @@ def main() -> int:
                 ok2, val2 = run_step(
                     "consolidate_csv",
                     lambda: _consolidate_into_master(gap_csv=val),
-                    refresh_date=refresh_date.isoformat(),
+                    refresh_date=refresh_date,
                     dry_run=args.dry_run,
                 )
                 if ok2 and val2:
@@ -526,7 +594,7 @@ def main() -> int:
                 include_earnings=include_rates,
                 headed=headed,
             ),
-            refresh_date=refresh_date.isoformat(),
+            refresh_date=refresh_date,
             dry_run=args.dry_run,
         )
         if ok and isinstance(val, dict):
@@ -563,7 +631,7 @@ def main() -> int:
                 cwd=str(PROJECT_ROOT), check=True,
                 env={**os.environ, "PYTHONUNBUFFERED": "1"},
             ),
-            refresh_date=refresh_date.isoformat(),
+            refresh_date=refresh_date,
             dry_run=args.dry_run,
         )
         if ok:
@@ -585,7 +653,7 @@ def main() -> int:
                  "--store", args.store],
                 cwd=str(PROJECT_ROOT), check=True,
             ),
-            refresh_date=refresh_date.isoformat(),
+            refresh_date=refresh_date,
             dry_run=args.dry_run,
         )
         if not ok:
@@ -606,7 +674,7 @@ def main() -> int:
                 + (["--no-slack"] if args.no_slack else []),
                 cwd=str(PROJECT_ROOT), check=True,
             ),
-            refresh_date=refresh_date.isoformat(),
+            refresh_date=refresh_date,
             dry_run=args.dry_run,
         )
         if not ok:

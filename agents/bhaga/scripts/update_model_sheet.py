@@ -46,6 +46,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
+from agents.bhaga.scripts.daily_refresh import is_refresh_date_complete
 from core.config_loader import project_dir, refresh_access_token
 from skills.adp_run_automation import compensation_backend
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
@@ -75,41 +76,6 @@ PROJECT = pathlib.Path(project_dir())
 DOWNLOADS = PROJECT / "extracted" / "downloads"
 STORE_PROFILE_DIR = PROJECT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
 SHEETS_API = "https://sheets.googleapis.com/v4"
-
-
-# ---------- A1 helpers ----------
-
-
-def _a1_col(idx0: int) -> str:
-    """0-indexed column → A1 column letter (0=A, 25=Z, 26=AA, 27=AB, …)."""
-    if idx0 < 0:
-        raise ValueError(f"negative column index: {idx0}")
-    s = ""
-    n = idx0
-    while True:
-        s = chr(ord("A") + n % 26) + s
-        n = n // 26 - 1
-        if n < 0:
-            break
-    return s
-
-
-# Named range that points at the value cell of `saturation_orders_per_labor_hour`
-# on the config tab. labor_daily / labor_period / labor_weekly reference this
-# by name (no sheet qualifier) so editing the config cell recalculates every
-# `over_saturation` flag instantly without a model rebuild.
-SATURATION_THRESHOLD_NAMED_RANGE = "saturation_threshold"
-
-
-def _over_saturation_formula(orders_per_labor_hour_a1: str) -> str:
-    """Formula written into each over_saturation cell. ISBLANK guards the
-    no-orders-yet rows (where orders_per_labor_hour is empty) so they stay
-    blank instead of comparing "" > threshold and emitting a false 'ok'."""
-    return (
-        f'=IF(ISBLANK({orders_per_labor_hour_a1}), "", '
-        f'IF({orders_per_labor_hour_a1} > {SATURATION_THRESHOLD_NAMED_RANGE}, '
-        f'"OVER", "ok"))'
-    )
 
 
 # ---------- Sheets HTTP helpers ----------
@@ -188,6 +154,56 @@ def clear_and_write_tab(
     )
 
 
+def reset_number_format(
+    spreadsheet_id: str,
+    token: str,
+    *,
+    sheet_id: int,
+    num_cols: int,
+    start_row: int = 1,
+) -> None:
+    """Reset numberFormat to AUTOMATIC across the data range.
+
+    Google Sheets retains per-cell number formatting across clear+write
+    operations (the values:clear endpoint only clears values). When the
+    column layout changes (e.g. adding a new column that shifts everything
+    right), residual formatting from the previous layout leaks through —
+    a numeric count gets rendered as currency, a 0..2 ratio gets rendered
+    as "22.00%" because the old column at that position was a percentage.
+
+    This call wipes numberFormat back to AUTOMATIC before format_currency_
+    columns reapplies the targeted currency styling, so only columns we
+    explicitly want as currency get the dollar sign.
+    """
+    if num_cols <= 0:
+        return
+    # Nuke the entire userEnteredFormat on the data range. We have to do this
+    # broadly because a partial mask (fields=userEnteredFormat.numberFormat
+    # with empty body) was empirically inconsistent — old PERCENT formatting
+    # leaked through in some cells but not others on the same column. After
+    # this call, format_currency_columns + bold_header_row re-apply the
+    # targeted styling. Cover all rows including the header; bold_header_row
+    # runs AFTER this so the header still ends up bold.
+    _api(
+        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
+        token, method="POST",
+        data={"requests": [{
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    # cover from row 0 so the header's own old formatting
+                    # (e.g. previous percent-suffix) doesn't survive either.
+                    "startRowIndex": 0,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": num_cols,
+                },
+                "cell": {"userEnteredFormat": {}},
+                "fields": "userEnteredFormat",
+            }
+        }]},
+    )
+
+
 def format_currency_columns(
     spreadsheet_id: str,
     token: str,
@@ -220,43 +236,6 @@ def format_currency_columns(
     )
 
 
-def reset_user_entered_format(
-    spreadsheet_id: str,
-    token: str,
-    *,
-    sheet_id: int,
-    num_cols: int,
-    start_row: int = 1,
-) -> None:
-    """Wipe userEnteredFormat across the data range before re-styling.
-
-    Google Sheets retains per-cell formatting across values:clear writes —
-    when a column gains/loses meaning (e.g. adding `orders` between
-    net_sales_plus_tips and hourly_hours), residual styling from the
-    previous layout leaks through and renders a count as currency or a
-    0..2 ratio as "22.00%". Call this BEFORE bold_header_row and
-    format_currency_columns so their targeted styling wins on top.
-    """
-    if num_cols <= 0:
-        return
-    _api(
-        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
-        token, method="POST",
-        data={"requests": [{
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": start_row,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": num_cols,
-                },
-                "cell": {"userEnteredFormat": {}},
-                "fields": "userEnteredFormat",
-            }
-        }]},
-    )
-
-
 def bold_header_row(spreadsheet_id: str, token: str, *, sheet_id: int) -> None:
     _api(
         f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
@@ -268,62 +247,6 @@ def bold_header_row(spreadsheet_id: str, token: str, *, sheet_id: int) -> None:
                 "fields": "userEnteredFormat.textFormat.bold",
             }
         }]},
-    )
-
-
-def upsert_named_range(
-    spreadsheet_id: str,
-    token: str,
-    *,
-    name: str,
-    sheet_id: int,
-    row_0idx: int,
-    col_0idx: int,
-) -> None:
-    """Add or update a SPREADSHEET-scoped single-cell named range.
-
-    Named ranges in Sheets are workbook-wide regardless of which sheet's
-    cell they point at, so a formula in any other tab can reference them
-    by `name` without a sheet qualifier. Idempotent: if a named range with
-    `name` already exists we updateNamedRange in place (preserves any
-    formulas that already reference it); otherwise we addNamedRange.
-    """
-    meta = get_spreadsheet_meta(spreadsheet_id, token)
-    existing_id: Optional[str] = None
-    for nr in meta.get("namedRanges", []) or []:
-        if nr.get("name") == name:
-            existing_id = nr.get("namedRangeId")
-            break
-    grid_range = {
-        "sheetId": sheet_id,
-        "startRowIndex": row_0idx,
-        "endRowIndex": row_0idx + 1,
-        "startColumnIndex": col_0idx,
-        "endColumnIndex": col_0idx + 1,
-    }
-    if existing_id:
-        request = {
-            "updateNamedRange": {
-                "namedRange": {
-                    "namedRangeId": existing_id,
-                    "name": name,
-                    "range": grid_range,
-                },
-                "fields": "name,range",
-            }
-        }
-    else:
-        request = {
-            "addNamedRange": {
-                "namedRange": {
-                    "name": name,
-                    "range": grid_range,
-                }
-            }
-        }
-    _api(
-        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
-        token, method="POST", data={"requests": [request]},
     )
 
 
@@ -522,18 +445,17 @@ REVIEW_TUNABLE_KEYS = (
 )
 
 # Labor-saturation tunables. Same round-trip-preserve pattern as the review
-# tunables — operator edits in-sheet, subsequent refreshes echo back the value.
+# tunables — the operator can edit these in-sheet and subsequent refreshes
+# will echo back whatever they set. Defaults seed on first run.
 LABOR_TUNABLE_KEYS = (
     "saturation_orders_per_labor_hour",
 )
 
-# Seed value for the saturation threshold (orders / labor-hour). Calibrated
-# from week-1 data: Friday's busy day landed at orders/labor-hr ≈ 4.0, so 4
-# represents a "fully-loaded bar" — orders_per_labor_hour ≥ threshold means
-# we're at capacity. Operators can re-tune in-sheet via the named range
-# `saturation_threshold` (config!B<row>); the over_saturation cells in
-# labor_daily/period/weekly are live formulas that recompute on edit.
-DEFAULT_SATURATION_THRESHOLD = 4.0
+# Orders / hourly-labor-hour above which we flag the day as "OVER" capacity.
+# 10 is a reasonable starting point for a specialty coffee bar (~6 minutes per
+# completed order per barista hour). The operator tunes this in-sheet by
+# eyeballing busy vs slow days; this is just the seed.
+DEFAULT_SATURATION_THRESHOLD = 10.0
 
 
 def build_config_rows(
@@ -588,20 +510,24 @@ def build_config_rows(
         ["review_named_bonus_dollars",
          review_tunables.get("review_named_bonus_dollars", "20"),
          "Per-person bonus on a shoutout review (only the named people; overrides exclusions)."],
-        # Labor saturation tuning. labor_daily / labor_period / labor_weekly
-        # emit an `over_saturation` flag — "OVER" iff orders_per_labor_hour
-        # >=1.0 = at/over capacity; <1.0 = headroom. Tune in-sheet.
+        # ── Labor saturation tuning ──
+        # labor_daily / labor_period / labor_weekly emit an `over_saturation`
+        # flag — "OVER" when orders_per_labor_hour (hourly bucket only)
+        # exceeds this threshold, "ok" otherwise. Forward-looking: this is
+        # the "am I approaching the throughput wall? do I add a shift?"
+        # signal, not historical accounting. Tune by watching busy vs slow
+        # days; conditional-format "OVER" red in-sheet for at-a-glance use.
         ["saturation_orders_per_labor_hour",
          labor_tunables.get(
              "saturation_orders_per_labor_hour",
              str(DEFAULT_SATURATION_THRESHOLD),
          ),
-         "Orders/labor-hour above which the day is flagged OVER on "
-         "labor_daily/period/weekly. Default 4 ≈ a fully-loaded bar — at or "
-         "above this rate, every barista is order-bound. Edit this cell to "
-         "retune: the over_saturation column is a live formula keyed to the "
-         "named range `saturation_threshold` so every flag cell recomputes "
-         "instantly without re-running the model build."],
+         "Orders/hourly-labor-hour above which the day is flagged 'OVER'. "
+         "Default 10 = roughly 1 completed order every 6 labor-minutes per "
+         "barista. Raise if your hourly staff have idle time at this rate; "
+         "lower if lines/wait grow at this rate. Only hourly labor counts "
+         "toward the denominator (full-timers like managers don't add bar "
+         "throughput)."],
     ]
     # Echo training exclusions verbatim so they survive the config-tab rewrite.
     # USERS: edit these rows directly in Google Sheets. Set the date to the
@@ -627,6 +553,7 @@ def build_daily_rows(
     shifts: list[dict],
     excluded: set[str],
     training_through: dict[str, datetime.date] | None = None,
+    now_ct: datetime.datetime | None = None,
 ) -> tuple[list[list], dict[str, dict]]:
     training_through = training_through or {}
     sales = transactions_backend.aggregate_daily_sales(txns)
@@ -641,6 +568,15 @@ def build_daily_rows(
         daily_hours_excl[d] = daily_hours_excl.get(d, 0.0) + s.get("total_hours", 0.0)
 
     all_dates = sorted(set(sales.keys()) | set(daily_hours_all.keys()))
+    # Same in-progress filter as build_labor_daily_rows — see that function's
+    # comment for the rationale. The `daily` tab is the per-day store-inputs
+    # source-of-truth that tip_alloc_daily references for `team_hours` and
+    # `pool_cents`; emitting a partial-day row here would silently propagate
+    # into the per-employee tip allocation drill-down.
+    all_dates = [
+        d for d in all_dates
+        if is_refresh_date_complete(datetime.date.fromisoformat(d), now_ct=now_ct)
+    ]
     header = [
         "date", "dow",
         "gross_sales", "tip_pool", "tips_pct_of_sales",
@@ -680,13 +616,14 @@ def build_daily_rows(
 def _spread_shift_minutes_by_hour(in_time: str, out_time: str) -> dict[int, float]:
     """Spread a single shift's minutes across clock-hour buckets.
 
-    Used for the peak-hour saturation view: a 06:27 → 13:48 shift contributes
-    0.55 hr to hour-6, 1.0 hr to hours 7-12, and 0.80 hr to hour-13.
+    Used for peak-hour saturation: a 06:27 → 13:48 shift contributes 0.55 hr
+    to hour-6, 1.0 hr to hours 7-12, 0.80 hr to hour-13.
 
     Returns {clock_hour: labor_hours_in_that_hour}. Returns {} for malformed
-    inputs (empty strings, unparseable HH:MM) so a single bad row doesn't
+    inputs (empty strings, unparseable HH:MM) so a single bad shift doesn't
     nuke the day. BHAGA closes well before midnight, so overnight wraps are
-    treated as "ignore" rather than +24h.
+    treated as "ignore" rather than +24h — if a shift later happens to run
+    past midnight we'd revisit this; logging would surface it.
     """
     try:
         h1, m1 = map(int, in_time.split(":")[:2])
@@ -701,8 +638,8 @@ def _spread_shift_minutes_by_hour(in_time: str, out_time: str) -> dict[int, floa
     cur = start
     while cur < end:
         hour = cur // 60
-        next_boundary = (hour + 1) * 60
-        slice_end = min(end, next_boundary)
+        next_hour_boundary = (hour + 1) * 60
+        slice_end = min(end, next_hour_boundary)
         by_hour[hour] = by_hour.get(hour, 0.0) + (slice_end - cur) / 60.0
         cur = slice_end
     return by_hour
@@ -712,16 +649,16 @@ def _peak_hour_orders_per_labor_hour(
     *,
     hourly_labor_by_clock_hour: dict[int, float],
     orders_by_clock_hour: dict[int, int],
-):
+) -> float | str:
     """For one date: worst hour's orders/hourly-labor-hour saturation.
 
     "Worst" = max ratio over clock hours where hourly labor > 0. Hours with
-    zero hourly labor are skipped (we're not open or no hourly staff was on;
-    div-by-zero would be misleading). Hours with zero orders contribute 0
-    to the max (still considered, just not peaks).
+    zero hourly labor are skipped (we're not open or no hourly staff was
+    on; computing infinity would be misleading). Hours with zero orders
+    contribute 0 to the max (still considered, they just aren't peaks).
 
-    Returns "" when no hour qualifies (no hourly labor scheduled all day),
-    matching the blank-cell convention used throughout this module.
+    Returns "" if no hour qualifies (no hourly labor scheduled all day,
+    or no completed orders all day).
     """
     best = 0.0
     seen_any = False
@@ -744,6 +681,8 @@ def build_labor_daily_rows(
     shifts: list[dict],
     wage_rates: list[dict],
     excluded_from_tip_pool: set[str],
+    saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD,
+    now_ct: datetime.datetime | None = None,
 ) -> list[list]:
     """One row per day with labor cost / labor% computed from ADP wage rates.
 
@@ -787,7 +726,7 @@ def build_labor_daily_rows(
     Columns:
       date | dow
       | gross_sales | discounts | net_sales | tip_pool | net_sales_plus_tips
-      | orders                                      ← completed Square txns
+      | orders                                  ← completed Square txns only
       | hourly_hours | hourly_labor_cost
       | fulltime_hours | fulltime_labor_cost
       | total_labor_cost
@@ -795,34 +734,30 @@ def build_labor_daily_rows(
       | fulltime_pct_of_net_sales | fulltime_pct_of_net_sales_plus_tips
       | total_labor_pct_of_net_sales | total_labor_pct_of_net_sales_plus_tips
       | tips_pct_of_net_sales | all_in_cost_pct_of_net_sales_plus_tips
-      | hourly_labor_per_order | fulltime_labor_per_order | total_labor_per_order
-      | orders_per_labor_hour                       ← orders / hourly_hours
-      | peak_hour_orders_per_labor_hour             ← worst-hour saturation
-      | over_saturation                             ← "OVER" iff >threshold
+      | hourly_labor_per_order                   ← $/order, hourly bucket
+      | fulltime_labor_per_order                 ← $/order, fulltime bucket
+      | total_labor_per_order                    ← $/order, all labor
+      | orders_per_labor_hour                    ← orders / hourly_hours
+      | peak_hour_orders_per_labor_hour          ← worst-hour saturation
+      | over_saturation                          ← "OVER" if >threshold else "ok"
 
-    `orders_per_labor_hour` uses HOURLY labor only as the denominator —
-    full-timers like managers don't add bar throughput, so they're excluded
-    from the saturation view. The numerator is completed Square
-    transactions (event_type=="Payment"; refunds excluded).
+    `orders_per_labor_hour` denominator is HOURLY labor only — full-timers
+    like managers don't add bar throughput, so they're excluded from the
+    saturation view. The numerator is completed Square transactions
+    (event_type=="Payment"; refunds excluded, matching net_sales).
 
     `peak_hour_orders_per_labor_hour` spreads each hourly shift across the
     clock hours it covered (06:27→13:48 → 0.55h to hour-6, 1.0h to hours
     7-12, 0.80h to hour-13) and reports the worst hour's ratio. This is
     the actionable column for "add a shift during the 11am-1pm rush"
-    decisions — a day with a flat 6 average can hide a 14 peak.
+    decisions: a day with a flat 6 orders/hr-hour average could still
+    have a 14 orders/hr-hour peak hidden inside it.
 
-    `over_saturation` is a LIVE Google Sheets formula (not a precomputed
-    value) keyed to the spreadsheet-scoped named range `saturation_threshold`,
-    which points at the value cell of `saturation_orders_per_labor_hour` on
-    the config tab. The cell reads:
-
-        =IF(ISBLANK(<orders_per_labor_hour>), "",
-            IF(<orders_per_labor_hour> > saturation_threshold, "OVER", "ok"))
-
-    Editing the threshold in config flips every flag cell across
-    labor_daily/period/weekly instantly without re-running the model build.
-    The ISBLANK guard preserves the existing blank-when-no-orders behavior
-    (no false 'ok' on a day with empty orders_per_labor_hour).
+    `over_saturation` flips to "OVER" when orders_per_labor_hour exceeds
+    the threshold from config (`saturation_orders_per_labor_hour`); the
+    operator conditional-formats this red in-sheet for at-a-glance use.
+    Both columns are blank ("") when there's no hourly labor or no orders
+    that day, rather than div-by-zero.
     """
     sales = transactions_backend.aggregate_daily_sales(txns)
     rates_by_emp = {r["employee_name"]: r for r in wage_rates}
@@ -857,7 +792,8 @@ def build_labor_daily_rows(
     # Per-date map of {clock_hour: hourly-bucket labor-hours in that hour}.
     # Only hourly-bucket shifts contribute — peak-hour saturation uses the
     # same denominator as the daily orders_per_labor_hour column for
-    # consistency. Built from shift in_time/out_time (HH:MM from ADP).
+    # consistency. Built from shift in_time/out_time (HH:MM strings from
+    # ADP). Used only for peak_hour_orders_per_labor_hour below.
     hourly_labor_by_date_hour: dict[str, dict[int, float]] = {}
     fallback_used: set[str] = set()
     fallback_dropped: set[str] = set()
@@ -894,10 +830,10 @@ def build_labor_daily_rows(
             b["el_h"] += h
             b["el_c"] += cost
             # Spread this hourly-bucket shift across clock hours for the
-            # peak-hour view. ADP only tracks one in/out pair per shift row;
-            # split shifts would underrepresent labor hours mid-day but in
-            # practice BHAGA shifts are contiguous, and the punches tab
-            # (where split shifts ARE separated) would be overkill here.
+            # peak-hour view. ADP only tracks one in/out pair per row, so
+            # split shifts would underrepresent labor hours mid-day; in
+            # practice BHAGA shifts are contiguous and the punches tab
+            # (where split shifts ARE separated) is overkill here.
             for hour, mins in _spread_shift_minutes_by_hour(
                 s.get("in_time", ""), s.get("out_time", "")
             ).items():
@@ -917,16 +853,27 @@ def build_labor_daily_rows(
     for t in txns:
         if t.get("event_type") == "Refund":
             continue
-        d_iso = t.get("date_local") or ""
-        if not d_iso:
+        d = t.get("date_local") or ""
+        if not d:
             continue
         hour = t.get("hour_local")
         if hour is None or hour == "":
             continue
-        day_map = orders_by_date_hour.setdefault(d_iso, {})
+        day_map = orders_by_date_hour.setdefault(d, {})
         day_map[int(hour)] = day_map.get(int(hour), 0) + 1
 
     all_dates = sorted(set(sales.keys()) | set(daily.keys()))
+    # Drop any in-progress date (today_ct before 21:00 CT shop-close buffer,
+    # or any future date). Without this filter, a refresh that runs mid-day
+    # would publish a half-day labor row whose orders / hourly_hours are a
+    # partial snapshot — the very bug that motivated the marker-dir + gate
+    # changes in daily_refresh.py. `now_ct` is wired through for tests so
+    # they can assert behavior at boundary times without depending on
+    # wall-clock.
+    all_dates = [
+        d for d in all_dates
+        if is_refresh_date_complete(datetime.date.fromisoformat(d), now_ct=now_ct)
+    ]
     header = [
         "date", "dow",
         "gross_sales", "discounts", "net_sales", "tip_pool", "net_sales_plus_tips",
@@ -942,7 +889,6 @@ def build_labor_daily_rows(
         "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
         "over_saturation",
     ]
-    opl_col_letter = _a1_col(header.index("orders_per_labor_hour"))
     rows: list[list] = [header]
     for d in all_dates:
         s_d = sales.get(d, {
@@ -960,7 +906,6 @@ def build_labor_daily_rows(
         fulltime_cost = b["ex_c"]
         total_cost = hourly_cost + fulltime_cost
         hourly_h = b["el_h"]
-        total_h = hourly_h + b["ex_h"]
 
         def _pct(num: float, denom: float) -> float:
             return (num / denom) if denom > 0 else 0.0
@@ -968,20 +913,20 @@ def build_labor_daily_rows(
         def _per_order(cost: float):
             return round(cost / orders, 2) if orders > 0 else ""
 
-        # orders_per_labor_hour denominator = HOURLY-bucket labor only.
+        # orders_per_labor_hour denominator = hourly-bucket labor only.
         # Full-timers don't add bar throughput, so excluding them from the
         # denominator is the whole point of the saturation view.
         orders_per_hr = round(orders / hourly_h, 1) if hourly_h > 0 else ""
+
         peak_hour = _peak_hour_orders_per_labor_hour(
             hourly_labor_by_clock_hour=hourly_labor_by_date_hour.get(d, {}),
             orders_by_clock_hour=orders_by_date_hour.get(d, {}),
         )
-        # over_saturation is a live formula keyed to the spreadsheet-scoped
-        # named range `saturation_threshold` so editing the config cell
-        # recalculates every flag without re-running the model build. The
-        # next row to be appended will land at 1-indexed sheet row
-        # len(rows)+1 (header is rows[0] at sheet row 1).
-        over = _over_saturation_formula(f"{opl_col_letter}{len(rows) + 1}")
+
+        if isinstance(orders_per_hr, (int, float)) and saturation_threshold > 0:
+            over = "OVER" if orders_per_hr > saturation_threshold else "ok"
+        else:
+            over = ""
 
         rows.append([
             d, datetime.date.fromisoformat(d).strftime("%a"),
@@ -1018,22 +963,24 @@ def build_labor_period_rows(
     *,
     periods: list[dict],
     labor_daily_rows: list[list],
+    saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD,
 ) -> list[list]:
     """Aggregate labor_daily rows by pay period.
 
-    Sums the raw $/hour columns across the days in each period, then
-    recomputes percentages from those sums (NOT an average of per-day
-    percentages — that would mis-weight low-sales days against high-sales
-    ones and produce a meaningless number).
+    Sums the raw $/hour/order columns across the days in each period, then
+    recomputes percentages and per-order ratios from those sums (NOT an
+    average of per-day percentages — that would mis-weight low-sales days
+    against high-sales ones and produce a meaningless number).
 
     `periods` come from discover_periods() + append_open_period() so the
     open in-progress period is included as the last row, flagged via
     `is_open=Y`. Helps the operator see "where we're trending" before
     the period closes.
 
-    Columns (22 total):
+    Columns — mirrors labor_daily but with period start/end:
       pay_period_start | pay_period_end | is_open | days_covered
       gross_sales | discounts | net_sales | tip_pool | net_sales_plus_tips
+      orders                                  ← sum of completed orders
       hourly_hours | hourly_labor_cost
       fulltime_hours | fulltime_labor_cost
       total_labor_cost
@@ -1041,6 +988,19 @@ def build_labor_period_rows(
       fulltime_pct_of_net_sales | fulltime_pct_of_net_sales_plus_tips
       total_labor_pct_of_net_sales | total_labor_pct_of_net_sales_plus_tips
       tips_pct_of_net_sales | all_in_cost_pct_of_net_sales_plus_tips
+      hourly_labor_per_order | fulltime_labor_per_order | total_labor_per_order
+      orders_per_labor_hour | peak_hour_orders_per_labor_hour
+      over_saturation
+
+    `orders_per_labor_hour` at period grain is aggregate-then-ratio
+    (sum(orders)/sum(hourly_hours)), NOT an average of daily ratios — that
+    would mis-weight low-sales days against high-sales ones. Same for
+    labor_per_order columns.
+
+    `peak_hour_orders_per_labor_hour` aggregates as MAX of the daily peaks:
+    the worst hour we observed anywhere in this period. That's the "is any
+    hour in this period a staffing alarm" view; averaging or summing peaks
+    would dilute the actionable signal.
     """
     header = [
         "pay_period_start", "pay_period_end", "is_open", "days_covered",
@@ -1057,19 +1017,16 @@ def build_labor_period_rows(
         "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
         "over_saturation",
     ]
-    opl_col_letter = _a1_col(header.index("orders_per_labor_hour"))
     if len(labor_daily_rows) <= 1:
         return [header]
 
     # Index labor_daily by date for fast period-bucketing. Field positions
     # match the header in build_labor_daily_rows: date=0, dow=1, gross=2,
     # disc=3, net=4, pool=5, net_plus_tips=6, orders=7, hourly_hours=8,
-    # hourly_cost=9, fulltime_hours=10, fulltime_cost=11.
-    daily_by_date: dict[str, dict] = {}
+    # hourly_cost=9, fulltime_hours=10, fulltime_cost=11,
+    # peak_hour_orders_per_labor_hour=25.
+    daily_by_date: dict[str, dict[str, float]] = {}
     for row in labor_daily_rows[1:]:
-        # column positions match build_labor_daily_rows header:
-        # peak_hour_orders_per_labor_hour=25 (was numeric saturation pre-rename).
-        peak_cell = row[25]
         daily_by_date[row[0]] = {
             "gross": float(row[2]),
             "disc": float(row[3]),
@@ -1080,9 +1037,9 @@ def build_labor_period_rows(
             "hourly_c": float(row[9]),
             "fulltime_h": float(row[10]),
             "fulltime_c": float(row[11]),
-            # peak is "" on no-orders/no-labor days; treat as None so the
-            # max-of-peaks aggregation skips them.
-            "peak": (float(peak_cell) if peak_cell not in ("", None) else None),
+            # peak is "" on no-orders/no-labor days; coerce to None so the
+            # max-of-peaks aggregation ignores them.
+            "peak": (float(row[25]) if row[25] != "" else None),
         }
 
     rows: list[list] = [header]
@@ -1093,7 +1050,7 @@ def build_labor_period_rows(
         gross = disc = net = pool = h_hours = h_cost = ft_hours = ft_cost = 0.0
         orders = 0
         days = 0
-        peak_max = None
+        peak_max: float | None = None
         cursor = datetime.date.fromisoformat(start)
         end_d = datetime.date.fromisoformat(end)
         while cursor <= end_d:
@@ -1123,8 +1080,11 @@ def build_labor_period_rows(
             return round(cost / orders, 2) if orders > 0 else ""
 
         orders_per_hr = round(orders / h_hours, 1) if h_hours > 0 else ""
-        peak_out = round(peak_max, 1) if peak_max is not None else ""
-        over = _over_saturation_formula(f"{opl_col_letter}{len(rows) + 1}")
+        peak_out: float | str = round(peak_max, 1) if peak_max is not None else ""
+        if isinstance(orders_per_hr, (int, float)) and saturation_threshold > 0:
+            over = "OVER" if orders_per_hr > saturation_threshold else "ok"
+        else:
+            over = ""
 
         rows.append([
             start, end, is_open, days,
@@ -1160,6 +1120,7 @@ def build_labor_period_rows(
 def build_labor_weekly_rows(
     *,
     labor_daily_rows: list[list],
+    saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD,
 ) -> list[list]:
     """Aggregate labor_daily rows by ISO calendar week (Monday → Sunday).
 
@@ -1169,23 +1130,19 @@ def build_labor_weekly_rows(
     the next one). To flip to Sunday-Saturday, change `cursor.weekday()`
     to `(cursor.weekday() + 1) % 7` and adjust the +6 offset.
 
-    Like build_labor_period_rows: aggregates raw $ totals and recomputes
-    percentages from those sums. Never averages per-day percentages.
+    Like build_labor_period_rows: aggregates raw $/hour/order totals and
+    recomputes percentages and per-order ratios from those sums. Never
+    averages per-day percentages.
 
     Includes the current (potentially partial) week as the last row with
     `is_partial=Y` and `days_covered < 7` so the operator can see the
     week-to-date trend. Closed weeks have `is_partial=N`.
 
-    Columns (23 total):
-      iso_week | week_start | week_end | is_partial | days_covered
-      gross_sales | discounts | net_sales | tip_pool | net_sales_plus_tips
-      hourly_hours | hourly_labor_cost
-      fulltime_hours | fulltime_labor_cost
-      total_labor_cost
-      hourly_pct_of_net_sales | hourly_pct_of_net_sales_plus_tips
-      fulltime_pct_of_net_sales | fulltime_pct_of_net_sales_plus_tips
-      total_labor_pct_of_net_sales | total_labor_pct_of_net_sales_plus_tips
-      tips_pct_of_net_sales | all_in_cost_pct_of_net_sales_plus_tips
+    Columns — mirrors labor_period but keyed by ISO week. orders_per_labor_hour
+    and labor-per-order ratios are aggregate-then-ratio across the week's
+    days; peak_hour_orders_per_labor_hour is the MAX of the daily peaks
+    observed within the week; over_saturation is "OVER" iff
+    orders_per_labor_hour > config threshold.
     """
     header = [
         "iso_week", "week_start", "week_end", "is_partial", "days_covered",
@@ -1202,14 +1159,12 @@ def build_labor_weekly_rows(
         "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
         "over_saturation",
     ]
-    opl_col_letter = _a1_col(header.index("orders_per_labor_hour"))
     if len(labor_daily_rows) <= 1:
         return [header]
 
     # Same field positions as labor_period (see build_labor_period_rows).
-    daily_by_date: dict[str, dict] = {}
+    daily_by_date: dict[str, dict[str, float]] = {}
     for row in labor_daily_rows[1:]:
-        peak_cell = row[25]
         daily_by_date[row[0]] = {
             "gross": float(row[2]),
             "disc": float(row[3]),
@@ -1220,7 +1175,7 @@ def build_labor_weekly_rows(
             "hourly_c": float(row[9]),
             "fulltime_h": float(row[10]),
             "fulltime_c": float(row[11]),
-            "peak": (float(peak_cell) if peak_cell not in ("", None) else None),
+            "peak": (float(row[25]) if row[25] != "" else None),
         }
 
     if not daily_by_date:
@@ -1246,7 +1201,7 @@ def build_labor_weekly_rows(
         gross = disc = net = pool = h_hours = h_cost = ft_hours = ft_cost = 0.0
         orders = 0
         days = 0
-        peak_max = None
+        peak_max: float | None = None
         for iso_date in weeks[monday]:
             bucket = daily_by_date[iso_date]
             gross += bucket["gross"]
@@ -1271,8 +1226,11 @@ def build_labor_weekly_rows(
             return round(cost / orders, 2) if orders > 0 else ""
 
         orders_per_hr = round(orders / h_hours, 1) if h_hours > 0 else ""
-        peak_out = round(peak_max, 1) if peak_max is not None else ""
-        over = _over_saturation_formula(f"{opl_col_letter}{len(rows) + 1}")
+        peak_out: float | str = round(peak_max, 1) if peak_max is not None else ""
+        if isinstance(orders_per_hr, (int, float)) and saturation_threshold > 0:
+            over = "OVER" if orders_per_hr > saturation_threshold else "ok"
+        else:
+            over = ""
 
         rows.append([
             iso_label, monday.isoformat(), sunday.isoformat(), is_partial, days,
@@ -1587,14 +1545,36 @@ def main() -> int:
         d for d, n in barista_shift_counts.items() if n >= MIN_BARISTAS_PER_DAY
     }
     both_covered = square_dates_covered & adp_dates_covered
-    if not both_covered:
+    # Drop in-progress dates from the cover-set. Even if both raw sources
+    # happen to contain rows for today_ct (e.g. an earlier mid-day debug
+    # run mirrored partial data into bhaga_adp_raw / bhaga_square_raw),
+    # we MUST NOT advance data_window_end past the last complete day —
+    # downstream tabs (labor_daily, labor_weekly, labor_period, the
+    # `open_period` synthetic in tip_alloc_*) all read off last_data_date.
+    # See agents.bhaga.scripts.daily_refresh.is_refresh_date_complete for
+    # the definition of "complete".
+    both_covered_complete = {
+        d for d in both_covered
+        if is_refresh_date_complete(datetime.date.fromisoformat(d))
+    }
+    in_progress_dropped = sorted(both_covered - both_covered_complete)
+    if in_progress_dropped:
         print(
-            "ERROR: no date is covered by BOTH Square AND >=2 barista shifts. "
-            f"square_dates={len(square_dates_covered)}, adp_dates>={MIN_BARISTAS_PER_DAY}={len(adp_dates_covered)}. "
+            f"# dropping in-progress dates from data_window_end candidates: "
+            f"{', '.join(in_progress_dropped)} (today's pre-21:00-CT data is "
+            f"partial — see is_refresh_date_complete)"
+        )
+    if not both_covered_complete:
+        print(
+            "ERROR: no COMPLETE date is covered by BOTH Square AND "
+            f">={MIN_BARISTAS_PER_DAY} barista shifts. "
+            f"square_dates={len(square_dates_covered)}, "
+            f"adp_dates>={MIN_BARISTAS_PER_DAY}={len(adp_dates_covered)}, "
+            f"in_progress_dropped={in_progress_dropped}. "
             "Raw sheets likely stale — run the orchestrator's write_raw_sheets step."
         )
         return 1
-    last_data_date = max(both_covered)
+    last_data_date = max(both_covered_complete)
 
     # Surface ADP-incomplete dates that we deliberately excluded so the
     # operator can see why data_window_end did not advance to "today".
@@ -1630,25 +1610,11 @@ def main() -> int:
         for k in REVIEW_TUNABLE_KEYS
     }
     review_tunables = {k: v for k, v in review_tunables.items() if v is not None}
-    # Same round-trip for labor saturation tunables (currently just one).
     labor_tunables = {
         k: _read_config_value(spreadsheet_id=model_sid, store=args.store, key=k)
         for k in LABOR_TUNABLE_KEYS
     }
     labor_tunables = {k: v for k, v in labor_tunables.items() if v is not None}
-    # One-shot calibration: the historical default was 10 orders/labor-hour
-    # but week-1 data shows Friday's busy day at ~4 — the "fully-loaded bar"
-    # is around 4, not 10. If the live config still has the legacy default,
-    # drop it so the new DEFAULT_SATURATION_THRESHOLD (4) flows through.
-    # Subsequent runs round-trip preserve whatever the operator has set.
-    raw_threshold = labor_tunables.get("saturation_orders_per_labor_hour")
-    if raw_threshold in ("10", "10.0", "10.00"):
-        print(
-            "# one-shot calibration: replacing legacy default "
-            f"saturation_orders_per_labor_hour={raw_threshold!r} → "
-            f"{DEFAULT_SATURATION_THRESHOLD} (week-1 data: busy Friday ≈ 4)"
-        )
-        labor_tunables.pop("saturation_orders_per_labor_hour")
     try:
         saturation_threshold = float(
             labor_tunables.get(
@@ -1658,15 +1624,12 @@ def main() -> int:
         )
     except (TypeError, ValueError):
         print(
-            "# WARN: saturation_orders_per_labor_hour in config is "
+            f"# WARN: saturation_orders_per_labor_hour in config is "
             f"not a number ({labor_tunables.get('saturation_orders_per_labor_hour')!r}); "
             f"falling back to default {DEFAULT_SATURATION_THRESHOLD}."
         )
         saturation_threshold = float(DEFAULT_SATURATION_THRESHOLD)
-    print(
-        f"# saturation threshold = {saturation_threshold} orders/labor-hour "
-        f"(now lives only in config; over_saturation cells are live formulas)"
-    )
+    print(f"# saturation threshold = {saturation_threshold} orders/hourly-labor-hour")
 
     config_rows = build_config_rows(
         profile, last_data_date,
@@ -1680,31 +1643,66 @@ def main() -> int:
     labor_daily_rows = build_labor_daily_rows(
         txns=txns, shifts=shifts, wage_rates=wage_rates,
         excluded_from_tip_pool=excluded,
+        saturation_threshold=saturation_threshold,
     )
     labor_period_rows = build_labor_period_rows(
         periods=periods, labor_daily_rows=labor_daily_rows,
+        saturation_threshold=saturation_threshold,
     )
     labor_weekly_rows = build_labor_weekly_rows(
         labor_daily_rows=labor_daily_rows,
+        saturation_threshold=saturation_threshold,
     )
     period_rows = build_tip_alloc_period_rows(period_results)
     day_alloc_rows = build_tip_alloc_daily_rows(period_results, daily_summary)
     summary_rows = build_period_summary_rows(period_results)
 
+    # ── Safety sentinel: no row may carry an in-progress date ────────
+    # Defends against future regressions in the per-builder filters or in
+    # last_data_date bounding. If labor_daily or daily emits a row whose
+    # `date` is not yet complete (today_ct before 21:00 CT, or future),
+    # we'd be re-publishing the original "partial today" bug — fail loud
+    # before touching the Sheet rather than re-painting it. The check is
+    # cheap and matches the round-trip sentinel pattern at the end of
+    # main().
+    for tab_name, rows in (
+        ("daily", daily_rows),
+        ("labor_daily", labor_daily_rows),
+    ):
+        for r in rows[1:]:
+            try:
+                d = datetime.date.fromisoformat(r[0])
+            except (ValueError, TypeError):
+                continue
+            if not is_refresh_date_complete(d):
+                raise AssertionError(
+                    f"{tab_name} would emit a row for in-progress date {d.isoformat()}; "
+                    "this means the per-builder in-progress filter or the "
+                    "last_data_date bounding regressed. Refusing to write."
+                )
+
+    # labor_daily currency columns (0-indexed against build_labor_daily_rows
+    # header): 2=gross_sales, 3=discounts, 4=net_sales, 5=tip_pool,
+    # 6=net_sales_plus_tips, 9=hourly_labor_cost, 11=fulltime_labor_cost,
+    # 12=total_labor_cost, 21=hourly_labor_per_order,
+    # 22=fulltime_labor_per_order, 23=total_labor_per_order.
+    # (orders=7 is a count; orders_per_labor_hour=24, peak=25 are ratios;
+    # over_saturation=26 is a string flag — none of those are currency.)
+    labor_daily_currency = [2, 3, 4, 5, 6, 9, 11, 12, 21, 22, 23]
+    # labor_period adds 4 lead columns before the labor_daily layout, so
+    # shift every labor_daily currency index by +2 (period header inserts
+    # is_open + days_covered between date+dow and gross_sales).
+    labor_period_currency = [4, 5, 6, 7, 8, 11, 13, 14, 23, 24, 25]
+    # labor_weekly adds 5 lead columns (iso_week + week_start + week_end +
+    # is_partial + days_covered), so shift labor_daily currency by +3.
+    labor_weekly_currency = [5, 6, 7, 8, 9, 12, 14, 15, 24, 25, 26]
+
     tab_payloads = [
         {"tab": "config",            "rows": config_rows,      "currency_cols": []},
         {"tab": "daily",             "rows": daily_rows,       "currency_cols": [2, 3, 7]},
-        # labor_daily currency cols (0-indexed against build_labor_daily_rows
-        # header): 2=gross_sales, 3=discounts, 4=net_sales, 5=tip_pool,
-        # 6=net_sales_plus_tips, 9=hourly_labor_cost, 11=fulltime_labor_cost,
-        # 12=total_labor_cost, 21=hourly_labor_per_order,
-        # 22=fulltime_labor_per_order, 23=total_labor_per_order. (orders=7 is
-        # a count; saturation/per-hour cols are ratios, not currency.)
-        {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": [2, 3, 4, 5, 6, 9, 11, 12, 21, 22, 23]},
-        # labor_weekly inserts 5 lead cols before labor_daily layout → +3 shift.
-        {"tab": "labor_weekly",      "rows": labor_weekly_rows, "currency_cols": [5, 6, 7, 8, 9, 12, 14, 15, 24, 25, 26]},
-        # labor_period inserts 4 lead cols before labor_daily layout → +2 shift.
-        {"tab": "labor_period",      "rows": labor_period_rows, "currency_cols": [4, 5, 6, 7, 8, 11, 13, 14, 23, 24, 25]},
+        {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": labor_daily_currency},
+        {"tab": "labor_weekly",      "rows": labor_weekly_rows, "currency_cols": labor_weekly_currency},
+        {"tab": "labor_period",      "rows": labor_period_rows, "currency_cols": labor_period_currency},
         {"tab": "tip_alloc_period",  "rows": period_rows,      "currency_cols": [6, 7, 8, 10, 11]},
         {"tab": "tip_alloc_daily",   "rows": day_alloc_rows,   "currency_cols": [6, 9]},
         {"tab": "period_summary",    "rows": summary_rows,     "currency_cols": [7, 8, 9, 10]},
@@ -1725,21 +1723,19 @@ def main() -> int:
     token = refresh_access_token(account=args.store)
     print(f"\n# Got token (len={len(token)}); writing to Model sheet {model_sid}...")
 
-    config_sheet_id: Optional[int] = None
     for p in tab_payloads:
         col_count = max(20, len(p["rows"][0]) + 2)
         sheet_id = add_sheet_if_missing(
             model_sid, token, tab_name=p["tab"], column_count=col_count,
         )
-        if p["tab"] == "config":
-            config_sheet_id = sheet_id
         clear_and_write_tab(model_sid, token, tab_name=p["tab"], values=p["rows"])
-        # Wipe stale numberFormat / borders / colors from any prior layout
-        # before re-applying the targeted bold-header + currency styling.
-        # Without this, an old percent-formatted cell at a column index that
-        # now holds a saturation ratio renders 0.22 as "22.00%".
-        reset_user_entered_format(
-            model_sid, token, sheet_id=sheet_id, num_cols=len(p["rows"][0]), start_row=0,
+        # Wipe stale formatting from any prior layout before applying the new
+        # targeted styling — otherwise an old percentage cell at the same
+        # column index renders our 0..2 saturation ratio as "22.00%". See
+        # reset_number_format() docstring for the trap. Order matters:
+        # reset BEFORE bold + currency so those re-applications win.
+        reset_number_format(
+            model_sid, token, sheet_id=sheet_id, num_cols=len(p["rows"][0]),
         )
         bold_header_row(model_sid, token, sheet_id=sheet_id)
         if p["currency_cols"]:
@@ -1750,41 +1746,12 @@ def main() -> int:
         auto_resize_columns(model_sid, token, sheet_id=sheet_id, num_cols=len(p["rows"][0]))
         print(f"    wrote {p['tab']:<22} ({len(p['rows'])-1} rows)")
 
-    # Upsert the spreadsheet-scoped named range `saturation_threshold` so the
-    # over_saturation formulas in labor_daily / labor_period / labor_weekly
-    # reference the live config cell. Idempotent: updates in place if the
-    # range already exists so we don't churn its ID across runs.
-    if config_sheet_id is not None:
-        sat_row_0idx: Optional[int] = None
-        for idx, row in enumerate(config_rows):
-            if row and row[0] == "saturation_orders_per_labor_hour":
-                sat_row_0idx = idx
-                break
-        if sat_row_0idx is None:
-            print(
-                "# WARN: saturation_orders_per_labor_hour row missing from "
-                "config_rows; skipping named-range upsert (over_saturation "
-                "formulas will #NAME? until this is restored)."
-            )
-        else:
-            upsert_named_range(
-                model_sid, token,
-                name=SATURATION_THRESHOLD_NAMED_RANGE,
-                sheet_id=config_sheet_id,
-                row_0idx=sat_row_0idx,
-                col_0idx=1,  # column B = value column
-            )
-            print(
-                f"# upserted named range {SATURATION_THRESHOLD_NAMED_RANGE!r} "
-                f"→ config!B{sat_row_0idx + 1}"
-            )
-
     # ── Round-trip sentinel ───────────────────────────────────────
-    # After every config write, re-read each date-bearing key and verify
-    # it round-trips back to the canonical ISO we wrote. This catches
-    # Sheets API regressions (e.g. a future change that breaks the
-    # apostrophe-as-text-literal trick) WITHIN THE SAME RUN instead of
-    # waiting 24h for the downstream cascade to surface it.
+    # After every config write, re-read each date-bearing key and
+    # verify it round-trips back to the canonical ISO we wrote. This
+    # catches Sheets API regressions (e.g. a future change that breaks
+    # the apostrophe-as-text-literal trick) WITHIN THE SAME RUN
+    # instead of waiting 24h for the downstream cascade to surface it.
     expected_iso = last_data_date
     try:
         read_back_raw = _read_config_value(
@@ -1803,8 +1770,8 @@ def main() -> int:
             f"\n!!! round-trip sentinel: data_window_end drift detected "
             f"after write: wrote {expected_iso!r}, read back "
             f"{read_back_raw!r} (coerced={read_back!r}). The apostrophe-"
-            f"as-text-literal write trick is no longer working — investigate "
-            f"before tonight's cron.",
+            f"as-text-literal write trick is no longer working — "
+            f"investigate before tonight's cron.",
             file=sys.stderr,
         )
         return 2

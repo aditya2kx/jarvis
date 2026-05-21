@@ -74,6 +74,7 @@ from agents.bhaga.scripts.update_model_sheet import (  # noqa: E402
     format_currency_columns,
 )
 from core.config_loader import refresh_access_token  # noqa: E402
+from skills.bhaga_config.dates import coerce_iso_date  # noqa: E402
 from skills.tip_ledger_writer import read_raw_adp_punches  # noqa: E402
 from skills.clickup_chat import fetch_messages  # noqa: E402
 
@@ -124,8 +125,28 @@ def _load_profile(store: str) -> dict:
     return json.loads((STORE_PROFILES / f"{store}.json").read_text())
 
 
+# Config keys whose values are dates. On read, route through
+# coerce_iso_date so apostrophe-prefixed ISO strings AND Sheets date-
+# serial drift both normalize to canonical "YYYY-MM-DD" before
+# downstream code sees them. Keep this aligned with
+# `agents.bhaga.scripts.update_model_sheet._DATE_CONFIG_KEYS` (the
+# write side).
+_DATE_CONFIG_KEYS = (
+    "data_window_start",
+    "data_window_end",
+    "review_bonus_started_date",
+)
+
+
 def _read_config_tab(spreadsheet_id: str, token: str) -> dict[str, str]:
-    """Read a Key/Value config tab into a flat dict. Returns {} if missing."""
+    """Read a Key/Value config tab into a flat dict. Returns {} if missing.
+
+    Date-shaped keys (per ``_DATE_CONFIG_KEYS``) and any
+    ``training_excluded:<name>`` rows are passed through
+    ``coerce_iso_date`` so callers always see canonical ISO regardless
+    of whether the sheet cell drifted to a serial or carries a
+    leading apostrophe.
+    """
     rng = urllib.parse.quote("config!A1:C500", safe="!:")
     url = f"{SHEETS_API}/spreadsheets/{spreadsheet_id}/values/{rng}"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
@@ -139,8 +160,51 @@ def _read_config_tab(spreadsheet_id: str, token: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for row in data.get("values", []):
         if row and len(row) >= 2:
-            out[row[0]] = row[1]
+            key = row[0]
+            raw = row[1]
+            if key in _DATE_CONFIG_KEYS or (
+                isinstance(key, str) and key.startswith("training_excluded:")
+            ):
+                coerced = coerce_iso_date(raw)
+                if coerced is not None:
+                    out[key] = coerced
+                    continue
+                # Leave the raw value in place so the caller can
+                # produce a useful error message ("not ISO-date: 'banana'").
+            out[key] = raw
     return out
+
+
+def _resolve_data_window_end(model_cfg: dict[str, str]) -> datetime.date:
+    """Pure helper — parse ``data_window_end`` from the model config dict.
+
+    Extracted from ``process_reviews.main`` so it can be unit-tested
+    without standing up a real Sheets read. ``model_cfg`` is the dict
+    returned by ``_read_config_tab`` — by that point date-shaped keys
+    have already been routed through ``coerce_iso_date``, so the value
+    here is either canonical ISO ("2026-05-20") or the raw cell value
+    when even ``coerce_iso_date`` couldn't recover it.
+
+    Raises ``RuntimeError`` with a message that includes the literal
+    bad cell value (so the operator can search the sheet for it) if
+    the value cannot be parsed.
+    """
+    raw = (model_cfg.get("data_window_end") or "")
+    if isinstance(raw, str):
+        raw = raw.strip()
+    if not raw:
+        raise RuntimeError(
+            "bhaga_model > config has no data_window_end. "
+            "Run update_model_sheet first."
+        )
+    # _read_config_tab already coerced; defensively try again so the
+    # helper is directly callable with raw dicts in tests.
+    coerced = coerce_iso_date(raw)
+    if coerced is None:
+        raise RuntimeError(
+            f"bhaga_model > config.data_window_end is not ISO-date: {raw!r}"
+        )
+    return datetime.date.fromisoformat(coerced)
 
 
 def _read_training_excluded(spreadsheet_id: str, token: str) -> dict[str, datetime.date]:
@@ -837,16 +901,10 @@ def main() -> int:
     #   - high-water mark never advances past the window end, so tomorrow's
     #     run will re-fetch the held-back messages.
     model_cfg = _read_config_tab(model_sid, token)
-    data_window_end_str = (model_cfg.get("data_window_end") or "").strip()
-    if not data_window_end_str:
-        print("ERROR: bhaga_model > config has no data_window_end. "
-              "Run update_model_sheet first.")
-        return 2
     try:
-        data_window_end = datetime.date.fromisoformat(data_window_end_str)
-    except ValueError:
-        print(f"ERROR: bhaga_model > config.data_window_end is not ISO-date: "
-              f"{data_window_end_str!r}")
+        data_window_end = _resolve_data_window_end(model_cfg)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}")
         return 2
     end_of_window_dt = datetime.datetime.combine(
         data_window_end, datetime.time.max, tzinfo=CT,

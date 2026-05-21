@@ -50,6 +50,14 @@ STORE_PROFILES = PROJECT_ROOT / "agents" / "bhaga" / "knowledge-base" / "store-p
 
 LOGIN_URL = "https://runpayroll.adp.com"
 POST_LOGIN_URL_RE = re.compile(r"runpayrollmain\.adp\.com/.*/v2/")
+
+# Match ADP's "Current Pay Period" / "Current" / "This Pay Period" dropdown
+# entry that covers the IN-FLIGHT payroll window. Closed pay-period entries
+# render as date ranges ("05/05/2026 - 05/18/2026") and don't intersect.
+# Module-level so unit tests can import without launching Playwright.
+_CURRENT_PAY_PERIOD_RE = re.compile(
+    r"^(current\s+pay\s+period|current|this\s+pay\s+period)$", re.I
+)
 KEYCHAIN_SERVICE_TEMPLATE = "jarvis-adp-{store}"
 
 
@@ -497,17 +505,36 @@ def _timecard_within_session(
                       f"(contains target_date={target_date.isoformat()})")
                 break
         if not matched:
-            # No pay period covers target_date — likely a calibration drift.
-            # Fall back to Select All so we still ship a useful XLSX rather
-            # than an empty one.
-            print(f"[adp_timecard] WARN: no pay period contains "
-                  f"{target_date.isoformat()}; falling back to Select All")
+            # No closed pay period covers target_date — usually because
+            # target_date is inside the IN-FLIGHT current payroll. ADP
+            # exposes a "Current Pay Period" option for exactly this case
+            # which is much cheaper than Select All (one period vs every
+            # period in the dropdown). Try it first; only fall back to
+            # Select All if "Current Pay Period" isn't exposed either.
             try:
-                frame.get_by_role(
-                    "option", name=re.compile(r"^Select All$", re.I)
-                ).first.click()
+                current_opt = frame.get_by_role(
+                    "option", name=_CURRENT_PAY_PERIOD_RE
+                ).first
+                current_opt.wait_for(state="visible", timeout=2_000)
+                current_opt.click()
+                matched = True
+                print(
+                    f"[adp_timecard] no closed pay period contains "
+                    f"{target_date.isoformat()}; selected 'Current Pay Period' "
+                    "(in-flight)"
+                )
             except Exception:  # noqa: BLE001
-                pass
+                print(
+                    f"[adp_timecard] WARN: no closed pay period AND no "
+                    f"'Current Pay Period' option found for "
+                    f"{target_date.isoformat()}; falling back to Select All"
+                )
+                try:
+                    frame.get_by_role(
+                        "option", name=re.compile(r"^Select All$", re.I)
+                    ).first.click()
+                except Exception:  # noqa: BLE001
+                    pass
     else:
         # Backfill / default mode: select every pay period exposed in the
         # dropdown. The multi-select listbox has a "Select All" checkbox at

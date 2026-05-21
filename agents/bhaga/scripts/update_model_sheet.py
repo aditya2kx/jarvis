@@ -48,6 +48,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from core.config_loader import project_dir, refresh_access_token
 from skills.adp_run_automation import compensation_backend
+from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
 from skills.square_tips import transactions_backend
 from skills.tip_ledger_writer import (
     read_raw_adp_rates,
@@ -55,6 +56,19 @@ from skills.tip_ledger_writer import (
     read_raw_square_transactions,
 )
 from skills.tip_pool_allocation.adapter import allocate
+
+
+# Config keys whose VALUE column is a date and therefore must be
+# written through `_iso_date_for_sheet_cell` so Google Sheets keeps
+# them as text literals instead of coercing them to date-serials.
+# When you add another date-bearing key to build_config_rows, list
+# it here too (the round-trip sentinel at the end of main() greps
+# this tuple to verify the cell didn't drift after the write).
+_DATE_CONFIG_KEYS = (
+    "data_window_start",
+    "data_window_end",
+    "review_bonus_started_date",
+)
 
 
 PROJECT = pathlib.Path(project_dir())
@@ -545,9 +559,10 @@ def build_config_rows(
          ", ".join(profile["employees"]["excluded_from_tip_pool_and_labor_pct"]),
          "These employees are excluded from the tip pool AND from labor% calcs."],
         ["pay_frequency", profile["adp_run"].get("pay_frequency", ""), ""],
-        ["data_window_start", profile["calibration"]["first_data_window"]["start"],
+        ["data_window_start",
+         _iso_date_for_sheet_cell(profile["calibration"]["first_data_window"]["start"]),
          "Square data starts here. Pay periods before this are partial."],
-        ["data_window_end", last_data_date,
+        ["data_window_end", _iso_date_for_sheet_cell(last_data_date),
          "Latest day for which we have Square + ADP data."],
         ["last_refreshed_utc",
          datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
@@ -563,7 +578,9 @@ def build_config_rows(
         # without touching code. Defaults seed on first run; subsequent
         # refreshes preserve whatever the operator has set.
         ["review_bonus_started_date",
-         review_tunables.get("review_bonus_started_date", "2026-05-11"),
+         _iso_date_for_sheet_cell(
+             review_tunables.get("review_bonus_started_date", "2026-05-11")
+         ),
          "Reviews on or after this date are eligible for shoutout/base bonuses."],
         ["review_base_bonus_dollars",
          review_tunables.get("review_base_bonus_dollars", "10"),
@@ -594,7 +611,7 @@ def build_config_rows(
     for name in sorted(training_through.keys()):
         rows.append([
             f"{TRAINING_EXCLUDED_PREFIX}{name}",
-            training_through[name].isoformat(),
+            _iso_date_for_sheet_cell(training_through[name]),
             (
                 "TEMP training exclusion. Shifts on/before this date contribute hours "
                 "but receive NO tip share; their share is redistributed to other tipped "
@@ -1761,6 +1778,36 @@ def main() -> int:
                 f"# upserted named range {SATURATION_THRESHOLD_NAMED_RANGE!r} "
                 f"→ config!B{sat_row_0idx + 1}"
             )
+
+    # ── Round-trip sentinel ───────────────────────────────────────
+    # After every config write, re-read each date-bearing key and verify
+    # it round-trips back to the canonical ISO we wrote. This catches
+    # Sheets API regressions (e.g. a future change that breaks the
+    # apostrophe-as-text-literal trick) WITHIN THE SAME RUN instead of
+    # waiting 24h for the downstream cascade to surface it.
+    expected_iso = last_data_date
+    try:
+        read_back_raw = _read_config_value(
+            spreadsheet_id=model_sid, store=args.store, key="data_window_end"
+        )
+        read_back = coerce_iso_date(read_back_raw)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"\n!!! round-trip sentinel: could not re-read data_window_end "
+            f"after write: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    if read_back != expected_iso:
+        print(
+            f"\n!!! round-trip sentinel: data_window_end drift detected "
+            f"after write: wrote {expected_iso!r}, read back "
+            f"{read_back_raw!r} (coerced={read_back!r}). The apostrophe-"
+            f"as-text-literal write trick is no longer working — investigate "
+            f"before tonight's cron.",
+            file=sys.stderr,
+        )
+        return 2
 
     print(f"\nDone. {model_url}")
     return 0

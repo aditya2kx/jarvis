@@ -63,6 +63,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 from agents.bhaga.notify import failure_alert, info_ping, success_heartbeat
 from core.config_loader import refresh_access_token
 from skills.adp_run_automation.runner import download_adp_bundle
+from skills.bhaga_config.dates import coerce_iso_date
 from skills.square_tips.runner import download_transactions
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -86,10 +87,21 @@ def _today_ct() -> datetime.date:
 
 def _read_data_window_end_from_sheet(
     *, spreadsheet_id: str, store: str
-) -> datetime.date | None:
+) -> tuple[datetime.date | None, bool]:
     """Read the `data_window_end` value from the Model sheet's config tab.
 
-    Returns None if the sheet/tab/key is missing or empty (fresh install).
+    Returns ``(prev_end, cell_was_empty)``:
+      - ``prev_end`` is the parsed ``datetime.date`` when the cell holds a
+        valid ISO date, an apostrophe-prefixed ISO date, or a Sheets
+        date-serial that recovers cleanly via ``coerce_iso_date``.
+      - ``prev_end`` is ``None`` when the cell is either empty OR genuinely
+        unparseable; the second tuple slot ``cell_was_empty`` disambiguates
+        these two cases so Layer C (compute_gap_window) can fresh-install
+        in the empty branch but hard-error in the unparseable branch
+        (we refuse to silently trigger a 60-day Square re-scrape).
+      - Both ``None, True`` is also returned when the entire config tab
+        is unreadable (network error, missing tab) — treated as fresh
+        install for the legacy code path.
     """
     token = refresh_access_token(store)
     rng = urllib.parse.quote("config!A1:C200", safe="!:")
@@ -103,15 +115,70 @@ def _read_data_window_end_from_sheet(
             data = json.loads(resp.read())
     except Exception as exc:  # noqa: BLE001
         print(f"  [config-read] could not read config tab: {exc}")
-        return None
+        return None, True
     for row in data.get("values", []):
-        if row and row[0] == "data_window_end" and len(row) >= 2 and row[1]:
-            try:
-                return datetime.date.fromisoformat(row[1].strip())
-            except ValueError:
-                print(f"  [config-read] data_window_end has unparseable value: {row[1]!r}")
-                return None
-    return None
+        if row and row[0] == "data_window_end":
+            raw = row[1] if len(row) >= 2 else ""
+            iso = coerce_iso_date(raw)
+            if iso is not None:
+                return datetime.date.fromisoformat(iso), False
+            # The key exists. Distinguish "empty cell" from
+            # "cell holds something we can't parse".
+            cell_was_empty = not (
+                isinstance(raw, str) and raw.strip().lstrip("'").strip()
+            )
+            if not cell_was_empty:
+                print(
+                    f"  [config-read] data_window_end has unparseable value: {raw!r}"
+                )
+            return None, cell_was_empty
+    return None, True
+
+
+def compute_gap_window(
+    prev_end: datetime.date | None,
+    cell_was_empty: bool,
+    data_start: datetime.date,
+    refresh_date: datetime.date,
+) -> tuple[datetime.date, str]:
+    """Decide what date range Square needs to scrape this run.
+
+    Pure function — extracted from ``main()`` so it can be unit-tested
+    without standing up Sheets/Playwright/Slack side effects.
+
+    Returns ``(gap_start, gap_source)``. ``gap_source`` is a short
+    human-readable label that lands in the refresh log so operators
+    can tell at a glance which branch fired.
+
+    Branches:
+      - ``prev_end`` set → incremental: gap_start = prev_end + 1 day.
+      - ``prev_end`` is None AND cell_was_empty → fresh install: scrape
+        from ``data_start`` (the store profile's first-data-window).
+      - ``prev_end`` is None AND NOT cell_was_empty → the config cell
+        holds something that even ``coerce_iso_date`` can't recover.
+        Hard-error rather than silently fall back to a 60-day Square
+        re-scrape (which costs the API budget AND a fresh 2FA round-
+        trip). See ``seamless_bhaga_refresh`` Layer C for the
+        rationale.
+
+    Raises ``SystemExit`` on the unparseable+non-empty case. The
+    message contains the literal phrase
+    ``"60-day Square re-scrape"`` so a regression test can grep it.
+    """
+    if prev_end is not None:
+        return prev_end + datetime.timedelta(days=1), (
+            f"sheet.data_window_end={prev_end} + 1"
+        )
+    if cell_was_empty:
+        return data_start, f"fresh install -> data_start={data_start}"
+    raise SystemExit(
+        "[daily_refresh] FATAL: bhaga_model > config.data_window_end "
+        "is set but unparseable. Refusing to fall back to fresh-install "
+        "because that would trigger a 60-day Square re-scrape + fresh 2FA. "
+        "Inspect the config cell (it's likely a date-serial integer like "
+        "'46162' — coerce_iso_date should normally recover it, so this "
+        "is true junk) and rerun."
+    )
 
 
 def _consolidate_into_master(
@@ -370,15 +437,15 @@ def main() -> int:
         gap_start = refresh_date
         gap_source = "(square skipped)"
     else:
-        prev_end = _read_data_window_end_from_sheet(
+        prev_end, cell_was_empty = _read_data_window_end_from_sheet(
             spreadsheet_id=spreadsheet_id, store=args.store
         )
-        if prev_end is None:
-            gap_start = data_start
-            gap_source = f"fresh install -> data_start={data_start}"
-        else:
-            gap_start = prev_end + datetime.timedelta(days=1)
-            gap_source = f"sheet.data_window_end={prev_end} + 1"
+        gap_start, gap_source = compute_gap_window(
+            prev_end=prev_end,
+            cell_was_empty=cell_was_empty,
+            data_start=data_start,
+            refresh_date=refresh_date,
+        )
 
     needs_square_scrape = (not args.skip_square) and (gap_start <= refresh_date)
 

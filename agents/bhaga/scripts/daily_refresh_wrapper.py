@@ -14,7 +14,12 @@ LOGIC:
     4. Run daily_refresh.py for refresh_date = today_ct
        (Shop closes 20:00 CT, nightly fires at 21:00 CT, so today is
        a complete business day by the time we run.)
-    5. On success: write today_ct.isoformat() to marker file, exit 0
+    5. On success: write refresh_date.isoformat() to marker file, exit 0
+       (Keyed by refresh_date — the date the gate computed and ran for —
+       NOT _now_ct().date() at write time. If a long-running refresh
+       crosses midnight CT, we still want the marker on the day it
+       represents, otherwise the next night's cron sees a marker with
+       tomorrow's date and silently skips itself.)
     6. On failure: notify.failure_alert was already called by orchestrator;
        re-raise so launchd records non-zero exit (for stderr log inspection).
 
@@ -133,10 +138,16 @@ def gate(*, force: bool, simulate_ct: str | None) -> tuple[bool, str, datetime.d
     return True, f"GO: now_ct={now_ct.isoformat()}, target hour matched, no marker for today.", refresh_date
 
 
-def write_marker(today_ct: datetime.date, *, status: str = "success",
+def write_marker(refresh_date: datetime.date, *, status: str = "success",
                  attempted_at: Optional[datetime.datetime] = None,
                  rc: Optional[int] = None) -> None:
     """Write the day marker so subsequent cron wakes gate off.
+
+    Keyed by `refresh_date` (the date the gate decided to run for), NOT by
+    `_now_ct().date()` at write time. A long-running refresh that crosses
+    midnight CT must still write its marker on the day it represents,
+    otherwise the next night's cron would see a marker for tomorrow and
+    silently skip itself.
 
     Strict-1-attempt: this is called on BOTH success and failure of the
     refresh. The marker body records the outcome so the wrapper log + a
@@ -144,7 +155,7 @@ def write_marker(today_ct: datetime.date, *, status: str = "success",
     """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     when = (attempted_at or datetime.datetime.now(datetime.timezone.utc)).isoformat()
-    lines = [today_ct.isoformat(), f"status: {status}", f"attempted_at: {when}"]
+    lines = [refresh_date.isoformat(), f"status: {status}", f"attempted_at: {when}"]
     if rc is not None:
         lines.append(f"rc: {rc}")
     if status != "success":
@@ -297,21 +308,29 @@ def main() -> int:
             _log(f"cleanup_old_run_dirs failed (non-fatal): {exc}")
 
         rc = run_refresh(refresh_date)
-        today_ct = _now_ct().date()
         # STRICT 1-ATTEMPT: write the day marker on ANY exit (success or
         # failure). Subsequent cron wakes this night will see the marker and
         # gate off. Operator can manually re-trigger with --force; per-step
         # markers in ~/.bhaga/state/run-<date>/ ensure already-completed
         # steps are skipped on the rerun (no duplicate OTPs).
+        #
+        # Key the marker by `refresh_date` (the date the gate decided to run
+        # for), NOT `_now_ct().date()` at write time. If the refresh crosses
+        # midnight CT (e.g. 2FA timeouts pushed a 21:00-CT run past 00:00 the
+        # next day), `_now_ct().date()` would be tomorrow and the marker
+        # would block tomorrow night's cron from firing. Companion to the
+        # per-step marker fix in commit 86e315a.
         if rc == 0:
-            write_marker(today_ct, status="success", rc=rc)
-            _log(f"marker written: {today_ct.isoformat()} (success)")
+            write_marker(refresh_date, status="success", rc=rc)
+            _log(f"marker written: {refresh_date.isoformat()} (success)")
             return 0
         else:
-            write_marker(today_ct, status="failed", rc=rc)
-            _log(f"refresh failed (rc={rc}); marker written so no auto-retry. "
-                 f"Manual rerun: python3 /Users/adityaparikh/Documents/current-workspace/"
-                 f"Jarvis/agents/bhaga/scripts/daily_refresh_wrapper.py --force")
+            write_marker(refresh_date, status="failed", rc=rc)
+            _log(f"refresh failed (rc={rc}); marker written for "
+                 f"refresh_date={refresh_date.isoformat()} so no auto-retry "
+                 f"this night. Manual rerun: python3 "
+                 f"/Users/adityaparikh/Documents/current-workspace/Jarvis/"
+                 f"agents/bhaga/scripts/daily_refresh_wrapper.py --force")
             # Wrapper-level summary alert (per-step alerts already fired
             # inside daily_refresh.py). This gives the operator a single
             # roll-up notification that today's run is parked.

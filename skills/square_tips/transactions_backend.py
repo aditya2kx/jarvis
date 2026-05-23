@@ -186,13 +186,24 @@ def parse_money_cents(s: str) -> int:
 
 
 def _to_iana(tz_display: str) -> str:
-    iana = _TZ_DISPLAY_TO_IANA.get((tz_display or "").strip())
-    if not iana:
+    s = (tz_display or "").strip()
+    iana = _TZ_DISPLAY_TO_IANA.get(s)
+    if iana:
+        return iana
+    # Square exports the Time Zone column in the operator's browser locale.
+    # When the operator is outside the US (e.g. traveling in India), Square
+    # emits a raw IANA name like 'Asia/Calcutta' instead of one of the
+    # human-readable US display strings above. Accept any value that
+    # zoneinfo can resolve so the parser doesn't silently drop those rows.
+    try:
+        ZoneInfo(s)
+        return s
+    except Exception as exc:
         raise ValueError(
-            f"Unknown Square Time Zone display value {tz_display!r}. "
-            f"Extend _TZ_DISPLAY_TO_IANA in transactions_backend.py."
-        )
-    return iana
+            f"Unknown Square Time Zone value {tz_display!r}. "
+            f"Extend _TZ_DISPLAY_TO_IANA in transactions_backend.py "
+            f"or fix the source export."
+        ) from exc
 
 
 def parse_csv(

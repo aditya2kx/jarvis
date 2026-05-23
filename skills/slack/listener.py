@@ -52,6 +52,67 @@ COMMAND_LOG = _DEFAULT_COMMAND_LOG
 
 _app_token_cache = {}
 
+# Per-app-token registry of live listener processes. Two listeners sharing the
+# same Slack app-level token cause Socket Mode connection eviction — Slack
+# kicks the prior connection when a new one connects with the same token,
+# producing eternal disconnect-thrash on both. We refuse to start a second
+# listener that holds a duplicate token.
+_TOKEN_REGISTRY = pathlib.Path("/tmp/jarvis-listener-tokens.json")
+
+
+def _ensure_unique_app_token(app_token, agent):
+    """Refuse to start if another live listener already owns this app token.
+
+    Returns silently on success; calls sys.exit(1) with a clear log line if a
+    duplicate is detected. Stale entries (dead pids) are pruned, so a clean
+    restart after a crash is always allowed.
+    """
+    fingerprint = hashlib.sha256(app_token.encode("utf-8")).hexdigest()[:16]
+    label = agent or "_default"
+    my_pid = os.getpid()
+
+    registry = {}
+    if _TOKEN_REGISTRY.exists():
+        try:
+            registry = json.loads(_TOKEN_REGISTRY.read_text())
+        except (json.JSONDecodeError, OSError):
+            registry = {}
+
+    cleaned = {}
+    for fp, owner in registry.items():
+        pid = owner.get("pid", 0)
+        if pid == my_pid:
+            continue
+        try:
+            os.kill(pid, 0)
+            cleaned[fp] = owner
+        except OSError:
+            pass
+    registry = cleaned
+
+    if fingerprint in registry:
+        owner = registry[fingerprint]
+        print(
+            f"[listener:{label}] REFUSING to start: Slack app-level token "
+            f"(sha256={fingerprint}) is already in use by pid={owner.get('pid')} "
+            f"agent={owner.get('agent')}. Two listeners on one Slack app cause "
+            f"Socket Mode connection eviction and silent event-drop. "
+            f"Stop the other listener, or configure a distinct Slack app + token "
+            f"for this agent.",
+            flush=True,
+        )
+        sys.exit(1)
+
+    registry[fingerprint] = {
+        "agent": label,
+        "pid": my_pid,
+        "started_at": time.time(),
+    }
+    try:
+        _TOKEN_REGISTRY.write_text(json.dumps(registry, indent=2))
+    except OSError:
+        pass
+
 
 def _set_agent_globals(agent):
     """Configure module-level paths and identity for the active listener agent."""
@@ -309,21 +370,48 @@ class SocketModeClient:
         self._send_frame(sock, 0x1, ack)
 
     def start(self):
-        """Connect and listen for events. Reconnects on failure."""
+        """Connect and listen for events. Reconnects on failure.
+
+        IMPORTANT: always close the previous socket before reconnecting,
+        otherwise we leak CLOSE_WAIT FDs every cycle. Over many hours of
+        normal Slack disconnect-cycling, this leak combined with a recv()
+        that's never broken out of on disconnect causes the listener to
+        wedge — process alive, socket "ESTABLISHED" per kernel, but Slack
+        is sending events to dead air.
+        """
         self._running = True
         while self._running:
+            sock = None
             try:
                 ws_url = _get_websocket_url(self.app_token)
-                print(f"[listener] Connecting to Socket Mode...")
+                print("[listener] Connecting to Socket Mode...", flush=True)
                 sock = self._connect_websocket(ws_url)
-                print("[listener] Connected. Listening for events...")
+                print("[listener] Connected. Listening for events...", flush=True)
                 self._listen(sock)
             except Exception as e:
-                print(f"[listener] Connection error: {e}. Reconnecting in 5s...")
+                print(f"[listener] Connection error: {e}. Reconnecting in 5s...", flush=True)
                 time.sleep(5)
+            finally:
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
 
     def _listen(self, sock):
-        """Main event loop."""
+        """Main event loop. Returns (does NOT raise) on any reason to reconnect.
+
+        Slack's Socket Mode protocol sends a `{"type":"disconnect"}` envelope
+        when it wants the client to reconnect (server-driven rotation, server
+        restart, etc). After sending it, Slack closes the WSS within a few
+        seconds. We MUST break out of the recv loop on this envelope and
+        reconnect on a fresh socket, otherwise:
+          1. The old socket sits in recv() for up to the socket timeout.
+          2. Any events Slack delivers during that window go to the dying
+             socket and are lost from this client's perspective.
+          3. When the recv finally errors out, the socket is leaked unless
+             closed (which `start`'s finally block now handles).
+        """
         while self._running:
             try:
                 opcode, data = self._read_frame(sock)
@@ -339,15 +427,23 @@ class SocketModeClient:
 
                     self.on_message(event_type, payload, envelope_id)
 
+                    if event_type == "disconnect":
+                        print(
+                            "[listener] Slack requested disconnect — closing socket "
+                            "and reconnecting on a fresh WSS.",
+                            flush=True,
+                        )
+                        return
+
                 elif opcode == 0x9:  # ping
                     self._send_frame(sock, 0xA, data)  # pong
 
                 elif opcode == 0x8:  # close
-                    print("[listener] Server closed connection")
-                    break
+                    print("[listener] Server closed connection", flush=True)
+                    return
 
             except ConnectionError:
-                break
+                return
 
     def stop(self):
         self._running = False
@@ -640,6 +736,8 @@ def start_listener(agent=None):
             print("[listener] No app-level token found in Keychain (SLACK_APP_TOKEN).")
             print("[listener] Store it: security add-generic-password -a SLACK_APP_TOKEN -s jarvis -w 'xapp-...'")
         sys.exit(1)
+
+    _ensure_unique_app_token(app_token, AGENT)
 
     label = f"listener:{AGENT}" if AGENT else "listener"
     client = SocketModeClient(app_token, on_message=_handle_event)

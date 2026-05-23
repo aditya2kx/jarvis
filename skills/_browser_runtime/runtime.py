@@ -6,6 +6,22 @@ Centralizes:
       backed login flows in each portal's runner. This matches what we
       already do for Google (OAuth refresh token) and ClickUp (PAT), and
       eliminates the multi-profile mess we used to have.
+    - **Timezone-locked context**: every browser context is created with
+      ``timezone_id="America/Chicago"`` and ``locale="en-US"``, regardless
+      of where the operator's laptop physically is. The shop is in Austin
+      TX (CT); the operator travels (e.g. IST, ET); and all portal date
+      filters (Square date-range picker, ADP report ranges, etc.) are
+      interpreted in BROWSER timezone. If we don't pin this, a portal in
+      a non-CT browser will silently truncate exports at the wrong wall-
+      clock boundary. All of BHAGA's downstream date arithmetic
+      (data_window_end, refresh_date, gap windows) is CT-anchored, so
+      the browser must agree.
+      Incident reference (2026-05-22): operator was in IST, Square's
+      date-range filter interpreted "5/21 to 5/23" as IST dates, the
+      export ended at IST 5/22 23:59:59 = CT 5/22 13:29:59, and silently
+      dropped the entire CT 5/22 afternoon (~$970 of sales / half a day).
+      Locking the context to America/Chicago + en-US makes the browser
+      behave identically no matter where the laptop is.
     - Download handling with deterministic filename + dir routing.
     - Failure-mode debugging: auto-screenshot + DOM snapshot before exceptions
       surface, so we always have evidence of what the page looked like when
@@ -164,6 +180,11 @@ def launch_persistent(
             viewport=DEFAULT_VIEWPORT,
             user_agent=REAL_UA,
             accept_downloads=accept_downloads,
+            # Pin TZ + locale so portal date filters always interpret ranges
+            # in CT regardless of the operator's physical location. See
+            # module docstring (2026-05-22 IST-truncation incident).
+            timezone_id="America/Chicago",
+            locale="en-US",
         )
         page = context.new_page()
         try:

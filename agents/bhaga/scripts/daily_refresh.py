@@ -340,6 +340,102 @@ def cleanup_old_run_dirs(*, keep_days: int = 7) -> None:
                 print(f"[cleanup] could not prune {child}: {exc}")
 
 
+def _assert_master_not_older_than_gap(
+    *, master_csv: pathlib.Path, gap_csv: pathlib.Path | None,
+) -> None:
+    """Pre-flight check before write_raw_sheets: master_csv mtime must be
+    at least as new as the gap_csv mtime.
+
+    If consolidate_csv ran successfully, master_csv was rewritten AFTER
+    gap_csv was downloaded, so master_csv.mtime >= gap_csv.mtime. If this
+    invariant is violated, something silently failed to merge the gap rows
+    into the master and write_raw_sheets is about to ship stale data to the
+    raw sheets. Fail LOUDLY rather than completing with exit 0.
+
+    This is one of the two defenses added on 2026-05-23 against the
+    "silent partial-success" class of bugs (the other is the post-condition
+    guard in main() that re-reads data_window_end). Both check different
+    things; both are needed.
+    """
+    if gap_csv is None or not gap_csv.exists():
+        return
+    if not master_csv.exists():
+        raise RuntimeError(
+            f"[write_raw_sheets] precondition violated: gap CSV exists "
+            f"({gap_csv.name}) but master CSV does not ({master_csv.name}). "
+            f"consolidate_csv must have failed silently — refusing to write "
+            f"raw sheets from an incomplete master."
+        )
+    gap_mtime = gap_csv.stat().st_mtime
+    master_mtime = master_csv.stat().st_mtime
+    if master_mtime < gap_mtime:
+        raise RuntimeError(
+            f"[write_raw_sheets] precondition violated: master CSV "
+            f"({master_csv.name}, mtime={master_mtime}) is OLDER than the gap "
+            f"CSV ({gap_csv.name}, mtime={gap_mtime}). consolidate_csv did "
+            f"not rewrite the master after the gap was downloaded — "
+            f"refusing to write raw sheets from stale master."
+        )
+
+
+def _assert_data_advanced_post_condition(
+    *,
+    prev_end: datetime.date | None,
+    post_end: datetime.date | None,
+    rows_added_from_gap: int,
+    update_model_ran: bool,
+    refresh_date: datetime.date,
+) -> None:
+    """Final guard against the 2026-05-23 silent partial-success class.
+
+    Fires AFTER all steps complete but BEFORE the orchestrator declares
+    success. Catches the case where:
+      * a non-empty Square gap was merged into the master CSV
+      * update_model_sheet ran
+      * but ``bhaga_model > config.data_window_end`` did NOT advance past
+        ``prev_end``.
+
+    That combination means write_raw_sheets or update_model_sheet silently
+    swallowed the new data — exactly the failure mode that produced the
+    2026-05-23 incident (parse_csv dropped all Asia/Calcutta-tz rows
+    because the operator was traveling in India, so 189 fresh rows reached
+    the master file but zero made it to the raw sheets). Without this
+    guard the orchestrator exits 0, writes `.done` markers, and the
+    operator loses 12+ hours before noticing.
+
+    Pure function so the contract can be unit-tested without standing up
+    Sheets / Playwright. Raises RuntimeError on violation.
+    """
+    if not update_model_ran:
+        return
+    if prev_end is None:
+        # Fresh install or unreadable config — separate failure mode.
+        return
+    if rows_added_from_gap <= 0:
+        # No new data was supposed to land; not advancing is correct.
+        return
+    if post_end is None:
+        raise RuntimeError(
+            f"silent partial-success guard: {rows_added_from_gap} new Square "
+            f"row(s) were merged into the master CSV for refresh_date="
+            f"{refresh_date.isoformat()}, but data_window_end could not be "
+            f"re-read from bhaga_model > config after update_model_sheet. "
+            f"Cannot verify the data made it through — refusing to declare "
+            f"success."
+        )
+    if post_end <= prev_end:
+        raise RuntimeError(
+            f"silent partial-success guard: {rows_added_from_gap} new Square "
+            f"row(s) merged into master.csv for refresh_date="
+            f"{refresh_date.isoformat()}, but bhaga_model > config."
+            f"data_window_end did NOT advance past {prev_end.isoformat()} "
+            f"(post-run value={post_end.isoformat()}). This means "
+            f"write_raw_sheets or update_model_sheet silently dropped the "
+            f"new rows. Inspect the raw_square_transactions tab vs the "
+            f"master CSV before retrying."
+        )
+
+
 def _adp_bundle_then_raise(
     *,
     store: str,
@@ -498,6 +594,11 @@ def main() -> int:
     # If the sheet has no entry yet, this is a fresh install -> full backfill
     # from `data_start`. After that first run, all subsequent runs are
     # strictly incremental.
+    # `prev_end` is captured for the post-condition guard at the end of
+    # main(); we want the SAME value the gap window was computed against,
+    # so we set it unconditionally here (None in the --from-date /
+    # --skip-square branches where there's nothing to compare against).
+    prev_end: datetime.date | None = None
     if args.from_date:
         gap_start = datetime.date.fromisoformat(args.from_date)
         gap_source = "--from-date override"
@@ -623,14 +724,25 @@ def main() -> int:
         # the underlying upsert is idempotent and includes anything currently
         # on disk (which may include unchanged inputs that still need to be
         # mirrored on a cold-start day).
-        ok, _ = run_step(
-            "write_raw_sheets",
-            lambda: subprocess.run(
+        gap_csv_for_check = artifacts.get("square_csv") if isinstance(artifacts.get("square_csv"), pathlib.Path) else None
+
+        def _write_raw_sheets_step():
+            # Pre-flight: master.csv must not be older than the gap CSV. If it
+            # is, consolidate_csv silently failed to merge — abort BEFORE
+            # shipping stale data to raw sheets. See 2026-05-23 incident.
+            _assert_master_not_older_than_gap(
+                master_csv=MASTER_TXN_CSV, gap_csv=gap_csv_for_check,
+            )
+            return subprocess.run(
                 [sys.executable, "-m", "agents.bhaga.scripts.backfill_from_downloads",
                  "--store", args.store],
                 cwd=str(PROJECT_ROOT), check=True,
                 env={**os.environ, "PYTHONUNBUFFERED": "1"},
-            ),
+            )
+
+        ok, _ = run_step(
+            "write_raw_sheets",
+            _write_raw_sheets_step,
             refresh_date=refresh_date,
             dry_run=args.dry_run,
         )
@@ -691,6 +803,61 @@ def main() -> int:
         names = ", ".join(name for name, _ in failures)
         print(f"\n=== {len(failures)} step(s) failed: {names} ===")
         # failure_alert was already called per-step. Don't double-DM.
+        return 1
+
+    # ── Post-condition guard: did the new data actually land? ──────
+    # Re-read bhaga_model > config.data_window_end and compare against
+    # the pre-run value. If a non-empty gap was supposed to advance the
+    # window but didn't, something silently swallowed the rows
+    # (2026-05-23 incident). Fail loudly BEFORE writing the success
+    # heartbeat — the wrapper will retry on the next 15-min wakeup.
+    failed_step_names = {name for name, _ in failures}
+    update_model_ran = (
+        not args.skip_model
+        and "update_model_sheet" not in failed_step_names
+        and not args.dry_run
+        # If --skip-square AND --skip-timecard both set, model is being
+        # re-derived from existing raw data; data_window_end may legitimately
+        # stay put. The rows_added_from_gap check below also covers this.
+    )
+    post_end: datetime.date | None = None
+    if update_model_ran and not args.skip_square:
+        try:
+            post_end, _ = _read_data_window_end_from_sheet(
+                spreadsheet_id=spreadsheet_id, store=args.store
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [post-condition] could not re-read data_window_end: {exc}")
+            post_end = None
+    try:
+        _assert_data_advanced_post_condition(
+            prev_end=prev_end,
+            post_end=post_end,
+            rows_added_from_gap=master_stats.get("rows_added", 0),
+            update_model_ran=update_model_ran,
+            refresh_date=refresh_date,
+        )
+    except RuntimeError as exc:
+        print(f"\n!!! POST-CONDITION GUARD FAILED: {exc}", file=sys.stderr)
+        try:
+            failure_alert(
+                step="post_condition_guard",
+                exception=exc,
+                date=refresh_date.isoformat(),
+                extra=(
+                    "The daily refresh completed every step's marker but the "
+                    "Model sheet's data_window_end did not advance despite new "
+                    "Square rows merging into the master CSV. This is the "
+                    "2026-05-23 silent-partial-success class — investigate "
+                    "write_raw_sheets / update_model_sheet before retrying. "
+                    "To force a retry, delete ~/.bhaga/state/run-"
+                    f"{refresh_date.isoformat()}/write_raw_sheets.done and "
+                    f"~/.bhaga/state/run-{refresh_date.isoformat()}/"
+                    "update_model_sheet.done."
+                ),
+            )
+        except Exception:  # noqa: BLE001, S110
+            pass
         return 1
 
     print(f"\n=== DONE in {runtime_s:.1f}s ===")

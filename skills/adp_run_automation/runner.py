@@ -333,6 +333,86 @@ def _handle_adp_two_factor(page, *, store: str) -> None:
     page.wait_for_timeout(1_500)
 
 
+def _target_meta_path(xlsx_path: pathlib.Path) -> pathlib.Path:
+    """Sidecar path used to record which ``target_date`` an XLSX was scraped for.
+
+    The XLSX itself is named by *download date* (``Timecard-2026-05-23.xlsx``),
+    NOT by the business ``target_date`` the run was asking for. That means an
+    XLSX downloaded earlier today for a DIFFERENT target_date can look
+    indistinguishable from one downloaded just now for the current target_date.
+
+    The 2026-05-23 silent-partial-success bug hit exactly that case: an orphan
+    run for ``--date 2026-05-21`` wrote ``Timecard-2026-05-23.xlsx`` at 12:08,
+    and the later run for ``--date 2026-05-22`` saw the file as "fresh on disk"
+    and skipped the ADP scrape — possibly missing 5/22 punches.
+
+    Fix: every successful download writes a small JSON sidecar
+    (``Timecard-<today>.target-meta.json``) recording the target_date the file
+    was scraped for. ``_xlsx_fresh_for_target`` requires BOTH the file to be
+    fresh AND the sidecar's target_date to match the current run's target_date
+    before declaring the file usable.
+    """
+    return xlsx_path.with_suffix(xlsx_path.suffix + ".target-meta.json")
+
+
+def _write_target_meta(xlsx_path: pathlib.Path, target_date: Optional[datetime.date]) -> None:
+    """Best-effort write of the target-date sidecar (see ``_target_meta_path``)."""
+    try:
+        meta = {
+            "target_date": target_date.isoformat() if target_date else None,
+            "downloaded_at": datetime.datetime.now().isoformat(),
+            "xlsx_filename": xlsx_path.name,
+        }
+        _target_meta_path(xlsx_path).write_text(json.dumps(meta))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp] WARN: could not write target-meta sidecar for {xlsx_path.name}: {exc}")
+
+
+def _xlsx_fresh_for_target(
+    xlsx_path: pathlib.Path,
+    *,
+    target_date: Optional[datetime.date],
+    min_bytes: int,
+) -> bool:
+    """Tighter form of ``is_fresh_download`` that also checks the sidecar.
+
+    Returns True iff:
+      1. ``is_fresh_download(xlsx_path, min_bytes=...)`` says yes (file
+         exists, mtime > CT-midnight today, size >= min_bytes), AND
+      2. ``<xlsx_path>.target-meta.json`` exists and its ``target_date``
+         field matches the current run's ``target_date``.
+
+    Conservatively rejects when the sidecar is missing (older files from
+    before this guard landed) so the next run re-scrapes rather than
+    silently reusing a possibly-wrong-target XLSX. This means we eat at
+    most ONE extra scrape after deploying this fix; subsequent runs sit
+    fast.
+    """
+    if not is_fresh_download(xlsx_path, min_bytes=min_bytes):
+        return False
+    meta_path = _target_meta_path(xlsx_path)
+    if not meta_path.exists():
+        print(
+            f"[adp] freshness: {xlsx_path.name} is on disk but has no target-meta "
+            f"sidecar — treating as stale (need to record target_date for safe reuse)"
+        )
+        return False
+    try:
+        meta = json.loads(meta_path.read_text())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp] freshness: target-meta sidecar unreadable ({exc}); treating as stale")
+        return False
+    want = target_date.isoformat() if target_date else None
+    got = meta.get("target_date")
+    if got != want:
+        print(
+            f"[adp] freshness: {xlsx_path.name} was scraped for target_date={got!r} "
+            f"but this run wants target_date={want!r} — treating as stale"
+        )
+        return False
+    return True
+
+
 def _mark_run_step_done(
     step_name: str,
     *,
@@ -409,7 +489,7 @@ def download_timecard(
     duplicate ADP 2FA SMS on cron retries.
     """
     expected = DOWNLOADS_DIR / f"Timecard-{datetime.date.today().isoformat()}.xlsx"
-    if is_fresh_download(expected, min_bytes=10_000):
+    if _xlsx_fresh_for_target(expected, target_date=target_date, min_bytes=10_000):
         print(f"[adp_timecard] SKIP browser — fresh Timecard XLSX already on disk: {expected}")
         return expected
 
@@ -420,7 +500,9 @@ def download_timecard(
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
         _ensure_logged_in(page, store=store)
-        return _timecard_within_session(page, target_date=target_date)
+        path = _timecard_within_session(page, target_date=target_date)
+        _write_target_meta(path, target_date)
+        return path
 
 
 def _timecard_within_session(
@@ -630,7 +712,12 @@ def download_earnings(
     """
     today = datetime.date.today()
     expected = DOWNLOADS_DIR / f"Earnings-and-Hours-V1-{today.isoformat()}.xlsx"
-    if is_fresh_download(expected, min_bytes=5_000):
+    # Standalone download_earnings has no target_date concept — the report
+    # is preset-driven ("Last payroll"). Use end_date if provided, else
+    # today_ct, as the freshness key so a same-day rerun with a different
+    # window doesn't silently reuse the prior XLSX.
+    target_for_freshness = end_date or today
+    if _xlsx_fresh_for_target(expected, target_date=target_for_freshness, min_bytes=5_000):
         print(f"[adp_earnings] SKIP browser — fresh Earnings XLSX already on disk: {expected}")
         return expected
 
@@ -646,9 +733,11 @@ def download_earnings(
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
         _ensure_logged_in(page, store=store)
-        return _earnings_within_session(
+        path = _earnings_within_session(
             page, store=store, start=start, end=end
         )
+        _write_target_meta(path, target_for_freshness)
+        return path
 
 
 def _assert_earnings_xlsx_has_rows(path: pathlib.Path) -> int:
@@ -969,8 +1058,16 @@ def download_adp_bundle(
     tc_expected = DOWNLOADS_DIR / f"Timecard-{today.isoformat()}.xlsx"
     er_expected = DOWNLOADS_DIR / f"Earnings-and-Hours-V1-{today.isoformat()}.xlsx"
 
-    tc_fresh = is_fresh_download(tc_expected, min_bytes=10_000)
-    er_fresh = is_fresh_download(er_expected, min_bytes=5_000) if include_earnings else False
+    # Layer A is target_date-aware (2026-05-23 fix): a file downloaded earlier
+    # today for a DIFFERENT target_date does NOT count as fresh, because it
+    # may not cover the current run's window. See _xlsx_fresh_for_target.
+    tc_fresh = _xlsx_fresh_for_target(
+        tc_expected, target_date=target_date, min_bytes=10_000,
+    )
+    er_fresh = (
+        _xlsx_fresh_for_target(er_expected, target_date=target_date, min_bytes=5_000)
+        if include_earnings else False
+    )
 
     result: dict = {
         "timecard_xlsx": tc_expected if tc_fresh else None,
@@ -1009,6 +1106,7 @@ def download_adp_bundle(
         if needs_timecard:
             try:
                 path = _timecard_within_session(page, target_date=target_date)
+                _write_target_meta(path, target_date)
                 result["timecard_xlsx"] = path
                 _mark_run_step_done(
                     "adp_timecard", refresh_date=target_date,
@@ -1072,6 +1170,7 @@ def download_adp_bundle(
                     page, store=store, target_date=target_date,
                     start=window_start, end=window_end,
                 )
+                _write_target_meta(path, target_date)
                 result["earnings_xlsx"] = path
                 _mark_run_step_done(
                     "adp_earnings", refresh_date=target_date,

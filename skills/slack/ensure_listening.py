@@ -89,6 +89,26 @@ def _read_pid(pid_file):
         return None
 
 
+HEARTBEAT_MAX_AGE_S = 300  # 5 minutes — if no heartbeat in this window, listener is wedged
+
+
+def _heartbeat_path(agent=None):
+    suffix = f"-{agent}" if agent else ""
+    return pathlib.Path(f"/tmp/jarvis-listener{suffix}-heartbeat")
+
+
+def _heartbeat_stale(agent=None):
+    """Return True if the heartbeat file is missing or older than HEARTBEAT_MAX_AGE_S."""
+    hb = _heartbeat_path(agent)
+    if not hb.exists():
+        return True
+    try:
+        ts = float(hb.read_text().strip())
+        return (time.time() - ts) > HEARTBEAT_MAX_AGE_S
+    except (ValueError, OSError):
+        return True
+
+
 def _check(pid_file, name):
     """Return ('alive', pid) | ('stale', pid) | ('absent', None)."""
     pid = _read_pid(pid_file)
@@ -97,6 +117,18 @@ def _check(pid_file, name):
     if _is_alive(pid):
         return ("alive", pid)
     return ("stale", pid)
+
+
+def _check_with_heartbeat(pid_file, name, agent=None):
+    """Like _check but also detects wedged processes via heartbeat staleness.
+
+    Returns ('alive', pid) | ('wedged', pid) | ('stale', pid) | ('absent', None).
+    'wedged' means PID is alive but heartbeat is stale — listener is stuck.
+    """
+    state, pid = _check(pid_file, name)
+    if state == "alive" and _heartbeat_stale(agent):
+        return ("wedged", pid)
+    return (state, pid)
 
 
 def _start_listener(agent=None):
@@ -169,6 +201,25 @@ def status():
     return states
 
 
+def _kill_and_wait(pid, label="process"):
+    """SIGTERM a process and wait up to 5s for it to exit."""
+    import signal
+    try:
+        os.kill(pid, signal.SIGTERM)
+        print(f"[ensure] sent SIGTERM to {label} (pid {pid})")
+    except OSError:
+        return
+    for _ in range(10):
+        time.sleep(0.5)
+        if not _is_alive(pid):
+            return
+    try:
+        os.kill(pid, signal.SIGKILL)
+        print(f"[ensure] sent SIGKILL to {label} (pid {pid}) — did not exit after SIGTERM")
+    except OSError:
+        pass
+
+
 def ensure(hours=8, interval=30):
     """Start whichever daemons are not currently alive. Returns dict of actions taken.
 
@@ -176,16 +227,21 @@ def ensure(hours=8, interval=30):
       - The legacy default listener (CHITRA's SLACK_APP_TOKEN)
       - One listener per agent in config.yaml whose identity_mode == "real"
       - The shared inbox processor (handles every per-agent inbox file)
+
+    Also detects and kills WEDGED listeners (PID alive but heartbeat stale).
     """
     actions = {}
 
     # Default / legacy CHITRA listener
-    listener_state, listener_pid = _check(LISTENER_PID, "listener")
+    listener_state, listener_pid = _check_with_heartbeat(LISTENER_PID, "listener", agent=None)
     if listener_state == "alive":
         actions["listener:default"] = f"already running (pid {listener_pid})"
     else:
         if listener_state == "stale":
             print(f"[ensure] cleaning up stale default listener pid file (pid {listener_pid} dead)")
+        elif listener_state == "wedged":
+            print(f"[ensure] default listener (pid {listener_pid}) is WEDGED — killing + restarting")
+            _kill_and_wait(listener_pid, "listener:default")
         new_pid = _start_listener()
         time.sleep(0.5)
         actions["listener:default"] = f"started (pid {new_pid})"
@@ -193,12 +249,15 @@ def ensure(hours=8, interval=30):
     # Per-agent listeners — one per real-identity agent in config
     for agent in _registered_agents_with_real_identity():
         pid_file = _agent_listener_pid(agent)
-        agent_state, agent_pid = _check(pid_file, f"listener:{agent}")
+        agent_state, agent_pid = _check_with_heartbeat(pid_file, f"listener:{agent}", agent=agent)
         if agent_state == "alive":
             actions[f"listener:{agent}"] = f"already running (pid {agent_pid})"
             continue
         if agent_state == "stale":
             print(f"[ensure] cleaning up stale {agent} listener pid file (pid {agent_pid} dead)")
+        elif agent_state == "wedged":
+            print(f"[ensure] listener:{agent} (pid {agent_pid}) is WEDGED — killing + restarting")
+            _kill_and_wait(agent_pid, f"listener:{agent}")
         new_pid = _start_listener(agent=agent)
         time.sleep(0.5)
         actions[f"listener:{agent}"] = f"started (pid {new_pid})"

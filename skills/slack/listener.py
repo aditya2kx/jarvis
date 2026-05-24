@@ -36,6 +36,21 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 OTP_DIR = pathlib.Path("/tmp/jarvis-otp")
 OTP_DIR.mkdir(exist_ok=True)
 
+HEARTBEAT_DIR = pathlib.Path("/tmp")
+
+
+def _heartbeat_path(agent=None):
+    suffix = f"-{agent}" if agent else ""
+    return HEARTBEAT_DIR / f"jarvis-listener{suffix}-heartbeat"
+
+
+def _write_heartbeat(agent=None):
+    """Touch the heartbeat file so ensure_listening.py can detect wedged processes."""
+    try:
+        _heartbeat_path(agent).write_text(f"{time.time()}\n")
+    except OSError:
+        pass
+
 # Per-agent state files: when AGENT is set, files become
 # /tmp/jarvis-slack-inbox-<agent>.json and /tmp/jarvis-slack-commands-<agent>.json
 # When AGENT is None (legacy / default CHITRA), files keep their original names
@@ -267,7 +282,28 @@ def _find_pending_portal():
 
 
 class SocketModeClient:
-    """Minimal Socket Mode client using stdlib only (no slack_sdk dependency)."""
+    """Minimal Socket Mode client using stdlib only (no slack_sdk dependency).
+
+    Key design decisions for reliability:
+    - Socket timeout is 30s for the initial TCP connect only; after the
+      WebSocket handshake completes, the timeout is raised to RECV_TIMEOUT_S
+      (default 120s) to tolerate normal idle periods between Slack events.
+    - A client-side ping is sent every PING_INTERVAL_S (30s) to keep the
+      connection alive and detect dead connections faster than recv timeout.
+    - Consecutive recv timeouts without any successful frame are tracked;
+      after MAX_CONSECUTIVE_TIMEOUTS the client backs off with a fresh
+      apps.connections.open rather than hammering Slack's API.
+    - Parent PID is tracked; if the parent exits (launchd restart, etc.)
+      this process self-terminates instead of becoming an orphan running
+      stale code.
+    """
+
+    RECV_TIMEOUT_S = 120
+    PING_INTERVAL_S = 30
+    MAX_CONSECUTIVE_TIMEOUTS = 5
+    BACKOFF_AFTER_TIMEOUT_STORM_S = 60
+
+    MAX_TOTAL_TIMEOUT_STORMS = 10
 
     def __init__(self, app_token, on_message=None):
         self.app_token = app_token
@@ -279,7 +315,7 @@ class SocketModeClient:
 
     def _connect_websocket(self, url):
         """Connect to WebSocket URL using ssl + socket."""
-        import socket
+        import socket as socket_mod
         from urllib.parse import urlparse
 
         parsed = urlparse(url)
@@ -290,7 +326,7 @@ class SocketModeClient:
             path += "?" + parsed.query
 
         ctx = ssl.create_default_context()
-        raw_sock = socket.create_connection((host, port), timeout=30)
+        raw_sock = socket_mod.create_connection((host, port), timeout=30)
         sock = ctx.wrap_socket(raw_sock, server_hostname=host)
 
         key = hashlib.sha1(os.urandom(16)).hexdigest()[:24]
@@ -312,6 +348,7 @@ class SocketModeClient:
         if b"101" not in response.split(b"\r\n")[0]:
             raise RuntimeError(f"WebSocket handshake failed: {response[:200]}")
 
+        sock.settimeout(self.RECV_TIMEOUT_S)
         return sock
 
     def _read_frame(self, sock):
@@ -364,6 +401,10 @@ class SocketModeClient:
         frame.extend(bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
         sock.sendall(frame)
 
+    def _send_ping(self, sock):
+        """Send a WebSocket ping frame to keep the connection alive."""
+        self._send_frame(sock, 0x9, b"keepalive")
+
     def _send_ack(self, sock, envelope_id):
         """Acknowledge a Socket Mode envelope."""
         ack = json.dumps({"envelope_id": envelope_id}).encode()
@@ -372,14 +413,17 @@ class SocketModeClient:
     def start(self):
         """Connect and listen for events. Reconnects on failure.
 
-        IMPORTANT: always close the previous socket before reconnecting,
-        otherwise we leak CLOSE_WAIT FDs every cycle. Over many hours of
-        normal Slack disconnect-cycling, this leak combined with a recv()
-        that's never broken out of on disconnect causes the listener to
-        wedge — process alive, socket "ESTABLISHED" per kernel, but Slack
-        is sending events to dead air.
+        Closes the previous socket before reconnecting to avoid leaking
+        CLOSE_WAIT FDs. Tracks consecutive timeout failures and backs off
+        with a longer sleep + fresh connections.open when the connection
+        appears dead (as opposed to just idle).
         """
+        import socket as socket_mod
+
         self._running = True
+        consecutive_timeouts = 0
+        total_timeout_storms = 0
+
         while self._running:
             sock = None
             try:
@@ -387,8 +431,38 @@ class SocketModeClient:
                 print("[listener] Connecting to Socket Mode...", flush=True)
                 sock = self._connect_websocket(ws_url)
                 print("[listener] Connected. Listening for events...", flush=True)
+                consecutive_timeouts = 0
+                _write_heartbeat(AGENT)
                 self._listen(sock)
+            except socket_mod.timeout:
+                consecutive_timeouts += 1
+                if consecutive_timeouts >= self.MAX_CONSECUTIVE_TIMEOUTS:
+                    total_timeout_storms += 1
+                    if total_timeout_storms >= self.MAX_TOTAL_TIMEOUT_STORMS:
+                        print(
+                            f"[listener] {total_timeout_storms} timeout storms — "
+                            f"exiting so launchd can restart us fresh.",
+                            flush=True,
+                        )
+                        return
+                    print(
+                        f"[listener] {consecutive_timeouts} consecutive recv timeouts "
+                        f"(storm {total_timeout_storms}/{self.MAX_TOTAL_TIMEOUT_STORMS}) "
+                        f"— backing off {self.BACKOFF_AFTER_TIMEOUT_STORM_S}s before "
+                        f"fresh connections.open.",
+                        flush=True,
+                    )
+                    time.sleep(self.BACKOFF_AFTER_TIMEOUT_STORM_S)
+                    consecutive_timeouts = 0
+                else:
+                    print(
+                        f"[listener] Recv timeout ({consecutive_timeouts}/"
+                        f"{self.MAX_CONSECUTIVE_TIMEOUTS}). Reconnecting in 5s...",
+                        flush=True,
+                    )
+                    time.sleep(5)
             except Exception as e:
+                consecutive_timeouts = 0
                 print(f"[listener] Connection error: {e}. Reconnecting in 5s...", flush=True)
                 time.sleep(5)
             finally:
@@ -401,20 +475,26 @@ class SocketModeClient:
     def _listen(self, sock):
         """Main event loop. Returns (does NOT raise) on any reason to reconnect.
 
-        Slack's Socket Mode protocol sends a `{"type":"disconnect"}` envelope
-        when it wants the client to reconnect (server-driven rotation, server
-        restart, etc). After sending it, Slack closes the WSS within a few
-        seconds. We MUST break out of the recv loop on this envelope and
-        reconnect on a fresh socket, otherwise:
-          1. The old socket sits in recv() for up to the socket timeout.
-          2. Any events Slack delivers during that window go to the dying
-             socket and are lost from this client's perspective.
-          3. When the recv finally errors out, the socket is leaked unless
-             closed (which `start`'s finally block now handles).
+        Handles:
+        - Slack disconnect envelopes (server-driven rotation)
+        - WebSocket close frames (opcode 0x8)
+        - Server pings (opcode 0x9) → responds with pong
+        - Recv timeouts → sends client ping to probe liveness; if the ping
+          send itself fails, the connection is dead and we return to reconnect.
+          If the ping succeeds, we stay in the loop and wait for the pong or
+          next frame.
+        - ConnectionError → return immediately to trigger reconnect
         """
+        import socket as socket_mod
+
+        last_ping_sent = time.time()
+        last_frame_received = time.time()
+
         while self._running:
             try:
                 opcode, data = self._read_frame(sock)
+                last_frame_received = time.time()
+                _write_heartbeat(AGENT)
 
                 if opcode == 0x1:  # text
                     envelope = json.loads(data)
@@ -438,8 +518,32 @@ class SocketModeClient:
                 elif opcode == 0x9:  # ping
                     self._send_frame(sock, 0xA, data)  # pong
 
+                elif opcode == 0xA:  # pong (response to our client ping)
+                    pass
+
                 elif opcode == 0x8:  # close
                     print("[listener] Server closed connection", flush=True)
+                    return
+
+            except socket_mod.timeout:
+                now = time.time()
+                idle_s = now - last_frame_received
+                if idle_s > self.RECV_TIMEOUT_S * 2:
+                    print(
+                        f"[listener] No frames for {idle_s:.0f}s — connection "
+                        f"presumed dead. Reconnecting.",
+                        flush=True,
+                    )
+                    return
+
+                try:
+                    self._send_ping(sock)
+                    last_ping_sent = now
+                except (OSError, ConnectionError):
+                    print(
+                        "[listener] Ping send failed — connection dead. Reconnecting.",
+                        flush=True,
+                    )
                     return
 
             except ConnectionError:

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  BHAGA command-polling launch agent (belt-and-suspenders fallback).
+
+  Runs every 15 minutes, 24/7. Makes a single Slack API call
+  (conversations.history) to check for unhandled operator commands
+  ("retry", "refresh <date>", "status"). Works even if the Socket Mode
+  listener is dead.
+
+  Typically returns in <2 seconds and does nothing 99% of the time.
+
+  INSTALL:
+    cp .../com.aditya.bhaga.poll-commands.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aditya.bhaga.poll-commands.plist
+
+  INSPECT:
+    launchctl print gui/$(id -u)/com.aditya.bhaga.poll-commands
+    tail -f ~/.bhaga/state/poll-commands.out.log
+
+  UNINSTALL:
+    launchctl bootout gui/$(id -u)/com.aditya.bhaga.poll-commands
+    rm ~/Library/LaunchAgents/com.aditya.bhaga.poll-commands.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aditya.bhaga.poll-commands</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/miniconda3/bin/python3</string>
+        <string>/Users/adityaparikh/Documents/current-workspace/Jarvis/skills/slack/poll_commands.py</string>
+    </array>
+
+    <!-- Run every 15 minutes (900 seconds), 24/7 -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <!-- Run-and-exit, not always-on -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/adityaparikh/.bhaga/state/poll-commands.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/adityaparikh/.bhaga/state/poll-commands.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/miniconda3/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/adityaparikh</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+</dict>
+</plist>

@@ -740,7 +740,26 @@ def _handle_event(event_type, payload, envelope_id):
                     _reply(f":white_check_mark: Got it — using code `{text.strip()}` for {portal}")
                     return
 
-            # Try known commands
+            # BHAGA command handler: retry / refresh / status
+            # Only activate when NO OTP request is pending — otherwise
+            # treat everything as a potential OTP code (existing behavior).
+            if AGENT and AGENT == "bhaga":
+                try:
+                    from skills.slack.command_handler import (
+                        has_pending_otp,
+                        is_command,
+                        handle_command as bhaga_handle_command,
+                    )
+                    if is_command(text) and not has_pending_otp():
+                        response = bhaga_handle_command(text, user_id)
+                        if response:
+                            _reply(response)
+                            _log_command(text.strip(), response[:200], user_id)
+                            return
+                except ImportError as exc:
+                    print(f"[listener] BHAGA command_handler import failed: {exc}")
+
+            # Try known commands (generic Jarvis: status, pause, resume, help)
             if _handle_command(text, user_id):
                 return
 

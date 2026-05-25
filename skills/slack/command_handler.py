@@ -127,10 +127,13 @@ def _get_run_status(refresh_date: datetime.date) -> dict:
     completed = set()
     if run_dir.is_dir():
         completed = {p.stem for p in run_dir.glob("*.done")}
+    expected_done = completed & EXPECTED_STEPS
     missing = EXPECTED_STEPS - completed
     return {
         "date": refresh_date.isoformat(),
         "completed": sorted(completed),
+        "expected_done": len(expected_done),
+        "expected_total": len(EXPECTED_STEPS),
         "missing": sorted(missing),
         "all_done": len(missing) == 0,
     }
@@ -208,7 +211,7 @@ def handle_status() -> str:
                 info = _get_run_status(datetime.date.fromisoformat(date_str))
                 status_emoji = ":white_check_mark:" if info["all_done"] else ":warning:"
                 missing_str = f" missing: {', '.join(info['missing'])}" if info["missing"] else ""
-                run_summaries.append(f"  {status_emoji} `{date_str}`: {len(info['completed'])}/{len(EXPECTED_STEPS)} steps{missing_str}")
+                run_summaries.append(f"  {status_emoji} `{date_str}`: {info['expected_done']}/{info['expected_total']} steps{missing_str}")
             except ValueError:
                 continue
 

@@ -39,5 +39,5 @@ COPY core/ core/
 ENV TZ=UTC
 ENV PYTHONUNBUFFERED=1
 
-ENTRYPOINT ["python3", "-m", "agents.bhaga.scripts.daily_refresh"]
+ENTRYPOINT ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1440x900x24", "python3", "-m", "agents.bhaga.scripts.daily_refresh"]
 CMD ["--store", "palmetto"]

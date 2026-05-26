@@ -61,6 +61,10 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
 from agents.bhaga.notify import failure_alert, info_ping, success_heartbeat
+from agents.bhaga.scripts.gcs_cache import (
+    download_cached_files,
+    upload_scrape_artifacts,
+)
 from core.config_loader import refresh_access_token, resolve_sheet_id
 from skills.adp_run_automation.runner import download_adp_bundle
 from skills.bhaga_config.dates import coerce_iso_date
@@ -678,6 +682,18 @@ def main() -> int:
     elif not args.skip_square:
         print("[square_transactions] SKIPPED — already covered through refresh_date.")
 
+    # ── GCS cache: upload Square artifacts after scrape + consolidate ──
+    if not args.dry_run and "square_transactions" not in {n for n, _ in failures}:
+        try:
+            upload_scrape_artifacts(
+                refresh_date=refresh_date,
+                download_dir=DOWNLOAD_DIR,
+                square_csv=artifacts.get("square_csv") if isinstance(artifacts.get("square_csv"), pathlib.Path) else None,
+                master_csv=MASTER_TXN_CSV if MASTER_TXN_CSV.exists() else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [gcs_cache] WARN: Square upload failed (non-fatal): {exc}")
+
     # Step 2 + 3 (combined): ADP Reports bundle.
     # Both Timecard and Earnings now run in a SINGLE browser session via
     # download_adp_bundle — one login, at most one OTP cost per nightly run.
@@ -706,6 +722,41 @@ def main() -> int:
             # into the legacy failure list shape so downstream gating logic
             # (square_ok / raw_sheets_ok) keeps working unchanged.
             failures.append(("adp_reports", val))
+
+    # ── GCS cache: upload ADP artifacts after scrape ──
+    if not args.dry_run and "adp_reports" not in {n for n, _ in failures}:
+        try:
+            upload_scrape_artifacts(
+                refresh_date=refresh_date,
+                download_dir=DOWNLOAD_DIR,
+                adp_timecard_xlsx=artifacts.get("adp_timecard_xlsx") if isinstance(artifacts.get("adp_timecard_xlsx"), pathlib.Path) else None,
+                adp_earnings_xlsx=artifacts.get("adp_earnings_xlsx") if isinstance(artifacts.get("adp_earnings_xlsx"), pathlib.Path) else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [gcs_cache] WARN: ADP upload failed (non-fatal): {exc}")
+
+    # ── GCS cache: restore missing files before downstream steps ──
+    # On Cloud Run re-runs, scrape markers say "done" but ephemeral FS is
+    # empty. Pull from GCS so write_raw_sheets/update_model_sheet proceed
+    # without re-scraping (no OTP cost).
+    if not args.dry_run:
+        critical_missing = (
+            not MASTER_TXN_CSV.exists()
+            or (not args.skip_timecard and not any(DOWNLOAD_DIR.glob("Timecard-*.xlsx")))
+        )
+        if critical_missing:
+            print("\n[gcs_cache] local files missing — attempting restore from GCS cache...")
+            try:
+                restored = download_cached_files(
+                    refresh_date=refresh_date,
+                    download_dir=DOWNLOAD_DIR,
+                )
+                if restored:
+                    print(f"  [gcs_cache] restored {len(restored)} file(s) from GCS")
+                else:
+                    print("  [gcs_cache] no cached files found in GCS for this date")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [gcs_cache] WARN: GCS restore failed (non-fatal): {exc}")
 
     # Step 3b: Push scraped data into the three RAW Google Sheets. The model
     # sheet's contract (per architecture) is: read only from raw sheets, never

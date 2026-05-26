@@ -52,6 +52,27 @@ from core.config_loader import refresh_access_token, resolve_sheet_id  # noqa: E
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 STORE_PROFILES_DIR = PROJECT_ROOT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
 
+_sheets_service_cache = None
+
+
+def _is_cloud_run() -> bool:
+    return (os.environ.get("BHAGA_SECRETS_BACKEND", "").lower() == "gcp"
+            or "K_SERVICE" in os.environ)
+
+
+def _get_sheets_service():
+    """Build and cache a Google Sheets API service using ADC (Cloud Run)."""
+    global _sheets_service_cache
+    if _sheets_service_cache is not None:
+        return _sheets_service_cache
+    import google.auth
+    from googleapiclient.discovery import build
+    creds, _ = google.auth.default(
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    _sheets_service_cache = build("sheets", "v4", credentials=creds)
+    return _sheets_service_cache
+
 
 def _bootstrap_pointer(store: str) -> dict:
     """Load the small bootstrap pointer (sheet id + google account key) from disk.
@@ -70,12 +91,49 @@ def _bootstrap_pointer(store: str) -> dict:
 
 
 def _fetch_range(spreadsheet_id: str, range_a1: str, *, account: str) -> list[list[str]]:
+    if _is_cloud_run():
+        svc = _get_sheets_service()
+        result = svc.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id, range=range_a1,
+        ).execute()
+        return result.get("values", [])
+
     token = refresh_access_token(account)
     rng = urllib.parse.quote(range_a1, safe="!:")
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{rng}"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(req, timeout=15) as r:
         return json.loads(r.read()).get("values", [])
+
+
+def _update_range(
+    spreadsheet_id: str, range_a1: str, values: list[list[str]], *, account: str,
+) -> None:
+    """Write values to a sheet range. Works in both local and Cloud Run."""
+    if _is_cloud_run():
+        svc = _get_sheets_service()
+        svc.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id, range=range_a1,
+            valueInputOption="USER_ENTERED", body={"values": values},
+        ).execute()
+        return
+
+    token = refresh_access_token(account)
+    rng = urllib.parse.quote(range_a1, safe="!:")
+    url = (
+        f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{rng}"
+        "?valueInputOption=USER_ENTERED"
+    )
+    body = json.dumps({"values": values}).encode()
+    req = urllib.request.Request(
+        url, data=body, method="PUT",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        r.read()
 
 
 @lru_cache(maxsize=4)
@@ -234,13 +292,10 @@ def write_alias(
     pointer = _bootstrap_pointer(store)
     sid = resolve_sheet_id("bhaga_model", pointer)
     account = pointer.get("google_account_key", store)
-    token = refresh_access_token(account)
 
-    roster = _read_employees_tab(store)
     rows = _fetch_range(sid, "employees!A1:E500", account=account)
     header = [h.strip() for h in rows[0]]
     alias_col = header.index("aliases")
-    notes_col = header.index("notes") if "notes" in header else 2
 
     target_row_idx: Optional[int] = None
     for i, row in enumerate(rows[1:], start=2):
@@ -249,25 +304,9 @@ def write_alias(
             break
 
     if target_row_idx is None:
-        # Append a new row at the end.
         new_row = [canonical_name, raw_name, note]
-        rng = urllib.parse.quote(f"employees!A{len(rows)+1}", safe="!:")
-        url = (
-            f"https://sheets.googleapis.com/v4/spreadsheets/{sid}/values/{rng}"
-            "?valueInputOption=USER_ENTERED"
-        )
-        body = json.dumps({"values": [new_row]}).encode()
-        req = urllib.request.Request(
-            url, data=body, method="PUT",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=15) as r:
-            r.read()
+        _update_range(sid, f"employees!A{len(rows)+1}", [new_row], account=account)
     else:
-        # Update existing aliases cell.
         existing_row = rows[target_row_idx - 1]
         existing_aliases = (
             existing_row[alias_col].strip() if alias_col < len(existing_row) else ""
@@ -281,23 +320,9 @@ def write_alias(
             parts.append(raw_name)
         new_value = "; ".join(parts)
         col_letter = chr(ord("A") + alias_col)
-        rng = urllib.parse.quote(
-            f"employees!{col_letter}{target_row_idx}", safe="!:"
+        _update_range(
+            sid, f"employees!{col_letter}{target_row_idx}",
+            [[new_value]], account=account,
         )
-        url = (
-            f"https://sheets.googleapis.com/v4/spreadsheets/{sid}/values/{rng}"
-            "?valueInputOption=USER_ENTERED"
-        )
-        body = json.dumps({"values": [[new_value]]}).encode()
-        req = urllib.request.Request(
-            url, data=body, method="PUT",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=15) as r:
-            r.read()
 
-    # Invalidate cache so subsequent reads see the new alias.
     _read_employees_tab.cache_clear()

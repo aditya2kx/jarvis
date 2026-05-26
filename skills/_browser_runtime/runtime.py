@@ -156,6 +156,22 @@ def _resolve_browser_channel() -> Optional[str]:
     return None
 
 
+def _force_headless() -> bool:
+    """True when the environment demands headless mode.
+
+    Checked inside launch_persistent to override the caller's ``headed``
+    flag. Cloud Run sets ``BHAGA_HEADLESS=1``; also auto-detects Docker
+    containers (/.dockerenv) and missing DISPLAY (no X server at all).
+    """
+    if os.environ.get("BHAGA_HEADLESS", "").strip() in ("1", "true", "yes"):
+        return True
+    if os.path.exists("/.dockerenv"):
+        return True
+    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+        return True
+    return False
+
+
 @contextlib.contextmanager
 def launch_persistent(
     portal: str,
@@ -185,6 +201,10 @@ def launch_persistent(
             page.goto("https://app.squareup.com/...")
             ...
     """
+    if _force_headless():
+        headed = False
+        print(f"[runtime] headless forced by environment (portal={portal})", file=sys.stderr)
+
     SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
     pw = sync_playwright().start()

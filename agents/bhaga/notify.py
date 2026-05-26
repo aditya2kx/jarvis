@@ -32,32 +32,57 @@ _ROOT = os.path.abspath(os.path.join(_HERE, "..", ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from skills.slack.adapter import open_dm, send_message  # noqa: E402
+from skills.slack.adapter import send_message  # noqa: E402
 
 AGENT_NAME = "bhaga"
-_DM_CHANNEL_STATIC = os.environ.get("BHAGA_DM_CHANNEL", "")
-_OPERATOR_USER_ID = os.environ.get("BHAGA_SLACK_USER_ID", "U06SGJUGNRA")
+_OPERATOR_USER_ID = "U0APJRE5DC4"
 SLACK_DISABLED_ENV = "BHAGA_SLACK_DISABLED"
-
-_dm_channel_cache: Optional[str] = None
+_dm_channel_cache: str | None = None
 
 
 def _resolve_dm_channel() -> str:
-    """Resolve the DM channel for the active BHAGA bot token.
+    """Resolve the DM channel for BHAGA → operator.
 
-    Uses conversations.open with the operator's user ID so the correct
-    channel is returned regardless of which bot token is active (local
-    BHAGA app vs BHAGA-Cloud service account bot).
+    Order:
+      1. BHAGA_DM_CHANNEL env var (explicit override — required on Cloud Run
+         where the bot token belongs to BHAGA-Cloud, not the local BHAGA app)
+      2. Local config.yaml → slack.agents.bhaga.dm_channel
+      3. Auto-discover via conversations.open (works when bot has im:write scope
+         and the user ID is visible in the bot's workspace)
+      4. Hardcoded fallback (local BHAGA bot's DM — last resort)
     """
     global _dm_channel_cache
-    if _dm_channel_cache:
+    if _dm_channel_cache is not None:
         return _dm_channel_cache
 
-    if _DM_CHANNEL_STATIC:
-        _dm_channel_cache = _DM_CHANNEL_STATIC
+    from_env = os.environ.get("BHAGA_DM_CHANNEL")
+    if from_env:
+        _dm_channel_cache = from_env
         return _dm_channel_cache
 
-    _dm_channel_cache = open_dm(_OPERATOR_USER_ID, agent=AGENT_NAME)
+    try:
+        from core.config_loader import load_config
+        cfg = load_config()
+        cfg_channel = (cfg.get("slack", {}).get("agents", {})
+                       .get(AGENT_NAME, {}).get("dm_channel", ""))
+        if cfg_channel:
+            _dm_channel_cache = cfg_channel
+            return _dm_channel_cache
+    except Exception:
+        pass
+
+    try:
+        from skills.slack.adapter import open_dm
+        _dm_channel_cache = open_dm(_OPERATOR_USER_ID, agent=AGENT_NAME)
+        return _dm_channel_cache
+    except Exception as exc:
+        print(
+            f"[bhaga.notify] conversations.open failed for user {_OPERATOR_USER_ID}: {exc}. "
+            f"Set BHAGA_DM_CHANNEL env var for Cloud Run.",
+            file=sys.stderr,
+        )
+
+    _dm_channel_cache = "D0ATWHSA14J"
     return _dm_channel_cache
 
 
@@ -70,16 +95,29 @@ def _safe_send(text: str) -> Optional[dict]:
 
     NEVER raise from a notification helper; the orchestrator must always
     surface the underlying scrape failure, not a Slack-API failure.
+
+    Fallback chain:
+      1. Resolved DM channel (env var / config / conversations.open / hardcoded)
+      2. Direct post to operator user ID (chat.postMessage auto-opens a DM
+         and only needs chat:write scope — works even when conversations.open
+         fails due to missing im:write or users:read scopes)
     """
     if _silenced():
         print(f"[BHAGA_SLACK_DISABLED] would send: {text[:200]}")
         return None
     try:
-        channel = _resolve_dm_channel()
-        return send_message(channel, text, agent=AGENT_NAME)
-    except Exception as e:  # noqa: BLE001
-        print(f"[bhaga.notify] Slack send failed (swallowed): {e}", file=sys.stderr)
-        return None
+        return send_message(_resolve_dm_channel(), text, agent=AGENT_NAME)
+    except Exception as e1:  # noqa: BLE001
+        print(f"[bhaga.notify] primary send failed: {e1}", file=sys.stderr)
+        try:
+            return send_message(_OPERATOR_USER_ID, text, agent=AGENT_NAME)
+        except Exception as e2:  # noqa: BLE001
+            print(
+                f"[bhaga.notify] fallback send to user {_OPERATOR_USER_ID} also failed "
+                f"(swallowed): {e2}",
+                file=sys.stderr,
+            )
+            return None
 
 
 def _host_tag() -> str:

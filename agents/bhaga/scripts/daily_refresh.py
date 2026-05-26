@@ -64,6 +64,11 @@ from agents.bhaga.notify import failure_alert, info_ping, success_heartbeat
 from core.config_loader import refresh_access_token
 from skills.adp_run_automation.runner import download_adp_bundle
 from skills.bhaga_config.dates import coerce_iso_date
+from skills.bhaga_config.state_adapter import (
+    mark_step_done as _adapter_mark_step_done,
+    run_state_dir as _adapter_run_state_dir,
+    step_already_done as _adapter_step_already_done,
+)
 from skills.square_tips.runner import download_transactions
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -266,20 +271,15 @@ def _should_run_rates(*, override: str | None) -> bool:
 
 
 def _run_state_dir(refresh_date: datetime.date) -> pathlib.Path:
-    return pathlib.Path.home() / ".bhaga" / "state" / f"run-{refresh_date.isoformat()}"
+    return _adapter_run_state_dir(refresh_date)
 
 
 def step_already_done(refresh_date: datetime.date, step_name: str) -> bool:
-    return (_run_state_dir(refresh_date) / f"{step_name}.done").exists()
+    return _adapter_step_already_done(refresh_date, step_name)
 
 
 def mark_step_done(refresh_date: datetime.date, step_name: str, *, note: str = "") -> None:
-    d = _run_state_dir(refresh_date)
-    d.mkdir(parents=True, exist_ok=True)
-    body = datetime.datetime.now(CT).isoformat()
-    if note:
-        body += f"\nnote: {note}"
-    (d / f"{step_name}.done").write_text(body)
+    _adapter_mark_step_done(refresh_date, step_name, note=note)
 
 
 # Cron triggers at 21:00 CT; the shop closes by ~20:00 CT so the +1h buffer

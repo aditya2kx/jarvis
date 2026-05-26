@@ -13,10 +13,10 @@ config.yaml
 agents/*/scripts/personal/
 
 # Credential storage (actual creds in Keychain, never files)
-credentials/
-!credentials/portals.yaml.template
-!credentials/import_from_chrome.py
-!credentials/store_credential.py
+/credentials/
+!/credentials/portals.yaml.template
+!/credentials/import_from_chrome.py
+!/credentials/store_credential.py
 
 # Credential registry metadata (account names, service names)
 skills/credentials/registry.json

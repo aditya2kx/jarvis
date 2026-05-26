@@ -47,7 +47,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
-from core.config_loader import refresh_access_token  # noqa: E402
+from core.config_loader import refresh_access_token, resolve_sheet_id  # noqa: E402
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 STORE_PROFILES_DIR = PROJECT_ROOT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
@@ -82,7 +82,7 @@ def _fetch_range(spreadsheet_id: str, range_a1: str, *, account: str) -> list[li
 def _read_employees_tab(store: str) -> list[dict]:
     """Read bhaga_model > employees and return list of roster dicts."""
     pointer = _bootstrap_pointer(store)
-    sid = pointer["google_sheets"]["bhaga_model"]["spreadsheet_id"]
+    sid = resolve_sheet_id("bhaga_model", pointer)
     account = pointer.get("google_account_key", store)
     rows = _fetch_range(sid, "employees!A1:E500", account=account)
     if not rows:
@@ -108,7 +108,7 @@ def _read_employees_tab(store: str) -> list[dict]:
 def _read_config_tab(store: str) -> dict[str, dict]:
     """Read bhaga_model > config and return {key: {"value": v, "notes": n}}."""
     pointer = _bootstrap_pointer(store)
-    sid = pointer["google_sheets"]["bhaga_model"]["spreadsheet_id"]
+    sid = resolve_sheet_id("bhaga_model", pointer)
     account = pointer.get("google_account_key", store)
     rows = _fetch_range(sid, "config!A1:F200", account=account)
     out: dict[str, dict] = {}
@@ -232,7 +232,7 @@ def write_alias(
     cell (or creates a new row if the canonical is new).
     """
     pointer = _bootstrap_pointer(store)
-    sid = pointer["google_sheets"]["bhaga_model"]["spreadsheet_id"]
+    sid = resolve_sheet_id("bhaga_model", pointer)
     account = pointer.get("google_account_key", store)
     token = refresh_access_token(account)
 

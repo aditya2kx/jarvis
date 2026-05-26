@@ -1,0 +1,46 @@
+{
+  "store": "palmetto",
+  "google_drive": {
+    "bhaga_folder_id": "1ko9yx78RPQvp0chaYfKOGNk2xF0vhjfP",
+    "bhaga_folder_name": "BHAGA"
+  },
+  "google_sheets": {
+    "bhaga_adp_raw_id": "1-08EIN6EO72t-ImCKRCf4gbIaVN5cJ1FRVlekccvg6w",
+    "bhaga_square_raw_id": "1q_uP14ZvbxPBLy8HcgK0EmwaQMmIPP1jwTV3xmd6kZU",
+    "bhaga_model_id": "1Drj9nplWcdeRChWQ9fk0dfZQPkQweIuPVL5yqNIDOd0"
+  },
+  "workbooks_detail": {
+    "BHAGA ADP Raw": {
+      "spreadsheet_id": "1-08EIN6EO72t-ImCKRCf4gbIaVN5cJ1FRVlekccvg6w",
+      "url": "https://docs.google.com/spreadsheets/d/1-08EIN6EO72t-ImCKRCf4gbIaVN5cJ1FRVlekccvg6w/edit?ouid=101307601154715311009",
+      "tabs": [
+        "shifts",
+        "punches",
+        "wage_rates"
+      ],
+      "action": "created"
+    },
+    "BHAGA Square Raw": {
+      "spreadsheet_id": "1q_uP14ZvbxPBLy8HcgK0EmwaQMmIPP1jwTV3xmd6kZU",
+      "url": "https://docs.google.com/spreadsheets/d/1q_uP14ZvbxPBLy8HcgK0EmwaQMmIPP1jwTV3xmd6kZU/edit?ouid=101307601154715311009",
+      "tabs": [
+        "transactions",
+        "daily_rollup"
+      ],
+      "action": "created"
+    },
+    "BHAGA Model": {
+      "spreadsheet_id": "1Drj9nplWcdeRChWQ9fk0dfZQPkQweIuPVL5yqNIDOd0",
+      "url": "https://docs.google.com/spreadsheets/d/1Drj9nplWcdeRChWQ9fk0dfZQPkQweIuPVL5yqNIDOd0/edit?ouid=101307601154715311009",
+      "tabs": [
+        "config",
+        "daily",
+        "tip_alloc_daily",
+        "dow_hour",
+        "period_summary"
+      ],
+      "action": "created"
+    }
+  },
+  "bootstrap_run_utc": "2026-05-16T17:10:16.094296+00:00"
+}

@@ -1,0 +1,157 @@
+{
+  "_doc": "Source-of-truth profile for the Palmetto Superfoods Austin store. Single point of configuration consumed by BHAGA's orchestrator (M3 daily_refresh.py) and all skills it calls. See agents/bhaga/knowledge-base/store-profiles/README.md (TODO) for the schema reference.",
+  "store_id": "palmetto",
+  "display_name": "Palmetto Superfoods (Austin)",
+  "legal_entity": "AK JUICY BOWLS LLC",
+  "google_account_key": "palmetto",
+  "_doc_google_account_key": "Matches the key in core/config.yaml accounts.{key}. Determines which Google credentials refresh_access_token() uses.",
+  "timezone": {
+    "shop_tz": "America/Chicago",
+    "square_account_display_tz": "America/New_York",
+    "_doc": "Square account display TZ is Eastern; Austin shop is Central. transactions_backend.parse_csv() does the conversion via zoneinfo. ADP times are already shop-local (no conversion needed)."
+  },
+  "shop_hours": {
+    "open_local_time": "10:00",
+    "close_local_time": "21:00",
+    "_doc": "Used by the orchestrator to schedule the daily refresh AFTER all clock-outs. Refresh fires at close + ORCHESTRATOR_SCRAPE_BUFFER_MINUTES_AFTER_SHOP_CLOSE (60 min) -> 22:00 CT."
+  },
+  "google_drive": {
+    "bhaga_folder_id": "1ko9yx78RPQvp0chaYfKOGNk2xF0vhjfP",
+    "bhaga_folder_name": "BHAGA",
+    "bhaga_folder_url": "https://drive.google.com/drive/folders/1ko9yx78RPQvp0chaYfKOGNk2xF0vhjfP"
+  },
+  "google_sheets_staging": {
+    "bhaga_model": {
+      "spreadsheet_id": "18NH71JwMOAX6euFugSsSQlJhHPgBghWk09YWnsSuvDk"
+    },
+    "bhaga_adp_raw": {
+      "spreadsheet_id": "1sv-zK6Mc_ybPUZrObt0CWmodxIVNYm3ahfZg8WZtLyo"
+    },
+    "bhaga_square_raw": {
+      "spreadsheet_id": "1X2sCGwJi8YfcM0DAYlDzHBxG3_Du4jLauppfAw_A1rw"
+    },
+    "bhaga_review_raw": {
+      "spreadsheet_id": "16pkNefCOEcEUlhIU6zH03nEcg5PXmBpJhkHy3aUa-k4"
+    }
+  },
+  "google_sheets": {
+    "bhaga_adp_raw": {
+      "spreadsheet_id": "1-08EIN6EO72t-ImCKRCf4gbIaVN5cJ1FRVlekccvg6w",
+      "url": "https://docs.google.com/spreadsheets/d/1-08EIN6EO72t-ImCKRCf4gbIaVN5cJ1FRVlekccvg6w/edit",
+      "tabs": [
+        "shifts",
+        "punches",
+        "wage_rates"
+      ]
+    },
+    "bhaga_square_raw": {
+      "spreadsheet_id": "1q_uP14ZvbxPBLy8HcgK0EmwaQMmIPP1jwTV3xmd6kZU",
+      "url": "https://docs.google.com/spreadsheets/d/1q_uP14ZvbxPBLy8HcgK0EmwaQMmIPP1jwTV3xmd6kZU/edit",
+      "tabs": [
+        "transactions",
+        "daily_rollup"
+      ]
+    },
+    "bhaga_model": {
+      "spreadsheet_id": "1Drj9nplWcdeRChWQ9fk0dfZQPkQweIuPVL5yqNIDOd0",
+      "url": "https://docs.google.com/spreadsheets/d/1Drj9nplWcdeRChWQ9fk0dfZQPkQweIuPVL5yqNIDOd0/edit",
+      "tabs": [
+        "config",
+        "daily",
+        "tip_alloc_daily",
+        "tip_alloc_period",
+        "period_summary",
+        "review_bonus_period"
+      ]
+    },
+    "bhaga_review_raw": {
+      "spreadsheet_id": "1FRtLNy5Ae-m7TK-Q0-alA62A-F7l0cwRZLj1sUMBfmM",
+      "url": "https://docs.google.com/spreadsheets/d/1FRtLNy5Ae-m7TK-Q0-alA62A-F7l0cwRZLj1sUMBfmM/edit",
+      "tabs": [
+        "reviews",
+        "unparseable",
+        "config"
+      ],
+      "_doc": "Per-review audit trail populated by process_reviews.py. Source data for the review_bonus_period rollup tab on bhaga_model."
+    }
+  },
+  "clickup": {
+    "team_id": "9017956545",
+    "team_name": "Austin Mueller Palmetto",
+    "review_channel": {
+      "id": "8cr6661-737",
+      "name": "running-austin-palmetto"
+    },
+    "credential_handle": "jarvis-clickup-palmetto-pat",
+    "_doc": "Source channel where the upstream Google-review automation posts each new review. Read by skills/clickup_chat via PAT in Keychain."
+  },
+  "square": {
+    "credential_handle": "jarvis-square-palmetto",
+    "_doc": "Keychain handle resolved via skills/credentials. Browser-automation login (no API access today). Account email: adi@mypalmetto.co."
+  },
+  "adp_run": {
+    "credential_handle": "adp_palmetto_login",
+    "tenant_uuid": "836d254c-789b-41b8-8052-d48a639e95d8",
+    "iid": "30109821",
+    "pay_frequency": "Biweekly",
+    "pay_periods_anchor_end_date": "2026-05-17",
+    "wage_rate_report_name": "Earnings and Hours V1",
+    "_doc": "wage_rate_report_name is the saved custom report under Reports > My saved custom reports. compensation_backend uses this to find the right report row to click."
+  },
+  "employees": {
+    "_doc": "Aliases map raw_name (as it appears in EITHER Timecard XLSX or Earnings XLSX) -> canonical_name. We use the comma form 'LastName, FirstName' as the canonical because it's the form ADP uses everywhere except the time-tracking module. Every employee MUST have entries for both forms to ensure the model-sheet join works.",
+    "aliases": {
+      "Alvarez Sebastian": "Alvarez, Sebastian",
+      "Alvarez, Sebastian": "Alvarez, Sebastian",
+      "Browning Skyler": "Browning, Skyler",
+      "Browning, Skyler": "Browning, Skyler",
+      "Garcia Jacob": "Garcia, Jacob",
+      "Garcia, Jacob": "Garcia, Jacob",
+      "Guerrero Amy": "Guerrero, Amy",
+      "Guerrero, Amy": "Guerrero, Amy",
+      "Johnson Dolce": "Johnson, Dolce",
+      "Johnson Dolce J": "Johnson, Dolce",
+      "Johnson, Dolce": "Johnson, Dolce",
+      "Johnson, Dolce J": "Johnson, Dolce",
+      "Krause Lindsay": "Krause, Lindsay",
+      "Krause, Lindsay": "Krause, Lindsay",
+      "Latham Aubree N": "Latham, Aubree N",
+      "Latham, Aubree N": "Latham, Aubree N",
+      "Majdinasab Tina": "Majdinasab, Tina",
+      "Majdinasab, Tina": "Majdinasab, Tina",
+      "Padron Lisette": "Padron, Lisette",
+      "Padron, Lisette": "Padron, Lisette",
+      "Pascone Kayah A": "Pascone, Kayah A",
+      "Pascone, Kayah A": "Pascone, Kayah A",
+      "Saldana Daniel": "Saldana, Daniel",
+      "Saldana, Daniel": "Saldana, Daniel",
+      "Steele Isabel": "Steele, Isabel",
+      "Steele, Isabel": "Steele, Isabel",
+      "Urrutia Emely": "Urrutia, Emely",
+      "Urrutia, Emely": "Urrutia, Emely",
+      "Flores Juan": "Flores, Juan",
+      "Flores, Juan": "Flores, Juan",
+      "Miles": "Guerrero, Amy",
+      "Myles": "Guerrero, Amy"
+    },
+    "excluded_from_tip_pool_and_labor_pct": [
+      "Krause, Lindsay"
+    ],
+    "_doc_exclusions": "Lindsay is the store manager. She IS paid hourly ($25/hr) per ADP, but is excluded from labor% (we don't count manager cost against store sales) and from the tip pool (managers don't take from tips per policy). Exclusion is by canonical name, NOT by salaried flag."
+  },
+  "calibration": {
+    "last_verified_utc": "2026-05-16T17:10:00Z",
+    "verified_by": "Cursor AI agent (Opus 4.7) via user-playwright MCP + Google API direct.",
+    "first_data_window": {
+      "start": "2026-03-22",
+      "end": "2026-05-15",
+      "_doc": "Initial historical backfill window. After this is loaded and validated, the orchestrator switches to T-1 daily increments."
+    },
+    "notes": [
+      "Square Transactions report scraping calibrated against app.squareup.com/dashboard/sales/transactions. 2956 txns / $47,946.77 collected / $2,527.21 tips over the backfill window.",
+      "ADP Timecard report scraping calibrated against Reports > Time reports > Timecard. 606 punch rows / 14 employees / 5 pay periods (Mar 9 - May 16, 2026; selected period over-covers the data window).",
+      "ADP Earnings and Hours V1 (custom saved report) calibrated. 116 earning lines / 12 employees in the data window. 11 staff @ $15.25/hr; Lindsay Krause @ $25/hr (hourly, not salaried).",
+      "Google Sheets workbooks created at My Drive root > BHAGA folder. All 3 workbooks seeded with headers + notes. Ready for tip_ledger_writer (M1 task remaining) to land data."
+    ]
+  }
+}

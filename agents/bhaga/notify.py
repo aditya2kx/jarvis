@@ -32,11 +32,33 @@ _ROOT = os.path.abspath(os.path.join(_HERE, "..", ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from skills.slack.adapter import send_message  # noqa: E402
+from skills.slack.adapter import open_dm, send_message  # noqa: E402
 
 AGENT_NAME = "bhaga"
-DM_CHANNEL = "D0ATWHSA14J"  # mirrored from config.yaml > slack.agents.bhaga.dm_channel
+_DM_CHANNEL_STATIC = os.environ.get("BHAGA_DM_CHANNEL", "")
+_OPERATOR_USER_ID = os.environ.get("BHAGA_SLACK_USER_ID", "U06SGJUGNRA")
 SLACK_DISABLED_ENV = "BHAGA_SLACK_DISABLED"
+
+_dm_channel_cache: Optional[str] = None
+
+
+def _resolve_dm_channel() -> str:
+    """Resolve the DM channel for the active BHAGA bot token.
+
+    Uses conversations.open with the operator's user ID so the correct
+    channel is returned regardless of which bot token is active (local
+    BHAGA app vs BHAGA-Cloud service account bot).
+    """
+    global _dm_channel_cache
+    if _dm_channel_cache:
+        return _dm_channel_cache
+
+    if _DM_CHANNEL_STATIC:
+        _dm_channel_cache = _DM_CHANNEL_STATIC
+        return _dm_channel_cache
+
+    _dm_channel_cache = open_dm(_OPERATOR_USER_ID, agent=AGENT_NAME)
+    return _dm_channel_cache
 
 
 def _silenced() -> bool:
@@ -53,7 +75,8 @@ def _safe_send(text: str) -> Optional[dict]:
         print(f"[BHAGA_SLACK_DISABLED] would send: {text[:200]}")
         return None
     try:
-        return send_message(DM_CHANNEL, text, agent=AGENT_NAME)
+        channel = _resolve_dm_channel()
+        return send_message(channel, text, agent=AGENT_NAME)
     except Exception as e:  # noqa: BLE001
         print(f"[bhaga.notify] Slack send failed (swallowed): {e}", file=sys.stderr)
         return None

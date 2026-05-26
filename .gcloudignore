@@ -1,5 +1,8 @@
+# Cloud Build ignore — separate from .gitignore because gcloud builds submit
+# uses .gcloudignore (falling back to .gitignore). We need store-profiles/
+# in the build context even though .gitignore excludes most of knowledge-base/.
+
 .git
-.gitignore
 __pycache__
 *.pyc
 .pytest_cache
@@ -10,9 +13,11 @@ agents/*/knowledge-base/raw-documents/
 agents/*/knowledge-base/adp-exports/
 agents/*/knowledge-base/square-exports/
 agents/*/knowledge-base/historical-verification/
+!agents/*/knowledge-base/store-profiles/
+!agents/*/knowledge-base/store-profiles/**
 /credentials/
+!skills/credentials/
 .bhaga/
-*.md
 .cursor/
 .vscode/
 tests/

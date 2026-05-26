@@ -133,6 +133,29 @@ _CHROME_LAUNCH_ARGS = [
 ]
 
 
+def _resolve_browser_channel() -> Optional[str]:
+    """Determine the Chromium channel to use at launch time.
+
+    Resolution order:
+      1. BHAGA_BROWSER_CHANNEL env var (explicit override)
+      2. "chrome" if a real Google Chrome installation is detected
+      3. None → use the patchright-bundled Chromium (Docker / CI)
+    """
+    env_channel = os.environ.get("BHAGA_BROWSER_CHANNEL")
+    if env_channel:
+        return env_channel if env_channel.lower() != "bundled" else None
+
+    chrome_paths = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/opt/google/chrome/chrome",
+        "/usr/bin/google-chrome",
+    ]
+    for p in chrome_paths:
+        if os.path.exists(p):
+            return "chrome"
+    return None
+
+
 @contextlib.contextmanager
 def launch_persistent(
     portal: str,
@@ -168,10 +191,13 @@ def launch_persistent(
     browser = None
     context: Optional[BrowserContext] = None
     try:
-        # Ephemeral: launch a real Chrome browser, then create an isolated
+        # Ephemeral: launch a Chromium-family browser, then create an isolated
         # context. No --user-data-dir → no persistent storage of any kind.
+        # In Docker/CI where only patchright-bundled Chromium is available,
+        # channel=None causes patchright to use its own binary.
+        channel = _resolve_browser_channel()
         browser = pw.chromium.launch(
-            channel="chrome",
+            channel=channel,
             headless=not headed,
             slow_mo=slow_mo_ms,
             args=_CHROME_LAUNCH_ARGS,

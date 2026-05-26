@@ -29,8 +29,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download the Patchright-bundled Chromium (used by headless browser launches)
-RUN patchright install chromium
+# Download real Chrome (channel="chrome" in runtime.py for anti-bot stealth)
+RUN patchright install chrome
 
 COPY agents/ agents/
 COPY skills/ skills/

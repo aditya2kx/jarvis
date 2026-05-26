@@ -724,16 +724,29 @@ def main() -> int:
             failures.append(("adp_reports", val))
 
     # ── GCS cache: upload ADP artifacts after scrape ──
-    if not args.dry_run and "adp_reports" not in {n for n, _ in failures}:
-        try:
-            upload_scrape_artifacts(
-                refresh_date=refresh_date,
-                download_dir=DOWNLOAD_DIR,
-                adp_timecard_xlsx=artifacts.get("adp_timecard_xlsx") if isinstance(artifacts.get("adp_timecard_xlsx"), pathlib.Path) else None,
-                adp_earnings_xlsx=artifacts.get("adp_earnings_xlsx") if isinstance(artifacts.get("adp_earnings_xlsx"), pathlib.Path) else None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [gcs_cache] WARN: ADP upload failed (non-fatal): {exc}")
+    # Upload whatever ADP files are on disk even on partial failure (e.g.
+    # timecard succeeded but earnings timed out). Fall back to scanning the
+    # download dir because the artifacts dict is empty when the step was
+    # skipped (marker already set) or when the step raised.
+    if not args.dry_run:
+        adp_tc = artifacts.get("adp_timecard_xlsx")
+        adp_er = artifacts.get("adp_earnings_xlsx")
+        if not isinstance(adp_tc, pathlib.Path):
+            tc_glob = sorted(DOWNLOAD_DIR.glob("Timecard-*.xlsx"))
+            adp_tc = tc_glob[-1] if tc_glob else None
+        if not isinstance(adp_er, pathlib.Path):
+            er_glob = sorted(DOWNLOAD_DIR.glob("Earnings-*.xlsx"))
+            adp_er = er_glob[-1] if er_glob else None
+        if adp_tc or adp_er:
+            try:
+                upload_scrape_artifacts(
+                    refresh_date=refresh_date,
+                    download_dir=DOWNLOAD_DIR,
+                    adp_timecard_xlsx=adp_tc,
+                    adp_earnings_xlsx=adp_er,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [gcs_cache] WARN: ADP upload failed (non-fatal): {exc}")
 
     # ── GCS cache: restore missing files before downstream steps ──
     # On Cloud Run re-runs, scrape markers say "done" but ephemeral FS is

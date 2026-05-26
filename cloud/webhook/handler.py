@@ -241,8 +241,8 @@ def _handle_slash_command(form: dict) -> Response:
         "response_type": "ephemeral",
         "text": (
             ":robot_face: *BHAGA Commands*\n"
-            "  `/bhaga refresh 2025-05-26` — trigger daily refresh for a date\n"
-            "  `/bhaga status` — latest run summary"
+            "  `/bhaga-cloud refresh 2025-05-26` — trigger daily refresh for a date\n"
+            "  `/bhaga-cloud status` — latest run summary"
         ),
     })
 

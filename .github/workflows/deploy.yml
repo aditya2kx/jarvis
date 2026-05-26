@@ -1,0 +1,100 @@
+name: Build and Deploy BHAGA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      rollback_sha:
+        description: 'Container SHA to rollback to (leave empty for normal deploy)'
+        required: false
+        type: string
+
+env:
+  PROJECT_ID: jarvis-bhaga-prod
+  REGION: us-central1
+  REGISTRY: us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build orchestrator image
+        run: |
+          docker build -t ${{ env.REGISTRY }}/bhaga-orchestrator:${{ github.sha }} \
+                       -t ${{ env.REGISTRY }}/bhaga-orchestrator:latest .
+
+      - name: Build webhook image
+        run: |
+          docker build -t ${{ env.REGISTRY }}/bhaga-webhook:${{ github.sha }} \
+                       -t ${{ env.REGISTRY }}/bhaga-webhook:latest \
+                       -f cloud/webhook/Dockerfile cloud/webhook/
+
+      - name: Build diff image
+        run: |
+          docker build -t ${{ env.REGISTRY }}/bhaga-diff:${{ github.sha }} \
+                       -t ${{ env.REGISTRY }}/bhaga-diff:latest \
+                       -f cloud/diff/Dockerfile cloud/diff/
+
+      - name: Push images
+        run: |
+          docker push ${{ env.REGISTRY }}/bhaga-orchestrator:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/bhaga-orchestrator:latest
+          docker push ${{ env.REGISTRY }}/bhaga-webhook:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/bhaga-webhook:latest
+          docker push ${{ env.REGISTRY }}/bhaga-diff:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/bhaga-diff:latest
+
+      - name: Deploy orchestrator (Cloud Run Job)
+        if: ${{ !inputs.rollback_sha }}
+        run: |
+          gcloud run jobs update bhaga-daily-refresh \
+            --image ${{ env.REGISTRY }}/bhaga-orchestrator:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }}
+
+      - name: Deploy webhook (Cloud Run Service)
+        if: ${{ !inputs.rollback_sha }}
+        run: |
+          gcloud run services update bhaga-webhook \
+            --image ${{ env.REGISTRY }}/bhaga-webhook:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }}
+
+      - name: Deploy diff (Cloud Run Job)
+        if: ${{ !inputs.rollback_sha }}
+        run: |
+          gcloud run jobs update bhaga-daily-diff \
+            --image ${{ env.REGISTRY }}/bhaga-diff:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }}
+
+      - name: Rollback (if SHA provided)
+        if: ${{ inputs.rollback_sha }}
+        run: |
+          gcloud run jobs update bhaga-daily-refresh \
+            --image ${{ env.REGISTRY }}/bhaga-orchestrator:${{ inputs.rollback_sha }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }}
+          gcloud run services update bhaga-webhook \
+            --image ${{ env.REGISTRY }}/bhaga-webhook:${{ inputs.rollback_sha }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }}

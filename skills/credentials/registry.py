@@ -81,11 +81,6 @@ def get_secret(name: str) -> str:
       - "keychain" (default): reads from macOS Keychain
       - "gcp": reads from GCP Secret Manager
     """
-    reg = _load_registry()
-    entry = reg.get(name)
-    if entry is None:
-        raise KeyError(f"Credential '{name}' not found in registry")
-
     backend = _secrets_backend()
 
     if backend == "gcp":
@@ -98,6 +93,11 @@ def get_secret(name: str) -> str:
         secret_path = f"projects/{_GCP_PROJECT}/secrets/{name}/versions/latest"
         response = client.access_secret_version(name=secret_path)
         return response.payload.data.decode("utf-8")
+
+    reg = _load_registry()
+    entry = reg.get(name)
+    if entry is None:
+        raise KeyError(f"Credential '{name}' not found in registry")
 
     # Default: keychain backend
     cred_type = entry.get("type", "")

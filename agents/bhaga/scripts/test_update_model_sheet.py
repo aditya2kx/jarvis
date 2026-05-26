@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 from agents.bhaga.scripts.daily_refresh import CT
 from agents.bhaga.scripts.update_model_sheet import (
     _DATE_CONFIG_KEYS,
+    _fill_calendar_dates,
     build_config_rows,
     build_daily_rows,
     build_labor_daily_rows,
@@ -537,6 +538,160 @@ class RowBuilderDateApostropheTests(unittest.TestCase):
         for r in rows[1:]:
             self._assert_apostrophe_iso(r[0], "period_summary.period_start")
             self._assert_apostrophe_iso(r[1], "period_summary.period_end")
+
+
+class ZeroShiftDayTests(unittest.TestCase):
+    """A day with 0 ADP shifts and 0 Square transactions must:
+    - not block data_window_end advancement (covered by the range-based
+      gate in main(), not the row builders — tested here at the builder
+      layer via _fill_calendar_dates),
+    - produce valid rows in daily, labor_daily, labor_weekly, labor_period
+      with all-zero values,
+    - not crash on any division.
+    """
+
+    NOW_POST_CLOSE = datetime.datetime(2026, 5, 22, 21, 30, 0, tzinfo=CT)
+
+    def _txns(self, dates: list[str]) -> list[dict]:
+        return [{
+            "date_local": d,
+            "hour_local": 10,
+            "event_type": "Payment",
+            "gross_sales_cents": 500,
+            "discount_cents": 0,
+            "total_collected_cents": 600,
+            "tip_cents": 100,
+        } for d in dates]
+
+    def _shifts(self, dates: list[str]) -> list[dict]:
+        return [{
+            "date": d,
+            "employee_name": "Test Barista",
+            "employee_id": "barista-1",
+            "in_time": "08:00",
+            "out_time": "14:00",
+            "regular_hours": 6.0,
+            "ot_hours": 0.0,
+            "doubletime_hours": 0.0,
+            "total_hours": 6.0,
+        } for d in dates]
+
+    def _wage_rates(self) -> list[dict]:
+        return [{
+            "employee_name": "Test Barista",
+            "wage_rate_dollars": "12.00",
+            "ot_rate_dollars": "18.00",
+            "is_salaried": False,
+            "excluded_from_labor_pct": False,
+        }]
+
+    def test_fill_calendar_dates_fills_gaps(self):
+        result = _fill_calendar_dates(["2026-05-19", "2026-05-22"])
+        self.assertEqual(result, [
+            "2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22",
+        ])
+
+    def test_fill_calendar_dates_no_gap(self):
+        result = _fill_calendar_dates(["2026-05-19", "2026-05-20"])
+        self.assertEqual(result, ["2026-05-19", "2026-05-20"])
+
+    def test_fill_calendar_dates_single_date(self):
+        result = _fill_calendar_dates(["2026-05-20"])
+        self.assertEqual(result, ["2026-05-20"])
+
+    def test_fill_calendar_dates_empty(self):
+        result = _fill_calendar_dates([])
+        self.assertEqual(result, [])
+
+    def test_daily_emits_zero_row_for_gap_day(self):
+        # Data on 5/19 and 5/21 but NOT 5/20 (store closed).
+        # The gap day 5/20 must still appear with all-zero values.
+        rows, summary = build_daily_rows(
+            txns=self._txns(["2026-05-19", "2026-05-21"]),
+            shifts=self._shifts(["2026-05-19", "2026-05-21"]),
+            excluded=set(),
+            now_ct=self.NOW_POST_CLOSE,
+        )
+        date_col = [coerce_iso_date(r[0]) for r in rows[1:]]
+        self.assertIn("2026-05-20", date_col,
+                      "closed day 2026-05-20 missing from daily rows")
+        # Find the gap-day row and verify it has zeros.
+        gap_row = next(r for r in rows[1:] if coerce_iso_date(r[0]) == "2026-05-20")
+        self.assertEqual(gap_row[2], 0)   # gross_sales
+        self.assertEqual(gap_row[3], 0)   # tip_pool
+        self.assertEqual(gap_row[8], 0)   # txn_count
+
+    def test_daily_gap_day_no_division_crash(self):
+        # Exercises the per_hour and tips_pct divisions with 0 values.
+        rows, _summary = build_daily_rows(
+            txns=self._txns(["2026-05-19", "2026-05-21"]),
+            shifts=self._shifts(["2026-05-19", "2026-05-21"]),
+            excluded=set(),
+            now_ct=self.NOW_POST_CLOSE,
+        )
+        self.assertGreater(len(rows), 1)
+
+    def test_labor_daily_emits_zero_row_for_gap_day(self):
+        rows = build_labor_daily_rows(
+            txns=self._txns(["2026-05-19", "2026-05-21"]),
+            shifts=self._shifts(["2026-05-19", "2026-05-21"]),
+            wage_rates=self._wage_rates(),
+            excluded_from_tip_pool=set(),
+            now_ct=self.NOW_POST_CLOSE,
+        )
+        date_col = [coerce_iso_date(r[0]) for r in rows[1:]]
+        self.assertIn("2026-05-20", date_col,
+                      "closed day 2026-05-20 missing from labor_daily rows")
+        gap_row = next(r for r in rows[1:] if coerce_iso_date(r[0]) == "2026-05-20")
+        self.assertEqual(gap_row[7], 0)    # orders
+        self.assertEqual(gap_row[8], 0)    # hourly_hours
+        self.assertEqual(gap_row[9], 0)    # hourly_labor_cost
+
+    def test_labor_daily_gap_day_no_division_crash(self):
+        rows = build_labor_daily_rows(
+            txns=self._txns(["2026-05-19", "2026-05-21"]),
+            shifts=self._shifts(["2026-05-19", "2026-05-21"]),
+            wage_rates=self._wage_rates(),
+            excluded_from_tip_pool=set(),
+            now_ct=self.NOW_POST_CLOSE,
+        )
+        self.assertGreater(len(rows), 1)
+
+    def test_labor_weekly_includes_gap_day_contribution(self):
+        # Gap day is within a week with real data — the week row must
+        # still aggregate correctly without crashing.
+        labor_daily = build_labor_daily_rows(
+            txns=self._txns(["2026-05-19", "2026-05-21"]),
+            shifts=self._shifts(["2026-05-19", "2026-05-21"]),
+            wage_rates=self._wage_rates(),
+            excluded_from_tip_pool=set(),
+            now_ct=self.NOW_POST_CLOSE,
+        )
+        rows = build_labor_weekly_rows(labor_daily_rows=labor_daily)
+        self.assertGreater(len(rows), 1)
+        # days_covered (column 4) should be 3 (19, 20, 21)
+        # because the gap day now has a labor_daily row.
+        total_days = sum(r[4] for r in rows[1:])
+        self.assertEqual(total_days, 3)
+
+    def test_labor_period_includes_gap_day(self):
+        labor_daily = build_labor_daily_rows(
+            txns=self._txns(["2026-05-19", "2026-05-21"]),
+            shifts=self._shifts(["2026-05-19", "2026-05-21"]),
+            wage_rates=self._wage_rates(),
+            excluded_from_tip_pool=set(),
+            now_ct=self.NOW_POST_CLOSE,
+        )
+        periods = [{
+            "start": "2026-05-18", "end": "2026-05-31",
+            "check_dates": [], "variants": [], "is_open": True,
+        }]
+        rows = build_labor_period_rows(
+            periods=periods, labor_daily_rows=labor_daily,
+        )
+        self.assertGreater(len(rows), 1)
+        # days_covered = 3 (19, 20, 21 are within the period and have rows)
+        self.assertEqual(rows[1][3], 3)
 
 
 if __name__ == "__main__":

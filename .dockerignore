@@ -5,6 +5,7 @@ __pycache__
 .pytest_cache
 extracted/
 agents/*/knowledge-base/
+!agents/*/knowledge-base/store-profiles/
 credentials/
 .bhaga/
 *.md

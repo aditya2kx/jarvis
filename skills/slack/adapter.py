@@ -42,7 +42,11 @@ def set_agent(agent_name):
 
 
 def _get_bot_token(agent=None):
-    """Retrieve the Slack bot token from macOS Keychain.
+    """Retrieve the Slack bot token.
+
+    Resolution order:
+      1. SLACK_BOT_TOKEN env var (Cloud Run / CI)
+      2. macOS Keychain via config.yaml bot_token_cmd (local dev)
 
     Each agent has its own Slack app and bot token. The keychain
     account name follows the pattern: SLACK_BOT_TOKEN_<AGENT>.
@@ -51,6 +55,11 @@ def _get_bot_token(agent=None):
     agent_key = (agent or _current_agent or "default").lower()
     if agent_key in _token_cache:
         return _token_cache[agent_key]
+
+    env_token = os.environ.get("SLACK_BOT_TOKEN")
+    if env_token:
+        _token_cache[agent_key] = env_token
+        return env_token
 
     cfg = load_config()
     agents_cfg = cfg.get("slack", {}).get("agents", {})

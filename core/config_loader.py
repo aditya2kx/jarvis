@@ -22,7 +22,11 @@ _config = None
 
 
 def load_config():
-    """Load and cache configuration."""
+    """Load and cache configuration.
+
+    In cloud environments (BHAGA_SECRETS_BACKEND=gcp), returns an empty dict
+    if config.yaml is absent — cloud deploys don't carry the local config file.
+    """
     global _config
     if _config is not None:
         return _config
@@ -30,6 +34,8 @@ def load_config():
     if os.path.exists(_CONFIG_PATH):
         with open(_CONFIG_PATH) as f:
             _config = yaml.safe_load(f) or {}
+    elif os.environ.get("BHAGA_SECRETS_BACKEND", "").lower() == "gcp":
+        _config = {}
     elif os.path.exists(_TEMPLATE_PATH):
         raise FileNotFoundError(
             f"config.yaml not found. Copy config.template.yaml to config.yaml and fill in your values.\n"
@@ -101,6 +107,29 @@ def get_profile():
     return cfg.get("profile", {})
 
 
+def resolve_sheet_id(profile_key: str, profile: dict) -> str:
+    """Resolve a Google Sheets spreadsheet ID, respecting BHAGA_SHEET_MODE.
+
+    When BHAGA_SHEET_MODE=staging, looks up env var overrides first:
+      BHAGA_STAGING_{KEY}_SID  (e.g. BHAGA_STAGING_BHAGA_MODEL_SID)
+    Falls back to profile["google_sheets_staging"][profile_key]["spreadsheet_id"]
+    if present, otherwise returns the prod ID from the profile.
+
+    profile_key: one of "bhaga_model", "bhaga_adp_raw", "bhaga_square_raw",
+                 "bhaga_review_raw"
+    """
+    mode = os.environ.get("BHAGA_SHEET_MODE", "prod").lower()
+    if mode == "staging":
+        env_key = f"BHAGA_STAGING_{profile_key.upper()}_SID"
+        env_val = os.environ.get(env_key)
+        if env_val:
+            return env_val
+        staging = profile.get("google_sheets_staging", {})
+        if profile_key in staging:
+            return staging[profile_key]["spreadsheet_id"]
+    return profile["google_sheets"][profile_key]["spreadsheet_id"]
+
+
 def project_dir():
     """Return the project root directory."""
     return _PROJECT_DIR
@@ -132,7 +161,22 @@ def refresh_access_token(account=None):
         account: Named account from the 'accounts' config section
                  (e.g. 'personal', 'palmetto').  None falls back to
                  the legacy 'auth' section for backward compatibility.
+
+    In cloud environments (BHAGA_SECRETS_BACKEND=gcp), uses Application
+    Default Credentials (service account) instead of local OAuth files.
     """
+    if os.environ.get("BHAGA_SECRETS_BACKEND", "").lower() == "gcp":
+        import google.auth
+        import google.auth.transport.requests
+
+        SCOPES = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        credentials, _ = google.auth.default(scopes=SCOPES)
+        credentials.refresh(google.auth.transport.requests.Request())
+        return credentials.token
+
     creds_path, env_path = get_auth_paths(account)
     with open(creds_path) as f:
         creds = json.load(f)

@@ -27,7 +27,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
-from core.config_loader import project_dir
+from core.config_loader import project_dir, resolve_sheet_id
 from skills.adp_run_automation import compensation_backend, shift_backend
 from skills.adp_run_automation.employee_aliases import (
     detect_new_employees,
@@ -114,8 +114,8 @@ def main() -> int:
     from skills.store_profile import load_aliases, load_exclusions
     aliases = load_aliases(args.store)
     excluded = load_exclusions(args.store)["permanent"]
-    adp_raw_sid = profile["google_sheets"]["bhaga_adp_raw"]["spreadsheet_id"]
-    square_raw_sid = profile["google_sheets"]["bhaga_square_raw"]["spreadsheet_id"]
+    adp_raw_sid = resolve_sheet_id("bhaga_adp_raw", profile)
+    square_raw_sid = resolve_sheet_id("bhaga_square_raw", profile)
     shop_tz = profile["timezone"]["shop_tz"]
     google_account = profile["google_account_key"]
 

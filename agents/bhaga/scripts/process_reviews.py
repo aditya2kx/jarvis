@@ -73,7 +73,7 @@ from agents.bhaga.scripts.update_model_sheet import (  # noqa: E402
     clear_and_write_tab,
     format_currency_columns,
 )
-from core.config_loader import refresh_access_token  # noqa: E402
+from core.config_loader import refresh_access_token, resolve_sheet_id  # noqa: E402
 from skills.bhaga_config.dates import (  # noqa: E402
     _iso_date_for_sheet_cell,
     coerce_iso_date,
@@ -836,7 +836,7 @@ def main() -> int:
     aliases = load_aliases(args.store)
     _excl_sheet = load_exclusions(args.store)
     excluded_permanent = set(_excl_sheet["permanent"])
-    model_sid = profile["google_sheets"]["bhaga_model"]["spreadsheet_id"]
+    model_sid = resolve_sheet_id("bhaga_model", profile)
 
     raw_sheet_cfg = profile["google_sheets"].get("bhaga_review_raw")
     if not raw_sheet_cfg or not raw_sheet_cfg.get("spreadsheet_id"):
@@ -845,7 +845,7 @@ def main() -> int:
             "Create the sheet first (one-time) and add it to the profile."
         )
         return 2
-    raw_sid = raw_sheet_cfg["spreadsheet_id"]
+    raw_sid = resolve_sheet_id("bhaga_review_raw", profile)
 
     token = refresh_access_token(args.store)
 

@@ -61,7 +61,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
 from agents.bhaga.notify import failure_alert, info_ping, success_heartbeat
-from core.config_loader import refresh_access_token
+from core.config_loader import refresh_access_token, resolve_sheet_id
 from skills.adp_run_automation.runner import download_adp_bundle
 from skills.bhaga_config.dates import coerce_iso_date
 from skills.bhaga_config.state_adapter import (
@@ -586,7 +586,7 @@ def main() -> int:
 
     profile = _load_profile(args.store)
     data_start = datetime.date.fromisoformat(profile["calibration"]["first_data_window"]["start"])
-    spreadsheet_id = profile["google_sheets"]["bhaga_model"]["spreadsheet_id"]
+    spreadsheet_id = resolve_sheet_id("bhaga_model", profile)
 
     # ---- Incremental window resolution ----------------------------------
     # Source of truth: Model sheet's config tab `data_window_end`.

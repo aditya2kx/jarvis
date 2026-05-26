@@ -32,12 +32,30 @@ _ROOT = os.path.abspath(os.path.join(_HERE, "..", ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from skills.slack.adapter import send_message  # noqa: E402
+from skills.slack.adapter import open_dm, send_message, _api_call  # noqa: E402
 
 AGENT_NAME = "bhaga"
-_OPERATOR_USER_ID = "U0APJRE5DC4"
+_OPERATOR_USER_ID = os.environ.get("BHAGA_OPERATOR_USER_ID",
+                                   os.environ.get("BHAGA_SLACK_USER_ID", "U0APJRE5DC4"))
 SLACK_DISABLED_ENV = "BHAGA_SLACK_DISABLED"
 _dm_channel_cache: str | None = None
+
+
+def _find_first_im_channel() -> str:
+    """Last-resort: list the bot's IM conversations and return the first one.
+
+    Works when conversations.open fails (e.g. user_not_found because the
+    bot is installed in a different workspace than the target user).
+    """
+    result = _api_call("conversations.list",
+                       params={"types": "im", "limit": "50"},
+                       agent=AGENT_NAME)
+    if not result.get("ok"):
+        raise RuntimeError(f"conversations.list failed: {result.get('error', 'unknown')}")
+    channels = result.get("channels", [])
+    if not channels:
+        raise RuntimeError("No IM channels found for the BHAGA bot")
+    return channels[0]["id"]
 
 
 def _resolve_dm_channel() -> str:
@@ -49,7 +67,7 @@ def _resolve_dm_channel() -> str:
       2. Local config.yaml → slack.agents.bhaga.dm_channel
       3. Auto-discover via conversations.open (works when bot has im:write scope
          and the user ID is visible in the bot's workspace)
-      4. Hardcoded fallback (local BHAGA bot's DM — last resort)
+      4. conversations.list(types=im) — pick the bot's first DM
     """
     global _dm_channel_cache
     if _dm_channel_cache is not None:
@@ -72,17 +90,16 @@ def _resolve_dm_channel() -> str:
         pass
 
     try:
-        from skills.slack.adapter import open_dm
         _dm_channel_cache = open_dm(_OPERATOR_USER_ID, agent=AGENT_NAME)
         return _dm_channel_cache
     except Exception as exc:
         print(
-            f"[bhaga.notify] conversations.open failed for user {_OPERATOR_USER_ID}: {exc}. "
-            f"Set BHAGA_DM_CHANNEL env var for Cloud Run.",
+            f"[bhaga.notify] conversations.open failed for {_OPERATOR_USER_ID}: {exc}, "
+            f"falling back to conversations.list",
             file=sys.stderr,
         )
 
-    _dm_channel_cache = "D0ATWHSA14J"
+    _dm_channel_cache = _find_first_im_channel()
     return _dm_channel_cache
 
 

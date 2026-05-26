@@ -1231,31 +1231,33 @@ def download_adp_bundle(
 
         if needs_earnings:
             try:
-                # We only need to reset to v2 chrome if we LEFT it (timecard
-                # ended deep inside the report iframe). If we came straight
-                # from initial login (needs_timecard=False), the page is
-                # already on v2 — skipping the redundant goto avoids killing
-                # our session and forcing a wasteful re-login. The redundant
-                # goto-relogin was burning 2 logins per --force when only
-                # earnings was needed (fixed 2026-05-20).
+                # Always reset to the dashboard via LOGIN_URL before
+                # earnings. After timecard, the page is deep inside the
+                # report iframe and the sidebar is in a collapsed/broken
+                # state — Reports-btn exists in the DOM but is not visible.
+                # A full page navigation forces ADP's SPA to re-render the
+                # sidebar in its expanded state. (2026-05-26 fix)
+                print(f"[adp_bundle] step=reset-page-before-earnings "
+                      f"url={page.url}")
+                page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=30_000)
+                except Exception:  # noqa: BLE001
+                    pass
                 if POST_LOGIN_URL_RE.search(page.url):
-                    print(f"[adp_bundle] earnings prep: already on v2 "
-                          f"(url={page.url}); skipping goto/relogin")
+                    print(f"[adp_bundle] earnings prep: session alive "
+                          f"(url={page.url})")
                 else:
-                    print(f"[adp_bundle] earnings prep: pre-goto url={page.url}")
-                    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30_000)
-                    print(f"[adp_bundle] earnings prep: post-goto url={page.url}")
                     try:
-                        # Probe aggressively (5s, not 20s) — if the session is
-                        # alive ADP redirects to v2 in <2s; if not, fail fast
-                        # so we can re-login.
-                        page.wait_for_url(POST_LOGIN_URL_RE, timeout=5_000)
-                        print(f"[adp_bundle] earnings prep: session alive (url={page.url})")
+                        page.wait_for_url(POST_LOGIN_URL_RE, timeout=10_000)
+                        print(f"[adp_bundle] earnings prep: redirected to v2 "
+                              f"(url={page.url})")
                     except Exception:  # noqa: BLE001
-                        print(f"[adp_bundle] earnings: session lapsed after timecard "
-                              f"(url={page.url}); re-running login")
+                        print(f"[adp_bundle] earnings: session lapsed after "
+                              f"timecard (url={page.url}); re-running login")
                         _ensure_logged_in(page, store=store)
-                        print(f"[adp_bundle] earnings: post-relogin url={page.url}")
+                        print(f"[adp_bundle] earnings: post-relogin "
+                              f"url={page.url}")
                         page.wait_for_timeout(2_000)
 
                 # NOTE: window_start / window_end are passed through for

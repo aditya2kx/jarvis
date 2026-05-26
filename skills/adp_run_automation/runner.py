@@ -464,6 +464,81 @@ def _raise_with_evidence(page, *, store: str, reason: str) -> None:
     raise RuntimeError(reason)
 
 
+# ── Shared Reports navigation ─────────────────────────────────────
+
+
+def _navigate_to_reports_landing(page, *, max_retries: int = 2) -> None:
+    """Navigate from the ADP dashboard to the Reports listing page.
+
+    Used by both _timecard_within_session and _earnings_within_session.
+
+    Handles two failure modes observed in production (5/24-5/25):
+      A) ADP lands on HOME after Reports-btn click — the "View all reports"
+         link exists in a Reports widget card below the fold. wait_for(visible)
+         times out because the element needs scrolling first.
+      B) SPA navigation fails silently — main content area renders blank
+         (sidebar OK, content white). The element never appears because JS
+         hydration failed or an API call timed out.
+
+    Strategy: scroll-first (attached → scroll → visible) + reload-retry on
+    blank content.
+
+    Post-condition: the "All Reports" listing is loaded (the page showing
+    Time / Custom / Benefits / H-R / etc. accordion sections).
+    """
+    tag = "adp_reports"
+
+    for attempt in range(1, max_retries + 2):
+        print(f"[{tag}] step=click-reports-btn (attempt {attempt})")
+        page.locator('[data-test-id="Reports-btn"]').first.click()
+        page.wait_for_timeout(3_000)
+        print(f"[{tag}] step=wait-content (attempt {attempt}) url={page.url}")
+
+        content_indicators = page.locator(
+            '[data-test-id="view-all-reports"], '
+            '[data-test-id="reports-tile-view-all-reports-button"], '
+            '[data-test-id*="section_Head"]'
+        )
+        try:
+            content_count = content_indicators.count()
+        except Exception:  # noqa: BLE001
+            content_count = 0
+
+        if content_count > 0:
+            print(f"[{tag}] step=content-loaded (attempt {attempt}, "
+                  f"indicators={content_count})")
+            break
+
+        if attempt <= max_retries:
+            print(f"[{tag}] step=content-blank, reloading page (attempt {attempt})")
+            page.reload(wait_until="domcontentloaded", timeout=30_000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=8_000)
+            except Exception:  # noqa: BLE001
+                pass
+            page.wait_for_timeout(2_000)
+        else:
+            print(f"[{tag}] step=content-blank after {max_retries} retries; "
+                  f"proceeding anyway")
+
+    view_all = page.locator(
+        '[data-test-id="view-all-reports"], '
+        '[data-test-id="reports-tile-view-all-reports-button"]'
+    ).first
+
+    print(f"[{tag}] step=view-all-reports wait-attached")
+    view_all.wait_for(state="attached", timeout=15_000)
+
+    print(f"[{tag}] step=view-all-reports scroll-into-view")
+    view_all.scroll_into_view_if_needed(timeout=5_000)
+    view_all.wait_for(state="visible", timeout=5_000)
+
+    print(f"[{tag}] step=view-all-reports click")
+    view_all.click()
+    page.wait_for_timeout(2_000)
+    print(f"[{tag}] step=view-all-reports clicked url={page.url}")
+
+
 # ── Timecard scrape ────────────────────────────────────────────────
 
 
@@ -516,20 +591,7 @@ def _timecard_within_session(
 
     Pre-condition: `page` is on the v2 ADP RUN dashboard (POST_LOGIN_URL_RE).
     """
-    # Navigate to Timecard: Reports-btn → Reports landing → "View all
-    # reports" opens the Single Reports modal → expand "Time reports"
-    # accordion → click "Timecard". ADP dashboard maintains persistent
-    # connections so 'networkidle' never fires; use targeted waits.
-    page.locator('[data-test-id="Reports-btn"]').first.click()
-    # After Reports-btn click ADP can land on either:
-    #   (a) the Reports landing page (test-id="view-all-reports") OR
-    #   (b) the homepage Reports widget (test-id="reports-tile-view-all-reports-button")
-    view_all = page.locator(
-        '[data-test-id="view-all-reports"], [data-test-id="reports-tile-view-all-reports-button"]'
-    ).first
-    view_all.wait_for(state="visible", timeout=20_000)
-    view_all.scroll_into_view_if_needed(timeout=5_000)
-    view_all.click()
+    _navigate_to_reports_landing(page)
     # Single Reports modal: ensure the "Time" section header is loaded, then
     # click the Timecard report tile. The section accordion is often already
     # expanded by default; if not, clicking the header expands it.
@@ -836,26 +898,7 @@ def _earnings_within_session(
     print(f"[earnings] step=pre-reports url={page.url} "
           f"target_date={target_date.isoformat() if target_date else 'none'} "
           f"(filter=Last payroll regardless)")
-    page.locator('[data-test-id="Reports-btn"]').first.click()
-    # The Reports landing page takes a beat to render even after the SPA
-    # navigation completes — give it a moment so visibility waits don't
-    # race against the initial paint.
-    page.wait_for_timeout(2_000)
-    print(f"[earnings] step=after-reports-click url={page.url}")
-
-    # MUST go through "View all reports" first. The Reports-btn click can
-    # land on either (a) the Reports landing page directly or (b) the
-    # homepage's Reports widget showing tax-forms / upcoming-payroll tiles.
-    # In case (b) the "Custom" section is NOT on the page — we have to
-    # click View All to get to the landing where saved reports live.
-    view_all = page.locator(
-        '[data-test-id="view-all-reports"], '
-        '[data-test-id="reports-tile-view-all-reports-button"]'
-    ).first
-    view_all.wait_for(state="visible", timeout=15_000)
-    view_all.scroll_into_view_if_needed(timeout=5_000)
-    view_all.click()
-    page.wait_for_timeout(2_000)
+    _navigate_to_reports_landing(page)
     print(f"[earnings] step=after-view-all-reports url={page.url}")
 
     # The Reports landing has accordion sections (verified 2026-05-19):

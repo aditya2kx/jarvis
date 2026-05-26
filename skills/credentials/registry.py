@@ -37,6 +37,8 @@ BHAGA_SECRETS = frozenset([
     "square_palmetto_login",
     "slack_bhaga_app",
     "slack_bhaga_bot",
+    "slack_bhaga_cloud_bot",
+    "slack_bhaga_cloud_signing",
     "google_palmetto",
     "clickup",
     "clickup_palmetto_pat",

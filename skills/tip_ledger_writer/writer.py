@@ -64,20 +64,37 @@ SHEETS_API = "https://sheets.googleapis.com/v4"
 # ── Low-level API helpers ─────────────────────────────────────────
 
 
-def _api(url: str, token: str, *, method: str = "GET", data: dict | None = None) -> dict:
+def _api(
+    url: str,
+    token: str,
+    *,
+    method: str = "GET",
+    data: dict | None = None,
+    _retries: int = 3,
+    _backoff: float = 2.0,
+) -> dict:
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
     body = json.dumps(data).encode() if data is not None else None
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req) as resp:
-            raw = resp.read()
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode(errors="replace")
-        raise RuntimeError(f"{method} {url} -> HTTP {e.code}\n{err_body}") from None
+    last_exc: Exception | None = None
+    for attempt in range(1, _retries + 1):
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req) as resp:
+                raw = resp.read()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode(errors="replace")
+            if e.code in (429, 500, 502, 503) and attempt < _retries:
+                wait = _backoff * attempt
+                print(f"[sheets] {method} {e.code} (attempt {attempt}/{_retries}), retrying in {wait}s")
+                import time; time.sleep(wait)
+                last_exc = RuntimeError(f"{method} {url} -> HTTP {e.code}\n{err_body}")
+                continue
+            raise RuntimeError(f"{method} {url} -> HTTP {e.code}\n{err_body}") from None
+    raise last_exc  # type: ignore[misc]
 
 
 def _read_tab(spreadsheet_id: str, tab: str, token: str) -> list[list[Any]]:

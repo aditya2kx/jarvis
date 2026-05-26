@@ -45,12 +45,16 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Iterable, Optional
+
+log = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
@@ -64,22 +68,19 @@ SHEETS_API = "https://sheets.googleapis.com/v4"
 # ── Low-level API helpers ─────────────────────────────────────────
 
 
-def _api(
-    url: str,
-    token: str,
-    *,
-    method: str = "GET",
-    data: dict | None = None,
-    _retries: int = 3,
-    _backoff: float = 2.0,
-) -> dict:
+_RETRYABLE_CODES = {429, 500, 502, 503, 504}
+_MAX_RETRIES = 4
+_INITIAL_BACKOFF_S = 2.0
+
+
+def _api(url: str, token: str, *, method: str = "GET", data: dict | None = None) -> dict:
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
     body = json.dumps(data).encode() if data is not None else None
-    last_exc: Exception | None = None
-    for attempt in range(1, _retries + 1):
+    last_err: RuntimeError | None = None
+    for attempt in range(_MAX_RETRIES + 1):
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req) as resp:
@@ -87,14 +88,14 @@ def _api(
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
             err_body = e.read().decode(errors="replace")
-            if e.code in (429, 500, 502, 503) and attempt < _retries:
-                wait = _backoff * attempt
-                print(f"[sheets] {method} {e.code} (attempt {attempt}/{_retries}), retrying in {wait}s")
-                import time; time.sleep(wait)
-                last_exc = RuntimeError(f"{method} {url} -> HTTP {e.code}\n{err_body}")
-                continue
-            raise RuntimeError(f"{method} {url} -> HTTP {e.code}\n{err_body}") from None
-    raise last_exc  # type: ignore[misc]
+            last_err = RuntimeError(f"{method} {url} -> HTTP {e.code}\n{err_body}")
+            if e.code not in _RETRYABLE_CODES or attempt == _MAX_RETRIES:
+                raise last_err from None
+            wait = _INITIAL_BACKOFF_S * (2 ** attempt)
+            log.warning("[sheets-api] HTTP %d on attempt %d/%d; retrying in %.1fs",
+                        e.code, attempt + 1, _MAX_RETRIES + 1, wait)
+            time.sleep(wait)
+    raise last_err  # unreachable but satisfies type checker
 
 
 def _read_tab(spreadsheet_id: str, tab: str, token: str) -> list[list[Any]]:

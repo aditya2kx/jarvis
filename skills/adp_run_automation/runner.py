@@ -107,7 +107,67 @@ def _get_adp_username(store: str) -> str:
     )
 
 
-def _ensure_logged_in(page, *, store: str, timeout_ms: int = 30_000) -> None:
+def _load_login_page(page, *, timeout_ms: int = 60_000) -> None:
+    """Navigate to ADP login and wait for the page to settle.
+
+    ADP's login SPA can take 15-20+ seconds to hydrate from non-US
+    locations (CDN + JS bundle latency). We give it generous timeouts
+    and wait for networkidle so the SDF web-component framework has
+    time to render the login form.
+    """
+    print(f"[adp_login] step=goto url={LOGIN_URL}")
+    t0 = time.monotonic()
+    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+    print(f"[adp_login] step=domcontentloaded "
+          f"elapsed={time.monotonic() - t0:.1f}s url={page.url}")
+    try:
+        page.wait_for_load_state("networkidle", timeout=30_000)
+    except Exception:  # noqa: BLE001
+        pass
+    print(f"[adp_login] step=page-settled "
+          f"elapsed={time.monotonic() - t0:.1f}s url={page.url}")
+
+
+def _wait_for_login_form(page, *, max_retries: int = 2):
+    """Wait for the User ID textbox to appear, reloading on stall.
+
+    ADP's login spinner sometimes stalls permanently (JS hydration
+    failure). A page reload fixes it. We try up to max_retries reloads
+    before giving up.
+
+    Returns the User ID locator once visible.
+    """
+    uid_box = page.get_by_role("textbox", name=re.compile(r"^User ID$", re.I)).first
+
+    for attempt in range(1, max_retries + 2):
+        print(f"[adp_login] step=wait-uid-box (attempt {attempt})")
+        t0 = time.monotonic()
+        try:
+            uid_box.wait_for(state="visible", timeout=60_000)
+            print(f"[adp_login] step=uid-box-visible "
+                  f"elapsed={time.monotonic() - t0:.1f}s (attempt {attempt})")
+            return uid_box
+        except Exception:  # noqa: BLE001
+            elapsed = time.monotonic() - t0
+            print(f"[adp_login] step=uid-box-timeout "
+                  f"elapsed={elapsed:.1f}s (attempt {attempt})")
+
+        if attempt <= max_retries:
+            print(f"[adp_login] step=reload-login-page (attempt {attempt})")
+            page.reload(wait_until="domcontentloaded", timeout=60_000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=30_000)
+            except Exception:  # noqa: BLE001
+                pass
+            print(f"[adp_login] step=reload-settled url={page.url}")
+
+    raise RuntimeError(
+        f"ADP login form did not render after {max_retries + 1} attempts "
+        f"(User ID textbox never became visible). URL: {page.url}"
+    )
+
+
+def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
     """Open ADP and complete a FRESH login using keychain creds.
 
     Stateless: assumes no cookies (ephemeral browser context). Flow:
@@ -123,26 +183,22 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 30_000) -> None:
         - "User ID and/or password incorrect" — keychain creds need rotation
         - Any unexpected post-login URL
     """
-    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=timeout_ms)
-    try:
-        page.wait_for_load_state("networkidle", timeout=10_000)
-    except Exception:  # noqa: BLE001
-        pass
+    _load_login_page(page, timeout_ms=timeout_ms)
 
     if POST_LOGIN_URL_RE.search(page.url):
         return  # Already authenticated (shouldn't happen in ephemeral, but defensive).
 
     # Step 1: User ID. sdf-input wraps a real <input>; get_by_role finds it.
-    uid_box = page.get_by_role("textbox", name=re.compile(r"^User ID$", re.I)).first
-    uid_box.wait_for(state="visible", timeout=10_000)
+    uid_box = _wait_for_login_form(page)
     uid_box.fill(_get_adp_username(store))
     page.get_by_role("button", name=re.compile(r"^Next$", re.I)).first.click()
+    print(f"[adp_login] step=clicked-next url={page.url}")
 
     # Step 2: Password. ADP enables the button only after the password field
     # is populated, so just press Enter rather than racing the disabled state.
     pw_box = page.get_by_role("textbox", name=re.compile(r"^Password$", re.I)).first
     try:
-        pw_box.wait_for(state="visible", timeout=10_000)
+        pw_box.wait_for(state="visible", timeout=30_000)
     except Exception:
         # Could be MFA / device-trust challenge inserted between User ID and Password.
         _raise_with_evidence(

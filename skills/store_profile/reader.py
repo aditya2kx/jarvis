@@ -57,7 +57,8 @@ _sheets_service_cache = None
 
 def _is_cloud_run() -> bool:
     return (os.environ.get("BHAGA_SECRETS_BACKEND", "").lower() == "gcp"
-            or "K_SERVICE" in os.environ)
+            or "K_SERVICE" in os.environ
+            or "CLOUD_RUN_JOB" in os.environ)
 
 
 def _get_sheets_service():

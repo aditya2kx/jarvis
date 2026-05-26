@@ -44,6 +44,7 @@ from skills._browser_runtime.runtime import (
     is_fresh_download,
     launch_persistent,
 )
+from skills.credentials import registry as cred_registry
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 STORE_PROFILES = PROJECT_ROOT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
@@ -65,46 +66,28 @@ KEYCHAIN_SERVICE_TEMPLATE = "jarvis-adp-{store}"
 
 
 def _get_adp_password(store: str) -> str:
-    """Pull ADP password from macOS Keychain via `security find-generic-password`."""
-    import subprocess
-    svc = KEYCHAIN_SERVICE_TEMPLATE.format(store=store)
-    result = subprocess.run(
-        ["security", "find-generic-password", "-s", svc, "-w"],
-        capture_output=True, text=True, timeout=5,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"ADP password not in Keychain (service={svc!r}). "
-            f"Add with: security add-generic-password -s {svc} -a {{username}} -w {{password}}"
-        )
-    return result.stdout.strip()
+    """Pull ADP password via dual-backend get_secret (Keychain or GCP Secret Manager)."""
+    return cred_registry.get_secret(f"adp_{store}_login")
 
 
 # ── Login (shared by both scrapes) ─────────────────────────────────
 
 
 def _get_adp_username(store: str) -> str:
-    """Read the ADP User ID stored alongside the password in Keychain.
+    """Read the ADP User ID from the credential registry.
 
-    The keychain entry's `acct` attribute holds the user-visible User ID
+    The registry entry's `account` field holds the user-visible User ID
     (e.g. an email). Same entry used by _get_adp_password() — single source
     of truth so password rotations don't require touching the username.
     """
-    svc = KEYCHAIN_SERVICE_TEMPLATE.format(store=store)
-    result = subprocess.run(
-        ["security", "find-generic-password", "-s", svc, "-g"],
-        capture_output=True, text=True, timeout=5,
-    )
-    # `security -g` prints account metadata to stderr in the form `acct"<blob>="value"`.
-    out = result.stderr + result.stdout
-    for line in out.splitlines():
-        if '"acct"<blob>=' in line:
-            # Format: `    "acct"<blob>="aditya.2ky@gmail.com"`
-            return line.split("=", 1)[1].strip().strip('"')
-    raise RuntimeError(
-        f"Could not parse account from Keychain entry {svc!r}. "
-        f"Set it with: security add-generic-password -U -s {svc} -a {{username}} -w {{password}}"
-    )
+    cred_name = f"adp_{store}_login"
+    entry = cred_registry.lookup(cred_name)
+    if not entry or "account" not in entry:
+        raise RuntimeError(
+            f"Credential '{cred_name}' not found in registry or missing 'account' field. "
+            f"Register it with: python -m skills.credentials.registry register ..."
+        )
+    return entry["account"]
 
 
 def _load_login_page(page, *, timeout_ms: int = 60_000) -> None:

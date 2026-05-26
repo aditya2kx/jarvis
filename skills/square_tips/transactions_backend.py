@@ -40,7 +40,6 @@ import json
 import os
 import pathlib
 import re
-import subprocess
 import sys
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -117,7 +116,7 @@ def _credential_name(store: str) -> str:
 
 
 def get_credentials(store: str = "palmetto") -> dict:
-    """Resolve Square dashboard login from Keychain. {'username', 'password'}."""
+    """Resolve Square dashboard login credentials. {'username', 'password'}."""
     entry = cred_registry.lookup(_credential_name(store))
     if not entry:
         raise RuntimeError(
@@ -125,26 +124,8 @@ def get_credentials(store: str = "palmetto") -> dict:
             f"collaborative login capture via skills/browser/collaborative.py "
             f"to populate it."
         )
-    if entry.get("type") != "keychain":
-        raise RuntimeError(
-            f"Credential '{_credential_name(store)}' is type "
-            f"{entry.get('type')!r}, expected 'keychain'."
-        )
-    result = subprocess.run(
-        [
-            "security", "find-generic-password",
-            "-a", entry["account"],
-            "-s", entry["service"],
-            "-w",
-        ],
-        capture_output=True, text=True, timeout=5,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Keychain lookup failed for {entry['account']}@{entry['service']}: "
-            f"{result.stderr.strip()}"
-        )
-    return {"username": entry["account"], "password": result.stdout.strip()}
+    password = cred_registry.get_secret(_credential_name(store))
+    return {"username": entry["account"], "password": password}
 
 
 # ── Selectors ─────────────────────────────────────────────────────

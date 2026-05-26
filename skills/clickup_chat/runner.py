@@ -22,13 +22,14 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Iterator
+
+from skills.credentials import registry as cred_registry
 
 API_BASE = "https://api.clickup.com"
 KEYCHAIN_SERVICE = "jarvis-clickup-palmetto-pat"
@@ -38,20 +39,16 @@ INTER_PAGE_SLEEP_S = 0.7  # ~85 req/min ceiling
 
 
 def get_pat() -> str:
-    """Read the ClickUp PAT from Keychain. Raises if missing."""
-    result = subprocess.run(
-        ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
-        capture_output=True, text=True, timeout=5,
-    )
-    if result.returncode != 0:
+    """Read the ClickUp PAT via dual-backend credential registry."""
+    pat = cred_registry.get_secret(KEYCHAIN_SERVICE)
+    if not pat:
         raise RuntimeError(
-            f"ClickUp PAT not in Keychain (service={KEYCHAIN_SERVICE}). "
+            f"ClickUp PAT not found (service={KEYCHAIN_SERVICE}). "
             f"Re-run the credential setup: see skills/credentials/registry.py."
         )
-    pat = result.stdout.strip()
     if not pat.startswith("pk_"):
         raise RuntimeError(
-            f"Keychain entry for {KEYCHAIN_SERVICE} does not look like a "
+            f"Credential for {KEYCHAIN_SERVICE} does not look like a "
             f"ClickUp PAT (should start with 'pk_'). Got: {pat[:8]}..."
         )
     return pat

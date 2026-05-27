@@ -35,6 +35,7 @@ from skills.adp_run_automation.employee_aliases import (
 )
 from skills.square_tips import transactions_backend
 from skills.tip_ledger_writer import (
+    read_raw_adp_rates,
     write_raw_adp_punches,
     write_raw_adp_rates,
     write_raw_adp_shifts,
@@ -197,6 +198,39 @@ def main() -> int:
             earnings = compensation_backend.parse_xlsx(earnings_xlsx, employee_aliases=aliases)
             rates = compensation_backend.infer_wage_rates(earnings, excluded_employees=excluded)
             print(f"  inferred rates for {len(rates)} employees")
+
+            # Ensure roster employees missing from ADP earnings still get a
+            # wage_rates row. Covers former employees (Latham, Steele) whose
+            # historical shifts are in the data window but who no longer
+            # appear in ADP payroll downloads. Only adds stubs for employees
+            # absent from BOTH the current rates AND the existing raw sheet
+            # (so we never overwrite a previously-written real rate).
+            from skills.store_profile import load_employee_roster
+            roster = load_employee_roster(args.store)
+            rate_names = {r["employee_name"] for r in rates}
+            existing_rates = read_raw_adp_rates(adp_raw_sid, account=google_account)
+            existing_ids = {r["employee_id"] for r in existing_rates}
+            excluded_set = set(excluded)
+            roster_stubs = 0
+            for rec in roster:
+                canonical = rec["canonical_name"]
+                if canonical not in rate_names and canonical not in existing_ids:
+                    rates.append({
+                        "employee_id": canonical,
+                        "employee_name": canonical,
+                        "wage_rate_dollars": None,
+                        "ot_rate_dollars": None,
+                        "is_salaried": False,
+                        "multi_rate": False,
+                        "rate_history": [],
+                        "ot_rate_history": [],
+                        "excluded_from_labor_pct": canonical in excluded_set,
+                        "raw_employee_names": [],
+                    })
+                    roster_stubs += 1
+            if roster_stubs:
+                print(f"  added {roster_stubs} roster stub(s) for employees without ADP earnings")
+
             if args.dry_run:
                 print(f"  DRY: would write {len(rates)} wage rows")
             else:

@@ -222,16 +222,29 @@ def load_exclusions(store: str = "palmetto") -> dict:
       "permanent": ["Krause, Lindsay", ...],
       "training":  {"Flores, Juan": "2026-05-16", ...},
     }
+
+    Falls back to the bootstrap JSON's ``excluded_from_tip_pool_and_labor_pct``
+    when the config tab is empty or missing the key (first-run bootstrap, e.g.
+    fresh staging sheets).
     """
     cfg = _read_config_tab(store)
     permanent_raw = cfg.get("excluded_from_tip_pool", {}).get("value", "")
-    # Multiple names are SEMICOLON-separated (canonical names contain commas:
-    # "Krause, Lindsay" must stay as one entry, not split into ["Krause", "Lindsay"]).
-    if ";" in permanent_raw:
-        permanent = [n.strip() for n in permanent_raw.split(";") if n.strip()]
+    if permanent_raw.strip():
+        # Multiple names are SEMICOLON-separated (canonical names contain commas:
+        # "Krause, Lindsay" must stay as one entry, not split into ["Krause", "Lindsay"]).
+        if ";" in permanent_raw:
+            permanent = [n.strip() for n in permanent_raw.split(";") if n.strip()]
+        else:
+            permanent = [permanent_raw.strip()]
     else:
-        # Single name OR comma-joined canonical (treat as one entry).
-        permanent = [permanent_raw.strip()] if permanent_raw.strip() else []
+        # Config tab empty or missing → fall back to the bootstrap JSON so the
+        # very first pipeline run still applies exclusions correctly.
+        pointer = _bootstrap_pointer(store)
+        permanent = list(
+            pointer.get("employees", {}).get(
+                "excluded_from_tip_pool_and_labor_pct", []
+            )
+        )
     training: dict[str, str] = {}
     for key, rec in cfg.items():
         if key.startswith("training_excluded:"):

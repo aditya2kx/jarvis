@@ -20,20 +20,6 @@
     "bhaga_folder_name": "BHAGA",
     "bhaga_folder_url": "https://drive.google.com/drive/folders/1ko9yx78RPQvp0chaYfKOGNk2xF0vhjfP"
   },
-  "google_sheets_staging": {
-    "bhaga_model": {
-      "spreadsheet_id": "18NH71JwMOAX6euFugSsSQlJhHPgBghWk09YWnsSuvDk"
-    },
-    "bhaga_adp_raw": {
-      "spreadsheet_id": "1sv-zK6Mc_ybPUZrObt0CWmodxIVNYm3ahfZg8WZtLyo"
-    },
-    "bhaga_square_raw": {
-      "spreadsheet_id": "1X2sCGwJi8YfcM0DAYlDzHBxG3_Du4jLauppfAw_A1rw"
-    },
-    "bhaga_review_raw": {
-      "spreadsheet_id": "16pkNefCOEcEUlhIU6zH03nEcg5PXmBpJhkHy3aUa-k4"
-    }
-  },
   "google_sheets": {
     "bhaga_adp_raw": {
       "spreadsheet_id": "1-08EIN6EO72t-ImCKRCf4gbIaVN5cJ1FRVlekccvg6w",
@@ -73,6 +59,25 @@
         "config"
       ],
       "_doc": "Per-review audit trail populated by process_reviews.py. Source data for the review_bonus_period rollup tab on bhaga_model."
+    }
+  },
+  "google_sheets_staging": {
+    "_doc": "Cloud Staging sheets — copies of prod, used by the Cloud Run orchestrator (BHAGA_SHEET_MODE=staging). Never touched by the laptop nightly. Created 2026-05-26.",
+    "bhaga_model": {
+      "spreadsheet_id": "18NH71JwMOAX6euFugSsSQlJhHPgBghWk09YWnsSuvDk",
+      "url": "https://docs.google.com/spreadsheets/d/18NH71JwMOAX6euFugSsSQlJhHPgBghWk09YWnsSuvDk/edit"
+    },
+    "bhaga_adp_raw": {
+      "spreadsheet_id": "1sv-zK6Mc_ybPUZrObt0CWmodxIVNYm3ahfZg8WZtLyo",
+      "url": "https://docs.google.com/spreadsheets/d/1sv-zK6Mc_ybPUZrObt0CWmodxIVNYm3ahfZg8WZtLyo/edit"
+    },
+    "bhaga_square_raw": {
+      "spreadsheet_id": "1X2sCGwJi8YfcM0DAYlDzHBxG3_Du4jLauppfAw_A1rw",
+      "url": "https://docs.google.com/spreadsheets/d/1X2sCGwJi8YfcM0DAYlDzHBxG3_Du4jLauppfAw_A1rw/edit"
+    },
+    "bhaga_review_raw": {
+      "spreadsheet_id": "16pkNefCOEcEUlhIU6zH03nEcg5PXmBpJhkHy3aUa-k4",
+      "url": "https://docs.google.com/spreadsheets/d/16pkNefCOEcEUlhIU6zH03nEcg5PXmBpJhkHy3aUa-k4/edit"
     }
   },
   "clickup": {
@@ -138,6 +143,10 @@
       "Krause, Lindsay"
     ],
     "_doc_exclusions": "Lindsay is the store manager. She IS paid hourly ($25/hr) per ADP, but is excluded from labor% (we don't count manager cost against store sales) and from the tip pool (managers don't take from tips per policy). Exclusion is by canonical name, NOT by salaried flag."
+  },
+  "labor_config": {
+    "saturation_orders_per_labor_hour": 4,
+    "_doc": "Store-specific seed default. Palmetto's throughput wall is ~4 orders/hourly-labor-hour (one order every 15 labor-minutes per barista). The code default of 10 is for a generic fast-paced shop; Palmetto's specialty drinks take longer. Operator can still override in-sheet; subsequent refreshes preserve the in-sheet value."
   },
   "calibration": {
     "last_verified_utc": "2026-05-16T17:10:00Z",

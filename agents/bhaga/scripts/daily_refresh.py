@@ -1049,30 +1049,38 @@ def main() -> int:
             failures.append(("update_model_sheet", val))
 
     # Step: Google Review attribution (sequential, uses pre-fetched messages).
-    if not args.skip_reviews and raw_sheets_ok:
-        review_cmd = [
-            sys.executable, "-m", "agents.bhaga.scripts.process_reviews",
-            "--store", args.store,
-        ]
-        if args.no_slack:
-            review_cmd.append("--no-slack")
-        if review_prefetch_path and review_prefetch_path.exists():
+    # Architecture rule: ALL data fetching happens in the parallel phase.
+    # process_reviews REQUIRES the pre-fetched JSON from review_fetch.
+    # If review_fetch failed or produced no file, process_reviews is skipped.
+    review_fetch_ok = "review_fetch" not in failed_steps
+    if not args.skip_reviews and raw_sheets_ok and review_fetch_ok:
+        if not review_prefetch_path or not review_prefetch_path.exists():
+            print("[process_reviews] SKIPPED — review_fetch produced no output file.")
+        else:
+            review_cmd = [
+                sys.executable, "-m", "agents.bhaga.scripts.process_reviews",
+                "--store", args.store,
+            ]
+            if args.no_slack:
+                review_cmd.append("--no-slack")
             review_cmd.extend(["--prefetched-messages", str(review_prefetch_path)])
-        if args.reviews_since:
-            review_cmd.extend(["--since", args.reviews_since])
+            if args.reviews_since:
+                review_cmd.extend(["--since", args.reviews_since])
 
-        ok, val = run_step(
-            "process_reviews",
-            lambda: subprocess.run(
-                review_cmd, cwd=str(PROJECT_ROOT), check=True,
-            ),
-            refresh_date=refresh_date,
-            dry_run=args.dry_run,
-        )
-        if not ok:
-            failures.append(("process_reviews", val))
+            ok, val = run_step(
+                "process_reviews",
+                lambda: subprocess.run(
+                    review_cmd, cwd=str(PROJECT_ROOT), check=True,
+                ),
+                refresh_date=refresh_date,
+                dry_run=args.dry_run,
+            )
+            if not ok:
+                failures.append(("process_reviews", val))
     elif args.skip_reviews:
         print("[process_reviews] SKIPPED — --skip-reviews flag set.")
+    elif not review_fetch_ok:
+        print("[process_reviews] SKIPPED — review_fetch failed in parallel phase.")
     else:
         print("[process_reviews] SKIPPED — raw_sheets_ok=False (need fresh ADP punches).")
 

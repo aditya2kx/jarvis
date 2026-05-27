@@ -22,14 +22,13 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Iterator
-
-from skills.credentials import registry as cred_registry
 
 API_BASE = "https://api.clickup.com"
 KEYCHAIN_SERVICE = "jarvis-clickup-palmetto-pat"
@@ -39,38 +38,92 @@ INTER_PAGE_SLEEP_S = 0.7  # ~85 req/min ceiling
 
 
 def get_pat() -> str:
-    """Read the ClickUp PAT via dual-backend credential registry."""
-    pat = cred_registry.get_secret(KEYCHAIN_SERVICE)
-    if not pat:
+    """Read the ClickUp PAT from Keychain. Raises if missing."""
+    result = subprocess.run(
+        ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+        capture_output=True, text=True, timeout=5,
+    )
+    if result.returncode != 0:
         raise RuntimeError(
-            f"ClickUp PAT not found (service={KEYCHAIN_SERVICE}). "
+            f"ClickUp PAT not in Keychain (service={KEYCHAIN_SERVICE}). "
             f"Re-run the credential setup: see skills/credentials/registry.py."
         )
+    pat = result.stdout.strip()
     if not pat.startswith("pk_"):
         raise RuntimeError(
-            f"Credential for {KEYCHAIN_SERVICE} does not look like a "
+            f"Keychain entry for {KEYCHAIN_SERVICE} does not look like a "
             f"ClickUp PAT (should start with 'pk_'). Got: {pat[:8]}..."
         )
     return pat
 
 
+_RETRYABLE_CODES = frozenset({429, 500, 502, 503, 504})
+_MAX_RETRIES = 3
+_INITIAL_BACKOFF_S = 2.0
+
+
 def _request(path: str, *, pat: str | None = None) -> dict:
-    """GET a ClickUp endpoint. Returns the parsed JSON body."""
+    """GET a ClickUp endpoint with retry/backoff for transient errors."""
     if pat is None:
         pat = get_pat()
     url = f"{API_BASE}{path}"
-    req = urllib.request.Request(url, headers={
-        "Authorization": pat,
-        "Accept": "application/json",
-    })
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(
-            f"ClickUp API error {e.code} on GET {path}: {body}"
-        ) from e
+
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        req = urllib.request.Request(url, headers={
+            "Authorization": pat,
+            "Accept": "application/json",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")[:500]
+            if e.code in _RETRYABLE_CODES and attempt < _MAX_RETRIES:
+                wait = _INITIAL_BACKOFF_S * (2 ** attempt)
+                print(
+                    f"[clickup] {e.code} on GET {path} (attempt {attempt + 1}/"
+                    f"{_MAX_RETRIES + 1}), retrying in {wait:.1f}s...",
+                    file=sys.stderr,
+                )
+                time.sleep(wait)
+                last_exc = e
+                continue
+            if e.code == 401:
+                raise RuntimeError(
+                    f"ClickUp PAT rejected (401 Unauthorized). The PAT in "
+                    f"Keychain ({KEYCHAIN_SERVICE}) may be expired or revoked. "
+                    f"Response: {body}"
+                ) from e
+            if e.code == 429:
+                raise RuntimeError(
+                    f"ClickUp rate limit exceeded (429) after {_MAX_RETRIES + 1} "
+                    f"attempts on GET {path}. Back off and retry later. "
+                    f"Response: {body}"
+                ) from e
+            raise RuntimeError(
+                f"ClickUp API error {e.code} on GET {path}: {body}"
+            ) from e
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            if attempt < _MAX_RETRIES:
+                wait = _INITIAL_BACKOFF_S * (2 ** attempt)
+                print(
+                    f"[clickup] Network error on GET {path} (attempt "
+                    f"{attempt + 1}/{_MAX_RETRIES + 1}): {e}, "
+                    f"retrying in {wait:.1f}s...",
+                    file=sys.stderr,
+                )
+                time.sleep(wait)
+                last_exc = e
+                continue
+            raise RuntimeError(
+                f"ClickUp network error after {_MAX_RETRIES + 1} attempts "
+                f"on GET {path}: {e}"
+            ) from e
+
+    raise RuntimeError(
+        f"ClickUp request failed after {_MAX_RETRIES + 1} attempts: {last_exc}"
+    )
 
 
 def list_channels(team_id: str = DEFAULT_TEAM_ID, *, pat: str | None = None) -> list[dict]:

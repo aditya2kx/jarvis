@@ -150,9 +150,9 @@ def _read_data_window_end() -> Optional[str]:
             / "knowledge-base" / "store-profiles" / "palmetto.json"
         )
         profile = json.loads(profile_path.read_text())
-        spreadsheet_id = profile["google_sheets"]["bhaga_model"]["spreadsheet_id"]
+        from core.config_loader import refresh_access_token, resolve_sheet_id
+        spreadsheet_id = resolve_sheet_id("bhaga_model", profile)
 
-        from core.config_loader import refresh_access_token
         from skills.bhaga_config.dates import coerce_iso_date
         import urllib.request
 

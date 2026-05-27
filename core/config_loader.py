@@ -19,6 +19,46 @@ _CONFIG_PATH = os.path.join(_PROJECT_DIR, "config.yaml")
 _TEMPLATE_PATH = os.path.join(_PROJECT_DIR, "config.template.yaml")
 
 _config = None
+_PRODUCTION_SHEET_IDS: frozenset | None = None
+
+
+def _load_production_sheet_ids() -> frozenset:
+    """Scan all store profiles and collect every production spreadsheet_id."""
+    global _PRODUCTION_SHEET_IDS
+    if _PRODUCTION_SHEET_IDS is not None:
+        return _PRODUCTION_SHEET_IDS
+    store_profiles_dir = os.path.join(
+        _PROJECT_DIR, "agents", "bhaga", "knowledge-base", "store-profiles",
+    )
+    ids: set = set()
+    if os.path.isdir(store_profiles_dir):
+        for filename in os.listdir(store_profiles_dir):
+            if not filename.endswith(".json"):
+                continue
+            path = os.path.join(store_profiles_dir, filename)
+            try:
+                with open(path) as f:
+                    profile = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+            for sheet_info in profile.get("google_sheets", {}).values():
+                if isinstance(sheet_info, dict) and "spreadsheet_id" in sheet_info:
+                    ids.add(sheet_info["spreadsheet_id"])
+    _PRODUCTION_SHEET_IDS = frozenset(ids)
+    return _PRODUCTION_SHEET_IDS
+
+
+def _assert_not_production_sheet(spreadsheet_id: str) -> None:
+    """Hard guard: when running in staging mode, block any access to production sheets."""
+    if os.environ.get("BHAGA_SHEET_MODE", "").lower() != "staging":
+        return
+    prod_ids = _load_production_sheet_ids()
+    if spreadsheet_id in prod_ids:
+        raise RuntimeError(
+            f"BLOCKED: Cloud flow attempted to access production sheet {spreadsheet_id}. "
+            f"BHAGA_SHEET_MODE=staging requires exclusive use of staging sheets. "
+            f"Production sheet IDs are loaded from store-profiles/*.json google_sheets section."
+        )
 
 
 def load_config():
@@ -123,11 +163,16 @@ def resolve_sheet_id(profile_key: str, profile: dict) -> str:
         env_key = f"BHAGA_STAGING_{profile_key.upper()}_SID"
         env_val = os.environ.get(env_key)
         if env_val:
+            _assert_not_production_sheet(env_val)
             return env_val
         staging = profile.get("google_sheets_staging", {})
         if profile_key in staging:
-            return staging[profile_key]["spreadsheet_id"]
-    return profile["google_sheets"][profile_key]["spreadsheet_id"]
+            sid = staging[profile_key]["spreadsheet_id"]
+            _assert_not_production_sheet(sid)
+            return sid
+    sid = profile["google_sheets"][profile_key]["spreadsheet_id"]
+    _assert_not_production_sheet(sid)
+    return sid
 
 
 def project_dir():

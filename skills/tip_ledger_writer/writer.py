@@ -58,7 +58,7 @@ log = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
-from core.config_loader import refresh_access_token
+from core.config_loader import _assert_not_production_sheet, refresh_access_token
 from skills.tip_ledger_writer.schema import WORKBOOK_SCHEMAS, get_tab_spec
 
 
@@ -101,6 +101,7 @@ def _api(url: str, token: str, *, method: str = "GET", data: dict | None = None)
 def _read_tab(spreadsheet_id: str, tab: str, token: str) -> list[list[Any]]:
     """Return the full sheet as a list of rows (list[Any] per row). Empty trailing
     rows/cols are omitted by the API."""
+    _assert_not_production_sheet(spreadsheet_id)
     range_a1 = urllib.parse.quote(f"{tab}!A:ZZ", safe="")
     url = f"{SHEETS_API}/spreadsheets/{spreadsheet_id}/values/{range_a1}"
     resp = _api(url, token)
@@ -116,6 +117,7 @@ def _write_range(
     value_input_option: str = "RAW",
 ) -> dict:
     """Write a 2D array of values to a range. Caller controls the range bounds."""
+    _assert_not_production_sheet(spreadsheet_id)
     enc_range = urllib.parse.quote(range_a1, safe="")
     url = (
         f"{SHEETS_API}/spreadsheets/{spreadsheet_id}/values/{enc_range}"
@@ -125,6 +127,7 @@ def _write_range(
 
 
 def _clear_range(spreadsheet_id: str, range_a1: str, token: str) -> dict:
+    _assert_not_production_sheet(spreadsheet_id)
     enc_range = urllib.parse.quote(range_a1, safe="")
     url = f"{SHEETS_API}/spreadsheets/{spreadsheet_id}/values/{enc_range}:clear"
     return _api(url, token, method="POST", data={})

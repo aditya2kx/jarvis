@@ -47,7 +47,11 @@ from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
-from core.config_loader import refresh_access_token, resolve_sheet_id  # noqa: E402
+from core.config_loader import (  # noqa: E402
+    _assert_not_production_sheet,
+    refresh_access_token,
+    resolve_sheet_id,
+)
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 STORE_PROFILES_DIR = PROJECT_ROOT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
@@ -92,6 +96,7 @@ def _bootstrap_pointer(store: str) -> dict:
 
 
 def _fetch_range(spreadsheet_id: str, range_a1: str, *, account: str) -> list[list[str]]:
+    _assert_not_production_sheet(spreadsheet_id)
     if _is_cloud_run():
         svc = _get_sheets_service()
         result = svc.spreadsheets().values().get(
@@ -111,6 +116,7 @@ def _update_range(
     spreadsheet_id: str, range_a1: str, values: list[list[str]], *, account: str,
 ) -> None:
     """Write values to a sheet range. Works in both local and Cloud Run."""
+    _assert_not_production_sheet(spreadsheet_id)
     if _is_cloud_run():
         svc = _get_sheets_service()
         svc.spreadsheets().values().update(

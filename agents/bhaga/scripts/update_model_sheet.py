@@ -273,28 +273,6 @@ def _newest(pattern: str) -> pathlib.Path | None:
     return max(paths, key=lambda p: p.stat().st_mtime) if paths else None
 
 
-def _fill_calendar_dates(dates: list[str]) -> list[str]:
-    """Fill gaps in a sorted list of ISO date strings.
-
-    Given ["2026-05-19", "2026-05-22"], returns the contiguous range
-    ["2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22"]. Used by
-    build_daily_rows / build_labor_daily_rows so that days with zero
-    activity (store closed, gap between shifts) still get a row with
-    all-zero values — otherwise weekly/period aggregators silently drop
-    those days and daily-tab row counts diverge between prod and staging.
-    """
-    if len(dates) < 2:
-        return list(dates)
-    start = datetime.date.fromisoformat(dates[0])
-    end = datetime.date.fromisoformat(dates[-1])
-    filled: list[str] = []
-    cursor = start
-    while cursor <= end:
-        filled.append(cursor.isoformat())
-        cursor += datetime.timedelta(days=1)
-    return filled
-
-
 # ---------- Training exclusions (sheet-driven, sheet-survived) ----------
 
 TRAINING_EXCLUDED_PREFIX = "training_excluded:"
@@ -460,6 +438,21 @@ def actual_cc_tips_by_period(earnings: list[dict]) -> dict[tuple, dict[str, int]
 # ---------- Tab builders ----------
 
 
+def _fill_calendar_dates(dates: list[str]) -> list[str]:
+    """Expand a sorted list of ISO dates to include every calendar day
+    between the first and last date, so closed/gap days get 0-value rows."""
+    if len(dates) < 2:
+        return dates
+    start = datetime.date.fromisoformat(dates[0])
+    end = datetime.date.fromisoformat(dates[-1])
+    filled: list[str] = []
+    cursor = start
+    while cursor <= end:
+        filled.append(cursor.isoformat())
+        cursor += datetime.timedelta(days=1)
+    return filled
+
+
 REVIEW_TUNABLE_KEYS = (
     "review_bonus_started_date",
     "review_base_bonus_dollars",
@@ -590,6 +583,8 @@ def build_daily_rows(
         daily_hours_excl[d] = daily_hours_excl.get(d, 0.0) + s.get("total_hours", 0.0)
 
     all_dates = sorted(set(sales.keys()) | set(daily_hours_all.keys()))
+    # Fill in any calendar gaps so closed days still get 0-value rows.
+    all_dates = _fill_calendar_dates(all_dates)
     # Same in-progress filter as build_labor_daily_rows — see that function's
     # comment for the rationale. The `daily` tab is the per-day store-inputs
     # source-of-truth that tip_alloc_daily references for `team_hours` and
@@ -599,7 +594,6 @@ def build_daily_rows(
         d for d in all_dates
         if is_refresh_date_complete(datetime.date.fromisoformat(d), now_ct=now_ct)
     ]
-    all_dates = _fill_calendar_dates(all_dates)
     header = [
         "date", "dow",
         "gross_sales", "tip_pool", "tips_pct_of_sales",
@@ -886,6 +880,8 @@ def build_labor_daily_rows(
         day_map[int(hour)] = day_map.get(int(hour), 0) + 1
 
     all_dates = sorted(set(sales.keys()) | set(daily.keys()))
+    # Fill in any calendar gaps so closed days still get 0-value rows.
+    all_dates = _fill_calendar_dates(all_dates)
     # Drop any in-progress date (today_ct before 21:00 CT shop-close buffer,
     # or any future date). Without this filter, a refresh that runs mid-day
     # would publish a half-day labor row whose orders / hourly_hours are a
@@ -897,7 +893,6 @@ def build_labor_daily_rows(
         d for d in all_dates
         if is_refresh_date_complete(datetime.date.fromisoformat(d), now_ct=now_ct)
     ]
-    all_dates = _fill_calendar_dates(all_dates)
     header = [
         "date", "dow",
         "gross_sales", "discounts", "net_sales", "tip_pool", "net_sales_plus_tips",
@@ -1522,7 +1517,7 @@ def main() -> int:
     excluded = set(load_exclusions(args.store)["permanent"])
     shop_tz = profile["timezone"]["shop_tz"]
     model_sid = resolve_sheet_id("bhaga_model", profile)
-    model_url = profile["google_sheets"]["bhaga_model"]["url"]
+    model_url = profile.get("google_sheets", {}).get("bhaga_model", {}).get("url", "")
 
     # Sheet-driven training exclusions (see config tab `training_excluded:*`).
     # READ FIRST so they survive the upcoming config-tab rewrite.
@@ -1573,28 +1568,47 @@ def main() -> int:
         )
         return 1
 
-    # data_window_end = the most recent date for which BOTH raw inputs look
-    # "complete enough" to publish in the model. Definitions:
-    #   * Square completeness: a date with >= 1 transaction is treated as
-    #     covered. (No retrospective Square corrections happen — once we have
-    #     any txn for a day, we have them all from that scrape.)
-    #   * ADP completeness: a date with >= MIN_BARISTAS_PER_DAY non-manager
-    #     shifts is treated as covered. (A lone manager punch — e.g. Lindsay
-    #     coming in to open — is NOT a complete day because no baristas have
-    #     clocked in/out yet, which means we'd publish $0 tips against a real
-    #     working day. This is exactly the May-16-AM bug.)
-    # Take the most recent date that satisfies BOTH (intersection).
-    MIN_BARISTAS_PER_DAY = 2  # Palmetto has 2-3 baristas per shift typically
-    square_dates_covered = {t["date_local"] for t in txns}
-    barista_shift_counts: dict[str, int] = {}
-    for s in shifts:
-        if s["employee_id"] in excluded:
-            continue
-        barista_shift_counts[s["date"]] = barista_shift_counts.get(s["date"], 0) + 1
-    adp_dates_covered = {
-        d for d, n in barista_shift_counts.items() if n >= MIN_BARISTAS_PER_DAY
-    }
-    both_covered = square_dates_covered & adp_dates_covered
+    # data_window_end = the most recent date for which BOTH raw inputs
+    # cover that date. Definitions:
+    #   * Square completeness: any date within the Square data range
+    #     (between first and last transaction dates). A date with 0 txns
+    #     inside this range means the store was closed — still valid.
+    #   * ADP completeness: any date within the ADP data range (between
+    #     first and last shift dates). A date with 0 shifts inside this
+    #     range means the store was closed — still valid. We do NOT
+    #     require a minimum shift count; days with 0 baristas are
+    #     legitimate (temporarily closed, holiday, etc.) and should
+    #     produce rows with 0 values.
+    # Take the most recent date that falls within BOTH ranges.
+    square_dates_with_data = {t["date_local"] for t in txns}
+    adp_dates_with_data = {s["date"] for s in shifts}
+
+    square_range_start = min(square_dates_with_data)
+    square_range_end = max(square_dates_with_data)
+    adp_range_start = min(adp_dates_with_data)
+    adp_range_end = max(adp_dates_with_data)
+
+    # The covered range is the intersection of the two data ranges.
+    # Every date in this range is "covered" regardless of whether it has
+    # any individual shifts or transactions (0 is a valid data point).
+    range_start = max(square_range_start, adp_range_start)
+    range_end = min(square_range_end, adp_range_end)
+    if range_start > range_end:
+        print(
+            "ERROR: Square and ADP date ranges do not overlap. "
+            f"Square: {square_range_start}..{square_range_end}, "
+            f"ADP: {adp_range_start}..{adp_range_end}. "
+            "Raw sheets likely stale — run the orchestrator's write_raw_sheets step."
+        )
+        return 1
+
+    both_covered: set[str] = set()
+    cursor_d = datetime.date.fromisoformat(range_start)
+    end_d = datetime.date.fromisoformat(range_end)
+    while cursor_d <= end_d:
+        both_covered.add(cursor_d.isoformat())
+        cursor_d += datetime.timedelta(days=1)
+
     # Drop in-progress dates from the cover-set. Even if both raw sources
     # happen to contain rows for today_ct (e.g. an earlier mid-day debug
     # run mirrored partial data into bhaga_adp_raw / bhaga_square_raw),
@@ -1616,30 +1630,14 @@ def main() -> int:
         )
     if not both_covered_complete:
         print(
-            "ERROR: no COMPLETE date is covered by BOTH Square AND "
-            f">={MIN_BARISTAS_PER_DAY} barista shifts. "
-            f"square_dates={len(square_dates_covered)}, "
-            f"adp_dates>={MIN_BARISTAS_PER_DAY}={len(adp_dates_covered)}, "
+            "ERROR: no COMPLETE date is covered by both Square and ADP ranges. "
+            f"Square range: {square_range_start}..{square_range_end}, "
+            f"ADP range: {adp_range_start}..{adp_range_end}, "
             f"in_progress_dropped={in_progress_dropped}. "
             "Raw sheets likely stale — run the orchestrator's write_raw_sheets step."
         )
         return 1
     last_data_date = max(both_covered_complete)
-
-    # Surface ADP-incomplete dates that we deliberately excluded so the
-    # operator can see why data_window_end did not advance to "today".
-    adp_incomplete_recent = sorted(
-        d for d in square_dates_covered
-        if d > last_data_date
-        and barista_shift_counts.get(d, 0) < MIN_BARISTAS_PER_DAY
-    )
-    if adp_incomplete_recent:
-        print(
-            f"# data_window_end held at {last_data_date}; later days have Square "
-            f"but <{MIN_BARISTAS_PER_DAY} barista shifts: " + ", ".join(
-                f"{d}({barista_shift_counts.get(d, 0)})" for d in adp_incomplete_recent
-            )
-        )
     print(f"# last_data_date = {last_data_date}")
 
     periods = discover_periods(earnings)

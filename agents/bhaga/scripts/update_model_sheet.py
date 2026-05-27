@@ -1573,6 +1573,35 @@ def main() -> int:
             if key in rec:
                 rec[key] = normalize_employee_name(rec[key], aliases)
 
+    # Post-alias deduplication: alias resolution can collapse two raw names
+    # into the same canonical employee_id, creating duplicate records for a
+    # single (date, employee) pair. Keep only the first occurrence.
+    _seen_shifts: set[tuple] = set()
+    _deduped_shifts: list[dict] = []
+    for rec in shifts:
+        key = (rec.get("date"), rec.get("employee_id"))
+        if key in _seen_shifts:
+            continue
+        _seen_shifts.add(key)
+        _deduped_shifts.append(rec)
+    _n_dup_shifts = len(shifts) - len(_deduped_shifts)
+    if _n_dup_shifts:
+        print(f"[dedup] removed {_n_dup_shifts} duplicate shift records after alias resolution")
+    shifts = _deduped_shifts
+
+    _seen_rates: set[str] = set()
+    _deduped_rates: list[dict] = []
+    for rec in wage_rates:
+        key = rec.get("employee_id", "")
+        if key in _seen_rates:
+            continue
+        _seen_rates.add(key)
+        _deduped_rates.append(rec)
+    _n_dup_rates = len(wage_rates) - len(_deduped_rates)
+    if _n_dup_rates:
+        print(f"[dedup] removed {_n_dup_rates} duplicate wage_rate records after alias resolution")
+    wage_rates = _deduped_rates
+
     print(f"#   → {len(shifts)} shift rows")
 
     print(f"# loading transactions from raw sheet {square_raw_sid} (BHAGA Square Raw > transactions)")

@@ -231,10 +231,41 @@ def main() -> int:
             if roster_stubs:
                 print(f"  added {roster_stubs} roster stub(s) for employees without ADP earnings")
 
+            # Detect stale wage_rates rows left behind by alias corrections.
+            # When an alias change renames an employee_id (e.g., "Johnson,
+            # Dolce J" → "Johnson, Dolce"), the old row persists because the
+            # upsert keys on employee_id. Find old rows whose
+            # raw_employee_names overlap with incoming rows under a *different*
+            # employee_id, and mark them for removal.
+            incoming_raw_to_id: dict[str, str] = {}
+            for r in rates:
+                for rn in r.get("raw_employee_names", []):
+                    incoming_raw_to_id[rn] = r["employee_id"]
+
+            stale_keys: set[tuple] = set()
+            for er in existing_rates:
+                eid = er["employee_id"]
+                raw_names = er.get("raw_employee_names_json", [])
+                if not isinstance(raw_names, list):
+                    continue
+                for rn in raw_names:
+                    incoming_id = incoming_raw_to_id.get(rn)
+                    if incoming_id and incoming_id != eid:
+                        stale_keys.add((eid,))
+                        print(f"  stale wage_rate row: {eid!r} "
+                              f"(raw name {rn!r} now belongs to {incoming_id!r})")
+                        break
+
+            if stale_keys:
+                print(f"  will supersede {len(stale_keys)} stale wage_rate row(s)")
+
             if args.dry_run:
                 print(f"  DRY: would write {len(rates)} wage rows")
             else:
-                s = write_raw_adp_rates(adp_raw_sid, rates, account=google_account)
+                s = write_raw_adp_rates(
+                    adp_raw_sid, rates, account=google_account,
+                    superseded_keys=stale_keys or None,
+                )
                 summaries.append(s)
                 print(f"  wage_rates: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
 

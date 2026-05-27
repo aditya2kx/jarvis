@@ -474,6 +474,11 @@ def _build_first_name_index(aliases: dict[str, str]) -> dict[str, list[str]]:
 
 # Common English words that look like names but should never trigger a fuzzy
 # match. Add to this list as false positives surface in production.
+#
+# IMPORTANT: "miles" is intentionally ABSENT — it is a customer-facing alias
+# for Guerrero, Amy (and "myles" resolves to the same person). Before adding
+# ANY short common-looking word, check the bhaga_model > employees aliases
+# column; suppressing a real employee alias silently drops shoutout credit.
 _FUZZY_MATCH_STOPWORDS = frozenset({
     "the", "and", "but", "for", "with", "from", "into", "very", "good", "great",
     "love", "loved", "nice", "best", "they", "this", "that", "here", "were",

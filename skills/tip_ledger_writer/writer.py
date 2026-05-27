@@ -230,8 +230,16 @@ def _upsert_tab(
     *,
     account: str,
     scraped_at_utc: Optional[str] = None,
+    superseded_keys: set[tuple] | None = None,
 ) -> dict:
     """Read tab, overlay records by natural key, write back. Returns a summary dict.
+
+    ``superseded_keys``, when provided, is a set of natural-key tuples that
+    should be evicted from the existing data before the overlay. This handles
+    alias corrections: when a canonical employee_id changes, the old row's key
+    no longer matches any incoming record and would normally be preserved. The
+    caller detects the stale key (via raw_employee_names overlap) and passes it
+    here so the upsert removes it in the same write transaction.
 
     Summary keys:
         existing_rows, incoming_records, inserted, updated, total_after, tab
@@ -288,6 +296,12 @@ def _upsert_tab(
         # Pad/truncate to header width.
         padded = list(r[: len(header_expected)]) + [""] * (len(header_expected) - len(r))
         by_key[k] = padded
+
+    if superseded_keys:
+        for sk in superseded_keys:
+            removed = by_key.pop(sk, None)
+            if removed is not None:
+                log.info("superseded stale key %s in %s", sk, tab_name)
 
     existing_count = len(by_key)
 
@@ -378,16 +392,22 @@ def write_raw_adp_rates(
     *,
     account: str = "palmetto",
     scraped_at_utc: Optional[str] = None,
+    superseded_keys: set[tuple] | None = None,
 ) -> dict:
     """Idempotent upsert into BHAGA ADP Raw > wage_rates. Natural key: (employee_id,).
 
     Source records come from compensation_backend.compensation(); the writer
     JSON-encodes rate_history -> rate_history_json and raw_employee_names ->
     raw_employee_names_json automatically.
+
+    ``superseded_keys``: natural-key tuples for stale rows to evict (see
+    ``_upsert_tab`` docstring). Used by the backfill to clean up rows left
+    behind when an alias correction changed an employee's canonical name.
     """
     return _upsert_tab(
         spreadsheet_id, "BHAGA ADP Raw", "wage_rates", rates,
         account=account, scraped_at_utc=scraped_at_utc,
+        superseded_keys=superseded_keys,
     )
 
 

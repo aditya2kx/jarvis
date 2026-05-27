@@ -1184,6 +1184,8 @@ def download_adp_bundle(
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
         _ensure_logged_in(page, store=store)
+        dashboard_url = page.url
+        print(f"[adp_bundle] dashboard_url={dashboard_url}")
 
         if needs_timecard:
             try:
@@ -1214,15 +1216,15 @@ def download_adp_bundle(
 
         if needs_earnings:
             try:
-                # Always reset to the dashboard via LOGIN_URL before
-                # earnings. After timecard, the page is deep inside the
-                # report iframe and the sidebar is in a collapsed/broken
-                # state — Reports-btn exists in the DOM but is not visible.
-                # A full page navigation forces ADP's SPA to re-render the
-                # sidebar in its expanded state. (2026-05-26 fix)
+                # Navigate back to the dashboard URL (runpayrollmain.adp.com)
+                # rather than LOGIN_URL (runpayroll.adp.com). The login domain
+                # doesn't share session cookies with the dashboard domain, so
+                # hitting it triggers re-auth + a second OTP. Using the captured
+                # dashboard_url keeps us on the same domain and preserves the
+                # session. (2026-05-27 fix: single OTP per bundle)
                 print(f"[adp_bundle] step=reset-page-before-earnings "
                       f"url={page.url}")
-                page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
+                page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
                 try:
                     page.wait_for_load_state("networkidle", timeout=30_000)
                 except Exception:  # noqa: BLE001
@@ -1236,8 +1238,9 @@ def download_adp_bundle(
                         print(f"[adp_bundle] earnings prep: redirected to v2 "
                               f"(url={page.url})")
                     except Exception:  # noqa: BLE001
-                        print(f"[adp_bundle] earnings: session lapsed after "
-                              f"timecard (url={page.url}); re-running login")
+                        print(f"[adp_bundle] earnings: UNEXPECTED session lapse "
+                              f"after timecard (url={page.url}, "
+                              f"dashboard_url={dashboard_url}); re-running login")
                         _ensure_logged_in(page, store=store)
                         print(f"[adp_bundle] earnings: post-relogin "
                               f"url={page.url}")

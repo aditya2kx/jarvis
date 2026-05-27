@@ -46,6 +46,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import datetime
 import json
@@ -54,8 +55,10 @@ import pathlib
 import subprocess
 import sys
 import time
+import traceback
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
@@ -471,6 +474,185 @@ def _adp_bundle_then_raise(
     return result
 
 
+@dataclass
+class PipelineResult:
+    """Outcome of a parallel data-gathering pipeline."""
+    name: str
+    success: bool = False
+    error: Exception | None = None
+    artifacts: dict[str, pathlib.Path | None] = field(default_factory=dict)
+    master_stats: dict[str, int] = field(default_factory=dict)
+
+
+def _run_square_pipeline(
+    *,
+    gap_start: datetime.date,
+    end_date: datetime.date,
+    store: str,
+    headed: bool,
+    refresh_date: datetime.date,
+    dry_run: bool,
+) -> PipelineResult:
+    """Thread 1: Square transactions scrape → consolidate CSV → GCS upload."""
+    result = PipelineResult(name="square")
+    try:
+        if dry_run:
+            print("[square_pipeline] DRY RUN — skipped.")
+            result.success = True
+            return result
+
+        csv_path = download_transactions(
+            start_date=gap_start, end_date=end_date,
+            store=store, headed=headed,
+        )
+        result.artifacts["square_csv"] = csv_path
+        print(f"[square_pipeline] download OK → {csv_path}")
+
+        if csv_path is not None:
+            total, added = _consolidate_into_master(gap_csv=csv_path)
+            result.master_stats = {"master_rows": total, "rows_added": added}
+            print(f"[square_pipeline] consolidate OK — master={total}, added={added}")
+
+        try:
+            upload_scrape_artifacts(
+                refresh_date=refresh_date,
+                download_dir=DOWNLOAD_DIR,
+                square_csv=csv_path if isinstance(csv_path, pathlib.Path) else None,
+                master_csv=MASTER_TXN_CSV if MASTER_TXN_CSV.exists() else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[square_pipeline] WARN: GCS upload failed (non-fatal): {exc}")
+
+        result.success = True
+    except Exception as exc:  # noqa: BLE001
+        result.success = False
+        result.error = exc
+        print(f"[square_pipeline] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+    return result
+
+
+def _run_adp_pipeline(
+    *,
+    store: str,
+    target_date: datetime.date | None,
+    include_earnings: bool,
+    headed: bool,
+    refresh_date: datetime.date,
+    dry_run: bool,
+) -> PipelineResult:
+    """Thread 2: ADP Timecard + Earnings scrape → GCS upload."""
+    result = PipelineResult(name="adp")
+    try:
+        if dry_run:
+            print("[adp_pipeline] DRY RUN — skipped.")
+            result.success = True
+            return result
+
+        bundle = _adp_bundle_then_raise(
+            store=store,
+            target_date=target_date,
+            include_earnings=include_earnings,
+            headed=headed,
+        )
+        result.artifacts["adp_timecard_xlsx"] = bundle.get("timecard_xlsx")
+        result.artifacts["adp_earnings_xlsx"] = bundle.get("earnings_xlsx")
+        print(f"[adp_pipeline] bundle OK → {list(bundle.keys())}")
+
+        adp_tc = result.artifacts.get("adp_timecard_xlsx")
+        adp_er = result.artifacts.get("adp_earnings_xlsx")
+        if not isinstance(adp_tc, pathlib.Path):
+            tc_glob = sorted(DOWNLOAD_DIR.glob("Timecard-*.xlsx"))
+            adp_tc = tc_glob[-1] if tc_glob else None
+        if not isinstance(adp_er, pathlib.Path):
+            er_glob = sorted(DOWNLOAD_DIR.glob("Earnings-*.xlsx"))
+            adp_er = er_glob[-1] if er_glob else None
+        if adp_tc or adp_er:
+            try:
+                upload_scrape_artifacts(
+                    refresh_date=refresh_date,
+                    download_dir=DOWNLOAD_DIR,
+                    adp_timecard_xlsx=adp_tc,
+                    adp_earnings_xlsx=adp_er,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[adp_pipeline] WARN: GCS upload failed (non-fatal): {exc}")
+
+        result.success = True
+    except Exception as exc:  # noqa: BLE001
+        result.success = False
+        result.error = exc
+        print(f"[adp_pipeline] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+    return result
+
+
+def _run_review_fetch(
+    *,
+    store: str,
+    dry_run: bool,
+) -> PipelineResult:
+    """Thread 3: Fetch ClickUp review messages and cache locally as JSON.
+
+    Does NOT do attribution — that requires punch data from raw sheets
+    and must run after write_raw_sheets + update_model_sheet.
+    """
+    from agents.bhaga.scripts.process_reviews import (  # noqa: PLC0415
+        REVIEW_CHANNEL_ID, CLICKUP_TEAM_ID, REVIEW_CHANNEL_NAME,
+        _load_profile as _load_review_profile,
+        _read_config_tab, _latest_review_ts_ms,
+        BONUS_START_DATE, CT as REVIEW_CT,
+        fetch_review_messages,
+    )
+    from core.config_loader import (  # noqa: PLC0415
+        refresh_access_token as _refresh_token,
+        resolve_sheet_id as _resolve_sid,
+    )
+
+    result = PipelineResult(name="review_fetch")
+    try:
+        if dry_run:
+            print("[review_fetch] DRY RUN — skipped.")
+            result.success = True
+            return result
+
+        profile = _load_review_profile(store)
+        raw_sheet_cfg = profile["google_sheets"].get("bhaga_review_raw")
+        if not raw_sheet_cfg or not raw_sheet_cfg.get("spreadsheet_id"):
+            print("[review_fetch] WARN: no bhaga_review_raw configured — skipping.")
+            result.success = True
+            return result
+
+        raw_sid = _resolve_sid("bhaga_review_raw", profile)
+        token = _refresh_token(store)
+
+        latest_in_sheet_ms = _latest_review_ts_ms(raw_sid, token)
+        if latest_in_sheet_ms is not None:
+            since_ts_ms = latest_in_sheet_ms
+        else:
+            bonus_start_dt = datetime.datetime.combine(
+                BONUS_START_DATE, datetime.time.min, tzinfo=REVIEW_CT,
+            )
+            since_ts_ms = int(bonus_start_dt.timestamp() * 1000) - 1
+
+        msgs = fetch_review_messages(
+            since_ts_ms=since_ts_ms, max_pages=40,
+        )
+        print(f"[review_fetch] fetched {len(msgs)} messages from ClickUp")
+
+        cache_path = DOWNLOAD_DIR / "review-messages-prefetched.json"
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(msgs, default=str), encoding="utf-8")
+        result.artifacts["prefetched_messages"] = cache_path
+        result.success = True
+    except Exception as exc:  # noqa: BLE001
+        result.success = False
+        result.error = exc
+        print(f"[review_fetch] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+    return result
+
+
 def run_step(
     step_name: str,
     fn,
@@ -551,15 +733,36 @@ def main() -> int:
                      help="Shortcut for --include-rates=no.")
     cli.add_argument("--skip-square", action="store_true")
     cli.add_argument("--skip-timecard", action="store_true")
+    cli.add_argument("--skip-adp", action="store_true",
+                     help="Alias for --skip-timecard (skip ADP scrape).")
     cli.add_argument("--skip-reviews", action="store_true",
                      help="Skip the Google review bonus refresh step.")
     cli.add_argument("--skip-model", action="store_true",
                      help="Skip the final Model-sheet refresh (raw downloads only).")
+    # Per-source date range overrides
+    cli.add_argument("--square-from", default=None, metavar="DATE",
+                     help="Override Square scrape start date (YYYY-MM-DD). Default: gap_start.")
+    cli.add_argument("--square-to", default=None, metavar="DATE",
+                     help="Override Square scrape end date (YYYY-MM-DD). Default: refresh_date.")
+    cli.add_argument("--adp-from", default=None, metavar="DATE",
+                     help="Override ADP target start date (YYYY-MM-DD). Default: derived from gap.")
+    cli.add_argument("--adp-to", default=None, metavar="DATE",
+                     help="Override ADP target end date (YYYY-MM-DD). Default: refresh_date.")
+    cli.add_argument("--adp-pay-period", default=None, metavar="PERIOD",
+                     help="Override ADP pay period selection (e.g. 'current', 'last', 'all').")
+    cli.add_argument("--reviews-since", default=None, metavar="DATE",
+                     help="Override reviews anchor timestamp (YYYY-MM-DD). Default: auto from sheet.")
+    cli.add_argument("--reviews-until", default=None, metavar="DATE",
+                     help="Override reviews end cap (YYYY-MM-DD). Default: data_window_end.")
     cli.add_argument("--dry-run", action="store_true",
                      help="Print steps but do not actually scrape.")
     cli.add_argument("--no-slack", action="store_true",
                      help="Suppress all Slack messages (overrides notify.py).")
     args = cli.parse_args()
+
+    # Unify --skip-adp / --skip-timecard
+    if args.skip_adp:
+        args.skip_timecard = True
 
     if args.no_slack:
         os.environ["BHAGA_SLACK_DISABLED"] = "1"
@@ -622,8 +825,19 @@ def main() -> int:
 
     needs_square_scrape = (not args.skip_square) and (gap_start <= refresh_date)
 
+    # Fresh install: this is a full backfill from data_start, not an
+    # incremental nightly.  Two consequences:
+    #   1. ADP Timecard must select ALL pay periods (target_date=None triggers
+    #      "Select All" in the pay-period dropdown) rather than just the single
+    #      period containing refresh_date.  One login, one OTP, all data.
+    #   2. Earnings should always be included so wage-rate data is present for
+    #      the model sheet (override the Mon/Tue auto-gate).
+    is_fresh_install = prev_end is None and "fresh install" in gap_source
+    adp_target_date: datetime.date | None = None if is_fresh_install else refresh_date
+
     include_rates = (
-        False if args.skip_rates else _should_run_rates(override=args.include_rates if args.include_rates != "auto" else None)
+        True if is_fresh_install  # always pull earnings on backfill
+        else (False if args.skip_rates else _should_run_rates(override=args.include_rates if args.include_rates != "auto" else None))
     )
 
     headed = not args.headless  # default headed
@@ -633,10 +847,28 @@ def main() -> int:
     print(f"  gap source:     {gap_source}")
     print(f"  gap window:     {gap_start.isoformat()} → {refresh_date.isoformat()}"
           + ("  (empty — nothing to scrape)" if not needs_square_scrape and not args.skip_square else ""))
+    print(f"  fresh_install:  {is_fresh_install}")
+    print(f"  adp_target:     {adp_target_date!r}{'  (Select All pay periods)' if adp_target_date is None else ''}")
     print(f"  include_rates:  {include_rates}")
     print(f"  headed:         {headed}")
     print(f"  dry_run:        {args.dry_run}")
     print(f"{'='*60}")
+
+    # ── Resolve per-source date overrides ──────────────────────────────
+    square_from = (
+        datetime.date.fromisoformat(args.square_from) if args.square_from
+        else gap_start
+    )
+    square_to = (
+        datetime.date.fromisoformat(args.square_to) if args.square_to
+        else refresh_date
+    )
+
+    if args.adp_pay_period == "all":
+        adp_target_date = None  # triggers "Select All" in the pay-period dropdown
+    elif args.adp_to:
+        adp_target_date = datetime.date.fromisoformat(args.adp_to)
+    # else: adp_target_date was already set above (None for fresh install, refresh_date otherwise)
 
     t_start = time.monotonic()
     info_ping(
@@ -650,108 +882,98 @@ def main() -> int:
         "square_csv": None, "adp_timecard_xlsx": None, "adp_earnings_xlsx": None,
     }
     master_stats: dict[str, int] = {}
+    review_prefetch_path: pathlib.Path | None = None
 
-    # Step 1: Square Transactions (incremental) + consolidate into master CSV
-    if needs_square_scrape:
-        ok, val = run_step(
-            "square_transactions",
-            lambda: download_transactions(
-                start_date=gap_start, end_date=refresh_date,
-                store=args.store, headed=headed,
-            ),
-            refresh_date=refresh_date,
-            dry_run=args.dry_run,
-        )
-        if ok:
-            artifacts["square_csv"] = val
-            if val is not None and not args.dry_run:
-                ok2, val2 = run_step(
-                    "consolidate_csv",
-                    lambda: _consolidate_into_master(gap_csv=val),
-                    refresh_date=refresh_date,
-                    dry_run=args.dry_run,
-                )
-                if ok2 and val2:
-                    total, added = val2
-                    master_stats = {"master_rows": total, "rows_added": added}
-                    print(f"  [consolidate] master={total} rows, added={added} from gap")
-                elif not ok2:
-                    failures.append(("consolidate_csv", val2))
-        else:
-            failures.append(("square_transactions", val))
-    elif not args.skip_square:
+    # ════════════════════════════════════════════════════════════════════
+    # Phase 1: PARALLEL data gathering — Square, ADP, and review-fetch
+    # run concurrently. Each gets its own error handling; a failure in
+    # one does NOT block the others.
+    # ════════════════════════════════════════════════════════════════════
+    needs_square = needs_square_scrape and not step_already_done(refresh_date, "square_transactions")
+    needs_adp = not args.skip_timecard and not step_already_done(refresh_date, "adp_reports")
+    needs_review_fetch = not args.skip_reviews
+
+    if not needs_square and not args.skip_square and not needs_square_scrape:
         print("[square_transactions] SKIPPED — already covered through refresh_date.")
 
-    # ── GCS cache: upload Square artifacts after scrape + consolidate ──
-    if not args.dry_run and "square_transactions" not in {n for n, _ in failures}:
-        try:
-            upload_scrape_artifacts(
-                refresh_date=refresh_date,
-                download_dir=DOWNLOAD_DIR,
-                square_csv=artifacts.get("square_csv") if isinstance(artifacts.get("square_csv"), pathlib.Path) else None,
-                master_csv=MASTER_TXN_CSV if MASTER_TXN_CSV.exists() else None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [gcs_cache] WARN: Square upload failed (non-fatal): {exc}")
-
-    # Step 2 + 3 (combined): ADP Reports bundle.
-    # Both Timecard and Earnings now run in a SINGLE browser session via
-    # download_adp_bundle — one login, at most one OTP cost per nightly run.
-    # The bundle returns a partial-success dict (timecard_xlsx / earnings_xlsx
-    # / errors); per-component .done markers are written inside the bundle so
-    # operator-facing granularity is preserved. We raise here AFTER both
-    # attempts have run so the partial success lands on disk + in markers
-    # before the exception propagates.
-    if not args.skip_timecard:
-        ok, val = run_step(
-            "adp_reports",
-            lambda: _adp_bundle_then_raise(
+    futures: dict[concurrent.futures.Future, str] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        if needs_square:
+            sq_future = pool.submit(
+                _run_square_pipeline,
+                gap_start=square_from,
+                end_date=square_to,
                 store=args.store,
-                target_date=refresh_date,
+                headed=headed,
+                refresh_date=refresh_date,
+                dry_run=args.dry_run,
+            )
+            futures[sq_future] = "square"
+
+        if needs_adp:
+            if is_fresh_install:
+                print(f"  [adp] FRESH INSTALL: target_date=None (Select All pay periods), include_earnings=True")
+            adp_future = pool.submit(
+                _run_adp_pipeline,
+                store=args.store,
+                target_date=adp_target_date,
                 include_earnings=include_rates,
                 headed=headed,
-            ),
-            refresh_date=refresh_date,
-            dry_run=args.dry_run,
-        )
-        if ok and isinstance(val, dict):
-            artifacts["adp_timecard_xlsx"] = val.get("timecard_xlsx")
-            artifacts["adp_earnings_xlsx"] = val.get("earnings_xlsx")
-        elif not ok:
-            # The bundle raised (one or both components failed). Translate
-            # into the legacy failure list shape so downstream gating logic
-            # (square_ok / raw_sheets_ok) keeps working unchanged.
-            failures.append(("adp_reports", val))
+                refresh_date=refresh_date,
+                dry_run=args.dry_run,
+            )
+            futures[adp_future] = "adp"
 
-    # ── GCS cache: upload ADP artifacts after scrape ──
-    # Upload whatever ADP files are on disk even on partial failure (e.g.
-    # timecard succeeded but earnings timed out). Fall back to scanning the
-    # download dir because the artifacts dict is empty when the step was
-    # skipped (marker already set) or when the step raised.
-    if not args.dry_run:
-        adp_tc = artifacts.get("adp_timecard_xlsx")
-        adp_er = artifacts.get("adp_earnings_xlsx")
-        if not isinstance(adp_tc, pathlib.Path):
-            tc_glob = sorted(DOWNLOAD_DIR.glob("Timecard-*.xlsx"))
-            adp_tc = tc_glob[-1] if tc_glob else None
-        if not isinstance(adp_er, pathlib.Path):
-            er_glob = sorted(DOWNLOAD_DIR.glob("Earnings-*.xlsx"))
-            adp_er = er_glob[-1] if er_glob else None
-        if adp_tc or adp_er:
+        if needs_review_fetch:
+            rev_future = pool.submit(
+                _run_review_fetch,
+                store=args.store,
+                dry_run=args.dry_run,
+            )
+            futures[rev_future] = "review_fetch"
+
+    # Collect results from all parallel pipelines
+    for future, pipeline_name in futures.items():
+        try:
+            pr: PipelineResult = future.result()
+        except Exception as exc:  # noqa: BLE001
+            failures.append((pipeline_name, exc))
+            continue
+
+        if not pr.success:
+            if pr.error:
+                failures.append((pipeline_name, pr.error))
+                try:
+                    failure_alert(
+                        step=pipeline_name, exception=pr.error,
+                        date=refresh_date.isoformat(),
+                    )
+                except Exception:  # noqa: BLE001, S110
+                    pass
+            continue
+
+        if pipeline_name == "square":
+            artifacts["square_csv"] = pr.artifacts.get("square_csv")
+            master_stats = pr.master_stats
             try:
-                upload_scrape_artifacts(
-                    refresh_date=refresh_date,
-                    download_dir=DOWNLOAD_DIR,
-                    adp_timecard_xlsx=adp_tc,
-                    adp_earnings_xlsx=adp_er,
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"  [gcs_cache] WARN: ADP upload failed (non-fatal): {exc}")
+                mark_step_done(refresh_date, "square_transactions",
+                               note=f"rows_added={pr.master_stats.get('rows_added', 0)}")
+                mark_step_done(refresh_date, "consolidate_csv")
+            except Exception as mark_exc:  # noqa: BLE001
+                print(f"  [square] WARN: marker write failed: {mark_exc}")
+
+        elif pipeline_name == "adp":
+            artifacts["adp_timecard_xlsx"] = pr.artifacts.get("adp_timecard_xlsx")
+            artifacts["adp_earnings_xlsx"] = pr.artifacts.get("adp_earnings_xlsx")
+            try:
+                mark_step_done(refresh_date, "adp_reports")
+            except Exception as mark_exc:  # noqa: BLE001
+                print(f"  [adp] WARN: marker write failed: {mark_exc}")
+
+        elif pipeline_name == "review_fetch":
+            review_prefetch_path = pr.artifacts.get("prefetched_messages")
 
     # ── GCS cache: restore missing files before downstream steps ──
-    # On Cloud Run re-runs, scrape markers say "done" but ephemeral FS is
-    # empty. Pull from GCS so write_raw_sheets/update_model_sheet proceed
-    # without re-scraping (no OTP cost).
     if not args.dry_run:
         critical_missing = (
             not MASTER_TXN_CSV.exists()
@@ -771,29 +993,23 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001
                 print(f"  [gcs_cache] WARN: GCS restore failed (non-fatal): {exc}")
 
-    # Step 3b: Push scraped data into the three RAW Google Sheets. The model
-    # sheet's contract (per architecture) is: read only from raw sheets, never
-    # from local files. So we MUST upsert local scrapes into bhaga_adp_raw +
-    # bhaga_square_raw before the model refresh runs. Failure here blocks the
-    # model refresh — stale raw sheets would make the model sheet lie.
+    # ════════════════════════════════════════════════════════════════════
+    # Phase 2: SEQUENTIAL downstream — write raw sheets, update model,
+    # then attribution-phase of process_reviews.
+    # ════════════════════════════════════════════════════════════════════
+
     failed_steps = {name for name, _ in failures}
     square_ok = (
-        "square_transactions" not in failed_steps
+        "square" not in failed_steps
+        and "square_transactions" not in failed_steps
         and "consolidate_csv" not in failed_steps
         and not args.skip_square
     )
     raw_sheets_ok = False
     if square_ok or not args.skip_timecard:
-        # We have at least SOME fresh data to push. Always run write_raw_sheets;
-        # the underlying upsert is idempotent and includes anything currently
-        # on disk (which may include unchanged inputs that still need to be
-        # mirrored on a cold-start day).
         gap_csv_for_check = artifacts.get("square_csv") if isinstance(artifacts.get("square_csv"), pathlib.Path) else None
 
         def _write_raw_sheets_step():
-            # Pre-flight: master.csv must not be older than the gap CSV. If it
-            # is, consolidate_csv silently failed to merge — abort BEFORE
-            # shipping stale data to raw sheets. See 2026-05-23 incident.
             _assert_master_not_older_than_gap(
                 master_csv=MASTER_TXN_CSV, gap_csv=gap_csv_for_check,
             )
@@ -817,9 +1033,6 @@ def main() -> int:
     else:
         print("[write_raw_sheets] SKIPPED — no fresh inputs to mirror.")
 
-    # Step 4: Refresh Model sheet. Now reads from the raw sheets (post-refactor)
-    # rather than from local files. Requires raw_sheets_ok unless --skip-square
-    # AND --skip-timecard both set (manual re-derive from existing raw data).
     failed_steps = {name for name, _ in failures}
     if not args.skip_model and (raw_sheets_ok or (args.skip_square and args.skip_timecard)):
         ok, val = run_step(
@@ -835,26 +1048,28 @@ def main() -> int:
         if not ok:
             failures.append(("update_model_sheet", val))
 
-    # Step 5: Google Review bonuses. Runs AFTER the model refresh so that
-    # process_reviews can pull punches from the freshly-mirrored
-    # `bhaga_adp_raw > punches` tab (architecture contract: never local files).
-    # Idempotent — uses `BHAGA Review Raw > config.last_processed_ts_ms` as the
-    # high-water mark, so a no-op rerun is safe. Cheap to skip with
-    # --skip-reviews if ClickUp is down.
+    # Step: Google Review attribution (sequential, uses pre-fetched messages).
     if not args.skip_reviews and raw_sheets_ok:
+        review_cmd = [
+            sys.executable, "-m", "agents.bhaga.scripts.process_reviews",
+            "--store", args.store,
+        ]
+        if args.no_slack:
+            review_cmd.append("--no-slack")
+        if review_prefetch_path and review_prefetch_path.exists():
+            review_cmd.extend(["--prefetched-messages", str(review_prefetch_path)])
+        if args.reviews_since:
+            review_cmd.extend(["--since", args.reviews_since])
+
         ok, val = run_step(
             "process_reviews",
             lambda: subprocess.run(
-                [sys.executable, "-m", "agents.bhaga.scripts.process_reviews",
-                 "--store", args.store]
-                + (["--no-slack"] if args.no_slack else []),
-                cwd=str(PROJECT_ROOT), check=True,
+                review_cmd, cwd=str(PROJECT_ROOT), check=True,
             ),
             refresh_date=refresh_date,
             dry_run=args.dry_run,
         )
         if not ok:
-            # Reviews failing is non-fatal for tips — log and continue.
             failures.append(("process_reviews", val))
     elif args.skip_reviews:
         print("[process_reviews] SKIPPED — --skip-reviews flag set.")

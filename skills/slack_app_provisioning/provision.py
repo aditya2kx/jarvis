@@ -271,6 +271,27 @@ def build_plan(
                 "postcondition": "Captured app_token starts with 'xapp-'",
             },
             {
+                "id": "verify_messages_tab",
+                "action": "browser_navigate_then_snapshot",
+                "description": (
+                    "Navigate to App Home and verify Messages Tab + user-reply checkbox. "
+                    "The manifest sets messages_tab_read_only_enabled: false, but verify "
+                    "the UI shows the checkbox checked."
+                ),
+                "args": {"url": "https://api.slack.com/apps/{app_id}/app-home?"},
+                "postcondition": (
+                    "'Allow users to send Slash commands and messages from the messages tab' "
+                    "checkbox is checked. If not, click it."
+                ),
+                "on_failure": {
+                    "do": "browser_click",
+                    "reason": (
+                        "Messages Tab checkbox not set — users cannot reply to bot DMs. "
+                        "Click the checkbox to enable."
+                    ),
+                },
+            },
+            {
                 "id": "finalize",
                 "action": "python",
                 "description": (

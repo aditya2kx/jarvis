@@ -921,7 +921,7 @@ def main() -> int:
     # Punches come from the raw sheet (BHAGA's architecture contract: model +
     # downstream code read only from raw sheets, never from local files). The
     # orchestrator's write_raw_sheets step is responsible for keeping it fresh.
-    adp_raw_sid = profile["google_sheets"]["bhaga_adp_raw"]["spreadsheet_id"]
+    adp_raw_sid = resolve_sheet_id("bhaga_adp_raw", profile)
     print(f"# loading punches from raw sheet {adp_raw_sid} (BHAGA ADP Raw > punches)")
     punches = read_raw_adp_punches(adp_raw_sid, account=args.store)
     if not punches:

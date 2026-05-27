@@ -71,6 +71,34 @@ If an agent wants a non-default manifest (custom display name, color, scopes), i
 | Keychain write failed | Abort, report which command failed |
 | `config.yaml` write failed | Abort, leave Keychain entries intact (idempotent re-run safe) |
 
+## Post-Provisioning Checklist: Messages Tab & DM Scopes
+
+After creating and installing the Slack app (whether via this skill or manually), verify these settings:
+
+### Messages Tab (required for user replies to bot DMs)
+
+Navigate to **App Home → Show Tabs** and ensure:
+1. **"Messages Tab"** toggle is ON (display DMs)
+2. **"Allow users to send Slash commands and messages from the messages tab"** checkbox is CHECKED
+
+Without step 2, the bot can *send* DMs to the user but the user **cannot reply**. This is the single most common misconfiguration — the manifest sets `messages_tab_read_only_enabled: false` which should handle it on new apps, but always verify after install.
+
+### Required OAuth Scopes (bot token)
+
+| Scope | Purpose |
+|-------|---------|
+| `im:history` | Read messages in bot DMs (needed to see user replies) |
+| `im:read` | View DM channel metadata |
+| `im:write` | Open/start DMs with users |
+| `chat:write` | Send messages as the bot |
+| `commands` | Slash command support (auto-added if slash commands exist) |
+
+For OTP flows (where the bot reads user-typed codes), `im:history` + `message.im` event subscription are both required — the bot must be able to read user replies in DMs in real-time via Socket Mode.
+
+### Verification
+
+After provisioning, send a DM to the bot in Slack. If the text input is disabled or shows "This app can't be messaged", the Messages Tab checkbox is not set. Fix it at `https://api.slack.com/apps/<APP_ID>/app-home`.
+
 ## Multi-agent reuse (the whole point)
 
 Future `agents/narada/`, `agents/vidura/`, etc. — exactly one command:

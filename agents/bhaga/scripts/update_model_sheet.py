@@ -273,6 +273,28 @@ def _newest(pattern: str) -> pathlib.Path | None:
     return max(paths, key=lambda p: p.stat().st_mtime) if paths else None
 
 
+def _fill_calendar_dates(dates: list[str]) -> list[str]:
+    """Fill gaps in a sorted list of ISO date strings.
+
+    Given ["2026-05-19", "2026-05-22"], returns the contiguous range
+    ["2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22"]. Used by
+    build_daily_rows / build_labor_daily_rows so that days with zero
+    activity (store closed, gap between shifts) still get a row with
+    all-zero values — otherwise weekly/period aggregators silently drop
+    those days and daily-tab row counts diverge between prod and staging.
+    """
+    if len(dates) < 2:
+        return list(dates)
+    start = datetime.date.fromisoformat(dates[0])
+    end = datetime.date.fromisoformat(dates[-1])
+    filled: list[str] = []
+    cursor = start
+    while cursor <= end:
+        filled.append(cursor.isoformat())
+        cursor += datetime.timedelta(days=1)
+    return filled
+
+
 # ---------- Training exclusions (sheet-driven, sheet-survived) ----------
 
 TRAINING_EXCLUDED_PREFIX = "training_excluded:"
@@ -577,6 +599,7 @@ def build_daily_rows(
         d for d in all_dates
         if is_refresh_date_complete(datetime.date.fromisoformat(d), now_ct=now_ct)
     ]
+    all_dates = _fill_calendar_dates(all_dates)
     header = [
         "date", "dow",
         "gross_sales", "tip_pool", "tips_pct_of_sales",
@@ -874,6 +897,7 @@ def build_labor_daily_rows(
         d for d in all_dates
         if is_refresh_date_complete(datetime.date.fromisoformat(d), now_ct=now_ct)
     ]
+    all_dates = _fill_calendar_dates(all_dates)
     header = [
         "date", "dow",
         "gross_sales", "discounts", "net_sales", "tip_pool", "net_sales_plus_tips",

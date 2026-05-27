@@ -74,6 +74,7 @@ from agents.bhaga.scripts.update_model_sheet import (  # noqa: E402
     format_currency_columns,
 )
 from core.config_loader import refresh_access_token, resolve_sheet_id  # noqa: E402
+from skills.adp_run_automation.shift_backend import normalize_employee_name  # noqa: E402
 from skills.bhaga_config.dates import (  # noqa: E402
     _iso_date_for_sheet_cell,
     coerce_iso_date,
@@ -476,11 +477,9 @@ def _build_first_name_index(aliases: dict[str, str]) -> dict[str, list[str]]:
 _FUZZY_MATCH_STOPWORDS = frozenset({
     "the", "and", "but", "for", "with", "from", "into", "very", "good", "great",
     "love", "loved", "nice", "best", "they", "this", "that", "here", "were",
-    "have", "been", "will", "your", "their", "them", "made", "make", "makes",
-    "menu", "well", "back", "down", "over", "much", "just", "more", "also",
-    "some", "every", "super", "style", "styles", "fresh", "staff", "store",
-    "sweet", "place", "order", "other", "smile", "quick", "serve", "served",
-    "perfect", "amazing", "really", "always", "thanks", "thank", "there",
+    "have", "been", "will", "your", "their", "them", "made", "make", "menu",
+    "well", "back", "down", "over", "much", "just", "more", "also", "some",
+    "perfect", "amazing", "really", "always", "thanks", "thank",
 })
 
 
@@ -579,8 +578,6 @@ def match_named_baristas(
     named: set[str] = set()
     ambiguities: list[str] = []
     seen_first_names: set[str] = set()
-    exact_matched: set[str] = set()
-    fuzzy_ambiguities: list[tuple[str, str]] = []
 
     for tok in tokens:
         first = tok.lower()
@@ -607,26 +604,16 @@ def match_named_baristas(
         seen_first_names.add(first)
         if len(on_shift_candidates) == 1:
             named.add(on_shift_candidates[0])
-            if match_mode == "exact":
-                exact_matched.add(on_shift_candidates[0])
-            elif match_mode == "fuzzy":
-                fuzzy_ambiguities.append((
+            if match_mode == "fuzzy":
+                ambiguities.append(
                     f"fuzzy match: {tok!r} -> {on_shift_candidates[0]} "
-                    f"(verify in case of misspelling)",
-                    on_shift_candidates[0],
-                ))
+                    f"(verify in case of misspelling)"
+                )
         else:
             ambiguities.append(
                 f"{tok.title()} matches {len(on_shift_candidates)} on-shift "
                 f"employees ({match_mode}): {', '.join(on_shift_candidates)}"
             )
-
-    # Suppress fuzzy ambiguity messages for canonicals that were also
-    # confirmed by an exact match elsewhere in the comment (e.g. "makes"
-    # fuzzy→Amy is noise if "Myles" exact→Amy appears later in the text).
-    for msg, canonical in fuzzy_ambiguities:
-        if canonical not in exact_matched:
-            ambiguities.append(msg)
 
     return sorted(named), ambiguities
 
@@ -824,22 +811,6 @@ def build_period_rollup(
 # ── Main orchestration ───────────────────────────────────────────────
 
 
-def fetch_review_messages(
-    *,
-    since_ts_ms: int,
-    max_pages: int = 40,
-) -> list[dict]:
-    """Fetch review messages from ClickUp (stateless, no Sheets dependency).
-
-    Returns raw ClickUp message dicts. Safe to call from a background thread
-    during parallel data gathering — no Google Sheets or profile I/O.
-    """
-    return fetch_messages(
-        REVIEW_CHANNEL_ID, team_id=CLICKUP_TEAM_ID,
-        since_ts_ms=since_ts_ms, max_pages=max_pages,
-    )
-
-
 def main() -> int:
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--store", default="palmetto")
@@ -851,12 +822,6 @@ def main() -> int:
     )
     cli.add_argument("--max-pages", type=int, default=40,
                      help="Cap on ClickUp pagination depth (default 40).")
-    cli.add_argument(
-        "--prefetched-messages", default=None, metavar="PATH",
-        help="Path to a JSON file containing pre-fetched ClickUp messages. "
-             "Skips the ClickUp API fetch and reads from this file instead. "
-             "Used by the orchestrator to pass messages fetched in parallel.",
-    )
     cli.add_argument("--dry-run", action="store_true",
                      help="Parse + compute but do NOT write to sheets or Slack.")
     cli.add_argument("--no-slack", action="store_true")
@@ -964,6 +929,15 @@ def main() -> int:
         print("ERROR: BHAGA ADP Raw > punches is empty. Run the orchestrator's "
               "write_raw_sheets step (or backfill_from_downloads.py) first.")
         return 2
+
+    # Re-resolve employee names through the alias map so raw-sheet names
+    # written before alias corrections still match the canonical names
+    # used by _build_first_name_index / eligible_set.
+    for rec in punches:
+        for key in ("employee_name", "employee_id"):
+            if key in rec:
+                rec[key] = normalize_employee_name(rec[key], aliases)
+
     print(f"#   → {len(punches)} punches")
 
     print(f"\n{'='*60}")
@@ -978,17 +952,12 @@ def main() -> int:
 
     info_ping(f"process_reviews starting (since {datetime.datetime.fromtimestamp(since_ts_ms/1000, tz=CT).date()})")
 
-    # Fetch new messages (or load from pre-fetched file).
-    if args.prefetched_messages:
-        prefetch_path = pathlib.Path(args.prefetched_messages)
-        with prefetch_path.open() as fh:
-            msgs = json.load(fh)
-        print(f"# loaded {len(msgs)} pre-fetched messages from {prefetch_path.name}")
-    else:
-        msgs = fetch_review_messages(
-            since_ts_ms=since_ts_ms, max_pages=args.max_pages,
-        )
-        print(f"# fetched {len(msgs)} new messages from #{REVIEW_CHANNEL_NAME}")
+    # Fetch new messages.
+    msgs = fetch_messages(
+        REVIEW_CHANNEL_ID, team_id=CLICKUP_TEAM_ID,
+        since_ts_ms=since_ts_ms, max_pages=args.max_pages,
+    )
+    print(f"# fetched {len(msgs)} new messages from #{REVIEW_CHANNEL_NAME}")
 
     first_name_index = _build_first_name_index(aliases)
 

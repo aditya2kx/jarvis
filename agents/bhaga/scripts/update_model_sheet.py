@@ -49,6 +49,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from agents.bhaga.scripts.daily_refresh import is_refresh_date_complete
 from core.config_loader import project_dir, refresh_access_token, resolve_sheet_id
 from skills.adp_run_automation import compensation_backend
+from skills.adp_run_automation.shift_backend import normalize_employee_name
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
 from skills.square_tips import transactions_backend
 from skills.tip_ledger_writer import (
@@ -1559,6 +1560,19 @@ def main() -> int:
     shifts = read_raw_adp_shifts(adp_raw_sid, account=args.store)
     print(f"# loading wage_rates from raw sheet {adp_raw_sid} (BHAGA ADP Raw > wage_rates)")
     wage_rates = read_raw_adp_rates(adp_raw_sid, account=args.store)
+
+    # Re-resolve employee names through the alias map. Raw-sheet data may
+    # contain non-canonical names from backfill runs that predated alias
+    # corrections (e.g. "Johnson, Dolce J" instead of "Johnson, Dolce").
+    for rec in shifts:
+        for key in ("employee_name", "employee_id"):
+            if key in rec:
+                rec[key] = normalize_employee_name(rec[key], aliases)
+    for rec in wage_rates:
+        for key in ("employee_name", "employee_id"):
+            if key in rec:
+                rec[key] = normalize_employee_name(rec[key], aliases)
+
     print(f"#   → {len(shifts)} shift rows")
 
     print(f"# loading transactions from raw sheet {square_raw_sid} (BHAGA Square Raw > transactions)")
@@ -1671,6 +1685,25 @@ def main() -> int:
         for k in LABOR_TUNABLE_KEYS
     }
     labor_tunables = {k: v for k, v in labor_tunables.items() if v is not None}
+
+    # Migrate stale default: if the in-sheet saturation threshold is still
+    # the old code default (10) but the store profile has a different
+    # calibrated value, adopt the store profile value. This handles the
+    # one-time migration from the generic default to the per-store value
+    # without overriding intentional operator edits.
+    _sat_key = "saturation_orders_per_labor_hour"
+    _store_profile_sat = profile.get("labor_config", {}).get(_sat_key)
+    if _sat_key in labor_tunables and _store_profile_sat is not None:
+        try:
+            _in_sheet = float(labor_tunables[_sat_key])
+            _from_profile = float(_store_profile_sat)
+            if _in_sheet == DEFAULT_SATURATION_THRESHOLD and _from_profile != DEFAULT_SATURATION_THRESHOLD:
+                labor_tunables[_sat_key] = str(_store_profile_sat)
+                print(f"# migrating {_sat_key}: in-sheet was {_in_sheet} "
+                      f"(old code default), store profile has {_store_profile_sat}")
+        except (ValueError, TypeError):
+            pass
+
     store_sat_default = profile.get("labor_config", {}).get(
         "saturation_orders_per_labor_hour", DEFAULT_SATURATION_THRESHOLD,
     )

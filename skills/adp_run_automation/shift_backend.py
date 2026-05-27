@@ -192,18 +192,24 @@ def parse_hhmm_to_decimal(s: str) -> float:
 def normalize_employee_name(name: str, aliases: Optional[dict] = None) -> str:
     """Apply alias map, trim whitespace, return canonical name.
 
-    Example aliases (calibrated 2026-05-16):
-        {"Johnson Dolce J": "Johnson Dolce"}
+    ADP uses two name formats across its reports:
+      - Timecard XLSX:  "Last First MI"   (no comma)
+      - Earnings XLSX:  "Last, First MI"  (with comma)
 
-    Source-of-truth aliases live in
-    agents/bhaga/knowledge-base/store-profiles/{store}.json under
-    `employee_aliases`. Pass them in here per call.
+    The alias map may only contain one form. This function tries the
+    exact whitespace-collapsed string first, then falls back to a
+    comma-stripped form so either ADP variant matches.
     """
     if not name:
         return ""
     normalized = " ".join(str(name).split())  # collapse whitespace
-    if aliases and normalized in aliases:
-        return aliases[normalized]
+    if aliases:
+        if normalized in aliases:
+            return aliases[normalized]
+        # Comma-stripped fallback: "Johnson, Dolce J" -> "Johnson Dolce J"
+        no_comma = " ".join(normalized.replace(",", "").split())
+        if no_comma != normalized and no_comma in aliases:
+            return aliases[no_comma]
     return normalized
 
 

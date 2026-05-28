@@ -924,6 +924,8 @@ def build_labor_daily_rows(
         "over_saturation",
         "hours_per_order", "avg_order_price", "avg_net_sales_plus_tips_per_order",
         "items_sold", "avg_items_per_order", "hours_per_item", "avg_item_price",
+        "hourly_hours_per_order", "fulltime_hours_per_order",
+        "hourly_hours_per_item", "fulltime_hours_per_item",
     ]
     rows: list[list] = [header]
     for d in all_dates:
@@ -1007,6 +1009,10 @@ def build_labor_daily_rows(
             avg_items_per_order,
             hours_per_item,
             avg_item_price,
+            round(hourly_h / orders, 3) if orders > 0 else "",
+            round(b["ex_h"] / orders, 3) if orders > 0 else "",
+            round(hourly_h / items_sold, 3) if items_sold > 0 else "",
+            round(b["ex_h"] / items_sold, 3) if items_sold > 0 else "",
         ])
     return rows
 
@@ -1070,6 +1076,8 @@ def build_labor_period_rows(
         "over_saturation",
         "hours_per_order", "avg_order_price", "avg_net_sales_plus_tips_per_order",
         "items_sold", "avg_items_per_order", "hours_per_item", "avg_item_price",
+        "hourly_hours_per_order", "fulltime_hours_per_order",
+        "hourly_hours_per_item", "fulltime_hours_per_item",
     ]
     if len(labor_daily_rows) <= 1:
         return [header]
@@ -1189,6 +1197,10 @@ def build_labor_period_rows(
             round(items_sold_sum / orders, 2) if orders > 0 and items_sold_sum > 0 else "",
             round(p_total_h / items_sold_sum, 3) if items_sold_sum > 0 else "",
             round(item_gross_sum / items_sold_sum, 2) if items_sold_sum > 0 else "",
+            round(h_hours / orders, 3) if orders > 0 else "",
+            round(ft_hours / orders, 3) if orders > 0 else "",
+            round(h_hours / items_sold_sum, 3) if items_sold_sum > 0 else "",
+            round(ft_hours / items_sold_sum, 3) if items_sold_sum > 0 else "",
         ])
     return rows
 
@@ -1236,6 +1248,8 @@ def build_labor_weekly_rows(
         "over_saturation",
         "hours_per_order", "avg_order_price", "avg_net_sales_plus_tips_per_order",
         "items_sold", "avg_items_per_order", "hours_per_item", "avg_item_price",
+        "hourly_hours_per_order", "fulltime_hours_per_order",
+        "hourly_hours_per_item", "fulltime_hours_per_item",
     ]
     if len(labor_daily_rows) <= 1:
         return [header]
@@ -1367,6 +1381,10 @@ def build_labor_weekly_rows(
             round(items_sold_sum / orders, 2) if orders > 0 and items_sold_sum > 0 else "",
             round(w_total_h / items_sold_sum, 3) if items_sold_sum > 0 else "",
             round(item_gross_sum / items_sold_sum, 2) if items_sold_sum > 0 else "",
+            round(h_hours / orders, 3) if orders > 0 else "",
+            round(ft_hours / orders, 3) if orders > 0 else "",
+            round(h_hours / items_sold_sum, 3) if items_sold_sum > 0 else "",
+            round(ft_hours / items_sold_sum, 3) if items_sold_sum > 0 else "",
         ])
     return rows
 
@@ -1902,7 +1920,9 @@ def main() -> int:
     # 33=avg_item_price.
     # (orders=7 is a count; orders_per_labor_hour=24, peak=25 are ratios;
     # over_saturation=26 is a string flag; hours_per_order=27 is a ratio;
-    # items_sold=30 is a count; avg_items_per_order=31, hours_per_item=32 are ratios.)
+    # items_sold=30 is a count; avg_items_per_order=31, hours_per_item=32 are ratios;
+    # hourly_hours_per_order=34, fulltime_hours_per_order=35,
+    # hourly_hours_per_item=36, fulltime_hours_per_item=37 are ratios.)
     labor_daily_currency = [2, 3, 4, 5, 6, 9, 11, 12, 21, 22, 23, 28, 29, 33]
     # labor_period adds 4 lead columns before the labor_daily layout, so
     # shift every labor_daily currency index by +2 (period header inserts

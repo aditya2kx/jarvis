@@ -974,7 +974,9 @@ def main() -> int:
     # run concurrently. Each gets its own error handling; a failure in
     # one does NOT block the others.
     # ════════════════════════════════════════════════════════════════════
-    needs_square = needs_square_scrape and not step_already_done(refresh_date, "square_transactions")
+    needs_square_txn = needs_square_scrape and not step_already_done(refresh_date, "square_transactions")
+    needs_square_kds = needs_square_scrape and not args.skip_kds and not step_already_done(refresh_date, "square_kds")
+    needs_square = needs_square_txn or needs_square_kds
     needs_adp = not args.skip_timecard and not step_already_done(refresh_date, "adp_reports")
     needs_review_fetch = not args.skip_reviews
 

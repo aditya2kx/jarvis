@@ -372,6 +372,7 @@ def aggregate_by_day(punches: list[dict]) -> list[dict]:
                 "date": p["date"],
                 "employee_id": p["employee_id"],
                 "employee_name": p["employee_name"],
+                "raw_employee_name": p.get("raw_employee_name", ""),
                 "in_time": p["in_time"],
                 "out_time": p["out_time"],
                 "regular_hours": 0.0,
@@ -379,6 +380,7 @@ def aggregate_by_day(punches: list[dict]) -> list[dict]:
                 "doubletime_hours": 0.0,
                 "total_hours": 0.0,
                 "punch_count": 0,
+                "pay_period": p.get("pay_period", ""),
             }
         bucket = by_key[key]
         bucket["in_time"] = min(bucket["in_time"], p["in_time"])

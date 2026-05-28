@@ -600,6 +600,8 @@ def _run_square_pipeline(
                 download_dir=DOWNLOAD_DIR,
                 square_csv=csv_path if isinstance(csv_path, pathlib.Path) else None,
                 master_csv=MASTER_TXN_CSV if MASTER_TXN_CSV.exists() else None,
+                item_sales_csv=item_csv_path if isinstance(item_csv_path, pathlib.Path) else None,
+                kds_csv=kds_csv_path if isinstance(kds_csv_path, pathlib.Path) else None,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[square_pipeline] WARN: GCS upload failed (non-fatal): {exc}")

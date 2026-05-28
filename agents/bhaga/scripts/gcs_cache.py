@@ -8,6 +8,8 @@ the orchestrator downloads from GCS instead of re-scraping — no OTP cost.
 Bucket layout:
     gs://bhaga-scrape-cache/{refresh_date}/square/transactions-*.csv
     gs://bhaga-scrape-cache/{refresh_date}/square/transactions-master.csv
+    gs://bhaga-scrape-cache/{refresh_date}/square/items-*.csv
+    gs://bhaga-scrape-cache/{refresh_date}/square/kds-*.csv
     gs://bhaga-scrape-cache/{refresh_date}/adp/Timecard-*.xlsx
     gs://bhaga-scrape-cache/{refresh_date}/adp/Earnings-*.xlsx
 
@@ -28,7 +30,7 @@ except ImportError:
 BUCKET_NAME = os.environ.get("BHAGA_GCS_CACHE_BUCKET", "bhaga-scrape-cache")
 
 _CATEGORY_MAP = {
-    "square": ["transactions-*.csv"],
+    "square": ["transactions-*.csv", "items-*.csv", "kds-*.csv"],
     "adp": ["Timecard-*.xlsx", "Earnings-*.xlsx"],
 }
 
@@ -72,6 +74,8 @@ def upload_scrape_artifacts(
     download_dir: pathlib.Path,
     square_csv: pathlib.Path | None = None,
     master_csv: pathlib.Path | None = None,
+    item_sales_csv: pathlib.Path | None = None,
+    kds_csv: pathlib.Path | None = None,
     adp_timecard_xlsx: pathlib.Path | None = None,
     adp_earnings_xlsx: pathlib.Path | None = None,
 ) -> list[str]:
@@ -81,6 +85,8 @@ def upload_scrape_artifacts(
     for path, category in [
         (square_csv, "square"),
         (master_csv, "square"),
+        (item_sales_csv, "square"),
+        (kds_csv, "square"),
         (adp_timecard_xlsx, "adp"),
         (adp_earnings_xlsx, "adp"),
     ]:

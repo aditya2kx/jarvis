@@ -919,6 +919,7 @@ def build_labor_daily_rows(
         "hourly_labor_per_order", "fulltime_labor_per_order", "total_labor_per_order",
         "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
         "over_saturation",
+        "hours_per_order", "avg_order_price", "avg_net_sales_plus_tips_per_order",
     ]
     rows: list[list] = [header]
     for d in all_dates:
@@ -937,6 +938,7 @@ def build_labor_daily_rows(
         fulltime_cost = b["ex_c"]
         total_cost = hourly_cost + fulltime_cost
         hourly_h = b["el_h"]
+        total_h = hourly_h + b["ex_h"]
 
         def _pct(num: float, denom: float) -> float:
             return (num / denom) if denom > 0 else 0.0
@@ -944,9 +946,6 @@ def build_labor_daily_rows(
         def _per_order(cost: float):
             return round(cost / orders, 2) if orders > 0 else ""
 
-        # orders_per_labor_hour denominator = hourly-bucket labor only.
-        # Full-timers don't add bar throughput, so excluding them from the
-        # denominator is the whole point of the saturation view.
         orders_per_hr = round(orders / hourly_h, 1) if hourly_h > 0 else ""
 
         peak_hour = _peak_hour_orders_per_labor_hour(
@@ -958,6 +957,10 @@ def build_labor_daily_rows(
             over = "OVER" if orders_per_hr > saturation_threshold else "ok"
         else:
             over = ""
+
+        hours_per_order = round(total_h / orders, 3) if orders > 0 else ""
+        avg_order_price = round(net / orders, 2) if orders > 0 else ""
+        avg_npt_per_order = round(net_plus_tips / orders, 2) if orders > 0 else ""
 
         rows.append([
             _iso_date_for_sheet_cell(d),
@@ -987,6 +990,9 @@ def build_labor_daily_rows(
             orders_per_hr,
             peak_hour,
             over,
+            hours_per_order,
+            avg_order_price,
+            avg_npt_per_order,
         ])
     return rows
 
@@ -1048,6 +1054,7 @@ def build_labor_period_rows(
         "hourly_labor_per_order", "fulltime_labor_per_order", "total_labor_per_order",
         "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
         "over_saturation",
+        "hours_per_order", "avg_order_price", "avg_net_sales_plus_tips_per_order",
     ]
     if len(labor_daily_rows) <= 1:
         return [header]
@@ -1151,6 +1158,9 @@ def build_labor_period_rows(
             orders_per_hr,
             peak_out,
             over,
+            round((h_hours + ft_hours) / orders, 3) if orders > 0 else "",
+            round(net / orders, 2) if orders > 0 else "",
+            round(net_plus_tips / orders, 2) if orders > 0 else "",
         ])
     return rows
 
@@ -1196,6 +1206,7 @@ def build_labor_weekly_rows(
         "hourly_labor_per_order", "fulltime_labor_per_order", "total_labor_per_order",
         "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
         "over_saturation",
+        "hours_per_order", "avg_order_price", "avg_net_sales_plus_tips_per_order",
     ]
     if len(labor_daily_rows) <= 1:
         return [header]
@@ -1309,6 +1320,9 @@ def build_labor_weekly_rows(
             orders_per_hr,
             peak_out,
             over,
+            round((h_hours + ft_hours) / orders, 3) if orders > 0 else "",
+            round(net / orders, 2) if orders > 0 else "",
+            round(net_plus_tips / orders, 2) if orders > 0 else "",
         ])
     return rows
 
@@ -1633,17 +1647,17 @@ def main() -> int:
     #     clocked in/out yet, which means we'd publish $0 tips against a real
     #     working day. This is exactly the May-16-AM bug.)
     # Take the most recent date that satisfies BOTH (intersection).
-    MIN_BARISTAS_PER_DAY = 2  # Palmetto has 2-3 baristas per shift typically
     square_dates_covered = {t["date_local"] for t in txns}
     barista_shift_counts: dict[str, int] = {}
     for s in shifts:
         if s["employee_id"] in excluded:
             continue
         barista_shift_counts[s["date"]] = barista_shift_counts.get(s["date"], 0) + 1
-    adp_dates_covered = {
-        d for d, n in barista_shift_counts.items() if n >= MIN_BARISTAS_PER_DAY
-    }
-    both_covered = square_dates_covered & adp_dates_covered
+    # A date is "covered" if Square has transactions for it. Zero-shift days
+    # (store closed, holidays like Memorial Day) are legitimate — they get
+    # zero-value rows via _fill_calendar_dates. We no longer require a minimum
+    # barista shift count to advance data_window_end.
+    both_covered = square_dates_covered
     # Drop in-progress dates from the cover-set. Even if both raw sources
     # happen to contain rows for today_ct (e.g. an earlier mid-day debug
     # run mirrored partial data into bhaga_adp_raw / bhaga_square_raw),
@@ -1665,10 +1679,8 @@ def main() -> int:
         )
     if not both_covered_complete:
         print(
-            "ERROR: no COMPLETE date is covered by BOTH Square AND "
-            f">={MIN_BARISTAS_PER_DAY} barista shifts. "
+            "ERROR: no COMPLETE date is covered by Square transactions. "
             f"square_dates={len(square_dates_covered)}, "
-            f"adp_dates>={MIN_BARISTAS_PER_DAY}={len(adp_dates_covered)}, "
             f"in_progress_dropped={in_progress_dropped}. "
             "Raw sheets likely stale — run the orchestrator's write_raw_sheets step."
         )
@@ -1677,17 +1689,15 @@ def main() -> int:
 
     # Surface ADP-incomplete dates that we deliberately excluded so the
     # operator can see why data_window_end did not advance to "today".
-    adp_incomplete_recent = sorted(
+    zero_shift_recent = sorted(
         d for d in square_dates_covered
-        if d > last_data_date
-        and barista_shift_counts.get(d, 0) < MIN_BARISTAS_PER_DAY
+        if d <= last_data_date
+        and barista_shift_counts.get(d, 0) == 0
     )
-    if adp_incomplete_recent:
+    if zero_shift_recent:
         print(
-            f"# data_window_end held at {last_data_date}; later days have Square "
-            f"but <{MIN_BARISTAS_PER_DAY} barista shifts: " + ", ".join(
-                f"{d}({barista_shift_counts.get(d, 0)})" for d in adp_incomplete_recent
-            )
+            f"# zero-shift days included in window (store closed / holiday): "
+            + ", ".join(zero_shift_recent)
         )
     print(f"# last_data_date = {last_data_date}")
 
@@ -1814,17 +1824,18 @@ def main() -> int:
     # header): 2=gross_sales, 3=discounts, 4=net_sales, 5=tip_pool,
     # 6=net_sales_plus_tips, 9=hourly_labor_cost, 11=fulltime_labor_cost,
     # 12=total_labor_cost, 21=hourly_labor_per_order,
-    # 22=fulltime_labor_per_order, 23=total_labor_per_order.
+    # 22=fulltime_labor_per_order, 23=total_labor_per_order,
+    # 28=avg_order_price, 29=avg_net_sales_plus_tips_per_order.
     # (orders=7 is a count; orders_per_labor_hour=24, peak=25 are ratios;
-    # over_saturation=26 is a string flag — none of those are currency.)
-    labor_daily_currency = [2, 3, 4, 5, 6, 9, 11, 12, 21, 22, 23]
+    # over_saturation=26 is a string flag; hours_per_order=27 is a ratio.)
+    labor_daily_currency = [2, 3, 4, 5, 6, 9, 11, 12, 21, 22, 23, 28, 29]
     # labor_period adds 4 lead columns before the labor_daily layout, so
     # shift every labor_daily currency index by +2 (period header inserts
     # is_open + days_covered between date+dow and gross_sales).
-    labor_period_currency = [4, 5, 6, 7, 8, 11, 13, 14, 23, 24, 25]
+    labor_period_currency = [4, 5, 6, 7, 8, 11, 13, 14, 23, 24, 25, 30, 31]
     # labor_weekly adds 5 lead columns (iso_week + week_start + week_end +
     # is_partial + days_covered), so shift labor_daily currency by +3.
-    labor_weekly_currency = [5, 6, 7, 8, 9, 12, 14, 15, 24, 25, 26]
+    labor_weekly_currency = [5, 6, 7, 8, 9, 12, 14, 15, 24, 25, 26, 31, 32]
 
     tab_payloads = [
         {"tab": "config",            "rows": config_rows,      "currency_cols": []},

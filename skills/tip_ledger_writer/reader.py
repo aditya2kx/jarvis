@@ -51,6 +51,7 @@ _INT_COLUMNS = {
 _FLOAT_COLUMNS = {
     "regular_hours", "ot_hours", "doubletime_hours", "total_hours",
     "wage_rate_dollars", "ot_rate_dollars",
+    "hours", "hourly_rate", "amount",
 }
 _BOOL_COLUMNS = {"is_salaried", "multi_rate", "excluded_from_labor_pct"}
 _JSON_COLUMNS = {"rate_history_json", "raw_employee_names_json"}
@@ -129,6 +130,19 @@ def read_raw_adp_shifts(spreadsheet_id: str, *, account: str = "palmetto") -> li
 def read_raw_adp_punches(spreadsheet_id: str, *, account: str = "palmetto") -> list[dict]:
     """Return all rows of BHAGA ADP Raw > punches as list[dict] (per-punch detail)."""
     return _read_raw_tab(spreadsheet_id, "BHAGA ADP Raw", "punches", account=account)
+
+
+def read_raw_adp_earnings(spreadsheet_id: str, *, account: str = "palmetto") -> list[dict]:
+    """Return all rows of BHAGA ADP Raw > earnings as list[dict].
+
+    Each record matches the schema header: date_local, employee_name,
+    raw_employee_name, period_start, period_end, hours, hourly_rate,
+    amount, description, scraped_at_utc.
+
+    hours/hourly_rate/amount are float-coerced. date_local corresponds
+    to check_date from the source XLSX (YYYY-MM-DD).
+    """
+    return _read_raw_tab(spreadsheet_id, "BHAGA ADP Raw", "earnings", account=account)
 
 
 def read_raw_adp_rates(spreadsheet_id: str, *, account: str = "palmetto") -> list[dict]:

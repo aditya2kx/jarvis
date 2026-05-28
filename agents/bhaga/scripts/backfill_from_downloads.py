@@ -36,6 +36,7 @@ from skills.adp_run_automation.employee_aliases import (
 from skills.square_tips import transactions_backend
 from skills.tip_ledger_writer import (
     read_raw_adp_rates,
+    write_raw_adp_earnings,
     write_raw_adp_punches,
     write_raw_adp_rates,
     write_raw_adp_shifts,
@@ -120,7 +121,7 @@ def main() -> int:
     cli.add_argument("--end", default=None)
     cli.add_argument(
         "--skip", default=[], action="append",
-        choices=["square", "adp_shifts", "adp_punches", "adp_rates", "square_rollup"],
+        choices=["square", "adp_shifts", "adp_punches", "adp_earnings", "adp_rates", "square_rollup"],
         help="Skip a specific write. Can pass multiple times.",
     )
     cli.add_argument("--dry-run", action="store_true",
@@ -241,6 +242,23 @@ def main() -> int:
                     n_bq = _write_to_bq("adp_punches", bq_rows, merge_keys=["date", "employee_id", "punch_index"])
                     if n_bq:
                         print(f"  punches (BQ): {n_bq} rows upserted")
+
+    # ── ADP raw earnings (per-line) ───────────────────────────────
+    if "adp_earnings" not in args.skip:
+        earnings_xlsx_for_raw = _newest("Earnings*.xlsx")
+        if not earnings_xlsx_for_raw:
+            print("WARN: no Earnings*.xlsx found — skipping ADP raw earnings")
+        else:
+            print(f"# parsing ADP earnings (raw lines): {earnings_xlsx_for_raw.name}")
+            raw_earnings = compensation_backend.parse_xlsx(earnings_xlsx_for_raw, employee_aliases=aliases)
+            raw_earnings = [e for e in raw_earnings if _in_window(e["check_date"])]
+            print(f"  parsed {len(raw_earnings)} earning lines")
+            if args.dry_run:
+                print(f"  DRY: would write {len(raw_earnings)} earning rows")
+            else:
+                s = write_raw_adp_earnings(adp_raw_sid, raw_earnings, account=google_account)
+                summaries.append(s)
+                print(f"  earnings: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
 
     # ── ADP wage rates ────────────────────────────────────────────
     if "adp_rates" not in args.skip:

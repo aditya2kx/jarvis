@@ -53,6 +53,7 @@ from skills.adp_run_automation.shift_backend import normalize_employee_name
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
 from skills.square_tips import transactions_backend
 from skills.tip_ledger_writer import (
+    read_raw_adp_earnings,
     read_raw_adp_rates,
     read_raw_adp_shifts,
     read_raw_square_transactions,
@@ -1700,13 +1701,8 @@ def main() -> int:
     # sheets in sync with the latest local scrapes via tip_ledger_writer.
     #   * shifts/punches  ← BHAGA ADP Raw   > shifts
     #   * transactions    ← BHAGA Square Raw > transactions
-    #   * earnings (per-period gross+CC tips) is the one remaining local-XLSX
-    #     read — there is no raw-sheet schema for it yet (TODO: add a
-    #     bhaga_adp_raw > earnings tab so this script becomes 100% sheet-driven).
+    #   * earnings        ← BHAGA ADP Raw   > earnings (raw sheet primary, local XLSX fallback)
     earnings_xlsx = _newest("Earnings*.xlsx")
-    if not earnings_xlsx:
-        print(f"MISSING input: no Earnings*.xlsx in {DOWNLOADS}; orchestrator must run ADP earnings scrape first.")
-        return 1
 
     if args.data_source == "bigquery":
         from core.datastore_reader import read_shifts_bq, read_transactions_bq, read_wage_rates_bq
@@ -1786,9 +1782,29 @@ def main() -> int:
     items_by_date: dict[str, dict] = {r["date_local"]: r for r in item_rollup_rows}
     print(f"#   → {len(items_by_date)} item-day rows")
 
-    print(f"# loading earnings from local XLSX (no raw-sheet equiv yet): {earnings_xlsx.name}")
-    earnings = compensation_backend.parse_xlsx(earnings_xlsx, employee_aliases=aliases)
-    print(f"#   → {len(earnings)} earnings rows")
+    earnings: list[dict] = []
+    if args.data_source == "bigquery":
+        pass  # earnings not yet in BQ; fall through to raw sheet / XLSX below
+    else:
+        print(f"# loading earnings from raw sheet {adp_raw_sid} (BHAGA ADP Raw > earnings)")
+        try:
+            raw_sheet_earnings = read_raw_adp_earnings(adp_raw_sid, account=args.store)
+        except Exception as exc:  # noqa: BLE001
+            print(f"#   WARN: could not read earnings tab (may not exist yet): {exc}")
+            raw_sheet_earnings = []
+        if raw_sheet_earnings:
+            earnings = [
+                {**rec, "check_date": rec.get("date_local", rec.get("check_date", ""))}
+                for rec in raw_sheet_earnings
+            ]
+            print(f"#   → {len(earnings)} earnings rows from raw sheet")
+    if not earnings and earnings_xlsx:
+        print(f"# falling back to local XLSX for earnings: {earnings_xlsx.name}")
+        earnings = compensation_backend.parse_xlsx(earnings_xlsx, employee_aliases=aliases)
+        print(f"#   → {len(earnings)} earnings rows from local XLSX")
+    elif not earnings:
+        print(f"#   no earnings from raw sheet or local XLSX")
+    print(f"#   → {len(earnings)} earnings rows total")
 
     if not (shifts and earnings and txns):
         print(

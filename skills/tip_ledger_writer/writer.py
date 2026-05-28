@@ -10,7 +10,6 @@ API summary:
 
     write_raw_adp_shifts(spreadsheet_id, shifts, *, account="palmetto")
     write_raw_adp_punches(spreadsheet_id, punches, *, account="palmetto")
-    write_raw_adp_earnings(spreadsheet_id, earnings, *, account="palmetto")
     write_raw_adp_rates(spreadsheet_id, rates, *, account="palmetto")
     write_raw_square_transactions(spreadsheet_id, txns, *, account="palmetto")
     write_raw_square_daily_rollup(spreadsheet_id, rollups, *, account="palmetto")
@@ -416,31 +415,6 @@ def write_raw_adp_punches(
     )
 
 
-def write_raw_adp_earnings(
-    spreadsheet_id: str,
-    earnings: list[dict],
-    *,
-    account: str = "palmetto",
-    scraped_at_utc: Optional[str] = None,
-) -> dict:
-    """Idempotent upsert into BHAGA ADP Raw > earnings. Natural key:
-    (date_local, employee_name, description).
-
-    Source records come from compensation_backend.parse_xlsx(). The writer
-    maps check_date → date_local for schema consistency with other tabs.
-    """
-    mapped = []
-    for rec in earnings:
-        row = dict(rec)
-        if "check_date" in row and "date_local" not in row:
-            row["date_local"] = row.pop("check_date")
-        mapped.append(row)
-    return _upsert_tab(
-        spreadsheet_id, "BHAGA ADP Raw", "earnings", mapped,
-        account=account, scraped_at_utc=scraped_at_utc,
-    )
-
-
 def write_raw_adp_rates(
     spreadsheet_id: str,
     rates: list[dict],
@@ -553,7 +527,6 @@ if __name__ == "__main__":
     for tab, fn_name in [
         ("adp_shifts", "write_raw_adp_shifts"),
         ("adp_punches", "write_raw_adp_punches"),
-        ("adp_earnings", "write_raw_adp_earnings"),
         ("adp_rates", "write_raw_adp_rates"),
         ("square_transactions", "write_raw_square_transactions"),
         ("square_daily_rollup", "write_raw_square_daily_rollup"),
@@ -580,7 +553,6 @@ if __name__ == "__main__":
         fn = {
             "adp_shifts": write_raw_adp_shifts,
             "adp_punches": write_raw_adp_punches,
-            "adp_earnings": write_raw_adp_earnings,
             "adp_rates": write_raw_adp_rates,
             "square_transactions": write_raw_square_transactions,
             "square_daily_rollup": write_raw_square_daily_rollup,

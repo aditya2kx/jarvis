@@ -51,23 +51,6 @@ WORKBOOK_SCHEMAS: dict[str, list[dict]] = {
             ),
         },
         {
-            "tab_name": "earnings",
-            "natural_key_columns": ("date_local", "employee_name", "description"),
-            "header": [
-                "date_local", "employee_name", "raw_employee_name",
-                "period_start", "period_end",
-                "hours", "hourly_rate", "amount",
-                "description", "scraped_at_utc",
-            ],
-            "notes": (
-                "One row per earning line from ADP Earnings & Hours XLSX. "
-                "Source: skills/adp_run_automation/compensation_backend.parse_xlsx. "
-                "Natural key: (date_local, employee_name, description). "
-                "date_local is check_date from the XLSX (YYYY-MM-DD). "
-                "Multiple rows per employee per check date (Regular, Overtime, Cash tips, etc.)."
-            ),
-        },
-        {
             "tab_name": "wage_rates",
             "natural_key_columns": ("employee_id",),
             "header": [

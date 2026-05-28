@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import glob
 import json
 import os
 import pathlib
@@ -48,12 +47,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from agents.bhaga.scripts.daily_refresh import is_refresh_date_complete
 from core.config_loader import project_dir, refresh_access_token, resolve_sheet_id
-from skills.adp_run_automation import compensation_backend
 from skills.adp_run_automation.shift_backend import normalize_employee_name
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
 from skills.square_tips import transactions_backend
 from skills.tip_ledger_writer import (
-    read_raw_adp_earnings,
     read_raw_adp_rates,
     read_raw_adp_shifts,
     read_raw_square_transactions,
@@ -76,7 +73,6 @@ _DATE_CONFIG_KEYS = (
 
 
 PROJECT = pathlib.Path(project_dir())
-DOWNLOADS = PROJECT / "extracted" / "downloads"
 STORE_PROFILE_DIR = PROJECT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
 SHEETS_API = "https://sheets.googleapis.com/v4"
 
@@ -271,11 +267,6 @@ def auto_resize_columns(spreadsheet_id: str, token: str, *, sheet_id: int, num_c
 # ---------- Data loading & period discovery ----------
 
 
-def _newest(pattern: str) -> pathlib.Path | None:
-    paths = [pathlib.Path(p) for p in glob.glob(str(DOWNLOADS / pattern))]
-    return max(paths, key=lambda p: p.stat().st_mtime) if paths else None
-
-
 def _fill_calendar_dates(dates: list[str]) -> list[str]:
     """Fill gaps in a sorted list of ISO date strings.
 
@@ -383,19 +374,28 @@ def _is_excluded(
     return False
 
 
-def discover_periods(earnings: list[dict]) -> list[dict]:
-    """Group earnings rows into canonical pay periods (merge off-by-1-day variants)."""
+def discover_periods(shifts: list[dict]) -> list[dict]:
+    """Derive canonical pay periods from shifts' pay_period field.
+
+    Each shift record has a `pay_period` string formatted as
+    'YYYY-MM-DD to YYYY-MM-DD'. We extract unique (start, end) pairs,
+    merge off-by-1-day variants (same as before), and return a sorted
+    list of period dicts.
+    """
     buckets: dict[tuple, dict] = {}
-    for r in earnings:
-        ps, pe = r.get("period_start"), r.get("period_end")
+    for s in shifts:
+        pp = s.get("pay_period", "")
+        if " to " not in pp:
+            continue
+        parts = pp.split(" to ", 1)
+        ps, pe = parts[0].strip(), parts[1].strip()
         if not ps or not pe:
             continue
-        b = buckets.setdefault((ps, pe), {"start": ps, "end": pe, "check_dates": set()})
-        b["check_dates"].add(r["check_date"])
+        buckets.setdefault((ps, pe), {"start": ps, "end": pe})
 
     raw = []
-    for (ps, pe), b in sorted(buckets.items()):
-        raw.append({"start": ps, "end": pe, "check_dates": sorted(b["check_dates"])})
+    for (ps, pe) in sorted(buckets.keys()):
+        raw.append({"start": ps, "end": pe})
 
     canonical: list[dict] = []
     for p in raw:
@@ -407,7 +407,6 @@ def discover_periods(earnings: list[dict]) -> list[dict]:
             ce_d = datetime.date.fromisoformat(c["end"])
             if ps_d == cs_d and abs((pe_d - ce_d).days) <= 2:
                 c["variants"].append({"start": p["start"], "end": p["end"]})
-                c["check_dates"] = sorted(set(c["check_dates"]) | set(p["check_dates"]))
                 if pe_d > ce_d:
                     c["end"] = p["end"]
                 merged = True
@@ -415,7 +414,7 @@ def discover_periods(earnings: list[dict]) -> list[dict]:
         if not merged:
             canonical.append({
                 "start": p["start"], "end": p["end"],
-                "check_dates": p["check_dates"],
+                "check_dates": [],
                 "variants": [{"start": p["start"], "end": p["end"]}],
                 "is_open": False,
             })
@@ -448,7 +447,14 @@ def append_open_period(
     return canonical
 
 
-def actual_cc_tips_by_period(earnings: list[dict]) -> dict[tuple, dict[str, int]]:
+def actual_cc_tips_by_period(earnings: list[dict] | None) -> dict[tuple, dict[str, int]]:
+    """Extract ADP 'Credit Card Tips Owed' actuals grouped by period.
+
+    Returns empty dict when earnings data is not available, allowing
+    downstream code to handle missing actuals gracefully.
+    """
+    if not earnings:
+        return {}
     out: dict[tuple, dict[str, int]] = {}
     for r in earnings:
         if r.get("description") != "Credit Card Tips Owed":
@@ -1572,6 +1578,7 @@ def build_tip_alloc_period_rows(period_results: list[dict]) -> list[list]:
     ]
     rows: list[list] = [header]
     for p in period_results:
+        has_actuals = bool(p["per_period_adp"])
         emps = sorted(set(p["per_period_ours"]) | set(p["per_period_adp"]))
         for emp in emps:
             ours_c = p["per_period_ours"].get(emp, 0)
@@ -1579,21 +1586,33 @@ def build_tip_alloc_period_rows(period_results: list[dict]) -> list[list]:
             hrs = p["per_period_hours"].get(emp, 0.0)
             diff_c = ours_c - adp_c
             pct = (diff_c / adp_c) if adp_c else None
+            if has_actuals:
+                adp_paid_val = round(adp_c / 100, 2)
+                diff_val = round(diff_c / 100, 2)
+                pct_val = f"{pct:+.1%}" if pct is not None else ("n/a" if p["is_open"] else "—")
+                adp_per_hour = round((adp_c / 100 / hrs), 2) if hrs > 0 else 0
+                reason = likely_reason(
+                    ours_c=ours_c, adp_c=adp_c,
+                    is_open=p["is_open"], coverage=p["coverage"],
+                )
+            else:
+                adp_paid_val = "N/A"
+                diff_val = "N/A"
+                pct_val = "N/A"
+                adp_per_hour = "N/A"
+                reason = "No earnings data" if not p["is_open"] else "Open period — not yet paid"
             rows.append([
                 _iso_date_for_sheet_cell(p["start"]),
                 _iso_date_for_sheet_cell(p["end"]),
                 p["coverage"], "yes" if p["is_open"] else "no",
                 emp, round(hrs, 2),
                 round(ours_c / 100, 2),
-                round(adp_c / 100, 2),
-                round(diff_c / 100, 2),
-                f"{pct:+.1%}" if pct is not None else ("n/a" if p["is_open"] else "—"),
+                adp_paid_val,
+                diff_val,
+                pct_val,
                 round((ours_c / 100 / hrs), 2) if hrs > 0 else 0,
-                round((adp_c / 100 / hrs), 2) if hrs > 0 else 0,
-                likely_reason(
-                    ours_c=ours_c, adp_c=adp_c,
-                    is_open=p["is_open"], coverage=p["coverage"],
-                ),
+                adp_per_hour,
+                reason,
             ])
     return rows
 
@@ -1638,15 +1657,24 @@ def build_period_summary_rows(period_results: list[dict]) -> list[list]:
     ]
     rows: list[list] = [header]
     for p in period_results:
+        has_actuals = bool(p["per_period_adp"])
         team_hrs = sum(p["per_period_hours"].values())
         pool_c = sum(a["share_cents"] for a in p["per_day_allocations"])
         our_total_c = sum(p["per_period_ours"].values())
         adp_total_c = sum(p["per_period_adp"].values())
         diff_c = our_total_c - adp_total_c
-        flagged = sum(
-            1 for emp in (set(p["per_period_ours"]) | set(p["per_period_adp"]))
-            if abs(p["per_period_ours"].get(emp, 0) - p["per_period_adp"].get(emp, 0)) >= 100
-        )
+        if has_actuals:
+            flagged = sum(
+                1 for emp in (set(p["per_period_ours"]) | set(p["per_period_adp"]))
+                if abs(p["per_period_ours"].get(emp, 0) - p["per_period_adp"].get(emp, 0)) >= 100
+            )
+            adp_paid_val = round(adp_total_c / 100, 2)
+            diff_val = round(diff_c / 100, 2)
+            flagged_val = flagged
+        else:
+            adp_paid_val = "N/A"
+            diff_val = "N/A"
+            flagged_val = "N/A"
         rows.append([
             _iso_date_for_sheet_cell(p["start"]),
             _iso_date_for_sheet_cell(p["end"]),
@@ -1656,9 +1684,9 @@ def build_period_summary_rows(period_results: list[dict]) -> list[list]:
             round(team_hrs, 2),
             round(pool_c / 100, 2),
             round(our_total_c / 100, 2),
-            round(adp_total_c / 100, 2),
-            round(diff_c / 100, 2),
-            flagged,
+            adp_paid_val,
+            diff_val,
+            flagged_val,
         ])
     return rows
 
@@ -1701,8 +1729,6 @@ def main() -> int:
     # sheets in sync with the latest local scrapes via tip_ledger_writer.
     #   * shifts/punches  ← BHAGA ADP Raw   > shifts
     #   * transactions    ← BHAGA Square Raw > transactions
-    #   * earnings        ← BHAGA ADP Raw   > earnings (raw sheet primary, local XLSX fallback)
-    earnings_xlsx = _newest("Earnings*.xlsx")
 
     if args.data_source == "bigquery":
         from core.datastore_reader import read_shifts_bq, read_transactions_bq, read_wage_rates_bq
@@ -1782,36 +1808,12 @@ def main() -> int:
     items_by_date: dict[str, dict] = {r["date_local"]: r for r in item_rollup_rows}
     print(f"#   → {len(items_by_date)} item-day rows")
 
-    earnings: list[dict] = []
-    if args.data_source == "bigquery":
-        pass  # earnings not yet in BQ; fall through to raw sheet / XLSX below
-    else:
-        print(f"# loading earnings from raw sheet {adp_raw_sid} (BHAGA ADP Raw > earnings)")
-        try:
-            raw_sheet_earnings = read_raw_adp_earnings(adp_raw_sid, account=args.store)
-        except Exception as exc:  # noqa: BLE001
-            print(f"#   WARN: could not read earnings tab (may not exist yet): {exc}")
-            raw_sheet_earnings = []
-        if raw_sheet_earnings:
-            earnings = [
-                {**rec, "check_date": rec.get("date_local", rec.get("check_date", ""))}
-                for rec in raw_sheet_earnings
-            ]
-            print(f"#   → {len(earnings)} earnings rows from raw sheet")
-    if not earnings and earnings_xlsx:
-        print(f"# falling back to local XLSX for earnings: {earnings_xlsx.name}")
-        earnings = compensation_backend.parse_xlsx(earnings_xlsx, employee_aliases=aliases)
-        print(f"#   → {len(earnings)} earnings rows from local XLSX")
-    elif not earnings:
-        print(f"#   no earnings from raw sheet or local XLSX")
-    print(f"#   → {len(earnings)} earnings rows total")
-
-    if not (shifts and earnings and txns):
+    if not (shifts and txns):
         print(
-            "Empty input: shifts={} earnings={} txns={}. "
+            "Empty input: shifts={} txns={}. "
             "If raw sheets are empty, the orchestrator's write_raw_sheets step "
             "needs to run first (or run agents/bhaga/scripts/backfill_from_downloads.py manually).".format(
-                len(shifts), len(earnings), len(txns)
+                len(shifts), len(txns)
             )
         )
         return 1
@@ -1881,9 +1883,9 @@ def main() -> int:
         )
     print(f"# last_data_date = {last_data_date}")
 
-    periods = discover_periods(earnings)
+    periods = discover_periods(shifts)
     periods = append_open_period(periods, last_data_date=last_data_date)
-    actuals = actual_cc_tips_by_period(earnings)
+    actuals = actual_cc_tips_by_period(None)
     square_data_start = min(t["date_local"] for t in txns)
     period_results = build_period_results(
         periods=periods, shifts=shifts, txns=txns,

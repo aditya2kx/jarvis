@@ -332,8 +332,14 @@ def main() -> int:
     last_data_date = max(both_covered_complete)
     print(f"    last_data_date: {last_data_date}")
 
-    # Discover periods
-    periods = discover_periods(earnings)
+    # Discover periods algorithmically from the store profile (biweekly
+    # anchor), not from earnings rows — see update_model_sheet.discover_periods.
+    periods = discover_periods(
+        anchor_end_date=profile["adp_run"]["pay_periods_anchor_end_date"],
+        pay_frequency=profile["adp_run"].get("pay_frequency", ""),
+        data_start=profile["calibration"]["first_data_window"]["start"],
+        last_data_date=last_data_date,
+    )
     periods = append_open_period(periods, last_data_date=last_data_date)
     actuals = actual_cc_tips_by_period(earnings)
     square_data_start = min(t["date_local"] for t in txns)

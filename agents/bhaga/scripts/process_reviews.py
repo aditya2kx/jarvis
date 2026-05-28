@@ -1155,7 +1155,16 @@ def main() -> int:
             append_open_period, discover_periods,
         )
         earnings = compensation_backend.parse_xlsx(earnings_xlsx, employee_aliases=aliases)
-        periods = discover_periods(earnings)
+        # Periods are derived algorithmically from the store profile's
+        # biweekly anchor (see update_model_sheet.discover_periods), not from
+        # the earnings rows' pay_period text. data_start = the profile's
+        # first-data-window start so every period up to window_end is emitted.
+        periods = discover_periods(
+            anchor_end_date=profile["adp_run"]["pay_periods_anchor_end_date"],
+            pay_frequency=profile["adp_run"].get("pay_frequency", ""),
+            data_start=profile["calibration"]["first_data_window"]["start"],
+            last_data_date=window_end_iso,
+        )
         # Anchor the open-period column to data_window_end (not "today" or
         # latest credited shift) so the rollup's open period ends exactly
         # where the rest of the model ends.

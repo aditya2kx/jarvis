@@ -374,51 +374,90 @@ def _is_excluded(
     return False
 
 
-def discover_periods(shifts: list[dict]) -> list[dict]:
-    """Derive canonical pay periods from shifts' pay_period field.
+def _period_length_days(pay_frequency: str) -> int:
+    """Map a store-profile pay_frequency string to a period length in days.
 
-    Each shift record has a `pay_period` string formatted as
-    'YYYY-MM-DD to YYYY-MM-DD'. We extract unique (start, end) pairs,
-    merge off-by-1-day variants (same as before), and return a sorted
-    list of period dicts.
+    Only "Biweekly" (14-day) is supported today — it's the only frequency
+    Palmetto (or any current store) uses. Any other value raises a clear
+    error rather than silently guessing, so a future weekly/semi-monthly
+    store fails loudly at the point the assumption breaks.
     """
-    buckets: dict[tuple, dict] = {}
-    for s in shifts:
-        pp = s.get("pay_period", "")
-        if " to " not in pp:
-            continue
-        parts = pp.split(" to ", 1)
-        ps, pe = parts[0].strip(), parts[1].strip()
-        if not ps or not pe:
-            continue
-        buckets.setdefault((ps, pe), {"start": ps, "end": pe})
+    freq = (pay_frequency or "").strip().lower()
+    if freq == "biweekly":
+        return 14
+    raise ValueError(
+        f"discover_periods: unsupported pay_frequency {pay_frequency!r}. "
+        f"Only 'Biweekly' (14-day) is implemented. Add the mapping in "
+        f"_period_length_days() or fix the store profile's "
+        f"adp_run.pay_frequency."
+    )
 
-    raw = []
-    for (ps, pe) in sorted(buckets.keys()):
-        raw.append({"start": ps, "end": pe})
 
-    canonical: list[dict] = []
-    for p in raw:
-        ps_d = datetime.date.fromisoformat(p["start"])
-        pe_d = datetime.date.fromisoformat(p["end"])
-        merged = False
-        for c in canonical:
-            cs_d = datetime.date.fromisoformat(c["start"])
-            ce_d = datetime.date.fromisoformat(c["end"])
-            if ps_d == cs_d and abs((pe_d - ce_d).days) <= 2:
-                c["variants"].append({"start": p["start"], "end": p["end"]})
-                if pe_d > ce_d:
-                    c["end"] = p["end"]
-                merged = True
-                break
-        if not merged:
-            canonical.append({
-                "start": p["start"], "end": p["end"],
-                "check_dates": [],
-                "variants": [{"start": p["start"], "end": p["end"]}],
-                "is_open": False,
-            })
-    return canonical
+def discover_periods(
+    *,
+    anchor_end_date: str,
+    pay_frequency: str,
+    data_start: str,
+    last_data_date: str,
+) -> list[dict]:
+    """Derive canonical pay periods ALGORITHMICALLY from the store profile.
+
+    Pay periods are fixed-length windows anchored on a known period END
+    date (``adp_run.pay_periods_anchor_end_date`` in the store profile).
+    A period ENDS on ``anchor_end_date`` and on every ±period_len days from
+    there; each period spans ``[end - (period_len - 1), end]`` inclusive.
+
+    We emit every COMPLETED period (``end <= last_data_date``) whose window
+    overlaps the data window ``[data_start, last_data_date]`` — i.e. with
+    ``end >= data_start``. The trailing in-progress/open period (from the
+    last completed period's end+1 through ``last_data_date``) is appended
+    separately by ``append_open_period``.
+
+    Deriving periods from the profile — instead of from each shift's
+    ``pay_period`` text field — makes the period tabs robust to raw rows
+    that carry a blank ``pay_period`` (the field was dropped during
+    aggregation in older backfills, and we no longer re-scrape ADP to
+    repopulate it). Downstream period builders assign each shift/txn to a
+    period purely by date membership in ``[start, end]``, so the windows
+    just need to be the correct biweekly calendar — which is exactly what
+    the anchor + frequency give us.
+
+    Args:
+        anchor_end_date: ISO date a pay period is known to END on.
+        pay_frequency: store profile pay frequency (only "Biweekly" today).
+        data_start: ISO date of the earliest day with any data.
+        last_data_date: ISO date of the latest complete data day.
+
+    Returns period dicts sorted ascending by start, each with the keys
+    downstream builders expect: ``start``, ``end``, ``check_dates``,
+    ``variants``, ``is_open``.
+    """
+    period_len = _period_length_days(pay_frequency)
+    anchor_end = datetime.date.fromisoformat(anchor_end_date)
+    data_start_d = datetime.date.fromisoformat(data_start)
+    last_data_d = datetime.date.fromisoformat(last_data_date)
+
+    # Largest period end that is <= last_data_date. The profile anchor may
+    # sit in the future relative to the data window (anchored to a period
+    # that hasn't closed yet) OR in the past; floor-division snaps it onto
+    # the latest completed period boundary either way.
+    k = (last_data_d - anchor_end).days // period_len
+    end = anchor_end + datetime.timedelta(days=period_len * k)
+
+    periods: list[dict] = []
+    while end >= data_start_d:
+        start = end - datetime.timedelta(days=period_len - 1)
+        periods.append({
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "check_dates": [],
+            "variants": [{"start": start.isoformat(), "end": end.isoformat()}],
+            "is_open": False,
+        })
+        end -= datetime.timedelta(days=period_len)
+
+    periods.reverse()
+    return periods
 
 
 def append_open_period(
@@ -1883,7 +1922,19 @@ def main() -> int:
         )
     print(f"# last_data_date = {last_data_date}")
 
-    periods = discover_periods(shifts)
+    # Period derivation is ALGORITHMIC (profile anchor + biweekly cadence),
+    # not scraped from each shift's pay_period text field — see
+    # discover_periods(). data_start spans the earliest day with any raw
+    # data (shifts OR txns) so every overlapping biweekly window is emitted.
+    _shift_dates = [s["date"] for s in shifts if s.get("date")]
+    _txn_dates = [t["date_local"] for t in txns if t.get("date_local")]
+    data_window_start = min(_shift_dates + _txn_dates)
+    periods = discover_periods(
+        anchor_end_date=profile["adp_run"]["pay_periods_anchor_end_date"],
+        pay_frequency=profile["adp_run"].get("pay_frequency", ""),
+        data_start=data_window_start,
+        last_data_date=last_data_date,
+    )
     periods = append_open_period(periods, last_data_date=last_data_date)
     actuals = actual_cc_tips_by_period(None)
     square_data_start = min(t["date_local"] for t in txns)

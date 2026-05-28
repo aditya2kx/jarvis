@@ -444,6 +444,157 @@ def _assert_data_advanced_post_condition(
         )
 
 
+# ── Model-sheet verification (built into the pipeline) ─────────────
+#
+# After update_model_sheet rebuilds the Model workbook, read it back and
+# assert the expected tabs are non-empty for the data window. This turns
+# "the period tabs are silently empty" (the 2026-05-27 bug) into a loud,
+# alerting failure that the operator sees the same night instead of
+# discovering days later. The assertion logic is a pure function
+# (assert_model_tabs_populated) so it's unit-testable without Sheets.
+
+# Tabs that MUST have >= this many data rows after a full model rebuild.
+# labor_period / period_summary expect >= 1 because the data window always
+# spans multiple biweekly pay periods (so at least one period + one open
+# period exist). daily / labor_daily / labor_weekly / labor_daily_forecast
+# expect >= 1 because the window always covers >= 1 complete day.
+MODEL_VERIFY_MIN_ROWS: dict[str, int] = {
+    "daily": 1,
+    "labor_daily": 1,
+    "labor_weekly": 1,
+    "labor_period": 1,
+    "labor_daily_forecast": 1,
+    "period_summary": 1,
+}
+
+# Header used to confirm KDS columns made it into the model's labor tabs.
+_KDS_MODEL_COLUMN_HEADER = "kds_completed_tickets"
+
+
+def assert_model_tabs_populated(
+    *,
+    tab_row_counts: dict[str, int],
+    expect_kds: bool,
+    raw_kds_row_count: int | None = None,
+    model_kds_columns_nonempty: bool | None = None,
+    min_rows: dict[str, int] | None = None,
+) -> None:
+    """Pure guard: raise RuntimeError if the rebuilt model is under-populated.
+
+    Args:
+        tab_row_counts: {tab_name: data_row_count} read back from the model.
+        expect_kds: True when KDS data was scraped this run (no --skip-kds),
+            so the KDS-specific assertions apply.
+        raw_kds_row_count: data rows in the raw square `kds_daily` tab, or
+            None if not read. Only consulted when ``expect_kds``.
+        model_kds_columns_nonempty: True/False whether the model's
+            labor_daily KDS columns have at least one non-empty value, or
+            None if not read. Only consulted when ``expect_kds``.
+        min_rows: override of MODEL_VERIFY_MIN_ROWS (for tests).
+
+    Pure function — no I/O — so the contract can be unit-tested without
+    standing up Sheets. Mirrors _assert_data_advanced_post_condition's style.
+    """
+    expectations = min_rows or MODEL_VERIFY_MIN_ROWS
+    problems: list[str] = []
+    for tab, minimum in sorted(expectations.items()):
+        n = tab_row_counts.get(tab)
+        if n is None:
+            problems.append(f"{tab}: tab missing/unreadable (expected >= {minimum})")
+        elif n < minimum:
+            problems.append(f"{tab}: {n} row(s) (expected >= {minimum})")
+    if expect_kds:
+        if raw_kds_row_count is not None and raw_kds_row_count <= 0:
+            problems.append(
+                "kds_daily (raw square sheet): 0 rows but KDS was expected "
+                "(no --skip-kds) — KDS scrape/backfill did not land"
+            )
+        if model_kds_columns_nonempty is False:
+            problems.append(
+                "labor_daily: KDS columns are entirely empty but KDS data "
+                "was expected — model did not join KDS into labor tabs"
+            )
+    if problems:
+        raise RuntimeError(
+            "model-sheet verification failed: " + "; ".join(problems)
+        )
+
+
+def _sheets_batch_get(
+    spreadsheet_id: str, token: str, ranges: list[str]
+) -> dict:
+    qs = "&".join(
+        f"ranges={urllib.parse.quote(r, safe='!:')}" for r in ranges
+    )
+    url = (
+        f"https://sheets.googleapis.com/v4/spreadsheets/"
+        f"{spreadsheet_id}/values:batchGet?{qs}&majorDimension=ROWS"
+    )
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read())
+
+
+def _labor_daily_has_kds(values: list[list]) -> bool:
+    """True iff the labor_daily matrix has >= 1 non-empty KDS-tickets cell."""
+    if not values:
+        return False
+    header = values[0]
+    try:
+        idx = header.index(_KDS_MODEL_COLUMN_HEADER)
+    except ValueError:
+        return False
+    for row in values[1:]:
+        if len(row) > idx and str(row[idx]).strip():
+            return True
+    return False
+
+
+def _read_model_verification_data(
+    *,
+    spreadsheet_id: str,
+    store: str,
+    raw_square_sid: str,
+    expect_kds: bool,
+) -> tuple[dict[str, int], bool | None, int | None]:
+    """Read back the model (and raw KDS) for verification.
+
+    Returns ``(tab_row_counts, model_kds_columns_nonempty, raw_kds_row_count)``.
+    The latter two are None when ``expect_kds`` is False or the raw KDS tab
+    can't be read (treated as "unknown", not "failed", by the assertion).
+    """
+    token = refresh_access_token(store)
+    tabs = list(MODEL_VERIFY_MIN_ROWS.keys())
+    ranges = [f"{t}!A1:A100000" for t in tabs]
+    if expect_kds:
+        ranges.append("labor_daily!A1:ZZ100000")
+    data = _sheets_batch_get(spreadsheet_id, token, ranges)
+    value_ranges = data.get("valueRanges", [])
+
+    counts: dict[str, int] = {}
+    for t, vr in zip(tabs, value_ranges):
+        vals = vr.get("values", [])
+        counts[t] = max(len(vals) - 1, 0)
+
+    model_kds_nonempty: bool | None = None
+    if expect_kds and len(value_ranges) > len(tabs):
+        full = value_ranges[len(tabs)].get("values", [])
+        model_kds_nonempty = _labor_daily_has_kds(full)
+
+    raw_kds_count: int | None = None
+    if expect_kds:
+        try:
+            raw = _sheets_batch_get(raw_square_sid, token, ["kds_daily!A1:A100000"])
+            rkv = (raw.get("valueRanges") or [{}])[0].get("values", [])
+            raw_kds_count = max(len(rkv) - 1, 0)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [verify_model] could not read raw kds_daily (treating "
+                  f"as unknown): {exc}")
+            raw_kds_count = None
+
+    return counts, model_kds_nonempty, raw_kds_count
+
+
 def _adp_bundle_then_raise(
     *,
     store: str,
@@ -983,6 +1134,36 @@ def main() -> int:
     if not needs_square and not args.skip_square and not needs_square_scrape:
         print("[square_transactions] SKIPPED — already covered through refresh_date.")
 
+    # ── GCS cache PRE-restore (no-OTP retry path) ──────────────────────
+    # On a fresh Cloud Run container the scrape CSVs are not on disk, so the
+    # Square pipeline's is_fresh_download() check would fail and fall through
+    # to a browser login (→ Square 2FA OTP). For an already-scraped date the
+    # CSVs live in GCS, so we restore them HERE — before the parallel phase —
+    # which makes is_fresh_download() return True inside _run_square_pipeline
+    # and SKIPS the browser entirely. This is what makes "retry an
+    # already-scraped date with cleared markers" cost ZERO OTP.
+    #
+    # Safe for the normal nightly: a brand-new refresh_date has no cache yet,
+    # so download_cached_files is a graceful no-op and the browser scrapes
+    # as usual. The post-parallel restore below still runs to cover the
+    # master CSV needed by write_raw_sheets when Square is skipped outright.
+    if not args.dry_run and needs_square:
+        print("\n[gcs_cache] pre-restoring scrape cache (if any) so a retry "
+              "of an already-scraped date skips the browser / OTP...")
+        try:
+            pre_restored = download_cached_files(
+                refresh_date=refresh_date,
+                download_dir=DOWNLOAD_DIR,
+            )
+            if pre_restored:
+                print(f"  [gcs_cache] pre-restored {len(pre_restored)} file(s) "
+                      f"from GCS before scrape decision")
+            else:
+                print("  [gcs_cache] no cached files for this date — "
+                      "Square will scrape fresh (expected on a new date)")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [gcs_cache] WARN: pre-restore failed (non-fatal): {exc}")
+
     futures: dict[concurrent.futures.Future, str] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
         if needs_square:
@@ -1243,6 +1424,63 @@ def main() -> int:
         except Exception:  # noqa: BLE001, S110
             pass
         return 1
+
+    # ── Model-sheet verification (built into the pipeline) ─────────
+    # Runs on EVERY execution that actually rebuilt the model. Reads the
+    # Model workbook back and asserts the expected tabs are non-empty (the
+    # period tabs in particular — empty period tabs were the 2026-05-27
+    # bug). On failure: loud RuntimeError + failure_alert DM + non-zero
+    # exit, so the operator is notified the same night. Skipped when the
+    # model wasn't refreshed this run (--skip-model / dry-run / update
+    # failed) so we never false-positive on legitimately-empty cases.
+    if update_model_ran:
+        expect_kds = not args.skip_kds
+        try:
+            raw_square_sid = resolve_sheet_id("bhaga_square_raw", profile)
+            counts, model_kds_nonempty, raw_kds_count = _read_model_verification_data(
+                spreadsheet_id=spreadsheet_id,
+                store=args.store,
+                raw_square_sid=raw_square_sid,
+                expect_kds=expect_kds,
+            )
+            print(f"\n[verify_model] model tab row counts: {counts}")
+            if expect_kds:
+                print(f"[verify_model] raw kds_daily rows={raw_kds_count}; "
+                      f"model labor_daily KDS columns non-empty={model_kds_nonempty}")
+            assert_model_tabs_populated(
+                tab_row_counts=counts,
+                expect_kds=expect_kds,
+                raw_kds_row_count=raw_kds_count,
+                model_kds_columns_nonempty=model_kds_nonempty,
+            )
+            print("[verify_model] OK — all expected model tabs are populated.")
+        except RuntimeError as exc:
+            print(f"\n!!! MODEL VERIFICATION FAILED: {exc}", file=sys.stderr)
+            try:
+                failure_alert(
+                    step="verify_model_sheet",
+                    exception=exc,
+                    date=refresh_date.isoformat(),
+                    extra=(
+                        "update_model_sheet ran but the rebuilt Model sheet is "
+                        "missing expected non-empty tabs (e.g. labor_period / "
+                        "period_summary at 0 rows, or KDS columns empty). The "
+                        "model is NOT correct — investigate update_model_sheet "
+                        "(period derivation, raw-sheet reads) before relying on "
+                        "tonight's numbers. The other steps' .done markers are "
+                        "written, so re-running will re-verify after a fix."
+                    ),
+                )
+            except Exception:  # noqa: BLE001, S110
+                pass
+            return 1
+        except Exception as exc:  # noqa: BLE001
+            # A transport/read error while verifying shouldn't mask the run
+            # as failed (the post-condition guard already covers the
+            # data-advancement contract), but it must be loud.
+            print(f"[verify_model] WARN: could not read back the model sheet "
+                  f"for verification (non-fatal): {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
 
     print(f"\n=== DONE in {runtime_s:.1f}s ===")
     if not args.dry_run:

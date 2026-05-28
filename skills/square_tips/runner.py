@@ -36,6 +36,7 @@ from skills.square_tips.transactions_backend import parse_csv, get_credentials
 
 LOGIN_URL = "https://app.squareup.com/login"
 TRANSACTIONS_URL = "https://app.squareup.com/dashboard/sales/transactions"
+ITEM_SALES_URL = "https://app.squareup.com/dashboard/sales/reports/item-sales"
 
 
 def _is_on_login(url: str) -> bool:
@@ -438,6 +439,175 @@ def download_transactions(
         return csv_path
     finally:
         _release_scrape_lock()
+
+
+def _set_item_sales_date_range(page, *, start: datetime.date, end: datetime.date) -> None:
+    """Open the item-sales date picker and type a precise start/end range.
+
+    Square has updated the item-sales page to use the same MM/DD/YYYY format
+    as the transactions page. Falls back to the old month-label format for
+    backward compatibility.
+
+    Selectors calibrated via skills/square_tips/selectors/item_sales.json.
+    """
+    pill = None
+    for pattern in [
+        re.compile(r"\d{2}/\d{2}/\d{4}"),
+        re.compile(r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d"),
+    ]:
+        loc = page.locator("button").filter(has_text=pattern).first
+        try:
+            loc.wait_for(state="visible", timeout=5_000)
+            pill = loc
+            break
+        except Exception:
+            continue
+    if pill is None:
+        raise RuntimeError("Item Sales date picker pill not found")
+    pill.click()
+    page.wait_for_timeout(800)
+
+    start_str = start.strftime("%m/%d/%Y")
+    end_str = end.strftime("%m/%d/%Y")
+
+    inputs = page.locator("input[type='text']:visible")
+    n = inputs.count()
+    date_inputs = []
+    for i in range(n):
+        el = inputs.nth(i)
+        val = el.input_value() or ""
+        label = (el.get_attribute("aria-label") or "").lower()
+        if re.search(r"\d{2}/\d{2}/\d{4}", val) or any(
+            kw in label for kw in ("date", "start", "end")
+        ):
+            date_inputs.append(el)
+        if len(date_inputs) == 2:
+            break
+
+    if len(date_inputs) < 2:
+        date_inputs = [inputs.nth(0), inputs.nth(1)]
+
+    date_inputs[0].fill(start_str)
+    page.wait_for_timeout(300)
+    date_inputs[1].fill(end_str)
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(1_500)
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(2_000)
+
+
+def _trigger_item_sales_export(
+    page,
+    *,
+    start: datetime.date,
+    end: datetime.date,
+) -> pathlib.Path:
+    """Click Export -> Detail CSV Export -> wait for download.
+
+    Unlike Transactions (async Generate -> poll -> Download), the Item Sales
+    Detail CSV is a direct download triggered from the Export dropdown.
+    """
+    page.get_by_role("button", name=re.compile(r"^Export$", re.I)).first.click()
+    page.wait_for_timeout(800)
+
+    rename = f"items-{start.isoformat()}-{(end + datetime.timedelta(days=1)).isoformat()}.csv"
+    return download_to(
+        page,
+        trigger=lambda: page.get_by_text(re.compile(r"Detail\s+CSV", re.I)).first.click(),
+        rename_to=rename,
+        timeout_ms=120_000,
+    )
+
+
+def download_item_sales(
+    page=None,
+    *,
+    start_date: datetime.date,
+    end_date: datetime.date,
+    store: str = "palmetto",
+    headed: bool = True,
+    slow_mo_ms: int = 50,
+) -> pathlib.Path:
+    """Download Item Sales Detail CSV.
+
+    Can be called in two modes:
+      1. With a ``page`` argument — reuses an already-logged-in Playwright page
+         (designed for same-session use with ``download_transactions()``).
+      2. Without ``page`` (page=None) — opens its own browser session, logs in,
+         and downloads. Uses the same scrape lock as download_transactions.
+
+    Returns the path to the downloaded CSV in extracted/downloads/.
+
+    Idempotency: if the expected file already exists with today's CT mtime
+    and is non-empty, returns it without touching the browser.
+
+    Usage::
+
+        # Shared session (preferred — single OTP):
+        with launch_persistent("square") as (ctx, page):
+            _ensure_logged_in(page, store="palmetto")
+            item_csv = download_item_sales(page, start_date=..., end_date=...)
+
+        # Standalone (opens own session):
+        item_csv = download_item_sales(start_date=..., end_date=..., store="palmetto")
+    """
+    expected = DOWNLOADS_DIR / (
+        f"items-{start_date.isoformat()}-"
+        f"{(end_date + datetime.timedelta(days=1)).isoformat()}.csv"
+    )
+    if is_fresh_download(expected):
+        print(f"[square_item_sales] SKIP browser — fresh CSV already on disk: {expected}")
+        return expected
+
+    if page is not None:
+        return _download_item_sales_with_page(page, start_date=start_date, end_date=end_date)
+
+    _acquire_scrape_lock(store)
+    try:
+        with launch_persistent(
+            portal="square",
+            headed=headed,
+            slow_mo_ms=slow_mo_ms,
+        ) as (ctx, p):
+            _ensure_logged_in(p, store=store)
+            return _download_item_sales_with_page(p, start_date=start_date, end_date=end_date)
+    finally:
+        _release_scrape_lock()
+
+
+def _download_item_sales_with_page(
+    page,
+    *,
+    start_date: datetime.date,
+    end_date: datetime.date,
+) -> pathlib.Path:
+    """Internal: navigate to item-sales report and export the Detail CSV."""
+    page.goto(ITEM_SALES_URL, wait_until="domcontentloaded")
+    # Square updated the item-sales date picker from "May 2026" (month label)
+    # to "05/28/2026" (MM/DD/YYYY format, same as transactions page). Try the
+    # new format first, fall back to old month-label format.
+    pill_found = False
+    for pattern in [
+        re.compile(r"\d{2}/\d{2}/\d{4}"),
+        re.compile(r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d"),
+    ]:
+        try:
+            page.locator("button").filter(has_text=pattern).first.wait_for(
+                state="visible", timeout=15_000,
+            )
+            pill_found = True
+            break
+        except Exception:
+            continue
+    if not pill_found:
+        raise RuntimeError(
+            f"Item Sales page date picker not found within timeout. "
+            f"Current URL: {page.url}"
+        )
+    page.wait_for_timeout(1_500)
+
+    _set_item_sales_date_range(page, start=start_date, end=end_date)
+    return _trigger_item_sales_export(page, start=start_date, end=end_date)
 
 
 def main() -> int:

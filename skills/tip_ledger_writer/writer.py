@@ -441,6 +441,27 @@ def write_raw_square_daily_rollup(
     )
 
 
+def write_raw_square_item_daily_rollup(
+    spreadsheet_id: str,
+    rollups: list[dict],
+    *,
+    account: str = "palmetto",
+    scraped_at_utc: Optional[str] = None,
+) -> dict:
+    """Idempotent upsert into BHAGA Square Raw > item_daily_rollup. Natural key:
+    (date_local,).
+
+    Source records come from
+    transactions_backend.aggregate_daily_item_stats(). Each record carries
+    items_sold, units_sold, gross_sales_cents, and avg_item_price_cents for
+    one shop-local day.
+    """
+    return _upsert_tab(
+        spreadsheet_id, "BHAGA Square Raw", "item_daily_rollup", rollups,
+        account=account, scraped_at_utc=scraped_at_utc,
+    )
+
+
 # ── CLI ───────────────────────────────────────────────────────────
 
 
@@ -458,6 +479,7 @@ if __name__ == "__main__":
         ("adp_rates", "write_raw_adp_rates"),
         ("square_transactions", "write_raw_square_transactions"),
         ("square_daily_rollup", "write_raw_square_daily_rollup"),
+        ("square_item_daily_rollup", "write_raw_square_item_daily_rollup"),
     ]:
         p = sub.add_parser(tab, help=f"Run {fn_name}() with records from a JSON file.")
         p.add_argument("--spreadsheet-id", required=True)
@@ -482,6 +504,7 @@ if __name__ == "__main__":
             "adp_rates": write_raw_adp_rates,
             "square_transactions": write_raw_square_transactions,
             "square_daily_rollup": write_raw_square_daily_rollup,
+            "square_item_daily_rollup": write_raw_square_item_daily_rollup,
         }[args.cmd]
         summary = fn(args.spreadsheet_id, records, account=args.account)
         print(json.dumps(summary, indent=2))

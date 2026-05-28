@@ -44,6 +44,7 @@ _INT_COLUMNS = {
     "txn_count", "transaction_count", "order_count",
     "hour_local", "dow_local",
     "punch_idx_in_day", "punch_count",
+    "items_sold", "units_sold", "avg_item_price_cents",
 }
 # Columns whose string value should become float. Hours and dollar amounts
 # typed as decimal.
@@ -151,3 +152,12 @@ def read_raw_square_transactions(spreadsheet_id: str, *, account: str = "palmett
 def read_raw_square_daily_rollup(spreadsheet_id: str, *, account: str = "palmetto") -> list[dict]:
     """Return all rows of BHAGA Square Raw > daily_rollup as list[dict]."""
     return _read_raw_tab(spreadsheet_id, "BHAGA Square Raw", "daily_rollup", account=account)
+
+
+def read_raw_square_item_daily_rollup(spreadsheet_id: str, *, account: str = "palmetto") -> list[dict]:
+    """Return all rows of BHAGA Square Raw > item_daily_rollup as list[dict].
+
+    Each record: date_local, items_sold (int), units_sold (int),
+    gross_sales_cents (int), avg_item_price_cents (int), scraped_at_utc.
+    """
+    return _read_raw_tab(spreadsheet_id, "BHAGA Square Raw", "item_daily_rollup", account=account)

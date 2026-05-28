@@ -80,6 +80,10 @@ IGNORED_COLUMNS = frozenset({
     "hours_per_order",
     "avg_order_price",
     "avg_net_sales_plus_tips_per_order",
+    "items_sold",
+    "avg_items_per_order",
+    "hours_per_item",
+    "avg_item_price",
 })
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")

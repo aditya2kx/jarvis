@@ -17,6 +17,7 @@ from skills.tip_ledger_writer.reader import (
     read_raw_adp_rates,
     read_raw_adp_shifts,
     read_raw_square_daily_rollup,
+    read_raw_square_item_daily_rollup,
     read_raw_square_transactions,
 )
 from skills.tip_ledger_writer.schema import WORKBOOK_SCHEMAS, get_tab_spec
@@ -43,4 +44,5 @@ __all__ = [
     "read_raw_adp_rates",
     "read_raw_square_transactions",
     "read_raw_square_daily_rollup",
+    "read_raw_square_item_daily_rollup",
 ]

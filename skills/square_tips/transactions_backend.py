@@ -354,6 +354,177 @@ def aggregate_daily_sales(records: list[dict]) -> dict[str, dict]:
     return by_day
 
 
+# ── Item Sales CSV parsing ────────────────────────────────────────
+
+# Column indexes in the Item Sales Detail CSV (verified 2026-05-28 against
+# extracted/downloads/items-2026-04-01-2026-05-01.csv).
+_ITEM_COL = {
+    "date": 0,
+    "time": 1,
+    "time_zone": 2,
+    "category": 3,
+    "item": 4,
+    "qty": 5,
+    "price_point_name": 6,
+    "sku": 7,
+    "modifiers_applied": 8,
+    "gross_sales": 9,
+    "discounts": 10,
+    "net_sales": 11,
+    "tax": 12,
+    "transaction_id": 13,
+    "payment_id": 14,
+    "device_name": 15,
+    "event_type": 18,
+    "location": 19,
+    "dining_option": 20,
+    "unit": 24,
+    "count": 25,
+    "employee": 28,
+    "channel": 30,
+}
+
+
+def parse_item_sales_csv(
+    csv_path: pathlib.Path,
+    *,
+    shop_tz: str = DEFAULT_SHOP_TZ,
+) -> list[dict]:
+    """Parse a downloaded Item Sales Detail CSV into canonical per-item-line records.
+
+    Each output dict represents one item line in a transaction (one CSV row):
+
+        {
+            "date_local": "2026-05-26",       # shop-TZ date
+            "time_local": "19:41:18",          # shop-TZ time (HH:MM:SS)
+            "item_name": "Blue Bondives Smoothie (16oz.)",
+            "category": "Health Boost Smoothies",
+            "qty_sold": 1.0,
+            "gross_sales_cents": 1195,
+            "discount_cents": 0,
+            "net_sales_cents": 1195,
+            "transaction_id": "4ECSV5...",
+            "payment_id": "zZq3pU...",
+            "event_type": "Payment",
+            "location": "Austin Mueller Lake",
+            "employee": "Lindsay Krause",
+            "channel": "Austin Mueller Lake",
+        }
+
+    Timezone conversion mirrors parse_csv(): the CSV's Date/Time/Time Zone
+    columns are in the account's display timezone (varies by operator locale),
+    and we convert to shop_tz (America/Chicago) for date_local bucketing.
+
+    Records are returned sorted by (date_local, time_local) ascending.
+    """
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Item Sales CSV not found: {csv_path}")
+
+    target_tz = ZoneInfo(shop_tz)
+
+    with csv_path.open(encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f))
+
+    if not rows or len(rows) < 2:
+        return []
+
+    header = rows[0]
+    if "Transaction ID" not in header:
+        return []
+
+    records: list[dict] = []
+    for row in rows[1:]:
+        if len(row) <= _ITEM_COL["transaction_id"] or not row[_ITEM_COL["transaction_id"]]:
+            continue
+
+        date_str = row[_ITEM_COL["date"]].strip()
+        time_str = row[_ITEM_COL["time"]].strip()
+        tz_display = row[_ITEM_COL["time_zone"]]
+        try:
+            src_tz = ZoneInfo(_to_iana(tz_display))
+        except ValueError:
+            continue
+
+        try:
+            dt_src = datetime.datetime.fromisoformat(f"{date_str}T{time_str}").replace(
+                tzinfo=src_tz
+            )
+        except ValueError:
+            continue
+        dt_local = dt_src.astimezone(target_tz)
+
+        qty_raw = (row[_ITEM_COL["qty"]] or "").strip()
+        try:
+            qty = float(qty_raw) if qty_raw else 0.0
+        except ValueError:
+            qty = 0.0
+
+        records.append({
+            "date_local": dt_local.date().isoformat(),
+            "time_local": dt_local.strftime("%H:%M:%S"),
+            "item_name": row[_ITEM_COL["item"]].strip(),
+            "category": row[_ITEM_COL["category"]].strip(),
+            "qty_sold": qty,
+            "gross_sales_cents": parse_money_cents(row[_ITEM_COL["gross_sales"]]),
+            "discount_cents": parse_money_cents(row[_ITEM_COL["discounts"]]),
+            "net_sales_cents": parse_money_cents(row[_ITEM_COL["net_sales"]]),
+            "transaction_id": row[_ITEM_COL["transaction_id"]],
+            "payment_id": row[_ITEM_COL["payment_id"]],
+            "event_type": row[_ITEM_COL["event_type"]],
+            "location": row[_ITEM_COL["location"]],
+            "employee": row[_ITEM_COL["employee"]],
+            "channel": row[_ITEM_COL["channel"]],
+        })
+
+    records.sort(key=lambda r: (r["date_local"], r["time_local"]))
+    return records
+
+
+def aggregate_daily_item_stats(records: list[dict]) -> list[dict]:
+    """Roll up item-level records to per-day stats.
+
+    Input: output of parse_item_sales_csv().
+    Output: one dict per shop-local day, sorted by date_local:
+
+        {
+            "date_local": "2026-05-26",
+            "items_sold": 45,              # count of item line rows
+            "units_sold": 48,              # sum of qty_sold (can exceed items_sold)
+            "gross_sales_cents": 67500,
+            "avg_item_price_cents": 1500,  # gross_sales_cents / items_sold (floor div)
+        }
+
+    Only Payment rows are counted (refund line items are excluded so the
+    aggregate reflects actual throughput, matching aggregate_daily_sales
+    order_count semantics).
+    """
+    by_day: dict[str, dict] = {}
+    for r in records:
+        if r.get("event_type") == "Refund":
+            continue
+        d = r["date_local"]
+        bucket = by_day.setdefault(d, {
+            "date_local": d,
+            "items_sold": 0,
+            "units_sold": 0.0,
+            "gross_sales_cents": 0,
+        })
+        bucket["items_sold"] += 1
+        bucket["units_sold"] += r["qty_sold"]
+        bucket["gross_sales_cents"] += r["gross_sales_cents"]
+
+    result = []
+    for d in sorted(by_day):
+        bucket = by_day[d]
+        items = bucket["items_sold"]
+        bucket["units_sold"] = int(round(bucket["units_sold"]))
+        bucket["avg_item_price_cents"] = (
+            bucket["gross_sales_cents"] // items if items > 0 else 0
+        )
+        result.append(bucket)
+    return result
+
+
 # ── Playwright playbook ───────────────────────────────────────────
 
 

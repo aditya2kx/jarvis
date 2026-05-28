@@ -99,6 +99,21 @@ WORKBOOK_SCHEMAS: dict[str, list[dict]] = {
                 "snapshot so the model doesn't need to re-aggregate every refresh."
             ),
         },
+        {
+            "tab_name": "item_daily_rollup",
+            "natural_key_columns": ("date_local",),
+            "header": [
+                "date_local", "items_sold", "units_sold",
+                "gross_sales_cents", "avg_item_price_cents",
+                "scraped_at_utc",
+            ],
+            "notes": (
+                "Per-shop-local-day item-level rollup. Source: "
+                "skills/square_tips/transactions_backend.aggregate_daily_item_stats. "
+                "Natural key: (date_local,). items_sold = count of item line items; "
+                "units_sold = sum of qty; avg_item_price_cents = gross_sales / items_sold."
+            ),
+        },
     ],
     "BHAGA Model": [
         {

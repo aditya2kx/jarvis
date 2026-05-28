@@ -638,31 +638,36 @@ def _kds_navigate_calendar_to_month(page, *, target_year: int, target_month: int
 
 
 def _kds_set_date_range(page, *, start: datetime.date, end: datetime.date) -> None:
-    """Open the KDS calendar picker and select start/end dates via data-test-calendar-month-day."""
-    # Click the date text to open the calendar
-    date_trigger = page.locator("button, span, div").filter(
-        has_text=re.compile(r"\d{2}/\d{2}/\d{4}")
-    ).first
+    """Open the KDS date picker and type start/end dates into the input fields.
+
+    Typing into the Start / End text inputs avoids month-by-month calendar
+    navigation, which breaks when the target date is more than one month back.
+    """
+    date_trigger = page.locator("[data-test-sq-date-filter-dropdown-trigger]")
     date_trigger.wait_for(state="visible", timeout=15_000)
     date_trigger.click()
     page.wait_for_timeout(1_000)
 
-    # Navigate to start date's month if needed
-    _kds_navigate_calendar_to_month(page, target_year=start.year, target_month=start.month)
+    start_str = start.strftime("%m/%d/%Y")
+    end_str = end.strftime("%m/%d/%Y")
 
-    # Click start date
-    start_selector = f"[data-test-calendar-month-day='{start.month}/{start.day}']"
-    page.locator(start_selector).first.click()
+    start_input = page.locator(".begin-date input.input-date")
+    start_input.wait_for(state="visible", timeout=5_000)
+    start_input.click(click_count=3)
+    page.wait_for_timeout(200)
+    start_input.fill(start_str)
+    page.wait_for_timeout(500)
+    page.keyboard.press("Tab")
     page.wait_for_timeout(500)
 
-    # Navigate to end date's month if different
-    if (end.year, end.month) != (start.year, start.month):
-        _kds_navigate_calendar_to_month(page, target_year=end.year, target_month=end.month)
-
-    # Click end date
-    end_selector = f"[data-test-calendar-month-day='{end.month}/{end.day}']"
-    page.locator(end_selector).first.click()
+    end_input = page.locator(".end-date input.input-date")
+    end_input.wait_for(state="visible", timeout=5_000)
+    end_input.click(click_count=3)
+    page.wait_for_timeout(200)
+    end_input.fill(end_str)
     page.wait_for_timeout(500)
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(1_000)
 
 
 def _kds_trigger_export_and_download(

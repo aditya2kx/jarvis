@@ -99,12 +99,16 @@ def _api(url: str, token: str, *, method: str = "GET", data: dict | None = None)
 
 
 def _read_tab(spreadsheet_id: str, tab: str, token: str) -> list[list[Any]]:
-    """Return the full sheet as a list of rows (list[Any] per row). Empty trailing
-    rows/cols are omitted by the API."""
+    """Return the full sheet as a list of rows. Returns [] if the tab doesn't exist."""
     _assert_not_production_sheet(spreadsheet_id)
     range_a1 = urllib.parse.quote(f"{tab}!A:ZZ", safe="")
     url = f"{SHEETS_API}/spreadsheets/{spreadsheet_id}/values/{range_a1}"
-    resp = _api(url, token)
+    try:
+        resp = _api(url, token)
+    except RuntimeError as exc:
+        if "400" in str(exc):
+            return []
+        raise
     return resp.get("values", [])
 
 
@@ -124,6 +128,30 @@ def _write_range(
         f"?valueInputOption={value_input_option}"
     )
     return _api(url, token, method="PUT", data={"values": values})
+
+
+def _add_sheet_if_missing(spreadsheet_id: str, token: str, tab_name: str) -> None:
+    """Create the sheet/tab if it doesn't exist."""
+    _assert_not_production_sheet(spreadsheet_id)
+    meta_url = f"{SHEETS_API}/spreadsheets/{spreadsheet_id}?fields=sheets.properties.title"
+    meta = _api(meta_url, token)
+    existing_tabs = [s["properties"]["title"] for s in meta.get("sheets", [])]
+    if tab_name in existing_tabs:
+        return
+    body = {
+        "requests": [{
+            "addSheet": {
+                "properties": {
+                    "title": tab_name,
+                    "gridProperties": {"frozenRowCount": 1},
+                }
+            }
+        }]
+    }
+    _api(
+        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
+        token, method="POST", data=body,
+    )
 
 
 def _clear_range(spreadsheet_id: str, range_a1: str, token: str) -> dict:
@@ -259,10 +287,11 @@ def _upsert_tab(
 
     raw = _read_tab(spreadsheet_id, tab_name, token)
     if not raw:
-        raise RuntimeError(
-            f"Tab '{tab_name}' in spreadsheet {spreadsheet_id} appears empty. "
-            f"Bootstrap may not have run — expected header row at row 1."
-        )
+        # Tab is missing or empty — bootstrap it with the header row.
+        _add_sheet_if_missing(spreadsheet_id, token, tab_name)
+        header_row = list(header_expected)
+        _write_range(spreadsheet_id, f"{tab_name}!A1", [header_row], token)
+        raw = [header_row]
 
     header_actual = list(raw[0])
     # Truncate trailing notes/sidecar columns (bootstrap puts a freeform note 2

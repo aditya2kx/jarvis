@@ -57,6 +57,7 @@ from skills.tip_ledger_writer import (
     read_raw_adp_shifts,
     read_raw_square_transactions,
 )
+from skills.tip_ledger_writer.reader import read_raw_square_item_daily_rollup
 from skills.tip_pool_allocation.adapter import allocate
 
 
@@ -713,6 +714,7 @@ def build_labor_daily_rows(
     excluded_from_tip_pool: set[str],
     saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD,
     now_ct: datetime.datetime | None = None,
+    items_by_date: dict[str, dict] | None = None,
 ) -> list[list]:
     """One row per day with labor cost / labor% computed from ADP wage rates.
 
@@ -905,6 +907,7 @@ def build_labor_daily_rows(
         if is_refresh_date_complete(datetime.date.fromisoformat(d), now_ct=now_ct)
     ]
     all_dates = _fill_calendar_dates(all_dates)
+    items_by_date = items_by_date or {}
     header = [
         "date", "dow",
         "gross_sales", "discounts", "net_sales", "tip_pool", "net_sales_plus_tips",
@@ -920,6 +923,7 @@ def build_labor_daily_rows(
         "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
         "over_saturation",
         "hours_per_order", "avg_order_price", "avg_net_sales_plus_tips_per_order",
+        "items_sold", "avg_items_per_order", "hours_per_item", "avg_item_price",
     ]
     rows: list[list] = [header]
     for d in all_dates:
@@ -962,6 +966,12 @@ def build_labor_daily_rows(
         avg_order_price = round(net / orders, 2) if orders > 0 else ""
         avg_npt_per_order = round(net_plus_tips / orders, 2) if orders > 0 else ""
 
+        item_day = items_by_date.get(d, {})
+        items_sold = int(item_day.get("items_sold", 0) or 0)
+        avg_items_per_order = round(items_sold / orders, 2) if orders > 0 and items_sold > 0 else ""
+        hours_per_item = round(total_h / items_sold, 3) if items_sold > 0 else ""
+        avg_item_price = round(item_day.get("gross_sales_cents", 0) / 100 / items_sold, 2) if items_sold > 0 else ""
+
         rows.append([
             _iso_date_for_sheet_cell(d),
             datetime.date.fromisoformat(d).strftime("%a"),
@@ -993,6 +1003,10 @@ def build_labor_daily_rows(
             hours_per_order,
             avg_order_price,
             avg_npt_per_order,
+            items_sold if items_sold > 0 else "",
+            avg_items_per_order,
+            hours_per_item,
+            avg_item_price,
         ])
     return rows
 
@@ -1055,6 +1069,7 @@ def build_labor_period_rows(
         "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
         "over_saturation",
         "hours_per_order", "avg_order_price", "avg_net_sales_plus_tips_per_order",
+        "items_sold", "avg_items_per_order", "hours_per_item", "avg_item_price",
     ]
     if len(labor_daily_rows) <= 1:
         return [header]
@@ -1063,7 +1078,7 @@ def build_labor_period_rows(
     # match the header in build_labor_daily_rows: date=0, dow=1, gross=2,
     # disc=3, net=4, pool=5, net_plus_tips=6, orders=7, hourly_hours=8,
     # hourly_cost=9, fulltime_hours=10, fulltime_cost=11,
-    # peak_hour_orders_per_labor_hour=25.
+    # peak_hour_orders_per_labor_hour=25, items_sold=30.
     # `row[0]` is apostrophe-prefixed for Sheets text-literal rendering
     # (`'2026-05-20`); route through coerce_iso_date so the key matches
     # the plain ISO produced by `cursor.isoformat()` below.
@@ -1080,9 +1095,13 @@ def build_labor_period_rows(
             "hourly_c": float(row[9]),
             "fulltime_h": float(row[10]),
             "fulltime_c": float(row[11]),
-            # peak is "" on no-orders/no-labor days; coerce to None so the
-            # max-of-peaks aggregation ignores them.
             "peak": (float(row[25]) if row[25] != "" else None),
+            "items_sold": int(row[30]) if len(row) > 30 and row[30] != "" else 0,
+            "item_gross_dollars": (
+                float(row[33]) * int(row[30])
+                if len(row) > 33 and row[33] != "" and row[30] != ""
+                else 0.0
+            ),
         }
 
     rows: list[list] = [header]
@@ -1093,6 +1112,8 @@ def build_labor_period_rows(
         gross = disc = net = pool = h_hours = h_cost = ft_hours = ft_cost = 0.0
         orders = 0
         days = 0
+        items_sold_sum = 0
+        item_gross_sum = 0.0
         peak_max: float | None = None
         cursor = datetime.date.fromisoformat(start)
         end_d = datetime.date.fromisoformat(end)
@@ -1109,6 +1130,8 @@ def build_labor_period_rows(
                 h_cost += bucket["hourly_c"]
                 ft_hours += bucket["fulltime_h"]
                 ft_cost += bucket["fulltime_c"]
+                items_sold_sum += bucket["items_sold"]
+                item_gross_sum += bucket["item_gross_dollars"]
                 if bucket["peak"] is not None:
                     peak_max = bucket["peak"] if peak_max is None else max(peak_max, bucket["peak"])
                 days += 1
@@ -1129,6 +1152,7 @@ def build_labor_period_rows(
         else:
             over = ""
 
+        p_total_h = h_hours + ft_hours
         rows.append([
             _iso_date_for_sheet_cell(start),
             _iso_date_for_sheet_cell(end),
@@ -1158,9 +1182,13 @@ def build_labor_period_rows(
             orders_per_hr,
             peak_out,
             over,
-            round((h_hours + ft_hours) / orders, 3) if orders > 0 else "",
+            round(p_total_h / orders, 3) if orders > 0 else "",
             round(net / orders, 2) if orders > 0 else "",
             round(net_plus_tips / orders, 2) if orders > 0 else "",
+            items_sold_sum if items_sold_sum > 0 else "",
+            round(items_sold_sum / orders, 2) if orders > 0 and items_sold_sum > 0 else "",
+            round(p_total_h / items_sold_sum, 3) if items_sold_sum > 0 else "",
+            round(item_gross_sum / items_sold_sum, 2) if items_sold_sum > 0 else "",
         ])
     return rows
 
@@ -1207,6 +1235,7 @@ def build_labor_weekly_rows(
         "orders_per_labor_hour", "peak_hour_orders_per_labor_hour",
         "over_saturation",
         "hours_per_order", "avg_order_price", "avg_net_sales_plus_tips_per_order",
+        "items_sold", "avg_items_per_order", "hours_per_item", "avg_item_price",
     ]
     if len(labor_daily_rows) <= 1:
         return [header]
@@ -1229,6 +1258,12 @@ def build_labor_weekly_rows(
             "fulltime_h": float(row[10]),
             "fulltime_c": float(row[11]),
             "peak": (float(row[25]) if row[25] != "" else None),
+            "items_sold": int(row[30]) if len(row) > 30 and row[30] != "" else 0,
+            "item_gross_dollars": (
+                float(row[33]) * int(row[30])
+                if len(row) > 33 and row[33] != "" and row[30] != ""
+                else 0.0
+            ),
         }
 
     if not daily_by_date:
@@ -1254,6 +1289,8 @@ def build_labor_weekly_rows(
         gross = disc = net = pool = h_hours = h_cost = ft_hours = ft_cost = 0.0
         orders = 0
         days = 0
+        items_sold_sum = 0
+        item_gross_sum = 0.0
         peak_max: float | None = None
         for iso_date in weeks[monday]:
             bucket = daily_by_date[iso_date]
@@ -1266,6 +1303,8 @@ def build_labor_weekly_rows(
             h_cost += bucket["hourly_c"]
             ft_hours += bucket["fulltime_h"]
             ft_cost += bucket["fulltime_c"]
+            items_sold_sum += bucket["items_sold"]
+            item_gross_sum += bucket["item_gross_dollars"]
             if bucket["peak"] is not None:
                 peak_max = bucket["peak"] if peak_max is None else max(peak_max, bucket["peak"])
             days += 1
@@ -1290,6 +1329,7 @@ def build_labor_weekly_rows(
         # date-serial coercion (the "W" breaks any date parser). week_start
         # and week_end ARE plain ISO dates and DO get coerced, so they go
         # through _iso_date_for_sheet_cell.
+        w_total_h = h_hours + ft_hours
         rows.append([
             iso_label,
             _iso_date_for_sheet_cell(monday.isoformat()),
@@ -1320,9 +1360,13 @@ def build_labor_weekly_rows(
             orders_per_hr,
             peak_out,
             over,
-            round((h_hours + ft_hours) / orders, 3) if orders > 0 else "",
+            round(w_total_h / orders, 3) if orders > 0 else "",
             round(net / orders, 2) if orders > 0 else "",
             round(net_plus_tips / orders, 2) if orders > 0 else "",
+            items_sold_sum if items_sold_sum > 0 else "",
+            round(items_sold_sum / orders, 2) if orders > 0 and items_sold_sum > 0 else "",
+            round(w_total_h / items_sold_sum, 3) if items_sold_sum > 0 else "",
+            round(item_gross_sum / items_sold_sum, 2) if items_sold_sum > 0 else "",
         ])
     return rows
 
@@ -1534,6 +1578,9 @@ def main() -> int:
     cli.add_argument("--store", required=True)
     cli.add_argument("--dry-run", action="store_true",
                      help="Print row counts per tab and the first few rows but do not write to Sheets.")
+    cli.add_argument("--data-source", choices=["sheets", "bigquery"], default="sheets",
+                     help="Where to read raw data from. 'sheets' (default) reads from Google Sheets; "
+                          "'bigquery' reads from the bhaga dataset in jarvis-bhaga-prod.")
     args = cli.parse_args()
 
     # Bootstrap pointer + sheet-derived aliases/exclusions.
@@ -1555,7 +1602,8 @@ def main() -> int:
         for n, d in sorted(training_through.items()):
             print(f"    {n}: {d.isoformat()}")
 
-    # ARCHITECTURE: model sheet reads canonical data from RAW SHEETS only.
+    # ARCHITECTURE: model sheet reads canonical data from RAW SHEETS only
+    # (default) OR from BigQuery when --data-source=bigquery.
     # The orchestrator (daily_refresh.py) is responsible for keeping the raw
     # sheets in sync with the latest local scrapes via tip_ledger_writer.
     #   * shifts/punches  ← BHAGA ADP Raw   > shifts
@@ -1563,17 +1611,24 @@ def main() -> int:
     #   * earnings (per-period gross+CC tips) is the one remaining local-XLSX
     #     read — there is no raw-sheet schema for it yet (TODO: add a
     #     bhaga_adp_raw > earnings tab so this script becomes 100% sheet-driven).
-    adp_raw_sid = resolve_sheet_id("bhaga_adp_raw", profile)
-    square_raw_sid = resolve_sheet_id("bhaga_square_raw", profile)
     earnings_xlsx = _newest("Earnings*.xlsx")
     if not earnings_xlsx:
         print(f"MISSING input: no Earnings*.xlsx in {DOWNLOADS}; orchestrator must run ADP earnings scrape first.")
         return 1
 
-    print(f"# loading shifts from raw sheet {adp_raw_sid} (BHAGA ADP Raw > shifts)")
-    shifts = read_raw_adp_shifts(adp_raw_sid, account=args.store)
-    print(f"# loading wage_rates from raw sheet {adp_raw_sid} (BHAGA ADP Raw > wage_rates)")
-    wage_rates = read_raw_adp_rates(adp_raw_sid, account=args.store)
+    if args.data_source == "bigquery":
+        from core.datastore_reader import read_shifts_bq, read_transactions_bq, read_wage_rates_bq
+        print("# loading shifts from BigQuery (bhaga.adp_shifts)")
+        shifts = read_shifts_bq()
+        print("# loading wage_rates from BigQuery (bhaga.adp_wage_rates)")
+        wage_rates = read_wage_rates_bq()
+    else:
+        adp_raw_sid = resolve_sheet_id("bhaga_adp_raw", profile)
+        square_raw_sid = resolve_sheet_id("bhaga_square_raw", profile)
+        print(f"# loading shifts from raw sheet {adp_raw_sid} (BHAGA ADP Raw > shifts)")
+        shifts = read_raw_adp_shifts(adp_raw_sid, account=args.store)
+        print(f"# loading wage_rates from raw sheet {adp_raw_sid} (BHAGA ADP Raw > wage_rates)")
+        wage_rates = read_raw_adp_rates(adp_raw_sid, account=args.store)
 
     # Re-resolve employee names through the alias map. Raw-sheet data may
     # contain non-canonical names from backfill runs that predated alias
@@ -1618,9 +1673,26 @@ def main() -> int:
 
     print(f"#   → {len(shifts)} shift rows")
 
-    print(f"# loading transactions from raw sheet {square_raw_sid} (BHAGA Square Raw > transactions)")
-    txns = read_raw_square_transactions(square_raw_sid, account=args.store)
+    if args.data_source == "bigquery":
+        print("# loading transactions from BigQuery (bhaga.square_transactions)")
+        txns = read_transactions_bq()
+    else:
+        print(f"# loading transactions from raw sheet {square_raw_sid} (BHAGA Square Raw > transactions)")
+        txns = read_raw_square_transactions(square_raw_sid, account=args.store)
     print(f"#   → {len(txns)} transaction rows")
+
+    if args.data_source == "bigquery":
+        # Item daily rollup not yet in BQ; skip gracefully
+        item_rollup_rows = []
+    else:
+        print(f"# loading item daily rollup from raw sheet {square_raw_sid} (BHAGA Square Raw > item_daily_rollup)")
+        try:
+            item_rollup_rows = read_raw_square_item_daily_rollup(square_raw_sid, account=args.store)
+        except Exception as exc:  # noqa: BLE001
+            print(f"#   WARN: could not read item_daily_rollup (tab may not exist yet): {exc}")
+            item_rollup_rows = []
+    items_by_date: dict[str, dict] = {r["date_local"]: r for r in item_rollup_rows}
+    print(f"#   → {len(items_by_date)} item-day rows")
 
     print(f"# loading earnings from local XLSX (no raw-sheet equiv yet): {earnings_xlsx.name}")
     earnings = compensation_backend.parse_xlsx(earnings_xlsx, employee_aliases=aliases)
@@ -1775,6 +1847,7 @@ def main() -> int:
         txns=txns, shifts=shifts, wage_rates=wage_rates,
         excluded_from_tip_pool=excluded,
         saturation_threshold=saturation_threshold,
+        items_by_date=items_by_date,
     )
     labor_period_rows = build_labor_period_rows(
         periods=periods, labor_daily_rows=labor_daily_rows,
@@ -1825,17 +1898,19 @@ def main() -> int:
     # 6=net_sales_plus_tips, 9=hourly_labor_cost, 11=fulltime_labor_cost,
     # 12=total_labor_cost, 21=hourly_labor_per_order,
     # 22=fulltime_labor_per_order, 23=total_labor_per_order,
-    # 28=avg_order_price, 29=avg_net_sales_plus_tips_per_order.
+    # 28=avg_order_price, 29=avg_net_sales_plus_tips_per_order,
+    # 33=avg_item_price.
     # (orders=7 is a count; orders_per_labor_hour=24, peak=25 are ratios;
-    # over_saturation=26 is a string flag; hours_per_order=27 is a ratio.)
-    labor_daily_currency = [2, 3, 4, 5, 6, 9, 11, 12, 21, 22, 23, 28, 29]
+    # over_saturation=26 is a string flag; hours_per_order=27 is a ratio;
+    # items_sold=30 is a count; avg_items_per_order=31, hours_per_item=32 are ratios.)
+    labor_daily_currency = [2, 3, 4, 5, 6, 9, 11, 12, 21, 22, 23, 28, 29, 33]
     # labor_period adds 4 lead columns before the labor_daily layout, so
     # shift every labor_daily currency index by +2 (period header inserts
     # is_open + days_covered between date+dow and gross_sales).
-    labor_period_currency = [4, 5, 6, 7, 8, 11, 13, 14, 23, 24, 25, 30, 31]
+    labor_period_currency = [4, 5, 6, 7, 8, 11, 13, 14, 23, 24, 25, 30, 31, 35]
     # labor_weekly adds 5 lead columns (iso_week + week_start + week_end +
     # is_partial + days_covered), so shift labor_daily currency by +3.
-    labor_weekly_currency = [5, 6, 7, 8, 9, 12, 14, 15, 24, 25, 26, 31, 32]
+    labor_weekly_currency = [5, 6, 7, 8, 9, 12, 14, 15, 24, 25, 26, 31, 32, 36]
 
     tab_payloads = [
         {"tab": "config",            "rows": config_rows,      "currency_cols": []},

@@ -76,7 +76,8 @@ from skills.bhaga_config.state_adapter import (
     run_state_dir as _adapter_run_state_dir,
     step_already_done as _adapter_step_already_done,
 )
-from skills.square_tips.runner import download_transactions
+from skills.square_tips.runner import download_item_sales, download_transactions
+from skills._browser_runtime.runtime import launch_persistent
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
 STORE_PROFILES = PROJECT_ROOT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
@@ -493,7 +494,7 @@ def _run_square_pipeline(
     refresh_date: datetime.date,
     dry_run: bool,
 ) -> PipelineResult:
-    """Thread 1: Square transactions scrape → consolidate CSV → GCS upload."""
+    """Thread 1: Square transactions + item sales scrape → consolidate CSV → GCS upload."""
     result = PipelineResult(name="square")
     try:
         if dry_run:
@@ -501,12 +502,71 @@ def _run_square_pipeline(
             result.success = True
             return result
 
-        csv_path = download_transactions(
-            start_date=gap_start, end_date=end_date,
-            store=store, headed=headed,
+        from skills.square_tips.runner import (
+            _ensure_logged_in,
+            _set_date_range,
+            _trigger_export_and_download,
+            TRANSACTIONS_URL,
+            _acquire_scrape_lock,
+            _release_scrape_lock,
         )
+        from skills._browser_runtime.runtime import DOWNLOADS_DIR as _DL_DIR, is_fresh_download
+        import re as _re
+
+        # Check if transactions CSV already exists (idempotency).
+        expected_txn = _DL_DIR / (
+            f"transactions-{gap_start.isoformat()}-"
+            f"{(end_date + datetime.timedelta(days=1)).isoformat()}.csv"
+        )
+        expected_items = _DL_DIR / (
+            f"items-{gap_start.isoformat()}-"
+            f"{(end_date + datetime.timedelta(days=1)).isoformat()}.csv"
+        )
+        txn_fresh = is_fresh_download(expected_txn)
+        items_fresh = is_fresh_download(expected_items)
+
+        if txn_fresh and items_fresh:
+            csv_path = expected_txn
+            item_csv_path = expected_items
+            print(f"[square_pipeline] SKIP browser — both CSVs fresh on disk")
+        else:
+            _acquire_scrape_lock(store)
+            try:
+                with launch_persistent(
+                    portal="square", headed=headed, slow_mo_ms=50,
+                ) as (ctx, page):
+                    _ensure_logged_in(page, store=store)
+
+                    # Download transactions
+                    if txn_fresh:
+                        csv_path = expected_txn
+                        print(f"[square_pipeline] transactions already fresh: {csv_path}")
+                    else:
+                        page.goto(TRANSACTIONS_URL, wait_until="domcontentloaded")
+                        page.locator("button").filter(
+                            has_text=_re.compile(r"\d{2}/\d{2}/\d{4}")
+                        ).first.wait_for(state="visible", timeout=30_000)
+                        page.wait_for_timeout(1_500)
+                        _set_date_range(page, start=gap_start, end=end_date)
+                        csv_path = _trigger_export_and_download(
+                            page, start=gap_start, end=end_date,
+                        )
+                        print(f"[square_pipeline] transactions OK → {csv_path}")
+
+                    # Download item sales in the same session
+                    if items_fresh:
+                        item_csv_path = expected_items
+                        print(f"[square_pipeline] item sales already fresh: {item_csv_path}")
+                    else:
+                        item_csv_path = download_item_sales(
+                            page, start_date=gap_start, end_date=end_date, store=store,
+                        )
+                        print(f"[square_pipeline] item sales OK → {item_csv_path}")
+            finally:
+                _release_scrape_lock()
+
         result.artifacts["square_csv"] = csv_path
-        print(f"[square_pipeline] download OK → {csv_path}")
+        result.artifacts["item_sales_csv"] = item_csv_path
 
         if csv_path is not None:
             total, added = _consolidate_into_master(gap_csv=csv_path)
@@ -954,6 +1014,7 @@ def main() -> int:
 
         if pipeline_name == "square":
             artifacts["square_csv"] = pr.artifacts.get("square_csv")
+            artifacts["item_sales_csv"] = pr.artifacts.get("item_sales_csv")
             master_stats = pr.master_stats
             try:
                 mark_step_done(refresh_date, "square_transactions",
@@ -1035,11 +1096,16 @@ def main() -> int:
 
     failed_steps = {name for name, _ in failures}
     if not args.skip_model and (raw_sheets_ok or (args.skip_square and args.skip_timecard)):
+        model_cmd = [
+            sys.executable, "-m", "agents.bhaga.scripts.update_model_sheet",
+            "--store", args.store,
+        ]
+        if os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery":
+            model_cmd += ["--data-source", "bigquery"]
         ok, val = run_step(
             "update_model_sheet",
             lambda: subprocess.run(
-                [sys.executable, "-m", "agents.bhaga.scripts.update_model_sheet",
-                 "--store", args.store],
+                model_cmd,
                 cwd=str(PROJECT_ROOT), check=True,
             ),
             refresh_date=refresh_date,

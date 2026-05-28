@@ -42,6 +42,7 @@ from skills.tip_ledger_writer import (
     write_raw_square_daily_rollup,
     write_raw_square_transactions,
 )
+from skills.tip_ledger_writer.writer import write_raw_square_item_daily_rollup
 
 # Notify is optional — backfill may run in environments without Slack creds.
 try:
@@ -49,6 +50,23 @@ try:
 except Exception:  # noqa: BLE001
     def new_employee_alert(*args, **kwargs):  # type: ignore[misc]
         return None
+
+
+def _bq_enabled() -> bool:
+    return os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery"
+
+
+def _write_to_bq(table_name: str, rows: list[dict], merge_keys: list[str]) -> int:
+    """Dual-write to BigQuery when enabled. Returns rows affected or 0."""
+    if not _bq_enabled() or not rows:
+        return 0
+    from core.datastore import load_rows
+    try:
+        n = load_rows(table_name, rows, merge_keys=merge_keys)
+        return n
+    except Exception as exc:
+        print(f"  WARN: BigQuery write to {table_name} failed: {exc}")
+        return 0
 
 
 PROJECT = pathlib.Path(project_dir())
@@ -179,6 +197,24 @@ def main() -> int:
                     s = write_raw_adp_shifts(adp_raw_sid, shifts, account=google_account)
                     summaries.append(s)
                     print(f"  shifts: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
+                    # Dual-write to BigQuery
+                    bq_rows = [{
+                        "date": r["date"],
+                        "employee_id": r["employee_id"],
+                        "canonical_name": r.get("employee_name", r["employee_id"]),
+                        "raw_employee_name": r.get("raw_employee_name", ""),
+                        "in_time": r.get("in_time", ""),
+                        "out_time": r.get("out_time", ""),
+                        "regular_hours": float(r.get("regular_hours") or 0),
+                        "ot_hours": float(r.get("ot_hours") or 0),
+                        "doubletime_hours": float(r.get("doubletime_hours") or 0),
+                        "total_hours": float(r.get("total_hours") or 0),
+                        "shift_count": int(r.get("punch_count") or 1),
+                        "scraped_at_utc": r.get("scraped_at_utc", ""),
+                    } for r in shifts]
+                    n_bq = _write_to_bq("adp_shifts", bq_rows, merge_keys=["date", "employee_id"])
+                    if n_bq:
+                        print(f"  shifts (BQ): {n_bq} rows upserted")
 
             if "adp_punches" not in args.skip:
                 if args.dry_run:
@@ -187,6 +223,24 @@ def main() -> int:
                     s = write_raw_adp_punches(adp_raw_sid, punches, account=google_account)
                     summaries.append(s)
                     print(f"  punches: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
+                    # Dual-write to BigQuery
+                    bq_rows = [{
+                        "date": r["date"],
+                        "employee_id": r["employee_id"],
+                        "canonical_name": r.get("employee_name", r["employee_id"]),
+                        "raw_employee_name": r.get("raw_employee_name", ""),
+                        "punch_index": int(r.get("punch_idx_in_day") or 0),
+                        "in_time": r.get("in_time", ""),
+                        "out_time": r.get("out_time", ""),
+                        "regular_hours": float(r.get("regular_hours") or 0),
+                        "ot_hours": float(r.get("ot_hours") or 0),
+                        "doubletime_hours": float(r.get("doubletime_hours") or 0),
+                        "total_hours": float(r.get("total_hours") or 0),
+                        "scraped_at_utc": r.get("scraped_at_utc", ""),
+                    } for r in punches]
+                    n_bq = _write_to_bq("adp_punches", bq_rows, merge_keys=["date", "employee_id", "punch_index"])
+                    if n_bq:
+                        print(f"  punches (BQ): {n_bq} rows upserted")
 
     # ── ADP wage rates ────────────────────────────────────────────
     if "adp_rates" not in args.skip:
@@ -268,6 +322,22 @@ def main() -> int:
                 )
                 summaries.append(s)
                 print(f"  wage_rates: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
+                # Dual-write to BigQuery
+                bq_rows = [{
+                    "employee_id": r["employee_id"],
+                    "canonical_name": r.get("employee_name", r["employee_id"]),
+                    "wage_rate_dollars": float(r["wage_rate_dollars"]) if r.get("wage_rate_dollars") else None,
+                    "ot_rate_dollars": float(r["ot_rate_dollars"]) if r.get("ot_rate_dollars") else None,
+                    "is_salaried": bool(r.get("is_salaried")),
+                    "excluded_from_labor_pct": bool(r.get("excluded_from_labor_pct")),
+                    "excluded_from_tip_pool": bool(r.get("excluded_from_labor_pct")),
+                    "raw_employee_names_json": json.dumps(r.get("raw_employee_names", [])),
+                    "earnings_json": json.dumps(r.get("rate_history", [])),
+                    "scraped_at_utc": r.get("scraped_at_utc", ""),
+                } for r in rates]
+                n_bq = _write_to_bq("adp_wage_rates", bq_rows, merge_keys=["employee_id"])
+                if n_bq:
+                    print(f"  wage_rates (BQ): {n_bq} rows upserted")
 
     # ── Square transactions + daily rollup ────────────────────────
     if "square" not in args.skip:
@@ -286,6 +356,27 @@ def main() -> int:
                 s = write_raw_square_transactions(square_raw_sid, txns, account=google_account)
                 summaries.append(s)
                 print(f"  transactions: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
+                # Dual-write to BigQuery
+                bq_rows = [{
+                    "transaction_id": t["transaction_id"],
+                    "date_local": t["date_local"],
+                    "event_type": t.get("event_type", ""),
+                    "gross_sales_cents": int(t.get("gross_sales_cents") or 0),
+                    "discount_cents": int(t.get("discount_cents") or 0),
+                    "net_sales_cents": int(t.get("net_sales_cents") or 0),
+                    "tip_cents": int(t.get("tip_cents") or 0),
+                    "total_collected_cents": int(t.get("total_collected_cents") or 0),
+                    "net_total_cents": int(t.get("net_total_cents") or 0),
+                    "source": t.get("source", ""),
+                    "staff_name": t.get("staff_name", ""),
+                    "location": t.get("location", ""),
+                    "created_at_src_iso": t.get("created_at_src_iso", ""),
+                    "created_at_local_iso": t.get("created_at_local_iso", ""),
+                    "scraped_at_utc": t.get("scraped_at_utc", ""),
+                } for t in txns]
+                n_bq = _write_to_bq("square_transactions", bq_rows, merge_keys=["transaction_id"])
+                if n_bq:
+                    print(f"  transactions (BQ): {n_bq} rows upserted")
 
             if "square_rollup" not in args.skip:
                 rollup = aggregate_square_daily(txns)
@@ -296,6 +387,40 @@ def main() -> int:
                     s = write_raw_square_daily_rollup(square_raw_sid, rollup, account=google_account)
                     summaries.append(s)
                     print(f"  daily_rollup: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
+                    # Dual-write to BigQuery
+                    bq_rows = [{
+                        "date_local": r["date_local"],
+                        "txn_count": int(r.get("txn_count") or 0),
+                        "gross_sales_cents": int(r.get("gross_sales_cents") or 0),
+                        "tip_cents": int(r.get("tip_cents") or 0),
+                        "net_sales_cents": int(r.get("net_sales_cents") or 0),
+                        "refund_cents": int(r.get("refund_cents") or 0),
+                        "order_count": int(r.get("txn_count") or 0),
+                        "scraped_at_utc": r.get("scraped_at_utc", ""),
+                    } for r in rollup]
+                    n_bq = _write_to_bq("square_daily_rollup", bq_rows, merge_keys=["date_local"])
+                    if n_bq:
+                        print(f"  daily_rollup (BQ): {n_bq} rows upserted")
+
+    # ── Square item sales + item daily rollup ────────────────────
+    if "square" not in args.skip:
+        item_csv = _newest("items-*.csv")
+        if not item_csv:
+            print("WARN: no items-*.csv found — skipping item daily rollup")
+        else:
+            print(f"# parsing Square item sales: {item_csv.name}")
+            item_records = transactions_backend.parse_item_sales_csv(item_csv, shop_tz=shop_tz)
+            item_records = [r for r in item_records if _in_window(r["date_local"])]
+            print(f"  parsed {len(item_records)} item records")
+
+            item_daily = transactions_backend.aggregate_daily_item_stats(item_records)
+            print(f"  computed item daily rollup: {len(item_daily)} days")
+            if args.dry_run:
+                print(f"  DRY: would write {len(item_daily)} item rollup rows")
+            else:
+                s = write_raw_square_item_daily_rollup(square_raw_sid, item_daily, account=google_account)
+                summaries.append(s)
+                print(f"  item_daily_rollup: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
 
     print()
     print("=" * 60)

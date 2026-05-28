@@ -1,0 +1,24 @@
+{
+  "_doc": "Calibrated selectors for the Square KDS Performance Report (https://app.squareup.com/dashboard/kitchen/reports/performance). Used by download_kds_report() in runner.py.",
+  "last_verified": "2026-05-28",
+  "verified_by": "Live browser exploration via user-playwright MCP",
+  "page_urls": {
+    "kds_performance": "https://app.squareup.com/dashboard/kitchen/reports/performance"
+  },
+  "date_picker": {
+    "date_text_trigger": "Click on the displayed date text (e.g. '05/28/2026') to open the calendar picker.",
+    "calendar_day_selector": "[data-test-calendar-month-day='M/D'] — e.g. [data-test-calendar-month-day='5/20'] for May 20. Month is numeric without leading zero, day without leading zero.",
+    "month_back_arrow": "Button with aria-label containing 'previous' or '<' inside the calendar header, navigates to the prior month.",
+    "month_header": "The month/year label inside the calendar header (e.g. 'May 2026') — check this to know if month navigation is needed."
+  },
+  "report_controls": {
+    "run_report_button": "button with name 'Run report' — triggers report generation after date selection.",
+    "export_button": "market-button[aria-label='Export'] — opens the export popover.",
+    "generate_button": "button with name 'Generate' — starts async CSV generation inside the export popover.",
+    "download_button": ".async-report-export-popover__button — appears once CSV generation completes."
+  },
+  "table_layout_reference": {
+    "columns": ["Device Name", "Type", "Location", "Completed Tickets", "Avg. Completion Time"],
+    "notes": "Table appears after Run Report completes. Export produces a per-ticket CSV with: Device Name, Ticket Name, Order Source, Number of Items, Items in Ticket, Completion Time (seconds), Time Created, Time Completed, Time Due, Time Recalled."
+  }
+}

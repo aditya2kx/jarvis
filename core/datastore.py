@@ -1,0 +1,291 @@
+"""BigQuery datastore for BHAGA — canonical structured data store.
+
+Uses Application Default Credentials (ADC), same SA as Cloud Run.
+Provides: schema migrations, read/write helpers.
+
+Gated by BHAGA_DATASTORE env var: set to "bigquery" to enable.
+When unset or set to anything else, all operations gracefully no-op
+(returns empty lists, skips writes) so the laptop flow keeps working
+without a BigQuery dependency.
+"""
+
+from __future__ import annotations
+
+import datetime
+import logging
+import os
+import pathlib
+import re
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+_PROJECT_ID = "jarvis-bhaga-prod"
+_DATASET = "bhaga"
+_MIGRATIONS_DIR = pathlib.Path(__file__).parent / "migrations"
+
+
+def _is_enabled() -> bool:
+    return os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery"
+
+
+def get_client():
+    """Return a BigQuery Client, or None if BQ is disabled/unavailable.
+
+    Auth priority:
+      1. ADC (GOOGLE_APPLICATION_CREDENTIALS env var, or metadata server)
+      2. gcloud CLI user credentials (via `gcloud auth print-access-token`)
+    """
+    if not _is_enabled():
+        return None
+    try:
+        from google.cloud import bigquery
+        try:
+            return bigquery.Client(project=_PROJECT_ID)
+        except Exception:
+            pass
+        creds = _gcloud_credentials()
+        if creds is not None:
+            return bigquery.Client(project=_PROJECT_ID, credentials=creds)
+        logger.warning("No BigQuery credentials available")
+        return None
+    except Exception:
+        logger.warning("BigQuery client init failed; falling back to no-op", exc_info=True)
+        return None
+
+
+def _gcloud_credentials():
+    """Build credentials from the active gcloud CLI session."""
+    import subprocess
+    try:
+        token = subprocess.check_output(
+            ["gcloud", "auth", "print-access-token", f"--project={_PROJECT_ID}"],
+            text=True, stderr=subprocess.DEVNULL, timeout=10,
+        ).strip()
+        if not token:
+            return None
+        from google.oauth2.credentials import Credentials
+        return Credentials(token=token)
+    except Exception:
+        return None
+
+
+def ensure_schema() -> list[str]:
+    """Run pending SQL migrations from core/migrations/ in version order.
+
+    Migration files are named NNN_description.sql (e.g. 001_initial_schema.sql).
+    Returns list of newly-applied migration names.
+    """
+    client = get_client()
+    if client is None:
+        return []
+
+    applied = _get_applied_versions(client)
+    pending = _scan_migration_files()
+    newly_applied: list[str] = []
+
+    for version, name, path in sorted(pending, key=lambda t: t[0]):
+        if version in applied:
+            continue
+        sql = path.read_text()
+        logger.info("Applying migration %03d_%s ...", version, name)
+        for statement in _split_statements(sql):
+            statement = statement.strip()
+            if not statement:
+                continue
+            client.query(statement).result()
+        client.query(
+            f"INSERT INTO `{_PROJECT_ID}.{_DATASET}._schema_migrations` "
+            f"(version, name, applied_at) VALUES (@v, @n, CURRENT_TIMESTAMP())",
+            job_config=_param_config([
+                ("v", "INT64", version),
+                ("n", "STRING", name),
+            ]),
+        ).result()
+        newly_applied.append(f"{version:03d}_{name}")
+        logger.info("  Applied %03d_%s", version, name)
+
+    return newly_applied
+
+
+def load_rows(table_name: str, rows: list[dict], *, merge_keys: list[str] | None = None) -> int:
+    """Bulk-insert rows into a BigQuery table.
+
+    If merge_keys is provided, performs a MERGE (upsert) using those columns
+    as the match condition. Otherwise does a simple INSERT.
+
+    Returns number of rows affected.
+    """
+    client = get_client()
+    if client is None or not rows:
+        return 0
+
+    fq_table = f"`{_PROJECT_ID}.{_DATASET}.{table_name}`"
+    columns = list(rows[0].keys())
+
+    if merge_keys:
+        return _merge_rows(client, fq_table, columns, rows, merge_keys)
+    return _insert_rows(client, fq_table, columns, rows)
+
+
+def read_table(table_name: str, *, where: str = "", limit: int | None = None) -> list[dict]:
+    """Read all rows from a table (with optional WHERE clause)."""
+    sql = f"SELECT * FROM `{_PROJECT_ID}.{_DATASET}.{table_name}`"
+    if where:
+        sql += f" WHERE {where}"
+    if limit is not None:
+        sql += f" LIMIT {limit}"
+    return read_query(sql)
+
+
+def read_query(sql: str) -> list[dict]:
+    """Run arbitrary SQL and return results as list[dict]."""
+    client = get_client()
+    if client is None:
+        return []
+    try:
+        result = client.query(sql).result()
+        return [dict(row) for row in result]
+    except Exception:
+        logger.warning("BigQuery query failed", exc_info=True)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _get_applied_versions(client) -> set[int]:
+    """Read _schema_migrations to find already-applied versions."""
+    try:
+        rows = client.query(
+            f"SELECT version FROM `{_PROJECT_ID}.{_DATASET}._schema_migrations`"
+        ).result()
+        return {row.version for row in rows}
+    except Exception:
+        return set()
+
+
+def _scan_migration_files() -> list[tuple[int, str, pathlib.Path]]:
+    """Scan migrations/ for NNN_name.sql files. Returns [(version, name, path)]."""
+    pattern = re.compile(r"^(\d+)_(.+)\.sql$")
+    results = []
+    if not _MIGRATIONS_DIR.is_dir():
+        return results
+    for f in sorted(_MIGRATIONS_DIR.iterdir()):
+        m = pattern.match(f.name)
+        if m:
+            results.append((int(m.group(1)), m.group(2), f))
+    return results
+
+
+def _split_statements(sql: str) -> list[str]:
+    """Split a SQL file on semicolons, respecting that BigQuery DDL uses
+    semicolons as statement terminators."""
+    return [s.strip() for s in sql.split(";") if s.strip()]
+
+
+def _insert_rows(client, fq_table: str, columns: list[str], rows: list[dict]) -> int:
+    """Simple streaming insert using the client library."""
+    from google.cloud import bigquery
+
+    col_list = ", ".join(columns)
+    placeholders = ", ".join(f"@{c}" for c in columns)
+
+    inserted = 0
+    batch_size = 500
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i : i + batch_size]
+        values_clauses = []
+        params = []
+        for idx, row in enumerate(batch):
+            suffixed_cols = [f"@{c}_{idx}" for c in columns]
+            values_clauses.append(f"({', '.join(suffixed_cols)})")
+            for c in columns:
+                val = row.get(c)
+                params.append((f"{c}_{idx}", _infer_bq_type(val), val))
+
+        sql = f"INSERT INTO {fq_table} ({col_list}) VALUES {', '.join(values_clauses)}"
+        try:
+            client.query(sql, job_config=_param_config(params)).result()
+            inserted += len(batch)
+        except Exception:
+            logger.error("Insert batch failed for %s (batch %d)", fq_table, i // batch_size, exc_info=True)
+            raise
+
+    return inserted
+
+
+def _merge_rows(
+    client, fq_table: str, columns: list[str], rows: list[dict], merge_keys: list[str],
+) -> int:
+    """MERGE (upsert) rows into the target table."""
+    from google.cloud import bigquery
+
+    non_key_cols = [c for c in columns if c not in merge_keys]
+
+    merged = 0
+    batch_size = 200
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i : i + batch_size]
+        source_rows = []
+        params = []
+        for idx, row in enumerate(batch):
+            fields = []
+            for c in columns:
+                val = row.get(c)
+                param_name = f"{c}_{idx}"
+                fields.append(f"@{param_name} AS {c}")
+                params.append((param_name, _infer_bq_type(val), val))
+            source_rows.append(f"SELECT {', '.join(fields)}")
+
+        source_sql = " UNION ALL ".join(source_rows)
+        on_clause = " AND ".join(f"T.{k} = S.{k}" for k in merge_keys)
+        update_clause = ", ".join(f"T.{c} = S.{c}" for c in non_key_cols) if non_key_cols else "T._noop = 1"
+        insert_cols = ", ".join(columns)
+        insert_vals = ", ".join(f"S.{c}" for c in columns)
+
+        sql = (
+            f"MERGE {fq_table} T "
+            f"USING ({source_sql}) S "
+            f"ON {on_clause} "
+            f"WHEN MATCHED THEN UPDATE SET {update_clause} "
+            f"WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})"
+        )
+        try:
+            result = client.query(sql, job_config=_param_config(params)).result()
+            merged += len(batch)
+        except Exception:
+            logger.error("Merge batch failed for %s (batch %d)", fq_table, i // batch_size, exc_info=True)
+            raise
+
+    return merged
+
+
+def _infer_bq_type(value: Any) -> str:
+    """Map a Python value to a BigQuery scalar type name for query parameters."""
+    if value is None:
+        return "STRING"
+    if isinstance(value, bool):
+        return "BOOL"
+    if isinstance(value, int):
+        return "INT64"
+    if isinstance(value, float):
+        return "FLOAT64"
+    if isinstance(value, datetime.datetime):
+        return "TIMESTAMP"
+    if isinstance(value, datetime.date):
+        return "DATE"
+    return "STRING"
+
+
+def _param_config(params: list[tuple[str, str, Any]]):
+    """Build a QueryJobConfig with scalar query parameters."""
+    from google.cloud import bigquery
+
+    return bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter(name, type_, val)
+            for name, type_, val in params
+        ]
+    )

@@ -473,6 +473,9 @@ REVIEW_TUNABLE_KEYS = (
 # will echo back whatever they set. Defaults seed on first run.
 LABOR_TUNABLE_KEYS = (
     "saturation_orders_per_labor_hour",
+    "forecast_target_labor_pct",
+    "forecast_fulltime_weekly_hours",
+    "forecast_target_completion_time_per_item_sec",
 )
 
 # Orders / hourly-labor-hour above which we flag the day as "OVER" capacity.
@@ -558,6 +561,18 @@ def build_config_rows(
          "lower if lines/wait grow at this rate. Only hourly labor counts "
          "toward the denominator (full-timers like managers don't add bar "
          "throughput)."],
+        # ── Forecast/staffing solver tuning ──
+        ["forecast_target_labor_pct",
+         labor_tunables.get("forecast_target_labor_pct", "0.25"),
+         "Total labor cost / net sales target for the staffing solver ceiling. "
+         "Default 25%."],
+        ["forecast_fulltime_weekly_hours",
+         labor_tunables.get("forecast_fulltime_weekly_hours", "40"),
+         "Full-time (manager) weekly hour cap for forecast allocation."],
+        ["forecast_target_completion_time_per_item_sec",
+         labor_tunables.get("forecast_target_completion_time_per_item_sec", "300"),
+         "Target prep time per item in seconds (5 min default). "
+         "Used by the KDS-based staffing solver to compute needed labor hours."],
     ]
     # Echo training exclusions verbatim so they survive the config-tab rewrite.
     # USERS: edit these rows directly in Google Sheets. Set the date to the
@@ -715,6 +730,7 @@ def build_labor_daily_rows(
     saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD,
     now_ct: datetime.datetime | None = None,
     items_by_date: dict[str, dict] | None = None,
+    kds_by_date: dict[str, dict] | None = None,
 ) -> list[list]:
     """One row per day with labor cost / labor% computed from ADP wage rates.
 
@@ -908,6 +924,7 @@ def build_labor_daily_rows(
     ]
     all_dates = _fill_calendar_dates(all_dates)
     items_by_date = items_by_date or {}
+    kds_by_date = kds_by_date or {}
     header = [
         "date", "dow",
         "gross_sales", "discounts", "net_sales", "tip_pool", "net_sales_plus_tips",
@@ -926,6 +943,9 @@ def build_labor_daily_rows(
         "items_sold", "avg_items_per_order", "hours_per_item", "avg_item_price",
         "hourly_hours_per_order", "fulltime_hours_per_order",
         "hourly_hours_per_item", "fulltime_hours_per_item",
+        "kds_completed_tickets", "kds_completed_items",
+        "kds_avg_time_per_item_sec", "kds_median_time_per_item_sec",
+        "kds_pct_tickets_late",
     ]
     rows: list[list] = [header]
     for d in all_dates:
@@ -974,6 +994,17 @@ def build_labor_daily_rows(
         hours_per_item = round(total_h / items_sold, 3) if items_sold > 0 else ""
         avg_item_price = round(item_day.get("gross_sales_cents", 0) / 100 / items_sold, 2) if items_sold > 0 else ""
 
+        kds_day = kds_by_date.get(d, {})
+        kds_tickets = kds_day.get("completed_tickets", "")
+        kds_items = kds_day.get("completed_items", "")
+        kds_avg_tpi = kds_day.get("avg_time_per_item_sec", "")
+        kds_med_tpi = kds_day.get("median_time_per_item_sec", "")
+        kds_pct_late = kds_day.get("pct_tickets_late", "")
+        if isinstance(kds_pct_late, float) and kds_pct_late > 0:
+            kds_pct_late = f"{kds_pct_late:.2%}"
+        elif kds_pct_late == 0.0:
+            kds_pct_late = "0.00%"
+
         rows.append([
             _iso_date_for_sheet_cell(d),
             datetime.date.fromisoformat(d).strftime("%a"),
@@ -1013,6 +1044,11 @@ def build_labor_daily_rows(
             round(b["ex_h"] / orders, 3) if orders > 0 else "",
             round(hourly_h / items_sold, 3) if items_sold > 0 else "",
             round(b["ex_h"] / items_sold, 3) if items_sold > 0 else "",
+            kds_tickets if kds_tickets else "",
+            kds_items if kds_items else "",
+            round(kds_avg_tpi, 1) if isinstance(kds_avg_tpi, (int, float)) else "",
+            round(kds_med_tpi, 1) if isinstance(kds_med_tpi, (int, float)) else "",
+            kds_pct_late if kds_pct_late else "",
         ])
     return rows
 
@@ -1078,6 +1114,9 @@ def build_labor_period_rows(
         "items_sold", "avg_items_per_order", "hours_per_item", "avg_item_price",
         "hourly_hours_per_order", "fulltime_hours_per_order",
         "hourly_hours_per_item", "fulltime_hours_per_item",
+        "kds_completed_tickets", "kds_completed_items",
+        "kds_avg_time_per_item_sec", "kds_median_time_per_item_sec",
+        "kds_pct_tickets_late",
     ]
     if len(labor_daily_rows) <= 1:
         return [header]
@@ -1086,7 +1125,10 @@ def build_labor_period_rows(
     # match the header in build_labor_daily_rows: date=0, dow=1, gross=2,
     # disc=3, net=4, pool=5, net_plus_tips=6, orders=7, hourly_hours=8,
     # hourly_cost=9, fulltime_hours=10, fulltime_cost=11,
-    # peak_hour_orders_per_labor_hour=25, items_sold=30.
+    # peak_hour_orders_per_labor_hour=25, items_sold=30, avg_item_price=33,
+    # KDS: kds_completed_tickets=38, kds_completed_items=39,
+    # kds_avg_time_per_item_sec=40, kds_median_time_per_item_sec=41,
+    # kds_pct_tickets_late=42.
     # `row[0]` is apostrophe-prefixed for Sheets text-literal rendering
     # (`'2026-05-20`); route through coerce_iso_date so the key matches
     # the plain ISO produced by `cursor.isoformat()` below.
@@ -1110,6 +1152,8 @@ def build_labor_period_rows(
                 if len(row) > 33 and row[33] != "" and row[30] != ""
                 else 0.0
             ),
+            "kds_tickets": int(row[38]) if len(row) > 38 and row[38] != "" else 0,
+            "kds_items": int(row[39]) if len(row) > 39 and row[39] != "" else 0,
         }
 
     rows: list[list] = [header]
@@ -1122,6 +1166,8 @@ def build_labor_period_rows(
         days = 0
         items_sold_sum = 0
         item_gross_sum = 0.0
+        kds_tickets_sum = 0
+        kds_items_sum = 0
         peak_max: float | None = None
         cursor = datetime.date.fromisoformat(start)
         end_d = datetime.date.fromisoformat(end)
@@ -1140,6 +1186,8 @@ def build_labor_period_rows(
                 ft_cost += bucket["fulltime_c"]
                 items_sold_sum += bucket["items_sold"]
                 item_gross_sum += bucket["item_gross_dollars"]
+                kds_tickets_sum += bucket["kds_tickets"]
+                kds_items_sum += bucket["kds_items"]
                 if bucket["peak"] is not None:
                     peak_max = bucket["peak"] if peak_max is None else max(peak_max, bucket["peak"])
                 days += 1
@@ -1161,6 +1209,13 @@ def build_labor_period_rows(
             over = ""
 
         p_total_h = h_hours + ft_hours
+        # KDS period aggregates: weighted avg not meaningful for time-per-item,
+        # so we report sum of tickets/items (throughput) and leave per-item
+        # metrics blank at period grain (they're day-level operational metrics).
+        kds_avg_tpi_period = (
+            "" if kds_items_sum == 0
+            else ""  # left blank intentionally; per-item time is day-level only
+        )
         rows.append([
             _iso_date_for_sheet_cell(start),
             _iso_date_for_sheet_cell(end),
@@ -1201,6 +1256,11 @@ def build_labor_period_rows(
             round(ft_hours / orders, 3) if orders > 0 else "",
             round(h_hours / items_sold_sum, 3) if items_sold_sum > 0 else "",
             round(ft_hours / items_sold_sum, 3) if items_sold_sum > 0 else "",
+            kds_tickets_sum if kds_tickets_sum > 0 else "",
+            kds_items_sum if kds_items_sum > 0 else "",
+            "",  # kds_avg_time_per_item_sec — day-level only
+            "",  # kds_median_time_per_item_sec — day-level only
+            "",  # kds_pct_tickets_late — day-level only
         ])
     return rows
 
@@ -1250,6 +1310,9 @@ def build_labor_weekly_rows(
         "items_sold", "avg_items_per_order", "hours_per_item", "avg_item_price",
         "hourly_hours_per_order", "fulltime_hours_per_order",
         "hourly_hours_per_item", "fulltime_hours_per_item",
+        "kds_completed_tickets", "kds_completed_items",
+        "kds_avg_time_per_item_sec", "kds_median_time_per_item_sec",
+        "kds_pct_tickets_late",
     ]
     if len(labor_daily_rows) <= 1:
         return [header]
@@ -1278,6 +1341,8 @@ def build_labor_weekly_rows(
                 if len(row) > 33 and row[33] != "" and row[30] != ""
                 else 0.0
             ),
+            "kds_tickets": int(row[38]) if len(row) > 38 and row[38] != "" else 0,
+            "kds_items": int(row[39]) if len(row) > 39 and row[39] != "" else 0,
         }
 
     if not daily_by_date:
@@ -1305,6 +1370,8 @@ def build_labor_weekly_rows(
         days = 0
         items_sold_sum = 0
         item_gross_sum = 0.0
+        kds_tickets_sum = 0
+        kds_items_sum = 0
         peak_max: float | None = None
         for iso_date in weeks[monday]:
             bucket = daily_by_date[iso_date]
@@ -1319,6 +1386,8 @@ def build_labor_weekly_rows(
             ft_cost += bucket["fulltime_c"]
             items_sold_sum += bucket["items_sold"]
             item_gross_sum += bucket["item_gross_dollars"]
+            kds_tickets_sum += bucket["kds_tickets"]
+            kds_items_sum += bucket["kds_items"]
             if bucket["peak"] is not None:
                 peak_max = bucket["peak"] if peak_max is None else max(peak_max, bucket["peak"])
             days += 1
@@ -1385,6 +1454,11 @@ def build_labor_weekly_rows(
             round(ft_hours / orders, 3) if orders > 0 else "",
             round(h_hours / items_sold_sum, 3) if items_sold_sum > 0 else "",
             round(ft_hours / items_sold_sum, 3) if items_sold_sum > 0 else "",
+            kds_tickets_sum if kds_tickets_sum > 0 else "",
+            kds_items_sum if kds_items_sum > 0 else "",
+            "",  # kds_avg_time_per_item_sec — day-level only
+            "",  # kds_median_time_per_item_sec — day-level only
+            "",  # kds_pct_tickets_late — day-level only
         ])
     return rows
 
@@ -1861,11 +1935,23 @@ def main() -> int:
     daily_rows, daily_summary = build_daily_rows(
         txns=txns, shifts=shifts, excluded=excluded, training_through=training_through,
     )
+    # Load KDS daily data from raw sheet (graceful fallback if tab doesn't exist yet)
+    kds_by_date: dict[str, dict] = {}
+    if args.data_source != "bigquery":
+        try:
+            from skills.tip_ledger_writer.reader import read_raw_kds_daily
+            kds_rows = read_raw_kds_daily(square_raw_sid, account=args.store)
+            kds_by_date = {r["date_local"]: r for r in kds_rows}
+            print(f"#   → {len(kds_by_date)} KDS-day rows")
+        except Exception as exc:  # noqa: BLE001
+            print(f"#   WARN: could not read kds_daily (tab may not exist yet): {exc}")
+
     labor_daily_rows = build_labor_daily_rows(
         txns=txns, shifts=shifts, wage_rates=wage_rates,
         excluded_from_tip_pool=excluded,
         saturation_threshold=saturation_threshold,
         items_by_date=items_by_date,
+        kds_by_date=kds_by_date,
     )
     labor_period_rows = build_labor_period_rows(
         periods=periods, labor_daily_rows=labor_daily_rows,
@@ -1922,15 +2008,41 @@ def main() -> int:
     # over_saturation=26 is a string flag; hours_per_order=27 is a ratio;
     # items_sold=30 is a count; avg_items_per_order=31, hours_per_item=32 are ratios;
     # hourly_hours_per_order=34, fulltime_hours_per_order=35,
-    # hourly_hours_per_item=36, fulltime_hours_per_item=37 are ratios.)
+    # hourly_hours_per_item=36, fulltime_hours_per_item=37 are ratios;
+    # kds_completed_tickets=38 is a count; kds_completed_items=39 is a count;
+    # kds_avg_time_per_item_sec=40 is seconds; kds_median_time_per_item_sec=41;
+    # kds_pct_tickets_late=42 is a percentage string.)
     labor_daily_currency = [2, 3, 4, 5, 6, 9, 11, 12, 21, 22, 23, 28, 29, 33]
     # labor_period adds 4 lead columns before the labor_daily layout, so
     # shift every labor_daily currency index by +2 (period header inserts
     # is_open + days_covered between date+dow and gross_sales).
+    # KDS columns (40-44 in period) are counts/ratios/seconds, NOT currency.
     labor_period_currency = [4, 5, 6, 7, 8, 11, 13, 14, 23, 24, 25, 30, 31, 35]
     # labor_weekly adds 5 lead columns (iso_week + week_start + week_end +
     # is_partial + days_covered), so shift labor_daily currency by +3.
+    # KDS columns (41-45 in weekly) are counts/ratios/seconds, NOT currency.
     labor_weekly_currency = [5, 6, 7, 8, 9, 12, 14, 15, 24, 25, 26, 31, 32, 36]
+
+    # ── Forecast tab ──────────────────────────────────────────────────
+    from agents.bhaga.scripts.forecast import (
+        build_labor_daily_forecast_rows,
+        backfill_forecast_errors,
+    )
+    from core.config_loader import get_forecast_config
+
+    forecast_config = get_forecast_config(config_rows)
+    forecast_rows = build_labor_daily_forecast_rows(
+        labor_daily_rows=labor_daily_rows,
+        wage_rates=wage_rates,
+        config=forecast_config,
+    )
+    # Backfill error columns for past forecast rows where actuals now exist.
+    # On the first run there are no past forecasts; on subsequent runs the
+    # forecast tab accumulates history.
+    forecast_rows = backfill_forecast_errors(
+        forecast_rows=forecast_rows,
+        labor_daily_rows=labor_daily_rows,
+    )
 
     tab_payloads = [
         {"tab": "config",            "rows": config_rows,      "currency_cols": []},
@@ -1938,6 +2050,7 @@ def main() -> int:
         {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": labor_daily_currency},
         {"tab": "labor_weekly",      "rows": labor_weekly_rows, "currency_cols": labor_weekly_currency},
         {"tab": "labor_period",      "rows": labor_period_rows, "currency_cols": labor_period_currency},
+        {"tab": "labor_daily_forecast", "rows": forecast_rows, "currency_cols": labor_daily_currency},
         {"tab": "tip_alloc_period",  "rows": period_rows,      "currency_cols": [6, 7, 8, 10, 11]},
         {"tab": "tip_alloc_daily",   "rows": day_alloc_rows,   "currency_cols": [6, 9]},
         {"tab": "period_summary",    "rows": summary_rows,     "currency_cols": [7, 8, 9, 10]},

@@ -161,3 +161,14 @@ def read_raw_square_item_daily_rollup(spreadsheet_id: str, *, account: str = "pa
     gross_sales_cents (int), avg_item_price_cents (int), scraped_at_utc.
     """
     return _read_raw_tab(spreadsheet_id, "BHAGA Square Raw", "item_daily_rollup", account=account)
+
+
+def read_raw_kds_daily(spreadsheet_id: str, *, account: str = "palmetto") -> list[dict]:
+    """Return all rows of BHAGA Square Raw > kds_daily as list[dict].
+
+    Each record: date_local, completed_tickets (int), completed_items (int),
+    avg_completion_time_sec (float), avg_time_per_item_sec (float),
+    median_time_per_item_sec (float), pct_tickets_late (float),
+    shift_start (str HH:MM), shift_end (str HH:MM), scraped_at_utc.
+    """
+    return _read_raw_tab(spreadsheet_id, "BHAGA Square Raw", "kds_daily", account=account)

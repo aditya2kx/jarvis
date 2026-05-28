@@ -114,6 +114,23 @@ WORKBOOK_SCHEMAS: dict[str, list[dict]] = {
                 "units_sold = sum of qty; avg_item_price_cents = gross_sales / items_sold."
             ),
         },
+        {
+            "tab_name": "kds_daily",
+            "natural_key_columns": ("date_local",),
+            "header": [
+                "date_local", "completed_tickets", "completed_items",
+                "avg_completion_time_sec", "avg_time_per_item_sec",
+                "median_time_per_item_sec", "pct_tickets_late",
+                "shift_start", "shift_end",
+                "scraped_at_utc",
+            ],
+            "notes": (
+                "Per-shop-local-day KDS performance aggregates. Source: "
+                "skills/square_tips/transactions_backend.aggregate_daily_kds_stats. "
+                "Natural key: (date_local,). Filters outlier tickets with "
+                "completion_time < 15s (KDS cleared without actual prep)."
+            ),
+        },
     ],
     "BHAGA Model": [
         {

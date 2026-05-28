@@ -199,6 +199,42 @@ def load_env(path):
     return env
 
 
+# ── Forecast config keys ──────────────────────────────────────────
+
+_FORECAST_DEFAULTS = {
+    "forecast_target_labor_pct": 0.25,
+    "forecast_fulltime_weekly_hours": 40,
+    "forecast_target_completion_time_per_item_sec": 300,
+}
+
+
+def get_forecast_config(config_rows: list[list] | None = None) -> dict:
+    """Read forecast configuration from the config tab rows.
+
+    Args:
+        config_rows: The raw [[key, value, notes], ...] from the model sheet's
+            config tab. If None, returns defaults.
+
+    Returns dict with keys:
+        forecast_target_labor_pct (float, default 0.25)
+        forecast_fulltime_weekly_hours (float, default 40)
+        forecast_target_completion_time_per_item_sec (float, default 300)
+    """
+    result = dict(_FORECAST_DEFAULTS)
+    if config_rows is None:
+        return result
+    for row in config_rows:
+        if not row or len(row) < 2:
+            continue
+        key = str(row[0]).strip()
+        if key in _FORECAST_DEFAULTS:
+            try:
+                result[key] = float(row[1])
+            except (ValueError, TypeError):
+                pass
+    return result
+
+
 def refresh_access_token(account=None):
     """Refresh and return a Google API access token.
 

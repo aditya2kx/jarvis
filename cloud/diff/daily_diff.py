@@ -71,7 +71,7 @@ SHEET_PAIRS: list[dict[str, str]] = [
     },
 ]
 
-IGNORED_TABS = frozenset({"config"})
+IGNORED_TABS = frozenset({"config", "labor_daily_forecast"})
 
 IGNORED_COLUMNS = frozenset({
     "scraped_at_utc",
@@ -88,6 +88,11 @@ IGNORED_COLUMNS = frozenset({
     "fulltime_hours_per_order",
     "hourly_hours_per_item",
     "fulltime_hours_per_item",
+    "kds_completed_tickets",
+    "kds_completed_items",
+    "kds_avg_time_per_item_sec",
+    "kds_median_time_per_item_sec",
+    "kds_pct_tickets_late",
 })
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")

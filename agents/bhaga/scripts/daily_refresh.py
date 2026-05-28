@@ -76,7 +76,7 @@ from skills.bhaga_config.state_adapter import (
     run_state_dir as _adapter_run_state_dir,
     step_already_done as _adapter_step_already_done,
 )
-from skills.square_tips.runner import download_item_sales, download_transactions
+from skills.square_tips.runner import download_item_sales, download_kds_report, download_transactions
 from skills._browser_runtime.runtime import launch_persistent
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -493,8 +493,9 @@ def _run_square_pipeline(
     headed: bool,
     refresh_date: datetime.date,
     dry_run: bool,
+    skip_kds: bool = False,
 ) -> PipelineResult:
-    """Thread 1: Square transactions + item sales scrape → consolidate CSV → GCS upload."""
+    """Thread 1: Square transactions + item sales + KDS scrape → consolidate CSV → GCS upload."""
     result = PipelineResult(name="square")
     try:
         if dry_run:
@@ -525,10 +526,20 @@ def _run_square_pipeline(
         txn_fresh = is_fresh_download(expected_txn)
         items_fresh = is_fresh_download(expected_items)
 
-        if txn_fresh and items_fresh:
+        # Check KDS freshness
+        from skills._browser_runtime.runtime import DOWNLOADS_DIR as _DL_DIR2
+        expected_kds = _DL_DIR2 / (
+            f"kds-{gap_start.isoformat()}-"
+            f"{(end_date + datetime.timedelta(days=1)).isoformat()}.csv"
+        )
+        kds_fresh = is_fresh_download(expected_kds) if not skip_kds else True
+        needs_kds = not skip_kds and not kds_fresh and not step_already_done(refresh_date, "square_kds")
+
+        if txn_fresh and items_fresh and (not needs_kds or kds_fresh):
             csv_path = expected_txn
             item_csv_path = expected_items
-            print(f"[square_pipeline] SKIP browser — both CSVs fresh on disk")
+            kds_csv_path = expected_kds if not skip_kds and expected_kds.exists() else None
+            print(f"[square_pipeline] SKIP browser — all CSVs fresh on disk")
         else:
             _acquire_scrape_lock(store)
             try:
@@ -562,11 +573,21 @@ def _run_square_pipeline(
                             page, start_date=gap_start, end_date=end_date, store=store,
                         )
                         print(f"[square_pipeline] item sales OK → {item_csv_path}")
+
+                    # Download KDS report in the same session
+                    if needs_kds:
+                        kds_csv_path = download_kds_report(
+                            page, start_date=gap_start, end_date=end_date, store=store,
+                        )
+                        print(f"[square_pipeline] KDS OK → {kds_csv_path}")
+                    else:
+                        kds_csv_path = expected_kds if expected_kds.exists() else None
             finally:
                 _release_scrape_lock()
 
         result.artifacts["square_csv"] = csv_path
         result.artifacts["item_sales_csv"] = item_csv_path
+        result.artifacts["kds_csv"] = kds_csv_path
 
         if csv_path is not None:
             total, added = _consolidate_into_master(gap_csv=csv_path)
@@ -792,6 +813,8 @@ def main() -> int:
     cli.add_argument("--skip-rates", action="store_true",
                      help="Shortcut for --include-rates=no.")
     cli.add_argument("--skip-square", action="store_true")
+    cli.add_argument("--skip-kds", action="store_true",
+                     help="Skip KDS performance report scrape.")
     cli.add_argument("--skip-timecard", action="store_true")
     cli.add_argument("--skip-adp", action="store_true",
                      help="Alias for --skip-timecard (skip ADP scrape).")
@@ -967,6 +990,7 @@ def main() -> int:
                 headed=headed,
                 refresh_date=refresh_date,
                 dry_run=args.dry_run,
+                skip_kds=args.skip_kds,
             )
             futures[sq_future] = "square"
 
@@ -1015,11 +1039,14 @@ def main() -> int:
         if pipeline_name == "square":
             artifacts["square_csv"] = pr.artifacts.get("square_csv")
             artifacts["item_sales_csv"] = pr.artifacts.get("item_sales_csv")
+            artifacts["kds_csv"] = pr.artifacts.get("kds_csv")
             master_stats = pr.master_stats
             try:
                 mark_step_done(refresh_date, "square_transactions",
                                note=f"rows_added={pr.master_stats.get('rows_added', 0)}")
                 mark_step_done(refresh_date, "consolidate_csv")
+                if pr.artifacts.get("kds_csv"):
+                    mark_step_done(refresh_date, "square_kds")
             except Exception as mark_exc:  # noqa: BLE001
                 print(f"  [square] WARN: marker write failed: {mark_exc}")
 

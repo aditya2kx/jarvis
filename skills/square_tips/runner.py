@@ -37,6 +37,7 @@ from skills.square_tips.transactions_backend import parse_csv, get_credentials
 LOGIN_URL = "https://app.squareup.com/login"
 TRANSACTIONS_URL = "https://app.squareup.com/dashboard/sales/transactions"
 ITEM_SALES_URL = "https://app.squareup.com/dashboard/sales/reports/item-sales"
+KDS_PERFORMANCE_URL = "https://app.squareup.com/dashboard/kitchen/reports/performance"
 
 
 def _is_on_login(url: str) -> bool:
@@ -608,6 +609,196 @@ def _download_item_sales_with_page(
 
     _set_item_sales_date_range(page, start=start_date, end=end_date)
     return _trigger_item_sales_export(page, start=start_date, end=end_date)
+
+
+def _kds_navigate_calendar_to_month(page, *, target_year: int, target_month: int) -> None:
+    """If the KDS calendar is showing a different month, click the back arrow until we reach it."""
+    import calendar
+    month_names = {i: calendar.month_name[i] for i in range(1, 13)}
+    target_label = f"{month_names[target_month]} {target_year}"
+
+    for _ in range(12):
+        header = page.locator("[class*='calendar'] h2, [class*='calendar'] [class*='header'], [class*='month-label']").first
+        try:
+            text = header.text_content(timeout=3_000) or ""
+        except Exception:
+            break
+        if target_label.lower() in text.lower():
+            return
+        # Click the back/previous arrow
+        back_btn = page.locator(
+            "button[aria-label*='previous'], button[aria-label*='Previous'], "
+            "button[aria-label*='back'], [class*='calendar'] button:first-child"
+        ).first
+        try:
+            back_btn.click(timeout=3_000)
+            page.wait_for_timeout(500)
+        except Exception:
+            break
+
+
+def _kds_set_date_range(page, *, start: datetime.date, end: datetime.date) -> None:
+    """Open the KDS calendar picker and select start/end dates via data-test-calendar-month-day."""
+    # Click the date text to open the calendar
+    date_trigger = page.locator("button, span, div").filter(
+        has_text=re.compile(r"\d{2}/\d{2}/\d{4}")
+    ).first
+    date_trigger.wait_for(state="visible", timeout=15_000)
+    date_trigger.click()
+    page.wait_for_timeout(1_000)
+
+    # Navigate to start date's month if needed
+    _kds_navigate_calendar_to_month(page, target_year=start.year, target_month=start.month)
+
+    # Click start date
+    start_selector = f"[data-test-calendar-month-day='{start.month}/{start.day}']"
+    page.locator(start_selector).first.click()
+    page.wait_for_timeout(500)
+
+    # Navigate to end date's month if different
+    if (end.year, end.month) != (start.year, start.month):
+        _kds_navigate_calendar_to_month(page, target_year=end.year, target_month=end.month)
+
+    # Click end date
+    end_selector = f"[data-test-calendar-month-day='{end.month}/{end.day}']"
+    page.locator(end_selector).first.click()
+    page.wait_for_timeout(500)
+
+
+def _kds_trigger_export_and_download(
+    page,
+    *,
+    start: datetime.date,
+    end: datetime.date,
+    max_generate_wait_s: int = 300,
+) -> pathlib.Path:
+    """Click Export -> Generate -> wait -> Download for KDS report."""
+    # Click the Export button
+    export_btn = page.locator("market-button[aria-label='Export'], button[aria-label='Export']").first
+    export_btn.wait_for(state="visible", timeout=10_000)
+    export_btn.click()
+    page.wait_for_timeout(1_000)
+
+    # Click Generate
+    gen_btn = page.get_by_role("button", name=re.compile(r"Generate", re.I)).first
+    gen_btn.wait_for(state="visible", timeout=10_000)
+    gen_btn.click()
+
+    # Wait for Download button to appear
+    deadline = time.monotonic() + max_generate_wait_s
+    while time.monotonic() < deadline:
+        try:
+            dl_btn = page.locator(".async-report-export-popover__button").first
+            if dl_btn.is_visible(timeout=500):
+                break
+        except Exception:
+            pass
+        # Also try by role as fallback
+        try:
+            dl_btn = page.get_by_role("button", name=re.compile(r"Download", re.I)).first
+            if dl_btn.is_visible(timeout=500):
+                break
+        except Exception:
+            pass
+        time.sleep(2)
+    else:
+        raise RuntimeError(
+            f"KDS Generate CSV did not complete within {max_generate_wait_s}s."
+        )
+
+    rename = f"kds-{start.isoformat()}-{(end + datetime.timedelta(days=1)).isoformat()}.csv"
+    return download_to(
+        page,
+        trigger=lambda: page.locator(
+            ".async-report-export-popover__button, "
+            "button:has-text('Download')"
+        ).first.click(),
+        rename_to=rename,
+        timeout_ms=120_000,
+    )
+
+
+def download_kds_report(
+    page=None,
+    *,
+    start_date: datetime.date,
+    end_date: datetime.date,
+    store: str = "palmetto",
+    headed: bool = True,
+    slow_mo_ms: int = 50,
+) -> pathlib.Path:
+    """Download the KDS Performance Report CSV for [start_date, end_date] inclusive.
+
+    Can be called in two modes:
+      1. With a ``page`` argument — reuses an already-logged-in Playwright page
+         (same-session use alongside transactions + item-sales).
+      2. Without ``page`` (page=None) — opens its own browser session and logs in.
+
+    Returns the path to the downloaded CSV in extracted/downloads/.
+
+    The KDS report is at /dashboard/kitchen/reports/performance. Flow:
+      1. Navigate to KDS page
+      2. Click date text to open calendar picker
+      3. Select start date via [data-test-calendar-month-day='M/D']
+      4. Select end date via same selector
+      5. Click "Run report"
+      6. Wait for table to load
+      7. Click Export -> Generate -> Download
+    """
+    expected = DOWNLOADS_DIR / (
+        f"kds-{start_date.isoformat()}-"
+        f"{(end_date + datetime.timedelta(days=1)).isoformat()}.csv"
+    )
+    if is_fresh_download(expected):
+        print(f"[square_kds] SKIP browser — fresh CSV already on disk: {expected}")
+        return expected
+
+    if page is not None:
+        return _download_kds_with_page(page, start_date=start_date, end_date=end_date)
+
+    _acquire_scrape_lock(store)
+    try:
+        with launch_persistent(
+            portal="square", headed=headed, slow_mo_ms=slow_mo_ms,
+        ) as (ctx, p):
+            _ensure_logged_in(p, store=store)
+            return _download_kds_with_page(p, start_date=start_date, end_date=end_date)
+    finally:
+        _release_scrape_lock()
+
+
+def _download_kds_with_page(
+    page,
+    *,
+    start_date: datetime.date,
+    end_date: datetime.date,
+) -> pathlib.Path:
+    """Internal: navigate to KDS performance report and export CSV."""
+    page.goto(KDS_PERFORMANCE_URL, wait_until="domcontentloaded")
+    page.wait_for_timeout(3_000)
+
+    # Set the date range via calendar picker
+    _kds_set_date_range(page, start=start_date, end=end_date)
+
+    # Click "Run report"
+    run_btn = page.get_by_role("button", name=re.compile(r"Run\s+report", re.I)).first
+    run_btn.wait_for(state="visible", timeout=10_000)
+    run_btn.click()
+
+    # Wait for the report table to load (look for table content or a known column header)
+    page.wait_for_timeout(3_000)
+    try:
+        page.locator("table, [class*='report-table'], [class*='data-table']").first.wait_for(
+            state="visible", timeout=30_000,
+        )
+    except Exception:
+        # Fallback: wait for Export button to become enabled (signals report ready)
+        page.locator(
+            "market-button[aria-label='Export'], button[aria-label='Export']"
+        ).first.wait_for(state="visible", timeout=30_000)
+    page.wait_for_timeout(1_500)
+
+    return _kds_trigger_export_and_download(page, start=start_date, end=end_date)
 
 
 def main() -> int:

@@ -525,6 +525,196 @@ def aggregate_daily_item_stats(records: list[dict]) -> list[dict]:
     return result
 
 
+# ── KDS CSV parsing ───────────────────────────────────────────────
+
+
+def parse_kds_csv(
+    csv_path: pathlib.Path,
+    *,
+    shop_tz: str = DEFAULT_SHOP_TZ,
+) -> list[dict]:
+    """Parse the KDS kitchen-report.csv into a list of ticket dicts.
+
+    CSV columns: Device Name, Ticket Name, Order Source, Number of Items,
+    Items in Ticket, Completion Time (seconds), Time Created, Time Completed,
+    Time Due, Time Recalled.
+
+    Each output dict:
+        {
+            "device_name": str,
+            "ticket_name": str,
+            "order_source": str,
+            "num_items": int,
+            "items_in_ticket": str,
+            "completion_time_sec": float,
+            "time_created": datetime (shop-tz aware),
+            "time_completed": datetime (shop-tz aware),
+            "time_due": datetime | None,
+            "time_recalled": datetime | None,
+            "date_local": "YYYY-MM-DD",
+        }
+    """
+    if not csv_path.exists():
+        raise FileNotFoundError(f"KDS CSV not found: {csv_path}")
+
+    target_tz = ZoneInfo(shop_tz)
+
+    with csv_path.open(encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            return []
+
+        records: list[dict] = []
+        for row in reader:
+            device = (row.get("Device Name") or "").strip()
+            ticket = (row.get("Ticket Name") or "").strip()
+            order_source = (row.get("Order Source") or "").strip()
+
+            num_items_raw = (row.get("Number of Items") or "").strip()
+            try:
+                num_items = int(num_items_raw) if num_items_raw else 0
+            except ValueError:
+                num_items = 0
+
+            comp_time_raw = (row.get("Completion Time (seconds)") or "").strip()
+            try:
+                completion_time_sec = float(comp_time_raw) if comp_time_raw else 0.0
+            except ValueError:
+                completion_time_sec = 0.0
+
+            time_created_raw = (row.get("Time Created") or "").strip()
+            time_completed_raw = (row.get("Time Completed") or "").strip()
+            time_due_raw = (row.get("Time Due") or "").strip()
+            time_recalled_raw = (row.get("Time Recalled") or "").strip()
+
+            def _parse_ts(s: str):
+                if not s:
+                    return None
+                try:
+                    dt = datetime.datetime.fromisoformat(s)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=target_tz)
+                    else:
+                        dt = dt.astimezone(target_tz)
+                    return dt
+                except ValueError:
+                    # Try common formats
+                    for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                        try:
+                            dt = datetime.datetime.strptime(s, fmt).replace(tzinfo=target_tz)
+                            return dt
+                        except ValueError:
+                            continue
+                    return None
+
+            created = _parse_ts(time_created_raw)
+            completed = _parse_ts(time_completed_raw)
+            due = _parse_ts(time_due_raw)
+            recalled = _parse_ts(time_recalled_raw)
+
+            if created is None:
+                continue
+
+            date_local = created.date().isoformat()
+
+            records.append({
+                "device_name": device,
+                "ticket_name": ticket,
+                "order_source": order_source,
+                "num_items": num_items,
+                "items_in_ticket": (row.get("Items in Ticket") or "").strip(),
+                "completion_time_sec": completion_time_sec,
+                "time_created": created,
+                "time_completed": completed,
+                "time_due": due,
+                "time_recalled": recalled,
+                "date_local": date_local,
+            })
+
+    records.sort(key=lambda r: r["time_created"])
+    return records
+
+
+def aggregate_daily_kds_stats(tickets: list[dict]) -> dict[str, dict]:
+    """Aggregate per-ticket KDS data into daily stats.
+
+    Returns {date_iso: {
+        completed_tickets: int,
+        completed_items: int,
+        avg_completion_time_sec: float,
+        avg_time_per_item_sec: float,
+        median_time_per_item_sec: float,
+        pct_tickets_late: float,
+        shift_start: str (HH:MM),
+        shift_end: str (HH:MM),
+    }}
+
+    Filters outlier tickets with completion_time < 15 seconds
+    (KDS cleared without actual prep).
+    """
+    import statistics
+
+    by_day: dict[str, list[dict]] = {}
+    for t in tickets:
+        # Filter outliers: tickets cleared without prep
+        if t["completion_time_sec"] < 15:
+            continue
+        d = t["date_local"]
+        by_day.setdefault(d, []).append(t)
+
+    result: dict[str, dict] = {}
+    for d in sorted(by_day):
+        day_tickets = by_day[d]
+        completed_tickets = len(day_tickets)
+        completed_items = sum(t["num_items"] for t in day_tickets)
+
+        completion_times = [t["completion_time_sec"] for t in day_tickets if t["completion_time_sec"] > 0]
+        avg_completion_time = (
+            statistics.mean(completion_times) if completion_times else 0.0
+        )
+
+        # Time per item: completion_time / num_items for each ticket with items > 0
+        time_per_item_values = [
+            t["completion_time_sec"] / t["num_items"]
+            for t in day_tickets
+            if t["num_items"] > 0 and t["completion_time_sec"] > 0
+        ]
+        avg_time_per_item = (
+            statistics.mean(time_per_item_values) if time_per_item_values else 0.0
+        )
+        median_time_per_item = (
+            statistics.median(time_per_item_values) if time_per_item_values else 0.0
+        )
+
+        # Late tickets: completed after time_due
+        late_count = 0
+        due_count = 0
+        for t in day_tickets:
+            if t["time_due"] is not None and t["time_completed"] is not None:
+                due_count += 1
+                if t["time_completed"] > t["time_due"]:
+                    late_count += 1
+        pct_late = (late_count / due_count) if due_count > 0 else 0.0
+
+        # Shift envelope: first ticket created to last ticket completed
+        created_times = [t["time_created"] for t in day_tickets if t["time_created"]]
+        completed_times_dt = [t["time_completed"] for t in day_tickets if t["time_completed"]]
+        shift_start = min(created_times).strftime("%H:%M") if created_times else ""
+        shift_end = max(completed_times_dt).strftime("%H:%M") if completed_times_dt else ""
+
+        result[d] = {
+            "completed_tickets": completed_tickets,
+            "completed_items": completed_items,
+            "avg_completion_time_sec": round(avg_completion_time, 1),
+            "avg_time_per_item_sec": round(avg_time_per_item, 1),
+            "median_time_per_item_sec": round(median_time_per_item, 1),
+            "pct_tickets_late": round(pct_late, 4),
+            "shift_start": shift_start,
+            "shift_end": shift_end,
+        }
+    return result
+
+
 # ── Playwright playbook ───────────────────────────────────────────
 
 

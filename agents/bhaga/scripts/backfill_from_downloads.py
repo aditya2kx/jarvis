@@ -42,7 +42,7 @@ from skills.tip_ledger_writer import (
     write_raw_square_daily_rollup,
     write_raw_square_transactions,
 )
-from skills.tip_ledger_writer.writer import write_raw_square_item_daily_rollup
+from skills.tip_ledger_writer.writer import write_raw_square_item_daily_rollup, write_raw_kds_daily
 
 # Notify is optional — backfill may run in environments without Slack creds.
 try:
@@ -421,6 +421,29 @@ def main() -> int:
                 s = write_raw_square_item_daily_rollup(square_raw_sid, item_daily, account=google_account)
                 summaries.append(s)
                 print(f"  item_daily_rollup: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
+
+    # ── Square KDS performance report ─────────────────────────────
+    if "square" not in args.skip:
+        kds_csv = _newest("kds-*.csv")
+        if not kds_csv:
+            print("WARN: no kds-*.csv found — skipping KDS daily rollup")
+        else:
+            print(f"# parsing Square KDS report: {kds_csv.name}")
+            kds_tickets = transactions_backend.parse_kds_csv(kds_csv, shop_tz=shop_tz)
+            kds_tickets = [t for t in kds_tickets if _in_window(t["date_local"])]
+            print(f"  parsed {len(kds_tickets)} KDS tickets")
+
+            kds_daily = transactions_backend.aggregate_daily_kds_stats(kds_tickets)
+            kds_rollups = [
+                {"date_local": d, **stats} for d, stats in sorted(kds_daily.items())
+            ]
+            print(f"  computed KDS daily rollup: {len(kds_rollups)} days")
+            if args.dry_run:
+                print(f"  DRY: would write {len(kds_rollups)} KDS daily rows")
+            else:
+                s = write_raw_kds_daily(square_raw_sid, kds_rollups, account=google_account)
+                summaries.append(s)
+                print(f"  kds_daily: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
 
     print()
     print("=" * 60)

@@ -337,11 +337,15 @@ def _handle_adp_two_factor(page, *, store: str) -> None:
     # Step 4: request OTP via Slack DM, block until operator replies.
     from skills.slack.adapter import request_otp  # local import: optional dep
 
-    print(f"[adp 2fa] requesting OTP via Slack for store={store!r}; SMS expected at +1-XXX-XXX-0038")
+    # Bounded wait: the READY handshake already confirmed the operator is
+    # present, so BHAGA_OTP_WAIT_S (default 900s on resume) is plenty.
+    # Standalone callers with no env set keep the generous 1800s default.
+    wait_s = int(os.environ.get("BHAGA_OTP_WAIT_S", "1800"))
+    print(f"[adp 2fa] requesting OTP via Slack for store={store!r} (wait={wait_s}s); SMS expected at +1-XXX-XXX-0038")
     code = request_otp(
         user_id="U0APJRE5DC4",       # operator (primary_user_id from config.yaml)
         portal_name="ADP",
-        timeout_seconds=1800,         # 30 min — operator may be away from phone
+        timeout_seconds=wait_s,
         phone_hint="+1-XXX-XXX-0038",
         agent="bhaga",
     )

@@ -75,6 +75,53 @@ class TestLocalBackend:
         assert state_adapter.step_already_done(today, "some_step") is False
 
 
+# ── Pending-OTP checkpoint (local backend) ────────────────────────────
+
+
+class TestPendingOtpLocal:
+    def test_absent_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        d = datetime.date(2026, 5, 28)
+        assert state_adapter.get_pending_otp(d) is None
+
+    def test_save_then_get(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        d = datetime.date(2026, 5, 28)
+        state_adapter.save_pending_otp(
+            d, ["Square", "ADP"], requested_at="2026-05-28T21:00:00-05:00",
+            agent="bhaga",
+        )
+        pending = state_adapter.get_pending_otp(d)
+        assert pending["portals"] == ["Square", "ADP"]
+        assert pending["agent"] == "bhaga"
+        assert pending["ready_received"] is False
+        # Marker file lives under the refresh_date run dir.
+        assert (tmp_path / ".bhaga" / "state" / "run-2026-05-28" / "pending_otp.json").exists()
+
+    def test_mark_ready(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        d = datetime.date(2026, 5, 28)
+        state_adapter.save_pending_otp(d, ["Square"], requested_at="2026-05-28T21:00:00-05:00")
+        assert state_adapter.mark_otp_ready(d) is True
+        pending = state_adapter.get_pending_otp(d)
+        assert pending["ready_received"] is True
+        assert pending["ready_at"]
+
+    def test_mark_ready_no_checkpoint_is_false(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        d = datetime.date(2026, 5, 28)
+        assert state_adapter.mark_otp_ready(d) is False
+
+    def test_clear(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        d = datetime.date(2026, 5, 28)
+        state_adapter.save_pending_otp(d, ["Square"], requested_at="2026-05-28T21:00:00-05:00")
+        state_adapter.clear_pending_otp(d)
+        assert state_adapter.get_pending_otp(d) is None
+        # Idempotent.
+        state_adapter.clear_pending_otp(d)
+
+
 # ── Firestore backend tests ───────────────────────────────────────────
 
 
@@ -159,6 +206,35 @@ class TestFirestoreBackend:
         result = state_adapter.run_state_dir(d)
         assert "firestore" in str(result)
         assert "2026-05-25" in str(result)
+
+    def test_pending_otp_save_get_ready_clear(self):
+        mock_client = self._mock_client()
+        with patch.object(state_adapter, "_get_firestore_client", return_value=mock_client):
+            d = datetime.date(2026, 5, 28)
+            assert state_adapter.get_pending_otp(d) is None
+            state_adapter.save_pending_otp(
+                d, ["Square", "ADP"], requested_at="2026-05-28T21:00:00-05:00",
+            )
+            pending = state_adapter.get_pending_otp(d)
+            assert pending["portals"] == ["Square", "ADP"]
+            assert pending["ready_received"] is False
+            # Mark ready (cloud webhook half of the handshake does this too).
+            assert state_adapter.mark_otp_ready(d) is True
+            assert state_adapter.get_pending_otp(d)["ready_received"] is True
+            # Clearing leaves the run doc but drops the checkpoint.
+            state_adapter.clear_pending_otp(d)
+            assert state_adapter.get_pending_otp(d) is None
+
+    def test_pending_otp_coexists_with_step_markers(self):
+        """pending_otp and step markers share the runs/<date> doc cleanly."""
+        mock_client = self._mock_client()
+        with patch.object(state_adapter, "_get_firestore_client", return_value=mock_client):
+            d = datetime.date(2026, 5, 28)
+            state_adapter.mark_step_done(d, "square_transactions")
+            state_adapter.save_pending_otp(d, ["ADP"], requested_at="2026-05-28T21:00:00-05:00")
+            # Step marker survives the pending write (merge semantics).
+            assert state_adapter.step_already_done(d, "square_transactions") is True
+            assert state_adapter.get_pending_otp(d)["portals"] == ["ADP"]
 
 
 # ── Backend-agnostic interface tests ──────────────────────────────────

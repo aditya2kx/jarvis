@@ -197,6 +197,49 @@ def info_ping(text: str) -> Optional[dict]:
     return _safe_send(f"ℹ️ BHAGA: {text} on {_host_tag()}")
 
 
+def ready_request(*, date: str, portals: list) -> Optional[dict]:
+    """Ask the operator if they're available to grab their phone for OTP(s).
+
+    Step one of the two-step OTP handshake. We post this INSTEAD of triggering
+    an OTP immediately (codes expire in minutes), checkpoint a pending state,
+    and exit cleanly. The operator replies READY whenever they can; the run
+    then resumes and triggers fresh code(s).
+
+    ONE READY covers ALL OTP portals this run will need.
+    """
+    portal_list = list(portals)
+    if len(portal_list) == 1:
+        portal_str = portal_list[0]
+    elif len(portal_list) == 2:
+        portal_str = f"{portal_list[0]} and {portal_list[1]}"
+    else:
+        portal_str = ", ".join(portal_list[:-1]) + f", and {portal_list[-1]}"
+    text = (
+        f":wave: *BHAGA needs an OTP for {portal_str}* (refresh *{date}*) on {_host_tag()}\n"
+        f"Reply *READY* (or `ok` / `go` / `yes`) when you can grab your phone — "
+        f"I'll then send a fresh code for each and ask you to paste it.\n"
+        f"_No rush: I'll wait up to 48h and you can reply anytime. "
+        f"I'm not holding anything open in the meantime._"
+    )
+    return _safe_send(text)
+
+
+def otp_skipped_alert(*, date: str, portals: list) -> Optional[dict]:
+    """Alert that the OTP-gated step(s) were skipped after the 48h cap.
+
+    Everything that does NOT need an OTP still ran; the next nightly refresh
+    will retry the skipped portal(s).
+    """
+    portal_str = ", ".join(portals) if portals else "OTP step(s)"
+    text = (
+        f":hourglass: *BHAGA skipped {portal_str}* for refresh *{date}* on {_host_tag()}\n"
+        f"No READY reply arrived within 48h, so I finished everything that "
+        f"didn't need an OTP and parked {portal_str}. The next nightly run "
+        f"will retry — or reply `retry` to run it now."
+    )
+    return _safe_send(text)
+
+
 def new_employee_alert(
     new_pairs: list[tuple[str, str]],
     *,

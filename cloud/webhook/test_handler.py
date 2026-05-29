@@ -265,6 +265,160 @@ class TestAgentRouting:
 
 
 # ===========================================================================
+# 4b. READY-handshake routing (two-step OTP availability, cloud half)
+# ===========================================================================
+
+
+class _FakeDoc:
+    def __init__(self, doc_id, data):
+        self.id = doc_id
+        self._data = data
+
+    def to_dict(self):
+        return dict(self._data)
+
+
+class _FakeCollection:
+    def __init__(self, docs):
+        self._docs = docs  # {doc_id: data}
+
+    def stream(self):
+        return [_FakeDoc(i, d) for i, d in self._docs.items()]
+
+    def document(self, doc_id):
+        coll = self
+
+        class _Ref:
+            def set(self, data, merge=False):
+                if merge and doc_id in coll._docs:
+                    coll._docs[doc_id].update(data)
+                else:
+                    coll._docs[doc_id] = dict(data)
+
+        return _Ref()
+
+
+class _FakeDb:
+    def __init__(self, runs):
+        self._runs = _FakeCollection(runs)
+
+    def collection(self, name):
+        assert name == "runs"
+        return self._runs
+
+
+class TestIsReadyReply:
+    @pytest.mark.parametrize("text", ["ready", "READY", "ok", "go", "yes", "ready to go", "ok!"])
+    def test_ready(self, text):
+        assert handler.is_ready_reply(text) is True
+
+    @pytest.mark.parametrize("text", ["123456", "no", "later", "", "status"])
+    def test_not_ready(self, text):
+        assert handler.is_ready_reply(text) is False
+
+
+class TestFindPendingOtpRun:
+    def test_finds_newest_unready_for_agent(self):
+        runs = {
+            "2026-05-27": {"pending_otp": {
+                "agent": "bhaga", "ready_received": False,
+                "requested_at": "2026-05-27T21:00:00-05:00", "portals": ["Square"]}},
+            "2026-05-28": {"pending_otp": {
+                "agent": "bhaga", "ready_received": False,
+                "requested_at": "2026-05-28T21:00:00-05:00", "portals": ["Square", "ADP"]}},
+        }
+        with patch.object(handler, "db", _FakeDb(runs)):
+            found = handler._find_pending_otp_run("bhaga")
+        assert found is not None
+        assert found["date"] == "2026-05-28"
+
+    def test_skips_already_ready(self):
+        runs = {"2026-05-28": {"pending_otp": {
+            "agent": "bhaga", "ready_received": True,
+            "requested_at": "2026-05-28T21:00:00-05:00", "portals": ["Square"]}}}
+        with patch.object(handler, "db", _FakeDb(runs)):
+            assert handler._find_pending_otp_run("bhaga") is None
+
+    def test_skips_other_agent(self):
+        runs = {"2026-05-28": {"pending_otp": {
+            "agent": "chitra", "ready_received": False,
+            "requested_at": "2026-05-28T21:00:00-05:00", "portals": ["Square"]}}}
+        with patch.object(handler, "db", _FakeDb(runs)):
+            assert handler._find_pending_otp_run("bhaga") is None
+
+    def test_mark_ready_sets_flag(self):
+        runs = {"2026-05-28": {"pending_otp": {
+            "agent": "bhaga", "ready_received": False,
+            "requested_at": "2026-05-28T21:00:00-05:00", "portals": ["Square"]}}}
+        db = _FakeDb(runs)
+        with patch.object(handler, "db", db):
+            handler._mark_otp_ready("2026-05-28", runs["2026-05-28"]["pending_otp"])
+        assert runs["2026-05-28"]["pending_otp"]["ready_received"] is True
+
+
+class TestReadyEventRouting:
+    @patch.object(handler, "_trigger_cloud_run_job")
+    @patch.object(handler, "_mark_otp_ready")
+    @patch.object(handler, "_find_pending_portal_for_agent")
+    def test_ready_reply_triggers_fresh_execution(self, mock_find_otp, mock_mark, mock_trigger):
+        """A READY reply marks the checkpoint ready and triggers a new job."""
+        with patch.object(
+            handler, "_find_pending_otp_run",
+            return_value={"date": "2026-05-28", "pending_otp": {"agent": "bhaga"}},
+        ):
+            with app.test_client() as c:
+                _post_event(c, {
+                    "type": "event_callback",
+                    "event": {
+                        "type": "message",
+                        "channel": "D_BHAGA",
+                        "user": "U_USER",
+                        "text": "ready",
+                    },
+                })
+        mock_mark.assert_called_once()
+        mock_trigger.assert_called_once_with("2026-05-28")
+        # A READY word is not an OTP code → no OTP routing.
+        mock_find_otp.assert_not_called()
+
+    @patch.object(handler, "_trigger_cloud_run_job")
+    @patch.object(handler, "_find_pending_otp_run", return_value=None)
+    def test_ready_reply_no_pending_does_not_trigger(self, mock_find, mock_trigger):
+        with app.test_client() as c:
+            _post_event(c, {
+                "type": "event_callback",
+                "event": {
+                    "type": "message",
+                    "channel": "D_BHAGA",
+                    "user": "U_USER",
+                    "text": "ready",
+                },
+            })
+        mock_trigger.assert_not_called()
+
+    @patch.object(handler, "_trigger_cloud_run_job")
+    @patch.object(handler, "_complete_otp")
+    @patch.object(handler, "_find_pending_portal_for_agent")
+    def test_code_reply_routes_to_otp_not_job(self, mock_find, mock_complete, mock_trigger):
+        """A numeric code still routes to read_otp; it never triggers a job."""
+        mock_find.return_value = {"_doc_id": "bhaga_square", "portal": "square"}
+        with patch.object(handler, "_find_pending_otp_run") as mock_find_run:
+            with app.test_client() as c:
+                _post_event(c, {
+                    "type": "event_callback",
+                    "event": {
+                        "type": "message",
+                        "channel": "D_BHAGA",
+                        "user": "U_USER",
+                        "text": "123456",
+                    },
+                })
+            mock_find_run.assert_not_called()
+        mock_complete.assert_called_once_with("bhaga_square", "123456")
+        mock_trigger.assert_not_called()
+
+
+# ===========================================================================
 # 5. Slash command parsing
 # ===========================================================================
 

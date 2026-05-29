@@ -749,7 +749,18 @@ def _handle_event(event_type, payload, envelope_id):
                         has_pending_otp,
                         is_command,
                         handle_command as bhaga_handle_command,
+                        handle_ready as bhaga_handle_ready,
                     )
+                    # READY-handshake resume: when a daily run is awaiting
+                    # availability, a READY reply triggers a (non-destructive)
+                    # resume. Only when no OTP code is pending — during an
+                    # active code wait every DM is treated as the code.
+                    if not has_pending_otp():
+                        ready_ack = bhaga_handle_ready(text)
+                        if ready_ack:
+                            _reply(ready_ack)
+                            _log_command(text.strip(), ready_ack[:200], user_id)
+                            return
                     if is_command(text) and not has_pending_otp():
                         response = bhaga_handle_command(text, user_id)
                         if response:

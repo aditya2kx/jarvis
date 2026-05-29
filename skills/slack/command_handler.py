@@ -306,6 +306,121 @@ def _trigger_recovery(refresh_date: datetime.date) -> None:
     return thread
 
 
+def find_pending_otp_date() -> Optional[datetime.date]:
+    """Newest refresh_date with an outstanding (not-yet-READY) OTP checkpoint.
+
+    Scans the local run-* state dirs for a ``pending_otp.json`` whose
+    ``ready_received`` is False. Used by the non-cloud resumer: when the
+    laptop is closed the daily run posts a READY request + this checkpoint and
+    exits; the operator replies READY from their phone; the next poll wakeup
+    detects the reply and resumes.
+    """
+    if not STATE_DIR.is_dir():
+        return None
+    run_dirs = sorted(
+        (d for d in STATE_DIR.iterdir() if d.is_dir() and d.name.startswith("run-")),
+        key=lambda d: d.name,
+        reverse=True,
+    )
+    for d in run_dirs:
+        pending_file = d / "pending_otp.json"
+        if not pending_file.exists():
+            continue
+        try:
+            data = json.loads(pending_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if data and not data.get("ready_received"):
+            try:
+                return datetime.date.fromisoformat(d.name[len("run-"):])
+            except ValueError:
+                continue
+    return None
+
+
+def _trigger_resume(refresh_date: datetime.date) -> "threading.Thread":
+    """Fork daily_refresh for refresh_date WITHOUT wiping run state.
+
+    Unlike _trigger_recovery (used by the `retry`/`refresh` commands), this
+    PRESERVES completed-step markers AND the READY-marked pending checkpoint,
+    so the resumed run skips already-done work and proceeds straight to the
+    OTP portal(s) with a short bounded code wait.
+    """
+
+    def _worker():
+        date_iso = refresh_date.isoformat()
+        try:
+            # Remove a stale Square lock if a prior process died mid-scrape;
+            # do NOT touch the run-state dir or pending_otp checkpoint.
+            lock_file = pathlib.Path("/tmp/bhaga-square-scrape.lock")
+            if lock_file.exists():
+                lock_file.unlink(missing_ok=True)
+
+            cmd = [
+                "/opt/miniconda3/bin/python3",
+                "-m", "agents.bhaga.scripts.daily_refresh",
+                "--store", "palmetto",
+                "--date", date_iso,
+            ]
+            child_env = {
+                "PATH": os.environ.get("PATH", "/opt/miniconda3/bin:/usr/local/bin:/usr/bin:/bin"),
+                "HOME": os.environ.get("HOME", "/Users/adityaparikh"),
+                "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+                "PYTHONPATH": "",
+                "PYTHONUNBUFFERED": "1",
+            }
+            print(f"[command_handler] Resuming: {' '.join(cmd)}")
+            result = subprocess.run(
+                cmd, cwd=_PROJECT_ROOT, capture_output=True, text=True, env=child_env,
+            )
+            if result.returncode == 0:
+                _send_dm(f":white_check_mark: Resume for *{date_iso}* complete.")
+            else:
+                stderr_tail = (result.stderr or result.stdout or "")[-1500:]
+                _send_dm(
+                    f":x: Resume for *{date_iso}* failed (rc={result.returncode}).\n"
+                    f"```\n{stderr_tail}\n```"
+                )
+        except Exception as exc:
+            _send_dm(
+                f":x: Resume for *{date_iso}* crashed: `{type(exc).__name__}: {exc}`"
+            )
+
+    thread = threading.Thread(
+        target=_worker, daemon=True, name=f"bhaga-resume-{refresh_date}"
+    )
+    thread.start()
+    return thread
+
+
+def handle_ready(text: str) -> Optional[str]:
+    """If `text` is a READY reply and a run is awaiting availability, mark the
+    checkpoint ready and resume it (non-destructively).
+
+    Returns an acknowledgement string when a resume was triggered, else None
+    (so the caller can fall through to normal command / OTP handling).
+    """
+    try:
+        from agents.bhaga.scripts.otp_gate import is_ready_reply
+    except ImportError:
+        return None
+    if not is_ready_reply(text):
+        return None
+    pending_date = find_pending_otp_date()
+    if pending_date is None:
+        return None
+    try:
+        from skills.bhaga_config.state_adapter import mark_otp_ready
+        mark_otp_ready(pending_date)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[command_handler] mark_otp_ready failed: {exc}", file=sys.stderr)
+    _trigger_resume(pending_date)
+    return (
+        f":arrow_forward: Got it — resuming *{pending_date.isoformat()}* now. "
+        f"I'll send the OTP code request(s) shortly; reply with each code."
+    )
+
+
 def handle_command(text: str, user_id: str) -> Optional[str]:
     """Parse and handle a BHAGA command. Returns response text, or None if not a command.
 

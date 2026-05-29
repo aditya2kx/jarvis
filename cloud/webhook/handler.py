@@ -158,6 +158,33 @@ def extract_otp(text: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# READY-handshake detection
+# ---------------------------------------------------------------------------
+#
+# Mirror of agents/bhaga/scripts/otp_gate.READY_WORDS / is_ready_reply. The
+# webhook is a standalone deploy unit (its Dockerfile copies only handler.py)
+# so it cannot import the skills package — keep this list in sync if you edit
+# the source of truth in otp_gate.py.
+
+READY_WORDS = {
+    "ready", "ok", "okay", "go", "yes", "yep", "yup", "available", "here", "y",
+}
+
+
+def is_ready_reply(text: str) -> bool:
+    """True if a reply means "I'm available now — send the OTP(s)"."""
+    if not text:
+        return False
+    cleaned = str(text).strip().lower().strip("!.?*_`~ ")
+    if not cleaned:
+        return False
+    if cleaned in READY_WORDS:
+        return True
+    tokens = cleaned.split()
+    return bool(tokens) and tokens[0] in READY_WORDS
+
+
+# ---------------------------------------------------------------------------
 # Agent-aware OTP routing (ported from _find_pending_portal)
 # ---------------------------------------------------------------------------
 
@@ -205,6 +232,90 @@ def _complete_otp(doc_id: str, code: str) -> None:
         log.info("OTP completed: %s → %s", doc_id, code)
     except Exception as exc:
         log.error("Firestore update failed for %s: %s", doc_id, exc)
+
+
+# ---------------------------------------------------------------------------
+# Pending-OTP availability resume (two-step READY handshake, cloud half)
+# ---------------------------------------------------------------------------
+#
+# When a Cloud Run job reaches an OTP gate without a prior READY it posts a
+# READY request, writes a pending checkpoint into runs/<date>.pending_otp, and
+# EXITS (billing stops). When the operator later replies READY, THIS webhook:
+#   1. finds the pending run for that agent,
+#   2. marks the checkpoint ready_received=True, and
+#   3. triggers a FRESH bhaga-daily-refresh job execution for that date.
+# The new execution skips done steps via markers/GCS, sees READY, triggers a
+# fresh OTP, and blocks only briefly. The long wait costs nothing.
+#
+# The checkpoint shape mirrors skills.bhaga_config.state_adapter.save_pending_otp
+# (runs/<date> doc, `pending_otp` map). Keep field names in sync.
+
+
+def _find_pending_otp_run(agent: str) -> Optional[dict]:
+    """Return {"date", "pending_otp"} for the newest run awaiting READY.
+
+    Scans the `runs` collection for a doc whose `pending_otp` is owned by
+    ``agent`` and not yet ready_received. Volume is one doc/day so a full
+    stream + client-side filter is fine and avoids a composite-index
+    requirement.
+    """
+    if db is None:
+        return None
+    try:
+        candidates = []
+        for doc in db.collection("runs").stream():
+            data = doc.to_dict() or {}
+            pending = data.get("pending_otp")
+            if not pending or pending.get("ready_received"):
+                continue
+            if pending.get("agent", "bhaga") != agent:
+                continue
+            candidates.append((doc.id, pending))
+        if not candidates:
+            return None
+        # Newest by requested_at (fall back to doc id / date string).
+        candidates.sort(
+            key=lambda c: (c[1].get("requested_at") or "", c[0]),
+            reverse=True,
+        )
+        date_id, pending = candidates[0]
+        return {"date": date_id, "pending_otp": pending}
+    except Exception as exc:
+        log.error("Firestore pending-OTP scan failed for agent=%s: %s", agent, exc)
+        return None
+
+
+def _mark_otp_ready(date_id: str, pending: dict) -> None:
+    """Set pending_otp.ready_received=True on runs/<date_id>."""
+    if db is None:
+        return
+    try:
+        updated = dict(pending)
+        updated["ready_received"] = True
+        updated["ready_at"] = firestore.SERVER_TIMESTAMP
+        db.collection("runs").document(date_id).set(
+            {"pending_otp": updated}, merge=True
+        )
+        log.info("Pending OTP marked READY for run=%s", date_id)
+    except Exception as exc:
+        log.error("Firestore mark-ready failed for %s: %s", date_id, exc)
+
+
+def _handle_ready_reply(agent: str) -> bool:
+    """Resume a checkpointed run when the operator replies READY.
+
+    Returns True if a pending run was found, marked ready, and a fresh job
+    execution was triggered; False if there was nothing pending for ``agent``.
+    """
+    pending_run = _find_pending_otp_run(agent)
+    if not pending_run:
+        log.info("READY from agent=%s but no pending OTP run — ignoring", agent)
+        return False
+    date_id = pending_run["date"]
+    _mark_otp_ready(date_id, pending_run["pending_otp"])
+    log.info("READY from agent=%s → triggering fresh job for date=%s", agent, date_id)
+    _trigger_cloud_run_job(date_id)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +490,16 @@ def _handle_event(event: dict) -> None:
     if not agent:
         log.info("Channel %s not mapped to any agent — ignoring", channel)
         return
+
+    # Two-step OTP handshake: a READY reply resumes a checkpointed run by
+    # triggering a fresh job execution. Check this BEFORE OTP extraction so a
+    # word like "ready"/"go" is never misread, and so a READY reply that
+    # arrives while no code is pending still resumes the run.
+    if is_ready_reply(text):
+        if _handle_ready_reply(agent):
+            return
+        # No pending run to resume — fall through (nothing else to do for a
+        # bare READY word; extract_otp will return None below).
 
     otp_code = extract_otp(text)
     if not otp_code:

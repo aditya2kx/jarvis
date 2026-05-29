@@ -33,6 +33,7 @@ from skills.slack.command_handler import (
     AGENT_NAME,
     DM_CHANNEL,
     handle_command,
+    handle_ready,
     has_pending_otp,
     is_command,
 )
@@ -107,6 +108,17 @@ def poll_once() -> int:
         # Track the newest timestamp regardless of whether it's a command
         if float(ts) > float(newest_ts):
             newest_ts = ts
+
+        # READY-handshake resume (two-step OTP availability). When the daily
+        # run posted a READY request and exited (laptop was closed), the
+        # operator's READY reply may have arrived while the live listener was
+        # down — so we detect it here from the DM backlog and resume the
+        # checkpointed run. Checked BEFORE is_command so "go"/"ok" route here.
+        ready_ack = handle_ready(text)
+        if ready_ack:
+            _send_dm(ready_ack)
+            commands_handled += 1
+            continue
 
         if not is_command(text):
             continue

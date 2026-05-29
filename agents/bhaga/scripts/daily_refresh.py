@@ -63,7 +63,16 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
-from agents.bhaga.notify import failure_alert, info_ping, success_heartbeat
+import functools
+
+from agents.bhaga.notify import (
+    failure_alert,
+    info_ping,
+    otp_skipped_alert,
+    ready_request,
+    success_heartbeat,
+)
+from agents.bhaga.scripts import otp_gate
 from agents.bhaga.scripts.gcs_cache import (
     download_cached_files,
     upload_scrape_artifacts,
@@ -72,8 +81,10 @@ from core.config_loader import refresh_access_token, resolve_sheet_id
 from skills.adp_run_automation.runner import download_adp_bundle
 from skills.bhaga_config.dates import coerce_iso_date
 from skills.bhaga_config.state_adapter import (
+    clear_pending_otp as _adapter_clear_pending_otp,
     mark_step_done as _adapter_mark_step_done,
     run_state_dir as _adapter_run_state_dir,
+    save_pending_otp as _adapter_save_pending_otp,
     step_already_done as _adapter_step_already_done,
 )
 from skills.square_tips.runner import download_item_sales, download_kds_report, download_transactions
@@ -1068,6 +1079,121 @@ def _run_review_fetch(
     return result
 
 
+# ── OTP availability gate helpers ──────────────────────────────────
+#
+# These decide, BEFORE launching any browser, which portals this run will
+# actually need an OTP for. The rule is intentionally simple and matches the
+# zero-OTP happy path: a portal needs an OTP iff its scrape will launch a
+# browser this run (architecture is stateless — every browser launch does a
+# fresh login → 2FA). If GCS cache + freshness markers already satisfy a
+# step, NO browser launches and NO READY request is posted.
+
+
+def _square_will_launch_browser(
+    *,
+    needs_square: bool,
+    gap_start: datetime.date,
+    end_date: datetime.date,
+    refresh_date: datetime.date,
+    skip_kds: bool,
+) -> bool:
+    """Mirror _run_square_pipeline's freshness gate to predict a browser launch."""
+    if not needs_square:
+        return False
+    from skills._browser_runtime.runtime import DOWNLOADS_DIR as _DL, is_fresh_download
+
+    plus1 = (end_date + datetime.timedelta(days=1)).isoformat()
+    exp_txn = _DL / f"transactions-{gap_start.isoformat()}-{plus1}.csv"
+    exp_items = _DL / f"items-{gap_start.isoformat()}-{plus1}.csv"
+    exp_kds = _DL / f"kds-{gap_start.isoformat()}-{plus1}.csv"
+    txn_fresh = is_fresh_download(exp_txn)
+    items_fresh = is_fresh_download(exp_items)
+    kds_fresh = is_fresh_download(exp_kds) if not skip_kds else True
+    needs_kds = (
+        (not skip_kds)
+        and not kds_fresh
+        and not step_already_done(refresh_date, "square_kds")
+    )
+    # Pipeline SKIPS the browser only when txn AND items are fresh AND KDS is
+    # either not needed or already fresh.
+    return not (txn_fresh and items_fresh and (not needs_kds or kds_fresh))
+
+
+def _adp_will_launch_browser(
+    *,
+    needs_adp: bool,
+    target_date: datetime.date | None,
+    include_earnings: bool,
+) -> bool:
+    """Mirror download_adp_bundle's Layer-A gate to predict a browser launch."""
+    if not needs_adp:
+        return False
+    from skills.adp_run_automation.runner import (
+        DOWNLOADS_DIR as _DL,
+        _xlsx_fresh_for_target,
+    )
+
+    today = datetime.date.today()
+    tc = _DL / f"Timecard-{today.isoformat()}.xlsx"
+    er = _DL / f"Earnings-and-Hours-V1-{today.isoformat()}.xlsx"
+    tc_fresh = _xlsx_fresh_for_target(tc, target_date=target_date, min_bytes=10_000)
+    er_fresh = (
+        _xlsx_fresh_for_target(er, target_date=target_date, min_bytes=5_000)
+        if include_earnings
+        else False
+    )
+    needs_timecard = not tc_fresh
+    needs_earnings = include_earnings and not er_fresh
+    return needs_timecard or needs_earnings
+
+
+def _execute_pipelines(
+    specs: dict, *, serialize_otp: bool
+) -> dict:
+    """Run the data-gathering pipelines, returning {name: PipelineResult}.
+
+    ``specs`` maps a pipeline name to a zero-arg callable returning a
+    PipelineResult. Exceptions are captured into a failed PipelineResult so
+    the caller's collection loop has a uniform contract.
+
+    When ``serialize_otp`` is True and BOTH OTP-needing portals (square + adp)
+    will run, they are driven BACK-TO-BACK rather than concurrently so the
+    operator gets one fresh code at a time (codes can't be told apart if two
+    SMS land together, and the pending-portal lookup is single-valued). Any
+    non-OTP pipeline (review_fetch) still runs concurrently.
+    """
+    results: dict = {}
+
+    def _capture(name: str, fn):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            pr = PipelineResult(name=name)
+            pr.success = False
+            pr.error = exc
+            return pr
+
+    otp_names = [n for n in ("square", "adp") if n in specs]
+    if serialize_otp and len(otp_names) > 1:
+        other = {n: f for n, f in specs.items() if n not in otp_names}
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, len(other) or 1)
+        ) as pool:
+            other_futs = {pool.submit(_capture, n, f): n for n, f in other.items()}
+            # OTP portals strictly sequential (one fresh code at a time).
+            for name in otp_names:
+                results[name] = _capture(name, specs[name])
+            for fut, n in other_futs.items():
+                results[n] = fut.result()
+        return results
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        futs = {pool.submit(_capture, n, f): n for n, f in specs.items()}
+        for fut, n in futs.items():
+            results[n] = fut.result()
+    return results
+
+
 def run_step(
     step_name: str,
     fn,
@@ -1184,8 +1310,12 @@ def main() -> int:
     if args.no_slack:
         os.environ["BHAGA_SLACK_DISABLED"] = "1"
 
+    # --date wins; otherwise honor the REFRESH_DATE env var (set by the cloud
+    # webhook's job-execution trigger when resuming from a pending checkpoint),
+    # falling back to today CT for the nightly cron.
+    date_arg = args.date or os.environ.get("REFRESH_DATE") or None
     refresh_date = (
-        datetime.date.fromisoformat(args.date) if args.date else _today_ct()
+        datetime.date.fromisoformat(date_arg) if date_arg else _today_ct()
     )
 
     # ── Completeness gate ────────────────────────────────────────────
@@ -1345,54 +1475,110 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"  [gcs_cache] WARN: pre-restore failed (non-fatal): {exc}")
 
-    futures: dict[concurrent.futures.Future, str] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        if needs_square:
-            sq_future = pool.submit(
-                _run_square_pipeline,
-                gap_start=square_from,
-                end_date=square_to,
-                store=args.store,
-                headed=headed,
-                refresh_date=refresh_date,
-                dry_run=args.dry_run,
-                skip_kds=args.skip_kds,
-            )
-            futures[sq_future] = "square"
+    # ── OTP availability gate (two-step READY handshake) ──────────────
+    # Decide which portals THIS run will actually need an OTP for (i.e. will
+    # launch a browser). If none, this is the zero-OTP happy path — no READY
+    # request is ever posted. If at least one will, consult the pending
+    # checkpoint:
+    #   - no checkpoint        → post ONE READY request covering all portals,
+    #                            persist the checkpoint, and EXIT CLEANLY (0).
+    #   - checkpoint, no READY → already-outstanding request; exit cleanly
+    #                            (or, if 48h elapsed, skip ONLY the OTP steps).
+    #   - checkpoint + READY   → operator is active; proceed to trigger a
+    #                            FRESH code per portal back-to-back.
+    otp_portals: list[str] = []
+    if not args.dry_run:
+        if _square_will_launch_browser(
+            needs_square=needs_square, gap_start=square_from,
+            end_date=square_to, refresh_date=refresh_date, skip_kds=args.skip_kds,
+        ):
+            otp_portals.append("Square")
+        if _adp_will_launch_browser(
+            needs_adp=needs_adp, target_date=adp_target_date,
+            include_earnings=include_rates,
+        ):
+            otp_portals.append("ADP")
 
-        if needs_adp:
-            if is_fresh_install:
-                print(f"  [adp] FRESH INSTALL: target_date=None (Select All pay periods), include_earnings=True")
-            adp_future = pool.submit(
-                _run_adp_pipeline,
-                store=args.store,
-                target_date=adp_target_date,
-                include_earnings=include_rates,
-                headed=headed,
-                refresh_date=refresh_date,
-                dry_run=args.dry_run,
-            )
-            futures[adp_future] = "adp"
+    serialize_otp = False
+    if otp_portals:
+        decision, info = otp_gate.evaluate(refresh_date, otp_portals)
+        print(f"[otp_gate] portals={otp_portals} decision={decision} "
+              f"({info.get('reason')})")
+        if decision == otp_gate.EXIT_PENDING:
+            if info.get("first_request"):
+                _adapter_save_pending_otp(
+                    refresh_date, otp_portals,
+                    requested_at=datetime.datetime.now(CT).isoformat(),
+                    agent="bhaga",
+                )
+                ready_request(date=refresh_date.isoformat(), portals=otp_portals)
+                print("[otp_gate] posted READY request + checkpoint; exiting "
+                      "cleanly (exit 0). Will resume when operator replies READY.")
+            else:
+                print("[otp_gate] READY request already outstanding; exiting "
+                      "cleanly without re-pinging the operator.")
+            return 0
+        if decision == otp_gate.SKIP_OTP:
+            otp_skipped_alert(date=refresh_date.isoformat(), portals=otp_portals)
+            _adapter_clear_pending_otp(refresh_date)
+            if "Square" in otp_portals:
+                args.skip_square = True
+                needs_square = False
+            if "ADP" in otp_portals:
+                args.skip_timecard = True
+                needs_adp = False
+            print(f"[otp_gate] 48h cap hit — skipped {otp_portals}; finishing "
+                  "every step that does NOT need an OTP.")
+        elif decision == otp_gate.PROCEED:
+            # READY in hand → operator is active now. Use a SHORT bounded wait
+            # per code (the long wait already happened, for free, before READY).
+            # Serialize OTP portals so two SMS can't collide.
+            os.environ.setdefault("BHAGA_OTP_WAIT_S", "900")
+            serialize_otp = len(otp_portals) > 1
 
-        if needs_review_fetch:
-            rev_future = pool.submit(
-                _run_review_fetch,
-                store=args.store,
-                dry_run=args.dry_run,
-            )
-            futures[rev_future] = "review_fetch"
+    # ── Build + run the data-gathering pipelines ──────────────────────
+    pipeline_specs: dict = {}
+    if needs_square:
+        pipeline_specs["square"] = functools.partial(
+            _run_square_pipeline,
+            gap_start=square_from,
+            end_date=square_to,
+            store=args.store,
+            headed=headed,
+            refresh_date=refresh_date,
+            dry_run=args.dry_run,
+            skip_kds=args.skip_kds,
+        )
+    if needs_adp:
+        if is_fresh_install:
+            print(f"  [adp] FRESH INSTALL: target_date=None (Select All pay periods), include_earnings=True")
+        pipeline_specs["adp"] = functools.partial(
+            _run_adp_pipeline,
+            store=args.store,
+            target_date=adp_target_date,
+            include_earnings=include_rates,
+            headed=headed,
+            refresh_date=refresh_date,
+            dry_run=args.dry_run,
+        )
+    if needs_review_fetch:
+        pipeline_specs["review_fetch"] = functools.partial(
+            _run_review_fetch,
+            store=args.store,
+            dry_run=args.dry_run,
+        )
 
-    # Collect results from all parallel pipelines
-    for future, pipeline_name in futures.items():
-        try:
-            pr: PipelineResult = future.result()
-        except Exception as exc:  # noqa: BLE001
-            failures.append((pipeline_name, exc))
-            continue
+    results = _execute_pipelines(pipeline_specs, serialize_otp=serialize_otp)
 
+    # Collect results from all pipelines (executor captured exceptions into
+    # failed PipelineResults, so the contract is uniform here).
+    otp_portal_failed = False
+    for pipeline_name, pr in results.items():
         if not pr.success:
             if pr.error:
                 failures.append((pipeline_name, pr.error))
+                if pipeline_name in ("square", "adp"):
+                    otp_portal_failed = True
                 try:
                     failure_alert(
                         step=pipeline_name, exception=pr.error,
@@ -1426,6 +1612,17 @@ def main() -> int:
 
         elif pipeline_name == "review_fetch":
             review_prefetch_path = pr.artifacts.get("prefetched_messages")
+
+    # OTP portals completed (or none were needed / they were skipped at the
+    # cap): tear down the pending checkpoint so a same-day rerun doesn't think
+    # the run is still awaiting READY. If an OTP portal FAILED after READY we
+    # keep the checkpoint (ready_received stays True) so the retry proceeds
+    # straight to a fresh code without re-asking for availability.
+    if otp_portals and not otp_portal_failed and not args.dry_run:
+        try:
+            _adapter_clear_pending_otp(refresh_date)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[otp_gate] WARN: could not clear pending checkpoint: {exc}")
 
     # ── GCS cache: restore missing files before downstream steps ──
     if not args.dry_run:

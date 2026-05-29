@@ -253,11 +253,17 @@ def _handle_square_two_factor(page, *, store: str) -> None:
     # Step 4: request the code via Slack DM, block for reply.
     from skills.slack.adapter import request_otp  # local import: optional dep
 
-    print(f"[square 2fa] requesting OTP via Slack for store={store!r}...")
+    # In the READY-handshake model the orchestrator has already confirmed the
+    # operator is at their phone before we get here, so the bounded wait is
+    # short (BHAGA_OTP_WAIT_S, default 900s). Standalone/legacy callers with no
+    # env set fall back to the generous 1800s.
+    import os as _os
+    wait_s = int(_os.environ.get("BHAGA_OTP_WAIT_S", "1800"))
+    print(f"[square 2fa] requesting OTP via Slack for store={store!r} (wait={wait_s}s)...")
     code = request_otp(
         user_id="U0APJRE5DC4",          # operator (primary_user_id from config.yaml)
         portal_name="Square",
-        timeout_seconds=1800,             # 30 min — operator may be away from phone
+        timeout_seconds=wait_s,
         phone_hint="+1-XXX-XXX-0038",
         agent="bhaga",
     )

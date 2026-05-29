@@ -28,7 +28,6 @@ from agents.bhaga.scripts.daily_refresh import CT
 from agents.bhaga.scripts.update_model_sheet import (
     _DATE_CONFIG_KEYS,
     _fill_calendar_dates,
-    _orders_outlier_flag,
     _parse_sheet_bool,
     build_config_rows,
     build_daily_rows,
@@ -694,31 +693,6 @@ class ZeroShiftDayTests(unittest.TestCase):
         self.assertGreater(len(rows), 1)
         # days_covered = 3 (19, 20, 21 are within the period and have rows)
         self.assertEqual(rows[1][3], 3)
-
-
-class OutlierFlagTests(unittest.TestCase):
-    """Pure-function outlier detection used to seed labor_daily.forecast_exclude."""
-
-    def test_within_threshold_not_outlier(self):
-        # 110 vs baseline 100 → 10% deviation, under 25% → not an outlier.
-        self.assertFalse(_orders_outlier_flag(110, 100.0, threshold=0.25))
-
-    def test_high_outlier(self):
-        # 130 vs 100 → 30% > 25% → outlier.
-        self.assertTrue(_orders_outlier_flag(130, 100.0, threshold=0.25))
-
-    def test_low_outlier(self):
-        # 50 vs 100 → 50% deviation → outlier.
-        self.assertTrue(_orders_outlier_flag(50, 100.0, threshold=0.25))
-
-    def test_zero_order_day_is_outlier(self):
-        # Closed day (0 orders) against a real baseline → outlier (excluded
-        # from the forecast seed by default).
-        self.assertTrue(_orders_outlier_flag(0, 120.0, threshold=0.25))
-
-    def test_no_baseline_not_outlier(self):
-        # No same-DOW operating history → can't judge → not flagged.
-        self.assertFalse(_orders_outlier_flag(50, 0.0, threshold=0.25))
 
 
 class ParseSheetBoolTests(unittest.TestCase):

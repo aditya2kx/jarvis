@@ -237,6 +237,56 @@ def _get_parsed_rows(
 # ── Order seed ────────────────────────────────────────────────────
 
 
+def _expected_orders_from_records(
+    records: list[dict],
+    target_date: datetime.date,
+    *,
+    lookback_weeks: int = 6,
+    decay: float = 0.8,
+) -> float:
+    """Weighted-DOW average × capped trend factor, evaluated for ``target_date``.
+
+    ``records`` is a list of operating-day dicts each carrying ``date`` (ISO
+    str), ``dow`` (int weekday) and ``orders`` (int). Only days STRICTLY before
+    ``target_date`` feed the estimate, so evaluating this at a historical day
+    yields a leakage-free expectation for that day — which is exactly what the
+    trend-aware outlier detector needs.
+
+    DOW weighted average: last ``lookback_weeks`` same-day-of-week values,
+    weighted by exponential decay (most recent = 1.0, then decay, decay^2, ...).
+    Trend factor: avg(last 2 weeks) / avg(prior 2 weeks), capped [0.85, 1.15] —
+    this is what lets a sustained growth run be absorbed into the expectation
+    instead of read as a string of upward anomalies. Returns 0.0 when there's
+    no same-DOW history to judge against. The result is NOT rounded; callers
+    round for display.
+    """
+    iso = target_date.isoformat()
+    target_dow = target_date.weekday()
+    prior = sorted(
+        (r for r in records if r["date"] < iso),
+        key=lambda x: x["date"], reverse=True,
+    )
+    if not prior:
+        return 0.0
+    same_dow = [r for r in prior if r["dow"] == target_dow][:lookback_weeks]
+    if not same_dow:
+        return 0.0
+    weights = [decay ** i for i in range(len(same_dow))]
+    dow_avg = sum(r["orders"] * w for r, w in zip(same_dow, weights)) / sum(weights)
+
+    if len(prior) < 14:
+        return dow_avg
+    last_2_weeks = prior[:14]
+    prior_2_weeks = prior[14:28]
+    if not prior_2_weeks:
+        return dow_avg
+    avg_recent = statistics.mean(r["orders"] for r in last_2_weeks)
+    avg_prior = statistics.mean(r["orders"] for r in prior_2_weeks)
+    trend = 1.0 if avg_prior <= 0 else avg_recent / avg_prior
+    trend = max(0.85, min(1.15, trend))
+    return dow_avg * trend
+
+
 def forecast_orders_dow_trend(
     labor_daily_rows: list[list],
     target_date: datetime.date,
@@ -245,45 +295,118 @@ def forecast_orders_dow_trend(
 ) -> float:
     """Forecast orders using weighted DOW average + trend factor.
 
-    DOW weighted average: last `lookback_weeks` same-day-of-week values,
-    weighted by exponential decay (most recent = 1.0, then decay, decay^2, ...).
-    Trend factor: avg(last 2 weeks) / avg(prior 2 weeks), capped [0.85, 1.15].
-
+    Thin wrapper over _expected_orders_from_records (the single source of truth
+    for the weighted-DOW + trend expectation, shared with the outlier detector).
     Days flagged forecast_exclude=TRUE (operator override or outlier default)
     are dropped before any averaging — see _get_parsed_rows(exclude_flagged).
     """
     parsed = _get_parsed_rows(labor_daily_rows, exclude_flagged=True)
     if not parsed:
         return 0.0
+    records = [
+        {"date": r["date"], "dow": r["dow"], "orders": r["orders"]} for r in parsed
+    ]
+    expected = _expected_orders_from_records(
+        records, target_date, lookback_weeks=lookback_weeks, decay=decay,
+    )
+    return round(expected, 0)
 
-    target_dow = target_date.weekday()
-    same_dow = [
-        r for r in sorted(parsed, key=lambda x: x["date"], reverse=True)
-        if r["dow"] == target_dow and r["date"] < target_date.isoformat()
-    ][:lookback_weeks]
 
-    if not same_dow:
-        return 0.0
+def compute_outlier_stats(
+    operating_days: list[dict],
+    *,
+    window_weeks: int = 8,
+    z_threshold: float = 2.5,
+    lookback_weeks: int = 6,
+    decay: float = 0.8,
+) -> dict[str, dict]:
+    """Trend-aware, robust outlier detection for daily order counts.
 
-    weights = [decay ** i for i in range(len(same_dow))]
-    total_weight = sum(weights)
-    dow_avg = sum(r["orders"] * w for r, w in zip(same_dow, weights)) / total_weight
+    ``operating_days``: list of ``{"date": ISO, "orders": int}`` for days with
+    orders > 0 (closed / zero-order days carry no demand signal and would
+    pollute the residual dispersion, so the caller filters them out before
+    calling — see build_labor_daily_rows).
 
-    all_sorted = sorted(parsed, key=lambda x: x["date"], reverse=True)
-    recent_dates = [r for r in all_sorted if r["date"] < target_date.isoformat()]
-    if len(recent_dates) < 14:
-        return round(dow_avg, 0)
+    For each day the EXPECTED order count comes from the SAME weighted-DOW +
+    trend model the live seed uses (_expected_orders_from_records), evaluated at
+    that day's date using prior days only. Because sustained growth is absorbed
+    into the expectation, a growth run produces small residuals rather than a
+    string of "far from the flat average" false positives — the core bug this
+    replaces.
 
-    last_2_weeks = recent_dates[:14]
-    prior_2_weeks = recent_dates[14:28]
-    if not prior_2_weeks:
-        return round(dow_avg, 0)
+    residual = actual - expected. Dispersion is the median + MAD of residuals
+    over the trailing ``window_weeks`` (robust to a few extreme days):
+        robust_z = (residual - median_residual) / (1.4826 * MAD)
+    When MAD is degenerate (≥ half the residuals identical) we fall back to the
+    population stdev, then to a sane floor (10% of the median expected, min 1
+    order) so a near-constant series can't divide by zero.
 
-    avg_recent = statistics.mean(r["orders"] for r in last_2_weeks)
-    avg_prior = statistics.mean(r["orders"] for r in prior_2_weeks)
-    trend = 1.0 if avg_prior <= 0 else avg_recent / avg_prior
-    trend = max(0.85, min(1.15, trend))
-    return round(dow_avg * trend, 0)
+    Returns ``{date_iso: {expected, residual, robust_z, outlier_flag,
+    exclude_default}}``:
+      * outlier_flag    — BOTH directions (|z| > threshold); informational, for
+                          operator visibility.
+      * exclude_default — DOWN only (z < -threshold AND actual < expected);
+                          the auto-exclusion default for anomalous lows
+                          (stock-out / early-close). Upward / growth days are
+                          NEVER auto-excluded.
+    """
+    records = [
+        {
+            "date": r["date"],
+            "dow": datetime.date.fromisoformat(r["date"]).weekday(),
+            "orders": int(r["orders"]),
+        }
+        for r in operating_days
+        if int(r.get("orders", 0)) > 0
+    ]
+    if not records:
+        return {}
+
+    expected_by_date: dict[str, float] = {}
+    resid_by_date: dict[str, float] = {}
+    for r in records:
+        d = datetime.date.fromisoformat(r["date"])
+        expected = _expected_orders_from_records(
+            records, d, lookback_weeks=lookback_weeks, decay=decay,
+        )
+        if expected <= 0:
+            continue
+        expected_by_date[r["date"]] = expected
+        resid_by_date[r["date"]] = r["orders"] - expected
+    if not resid_by_date:
+        return {}
+
+    max_date = max(datetime.date.fromisoformat(d) for d in resid_by_date)
+    window_start = (max_date - datetime.timedelta(days=window_weeks * 7)).isoformat()
+    window_resids = [v for d, v in resid_by_date.items() if d >= window_start]
+    if len(window_resids) < 2:
+        window_resids = list(resid_by_date.values())
+
+    median_resid = statistics.median(window_resids)
+    mad = statistics.median([abs(x - median_resid) for x in window_resids])
+    scale = 1.4826 * mad
+    if scale <= 0:
+        try:
+            scale = statistics.pstdev(window_resids)
+        except statistics.StatisticsError:
+            scale = 0.0
+        if scale <= 0:
+            med_expected = statistics.median(list(expected_by_date.values()))
+            scale = max(1.0, 0.10 * med_expected)
+
+    out: dict[str, dict] = {}
+    for d, residual in resid_by_date.items():
+        robust_z = (residual - median_resid) / scale if scale > 0 else 0.0
+        is_outlier = abs(robust_z) > z_threshold
+        exclude_default = (robust_z < -z_threshold) and (residual < 0)
+        out[d] = {
+            "expected": round(expected_by_date[d], 1),
+            "residual": round(residual, 1),
+            "robust_z": round(robust_z, 2),
+            "outlier_flag": is_outlier,
+            "exclude_default": exclude_default,
+        }
+    return out
 
 
 def _forecast_fulltime_hours_dow_raw(

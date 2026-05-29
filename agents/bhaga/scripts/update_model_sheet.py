@@ -46,6 +46,7 @@ from typing import Optional
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
 from agents.bhaga.scripts.daily_refresh import is_refresh_date_complete
+from agents.bhaga.scripts.forecast import compute_outlier_stats
 from core.config_loader import project_dir, refresh_access_token, resolve_sheet_id
 from skills.adp_run_automation.shift_backend import normalize_employee_name
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
@@ -465,19 +466,6 @@ def _parse_sheet_bool(v) -> bool:
     return s in ("true", "1", "yes", "y", "t")
 
 
-def _orders_outlier_flag(orders: int, dow_avg_orders: float, threshold: float = 0.25) -> bool:
-    """True when a day's order count deviates from its DOW baseline by > threshold.
-
-    Pure function (no I/O) so it's unit-testable. ``dow_avg_orders`` is the
-    mean orders for that day-of-week across the labor_daily window (computed
-    over operating days only). When the baseline is non-positive (no operating
-    same-DOW history) we can't judge deviation, so we report False.
-    """
-    if dow_avg_orders <= 0:
-        return False
-    return abs(orders - dow_avg_orders) / dow_avg_orders > threshold
-
-
 def _read_existing_labor_daily_forecast_exclude(
     *, spreadsheet_id: str, store: str
 ) -> dict[str, bool]:
@@ -687,6 +675,8 @@ LABOR_TUNABLE_KEYS = (
     "forecast_target_labor_pct",
     "forecast_fulltime_weekly_hours",
     "forecast_target_completion_time_per_item_sec",
+    "forecast_outlier_window_weeks",
+    "forecast_outlier_z_threshold",
 )
 
 # Orders / hourly-labor-hour above which we flag the day as "OVER" capacity.
@@ -784,6 +774,15 @@ def build_config_rows(
          labor_tunables.get("forecast_target_completion_time_per_item_sec", "300"),
          "Target prep time per item in seconds (5 min default). "
          "Used by the KDS-based staffing solver to compute needed labor hours."],
+        ["forecast_outlier_window_weeks",
+         labor_tunables.get("forecast_outlier_window_weeks", "8"),
+         "Trailing window (weeks) of trend-aware residuals the robust outlier "
+         "detector computes its median/MAD dispersion over. Default 8."],
+        ["forecast_outlier_z_threshold",
+         labor_tunables.get("forecast_outlier_z_threshold", "2.5"),
+         "Robust-z threshold for outlier_flag (both directions) and the "
+         "DOWN-only forecast_exclude auto-default (anomalous lows: stock-out / "
+         "early-close). Higher = more tolerant. Default 2.5."],
     ]
     # Echo training exclusions verbatim so they survive the config-tab rewrite.
     # USERS: edit these rows directly in Google Sheets. Set the date to the
@@ -943,7 +942,8 @@ def build_labor_daily_rows(
     items_by_date: dict[str, dict] | None = None,
     kds_by_date: dict[str, dict] | None = None,
     existing_forecast_exclude: dict[str, bool] | None = None,
-    outlier_threshold: float = 0.25,
+    outlier_window_weeks: float = 8,
+    outlier_z_threshold: float = 2.5,
 ) -> list[list]:
     """One row per day with labor cost / labor% computed from ADP wage rates.
 
@@ -1161,34 +1161,41 @@ def build_labor_daily_rows(
         "kds_pct_tickets_late",
         # Forecast-input helper columns (appended last so weekly/period
         # builders that index labor_daily by fixed position are unaffected):
-        #   outlier_flag     — Python-computed; orders deviate from the DOW
-        #                      baseline by > outlier_threshold (default 25%).
-        #   forecast_exclude — operator-editable boolean. Defaults to the
-        #                      outlier_flag on new rows, but any existing
-        #                      operator value in the sheet is PRESERVED across
-        #                      rebuilds (see existing_forecast_exclude). The
-        #                      forecast tab's order-seed excludes TRUE days.
+        #   outlier_flag     — Python-computed, BOTH directions; |robust_z| of
+        #                      the trend-aware residual exceeds the configured
+        #                      z-threshold. Informational only.
+        #   forecast_exclude — operator-editable boolean. Auto-defaults TRUE on
+        #                      new rows ONLY for anomalous LOWS (down-outliers:
+        #                      stock-out / early-close / closed days), never for
+        #                      growth. Any existing operator value in the sheet
+        #                      is PRESERVED across rebuilds (see
+        #                      existing_forecast_exclude). The forecast tab's
+        #                      order-seed excludes TRUE days.
         "outlier_flag", "forecast_exclude",
     ]
     existing_forecast_exclude = existing_forecast_exclude or {}
-    # DOW baseline for outlier detection: mean orders for each weekday across
-    # the window, computed over OPERATING days (orders > 0) so zero-order
-    # closed days don't drag the baseline down (they then read as outliers,
-    # which is the desired "exclude closed days from the forecast" behavior).
+    # Trend-aware, robust outlier detection over the operating days. The
+    # expected order count for each day comes from the same weighted-DOW +
+    # trend model the live seed uses, so a growth run is absorbed into the
+    # expectation instead of read as a string of upward "outliers". Residuals
+    # are scored with a robust median/MAD z over the trailing window; only
+    # anomalous LOWS auto-exclude (the operator's "we had to close shop /
+    # ran out of stock" days). Zero-order days carry no demand signal — they're
+    # kept OUT of the residual stats (so they can't pollute the dispersion) and
+    # handled directly below as down-outliers (Palmetto operates 7 days/week,
+    # so a 0-order complete day is a closure/stock-out, not a normal closed
+    # DOW; the codebase models no scheduled closures, hence this choice).
     orders_by_date: dict[str, int] = {
         d: int(sales.get(d, {}).get("order_count", 0) or 0) for d in all_dates
     }
-    _dow_sum: dict[int, int] = {}
-    _dow_cnt: dict[int, int] = {}
-    for d, o in orders_by_date.items():
-        if o <= 0:
-            continue
-        wd = datetime.date.fromisoformat(d).weekday()
-        _dow_sum[wd] = _dow_sum.get(wd, 0) + o
-        _dow_cnt[wd] = _dow_cnt.get(wd, 0) + 1
-    dow_avg_orders: dict[int, float] = {
-        wd: (_dow_sum[wd] / _dow_cnt[wd]) for wd in _dow_sum
-    }
+    operating_days = [
+        {"date": d, "orders": o} for d, o in orders_by_date.items() if o > 0
+    ]
+    outlier_stats = compute_outlier_stats(
+        operating_days,
+        window_weeks=int(outlier_window_weeks),
+        z_threshold=float(outlier_z_threshold),
+    )
     rows: list[list] = [header]
     for d in all_dates:
         s_d = sales.get(d, {
@@ -1255,12 +1262,16 @@ def build_labor_daily_rows(
 
         # Outlier + forecast_exclude (written as TRUE/FALSE text literals;
         # USER_ENTERED coerces them to native booleans / checkbox values).
-        wd = datetime.date.fromisoformat(d).weekday()
-        is_outlier = _orders_outlier_flag(
-            orders, dow_avg_orders.get(wd, 0.0), threshold=outlier_threshold,
-        )
-        # Preserve operator edits; default new rows to the outlier flag.
-        fe_val = existing_forecast_exclude.get(d, is_outlier)
+        if orders <= 0:
+            # Closed / no-sales complete day: a down-outlier by definition.
+            is_outlier = True
+            exclude_default = True
+        else:
+            stat = outlier_stats.get(d)
+            is_outlier = bool(stat["outlier_flag"]) if stat else False
+            exclude_default = bool(stat["exclude_default"]) if stat else False
+        # Preserve operator edits; new rows default to the DOWN-only auto-exclude.
+        fe_val = existing_forecast_exclude.get(d, exclude_default)
         _outlier_flag = "TRUE" if is_outlier else "FALSE"
         _forecast_exclude = "TRUE" if fe_val else "FALSE"
 
@@ -2301,6 +2312,11 @@ def main() -> int:
         print(f"#   → preserved forecast_exclude for {len(existing_forecast_exclude)} "
               f"existing labor_daily rows ({_n_excl} TRUE)")
 
+    # Forecast config (incl. the trend-aware robust-outlier knobs) drives both
+    # the labor_daily auto-exclusion default and the forecast tab below.
+    from core.config_loader import get_forecast_config
+    forecast_config = get_forecast_config(config_rows)
+
     labor_daily_rows = build_labor_daily_rows(
         txns=txns, shifts=shifts, wage_rates=wage_rates,
         excluded_from_tip_pool=excluded,
@@ -2308,6 +2324,8 @@ def main() -> int:
         items_by_date=items_by_date,
         kds_by_date=kds_by_date,
         existing_forecast_exclude=existing_forecast_exclude,
+        outlier_window_weeks=forecast_config["forecast_outlier_window_weeks"],
+        outlier_z_threshold=forecast_config["forecast_outlier_z_threshold"],
     )
     labor_period_rows = build_labor_period_rows(
         periods=periods, labor_daily_rows=labor_daily_rows,
@@ -2388,9 +2406,7 @@ def main() -> int:
         build_labor_daily_forecast_rows,
         backfill_forecast_errors,
     )
-    from core.config_loader import get_forecast_config
 
-    forecast_config = get_forecast_config(config_rows)
     forecast_rows = build_labor_daily_forecast_rows(
         labor_daily_rows=labor_daily_rows,
         wage_rates=wage_rates,

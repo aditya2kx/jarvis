@@ -29,6 +29,7 @@ from agents.bhaga.scripts.forecast import (
     _IDX,
     backfill_forecast_errors,
     build_labor_daily_forecast_rows,
+    compute_outlier_stats,
     compute_staffing,
     forecast_orders_dow_trend,
 )
@@ -157,6 +158,87 @@ class OrderSeedExclusionTests(unittest.TestCase):
     def test_seed_is_positive(self):
         target = datetime.date(2026, 5, 15)
         self.assertGreater(forecast_orders_dow_trend(_labor_daily_grid(), target), 0)
+
+
+def _growth_days(
+    weeks: int = 9, start_orders: int = 80, weekly_growth: int = 12,
+) -> list[dict]:
+    """Daily operating days in a sustained growth phase (Monday-anchored).
+
+    Each week's level rises by ``weekly_growth``; mild per-DOW variation on
+    top. Returns ``[{"date": ISO, "orders": int}, ...]`` — the shape
+    compute_outlier_stats consumes.
+    """
+    start = datetime.date(2026, 3, 30)  # a Monday
+    out: list[dict] = []
+    for w in range(weeks):
+        level = start_orders + w * weekly_growth
+        for dow in range(7):
+            d = start + datetime.timedelta(days=w * 7 + dow)
+            out.append({"date": d.isoformat(), "orders": level + dow * 2})
+    return out
+
+
+class OutlierStatsTests(unittest.TestCase):
+    """Trend-aware, robust (median/MAD) outlier detection — DOWN-only exclude."""
+
+    def test_growth_is_not_auto_excluded(self):
+        # Pure sustained growth: the trend-aware expectation absorbs it, so no
+        # day is flagged as a down-outlier (the old flat rule excluded most).
+        stats = compute_outlier_stats(_growth_days())
+        self.assertTrue(stats, "expected per-day stats")
+        excluded = [d for d, s in stats.items() if s["exclude_default"]]
+        self.assertEqual(
+            excluded, [],
+            f"growth days were wrongly auto-excluded: {excluded}",
+        )
+
+    def test_recent_growth_saturday_not_excluded(self):
+        days = _growth_days()
+        stats = compute_outlier_stats(days)
+        # Most recent Saturday (a strong-growth day) must NOT be auto-excluded.
+        sats = [
+            d for d in stats
+            if datetime.date.fromisoformat(d).weekday() == 5
+        ]
+        last_sat = max(sats)
+        self.assertFalse(stats[last_sat]["exclude_default"])
+        # Its residual is non-negative-ish (growth), so it can never be a down.
+        self.assertGreaterEqual(stats[last_sat]["robust_z"], -2.5)
+
+    def test_stockout_day_is_down_outlier_and_excluded(self):
+        days = _growth_days()
+        # Force a recent day into a stock-out (orders=3).
+        victim = days[-3]["date"]
+        days[-3] = {"date": victim, "orders": 3}
+        stats = compute_outlier_stats(days)
+        self.assertIn(victim, stats)
+        self.assertTrue(stats[victim]["outlier_flag"])
+        self.assertTrue(stats[victim]["exclude_default"])
+        self.assertLess(stats[victim]["robust_z"], -2.5)
+        self.assertLess(stats[victim]["residual"], 0)
+
+    def test_upward_spike_flags_but_does_not_exclude(self):
+        days = _growth_days()
+        # A one-off banner day (3x) — informational outlier, never auto-excluded.
+        victim = days[-2]["date"]
+        base = days[-2]["orders"]
+        days[-2] = {"date": victim, "orders": base * 3}
+        stats = compute_outlier_stats(days)
+        self.assertTrue(stats[victim]["outlier_flag"])
+        self.assertFalse(stats[victim]["exclude_default"])
+        self.assertGreater(stats[victim]["robust_z"], 0)
+
+    def test_normal_day_not_flagged(self):
+        days = _growth_days()
+        stats = compute_outlier_stats(days)
+        # A mid-window normal day sits near its expectation → not an outlier.
+        mid = days[len(days) // 2]["date"]
+        if mid in stats:
+            self.assertFalse(stats[mid]["outlier_flag"])
+
+    def test_empty_input(self):
+        self.assertEqual(compute_outlier_stats([]), {})
 
 
 class BuildForecastGridTests(unittest.TestCase):

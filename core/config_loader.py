@@ -205,6 +205,9 @@ _FORECAST_DEFAULTS = {
     "forecast_target_labor_pct": 0.25,
     "forecast_fulltime_weekly_hours": 40,
     "forecast_target_completion_time_per_item_sec": 300,
+    # Trend-aware robust outlier detection (replaces the old flat 25% rule).
+    "forecast_outlier_window_weeks": 8,
+    "forecast_outlier_z_threshold": 2.5,
 }
 
 
@@ -219,6 +222,11 @@ def get_forecast_config(config_rows: list[list] | None = None) -> dict:
         forecast_target_labor_pct (float, default 0.25)
         forecast_fulltime_weekly_hours (float, default 40)
         forecast_target_completion_time_per_item_sec (float, default 300)
+        forecast_outlier_window_weeks (float, default 8) — trailing window of
+            residuals the robust-z dispersion (median/MAD) is computed over.
+        forecast_outlier_z_threshold (float, default 2.5) — |robust_z| beyond
+            this flags an outlier; z below the negative of this (with actual <
+            expected) auto-excludes an anomalous LOW (stock-out / early-close).
     """
     result = dict(_FORECAST_DEFAULTS)
     if config_rows is None:

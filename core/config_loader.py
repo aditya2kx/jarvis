@@ -203,6 +203,10 @@ def load_env(path):
 
 _FORECAST_DEFAULTS = {
     "forecast_target_labor_pct": 0.25,
+    # Hourly (part-time-only) labor% target for the forecast tab's
+    # hourly_staffing_flag — hourly_cost / net_sales, EXCLUDING Lindsay's
+    # full-time cost. Seeded on every future forecast row but editable per row.
+    "forecast_target_hourly_labor_pct": 0.20,
     "forecast_fulltime_weekly_hours": 40,
     # Flat, configurable staffing-solver target — NOT derived from observed KDS.
     # 420s = 7 min/item (bumped from the old 300s/5 min default). Also editable
@@ -224,6 +228,8 @@ def get_forecast_config(config_rows: list[list] | None = None) -> dict:
 
     Returns dict with keys:
         forecast_target_labor_pct (float, default 0.25)
+        forecast_target_hourly_labor_pct (float, default 0.20) — hourly
+            (part-time-only) labor% target; drives hourly_staffing_flag.
         forecast_fulltime_weekly_hours (float, default 40)
         forecast_target_completion_time_per_item_sec (float, default 420 = 7 min/item)
         forecast_outlier_window_weeks (float, default 8) — trailing window of

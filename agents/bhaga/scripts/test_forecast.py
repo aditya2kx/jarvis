@@ -138,6 +138,30 @@ class ComputeStaffingTests(unittest.TestCase):
         self.assertAlmostEqual(s["fulltime_cost"], 120.0)
         self.assertAlmostEqual(s["budget_hours"], 12.0)
 
+    def test_hourly_labor_pct_excludes_fulltime(self):
+        # needed=16h coverage; hourly_cost=16*15=240; net=1200 → hourly%=0.20.
+        # total includes fulltime_cost (8*15=120) so actual% > hourly%.
+        s = compute_staffing(
+            target_labor_pct=0.25,
+            target_hourly_labor_pct=0.20,
+            **{**self.BASE, "fulltime_hours": 8.0},
+        )
+        self.assertAlmostEqual(s["hourly_labor_pct"], 240.0 / 1200.0)
+        self.assertAlmostEqual(s["actual_labor_pct"], (240.0 + 120.0) / 1200.0)
+        self.assertGreater(s["actual_labor_pct"], s["hourly_labor_pct"])
+
+    def test_hourly_staffing_flag_over_under_ok(self):
+        # hourly_labor_pct = 0.20 for BASE (240/1200).
+        over = compute_staffing(
+            target_labor_pct=0.25, target_hourly_labor_pct=0.10, **self.BASE)
+        self.assertEqual(over["hourly_staffing_flag"], "OVER_HOURLY_BUDGET")
+        under = compute_staffing(
+            target_labor_pct=0.25, target_hourly_labor_pct=0.40, **self.BASE)
+        self.assertEqual(under["hourly_staffing_flag"], "UNDER_HOURLY_BUDGET")
+        ok = compute_staffing(
+            target_labor_pct=0.25, target_hourly_labor_pct=0.20, **self.BASE)
+        self.assertEqual(ok["hourly_staffing_flag"], "OK")
+
 
 class OrderSeedExclusionTests(unittest.TestCase):
     def test_flagged_day_is_dropped_from_seed(self):
@@ -255,15 +279,31 @@ class BuildForecastGridTests(unittest.TestCase):
             },
         )
         self.assertEqual(grid[0], FORECAST_COLUMNS)
-        self.assertEqual(len(grid) - 1, 14)  # 14-day horizon
+        self.assertEqual(len(grid) - 1, 14)  # 14-day horizon (no frozen rows)
         r2 = grid[1]
-        # derived columns are formulas referencing sheet row 2
-        self.assertEqual(r2[_IDX["net_sales"]], "=C2*I2")
-        self.assertEqual(r2[_IDX["gross_sales"]], "=P2+Q2")
-        self.assertEqual(r2[_IDX["needed_hours"]], "=MAX(U2,V2)")
-        self.assertTrue(r2[_IDX["staffing_flag"]].startswith('=IF(W2>Y2,"BUDGET_CONFLICT"'))
+        # derived columns are formulas referencing sheet row 2. Cell letters are
+        # derived from the live layout so they survive future column shuffles.
+        self.assertEqual(
+            r2[_IDX["net_sales"]],
+            f"={_col(_IDX['orders'])}2*{_col(_IDX['_avg_order_price'])}2",
+        )
+        self.assertEqual(
+            r2[_IDX["gross_sales"]],
+            f"={_col(_IDX['net_sales'])}2+{_col(_IDX['discounts'])}2",
+        )
+        self.assertEqual(
+            r2[_IDX["needed_hours"]],
+            f"=MAX({_col(_IDX['min_coverage_hours'])}2,{_col(_IDX['efficiency_hours'])}2)",
+        )
+        self.assertTrue(r2[_IDX["staffing_flag"]].startswith(
+            f"=IF({_col(_IDX['needed_hours'])}2>{_col(_IDX['budget_hours'])}2,"
+            '"BUDGET_CONFLICT"'
+        ))
         # row 3 references row 3
-        self.assertEqual(grid[2][_IDX["net_sales"]], "=C3*I3")
+        self.assertEqual(
+            grid[2][_IDX["net_sales"]],
+            f"={_col(_IDX['orders'])}3*{_col(_IDX['_avg_order_price'])}3",
+        )
         # inputs are values, not formulas
         self.assertNotIsInstance(r2[_IDX["orders"]], str)  # int
         self.assertEqual(r2[_IDX["forecast_exclude"]], "FALSE")
@@ -326,6 +366,198 @@ class BuildForecastGridTests(unittest.TestCase):
             by_week[monday] += float(row[_IDX["fulltime_hours"]])
         for monday, total in by_week.items():
             self.assertLessEqual(round(total, 2), 40.0 + 1e-6, f"week {monday} over cap: {total}")
+
+
+class HourlyForecastColumnTests(unittest.TestCase):
+    """hourly_labor_pct + hourly_staffing_flag formulas, target seeding/preserve."""
+
+    def test_hourly_columns_are_formulas(self):
+        grid = build_labor_daily_forecast_rows(
+            labor_daily_rows=_labor_daily_grid(),
+            wage_rates=_wage_rates(),
+            config=_CONFIG,
+        )
+        r2 = grid[1]
+        # hourly_labor_pct = hourly_cost / net_sales (part-time only).
+        self.assertEqual(
+            r2[_IDX["hourly_labor_pct"]],
+            f"=IF({_col(_IDX['net_sales'])}2>0,"
+            f"{_col(_IDX['hourly_cost'])}2/{_col(_IDX['net_sales'])}2,0)",
+        )
+        # hourly_staffing_flag keys off target_hourly_labor_pct.
+        self.assertTrue(r2[_IDX["hourly_staffing_flag"]].startswith(
+            f"=IF({_col(_IDX['hourly_labor_pct'])}2>"
+            f"{_col(_IDX['target_hourly_labor_pct'])}2,\"OVER_HOURLY_BUDGET\""
+        ))
+
+    def test_target_hourly_seeded_from_config_default(self):
+        # No config key → default 0.20 (20%) seeded as a per-row VALUE.
+        grid = build_labor_daily_forecast_rows(
+            labor_daily_rows=_labor_daily_grid(),
+            wage_rates=_wage_rates(),
+            config=_CONFIG,
+        )
+        r2 = grid[1]
+        self.assertNotIsInstance(r2[_IDX["target_hourly_labor_pct"]], str)
+        self.assertEqual(r2[_IDX["target_hourly_labor_pct"]], 0.20)
+
+    def test_target_hourly_seeded_from_config_value(self):
+        cfg = {**_CONFIG, "forecast_target_hourly_labor_pct": 0.18}
+        grid = build_labor_daily_forecast_rows(
+            labor_daily_rows=_labor_daily_grid(),
+            wage_rates=_wage_rates(),
+            config=cfg,
+        )
+        self.assertEqual(grid[1][_IDX["target_hourly_labor_pct"]], 0.18)
+
+    def test_target_hourly_preserves_operator_edits(self):
+        grid0 = build_labor_daily_forecast_rows(
+            labor_daily_rows=_labor_daily_grid(),
+            wage_rates=_wage_rates(),
+            config=_CONFIG,
+        )
+        edited_date = coerce_iso_date(grid0[1][_IDX["date"]])
+        grid = build_labor_daily_forecast_rows(
+            labor_daily_rows=_labor_daily_grid(),
+            wage_rates=_wage_rates(),
+            config=_CONFIG,
+            existing_hourly_target_by_date={edited_date: 0.30},
+        )
+        self.assertEqual(grid[1][_IDX["target_hourly_labor_pct"]], 0.30)
+        # Untouched rows keep the 0.20 seed.
+        self.assertEqual(grid[2][_IDX["target_hourly_labor_pct"]], 0.20)
+
+
+def _existing_forecast_grid_for_date(date_iso: str) -> list[list]:
+    """A minimal existing labor_daily_forecast grid (header + one VALUE row).
+
+    Mimics what the Sheets read returns with UNFORMATTED_VALUE: derived/helper
+    cells carry evaluated NUMBERS, not formula strings — exactly what
+    freeze-in-place captures when a forecast day rolls into the past.
+    """
+    header = list(FORECAST_COLUMNS)
+    row = [""] * len(FORECAST_COLUMNS)
+    row[_IDX["date"]] = date_iso
+    row[_IDX["dow"]] = "x"
+    row[_IDX["orders"]] = 100
+    row[_IDX["fulltime_hours"]] = 6.0
+    row[_IDX["target_labor_pct"]] = 0.25
+    row[_IDX["target_hourly_labor_pct"]] = 0.20
+    row[_IDX["target_time_per_item_sec"]] = 420.0
+    row[_IDX["forecast_exclude"]] = "FALSE"
+    row[_IDX["_avg_order_price"]] = 9.0
+    row[_IDX["_avg_items_per_order"]] = 1.4
+    row[_IDX["_avg_discount_per_order"]] = 0.5
+    row[_IDX["_avg_tip_pool_per_order"]] = 0.72
+    row[_IDX["_avg_hourly_wage"]] = 15.0
+    row[_IDX["_shift_hours"]] = 11.0
+    row[_IDX["_min_parttimers"]] = 2
+    # Evaluated derived values (numbers), as the Sheets read returns them.
+    row[_IDX["net_sales"]] = 900.0
+    row[_IDX["items_sold"]] = 140.0
+    row[_IDX["hourly_cost"]] = 330.0
+    row[_IDX["total_labor_cost"]] = 420.0
+    row[_IDX["actual_labor_pct"]] = 0.4667
+    row[_IDX["hourly_labor_pct"]] = 0.3667
+    row[_IDX["forecast_generated_at"]] = "2026-05-01T08:00:00+00:00"
+    return [header, row]
+
+
+class FreezeInPlaceTests(unittest.TestCase):
+    """Trailing FROZEN past rows get scored; FUTURE rows stay live/blank."""
+
+    def test_past_row_is_frozen_and_scored(self):
+        ld = _labor_daily_grid(days=40)  # last actual = 2026-05-10
+        last_actual = ld[-1][0]  # ISO of the last labor_daily date
+        existing = _existing_forecast_grid_for_date(last_actual)
+        grid = build_labor_daily_forecast_rows(
+            labor_daily_rows=ld,
+            wage_rates=_wage_rates(),
+            config=_CONFIG,
+            existing_forecast_rows=existing,
+        )
+        # The frozen past row sits BEFORE the future rows.
+        frozen = grid[1]
+        self.assertEqual(coerce_iso_date(frozen[_IDX["date"]]), last_actual)
+        # Frozen derived cells are VALUES, not live formulas.
+        self.assertNotIsInstance(frozen[_IDX["net_sales"]], str)
+        self.assertEqual(frozen[_IDX["forecast_generated_at"]], "2026-05-01T08:00:00+00:00")
+        # Future rows follow and are still live formulas / blank accuracy.
+        future = grid[2]
+        self.assertTrue(str(future[_IDX["net_sales"]]).startswith("="))
+        self.assertEqual(future[_IDX["orders_error_pct"]], "")
+
+        out = backfill_forecast_errors(forecast_rows=grid, labor_daily_rows=ld)
+        frozen = out[1]
+        # The frozen past day now has a matching labor_daily actual → scored.
+        self.assertNotEqual(frozen[_IDX["orders_error_pct"]], "")
+        self.assertNotEqual(frozen[_IDX["net_sales_error_pct"]], "")
+        self.assertNotEqual(frozen[_IDX["realized_labor_pct"]], "")
+        self.assertNotEqual(frozen[_IDX["forecast_mape"]], "")
+        # Future rows stay blank (no actual, derived still formulas).
+        future = out[2]
+        self.assertEqual(future[_IDX["orders_error_pct"]], "")
+        self.assertTrue(str(future[_IDX["net_sales"]]).startswith("="))
+
+    def test_future_only_when_no_existing_tab(self):
+        # First run (no existing forecast tab) → no frozen rows, future-only.
+        grid = build_labor_daily_forecast_rows(
+            labor_daily_rows=_labor_daily_grid(days=40),
+            wage_rates=_wage_rates(),
+            config=_CONFIG,
+            existing_forecast_rows=None,
+        )
+        self.assertEqual(len(grid) - 1, 14)
+        # grid[1] is the first FUTURE row → live formula.
+        self.assertTrue(str(grid[1][_IDX["net_sales"]]).startswith("="))
+
+    def test_rows_older_than_window_are_dropped(self):
+        ld = _labor_daily_grid(days=40)  # last actual 2026-05-10, start 05-11
+        # A stale forecast row well outside the 30-day window (freeze_start
+        # = 2026-04-11) must NOT be carried forward.
+        stale = _existing_forecast_grid_for_date("2026-03-01")
+        grid = build_labor_daily_forecast_rows(
+            labor_daily_rows=ld,
+            wage_rates=_wage_rates(),
+            config=_CONFIG,
+            existing_forecast_rows=stale,
+        )
+        dates = [coerce_iso_date(r[_IDX["date"]]) for r in grid[1:]]
+        self.assertNotIn("2026-03-01", dates)
+        self.assertEqual(len(grid) - 1, 14)  # future-only, stale dropped
+
+
+class BackfillColumnResolutionTests(unittest.TestCase):
+    """backfill resolves labor_daily actual columns by HEADER NAME, not position."""
+
+    def test_resolves_by_name_after_layout_shift(self):
+        # Build a forecast grid with a frozen past row to score.
+        ld = _labor_daily_grid(days=40)
+        last_actual = ld[-1][0]
+        existing = _existing_forecast_grid_for_date(last_actual)
+        grid = build_labor_daily_forecast_rows(
+            labor_daily_rows=ld, wage_rates=_wage_rates(), config=_CONFIG,
+            existing_forecast_rows=existing,
+        )
+        # Shift the labor_daily layout: prepend a NEW column so every fixed
+        # position is wrong, but the header names still resolve.
+        shifted = [["row_id"] + r for r in ld]
+        # Sanity: orders is no longer at position 7.
+        self.assertNotEqual(shifted[0].index("orders"), 7)
+        out = backfill_forecast_errors(forecast_rows=grid, labor_daily_rows=shifted)
+        frozen = out[1]
+        self.assertEqual(coerce_iso_date(frozen[_IDX["date"]]), last_actual)
+        # Name resolution found the right columns → non-blank, sane errors.
+        self.assertNotEqual(frozen[_IDX["net_sales_error_pct"]], "")
+        self.assertNotEqual(frozen[_IDX["realized_labor_pct"]], "")
+        # realized_labor_pct = total_labor_cost / net_sales from the actual.
+        # _labor_daily_grid: orders=100+dow*10, net=orders*9, total=270.
+        d = datetime.date.fromisoformat(last_actual)
+        orders = 100 + d.weekday() * 10
+        net = orders * 9.0
+        self.assertAlmostEqual(
+            frozen[_IDX["realized_labor_pct"]], round(270.0 / net, 4)
+        )
 
 
 class BackfillErrorsTests(unittest.TestCase):

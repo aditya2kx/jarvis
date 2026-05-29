@@ -8,11 +8,16 @@ notes) plus a row of rate CONSTANTS, and every DERIVED column is a Google
 Sheets FORMULA (=...) so editing an input recalculates sales, items, the
 staffing solver and the budget/coverage flag IN THE SHEET.
 
-Layout (one row per forecast day, ~14 future days):
+The tab is FREEZE-IN-PLACE: it holds a trailing window of recent FROZEN past
+forecast days (captured as VALUES the day they roll from future → past, so we
+score the forecast we actually made, not a hindsight re-forecast) followed by
+the live FUTURE days. See build_labor_daily_forecast_rows for the mechanics.
 
-  INPUTS (values, operator-editable)
+Layout (one row per forecast day = [frozen past window] + [~14 future days]):
+
+  INPUTS (values, operator-editable on FUTURE rows; frozen on PAST rows)
     date | dow | orders | fulltime_hours | target_labor_pct |
-    target_time_per_item_sec | forecast_exclude | notes
+    target_hourly_labor_pct | target_time_per_item_sec | forecast_exclude | notes
   HELPER CONSTANTS (values; hidden in-sheet)
     _avg_order_price | _avg_items_per_order | _avg_discount_per_order |
     _avg_tip_pool_per_order | _avg_hourly_wage |
@@ -20,13 +25,22 @@ Layout (one row per forecast day, ~14 future days):
 
   target_time_per_item_sec is the flat staffing-solver target (seconds/item),
   seeded from config (default 420 = 7 min) on every row but editable PER ROW;
-  efficiency_hours references it. Operator edits are preserved across rebuilds
-  (same mechanism as forecast_exclude / orders preservation in labor_daily).
-  DERIVED (FORMULAS, evaluate live via USER_ENTERED)
+  efficiency_hours references it. target_hourly_labor_pct is the hourly (part-
+  time-only) labor% target, seeded from config (default 0.20 = 20%) but editable
+  PER ROW. Operator edits to both are preserved across rebuilds (same mechanism
+  as forecast_exclude / orders preservation in labor_daily).
+  DERIVED (FORMULAS on FUTURE rows, evaluate live via USER_ENTERED; VALUES on
+  frozen PAST rows)
     net_sales | discounts | gross_sales | items_sold | tip_pool |
     min_coverage_hours | efficiency_hours | needed_hours | fulltime_cost |
     budget_hours | recommended_hourly_hours | hourly_cost |
-    total_labor_cost | actual_labor_pct | staffing_flag
+    total_labor_cost | actual_labor_pct | hourly_labor_pct |
+    staffing_flag | hourly_staffing_flag
+
+  actual_labor_pct = total_labor_cost / net_sales (ALL labor incl. Lindsay's
+  full-time cost); hourly_labor_pct = hourly_cost / net_sales (PART-TIME labor
+  ONLY, excludes Lindsay). staffing_flag keys off the total-labor budget;
+  hourly_staffing_flag keys off target_hourly_labor_pct.
   ACCURACY (Python-backfilled once a forecast day has a realized actual)
     forecast_generated_at | orders_error_pct | items_sold_error_pct |
     net_sales_error_pct | fulltime_hours_error_pct | hourly_hours_error_pct |
@@ -60,6 +74,7 @@ from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
 FORECAST_COLUMNS: list[str] = [
     # inputs
     "date", "dow", "orders", "fulltime_hours", "target_labor_pct",
+    "target_hourly_labor_pct",
     "target_time_per_item_sec", "forecast_exclude", "notes",
     # helper constants (hidden)
     "_avg_order_price", "_avg_items_per_order", "_avg_discount_per_order",
@@ -69,13 +84,20 @@ FORECAST_COLUMNS: list[str] = [
     "net_sales", "discounts", "gross_sales", "items_sold", "tip_pool",
     "min_coverage_hours", "efficiency_hours", "needed_hours",
     "fulltime_cost", "budget_hours", "recommended_hourly_hours",
-    "hourly_cost", "total_labor_cost", "actual_labor_pct", "staffing_flag",
+    "hourly_cost", "total_labor_cost", "actual_labor_pct", "hourly_labor_pct",
+    "staffing_flag", "hourly_staffing_flag",
     # accuracy (python-backfilled)
     "forecast_generated_at",
     "orders_error_pct", "items_sold_error_pct", "net_sales_error_pct",
     "fulltime_hours_error_pct", "hourly_hours_error_pct",
     "avg_order_price_error_pct", "realized_labor_pct", "forecast_mape",
 ]
+
+# Number of trailing PAST calendar days kept FROZEN in the forecast tab so
+# their forecast-vs-actual error can be scored once the actual lands. Small,
+# easy to tune. Frozen rows older than this (relative to the horizon start) are
+# dropped so the tab doesn't grow unbounded.
+FREEZE_WINDOW_DAYS: int = 30
 
 _IDX: dict[str, int] = {name: i for i, name in enumerate(FORECAST_COLUMNS)}
 
@@ -149,10 +171,21 @@ def _derived_formulas(sheet_row: int) -> dict[str, str]:
         "hourly_cost": f"={R('recommended_hourly_hours')}*{R('_avg_hourly_wage')}",
         "total_labor_cost": f"={R('hourly_cost')}+{R('fulltime_cost')}",
         "actual_labor_pct": f"=IF({R('net_sales')}>0,{R('total_labor_cost')}/{R('net_sales')},0)",
+        # Hourly (part-time-only) labor% — excludes Lindsay's full-time cost.
+        "hourly_labor_pct": f"=IF({R('net_sales')}>0,{R('hourly_cost')}/{R('net_sales')},0)",
         "staffing_flag": (
             f"=IF({R('needed_hours')}>{R('budget_hours')},\"BUDGET_CONFLICT\","
             f"IF({R('budget_hours')}>{R('needed_hours')}*1.25,"
             f"\"OVERSTAFFED_BUDGET\",\"OK\"))"
+        ),
+        # Mirror of staffing_flag keyed to the hourly labor% target: OVER when
+        # hourly_labor_pct exceeds target_hourly_labor_pct, UNDER when it sits
+        # well below (lots of headroom), OK in between.
+        "hourly_staffing_flag": (
+            f"=IF({R('hourly_labor_pct')}>{R('target_hourly_labor_pct')},"
+            f"\"OVER_HOURLY_BUDGET\","
+            f"IF({R('hourly_labor_pct')}<{R('target_hourly_labor_pct')}*0.75,"
+            f"\"UNDER_HOURLY_BUDGET\",\"OK\"))"
         ),
     }
 
@@ -518,6 +551,7 @@ def compute_staffing(
     min_parttimers: float,
     fulltime_hours: float,
     target_labor_pct: float,
+    target_hourly_labor_pct: float = 0.20,
 ) -> dict[str, float | str]:
     """Replicate the in-sheet derived formulas in Python.
 
@@ -542,12 +576,19 @@ def compute_staffing(
     hourly_cost = recommended_hourly_hours * avg_hourly_wage
     total_labor_cost = hourly_cost + fulltime_cost
     actual_labor_pct = (total_labor_cost / net_sales) if net_sales > 0 else 0.0
+    hourly_labor_pct = (hourly_cost / net_sales) if net_sales > 0 else 0.0
     if needed_hours > budget_hours:
         staffing_flag = "BUDGET_CONFLICT"
     elif budget_hours > needed_hours * 1.25:
         staffing_flag = "OVERSTAFFED_BUDGET"
     else:
         staffing_flag = "OK"
+    if hourly_labor_pct > target_hourly_labor_pct:
+        hourly_staffing_flag = "OVER_HOURLY_BUDGET"
+    elif hourly_labor_pct < target_hourly_labor_pct * 0.75:
+        hourly_staffing_flag = "UNDER_HOURLY_BUDGET"
+    else:
+        hourly_staffing_flag = "OK"
     return {
         "net_sales": net_sales,
         "discounts": discounts,
@@ -563,8 +604,46 @@ def compute_staffing(
         "hourly_cost": hourly_cost,
         "total_labor_cost": total_labor_cost,
         "actual_labor_pct": actual_labor_pct,
+        "hourly_labor_pct": hourly_labor_pct,
         "staffing_flag": staffing_flag,
+        "hourly_staffing_flag": hourly_staffing_flag,
     }
+
+
+# ── Existing-tab freeze capture ───────────────────────────────────
+
+
+def _parse_existing_forecast_grid(
+    existing_forecast_rows: list[list] | None,
+) -> dict[str, dict[str, Any]]:
+    """Map an existing labor_daily_forecast grid → {date_iso: {col_name: value}}.
+
+    The grid is read straight from the sheet (header + value rows). Because the
+    Sheets Values API returns the EVALUATED value of a formula cell (a number),
+    every derived column already carries its computed value here — which is
+    exactly what we freeze when a forecast day rolls from future to past, so we
+    score the forecast we actually made rather than a hindsight re-forecast.
+    Columns are mapped by HEADER NAME so this stays correct even if an older
+    tab had a different column set.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    if not existing_forecast_rows or len(existing_forecast_rows) <= 1:
+        return out
+    header = existing_forecast_rows[0]
+    if "date" not in header:
+        return out
+    date_i = header.index("date")
+    for row in existing_forecast_rows[1:]:
+        if date_i >= len(row):
+            continue
+        iso = coerce_iso_date(row[date_i])
+        if iso is None:
+            continue
+        captured: dict[str, Any] = {}
+        for i, name in enumerate(header):
+            captured[name] = row[i] if i < len(row) else ""
+        out[iso] = captured
+    return out
 
 
 # ── Grid builder ──────────────────────────────────────────────────
@@ -577,24 +656,40 @@ def build_labor_daily_forecast_rows(
     config: dict,
     kds_by_date: dict[str, dict] | None = None,
     existing_target_by_date: dict[str, float] | None = None,
+    existing_hourly_target_by_date: dict[str, float] | None = None,
+    existing_forecast_rows: list[list] | None = None,
     horizon_days: int = 14,
+    freeze_window_days: int = FREEZE_WINDOW_DAYS,
 ) -> list[list]:
-    """Build the formula-driven labor_daily_forecast grid (header + N rows).
+    """Build the freeze-in-place labor_daily_forecast grid (header + N rows).
 
-    INPUT cells are written as values; HELPER constants as values; DERIVED
-    columns as ``=...`` formula strings (the writer uses USER_ENTERED so they
-    evaluate live). ACCURACY columns start blank and are filled by
-    backfill_forecast_errors once a forecast day has a realized actual.
+    The grid is ``[frozen past rows] + [future rows]``:
 
-    ``target_time_per_item_sec`` is seeded per row from config
-    (forecast_target_completion_time_per_item_sec, default 420), but any
-    operator edit for a date present in ``existing_target_by_date`` is
-    PRESERVED across rebuilds.
+    * FUTURE rows (horizon start = last_actual+1 .. +horizon_days) are LIVE:
+      INPUT cells as values, HELPER constants as values, DERIVED columns as
+      ``=...`` formula strings (the writer uses USER_ENTERED so they evaluate
+      live), ACCURACY columns blank.
+    * FROZEN past rows are captured from ``existing_forecast_rows`` (read from
+      the sheet, so formula cells carry their evaluated VALUES) the moment a
+      date rolls from future → past. They are written as VALUES (no live
+      formulas, no operator-editable inputs) with their ORIGINAL
+      forecast_generated_at preserved, so backfill_forecast_errors can score
+      the forecast we actually made against the realized actual. Frozen rows
+      older than ``freeze_window_days`` before the horizon start are dropped so
+      the tab can't grow unbounded.
+
+    ``target_time_per_item_sec`` (config default 420) and
+    ``target_hourly_labor_pct`` (config default 0.20) are seeded per FUTURE
+    row, but any operator edit for a date present in ``existing_target_by_date``
+    / ``existing_hourly_target_by_date`` is PRESERVED across rebuilds.
     """
     target_labor_pct = float(config.get("forecast_target_labor_pct", 0.25))
+    target_hourly_labor_pct = float(config.get("forecast_target_hourly_labor_pct", 0.20))
     fulltime_weekly_hours = float(config.get("forecast_fulltime_weekly_hours", 40.0))
     target_time_per_item = float(config.get("forecast_target_completion_time_per_item_sec", 420.0))
     existing_target_by_date = existing_target_by_date or {}
+    existing_hourly_target_by_date = existing_hourly_target_by_date or {}
+    existing_by_date = _parse_existing_forecast_grid(existing_forecast_rows)
 
     hourly_wages = [
         float(r["wage_rate_dollars"])
@@ -673,9 +768,44 @@ def build_labor_daily_forecast_rows(
             for s in week_rows:
                 s["ft_capped"] = round(s["ft_raw"], 2)
 
-    # Second pass: emit rows. Sheet row number = header(1) + 1-based index.
+    # ── Freeze-in-place: carry forward recent PAST forecast rows ──────
+    # Any existing-tab row whose date is now in the past (< horizon start) but
+    # still within the trailing freeze window is captured AS VALUES. The Sheets
+    # read already returned evaluated values for the formula cells, so we freeze
+    # the forecast we actually made (no hindsight re-forecast). Rows older than
+    # the window are dropped (not carried), so the tab stays bounded.
+    freeze_start = start_date - datetime.timedelta(days=freeze_window_days)
+    frozen_rows: list[list] = []
+    for iso in sorted(existing_by_date):
+        try:
+            d = datetime.date.fromisoformat(iso)
+        except (ValueError, TypeError):
+            continue
+        if d >= start_date:
+            continue  # future date → will be regenerated live below
+        if d < freeze_start:
+            continue  # older than the trailing window → drop
+        src = existing_by_date[iso]
+        frozen: list[Any] = [""] * len(FORECAST_COLUMNS)
+        for name in FORECAST_COLUMNS:
+            val = src.get(name, "")
+            # Never carry an unevaluated formula string into a frozen value
+            # cell — if the source somehow still holds "=...", blank it.
+            if isinstance(val, str) and val.startswith("="):
+                val = ""
+            frozen[_IDX[name]] = val
+        # Canonicalize the date as a text literal; preserve original
+        # forecast_generated_at if the source carried one.
+        frozen[_IDX["date"]] = _iso_date_for_sheet_cell(iso)
+        frozen_rows.append(frozen)
+
+    # ── Future rows: live formulas, operator-editable inputs ──────────
+    # Sheet row number = header(1) + frozen rows + 1-based future index, so the
+    # derived-column A1 references resolve against each row's OWN cells.
+    n_frozen = len(frozen_rows)
+    future_rows: list[list] = []
     for i, s in enumerate(staged):
-        sheet_row = i + 2
+        sheet_row = i + 2 + n_frozen
         target_date = s["date"]
         formulas = _derived_formulas(sheet_row)
         row: list[Any] = [""] * len(FORECAST_COLUMNS)
@@ -686,6 +816,11 @@ def build_labor_daily_forecast_rows(
         row[_IDX["orders"]] = s["orders"]
         row[_IDX["fulltime_hours"]] = s["ft_capped"]
         row[_IDX["target_labor_pct"]] = target_labor_pct
+        # Per-row editable hourly labor% target; preserve operator edits.
+        row[_IDX["target_hourly_labor_pct"]] = round(
+            float(existing_hourly_target_by_date.get(
+                target_date.isoformat(), target_hourly_labor_pct)), 4
+        )
         # Per-row editable staffing-solver target; preserve operator edits.
         row[_IDX["target_time_per_item_sec"]] = round(
             float(existing_target_by_date.get(target_date.isoformat(), target_time_per_item)), 1
@@ -710,8 +845,10 @@ def build_labor_daily_forecast_rows(
         row[_IDX["forecast_generated_at"]] = generated_at
         # error/realized columns start blank (backfilled when actuals land)
 
-        rows.append(row)
+        future_rows.append(row)
 
+    rows.extend(frozen_rows)
+    rows.extend(future_rows)
     return rows
 
 
@@ -725,35 +862,62 @@ def backfill_forecast_errors(
 ) -> list[list]:
     """Fill accuracy columns for forecast rows whose date now has an actual.
 
-    Forecasted values are recomputed in Python from the row's OWN input +
-    helper cells (the derived cells hold formula strings, not numbers, so we
-    can't read an evaluated value here). Error = (actual - forecast)/actual.
+    With FREEZE-IN-PLACE the forecast tab retains a trailing window of FROZEN
+    past rows whose input + helper cells hold the values we forecast for that
+    day. Forecasted values are recomputed in Python from the row's OWN input +
+    helper cells (consistent with the in-sheet formulas, and for a frozen row
+    those inputs ARE the frozen forecast). Error = (actual - forecast)/actual.
 
-    In the current rebuild model the forecast tab only ever holds FUTURE dates
-    (it's regenerated each run from last_actual+1), so this is typically a
-    no-op — but it stays correct if a realized date ever overlaps a forecast
-    row, and keeps the columns meaningful.
+    labor_daily actuals are resolved BY HEADER NAME, not fixed positions —
+    labor_daily has had columns appended over time (KDS metrics, breakdown
+    cols, outlier_flag, forecast_exclude), and once freeze-in-place starts
+    scoring real rows a positional drift would silently compute garbage. Name
+    resolution stays correct regardless of layout, with positional fallback
+    only if a header name is missing.
     """
     if len(forecast_rows) <= 1 or len(labor_daily_rows) <= 1:
         return forecast_rows
 
     ld_header = labor_daily_rows[0]
+    # Resolve actual columns by header NAME (robust to layout drift), falling
+    # back to the historical fixed positions only if a name is absent.
+    _ld_idx = {str(name).strip(): i for i, name in enumerate(ld_header)}
+
+    def _col(name: str, fallback: int) -> int:
+        return _ld_idx.get(name, fallback)
+
+    c_date = _col("date", 0)
+    c_net = _col("net_sales", 4)
+    c_orders = _col("orders", 7)
+    c_hourly_h = _col("hourly_hours", 8)
+    c_ft_h = _col("fulltime_hours", 10)
+    c_total_cost = _col("total_labor_cost", 12)
+    c_items = _col("items_sold", 30)
+
+    def _ld_float(row, i):
+        if i >= len(row) or row[i] == "" or row[i] is None:
+            return 0.0
+        try:
+            return float(row[i])
+        except (ValueError, TypeError):
+            return 0.0
+
+    def _ld_int(row, i):
+        return int(_ld_float(row, i))
+
     actual_by_date: dict[str, dict] = {}
     for row in labor_daily_rows[1:]:
-        d = coerce_iso_date(row[0])
+        d = coerce_iso_date(row[c_date]) if c_date < len(row) else None
         if d is None:
             continue
-        try:
-            actual_by_date[d] = {
-                "orders": int(row[7] or 0),
-                "net_sales": float(row[4] or 0),
-                "items_sold": int(row[30]) if len(row) > 30 and row[30] != "" else 0,
-                "fulltime_hours": float(row[10] or 0),
-                "hourly_hours": float(row[8] or 0),
-                "total_labor_cost": float(row[12] or 0),
-            }
-        except (ValueError, IndexError):
-            continue
+        actual_by_date[d] = {
+            "orders": _ld_int(row, c_orders),
+            "net_sales": _ld_float(row, c_net),
+            "items_sold": _ld_int(row, c_items),
+            "fulltime_hours": _ld_float(row, c_ft_h),
+            "hourly_hours": _ld_float(row, c_hourly_h),
+            "total_labor_cost": _ld_float(row, c_total_cost),
+        }
 
     header = forecast_rows[0]
     idx = {name: i for i, name in enumerate(header)}

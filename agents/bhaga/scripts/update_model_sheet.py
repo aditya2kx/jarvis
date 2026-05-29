@@ -563,41 +563,71 @@ def _read_existing_labor_daily_forecast_exclude(
     return out
 
 
-def _read_existing_forecast_target(
+def _read_existing_forecast_grid(
     *, spreadsheet_id: str, store: str
-) -> dict[str, float]:
-    """Read the current labor_daily_forecast tab's date → target_time_per_item_sec map.
+) -> list[list]:
+    """Read the current labor_daily_forecast tab as a raw grid (header + rows).
 
-    Lets the nightly rebuild PRESERVE operator-edited per-row staffing targets
-    instead of clobbering them with the config seed. Returns {} if the tab/column
-    is absent or unreachable (graceful degrade / first run).
+    Single fetch that serves two jobs in the nightly rebuild:
+      1. FREEZE-IN-PLACE — the Sheets Values API returns the EVALUATED value of
+         a formula cell, so the derived columns here already carry their
+         computed numbers. build_labor_daily_forecast_rows captures the rows
+         that have rolled into the past AS VALUES (the forecast we actually
+         made) instead of re-forecasting them with hindsight.
+      2. PRESERVATION — _forecast_grid_col_numeric_map() extracts the per-date
+         operator-edited input columns (target_time_per_item_sec,
+         target_hourly_labor_pct) so they survive the rebuild.
+
+    Returns [] if the tab is absent or unreachable (graceful degrade / first
+    run), which makes the forecast build fall back to future-only behavior.
     """
-    out: dict[str, float] = {}
     try:
         token = refresh_access_token(store)
         rng = urllib.parse.quote("labor_daily_forecast!A1:ZZ100000", safe="!:")
-        url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{rng}"
+        # UNFORMATTED_VALUE so formula cells come back as their evaluated
+        # NUMBERS (not "$9.00" / "23.45%" formatted strings) — otherwise freeze
+        # would capture display strings and backfill's float() parse would fail
+        # on the currency-formatted helper constants, silently zeroing the
+        # frozen forecast it scores against.
+        url = (
+            f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+            f"/values/{rng}?valueRenderOption=UNFORMATTED_VALUE"
+        )
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
         with urllib.request.urlopen(req, timeout=20) as resp:
             data = json.loads(resp.read())
     except Exception as exc:  # noqa: BLE001
-        print(f"  [forecast-read] could not read existing target_time_per_item_sec (first run?): {exc}")
+        print(f"  [forecast-read] could not read existing forecast tab (first run?): {exc}")
+        return []
+    return data.get("values", []) or []
+
+
+def _forecast_grid_col_numeric_map(
+    grid: list[list], col_name: str
+) -> dict[str, float]:
+    """Extract a date → numeric-value map for one column of a forecast grid.
+
+    Pure helper over the raw grid from _read_existing_forecast_grid. Used to
+    PRESERVE operator-edited per-row inputs (target_time_per_item_sec,
+    target_hourly_labor_pct) across rebuilds — same idiom as the labor_daily
+    forecast_exclude preservation. Skips blank cells and formula strings; keeps
+    only parseable numbers. Returns {} if the tab/column is absent.
+    """
+    out: dict[str, float] = {}
+    if not grid or len(grid) <= 1:
         return out
-    values = data.get("values", [])
-    if not values:
-        return out
-    header = values[0]
-    if "date" not in header or "target_time_per_item_sec" not in header:
+    header = grid[0]
+    if "date" not in header or col_name not in header:
         return out
     date_i = header.index("date")
-    tgt_i = header.index("target_time_per_item_sec")
-    for row in values[1:]:
-        if len(row) <= max(date_i, tgt_i):
+    col_i = header.index(col_name)
+    for row in grid[1:]:
+        if len(row) <= max(date_i, col_i):
             continue
         iso = coerce_iso_date(row[date_i])
         if iso is None:
             continue
-        raw = str(row[tgt_i]).strip()
+        raw = str(row[col_i]).strip()
         if not raw or raw.startswith("="):
             continue
         try:
@@ -773,6 +803,7 @@ REVIEW_TUNABLE_KEYS = (
 LABOR_TUNABLE_KEYS = (
     "saturation_orders_per_labor_hour",
     "forecast_target_labor_pct",
+    "forecast_target_hourly_labor_pct",
     "forecast_fulltime_weekly_hours",
     "forecast_target_completion_time_per_item_sec",
     "forecast_outlier_window_weeks",
@@ -867,6 +898,12 @@ def build_config_rows(
          labor_tunables.get("forecast_target_labor_pct", "0.25"),
          "Total labor cost / net sales target for the staffing solver ceiling. "
          "Default 25%."],
+        ["forecast_target_hourly_labor_pct",
+         labor_tunables.get("forecast_target_hourly_labor_pct", "0.20"),
+         "Hourly (part-time-only) labor cost / net sales target — EXCLUDES "
+         "Lindsay's full-time cost. Drives the forecast tab's "
+         "hourly_staffing_flag (OVER_HOURLY_BUDGET when hourly_labor_pct "
+         "exceeds this). Seeded per forecast row, editable per row. Default 20%."],
         ["forecast_fulltime_weekly_hours",
          labor_tunables.get("forecast_fulltime_weekly_hours", "40"),
          "Full-time (manager) weekly hour cap for forecast allocation."],
@@ -2582,20 +2619,33 @@ def main() -> int:
         backfill_forecast_errors,
     )
 
-    # Preserve operator-edited per-row target_time_per_item_sec from the
-    # existing forecast tab (same idiom as labor_daily forecast_exclude).
-    existing_target_by_date = _read_existing_forecast_target(
+    # Read the existing forecast tab ONCE: it drives freeze-in-place (formula
+    # cells come back as evaluated VALUES) AND preserves operator-edited per-row
+    # inputs (target_time_per_item_sec, target_hourly_labor_pct) — same idiom as
+    # the labor_daily forecast_exclude preservation.
+    existing_forecast_grid = _read_existing_forecast_grid(
         spreadsheet_id=model_sid, store=args.store,
+    )
+    existing_target_by_date = _forecast_grid_col_numeric_map(
+        existing_forecast_grid, "target_time_per_item_sec",
+    )
+    existing_hourly_target_by_date = _forecast_grid_col_numeric_map(
+        existing_forecast_grid, "target_hourly_labor_pct",
     )
     if existing_target_by_date:
         print(f"#   → preserved target_time_per_item_sec for "
               f"{len(existing_target_by_date)} existing forecast rows")
+    if existing_hourly_target_by_date:
+        print(f"#   → preserved target_hourly_labor_pct for "
+              f"{len(existing_hourly_target_by_date)} existing forecast rows")
     forecast_rows = build_labor_daily_forecast_rows(
         labor_daily_rows=labor_daily_rows,
         wage_rates=wage_rates,
         config=forecast_config,
         kds_by_date=kds_by_date,
         existing_target_by_date=existing_target_by_date,
+        existing_hourly_target_by_date=existing_hourly_target_by_date,
+        existing_forecast_rows=existing_forecast_grid,
     )
     # Backfill error columns for past forecast rows where actuals now exist.
     # On the first run there are no past forecasts; on subsequent runs the

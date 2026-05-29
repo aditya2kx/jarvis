@@ -251,6 +251,101 @@ def _normalize_key_cell(v: Any) -> str:
     return str(v).strip()
 
 
+# ── Header reconciliation (additive auto-migration) ───────────────
+
+
+def _reconcile_header(
+    header_actual: list[Any],
+    header_expected: list[str],
+    *,
+    tab_name: str,
+    workbook_title: str,
+    spreadsheet_id: str,
+) -> dict:
+    """Decide how the live row-1 header relates to the schema header.
+
+    Returns one of:
+        {"action": "match"}
+            The live DATA header already equals the schema header — nothing to
+            migrate.
+        {"action": "migrate", "new_cols": [...], "header_row": [...],
+         "data_header_len": int}
+            The live data header is a strict PREFIX of the schema header (the
+            schema only APPENDED new columns at the end). The caller should
+            rewrite row 1 to ``header_row`` (the widened header with any
+            trailing sidecar note re-placed) and pad existing data rows out to
+            the new width.
+
+    Raises ``ValueError`` on any destructive / ambiguous drift — a rename,
+    reorder, type-incompatible change, a removed column (live header longer
+    than expected), or any live header that is not a clean prefix of the
+    schema. We never silently rewrite a divergent layout.
+
+    Sidecar convention: ``bootstrap_sheets`` writes a freeform note ~2 columns
+    past the data header (a blank gap, then the note). Data headers are never
+    blank, so the FIRST blank cell marks the boundary between data columns and
+    the trailing sidecar note(s); the prefix comparison runs against the data
+    header only, and the note is re-placed one blank column past the widened
+    header so the original convention (note at len(header)+2) is preserved.
+    """
+    # Split row 1 into the data header (contiguous leading non-blank cells) and
+    # any trailing sidecar note(s) that live beyond the first blank gap.
+    data_len = len(header_actual)
+    for i, cell in enumerate(header_actual):
+        if str(cell).strip() == "":
+            data_len = i
+            break
+    live_data_header = [str(c) for c in header_actual[:data_len]]
+    sidecar_notes = [c for c in header_actual[data_len:] if str(c).strip() != ""]
+
+    expected = list(header_expected)
+    if live_data_header == expected:
+        return {"action": "match"}
+
+    common = min(len(live_data_header), len(expected))
+    prefix_matches = live_data_header[:common] == expected[:common]
+    # Additive == the live data header is a strict prefix of the schema (every
+    # existing column matches in order and the schema only appends new columns).
+    additive = prefix_matches and len(live_data_header) < len(expected)
+
+    if not additive:
+        # Destructive / ambiguous: rename, reorder, type change, or removed
+        # columns (live header longer than expected). Keep the detailed drift
+        # error (col_idx, expected, actual) — None marks a column present on
+        # only one side.
+        n = max(len(expected), len(live_data_header))
+        diff = [
+            (
+                i,
+                expected[i] if i < len(expected) else None,
+                live_data_header[i] if i < len(live_data_header) else None,
+            )
+            for i in range(n)
+            if (expected[i] if i < len(expected) else None)
+            != (live_data_header[i] if i < len(live_data_header) else None)
+        ]
+        raise ValueError(
+            f"Header drift on tab '{tab_name}' (workbook '{workbook_title}', "
+            f"spreadsheet {spreadsheet_id}). Diffs (col_idx, expected, actual): {diff}. "
+            f"Re-run bootstrap_sheets.py or migrate the tab before retrying."
+        )
+
+    new_cols = expected[len(live_data_header):]
+    header_row = list(expected)
+    if sidecar_notes:
+        # Re-place the note one blank column past the widened header. Because
+        # the new note position is always >= the old one, writing the combined
+        # row from A1 in a single update overwrites the old note location too,
+        # leaving no stale duplicate.
+        header_row = header_row + [""] + list(sidecar_notes)
+    return {
+        "action": "migrate",
+        "new_cols": new_cols,
+        "header_row": header_row,
+        "data_header_len": len(live_data_header),
+    }
+
+
 # ── Core upsert ───────────────────────────────────────────────────
 
 
@@ -298,19 +393,28 @@ def _upsert_tab(
         raw = [header_row]
 
     header_actual = list(raw[0])
-    # Truncate trailing notes/sidecar columns (bootstrap puts a freeform note 2
-    # columns past the header); the data columns are the first len(header_expected).
-    header_actual_data = header_actual[: len(header_expected)]
-    if header_actual_data != header_expected:
-        diff = [
-            (i, exp, got)
-            for i, (exp, got) in enumerate(zip(header_expected, header_actual_data))
-            if exp != got
-        ]
-        raise ValueError(
-            f"Header drift on tab '{tab_name}' (workbook '{workbook_title}', "
-            f"spreadsheet {spreadsheet_id}). Diffs (col_idx, expected, actual): {diff}. "
-            f"Re-run bootstrap_sheets.py or migrate the tab before retrying."
+    # Reconcile the live header against the schema. Additive changes (the schema
+    # only appended new columns) auto-migrate: row 1 is widened and existing
+    # rows are padded with blanks below. Destructive / ambiguous drift still
+    # raises. The sidecar note convention is respected on both paths.
+    reconcile = _reconcile_header(
+        header_actual,
+        header_expected,
+        tab_name=tab_name,
+        workbook_title=workbook_title,
+        spreadsheet_id=spreadsheet_id,
+    )
+    if reconcile["action"] == "migrate":
+        existing_row_count = sum(
+            1 for r in raw[1:] if any(str(c).strip() for c in r)
+        )
+        # Widen the header first (single safe update). If the subsequent data
+        # write fails the tab is still consistent: existing rows remain valid
+        # under the wider header (the new columns just read back blank).
+        _write_range(spreadsheet_id, f"{tab_name}!A1", [reconcile["header_row"]], token)
+        log.info(
+            "[schema_migrate] tab '%s': appended columns %s (%d existing rows widened)",
+            tab_name, reconcile["new_cols"], existing_row_count,
         )
 
     # Build index of existing data rows by natural key.

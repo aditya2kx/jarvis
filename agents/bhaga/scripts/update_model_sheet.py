@@ -35,10 +35,10 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import logging
 import os
 import pathlib
 import sys
-import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Optional
@@ -53,6 +53,7 @@ CT = ZoneInfo("America/Chicago")
 from agents.bhaga.scripts.daily_refresh import is_refresh_date_complete
 from agents.bhaga.scripts.forecast import compute_outlier_stats
 from core.config_loader import project_dir, refresh_access_token, resolve_sheet_id
+from core.sheets_retry import request_with_backoff
 from skills.adp_run_automation.shift_backend import normalize_employee_name
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
 from skills.square_tips import transactions_backend
@@ -82,21 +83,38 @@ PROJECT = pathlib.Path(project_dir())
 STORE_PROFILE_DIR = PROJECT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
 SHEETS_API = "https://sheets.googleapis.com/v4"
 
+log = logging.getLogger(__name__)
+
 
 # ---------- Sheets HTTP helpers ----------
 
 
 def _api(url: str, token: str, *, method: str = "GET", data: dict | None = None) -> dict:
+    """Execute one Sheets request with shared jittered-exponential-backoff retry.
+
+    Transient HTTP 429 ``RESOURCE_EXHAUSTED`` (the "Write requests per minute
+    per user" = 60 cap) and 5xx are retried automatically — see
+    ``core.sheets_retry``. The thunk lets ``HTTPError`` propagate unread so the
+    retry layer can inspect the body once.
+    """
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     body = json.dumps(data).encode() if data is not None else None
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
+
+    def _do() -> dict:
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
         with urllib.request.urlopen(req) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as e:
-        err = e.read().decode(errors="replace")
-        raise RuntimeError(f"{method} {url} -> HTTP {e.code}\n{err}") from None
+
+    return request_with_backoff(_do, method=method, url=url, logger=log)
+
+
+def _batch_update(spreadsheet_id: str, token: str, requests: list[dict]) -> dict:
+    """Issue a single spreadsheets:batchUpdate with the given request list."""
+    return _api(
+        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
+        token, method="POST", data={"requests": requests},
+    )
 
 
 def get_spreadsheet_meta(spreadsheet_id: str, token: str) -> dict:
@@ -180,33 +198,38 @@ def reset_number_format(
     columns reapplies the targeted currency styling, so only columns we
     explicitly want as currency get the dollar sign.
     """
+    reqs = _reset_number_format_requests(sheet_id=sheet_id, num_cols=num_cols)
+    if reqs:
+        _batch_update(spreadsheet_id, token, reqs)
+
+
+def _reset_number_format_requests(*, sheet_id: int, num_cols: int) -> list[dict]:
+    """batchUpdate requests to wipe userEnteredFormat back to AUTOMATIC.
+
+    Nuke the entire userEnteredFormat on the data range. We have to do this
+    broadly because a partial mask (fields=userEnteredFormat.numberFormat with
+    empty body) was empirically inconsistent — old PERCENT formatting leaked
+    through in some cells but not others on the same column. After this, the
+    currency/percent/bold requests re-apply the targeted styling. Cover all
+    rows including the header; the bold-header request is ordered AFTER this so
+    the header still ends up bold.
+    """
     if num_cols <= 0:
-        return
-    # Nuke the entire userEnteredFormat on the data range. We have to do this
-    # broadly because a partial mask (fields=userEnteredFormat.numberFormat
-    # with empty body) was empirically inconsistent — old PERCENT formatting
-    # leaked through in some cells but not others on the same column. After
-    # this call, format_currency_columns + bold_header_row re-apply the
-    # targeted styling. Cover all rows including the header; bold_header_row
-    # runs AFTER this so the header still ends up bold.
-    _api(
-        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
-        token, method="POST",
-        data={"requests": [{
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    # cover from row 0 so the header's own old formatting
-                    # (e.g. previous percent-suffix) doesn't survive either.
-                    "startRowIndex": 0,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": num_cols,
-                },
-                "cell": {"userEnteredFormat": {}},
-                "fields": "userEnteredFormat",
-            }
-        }]},
-    )
+        return []
+    return [{
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                # cover from row 0 so the header's own old formatting
+                # (e.g. previous percent-suffix) doesn't survive either.
+                "startRowIndex": 0,
+                "startColumnIndex": 0,
+                "endColumnIndex": num_cols,
+            },
+            "cell": {"userEnteredFormat": {}},
+            "fields": "userEnteredFormat",
+        }
+    }]
 
 
 def format_currency_columns(
@@ -218,9 +241,19 @@ def format_currency_columns(
     start_row: int = 1,
 ) -> None:
     """Apply USD currency format to specified columns (0-indexed) from start_row down."""
+    reqs = _format_currency_requests(
+        sheet_id=sheet_id, column_indices=column_indices, start_row=start_row,
+    )
+    if reqs:
+        _batch_update(spreadsheet_id, token, reqs)
+
+
+def _format_currency_requests(
+    *, sheet_id: int, column_indices: list[int], start_row: int = 1,
+) -> list[dict]:
     if not column_indices:
-        return
-    requests = [
+        return []
+    return [
         {
             "repeatCell": {
                 "range": {
@@ -235,10 +268,6 @@ def format_currency_columns(
         }
         for col in column_indices
     ]
-    _api(
-        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
-        token, method="POST", data={"requests": requests},
-    )
 
 
 def _percent_column_indices(header: list) -> list[int]:
@@ -301,9 +330,20 @@ def format_number_columns(
     layout can't leak through (the userEnteredFormat wipe in reset_number_format
     is unreliable for this on isolated rows).
     """
+    reqs = _format_number_requests(
+        sheet_id=sheet_id, column_indices=column_indices,
+        start_row=start_row, pattern=pattern,
+    )
+    if reqs:
+        _batch_update(spreadsheet_id, token, reqs)
+
+
+def _format_number_requests(
+    *, sheet_id: int, column_indices: list[int], start_row: int = 1, pattern: str = "0.0",
+) -> list[dict]:
     if not column_indices:
-        return
-    requests = [
+        return []
+    return [
         {
             "repeatCell": {
                 "range": {
@@ -318,10 +358,6 @@ def format_number_columns(
         }
         for col in column_indices
     ]
-    _api(
-        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
-        token, method="POST", data={"requests": requests},
-    )
 
 
 def format_percent_columns(
@@ -339,9 +375,20 @@ def format_percent_columns(
     targeted percent styling wins over the AUTOMATIC wipe. The stored values are
     fractions (e.g. 0.6667), so the ``0.00%`` pattern renders them as 66.67%.
     """
+    reqs = _format_percent_requests(
+        sheet_id=sheet_id, column_indices=column_indices,
+        start_row=start_row, pattern=pattern,
+    )
+    if reqs:
+        _batch_update(spreadsheet_id, token, reqs)
+
+
+def _format_percent_requests(
+    *, sheet_id: int, column_indices: list[int], start_row: int = 1, pattern: str = "0.00%",
+) -> list[dict]:
     if not column_indices:
-        return
-    requests = [
+        return []
+    return [
         {
             "repeatCell": {
                 "range": {
@@ -356,24 +403,20 @@ def format_percent_columns(
         }
         for col in column_indices
     ]
-    _api(
-        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
-        token, method="POST", data={"requests": requests},
-    )
 
 
 def bold_header_row(spreadsheet_id: str, token: str, *, sheet_id: int) -> None:
-    _api(
-        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
-        token, method="POST",
-        data={"requests": [{
-            "repeatCell": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1},
-                "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
-                "fields": "userEnteredFormat.textFormat.bold",
-            }
-        }]},
-    )
+    _batch_update(spreadsheet_id, token, _bold_header_row_requests(sheet_id=sheet_id))
+
+
+def _bold_header_row_requests(*, sheet_id: int) -> list[dict]:
+    return [{
+        "repeatCell": {
+            "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1},
+            "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+            "fields": "userEnteredFormat.textFormat.bold",
+        }
+    }]
 
 
 def hide_columns(
@@ -386,9 +429,15 @@ def hide_columns(
     operator's way. hiddenByUser is a dimension property (not a cell format), so
     it survives the values:clear + reset_number_format pass.
     """
+    reqs = _hide_columns_requests(sheet_id=sheet_id, column_indices=column_indices)
+    if reqs:
+        _batch_update(spreadsheet_id, token, reqs)
+
+
+def _hide_columns_requests(*, sheet_id: int, column_indices: list[int]) -> list[dict]:
     if not column_indices:
-        return
-    requests = [
+        return []
+    return [
         {
             "updateDimensionProperties": {
                 "range": {
@@ -403,25 +452,88 @@ def hide_columns(
         }
         for col in column_indices
     ]
-    _api(
-        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
-        token, method="POST", data={"requests": requests},
-    )
 
 
 def auto_resize_columns(spreadsheet_id: str, token: str, *, sheet_id: int, num_cols: int) -> None:
-    _api(
-        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
-        token, method="POST",
-        data={"requests": [{
-            "autoResizeDimensions": {
-                "dimensions": {
-                    "sheetId": sheet_id, "dimension": "COLUMNS",
-                    "startIndex": 0, "endIndex": num_cols,
-                }
-            }
-        }]},
+    _batch_update(
+        spreadsheet_id, token,
+        _auto_resize_requests(sheet_id=sheet_id, num_cols=num_cols),
     )
+
+
+def _auto_resize_requests(*, sheet_id: int, num_cols: int) -> list[dict]:
+    return [{
+        "autoResizeDimensions": {
+            "dimensions": {
+                "sheetId": sheet_id, "dimension": "COLUMNS",
+                "startIndex": 0, "endIndex": num_cols,
+            }
+        }
+    }]
+
+
+def build_tab_format_requests(
+    *,
+    sheet_id: int,
+    num_cols: int,
+    currency_cols: list[int],
+    percent_cols: list[int],
+    seconds_cols: list[int],
+    hidden_cols: list[int] | None = None,
+) -> list[dict]:
+    """Build the ordered batchUpdate requests that style ONE tab.
+
+    Order matters and mirrors the original per-call sequence: reset wipes
+    formatting FIRST, then bold header, then targeted currency / percent /
+    number re-applies win over the AUTOMATIC wipe, then auto-resize, then any
+    column hides. Returning a flat list lets the caller coalesce every tab's
+    requests into a single batchUpdate (one round-trip instead of ~7 per tab),
+    which keeps the model rebuild comfortably under the Sheets 60-writes/minute
+    quota while producing byte-identical formatting.
+    """
+    reqs: list[dict] = []
+    reqs += _reset_number_format_requests(sheet_id=sheet_id, num_cols=num_cols)
+    reqs += _bold_header_row_requests(sheet_id=sheet_id)
+    reqs += _format_currency_requests(
+        sheet_id=sheet_id, column_indices=currency_cols, start_row=1,
+    )
+    reqs += _format_percent_requests(
+        sheet_id=sheet_id, column_indices=percent_cols, start_row=1,
+    )
+    reqs += _format_number_requests(
+        sheet_id=sheet_id, column_indices=seconds_cols, start_row=1,
+    )
+    reqs += _auto_resize_requests(sheet_id=sheet_id, num_cols=num_cols)
+    reqs += _hide_columns_requests(
+        sheet_id=sheet_id, column_indices=hidden_cols or [],
+    )
+    return reqs
+
+
+def write_tab_formatting(spreadsheet_id: str, token: str, tab_specs: list[dict]) -> int:
+    """Apply formatting for ALL tabs in a SINGLE batchUpdate round-trip.
+
+    ``tab_specs`` items carry the keys consumed by
+    ``build_tab_format_requests`` (sheet_id, num_cols, currency_cols,
+    percent_cols, seconds_cols, hidden_cols). Returns the number of underlying
+    batchUpdate calls made (0 or 1) so callers/tests can assert the burst was
+    coalesced. Cross-tab ordering is irrelevant (distinct sheetIds); within a
+    tab the request order from ``build_tab_format_requests`` is preserved.
+    """
+    requests: list[dict] = []
+    for spec in tab_specs:
+        requests += build_tab_format_requests(
+            sheet_id=spec["sheet_id"],
+            num_cols=spec["num_cols"],
+            currency_cols=spec.get("currency_cols", []),
+            percent_cols=spec.get("percent_cols", []),
+            seconds_cols=spec.get("seconds_cols", []),
+            hidden_cols=spec.get("hidden_cols", []),
+        )
+    if not requests:
+        return 0
+    _batch_update(spreadsheet_id, token, requests)
+    return 1
 
 
 # ---------- Data loading & period discovery ----------
@@ -2735,52 +2847,38 @@ def main() -> int:
     token = refresh_access_token(account=args.store)
     print(f"\n# Got token (len={len(token)}); writing to Model sheet {model_sid}...")
 
+    # First pass: ensure tabs exist and write each tab's values (clear + PUT).
+    # Formatting is deferred and coalesced into ONE batchUpdate afterward so the
+    # whole rebuild stays well under the Sheets 60-writes/minute quota (the
+    # previous one-batchUpdate-per-tab-per-style sequence routinely burst past
+    # it and tripped HTTP 429 RESOURCE_EXHAUSTED). See write_tab_formatting.
+    tab_format_specs: list[dict] = []
     for p in tab_payloads:
         col_count = max(20, len(p["rows"][0]) + 2)
         sheet_id = add_sheet_if_missing(
             model_sid, token, tab_name=p["tab"], column_count=col_count,
         )
         clear_and_write_tab(model_sid, token, tab_name=p["tab"], values=p["rows"])
-        # Wipe stale formatting from any prior layout before applying the new
-        # targeted styling — otherwise an old percentage cell at the same
-        # column index renders our 0..2 saturation ratio as "22.00%". See
-        # reset_number_format() docstring for the trap. Order matters:
-        # reset BEFORE bold + currency so those re-applications win.
-        reset_number_format(
-            model_sid, token, sheet_id=sheet_id, num_cols=len(p["rows"][0]),
-        )
-        bold_header_row(model_sid, token, sheet_id=sheet_id)
-        if p["currency_cols"]:
-            format_currency_columns(
-                model_sid, token, sheet_id=sheet_id,
-                column_indices=p["currency_cols"], start_row=1,
-            )
-        # Re-apply PERCENT format to every fraction column (detected by header
-        # name) so *_pct_* cells render as e.g. 66.67% instead of a bare 0.6667
-        # after reset_number_format wipes formatting. Survives every rebuild.
-        percent_cols = _percent_column_indices(p["rows"][0])
-        if percent_cols:
-            format_percent_columns(
-                model_sid, token, sheet_id=sheet_id,
-                column_indices=percent_cols, start_row=1,
-            )
-        # Positively assert NUMBER format on the KDS *_time_per_item_sec columns
-        # so stale PERCENT formatting from a prior layout can't leak through
-        # (reset_number_format's userEnteredFormat wipe is unreliable for this
-        # on isolated rows — see _seconds_column_indices docstring).
-        seconds_cols = _seconds_column_indices(p["rows"][0])
-        if seconds_cols:
-            format_number_columns(
-                model_sid, token, sheet_id=sheet_id,
-                column_indices=seconds_cols, start_row=1,
-            )
-        auto_resize_columns(model_sid, token, sheet_id=sheet_id, num_cols=len(p["rows"][0]))
-        if p.get("hidden_cols"):
-            hide_columns(
-                model_sid, token, sheet_id=sheet_id,
-                column_indices=p["hidden_cols"],
-            )
+        # Detect fraction columns by header name so *_pct_* cells render as e.g.
+        # 66.67% instead of a bare 0.6667 after reset wipes formatting; and the
+        # KDS *_time_per_item_sec columns get a positive NUMBER assertion since
+        # the userEnteredFormat wipe is unreliable for them on isolated rows.
+        tab_format_specs.append({
+            "sheet_id": sheet_id,
+            "num_cols": len(p["rows"][0]),
+            "currency_cols": p["currency_cols"],
+            "percent_cols": _percent_column_indices(p["rows"][0]),
+            "seconds_cols": _seconds_column_indices(p["rows"][0]),
+            "hidden_cols": p.get("hidden_cols", []),
+        })
         print(f"    wrote {p['tab']:<22} ({len(p['rows'])-1} rows)")
+
+    # Second pass: wipe stale formatting + re-apply targeted bold/currency/
+    # percent/number/resize/hide for EVERY tab in a single batchUpdate. Order
+    # within each tab (reset BEFORE bold + currency so those re-applications
+    # win) is preserved by build_tab_format_requests, so formatting is
+    # byte-identical to the prior one-call-per-style sequence.
+    write_tab_formatting(model_sid, token, tab_format_specs)
 
     # ── Round-trip sentinel ───────────────────────────────────────
     # After every config write, re-read each date-bearing key and

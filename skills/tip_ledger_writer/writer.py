@@ -48,8 +48,6 @@ import json
 import logging
 import os
 import sys
-import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Iterable, Optional
@@ -59,6 +57,7 @@ log = logging.getLogger(__name__)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from core.config_loader import _assert_not_production_sheet, refresh_access_token
+from core.sheets_retry import request_with_backoff
 from skills.tip_ledger_writer.schema import WORKBOOK_SCHEMAS, get_tab_spec
 
 
@@ -68,34 +67,30 @@ SHEETS_API = "https://sheets.googleapis.com/v4"
 # ── Low-level API helpers ─────────────────────────────────────────
 
 
-_RETRYABLE_CODES = {429, 500, 502, 503, 504}
-_MAX_RETRIES = 4
-_INITIAL_BACKOFF_S = 2.0
-
-
 def _api(url: str, token: str, *, method: str = "GET", data: dict | None = None) -> dict:
+    """Execute one Sheets request with shared jittered-exponential-backoff retry.
+
+    Transient HTTP 429 ``RESOURCE_EXHAUSTED`` (the Sheets "Write requests per
+    minute per user" = 60 cap) and 5xx are retried automatically — the same
+    ``core.sheets_retry`` policy the model-sheet writer uses, so the non-cloud
+    (laptop prod) path gets identical resilience. The thunk lets ``HTTPError``
+    propagate unread so the retry layer can inspect the body once; on final
+    failure it raises ``RuntimeError`` carrying "HTTP {code}\\n{body}" — the
+    same shape ``_read_tab`` greps for ``"400"`` to detect a missing tab.
+    """
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
     body = json.dumps(data).encode() if data is not None else None
-    last_err: RuntimeError | None = None
-    for attempt in range(_MAX_RETRIES + 1):
+
+    def _do() -> dict:
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
-        try:
-            with urllib.request.urlopen(req) as resp:
-                raw = resp.read()
-                return json.loads(raw) if raw else {}
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode(errors="replace")
-            last_err = RuntimeError(f"{method} {url} -> HTTP {e.code}\n{err_body}")
-            if e.code not in _RETRYABLE_CODES or attempt == _MAX_RETRIES:
-                raise last_err from None
-            wait = _INITIAL_BACKOFF_S * (2 ** attempt)
-            log.warning("[sheets-api] HTTP %d on attempt %d/%d; retrying in %.1fs",
-                        e.code, attempt + 1, _MAX_RETRIES + 1, wait)
-            time.sleep(wait)
-    raise last_err  # unreachable but satisfies type checker
+        with urllib.request.urlopen(req) as resp:
+            raw = resp.read()
+            return json.loads(raw) if raw else {}
+
+    return request_with_backoff(_do, method=method, url=url, logger=log)
 
 
 def _read_tab(spreadsheet_id: str, tab: str, token: str) -> list[list[Any]]:

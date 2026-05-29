@@ -274,5 +274,66 @@ class AdditiveMigrationTest(unittest.TestCase):
         self.assertEqual(len(self._migrate_lines()), 1)
 
 
+class _FakeResp:
+    def __init__(self, body: str):
+        self._b = body.encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self._b
+
+
+def _http_error(code: int, body: str):
+    import io
+    import urllib.error
+    return urllib.error.HTTPError(
+        "https://sheets.googleapis.com/x", code, "err", {}, io.BytesIO(body.encode())
+    )
+
+
+class ApiRetryTest(unittest.TestCase):
+    """writer._api routes through the shared core.sheets_retry backoff so the
+    laptop/non-cloud prod path gets the same 429 resilience as the cloud job."""
+
+    def setUp(self):
+        from core import sheets_retry
+        self.sheets_retry = sheets_retry
+        p = mock.patch.object(sheets_retry.time, "sleep", lambda *_a: None)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_retries_429_then_succeeds(self):
+        seq = [
+            _http_error(429, '{"error": {"status": "RESOURCE_EXHAUSTED"}}'),
+            _FakeResp('{"values": [["a"]]}'),
+        ]
+        with mock.patch("urllib.request.urlopen", side_effect=seq) as m:
+            out = writer._api("https://sheets.googleapis.com/v4/x", "tok")
+        self.assertEqual(out, {"values": [["a"]]})
+        self.assertEqual(m.call_count, 2)
+
+    def test_gives_up_after_max_attempts(self):
+        n = self.sheets_retry.DEFAULT_MAX_ATTEMPTS
+        seq = [_http_error(429, '{"error": {"status": "RESOURCE_EXHAUSTED"}}') for _ in range(n)]
+        with mock.patch("urllib.request.urlopen", side_effect=seq) as m:
+            with self.assertRaises(RuntimeError) as ctx:
+                writer._api("https://sheets.googleapis.com/v4/x", "tok")
+        self.assertIn("HTTP 429", str(ctx.exception))
+        self.assertEqual(m.call_count, n)
+
+    def test_400_raises_without_retry(self):
+        seq = [_http_error(400, '{"error": {"code": 400}}')]
+        with mock.patch("urllib.request.urlopen", side_effect=seq) as m:
+            with self.assertRaises(RuntimeError) as ctx:
+                writer._api("https://sheets.googleapis.com/v4/x", "tok")
+        self.assertIn("HTTP 400", str(ctx.exception))
+        self.assertEqual(m.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

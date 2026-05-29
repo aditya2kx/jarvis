@@ -314,6 +314,39 @@ def bold_header_row(spreadsheet_id: str, token: str, *, sheet_id: int) -> None:
     )
 
 
+def hide_columns(
+    spreadsheet_id: str, token: str, *, sheet_id: int, column_indices: list[int],
+) -> None:
+    """Hide the given 0-based columns (hiddenByUser). Idempotent across runs.
+
+    Used for the forecast tab's helper-constant columns: they exist only so the
+    derived formulas have stable cell references, so we tuck them out of the
+    operator's way. hiddenByUser is a dimension property (not a cell format), so
+    it survives the values:clear + reset_number_format pass.
+    """
+    if not column_indices:
+        return
+    requests = [
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": col,
+                    "endIndex": col + 1,
+                },
+                "properties": {"hiddenByUser": True},
+                "fields": "hiddenByUser",
+            }
+        }
+        for col in column_indices
+    ]
+    _api(
+        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
+        token, method="POST", data={"requests": requests},
+    )
+
+
 def auto_resize_columns(spreadsheet_id: str, token: str, *, sheet_id: int, num_cols: int) -> None:
     _api(
         f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
@@ -416,6 +449,73 @@ def _read_training_excluded_from_sheet(
             out[name] = datetime.date.fromisoformat(row[1].strip())
         except ValueError:
             print(f"  [training-read] unparseable date for {name!r}: {row[1]!r}")
+    return out
+
+
+def _parse_sheet_bool(v) -> bool:
+    """Coerce a sheet cell into a boolean.
+
+    Sheets returns native booleans as the strings "TRUE"/"FALSE" (and the
+    Values API may echo Python bools). Anything truthy-looking maps to True;
+    everything else (blank, "FALSE", "0", "no") maps to False.
+    """
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    return s in ("true", "1", "yes", "y", "t")
+
+
+def _orders_outlier_flag(orders: int, dow_avg_orders: float, threshold: float = 0.25) -> bool:
+    """True when a day's order count deviates from its DOW baseline by > threshold.
+
+    Pure function (no I/O) so it's unit-testable. ``dow_avg_orders`` is the
+    mean orders for that day-of-week across the labor_daily window (computed
+    over operating days only). When the baseline is non-positive (no operating
+    same-DOW history) we can't judge deviation, so we report False.
+    """
+    if dow_avg_orders <= 0:
+        return False
+    return abs(orders - dow_avg_orders) / dow_avg_orders > threshold
+
+
+def _read_existing_labor_daily_forecast_exclude(
+    *, spreadsheet_id: str, store: str
+) -> dict[str, bool]:
+    """Read the current labor_daily tab's date → forecast_exclude map.
+
+    Lets the nightly rebuild PRESERVE operator-edited forecast_exclude values
+    instead of clobbering them with the freshly-computed outlier default.
+    Returns {} if the tab/column is absent or unreachable (graceful degrade).
+    """
+    out: dict[str, bool] = {}
+    try:
+        token = refresh_access_token(store)
+        rng = urllib.parse.quote("labor_daily!A1:ZZ100000", safe="!:")
+        url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{rng}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [labor_daily-read] could not read existing forecast_exclude (first run?): {exc}")
+        return out
+    values = data.get("values", [])
+    if not values:
+        return out
+    header = values[0]
+    try:
+        date_i = header.index("date")
+    except ValueError:
+        return out
+    if "forecast_exclude" not in header:
+        return out
+    fe_i = header.index("forecast_exclude")
+    for row in values[1:]:
+        if len(row) <= max(date_i, fe_i):
+            continue
+        iso = coerce_iso_date(row[date_i])
+        if iso is None:
+            continue
+        out[iso] = _parse_sheet_bool(row[fe_i])
     return out
 
 
@@ -842,6 +942,8 @@ def build_labor_daily_rows(
     now_ct: datetime.datetime | None = None,
     items_by_date: dict[str, dict] | None = None,
     kds_by_date: dict[str, dict] | None = None,
+    existing_forecast_exclude: dict[str, bool] | None = None,
+    outlier_threshold: float = 0.25,
 ) -> list[list]:
     """One row per day with labor cost / labor% computed from ADP wage rates.
 
@@ -1057,7 +1159,36 @@ def build_labor_daily_rows(
         "kds_completed_tickets", "kds_completed_items",
         "kds_avg_time_per_item_sec", "kds_median_time_per_item_sec",
         "kds_pct_tickets_late",
+        # Forecast-input helper columns (appended last so weekly/period
+        # builders that index labor_daily by fixed position are unaffected):
+        #   outlier_flag     — Python-computed; orders deviate from the DOW
+        #                      baseline by > outlier_threshold (default 25%).
+        #   forecast_exclude — operator-editable boolean. Defaults to the
+        #                      outlier_flag on new rows, but any existing
+        #                      operator value in the sheet is PRESERVED across
+        #                      rebuilds (see existing_forecast_exclude). The
+        #                      forecast tab's order-seed excludes TRUE days.
+        "outlier_flag", "forecast_exclude",
     ]
+    existing_forecast_exclude = existing_forecast_exclude or {}
+    # DOW baseline for outlier detection: mean orders for each weekday across
+    # the window, computed over OPERATING days (orders > 0) so zero-order
+    # closed days don't drag the baseline down (they then read as outliers,
+    # which is the desired "exclude closed days from the forecast" behavior).
+    orders_by_date: dict[str, int] = {
+        d: int(sales.get(d, {}).get("order_count", 0) or 0) for d in all_dates
+    }
+    _dow_sum: dict[int, int] = {}
+    _dow_cnt: dict[int, int] = {}
+    for d, o in orders_by_date.items():
+        if o <= 0:
+            continue
+        wd = datetime.date.fromisoformat(d).weekday()
+        _dow_sum[wd] = _dow_sum.get(wd, 0) + o
+        _dow_cnt[wd] = _dow_cnt.get(wd, 0) + 1
+    dow_avg_orders: dict[int, float] = {
+        wd: (_dow_sum[wd] / _dow_cnt[wd]) for wd in _dow_sum
+    }
     rows: list[list] = [header]
     for d in all_dates:
         s_d = sales.get(d, {
@@ -1116,6 +1247,17 @@ def build_labor_daily_rows(
         elif kds_pct_late == 0.0:
             kds_pct_late = "0.00%"
 
+        # Outlier + forecast_exclude (written as TRUE/FALSE text literals;
+        # USER_ENTERED coerces them to native booleans / checkbox values).
+        wd = datetime.date.fromisoformat(d).weekday()
+        is_outlier = _orders_outlier_flag(
+            orders, dow_avg_orders.get(wd, 0.0), threshold=outlier_threshold,
+        )
+        # Preserve operator edits; default new rows to the outlier flag.
+        fe_val = existing_forecast_exclude.get(d, is_outlier)
+        _outlier_flag = "TRUE" if is_outlier else "FALSE"
+        _forecast_exclude = "TRUE" if fe_val else "FALSE"
+
         rows.append([
             _iso_date_for_sheet_cell(d),
             datetime.date.fromisoformat(d).strftime("%a"),
@@ -1160,6 +1302,8 @@ def build_labor_daily_rows(
             round(kds_avg_tpi, 1) if isinstance(kds_avg_tpi, (int, float)) else "",
             round(kds_med_tpi, 1) if isinstance(kds_med_tpi, (int, float)) else "",
             kds_pct_late if kds_pct_late else "",
+            _outlier_flag,
+            _forecast_exclude,
         ])
     return rows
 
@@ -2141,12 +2285,23 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"#   WARN: could not read kds_daily (tab may not exist yet): {exc}")
 
+    # Preserve operator-edited forecast_exclude flags from the existing
+    # labor_daily tab so the nightly rebuild doesn't clobber their choices.
+    existing_forecast_exclude = _read_existing_labor_daily_forecast_exclude(
+        spreadsheet_id=model_sid, store=args.store,
+    )
+    if existing_forecast_exclude:
+        _n_excl = sum(1 for v in existing_forecast_exclude.values() if v)
+        print(f"#   → preserved forecast_exclude for {len(existing_forecast_exclude)} "
+              f"existing labor_daily rows ({_n_excl} TRUE)")
+
     labor_daily_rows = build_labor_daily_rows(
         txns=txns, shifts=shifts, wage_rates=wage_rates,
         excluded_from_tip_pool=excluded,
         saturation_threshold=saturation_threshold,
         items_by_date=items_by_date,
         kds_by_date=kds_by_date,
+        existing_forecast_exclude=existing_forecast_exclude,
     )
     labor_period_rows = build_labor_period_rows(
         periods=periods, labor_daily_rows=labor_daily_rows,
@@ -2222,6 +2377,8 @@ def main() -> int:
 
     # ── Forecast tab ──────────────────────────────────────────────────
     from agents.bhaga.scripts.forecast import (
+        FORECAST_CURRENCY_COLS,
+        FORECAST_HIDDEN_COLS,
         build_labor_daily_forecast_rows,
         backfill_forecast_errors,
     )
@@ -2232,6 +2389,7 @@ def main() -> int:
         labor_daily_rows=labor_daily_rows,
         wage_rates=wage_rates,
         config=forecast_config,
+        kds_by_date=kds_by_date,
     )
     # Backfill error columns for past forecast rows where actuals now exist.
     # On the first run there are no past forecasts; on subsequent runs the
@@ -2247,7 +2405,8 @@ def main() -> int:
         {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": labor_daily_currency},
         {"tab": "labor_weekly",      "rows": labor_weekly_rows, "currency_cols": labor_weekly_currency},
         {"tab": "labor_period",      "rows": labor_period_rows, "currency_cols": labor_period_currency},
-        {"tab": "labor_daily_forecast", "rows": forecast_rows, "currency_cols": labor_daily_currency},
+        {"tab": "labor_daily_forecast", "rows": forecast_rows,
+         "currency_cols": FORECAST_CURRENCY_COLS, "hidden_cols": FORECAST_HIDDEN_COLS},
         {"tab": "tip_alloc_period",  "rows": period_rows,      "currency_cols": [6, 7, 8, 10, 11]},
         {"tab": "tip_alloc_daily",   "rows": day_alloc_rows,   "currency_cols": [6, 9]},
         {"tab": "period_summary",    "rows": summary_rows,     "currency_cols": [7, 8, 9, 10]},
@@ -2298,6 +2457,11 @@ def main() -> int:
                 column_indices=percent_cols, start_row=1,
             )
         auto_resize_columns(model_sid, token, sheet_id=sheet_id, num_cols=len(p["rows"][0]))
+        if p.get("hidden_cols"):
+            hide_columns(
+                model_sid, token, sheet_id=sheet_id,
+                column_indices=p["hidden_cols"],
+            )
         print(f"    wrote {p['tab']:<22} ({len(p['rows'])-1} rows)")
 
     # ── Round-trip sentinel ───────────────────────────────────────

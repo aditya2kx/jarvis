@@ -28,6 +28,8 @@ from agents.bhaga.scripts.daily_refresh import CT
 from agents.bhaga.scripts.update_model_sheet import (
     _DATE_CONFIG_KEYS,
     _fill_calendar_dates,
+    _orders_outlier_flag,
+    _parse_sheet_bool,
     build_config_rows,
     build_daily_rows,
     build_labor_daily_rows,
@@ -692,6 +694,126 @@ class ZeroShiftDayTests(unittest.TestCase):
         self.assertGreater(len(rows), 1)
         # days_covered = 3 (19, 20, 21 are within the period and have rows)
         self.assertEqual(rows[1][3], 3)
+
+
+class OutlierFlagTests(unittest.TestCase):
+    """Pure-function outlier detection used to seed labor_daily.forecast_exclude."""
+
+    def test_within_threshold_not_outlier(self):
+        # 110 vs baseline 100 → 10% deviation, under 25% → not an outlier.
+        self.assertFalse(_orders_outlier_flag(110, 100.0, threshold=0.25))
+
+    def test_high_outlier(self):
+        # 130 vs 100 → 30% > 25% → outlier.
+        self.assertTrue(_orders_outlier_flag(130, 100.0, threshold=0.25))
+
+    def test_low_outlier(self):
+        # 50 vs 100 → 50% deviation → outlier.
+        self.assertTrue(_orders_outlier_flag(50, 100.0, threshold=0.25))
+
+    def test_zero_order_day_is_outlier(self):
+        # Closed day (0 orders) against a real baseline → outlier (excluded
+        # from the forecast seed by default).
+        self.assertTrue(_orders_outlier_flag(0, 120.0, threshold=0.25))
+
+    def test_no_baseline_not_outlier(self):
+        # No same-DOW operating history → can't judge → not flagged.
+        self.assertFalse(_orders_outlier_flag(50, 0.0, threshold=0.25))
+
+
+class ParseSheetBoolTests(unittest.TestCase):
+    def test_truthy(self):
+        for v in ("TRUE", "true", "True", "1", "yes", True):
+            self.assertTrue(_parse_sheet_bool(v), v)
+
+    def test_falsy(self):
+        for v in ("FALSE", "false", "", "0", "no", None, False):
+            self.assertFalse(_parse_sheet_bool(v), v)
+
+
+class LaborDailyForecastColumnsTests(unittest.TestCase):
+    """labor_daily emits outlier_flag + forecast_exclude, preserving operator edits."""
+
+    NOW_POST = datetime.datetime(2026, 6, 1, 22, 0, 0, tzinfo=CT)
+
+    def _txns_volume(self, by_date: dict[str, int]) -> list[dict]:
+        """Emit `count` Payment txns for each date so order_count varies."""
+        out = []
+        for d, count in by_date.items():
+            for _ in range(count):
+                out.append({
+                    "date_local": d, "hour_local": 10, "event_type": "Payment",
+                    "gross_sales_cents": 500, "discount_cents": 0,
+                    "total_collected_cents": 600, "tip_cents": 100,
+                })
+        return out
+
+    def _shifts(self, dates: list[str]) -> list[dict]:
+        return [{
+            "date": d, "employee_name": "Test Barista", "employee_id": "barista-1",
+            "in_time": "08:00", "out_time": "14:00", "regular_hours": 6.0,
+            "ot_hours": 0.0, "doubletime_hours": 0.0, "total_hours": 6.0,
+        } for d in dates]
+
+    def _wage_rates(self):
+        return [{
+            "employee_name": "Test Barista", "wage_rate_dollars": "12.00",
+            "ot_rate_dollars": "18.00", "is_salaried": False,
+            "excluded_from_labor_pct": False,
+        }]
+
+    # 8 Mondays of ~100-order days; the last is a 3-order anomaly. With this
+    # much same-DOW history one extreme low can't skew the baseline enough to
+    # flag the normal days, so the assertions are stable.
+    _MONDAYS = [
+        "2026-03-30", "2026-04-06", "2026-04-13", "2026-04-20",
+        "2026-04-27", "2026-05-04", "2026-05-11", "2026-05-18",
+    ]
+    _VOLS = {
+        "2026-03-30": 100, "2026-04-06": 102, "2026-04-13": 98,
+        "2026-04-20": 101, "2026-04-27": 99, "2026-05-04": 100,
+        "2026-05-11": 103, "2026-05-18": 3,
+    }
+
+    def test_columns_present_and_flagged(self):
+        rows = build_labor_daily_rows(
+            txns=self._txns_volume(self._VOLS),
+            shifts=self._shifts(self._MONDAYS),
+            wage_rates=self._wage_rates(),
+            excluded_from_tip_pool=set(),
+            now_ct=self.NOW_POST,
+        )
+        header = rows[0]
+        self.assertIn("outlier_flag", header)
+        self.assertIn("forecast_exclude", header)
+        oi = header.index("outlier_flag")
+        fi = header.index("forecast_exclude")
+        by_date = {coerce_iso_date(r[0]): r for r in rows[1:]}
+        self.assertEqual(by_date["2026-05-18"][oi], "TRUE")
+        self.assertEqual(by_date["2026-05-18"][fi], "TRUE")  # defaults to outlier
+        self.assertEqual(by_date["2026-03-30"][oi], "FALSE")
+        self.assertEqual(by_date["2026-03-30"][fi], "FALSE")
+
+    def test_preserves_operator_forecast_exclude(self):
+        # Operator manually UN-excluded the anomaly and excluded a normal day.
+        existing = {"2026-05-18": False, "2026-03-30": True}
+        rows = build_labor_daily_rows(
+            txns=self._txns_volume(self._VOLS),
+            shifts=self._shifts(self._MONDAYS),
+            wage_rates=self._wage_rates(),
+            excluded_from_tip_pool=set(),
+            now_ct=self.NOW_POST,
+            existing_forecast_exclude=existing,
+        )
+        header = rows[0]
+        oi = header.index("outlier_flag")
+        fi = header.index("forecast_exclude")
+        by_date = {coerce_iso_date(r[0]): r for r in rows[1:]}
+        # outlier_flag is still computed objectively...
+        self.assertEqual(by_date["2026-05-18"][oi], "TRUE")
+        # ...but forecast_exclude honors the operator override.
+        self.assertEqual(by_date["2026-05-18"][fi], "FALSE")
+        self.assertEqual(by_date["2026-03-30"][fi], "TRUE")
 
 
 if __name__ == "__main__":

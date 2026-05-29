@@ -1,17 +1,40 @@
 #!/usr/bin/env python3
-"""BHAGA labor_daily_forecast — demand forecasting + staffing solver.
+"""BHAGA labor_daily_forecast — a LIVE, formula-driven planning worksheet.
 
-Forecasts orders using DOW+trend, derives sales/items, and recommends
-part-time hours within a 3-bound staffing solver (coverage floor,
-KDS-based efficiency need, budget ceiling).
+Unlike the old static build (Python computed every cell), this writes the
+forecast tab as a spreadsheet the operator can actually plan in: a few INPUT
+cells per row (orders, fulltime_hours, target_labor_pct, forecast_exclude,
+notes) plus a row of rate CONSTANTS, and every DERIVED column is a Google
+Sheets FORMULA (=...) so editing an input recalculates sales, items, the
+staffing solver and the budget/coverage flag IN THE SHEET.
+
+Layout (one row per forecast day, ~14 future days):
+
+  INPUTS (values, operator-editable)
+    date | dow | orders | fulltime_hours | target_labor_pct |
+    forecast_exclude | notes
+  HELPER CONSTANTS (values; hidden in-sheet)
+    _avg_order_price | _avg_items_per_order | _avg_discount_per_order |
+    _avg_tip_pool_per_order | _avg_hourly_wage | _target_time_per_item_sec |
+    _shift_hours | _min_parttimers
+  DERIVED (FORMULAS, evaluate live via USER_ENTERED)
+    net_sales | discounts | gross_sales | items_sold | tip_pool |
+    min_coverage_hours | efficiency_hours | needed_hours | fulltime_cost |
+    budget_hours | recommended_hourly_hours | hourly_cost |
+    total_labor_cost | actual_labor_pct | staffing_flag
+  ACCURACY (Python-backfilled once a forecast day has a realized actual)
+    forecast_generated_at | orders_error_pct | items_sold_error_pct |
+    net_sales_error_pct | fulltime_hours_error_pct | hourly_hours_error_pct |
+    avg_order_price_error_pct | realized_labor_pct | forecast_mape
 
 Public API:
-    forecast_orders_dow_trend(labor_daily_rows, target_date, ...)
-    derive_sales_from_orders(forecast_orders, labor_daily_rows, ...)
-    compute_shift_envelope(labor_daily_rows, ...)
-    solve_hourly_hours(...)
-    build_labor_daily_forecast_rows(...)
-    backfill_forecast_errors(...)
+    build_labor_daily_forecast_rows(...)   -> grid (header + formula rows)
+    backfill_forecast_errors(...)          -> fill accuracy cols
+    forecast_orders_dow_trend(...)         -> the order seed (excludes
+                                              forecast_exclude=TRUE days)
+    compute_forecast_constants(...)        -> the rate constants (pure)
+    compute_staffing(...)                  -> Python mirror of the sheet
+                                              solver formulas (pure, testable)
 """
 
 from __future__ import annotations
@@ -25,6 +48,111 @@ from typing import Any
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
+
+
+# ── Column layout ─────────────────────────────────────────────────
+
+FORECAST_COLUMNS: list[str] = [
+    # inputs
+    "date", "dow", "orders", "fulltime_hours", "target_labor_pct",
+    "forecast_exclude", "notes",
+    # helper constants (hidden)
+    "_avg_order_price", "_avg_items_per_order", "_avg_discount_per_order",
+    "_avg_tip_pool_per_order", "_avg_hourly_wage", "_target_time_per_item_sec",
+    "_shift_hours", "_min_parttimers",
+    # derived (formulas)
+    "net_sales", "discounts", "gross_sales", "items_sold", "tip_pool",
+    "min_coverage_hours", "efficiency_hours", "needed_hours",
+    "fulltime_cost", "budget_hours", "recommended_hourly_hours",
+    "hourly_cost", "total_labor_cost", "actual_labor_pct", "staffing_flag",
+    # accuracy (python-backfilled)
+    "forecast_generated_at",
+    "orders_error_pct", "items_sold_error_pct", "net_sales_error_pct",
+    "fulltime_hours_error_pct", "hourly_hours_error_pct",
+    "avg_order_price_error_pct", "realized_labor_pct", "forecast_mape",
+]
+
+_IDX: dict[str, int] = {name: i for i, name in enumerate(FORECAST_COLUMNS)}
+
+# Helper-constant columns get hidden in-sheet (they exist only so the derived
+# formulas have stable cell references). 0-based indices.
+FORECAST_HIDDEN_COLS: list[int] = [
+    _IDX[name] for name in (
+        "_avg_order_price", "_avg_items_per_order", "_avg_discount_per_order",
+        "_avg_tip_pool_per_order", "_avg_hourly_wage",
+        "_target_time_per_item_sec", "_shift_hours", "_min_parttimers",
+    )
+]
+
+# Currency columns (0-based) for the forecast tab — used by the writer's
+# format_currency_columns pass. (Percent columns are auto-detected by the
+# writer via the "pct"/"mape" name heuristic, so they're not listed here.)
+FORECAST_CURRENCY_COLS: list[int] = [
+    _IDX["_avg_order_price"], _IDX["_avg_discount_per_order"],
+    _IDX["_avg_tip_pool_per_order"], _IDX["_avg_hourly_wage"],
+    _IDX["net_sales"], _IDX["discounts"], _IDX["gross_sales"],
+    _IDX["tip_pool"], _IDX["fulltime_cost"], _IDX["hourly_cost"],
+    _IDX["total_labor_cost"],
+]
+
+
+def _col_letter(idx0: int) -> str:
+    """0-based column index → A1 column letter (0→A, 25→Z, 26→AA)."""
+    s = ""
+    n = idx0
+    while True:
+        n, r = divmod(n, 26)
+        s = chr(ord("A") + r) + s
+        if n == 0:
+            break
+        n -= 1
+    return s
+
+
+def _ref(name: str, sheet_row: int) -> str:
+    """A1 reference to column `name` in `sheet_row` (e.g. ('orders', 2) → 'C2')."""
+    return f"{_col_letter(_IDX[name])}{sheet_row}"
+
+
+def _derived_formulas(sheet_row: int) -> dict[str, str]:
+    """All derived-column formula strings for one sheet row.
+
+    Cross-references use the row's own input + helper cells, so editing any
+    input recalculates the whole chain. budget_hours is the hours of hourly
+    labor the labor budget allows AFTER full-time (Lindsay); recommended hours
+    stay = needed_hours (coverage/efficiency floor) — budget is a CHECK
+    surfaced by staffing_flag, never a cap that would understaff below
+    coverage.
+    """
+    r = sheet_row
+    R = lambda n: _ref(n, r)  # noqa: E731
+    return {
+        "net_sales": f"={R('orders')}*{R('_avg_order_price')}",
+        "discounts": f"={R('orders')}*{R('_avg_discount_per_order')}",
+        "gross_sales": f"={R('net_sales')}+{R('discounts')}",
+        "items_sold": f"={R('orders')}*{R('_avg_items_per_order')}",
+        "tip_pool": f"={R('orders')}*{R('_avg_tip_pool_per_order')}",
+        "min_coverage_hours": f"={R('_min_parttimers')}*{R('_shift_hours')}",
+        "efficiency_hours": f"={R('items_sold')}*{R('_target_time_per_item_sec')}/3600",
+        "needed_hours": f"=MAX({R('min_coverage_hours')},{R('efficiency_hours')})",
+        "fulltime_cost": f"={R('fulltime_hours')}*{R('_avg_hourly_wage')}",
+        "budget_hours": (
+            f"=({R('target_labor_pct')}*{R('net_sales')}-{R('fulltime_cost')})"
+            f"/{R('_avg_hourly_wage')}"
+        ),
+        "recommended_hourly_hours": f"={R('needed_hours')}",
+        "hourly_cost": f"={R('recommended_hourly_hours')}*{R('_avg_hourly_wage')}",
+        "total_labor_cost": f"={R('hourly_cost')}+{R('fulltime_cost')}",
+        "actual_labor_pct": f"=IF({R('net_sales')}>0,{R('total_labor_cost')}/{R('net_sales')},0)",
+        "staffing_flag": (
+            f"=IF({R('needed_hours')}>{R('budget_hours')},\"BUDGET_CONFLICT\","
+            f"IF({R('budget_hours')}>{R('needed_hours')}*1.25,"
+            f"\"OVERSTAFFED_BUDGET\",\"OK\"))"
+        ),
+    }
+
+
+# ── labor_daily parsing ───────────────────────────────────────────
 
 
 def _parse_daily_row(row: list, header: list[str]) -> dict[str, Any] | None:
@@ -52,6 +180,14 @@ def _parse_daily_row(row: list, header: list[str]) -> dict[str, Any] | None:
         except (ValueError, TypeError):
             return 0
 
+    # forecast_exclude lives in an appended column; locate by name so we don't
+    # depend on its absolute position (older sheets won't have it at all).
+    forecast_exclude = False
+    if "forecast_exclude" in header:
+        fe_i = header.index("forecast_exclude")
+        if fe_i < len(row):
+            forecast_exclude = str(row[fe_i]).strip().lower() in ("true", "1", "yes", "y", "t")
+
     return {
         "date": date_raw,
         "dow": datetime.date.fromisoformat(date_raw).weekday(),
@@ -67,22 +203,38 @@ def _parse_daily_row(row: list, header: list[str]) -> dict[str, Any] | None:
         "fulltime_labor_cost": _float(row[11]),
         "total_labor_cost": _float(row[12]),
         "items_sold": _int(row[30]) if len(row) > 30 and row[30] != "" else 0,
-        "kds_shift_start": str(row[len(header) - 5]) if len(row) > len(header) - 5 else "",
-        "kds_shift_end": str(row[len(header) - 4]) if len(row) > len(header) - 4 else "",
+        "forecast_exclude": forecast_exclude,
     }
 
 
-def _get_parsed_rows(labor_daily_rows: list[list]) -> list[dict]:
-    """Parse all labor_daily rows (skip header)."""
+def _get_parsed_rows(
+    labor_daily_rows: list[list],
+    *,
+    exclude_flagged: bool = True,
+) -> list[dict]:
+    """Parse all labor_daily rows (skip header).
+
+    Only operating days (orders > 0) are returned. When ``exclude_flagged`` is
+    True (the default for every forecast computation), days the operator (or
+    the outlier detector) marked ``forecast_exclude=TRUE`` are dropped so they
+    never pollute the order seed, the per-order rate constants, or the DOW
+    full-time average.
+    """
     if len(labor_daily_rows) <= 1:
         return []
     header = labor_daily_rows[0]
     parsed = []
     for row in labor_daily_rows[1:]:
         p = _parse_daily_row(row, header)
-        if p is not None and p["orders"] > 0:
-            parsed.append(p)
+        if p is None or p["orders"] <= 0:
+            continue
+        if exclude_flagged and p["forecast_exclude"]:
+            continue
+        parsed.append(p)
     return parsed
+
+
+# ── Order seed ────────────────────────────────────────────────────
 
 
 def forecast_orders_dow_trend(
@@ -95,19 +247,16 @@ def forecast_orders_dow_trend(
 
     DOW weighted average: last `lookback_weeks` same-day-of-week values,
     weighted by exponential decay (most recent = 1.0, then decay, decay^2, ...).
+    Trend factor: avg(last 2 weeks) / avg(prior 2 weeks), capped [0.85, 1.15].
 
-    Trend factor: avg(last 2 weeks orders) / avg(prior 2 weeks orders).
-    Capped at [0.85, 1.15].
-
-    Minimum data: 3 weeks for DOW+trend; fewer falls back to simple DOW average.
+    Days flagged forecast_exclude=TRUE (operator override or outlier default)
+    are dropped before any averaging — see _get_parsed_rows(exclude_flagged).
     """
-    parsed = _get_parsed_rows(labor_daily_rows)
+    parsed = _get_parsed_rows(labor_daily_rows, exclude_flagged=True)
     if not parsed:
         return 0.0
 
     target_dow = target_date.weekday()
-
-    # Collect same-DOW values, most recent first
     same_dow = [
         r for r in sorted(parsed, key=lambda x: x["date"], reverse=True)
         if r["dow"] == target_dow and r["date"] < target_date.isoformat()
@@ -116,214 +265,179 @@ def forecast_orders_dow_trend(
     if not same_dow:
         return 0.0
 
-    # Weighted average
     weights = [decay ** i for i in range(len(same_dow))]
     total_weight = sum(weights)
     dow_avg = sum(r["orders"] * w for r, w in zip(same_dow, weights)) / total_weight
 
-    # Trend factor (need at least 3 weeks of any-DOW data)
     all_sorted = sorted(parsed, key=lambda x: x["date"], reverse=True)
     recent_dates = [r for r in all_sorted if r["date"] < target_date.isoformat()]
-
     if len(recent_dates) < 14:
         return round(dow_avg, 0)
 
     last_2_weeks = recent_dates[:14]
     prior_2_weeks = recent_dates[14:28]
-
     if not prior_2_weeks:
         return round(dow_avg, 0)
 
     avg_recent = statistics.mean(r["orders"] for r in last_2_weeks)
     avg_prior = statistics.mean(r["orders"] for r in prior_2_weeks)
-
-    if avg_prior <= 0:
-        trend = 1.0
-    else:
-        trend = avg_recent / avg_prior
-
-    # Cap trend factor
+    trend = 1.0 if avg_prior <= 0 else avg_recent / avg_prior
     trend = max(0.85, min(1.15, trend))
-
     return round(dow_avg * trend, 0)
 
 
-def derive_sales_from_orders(
-    forecast_orders: float,
-    labor_daily_rows: list[list],
+def _forecast_fulltime_hours_dow_raw(
+    parsed: list[dict],
     target_date: datetime.date,
     lookback_weeks: int = 4,
-) -> dict[str, float]:
-    """Derive gross_sales, items_sold, discounts, tips from forecast orders using recent averages.
+) -> float:
+    """Uncapped historical DOW average of full-time (Lindsay) hours.
 
-    Uses 4-week averages of per-order ratios:
-        avg_order_price = avg(gross_sales / orders)
-        avg_items_per_order = avg(items_sold / orders)
-        discount_pct = avg(discounts / gross_sales)
-        tip_pct = avg(tip_pool / net_sales)
-
-    Returns dict with: gross_sales, items_sold, discounts, net_sales,
-    tip_pool, net_sales_plus_tips, avg_order_price.
+    Weekly capping to forecast_fulltime_weekly_hours happens AFTER the whole
+    horizon is built (see build_labor_daily_forecast_rows) so the cap is on the
+    weekly SUM, not an artificial per-day ceiling.
     """
-    parsed = _get_parsed_rows(labor_daily_rows)
-    recent = [
+    target_dow = target_date.weekday()
+    same_dow = [
         r for r in sorted(parsed, key=lambda x: x["date"], reverse=True)
-        if r["date"] < target_date.isoformat() and r["orders"] > 0
-    ][:lookback_weeks * 7]
+        if r["dow"] == target_dow and r["date"] < target_date.isoformat()
+    ][:lookback_weeks]
+    if not same_dow:
+        return 0.0
+    return round(statistics.mean(r["fulltime_hours"] for r in same_dow), 2)
 
-    if not recent or forecast_orders <= 0:
-        return {
-            "gross_sales": 0.0, "items_sold": 0, "discounts": 0.0,
-            "net_sales": 0.0, "tip_pool": 0.0, "net_sales_plus_tips": 0.0,
-            "avg_order_price": 0.0,
-        }
 
-    # Per-order ratios
-    order_prices = [r["gross_sales"] / r["orders"] for r in recent if r["orders"] > 0]
+# ── Rate constants ────────────────────────────────────────────────
+
+
+def compute_forecast_constants(
+    parsed_recent: list[dict],
+    *,
+    avg_hourly_wage: float,
+    target_time_per_item_sec: float,
+    min_parttimers: int = 2,
+) -> dict[str, float]:
+    """Compute the per-order rate constants from recent operating days.
+
+    Pure function. ``parsed_recent`` is a list of parsed labor_daily dicts
+    (already filtered to recent, non-excluded, operating days). Discounts are
+    returned as a POSITIVE per-order magnitude so the sheet identity
+    gross_sales = net_sales + discounts yields gross > net (labor_daily stores
+    discounts as negative; we take abs()).
+    """
+    order_prices = [r["net_sales"] / r["orders"] for r in parsed_recent if r["orders"] > 0]
     items_per_order = [
-        r["items_sold"] / r["orders"] for r in recent
+        r["items_sold"] / r["orders"] for r in parsed_recent
         if r["orders"] > 0 and r["items_sold"] > 0
     ]
-    discount_pcts = [
-        abs(r["discounts"]) / r["gross_sales"] for r in recent
-        if r["gross_sales"] > 0
-    ]
-    tip_pcts = [
-        r["tip_pool"] / r["net_sales"] for r in recent
-        if r["net_sales"] > 0
-    ]
-
-    avg_price = statistics.mean(order_prices) if order_prices else 0.0
-    avg_items = statistics.mean(items_per_order) if items_per_order else 0.0
-    avg_disc_pct = statistics.mean(discount_pcts) if discount_pcts else 0.0
-    avg_tip_pct = statistics.mean(tip_pcts) if tip_pcts else 0.0
-
-    gross = forecast_orders * avg_price
-    items = round(forecast_orders * avg_items)
-    discounts = gross * avg_disc_pct
-    net = gross - discounts
-    tips = net * avg_tip_pct
-
+    disc_per_order = [abs(r["discounts"]) / r["orders"] for r in parsed_recent if r["orders"] > 0]
+    tip_per_order = [r["tip_pool"] / r["orders"] for r in parsed_recent if r["orders"] > 0]
     return {
-        "gross_sales": round(gross, 2),
-        "items_sold": items,
-        "discounts": round(-discounts, 2),
-        "net_sales": round(net, 2),
-        "tip_pool": round(tips, 2),
-        "net_sales_plus_tips": round(net + tips, 2),
-        "avg_order_price": round(avg_price, 2),
+        "_avg_order_price": round(statistics.mean(order_prices), 2) if order_prices else 0.0,
+        "_avg_items_per_order": round(statistics.mean(items_per_order), 3) if items_per_order else 0.0,
+        "_avg_discount_per_order": round(statistics.mean(disc_per_order), 4) if disc_per_order else 0.0,
+        "_avg_tip_pool_per_order": round(statistics.mean(tip_per_order), 4) if tip_per_order else 0.0,
+        "_avg_hourly_wage": round(avg_hourly_wage, 2),
+        "_target_time_per_item_sec": round(target_time_per_item_sec, 1),
+        "_min_parttimers": min_parttimers,
     }
 
 
-def compute_shift_envelope(
-    labor_daily_rows: list[list],
-    target_date: datetime.date,
-    lookback_weeks: int = 2,
-) -> float:
-    """Compute per-DOW shift envelope from KDS shift_start/shift_end in labor_daily.
+def _shift_hours_by_dow(kds_by_date: dict[str, dict] | None) -> dict[int, float]:
+    """Average KDS shift-envelope hours (shift_end - shift_start) per DOW.
 
-    Returns shift_envelope_hours for the target DOW, averaged over lookback_weeks.
+    Built from the raw kds_daily rows (which carry shift_start / shift_end as
+    HH:MM strings). Returns {weekday: avg_hours}. DOWs with no KDS history are
+    absent; the caller falls back to a sane default.
     """
-    parsed = _get_parsed_rows(labor_daily_rows)
-    target_dow = target_date.weekday()
-
-    same_dow = [
-        r for r in sorted(parsed, key=lambda x: x["date"], reverse=True)
-        if r["dow"] == target_dow and r["date"] < target_date.isoformat()
-    ][:lookback_weeks]
-
-    envelopes = []
-    for r in same_dow:
-        # Prefer KDS shift start/end, fall back to hourly_hours as proxy
-        start_str = r.get("kds_shift_start", "")
-        end_str = r.get("kds_shift_end", "")
-        if start_str and end_str and ":" in start_str and ":" in end_str:
-            try:
-                sh, sm = map(int, start_str.split(":")[:2])
-                eh, em = map(int, end_str.split(":")[:2])
-                hours = (eh * 60 + em - sh * 60 - sm) / 60.0
-                if hours > 0:
-                    envelopes.append(hours)
-                    continue
-            except (ValueError, TypeError):
-                pass
-        # Fallback: use total hours as a rough proxy for the day length
-        total_h = r.get("hourly_hours", 0) + r.get("fulltime_hours", 0)
-        if total_h > 0:
-            envelopes.append(total_h / 2.0)
-
-    if not envelopes:
-        return 12.0  # default 12-hour day
-    return statistics.mean(envelopes)
+    by_dow: dict[int, list[float]] = {}
+    for date_iso, k in (kds_by_date or {}).items():
+        start = str(k.get("shift_start", "")).strip()
+        end = str(k.get("shift_end", "")).strip()
+        if ":" not in start or ":" not in end:
+            continue
+        try:
+            sh, sm = map(int, start.split(":")[:2])
+            eh, em = map(int, end.split(":")[:2])
+            hours = (eh * 60 + em - sh * 60 - sm) / 60.0
+        except (ValueError, TypeError):
+            continue
+        if hours <= 0:
+            continue
+        try:
+            wd = datetime.date.fromisoformat(date_iso).weekday()
+        except (ValueError, TypeError):
+            continue
+        by_dow.setdefault(wd, []).append(hours)
+    return {wd: round(statistics.mean(v), 2) for wd, v in by_dow.items()}
 
 
-def solve_hourly_hours(
+# ── Pure Python mirror of the sheet solver (for tests) ─────────────
+
+
+def compute_staffing(
     *,
-    forecast_items: int,
-    target_time_per_item_sec: float,
-    shift_envelope_hours: float,
-    fulltime_hours: float,
-    fulltime_cost: float,
-    target_labor_pct: float,
-    net_sales: float,
+    orders: float,
+    avg_order_price: float,
+    avg_items_per_order: float,
+    avg_discount_per_order: float,
+    avg_tip_pool_per_order: float,
     avg_hourly_wage: float,
-) -> tuple[float, str]:
-    """3-bound staffing solver. Returns (recommended_hours, staffing_flag).
+    target_time_per_item_sec: float,
+    shift_hours: float,
+    min_parttimers: float,
+    fulltime_hours: float,
+    target_labor_pct: float,
+) -> dict[str, float | str]:
+    """Replicate the in-sheet derived formulas in Python.
 
-    Bound 1 — FLOOR: min_hourly_hours = 2 * shift_envelope_hours
-    Bound 2 — NEED: needed_hourly_hours = (items * target_time / 3600) - fulltime_hours
-    Bound 3 — CEILING: max_hourly_hours = (target_pct * net - fulltime_cost) / avg_hourly_wage
+    Single source of truth for the math that the spreadsheet evaluates, so the
+    unit tests can assert the solver behaves as designed without a live Sheet.
+    Keep this in lockstep with _derived_formulas().
     """
-    # Floor: 2 part-timers for the full shift envelope
-    floor_hours = 2.0 * shift_envelope_hours
-
-    # Need: efficiency-based
-    total_needed = (forecast_items * target_time_per_item_sec) / 3600.0
-    needed_hourly = max(0.0, total_needed - fulltime_hours)
-
-    # Ceiling: budget
-    if avg_hourly_wage > 0 and net_sales > 0:
-        max_labor_budget = target_labor_pct * net_sales
-        available_for_hourly = max_labor_budget - fulltime_cost
-        ceiling_hours = available_for_hourly / avg_hourly_wage
+    net_sales = orders * avg_order_price
+    discounts = orders * avg_discount_per_order
+    gross_sales = net_sales + discounts
+    items_sold = orders * avg_items_per_order
+    tip_pool = orders * avg_tip_pool_per_order
+    min_coverage_hours = min_parttimers * shift_hours
+    efficiency_hours = items_sold * target_time_per_item_sec / 3600.0
+    needed_hours = max(min_coverage_hours, efficiency_hours)
+    fulltime_cost = fulltime_hours * avg_hourly_wage
+    budget_hours = (
+        (target_labor_pct * net_sales - fulltime_cost) / avg_hourly_wage
+        if avg_hourly_wage else 0.0
+    )
+    recommended_hourly_hours = needed_hours
+    hourly_cost = recommended_hourly_hours * avg_hourly_wage
+    total_labor_cost = hourly_cost + fulltime_cost
+    actual_labor_pct = (total_labor_cost / net_sales) if net_sales > 0 else 0.0
+    if needed_hours > budget_hours:
+        staffing_flag = "BUDGET_CONFLICT"
+    elif budget_hours > needed_hours * 1.25:
+        staffing_flag = "OVERSTAFFED_BUDGET"
     else:
-        ceiling_hours = float("inf")
+        staffing_flag = "OK"
+    return {
+        "net_sales": net_sales,
+        "discounts": discounts,
+        "gross_sales": gross_sales,
+        "items_sold": items_sold,
+        "tip_pool": tip_pool,
+        "min_coverage_hours": min_coverage_hours,
+        "efficiency_hours": efficiency_hours,
+        "needed_hours": needed_hours,
+        "fulltime_cost": fulltime_cost,
+        "budget_hours": budget_hours,
+        "recommended_hourly_hours": recommended_hourly_hours,
+        "hourly_cost": hourly_cost,
+        "total_labor_cost": total_labor_cost,
+        "actual_labor_pct": actual_labor_pct,
+        "staffing_flag": staffing_flag,
+    }
 
-    # Clamp
-    flag = ""
-    if floor_hours > ceiling_hours:
-        flag = "BUDGET_CONFLICT"
-        recommended = floor_hours  # safety first
-    elif floor_hours > needed_hourly:
-        flag = "OVERSTAFFED"
-        recommended = floor_hours
-    else:
-        recommended = min(needed_hourly, ceiling_hours)
 
-    return round(max(recommended, 0), 2), flag
-
-
-def _forecast_fulltime_hours_dow(
-    labor_daily_rows: list[list],
-    target_date: datetime.date,
-    weekly_cap: float,
-    lookback_weeks: int = 4,
-) -> float:
-    """Forecast fulltime hours from historical DOW average, capped weekly."""
-    parsed = _get_parsed_rows(labor_daily_rows)
-    target_dow = target_date.weekday()
-
-    same_dow = [
-        r for r in sorted(parsed, key=lambda x: x["date"], reverse=True)
-        if r["dow"] == target_dow and r["date"] < target_date.isoformat()
-    ][:lookback_weeks]
-
-    if not same_dow:
-        return weekly_cap / 7.0
-
-    avg_ft = statistics.mean(r["fulltime_hours"] for r in same_dow)
-    daily_cap = weekly_cap / 7.0
-    return min(round(avg_ft, 2), daily_cap)
+# ── Grid builder ──────────────────────────────────────────────────
 
 
 def build_labor_daily_forecast_rows(
@@ -331,24 +445,20 @@ def build_labor_daily_forecast_rows(
     labor_daily_rows: list[list],
     wage_rates: list[dict],
     config: dict,
+    kds_by_date: dict[str, dict] | None = None,
     horizon_days: int = 14,
 ) -> list[list]:
-    """Build the full labor_daily_forecast tab grid.
+    """Build the formula-driven labor_daily_forecast grid (header + N rows).
 
-    The forecast tab has the same columns as labor_daily, PLUS appended columns:
-        target_labor_pct, staffing_flag, forecast_generated_at,
-        orders_error_pct, items_sold_error_pct, net_sales_error_pct,
-        fulltime_hours_error_pct, hourly_hours_error_pct,
-        avg_order_price_error_pct, actual_labor_pct, forecast_mape
-
-    Error columns are left blank for future dates; filled once actuals exist
-    (via backfill_forecast_errors).
+    INPUT cells are written as values; HELPER constants as values; DERIVED
+    columns as ``=...`` formula strings (the writer uses USER_ENTERED so they
+    evaluate live). ACCURACY columns start blank and are filled by
+    backfill_forecast_errors once a forecast day has a realized actual.
     """
-    target_labor_pct = config.get("forecast_target_labor_pct", 0.25)
-    fulltime_weekly_hours = config.get("forecast_fulltime_weekly_hours", 40.0)
-    target_time_per_item = config.get("forecast_target_completion_time_per_item_sec", 300.0)
+    target_labor_pct = float(config.get("forecast_target_labor_pct", 0.25))
+    fulltime_weekly_hours = float(config.get("forecast_fulltime_weekly_hours", 40.0))
+    target_time_per_item = float(config.get("forecast_target_completion_time_per_item_sec", 300.0))
 
-    # Compute avg hourly wage from wage_rates
     hourly_wages = [
         float(r["wage_rate_dollars"])
         for r in wage_rates
@@ -358,154 +468,106 @@ def build_labor_daily_forecast_rows(
     ]
     avg_hourly_wage = statistics.mean(hourly_wages) if hourly_wages else 15.0
 
-    # Fulltime cost per hour (from rates of excluded/salaried employees)
-    ft_wages = [
-        float(r["wage_rate_dollars"])
-        for r in wage_rates
-        if r.get("wage_rate_dollars")
-        and (r.get("is_salaried") or r.get("excluded_from_labor_pct"))
-    ]
-    avg_ft_wage = statistics.mean(ft_wages) if ft_wages else 20.0
-
-    # Labor_daily header + forecast-specific columns
-    if len(labor_daily_rows) <= 1:
-        base_header = ["date", "dow"]
-    else:
-        base_header = list(labor_daily_rows[0])
-
-    forecast_extra_cols = [
-        "target_labor_pct", "staffing_flag", "forecast_generated_at",
-        "orders_error_pct", "items_sold_error_pct", "net_sales_error_pct",
-        "fulltime_hours_error_pct", "hourly_hours_error_pct",
-        "avg_order_price_error_pct", "actual_labor_pct", "forecast_mape",
-    ]
-    header = base_header + forecast_extra_cols
+    header = list(FORECAST_COLUMNS)
     rows: list[list] = [header]
 
-    # Determine the start date for forecast: day after last actual
-    parsed = _get_parsed_rows(labor_daily_rows)
+    parsed = _get_parsed_rows(labor_daily_rows, exclude_flagged=True)
     if not parsed:
         return rows
+
+    # Recent window (last 4 weeks of non-excluded operating days) for the rate
+    # constants. Sorted desc, capped at 28 days.
+    recent = sorted(parsed, key=lambda x: x["date"], reverse=True)[:28]
+    constants = compute_forecast_constants(
+        recent,
+        avg_hourly_wage=avg_hourly_wage,
+        target_time_per_item_sec=target_time_per_item,
+    )
+    shift_hours_dow = _shift_hours_by_dow(kds_by_date)
+    # Fallback shift length: median of whatever DOW envelopes we do have, else
+    # 11h (Palmetto 10:00–21:00 shop hours).
+    if shift_hours_dow:
+        shift_hours_fallback = round(statistics.median(shift_hours_dow.values()), 2)
+    else:
+        shift_hours_fallback = 11.0
 
     last_actual_date = max(r["date"] for r in parsed)
     start_date = datetime.date.fromisoformat(last_actual_date) + datetime.timedelta(days=1)
     generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
+    # First pass: compute per-day input + helper values; stash raw full-time
+    # hours so we can apply the WEEKLY cap before emitting.
+    staged: list[dict] = []
     for i in range(horizon_days):
         target_date = start_date + datetime.timedelta(days=i)
+        wd = target_date.weekday()
+        orders = int(forecast_orders_dow_trend(labor_daily_rows, target_date))
+        ft_raw = _forecast_fulltime_hours_dow_raw(parsed, target_date)
+        shift_hours = shift_hours_dow.get(wd, shift_hours_fallback)
+        staged.append({
+            "date": target_date,
+            "wd": wd,
+            "orders": orders,
+            "ft_raw": ft_raw,
+            "shift_hours": shift_hours,
+        })
 
-        # Forecast orders
-        forecast_orders = forecast_orders_dow_trend(labor_daily_rows, target_date)
+    # Weekly cap: scale each ISO week's full-time hours so the week SUM never
+    # exceeds forecast_fulltime_weekly_hours (Lindsay's 40h ceiling).
+    by_week: dict[datetime.date, list[dict]] = {}
+    for s in staged:
+        monday = s["date"] - datetime.timedelta(days=s["date"].weekday())
+        by_week.setdefault(monday, []).append(s)
+    for week_rows in by_week.values():
+        week_sum = sum(s["ft_raw"] for s in week_rows)
+        if week_sum > fulltime_weekly_hours and week_sum > 0:
+            scale = fulltime_weekly_hours / week_sum
+            for s in week_rows:
+                s["ft_capped"] = round(s["ft_raw"] * scale, 2)
+        else:
+            for s in week_rows:
+                s["ft_capped"] = round(s["ft_raw"], 2)
 
-        # Derive sales/items
-        derived = derive_sales_from_orders(forecast_orders, labor_daily_rows, target_date)
+    # Second pass: emit rows. Sheet row number = header(1) + 1-based index.
+    for i, s in enumerate(staged):
+        sheet_row = i + 2
+        target_date = s["date"]
+        formulas = _derived_formulas(sheet_row)
+        row: list[Any] = [""] * len(FORECAST_COLUMNS)
 
-        # Forecast fulltime hours
-        ft_hours = _forecast_fulltime_hours_dow(
-            labor_daily_rows, target_date, fulltime_weekly_hours,
-        )
-        ft_cost = ft_hours * avg_ft_wage
+        # inputs
+        row[_IDX["date"]] = _iso_date_for_sheet_cell(target_date.isoformat())
+        row[_IDX["dow"]] = target_date.strftime("%a")
+        row[_IDX["orders"]] = s["orders"]
+        row[_IDX["fulltime_hours"]] = s["ft_capped"]
+        row[_IDX["target_labor_pct"]] = target_labor_pct
+        row[_IDX["forecast_exclude"]] = "FALSE"
+        row[_IDX["notes"]] = ""
 
-        # Shift envelope
-        envelope = compute_shift_envelope(labor_daily_rows, target_date)
+        # helper constants
+        row[_IDX["_avg_order_price"]] = constants["_avg_order_price"]
+        row[_IDX["_avg_items_per_order"]] = constants["_avg_items_per_order"]
+        row[_IDX["_avg_discount_per_order"]] = constants["_avg_discount_per_order"]
+        row[_IDX["_avg_tip_pool_per_order"]] = constants["_avg_tip_pool_per_order"]
+        row[_IDX["_avg_hourly_wage"]] = constants["_avg_hourly_wage"]
+        row[_IDX["_target_time_per_item_sec"]] = constants["_target_time_per_item_sec"]
+        row[_IDX["_shift_hours"]] = s["shift_hours"]
+        row[_IDX["_min_parttimers"]] = constants["_min_parttimers"]
 
-        # Solve hourly hours
-        hourly_hours, flag = solve_hourly_hours(
-            forecast_items=derived["items_sold"],
-            target_time_per_item_sec=target_time_per_item,
-            shift_envelope_hours=envelope,
-            fulltime_hours=ft_hours,
-            fulltime_cost=ft_cost,
-            target_labor_pct=target_labor_pct,
-            net_sales=derived["net_sales"],
-            avg_hourly_wage=avg_hourly_wage,
-        )
+        # derived formulas
+        for name, formula in formulas.items():
+            row[_IDX[name]] = formula
 
-        hourly_cost = hourly_hours * avg_hourly_wage
-        total_cost = hourly_cost + ft_cost
-        net = derived["net_sales"]
-        pool = derived["tip_pool"]
-        net_plus_tips = net + pool
-        orders = int(forecast_orders)
-        items_sold = derived["items_sold"]
-        gross = derived["gross_sales"]
-        disc = derived["discounts"]
+        # accuracy
+        row[_IDX["forecast_generated_at"]] = generated_at
+        # error/realized columns start blank (backfilled when actuals land)
 
-        def _pct(num: float, denom: float) -> str:
-            return f"{(num / denom):.2%}" if denom > 0 else "0.00%"
-
-        def _per_order(cost: float):
-            return round(cost / orders, 2) if orders > 0 else ""
-
-        orders_per_hr = round(orders / hourly_hours, 1) if hourly_hours > 0 else ""
-        total_h = hourly_hours + ft_hours
-        hours_per_order = round(total_h / orders, 3) if orders > 0 else ""
-        avg_order_price = round(net / orders, 2) if orders > 0 else ""
-        avg_npt = round(net_plus_tips / orders, 2) if orders > 0 else ""
-        avg_items_per_order = round(items_sold / orders, 2) if orders > 0 and items_sold > 0 else ""
-        hours_per_item = round(total_h / items_sold, 3) if items_sold > 0 else ""
-
-        # Build row matching labor_daily columns + forecast extras
-        row = [
-            _iso_date_for_sheet_cell(target_date.isoformat()),
-            target_date.strftime("%a"),
-            round(gross, 2),
-            round(disc, 2),
-            round(net, 2),
-            round(pool, 2),
-            round(net_plus_tips, 2),
-            orders,
-            round(hourly_hours, 2),
-            round(hourly_cost, 2),
-            round(ft_hours, 2),
-            round(ft_cost, 2),
-            round(total_cost, 2),
-            _pct(hourly_cost, net),
-            _pct(hourly_cost, net_plus_tips),
-            _pct(ft_cost, net),
-            _pct(ft_cost, net_plus_tips),
-            _pct(total_cost, net),
-            _pct(total_cost, net_plus_tips),
-            _pct(pool, net),
-            _pct(total_cost + pool, net_plus_tips),
-            _per_order(hourly_cost),
-            _per_order(ft_cost),
-            _per_order(total_cost),
-            orders_per_hr,
-            "",  # peak_hour — requires intra-day data, blank for forecast
-            "",  # over_saturation — blank for forecast
-            hours_per_order,
-            avg_order_price,
-            avg_npt,
-            items_sold if items_sold > 0 else "",
-            avg_items_per_order,
-            hours_per_item,
-            "",  # avg_item_price — not forecast
-            round(hourly_hours / orders, 3) if orders > 0 else "",
-            round(ft_hours / orders, 3) if orders > 0 else "",
-            round(hourly_hours / items_sold, 3) if items_sold > 0 else "",
-            round(ft_hours / items_sold, 3) if items_sold > 0 else "",
-            "",  # kds_completed_tickets
-            "",  # kds_completed_items
-            "",  # kds_avg_time_per_item_sec
-            "",  # kds_median_time_per_item_sec
-            "",  # kds_pct_tickets_late
-            # Forecast-specific columns
-            target_labor_pct,
-            flag,
-            generated_at,
-            "",  # orders_error_pct
-            "",  # items_sold_error_pct
-            "",  # net_sales_error_pct
-            "",  # fulltime_hours_error_pct
-            "",  # hourly_hours_error_pct
-            "",  # avg_order_price_error_pct
-            "",  # actual_labor_pct
-            "",  # forecast_mape
-        ]
         rows.append(row)
 
     return rows
+
+
+# ── Accuracy backfill ─────────────────────────────────────────────
 
 
 def backfill_forecast_errors(
@@ -513,17 +575,21 @@ def backfill_forecast_errors(
     forecast_rows: list[list],
     labor_daily_rows: list[list],
 ) -> list[list]:
-    """Fill error columns for forecast rows where actuals now exist.
+    """Fill accuracy columns for forecast rows whose date now has an actual.
 
-    Error formula: (actual - forecast) / actual as signed percentage.
-    forecast_mape = mean absolute percentage error across orders + items + net_sales.
+    Forecasted values are recomputed in Python from the row's OWN input +
+    helper cells (the derived cells hold formula strings, not numbers, so we
+    can't read an evaluated value here). Error = (actual - forecast)/actual.
 
-    Returns updated forecast_rows (modifies in place and returns).
+    In the current rebuild model the forecast tab only ever holds FUTURE dates
+    (it's regenerated each run from last_actual+1), so this is typically a
+    no-op — but it stays correct if a realized date ever overlaps a forecast
+    row, and keeps the columns meaningful.
     """
     if len(forecast_rows) <= 1 or len(labor_daily_rows) <= 1:
         return forecast_rows
 
-    # Build actuals index
+    ld_header = labor_daily_rows[0]
     actual_by_date: dict[str, dict] = {}
     for row in labor_daily_rows[1:]:
         d = coerce_iso_date(row[0])
@@ -532,71 +598,80 @@ def backfill_forecast_errors(
         try:
             actual_by_date[d] = {
                 "orders": int(row[7] or 0),
-                "net_sales": float(row[4]),
+                "net_sales": float(row[4] or 0),
                 "items_sold": int(row[30]) if len(row) > 30 and row[30] != "" else 0,
-                "fulltime_hours": float(row[10]),
-                "hourly_hours": float(row[8]),
-                "total_labor_cost": float(row[12]),
+                "fulltime_hours": float(row[10] or 0),
+                "hourly_hours": float(row[8] or 0),
+                "total_labor_cost": float(row[12] or 0),
             }
         except (ValueError, IndexError):
             continue
 
-    forecast_header = forecast_rows[0]
-    # Find column indices for error fields
-    base_col_count = len(forecast_header) - 11  # 11 forecast-specific columns
+    header = forecast_rows[0]
+    idx = {name: i for i, name in enumerate(header)}
+
+    def _num(row, name, default=0.0):
+        i = idx.get(name)
+        if i is None or i >= len(row):
+            return default
+        v = row[i]
+        if v == "" or v is None or (isinstance(v, str) and v.startswith("=")):
+            return default
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return default
+
+    def _err(actual_val, forecast_val):
+        if not actual_val:
+            return ""
+        return round((actual_val - forecast_val) / actual_val, 4)
 
     for row in forecast_rows[1:]:
-        d = coerce_iso_date(row[0])
+        d = coerce_iso_date(row[idx["date"]]) if "date" in idx else None
         if d is None or d not in actual_by_date:
             continue
-
         actual = actual_by_date[d]
-        forecast_orders = int(row[7] or 0) if row[7] != "" else 0
-        forecast_net = float(row[4]) if row[4] != "" else 0.0
-        forecast_items = int(row[30]) if len(row) > 30 and row[30] != "" else 0
-        forecast_ft_h = float(row[10]) if row[10] != "" else 0.0
-        forecast_hourly_h = float(row[8]) if row[8] != "" else 0.0
 
-        def _err(actual_val, forecast_val):
-            if actual_val == 0:
-                return ""
-            return f"{((actual_val - forecast_val) / actual_val):.1%}"
+        f_orders = _num(row, "orders")
+        f_price = _num(row, "_avg_order_price")
+        f_items_per = _num(row, "_avg_items_per_order")
+        f_ft = _num(row, "fulltime_hours")
+        f_shift = _num(row, "_shift_hours")
+        f_minpt = _num(row, "_min_parttimers")
+        f_tpi = _num(row, "_target_time_per_item_sec")
 
-        orders_err = _err(actual["orders"], forecast_orders)
-        items_err = _err(actual["items_sold"], forecast_items)
-        net_err = _err(actual["net_sales"], forecast_net)
-        ft_err = _err(actual["fulltime_hours"], forecast_ft_h)
-        hourly_err = _err(actual["hourly_hours"], forecast_hourly_h)
+        f_net = f_orders * f_price
+        f_items = f_orders * f_items_per
+        f_eff = f_items * f_tpi / 3600.0
+        f_hourly = max(f_minpt * f_shift, f_eff)
+
+        row[idx["orders_error_pct"]] = _err(actual["orders"], f_orders)
+        row[idx["items_sold_error_pct"]] = _err(actual["items_sold"], f_items)
+        row[idx["net_sales_error_pct"]] = _err(actual["net_sales"], f_net)
+        row[idx["fulltime_hours_error_pct"]] = _err(actual["fulltime_hours"], f_ft)
+        row[idx["hourly_hours_error_pct"]] = _err(actual["hourly_hours"], f_hourly)
+
         price_err = ""
-        if actual["orders"] > 0 and forecast_orders > 0:
+        if actual["orders"] > 0 and f_orders > 0:
             actual_price = actual["net_sales"] / actual["orders"]
-            forecast_price = forecast_net / forecast_orders if forecast_orders > 0 else 0
+            forecast_price = f_net / f_orders
             price_err = _err(actual_price, forecast_price)
+        row[idx["avg_order_price_error_pct"]] = price_err
 
-        # Actual labor %
-        actual_labor_pct = ""
+        realized = ""
         if actual["net_sales"] > 0:
-            actual_labor_pct = f"{actual['total_labor_cost'] / actual['net_sales']:.2%}"
+            realized = round(actual["total_labor_cost"] / actual["net_sales"], 4)
+        row[idx["realized_labor_pct"]] = realized
 
-        # MAPE across orders + items + net_sales
-        mape_values = []
+        mape_vals = []
         for a, f in [
-            (actual["orders"], forecast_orders),
-            (actual["items_sold"], forecast_items),
-            (actual["net_sales"], forecast_net),
+            (actual["orders"], f_orders),
+            (actual["items_sold"], f_items),
+            (actual["net_sales"], f_net),
         ]:
-            if a != 0:
-                mape_values.append(abs((a - f) / a))
-        mape = f"{statistics.mean(mape_values):.1%}" if mape_values else ""
-
-        # Fill error columns (at end of row)
-        row[base_col_count + 3] = orders_err
-        row[base_col_count + 4] = items_err
-        row[base_col_count + 5] = net_err
-        row[base_col_count + 6] = ft_err
-        row[base_col_count + 7] = hourly_err
-        row[base_col_count + 8] = price_err
-        row[base_col_count + 9] = actual_labor_pct
-        row[base_col_count + 10] = mape
+            if a:
+                mape_vals.append(abs((a - f) / a))
+        row[idx["forecast_mape"]] = round(statistics.mean(mape_vals), 4) if mape_vals else ""
 
     return forecast_rows

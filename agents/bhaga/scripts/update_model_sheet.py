@@ -1238,10 +1238,16 @@ def build_labor_daily_rows(
 
         kds_day = kds_by_date.get(d, {})
         kds_tickets = kds_day.get("completed_tickets", "")
-        kds_items = kds_day.get("completed_items", "")
-        kds_avg_tpi = kds_day.get("avg_time_per_item_sec", "")
-        kds_med_tpi = kds_day.get("median_time_per_item_sec", "")
-        kds_pct_late = kds_day.get("pct_tickets_late", "")
+        # A day with zero completed KDS tickets (e.g. a closed day whose only
+        # tickets were left-open outliers dropped by the cap) carries no
+        # meaningful time metrics — blank them all so they read as "no data"
+        # rather than a misleading 0.0 (and so weekly/period don't aggregate a
+        # spurious zero). completed_tickets==0 comes through as the int 0.
+        _has_kds = bool(kds_tickets)
+        kds_items = kds_day.get("completed_items", "") if _has_kds else ""
+        kds_avg_tpi = kds_day.get("avg_time_per_item_sec", "") if _has_kds else ""
+        kds_med_tpi = kds_day.get("median_time_per_item_sec", "") if _has_kds else ""
+        kds_pct_late = kds_day.get("pct_tickets_late", "") if _has_kds else ""
         if isinstance(kds_pct_late, float) and kds_pct_late > 0:
             kds_pct_late = f"{kds_pct_late:.2%}"
         elif kds_pct_late == 0.0:

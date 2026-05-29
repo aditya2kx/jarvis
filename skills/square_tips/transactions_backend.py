@@ -680,7 +680,16 @@ def aggregate_daily_kds_stats(
     import statistics
 
     by_day: dict[str, list[dict]] = {}
+    # Every date that had ANY ticket (pre-filter). Dates whose tickets are ALL
+    # outliers (e.g. a closed day with only left-open artifacts) end up with no
+    # qualifying tickets; we still emit an explicit ZERO row for them below so
+    # the idempotent raw-sheet upsert OVERWRITES any stale inflated row from a
+    # pre-cap run (the upsert keys on date and never deletes, so a vanished day
+    # would otherwise keep its old multi-hour values and re-inflate
+    # weekly/period rollups).
+    dates_with_any_ticket: set[str] = set()
     for t in tickets:
+        dates_with_any_ticket.add(t["date_local"])
         # Drop both lower (no-prep) and upper (left-open) outliers entirely.
         cts = t["completion_time_sec"]
         if cts < min_completion_sec or cts > max_completion_sec:
@@ -748,6 +757,26 @@ def aggregate_daily_kds_stats(
             "due_tickets": due_count,
             "time_per_item_sum_sec": round(sum(time_per_item_values), 4),
             "time_per_item_count": len(time_per_item_values),
+        }
+
+    # Emit ZERO rows for dates that had tickets but ALL were filtered out, so a
+    # re-run overwrites stale inflated rows from a pre-cap aggregation. Counts
+    # and time intermediates are zero (the day had no real prep activity), so
+    # daily/weekly/period rollups contribute nothing for these dates.
+    for d in sorted(dates_with_any_ticket - set(result)):
+        result[d] = {
+            "completed_tickets": 0,
+            "completed_items": 0,
+            "avg_completion_time_sec": 0.0,
+            "avg_time_per_item_sec": 0.0,
+            "median_time_per_item_sec": 0.0,
+            "pct_tickets_late": 0.0,
+            "shift_start": "",
+            "shift_end": "",
+            "late_tickets": 0,
+            "due_tickets": 0,
+            "time_per_item_sum_sec": 0.0,
+            "time_per_item_count": 0,
         }
     return result
 

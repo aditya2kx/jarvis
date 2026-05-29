@@ -234,5 +234,62 @@ class ParseCsvMixedEncodingTests(unittest.TestCase):
         )
 
 
+class KdsCapTests(unittest.TestCase):
+    """Upper/lower outlier cap + stale-row overwrite for aggregate_daily_kds_stats."""
+
+    @staticmethod
+    def _ticket(date, cts, num_items=2):
+        import datetime
+        base = datetime.datetime.fromisoformat(f"{date}T10:00:00")
+        return {
+            "date_local": date,
+            "completion_time_sec": float(cts),
+            "num_items": num_items,
+            "time_created": base,
+            "time_completed": base,
+            "time_due": None,
+        }
+
+    def test_upper_cap_drops_left_open_tickets(self):
+        from skills.square_tips.transactions_backend import aggregate_daily_kds_stats
+        tickets = [
+            self._ticket("2026-05-20", 300),    # 150s/item — kept
+            self._ticket("2026-05-20", 600),    # 300s/item — kept
+            self._ticket("2026-05-20", 80000),  # ~22h — dropped (left open)
+        ]
+        out = aggregate_daily_kds_stats(tickets, max_completion_sec=3600)
+        day = out["2026-05-20"]
+        self.assertEqual(day["completed_tickets"], 2)
+        # avg time-per-item over kept tickets = mean(150, 300) = 225, sane.
+        self.assertLess(day["avg_time_per_item_sec"], 3600)
+        self.assertAlmostEqual(day["avg_time_per_item_sec"], 225.0, places=1)
+
+    def test_lower_bound_still_applies(self):
+        from skills.square_tips.transactions_backend import aggregate_daily_kds_stats
+        tickets = [self._ticket("2026-05-20", 5), self._ticket("2026-05-20", 300)]
+        out = aggregate_daily_kds_stats(tickets, max_completion_sec=3600)
+        self.assertEqual(out["2026-05-20"]["completed_tickets"], 1)
+
+    def test_fully_filtered_day_emits_zero_row(self):
+        # A closed day whose ONLY tickets are multi-hour left-open artifacts
+        # must still emit a ZERO row so a re-run overwrites stale inflated data.
+        from skills.square_tips.transactions_backend import aggregate_daily_kds_stats
+        tickets = [
+            self._ticket("2026-05-25", 63000),
+            self._ticket("2026-05-25", 71000),
+        ]
+        out = aggregate_daily_kds_stats(tickets, max_completion_sec=3600)
+        self.assertIn("2026-05-25", out, "fully-filtered day vanished — stale row would persist")
+        day = out["2026-05-25"]
+        self.assertEqual(day["completed_tickets"], 0)
+        self.assertEqual(day["avg_time_per_item_sec"], 0.0)
+        self.assertEqual(day["median_time_per_item_sec"], 0.0)
+        self.assertEqual(day["time_per_item_count"], 0)
+
+    def test_default_cap_is_one_hour(self):
+        from skills.square_tips.transactions_backend import KDS_MAX_COMPLETION_SEC
+        self.assertEqual(KDS_MAX_COMPLETION_SEC, 3600)
+
+
 if __name__ == "__main__":
     unittest.main()

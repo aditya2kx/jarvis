@@ -32,13 +32,55 @@ from typing import Iterator
 
 API_BASE = "https://api.clickup.com"
 KEYCHAIN_SERVICE = "jarvis-clickup-palmetto-pat"
+PAT_ENV_VAR = "CLICKUP_PAT"  # secret-backed env var used in Cloud Run / CI
 DEFAULT_TEAM_ID = "9017956545"  # Austin Mueller Palmetto
 PAGE_LIMIT = 50
 INTER_PAGE_SLEEP_S = 0.7  # ~85 req/min ceiling
 
 
+def _is_cloud_run() -> bool:
+    """Mirror skills/store_profile/reader.py::_is_cloud_run().
+
+    True on Cloud Run (the macOS `security` keychain binary is absent there,
+    so the PAT must come from a secret-backed env var instead).
+    """
+    return (os.environ.get("BHAGA_SECRETS_BACKEND", "").lower() == "gcp"
+            or "K_SERVICE" in os.environ
+            or "CLOUD_RUN_JOB" in os.environ)
+
+
+def _validate_pat(pat: str, *, source: str) -> str:
+    if not pat.startswith("pk_"):
+        raise RuntimeError(
+            f"ClickUp PAT from {source} does not look like a ClickUp PAT "
+            f"(should start with 'pk_'). Got: {pat[:8]}..."
+        )
+    return pat
+
+
 def get_pat() -> str:
-    """Read the ClickUp PAT from Keychain. Raises if missing."""
+    """Return the ClickUp PAT.
+
+    Resolution order (mirrors how SLACK_BOT_TOKEN is consumed in
+    skills/slack/adapter.py):
+      1. ``CLICKUP_PAT`` env var (Cloud Run / CI, secret-backed).
+      2. macOS Keychain via `security find-generic-password` (local dev).
+
+    In Cloud Run the keychain binary doesn't exist, so a missing env var
+    raises a clear, actionable error instead of FileNotFoundError('security').
+    """
+    env_pat = os.environ.get(PAT_ENV_VAR, "").strip()
+    if env_pat:
+        return _validate_pat(env_pat, source=f"${PAT_ENV_VAR}")
+
+    if _is_cloud_run():
+        raise RuntimeError(
+            f"ClickUp PAT not found in env var {PAT_ENV_VAR} while running in "
+            f"Cloud Run. The macOS Keychain is unavailable in the container; "
+            f"wire the PAT as a secret-backed env var on the job, e.g. "
+            f"`--update-secrets {PAT_ENV_VAR}=<secret>:latest`."
+        )
+
     result = subprocess.run(
         ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
         capture_output=True, text=True, timeout=5,
@@ -48,13 +90,7 @@ def get_pat() -> str:
             f"ClickUp PAT not in Keychain (service={KEYCHAIN_SERVICE}). "
             f"Re-run the credential setup: see skills/credentials/registry.py."
         )
-    pat = result.stdout.strip()
-    if not pat.startswith("pk_"):
-        raise RuntimeError(
-            f"Keychain entry for {KEYCHAIN_SERVICE} does not look like a "
-            f"ClickUp PAT (should start with 'pk_'). Got: {pat[:8]}..."
-        )
-    return pat
+    return _validate_pat(result.stdout.strip(), source=f"Keychain {KEYCHAIN_SERVICE}")
 
 
 _RETRYABLE_CODES = frozenset({429, 500, 502, 503, 504})

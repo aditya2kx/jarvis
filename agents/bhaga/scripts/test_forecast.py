@@ -186,6 +186,21 @@ class BuildForecastGridTests(unittest.TestCase):
         self.assertEqual(r2[_IDX["forecast_exclude"]], "FALSE")
         self.assertEqual(r2[_IDX["target_labor_pct"]], 0.25)
 
+    def test_horizon_anchors_on_last_actual_not_last_unflagged(self):
+        # Flag the most recent 3 operating days forecast_exclude=TRUE (as a
+        # hyper-growth run would, where sustained growth trips the outlier band).
+        # The horizon must still start the day AFTER the last CALENDAR date with
+        # data — it must not rewind into the past to the last non-excluded day.
+        ld = _labor_daily_grid(days=40)
+        last_cal = datetime.date.fromisoformat(ld[-1][0])
+        for row in ld[-3:]:
+            row[-1] = "TRUE"  # forecast_exclude is the last column
+        grid = build_labor_daily_forecast_rows(
+            labor_daily_rows=ld, wage_rates=_wage_rates(), config=_CONFIG,
+        )
+        first_fc = datetime.date.fromisoformat(coerce_iso_date(grid[1][_IDX["date"]]))
+        self.assertEqual(first_fc, last_cal + datetime.timedelta(days=1))
+
     def test_weekly_fulltime_cap(self):
         grid = build_labor_daily_forecast_rows(
             labor_daily_rows=_labor_daily_grid(),

@@ -491,7 +491,16 @@ def build_labor_daily_forecast_rows(
     else:
         shift_hours_fallback = 11.0
 
-    last_actual_date = max(r["date"] for r in parsed)
+    # Anchor the horizon on the last CALENDAR day we actually have data for —
+    # NOT the last non-excluded day. `parsed` drops forecast_exclude=TRUE rows,
+    # so during a stretch where the most recent days are all flagged (e.g. a
+    # hyper-growth run where sustained growth trips the DOW outlier band, or the
+    # near-closed tail days), max(parsed.date) rewinds into the past and the
+    # "forecast" ends up covering days that have already happened. Use the full
+    # unfiltered set of operating days (orders > 0) to find the true last actual.
+    all_rows = _get_parsed_rows(labor_daily_rows, exclude_flagged=False)
+    operating = [r for r in all_rows if r.get("orders", 0) > 0] or all_rows
+    last_actual_date = max(r["date"] for r in operating)
     start_date = datetime.date.fromisoformat(last_actual_date) + datetime.timedelta(days=1)
     generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 

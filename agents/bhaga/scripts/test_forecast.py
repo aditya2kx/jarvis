@@ -525,6 +525,23 @@ class FreezeInPlaceTests(unittest.TestCase):
         # grid[1] is the first FUTURE row → live formula.
         self.assertTrue(str(grid[1][_IDX["net_sales"]]).startswith("="))
 
+    def test_generated_at_is_central_time_not_utc(self):
+        # A freshly generated FUTURE row must stamp forecast_generated_at in
+        # store-local Central time (America/Chicago), NOT UTC — Cloud Run runs
+        # in UTC, so a "+00:00" stamp here would be the regression.
+        grid = build_labor_daily_forecast_rows(
+            labor_daily_rows=_labor_daily_grid(days=40),
+            wage_rates=_wage_rates(),
+            config=_CONFIG,
+            existing_forecast_rows=None,
+        )
+        generated_at = grid[1][_IDX["forecast_generated_at"]]
+        self.assertTrue(
+            generated_at.endswith("-05:00") or generated_at.endswith("-06:00"),
+            f"expected a US Central offset, got {generated_at!r}",
+        )
+        self.assertFalse(generated_at.endswith("+00:00"))
+
     def test_rows_older_than_window_are_dropped(self):
         ld = _labor_daily_grid(days=40)  # last actual 2026-05-10, start 05-11
         # A stale forecast row well outside the 30-day window (freeze_start

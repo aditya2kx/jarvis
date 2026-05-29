@@ -69,10 +69,16 @@ import statistics
 import sys
 import os
 from typing import Any
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
+
+# All report-facing timestamps are stamped in store-local Central time
+# (Texas / US Central). Cloud Run containers run in UTC, so a bare
+# datetime.now() there would mislabel report cells — pin the zone explicitly.
+CT = ZoneInfo("America/Chicago")
 
 
 # ── Column layout ─────────────────────────────────────────────────
@@ -740,7 +746,7 @@ def build_labor_daily_forecast_rows(
     operating = [r for r in all_rows if r.get("orders", 0) > 0] or all_rows
     last_actual_date = max(r["date"] for r in operating)
     start_date = datetime.date.fromisoformat(last_actual_date) + datetime.timedelta(days=1)
-    generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    generated_at = datetime.datetime.now(CT).isoformat(timespec="seconds")
 
     # First pass: compute per-day input + helper values; stash raw full-time
     # hours so we can apply the WEEKLY cap before emitting.

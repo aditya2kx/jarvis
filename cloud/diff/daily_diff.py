@@ -76,7 +76,7 @@ IGNORED_TABS = frozenset({"config", "labor_daily_forecast"})
 IGNORED_COLUMNS = frozenset({
     "scraped_at_utc",
     "scraped_at",
-    "last_refreshed_utc",
+    "last_refreshed_ct",
     "hours_per_order",
     "avg_order_price",
     "avg_net_sales_plus_tips_per_order",

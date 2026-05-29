@@ -42,8 +42,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+
+# Report-facing timestamps are stamped in store-local Central time. Cloud Run
+# runs in UTC, so a bare datetime.now() there would mislabel sheet cells.
+CT = ZoneInfo("America/Chicago")
 
 from agents.bhaga.scripts.daily_refresh import is_refresh_date_complete
 from agents.bhaga.scripts.forecast import compute_outlier_stats
@@ -850,9 +855,9 @@ def build_config_rows(
          "Square data starts here. Pay periods before this are partial."],
         ["data_window_end", _iso_date_for_sheet_cell(last_data_date),
          "Latest day for which we have Square + ADP data."],
-        ["last_refreshed_utc",
-         datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-         "When this Model workbook was last refreshed."],
+        ["last_refreshed_ct",
+         datetime.datetime.now(CT).isoformat(timespec="seconds"),
+         "When this Model workbook was last refreshed, in Central Time (America/Chicago)."],
         ["adp_wage_rate_report", profile["adp_run"].get("wage_rate_report_name", ""), ""],
         ["bhaga_adp_raw_url", profile["google_sheets"]["bhaga_adp_raw"]["url"], "Raw ADP data."],
         ["bhaga_square_raw_url", profile["google_sheets"]["bhaga_square_raw"]["url"], "Raw Square data."],

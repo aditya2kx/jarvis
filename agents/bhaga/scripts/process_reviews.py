@@ -1232,7 +1232,7 @@ def main() -> int:
     summary = "; ".join(parts)
     review_anomaly_alert(anomalies)
     success_heartbeat(
-        date=datetime.date.today().isoformat(),
+        date=datetime.datetime.now(CT).date().isoformat(),
         tabs_written=2,
         runtime_s=0.0,
         extra=summary,

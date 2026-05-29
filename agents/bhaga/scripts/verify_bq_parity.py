@@ -399,7 +399,7 @@ def main() -> int:
     print("-" * 60)
 
     # Skip timestamp/refresh columns that will always differ
-    skip_cols = {"last_refreshed_utc", "scraped_at_utc"}
+    skip_cols = {"last_refreshed_ct", "scraped_at_utc"}
     results: list[dict] = []
 
     for tab in tabs_to_verify:

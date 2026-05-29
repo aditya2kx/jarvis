@@ -470,12 +470,16 @@ MODEL_VERIFY_MIN_ROWS: dict[str, int] = {
 # Header used to confirm KDS columns made it into the model's labor tabs.
 _KDS_MODEL_COLUMN_HEADER = "kds_completed_tickets"
 
-# Per-item / late KDS metrics that MUST populate at weekly + period grain for
-# rows overlapping KDS coverage (Workstream A). These were previously blanked
-# at weekly/period grain; the verification now guards against that regression.
+# Per-item / over-goal / late KDS metrics that MUST populate at weekly + period
+# grain for rows overlapping KDS coverage. These pool the per-day item
+# distributions; the verification guards against the join silently blanking
+# them. (avg_time_per_item_sec was removed — percentiles + median replace it.)
 _KDS_PERIODIC_METRIC_HEADERS = (
-    "kds_avg_time_per_item_sec",
     "kds_median_time_per_item_sec",
+    "kds_p90_time_per_item_sec",
+    "kds_p95_time_per_item_sec",
+    "kds_p99_time_per_item_sec",
+    "kds_pct_items_over_goal",
     "kds_pct_tickets_late",
 )
 # Date-boundary column names per tab, used to test KDS-coverage overlap.
@@ -516,10 +520,10 @@ def check_weekly_period_kds(
 
     For each row whose [start, end] window overlaps the KDS-covered date range
     ``[kds_min_date, kds_max_date]`` AND that already shows KDS throughput
-    (``kds_completed_items`` non-empty), assert that
-    ``kds_avg_time_per_item_sec``, ``kds_median_time_per_item_sec`` and
-    ``kds_pct_tickets_late`` are all non-empty. This is exactly the regression
-    where those columns were hard-blanked at weekly/period grain.
+    (``kds_completed_items`` non-empty), assert that every metric in
+    ``_KDS_PERIODIC_METRIC_HEADERS`` (median / p90 / p95 / p99 /
+    pct_items_over_goal / pct_tickets_late) is non-empty. This guards against
+    the join silently hard-blanking those columns at weekly/period grain.
 
     Rows entirely BEFORE KDS coverage (KDS started 2026-04-24) have empty
     throughput and don't overlap, so they're skipped — no false positives.

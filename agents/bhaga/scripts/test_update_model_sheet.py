@@ -29,6 +29,8 @@ from agents.bhaga.scripts.update_model_sheet import (
     _DATE_CONFIG_KEYS,
     _fill_calendar_dates,
     _parse_sheet_bool,
+    _percent_column_indices,
+    _seconds_column_indices,
     build_config_rows,
     build_daily_rows,
     build_labor_daily_rows,
@@ -788,6 +790,42 @@ class LaborDailyForecastColumnsTests(unittest.TestCase):
         # ...but forecast_exclude honors the operator override.
         self.assertEqual(by_date["2026-05-18"][fi], "FALSE")
         self.assertEqual(by_date["2026-03-30"][fi], "TRUE")
+
+
+class KdsColumnFormatDetectionTests(unittest.TestCase):
+    """The KDS seconds vs percent columns must be classified correctly so the
+    post-write number-format pass doesn't render seconds as percent (the
+    8350100.00% bug) or vice-versa."""
+
+    HEADER = [
+        "date", "net_sales",
+        "kds_completed_tickets", "kds_completed_items",
+        "kds_median_time_per_item_sec",
+        "kds_p90_time_per_item_sec", "kds_p95_time_per_item_sec",
+        "kds_p99_time_per_item_sec",
+        "kds_pct_items_over_goal", "kds_pct_tickets_late",
+    ]
+
+    def test_seconds_cols_are_the_per_item_columns(self):
+        secs = _seconds_column_indices(self.HEADER)
+        names = [self.HEADER[i] for i in secs]
+        self.assertEqual(names, [
+            "kds_median_time_per_item_sec",
+            "kds_p90_time_per_item_sec",
+            "kds_p95_time_per_item_sec",
+            "kds_p99_time_per_item_sec",
+        ])
+
+    def test_percent_cols_are_only_the_pct_columns(self):
+        pcts = _percent_column_indices(self.HEADER)
+        names = [self.HEADER[i] for i in pcts]
+        self.assertEqual(names, ["kds_pct_items_over_goal", "kds_pct_tickets_late"])
+
+    def test_seconds_and_percent_sets_never_overlap(self):
+        # A column rendered as BOTH seconds and percent is exactly the bug.
+        secs = set(_seconds_column_indices(self.HEADER))
+        pcts = set(_percent_column_indices(self.HEADER))
+        self.assertEqual(secs & pcts, set())
 
 
 if __name__ == "__main__":

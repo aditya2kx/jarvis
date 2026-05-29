@@ -12,11 +12,16 @@ Layout (one row per forecast day, ~14 future days):
 
   INPUTS (values, operator-editable)
     date | dow | orders | fulltime_hours | target_labor_pct |
-    forecast_exclude | notes
+    target_time_per_item_sec | forecast_exclude | notes
   HELPER CONSTANTS (values; hidden in-sheet)
     _avg_order_price | _avg_items_per_order | _avg_discount_per_order |
-    _avg_tip_pool_per_order | _avg_hourly_wage | _target_time_per_item_sec |
+    _avg_tip_pool_per_order | _avg_hourly_wage |
     _shift_hours | _min_parttimers
+
+  target_time_per_item_sec is the flat staffing-solver target (seconds/item),
+  seeded from config (default 420 = 7 min) on every row but editable PER ROW;
+  efficiency_hours references it. Operator edits are preserved across rebuilds
+  (same mechanism as forecast_exclude / orders preservation in labor_daily).
   DERIVED (FORMULAS, evaluate live via USER_ENTERED)
     net_sales | discounts | gross_sales | items_sold | tip_pool |
     min_coverage_hours | efficiency_hours | needed_hours | fulltime_cost |
@@ -55,10 +60,10 @@ from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
 FORECAST_COLUMNS: list[str] = [
     # inputs
     "date", "dow", "orders", "fulltime_hours", "target_labor_pct",
-    "forecast_exclude", "notes",
+    "target_time_per_item_sec", "forecast_exclude", "notes",
     # helper constants (hidden)
     "_avg_order_price", "_avg_items_per_order", "_avg_discount_per_order",
-    "_avg_tip_pool_per_order", "_avg_hourly_wage", "_target_time_per_item_sec",
+    "_avg_tip_pool_per_order", "_avg_hourly_wage",
     "_shift_hours", "_min_parttimers",
     # derived (formulas)
     "net_sales", "discounts", "gross_sales", "items_sold", "tip_pool",
@@ -80,7 +85,7 @@ FORECAST_HIDDEN_COLS: list[int] = [
     _IDX[name] for name in (
         "_avg_order_price", "_avg_items_per_order", "_avg_discount_per_order",
         "_avg_tip_pool_per_order", "_avg_hourly_wage",
-        "_target_time_per_item_sec", "_shift_hours", "_min_parttimers",
+        "_shift_hours", "_min_parttimers",
     )
 ]
 
@@ -133,7 +138,7 @@ def _derived_formulas(sheet_row: int) -> dict[str, str]:
         "items_sold": f"={R('orders')}*{R('_avg_items_per_order')}",
         "tip_pool": f"={R('orders')}*{R('_avg_tip_pool_per_order')}",
         "min_coverage_hours": f"={R('_min_parttimers')}*{R('_shift_hours')}",
-        "efficiency_hours": f"={R('items_sold')}*{R('_target_time_per_item_sec')}/3600",
+        "efficiency_hours": f"={R('items_sold')}*{R('target_time_per_item_sec')}/3600",
         "needed_hours": f"=MAX({R('min_coverage_hours')},{R('efficiency_hours')})",
         "fulltime_cost": f"={R('fulltime_hours')}*{R('_avg_hourly_wage')}",
         "budget_hours": (
@@ -437,7 +442,6 @@ def compute_forecast_constants(
     parsed_recent: list[dict],
     *,
     avg_hourly_wage: float,
-    target_time_per_item_sec: float,
     min_parttimers: int = 2,
 ) -> dict[str, float]:
     """Compute the per-order rate constants from recent operating days.
@@ -447,6 +451,10 @@ def compute_forecast_constants(
     returned as a POSITIVE per-order magnitude so the sheet identity
     gross_sales = net_sales + discounts yields gross > net (labor_daily stores
     discounts as negative; we take abs()).
+
+    NOTE: the staffing-solver target (target_time_per_item_sec) is no longer a
+    hidden constant here — it's a VISIBLE, per-row editable input column seeded
+    from config in build_labor_daily_forecast_rows.
     """
     order_prices = [r["net_sales"] / r["orders"] for r in parsed_recent if r["orders"] > 0]
     items_per_order = [
@@ -461,7 +469,6 @@ def compute_forecast_constants(
         "_avg_discount_per_order": round(statistics.mean(disc_per_order), 4) if disc_per_order else 0.0,
         "_avg_tip_pool_per_order": round(statistics.mean(tip_per_order), 4) if tip_per_order else 0.0,
         "_avg_hourly_wage": round(avg_hourly_wage, 2),
-        "_target_time_per_item_sec": round(target_time_per_item_sec, 1),
         "_min_parttimers": min_parttimers,
     }
 
@@ -569,6 +576,7 @@ def build_labor_daily_forecast_rows(
     wage_rates: list[dict],
     config: dict,
     kds_by_date: dict[str, dict] | None = None,
+    existing_target_by_date: dict[str, float] | None = None,
     horizon_days: int = 14,
 ) -> list[list]:
     """Build the formula-driven labor_daily_forecast grid (header + N rows).
@@ -577,10 +585,16 @@ def build_labor_daily_forecast_rows(
     columns as ``=...`` formula strings (the writer uses USER_ENTERED so they
     evaluate live). ACCURACY columns start blank and are filled by
     backfill_forecast_errors once a forecast day has a realized actual.
+
+    ``target_time_per_item_sec`` is seeded per row from config
+    (forecast_target_completion_time_per_item_sec, default 420), but any
+    operator edit for a date present in ``existing_target_by_date`` is
+    PRESERVED across rebuilds.
     """
     target_labor_pct = float(config.get("forecast_target_labor_pct", 0.25))
     fulltime_weekly_hours = float(config.get("forecast_fulltime_weekly_hours", 40.0))
-    target_time_per_item = float(config.get("forecast_target_completion_time_per_item_sec", 300.0))
+    target_time_per_item = float(config.get("forecast_target_completion_time_per_item_sec", 420.0))
+    existing_target_by_date = existing_target_by_date or {}
 
     hourly_wages = [
         float(r["wage_rate_dollars"])
@@ -604,7 +618,6 @@ def build_labor_daily_forecast_rows(
     constants = compute_forecast_constants(
         recent,
         avg_hourly_wage=avg_hourly_wage,
-        target_time_per_item_sec=target_time_per_item,
     )
     shift_hours_dow = _shift_hours_by_dow(kds_by_date)
     # Fallback shift length: median of whatever DOW envelopes we do have, else
@@ -673,6 +686,10 @@ def build_labor_daily_forecast_rows(
         row[_IDX["orders"]] = s["orders"]
         row[_IDX["fulltime_hours"]] = s["ft_capped"]
         row[_IDX["target_labor_pct"]] = target_labor_pct
+        # Per-row editable staffing-solver target; preserve operator edits.
+        row[_IDX["target_time_per_item_sec"]] = round(
+            float(existing_target_by_date.get(target_date.isoformat(), target_time_per_item)), 1
+        )
         row[_IDX["forecast_exclude"]] = "FALSE"
         row[_IDX["notes"]] = ""
 
@@ -682,7 +699,6 @@ def build_labor_daily_forecast_rows(
         row[_IDX["_avg_discount_per_order"]] = constants["_avg_discount_per_order"]
         row[_IDX["_avg_tip_pool_per_order"]] = constants["_avg_tip_pool_per_order"]
         row[_IDX["_avg_hourly_wage"]] = constants["_avg_hourly_wage"]
-        row[_IDX["_target_time_per_item_sec"]] = constants["_target_time_per_item_sec"]
         row[_IDX["_shift_hours"]] = s["shift_hours"]
         row[_IDX["_min_parttimers"]] = constants["_min_parttimers"]
 
@@ -771,7 +787,7 @@ def backfill_forecast_errors(
         f_ft = _num(row, "fulltime_hours")
         f_shift = _num(row, "_shift_hours")
         f_minpt = _num(row, "_min_parttimers")
-        f_tpi = _num(row, "_target_time_per_item_sec")
+        f_tpi = _num(row, "target_time_per_item_sec")
 
         f_net = f_orders * f_price
         f_items = f_orders * f_items_per

@@ -636,66 +636,103 @@ def parse_kds_csv(
 
 
 # Lower bound: tickets cleared in under 15s never had real prep (KDS bumped
-# immediately / accidental clear). Upper bound: tickets left open for hours
-# are KDS-left-open artifacts (closer forgot to bump the ticket at end of
-# night), not real prep time. 2026-05-25/26 carried ~17-23h "completion"
-# tickets that, left in, inflated every daily/weekly/period time-per-item and
-# late metric into the thousands of seconds. Both bounds drop the ticket from
-# ALL daily stats (it never enters completed_tickets/items either) so the
-# count and the time/late metrics stay mutually consistent.
+# immediately / accidental clear) — kept as the ONLY filter. There is NO upper
+# cap any more: KDS is now a purely OPERATIONAL-EFFICIENCY monitoring metric
+# (it never feeds the staffing solver — that uses the flat config target), so
+# we surface the FULL tail (p90/p95/p99) instead of hiding left-open artifacts.
+# Percentiles + median are inherently robust to the left-open / left-open tail,
+# so no cap is needed; the operator sees the real distribution and can coach.
 KDS_MIN_COMPLETION_SEC = 15
-KDS_MAX_COMPLETION_SEC = 3600  # 1 hour; override via store profile labor_config
+
+
+def _percentile(sorted_vals: list, q: float) -> float:
+    """Linear-interpolation percentile (numpy 'linear' / type-7), q in [0,100].
+
+    ``sorted_vals`` MUST be sorted ascending. Returns 0.0 for an empty list.
+    Used for the KDS per-item p90/p95/p99/median. Pure + deterministic so
+    weekly/period rollups pool the per-day item distributions and recompute
+    TRUE percentiles (not an average-of-daily-percentiles).
+    """
+    n = len(sorted_vals)
+    if n == 0:
+        return 0.0
+    if n == 1:
+        return float(sorted_vals[0])
+    rank = (q / 100.0) * (n - 1)
+    lo = int(rank)
+    hi = min(lo + 1, n - 1)
+    frac = rank - lo
+    return float(sorted_vals[lo]) * (1.0 - frac) + float(sorted_vals[hi]) * frac
 
 
 def aggregate_daily_kds_stats(
     tickets: list[dict],
     *,
-    max_completion_sec: float = KDS_MAX_COMPLETION_SEC,
     min_completion_sec: float = KDS_MIN_COMPLETION_SEC,
 ) -> dict[str, dict]:
-    """Aggregate per-ticket KDS data into daily stats.
+    """Aggregate per-ticket KDS data into daily OPERATIONAL-EFFICIENCY stats.
 
     Returns {date_iso: {
         completed_tickets: int,
         completed_items: int,
-        avg_completion_time_sec: float,
-        avg_time_per_item_sec: float,
         median_time_per_item_sec: float,
+        p90_time_per_item_sec: float,
+        p95_time_per_item_sec: float,
+        p99_time_per_item_sec: float,
         pct_tickets_late: float,
         shift_start: str (HH:MM),
         shift_end: str (HH:MM),
+        late_tickets: int,
+        due_tickets: int,
+        per_item_times: list[int],   # item-weighted per-item seconds, sorted
     }}
 
-    Outlier filtering (both bounds EXCLUDE the ticket from every daily metric,
-    including completed_tickets / completed_items, so counts and time/late
-    metrics stay consistent):
-      * completion_time_sec < ``min_completion_sec`` (default 15s) — KDS
-        cleared without actual prep.
-      * completion_time_sec > ``max_completion_sec`` (default 3600s = 1h) —
-        ticket left open for hours (closer forgot to bump it); a left-open
-        artifact, not real prep. Configurable via the store profile
-        (``labor_config.kds_max_completion_time_sec``); the caller in
-        backfill_from_downloads.py passes the profile value.
-    """
-    import statistics
+    Per-item time = completion_time_sec / num_items for each ticket (guarded
+    num_items > 0). The distribution is ITEM-WEIGHTED: a ticket of N items
+    contributes N copies of its per-item time, so ``len(per_item_times) ==
+    completed_items`` and ``kds_pct_items_over_goal`` (computed downstream) is a
+    true share-of-ITEMS. ``per_item_times`` is stored per day so weekly/period
+    rollups pool the raw item distributions and compute EXACT pooled
+    percentiles + over-goal share (no average-of-averages approximation).
 
+    The goal for pct_items_over_goal is NOT applied here — the model/config
+    layer (update_model_sheet) injects the flat config target so changing the
+    goal recomputes on the next rebuild without re-backfilling.
+
+    Filtering: only the 15s lower floor (``min_completion_sec``) is applied —
+    a ticket cleared in < 15s never had real prep (accidental clear). There is
+    NO upper cap: the full tail is surfaced on purpose. Tickets with
+    num_items <= 0 contribute to completed_tickets but add nothing to the
+    per-item distribution.
+    """
     by_day: dict[str, list[dict]] = {}
     # Every date that had ANY ticket (pre-filter). Dates whose tickets are ALL
-    # outliers (e.g. a closed day with only left-open artifacts) end up with no
-    # qualifying tickets; we still emit an explicit ZERO row for them below so
-    # the idempotent raw-sheet upsert OVERWRITES any stale inflated row from a
-    # pre-cap run (the upsert keys on date and never deletes, so a vanished day
-    # would otherwise keep its old multi-hour values and re-inflate
-    # weekly/period rollups).
+    # below the 15s floor end up with no qualifying tickets; we still emit an
+    # explicit ZERO row for them below so the idempotent raw-sheet upsert
+    # OVERWRITES any stale row from an earlier (capped) run — the upsert keys on
+    # date and never deletes, so a vanished day would otherwise keep old values.
     dates_with_any_ticket: set[str] = set()
     for t in tickets:
         dates_with_any_ticket.add(t["date_local"])
-        # Drop both lower (no-prep) and upper (left-open) outliers entirely.
-        cts = t["completion_time_sec"]
-        if cts < min_completion_sec or cts > max_completion_sec:
+        if t["completion_time_sec"] < min_completion_sec:
             continue
-        d = t["date_local"]
-        by_day.setdefault(d, []).append(t)
+        by_day.setdefault(t["date_local"], []).append(t)
+
+    def _zero_row() -> dict:
+        return {
+            "completed_tickets": 0,
+            "completed_items": 0,
+            "median_time_per_item_sec": 0.0,
+            "p90_time_per_item_sec": 0.0,
+            "p95_time_per_item_sec": 0.0,
+            "p99_time_per_item_sec": 0.0,
+            "pct_tickets_late": 0.0,
+            "shift_start": "",
+            "shift_end": "",
+            "late_tickets": 0,
+            "due_tickets": 0,
+            "per_item_times": [],
+        }
 
     result: dict[str, dict] = {}
     for d in sorted(by_day):
@@ -703,23 +740,20 @@ def aggregate_daily_kds_stats(
         completed_tickets = len(day_tickets)
         completed_items = sum(t["num_items"] for t in day_tickets)
 
-        completion_times = [t["completion_time_sec"] for t in day_tickets if t["completion_time_sec"] > 0]
-        avg_completion_time = (
-            statistics.mean(completion_times) if completion_times else 0.0
-        )
+        # Item-weighted per-item completion times (one entry per ITEM). No cap —
+        # the full tail (including left-open artifacts) is intentionally kept.
+        per_item_times: list[int] = []
+        for t in day_tickets:
+            n = t["num_items"]
+            if n > 0 and t["completion_time_sec"] > 0:
+                tpi = t["completion_time_sec"] / n
+                per_item_times.extend([int(round(tpi))] * n)
+        per_item_times.sort()
 
-        # Time per item: completion_time / num_items for each ticket with items > 0
-        time_per_item_values = [
-            t["completion_time_sec"] / t["num_items"]
-            for t in day_tickets
-            if t["num_items"] > 0 and t["completion_time_sec"] > 0
-        ]
-        avg_time_per_item = (
-            statistics.mean(time_per_item_values) if time_per_item_values else 0.0
-        )
-        median_time_per_item = (
-            statistics.median(time_per_item_values) if time_per_item_values else 0.0
-        )
+        median_tpi = _percentile(per_item_times, 50)
+        p90_tpi = _percentile(per_item_times, 90)
+        p95_tpi = _percentile(per_item_times, 95)
+        p99_tpi = _percentile(per_item_times, 99)
 
         # Late tickets: completed after time_due
         late_count = 0
@@ -740,44 +774,26 @@ def aggregate_daily_kds_stats(
         result[d] = {
             "completed_tickets": completed_tickets,
             "completed_items": completed_items,
-            "avg_completion_time_sec": round(avg_completion_time, 1),
-            "avg_time_per_item_sec": round(avg_time_per_item, 1),
-            "median_time_per_item_sec": round(median_time_per_item, 1),
+            "median_time_per_item_sec": round(median_tpi, 1),
+            "p90_time_per_item_sec": round(p90_tpi, 1),
+            "p95_time_per_item_sec": round(p95_tpi, 1),
+            "p99_time_per_item_sec": round(p99_tpi, 1),
             "pct_tickets_late": round(pct_late, 4),
             "shift_start": shift_start,
             "shift_end": shift_end,
-            # Intermediates exposed so weekly/period rollups can recompute
-            # these metrics EXACTLY (pooled, not an average-of-averages):
-            #   pct_tickets_late = sum(late_tickets)/sum(due_tickets)
-            #   avg_time_per_item_sec = sum(time_per_item_sum_sec)/sum(time_per_item_count)
-            # (median across days is only approximable — see update_model_sheet).
-            # Daily values above are unchanged: avg == sum/count and
-            # pct == late/due, so these are pure additions.
+            # Exposed so weekly/period rollups recompute metrics EXACTLY by
+            # POOLING the raw item distributions (percentiles + over-goal share
+            # are not recoverable from daily summary stats — pct_tickets_late is
+            # exact via Σlate/Σdue):
             "late_tickets": late_count,
             "due_tickets": due_count,
-            "time_per_item_sum_sec": round(sum(time_per_item_values), 4),
-            "time_per_item_count": len(time_per_item_values),
+            "per_item_times": per_item_times,
         }
 
-    # Emit ZERO rows for dates that had tickets but ALL were filtered out, so a
-    # re-run overwrites stale inflated rows from a pre-cap aggregation. Counts
-    # and time intermediates are zero (the day had no real prep activity), so
-    # daily/weekly/period rollups contribute nothing for these dates.
+    # Emit ZERO rows for dates that had tickets but ALL were below the floor, so
+    # a re-run overwrites any stale row from an earlier (capped) aggregation.
     for d in sorted(dates_with_any_ticket - set(result)):
-        result[d] = {
-            "completed_tickets": 0,
-            "completed_items": 0,
-            "avg_completion_time_sec": 0.0,
-            "avg_time_per_item_sec": 0.0,
-            "median_time_per_item_sec": 0.0,
-            "pct_tickets_late": 0.0,
-            "shift_start": "",
-            "shift_end": "",
-            "late_tickets": 0,
-            "due_tickets": 0,
-            "time_per_item_sum_sec": 0.0,
-            "time_per_item_count": 0,
-        }
+        result[d] = _zero_row()
     return result
 
 

@@ -46,7 +46,7 @@ _INT_COLUMNS = {
     "punch_idx_in_day", "punch_count",
     "items_sold", "units_sold", "avg_item_price_cents",
     "completed_tickets", "completed_items",
-    "late_tickets", "due_tickets", "time_per_item_count",
+    "late_tickets", "due_tickets",
 }
 # Columns whose string value should become float. Hours and dollar amounts
 # typed as decimal.
@@ -54,12 +54,12 @@ _FLOAT_COLUMNS = {
     "regular_hours", "ot_hours", "doubletime_hours", "total_hours",
     "wage_rate_dollars", "ot_rate_dollars",
     "hours", "hourly_rate", "amount",
-    "avg_completion_time_sec", "avg_time_per_item_sec",
-    "median_time_per_item_sec", "pct_tickets_late",
-    "time_per_item_sum_sec",
+    "median_time_per_item_sec",
+    "p90_time_per_item_sec", "p95_time_per_item_sec", "p99_time_per_item_sec",
+    "pct_tickets_late",
 }
 _BOOL_COLUMNS = {"is_salaried", "multi_rate", "excluded_from_labor_pct"}
-_JSON_COLUMNS = {"rate_history_json", "raw_employee_names_json"}
+_JSON_COLUMNS = {"rate_history_json", "raw_employee_names_json", "per_item_times_json"}
 
 
 def _coerce_cell(col: str, raw: Any) -> Any:
@@ -83,7 +83,12 @@ def _coerce_cell(col: str, raw: Any) -> Any:
         return s.upper() == "TRUE"
     if col in _JSON_COLUMNS:
         if not s:
-            return [] if col.endswith("_names_json") or col == "rate_history_json" else None
+            return (
+                []
+                if col.endswith("_names_json")
+                or col in ("rate_history_json", "per_item_times_json")
+                else None
+            )
         try:
             return json.loads(s)
         except json.JSONDecodeError:
@@ -173,13 +178,15 @@ def read_raw_kds_daily(spreadsheet_id: str, *, account: str = "palmetto") -> lis
     """Return all rows of BHAGA Square Raw > kds_daily as list[dict].
 
     Each record: date_local, completed_tickets (int), completed_items (int),
-    avg_completion_time_sec (float), avg_time_per_item_sec (float),
-    median_time_per_item_sec (float), pct_tickets_late (float),
+    median_time_per_item_sec / p90_time_per_item_sec / p95_time_per_item_sec /
+    p99_time_per_item_sec (float), pct_tickets_late (float),
     shift_start (str HH:MM), shift_end (str HH:MM),
     late_tickets (int), due_tickets (int),
-    time_per_item_sum_sec (float), time_per_item_count (int), scraped_at_utc.
+    per_item_times_json (list[int]), scraped_at_utc.
 
-    The last four are intermediates that let weekly/period rollups recompute
-    pct_tickets_late and avg_time_per_item_sec EXACTLY (pooled across days).
+    late_tickets/due_tickets let weekly/period rollups recompute pct_tickets_late
+    EXACTLY (Σlate/Σdue), and per_item_times_json is the item-weighted per-item
+    seconds distribution that lets them pool TRUE percentiles +
+    kds_pct_items_over_goal across days.
     """
     return _read_raw_tab(spreadsheet_id, "BHAGA Square Raw", "kds_daily", account=account)

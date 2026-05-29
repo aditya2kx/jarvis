@@ -263,6 +263,62 @@ def _percent_column_indices(header: list) -> list[int]:
     return out
 
 
+def _seconds_column_indices(header: list) -> list[int]:
+    """Column indices (0-based) that hold per-item SECONDS values, by header name.
+
+    The KDS percentile/median columns (``*_time_per_item_sec``) are plain
+    seconds — NOT fractions. A prior sheet layout had percent columns at these
+    same indices, and clearing userEnteredFormat alone has proven unreliable at
+    wiping that stale PERCENT format (it survives on isolated rows, rendering
+    e.g. 83501s as "8350100.00%"). So we POSITIVELY assert a NUMBER format on
+    them in the post-write pass — same reliable mechanism as currency/percent —
+    which deterministically overrides any residual percent format.
+    """
+    return [
+        i for i, name in enumerate(header)
+        if str(name).strip().lower().endswith("time_per_item_sec")
+    ]
+
+
+def format_number_columns(
+    spreadsheet_id: str,
+    token: str,
+    *,
+    sheet_id: int,
+    column_indices: list[int],
+    start_row: int = 1,
+    pattern: str = "0.0",
+) -> None:
+    """Assert a plain NUMBER format on specified columns (0-indexed) from start_row down.
+
+    Analogous to format_currency_columns / format_percent_columns. Used to force
+    the KDS seconds columns to NUMBER so stale PERCENT formatting from a previous
+    layout can't leak through (the userEnteredFormat wipe in reset_number_format
+    is unreliable for this on isolated rows).
+    """
+    if not column_indices:
+        return
+    requests = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": start_row,
+                    "startColumnIndex": col,
+                    "endColumnIndex": col + 1,
+                },
+                "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": pattern}}},
+                "fields": "userEnteredFormat.numberFormat",
+            }
+        }
+        for col in column_indices
+    ]
+    _api(
+        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
+        token, method="POST", data={"requests": requests},
+    )
+
+
 def format_percent_columns(
     spreadsheet_id: str,
     token: str,
@@ -504,6 +560,50 @@ def _read_existing_labor_daily_forecast_exclude(
         if iso is None:
             continue
         out[iso] = _parse_sheet_bool(row[fe_i])
+    return out
+
+
+def _read_existing_forecast_target(
+    *, spreadsheet_id: str, store: str
+) -> dict[str, float]:
+    """Read the current labor_daily_forecast tab's date → target_time_per_item_sec map.
+
+    Lets the nightly rebuild PRESERVE operator-edited per-row staffing targets
+    instead of clobbering them with the config seed. Returns {} if the tab/column
+    is absent or unreachable (graceful degrade / first run).
+    """
+    out: dict[str, float] = {}
+    try:
+        token = refresh_access_token(store)
+        rng = urllib.parse.quote("labor_daily_forecast!A1:ZZ100000", safe="!:")
+        url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{rng}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [forecast-read] could not read existing target_time_per_item_sec (first run?): {exc}")
+        return out
+    values = data.get("values", [])
+    if not values:
+        return out
+    header = values[0]
+    if "date" not in header or "target_time_per_item_sec" not in header:
+        return out
+    date_i = header.index("date")
+    tgt_i = header.index("target_time_per_item_sec")
+    for row in values[1:]:
+        if len(row) <= max(date_i, tgt_i):
+            continue
+        iso = coerce_iso_date(row[date_i])
+        if iso is None:
+            continue
+        raw = str(row[tgt_i]).strip()
+        if not raw or raw.startswith("="):
+            continue
+        try:
+            out[iso] = float(raw)
+        except (ValueError, TypeError):
+            continue
     return out
 
 
@@ -771,9 +871,14 @@ def build_config_rows(
          labor_tunables.get("forecast_fulltime_weekly_hours", "40"),
          "Full-time (manager) weekly hour cap for forecast allocation."],
         ["forecast_target_completion_time_per_item_sec",
-         labor_tunables.get("forecast_target_completion_time_per_item_sec", "300"),
-         "Target prep time per item in seconds (5 min default). "
-         "Used by the KDS-based staffing solver to compute needed labor hours."],
+         labor_tunables.get(
+             "forecast_target_completion_time_per_item_sec",
+             str(profile.get("labor_config", {}).get(
+                 "forecast_target_completion_time_per_item_sec", 420)),
+         ),
+         "Flat staffing-solver target prep time per item in seconds (7 min default). "
+         "Drives forecast efficiency_hours (per forecast row) AND the operational "
+         "kds_pct_items_over_goal threshold. NOT derived from observed KDS."],
         ["forecast_outlier_window_weeks",
          labor_tunables.get("forecast_outlier_window_weeks", "8"),
          "Trailing window (weeks) of trend-aware residuals the robust outlier "
@@ -944,6 +1049,7 @@ def build_labor_daily_rows(
     existing_forecast_exclude: dict[str, bool] | None = None,
     outlier_window_weeks: float = 8,
     outlier_z_threshold: float = 2.5,
+    kds_goal_sec: float = 420.0,
 ) -> list[list]:
     """One row per day with labor cost / labor% computed from ADP wage rates.
 
@@ -1157,8 +1263,10 @@ def build_labor_daily_rows(
         "hourly_hours_per_order", "fulltime_hours_per_order",
         "hourly_hours_per_item", "fulltime_hours_per_item",
         "kds_completed_tickets", "kds_completed_items",
-        "kds_avg_time_per_item_sec", "kds_median_time_per_item_sec",
-        "kds_pct_tickets_late",
+        "kds_median_time_per_item_sec",
+        "kds_p90_time_per_item_sec", "kds_p95_time_per_item_sec",
+        "kds_p99_time_per_item_sec",
+        "kds_pct_items_over_goal", "kds_pct_tickets_late",
         # Forecast-input helper columns (appended last so weekly/period
         # builders that index labor_daily by fixed position are unaffected):
         #   outlier_flag     — Python-computed, BOTH directions; |robust_z| of
@@ -1246,19 +1354,31 @@ def build_labor_daily_rows(
         kds_day = kds_by_date.get(d, {})
         kds_tickets = kds_day.get("completed_tickets", "")
         # A day with zero completed KDS tickets (e.g. a closed day whose only
-        # tickets were left-open outliers dropped by the cap) carries no
-        # meaningful time metrics — blank them all so they read as "no data"
-        # rather than a misleading 0.0 (and so weekly/period don't aggregate a
-        # spurious zero). completed_tickets==0 comes through as the int 0.
+        # tickets were below the 15s floor) carries no meaningful time metrics
+        # — blank them all so they read as "no data" rather than a misleading
+        # 0.0 (and so weekly/period don't aggregate a spurious zero).
+        # completed_tickets==0 comes through as the int 0.
         _has_kds = bool(kds_tickets)
         kds_items = kds_day.get("completed_items", "") if _has_kds else ""
-        kds_avg_tpi = kds_day.get("avg_time_per_item_sec", "") if _has_kds else ""
         kds_med_tpi = kds_day.get("median_time_per_item_sec", "") if _has_kds else ""
+        kds_p90_tpi = kds_day.get("p90_time_per_item_sec", "") if _has_kds else ""
+        kds_p95_tpi = kds_day.get("p95_time_per_item_sec", "") if _has_kds else ""
+        kds_p99_tpi = kds_day.get("p99_time_per_item_sec", "") if _has_kds else ""
         kds_pct_late = kds_day.get("pct_tickets_late", "") if _has_kds else ""
         if isinstance(kds_pct_late, float) and kds_pct_late > 0:
             kds_pct_late = f"{kds_pct_late:.2%}"
         elif kds_pct_late == 0.0:
             kds_pct_late = "0.00%"
+        # kds_pct_items_over_goal: share of ITEMS whose per-item time exceeded
+        # the flat config goal. Computed HERE (model/config layer) from the raw
+        # item-weighted distribution so changing the goal recomputes on rebuild
+        # without re-backfilling kds_daily.
+        _per_item = kds_day.get("per_item_times_json", []) if _has_kds else []
+        if isinstance(_per_item, list) and _per_item:
+            _over = sum(1 for x in _per_item if float(x) > kds_goal_sec)
+            kds_pct_over = f"{(_over / len(_per_item)):.2%}"
+        else:
+            kds_pct_over = ""
 
         # Outlier + forecast_exclude (written as TRUE/FALSE text literals;
         # USER_ENTERED coerces them to native booleans / checkbox values).
@@ -1316,8 +1436,11 @@ def build_labor_daily_rows(
             round(b["ex_h"] / items_sold, 3) if items_sold > 0 else "",
             kds_tickets if kds_tickets else "",
             kds_items if kds_items else "",
-            round(kds_avg_tpi, 1) if isinstance(kds_avg_tpi, (int, float)) else "",
             round(kds_med_tpi, 1) if isinstance(kds_med_tpi, (int, float)) else "",
+            round(kds_p90_tpi, 1) if isinstance(kds_p90_tpi, (int, float)) else "",
+            round(kds_p95_tpi, 1) if isinstance(kds_p95_tpi, (int, float)) else "",
+            round(kds_p99_tpi, 1) if isinstance(kds_p99_tpi, (int, float)) else "",
+            kds_pct_over if kds_pct_over else "",
             kds_pct_late if kds_pct_late else "",
             _outlier_flag,
             _forecast_exclude,
@@ -1326,31 +1449,29 @@ def build_labor_daily_rows(
 
 
 class _KdsAccumulator:
-    """Pools daily KDS intermediates so weekly/period rows recompute the
-    three per-item/late metrics correctly (NOT an average-of-daily-averages).
+    """Pools daily KDS item distributions so weekly/period rows recompute the
+    per-item percentiles + over-goal share EXACTLY (NOT an average-of-averages).
 
     Exactness:
+      * median / p90 / p95 / p99 — EXACT: the per-day item-weighted per-item
+        seconds are POOLED (concatenated) and re-percentiled over the whole
+        week/period, which is a TRUE percentile of the pooled distribution.
+      * pct_items_over_goal = Σ(items over goal) / Σ(items)        — EXACT
       * pct_tickets_late = Σ(late_tickets) / Σ(due_tickets)        — EXACT
-      * avg_time_per_item_sec = Σ(time_per_item_sum_sec)
-                              / Σ(time_per_item_count)              — EXACT pooled mean
-      * median_time_per_item_sec = Σ(median_day × completed_items_day)
-                              / Σ(completed_items_day)              — APPROXIMATION
-        (a true median across days isn't recoverable from daily rollups;
-        this items-weighted average of daily medians is the best estimate).
 
     `add(date_iso)` folds in one day from the `kds_by_date` dict (no-op if the
-    date has no KDS row). `emit_*` return the rounded value or "" when the
-    relevant denominator is zero (avoids div-by-zero and blank-week noise).
+    date has no KDS row). `emit_*` return the rounded value / percent string, or
+    "" when there's no data (avoids div-by-zero and blank-week noise). The goal
+    for the over-goal share is the flat config target, injected by the caller.
     """
 
-    def __init__(self, kds_by_date: dict[str, dict]):
+    def __init__(self, kds_by_date: dict[str, dict], goal_sec: float):
         self._kds = kds_by_date or {}
+        self.goal = float(goal_sec)
         self.late = 0
         self.due = 0
-        self.tpi_sum = 0.0
-        self.tpi_count = 0
-        self.median_num = 0.0
-        self.median_items = 0
+        self.times: list[float] = []
+        self._sorted: list[float] | None = None
 
     def add(self, date_iso: str) -> None:
         k = self._kds.get(date_iso)
@@ -1358,28 +1479,43 @@ class _KdsAccumulator:
             return
         self.late += int(k.get("late_tickets", 0) or 0)
         self.due += int(k.get("due_tickets", 0) or 0)
-        self.tpi_sum += float(k.get("time_per_item_sum_sec", 0) or 0)
-        self.tpi_count += int(k.get("time_per_item_count", 0) or 0)
-        items = int(k.get("completed_items", 0) or 0)
-        median = float(k.get("median_time_per_item_sec", 0) or 0)
-        if items > 0 and median > 0:
-            self.median_num += median * items
-            self.median_items += items
+        pit = k.get("per_item_times_json")
+        if isinstance(pit, list) and pit:
+            self.times.extend(float(x) for x in pit)
+            self._sorted = None
+
+    def _sorted_times(self) -> list[float]:
+        if self._sorted is None:
+            self._sorted = sorted(self.times)
+        return self._sorted
+
+    def _emit_pct(self, q: float):
+        if not self.times:
+            return ""
+        return round(transactions_backend._percentile(self._sorted_times(), q), 1)
+
+    def emit_median_time_per_item(self):
+        return self._emit_pct(50)
+
+    def emit_p90_time_per_item(self):
+        return self._emit_pct(90)
+
+    def emit_p95_time_per_item(self):
+        return self._emit_pct(95)
+
+    def emit_p99_time_per_item(self):
+        return self._emit_pct(99)
+
+    def emit_pct_items_over_goal(self) -> str:
+        if not self.times:
+            return ""
+        over = sum(1 for x in self.times if x > self.goal)
+        return f"{(over / len(self.times)):.2%}"
 
     def emit_pct_late(self) -> str:
         if self.due <= 0:
             return ""
         return f"{(self.late / self.due):.2%}"
-
-    def emit_avg_time_per_item(self):
-        if self.tpi_count <= 0:
-            return ""
-        return round(self.tpi_sum / self.tpi_count, 1)
-
-    def emit_median_time_per_item(self):
-        if self.median_items <= 0:
-            return ""
-        return round(self.median_num / self.median_items, 1)
 
 
 def build_labor_period_rows(
@@ -1388,6 +1524,7 @@ def build_labor_period_rows(
     labor_daily_rows: list[list],
     saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD,
     kds_by_date: dict[str, dict] | None = None,
+    kds_goal_sec: float = 420.0,
 ) -> list[list]:
     """Aggregate labor_daily rows by pay period.
 
@@ -1445,8 +1582,10 @@ def build_labor_period_rows(
         "hourly_hours_per_order", "fulltime_hours_per_order",
         "hourly_hours_per_item", "fulltime_hours_per_item",
         "kds_completed_tickets", "kds_completed_items",
-        "kds_avg_time_per_item_sec", "kds_median_time_per_item_sec",
-        "kds_pct_tickets_late",
+        "kds_median_time_per_item_sec",
+        "kds_p90_time_per_item_sec", "kds_p95_time_per_item_sec",
+        "kds_p99_time_per_item_sec",
+        "kds_pct_items_over_goal", "kds_pct_tickets_late",
     ]
     if len(labor_daily_rows) <= 1:
         return [header]
@@ -1456,9 +1595,9 @@ def build_labor_period_rows(
     # disc=3, net=4, pool=5, net_plus_tips=6, orders=7, hourly_hours=8,
     # hourly_cost=9, fulltime_hours=10, fulltime_cost=11,
     # peak_hour_orders_per_labor_hour=25, items_sold=30, avg_item_price=33,
-    # KDS: kds_completed_tickets=38, kds_completed_items=39,
-    # kds_avg_time_per_item_sec=40, kds_median_time_per_item_sec=41,
-    # kds_pct_tickets_late=42.
+    # KDS: kds_completed_tickets=38, kds_completed_items=39 (the per-item
+    # percentile / over-goal / late metrics are POOLED from kds_by_date via
+    # _KdsAccumulator, not read from these fixed labor_daily positions).
     # `row[0]` is apostrophe-prefixed for Sheets text-literal rendering
     # (`'2026-05-20`); route through coerce_iso_date so the key matches
     # the plain ISO produced by `cursor.isoformat()` below.
@@ -1499,7 +1638,7 @@ def build_labor_period_rows(
         item_gross_sum = 0.0
         kds_tickets_sum = 0
         kds_items_sum = 0
-        kds = _KdsAccumulator(kds_by_date)
+        kds = _KdsAccumulator(kds_by_date, kds_goal_sec)
         peak_max: float | None = None
         cursor = datetime.date.fromisoformat(start)
         end_d = datetime.date.fromisoformat(end)
@@ -1586,9 +1725,12 @@ def build_labor_period_rows(
             round(ft_hours / items_sold_sum, 3) if items_sold_sum > 0 else "",
             kds_tickets_sum if kds_tickets_sum > 0 else "",
             kds_items_sum if kds_items_sum > 0 else "",
-            kds.emit_avg_time_per_item(),     # EXACT pooled mean
-            kds.emit_median_time_per_item(),  # APPROX (items-weighted daily medians)
-            kds.emit_pct_late(),              # EXACT Σlate/Σdue
+            kds.emit_median_time_per_item(),    # EXACT (pooled item distribution)
+            kds.emit_p90_time_per_item(),       # EXACT pooled p90
+            kds.emit_p95_time_per_item(),       # EXACT pooled p95
+            kds.emit_p99_time_per_item(),       # EXACT pooled p99
+            kds.emit_pct_items_over_goal(),     # EXACT Σitems_over_goal/Σitems
+            kds.emit_pct_late(),                # EXACT Σlate/Σdue
         ])
     return rows
 
@@ -1598,6 +1740,7 @@ def build_labor_weekly_rows(
     labor_daily_rows: list[list],
     saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD,
     kds_by_date: dict[str, dict] | None = None,
+    kds_goal_sec: float = 420.0,
 ) -> list[list]:
     """Aggregate labor_daily rows by ISO calendar week (Monday → Sunday).
 
@@ -1640,8 +1783,10 @@ def build_labor_weekly_rows(
         "hourly_hours_per_order", "fulltime_hours_per_order",
         "hourly_hours_per_item", "fulltime_hours_per_item",
         "kds_completed_tickets", "kds_completed_items",
-        "kds_avg_time_per_item_sec", "kds_median_time_per_item_sec",
-        "kds_pct_tickets_late",
+        "kds_median_time_per_item_sec",
+        "kds_p90_time_per_item_sec", "kds_p95_time_per_item_sec",
+        "kds_p99_time_per_item_sec",
+        "kds_pct_items_over_goal", "kds_pct_tickets_late",
     ]
     if len(labor_daily_rows) <= 1:
         return [header]
@@ -1702,7 +1847,7 @@ def build_labor_weekly_rows(
         item_gross_sum = 0.0
         kds_tickets_sum = 0
         kds_items_sum = 0
-        kds = _KdsAccumulator(kds_by_date)
+        kds = _KdsAccumulator(kds_by_date, kds_goal_sec)
         peak_max: float | None = None
         for iso_date in weeks[monday]:
             bucket = daily_by_date[iso_date]
@@ -1789,9 +1934,12 @@ def build_labor_weekly_rows(
             round(ft_hours / items_sold_sum, 3) if items_sold_sum > 0 else "",
             kds_tickets_sum if kds_tickets_sum > 0 else "",
             kds_items_sum if kds_items_sum > 0 else "",
-            kds.emit_avg_time_per_item(),     # EXACT pooled mean
-            kds.emit_median_time_per_item(),  # APPROX (items-weighted daily medians)
-            kds.emit_pct_late(),              # EXACT Σlate/Σdue
+            kds.emit_median_time_per_item(),    # EXACT (pooled item distribution)
+            kds.emit_p90_time_per_item(),       # EXACT pooled p90
+            kds.emit_p95_time_per_item(),       # EXACT pooled p95
+            kds.emit_p99_time_per_item(),       # EXACT pooled p99
+            kds.emit_pct_items_over_goal(),     # EXACT Σitems_over_goal/Σitems
+            kds.emit_pct_late(),                # EXACT Σlate/Σdue
         ])
     return rows
 
@@ -2263,6 +2411,25 @@ def main() -> int:
         except (ValueError, TypeError):
             pass
 
+    # Migrate the KDS/staffing target off the OLD 300s (5 min) default to the
+    # current flat default (420s = 7 min). Same one-time pattern as saturation:
+    # only bumps a value still at the old code default, never an intentional
+    # operator edit to some other number.
+    _tpi_key = "forecast_target_completion_time_per_item_sec"
+    _OLD_TPI_DEFAULT = 300.0
+    _new_tpi_default = float(
+        profile.get("labor_config", {}).get(_tpi_key, 420)
+    )
+    if _tpi_key in labor_tunables:
+        try:
+            _in_sheet_tpi = float(labor_tunables[_tpi_key])
+            if _in_sheet_tpi == _OLD_TPI_DEFAULT and _new_tpi_default != _OLD_TPI_DEFAULT:
+                labor_tunables[_tpi_key] = str(_new_tpi_default)
+                print(f"# migrating {_tpi_key}: in-sheet was {_in_sheet_tpi} "
+                      f"(old 5 min default), bumping to {_new_tpi_default} (7 min)")
+        except (ValueError, TypeError):
+            pass
+
     store_sat_default = profile.get("labor_config", {}).get(
         "saturation_orders_per_labor_hour", DEFAULT_SATURATION_THRESHOLD,
     )
@@ -2316,6 +2483,10 @@ def main() -> int:
     # the labor_daily auto-exclusion default and the forecast tab below.
     from core.config_loader import get_forecast_config
     forecast_config = get_forecast_config(config_rows)
+    # Flat config target doubles as the goal for kds_pct_items_over_goal — the
+    # operational "X% of items took > 7 min" metric. Injected here (model/config
+    # layer) so changing the goal recomputes on rebuild without re-backfilling.
+    kds_goal_sec = float(forecast_config["forecast_target_completion_time_per_item_sec"])
 
     labor_daily_rows = build_labor_daily_rows(
         txns=txns, shifts=shifts, wage_rates=wage_rates,
@@ -2326,16 +2497,19 @@ def main() -> int:
         existing_forecast_exclude=existing_forecast_exclude,
         outlier_window_weeks=forecast_config["forecast_outlier_window_weeks"],
         outlier_z_threshold=forecast_config["forecast_outlier_z_threshold"],
+        kds_goal_sec=kds_goal_sec,
     )
     labor_period_rows = build_labor_period_rows(
         periods=periods, labor_daily_rows=labor_daily_rows,
         saturation_threshold=saturation_threshold,
         kds_by_date=kds_by_date,
+        kds_goal_sec=kds_goal_sec,
     )
     labor_weekly_rows = build_labor_weekly_rows(
         labor_daily_rows=labor_daily_rows,
         saturation_threshold=saturation_threshold,
         kds_by_date=kds_by_date,
+        kds_goal_sec=kds_goal_sec,
     )
     period_rows = build_tip_alloc_period_rows(period_results)
     day_alloc_rows = build_tip_alloc_daily_rows(period_results, daily_summary)
@@ -2385,9 +2559,10 @@ def main() -> int:
     # items_sold=30 is a count; avg_items_per_order=31, hours_per_item=32 are ratios;
     # hourly_hours_per_order=34, fulltime_hours_per_order=35,
     # hourly_hours_per_item=36, fulltime_hours_per_item=37 are ratios;
-    # kds_completed_tickets=38 is a count; kds_completed_items=39 is a count;
-    # kds_avg_time_per_item_sec=40 is seconds; kds_median_time_per_item_sec=41;
-    # kds_pct_tickets_late=42 is a percentage string.)
+    # kds_completed_tickets=38, kds_completed_items=39 are counts;
+    # kds_median/p90/p95/p99_time_per_item_sec=40-43 are seconds;
+    # kds_pct_items_over_goal=44, kds_pct_tickets_late=45 are percentage strings
+    # — auto-detected by _percent_column_indices via the "pct" name heuristic.)
     labor_daily_currency = [2, 3, 4, 5, 6, 9, 11, 12, 21, 22, 23, 28, 29, 33]
     # labor_period adds 4 lead columns before the labor_daily layout, so
     # shift every labor_daily currency index by +2 (period header inserts
@@ -2407,11 +2582,20 @@ def main() -> int:
         backfill_forecast_errors,
     )
 
+    # Preserve operator-edited per-row target_time_per_item_sec from the
+    # existing forecast tab (same idiom as labor_daily forecast_exclude).
+    existing_target_by_date = _read_existing_forecast_target(
+        spreadsheet_id=model_sid, store=args.store,
+    )
+    if existing_target_by_date:
+        print(f"#   → preserved target_time_per_item_sec for "
+              f"{len(existing_target_by_date)} existing forecast rows")
     forecast_rows = build_labor_daily_forecast_rows(
         labor_daily_rows=labor_daily_rows,
         wage_rates=wage_rates,
         config=forecast_config,
         kds_by_date=kds_by_date,
+        existing_target_by_date=existing_target_by_date,
     )
     # Backfill error columns for past forecast rows where actuals now exist.
     # On the first run there are no past forecasts; on subsequent runs the
@@ -2477,6 +2661,16 @@ def main() -> int:
             format_percent_columns(
                 model_sid, token, sheet_id=sheet_id,
                 column_indices=percent_cols, start_row=1,
+            )
+        # Positively assert NUMBER format on the KDS *_time_per_item_sec columns
+        # so stale PERCENT formatting from a prior layout can't leak through
+        # (reset_number_format's userEnteredFormat wipe is unreliable for this
+        # on isolated rows — see _seconds_column_indices docstring).
+        seconds_cols = _seconds_column_indices(p["rows"][0])
+        if seconds_cols:
+            format_number_columns(
+                model_sid, token, sheet_id=sheet_id,
+                column_indices=seconds_cols, start_row=1,
             )
         auto_resize_columns(model_sid, token, sheet_id=sheet_id, num_cols=len(p["rows"][0]))
         if p.get("hidden_cols"):

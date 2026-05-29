@@ -146,9 +146,9 @@
   },
   "labor_config": {
     "saturation_orders_per_labor_hour": 4,
-    "kds_max_completion_time_sec": 3600,
+    "forecast_target_completion_time_per_item_sec": 420,
     "_doc": "Store-specific seed default. Palmetto's throughput wall is ~4 orders/hourly-labor-hour (one order every 15 labor-minutes per barista). The code default of 10 is for a generic fast-paced shop; Palmetto's specialty drinks take longer. Operator can still override in-sheet; subsequent refreshes preserve the in-sheet value.",
-    "_doc_kds_max_completion_time_sec": "Upper cap (seconds) on a KDS ticket's completion_time. Tickets above this are dropped from ALL daily KDS stats as left-open artifacts (closer forgot to bump the ticket → multi-hour 'completion'). Default 3600 (1h). Pairs with the implicit 15s lower bound in aggregate_daily_kds_stats."
+    "_doc_forecast_target_completion_time_per_item_sec": "Flat, configurable staffing-solver target (seconds per item) — 420 = 7 min/item. Drives forecast efficiency_hours and the operational kds_pct_items_over_goal threshold. Editable in-sheet (config tab) AND per forecast row (labor_daily_forecast.target_time_per_item_sec). NOT derived from observed KDS — observed KDS time is purely operational/observational and never feeds the solver."
   },
   "calibration": {
     "last_verified_utc": "2026-05-16T17:10:00Z",

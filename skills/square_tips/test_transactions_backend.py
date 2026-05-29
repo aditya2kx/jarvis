@@ -234,8 +234,8 @@ class ParseCsvMixedEncodingTests(unittest.TestCase):
         )
 
 
-class KdsCapTests(unittest.TestCase):
-    """Upper/lower outlier cap + stale-row overwrite for aggregate_daily_kds_stats."""
+class KdsAggregationTests(unittest.TestCase):
+    """Percentile-based KDS aggregation: no upper cap, full tail surfaced, no avg."""
 
     @staticmethod
     def _ticket(date, cts, num_items=2):
@@ -250,45 +250,75 @@ class KdsCapTests(unittest.TestCase):
             "time_due": None,
         }
 
-    def test_upper_cap_drops_left_open_tickets(self):
+    def test_no_upper_cap_tail_is_visible(self):
+        # The old behavior DROPPED multi-hour left-open tickets. Now there's NO
+        # upper cap: the ticket is KEPT and surfaces in the upper percentiles,
+        # while the median stays sane (robust to the tail).
         from skills.square_tips.transactions_backend import aggregate_daily_kds_stats
         tickets = [
-            self._ticket("2026-05-20", 300),    # 150s/item — kept
-            self._ticket("2026-05-20", 600),    # 300s/item — kept
-            self._ticket("2026-05-20", 80000),  # ~22h — dropped (left open)
+            self._ticket("2026-05-20", 300),    # 150s/item
+            self._ticket("2026-05-20", 600),    # 300s/item
+            self._ticket("2026-05-20", 80000),  # ~22h left-open — KEPT now
         ]
-        out = aggregate_daily_kds_stats(tickets, max_completion_sec=3600)
+        out = aggregate_daily_kds_stats(tickets)
         day = out["2026-05-20"]
-        self.assertEqual(day["completed_tickets"], 2)
-        # avg time-per-item over kept tickets = mean(150, 300) = 225, sane.
-        self.assertLess(day["avg_time_per_item_sec"], 3600)
-        self.assertAlmostEqual(day["avg_time_per_item_sec"], 225.0, places=1)
+        self.assertEqual(day["completed_tickets"], 3)
+        self.assertEqual(day["completed_items"], 6)  # 3 tickets × 2 items
+        # Median is item-weighted across {150,150,300,300,40000,40000}.
+        self.assertLessEqual(day["median_time_per_item_sec"], 40000)
+        # The tail IS visible: p99 reflects the left-open ticket.
+        self.assertGreater(day["p99_time_per_item_sec"], 1000)
+        # avg metric is gone entirely.
+        self.assertNotIn("avg_time_per_item_sec", day)
+        self.assertNotIn("avg_completion_time_sec", day)
 
-    def test_lower_bound_still_applies(self):
+    def test_lower_floor_still_applies(self):
         from skills.square_tips.transactions_backend import aggregate_daily_kds_stats
         tickets = [self._ticket("2026-05-20", 5), self._ticket("2026-05-20", 300)]
-        out = aggregate_daily_kds_stats(tickets, max_completion_sec=3600)
+        out = aggregate_daily_kds_stats(tickets)
         self.assertEqual(out["2026-05-20"]["completed_tickets"], 1)
 
-    def test_fully_filtered_day_emits_zero_row(self):
-        # A closed day whose ONLY tickets are multi-hour left-open artifacts
-        # must still emit a ZERO row so a re-run overwrites stale inflated data.
+    def test_per_item_times_are_item_weighted(self):
+        # Each ticket contributes num_items copies of its per-item time, so the
+        # stored distribution length == completed_items (true share-of-ITEMS).
         from skills.square_tips.transactions_backend import aggregate_daily_kds_stats
         tickets = [
-            self._ticket("2026-05-25", 63000),
-            self._ticket("2026-05-25", 71000),
+            self._ticket("2026-05-20", 600, num_items=3),  # 200s/item ×3
+            self._ticket("2026-05-20", 120, num_items=1),  # 120s/item ×1
         ]
-        out = aggregate_daily_kds_stats(tickets, max_completion_sec=3600)
-        self.assertIn("2026-05-25", out, "fully-filtered day vanished — stale row would persist")
+        day = aggregate_daily_kds_stats(tickets)["2026-05-20"]
+        self.assertEqual(day["completed_items"], 4)
+        self.assertEqual(day["per_item_times"], [120, 200, 200, 200])
+
+    def test_percentiles_known_distribution(self):
+        # 100 items (1 item/ticket), times 20..119s (all above the 15s floor) →
+        # numpy 'linear' / type-7: median 69.5, p90 109.1, p95 114.05, p99 118.01.
+        from skills.square_tips.transactions_backend import aggregate_daily_kds_stats
+        tickets = [self._ticket("2026-05-20", t, num_items=1) for t in range(20, 120)]
+        day = aggregate_daily_kds_stats(tickets)["2026-05-20"]
+        self.assertEqual(day["completed_tickets"], 100)
+        self.assertAlmostEqual(day["median_time_per_item_sec"], 69.5, places=1)
+        self.assertAlmostEqual(day["p90_time_per_item_sec"], 109.1, places=1)
+        self.assertAlmostEqual(day["p95_time_per_item_sec"], 114.05, places=1)
+        self.assertAlmostEqual(day["p99_time_per_item_sec"], 118.01, places=1)
+
+    def test_fully_floored_day_emits_zero_row(self):
+        # A day whose ONLY tickets are below the 15s floor still emits a ZERO
+        # row so a re-run overwrites any stale row.
+        from skills.square_tips.transactions_backend import aggregate_daily_kds_stats
+        tickets = [self._ticket("2026-05-25", 3), self._ticket("2026-05-25", 8)]
+        out = aggregate_daily_kds_stats(tickets)
+        self.assertIn("2026-05-25", out, "fully-floored day vanished — stale row would persist")
         day = out["2026-05-25"]
         self.assertEqual(day["completed_tickets"], 0)
-        self.assertEqual(day["avg_time_per_item_sec"], 0.0)
         self.assertEqual(day["median_time_per_item_sec"], 0.0)
-        self.assertEqual(day["time_per_item_count"], 0)
+        self.assertEqual(day["p99_time_per_item_sec"], 0.0)
+        self.assertEqual(day["per_item_times"], [])
 
-    def test_default_cap_is_one_hour(self):
-        from skills.square_tips.transactions_backend import KDS_MAX_COMPLETION_SEC
-        self.assertEqual(KDS_MAX_COMPLETION_SEC, 3600)
+    def test_no_cap_constant_remains(self):
+        # The configurable 1h cap is removed entirely.
+        import skills.square_tips.transactions_backend as tb
+        self.assertFalse(hasattr(tb, "KDS_MAX_COMPLETION_SEC"))
 
 
 if __name__ == "__main__":

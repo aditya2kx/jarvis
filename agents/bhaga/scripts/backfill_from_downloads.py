@@ -433,18 +433,11 @@ def main() -> int:
             kds_tickets = [t for t in kds_tickets if _in_window(t["date_local"])]
             print(f"  parsed {len(kds_tickets)} KDS tickets")
 
-            # Upper cap for left-open KDS tickets (closer forgot to bump the
-            # ticket → multi-hour "completion" that inflates time/late metrics).
-            # Store-profile-configurable; defaults to 1h if absent.
-            kds_max_sec = float(
-                profile.get("labor_config", {}).get(
-                    "kds_max_completion_time_sec",
-                    transactions_backend.KDS_MAX_COMPLETION_SEC,
-                )
-            )
-            kds_daily = transactions_backend.aggregate_daily_kds_stats(
-                kds_tickets, max_completion_sec=kds_max_sec,
-            )
+            # No upper cap: KDS is a purely operational-efficiency metric (it
+            # never feeds the staffing solver), so we surface the full tail via
+            # percentiles. Only the 15s lower floor inside aggregate_daily_kds_stats
+            # applies.
+            kds_daily = transactions_backend.aggregate_daily_kds_stats(kds_tickets)
             kds_rollups = [
                 {"date_local": d, **stats} for d, stats in sorted(kds_daily.items())
             ]

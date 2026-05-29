@@ -178,6 +178,10 @@ _JSON_COLUMNS = {
     "rate_history_json",
     "raw_employee_names_json",
     "employee_aliases_json",
+    # kds_daily: the item-weighted per-item-seconds distribution, JSON-encoded
+    # from record["per_item_times"] so weekly/period rollups pool it for EXACT
+    # percentiles + kds_pct_items_over_goal.
+    "per_item_times_json",
 }
 
 
@@ -503,9 +507,10 @@ def write_raw_kds_daily(
 
     Source records come from
     transactions_backend.aggregate_daily_kds_stats(). Each record carries
-    completed_tickets, completed_items, avg_completion_time_sec,
-    avg_time_per_item_sec, median_time_per_item_sec, pct_tickets_late,
-    shift_start, and shift_end for one shop-local day.
+    completed_tickets, completed_items, median/p90/p95/p99_time_per_item_sec,
+    pct_tickets_late, shift_start, shift_end, late_tickets, due_tickets, and
+    per_item_times (a list[int] JSON-encoded into per_item_times_json) for one
+    shop-local day.
     """
     return _upsert_tab(
         spreadsheet_id, "BHAGA Square Raw", "kds_daily", rollups,

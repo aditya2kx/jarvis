@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from agents.bhaga.scripts.forecast import (
     FORECAST_COLUMNS,
     _IDX,
+    _col_letter as _col,
     backfill_forecast_errors,
     build_labor_daily_forecast_rows,
     compute_outlier_stats,
@@ -92,7 +93,7 @@ def _wage_rates() -> list[dict]:
 _CONFIG = {
     "forecast_target_labor_pct": 0.25,
     "forecast_fulltime_weekly_hours": 40,
-    "forecast_target_completion_time_per_item_sec": 300,
+    "forecast_target_completion_time_per_item_sec": 420,
 }
 
 
@@ -257,16 +258,43 @@ class BuildForecastGridTests(unittest.TestCase):
         self.assertEqual(len(grid) - 1, 14)  # 14-day horizon
         r2 = grid[1]
         # derived columns are formulas referencing sheet row 2
-        self.assertEqual(r2[_IDX["net_sales"]], "=C2*H2")
+        self.assertEqual(r2[_IDX["net_sales"]], "=C2*I2")
         self.assertEqual(r2[_IDX["gross_sales"]], "=P2+Q2")
         self.assertEqual(r2[_IDX["needed_hours"]], "=MAX(U2,V2)")
         self.assertTrue(r2[_IDX["staffing_flag"]].startswith('=IF(W2>Y2,"BUDGET_CONFLICT"'))
         # row 3 references row 3
-        self.assertEqual(grid[2][_IDX["net_sales"]], "=C3*H3")
+        self.assertEqual(grid[2][_IDX["net_sales"]], "=C3*I3")
         # inputs are values, not formulas
         self.assertNotIsInstance(r2[_IDX["orders"]], str)  # int
         self.assertEqual(r2[_IDX["forecast_exclude"]], "FALSE")
         self.assertEqual(r2[_IDX["target_labor_pct"]], 0.25)
+        # target_time_per_item_sec is a per-row INPUT VALUE seeded from config
+        # (420 = 7 min), NOT a formula, and efficiency_hours references it.
+        self.assertNotIsInstance(r2[_IDX["target_time_per_item_sec"]], str)
+        self.assertEqual(r2[_IDX["target_time_per_item_sec"]], 420.0)
+        self.assertEqual(
+            r2[_IDX["efficiency_hours"]],
+            f"={_col(_IDX['items_sold'])}2*{_col(_IDX['target_time_per_item_sec'])}2/3600",
+        )
+
+    def test_per_row_target_preserves_operator_edits(self):
+        # An operator edit to target_time_per_item_sec on a given date must
+        # survive the rebuild instead of being reset to the config seed.
+        grid0 = build_labor_daily_forecast_rows(
+            labor_daily_rows=_labor_daily_grid(),
+            wage_rates=_wage_rates(),
+            config=_CONFIG,
+        )
+        edited_date = coerce_iso_date(grid0[1][_IDX["date"]])
+        grid = build_labor_daily_forecast_rows(
+            labor_daily_rows=_labor_daily_grid(),
+            wage_rates=_wage_rates(),
+            config=_CONFIG,
+            existing_target_by_date={edited_date: 600.0},
+        )
+        self.assertEqual(grid[1][_IDX["target_time_per_item_sec"]], 600.0)
+        # Untouched rows keep the 420 seed.
+        self.assertEqual(grid[2][_IDX["target_time_per_item_sec"]], 420.0)
 
     def test_horizon_anchors_on_last_actual_not_last_unflagged(self):
         # Flag the most recent 3 operating days forecast_exclude=TRUE (as a

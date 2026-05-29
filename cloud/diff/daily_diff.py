@@ -90,8 +90,11 @@ IGNORED_COLUMNS = frozenset({
     "fulltime_hours_per_item",
     "kds_completed_tickets",
     "kds_completed_items",
-    "kds_avg_time_per_item_sec",
     "kds_median_time_per_item_sec",
+    "kds_p90_time_per_item_sec",
+    "kds_p95_time_per_item_sec",
+    "kds_p99_time_per_item_sec",
+    "kds_pct_items_over_goal",
     "kds_pct_tickets_late",
 })
 

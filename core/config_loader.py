@@ -204,7 +204,11 @@ def load_env(path):
 _FORECAST_DEFAULTS = {
     "forecast_target_labor_pct": 0.25,
     "forecast_fulltime_weekly_hours": 40,
-    "forecast_target_completion_time_per_item_sec": 300,
+    # Flat, configurable staffing-solver target — NOT derived from observed KDS.
+    # 420s = 7 min/item (bumped from the old 300s/5 min default). Also editable
+    # per forecast row via the labor_daily_forecast `target_time_per_item_sec`
+    # input column, and reused as the goal for the operational kds_pct_items_over_goal metric.
+    "forecast_target_completion_time_per_item_sec": 420,
     # Trend-aware robust outlier detection (replaces the old flat 25% rule).
     "forecast_outlier_window_weeks": 8,
     "forecast_outlier_z_threshold": 2.5,
@@ -221,7 +225,7 @@ def get_forecast_config(config_rows: list[list] | None = None) -> dict:
     Returns dict with keys:
         forecast_target_labor_pct (float, default 0.25)
         forecast_fulltime_weekly_hours (float, default 40)
-        forecast_target_completion_time_per_item_sec (float, default 300)
+        forecast_target_completion_time_per_item_sec (float, default 420 = 7 min/item)
         forecast_outlier_window_weeks (float, default 8) — trailing window of
             residuals the robust-z dispersion (median/MAD) is computed over.
         forecast_outlier_z_threshold (float, default 2.5) — |robust_z| beyond

@@ -119,18 +119,24 @@ WORKBOOK_SCHEMAS: dict[str, list[dict]] = {
             "natural_key_columns": ("date_local",),
             "header": [
                 "date_local", "completed_tickets", "completed_items",
-                "avg_completion_time_sec", "avg_time_per_item_sec",
-                "median_time_per_item_sec", "pct_tickets_late",
+                "median_time_per_item_sec",
+                "p90_time_per_item_sec", "p95_time_per_item_sec",
+                "p99_time_per_item_sec",
+                "pct_tickets_late",
                 "shift_start", "shift_end",
                 "late_tickets", "due_tickets",
-                "time_per_item_sum_sec", "time_per_item_count",
+                "per_item_times_json",
                 "scraped_at_utc",
             ],
             "notes": (
-                "Per-shop-local-day KDS performance aggregates. Source: "
+                "Per-shop-local-day KDS OPERATIONAL-EFFICIENCY aggregates. Source: "
                 "skills/square_tips/transactions_backend.aggregate_daily_kds_stats. "
-                "Natural key: (date_local,). Filters outlier tickets with "
-                "completion_time < 15s (KDS cleared without actual prep)."
+                "Natural key: (date_local,). Only filter is the 15s lower floor "
+                "(KDS cleared without actual prep) — NO upper cap, the full tail is "
+                "surfaced (p90/p95/p99). per_item_times_json is the item-weighted "
+                "per-item-seconds distribution so weekly/period rollups pool it for "
+                "EXACT percentiles + kds_pct_items_over_goal. avg_time_per_item_sec "
+                "was removed (percentiles + median replace it)."
             ),
         },
     ],

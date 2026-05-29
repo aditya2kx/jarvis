@@ -44,7 +44,13 @@ Layout (one row per forecast day = [frozen past window] + [~14 future days]):
   ACCURACY (Python-backfilled once a forecast day has a realized actual)
     forecast_generated_at | orders_error_pct | items_sold_error_pct |
     net_sales_error_pct | fulltime_hours_error_pct | hourly_hours_error_pct |
-    avg_order_price_error_pct | realized_labor_pct | forecast_mape
+    avg_order_price_error_pct | realized_labor_pct | total_hourly_labor_pct |
+    forecast_mape
+
+  realized_labor_pct = actual total_labor_cost / actual net_sales (ALL labor);
+  total_hourly_labor_pct = actual hourly_labor_cost / actual net_sales (the
+  REALIZED part-time-only counterpart, the actual analogue of the live
+  hourly_labor_pct formula).
 
 Public API:
     build_labor_daily_forecast_rows(...)   -> grid (header + formula rows)
@@ -90,7 +96,8 @@ FORECAST_COLUMNS: list[str] = [
     "forecast_generated_at",
     "orders_error_pct", "items_sold_error_pct", "net_sales_error_pct",
     "fulltime_hours_error_pct", "hourly_hours_error_pct",
-    "avg_order_price_error_pct", "realized_labor_pct", "forecast_mape",
+    "avg_order_price_error_pct", "realized_labor_pct", "total_hourly_labor_pct",
+    "forecast_mape",
 ]
 
 # Number of trailing PAST calendar days kept FROZEN in the forecast tab so
@@ -890,6 +897,7 @@ def backfill_forecast_errors(
     c_net = _col("net_sales", 4)
     c_orders = _col("orders", 7)
     c_hourly_h = _col("hourly_hours", 8)
+    c_hourly_cost = _col("hourly_labor_cost", 9)
     c_ft_h = _col("fulltime_hours", 10)
     c_total_cost = _col("total_labor_cost", 12)
     c_items = _col("items_sold", 30)
@@ -916,6 +924,7 @@ def backfill_forecast_errors(
             "items_sold": _ld_int(row, c_items),
             "fulltime_hours": _ld_float(row, c_ft_h),
             "hourly_hours": _ld_float(row, c_hourly_h),
+            "hourly_labor_cost": _ld_float(row, c_hourly_cost),
             "total_labor_cost": _ld_float(row, c_total_cost),
         }
 
@@ -975,6 +984,15 @@ def backfill_forecast_errors(
         if actual["net_sales"] > 0:
             realized = round(actual["total_labor_cost"] / actual["net_sales"], 4)
         row[idx["realized_labor_pct"]] = realized
+
+        # Realized hourly (part-time-only) labor% — actual hourly_labor_cost
+        # (read straight from labor_daily by name, the same cost the rest of
+        # the forecast values hourly labor at) over actual net_sales. Same
+        # zero-net guard as realized_labor_pct.
+        total_hourly = ""
+        if actual["net_sales"] > 0:
+            total_hourly = round(actual["hourly_labor_cost"] / actual["net_sales"], 4)
+        row[idx["total_hourly_labor_pct"]] = total_hourly
 
         mape_vals = []
         for a, f in [

@@ -494,9 +494,23 @@ class FreezeInPlaceTests(unittest.TestCase):
         self.assertNotEqual(frozen[_IDX["net_sales_error_pct"]], "")
         self.assertNotEqual(frozen[_IDX["realized_labor_pct"]], "")
         self.assertNotEqual(frozen[_IDX["forecast_mape"]], "")
+        # Realized hourly labor% = actual hourly_labor_cost / actual net_sales.
+        # _labor_daily_grid: hourly_labor_cost=120, net=orders*9.
+        self.assertNotEqual(frozen[_IDX["total_hourly_labor_pct"]], "")
+        d = datetime.date.fromisoformat(last_actual)
+        net = (100 + d.weekday() * 10) * 9.0
+        self.assertAlmostEqual(
+            frozen[_IDX["total_hourly_labor_pct"]], round(120.0 / net, 4)
+        )
+        # It is the hourly (part-time-only) slice, so strictly below the
+        # all-labor realized_labor_pct (which also carries Lindsay's cost).
+        self.assertLess(
+            frozen[_IDX["total_hourly_labor_pct"]], frozen[_IDX["realized_labor_pct"]]
+        )
         # Future rows stay blank (no actual, derived still formulas).
         future = out[2]
         self.assertEqual(future[_IDX["orders_error_pct"]], "")
+        self.assertEqual(future[_IDX["total_hourly_labor_pct"]], "")
         self.assertTrue(str(future[_IDX["net_sales"]]).startswith("="))
 
     def test_future_only_when_no_existing_tab(self):
@@ -550,6 +564,8 @@ class BackfillColumnResolutionTests(unittest.TestCase):
         # Name resolution found the right columns → non-blank, sane errors.
         self.assertNotEqual(frozen[_IDX["net_sales_error_pct"]], "")
         self.assertNotEqual(frozen[_IDX["realized_labor_pct"]], "")
+        # total_hourly_labor_pct also resolved hourly_labor_cost BY NAME.
+        self.assertNotEqual(frozen[_IDX["total_hourly_labor_pct"]], "")
         # realized_labor_pct = total_labor_cost / net_sales from the actual.
         # _labor_daily_grid: orders=100+dow*10, net=orders*9, total=270.
         d = datetime.date.fromisoformat(last_actual)

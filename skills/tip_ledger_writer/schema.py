@@ -122,6 +122,8 @@ WORKBOOK_SCHEMAS: dict[str, list[dict]] = {
                 "avg_completion_time_sec", "avg_time_per_item_sec",
                 "median_time_per_item_sec", "pct_tickets_late",
                 "shift_start", "shift_end",
+                "late_tickets", "due_tickets",
+                "time_per_item_sum_sec", "time_per_item_count",
                 "scraped_at_utc",
             ],
             "notes": (

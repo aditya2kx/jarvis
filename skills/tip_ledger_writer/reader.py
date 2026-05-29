@@ -46,6 +46,7 @@ _INT_COLUMNS = {
     "punch_idx_in_day", "punch_count",
     "items_sold", "units_sold", "avg_item_price_cents",
     "completed_tickets", "completed_items",
+    "late_tickets", "due_tickets", "time_per_item_count",
 }
 # Columns whose string value should become float. Hours and dollar amounts
 # typed as decimal.
@@ -55,6 +56,7 @@ _FLOAT_COLUMNS = {
     "hours", "hourly_rate", "amount",
     "avg_completion_time_sec", "avg_time_per_item_sec",
     "median_time_per_item_sec", "pct_tickets_late",
+    "time_per_item_sum_sec",
 }
 _BOOL_COLUMNS = {"is_salaried", "multi_rate", "excluded_from_labor_pct"}
 _JSON_COLUMNS = {"rate_history_json", "raw_employee_names_json"}
@@ -173,6 +175,11 @@ def read_raw_kds_daily(spreadsheet_id: str, *, account: str = "palmetto") -> lis
     Each record: date_local, completed_tickets (int), completed_items (int),
     avg_completion_time_sec (float), avg_time_per_item_sec (float),
     median_time_per_item_sec (float), pct_tickets_late (float),
-    shift_start (str HH:MM), shift_end (str HH:MM), scraped_at_utc.
+    shift_start (str HH:MM), shift_end (str HH:MM),
+    late_tickets (int), due_tickets (int),
+    time_per_item_sum_sec (float), time_per_item_count (int), scraped_at_utc.
+
+    The last four are intermediates that let weekly/period rollups recompute
+    pct_tickets_late and avg_time_per_item_sec EXACTLY (pooled across days).
     """
     return _read_raw_tab(spreadsheet_id, "BHAGA Square Raw", "kds_daily", account=account)

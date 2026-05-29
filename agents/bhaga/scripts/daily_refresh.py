@@ -470,6 +470,125 @@ MODEL_VERIFY_MIN_ROWS: dict[str, int] = {
 # Header used to confirm KDS columns made it into the model's labor tabs.
 _KDS_MODEL_COLUMN_HEADER = "kds_completed_tickets"
 
+# Per-item / late KDS metrics that MUST populate at weekly + period grain for
+# rows overlapping KDS coverage (Workstream A). These were previously blanked
+# at weekly/period grain; the verification now guards against that regression.
+_KDS_PERIODIC_METRIC_HEADERS = (
+    "kds_avg_time_per_item_sec",
+    "kds_median_time_per_item_sec",
+    "kds_pct_tickets_late",
+)
+# Date-boundary column names per tab, used to test KDS-coverage overlap.
+_PERIODIC_DATE_COLS = {
+    "labor_weekly": ("week_start", "week_end"),
+    "labor_period": ("pay_period_start", "pay_period_end"),
+}
+
+
+def _parse_sheet_iso_date(cell: object) -> str | None:
+    """Normalize a sheet date cell to a plain ISO ``YYYY-MM-DD`` string.
+
+    Model-sheet date cells are written apostrophe-prefixed as text literals
+    (e.g. ``'2026-05-04``); read back via the values API they come through
+    without the apostrophe but we strip it defensively. Returns None if the
+    first 10 chars aren't a parseable ISO date.
+    """
+    s = str(cell or "").strip().lstrip("'").strip()
+    if len(s) < 10:
+        return None
+    candidate = s[:10]
+    try:
+        datetime.date.fromisoformat(candidate)
+    except (ValueError, TypeError):
+        return None
+    return candidate
+
+
+def check_weekly_period_kds(
+    *,
+    weekly_values: list[list] | None,
+    period_values: list[list] | None,
+    kds_min_date: str | None,
+    kds_max_date: str | None,
+) -> list[str]:
+    """Pure check: weekly/period rows overlapping KDS coverage must carry the
+    three per-item/late KDS metrics (Workstream A).
+
+    For each row whose [start, end] window overlaps the KDS-covered date range
+    ``[kds_min_date, kds_max_date]`` AND that already shows KDS throughput
+    (``kds_completed_items`` non-empty), assert that
+    ``kds_avg_time_per_item_sec``, ``kds_median_time_per_item_sec`` and
+    ``kds_pct_tickets_late`` are all non-empty. This is exactly the regression
+    where those columns were hard-blanked at weekly/period grain.
+
+    Rows entirely BEFORE KDS coverage (KDS started 2026-04-24) have empty
+    throughput and don't overlap, so they're skipped — no false positives.
+
+    Also asserts that at least ONE overlapping row was actually checked in each
+    tab (otherwise the whole KDS→weekly/period join silently produced nothing).
+
+    Pure function (no I/O) so it's unit-testable without Sheets. Returns a list
+    of problem strings (empty when healthy). When ``kds_min_date`` /
+    ``kds_max_date`` are None (coverage unknown), returns [] (treated as
+    "can't check", not "failed").
+    """
+    if not kds_min_date or not kds_max_date:
+        return []
+    problems: list[str] = []
+    for tab, values in (("labor_weekly", weekly_values), ("labor_period", period_values)):
+        if not values:
+            problems.append(f"{tab}: tab unreadable for weekly/period KDS check")
+            continue
+        header = values[0]
+
+        def _idx(name: str) -> int:
+            try:
+                return header.index(name)
+            except ValueError:
+                return -1
+
+        start_name, end_name = _PERIODIC_DATE_COLS[tab]
+        si, ei = _idx(start_name), _idx(end_name)
+        items_i = _idx(_KDS_MODEL_COLUMN_HEADER.replace("tickets", "items"))  # kds_completed_items
+        metric_idx = {m: _idx(m) for m in _KDS_PERIODIC_METRIC_HEADERS}
+        missing_cols = [
+            n for n, i in (
+                [(start_name, si), (end_name, ei), ("kds_completed_items", items_i)]
+                + [(m, metric_idx[m]) for m in _KDS_PERIODIC_METRIC_HEADERS]
+            ) if i < 0
+        ]
+        if missing_cols:
+            problems.append(f"{tab}: missing expected columns {missing_cols}")
+            continue
+
+        checked = 0
+        for row in values[1:]:
+            def _cell(i: int) -> str:
+                return str(row[i]).strip() if 0 <= i < len(row) else ""
+
+            start = _parse_sheet_iso_date(_cell(si))
+            end = _parse_sheet_iso_date(_cell(ei))
+            if not start or not end:
+                continue
+            overlaps = end >= kds_min_date and start <= kds_max_date
+            has_items = _cell(items_i) != ""
+            if not (overlaps and has_items):
+                continue
+            checked += 1
+            empties = [m for m in _KDS_PERIODIC_METRIC_HEADERS if _cell(metric_idx[m]) == ""]
+            if empties:
+                problems.append(
+                    f"{tab}: row {start}..{end} has KDS items but empty "
+                    f"{', '.join(empties)}"
+                )
+        if checked == 0:
+            problems.append(
+                f"{tab}: no KDS-overlapping rows had populated metrics "
+                f"(expected weekly/period KDS to populate for dates within "
+                f"{kds_min_date}..{kds_max_date})"
+            )
+    return problems
+
 
 def assert_model_tabs_populated(
     *,
@@ -477,6 +596,10 @@ def assert_model_tabs_populated(
     expect_kds: bool,
     raw_kds_row_count: int | None = None,
     model_kds_columns_nonempty: bool | None = None,
+    weekly_values: list[list] | None = None,
+    period_values: list[list] | None = None,
+    kds_min_date: str | None = None,
+    kds_max_date: str | None = None,
     min_rows: dict[str, int] | None = None,
 ) -> None:
     """Pure guard: raise RuntimeError if the rebuilt model is under-populated.
@@ -490,6 +613,12 @@ def assert_model_tabs_populated(
         model_kds_columns_nonempty: True/False whether the model's
             labor_daily KDS columns have at least one non-empty value, or
             None if not read. Only consulted when ``expect_kds``.
+        weekly_values / period_values: full labor_weekly / labor_period grids
+            (header + rows) read back from the model, or None if not read.
+            Only consulted when ``expect_kds`` together with kds_min/max.
+        kds_min_date / kds_max_date: ISO bounds of KDS-covered dates (from the
+            raw kds_daily tab), or None when coverage is unknown. Used to scope
+            the weekly/period KDS assertion to overlapping rows only.
         min_rows: override of MODEL_VERIFY_MIN_ROWS (for tests).
 
     Pure function — no I/O — so the contract can be unit-tested without
@@ -513,6 +642,18 @@ def assert_model_tabs_populated(
             problems.append(
                 "labor_daily: KDS columns are entirely empty but KDS data "
                 "was expected — model did not join KDS into labor tabs"
+            )
+        # Weekly + period grain KDS metrics (Workstream A regression guard).
+        # Only runs when we actually read the grids back AND know KDS coverage;
+        # otherwise it's a no-op (coverage unknown → can't false-positive).
+        if weekly_values is not None or period_values is not None:
+            problems.extend(
+                check_weekly_period_kds(
+                    weekly_values=weekly_values,
+                    period_values=period_values,
+                    kds_min_date=kds_min_date,
+                    kds_max_date=kds_max_date,
+                )
             )
     if problems:
         raise RuntimeError(
@@ -556,18 +697,29 @@ def _read_model_verification_data(
     store: str,
     raw_square_sid: str,
     expect_kds: bool,
-) -> tuple[dict[str, int], bool | None, int | None]:
+) -> dict:
     """Read back the model (and raw KDS) for verification.
 
-    Returns ``(tab_row_counts, model_kds_columns_nonempty, raw_kds_row_count)``.
-    The latter two are None when ``expect_kds`` is False or the raw KDS tab
+    Returns a dict with keys:
+        tab_row_counts            : {tab_name: data_row_count}
+        model_kds_columns_nonempty: bool | None (labor_daily KDS join present)
+        raw_kds_row_count         : int | None (raw kds_daily data rows)
+        weekly_values             : list[list] | None (labor_weekly grid)
+        period_values             : list[list] | None (labor_period grid)
+        kds_min_date / kds_max_date: ISO bounds of KDS-covered dates, or None
+
+    All KDS-specific values are None when ``expect_kds`` is False or the source
     can't be read (treated as "unknown", not "failed", by the assertion).
     """
     token = refresh_access_token(store)
     tabs = list(MODEL_VERIFY_MIN_ROWS.keys())
     ranges = [f"{t}!A1:A100000" for t in tabs]
+    # When KDS is expected, also pull the full grids needed for the weekly /
+    # period KDS-metric assertion (labor_daily for the existing join check,
+    # labor_weekly + labor_period for the new per-item/late check).
+    kds_grid_tabs = ["labor_daily", "labor_weekly", "labor_period"]
     if expect_kds:
-        ranges.append("labor_daily!A1:ZZ100000")
+        ranges.extend(f"{t}!A1:ZZ100000" for t in kds_grid_tabs)
     data = _sheets_batch_get(spreadsheet_id, token, ranges)
     value_ranges = data.get("valueRanges", [])
 
@@ -577,22 +729,47 @@ def _read_model_verification_data(
         counts[t] = max(len(vals) - 1, 0)
 
     model_kds_nonempty: bool | None = None
-    if expect_kds and len(value_ranges) > len(tabs):
-        full = value_ranges[len(tabs)].get("values", [])
-        model_kds_nonempty = _labor_daily_has_kds(full)
+    weekly_values: list[list] | None = None
+    period_values: list[list] | None = None
+    if expect_kds and len(value_ranges) >= len(tabs) + len(kds_grid_tabs):
+        grids = value_ranges[len(tabs):len(tabs) + len(kds_grid_tabs)]
+        labor_daily_full = grids[0].get("values", [])
+        weekly_values = grids[1].get("values", [])
+        period_values = grids[2].get("values", [])
+        model_kds_nonempty = _labor_daily_has_kds(labor_daily_full)
 
     raw_kds_count: int | None = None
+    kds_min_date: str | None = None
+    kds_max_date: str | None = None
     if expect_kds:
         try:
             raw = _sheets_batch_get(raw_square_sid, token, ["kds_daily!A1:A100000"])
             rkv = (raw.get("valueRanges") or [{}])[0].get("values", [])
             raw_kds_count = max(len(rkv) - 1, 0)
+            # Column A of kds_daily is date_local (plain ISO). Derive the
+            # KDS-covered date range so the weekly/period assertion only fires
+            # for overlapping rows (KDS coverage starts 2026-04-24).
+            kds_dates = [
+                d for d in (_parse_sheet_iso_date(r[0]) for r in rkv[1:] if r)
+                if d is not None
+            ]
+            if kds_dates:
+                kds_min_date = min(kds_dates)
+                kds_max_date = max(kds_dates)
         except Exception as exc:  # noqa: BLE001
             print(f"  [verify_model] could not read raw kds_daily (treating "
                   f"as unknown): {exc}")
             raw_kds_count = None
 
-    return counts, model_kds_nonempty, raw_kds_count
+    return {
+        "tab_row_counts": counts,
+        "model_kds_columns_nonempty": model_kds_nonempty,
+        "raw_kds_row_count": raw_kds_count,
+        "weekly_values": weekly_values,
+        "period_values": period_values,
+        "kds_min_date": kds_min_date,
+        "kds_max_date": kds_max_date,
+    }
 
 
 def _adp_bundle_then_raise(
@@ -1437,23 +1614,31 @@ def main() -> int:
         expect_kds = not args.skip_kds
         try:
             raw_square_sid = resolve_sheet_id("bhaga_square_raw", profile)
-            counts, model_kds_nonempty, raw_kds_count = _read_model_verification_data(
+            vdata = _read_model_verification_data(
                 spreadsheet_id=spreadsheet_id,
                 store=args.store,
                 raw_square_sid=raw_square_sid,
                 expect_kds=expect_kds,
             )
+            counts = vdata["tab_row_counts"]
             print(f"\n[verify_model] model tab row counts: {counts}")
             if expect_kds:
-                print(f"[verify_model] raw kds_daily rows={raw_kds_count}; "
-                      f"model labor_daily KDS columns non-empty={model_kds_nonempty}")
+                print(f"[verify_model] raw kds_daily rows={vdata['raw_kds_row_count']}; "
+                      f"model labor_daily KDS columns non-empty="
+                      f"{vdata['model_kds_columns_nonempty']}; "
+                      f"KDS coverage={vdata['kds_min_date']}..{vdata['kds_max_date']}")
             assert_model_tabs_populated(
                 tab_row_counts=counts,
                 expect_kds=expect_kds,
-                raw_kds_row_count=raw_kds_count,
-                model_kds_columns_nonempty=model_kds_nonempty,
+                raw_kds_row_count=vdata["raw_kds_row_count"],
+                model_kds_columns_nonempty=vdata["model_kds_columns_nonempty"],
+                weekly_values=vdata["weekly_values"],
+                period_values=vdata["period_values"],
+                kds_min_date=vdata["kds_min_date"],
+                kds_max_date=vdata["kds_max_date"],
             )
-            print("[verify_model] OK — all expected model tabs are populated.")
+            print("[verify_model] OK — all expected model tabs are populated "
+                  "(incl. weekly/period KDS metrics).")
         except RuntimeError as exc:
             print(f"\n!!! MODEL VERIFICATION FAILED: {exc}", file=sys.stderr)
             try:

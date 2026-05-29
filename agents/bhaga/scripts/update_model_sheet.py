@@ -235,6 +235,71 @@ def format_currency_columns(
     )
 
 
+def _percent_column_indices(header: list) -> list[int]:
+    """Column indices (0-based) that hold percentage VALUES, by header name.
+
+    The builders write percent cells as the string ``"66.67%"`` via
+    USER_ENTERED, which Google Sheets parses into the underlying fraction
+    (``0.6667``) and would auto-render as a percent — EXCEPT reset_number_format
+    wipes that format back to AUTOMATIC, so the cell renders as a bare
+    ``0.6667``. We re-apply a PERCENT numberFormat to these columns in the same
+    post-write pass as the currency re-apply, so they render as ``66.67%``
+    AND survive every rebuild.
+
+    Detection is by name so it stays correct as columns shift between the
+    labor_daily / labor_weekly / labor_period / forecast layouts (each adds a
+    different number of lead columns): any header containing ``pct`` is a
+    fraction column (hourly_pct_of_net_sales, tips_pct_of_sales, diff_pct,
+    pct_of_day_hours, target_labor_pct, actual_labor_pct, *_error_pct,
+    kds_pct_tickets_late, …), plus ``forecast_mape`` which is a MAPE fraction.
+    Counts/ratios/seconds never contain ``pct`` so they're never matched.
+    """
+    out: list[int] = []
+    for i, name in enumerate(header):
+        n = str(name).strip().lower()
+        if "pct" in n or n == "forecast_mape":
+            out.append(i)
+    return out
+
+
+def format_percent_columns(
+    spreadsheet_id: str,
+    token: str,
+    *,
+    sheet_id: int,
+    column_indices: list[int],
+    start_row: int = 1,
+    pattern: str = "0.00%",
+) -> None:
+    """Apply PERCENT format to specified columns (0-indexed) from start_row down.
+
+    Analogous to format_currency_columns; runs AFTER reset_number_format so the
+    targeted percent styling wins over the AUTOMATIC wipe. The stored values are
+    fractions (e.g. 0.6667), so the ``0.00%`` pattern renders them as 66.67%.
+    """
+    if not column_indices:
+        return
+    requests = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": start_row,
+                    "startColumnIndex": col,
+                    "endColumnIndex": col + 1,
+                },
+                "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": pattern}}},
+                "fields": "userEnteredFormat.numberFormat",
+            }
+        }
+        for col in column_indices
+    ]
+    _api(
+        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
+        token, method="POST", data={"requests": requests},
+    )
+
+
 def bold_header_row(spreadsheet_id: str, token: str, *, sheet_id: int) -> None:
     _api(
         f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
@@ -1099,11 +1164,69 @@ def build_labor_daily_rows(
     return rows
 
 
+class _KdsAccumulator:
+    """Pools daily KDS intermediates so weekly/period rows recompute the
+    three per-item/late metrics correctly (NOT an average-of-daily-averages).
+
+    Exactness:
+      * pct_tickets_late = Σ(late_tickets) / Σ(due_tickets)        — EXACT
+      * avg_time_per_item_sec = Σ(time_per_item_sum_sec)
+                              / Σ(time_per_item_count)              — EXACT pooled mean
+      * median_time_per_item_sec = Σ(median_day × completed_items_day)
+                              / Σ(completed_items_day)              — APPROXIMATION
+        (a true median across days isn't recoverable from daily rollups;
+        this items-weighted average of daily medians is the best estimate).
+
+    `add(date_iso)` folds in one day from the `kds_by_date` dict (no-op if the
+    date has no KDS row). `emit_*` return the rounded value or "" when the
+    relevant denominator is zero (avoids div-by-zero and blank-week noise).
+    """
+
+    def __init__(self, kds_by_date: dict[str, dict]):
+        self._kds = kds_by_date or {}
+        self.late = 0
+        self.due = 0
+        self.tpi_sum = 0.0
+        self.tpi_count = 0
+        self.median_num = 0.0
+        self.median_items = 0
+
+    def add(self, date_iso: str) -> None:
+        k = self._kds.get(date_iso)
+        if not k:
+            return
+        self.late += int(k.get("late_tickets", 0) or 0)
+        self.due += int(k.get("due_tickets", 0) or 0)
+        self.tpi_sum += float(k.get("time_per_item_sum_sec", 0) or 0)
+        self.tpi_count += int(k.get("time_per_item_count", 0) or 0)
+        items = int(k.get("completed_items", 0) or 0)
+        median = float(k.get("median_time_per_item_sec", 0) or 0)
+        if items > 0 and median > 0:
+            self.median_num += median * items
+            self.median_items += items
+
+    def emit_pct_late(self) -> str:
+        if self.due <= 0:
+            return ""
+        return f"{(self.late / self.due):.2%}"
+
+    def emit_avg_time_per_item(self):
+        if self.tpi_count <= 0:
+            return ""
+        return round(self.tpi_sum / self.tpi_count, 1)
+
+    def emit_median_time_per_item(self):
+        if self.median_items <= 0:
+            return ""
+        return round(self.median_num / self.median_items, 1)
+
+
 def build_labor_period_rows(
     *,
     periods: list[dict],
     labor_daily_rows: list[list],
     saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD,
+    kds_by_date: dict[str, dict] | None = None,
 ) -> list[list]:
     """Aggregate labor_daily rows by pay period.
 
@@ -1202,6 +1325,7 @@ def build_labor_period_rows(
             "kds_items": int(row[39]) if len(row) > 39 and row[39] != "" else 0,
         }
 
+    kds_by_date = kds_by_date or {}
     rows: list[list] = [header]
     for p in periods:
         start = p["start"]
@@ -1214,6 +1338,7 @@ def build_labor_period_rows(
         item_gross_sum = 0.0
         kds_tickets_sum = 0
         kds_items_sum = 0
+        kds = _KdsAccumulator(kds_by_date)
         peak_max: float | None = None
         cursor = datetime.date.fromisoformat(start)
         end_d = datetime.date.fromisoformat(end)
@@ -1234,6 +1359,9 @@ def build_labor_period_rows(
                 item_gross_sum += bucket["item_gross_dollars"]
                 kds_tickets_sum += bucket["kds_tickets"]
                 kds_items_sum += bucket["kds_items"]
+                # Pool the raw daily KDS intermediates for this date so the
+                # period-grain per-item/late metrics are recomputed exactly.
+                kds.add(iso)
                 if bucket["peak"] is not None:
                     peak_max = bucket["peak"] if peak_max is None else max(peak_max, bucket["peak"])
                 days += 1
@@ -1255,13 +1383,6 @@ def build_labor_period_rows(
             over = ""
 
         p_total_h = h_hours + ft_hours
-        # KDS period aggregates: weighted avg not meaningful for time-per-item,
-        # so we report sum of tickets/items (throughput) and leave per-item
-        # metrics blank at period grain (they're day-level operational metrics).
-        kds_avg_tpi_period = (
-            "" if kds_items_sum == 0
-            else ""  # left blank intentionally; per-item time is day-level only
-        )
         rows.append([
             _iso_date_for_sheet_cell(start),
             _iso_date_for_sheet_cell(end),
@@ -1304,9 +1425,9 @@ def build_labor_period_rows(
             round(ft_hours / items_sold_sum, 3) if items_sold_sum > 0 else "",
             kds_tickets_sum if kds_tickets_sum > 0 else "",
             kds_items_sum if kds_items_sum > 0 else "",
-            "",  # kds_avg_time_per_item_sec — day-level only
-            "",  # kds_median_time_per_item_sec — day-level only
-            "",  # kds_pct_tickets_late — day-level only
+            kds.emit_avg_time_per_item(),     # EXACT pooled mean
+            kds.emit_median_time_per_item(),  # APPROX (items-weighted daily medians)
+            kds.emit_pct_late(),              # EXACT Σlate/Σdue
         ])
     return rows
 
@@ -1315,6 +1436,7 @@ def build_labor_weekly_rows(
     *,
     labor_daily_rows: list[list],
     saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD,
+    kds_by_date: dict[str, dict] | None = None,
 ) -> list[list]:
     """Aggregate labor_daily rows by ISO calendar week (Monday → Sunday).
 
@@ -1404,6 +1526,7 @@ def build_labor_weekly_rows(
         monday = d - datetime.timedelta(days=d.weekday())  # weekday(): Mon=0 .. Sun=6
         weeks.setdefault(monday, []).append(iso)
 
+    kds_by_date = kds_by_date or {}
     rows: list[list] = [header]
     for monday in sorted(weeks):
         sunday = monday + datetime.timedelta(days=6)
@@ -1418,6 +1541,7 @@ def build_labor_weekly_rows(
         item_gross_sum = 0.0
         kds_tickets_sum = 0
         kds_items_sum = 0
+        kds = _KdsAccumulator(kds_by_date)
         peak_max: float | None = None
         for iso_date in weeks[monday]:
             bucket = daily_by_date[iso_date]
@@ -1434,6 +1558,8 @@ def build_labor_weekly_rows(
             item_gross_sum += bucket["item_gross_dollars"]
             kds_tickets_sum += bucket["kds_tickets"]
             kds_items_sum += bucket["kds_items"]
+            # Pool the raw daily KDS intermediates for this date.
+            kds.add(iso_date)
             if bucket["peak"] is not None:
                 peak_max = bucket["peak"] if peak_max is None else max(peak_max, bucket["peak"])
             days += 1
@@ -1502,9 +1628,9 @@ def build_labor_weekly_rows(
             round(ft_hours / items_sold_sum, 3) if items_sold_sum > 0 else "",
             kds_tickets_sum if kds_tickets_sum > 0 else "",
             kds_items_sum if kds_items_sum > 0 else "",
-            "",  # kds_avg_time_per_item_sec — day-level only
-            "",  # kds_median_time_per_item_sec — day-level only
-            "",  # kds_pct_tickets_late — day-level only
+            kds.emit_avg_time_per_item(),     # EXACT pooled mean
+            kds.emit_median_time_per_item(),  # APPROX (items-weighted daily medians)
+            kds.emit_pct_late(),              # EXACT Σlate/Σdue
         ])
     return rows
 
@@ -2025,10 +2151,12 @@ def main() -> int:
     labor_period_rows = build_labor_period_rows(
         periods=periods, labor_daily_rows=labor_daily_rows,
         saturation_threshold=saturation_threshold,
+        kds_by_date=kds_by_date,
     )
     labor_weekly_rows = build_labor_weekly_rows(
         labor_daily_rows=labor_daily_rows,
         saturation_threshold=saturation_threshold,
+        kds_by_date=kds_by_date,
     )
     period_rows = build_tip_alloc_period_rows(period_results)
     day_alloc_rows = build_tip_alloc_daily_rows(period_results, daily_summary)
@@ -2159,6 +2287,15 @@ def main() -> int:
             format_currency_columns(
                 model_sid, token, sheet_id=sheet_id,
                 column_indices=p["currency_cols"], start_row=1,
+            )
+        # Re-apply PERCENT format to every fraction column (detected by header
+        # name) so *_pct_* cells render as e.g. 66.67% instead of a bare 0.6667
+        # after reset_number_format wipes formatting. Survives every rebuild.
+        percent_cols = _percent_column_indices(p["rows"][0])
+        if percent_cols:
+            format_percent_columns(
+                model_sid, token, sheet_id=sheet_id,
+                column_indices=percent_cols, start_row=1,
             )
         auto_resize_columns(model_sid, token, sheet_id=sheet_id, num_cols=len(p["rows"][0]))
         print(f"    wrote {p['tab']:<22} ({len(p['rows'])-1} rows)")

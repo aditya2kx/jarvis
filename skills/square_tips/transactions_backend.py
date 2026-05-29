@@ -711,6 +711,17 @@ def aggregate_daily_kds_stats(tickets: list[dict]) -> dict[str, dict]:
             "pct_tickets_late": round(pct_late, 4),
             "shift_start": shift_start,
             "shift_end": shift_end,
+            # Intermediates exposed so weekly/period rollups can recompute
+            # these metrics EXACTLY (pooled, not an average-of-averages):
+            #   pct_tickets_late = sum(late_tickets)/sum(due_tickets)
+            #   avg_time_per_item_sec = sum(time_per_item_sum_sec)/sum(time_per_item_count)
+            # (median across days is only approximable — see update_model_sheet).
+            # Daily values above are unchanged: avg == sum/count and
+            # pct == late/due, so these are pure additions.
+            "late_tickets": late_count,
+            "due_tickets": due_count,
+            "time_per_item_sum_sec": round(sum(time_per_item_values), 4),
+            "time_per_item_count": len(time_per_item_values),
         }
     return result
 

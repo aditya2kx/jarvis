@@ -48,20 +48,12 @@ jobs:
                        -t ${{ env.REGISTRY }}/bhaga-webhook:latest \
                        -f cloud/webhook/Dockerfile cloud/webhook/
 
-      - name: Build diff image
-        run: |
-          docker build -t ${{ env.REGISTRY }}/bhaga-diff:${{ github.sha }} \
-                       -t ${{ env.REGISTRY }}/bhaga-diff:latest \
-                       -f cloud/diff/Dockerfile cloud/diff/
-
       - name: Push images
         run: |
           docker push ${{ env.REGISTRY }}/bhaga-orchestrator:${{ github.sha }}
           docker push ${{ env.REGISTRY }}/bhaga-orchestrator:latest
           docker push ${{ env.REGISTRY }}/bhaga-webhook:${{ github.sha }}
           docker push ${{ env.REGISTRY }}/bhaga-webhook:latest
-          docker push ${{ env.REGISTRY }}/bhaga-diff:${{ github.sha }}
-          docker push ${{ env.REGISTRY }}/bhaga-diff:latest
 
       - name: Deploy orchestrator (Cloud Run Job)
         if: ${{ !inputs.rollback_sha }}
@@ -76,14 +68,6 @@ jobs:
         run: |
           gcloud run services update bhaga-webhook \
             --image ${{ env.REGISTRY }}/bhaga-webhook:${{ github.sha }} \
-            --region ${{ env.REGION }} \
-            --project ${{ env.PROJECT_ID }}
-
-      - name: Deploy diff (Cloud Run Job)
-        if: ${{ !inputs.rollback_sha }}
-        run: |
-          gcloud run jobs update bhaga-daily-diff \
-            --image ${{ env.REGISTRY }}/bhaga-diff:${{ github.sha }} \
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT_ID }}
 

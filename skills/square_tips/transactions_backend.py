@@ -635,7 +635,24 @@ def parse_kds_csv(
     return records
 
 
-def aggregate_daily_kds_stats(tickets: list[dict]) -> dict[str, dict]:
+# Lower bound: tickets cleared in under 15s never had real prep (KDS bumped
+# immediately / accidental clear). Upper bound: tickets left open for hours
+# are KDS-left-open artifacts (closer forgot to bump the ticket at end of
+# night), not real prep time. 2026-05-25/26 carried ~17-23h "completion"
+# tickets that, left in, inflated every daily/weekly/period time-per-item and
+# late metric into the thousands of seconds. Both bounds drop the ticket from
+# ALL daily stats (it never enters completed_tickets/items either) so the
+# count and the time/late metrics stay mutually consistent.
+KDS_MIN_COMPLETION_SEC = 15
+KDS_MAX_COMPLETION_SEC = 3600  # 1 hour; override via store profile labor_config
+
+
+def aggregate_daily_kds_stats(
+    tickets: list[dict],
+    *,
+    max_completion_sec: float = KDS_MAX_COMPLETION_SEC,
+    min_completion_sec: float = KDS_MIN_COMPLETION_SEC,
+) -> dict[str, dict]:
     """Aggregate per-ticket KDS data into daily stats.
 
     Returns {date_iso: {
@@ -649,15 +666,24 @@ def aggregate_daily_kds_stats(tickets: list[dict]) -> dict[str, dict]:
         shift_end: str (HH:MM),
     }}
 
-    Filters outlier tickets with completion_time < 15 seconds
-    (KDS cleared without actual prep).
+    Outlier filtering (both bounds EXCLUDE the ticket from every daily metric,
+    including completed_tickets / completed_items, so counts and time/late
+    metrics stay consistent):
+      * completion_time_sec < ``min_completion_sec`` (default 15s) — KDS
+        cleared without actual prep.
+      * completion_time_sec > ``max_completion_sec`` (default 3600s = 1h) —
+        ticket left open for hours (closer forgot to bump it); a left-open
+        artifact, not real prep. Configurable via the store profile
+        (``labor_config.kds_max_completion_time_sec``); the caller in
+        backfill_from_downloads.py passes the profile value.
     """
     import statistics
 
     by_day: dict[str, list[dict]] = {}
     for t in tickets:
-        # Filter outliers: tickets cleared without prep
-        if t["completion_time_sec"] < 15:
+        # Drop both lower (no-prep) and upper (left-open) outliers entirely.
+        cts = t["completion_time_sec"]
+        if cts < min_completion_sec or cts > max_completion_sec:
             continue
         d = t["date_local"]
         by_day.setdefault(d, []).append(t)

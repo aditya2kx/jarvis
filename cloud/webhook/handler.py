@@ -38,9 +38,20 @@ CLOCK_SKEW_TOLERANCE_S = 5 * 60  # reject timestamps older than 5 minutes
 
 # Agent config: maps DM channel IDs → agent names.
 # Loaded once at startup from AGENT_CONFIG_JSON env var, which mirrors the
-# config.yaml slack.agents section:
-#   {"chitra": {"dm_channel": "D0AP..."}, "bhaga": {"dm_channel": "D0AT..."}, ...}
-# The orchestrator's deploy script injects this from config.yaml.
+# config.yaml slack.agents section. Build it from config.yaml via
+# scripts/build_agent_config.py and inject it on the Cloud Run service with
+#   gcloud run services update bhaga-webhook \
+#     --update-env-vars AGENT_CONFIG_JSON="$(python3 scripts/build_agent_config.py)"
+# (deploy.yml only updates the image, so an injected env var persists across
+# image redeploys). Each agent entry may declare MULTIPLE DM channels:
+#   {
+#     "chitra": {"dm_channel": "D0AP..."},
+#     "bhaga":  {"dm_channel": "D0AT...",        # local bhaga bot ↔ operator
+#                "cloud_dm_channel": "D0B6..."}, # cloud bhaga-cloud bot ↔ operator
+#   }
+# EVERY declared channel maps to the SAME agent name, so a READY/code reply on
+# either the local or the cloud bot's DM resolves to that agent's pending OTP
+# run (the cloud nightly job checkpoints under agent="bhaga").
 _AGENT_CONFIG: dict[str, dict] = {}
 _CHANNEL_TO_AGENT: dict[str, str] = {}  # reverse lookup: channel_id → agent_name
 
@@ -67,9 +78,17 @@ def _init_agent_config() -> None:
 
     _CHANNEL_TO_AGENT = {}
     for agent_name, cfg in _AGENT_CONFIG.items():
-        ch = cfg.get("dm_channel")
-        if ch:
-            _CHANNEL_TO_AGENT[ch] = agent_name
+        if not isinstance(cfg, dict):
+            continue
+        # An agent may own several DM channels (e.g. a separate cloud bot).
+        # Collect them from the primary `dm_channel`, an optional
+        # `cloud_dm_channel`, and an optional `dm_channels` list. Map each one
+        # to the same agent name so a reply on any of them routes correctly.
+        channels = [cfg.get("dm_channel"), cfg.get("cloud_dm_channel")]
+        channels.extend(cfg.get("dm_channels") or [])
+        for ch in channels:
+            if ch:
+                _CHANNEL_TO_AGENT[ch] = agent_name
 
 
 def _init_firestore() -> None:

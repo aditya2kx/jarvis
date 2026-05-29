@@ -31,3 +31,14 @@ slack:
   workspace: "your-workspace-name"
   bot_token_cmd: "security find-generic-password -a SLACK_BOT_TOKEN -s jarvis -w"
   notification_channel: "#general"
+  # Per-agent Slack identities. scripts/build_agent_config.py projects the
+  # channel keys here into AGENT_CONFIG_JSON for the bhaga-webhook Cloud Run
+  # service (cloud/webhook/handler.py routes DM replies → agent by channel).
+  agents:
+    bhaga:
+      bot_token_cmd: "security find-generic-password -a SLACK_BOT_TOKEN_BHAGA -s jarvis-bhaga -w"
+      dm_channel: "D_LOCAL_BHAGA_BOT_DM"   # local bhaga bot ↔ operator DM
+      # The cloud nightly job posts its READY handshake from a SEPARATE
+      # "bhaga-cloud" bot whose DM channel differs. The cloud run still
+      # checkpoints under agent="bhaga", so map this channel to bhaga too.
+      cloud_dm_channel: "D_CLOUD_BHAGA_BOT_DM"

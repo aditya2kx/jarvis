@@ -15,7 +15,10 @@ import pytest
 os.environ["SLACK_SIGNING_SECRET"] = "test_signing_secret_1234"
 os.environ["AGENT_CONFIG_JSON"] = json.dumps({
     "chitra": {"dm_channel": "D_CHITRA"},
-    "bhaga": {"dm_channel": "D_BHAGA"},
+    # bhaga owns TWO DM channels: the local bot's DM (dm_channel) and the
+    # separate cloud "bhaga-cloud" bot's DM (cloud_dm_channel). Both must route
+    # to the "bhaga" agent (the cloud nightly job checkpoints under that name).
+    "bhaga": {"dm_channel": "D_BHAGA", "cloud_dm_channel": "D_BHAGA_CLOUD"},
     "chanakya": {"dm_channel": "D_CHANAKYA"},
 })
 
@@ -175,6 +178,26 @@ class TestAgentRouting:
         assert handler._CHANNEL_TO_AGENT["D_BHAGA"] == "bhaga"
         assert handler._CHANNEL_TO_AGENT["D_CHITRA"] == "chitra"
         assert handler._CHANNEL_TO_AGENT["D_CHANAKYA"] == "chanakya"
+
+    def test_cloud_dm_channel_maps_to_same_agent(self):
+        """The cloud bhaga-cloud bot's DM must resolve to the SAME 'bhaga' agent.
+
+        Regression for the cloud OTP-resume routing bug: the nightly job posts
+        its READY handshake from a separate bot whose DM channel is distinct
+        from the local bot's; both must map to 'bhaga'.
+        """
+        assert handler._CHANNEL_TO_AGENT["D_BHAGA_CLOUD"] == "bhaga"
+        assert handler._CHANNEL_TO_AGENT["D_BHAGA"] == "bhaga"
+
+    def test_extra_dm_channels_list_supported(self):
+        """An agent may also declare additional channels via a `dm_channels` list."""
+        cfg = {"x": {"dm_channel": "D_X", "dm_channels": ["D_X2", "D_X3"]}}
+        with patch.dict(os.environ, {"AGENT_CONFIG_JSON": json.dumps(cfg)}):
+            handler._init_agent_config()
+            assert handler._CHANNEL_TO_AGENT["D_X"] == "x"
+            assert handler._CHANNEL_TO_AGENT["D_X2"] == "x"
+            assert handler._CHANNEL_TO_AGENT["D_X3"] == "x"
+        handler._init_agent_config()  # restore module-level config
 
     def test_unknown_channel_ignored(self):
         """Messages from unmapped channels should not route anywhere."""
@@ -380,6 +403,52 @@ class TestReadyEventRouting:
         mock_trigger.assert_called_once_with("2026-05-28")
         # A READY word is not an OTP code → no OTP routing.
         mock_find_otp.assert_not_called()
+
+    @patch.object(handler, "_trigger_cloud_run_job")
+    @patch.object(handler, "_mark_otp_ready")
+    @patch.object(handler, "_find_pending_portal_for_agent")
+    def test_ready_on_cloud_dm_channel_resumes_bhaga(self, mock_find_otp, mock_mark, mock_trigger):
+        """A READY arriving on the CLOUD bhaga-cloud DM resolves to agent=bhaga.
+
+        Regression for the cloud OTP-resume routing bug: the operator's READY
+        landed on D_BHAGA_CLOUD (the cloud bot's DM), which previously mapped to
+        no agent and was dropped. It must now route to bhaga's pending run.
+        """
+        with patch.object(
+            handler, "_find_pending_otp_run",
+            return_value={"date": "2026-05-28", "pending_otp": {"agent": "bhaga"}},
+        ) as mock_find_run:
+            with app.test_client() as c:
+                _post_event(c, {
+                    "type": "event_callback",
+                    "event": {
+                        "type": "message",
+                        "channel": "D_BHAGA_CLOUD",
+                        "user": "U_USER",
+                        "text": "READY",
+                    },
+                })
+            mock_find_run.assert_called_once_with("bhaga")
+        mock_mark.assert_called_once()
+        mock_trigger.assert_called_once_with("2026-05-28")
+
+    @patch.object(handler, "_complete_otp")
+    @patch.object(handler, "_find_pending_portal_for_agent")
+    def test_code_on_cloud_dm_channel_routes_to_bhaga(self, mock_find, mock_complete):
+        """A numeric code on the cloud DM channel routes to bhaga's pending portal."""
+        mock_find.return_value = {"_doc_id": "bhaga_square", "portal": "square"}
+        with app.test_client() as c:
+            _post_event(c, {
+                "type": "event_callback",
+                "event": {
+                    "type": "message",
+                    "channel": "D_BHAGA_CLOUD",
+                    "user": "U_USER",
+                    "text": "123456",
+                },
+            })
+        mock_find.assert_called_once_with("bhaga")
+        mock_complete.assert_called_once_with("bhaga_square", "123456")
 
     @patch.object(handler, "_trigger_cloud_run_job")
     @patch.object(handler, "_find_pending_otp_run", return_value=None)

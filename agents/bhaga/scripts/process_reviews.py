@@ -816,6 +816,24 @@ def build_period_rollup(
 # ── Main orchestration ───────────────────────────────────────────────
 
 
+def fetch_review_messages(
+    *,
+    since_ts_ms: int,
+    max_pages: int = 40,
+) -> list[dict]:
+    """Fetch review messages from ClickUp (stateless, no Sheets dependency).
+
+    Returns raw ClickUp message dicts. Safe to call from a background thread
+    during parallel data gathering — no Google Sheets or profile I/O. The
+    orchestrator's ``_run_review_fetch`` thread calls this, caches the result
+    to JSON, and later passes that file to ``main`` via ``--prefetched-messages``.
+    """
+    return fetch_messages(
+        REVIEW_CHANNEL_ID, team_id=CLICKUP_TEAM_ID,
+        since_ts_ms=since_ts_ms, max_pages=max_pages,
+    )
+
+
 def main() -> int:
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--store", default="palmetto")
@@ -827,6 +845,12 @@ def main() -> int:
     )
     cli.add_argument("--max-pages", type=int, default=40,
                      help="Cap on ClickUp pagination depth (default 40).")
+    cli.add_argument(
+        "--prefetched-messages", default=None, metavar="PATH",
+        help="Path to a JSON file containing pre-fetched ClickUp messages. "
+             "Skips the ClickUp API fetch and reads from this file instead. "
+             "Used by the orchestrator to pass messages fetched in parallel.",
+    )
     cli.add_argument("--dry-run", action="store_true",
                      help="Parse + compute but do NOT write to sheets or Slack.")
     cli.add_argument("--no-slack", action="store_true")
@@ -957,12 +981,17 @@ def main() -> int:
 
     info_ping(f"process_reviews starting (since {datetime.datetime.fromtimestamp(since_ts_ms/1000, tz=CT).date()})")
 
-    # Fetch new messages.
-    msgs = fetch_messages(
-        REVIEW_CHANNEL_ID, team_id=CLICKUP_TEAM_ID,
-        since_ts_ms=since_ts_ms, max_pages=args.max_pages,
-    )
-    print(f"# fetched {len(msgs)} new messages from #{REVIEW_CHANNEL_NAME}")
+    # Fetch new messages (or load from pre-fetched file).
+    if args.prefetched_messages:
+        prefetch_path = pathlib.Path(args.prefetched_messages)
+        with prefetch_path.open() as fh:
+            msgs = json.load(fh)
+        print(f"# loaded {len(msgs)} pre-fetched messages from {prefetch_path.name}")
+    else:
+        msgs = fetch_review_messages(
+            since_ts_ms=since_ts_ms, max_pages=args.max_pages,
+        )
+        print(f"# fetched {len(msgs)} new messages from #{REVIEW_CHANNEL_NAME}")
 
     first_name_index = _build_first_name_index(aliases)
 

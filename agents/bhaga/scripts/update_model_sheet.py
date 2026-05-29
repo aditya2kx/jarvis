@@ -1316,7 +1316,14 @@ def build_labor_daily_rows(
         #                      is PRESERVED across rebuilds (see
         #                      existing_forecast_exclude). The forecast tab's
         #                      order-seed excludes TRUE days.
+        #   outlier_reason   — human-readable WHY for outlier_flag (direction +
+        #                      magnitude from the same robust-z stats); blank
+        #                      when not an outlier. Plain text, informational.
+        #   forecast_exclude_reason — human-readable SOURCE of forecast_exclude
+        #                      (zero-order / auto down-anomaly / operator
+        #                      override); blank when FALSE. Plain text.
         "outlier_flag", "forecast_exclude",
+        "outlier_reason", "forecast_exclude_reason",
     ]
     existing_forecast_exclude = existing_forecast_exclude or {}
     # Trend-aware, robust outlier detection over the operating days. The
@@ -1419,18 +1426,56 @@ def build_labor_daily_rows(
 
         # Outlier + forecast_exclude (written as TRUE/FALSE text literals;
         # USER_ENTERED coerces them to native booleans / checkbox values).
+        stat = outlier_stats.get(d)
         if orders <= 0:
             # Closed / no-sales complete day: a down-outlier by definition.
+            # (No residual stats exist for zero-order days — they're kept out
+            # of compute_outlier_stats — so `stat` is None here.)
             is_outlier = True
             exclude_default = True
         else:
-            stat = outlier_stats.get(d)
             is_outlier = bool(stat["outlier_flag"]) if stat else False
             exclude_default = bool(stat["exclude_default"]) if stat else False
         # Preserve operator edits; new rows default to the DOWN-only auto-exclude.
         fe_val = existing_forecast_exclude.get(d, exclude_default)
         _outlier_flag = "TRUE" if is_outlier else "FALSE"
         _forecast_exclude = "TRUE" if fe_val else "FALSE"
+
+        # ── Human-readable reasons (plain text; blank when flag is FALSE) ──
+        # outlier_reason: direction + magnitude straight from the robust-z
+        # stats compute_outlier_stats already produced for this date.
+        if not is_outlier:
+            _outlier_reason = ""
+        elif stat:
+            _exp = stat["expected"]
+            _z = stat["robust_z"]
+            _dir = "low volume" if _z < 0 else "high volume"
+            _outlier_reason = (
+                f"{_dir}: {orders} orders vs ~{_exp:.0f} expected (z={_z:+.1f})"
+            )
+        else:
+            # zero/no-order complete day — no residual stats to cite.
+            _outlier_reason = f"low volume: {orders} orders (closed/pre-open)"
+
+        # forecast_exclude_reason: SOURCE of the FINAL fe_val, matching the
+        # value-resolution precedence above — zero-order first, then the auto
+        # DOWN-anomaly default, else an operator override kept it TRUE. (The
+        # row builder can't perfectly distinguish an operator-set TRUE from a
+        # previously-persisted auto value: if exclude_default is also TRUE the
+        # auto signal is present, so we label it "auto"; only a TRUE with no
+        # zero-day and no auto signal can be an operator override.)
+        if not fe_val:
+            _forecast_exclude_reason = ""
+        elif orders <= 0:
+            _forecast_exclude_reason = "auto: no orders (closed/pre-open)"
+        elif exclude_default:
+            _exp = stat["expected"] if stat else 0
+            _z = stat["robust_z"] if stat else 0.0
+            _forecast_exclude_reason = (
+                f"auto: low-volume anomaly ({orders} orders vs ~{_exp:.0f}, z={_z:+.1f})"
+            )
+        else:
+            _forecast_exclude_reason = "operator override"
 
         rows.append([
             _iso_date_for_sheet_cell(d),
@@ -1481,6 +1526,8 @@ def build_labor_daily_rows(
             kds_pct_late if kds_pct_late else "",
             _outlier_flag,
             _forecast_exclude,
+            _outlier_reason,
+            _forecast_exclude_reason,
         ])
     return rows
 

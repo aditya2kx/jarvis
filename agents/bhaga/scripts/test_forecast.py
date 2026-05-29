@@ -6,7 +6,7 @@ Run:
 
 Pure-function coverage for the formula-driven forecast tab:
   * compute_staffing — the Python mirror of the in-sheet solver formulas
-    (OK / OVERSTAFFED_BUDGET / BUDGET_CONFLICT branches + coverage/efficiency).
+    (OK / UNDER_BUDGET / OVER_BUDGET branches + coverage/efficiency).
   * forecast_orders_dow_trend — order seed excludes forecast_exclude=TRUE days.
   * build_labor_daily_forecast_rows — derived columns are FORMULAS (=...),
     layout matches FORECAST_COLUMNS, weekly full-time cap holds.
@@ -122,15 +122,15 @@ class ComputeStaffingTests(unittest.TestCase):
         s = compute_staffing(target_labor_pct=0.25, **self.BASE)
         self.assertEqual(s["staffing_flag"], "OK")
 
-    def test_flag_budget_conflict(self):
-        # budget_hours = (0.10*1200)/15 = 8 < needed 16 -> BUDGET_CONFLICT
+    def test_flag_over_budget(self):
+        # budget_hours = (0.10*1200)/15 = 8 < needed 16 -> OVER_BUDGET
         s = compute_staffing(target_labor_pct=0.10, **self.BASE)
-        self.assertEqual(s["staffing_flag"], "BUDGET_CONFLICT")
+        self.assertEqual(s["staffing_flag"], "OVER_BUDGET")
 
-    def test_flag_overstaffed_budget(self):
-        # budget_hours = (0.50*1200)/15 = 40 > needed*1.25=20 -> OVERSTAFFED_BUDGET
+    def test_flag_under_budget(self):
+        # budget_hours = (0.50*1200)/15 = 40 > needed*1.25=20 -> UNDER_BUDGET
         s = compute_staffing(target_labor_pct=0.50, **self.BASE)
-        self.assertEqual(s["staffing_flag"], "OVERSTAFFED_BUDGET")
+        self.assertEqual(s["staffing_flag"], "UNDER_BUDGET")
 
     def test_fulltime_cost_reduces_budget(self):
         s = compute_staffing(target_labor_pct=0.25, **{**self.BASE, "fulltime_hours": 8.0})
@@ -297,7 +297,7 @@ class BuildForecastGridTests(unittest.TestCase):
         )
         self.assertTrue(r2[_IDX["staffing_flag"]].startswith(
             f"=IF({_col(_IDX['needed_hours'])}2>{_col(_IDX['budget_hours'])}2,"
-            '"BUDGET_CONFLICT"'
+            '"OVER_BUDGET"'
         ))
         # row 3 references row 3
         self.assertEqual(

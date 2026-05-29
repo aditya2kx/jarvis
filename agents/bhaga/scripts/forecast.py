@@ -181,9 +181,9 @@ def _derived_formulas(sheet_row: int) -> dict[str, str]:
         # Hourly (part-time-only) labor% — excludes Lindsay's full-time cost.
         "hourly_labor_pct": f"=IF({R('net_sales')}>0,{R('hourly_cost')}/{R('net_sales')},0)",
         "staffing_flag": (
-            f"=IF({R('needed_hours')}>{R('budget_hours')},\"BUDGET_CONFLICT\","
+            f"=IF({R('needed_hours')}>{R('budget_hours')},\"OVER_BUDGET\","
             f"IF({R('budget_hours')}>{R('needed_hours')}*1.25,"
-            f"\"OVERSTAFFED_BUDGET\",\"OK\"))"
+            f"\"UNDER_BUDGET\",\"OK\"))"
         ),
         # Mirror of staffing_flag keyed to the hourly labor% target: OVER when
         # hourly_labor_pct exceeds target_hourly_labor_pct, UNDER when it sits
@@ -585,9 +585,9 @@ def compute_staffing(
     actual_labor_pct = (total_labor_cost / net_sales) if net_sales > 0 else 0.0
     hourly_labor_pct = (hourly_cost / net_sales) if net_sales > 0 else 0.0
     if needed_hours > budget_hours:
-        staffing_flag = "BUDGET_CONFLICT"
+        staffing_flag = "OVER_BUDGET"
     elif budget_hours > needed_hours * 1.25:
-        staffing_flag = "OVERSTAFFED_BUDGET"
+        staffing_flag = "UNDER_BUDGET"
     else:
         staffing_flag = "OK"
     if hourly_labor_pct > target_hourly_labor_pct:

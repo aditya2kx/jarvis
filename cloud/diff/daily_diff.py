@@ -96,6 +96,12 @@ IGNORED_COLUMNS = frozenset({
     "kds_p99_time_per_item_sec",
     "kds_pct_items_over_goal",
     "kds_pct_tickets_late",
+    # Informational annotations (human-readable WHY for outlier_flag /
+    # forecast_exclude). Free text derived from per-store robust-z stats, so
+    # exact wording can differ between prod and staging without being a real
+    # parity regression.
+    "outlier_reason",
+    "forecast_exclude_reason",
 })
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")

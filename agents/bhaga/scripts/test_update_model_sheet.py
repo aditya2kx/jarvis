@@ -791,6 +791,106 @@ class LaborDailyForecastColumnsTests(unittest.TestCase):
         self.assertEqual(by_date["2026-05-18"][fi], "FALSE")
         self.assertEqual(by_date["2026-03-30"][fi], "TRUE")
 
+    # ── Reason columns ───────────────────────────────────────────────
+    # Upward spike on the last Monday; prior weeks ~100 so it reads as a
+    # high-volume outlier (flagged BOTH directions) but is NEVER auto-excluded.
+    _VOLS_UP = {
+        "2026-03-30": 100, "2026-04-06": 102, "2026-04-13": 98,
+        "2026-04-20": 101, "2026-04-27": 99, "2026-05-04": 100,
+        "2026-05-11": 103, "2026-05-18": 300,
+    }
+
+    def _reason_cols(self, header):
+        return (
+            header.index("outlier_reason"),
+            header.index("forecast_exclude_reason"),
+        )
+
+    def test_reason_columns_present_and_text(self):
+        rows = build_labor_daily_rows(
+            txns=self._txns_volume(self._VOLS),
+            shifts=self._shifts(self._MONDAYS),
+            wage_rates=self._wage_rates(),
+            excluded_from_tip_pool=set(),
+            now_ct=self.NOW_POST,
+        )
+        header = rows[0]
+        self.assertIn("outlier_reason", header)
+        self.assertIn("forecast_exclude_reason", header)
+        ori, fri = self._reason_cols(header)
+        by_date = {coerce_iso_date(r[0]): r for r in rows[1:]}
+        # Down anomaly (3 orders): outlier_reason describes a low-volume miss.
+        down = by_date["2026-05-18"]
+        self.assertTrue(down[ori].startswith("low volume: 3 orders vs ~"))
+        self.assertIn("z=-", down[ori])
+        # ...and forecast_exclude_reason marks it auto (down-anomaly default).
+        self.assertTrue(down[fri].startswith("auto: low-volume anomaly (3 orders vs ~"))
+        # Normal day: both reasons blank.
+        normal = by_date["2026-05-11"]
+        self.assertEqual(normal[ori], "")
+        self.assertEqual(normal[fri], "")
+
+    def test_outlier_reason_up_direction(self):
+        rows = build_labor_daily_rows(
+            txns=self._txns_volume(self._VOLS_UP),
+            shifts=self._shifts(self._MONDAYS),
+            wage_rates=self._wage_rates(),
+            excluded_from_tip_pool=set(),
+            now_ct=self.NOW_POST,
+        )
+        header = rows[0]
+        oi = header.index("outlier_flag")
+        fi = header.index("forecast_exclude")
+        ori, fri = self._reason_cols(header)
+        by_date = {coerce_iso_date(r[0]): r for r in rows[1:]}
+        up = by_date["2026-05-18"]
+        self.assertEqual(up[oi], "TRUE")
+        self.assertTrue(up[ori].startswith("high volume: 300 orders vs ~"))
+        self.assertIn("z=+", up[ori])
+        # Upward outliers are never auto-excluded → flag FALSE, reason blank.
+        self.assertEqual(up[fi], "FALSE")
+        self.assertEqual(up[fri], "")
+
+    def test_forecast_exclude_reason_zero_day(self):
+        # _fill_calendar_dates inserts the gaps between Mondays as zero-order
+        # complete days — a closed/pre-open day excluded with the zero reason.
+        rows = build_labor_daily_rows(
+            txns=self._txns_volume(self._VOLS),
+            shifts=self._shifts(self._MONDAYS),
+            wage_rates=self._wage_rates(),
+            excluded_from_tip_pool=set(),
+            now_ct=self.NOW_POST,
+        )
+        header = rows[0]
+        fi = header.index("forecast_exclude")
+        ori, fri = self._reason_cols(header)
+        by_date = {coerce_iso_date(r[0]): r for r in rows[1:]}
+        gap = by_date["2026-03-31"]  # a filled zero-order day
+        self.assertEqual(gap[fi], "TRUE")
+        self.assertEqual(gap[fri], "auto: no orders (closed/pre-open)")
+        self.assertEqual(gap[ori], "low volume: 0 orders (closed/pre-open)")
+
+    def test_forecast_exclude_reason_operator_override(self):
+        # Operator excludes a NORMAL day (orders>0, not an auto anomaly) →
+        # the reason must read "operator override", not "auto".
+        existing = {"2026-03-30": True}
+        rows = build_labor_daily_rows(
+            txns=self._txns_volume(self._VOLS),
+            shifts=self._shifts(self._MONDAYS),
+            wage_rates=self._wage_rates(),
+            excluded_from_tip_pool=set(),
+            now_ct=self.NOW_POST,
+            existing_forecast_exclude=existing,
+        )
+        header = rows[0]
+        fi = header.index("forecast_exclude")
+        ori, fri = self._reason_cols(header)
+        by_date = {coerce_iso_date(r[0]): r for r in rows[1:]}
+        ovr = by_date["2026-03-30"]
+        self.assertEqual(ovr[fi], "TRUE")
+        self.assertEqual(ovr[fri], "operator override")
+        self.assertEqual(ovr[ori], "")  # not an outlier, so blank
+
 
 class KdsColumnFormatDetectionTests(unittest.TestCase):
     """The KDS seconds vs percent columns must be classified correctly so the

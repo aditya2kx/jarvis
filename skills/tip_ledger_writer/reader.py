@@ -45,6 +45,7 @@ _INT_COLUMNS = {
     "hour_local", "dow_local",
     "punch_idx_in_day", "punch_count",
     "items_sold", "units_sold", "avg_item_price_cents",
+    "completed_tickets", "completed_items",
 }
 # Columns whose string value should become float. Hours and dollar amounts
 # typed as decimal.
@@ -52,6 +53,8 @@ _FLOAT_COLUMNS = {
     "regular_hours", "ot_hours", "doubletime_hours", "total_hours",
     "wage_rate_dollars", "ot_rate_dollars",
     "hours", "hourly_rate", "amount",
+    "avg_completion_time_sec", "avg_time_per_item_sec",
+    "median_time_per_item_sec", "pct_tickets_late",
 }
 _BOOL_COLUMNS = {"is_salaried", "multi_rate", "excluded_from_labor_pct"}
 _JSON_COLUMNS = {"rate_history_json", "raw_employee_names_json"}

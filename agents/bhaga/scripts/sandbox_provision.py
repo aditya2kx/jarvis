@@ -174,6 +174,9 @@ def seed_model_metadata(token: str, *, prod_model_sid: str, sandbox_model_sid: s
     Returns {"config_rows": n, "employees_rows": n} for evidence.
     """
     counts: dict[str, int] = {}
+    # Bounded read ranges keep the seed cheap. If the prod model ever grows the
+    # config tab past column F, or employees past ~499 rows, widen these — a
+    # silent truncation here would seed an incomplete sandbox profile.
     for tab, read_range in (("config", "config!A1:F200"), ("employees", "employees!A1:E500")):
         values = _read_values(token, prod_model_sid, read_range)
         if not values:

@@ -55,6 +55,10 @@ runner composes only replay code and imports no Square/ADP/ClickUp/browser modul
 `daily_refresh.py`'s scrape imports were made lazy (importing it, or `update_model_sheet`, no longer
 pulls in `patchright`/runners). `test_sandbox_e2e.py` enforces the guarantee in an isolated
 interpreter. Reviews stay out of scope (live ClickUp); item-ops auto-included once it lands on main.
+Follow-up (2026-05-30): addressed Claude review's non-blocking notes on PR #3 — clarified `select_window`
+returns the span across the N most-recent *cached* dates (not N calendar days), flagged the bounded
+`seed_model_metadata` read ranges as a truncation risk, and noted in RUNBOOK §13 that the first PR landing
+after `SANDBOX_E2E_ENABLED=true` is the live-validation of the harness.
 
 Named after **Bhaga** (भग) — Vedic Aditya whose name derives from Sanskrit *bhaj* ("to apportion, divide, share"). The deity of just distribution of wealth and shares — the rightful portion due to each. Etymologically perfect for a tip-pool fair-share agent.
 

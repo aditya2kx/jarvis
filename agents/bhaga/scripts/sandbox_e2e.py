@@ -68,10 +68,14 @@ def dates_in_window(start: datetime.date, end: datetime.date) -> list[datetime.d
 
 
 def select_window(cached_dates: list[datetime.date], max_days: int) -> tuple[datetime.date, datetime.date]:
-    """Pick the most recent ``max_days`` cached dates and return (start, end).
+    """Pick the most recent ``max_days`` *cached* dates and return (start, end).
 
-    Keeps the e2e window small (cost) and always cache-backed (determinism),
-    independent of any hardcoded calendar range. Raises if no dates are cached.
+    NOTE: the returned (start, end) spans the ``max_days`` most-recent dates that
+    actually have artifacts in GCS — NOT ``max_days`` calendar days. With a sparse
+    cache the calendar span (end - start) can exceed ``max_days``; that's fine,
+    because the replay only touches dates that are cache-backed. Keeps the e2e
+    window small (cost) and always cache-backed (determinism), independent of any
+    hardcoded calendar range. Raises if no dates are cached.
     """
     if not cached_dates:
         raise ValueError("no cached dates in GCS — cannot auto-select an e2e window")
@@ -242,10 +246,11 @@ def main(argv: list[str] | None = None) -> int:
     cli.add_argument("--start", default=None, help="YYYY-MM-DD (inclusive). Omit with --auto-window.")
     cli.add_argument("--end", default=None, help="YYYY-MM-DD (inclusive). Omit with --auto-window.")
     cli.add_argument("--auto-window", action="store_true",
-                     help="Auto-select the most recent --max-days cached dates from GCS "
+                     help="Auto-select up to the last --max-days *cached* dates from GCS "
                           "(deterministic + always cache-backed; preferred in CI).")
     cli.add_argument("--max-days", type=int, default=2,
-                     help="Window size for --auto-window. Kept small for cost.")
+                     help="Max number of most-recent cached days to replay for --auto-window "
+                          "(the calendar span may be wider if the cache is sparse). Kept small for cost.")
     cli.add_argument("--keep", action="store_true",
                      help="Do NOT tear down the sandbox sheets after the run (debugging).")
     cli.add_argument("--expect-kds", action="store_true",

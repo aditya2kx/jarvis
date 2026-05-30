@@ -418,6 +418,10 @@ python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --auto-window --keep
    `SANDBOX_E2E_SERVICE_ACCOUNT` at a dedicated SA (optionally one that writes into a Shared Drive).
 3. Optional: `SANDBOX_E2E_MAX_DAYS` (default `2`) bounds the replay window for cost.
 
+> The PR that *introduces* this infrastructure can't run the live e2e on itself (the workflow is dormant
+> until `SANDBOX_E2E_ENABLED=true`). The **first feature PR that lands after you flip the flag** is the
+> real live-validation of the sandbox harness — link its evidence comment back to the bootstrap PR.
+
 > Reviews (ClickUp) are intentionally **out of scope** for the per-PR e2e (they need a live call). The
 > e2e proves the sales / labor / tip / model core. Item-level operations are picked up automatically if
 > `backfill_item_lines_from_cache` lands on main.

@@ -71,14 +71,20 @@ COUPLINGS: list[dict] = [
         "why": "allocation invariant / sheet source-of-truth change → update BHAGA behavioral spec / RUNBOOK.",
     },
     {
-        "code": ["agents/**", "skills/**", "cloud/**", "core/**"],
+        "code": ["agents/**/*.py", "skills/**/*.py", "cloud/**/*.py", "core/**/*.py"],
         "docs": ["PROGRESS.md"],
-        "why": "notable change → add a dated line to PROGRESS.md (status / decision / blocker).",
+        "why": "notable code change → add a dated line to PROGRESS.md (status / decision / blocker).",
     },
 ]
 
-# Path prefixes that never need a doc update (avoid noisy reminders).
-IGNORE_GLOBS = ["**/test_*.py", "**/*_test.py", "**/__pycache__/**"]
+# Files that never *trigger* a doc reminder. Docs (*.md) are excluded because a
+# doc change never obligates another doc; tests/build artifacts are noise.
+IGNORE_GLOBS = [
+    "**/*.md",
+    "**/test_*.py",
+    "**/*_test.py",
+    "**/__pycache__/**",
+]
 
 
 def _git(args: list[str]) -> str:

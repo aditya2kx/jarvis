@@ -5,6 +5,7 @@ agents/*/knowledge-base/**
 !agents/*/knowledge-base/
 !agents/*/knowledge-base/**/
 !agents/*/knowledge-base/**/README.md
+!agents/*/knowledge-base/**/DOMAIN.md
 !agents/*/knowledge-base/store-profiles/
 !agents/*/knowledge-base/store-profiles/**
 agents/*/data/

@@ -22,6 +22,7 @@ Not "later," not "in a follow-up" — same change. A doc that lags the code is a
 | You changed… | Update… |
 |---|---|
 | `agents/bhaga/scripts/*.py` or `skills/tip_ledger_writer/*.py` (pipeline, scripts, data model) | `agents/bhaga/scripts/README.md` (code map + "Extending the model") |
+| sheet columns / metrics / domain meaning (`schema.py`, `update_model_sheet.py`, `forecast.py`, `process_reviews.py`) | `agents/bhaga/knowledge-base/DOMAIN.md` (data dictionary) |
 | `cloud/**`, `.github/workflows/deploy.yml`, `daily_refresh*.py`, `otp_gate.py` (deploy / scheduler / secrets / OTP / orchestration) | `RUNBOOK.md` |
 | `skills/tip_pool_allocation/*.py` or `store-profiles/*.json` (allocation invariant / sheet source of truth) | `.cursor/rules/bhaga.md` (+ `RUNBOOK.md` for sheets) |
 | Anything notable (new capability, decision, blocker, status) | `PROGRESS.md` (dated line) |

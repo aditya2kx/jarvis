@@ -6,7 +6,9 @@ Agent-specific orchestration for the BHAGA nightly pipeline. Reusable logic live
 as a Cloud Run Job.
 
 > **Operate the live system from [`RUNBOOK.md`](../../../RUNBOOK.md).** Behavioral invariants are in
-> [`.cursor/rules/bhaga.md`](../../../.cursor/rules/bhaga.md). This file is the **code map** + the
+> [`.cursor/rules/bhaga.md`](../../../.cursor/rules/bhaga.md). What the data *means* (orders, items,
+> labor, hourly vs full-time, KDS, tips, reviews, every metric) is in the domain data dictionary
+> [`../knowledge-base/DOMAIN.md`](../knowledge-base/DOMAIN.md). This file is the **code map** + the
 > guide for **extending the data model**.
 
 ---

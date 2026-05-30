@@ -44,6 +44,16 @@ COUPLINGS: list[dict] = [
     },
     {
         "code": [
+            "skills/tip_ledger_writer/schema.py",
+            "agents/bhaga/scripts/update_model_sheet.py",
+            "agents/bhaga/scripts/forecast.py",
+            "agents/bhaga/scripts/process_reviews.py",
+        ],
+        "docs": ["agents/bhaga/knowledge-base/DOMAIN.md"],
+        "why": "sheet columns / metrics / domain semantics changed → update the BHAGA domain data dictionary.",
+    },
+    {
+        "code": [
             "cloud/**",
             ".github/workflows/deploy.yml",
             "agents/bhaga/scripts/daily_refresh*.py",

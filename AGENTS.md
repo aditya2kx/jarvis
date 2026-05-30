@@ -49,6 +49,7 @@ you're working on **BHAGA**, ignore it — that's laptop-era guidance for the ot
 | If you want to… | Read |
 |---|---|
 | Operate / debug the live BHAGA cloud system | [`RUNBOOK.md`](RUNBOOK.md) — architecture, Cloud Run units, sheets, scheduler, secrets, **Operating rules**, **Common tasks** |
+| Understand the BHAGA domain (orders, items, labor, hourly vs full-time, KDS, tips, reviews, every metric) | [`agents/bhaga/knowledge-base/DOMAIN.md`](agents/bhaga/knowledge-base/DOMAIN.md) — data dictionary |
 | Understand or change the BHAGA pipeline code | [`agents/bhaga/scripts/README.md`](agents/bhaga/scripts/README.md) — script-by-script + **Extending the model** |
 | Know BHAGA's behavioral rules & invariants | [`.cursor/rules/bhaga.md`](.cursor/rules/bhaga.md) |
 | Coordinate across agents / add an agent or skill | [`.cursor/rules/jarvis.md`](.cursor/rules/jarvis.md) |

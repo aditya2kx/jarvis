@@ -85,7 +85,21 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 - **OTP via Slack, never the IDE.** ADP/Square 2FA codes are requested via the Firestore+webhook
   round-trip. The operator is not at a laptop. Announce any action that fires an SMS/email before
   triggering it.
-- **Commit → push → deploy** for anything that must run in prod. See `RUNBOOK.md` § Operating rules.
+- **Branch → PR → Claude-review → merge → deploy** for anything that must run in prod. Never push to
+  `main` directly. See `CONTRIBUTING.md` and `RUNBOOK.md` § Operating rules.
+- **Cloud reads from GCS, never laptop files.** The canonical scrape cache is GCS `bhaga-scrape-cache`.
+  `extracted/downloads/` is laptop-only and is NOT a source of truth for cloud sheets — never let a
+  prod/cloud backfill read it. Any backfill or replay that writes prod sheets MUST use the GCS path
+  (e.g. `--gcs-only`). The laptop is retired; if you find yourself reaching for a local download to
+  populate a cloud sheet, stop — that's the bug. See `RUNBOOK.md` § Common tasks.
+- **Run one-offs in the cloud, not on a laptop.** Backfills / maintenance scripts that touch prod run
+  as a Cloud Run job (or from an ADC-authenticated cloud shell resolving secrets from Secret Manager) —
+  not against laptop Keychain or laptop downloads. See `RUNBOOK.md` § Common tasks.
+- **Build and verify autonomously — don't ask permission for routine work.** Running tests, building
+  the image, deploying via commit→push, and running the standard verification (re-read the sheets /
+  diff expected vs actual) are part of shipping, not separate approvals. Just do them and report
+  results. Only pause for genuinely destructive/irreversible actions (deleting data, rewriting prod
+  history, schema-breaking changes) or real architecture forks — per the key-decision-surfacing rule.
 - **Keep docs in lock-step.** If you change pipeline behavior, a step, the sheets, or an invariant,
   update `RUNBOOK.md` + `agents/bhaga/scripts/README.md` + this file in the same change, and add a
   dated note to `PROGRESS.md`. See `AGENTS.md` § Keeping docs current.

@@ -53,6 +53,7 @@ you're working on **BHAGA**, ignore it — that's laptop-era guidance for the ot
 | Understand or change the BHAGA pipeline code | [`agents/bhaga/scripts/README.md`](agents/bhaga/scripts/README.md) — script-by-script + **Extending the model** |
 | Know BHAGA's behavioral rules & invariants | [`.cursor/rules/bhaga.md`](.cursor/rules/bhaga.md) |
 | Coordinate across agents / add an agent or skill | [`.cursor/rules/jarvis.md`](.cursor/rules/jarvis.md) |
+| Open a PR / understand the review process & what the bot checks | [`CONTRIBUTING.md`](CONTRIBUTING.md) + [`.github/claude-review-guidelines.md`](.github/claude-review-guidelines.md) |
 | See project state / history / decisions | [`PROGRESS.md`](PROGRESS.md) |
 | Add columns or a new tab to BHAGA sheets | [`agents/bhaga/scripts/README.md`](agents/bhaga/scripts/README.md) § Extending the model |
 | Decide x-device tooling (Cursor cloud vs Claude) | [`docs/research/cursor-vs-claude-code-anywhere.md`](docs/research/cursor-vs-claude-code-anywhere.md) |
@@ -65,16 +66,25 @@ These travel with the repo. (Machine-local rules under `~/.cursor/rules` and `~/
 also apply when working **on the operator's Mac**, but are **not** visible to cloud agents or other
 machines — so anything that must survive everywhere lives here or in the linked docs.)
 
-1. **Prod flows: commit → push → deploy. Never run prod against local-only or unpushed code.**
-   For BHAGA the deployed artifact is a container image built by `.github/workflows/deploy.yml` on
-   push to `main`. A local edit does nothing in prod until it's pushed and the image redeploys.
-   (See `RUNBOOK.md` § Operating rules.)
+1. **Never push to `main` directly — land every change via PR.** Branch → PR → automated Claude Opus
+   review + CI → merge → deploy. For BHAGA the deployed artifact is a container image built by
+   `.github/workflows/deploy.yml` on merge to `main`; a local edit does nothing in prod until it's
+   merged and the image redeploys. Full process in [`CONTRIBUTING.md`](CONTRIBUTING.md). (See also
+   `RUNBOOK.md` § Operating rules.)
 2. **No PII / secrets in git.** Tokens, credentials, and personal data live in Secret Manager (cloud)
    or Keychain / gitignored `config.yaml` (local) — never committed.
 3. **Skills are generic, agents are glue.** Reusable logic goes in `skills/`; agents only orchestrate.
 4. **Config-driven, no hardcoding.** Sheet IDs, store profile, pay schedule, etc. come from
    `agents/bhaga/knowledge-base/store-profiles/<store>.json` (BHAGA) or `config.yaml`.
 5. **Third-party portal automation uses the `user-playwright` MCP**, never `cursor-ide-browser`.
+6. **Cloud reads from the cloud, not from a laptop.** Prod/cloud data comes from GCS
+   (`bhaga-scrape-cache`) and secrets from Secret Manager. The local `extracted/downloads/` and
+   Keychain are laptop-only and are **not** sources of truth for anything that runs in prod. Never
+   populate a cloud sheet from a local download. (See `.cursor/rules/bhaga.md` § Operational rules.)
+7. **Build & verify are part of the task — do them without asking.** Running tests, building, deploying
+   (commit→push) and running the standard verification are routine and don't need a separate go-ahead.
+   Do them and report. Pause only for destructive/irreversible actions or genuine architecture forks
+   (per `~/.cursor/rules/dev-workflow-decisions.mdc`, mirrored here so it travels with the repo).
 
 ---
 
@@ -84,8 +94,14 @@ You do **not** need the operator's laptop. With GitHub + GCP access you can oper
 entirely from the repo:
 
 - **Operate:** follow `RUNBOOK.md` (gcloud commands for the job, scheduler, logs, Firestore markers).
-- **Change code:** edit → run tests (`python3 -m pytest agents/bhaga/scripts/ cloud/ core/`) → commit
-  → push `main` → GitHub Actions builds & deploys → verify per `RUNBOOK.md`.
+- **Change code:** edit → run tests (`python3 -m pytest agents/bhaga/scripts/ cloud/ core/`) → branch
+  → PR (`gh pr create`, fill the template) → Claude Opus review + CI → merge to `main` → GitHub Actions
+  builds & deploys → verify per `RUNBOOK.md`. Process: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- **Run a one-off (backfill / maintenance) against prod** as a Cloud Run job, or from an
+  ADC-authenticated cloud shell with `BHAGA_SECRETS_BACKEND=gcp` — reading GCS, never laptop files.
+  See `RUNBOOK.md` § Common tasks for the cloud one-off / backfill recipe.
+- **Verify, don't assume.** After a deploy or backfill, re-read the affected sheet(s) / Firestore
+  markers and diff expected vs actual. This is part of the task — see `RUNBOOK.md` § Common tasks.
 - **No machine-local skill/rule is required** for BHAGA work; if you find you needed one, that's a
   gap — copy the needed knowledge into the repo.
 

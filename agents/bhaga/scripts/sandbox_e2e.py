@@ -195,7 +195,10 @@ def _maybe_run_item_lines(store: str) -> bool:
     if not _item_lines_module_available():
         return False
     import agents.bhaga.scripts.backfill_item_lines_from_cache as item_lines  # type: ignore
-    _invoke_main(item_lines.main, ["--store", store, "--gcs-only"])
+    # GCS is the default source; --local-only is dev/tests only. (The earlier
+    # forward-compat call passed --gcs-only, which the landed script dropped as
+    # redundant.)
+    _invoke_main(item_lines.main, ["--store", store])
     return True
 
 

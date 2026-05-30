@@ -160,6 +160,12 @@ gh pr create --base main --fill     # then fill the template
 - **Cost comment:** after each run, `scripts/post_claude_review_cost.py` posts a PR comment with
   model, turns, input/output tokens, and reported USD cost (from the action's `execution_file`).
   Budget target remains **~$0.50–1/PR** on Sonnet.
+- **Workflow bootstrap PRs:** `claude-code-action` refuses to run when
+  `.github/workflows/claude-review.yml` on the PR branch differs from `main` (GitHub app token
+  validation). On those PRs the cost comment says **review did not run** (not fake zeros) and CI
+  emits a **warning** but stays green. After the workflow lands on `main`, the next PR gets a real
+  review + cost stats (see PR #6 for a working example). CI **fails** if review did not run and the
+  workflow file was **not** changed — that catches real regressions.
 - **What it looks for** is the rubric in `.github/claude-review-guidelines.md` — PR-description
   completeness, backward compatibility (feature-flagged / additive schema / legacy path proven), BHAGA
   correctness invariants (Decimal money, idempotent upserts, `America/Chicago`, GCS-not-laptop,

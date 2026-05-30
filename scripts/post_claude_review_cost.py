@@ -172,7 +172,23 @@ def format_comment(
     default_model: str,
     workflow_run_url: str | None,
     execution_missing: bool,
+    skip_reason: str | None = None,
 ) -> str:
+    if skip_reason == "bootstrap_workflow":
+        lines = [
+            "### Claude review — API cost",
+            "",
+            "**Review did not run on this PR.** `anthropics/claude-code-action` only executes when "
+            "`.github/workflows/claude-review.yml` is **byte-identical to `main`**. This PR changes "
+            "that workflow file (bootstrap) — that is expected, not a broken cost reporter.",
+            "",
+            "After this PR merges, the next PR gets a real Sonnet review and non-zero token/cost "
+            "stats in this comment.",
+        ]
+        if workflow_run_url:
+            lines.append(f"\n[Workflow run]({workflow_run_url})")
+        return "\n".join(lines)
+
     model = stats.get("model") if stats.get("model") != "unknown" else default_model
     # Tokens split by billing tier. "Input (uncached)" is usually tiny because
     # the diff prompt is served from cache — that is expected, not a bug, so we
@@ -282,6 +298,12 @@ def main(argv: list[str] | None = None) -> int:
     cli.add_argument("--execution-file", default="")
     cli.add_argument("--default-model", default="claude-sonnet-4-6")
     cli.add_argument("--workflow-run-url", default="")
+    cli.add_argument(
+        "--skip-reason",
+        choices=["bootstrap_workflow"],
+        default=None,
+        help="Why the review did not run (e.g. workflow file differs from main).",
+    )
     cli.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     cli.add_argument("--dry-run", action="store_true")
     args = cli.parse_args(argv)
@@ -307,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
         default_model=args.default_model,
         workflow_run_url=args.workflow_run_url or None,
         execution_missing=execution_missing,
+        skip_reason=args.skip_reason,
     )
     print(body)
     if args.dry_run:

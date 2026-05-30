@@ -145,6 +145,19 @@ class TestFormatCompositionAndLabels(unittest.TestCase):
         self.assertIn("Cost composition", body)
         self.assertIn("**$0.4646**", body)
 
+    def test_bootstrap_workflow_skips_zero_table(self):
+        body = format_comment(
+            pr_number=7,
+            stats={"num_turns": 0, "input_tokens": 0, "output_tokens": 0},
+            default_model="claude-sonnet-4-6",
+            workflow_run_url="https://example.com/run/1",
+            execution_missing=True,
+            skip_reason="bootstrap_workflow",
+        )
+        self.assertIn("Review did not run", body)
+        self.assertNotIn("| Turns | 0 |", body)
+        self.assertIn("byte-identical", body)
+
 
 if __name__ == "__main__":
     unittest.main()

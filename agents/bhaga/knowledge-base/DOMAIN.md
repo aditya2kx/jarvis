@@ -57,8 +57,9 @@ after the shop closes; the nightly fires 21:30 CT.
 ## 3. The four workbooks & every field
 
 Sheet IDs come from `store-profiles/palmetto.json` → `google_sheets` (keys `bhaga_adp_raw`,
-`bhaga_square_raw`, `bhaga_review_raw`, `bhaga_model`). **Raw** tabs upsert by natural key
-(idempotent); **model** tabs are recomputed each run. The contract (headers + natural keys) lives in
+`bhaga_square_raw`, `bhaga_review_raw`, `bhaga_model`). **Raw** tabs upsert by natural key (idempotent). Most **model** tabs are recomputed each run
+(clear-and-write); **`item_operations`** is upserted incrementally by natural key. The contract
+(headers + natural keys) lives in
 `skills/tip_ledger_writer/schema.py` for ADP/Square raw + some model tabs, in
 `agents/bhaga/scripts/process_reviews.py` (`*_HEADER_ROW`) for review raw, and in the `build_*_rows`
 functions of `update_model_sheet.py` / `forecast.py` for the labor / tip-alloc / forecast tabs.
@@ -133,6 +134,14 @@ functions of `update_model_sheet.py` / `forecast.py` for the labor / tip-alloc /
 `transactions_backend.aggregate_daily_item_stats`. Fields: `items_sold` (count of item line items),
 `units_sold` (sum of quantity), `gross_sales_cents`, `avg_item_price_cents` (= gross / items_sold).
 
+**`item_lines`** — one row per **Square item sales line**. Key:
+`(transaction_id, item_name, item_sold_at_local, line_seq)`. Source:
+`transactions_backend.parse_item_sales_csv` (Item Sales Detail CSV). Fields include
+`date_local`, `item_sold_at_local` (shop-local `YYYY-MM-DDTHH:MM:SS`), `item_name`, `category`,
+`qty_sold`, money in cents, `event_type` (Payment and Refund lines are both kept), `transaction_id`,
+`payment_id`, `location`, `channel`, `line_seq` (0-based row index in the source CSV).
+Square's per-line `employee` field is **not** stored — staffing uses ADP punches instead.
+
 **`kds_daily`** — one row per **day**, kitchen efficiency. Key: `(date_local,)`. Source:
 `transactions_backend.aggregate_daily_kds_stats`.
 
@@ -192,6 +201,22 @@ Detailed field semantics for the model tabs are in §4 (labor), §5 (tips), §6 
 | `dow_hour` | (weekday, hour) | Trailing-28-day heatmap (`transaction_count_28d`, `sales_dollars_28d`, `tips_dollars_28d`, `avg_sales_per_day`, `avg_tips_per_day`) | — |
 | `review_bonus_period` | (period, employee) | Review bonuses earned | §6 |
 | `labor_daily_forecast` | future day | Live staffing planner | §7 |
+| `item_operations` | item line | Item-level throughput + staff punched in at sale time | §4.1 |
+
+**`item_operations`** — one row per item line (mirrors `item_lines` grain). Key matches
+`item_lines`. Built by `agents/bhaga.scripts.item_operations.build_item_operations_records`.
+Upserted incrementally (not clear-and-rewrite). Money columns are in **dollars**; staff columns are
+**distinct headcounts** at `item_sold_at_local`:
+
+| Field | Meaning |
+|---|---|
+| `item_sold_at_local` | When the item line was recorded (shop-local); anchor for punch overlap |
+| `staff_punched_in_hourly_count` | Baristas / tipped staff with an active punch at that instant |
+| `staff_punched_in_fulltime_count` | Manager / excluded bucket (see §1) punched in |
+| `staff_punched_in_total_count` | Sum of the two counts |
+
+Punch rule: on `date_local`, count employee if `in_time <= item_time <= out_time` on
+`bhaga_adp_raw > punches` (same buckets as `labor_daily` via `skills/bhaga_labor/staff_punched_in.py`).
 
 ---
 

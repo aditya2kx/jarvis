@@ -115,6 +115,27 @@ WORKBOOK_SCHEMAS: dict[str, list[dict]] = {
             ),
         },
         {
+            "tab_name": "item_lines",
+            "natural_key_columns": (
+                "transaction_id", "item_name", "item_sold_at_local", "line_seq",
+            ),
+            "header": [
+                "date_local", "item_sold_at_local", "item_name", "category",
+                "qty_sold", "gross_sales_cents", "discount_cents", "net_sales_cents",
+                "event_type", "transaction_id", "payment_id", "location", "channel",
+                "line_seq", "scraped_at_utc",
+            ],
+            "notes": (
+                "One row per Square Item Sales Detail line. Source: "
+                "transactions_backend.parse_item_sales_csv. Natural key: "
+                "(transaction_id, item_name, item_sold_at_local, line_seq). "
+                "line_seq is the 0-based index AMONG lines sharing that same "
+                "(transaction_id, item_name, item_sold_at_local) — a per-group "
+                "counter (NOT a file-global index), so the key is stable across "
+                "differently-windowed re-exports and replay never duplicates a line."
+            ),
+        },
+        {
             "tab_name": "kds_daily",
             "natural_key_columns": ("date_local",),
             "header": [
@@ -205,6 +226,24 @@ WORKBOOK_SCHEMAS: dict[str, list[dict]] = {
             "notes": (
                 "Per-pay-period rollup for the pay-period close workflow (M4). "
                 "Boundaries from store_profile.pay_period_definition."
+            ),
+        },
+        {
+            "tab_name": "item_operations",
+            "natural_key_columns": (
+                "transaction_id", "item_name", "item_sold_at_local", "line_seq",
+            ),
+            "header": [
+                "date_local", "item_sold_at_local", "dow_label", "item_name",
+                "category", "qty_sold", "gross_sales_dollars", "discount_dollars",
+                "net_sales_dollars", "event_type", "transaction_id",
+                "staff_punched_in_hourly_count", "staff_punched_in_fulltime_count",
+                "staff_punched_in_total_count", "line_seq",
+            ],
+            "notes": (
+                "Item-level operations view: one row per Square item line with "
+                "staff punched-in headcounts at item_sold_at_local. Upserted "
+                "incrementally (not full-tab rewrite). Source: item_lines + punches."
             ),
         },
     ],

@@ -23,10 +23,12 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
 3. **Scrape ADP** timecards / earnings for overlapping pay periods (`skills/adp_run_automation/`).
    2FA, if challenged, goes through the **OTP gate** (see below).
 4. **Mirror scrapes → raw Google Sheets** (`backfill_from_downloads.py`): `bhaga_adp_raw`,
-   `bhaga_square_raw`. **Contract: downstream reads only the raw sheets, never local files.**
+   `bhaga_square_raw` (including **`item_lines`** from the same Item Sales CSV as
+   `item_daily_rollup`). **Contract: downstream reads only the raw sheets, never local files.**
 5. **Recompute the Model tabs** (`update_model_sheet.py`): `config, daily, labor_daily,
    labor_weekly, labor_period, tip_alloc_period, tip_alloc_daily, period_summary`
-   (+ `labor_daily_forecast` via `forecast.py`).
+   (+ `labor_daily_forecast` via `forecast.py`), then **upsert `item_operations`** for the gap
+   window (`item_operations.py` — incremental, not full-tab rewrite).
 6. **Reviews** (`process_reviews.py`): pull Google reviews from ClickUp, allocate bonuses, rebuild
    `review_bonus_period`. Idempotent on rerun.
 7. **Heartbeat** success/failure DM to the BHAGA Slack channel (`notify.py`).
@@ -45,6 +47,8 @@ clear its marker — see `RUNBOOK.md` § Common tasks.
 | `daily_refresh_wrapper.py` | Thin wrapper / Cloud Run entrypoint around `daily_refresh`. |
 | `otp_gate.py` | OTP **checkpoint-and-resume**: writes a pending request to Firestore + Slack, blocks until the webhook records the operator's reply. |
 | `backfill_from_downloads.py` | Mirror local/GCS scrape artifacts into the canonical **raw** sheets (`_upsert_tab`, additive header migration). |
+| `backfill_item_lines_from_cache.py` | **No extra OTP** — replay GCS-cached `items-*.csv` into raw `item_lines` (GCS default; `--local-only` for tests). |
+| `item_operations.py` | Build + upsert Model `item_operations` from `item_lines` + punches. |
 | `update_model_sheet.py` | Recompute the **Model** workbook tabs from the raw sheets. Houses the `build_*_rows` functions (one per tab). |
 | `process_reviews.py` | Reviews → bonus allocation → rebuild `review_bonus_period`. |
 | `forecast.py` | Builds `labor_daily_forecast` (staffing solver, guardrails, anomaly detection). |
@@ -96,6 +100,7 @@ Use these to consume already-scraped data when building a derived column or tab:
 | `read_raw_square_transactions(sid)` | Square transaction rows |
 | `read_raw_square_daily_rollup(sid)` | Square per-day rollup |
 | `read_raw_square_item_daily_rollup(sid)` | Square per-item per-day rollup |
+| `read_raw_square_item_lines(sid)` | Square per-item line rows |
 | `read_raw_kds_daily(sid)` | Square KDS per-day metrics |
 
 (All take `account="palmetto"` by default. Resolve `sid` from the store profile, never hardcode.)
@@ -153,6 +158,28 @@ Direction 1 in `DOMAIN.md` § Growing the data model.
 3. **Backfill:** re-scrape the window (`backfill_from_downloads.py` / re-run the gap) so the column
    populates history; old rows stay blank until re-scraped.
 4. **Surface it in the model** if needed (Recipe A/B), then document it in `DOMAIN.md` §3.
+
+### Recipe D — a high-volume model tab that upserts incrementally (NOT clear-and-write)
+
+Most model tabs are rebuilt every night with `clear_and_write_tab` (cheap at ~hundreds of rows).
+**Don't do that for a large tab** (thousands+ of rows, e.g. per-item-line) — a nightly full rewrite
+burns Sheets quota and is slow. `item_operations` is the reference implementation of the incremental
+pattern:
+
+1. **Register the tab in `schema.py`** with a natural key (so rows upsert, not duplicate).
+2. **Build rows in a dedicated module** (`agents/bhaga/scripts/item_operations.py`) reading raw via
+   `reader.py`; compute in memory (load punches/rates once, index, then per-row).
+3. **Upsert via `tip_ledger_writer`** (`write_model_*`) keyed by natural key — same idempotent path
+   as raw tabs — instead of `clear_and_write_tab`.
+4. **Scope the nightly run to the gap window.** Wire `daily_refresh.py` to recompute only the gap
+   dates, and expose explicit flags on `update_model_sheet.py` for ops/backfill, e.g.
+   `--item-operations-only`, `--all-item-operations`, `--item-ops-date-from/to`.
+5. **Backfill is a separate one-off script** (`backfill_item_lines_from_cache.py`) that replays the
+   GCS scrape cache — see RUNBOOK § "Run a one-off backfill against prod" (**cloud = GCS, never local
+   downloads**).
+
+> Rule of thumb: if a model tab can exceed ~1–2k rows or grows unbounded with history, use Recipe D
+> (incremental upsert + gap-scoped recompute), not the default clear-and-write of Recipe B.
 
 ### After any recipe
 

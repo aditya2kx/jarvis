@@ -12,6 +12,18 @@
 
 ## BHAGA Agent (Tip Allocation & Payroll Prep)
 
+### 2026-05-30 — Item-level operations tab (`item_lines` + `item_operations`)
+
+- **Raw `item_lines`:** persists every Square Item Sales Detail line (natural key includes
+  `line_seq`). Nightly `backfill_from_downloads` upserts gap rows; historical replay via
+  `backfill_item_lines_from_cache` (GCS `items-*.csv` by default, no extra OTP).
+- **Model `item_operations`:** item sale time + `staff_punched_in_{hourly,fulltime,total}_count`
+  from ADP punches at `item_sold_at_local` (`skills/bhaga_labor/staff_punched_in.py`). Incremental
+  upsert on each `update_model_sheet` run for the gap window.
+- **Docs:** `agents/bhaga/knowledge-base/DOMAIN.md` §3B/§3D; RUNBOOK backfill commands.
+- **Tests:** `test_item_lines.py`, `test_staff_punched_in.py` (golden day S1), reconciliation S2,
+  pipeline e2e.
+
 **Status: SHIPPED & CLOUD-PRIMARY (2026-05-29). Nightly runs as a GCP Cloud Run Job; laptop retired.**
 
 > **Operate from [`RUNBOOK.md`](RUNBOOK.md).** Behavioral spec: [`.cursor/rules/bhaga.md`](.cursor/rules/bhaga.md).
@@ -68,6 +80,27 @@ Follow-up (2026-05-30): addressed Claude review's non-blocking notes on PR #3 �
 returns the span across the N most-recent *cached* dates (not N calendar days), flagged the bounded
 `seed_model_metadata` read ranges as a truncation risk, and noted in RUNBOOK §13 that the first PR landing
 after `SANDBOX_E2E_ENABLED=true` is the live-validation of the harness.
+
+**Dev-process gaps closed (2026-05-30):** (1) "cloud reads from the cloud, never laptop files" is now
+a hard rule in `AGENTS.md` (rule 6) + `.cursor/rules/bhaga.md` § Operational rules, and enforced in
+code via `backfill_item_lines_from_cache.py` defaulting to GCS-only (`--local-only` for tests).
+(2) Deploy/run gap: RUNBOOK §13 now has "Run a one-off backfill / maintenance
+script against prod" — Option A (Cloud Run job command override + revert) and Option B (ADC shell with
+`BHAGA_SECRETS_BACKEND=gcp`), plus a verify step. (3) Autonomy norm: "build & verify are part of the
+task — don't ask permission" added to `AGENTS.md` (rule 7) + bhaga.md. (4) Added missing
+`skills/bhaga_labor/README.md`, Recipe D (incremental high-volume model tab) to scripts README, and
+freshness couplings for `skills/bhaga_labor/**` + `skills/square_tips/transactions_backend.py`.
+
+**PR process + Claude Opus review bot (2026-05-30):** moved off "push to `main` directly." New flow is
+branch → PR → automated Claude Opus review + CI → merge → deploy, so features built in other (cheaper-
+model) chat spaces stay reviewable. Added: `CONTRIBUTING.md` (the process), `.github/pull_request_template.md`
+(required sections: what / motivation / e2e-test-with-evidence / backward-compat + proof / checklist),
+`.github/claude-review-guidelines.md` (the rubric the bot enforces — desc completeness, backward compat,
+BHAGA invariants, testing, security, docs lock-step), and `.github/workflows/claude-review.yml`
+(`anthropics/claude-code-action@v1`, `--model opus`, cost-bounded, **dormant until repo secret
+`ANTHROPIC_API_KEY` is set**). Updated AGENTS.md rule 1 / RUNBOOK §12 / bhaga.md to the PR flow; added a
+freshness coupling for the process files. **Manual one-time (repo admin):** add `ANTHROPIC_API_KEY`
+secret + enable branch protection on `main` (see CONTRIBUTING.md § Enabling enforcement).
 
 Named after **Bhaga** (भग) — Vedic Aditya whose name derives from Sanskrit *bhaj* ("to apportion, divide, share"). The deity of just distribution of wealth and shares — the rightful portion due to each. Etymologically perfect for a tip-pool fair-share agent.
 

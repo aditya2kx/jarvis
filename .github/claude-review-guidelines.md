@@ -1,6 +1,6 @@
 # Claude PR review guidelines (Jarvis / BHAGA)
 
-This is the rubric the automated **Claude Opus** reviewer follows on every PR
+This is the rubric the automated **Claude Sonnet** reviewer follows on every PR
 (`.github/workflows/claude-review.yml`). It is also the human-readable contract for
 what a good PR here looks like. Keep it current as invariants evolve.
 
@@ -46,9 +46,11 @@ say which section.
 
 ## D. Testing & verification
 - Tests added/updated; new code should be ~**100% covered**.
-- The "end-to-end test" evidence is a **real prod (or prod-like) run** with recorded output — not
-  just unit tests. Unit tests are necessary but are not the proof of doneness. Flag PRs whose only
-  evidence is "unit tests pass".
+- The "end-to-end test" evidence is a **prod-like e2e run against isolated sandbox sheets** (for BHAGA,
+  the per-PR `Sandbox e2e` workflow / `agents/bhaga/scripts/sandbox_e2e.py`) with recorded output — not
+  just unit tests. A direct-against-prod run is acceptable only when sandbox isolation can't exercise
+  the path. Unit tests are necessary but are not the proof of doneness. Flag PRs whose only evidence is
+  "unit tests pass".
 
 ## D2. Cost & cleanup discipline (from CONTRIBUTING.md § Design & execution principles)
 - **Token / cost:** flag obvious cost regressions — per-row network calls, unbounded LLM turns,

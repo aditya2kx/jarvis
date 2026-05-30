@@ -9,7 +9,7 @@ sessions stays safe and reviewable.
 The goal is a clean split of ownership that lets the operator step back:
 
 - **The agent owns the entire development, end to end.** Once requirements are agreed, you own
-  everything: building, tests, the prod e2e, recording evidence, opening the PR, getting **all CI
+  everything: building, tests, the prod-like e2e, recording evidence, opening the PR, getting **all CI
   green**, and **addressing every review comment — from humans and from the Claude bot — autonomously,
   iterating until the PR is merge-ready, with no operator intervention.** Don't hand back a half-done
   PR and wait. Drive it to green: read the comments/failing checks, fix, re-push, repeat. If a comment
@@ -17,7 +17,7 @@ The goal is a clean split of ownership that lets the operator step back:
 - **You owe the operator two kinds of evidence:**
   1. **Evidence of understanding** — *before* building, prove (via Ask + Plan) you understood every
      requirement. Restate it back, surface ambiguities, get agreement.
-  2. **Evidence it works** — *during/after* building, present enough proof (prod e2e output, sheet
+  2. **Evidence it works** — *during/after* building, present enough proof (prod-like e2e output, sheet
      diffs, logs) to **convince** the operator the requirements are actually met. The burden of proof
      is on you, not on the operator to go verify.
 - **The operator owns only the final sign-off.** Their job shrinks to: give requirements incrementally,
@@ -42,9 +42,13 @@ tight build → verify → fix loop without the operator babysitting every step.
    (the operator isn't in the loop for routine correction). If a milestone can't be closed by your
    own verification, it's too big — split it. Include the per-milestone test plan (what you'll run
    to prove it) in the plan.
-4. **Verify with a real end-to-end run against prod — not just unit tests.** The proof a milestone /
-   PR works is a **prod (or prod-like) e2e** with recorded evidence. Unit tests are necessary but are
-   *not* the evidence of doneness.
+4. **Verify with a real end-to-end run — not just unit tests.** The proof a milestone / PR works is a
+   **prod-like e2e against isolated sandbox sheets** with recorded evidence. For BHAGA, the per-PR
+   `Sandbox e2e` workflow does exactly this — it provisions ephemeral sandbox sheets, replays the GCS
+   scrape cache (read-only, zero-OTP), builds the model, asserts the tabs are populated, and posts the
+   evidence as a PR comment (see `RUNBOOK.md` §13 and `agents/bhaga/scripts/sandbox_e2e.py`). Run
+   directly against prod sheets only when sandbox isolation genuinely can't exercise the path. Unit
+   tests are necessary but are *not* the evidence of doneness.
 5. **100% code coverage.** New code is fully covered by tests; the e2e is on top of that, not instead.
 6. **Record and present evidence in the PR.** Every claim ("it works", "it's backward compatible") is
    backed by commands + output / sheet diffs / logs in the PR description (template §3 and §4). If the
@@ -139,16 +143,19 @@ gh auth switch --user aditya2kx     # repo owner; creating PRs as another accoun
 gh pr create --base main --fill     # then fill the template
 ```
 
-## The review bot (Claude Opus)
+## The review bot (Claude Sonnet)
 
 - Workflow: `.github/workflows/claude-review.yml`. Triggers on PR `opened` / `synchronize` / `reopened`.
-- Model: **Claude Opus** (`--model opus`), cost-bounded with `--max-turns 40` (enough to read the
-  rubric + diff + key files and post inline comments and a summary on a multi-file PR; 12 was too low
-  and the bot died mid-review) and per-PR `concurrency` cancellation. It reads the diff + PR
-  description and posts inline comments + a summary verdict.
+- Model: **Claude Sonnet 4.6** (`--model claude-sonnet-4-6`), cost-budgeted for **~$0.50–1 per PR**:
+  `--max-turns 10`, a 12-minute job timeout, per-PR `concurrency` cancellation, and a prompt that
+  restricts the bot to `gh pr view` / `gh pr diff` (no repo-wide greps). Opus at 40 turns was ~$4–5/PR
+  (~4.7M input tokens). Escalate to Opus manually in chat for contentious changes.
 - **Advisory, not a hard gate.** The review step is `continue-on-error`, so a bot infra hiccup (turn
   cap, transient API error) never red-X's the PR — the **operator's approval** is the hard merge gate
   (branch protection). Real review feedback is posted as PR comments regardless.
+- **Cost comment:** after each run, `scripts/post_claude_review_cost.py` posts a PR comment with
+  model, turns, input/output tokens, and reported USD cost (from the action's `execution_file`).
+  Budget target remains **~$0.50–1/PR** on Sonnet.
 - **What it looks for** is the rubric in `.github/claude-review-guidelines.md` — PR-description
   completeness, backward compatibility (feature-flagged / additive schema / legacy path proven), BHAGA
   correctness invariants (Decimal money, idempotent upserts, `America/Chicago`, GCS-not-laptop,
@@ -162,8 +169,8 @@ gh pr create --base main --fill     # then fill the template
 These are GitHub-side and can't be done from the repo alone:
 
 1. **Add the API key:** repo → Settings → Secrets and variables → Actions → New secret
-   `ANTHROPIC_API_KEY` (an Anthropic key with Opus access). Cost note: this spends Anthropic API credits
-   per PR review.
+   `ANTHROPIC_API_KEY` (Anthropic API key). Cost note: ~$0.50–1 per PR at Sonnet + 10 turns; monitor in
+   the Anthropic console (Usage → Cost).
 2. **Protect `main`:** repo → Settings → Branches → add a rule for `main`:
    - Require a pull request before merging.
    - **Require approvals (1)** — so a PR can't be merged without the operator's explicit review approval.

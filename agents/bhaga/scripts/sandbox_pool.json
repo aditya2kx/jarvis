@@ -1,0 +1,29 @@
+{
+  "folder_id": "1bUJ_AMIlGrP9ThK4H7vCpZHpYRBc2yty",
+  "num_slots": 3,
+  "sa_email": "bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com",
+  "slots": [
+    {
+      "bhaga_adp_raw": "1mlABq2s35GP15v6INJVbJhjIK-S_Lu2IB8P0y_-mVpg",
+      "bhaga_model": "1mTIF7HeEgrnNRzxogBARrvupJ3Ky6auN1YOlBA732dg",
+      "bhaga_review_raw": "1bnadm9t5nR7I6XUOnpR8G5jOVDARGvgSJzhEZL4gRAo",
+      "bhaga_square_raw": "1qHvO9hJD_ECryx77GKurVcikeqaTACz90iWwMAsr5sE",
+      "slot": 0
+    },
+    {
+      "bhaga_adp_raw": "1nIY8P6yq827c8sKvMB6DXThXtLs0bc6eaDoibH12BJw",
+      "bhaga_model": "1UZ5W9SHp8K3ZO2ODCoxgEcLAQ1eZnVxeznzNHrenCKE",
+      "bhaga_review_raw": "1nrA3W20QgWXNdBg6B-u48S0WRjWQXHkl9SIvl29Kzak",
+      "bhaga_square_raw": "11XLXGoOVCaA30NAhI56NoKjvMVoYE0ij1Nr517S3i_Y",
+      "slot": 1
+    },
+    {
+      "bhaga_adp_raw": "1Sc1yiXw64vLtmBxq9A-avOOOvB_NF_h07dPO9VxjAk4",
+      "bhaga_model": "16ZZuhbr8eTOTXf5Rt8fr-_HI9tA10sBGxHy_s_az1nY",
+      "bhaga_review_raw": "1-ybPygHKzC0zVP3O_apHDC645AIfN8VBJvWh2pZ2IrQ",
+      "bhaga_square_raw": "1j1MzpJIJuvRYkYrY_yXb-f6ZbU_lP8aAY4qGoIbSwCI",
+      "slot": 2
+    }
+  ],
+  "store": "palmetto"
+}

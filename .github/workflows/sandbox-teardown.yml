@@ -1,0 +1,44 @@
+name: Sandbox teardown
+
+# Safety net: when a PR closes (merged or not), clear + release any leased pool
+# slot. Sheets persist (pre-created pool); only the Firestore lease is freed.
+# The e2e runner already teardowns in finally on a normal run; this catches a
+# slot left leased by a cancelled or killed job.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  teardown:
+    name: Sandbox teardown
+    runs-on: ubuntu-latest
+    if: ${{ vars.SANDBOX_E2E_ENABLED == 'true' }}
+    env:
+      BHAGA_SECRETS_BACKEND: gcp
+      BHAGA_STATE_BACKEND: firestore
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.SANDBOX_E2E_SERVICE_ACCOUNT || secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Release this PR's sandbox slot
+        run: |
+          python3 -m agents.bhaga.scripts.sandbox_provision \
+            --pr-number "${{ github.event.number }}" --action teardown

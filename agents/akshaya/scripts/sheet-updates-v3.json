@@ -765,11 +765,11 @@
   },
   {
     "range": "Sheet1!A24",
-    "value": "Tub Capacity (B6): 130 tubs  |  Post-Order (F36): 130.5 tubs (⚠ OVER CAPACITY (130.5 > 130 by 0.5 tubs))  |  Current Total: 74.5 tubs  |  Anchor-Date Initial: 77.5 (info)"
+    "value": "Tub Capacity (B6): 130 tubs  |  Post-Order (F36): 130.1 tubs (⚠ OVER CAPACITY (130.1 > 130 by 0.1 tubs))  |  Current Total: 81.1 tubs  |  Anchor-Date Initial: 77.5 (info)"
   },
   {
     "range": "Sheet1!A25",
-    "value": "Equalize-DoS Target: 36.0d  |  In-band (±4d): 5 of 8  |  Outliers: Açaí (50d), Ube (0d), Pog (69d)  |  Order Total: 56  |  Trailing Growth: +28.2%/wk"
+    "value": "Equalize-DoS Target: 33.3d  |  In-band (±4d): 5 of 8  |  Outliers: Açaí (212d), Ube (0d), Pog (69d)  |  Order Total: 49  |  Trailing Growth: +28.2%/wk"
   },
   {
     "range": "Sheet1!B24",
@@ -917,11 +917,11 @@
   },
   {
     "range": "Sheet1!C28",
-    "value": "32.5"
+    "value": "39.02"
   },
   {
     "range": "Sheet1!D28",
-    "value": "0.656"
+    "value": "0.184"
   },
   {
     "range": "Sheet1!E28",

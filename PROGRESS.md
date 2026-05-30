@@ -45,6 +45,30 @@ self-maintaining `COUPLINGS` table), and `.github/workflows/doc-freshness.yml` (
 signal on push + PRs). Git-hook approach rejected: local hooks don't travel, portable hooks need a
 forbidden git-config change that would shadow the corporate pre-push hook.
 
+**Per-PR sandbox e2e — prod-like, zero-OTP (2026-05-30):** added `agents/bhaga/scripts/sandbox_provision.py`
+(creates/tears down 4 ephemeral sandbox sheets per PR, seeds model `config`+`employees` read-only from
+prod, emits `BHAGA_STAGING_*_SID`) and `agents/bhaga/scripts/sandbox_e2e.py` (provision → GCS-cache
+replay → backfill → model build → `assert_model_tabs_populated` → evidence → teardown). It runs on
+every PR via `.github/workflows/sandbox-e2e.yml` (+ `sandbox-teardown.yml` on close), reusing
+deploy's WIF, gated behind the `SANDBOX_E2E_ENABLED` repo var. **Structural no-OTP guarantee:** the
+runner composes only replay code and imports no Square/ADP/ClickUp/browser module — to make that hold,
+`daily_refresh.py`'s scrape imports were made lazy (importing it, or `update_model_sheet`, no longer
+pulls in `patchright`/runners). `test_sandbox_e2e.py` enforces the guarantee in an isolated
+interpreter. Reviews stay out of scope (live ClickUp); item-ops auto-included once it lands on main.
+**Sandbox pool + CI fix (2026-05-30):** Replaced per-PR sheet *creation* (SA can't create on consumer
+Drive) with a 3-slot pre-shared pool (`sandbox_pool.json`, operator `create-pool` as palmetto user).
+CI leases via Firestore `sandbox_slots`, clears/writes, releases. Enabled Drive API on
+`jarvis-bhaga-prod`; local full e2e green with ADC (`aditya.2ky@gmail.com`) + palmetto OAuth.
+**Claude review cost cap (2026-05-30):** Switched PR bot from Opus/40 turns (~$4–5/PR, ~4.7M input
+tokens) to Sonnet 4.6/10 turns + diff-only prompt (~$0.50–1 target). Added
+`scripts/post_claude_review_cost.py` — posts a PR comment after each review with model, turns,
+tokens, and reported USD from `execution_file`.
+
+Follow-up (2026-05-30): addressed Claude review's non-blocking notes on PR #3 — clarified `select_window`
+returns the span across the N most-recent *cached* dates (not N calendar days), flagged the bounded
+`seed_model_metadata` read ranges as a truncation risk, and noted in RUNBOOK §13 that the first PR landing
+after `SANDBOX_E2E_ENABLED=true` is the live-validation of the harness.
+
 Named after **Bhaga** (भग) — Vedic Aditya whose name derives from Sanskrit *bhaj* ("to apportion, divide, share"). The deity of just distribution of wealth and shares — the rightful portion due to each. Etymologically perfect for a tip-pool fair-share agent.
 
 **Origin**: handoff doc at `get open/handoff-tip-allocator-agent.md` (chat: [Square ADP tip automation plan](b8a58719-e992-4051-954d-dbd513cf0f93)). Sibling-pattern reference: AKSHAYA (Square + Playwright + Sheets).

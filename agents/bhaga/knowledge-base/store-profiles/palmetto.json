@@ -22,8 +22,8 @@
   },
   "google_sheets": {
     "bhaga_adp_raw": {
-      "spreadsheet_id": "1-08EIN6EO72t-ImCKRCf4gbIaVN5cJ1FRVlekccvg6w",
-      "url": "https://docs.google.com/spreadsheets/d/1-08EIN6EO72t-ImCKRCf4gbIaVN5cJ1FRVlekccvg6w/edit",
+      "spreadsheet_id": "1sv-zK6Mc_ybPUZrObt0CWmodxIVNYm3ahfZg8WZtLyo",
+      "url": "https://docs.google.com/spreadsheets/d/1sv-zK6Mc_ybPUZrObt0CWmodxIVNYm3ahfZg8WZtLyo/edit",
       "tabs": [
         "shifts",
         "punches",
@@ -31,16 +31,16 @@
       ]
     },
     "bhaga_square_raw": {
-      "spreadsheet_id": "1q_uP14ZvbxPBLy8HcgK0EmwaQMmIPP1jwTV3xmd6kZU",
-      "url": "https://docs.google.com/spreadsheets/d/1q_uP14ZvbxPBLy8HcgK0EmwaQMmIPP1jwTV3xmd6kZU/edit",
+      "spreadsheet_id": "1X2sCGwJi8YfcM0DAYlDzHBxG3_Du4jLauppfAw_A1rw",
+      "url": "https://docs.google.com/spreadsheets/d/1X2sCGwJi8YfcM0DAYlDzHBxG3_Du4jLauppfAw_A1rw/edit",
       "tabs": [
         "transactions",
         "daily_rollup"
       ]
     },
     "bhaga_model": {
-      "spreadsheet_id": "1Drj9nplWcdeRChWQ9fk0dfZQPkQweIuPVL5yqNIDOd0",
-      "url": "https://docs.google.com/spreadsheets/d/1Drj9nplWcdeRChWQ9fk0dfZQPkQweIuPVL5yqNIDOd0/edit",
+      "spreadsheet_id": "18NH71JwMOAX6euFugSsSQlJhHPgBghWk09YWnsSuvDk",
+      "url": "https://docs.google.com/spreadsheets/d/18NH71JwMOAX6euFugSsSQlJhHPgBghWk09YWnsSuvDk/edit",
       "tabs": [
         "config",
         "daily",
@@ -51,33 +51,14 @@
       ]
     },
     "bhaga_review_raw": {
-      "spreadsheet_id": "1FRtLNy5Ae-m7TK-Q0-alA62A-F7l0cwRZLj1sUMBfmM",
-      "url": "https://docs.google.com/spreadsheets/d/1FRtLNy5Ae-m7TK-Q0-alA62A-F7l0cwRZLj1sUMBfmM/edit",
+      "spreadsheet_id": "16pkNefCOEcEUlhIU6zH03nEcg5PXmBpJhkHy3aUa-k4",
+      "url": "https://docs.google.com/spreadsheets/d/16pkNefCOEcEUlhIU6zH03nEcg5PXmBpJhkHy3aUa-k4/edit",
       "tabs": [
         "reviews",
         "unparseable",
         "config"
       ],
       "_doc": "Per-review audit trail populated by process_reviews.py. Source data for the review_bonus_period rollup tab on bhaga_model."
-    }
-  },
-  "google_sheets_staging": {
-    "_doc": "Cloud Staging sheets — copies of prod, used by the Cloud Run orchestrator (BHAGA_SHEET_MODE=staging). Never touched by the laptop nightly. Created 2026-05-26.",
-    "bhaga_model": {
-      "spreadsheet_id": "18NH71JwMOAX6euFugSsSQlJhHPgBghWk09YWnsSuvDk",
-      "url": "https://docs.google.com/spreadsheets/d/18NH71JwMOAX6euFugSsSQlJhHPgBghWk09YWnsSuvDk/edit"
-    },
-    "bhaga_adp_raw": {
-      "spreadsheet_id": "1sv-zK6Mc_ybPUZrObt0CWmodxIVNYm3ahfZg8WZtLyo",
-      "url": "https://docs.google.com/spreadsheets/d/1sv-zK6Mc_ybPUZrObt0CWmodxIVNYm3ahfZg8WZtLyo/edit"
-    },
-    "bhaga_square_raw": {
-      "spreadsheet_id": "1X2sCGwJi8YfcM0DAYlDzHBxG3_Du4jLauppfAw_A1rw",
-      "url": "https://docs.google.com/spreadsheets/d/1X2sCGwJi8YfcM0DAYlDzHBxG3_Du4jLauppfAw_A1rw/edit"
-    },
-    "bhaga_review_raw": {
-      "spreadsheet_id": "16pkNefCOEcEUlhIU6zH03nEcg5PXmBpJhkHy3aUa-k4",
-      "url": "https://docs.google.com/spreadsheets/d/16pkNefCOEcEUlhIU6zH03nEcg5PXmBpJhkHy3aUa-k4/edit"
     }
   },
   "clickup": {

@@ -11,27 +11,25 @@ GitHub + GCP access** — no dependency on the old laptop, its Keychain, or its 
 
 ---
 
-## 0. Read this first — the "promote-staging" reality (avoid future confusion)
+## 0. Read this first — sheet source of truth
 
-During the cloud migration, the cloud job was pointed at a set of **staging** sheets while the
-laptop nightly kept writing the original prod sheets. On **2026-05-29** we cut over: the cloud
-flow is now the **sole** primary, and the sheets it writes were **promoted to production**.
+During the cloud migration the job temporarily ran `BHAGA_SHEET_MODE=staging` to route writes to a
+parallel set of "staging" sheets while the laptop nightly kept writing the original prod sheets. On
+**2026-05-29** the cloud flow became the **sole** primary; on **2026-05-30** the cutover was
+**finalized**: the promoted sheet IDs were folded directly into the `google_sheets` (prod) block of
+`store-profiles/palmetto.json`, and the staging-mode plumbing was **retired**.
 
-Because of how the cutover was done, there are two facts that look contradictory but are correct:
+What this means now (the simple, non-confusing reality):
 
-1. **The job intentionally runs `BHAGA_SHEET_MODE=staging`.** This env var is **routing-only** —
-   it tells `core/config_loader.py:resolve_sheet_id()` to use the `BHAGA_STAGING_*_SID` sheet IDs
-   instead of the `google_sheets` IDs in `store-profiles/palmetto.json`. It does **NOT** disable,
-   skip, or degrade any pipeline step, OTP behavior, or writes. **DO NOT change it to `prod`** —
-   doing so would repoint the job at the old, frozen prod sheets.
-2. **The sheet internally called "staging" (`18NH71J…`) IS now PRODUCTION.** It has been renamed
-   to `BHAGA Model`. The old prod Model (`1Drj9…`) has been renamed
-   `[DEPRECATED — superseded by cloud sheet, do not use] BHAGA Model` and is frozen (no longer
-   written, no permission/data changes). The same promote/deprecate was applied to the three raw
-   sheets.
+1. **The profile's `google_sheets` block is the single source of truth.** `resolve_sheet_id()`
+   returns those IDs in plain prod mode. There is **no** `BHAGA_SHEET_MODE` env var on the job, **no**
+   `BHAGA_STAGING_*_SID` env vars, and **no** `google_sheets_staging` block in the profile anymore.
+2. **The active production sheets** are `18NH71J…` (Model) plus the three raw sheets listed in §2.
+   The old laptop-era sheets (`1Drj9…` etc.) are renamed `[DEPRECATED …]`, frozen, and **no longer
+   referenced anywhere in code or config** (git history preserves the old IDs if ever needed).
 
-> **TL;DR:** "staging" is just the env-var name for the active sheet-ID set. The sheets it points
-> at are the real production sheets. Leave `BHAGA_SHEET_MODE=staging` on the job.
+> **TL;DR:** prod mode, prod IDs, one source of truth. `config.yaml` is not in the cloud image —
+> the store-profile JSON is what the job reads.
 
 ---
 
@@ -67,7 +65,7 @@ All sheets live under the **`BHAGA`** Google Drive folder
 The Cloud Run service account is shared on every active sheet (see
 `agents/bhaga/scripts/share_sheets_with_sa.py`).
 
-### PRODUCTION (active — written by the cloud job; env-var set `BHAGA_STAGING_*_SID`)
+### PRODUCTION (active — written by the cloud job; `google_sheets` block in `store-profiles/palmetto.json`)
 
 | Role | Title | Spreadsheet ID |
 |---|---|---|
@@ -90,10 +88,11 @@ Model tabs: `config`, `daily`, `tip_alloc_daily`, `tip_alloc_period`, `period_su
 | Square raw | `[DEPRECATED …] BHAGA Square Raw` | `1q_uP14ZvbxPBLy8HcgK0EmwaQMmIPP1jwTV3xmd6kZU` |
 | Review raw | `[DEPRECATED …] BHAGA Review Raw` | `1FRtLNy5Ae-m7TK-Q0-alA62A-F7l0cwRZLj1sUMBfmM` |
 
-> The deprecated IDs are still listed under `google_sheets` in `store-profiles/palmetto.json` and are
-> used by `config_loader._load_production_sheet_ids()` as the **block-list** for the
-> `_assert_not_production_sheet()` guard — that guard prevents the staging-mode job from ever
-> touching them. Keep them in the profile.
+> The deprecated IDs are **no longer referenced** in `store-profiles/palmetto.json` or anywhere in
+> code (they were removed when the promoted IDs were folded into the `google_sheets` prod block on
+> 2026-05-30). They are listed here only as a record of the frozen, renamed Drive files. The
+> `_assert_not_production_sheet()` guard in `config_loader.py` is now inert (it only fired in
+> `BHAGA_SHEET_MODE=staging`, which is retired); the function is left in place harmlessly.
 
 ---
 
@@ -109,19 +108,14 @@ Model tabs: `config`, `daily`, `tip_alloc_daily`, `tip_alloc_period`, `period_su
   - Routes: `POST /slack/events` (Events API), `POST /slack/commands` (`/bhaga refresh <date>`,
     `/bhaga status`), `GET /health`.
 
-### `bhaga-daily-refresh` environment (routing-only, no secret values shown)
+### `bhaga-daily-refresh` environment (no secret values shown)
 
 | Env | Value |
 |---|---|
 | `BHAGA_SECRETS_BACKEND` | `gcp` (use Secret Manager / ADC, not local Keychain) |
 | `BHAGA_STATE_BACKEND` | `firestore` |
-| `BHAGA_SHEET_MODE` | `staging` ← **leave as-is** (routing-only; see §0) |
 | `GCP_PROJECT` | `jarvis-bhaga-prod` |
 | `STORE` | `palmetto` |
-| `BHAGA_STAGING_BHAGA_MODEL_SID` | `18NH71JwMOAX6euFugSsSQlJhHPgBghWk09YWnsSuvDk` |
-| `BHAGA_STAGING_BHAGA_ADP_RAW_SID` | `1sv-zK6Mc_ybPUZrObt0CWmodxIVNYm3ahfZg8WZtLyo` |
-| `BHAGA_STAGING_BHAGA_SQUARE_RAW_SID` | `1X2sCGwJi8YfcM0DAYlDzHBxG3_Du4jLauppfAw_A1rw` |
-| `BHAGA_STAGING_BHAGA_REVIEW_RAW_SID` | `16pkNefCOEcEUlhIU6zH03nEcg5PXmBpJhkHy3aUa-k4` |
 | `BHAGA_DM_CHANNEL` | `D0B67MW6J02` |
 | `BHAGA_HEADLESS` | `1` |
 | `SLACK_BOT_TOKEN` | secret → `slack-bot-token` |

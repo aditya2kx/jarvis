@@ -4,6 +4,42 @@ This applies to every change, regardless of which IDE / model / chat space you'r
 (Opus, Sonnet, cheaper models, cloud agents — all the same). It exists so work from many
 sessions stays safe and reviewable.
 
+## The development loop (how agents should work)
+
+Follow this for any non-trivial feature. It's designed so the agent can self-correct in a
+tight build → verify → fix loop without the operator babysitting every step.
+
+1. **Take requirements incrementally — Ask mode first.** Don't jump to code. Stay in **Ask /
+   read-only mode** until you *fully* understand the ask. Pull requirements from the operator in
+   increments, ask clarifying questions, and restate your understanding before proposing anything.
+2. **Plan mode before implementing.** Switch to **Plan mode** and present the *entire*
+   implementation plan for approval. No code until the plan is agreed.
+3. **Plan = 3–4 milestones, max — each independently verifiable.** Every milestone must end in a
+   state you can **verify and fix on your own**, so you can run the build→verify→fix loop yourself
+   (the operator isn't in the loop for routine correction). If a milestone can't be closed by your
+   own verification, it's too big — split it. Include the per-milestone test plan (what you'll run
+   to prove it) in the plan.
+4. **Verify with a real end-to-end run against prod — not just unit tests.** The proof a milestone /
+   PR works is a **prod (or prod-like) e2e** with recorded evidence. Unit tests are necessary but are
+   *not* the evidence of doneness.
+5. **100% code coverage.** New code is fully covered by tests; the e2e is on top of that, not instead.
+6. **Record and present evidence in the PR.** Every claim ("it works", "it's backward compatible") is
+   backed by commands + output / sheet diffs / logs in the PR description (template §3 and §4). If the
+   reviewer or operator can't *see* what you did, it didn't happen.
+
+## Design & execution principles
+
+- **Make the system iteratively more stable and configurable.** Each change should leave things more
+  robust and more config-driven than it found them — never add one-off hardcoding or a new fragile
+  path. Prefer small, reversible steps that compound.
+- **Be mindful of tokens and cost — build *and* prod.** During the build: don't thrash or burn tokens;
+  plan before you act. In prod: batch Sheets/API calls, bound LLM turns, cache, avoid per-row network.
+  Call out the cost implication of a design in the plan and PR.
+- **Backward compatible by default; feature-flag; then clean up.** New behavior that changes an
+  existing flow goes behind a feature flag (default off), schema changes are additive, and you *prove*
+  the legacy path still works. Make the **cleanup** (remove the flag / retire the old path) an explicit
+  final milestone — don't leave dead flags and forks lying around.
+
 ## The rules
 
 1. **Never push to `main` directly.** `main` is the deployed branch (push to `main` → image

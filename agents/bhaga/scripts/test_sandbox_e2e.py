@@ -72,9 +72,10 @@ class TestPureHelpers(unittest.TestCase):
                   "window": {"start": "x", "end": "y"}, "error": "boom"}
         self.assertIn("error: `boom`", e2e.format_evidence(report))
 
-    def test_item_lines_module_absent_on_main(self):
-        # backfill_item_lines_from_cache is not on main (in-flight elsewhere).
-        self.assertFalse(e2e._item_lines_module_available())
+    def test_item_lines_module_present(self):
+        # backfill_item_lines_from_cache now ships with item_operations, so the
+        # sandbox e2e picks up the item-lines backfill step automatically.
+        self.assertTrue(e2e._item_lines_module_available())
 
     def test_select_window_picks_most_recent_max_days(self):
         dates = [D(2026, 5, 1), D(2026, 5, 2), D(2026, 5, 3), D(2026, 5, 5)]

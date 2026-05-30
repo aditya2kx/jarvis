@@ -1699,6 +1699,8 @@ def main() -> int:
         model_cmd = [
             sys.executable, "-m", "agents.bhaga.scripts.update_model_sheet",
             "--store", args.store,
+            "--item-ops-date-from", gap_start.isoformat(),
+            "--item-ops-date-to", refresh_date.isoformat(),
         ]
         if os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery":
             model_cmd += ["--data-source", "bigquery"]

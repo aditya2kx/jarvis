@@ -1,0 +1,4 @@
+Date,Time,Time Zone,Category,Item,Qty,Price Point Name,SKU,Modifiers Applied,Gross Sales,Discounts,Net Sales,Tax,Transaction ID,Payment ID,Device Name,Col16,Col17,Event Type,Location,Col20,Col21,Col22,Col23,Unit,Count,Col26,Employee,Col28,Channel
+2026-05-26,19:30:00,Eastern Time (US & Canada),Smoothies,Blue Smoothie,1,,,,11.95,0.00,11.95,0.00,TXN001,PAY001,,,,Payment,Austin Mueller Lake,,,,,,,1,,Cashier A,,Austin Mueller Lake
+2026-05-26,19:30:00,Eastern Time (US & Canada),Smoothies,Blue Smoothie,1,,,,11.95,0.00,11.95,0.00,TXN001,PAY001,,,,Payment,Austin Mueller Lake,,,,,,,1,,Cashier A,,Austin Mueller Lake
+2026-05-26,20:00:00,Eastern Time (US & Canada),Smoothies,Green Smoothie,1,,,,12.95,0.00,12.95,0.00,TXN002,PAY002,,,,Refund,Austin Mueller Lake,,,,,,,1,,Cashier B,,Austin Mueller Lake

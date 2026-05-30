@@ -573,6 +573,24 @@ def write_raw_square_daily_rollup(
     )
 
 
+def write_raw_square_item_lines(
+    spreadsheet_id: str,
+    lines: list[dict],
+    *,
+    account: str = "palmetto",
+    scraped_at_utc: Optional[str] = None,
+) -> dict:
+    """Idempotent upsert into BHAGA Square Raw > item_lines. Natural key:
+    (transaction_id, item_name, item_sold_at_local, line_seq).
+
+    Source records come from transactions_backend.parse_item_sales_csv().
+    """
+    return _upsert_tab(
+        spreadsheet_id, "BHAGA Square Raw", "item_lines", lines,
+        account=account, scraped_at_utc=scraped_at_utc,
+    )
+
+
 def write_raw_square_item_daily_rollup(
     spreadsheet_id: str,
     rollups: list[dict],
@@ -590,6 +608,20 @@ def write_raw_square_item_daily_rollup(
     """
     return _upsert_tab(
         spreadsheet_id, "BHAGA Square Raw", "item_daily_rollup", rollups,
+        account=account, scraped_at_utc=scraped_at_utc,
+    )
+
+
+def write_model_item_operations(
+    spreadsheet_id: str,
+    records: list[dict],
+    *,
+    account: str = "palmetto",
+    scraped_at_utc: Optional[str] = None,
+) -> dict:
+    """Idempotent upsert into BHAGA Model > item_operations."""
+    return _upsert_tab(
+        spreadsheet_id, "BHAGA Model", "item_operations", records,
         account=account, scraped_at_utc=scraped_at_utc,
     )
 
@@ -634,7 +666,9 @@ if __name__ == "__main__":
         ("adp_rates", "write_raw_adp_rates"),
         ("square_transactions", "write_raw_square_transactions"),
         ("square_daily_rollup", "write_raw_square_daily_rollup"),
+        ("square_item_lines", "write_raw_square_item_lines"),
         ("square_item_daily_rollup", "write_raw_square_item_daily_rollup"),
+        ("item_operations", "write_model_item_operations"),
         ("kds_daily", "write_raw_kds_daily"),
     ]:
         p = sub.add_parser(tab, help=f"Run {fn_name}() with records from a JSON file.")
@@ -660,7 +694,9 @@ if __name__ == "__main__":
             "adp_rates": write_raw_adp_rates,
             "square_transactions": write_raw_square_transactions,
             "square_daily_rollup": write_raw_square_daily_rollup,
+            "square_item_lines": write_raw_square_item_lines,
             "square_item_daily_rollup": write_raw_square_item_daily_rollup,
+            "item_operations": write_model_item_operations,
             "kds_daily": write_raw_kds_daily,
         }[args.cmd]
         summary = fn(args.spreadsheet_id, records, account=args.account)

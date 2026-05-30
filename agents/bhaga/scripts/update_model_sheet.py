@@ -2377,6 +2377,14 @@ def main() -> int:
     cli.add_argument("--data-source", choices=["sheets", "bigquery"], default="sheets",
                      help="Where to read raw data from. 'sheets' (default) reads from Google Sheets; "
                           "'bigquery' reads from the bhaga dataset in jarvis-bhaga-prod.")
+    cli.add_argument("--item-operations-only", action="store_true",
+                     help="Only upsert the item_operations tab (skip other model tabs).")
+    cli.add_argument("--item-ops-date-from", default=None, metavar="DATE",
+                     help="Inclusive start date for item_operations upsert (YYYY-MM-DD).")
+    cli.add_argument("--item-ops-date-to", default=None, metavar="DATE",
+                     help="Inclusive end date for item_operations upsert (YYYY-MM-DD).")
+    cli.add_argument("--all-item-operations", action="store_true",
+                     help="Upsert all complete dates in raw item_lines (ignore date window).")
     args = cli.parse_args()
 
     # Bootstrap pointer + sheet-derived aliases/exclusions.
@@ -2405,19 +2413,26 @@ def main() -> int:
     #   * shifts/punches  ← BHAGA ADP Raw   > shifts
     #   * transactions    ← BHAGA Square Raw > transactions
 
+    # Raw-sheet IDs are only needed in sheets mode (reads + item_operations).
+    # BigQuery mode reads from BQ and skips item_operations, so resolving them
+    # there would needlessly require keys the profile may not carry.
     if args.data_source == "bigquery":
         from core.datastore_reader import read_shifts_bq, read_transactions_bq, read_wage_rates_bq
         print("# loading shifts from BigQuery (bhaga.adp_shifts)")
         shifts = read_shifts_bq()
         print("# loading wage_rates from BigQuery (bhaga.adp_wage_rates)")
         wage_rates = read_wage_rates_bq()
+        punches: list[dict] = []
     else:
         adp_raw_sid = resolve_sheet_id("bhaga_adp_raw", profile)
         square_raw_sid = resolve_sheet_id("bhaga_square_raw", profile)
+        from skills.tip_ledger_writer.reader import read_raw_adp_punches
         print(f"# loading shifts from raw sheet {adp_raw_sid} (BHAGA ADP Raw > shifts)")
         shifts = read_raw_adp_shifts(adp_raw_sid, account=args.store)
         print(f"# loading wage_rates from raw sheet {adp_raw_sid} (BHAGA ADP Raw > wage_rates)")
         wage_rates = read_raw_adp_rates(adp_raw_sid, account=args.store)
+        print(f"# loading punches from raw sheet {adp_raw_sid} (BHAGA ADP Raw > punches)")
+        punches = read_raw_adp_punches(adp_raw_sid, account=args.store)
 
     # Re-resolve employee names through the alias map. Raw-sheet data may
     # contain non-canonical names from backfill runs that predated alias
@@ -2430,6 +2445,30 @@ def main() -> int:
         for key in ("employee_name", "employee_id"):
             if key in rec:
                 rec[key] = normalize_employee_name(rec[key], aliases)
+    for rec in punches:
+        if "employee_name" in rec:
+            rec["employee_name"] = normalize_employee_name(rec["employee_name"], aliases)
+
+    if args.item_operations_only:
+        if args.data_source != "sheets":
+            print("ERROR: --item-operations-only requires --data-source sheets")
+            return 1
+        from agents.bhaga.scripts.item_operations import refresh_item_operations_tab
+        refresh_item_operations_tab(
+            model_sid=model_sid,
+            square_raw_sid=square_raw_sid,
+            adp_raw_sid=adp_raw_sid,
+            store=args.store,
+            excluded_from_tip_pool=excluded,
+            punches=punches,
+            wage_rates=wage_rates,
+            date_from=args.item_ops_date_from,
+            date_to=args.item_ops_date_to,
+            all_dates=args.all_item_operations,
+            dry_run=args.dry_run,
+        )
+        print(f"\nDone (item_operations only). {model_url}")
+        return 0
 
     # Post-alias deduplication: alias resolution can collapse two raw names
     # into the same canonical employee_id, creating duplicate records for a
@@ -2909,6 +2948,24 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+
+    if args.data_source == "sheets":
+        from agents.bhaga.scripts.item_operations import refresh_item_operations_tab
+        refresh_item_operations_tab(
+            model_sid=model_sid,
+            square_raw_sid=square_raw_sid,
+            adp_raw_sid=adp_raw_sid,
+            store=args.store,
+            excluded_from_tip_pool=excluded,
+            punches=punches,
+            wage_rates=wage_rates,
+            date_from=args.item_ops_date_from,
+            date_to=args.item_ops_date_to,
+            all_dates=args.all_item_operations,
+            dry_run=args.dry_run,
+        )
+    else:
+        print("# skipping item_operations (BigQuery data-source mode)")
 
     print(f"\nDone. {model_url}")
     return 0

@@ -93,9 +93,9 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
   "end-to-end evidence" for a BHAGA PR. See `RUNBOOK.md` §13.
 - **Cloud reads from GCS, never laptop files.** The canonical scrape cache is GCS `bhaga-scrape-cache`.
   `extracted/downloads/` is laptop-only and is NOT a source of truth for cloud sheets — never let a
-  prod/cloud backfill read it. Any backfill or replay that writes prod sheets MUST use the GCS path
-  (e.g. `--gcs-only`). The laptop is retired; if you find yourself reaching for a local download to
-  populate a cloud sheet, stop — that's the bug. See `RUNBOOK.md` § Common tasks.
+  prod/cloud backfill read it. `backfill_item_lines_from_cache.py` defaults to GCS-only; only pass
+  `--local-only` in tests. The laptop is retired; if you find yourself reaching for a local download
+  to populate a cloud sheet, stop — that's the bug. See `RUNBOOK.md` § Common tasks.
 - **Run one-offs in the cloud, not on a laptop.** Backfills / maintenance scripts that touch prod run
   as a Cloud Run job (or from an ADC-authenticated cloud shell resolving secrets from Secret Manager) —
   not against laptop Keychain or laptop downloads. See `RUNBOOK.md` § Common tasks.

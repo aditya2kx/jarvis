@@ -41,7 +41,7 @@ say which section.
   `datetime.now()`, UTC, or local-tz date math that drives a date window or a sheet date.
 - **Cloud = GCS, never laptop files.** Prod/cloud data comes from GCS `bhaga-scrape-cache`; secrets from
   Secret Manager. Flag any prod path reading `extracted/downloads/` or macOS Keychain, or a backfill
-  missing `--gcs-only`.
+  reading laptop `extracted/downloads/` for prod (backfill defaults to GCS-only).
 - **Config-driven:** sheet IDs / store specifics come from `store-profiles/<store>.json` — flag hardcoding.
 
 ## D. Testing & verification

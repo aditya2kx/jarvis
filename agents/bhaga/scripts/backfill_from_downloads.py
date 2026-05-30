@@ -42,7 +42,11 @@ from skills.tip_ledger_writer import (
     write_raw_square_daily_rollup,
     write_raw_square_transactions,
 )
-from skills.tip_ledger_writer.writer import write_raw_square_item_daily_rollup, write_raw_kds_daily
+from skills.tip_ledger_writer.writer import (
+    write_raw_kds_daily,
+    write_raw_square_item_daily_rollup,
+    write_raw_square_item_lines,
+)
 
 # Notify is optional — backfill may run in environments without Slack creds.
 try:
@@ -416,8 +420,17 @@ def main() -> int:
             item_daily = transactions_backend.aggregate_daily_item_stats(item_records)
             print(f"  computed item daily rollup: {len(item_daily)} days")
             if args.dry_run:
+                print(f"  DRY: would write {len(item_records)} item_lines rows")
                 print(f"  DRY: would write {len(item_daily)} item rollup rows")
             else:
+                s_lines = write_raw_square_item_lines(
+                    square_raw_sid, item_records, account=google_account,
+                )
+                summaries.append(s_lines)
+                print(
+                    f"  item_lines: +{s_lines['inserted']} new, "
+                    f"{s_lines['updated']} updated, {s_lines['total_after']} total"
+                )
                 s = write_raw_square_item_daily_rollup(square_raw_sid, item_daily, account=google_account)
                 summaries.append(s)
                 print(f"  item_daily_rollup: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")

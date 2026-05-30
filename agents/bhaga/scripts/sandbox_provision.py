@@ -234,6 +234,24 @@ def _read_values(token: str, spreadsheet_id: str, range_a1: str) -> list[list]:
     return resp.get("values", [])
 
 
+def _batch_read_values(
+    token: str, spreadsheet_id: str, ranges: list[str]
+) -> dict[str, list[list]]:
+    """Read many ranges from one workbook in a single values:batchGet call.
+
+    One round-trip instead of N — keeps the per-minute Sheets read quota happy
+    when verifying several tabs at once. Returns {requested_range: values}.
+    """
+    if not ranges:
+        return {}
+    qs = "&".join(f"ranges={urllib.parse.quote(r, safe='!:')}" for r in ranges)
+    url = f"{SHEETS_API}/spreadsheets/{spreadsheet_id}/values:batchGet?{qs}"
+    resp = api_request(url, token)
+    # valueRanges come back in request order; pair them back to our keys.
+    value_ranges = resp.get("valueRanges", [])
+    return {ranges[i]: vr.get("values", []) for i, vr in enumerate(value_ranges)}
+
+
 def _write_values(token: str, spreadsheet_id: str, range_a1: str, values: list[list]) -> None:
     rng = urllib.parse.quote(range_a1, safe="!:")
     url = (

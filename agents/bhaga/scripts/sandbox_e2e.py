@@ -207,10 +207,11 @@ def _run_model_build(store: str) -> int:
 
 
 def _read_model_tab_counts(token: str, model_sid: str) -> dict[str, int]:
-    raw: dict[str, list[list]] = {}
-    for tab in MODEL_VERIFY_MIN_ROWS:
-        rows = sandbox_provision._read_values(token, model_sid, f"{tab}!A1:A100000")
-        raw[tab] = rows
+    # One batchGet for all verify tabs instead of N single reads (quota-friendly).
+    tabs = list(MODEL_VERIFY_MIN_ROWS)
+    ranges = [f"{tab}!A1:A100000" for tab in tabs]
+    by_range = sandbox_provision._batch_read_values(token, model_sid, ranges)
+    raw = {tab: by_range.get(rng, []) for tab, rng in zip(tabs, ranges)}
     return tab_counts_from_columns(raw)
 
 

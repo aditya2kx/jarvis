@@ -147,9 +147,13 @@ gh pr create --base main --fill     # then fill the template
 
 - Workflow: `.github/workflows/claude-review.yml`. Triggers on PR `opened` / `synchronize` / `reopened`.
 - Model: **Claude Sonnet 4.6** (`--model claude-sonnet-4-6`), cost-budgeted for **~$0.50–1 per PR**:
-  `--max-turns 10`, a 12-minute job timeout, per-PR `concurrency` cancellation, and a prompt that
-  restricts the bot to `gh pr view` / `gh pr diff` (no repo-wide greps). Opus at 40 turns was ~$4–5/PR
-  (~4.7M input tokens). Escalate to Opus manually in chat for contentious changes.
+  `--max-turns 12`, a 12-minute job timeout, and per-PR `concurrency` cancellation. Opus at 40 turns
+  with repo-wide exploration was ~$4–5/PR (~4.7M input tokens); we do not do that.
+- **Bounded context (not diff-only, not repo-wide):** before review,
+  `scripts/build_claude_review_context.py` materializes into `review-context/` only (a) files changed
+  in the PR, (b) paired `test_*.py` modules for changed `.py` files, and (c) the review rubric. The
+  bot may Read **only** under `review-context/` plus `gh pr view` / `gh pr diff` — no grep/find
+  elsewhere. Escalate to a human or Opus in chat for rare whole-repo audits.
 - **Advisory, not a hard gate.** The review step is `continue-on-error`, so a bot infra hiccup (turn
   cap, transient API error) never red-X's the PR — the **operator's approval** is the hard merge gate
   (branch protection). Real review feedback is posted as PR comments regardless.

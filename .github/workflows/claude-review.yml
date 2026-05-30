@@ -40,6 +40,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Build bounded review context
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          python3 scripts/build_claude_review_context.py \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --out-dir review-context
+
       - name: Claude Sonnet review
         id: claude
         if: steps.gate.outputs.enabled == 'true'
@@ -56,12 +64,14 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
-            COST BUDGET: Finish in ≤8 turns. Use ONLY `gh pr view` and `gh pr diff`.
-            Do NOT grep/find the repo, list directories, or open files unless the diff
-            hunk is unreadable without ≤30 lines of that one file.
+            COST BUDGET: Finish in ≤10 turns. Start with `gh pr view` and `gh pr diff`.
 
-            Review this PR against the rubric below. Read
-            `.github/claude-review-guidelines.md` only if a section needs detail.
+            BOUNDED CONTEXT (read this before reviewing):
+            Open `review-context/MANIFEST.md` — it lists every file you are allowed to
+            read besides the PR metadata. Those files are materialized under
+            `review-context/` (PR diff paths + paired tests + the review rubric).
+            Use the Read tool ONLY on paths under `review-context/`. Do NOT grep,
+            find, list directories, or read any other repo path.
 
             Rubric (A–F):
             A. PR description — What, Motivation, E2E evidence, Backward compat + proof, Checklist
@@ -78,8 +88,8 @@ jobs:
             Do not modify code. No chat reply — GitHub comments only.
           claude_args: |
             --model claude-sonnet-4-6
-            --max-turns 10
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --max-turns 12
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Glob(review-context/**)"
 
       - name: Post review cost stats
         if: always() && steps.gate.outputs.enabled == 'true'

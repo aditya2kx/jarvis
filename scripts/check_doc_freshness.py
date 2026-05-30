@@ -78,6 +78,7 @@ COUPLINGS: list[dict] = [
             ".github/workflows/claude-review.yml",
             ".github/claude-review-guidelines.md",
             ".github/pull_request_template.md",
+            "scripts/build_claude_review_context.py",
         ],
         "docs": ["CONTRIBUTING.md"],
         "why": "PR process / review bot / template changed → update CONTRIBUTING.md (the process doc).",

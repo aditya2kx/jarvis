@@ -142,8 +142,13 @@ gh pr create --base main --fill     # then fill the template
 ## The review bot (Claude Opus)
 
 - Workflow: `.github/workflows/claude-review.yml`. Triggers on PR `opened` / `synchronize` / `reopened`.
-- Model: **Claude Opus** (`--model opus`), cost-bounded with `--max-turns` and per-PR `concurrency`
-  cancellation. It reads the diff + PR description and posts inline comments + a summary verdict.
+- Model: **Claude Opus** (`--model opus`), cost-bounded with `--max-turns 40` (enough to read the
+  rubric + diff + key files and post inline comments and a summary on a multi-file PR; 12 was too low
+  and the bot died mid-review) and per-PR `concurrency` cancellation. It reads the diff + PR
+  description and posts inline comments + a summary verdict.
+- **Advisory, not a hard gate.** The review step is `continue-on-error`, so a bot infra hiccup (turn
+  cap, transient API error) never red-X's the PR — the **operator's approval** is the hard merge gate
+  (branch protection). Real review feedback is posted as PR comments regardless.
 - **What it looks for** is the rubric in `.github/claude-review-guidelines.md` — PR-description
   completeness, backward compatibility (feature-flagged / additive schema / legacy path proven), BHAGA
   correctness invariants (Decimal money, idempotent upserts, `America/Chicago`, GCS-not-laptop,

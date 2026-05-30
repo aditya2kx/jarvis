@@ -87,6 +87,10 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
   triggering it.
 - **Branch → PR → Claude-review → merge → deploy** for anything that must run in prod. Never push to
   `main` directly. See `CONTRIBUTING.md` and `RUNBOOK.md` § Operating rules.
+- **Prove changes with the per-PR sandbox e2e, not by touching prod sheets.**
+  `agents/bhaga/scripts/sandbox_e2e.py` (CI: `.github/workflows/sandbox-e2e.yml`) replays the GCS cache
+  into ephemeral sandbox sheets — zero Square/ADP/Reviews calls, zero OTP. It is the standard
+  "end-to-end evidence" for a BHAGA PR. See `RUNBOOK.md` §13.
 - **Cloud reads from GCS, never laptop files.** The canonical scrape cache is GCS `bhaga-scrape-cache`.
   `extracted/downloads/` is laptop-only and is NOT a source of truth for cloud sheets — never let a
   prod/cloud backfill read it. Any backfill or replay that writes prod sheets MUST use the GCS path

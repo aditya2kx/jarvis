@@ -83,6 +83,16 @@ COUPLINGS: list[dict] = [
         "why": "PR process / review bot / template changed → update CONTRIBUTING.md (the process doc).",
     },
     {
+        "code": [
+            ".github/workflows/sandbox-e2e.yml",
+            ".github/workflows/sandbox-teardown.yml",
+            "agents/bhaga/scripts/sandbox_e2e.py",
+            "agents/bhaga/scripts/sandbox_provision.py",
+        ],
+        "docs": ["RUNBOOK.md", "agents/bhaga/scripts/README.md"],
+        "why": "sandbox e2e runner / CI changed → update RUNBOOK §13 + the scripts code map.",
+    },
+    {
         "code": ["agents/**/*.py", "skills/**/*.py", "cloud/**/*.py", "core/**/*.py"],
         "docs": ["PROGRESS.md"],
         "why": "notable code change → add a dated line to PROGRESS.md (status / decision / blocker).",

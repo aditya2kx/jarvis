@@ -78,7 +78,6 @@ from agents.bhaga.scripts.gcs_cache import (
     upload_scrape_artifacts,
 )
 from core.config_loader import refresh_access_token, resolve_sheet_id
-from skills.adp_run_automation.runner import download_adp_bundle
 from skills.bhaga_config.dates import coerce_iso_date
 from skills.bhaga_config.state_adapter import (
     clear_pending_otp as _adapter_clear_pending_otp,
@@ -87,8 +86,12 @@ from skills.bhaga_config.state_adapter import (
     save_pending_otp as _adapter_save_pending_otp,
     step_already_done as _adapter_step_already_done,
 )
-from skills.square_tips.runner import download_item_sales, download_kds_report, download_transactions
-from skills._browser_runtime.runtime import launch_persistent
+# NOTE: Square/ADP scrape + browser imports are intentionally LAZY (inside the
+# functions that scrape) so that importing daily_refresh — e.g. for its pure
+# verification contract (MODEL_VERIFY_MIN_ROWS, assert_model_tabs_populated,
+# is_refresh_date_complete) — never pulls in patchright or any login/OTP code.
+# This is what lets the sandbox e2e runner compose update_model_sheet without a
+# scrape module ever entering its import graph.
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
 STORE_PROFILES = PROJECT_ROOT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
@@ -805,6 +808,7 @@ def _adp_bundle_then_raise(
     success is durable on disk and run-state markers; the exception just
     surfaces it to the orchestrator + Slack alert path.
     """
+    from skills.adp_run_automation.runner import download_adp_bundle
     result = download_adp_bundle(
         store=store,
         target_date=target_date,
@@ -853,8 +857,14 @@ def _run_square_pipeline(
             TRANSACTIONS_URL,
             _acquire_scrape_lock,
             _release_scrape_lock,
+            download_item_sales,
+            download_kds_report,
         )
-        from skills._browser_runtime.runtime import DOWNLOADS_DIR as _DL_DIR, is_fresh_download
+        from skills._browser_runtime.runtime import (
+            DOWNLOADS_DIR as _DL_DIR,
+            is_fresh_download,
+            launch_persistent,
+        )
         import re as _re
 
         # Check if transactions CSV already exists (idempotency).

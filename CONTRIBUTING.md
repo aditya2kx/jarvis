@@ -9,7 +9,7 @@ sessions stays safe and reviewable.
 The goal is a clean split of ownership that lets the operator step back:
 
 - **The agent owns the entire development, end to end.** Once requirements are agreed, you own
-  everything: building, tests, the prod e2e, recording evidence, opening the PR, getting **all CI
+  everything: building, tests, the prod-like e2e, recording evidence, opening the PR, getting **all CI
   green**, and **addressing every review comment — from humans and from the Claude bot — autonomously,
   iterating until the PR is merge-ready, with no operator intervention.** Don't hand back a half-done
   PR and wait. Drive it to green: read the comments/failing checks, fix, re-push, repeat. If a comment
@@ -17,7 +17,7 @@ The goal is a clean split of ownership that lets the operator step back:
 - **You owe the operator two kinds of evidence:**
   1. **Evidence of understanding** — *before* building, prove (via Ask + Plan) you understood every
      requirement. Restate it back, surface ambiguities, get agreement.
-  2. **Evidence it works** — *during/after* building, present enough proof (prod e2e output, sheet
+  2. **Evidence it works** — *during/after* building, present enough proof (prod-like e2e output, sheet
      diffs, logs) to **convince** the operator the requirements are actually met. The burden of proof
      is on you, not on the operator to go verify.
 - **The operator owns only the final sign-off.** Their job shrinks to: give requirements incrementally,
@@ -42,9 +42,13 @@ tight build → verify → fix loop without the operator babysitting every step.
    (the operator isn't in the loop for routine correction). If a milestone can't be closed by your
    own verification, it's too big — split it. Include the per-milestone test plan (what you'll run
    to prove it) in the plan.
-4. **Verify with a real end-to-end run against prod — not just unit tests.** The proof a milestone /
-   PR works is a **prod (or prod-like) e2e** with recorded evidence. Unit tests are necessary but are
-   *not* the evidence of doneness.
+4. **Verify with a real end-to-end run — not just unit tests.** The proof a milestone / PR works is a
+   **prod-like e2e against isolated sandbox sheets** with recorded evidence. For BHAGA, the per-PR
+   `Sandbox e2e` workflow does exactly this — it provisions ephemeral sandbox sheets, replays the GCS
+   scrape cache (read-only, zero-OTP), builds the model, asserts the tabs are populated, and posts the
+   evidence as a PR comment (see `RUNBOOK.md` §13 and `agents/bhaga/scripts/sandbox_e2e.py`). Run
+   directly against prod sheets only when sandbox isolation genuinely can't exercise the path. Unit
+   tests are necessary but are *not* the evidence of doneness.
 5. **100% code coverage.** New code is fully covered by tests; the e2e is on top of that, not instead.
 6. **Record and present evidence in the PR.** Every claim ("it works", "it's backward compatible") is
    backed by commands + output / sheet diffs / logs in the PR description (template §3 and §4). If the

@@ -141,6 +141,28 @@ def download_cached_files(
     return restored
 
 
+def list_cached_dates() -> list[datetime.date]:
+    """Return the sorted list of refresh_dates that have any cached artifacts.
+
+    Reads the top-level ``YYYY-MM-DD/`` prefixes in the cache bucket. Used by
+    the sandbox e2e to auto-select a recent, definitely-cached window so CI
+    never depends on a hardcoded date range that may have aged out.
+    """
+    client = _get_client()
+    bucket = _bucket(client)
+    iterator = client.list_blobs(bucket, delimiter="/")
+    # Consume the iterator so .prefixes is populated.
+    for _ in iterator:
+        pass
+    dates: list[datetime.date] = []
+    for prefix in getattr(iterator, "prefixes", []) or []:
+        try:
+            dates.append(datetime.date.fromisoformat(prefix.rstrip("/")))
+        except ValueError:
+            continue
+    return sorted(dates)
+
+
 def has_cached_files(refresh_date: datetime.date) -> bool:
     """Quick check: does the GCS cache have any files for this refresh_date?"""
     try:

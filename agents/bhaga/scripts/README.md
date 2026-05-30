@@ -51,6 +51,8 @@ clear its marker — see `RUNBOOK.md` § Common tasks.
 | `notify.py` | Slack DMs under the BHAGA identity. Always DM through here, never `send_message` directly. |
 | `gcs_cache.py` | Read/write scrape artifacts in GCS `bhaga-scrape-cache`. |
 | `bootstrap_sheets.py` / `share_sheets_with_sa.py` | One-time: create sheets / share with the service account. |
+| `sandbox_provision.py` | Create / tear down **per-PR ephemeral sandbox sheets** (4 per PR), seeding the model `config`+`employees` tabs read-only from prod, and emit `BHAGA_STAGING_*_SID`. |
+| `sandbox_e2e.py` | **Prod-like, zero-OTP e2e.** provision → GCS-cache replay → backfill → model build → `assert_model_tabs_populated` → evidence → teardown. Imports **no** scrape/login code (enforced by `test_sandbox_e2e.py`). Runs on every PR via `.github/workflows/sandbox-e2e.yml`. See `RUNBOOK.md` §13. |
 | `verify_drilldown.py`, `verify_bq_parity.py`, `verify_against_historical_payroll.py` | Verification harnesses (parity vs historical payroll / BigQuery). |
 | `backfill_bigquery.py` | Backfill raw data into BigQuery. |
 | `test_*.py` | Unit tests. Run: `python3 -m pytest agents/bhaga/scripts/`. |

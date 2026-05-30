@@ -386,3 +386,38 @@ sheets. (Raw sheets are the source; the model is always reproducible from them.)
 See `agents/bhaga/scripts/README.md` § Extending the model (Recipe A: add a column; Recipe B: new
 tab from raw). Schema-backed tabs auto-migrate **additive** header changes; reordering/removing does
 not.
+
+### Run the per-PR sandbox e2e (prod-like, zero-OTP)
+
+`agents/bhaga/scripts/sandbox_e2e.py` is the prod-like end-to-end that proves a change without
+touching the production workbooks and **without ever calling Square / ADP / Google Reviews or
+triggering an OTP**. It provisions four ephemeral sandbox sheets, replays the GCS scrape cache
+(read-only), backfills the sandbox raw sheets, builds the sandbox model, asserts the tabs are
+populated, prints evidence, then tears the sandbox down.
+
+It runs automatically on every PR via `.github/workflows/sandbox-e2e.yml` (and
+`sandbox-teardown.yml` cleans up on PR close). Run it manually with ADC:
+
+```bash
+# auto-select the most recent cached window (preferred — always cache-backed):
+python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --auto-window --max-days 2
+
+# or pin an explicit window that exists in the GCS cache:
+python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --start 2026-05-01 --end 2026-05-02
+
+# keep the sandbox sheets for inspection instead of tearing down:
+python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --auto-window --keep
+```
+
+**Enabling it in CI (one-time, operator):**
+1. Set the repo **variable** `SANDBOX_E2E_ENABLED=true` (the workflows no-op until then, so they never
+   red-X a PR before you opt in).
+2. The workflows reuse `deploy.yml`'s `WIF_PROVIDER` / `WIF_SERVICE_ACCOUNT` secrets. The e2e service
+   account additionally needs **Drive create/delete** (it makes + deletes the `BHAGA-sandbox` sheets)
+   and **GCS read** on `bhaga-scrape-cache`. If the deploy SA's Drive quota is tight, point
+   `SANDBOX_E2E_SERVICE_ACCOUNT` at a dedicated SA (optionally one that writes into a Shared Drive).
+3. Optional: `SANDBOX_E2E_MAX_DAYS` (default `2`) bounds the replay window for cost.
+
+> Reviews (ClickUp) are intentionally **out of scope** for the per-PR e2e (they need a live call). The
+> e2e proves the sales / labor / tip / model core. Item-level operations are picked up automatically if
+> `backfill_item_lines_from_cache` lands on main.

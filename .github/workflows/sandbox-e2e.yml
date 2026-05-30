@@ -1,0 +1,76 @@
+name: Sandbox e2e
+
+# Prod-like end-to-end on every PR, against PER-PR EPHEMERAL sandbox sheets —
+# never the production workbooks. Replays scrape artifacts from the GCS cache
+# (read-only), so it NEVER calls Square / ADP / Google Reviews and NEVER
+# triggers an OTP. The runner tears its sandbox sheets down in a finally block;
+# sandbox-teardown.yml is the safety net for cancelled/killed jobs.
+#
+# Dormant until the WIF secrets exist (same ones deploy.yml uses). It also
+# needs the e2e service account to have Drive create/delete on the sandbox
+# folder — see RUNBOOK §13.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# One run per PR; a new push cancels the previous (cost + no orphan sheets).
+concurrency:
+  group: sandbox-e2e-${{ github.event.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  e2e:
+    name: Sandbox e2e
+    runs-on: ubuntu-latest
+    # No-op cleanly when WIF isn't configured yet, so it never red-X's a PR
+    # before the operator opts in.
+    if: ${{ vars.SANDBOX_E2E_ENABLED == 'true' }}
+    env:
+      BHAGA_SECRETS_BACKEND: gcp      # use ADC (the WIF service account) for Google APIs
+      BHAGA_STATE_BACKEND: memory     # never touch prod Firestore run-state
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.SANDBOX_E2E_SERVICE_ACCOUNT || secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Run sandbox e2e (replay-only, zero-OTP)
+        run: |
+          python3 -m agents.bhaga.scripts.sandbox_e2e \
+            --pr-number "${{ github.event.number }}" \
+            --auto-window --max-days "${{ vars.SANDBOX_E2E_MAX_DAYS || '2' }}" \
+            --evidence-file sandbox-e2e-evidence.md
+
+      - name: Post evidence comment
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '### BHAGA sandbox e2e\n_(no evidence file produced — see job logs)_';
+            try { body = fs.readFileSync('sandbox-e2e-evidence.md', 'utf8'); } catch (e) {}
+            const status = '${{ job.status }}';
+            body += `\n\n_job status: **${status}**_`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

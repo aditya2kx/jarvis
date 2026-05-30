@@ -1,9 +1,9 @@
 name: Sandbox teardown
 
-# Safety net: when a PR closes (merged or not), delete any ephemeral sandbox
-# sheets it owned. The e2e runner already tears down in a finally block on a
-# normal run; this catches sheets left behind by a cancelled or killed job so
-# no orphans accumulate in the operator's Drive.
+# Safety net: when a PR closes (merged or not), clear + release any leased pool
+# slot. Sheets persist (pre-created pool); only the Firestore lease is freed.
+# The e2e runner already teardowns in finally on a normal run; this catches a
+# slot left leased by a cancelled or killed job.
 
 on:
   pull_request:
@@ -20,6 +20,7 @@ jobs:
     if: ${{ vars.SANDBOX_E2E_ENABLED == 'true' }}
     env:
       BHAGA_SECRETS_BACKEND: gcp
+      BHAGA_STATE_BACKEND: firestore
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +38,7 @@ jobs:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.SANDBOX_E2E_SERVICE_ACCOUNT || secrets.WIF_SERVICE_ACCOUNT }}
 
-      - name: Delete this PR's sandbox sheets
+      - name: Release this PR's sandbox slot
         run: |
           python3 -m agents.bhaga.scripts.sandbox_provision \
             --pr-number "${{ github.event.number }}" --action teardown

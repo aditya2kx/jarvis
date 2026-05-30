@@ -55,6 +55,13 @@ runner composes only replay code and imports no Square/ADP/ClickUp/browser modul
 `daily_refresh.py`'s scrape imports were made lazy (importing it, or `update_model_sheet`, no longer
 pulls in `patchright`/runners). `test_sandbox_e2e.py` enforces the guarantee in an isolated
 interpreter. Reviews stay out of scope (live ClickUp); item-ops auto-included once it lands on main.
+**Sandbox pool + CI fix (2026-05-30):** Replaced per-PR sheet *creation* (SA can't create on consumer
+Drive) with a 3-slot pre-shared pool (`sandbox_pool.json`, operator `create-pool` as palmetto user).
+CI leases via Firestore `sandbox_slots`, clears/writes, releases. Enabled Drive API on
+`jarvis-bhaga-prod`; local full e2e green with ADC (`aditya.2ky@gmail.com`) + palmetto OAuth.
+**Claude review cost cap (2026-05-30):** Switched PR bot from Opus/40 turns (~$4–5/PR, ~4.7M input
+tokens) to Sonnet 4.6/10 turns + diff-only prompt (~$0.50–1 target).
+
 Follow-up (2026-05-30): addressed Claude review's non-blocking notes on PR #3 — clarified `select_window`
 returns the span across the N most-recent *cached* dates (not N calendar days), flagged the bounded
 `seed_model_metadata` read ranges as a truncation risk, and noted in RUNBOOK §13 that the first PR landing

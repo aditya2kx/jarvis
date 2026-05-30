@@ -391,32 +391,45 @@ not.
 
 `agents/bhaga/scripts/sandbox_e2e.py` is the prod-like end-to-end that proves a change without
 touching the production workbooks and **without ever calling Square / ADP / Google Reviews or
-triggering an OTP**. It provisions four ephemeral sandbox sheets, replays the GCS scrape cache
-(read-only), backfills the sandbox raw sheets, builds the sandbox model, asserts the tabs are
-populated, prints evidence, then tears the sandbox down.
+triggering an OTP**. It **leases a slot** from a pre-created sheet pool (see below), clears +
+re-seeds it, replays the GCS scrape cache (read-only), backfills the sandbox raw sheets, builds the
+sandbox model, asserts core tabs are populated, prints evidence, then releases the slot.
 
-It runs automatically on every PR via `.github/workflows/sandbox-e2e.yml` (and
-`sandbox-teardown.yml` cleans up on PR close). Run it manually with ADC:
+**Why a pool (not create-per-PR):** the Cloud Run service account can *edit* sheets shared with it
+but cannot *create* Drive files on a consumer Google account. The operator creates the pool once as
+a real user; CI only clears/writes/releases.
+
+**One-time pool setup (operator, user creds — not the SA):**
 
 ```bash
-# auto-select the most recent cached window (preferred — always cache-backed):
+# Creates 3 slots × 4 workbooks in Drive, shares each with the SA, writes sandbox_pool.json
+python3 -m agents.bhaga.scripts.sandbox_provision --store palmetto --action create-pool --slots 3
+git add agents/bhaga/scripts/sandbox_pool.json && git commit -m "chore: register sandbox sheet pool"
+```
+
+Slot selection in CI: Firestore transaction leases a free slot (up to 3 concurrent PRs). Locally,
+`pr_number % num_slots` is used (single-caller).
+
+It runs automatically on every PR via `.github/workflows/sandbox-e2e.yml` (and
+`sandbox-teardown.yml` releases the lease on PR close). Run it manually with ADC + palmetto OAuth:
+
+```bash
+gcloud auth application-default login   # aditya.2ky@gmail.com — GCS read
+# auto-select the most recent cached window (preferred):
 python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --auto-window --max-days 2
 
-# or pin an explicit window that exists in the GCS cache:
-python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --start 2026-05-01 --end 2026-05-02
-
-# keep the sandbox sheets for inspection instead of tearing down:
+# keep the leased slot uncleared after the run (debugging):
 python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --auto-window --keep
 ```
 
 **Enabling it in CI (one-time, operator):**
-1. Set the repo **variable** `SANDBOX_E2E_ENABLED=true` (the workflows no-op until then, so they never
-   red-X a PR before you opt in).
-2. The workflows reuse `deploy.yml`'s `WIF_PROVIDER` / `WIF_SERVICE_ACCOUNT` secrets. The e2e service
-   account additionally needs **Drive create/delete** (it makes + deletes the `BHAGA-sandbox` sheets)
-   and **GCS read** on `bhaga-scrape-cache`. If the deploy SA's Drive quota is tight, point
-   `SANDBOX_E2E_SERVICE_ACCOUNT` at a dedicated SA (optionally one that writes into a Shared Drive).
-3. Optional: `SANDBOX_E2E_MAX_DAYS` (default `2`) bounds the replay window for cost.
+1. Set the repo **variable** `SANDBOX_E2E_ENABLED=true`.
+2. Enable **Google Drive API** on project `jarvis-bhaga-prod` (Sheets API alone is not enough for
+   pool folder lookup). The SA needs **Sheets read/write** on the pre-shared pool sheets and **GCS
+   read** on `bhaga-scrape-cache` — not Drive create/delete.
+3. Workflows reuse `WIF_PROVIDER` / `WIF_SERVICE_ACCOUNT`. CI sets `BHAGA_STATE_BACKEND=firestore`
+   for slot leasing.
+4. Optional: `SANDBOX_E2E_MAX_DAYS` (default `2`) bounds the replay window for cost.
 
 > The PR that *introduces* this infrastructure can't run the live e2e on itself (the workflow is dormant
 > until `SANDBOX_E2E_ENABLED=true`). The **first feature PR that lands after you flip the flag** is the

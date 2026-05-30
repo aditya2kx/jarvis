@@ -56,13 +56,15 @@ class TestPureHelpers(unittest.TestCase):
             "restored_files": {"2026-05-01": 3, "2026-05-02": 2},
             "model_tab_counts": {"daily": 2, "period_summary": 1},
             "item_lines_ran": False,
-            "teardown": {"deleted": ["a", "b"]},
+            "slot": 1,
+            "teardown": {"slot": 1, "released": True},
         }
         text = e2e.format_evidence(report)
         self.assertIn("PR #7", text)
         self.assertIn("status: **ok**", text)
         self.assertIn("`daily`: 2", text)
-        self.assertIn("deleted 2 sheet(s)", text)
+        self.assertIn("pool slot: 1", text)
+        self.assertIn("released + cleared", text)
         self.assertIn("GCS files restored: 5", text)
 
     def test_format_evidence_error(self):

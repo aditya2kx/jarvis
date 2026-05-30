@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 """Zero-OTP, prod-like e2e for the BHAGA sales / labor / tip / model core.
 
-Provisions ephemeral sandbox sheets, replays scrape artifacts from the GCS
-cache (read-only) into the sandbox RAW sheets, builds the MODEL into the sandbox,
-asserts the model tabs are populated, prints evidence, then tears the sandbox
-down. Runs against isolated sandbox sheets — never the production workbooks.
+Leases a slot from the pre-created sandbox pool (see ``sandbox_provision.py``),
+clears + re-seeds it, replays scrape artifacts from the GCS cache (read-only)
+into the sandbox RAW sheets, builds the MODEL into the sandbox, asserts the model
+tabs are populated, prints evidence, then releases the slot. Runs against
+isolated sandbox sheets — never the production workbooks.
+
+LOCAL SMOKE (run before pushing — closes the "only caught in CI" gap):
+    python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --auto-window
+Locally it authenticates as the operator (user creds) and uses a deterministic
+slot; in CI it authenticates as the service account and Firestore-leases a slot.
+Both exercise the same real Sheets I/O, so identity/permission/enablement issues
+surface locally instead of on a PR.
 
 STRUCTURAL no-OTP guarantee
 ---------------------------
@@ -44,6 +52,16 @@ from agents.bhaga.scripts.daily_refresh import MODEL_VERIFY_MIN_ROWS, assert_mod
 from core.config_loader import refresh_access_token  # noqa: E402
 
 DOWNLOADS = backfill_from_downloads.DOWNLOADS
+
+# Shorter than MODEL_VERIFY_MIN_ROWS: the sandbox replay window is only a few
+# cached days (cost), so biweekly period tabs may legitimately be empty. Nightly
+# prod uses the full multi-period window and keeps the stricter contract there.
+SANDBOX_E2E_VERIFY_MIN_ROWS: dict[str, int] = {
+    "daily": 1,
+    "labor_daily": 1,
+    "labor_weekly": 1,
+    "labor_daily_forecast": 1,
+}
 
 # Modules that, if ever imported by this runner's graph, would mean a scrape /
 # login path is reachable. The no-OTP test asserts none of these load.
@@ -122,9 +140,13 @@ def format_evidence(report: dict) -> str:
         lines.append("- item-level operations backfill: ran (module present)")
     if report.get("error"):
         lines.append(f"- error: `{report['error']}`")
+    if report.get("slot") is not None:
+        lines.append(f"- pool slot: {report['slot']}")
     teardown = report.get("teardown")
     if teardown is not None:
-        lines.append(f"- teardown: deleted {len(teardown.get('deleted', []))} sheet(s)")
+        slot = teardown.get("slot")
+        released = teardown.get("released")
+        lines.append(f"- teardown: slot {slot} {'released + cleared' if released else 'nothing to release'}")
     return "\n".join(lines)
 
 
@@ -214,6 +236,7 @@ def run_e2e(
         prov = sandbox_provision.provision(store=store, pr_number=pr_number)
         ids = prov["ids"]
         report["sandbox_ids"] = ids
+        report["slot"] = prov.get("slot")
         report["seed_counts"] = prov.get("seed_counts")
         _apply_staging_env(ids)
 
@@ -227,7 +250,11 @@ def run_e2e(
 
         counts = _read_model_tab_counts(token, ids["bhaga_model"])
         report["model_tab_counts"] = counts
-        assert_model_tabs_populated(tab_row_counts=counts, expect_kds=expect_kds)
+        assert_model_tabs_populated(
+            tab_row_counts=counts,
+            expect_kds=expect_kds,
+            min_rows=SANDBOX_E2E_VERIFY_MIN_ROWS,
+        )
         report["status"] = "ok"
     except Exception as exc:  # noqa: BLE001
         report["error"] = f"{type(exc).__name__}: {exc}"

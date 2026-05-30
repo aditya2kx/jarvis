@@ -143,13 +143,13 @@ gh auth switch --user aditya2kx     # repo owner; creating PRs as another accoun
 gh pr create --base main --fill     # then fill the template
 ```
 
-## The review bot (Claude Opus)
+## The review bot (Claude Sonnet)
 
 - Workflow: `.github/workflows/claude-review.yml`. Triggers on PR `opened` / `synchronize` / `reopened`.
-- Model: **Claude Opus** (`--model opus`), cost-bounded with `--max-turns 40` (enough to read the
-  rubric + diff + key files and post inline comments and a summary on a multi-file PR; 12 was too low
-  and the bot died mid-review) and per-PR `concurrency` cancellation. It reads the diff + PR
-  description and posts inline comments + a summary verdict.
+- Model: **Claude Sonnet 4.6** (`--model claude-sonnet-4-6`), cost-budgeted for **~$0.50–1 per PR**:
+  `--max-turns 10`, a 12-minute job timeout, per-PR `concurrency` cancellation, and a prompt that
+  restricts the bot to `gh pr view` / `gh pr diff` (no repo-wide greps). Opus at 40 turns was ~$4–5/PR
+  (~4.7M input tokens). Escalate to Opus manually in chat for contentious changes.
 - **Advisory, not a hard gate.** The review step is `continue-on-error`, so a bot infra hiccup (turn
   cap, transient API error) never red-X's the PR — the **operator's approval** is the hard merge gate
   (branch protection). Real review feedback is posted as PR comments regardless.
@@ -166,8 +166,8 @@ gh pr create --base main --fill     # then fill the template
 These are GitHub-side and can't be done from the repo alone:
 
 1. **Add the API key:** repo → Settings → Secrets and variables → Actions → New secret
-   `ANTHROPIC_API_KEY` (an Anthropic key with Opus access). Cost note: this spends Anthropic API credits
-   per PR review.
+   `ANTHROPIC_API_KEY` (Anthropic API key). Cost note: ~$0.50–1 per PR at Sonnet + 10 turns; monitor in
+   the Anthropic console (Usage → Cost).
 2. **Protect `main`:** repo → Settings → Branches → add a rule for `main`:
    - Require a pull request before merging.
    - **Require approvals (1)** — so a PR can't be merged without the operator's explicit review approval.

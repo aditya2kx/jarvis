@@ -186,15 +186,23 @@ These are GitHub-side and can't be done from the repo alone:
      re-runs the required checks on the updated merge result. No extra workflow needed.
    - Block direct pushes (don't allow bypass, or restrict who can).
 
-### Why the “Add checks” picker is empty
+### Why the “Add checks” picker looked empty
 
-GitHub only lists a check **after it has completed at least once** on a PR **targeting the protected
-branch** (`main`). If you open branch protection before any PR has run Actions, the search box shows
-**No results** — that is normal.
+Two separate issues:
 
-**Fix:** open or push to any PR against `main` (e.g. PR #7), wait for Actions to finish, then reload
-the branch protection page. In **Add checks**, search for the **job name** (not the workflow file
-name). Leave the search box empty first, then type:
+1. **Rule not saved yet** — `main` is unprotected until you click **Save changes**. While editing a
+   new rule, the picker often shows **No checks have been added** / search **No results** even though
+   PRs have been green for weeks.
+
+2. **PR-only workflows don’t register on `main`** — until 2026-05-31, `Claude review` and
+   `Sandbox e2e` only ran on `pull_request`, never on `push` to `main`. GitHub’s branch-protection
+   picker is populated from checks that have run on the **default branch**. On `main` you only saw
+   `Doc Freshness` and `build-and-deploy`. PR #7+ adds a **fast no-op `push: branches: [main]`**
+   path so those job names also register on `main` after the next merge.
+
+**Fix:** save the branch rule, merge PR #7 (or any PR with the push registration), wait for the
+post-merge `push` workflows on `main` (~30s), reload branch protection → **Add checks**. Search for
+the **job name** (not the workflow filename):
 
 | Status check name (exact) | Workflow | Require? |
 | --- | --- | --- |

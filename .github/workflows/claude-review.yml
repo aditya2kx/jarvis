@@ -7,10 +7,14 @@ name: Claude PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  # Fast no-op on main so the job name appears in branch-protection settings
+  # (pull_request-only workflows otherwise never register on the default branch).
+  push:
+    branches: [main]
 
 # Don't stack reviews: a new push cancels the in-flight review for the same PR.
 concurrency:
-  group: claude-review-${{ github.event.pull_request.number }}
+  group: claude-review-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -22,7 +26,14 @@ jobs:
       pull-requests: write
       id-token: write
     steps:
+      - name: Register check on main push
+        if: github.event_name == 'push'
+        run: |
+          echo "Full Claude review runs on pull_request only."
+          echo "This step registers the job name on main for branch protection."
+
       - name: Check for API key
+        if: github.event_name == 'pull_request'
         id: gate
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -35,13 +46,13 @@ jobs:
           fi
 
       - name: Checkout
-        if: steps.gate.outputs.enabled == 'true'
+        if: github.event_name == 'pull_request' && steps.gate.outputs.enabled == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Build bounded review context
-        if: steps.gate.outputs.enabled == 'true'
+        if: github.event_name == 'pull_request' && steps.gate.outputs.enabled == 'true'
         run: |
           python3 scripts/build_claude_review_context.py \
             --base "${{ github.event.pull_request.base.sha }}" \
@@ -50,7 +61,7 @@ jobs:
 
       - name: Claude Sonnet review
         id: claude
-        if: steps.gate.outputs.enabled == 'true'
+        if: github.event_name == 'pull_request' && steps.gate.outputs.enabled == 'true'
         timeout-minutes: 12
         # Advisory gate: the operator's approval is the hard merge gate (branch
         # protection), so a bot infra hiccup (turn cap, transient API error)
@@ -92,7 +103,7 @@ jobs:
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Glob(review-context/**)"
 
       - name: Post review cost stats
-        if: always() && steps.gate.outputs.enabled == 'true'
+        if: github.event_name == 'pull_request' && always() && steps.gate.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

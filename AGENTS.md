@@ -105,3 +105,15 @@ This is the mechanism that keeps the repo "rich and self-updating" (the whole po
 
 Rule of thumb: **if a future you (or a cloud agent) would have to re-derive it from a chat, it
 belongs in one of the files above.** A doc commit that lags the code is a bug.
+
+**Enforcement (so this isn't just prose):**
+- [`.cursor/rules/doc-maintenance.md`](.cursor/rules/doc-maintenance.md) auto-loads whenever you edit
+  code under `agents/`, `skills/`, `cloud/`, `core/` and reminds you which doc to update.
+- [`scripts/check_doc_freshness.py`](scripts/check_doc_freshness.py) is a deterministic checker that
+  maps changed code paths → expected docs. Run it before finishing a change:
+  ```bash
+  python3 scripts/check_doc_freshness.py            # uncommitted work
+  python3 scripts/check_doc_freshness.py --base origin/main   # a branch / push range
+  ```
+  It's a nudge by default (`--strict` to make it fail). **When you add a new code↔doc dependency,
+  add a coupling to that script** so the checker keeps reflecting reality.

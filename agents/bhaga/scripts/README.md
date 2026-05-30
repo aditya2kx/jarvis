@@ -56,7 +56,7 @@ clear its marker — see `RUNBOOK.md` § Common tasks.
 | `gcs_cache.py` | Read/write scrape artifacts in GCS `bhaga-scrape-cache`. |
 | `bootstrap_sheets.py` / `share_sheets_with_sa.py` | One-time: create sheets / share with the service account. |
 | `sandbox_provision.py` | **Pool-based** sandbox for per-PR e2e: `create-pool` (operator, user creds) pre-creates N slots × 4 sheets shared with the SA; `provision` leases + clears + re-seeds; `teardown` releases. Registry: `sandbox_pool.json`. |
-| `sandbox_e2e.py` | **Prod-like, zero-OTP e2e.** provision → GCS-cache replay → backfill → model build → `assert_model_tabs_populated` → evidence → teardown. `--auto-window --max-days N` replays up to the **N most-recent *cached* dates** (the calendar span can be wider on a sparse cache). Imports **no** scrape/login code (enforced by `test_sandbox_e2e.py`). Runs on every PR via `.github/workflows/sandbox-e2e.yml`. See `RUNBOOK.md` §13. |
+| `sandbox_e2e.py` | **Prod-like, zero-OTP e2e.** provision → GCS-cache replay → backfill → model build → `assert_model_tabs_populated` → evidence → teardown. `--auto-window --max-days N` replays up to the **N most-recent *cached* dates** (the calendar span can be wider on a sparse cache). Imports **no** scrape/login code (enforced by `test_sandbox_e2e.py`). Runs on every PR via `.github/workflows/sandbox-e2e.yml` (plus a no-op `push` to `main` so the check registers for branch protection). See `RUNBOOK.md` §13. |
 | `verify_drilldown.py`, `verify_bq_parity.py`, `verify_against_historical_payroll.py` | Verification harnesses (parity vs historical payroll / BigQuery). |
 | `backfill_bigquery.py` | Backfill raw data into BigQuery. |
 | `test_*.py` | Unit tests. Run: `python3 -m pytest agents/bhaga/scripts/`. |

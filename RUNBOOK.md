@@ -477,7 +477,12 @@ Slot selection in CI: Firestore transaction leases a free slot (up to 3 concurre
 `pr_number % num_slots` is used (single-caller).
 
 It runs automatically on every PR via `.github/workflows/sandbox-e2e.yml` (and
-`sandbox-teardown.yml` releases the lease on PR close). Run it manually with ADC + palmetto OAuth:
+`sandbox-teardown.yml` releases the lease on PR close). The workflow also has a **fast no-op on
+`push` to `main`** so the job name **Sandbox e2e** appears in GitHub branch-protection settings
+(full e2e still runs only on `pull_request` when `SANDBOX_E2E_ENABLED=true`). See
+`CONTRIBUTING.md` § Enabling enforcement.
+
+Run it manually with ADC + palmetto OAuth:
 
 ```bash
 gcloud auth application-default login   # aditya.2ky@gmail.com — GCS read

@@ -61,6 +61,10 @@ say which section.
 ## E. Security
 - **No secrets / PII committed:** tokens, passwords, API keys. (Sheet IDs and the operator's own email
   are config and acceptable — but flag any *new* credential-looking value.)
+- **Don't flag `git push --no-verify` as a process violation.** On this personal repo a clean
+  `--no-verify` push past the enterprise pre-push hook is the operator-sanctioned procedure (see
+  CONTRIBUTING.md "Pushing & opening PRs… gotchas"). Only raise it if the diff actually contains a
+  secret.
 
 ## F. Docs lock-step
 - Coupled docs must move with code. The `doc-freshness` CI check (`scripts/check_doc_freshness.py`)

@@ -208,11 +208,9 @@ def format_comment(
     if stats.get("conclusion"):
         lines.append(f"| Run result | `{stats['conclusion']}` |")
 
-    # Per-tier composition so the headline cost is explainable (cache-read is
-    # cheap-but-voluminous; cache-write + output usually dominate).
-    if breakdown is not None and any(
-        stats.get(k) for k in ("input_tokens", "output_tokens",
-                               "cache_read_input_tokens", "cache_creation_input_tokens")
+    # Per-tier composition when cache tiers explain the headline cost.
+    if breakdown is not None and (
+        stats.get("cache_read_input_tokens") or stats.get("cache_creation_input_tokens")
     ):
         lines += [
             "",

@@ -4,6 +4,29 @@ This applies to every change, regardless of which IDE / model / chat space you'r
 (Opus, Sonnet, cheaper models, cloud agents — all the same). It exists so work from many
 sessions stays safe and reviewable.
 
+## Ownership model (why this process exists)
+
+The goal is a clean split of ownership that lets the operator step back:
+
+- **The agent owns the entire development, end to end.** Once requirements are agreed, you own
+  everything: building, tests, the prod e2e, recording evidence, opening the PR, getting **all CI
+  green**, and **addressing every review comment — from humans and from the Claude bot — autonomously,
+  iterating until the PR is merge-ready, with no operator intervention.** Don't hand back a half-done
+  PR and wait. Drive it to green: read the comments/failing checks, fix, re-push, repeat. If a comment
+  is wrong, reply with why; if it's right, fix it.
+- **You owe the operator two kinds of evidence:**
+  1. **Evidence of understanding** — *before* building, prove (via Ask + Plan) you understood every
+     requirement. Restate it back, surface ambiguities, get agreement.
+  2. **Evidence it works** — *during/after* building, present enough proof (prod e2e output, sheet
+     diffs, logs) to **convince** the operator the requirements are actually met. The burden of proof
+     is on you, not on the operator to go verify.
+- **The operator owns only the final sign-off.** Their job shrinks to: give requirements incrementally,
+  and own the final PR — reviewing and merging **once all CIs are green and every comment is
+  addressed.** They are the final approver, not your debugger or your tester.
+- **Full agency ≠ no guardrails.** You still pause for the must-ask categories — destructive /
+  irreversible actions, scope changes, genuine architecture forks, external-service / secret config.
+  Your agency is over the *how* and the *loop*, never over scope or risk.
+
 ## The development loop (how agents should work)
 
 Follow this for any non-trivial feature. It's designed so the agent can self-correct in a

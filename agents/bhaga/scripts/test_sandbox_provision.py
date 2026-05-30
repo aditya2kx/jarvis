@@ -75,6 +75,38 @@ class TestProvision(unittest.TestCase):
         self.assertIn("BHAGA_STAGING_BHAGA_MODEL_SID", result["staging_env"])
 
 
+class TestClearSlot(unittest.TestCase):
+    def test_creates_only_missing_schema_tabs_before_seeding(self):
+        # Pool workbook is missing a newly added schema tab (e.g. item_lines):
+        # clear_slot must addSheet the missing tab BEFORE seeding its header,
+        # otherwise seed_tab_headers 400s on an unknown range.
+        specs = [{"tab_name": "transactions", "header": ["a"]},
+                 {"tab_name": "item_lines", "header": ["b"]}]
+        added: list[list[str]] = []
+        seeded: list[list[dict]] = []
+        with mock.patch.object(sp, "_list_tab_titles", lambda t, sid: ["transactions"]), \
+             mock.patch.object(sp, "_batch_clear", mock.Mock()), \
+             mock.patch.object(sp, "_tab_specs_for", lambda key: specs), \
+             mock.patch.object(sp, "_add_tabs", lambda t, sid, names: added.append(names)), \
+             mock.patch.object(sp, "seed_tab_headers", lambda t, sid, s: seeded.append(s)):
+            sp.clear_slot("tok", {"bhaga_square_raw": "SID"})
+        # Only the missing tab is created; the existing one is left alone.
+        self.assertEqual(added, [["item_lines"]])
+        # Headers are seeded for the full spec set after creation.
+        self.assertEqual(seeded, [specs])
+
+    def test_no_addsheet_when_all_tabs_present(self):
+        specs = [{"tab_name": "transactions", "header": ["a"]}]
+        added: list[list[str]] = []
+        with mock.patch.object(sp, "_list_tab_titles", lambda t, sid: ["transactions", "extra"]), \
+             mock.patch.object(sp, "_batch_clear", mock.Mock()), \
+             mock.patch.object(sp, "_tab_specs_for", lambda key: specs), \
+             mock.patch.object(sp, "_add_tabs", lambda t, sid, names: added.append(names)), \
+             mock.patch.object(sp, "seed_tab_headers", mock.Mock()):
+            sp.clear_slot("tok", {"bhaga_square_raw": "SID"})
+        self.assertEqual(added, [[]])
+
+
 class TestTeardown(unittest.TestCase):
     def test_teardown_clears_and_releases(self):
         with mock.patch.object(sp, "load_registry", lambda path=sp.POOL_REGISTRY_PATH: _REGISTRY), \

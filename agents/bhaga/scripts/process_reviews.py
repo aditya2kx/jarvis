@@ -813,6 +813,48 @@ def build_period_rollup(
     return rows
 
 
+def rebuild_review_bonus_period(
+    *,
+    model_sid: str,
+    token: str,
+    all_reviews: list[dict],
+    data_window_end: datetime.date,
+    profile: dict,
+) -> int:
+    """Rebuild ``review_bonus_period`` from reviews + algorithmic pay periods.
+
+    Period boundaries come from ``discover_periods`` (store-profile anchor),
+    not from ADP Earnings exports. Returns the number of data rows written
+    (excluding the header).
+    """
+    from agents.bhaga.scripts.update_model_sheet import (  # noqa: PLC0415
+        append_open_period,
+        discover_periods,
+    )
+
+    window_end_iso = data_window_end.isoformat()
+    periods = discover_periods(
+        anchor_end_date=profile["adp_run"]["pay_periods_anchor_end_date"],
+        pay_frequency=profile["adp_run"].get("pay_frequency", ""),
+        data_start=profile["calibration"]["first_data_window"]["start"],
+        last_data_date=window_end_iso,
+    )
+    periods = append_open_period(periods, last_data_date=window_end_iso)
+    rollup_rows = build_period_rollup(all_reviews, periods)
+
+    sheet_id = add_sheet_if_missing(
+        model_sid, token, tab_name="review_bonus_period", column_count=12,
+    )
+    clear_and_write_tab(
+        model_sid, token, tab_name="review_bonus_period", values=rollup_rows,
+    )
+    bold_header_row(model_sid, token, sheet_id=sheet_id)
+    format_currency_columns(
+        model_sid, token, sheet_id=sheet_id, column_indices=[6, 7, 8],
+    )
+    return len(rollup_rows) - 1
+
+
 # ── Main orchestration ───────────────────────────────────────────────
 
 
@@ -1172,43 +1214,14 @@ def main() -> int:
     print(f"# Model rollup source: {len(all_reviews)} reviews "
           f"(window ≤ {window_end_iso}).")
 
-    earnings_xlsx = max(
-        DOWNLOADS.glob("Earnings*.xlsx"),
-        key=lambda p: p.stat().st_mtime, default=None,
+    n_rollup = rebuild_review_bonus_period(
+        model_sid=model_sid,
+        token=token,
+        all_reviews=all_reviews,
+        data_window_end=data_window_end,
+        profile=profile,
     )
-    if earnings_xlsx is None:
-        print("# WARN: no Earnings XLSX — skipping review_bonus_period rebuild.")
-    else:
-        from skills.adp_run_automation import compensation_backend  # noqa: PLC0415
-        from agents.bhaga.scripts.update_model_sheet import (  # noqa: PLC0415
-            append_open_period, discover_periods,
-        )
-        earnings = compensation_backend.parse_xlsx(earnings_xlsx, employee_aliases=aliases)
-        # Periods are derived algorithmically from the store profile's
-        # biweekly anchor (see update_model_sheet.discover_periods), not from
-        # the earnings rows' pay_period text. data_start = the profile's
-        # first-data-window start so every period up to window_end is emitted.
-        periods = discover_periods(
-            anchor_end_date=profile["adp_run"]["pay_periods_anchor_end_date"],
-            pay_frequency=profile["adp_run"].get("pay_frequency", ""),
-            data_start=profile["calibration"]["first_data_window"]["start"],
-            last_data_date=window_end_iso,
-        )
-        # Anchor the open-period column to data_window_end (not "today" or
-        # latest credited shift) so the rollup's open period ends exactly
-        # where the rest of the model ends.
-        periods = append_open_period(periods, last_data_date=window_end_iso)
-        rollup_rows = build_period_rollup(all_reviews, periods)
-
-        sheet_id = add_sheet_if_missing(model_sid, token, tab_name="review_bonus_period",
-                                        column_count=12)
-        clear_and_write_tab(model_sid, token, tab_name="review_bonus_period",
-                            values=rollup_rows)
-        bold_header_row(model_sid, token, sheet_id=sheet_id)
-        # Dollar columns are 6, 7, 8 (base, named, total) — 0-indexed.
-        format_currency_columns(model_sid, token, sheet_id=sheet_id,
-                                column_indices=[6, 7, 8])
-        print(f"# review_bonus_period: {len(rollup_rows) - 1} data rows.")
+    print(f"# review_bonus_period: {n_rollup} data rows.")
 
     # ── Slack summary ──
     # Build the summary line-by-line so HELD-BACK is prominent. The

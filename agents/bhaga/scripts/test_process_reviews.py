@@ -16,10 +16,14 @@ import datetime
 import os
 import sys
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
-from agents.bhaga.scripts.process_reviews import _resolve_data_window_end
+from agents.bhaga.scripts.process_reviews import (
+    _resolve_data_window_end,
+    rebuild_review_bonus_period,
+)
 
 
 class ResolveDataWindowEndTests(unittest.TestCase):
@@ -58,6 +62,52 @@ class ResolveDataWindowEndTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as cm:
             _resolve_data_window_end({"data_window_end": ""})
         self.assertIn("data_window_end", str(cm.exception))
+
+
+class RebuildReviewBonusPeriodTests(unittest.TestCase):
+    """rollup must not depend on a local Earnings XLSX (cloud has none)."""
+
+    def test_rebuild_without_earnings_xlsx(self):
+        profile = {
+            "adp_run": {
+                "pay_periods_anchor_end_date": "2026-05-17",
+                "pay_frequency": "biweekly",
+            },
+            "calibration": {"first_data_window": {"start": "2026-02-17"}},
+        }
+        reviews = [
+            {
+                "shift_date_credited": "2026-05-28",
+                "rating": 5,
+                "named": ["Alice"],
+                "allocations": {"Alice": 20},
+            },
+        ]
+        with unittest.mock.patch(
+            "agents.bhaga.scripts.process_reviews.add_sheet_if_missing",
+            return_value="sheet123",
+        ) as add_sheet, unittest.mock.patch(
+            "agents.bhaga.scripts.process_reviews.clear_and_write_tab",
+        ) as write_tab, unittest.mock.patch(
+            "agents.bhaga.scripts.process_reviews.bold_header_row",
+        ), unittest.mock.patch(
+            "agents.bhaga.scripts.process_reviews.format_currency_columns",
+        ):
+            n = rebuild_review_bonus_period(
+                model_sid="model_sid",
+                token="token",
+                all_reviews=reviews,
+                data_window_end=datetime.date(2026, 5, 29),
+                profile=profile,
+            )
+        self.assertGreaterEqual(n, 1)
+        add_sheet.assert_called_once()
+        write_tab.assert_called_once()
+        written = write_tab.call_args.kwargs["values"]
+        self.assertEqual(written[0][0], "period_start")
+        open_rows = [r for r in written[1:] if r[2] == "yes"]
+        ends = {str(r[1]).lstrip("'") for r in open_rows}
+        self.assertIn("2026-05-29", ends, "open period should end at data_window_end")
 
 
 if __name__ == "__main__":

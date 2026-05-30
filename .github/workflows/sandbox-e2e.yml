@@ -8,10 +8,12 @@ name: Sandbox e2e
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
 
 # One run per PR; a new push cancels the previous (cost + no orphan sheets).
 concurrency:
-  group: sandbox-e2e-${{ github.event.number }}
+  group: sandbox-e2e-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 permissions:
@@ -23,30 +25,43 @@ jobs:
   e2e:
     name: Sandbox e2e
     runs-on: ubuntu-latest
-    # No-op cleanly when WIF isn't configured yet, so it never red-X's a PR
-    # before the operator opts in.
-    if: ${{ vars.SANDBOX_E2E_ENABLED == 'true' }}
     env:
       BHAGA_SECRETS_BACKEND: gcp      # use ADC (the WIF service account) for Google APIs
       BHAGA_STATE_BACKEND: firestore   # slot leases only (sandbox_slots collection)
     steps:
+      - name: Register check on main push
+        if: github.event_name == 'push'
+        run: |
+          echo "Full sandbox e2e runs on pull_request when SANDBOX_E2E_ENABLED=true."
+          echo "This step registers the job name on main for branch protection."
+
+      - name: Skip when sandbox e2e disabled
+        if: github.event_name == 'pull_request' && vars.SANDBOX_E2E_ENABLED != 'true'
+        run: |
+          echo "SANDBOX_E2E_ENABLED is not true — skipping heavy e2e (by design)."
+
       - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request' && vars.SANDBOX_E2E_ENABLED == 'true'
 
       - name: Set up Python
+        if: github.event_name == 'pull_request' && vars.SANDBOX_E2E_ENABLED == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install dependencies
+        if: github.event_name == 'pull_request' && vars.SANDBOX_E2E_ENABLED == 'true'
         run: pip install -r requirements.txt
 
       - name: Authenticate to GCP
+        if: github.event_name == 'pull_request' && vars.SANDBOX_E2E_ENABLED == 'true'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.SANDBOX_E2E_SERVICE_ACCOUNT || secrets.WIF_SERVICE_ACCOUNT }}
 
       - name: Run sandbox e2e (replay-only, zero-OTP)
+        if: github.event_name == 'pull_request' && vars.SANDBOX_E2E_ENABLED == 'true'
         run: |
           python3 -m agents.bhaga.scripts.sandbox_e2e \
             --pr-number "${{ github.event.number }}" \
@@ -54,7 +69,7 @@ jobs:
             --evidence-file sandbox-e2e-evidence.md
 
       - name: Post evidence comment
-        if: ${{ always() }}
+        if: github.event_name == 'pull_request' && vars.SANDBOX_E2E_ENABLED == 'true'
         uses: actions/github-script@v7
         with:
           script: |

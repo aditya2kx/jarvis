@@ -75,6 +75,9 @@ CI leases via Firestore `sandbox_slots`, clears/writes, releases. Enabled Drive 
 tokens) to Sonnet 4.6/10 turns + diff-only prompt (~$0.50–1 target). Added
 `scripts/post_claude_review_cost.py` — posts a PR comment after each review with model, turns,
 tokens, and reported USD from `execution_file`.
+**Claude review bounded context (2026-05-30):** `scripts/build_claude_review_context.py` materializes
+PR-changed files + paired tests + rubric into `review-context/` so the bot can Read cross-file
+context without repo-wide grep (see CONTRIBUTING.md § Review bot).
 
 Follow-up (2026-05-30): addressed Claude review's non-blocking notes on PR #3 — clarified `select_window`
 returns the span across the N most-recent *cached* dates (not N calendar days), flagged the bounded

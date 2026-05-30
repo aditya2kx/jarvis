@@ -10,6 +10,7 @@ agents/*/knowledge-base/**
 !agents/*/knowledge-base/store-profiles/**
 agents/*/data/
 extracted/
+review-context/
 config.yaml
 
 # Local scratch / planning space — never ships to GitHub.

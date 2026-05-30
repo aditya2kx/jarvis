@@ -25,8 +25,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-# USD per million tokens (Anthropic API list, 2026-05). Used only when the
-# execution file lacks total_cost_usd.
+# USD per million tokens (Anthropic API list, 2026-05): (input, output). Used
+# only when the execution file lacks total_cost_usd.
 _PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-sonnet-4-5-20250929": (3.0, 15.0),
@@ -34,6 +34,14 @@ _PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-opus-4-8": (5.0, 25.0),
     "claude-haiku-4-5-20251001": (1.0, 5.0),
 }
+
+# Cache tokens are NOT billed at the base input rate. Anthropic prompt caching:
+# a 5-minute cache WRITE costs 1.25× base input; a cache READ costs 0.10× base
+# input. Summing cache + input into one "billable input" number and pricing it
+# all at the base rate over-states cost 2–3× (cache read dominates volume but is
+# the cheapest tier) — that was the old bug.
+_CACHE_WRITE_MULT = 1.25
+_CACHE_READ_MULT = 0.10
 
 
 def _usage_block(msg: dict[str, Any]) -> dict[str, int]:
@@ -114,13 +122,47 @@ def parse_execution(messages: list[Any]) -> dict[str, Any]:
     }
 
 
-def estimate_cost_usd(model: str, billable_input: int, output_tokens: int) -> float | None:
-    """Estimate USD when execution file has no total_cost_usd."""
+def _price_for(model: str) -> tuple[float, float] | None:
+    """(input, output) USD/Mtok for a model, or None if pricing is unknown."""
     key = model.lower()
-    for name, (in_p, out_p) in _PRICE_PER_MTOK.items():
+    for name, prices in _PRICE_PER_MTOK.items():
         if name in key or key in name:
-            return (billable_input / 1_000_000) * in_p + (output_tokens / 1_000_000) * out_p
+            return prices
     return None
+
+
+def cost_breakdown_usd(model: str, stats: dict[str, Any]) -> dict[str, float] | None:
+    """Per-tier USD using list prices, or None if the model isn't priceable.
+
+    Each tier is priced at its own rate (input, output at list; cache write at
+    1.25× input; cache read at 0.10× input), so the parts sum to a realistic
+    total instead of pricing cached tokens as fresh input.
+    """
+    prices = _price_for(model)
+    if prices is None:
+        return None
+    in_p, out_p = prices
+    input_cost = (int(stats.get("input_tokens") or 0) / 1_000_000) * in_p
+    output_cost = (int(stats.get("output_tokens") or 0) / 1_000_000) * out_p
+    cache_write_cost = (
+        int(stats.get("cache_creation_input_tokens") or 0) / 1_000_000
+    ) * in_p * _CACHE_WRITE_MULT
+    cache_read_cost = (
+        int(stats.get("cache_read_input_tokens") or 0) / 1_000_000
+    ) * in_p * _CACHE_READ_MULT
+    return {
+        "input": input_cost,
+        "output": output_cost,
+        "cache_write": cache_write_cost,
+        "cache_read": cache_read_cost,
+        "total": input_cost + output_cost + cache_write_cost + cache_read_cost,
+    }
+
+
+def estimate_cost_usd(model: str, stats: dict[str, Any]) -> float | None:
+    """Estimate total USD (cache-tier-aware) when the log lacks total_cost_usd."""
+    breakdown = cost_breakdown_usd(model, stats)
+    return breakdown["total"] if breakdown is not None else None
 
 
 def format_comment(
@@ -130,8 +172,27 @@ def format_comment(
     default_model: str,
     workflow_run_url: str | None,
     execution_missing: bool,
+    skip_reason: str | None = None,
 ) -> str:
+    if skip_reason == "bootstrap_workflow":
+        lines = [
+            "### Claude review — API cost",
+            "",
+            "**Review did not run on this PR.** `anthropics/claude-code-action` only executes when "
+            "`.github/workflows/claude-review.yml` is **byte-identical to `main`**. This PR changes "
+            "that workflow file (bootstrap) — that is expected, not a broken cost reporter.",
+            "",
+            "After this PR merges, the next PR gets a real Sonnet review and non-zero token/cost "
+            "stats in this comment.",
+        ]
+        if workflow_run_url:
+            lines.append(f"\n[Workflow run]({workflow_run_url})")
+        return "\n".join(lines)
+
     model = stats.get("model") if stats.get("model") != "unknown" else default_model
+    # Tokens split by billing tier. "Input (uncached)" is usually tiny because
+    # the diff prompt is served from cache — that is expected, not a bug, so we
+    # label it explicitly and never collapse the tiers into one "billable" sum.
     lines = [
         "### Claude review — API cost",
         "",
@@ -139,35 +200,48 @@ def format_comment(
         "| --- | --- |",
         f"| Model | `{model}` |",
         f"| Turns | {stats.get('num_turns', '—')} |",
-        f"| Input tokens | {stats.get('input_tokens', 0):,} |",
+        f"| Input tokens (uncached) | {stats.get('input_tokens', 0):,} |",
         f"| Output tokens | {stats.get('output_tokens', 0):,} |",
     ]
     if stats.get("cache_read_input_tokens"):
-        lines.append(f"| Cache read tokens | {stats['cache_read_input_tokens']:,} |")
+        lines.append(f"| Cache read tokens (0.10×) | {stats['cache_read_input_tokens']:,} |")
     if stats.get("cache_creation_input_tokens"):
-        lines.append(f"| Cache write tokens | {stats['cache_creation_input_tokens']:,} |")
-    if stats.get("billable_input_tokens") != stats.get("input_tokens"):
-        lines.append(f"| Billable input (incl. cache) | {stats['billable_input_tokens']:,} |")
+        lines.append(f"| Cache write tokens (1.25×) | {stats['cache_creation_input_tokens']:,} |")
 
     cost = stats.get("total_cost_usd")
-    est = None
+    breakdown = cost_breakdown_usd(model, stats)
     if cost is not None:
         lines.append(f"| **Reported cost** | **${cost:.4f}** |")
-    else:
-        est = estimate_cost_usd(
-            model,
-            int(stats.get("billable_input_tokens") or 0),
-            int(stats.get("output_tokens") or 0),
+    elif breakdown is not None:
+        lines.append(
+            f"| **Estimated cost** | **~${breakdown['total']:.4f}** (no `total_cost_usd` in log) |"
         )
-        if est is not None:
-            lines.append(f"| **Estimated cost** | **~${est:.4f}** (no `total_cost_usd` in log) |")
-        else:
-            lines.append("| **Cost** | _(not reported — unknown model pricing)_ |")
+    else:
+        lines.append("| **Cost** | _(not reported — unknown model pricing)_ |")
 
     if stats.get("duration_ms") is not None:
         lines.append(f"| Duration | {stats['duration_ms'] / 1000:.1f}s |")
     if stats.get("conclusion"):
         lines.append(f"| Run result | `{stats['conclusion']}` |")
+
+    # Per-tier composition when cache tiers explain the headline cost.
+    if breakdown is not None and (
+        stats.get("cache_read_input_tokens") or stats.get("cache_creation_input_tokens")
+    ):
+        lines += [
+            "",
+            "<details><summary>Cost composition (list prices)</summary>",
+            "",
+            "| Tier | USD |",
+            "| --- | --- |",
+            f"| Input (uncached) | ${breakdown['input']:.4f} |",
+            f"| Cache write | ${breakdown['cache_write']:.4f} |",
+            f"| Cache read | ${breakdown['cache_read']:.4f} |",
+            f"| Output | ${breakdown['output']:.4f} |",
+            f"| **Sum (list)** | **${breakdown['total']:.4f}** |",
+            "",
+            "</details>",
+        ]
 
     lines.append("")
     if execution_missing:
@@ -177,8 +251,8 @@ def format_comment(
         )
     else:
         lines.append(
-            "_Source: `claude-code-action` `execution_file` (`total_cost_usd` when present). "
-            "Output-token counts in session logs can under-report; trust **Reported cost**._"
+            "_Source: `claude-code-action` `execution_file`. **Reported cost** (when present) "
+            "is authoritative; the composition uses list prices and may differ slightly._"
         )
     if workflow_run_url:
         lines.append(f"\n[Workflow run]({workflow_run_url})")
@@ -224,6 +298,12 @@ def main(argv: list[str] | None = None) -> int:
     cli.add_argument("--execution-file", default="")
     cli.add_argument("--default-model", default="claude-sonnet-4-6")
     cli.add_argument("--workflow-run-url", default="")
+    cli.add_argument(
+        "--skip-reason",
+        choices=["bootstrap_workflow"],
+        default=None,
+        help="Why the review did not run (e.g. workflow file differs from main).",
+    )
     cli.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     cli.add_argument("--dry-run", action="store_true")
     args = cli.parse_args(argv)
@@ -249,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
         default_model=args.default_model,
         workflow_run_url=args.workflow_run_url or None,
         execution_missing=execution_missing,
+        skip_reason=args.skip_reason,
     )
     print(body)
     if args.dry_run:

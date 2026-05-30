@@ -147,15 +147,25 @@ gh pr create --base main --fill     # then fill the template
 
 - Workflow: `.github/workflows/claude-review.yml`. Triggers on PR `opened` / `synchronize` / `reopened`.
 - Model: **Claude Sonnet 4.6** (`--model claude-sonnet-4-6`), cost-budgeted for **~$0.50–1 per PR**:
-  `--max-turns 10`, a 12-minute job timeout, per-PR `concurrency` cancellation, and a prompt that
-  restricts the bot to `gh pr view` / `gh pr diff` (no repo-wide greps). Opus at 40 turns was ~$4–5/PR
-  (~4.7M input tokens). Escalate to Opus manually in chat for contentious changes.
+  `--max-turns 12`, a 12-minute job timeout, and per-PR `concurrency` cancellation. Opus at 40 turns
+  with repo-wide exploration was ~$4–5/PR (~4.7M input tokens); we do not do that.
+- **Bounded context (not diff-only, not repo-wide):** before review,
+  `scripts/build_claude_review_context.py` materializes into `review-context/` only (a) files changed
+  in the PR, (b) paired `test_*.py` modules for changed `.py` files, and (c) the review rubric. The
+  bot may Read **only** under `review-context/` plus `gh pr view` / `gh pr diff` — no grep/find
+  elsewhere. Escalate to a human or Opus in chat for rare whole-repo audits.
 - **Advisory, not a hard gate.** The review step is `continue-on-error`, so a bot infra hiccup (turn
   cap, transient API error) never red-X's the PR — the **operator's approval** is the hard merge gate
   (branch protection). Real review feedback is posted as PR comments regardless.
 - **Cost comment:** after each run, `scripts/post_claude_review_cost.py` posts a PR comment with
   model, turns, input/output tokens, and reported USD cost (from the action's `execution_file`).
   Budget target remains **~$0.50–1/PR** on Sonnet.
+- **Workflow bootstrap PRs:** `claude-code-action` refuses to run when
+  `.github/workflows/claude-review.yml` on the PR branch differs from `main` (GitHub app token
+  validation). On those PRs the cost comment says **review did not run** (not fake zeros) and CI
+  emits a **warning** but stays green. After the workflow lands on `main`, the next PR gets a real
+  review + cost stats (see PR #6 for a working example). CI **fails** if review did not run and the
+  workflow file was **not** changed — that catches real regressions.
 - **What it looks for** is the rubric in `.github/claude-review-guidelines.md` — PR-description
   completeness, backward compatibility (feature-flagged / additive schema / legacy path proven), BHAGA
   correctness invariants (Decimal money, idempotent upserts, `America/Chicago`, GCS-not-laptop,
@@ -176,9 +186,50 @@ These are GitHub-side and can't be done from the repo alone:
    - **Require approvals (1)** — so a PR can't be merged without the operator's explicit review approval.
      This is what makes "the agent never merges, only the operator merges" a hard, server-side gate
      rather than a convention. (Leave "allow specified actors to bypass" unset.)
-   - Require status checks to pass: `Doc Freshness`, the test job, and (optionally) `Claude review`.
-     These appear in the picker only after they've run once (open one PR first).
+   - **Require status checks to pass** (see below).
+   - **Require branches to be up to date before merging** — this is the “rebase/merge `main` first”
+     gate. GitHub will block the merge button until the PR branch contains the latest `main`, then
+     re-runs the required checks on the updated merge result. No extra workflow needed.
    - Block direct pushes (don't allow bypass, or restrict who can).
 
+### Why the “Add checks” picker looked empty
+
+Two separate issues:
+
+1. **Rule not saved yet** — `main` is unprotected until you click **Save changes**. While editing a
+   new rule, the picker often shows **No checks have been added** / search **No results** even though
+   PRs have been green for weeks.
+
+2. **PR-only workflows don’t register on `main`** — until 2026-05-31, `Claude review` and
+   `Sandbox e2e` only ran on `pull_request`, never on `push` to `main`. GitHub’s branch-protection
+   picker is populated from checks that have run on the **default branch**. On `main` you only saw
+   `Doc Freshness` and `build-and-deploy`. PR #7+ adds a **fast no-op `push: branches: [main]`**
+   path so those job names also register on `main` after the next merge.
+
+**Fix:** save the branch rule, merge PR #7 (or any PR with the push registration), wait for the
+post-merge `push` workflows on `main` (~30s), reload branch protection → **Add checks**. Search for
+the **job name** (not the workflow filename):
+
+| Status check name (exact) | Workflow | Require? |
+| --- | --- | --- |
+| `Doc Freshness` | `doc-freshness.yml` | **Yes** — always runs, cheap |
+| `Sandbox e2e` | `sandbox-e2e.yml` | **Yes** — prod-like replay (needs `SANDBOX_E2E_ENABLED=true`) |
+| `Claude review` | `claude-review.yml` | Optional — advisory (`continue-on-error`); still useful as signal |
+
+Do **not** expect `Sandbox teardown` here — it runs on PR **close**, not on the PR commit.
+
+If checks still do not appear: confirm the rule applies to branch **`main`**, you are not typing in
+the browser Find bar (Ctrl+F), and you are editing **Branch protection rules** (or a ruleset) for
+this repo — not an org template with no runs yet.
+
+### Recommended required checks (minimal)
+
+1. `Doc Freshness`
+2. `Sandbox e2e`
+3. Enable **Require branches to be up to date before merging**
+
+Skip requiring `Claude review` as a hard gate if you want merges to survive bot turn-cap/API blips
+(it is intentionally advisory).
+
 Once these are set, the process is enforced server-side, not just by convention: every change needs a
-PR, green CI, and **your** approval before it can merge.
+PR, green CI on the latest `main`, and **your** approval before it can merge.

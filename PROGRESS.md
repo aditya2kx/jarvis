@@ -12,13 +12,34 @@
 
 ## BHAGA Agent (Tip Allocation & Payroll Prep)
 
-**Status: Agent scaffolded 2026-04-18, ready for M1 (Square tips → sheet) on user confirmation of plan.**
+**Status: SHIPPED & CLOUD-PRIMARY (2026-05-29). Nightly runs as a GCP Cloud Run Job; laptop retired.**
+
+> **Operate from [`RUNBOOK.md`](RUNBOOK.md).** Behavioral spec: [`.cursor/rules/bhaga.md`](.cursor/rules/bhaga.md).
+> Code map + how to extend the model: [`agents/bhaga/scripts/README.md`](agents/bhaga/scripts/README.md).
+> Entry point for any machine/cloud agent: [`AGENTS.md`](AGENTS.md). The M1–M4 milestones and
+> open-questions below are **historical** — all resolved; kept for provenance.
+
+**Current state (2026-05-29):**
+- **Pipeline live in cloud.** `bhaga-nightly` Scheduler (21:30 CT) → `bhaga-daily-refresh` Cloud Run
+  Job (`daily_refresh.py`): scrape Square/ADP → mirror to raw sheets → recompute Model tabs →
+  reviews → Slack heartbeat. OTP/2FA via Firestore + `bhaga-webhook` (no laptop listener).
+- **Model tabs:** `config, daily, labor_daily, labor_weekly, labor_period, tip_alloc_period,
+  tip_alloc_daily, period_summary, review_bonus_period, labor_daily_forecast`. All derived from the
+  raw sheets (`bhaga_adp_raw`, `bhaga_square_raw`, `bhaga_review_raw`).
+- **Sheet source of truth:** `store-profiles/palmetto.json` `google_sheets` block (staging mode +
+  `google_sheets_staging` retired in the 2026-05-29 cutover).
+- **Timezone:** all date selection + reports in Central (`America/Chicago`).
+- **Recent fixes:** `review_bonus_period` now rebuilds unconditionally (commit `4059604`); sheet
+  config consolidated to a single source of truth; staging-isolation tests made synthetic.
+- **What's next / backlog:** extend the model as needs arise (see scripts/README § Extending the
+  model); finish laptop-decommission checklist (`RUNBOOK.md` §11) — keep credentials in an
+  independent password manager off the Keychain.
 
 Named after **Bhaga** (भग) — Vedic Aditya whose name derives from Sanskrit *bhaj* ("to apportion, divide, share"). The deity of just distribution of wealth and shares — the rightful portion due to each. Etymologically perfect for a tip-pool fair-share agent.
 
 **Origin**: handoff doc at `get open/handoff-tip-allocator-agent.md` (chat: [Square ADP tip automation plan](b8a58719-e992-4051-954d-dbd513cf0f93)). Sibling-pattern reference: AKSHAYA (Square + Playwright + Sheets).
 
-**What exists (scaffold only):**
+**What existed at scaffold time (2026-04-18 — historical; all since shipped):**
 - `agents/bhaga/` directory (`README.md`, `knowledge-base/README.md`, `scripts/README.md`)
 - `agents/bhaga/scripts/notify.py` — BHAGA-tagged DM helper (transitional identity; see below)
 - `.cursor/rules/bhaga.md` — agent behavior rule (auto-loads on `agents/bhaga/**`)
@@ -32,7 +53,7 @@ Named after **Bhaga** (भग) — Vedic Aditya whose name derives from Sanskrit
 
 **Existing skills BHAGA composes on**: `skills/browser/`, `skills/google_sheets/`, `skills/credentials/`, `skills/slack/`.
 
-**What's next (BHAGA backlog — incremental milestones, each independently useful):**
+**BHAGA backlog — incremental milestones (HISTORICAL; M1–M4 all shipped, now cloud-primary):**
 
 1. **M1 — Square tips visible in sheet (~1–2 days)**: implement `skills/square_tips/` + minimal `skills/tip_ledger_writer/` slice that drops a "Tips Today" column into the existing Austin sheet. Replaces the manual Square dashboard lookup. **Blocked on user input**: Square access token, sheet ID + Google account, daily-tab header row, cash-tips column policy.
 2. **M2 — Daily hours visible in sheet (~1 week, most fragile)**: implement `skills/adp_run_automation/`. Biggest unknown is RUN Time > Timecards DOM — requires one-time selector calibration during a live ADP session with the user. Also: MFA strategy (persistent cookie vs prompt-per-session). Selectors checked in to `agents/bhaga/knowledge-base/selectors/run_timecards.json`.

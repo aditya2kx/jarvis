@@ -314,3 +314,75 @@ Before wiping the laptop, confirm ALL of the following are captured online / off
       the laptop listener will no longer auto-start. Migrate or accept as needed.
 
 Only after every box is checked is the laptop safe to decommission.
+
+---
+
+## 12. Operating rules (how to change BHAGA safely)
+
+1. **Commit → push → deploy. Never run prod against local or unpushed code.** The deployed artifact
+   is a container image built by `.github/workflows/deploy.yml` on push to `main` (§9). A local edit
+   has **zero** effect on the nightly job until it's pushed and the image redeploys. Verify the deploy
+   landed (`gh run watch`) before expecting new behavior in prod.
+2. **Tests before push:** `python3 -m pytest agents/bhaga/scripts/ skills/tip_ledger_writer/ core/ cloud/`.
+3. **No PII / secrets in git.** Credentials live in Secret Manager (§7). Sheet IDs / emails live in
+   the store profile and docs — see the git-hook note below.
+4. **Corporate pre-push hook (`--no-verify`).** A machine-global DoorDash pre-push hook scans pushes
+   for "potential data leaks" (sheet IDs, email addresses) and can block a push to this **personal**
+   repo (`aditya2kx/jarvis`, pushed with personal `aditya.2ky@gmail.com` creds — not DoorDash). It is
+   a generic security control, **not** a credential problem. When a push is blocked solely by this
+   hook and the diff contains only non-secret config (sheet IDs, the operator's own email),
+   `git push --no-verify` is the sanctioned bypass. Do **not** `--no-verify` to push actual secrets.
+5. **Keep docs in lock-step (the reason this repo stays portable).** Any behavior change updates the
+   matching doc in the **same** change. Targets: pipeline/sheets/secrets/scheduler → this file; a
+   script or extension recipe → `agents/bhaga/scripts/README.md`; an invariant → `.cursor/rules/bhaga.md`;
+   anything notable → a dated line in `PROGRESS.md`. See `AGENTS.md` § Keeping docs current. A doc
+   that lags the code is a bug.
+
+---
+
+## 13. Common tasks
+
+### Force a step to re-run (clear the idempotency marker)
+
+A re-run skips steps already marked done in Firestore `runs/<YYYY-MM-DD>`
+(`skills/bhaga_config/state_adapter.py`). To force one step (e.g. re-run reviews after a fix), clear
+its marker, then execute the job for that date:
+
+```bash
+# View the run doc to see which step markers are set
+gcloud firestore documents get \
+  "projects/jarvis-bhaga-prod/databases/(default)/documents/runs/YYYY-MM-DD"
+
+# Clear a single step's marker (delete the field) or delete the whole run doc to force everything,
+# via the Firestore console (collection `runs`, doc `YYYY-MM-DD`). Then:
+gcloud run jobs execute bhaga-daily-refresh \
+  --region=us-central1 --update-env-vars REFRESH_DATE=YYYY-MM-DD
+```
+
+> Deleting the entire `runs/YYYY-MM-DD` doc forces a full re-run for that date. Writes stay idempotent
+> (upsert by natural key), so re-running is safe — it overwrites, never duplicates.
+
+### Rebuild model/history from scratch
+
+Reset `data_window_end` in the Model `config` tab back to `data_window_start`, then run the job for
+the target date — the gap window recomputes the full span and re-derives every Model tab from the raw
+sheets. (Raw sheets are the source; the model is always reproducible from them.)
+
+### Review pipeline mechanics (debugging "did we miss a review?")
+
+- `process_reviews.py` pulls reviews from ClickUp, then **rebuilds `review_bonus_period`
+  unconditionally** every run (the old gate that skipped the rebuild when no local `Earnings*.xlsx`
+  was present was removed 2026-05-29, commit `4059604` — that file is never downloaded in the cloud).
+- Dedupe / "held-back" logic keys off review identity + a high-water timestamp, so reruns don't
+  double-count and late-arriving reviews still land on the next run.
+- **First debugging step for a "missing review":** confirm you're reading the **primary** sheet IDs
+  from `palmetto.json` (`google_sheets` block). The classic false alarm was a local verification
+  script reading the **old deprecated** sheets while the cloud job wrote the **promoted** ones. The
+  raw review tab (`bhaga_review_raw`) is the ground truth — check it before concluding anything is
+  missing.
+
+### Add a column or a new derived tab
+
+See `agents/bhaga/scripts/README.md` § Extending the model (Recipe A: add a column; Recipe B: new
+tab from raw). Schema-backed tabs auto-migrate **additive** header changes; reordering/removing does
+not.

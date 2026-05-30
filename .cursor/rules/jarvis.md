@@ -26,6 +26,22 @@ Jarvis (this workspace)
 └── core/          Shared infrastructure (config, auth)
 ```
 
+## Deployment surfaces — read before applying the laptop protocol below
+
+Agents do **not** all run the same way. **[`AGENTS.md`](../../AGENTS.md) is the canonical entry
+point** and the source of truth for this:
+
+- **BHAGA is cloud-primary** (GCP Cloud Run; laptop retired 2026-05-29). It does **not** use the
+  local Slack-listener / `/tmp/jarvis-*.json` protocol described below — OTP/READY go through
+  Firestore + the `bhaga-webhook` Cloud Run service. Operate it from
+  **[`RUNBOOK.md`](../../RUNBOOK.md)**; behavioral spec in `bhaga.md`; code map in
+  `agents/bhaga/scripts/README.md`.
+- **CHITRA / CHANAKYA / AKSHAYA run locally** on the laptop and **do** use the Slack-listener /
+  `/tmp` inbox protocol in § Session Continuity.
+
+When the Session Continuity steps below mention the Slack listener or `/tmp` files, they apply to the
+**laptop agents only**. Skip them for BHAGA.
+
 ## Routing Rules
 
 1. **Tax-related requests** → activate CHITRA agent (read `chitra.md`, `chitra-workflows.md`, `chitra-playbook.md`)

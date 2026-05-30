@@ -35,6 +35,16 @@
   model); finish laptop-decommission checklist (`RUNBOOK.md` §11) — keep credentials in an
   independent password manager off the Keychain.
 
+**Docs system + lock-step enforcement (2026-05-30):** made the repo a self-sufficient, cross-device
+source of truth. Added `AGENTS.md` (canonical entry point + doc map + work-from-any-machine guide),
+rewrote `.cursor/rules/bhaga.md` and `agents/bhaga/scripts/README.md` to cloud reality (incl.
+"Extending the model" recipes), added RUNBOOK §12 Operating rules + §13 Common tasks. Enforcement
+(so it's not just prose): `.cursor/rules/doc-maintenance.md` (auto-loads on code edits, maps
+code→doc), `scripts/check_doc_freshness.py` (deterministic checker, `--strict` for CI,
+self-maintaining `COUPLINGS` table), and `.github/workflows/doc-freshness.yml` (non-blocking CI
+signal on push + PRs). Git-hook approach rejected: local hooks don't travel, portable hooks need a
+forbidden git-config change that would shadow the corporate pre-push hook.
+
 Named after **Bhaga** (भग) — Vedic Aditya whose name derives from Sanskrit *bhaj* ("to apportion, divide, share"). The deity of just distribution of wealth and shares — the rightful portion due to each. Etymologically perfect for a tip-pool fair-share agent.
 
 **Origin**: handoff doc at `get open/handoff-tip-allocator-agent.md` (chat: [Square ADP tip automation plan](b8a58719-e992-4051-954d-dbd513cf0f93)). Sibling-pattern reference: AKSHAYA (Square + Playwright + Sheets).

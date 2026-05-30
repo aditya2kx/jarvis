@@ -1,0 +1,42 @@
+name: Doc Freshness
+
+# Flags (does not block) when a code change lands without its coupled doc.
+# Separate from deploy.yml on purpose: a red X here is a visible signal and
+# gates future PRs, but never affects the build/deploy job.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history so we can diff against the base
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compute base ref
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            # First push to a branch reports an all-zero "before"; fall back.
+            if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+              BASE="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+            fi
+          fi
+          echo "ref=$BASE" >> "$GITHUB_OUTPUT"
+          echo "Diffing against base: $BASE"
+
+      - name: Check doc freshness
+        run: python3 scripts/check_doc_freshness.py --base "${{ steps.base.outputs.ref }}" --strict

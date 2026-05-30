@@ -1,6 +1,6 @@
 # Claude PR review guidelines (Jarvis / BHAGA)
 
-This is the rubric the automated **Claude Opus** reviewer follows on every PR
+This is the rubric the automated **Claude Sonnet** reviewer follows on every PR
 (`.github/workflows/claude-review.yml`). It is also the human-readable contract for
 what a good PR here looks like. Keep it current as invariants evolve.
 

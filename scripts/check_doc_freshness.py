@@ -48,6 +48,9 @@ COUPLINGS: list[dict] = [
             "agents/bhaga/scripts/update_model_sheet.py",
             "agents/bhaga/scripts/forecast.py",
             "agents/bhaga/scripts/process_reviews.py",
+            "agents/bhaga/scripts/item_operations.py",
+            "skills/bhaga_labor/*.py",
+            "skills/square_tips/transactions_backend.py",
         ],
         "docs": ["agents/bhaga/knowledge-base/DOMAIN.md"],
         "why": "sheet columns / metrics / domain semantics changed → update the BHAGA domain data dictionary.",
@@ -71,6 +74,15 @@ COUPLINGS: list[dict] = [
         "why": "allocation invariant / sheet source-of-truth change → update BHAGA behavioral spec / RUNBOOK.",
     },
     {
+        "code": [
+            ".github/workflows/claude-review.yml",
+            ".github/claude-review-guidelines.md",
+            ".github/pull_request_template.md",
+        ],
+        "docs": ["CONTRIBUTING.md"],
+        "why": "PR process / review bot / template changed → update CONTRIBUTING.md (the process doc).",
+    },
+    {
         "code": ["agents/**/*.py", "skills/**/*.py", "cloud/**/*.py", "core/**/*.py"],
         "docs": ["PROGRESS.md"],
         "why": "notable code change → add a dated line to PROGRESS.md (status / decision / blocker).",
@@ -80,6 +92,7 @@ COUPLINGS: list[dict] = [
 # Files that never *trigger* a doc reminder. Docs (*.md) are excluded because a
 # doc change never obligates another doc; tests/build artifacts are noise.
 IGNORE_GLOBS = [
+    "*.md",       # top-level docs (fnmatch '**/*.md' doesn't match paths without a '/')
     "**/*.md",
     "**/test_*.py",
     "**/*_test.py",
@@ -120,16 +133,20 @@ def main() -> int:
     ap.add_argument("--strict", action="store_true", help="exit non-zero when a coupled doc is missing.")
     args = ap.parse_args()
 
-    changed = [c for c in changed_files(args.base) if not _matches(c, IGNORE_GLOBS)]
-    if not changed:
+    all_changed = changed_files(args.base)
+    # Two views: docs satisfy a coupling, so the satisfaction check needs the FULL
+    # set (incl. *.md). IGNORE_GLOBS only governs what may *trigger* a reminder
+    # (a doc change must never obligate another doc).
+    changed_set = set(all_changed)
+    triggers = [c for c in all_changed if not _matches(c, IGNORE_GLOBS)]
+    if not triggers:
         print("doc-freshness: no relevant changed files. ✓")
         return 0
 
-    changed_set = set(changed)
     reminders: list[str] = []
 
     for rule in COUPLINGS:
-        triggering = [c for c in changed if _matches(c, rule["code"])]
+        triggering = [c for c in triggers if _matches(c, rule["code"])]
         if not triggering:
             continue
         if any(doc in changed_set for doc in rule["docs"]):
@@ -145,7 +162,7 @@ def main() -> int:
         )
 
     if not reminders:
-        print(f"doc-freshness: {len(changed)} changed file(s); all coupled docs updated. ✓")
+        print(f"doc-freshness: {len(triggers)} changed file(s); all coupled docs updated. ✓")
         return 0
 
     print("doc-freshness: some docs may be stale relative to this change:\n")

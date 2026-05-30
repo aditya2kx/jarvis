@@ -10,6 +10,7 @@ on:
 
 jobs:
   check:
+    name: Doc Freshness
     runs-on: ubuntu-latest
     permissions:
       contents: read

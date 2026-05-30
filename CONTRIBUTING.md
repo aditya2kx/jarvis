@@ -80,10 +80,13 @@ tight build → verify → fix loop without the operator babysitting every step.
    **motivation**, **end-to-end test with evidence**, and **backward compatibility + proof**. Empty or
    placeholder sections get a REQUEST CHANGES.
 4. **The Claude Opus reviewer bot runs automatically** on every PR and posts inline + summary comments
-   (see below). Address its findings (fix, or reply why not) before merge.
-5. **Merge only when:** required CI is green (`doc-freshness`, tests), the Claude review has no
-   unresolved REQUEST CHANGES, and the PR description is complete. Then squash-merge to `main`; the
-   deploy runs from `main`.
+   (see below). The agent addresses every finding autonomously (fix, or reply why not) and re-pushes —
+   looping until the PR is merge-ready.
+5. **The agent NEVER merges. Only the operator merges.** The agent's job ends at *merge-ready*: all CI
+   green (`doc-freshness`, tests, Claude review ran), no unresolved `REQUEST CHANGES`, and the PR
+   description complete. The agent then stops and hands the PR to the operator. The **operator** does
+   the final review and squash-merge to `main` (which triggers deploy). Merging is the human sign-off —
+   never automate it, never ask the operator to delegate it to you.
 
 > Bootstrapping note: branch protection (server-side enforcement of "no direct push to `main`") is a
 > GitHub **settings** change — see "Enabling enforcement" below. Until it's enabled, rule 1 is a
@@ -111,7 +114,12 @@ These are GitHub-side and can't be done from the repo alone:
    per PR review.
 2. **Protect `main`:** repo → Settings → Branches → add a rule for `main`:
    - Require a pull request before merging.
-   - Require status checks to pass: `doc-freshness`, the test job, and (optionally) the Claude review.
+   - **Require approvals (1)** — so a PR can't be merged without the operator's explicit review approval.
+     This is what makes "the agent never merges, only the operator merges" a hard, server-side gate
+     rather than a convention. (Leave "allow specified actors to bypass" unset.)
+   - Require status checks to pass: `Doc Freshness`, the test job, and (optionally) `Claude review`.
+     These appear in the picker only after they've run once (open one PR first).
    - Block direct pushes (don't allow bypass, or restrict who can).
 
-Once both are set, the process is enforced server-side, not just by convention.
+Once these are set, the process is enforced server-side, not just by convention: every change needs a
+PR, green CI, and **your** approval before it can merge.

@@ -2413,9 +2413,9 @@ def main() -> int:
     #   * shifts/punches  ← BHAGA ADP Raw   > shifts
     #   * transactions    ← BHAGA Square Raw > transactions
 
-    adp_raw_sid = resolve_sheet_id("bhaga_adp_raw", profile)
-    square_raw_sid = resolve_sheet_id("bhaga_square_raw", profile)
-
+    # Raw-sheet IDs are only needed in sheets mode (reads + item_operations).
+    # BigQuery mode reads from BQ and skips item_operations, so resolving them
+    # there would needlessly require keys the profile may not carry.
     if args.data_source == "bigquery":
         from core.datastore_reader import read_shifts_bq, read_transactions_bq, read_wage_rates_bq
         print("# loading shifts from BigQuery (bhaga.adp_shifts)")
@@ -2424,6 +2424,8 @@ def main() -> int:
         wage_rates = read_wage_rates_bq()
         punches: list[dict] = []
     else:
+        adp_raw_sid = resolve_sheet_id("bhaga_adp_raw", profile)
+        square_raw_sid = resolve_sheet_id("bhaga_square_raw", profile)
         from skills.tip_ledger_writer.reader import read_raw_adp_punches
         print(f"# loading shifts from raw sheet {adp_raw_sid} (BHAGA ADP Raw > shifts)")
         shifts = read_raw_adp_shifts(adp_raw_sid, account=args.store)

@@ -928,5 +928,170 @@ class KdsColumnFormatDetectionTests(unittest.TestCase):
         self.assertEqual(secs & pcts, set())
 
 
+class BuildItemOperationsTests(unittest.TestCase):
+    def test_build_counts_and_dollars(self):
+        from agents.bhaga.scripts.item_operations import build_item_operations_records
+
+        punches = [
+            {"date": "2026-05-20", "employee_name": "Alvarez, Sebastian", "in_time": "08:00", "out_time": "16:00"},
+            {"date": "2026-05-20", "employee_name": "Krause, Lindsay", "in_time": "08:00", "out_time": "16:00"},
+        ]
+        rates = [
+            {"employee_name": "Alvarez, Sebastian", "is_salaried": False, "excluded_from_labor_pct": False},
+            {"employee_name": "Krause, Lindsay", "is_salaried": False, "excluded_from_labor_pct": True},
+        ]
+        lines = [{
+            "date_local": "2026-05-20",
+            "item_sold_at_local": "2026-05-20T12:00:00",
+            "item_name": "Latte",
+            "category": "Coffee",
+            "qty_sold": 1,
+            "gross_sales_cents": 500,
+            "discount_cents": 0,
+            "net_sales_cents": 500,
+            "event_type": "Payment",
+            "transaction_id": "T1",
+            "line_seq": 0,
+        }]
+        now = datetime.datetime(2026, 5, 21, 22, 0, tzinfo=CT)
+        recs = build_item_operations_records(
+            item_lines=lines,
+            punches=punches,
+            wage_rates=rates,
+            excluded_from_tip_pool={"Krause, Lindsay"},
+            now_ct=now,
+        )
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["staff_punched_in_hourly_count"], 1)
+        self.assertEqual(recs[0]["staff_punched_in_fulltime_count"], 1)
+        self.assertEqual(recs[0]["gross_sales_dollars"], 5.0)
+        self.assertEqual(recs[0]["event_type"], "Payment")
+
+    def test_refund_line_included(self):
+        from agents.bhaga.scripts.item_operations import build_item_operations_records
+
+        lines = [{
+            "date_local": "2026-05-20",
+            "item_sold_at_local": "2026-05-20T12:00:00",
+            "item_name": "Latte",
+            "category": "Coffee",
+            "qty_sold": 1,
+            "gross_sales_cents": 500,
+            "discount_cents": 0,
+            "net_sales_cents": 500,
+            "event_type": "Refund",
+            "transaction_id": "T2",
+            "line_seq": 0,
+        }]
+        now = datetime.datetime(2026, 5, 21, 22, 0, tzinfo=CT)
+        recs = build_item_operations_records(
+            item_lines=lines,
+            punches=[],
+            wage_rates=[],
+            excluded_from_tip_pool=set(),
+            now_ct=now,
+        )
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["event_type"], "Refund")
+
+    def test_in_progress_date_excluded(self):
+        from agents.bhaga.scripts.item_operations import build_item_operations_records
+
+        lines = [{
+            "date_local": "2026-05-21",
+            "item_sold_at_local": "2026-05-21T12:00:00",
+            "item_name": "Latte",
+            "category": "Coffee",
+            "qty_sold": 1,
+            "gross_sales_cents": 500,
+            "discount_cents": 0,
+            "net_sales_cents": 500,
+            "event_type": "Payment",
+            "transaction_id": "T3",
+            "line_seq": 0,
+        }]
+        now = datetime.datetime(2026, 5, 21, 12, 0, tzinfo=CT)
+        recs = build_item_operations_records(
+            item_lines=lines,
+            punches=[],
+            wage_rates=[],
+            excluded_from_tip_pool=set(),
+            now_ct=now,
+        )
+        self.assertEqual(len(recs), 0)
+
+
+class ItemOperationsReconciliationTests(unittest.TestCase):
+    """S2: payment qty on item_operations aligns with item_daily semantics."""
+
+    def test_payment_units_match_rollup_items_sold(self):
+        from agents.bhaga.scripts.item_operations import build_item_operations_records
+
+        lines = [
+            {
+                "date_local": "2026-05-20",
+                "item_sold_at_local": "2026-05-20T10:00:00",
+                "item_name": "A",
+                "category": "X",
+                "qty_sold": 2,
+                "gross_sales_cents": 1000,
+                "discount_cents": 0,
+                "net_sales_cents": 1000,
+                "event_type": "Payment",
+                "transaction_id": "T1",
+                "line_seq": 0,
+            },
+            {
+                "date_local": "2026-05-20",
+                "item_sold_at_local": "2026-05-20T11:00:00",
+                "item_name": "B",
+                "category": "X",
+                "qty_sold": 1,
+                "gross_sales_cents": 500,
+                "discount_cents": 0,
+                "net_sales_cents": 500,
+                "event_type": "Payment",
+                "transaction_id": "T2",
+                "line_seq": 1,
+            },
+            {
+                "date_local": "2026-05-20",
+                "item_sold_at_local": "2026-05-20T12:00:00",
+                "item_name": "C",
+                "category": "X",
+                "qty_sold": 1,
+                "gross_sales_cents": 500,
+                "discount_cents": 0,
+                "net_sales_cents": 500,
+                "event_type": "Refund",
+                "transaction_id": "T3",
+                "line_seq": 2,
+            },
+        ]
+        now = datetime.datetime(2026, 5, 21, 22, 0, tzinfo=CT)
+        recs = build_item_operations_records(
+            item_lines=lines,
+            punches=[{
+                "date": "2026-05-20",
+                "employee_name": "Alvarez, Sebastian",
+                "in_time": "08:00",
+                "out_time": "16:00",
+            }],
+            wage_rates=[{
+                "employee_name": "Alvarez, Sebastian",
+                "is_salaried": False,
+                "excluded_from_labor_pct": False,
+            }],
+            excluded_from_tip_pool=set(),
+            now_ct=now,
+        )
+        payment_lines = [r for r in recs if r["event_type"] == "Payment"]
+        items_sold_equiv = len(payment_lines)
+        units_sold_equiv = sum(float(r["qty_sold"]) for r in payment_lines)
+        self.assertEqual(items_sold_equiv, 2)
+        self.assertEqual(units_sold_equiv, 3.0)
+        self.assertTrue(all(r["staff_punched_in_total_count"] >= 1 for r in payment_lines))
+
+
 if __name__ == "__main__":
     unittest.main()

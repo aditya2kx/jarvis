@@ -12,6 +12,11 @@ agents/*/data/
 extracted/
 config.yaml
 
+# Local scratch / planning space — never ships to GitHub.
+Playground/
+# Dev chat transcripts dropped at the repo root for analysis.
+chat transcript*
+
 # One-time scripts with hardcoded personal data
 agents/*/scripts/personal/
 
@@ -43,6 +48,9 @@ skills/user_model/data/
 .DS_Store
 __pycache__/
 *.pyc
+
+# Allow synthetic CSV test fixtures (no PII — required by CI/pytest)
+!**/fixtures/**/*.csv
 
 # Allow schema docs and examples (override *.json exclusion)
 !agents/*/knowledge-base/schema/

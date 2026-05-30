@@ -76,8 +76,31 @@ The Cloud Run service account is shared on every active sheet (see
 
 **Primary Model URL:** https://docs.google.com/spreadsheets/d/18NH71JwMOAX6euFugSsSQlJhHPgBghWk09YWnsSuvDk/edit
 
-Model tabs: `config`, `daily`, `tip_alloc_daily`, `tip_alloc_period`, `period_summary`,
-`review_bonus_period`.
+Model tabs: `config`, `daily`, `labor_daily`, `labor_weekly`, `labor_period`, `tip_alloc_daily`,
+`tip_alloc_period`, `period_summary`, `review_bonus_period`, `labor_daily_forecast`,
+`item_operations`.
+
+Square raw tabs include `item_lines` (per-item lines; upserted nightly with Item Sales CSV).
+
+### Item-level operations backfill (no extra OTP)
+
+Item Sales CSVs are already cached in GCS `bhaga-scrape-cache` from the nightly Square session. To
+populate history without a new scrape, replay the **cloud cache** (not laptop files — see §13):
+
+```bash
+# 1. Replay cached items-*.csv from GCS → raw item_lines (default = GCS only)
+python3 -m agents.bhaga.scripts.backfill_item_lines_from_cache --store palmetto
+
+# 2. Upsert model item_operations for all dates present in raw
+python3 -m agents.bhaga.scripts.update_model_sheet --store palmetto \
+  --item-operations-only --all-item-operations
+```
+
+The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be later than
+`config.data_window_start` if no `items-*.csv` exists in GCS for those dates.
+
+> The script **defaults to GCS only** and does not read laptop `extracted/downloads/`.
+> `--local-only` exists for offline tests only — never for prod. See §13 for *where* to run it.
 
 ### DEPRECATED / FROZEN (old laptop prod — do not use, not deleted, data preserved)
 
@@ -319,10 +342,11 @@ Only after every box is checked is the laptop safe to decommission.
 
 ## 12. Operating rules (how to change BHAGA safely)
 
-1. **Commit → push → deploy. Never run prod against local or unpushed code.** The deployed artifact
-   is a container image built by `.github/workflows/deploy.yml` on push to `main` (§9). A local edit
-   has **zero** effect on the nightly job until it's pushed and the image redeploys. Verify the deploy
-   landed (`gh run watch`) before expecting new behavior in prod.
+1. **Branch → PR → review → merge → deploy. Never push to `main` directly.** Every change lands via a
+   PR that gets the automated Claude Opus review + CI; merge to `main` builds the container image
+   (`.github/workflows/deploy.yml`, §9). A local edit has **zero** effect on the nightly job until it's
+   merged and the image redeploys. Verify the deploy landed (`gh run watch`) before expecting new
+   behavior in prod. Full process + PR template + review rubric: `CONTRIBUTING.md`.
 2. **Tests before push:** `python3 -m pytest agents/bhaga/scripts/ skills/tip_ledger_writer/ core/ cloud/`.
 3. **No PII / secrets in git.** Credentials live in Secret Manager (§7). Sheet IDs / emails live in
    the store profile and docs — see the git-hook note below.
@@ -381,11 +405,53 @@ sheets. (Raw sheets are the source; the model is always reproducible from them.)
   raw review tab (`bhaga_review_raw`) is the ground truth — check it before concluding anything is
   missing.
 
+### Run a one-off backfill / maintenance script against prod
+
+This is the canonical way to run something that isn't the nightly `daily_refresh` (a backfill, a
+re-derive, a data fix) against **prod sheets** — without a laptop and without touching laptop files.
+
+**Golden rule: cloud reads from the cloud.** Prod data = GCS `bhaga-scrape-cache`; secrets = Secret
+Manager. Never populate a prod sheet from `extracted/downloads/` or laptop Keychain.
+`backfill_item_lines_from_cache.py` defaults to GCS-only; use `--local-only` only in tests.
+
+**Option A — run it as a Cloud Run job (preferred; fully in-cloud).** The image already contains all
+code, the prod service account, GCS access, and Secret Manager wiring. Override the container command
+on the existing job, execute, then revert the command:
+
+```bash
+JOB=bhaga-daily-refresh; REGION=us-central1
+# Point the job at the one-off script (entrypoint default is daily_refresh)
+gcloud run jobs update "$JOB" --region="$REGION" \
+  --command=python3 \
+  --args="-m,agents.bhaga.scripts.backfill_item_lines_from_cache,--store,palmetto"
+gcloud run jobs execute "$JOB" --region="$REGION"   # watch logs (see §10)
+# IMPORTANT: revert so the nightly schedule runs daily_refresh again
+gcloud run jobs update "$JOB" --region="$REGION" \
+  --command=python3 --args="-m,agents.bhaga.scripts.daily_refresh,--store,palmetto"
+```
+
+(The script must already be on `main` and deployed into the image — commit → push → deploy first, §9.)
+
+**Option B — run from an ADC-authenticated shell (Cloud Shell or any machine with `gcloud`).** No
+laptop Keychain, no laptop downloads; secrets resolve from Secret Manager:
+
+```bash
+export BHAGA_SECRETS_BACKEND=gcp                  # resolve creds from Secret Manager, not Keychain
+gcloud auth application-default login             # one-time per environment
+python3 -m agents.bhaga.scripts.backfill_item_lines_from_cache --store palmetto
+python3 -m agents.bhaga.scripts.update_model_sheet --store palmetto --item-operations-only --all-item-operations
+```
+
+**Then verify (don't assume).** Re-read the affected sheet/tab and the script's
+`first_date_covered`/`last_date_covered` (or row counts) against what you expected. For model tabs,
+spot-check a known date against the raw sheet. A backfill isn't done until it's verified.
+
 ### Add a column or a new derived tab
 
 See `agents/bhaga/scripts/README.md` § Extending the model (Recipe A: add a column; Recipe B: new
-tab from raw). Schema-backed tabs auto-migrate **additive** header changes; reordering/removing does
-not.
+tab from raw; **Recipe C**: capture a new field source→raw; **Recipe D**: a high-volume tab that
+upserts incrementally instead of clear-and-write, like `item_operations`). Schema-backed tabs
+auto-migrate **additive** header changes; reordering/removing does not.
 
 ### Run the per-PR sandbox e2e (prod-like, zero-OTP)
 

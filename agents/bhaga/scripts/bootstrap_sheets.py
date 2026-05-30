@@ -33,13 +33,13 @@ import datetime
 import json
 import os
 import sys
-import urllib.error
 import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
 from core.config_loader import refresh_access_token
+from core.sheets_retry import request_with_backoff
 from skills.tip_ledger_writer.schema import WORKBOOK_SCHEMAS
 
 
@@ -57,19 +57,29 @@ FOLDER_NAME = "BHAGA"
 
 
 def api_request(url: str, token: str, *, method: str = "GET", data: dict | None = None) -> dict:
+    """One Drive/Sheets request, routed through the shared backoff policy.
+
+    Uses ``core.sheets_retry.request_with_backoff`` — the same jittered
+    exponential-backoff retry on 429 ``RESOURCE_EXHAUSTED`` / 5xx that the model
+    + raw-ledger writers use. The sandbox provisioning path (list/clear/seed/
+    addSheet) previously had no retry, so a transient per-minute quota spike
+    (e.g. teardown's _list_tab_titles after a heavy backfill) failed the whole
+    run; this gives it identical resilience. ``do_call`` must let HTTPError
+    propagate unread so the retry layer can inspect the body once.
+    """
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
     body = json.dumps(data).encode() if data is not None else None
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
+
+    def _do() -> dict:
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
         with urllib.request.urlopen(req) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode(errors="replace")
-        raise RuntimeError(f"{method} {url} -> HTTP {e.code}\n{err_body}") from None
+
+    return request_with_backoff(_do, method=method, url=url)
 
 
 def find_folder_at_root(token: str, name: str) -> str | None:

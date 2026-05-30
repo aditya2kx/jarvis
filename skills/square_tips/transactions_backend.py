@@ -397,6 +397,7 @@ def parse_item_sales_csv(
         {
             "date_local": "2026-05-26",       # shop-TZ date
             "time_local": "19:41:18",          # shop-TZ time (HH:MM:SS)
+            "item_sold_at_local": "2026-05-26T19:41:18",  # shop-TZ ISO datetime
             "item_name": "Blue Bondives Smoothie (16oz.)",
             "category": "Health Boost Smoothies",
             "qty_sold": 1.0,
@@ -409,13 +410,19 @@ def parse_item_sales_csv(
             "location": "Austin Mueller Lake",
             "employee": "Lindsay Krause",
             "channel": "Austin Mueller Lake",
+            "line_seq": 0,                     # 0-based within natural-key group
         }
+
+    ``line_seq`` is a per-group counter over lines that share
+    (transaction_id, item_name, item_sold_at_local), so the natural key stays
+    stable across differently-windowed re-exports of the same data.
 
     Timezone conversion mirrors parse_csv(): the CSV's Date/Time/Time Zone
     columns are in the account's display timezone (varies by operator locale),
     and we convert to shop_tz (America/Chicago) for date_local bucketing.
 
-    Records are returned sorted by (date_local, time_local) ascending.
+    Records are returned sorted by
+    (date_local, time_local, transaction_id, item_name, line_seq) ascending.
     """
     if not csv_path.exists():
         raise FileNotFoundError(f"Item Sales CSV not found: {csv_path}")
@@ -433,6 +440,13 @@ def parse_item_sales_csv(
         return []
 
     records: list[dict] = []
+    # line_seq disambiguates lines that share the natural-key prefix
+    # (transaction_id, item_name, item_sold_at_local) — e.g. two identical
+    # items on one ticket. It is a per-group 0-based counter, NOT a file-global
+    # index, so the same physical line gets the same line_seq regardless of how
+    # the source CSV was windowed. That keeps the natural key stable across
+    # re-exports and prevents duplicate item_lines rows on replay.
+    seq_by_group: dict[tuple[str, str, str], int] = {}
     for row in rows[1:]:
         if len(row) <= _ITEM_COL["transaction_id"] or not row[_ITEM_COL["transaction_id"]]:
             continue
@@ -459,24 +473,40 @@ def parse_item_sales_csv(
         except ValueError:
             qty = 0.0
 
+        date_local = dt_local.date().isoformat()
+        time_local = dt_local.strftime("%H:%M:%S")
+        item_sold_at_local = f"{date_local}T{time_local}"
+        item_name = row[_ITEM_COL["item"]].strip()
+        transaction_id = row[_ITEM_COL["transaction_id"]]
+        group = (transaction_id, item_name, item_sold_at_local)
+        line_seq = seq_by_group.get(group, 0)
+        seq_by_group[group] = line_seq + 1
         records.append({
-            "date_local": dt_local.date().isoformat(),
-            "time_local": dt_local.strftime("%H:%M:%S"),
-            "item_name": row[_ITEM_COL["item"]].strip(),
+            "date_local": date_local,
+            "time_local": time_local,
+            "item_sold_at_local": item_sold_at_local,
+            "item_name": item_name,
             "category": row[_ITEM_COL["category"]].strip(),
             "qty_sold": qty,
             "gross_sales_cents": parse_money_cents(row[_ITEM_COL["gross_sales"]]),
             "discount_cents": parse_money_cents(row[_ITEM_COL["discounts"]]),
             "net_sales_cents": parse_money_cents(row[_ITEM_COL["net_sales"]]),
-            "transaction_id": row[_ITEM_COL["transaction_id"]],
+            "transaction_id": transaction_id,
             "payment_id": row[_ITEM_COL["payment_id"]],
             "event_type": row[_ITEM_COL["event_type"]],
             "location": row[_ITEM_COL["location"]],
             "employee": row[_ITEM_COL["employee"]],
             "channel": row[_ITEM_COL["channel"]],
+            "line_seq": line_seq,
         })
 
-    records.sort(key=lambda r: (r["date_local"], r["time_local"]))
+    # Fully deterministic order (independent of source row order for ties).
+    records.sort(
+        key=lambda r: (
+            r["date_local"], r["time_local"],
+            r["transaction_id"], r["item_name"], r["line_seq"],
+        )
+    )
     return records
 
 

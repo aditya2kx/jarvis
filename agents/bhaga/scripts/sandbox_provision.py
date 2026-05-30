@@ -234,6 +234,24 @@ def _read_values(token: str, spreadsheet_id: str, range_a1: str) -> list[list]:
     return resp.get("values", [])
 
 
+def _batch_read_values(
+    token: str, spreadsheet_id: str, ranges: list[str]
+) -> dict[str, list[list]]:
+    """Read many ranges from one workbook in a single values:batchGet call.
+
+    One round-trip instead of N — keeps the per-minute Sheets read quota happy
+    when verifying several tabs at once. Returns {requested_range: values}.
+    """
+    if not ranges:
+        return {}
+    qs = "&".join(f"ranges={urllib.parse.quote(r, safe='!:')}" for r in ranges)
+    url = f"{SHEETS_API}/spreadsheets/{spreadsheet_id}/values:batchGet?{qs}"
+    resp = api_request(url, token)
+    # valueRanges come back in request order; pair them back to our keys.
+    value_ranges = resp.get("valueRanges", [])
+    return {ranges[i]: vr.get("values", []) for i, vr in enumerate(value_ranges)}
+
+
 def _write_values(token: str, spreadsheet_id: str, range_a1: str, values: list[list]) -> None:
     rng = urllib.parse.quote(range_a1, safe="!:")
     url = (
@@ -254,6 +272,25 @@ def _batch_clear(token: str, spreadsheet_id: str, ranges: list[str]) -> None:
         return
     url = f"{SHEETS_API}/spreadsheets/{spreadsheet_id}/values:batchClear"
     api_request(url, token, method="POST", data={"ranges": ranges})
+
+
+def _add_tabs(token: str, spreadsheet_id: str, tab_names: list[str]) -> None:
+    """Create missing tabs (sheets) in a pre-existing workbook.
+
+    The pool sheets are created once; when the schema later adds a tab (e.g.
+    item_lines / item_operations), the pool workbooks won't have it, and seeding
+    its header would 400 with "Unable to parse range". Creating the missing tab
+    first keeps the fixed pool forward-compatible with schema additions without
+    re-provisioning — the SA can addSheet on a shared workbook (a Sheets edit).
+    """
+    if not tab_names:
+        return
+    requests = [
+        {"addSheet": {"properties": {"title": t, "gridProperties": {"frozenRowCount": 1}}}}
+        for t in tab_names
+    ]
+    url = f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate"
+    api_request(url, token, method="POST", data={"requests": requests})
 
 
 def _delete_file(token: str, file_id: str) -> None:
@@ -297,9 +334,14 @@ def clear_slot(token: str, slot_ids: dict[str, str]) -> None:
     for key, sid in slot_ids.items():
         titles = _list_tab_titles(token, sid)
         _batch_clear(token, sid, titles)
-        # Re-seed the header rows for the tabs we manage (they still exist after
-        # a values clear). update_model_sheet creates its own data tabs as needed.
-        seed_tab_headers(token, sid, _tab_specs_for(key))
+        # Create any schema tab the (fixed) pool workbook doesn't have yet, so a
+        # newly added tab doesn't 400 on header seeding. update_model_sheet still
+        # creates its own data tabs as needed.
+        specs = _tab_specs_for(key)
+        missing = [s["tab_name"] for s in specs if s["tab_name"] not in titles]
+        _add_tabs(token, sid, missing)
+        # Re-seed the header rows for the tabs we manage.
+        seed_tab_headers(token, sid, specs)
 
 
 # ── Slot leasing (Firestore in CI, deterministic fallback locally) ─

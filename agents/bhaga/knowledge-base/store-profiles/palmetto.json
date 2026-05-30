@@ -35,7 +35,10 @@
       "url": "https://docs.google.com/spreadsheets/d/1X2sCGwJi8YfcM0DAYlDzHBxG3_Du4jLauppfAw_A1rw/edit",
       "tabs": [
         "transactions",
-        "daily_rollup"
+        "daily_rollup",
+        "item_daily_rollup",
+        "item_lines",
+        "kds_daily"
       ]
     },
     "bhaga_model": {
@@ -44,10 +47,15 @@
       "tabs": [
         "config",
         "daily",
+        "labor_daily",
+        "labor_weekly",
+        "labor_period",
         "tip_alloc_daily",
         "tip_alloc_period",
         "period_summary",
-        "review_bonus_period"
+        "review_bonus_period",
+        "labor_daily_forecast",
+        "item_operations"
       ]
     },
     "bhaga_review_raw": {

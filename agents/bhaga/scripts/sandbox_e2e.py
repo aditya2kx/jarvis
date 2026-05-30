@@ -195,7 +195,10 @@ def _maybe_run_item_lines(store: str) -> bool:
     if not _item_lines_module_available():
         return False
     import agents.bhaga.scripts.backfill_item_lines_from_cache as item_lines  # type: ignore
-    _invoke_main(item_lines.main, ["--store", store, "--gcs-only"])
+    # GCS is the default source; --local-only is dev/tests only. (The earlier
+    # forward-compat call passed --gcs-only, which the landed script dropped as
+    # redundant.)
+    _invoke_main(item_lines.main, ["--store", store])
     return True
 
 
@@ -204,10 +207,11 @@ def _run_model_build(store: str) -> int:
 
 
 def _read_model_tab_counts(token: str, model_sid: str) -> dict[str, int]:
-    raw: dict[str, list[list]] = {}
-    for tab in MODEL_VERIFY_MIN_ROWS:
-        rows = sandbox_provision._read_values(token, model_sid, f"{tab}!A1:A100000")
-        raw[tab] = rows
+    # One batchGet for all verify tabs instead of N single reads (quota-friendly).
+    tabs = list(MODEL_VERIFY_MIN_ROWS)
+    ranges = [f"{tab}!A1:A100000" for tab in tabs]
+    by_range = sandbox_provision._batch_read_values(token, model_sid, ranges)
+    raw = {tab: by_range.get(rng, []) for tab, rng in zip(tabs, ranges)}
     return tab_counts_from_columns(raw)
 
 

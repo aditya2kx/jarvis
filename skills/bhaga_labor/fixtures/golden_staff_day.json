@@ -1,0 +1,61 @@
+{
+  "excluded_from_tip_pool": ["Krause, Lindsay"],
+  "wage_rates": [
+    {"employee_name": "Krause, Lindsay", "is_salaried": false, "excluded_from_labor_pct": true},
+    {"employee_name": "Alvarez, Sebastian", "is_salaried": false, "excluded_from_labor_pct": false},
+    {"employee_name": "Guerrero, Amy", "is_salaried": false, "excluded_from_labor_pct": false}
+  ],
+  "punches": [
+    {"date": "2026-05-26", "employee_name": "Krause, Lindsay", "in_time": "06:00", "out_time": "07:00"},
+    {"date": "2026-05-26", "employee_name": "Krause, Lindsay", "in_time": "08:00", "out_time": "14:00"},
+    {"date": "2026-05-26", "employee_name": "Alvarez, Sebastian", "in_time": "08:00", "out_time": "14:00"},
+    {"date": "2026-05-26", "employee_name": "Guerrero, Amy", "in_time": "08:00", "out_time": "14:00"}
+  ],
+  "item_lines": [
+    {
+      "label": "manager-only open",
+      "item_sold_at_local": "2026-05-26T06:30:00",
+      "expected_counts": {
+        "staff_punched_in_hourly_count": 0,
+        "staff_punched_in_fulltime_count": 1,
+        "staff_punched_in_total_count": 1
+      }
+    },
+    {
+      "label": "rush two baristas plus manager",
+      "item_sold_at_local": "2026-05-26T12:15:00",
+      "expected_counts": {
+        "staff_punched_in_hourly_count": 2,
+        "staff_punched_in_fulltime_count": 1,
+        "staff_punched_in_total_count": 3
+      }
+    },
+    {
+      "label": "after close no staff",
+      "item_sold_at_local": "2026-05-26T20:00:00",
+      "expected_counts": {
+        "staff_punched_in_hourly_count": 0,
+        "staff_punched_in_fulltime_count": 0,
+        "staff_punched_in_total_count": 0
+      }
+    },
+    {
+      "label": "barista shift start",
+      "item_sold_at_local": "2026-05-26T08:00:00",
+      "expected_counts": {
+        "staff_punched_in_hourly_count": 2,
+        "staff_punched_in_fulltime_count": 1,
+        "staff_punched_in_total_count": 3
+      }
+    },
+    {
+      "label": "barista shift end inclusive",
+      "item_sold_at_local": "2026-05-26T14:00:00",
+      "expected_counts": {
+        "staff_punched_in_hourly_count": 2,
+        "staff_punched_in_fulltime_count": 1,
+        "staff_punched_in_total_count": 3
+      }
+    }
+  ]
+}

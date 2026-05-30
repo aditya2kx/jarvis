@@ -76,8 +76,11 @@ Square / ADP / ClickUp  ──scrape──▶  raw Google Sheets  ──read─�
 
 ## Extending the model
 
-Two supported ways to add information. Both keep the raw → model contract intact (you never read
-local files; you read raw sheets and write derived tabs).
+Three supported ways to add information. Recipes A & B keep the raw → model contract intact (read raw
+sheets, write derived tabs); Recipe C is for when the data isn't scraped yet. For what each field
+*means*, see the domain data dictionary [`../knowledge-base/DOMAIN.md`](../knowledge-base/DOMAIN.md)
+(§8 explains the two directions; §3 lists every existing field — check it before scraping, the raw
+sheets often already have what you want).
 
 ### Raw reader catalog (`skills/tip_ledger_writer/reader.py`)
 
@@ -132,12 +135,30 @@ item rollups).
    profile `google_sheets` block (`palmetto.json`) and resolve via `resolve_sheet_id`.
 5. **Test + verify + deploy.**
 
-### After either recipe
+### Recipe C — capture a NEW field straight from a source (source → raw sheet)
+
+Use when the field **isn't scraped yet** (a new Square column, an ADP field, a review attribute).
+Direction 1 in `DOMAIN.md` § Growing the data model.
+
+1. **Emit the field in the scrape backend:**
+   - Square → `skills/square_tips/transactions_backend.py` (`parse_csv` / `aggregate_*`).
+   - ADP → `skills/adp_run_automation/shift_backend.py` (`daily_shifts` / `raw_punches`) or
+     `compensation_backend.py` (`compensation`).
+   - Reviews → the parser in `process_reviews.py`.
+2. **Append the column to the raw tab's header:** ADP/Square in
+   `skills/tip_ledger_writer/schema.py` (`WORKBOOK_SCHEMAS`); reviews in the `*_HEADER_ROW` constants
+   in `process_reviews.py`. **Append at the end** so the additive migration handles the live sheet.
+3. **Backfill:** re-scrape the window (`backfill_from_downloads.py` / re-run the gap) so the column
+   populates history; old rows stay blank until re-scraped.
+4. **Surface it in the model** if needed (Recipe A/B), then document it in `DOMAIN.md` §3.
+
+### After any recipe
 
 - **Tests:** `python3 -m pytest agents/bhaga/scripts/ skills/tip_ledger_writer/`.
 - **Deploy:** commit → push `main` → GitHub Actions builds/deploys the image. Local edits don't
   affect prod until deployed (`RUNBOOK.md` § Operating rules).
 - **Backfill history** if the new field should be populated for past dates: re-run the model step for
   the historical window (force-rerun per `RUNBOOK.md` § Common tasks).
-- **Document:** note the new column/tab in `RUNBOOK.md` § Sheet topology and add a dated line to
+- **Document:** add the field/tab to the domain dictionary `../knowledge-base/DOMAIN.md` (§3 + the
+  relevant metric section), note it in `RUNBOOK.md` § Sheet topology, and add a dated line to
   `PROGRESS.md`.

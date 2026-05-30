@@ -54,43 +54,144 @@ after the shop closes; the nightly fires 21:30 CT.
 
 ---
 
-## 3. The three workbooks & their tabs
+## 3. The four workbooks & every field
 
-Sheet IDs come from `store-profiles/palmetto.json` → `google_sheets`. Raw tabs upsert by natural key
-(idempotent); model tabs are recomputed each run.
+Sheet IDs come from `store-profiles/palmetto.json` → `google_sheets` (keys `bhaga_adp_raw`,
+`bhaga_square_raw`, `bhaga_review_raw`, `bhaga_model`). **Raw** tabs upsert by natural key
+(idempotent); **model** tabs are recomputed each run. The contract (headers + natural keys) lives in
+`skills/tip_ledger_writer/schema.py` for ADP/Square raw + some model tabs, in
+`agents/bhaga/scripts/process_reviews.py` (`*_HEADER_ROW`) for review raw, and in the `build_*_rows`
+functions of `update_model_sheet.py` / `forecast.py` for the labor / tip-alloc / forecast tabs.
 
-### A. `BHAGA ADP Raw` — labor source of truth
+> Convention: `*_cents` = integer cents (money), `*_dollars` = dollars-and-cents, `*_utc` /
+> `*_iso` = timestamps, `*_local` / `*_ct` = shop-local (Central). `scraped_at_utc` /
+> `ingested_at_utc` stamp when the row was last written.
 
-| Tab | Grain | Key columns |
-|---|---|---|
-| `shifts` | one row per (employee, **day**) | `regular_hours`, `ot_hours`, `doubletime_hours`, `total_hours`, `in_time`/`out_time`, `pay_period` |
-| `punches` | one row per **clock punch** (split shifts → multiple rows) | `punch_idx_in_day`, `in_time`/`out_time`, per-punch hours |
-| `wage_rates` | one row per **employee** | `wage_rate_dollars` (latest Regular rate), `ot_rate_dollars`, `is_salaried`, `excluded_from_labor_pct`, `rate_history_json` (audit trail) |
+### A. `bhaga_adp_raw` — labor source of truth (from ADP RUN)
 
-### B. `BHAGA Square Raw` — sales & operations source of truth
+**`shifts`** — one row per (employee, **day**). Key: `(date, employee_id)`. Source:
+`skills/adp_run_automation/shift_backend.daily_shifts`.
 
-| Tab | Grain | Key columns |
-|---|---|---|
-| `transactions` | one row per **Square transaction** | `gross_sales_cents`, `discount_cents`, `tip_cents`, `net_total_cents`, `total_collected_cents`, `event_type` (`Payment` vs refund), local + source timestamps |
-| `daily_rollup` | one row per **shop-local day** | `txn_count`, `gross_sales_cents`, `tip_cents`, `net_sales_cents`, `refund_cents` |
-| `item_daily_rollup` | one row per **day** | `items_sold` (count of item line items), `units_sold` (sum of qty), `avg_item_price_cents` |
-| `kds_daily` | one row per **day** | `completed_tickets`, `completed_items`, `median/p90/p95/p99_time_per_item_sec`, `pct_tickets_late`, `late_tickets`, `due_tickets` |
+| Field | Meaning |
+|---|---|
+| `date` | shop-local calendar day |
+| `employee_id` | ADP file # (stable id) |
+| `employee_name` | canonical name (after alias normalization) |
+| `raw_employee_name` | exact spelling ADP returned (pre-normalization) |
+| `in_time` / `out_time` | first clock-in / last clock-out (HH:MM, shop-local) |
+| `regular_hours` | non-OT hours |
+| `ot_hours` | overtime hours (>40/wk) |
+| `doubletime_hours` | double-time hours (rare) |
+| `total_hours` | `regular + ot + doubletime` |
+| `punch_count` | number of clock punches that day (split shifts > 1) |
+| `pay_period` | the pay period this day belongs to |
 
-### C. `BHAGA Model` — derived, human-facing
+**`punches`** — one row per **clock punch** (split shifts emit multiple). Key:
+`(date, employee_id, punch_idx_in_day)`. Source: `shift_backend.raw_punches`. Same columns as
+`shifts` minus totals, plus `punch_idx_in_day` (0-based punch order within the day).
 
-| Tab | Grain | What it answers |
-|---|---|---|
-| `config` | key/value | Tunables the operator edits in-sheet (sheet IDs, store TZ, exclusions, bonus amounts, forecast targets, saturation threshold) |
-| `daily` | per day | Quick daily ledger: hours, labor cost, sales, labor %, tips, tips/hour, ticket count, avg ticket |
-| `labor_daily` | per day | The deep labor model (see §4) — hourly vs fulltime cost, labor % variants, throughput, saturation |
-| `labor_weekly` | per ISO week | Weekly rollup of the labor model |
-| `labor_period` | per pay period | Pay-period rollup of the labor model |
-| `tip_alloc_daily` | per (day, employee) | Pool-by-day fair-share: hours, % of day's team hours, day pool, that day's allocation |
-| `tip_alloc_period` | per (period, employee) | Period totals + reconciliation: `our_calc` vs `adp_paid`, `diff`, `likely_reason` |
-| `period_summary` | per pay period | Period headline: team hours, tip pool, our total vs ADP total, employees with >$1 diff |
-| `dow_hour` | per (day-of-week, hour) | Trailing-28-day heatmap of txns/sales/tips by weekday × hour |
-| `review_bonus_period` | per (period, employee) | Review bonuses earned (see §6) |
-| `labor_daily_forecast` | per future day | Live staffing planner (see §7) |
+**`wage_rates`** — one row per **employee**. Key: `(employee_id,)`. Source:
+`compensation_backend.compensation` (from the "Earnings and Hours V1" ADP report).
+
+| Field | Meaning |
+|---|---|
+| `wage_rate_dollars` | most recent Regular hourly rate |
+| `ot_rate_dollars` | overtime rate (usually 1.5×) |
+| `is_salaried` | salaried flag (→ fulltime bucket). Nobody today. |
+| `multi_rate` | employee has >1 active rate |
+| `excluded_from_labor_pct` | explicit fulltime-bucket override from store profile (the manager) |
+| `rate_history_json` | full rate-change audit trail |
+| `raw_employee_names_json` | every ADP spelling seen for this person |
+
+### B. `bhaga_square_raw` — sales & operations source of truth (from Square)
+
+**`transactions`** — one row per **Square transaction**. Key: `(transaction_id,)`. Source:
+`skills/square_tips/transactions_backend.parse_csv`.
+
+| Field | Meaning |
+|---|---|
+| `transaction_id` | Square's id |
+| `event_type` | `Payment` (counts as an order) vs refund types (excluded from net) |
+| `created_at_src_iso` | timestamp in the **Square account TZ (Eastern)** |
+| `created_at_local_iso` | timestamp converted to **shop-local (Central)** |
+| `date_local` / `hour_local` / `dow_local` | shop-local day / hour-of-day / weekday |
+| `gross_sales_cents` | pre-discount item revenue |
+| `discount_cents` | discounts (negative) |
+| `tip_cents` | tip on this txn |
+| `net_total_cents` | net for the txn |
+| `total_collected_cents` | total charged incl. tax/tips |
+| `source` | Square source channel (register, online, etc.) |
+| `staff_name` | Square-attributed staff (NOT used for tip allocation — hours drive that) |
+| `location` | Square location |
+| `raw_date_csv` / `raw_time_csv` / `raw_tz_csv` | untouched CSV values, kept for audit |
+
+**`daily_rollup`** — one row per **shop-local day**. Key: `(date_local,)`. Derived from
+`transactions`. Fields: `txn_count`, `gross_sales_cents`, `tip_cents`, `net_sales_cents`,
+`refund_cents`.
+
+**`item_daily_rollup`** — one row per **day**. Key: `(date_local,)`. Source:
+`transactions_backend.aggregate_daily_item_stats`. Fields: `items_sold` (count of item line items),
+`units_sold` (sum of quantity), `gross_sales_cents`, `avg_item_price_cents` (= gross / items_sold).
+
+**`kds_daily`** — one row per **day**, kitchen efficiency. Key: `(date_local,)`. Source:
+`transactions_backend.aggregate_daily_kds_stats`.
+
+| Field | Meaning |
+|---|---|
+| `completed_tickets` / `completed_items` | KDS tickets / line items finished |
+| `median_time_per_item_sec` | median per-item prep time |
+| `p90` / `p95` / `p99_time_per_item_sec` | tail of the per-item prep-time distribution (no upper cap) |
+| `pct_tickets_late` | share of tickets past their due time |
+| `shift_start` / `shift_end` | KDS active window |
+| `late_tickets` / `due_tickets` | late count / total tickets with a due time |
+| `per_item_times_json` | item-weighted per-item-seconds list (pooled for EXACT weekly/period percentiles) |
+
+### C. `bhaga_review_raw` — Google reviews source of truth (from ClickUp)
+
+Reviews arrive as ClickUp messages prefixed `### Google Review`. **No `config` tab** here. Built by
+`process_reviews.py`.
+
+**`reviews`** — one row per parsed review. Key: `review_id` (hash of post-time + reviewer +
+comment-prefix).
+
+| Field | Meaning |
+|---|---|
+| `review_id` | stable dedupe id |
+| `post_ts_ct` / `post_date_ct` | when the review was posted (Central) |
+| `rating` | star rating (1–5) |
+| `reviewer` | reviewer name as posted |
+| `comment` | review text |
+| `named_baristas` | staff explicitly named in the review (`; `-separated) |
+| `named_status` | how names were resolved (matched / unmatched / none) |
+| `shift_date_credited` | the shift day this review's bonus is credited to |
+| `shift_assignment_reason` | why that shift date was chosen |
+| `shift_members` | who worked the credited shift (`; `-separated) |
+| `trainees_on_shift` | trainees present (training-excluded in base mode) |
+| `named_credit_each` | $ per named person (shoutout mode) |
+| `base_credit_each` | $ per shift member (base mode) |
+| `total_bonus` | total $ this review generated |
+| `review_url` | link to the Google review |
+| `clickup_message_id` | source ClickUp message |
+
+**`unparseable`** — reviews that couldn't be parsed (for manual follow-up). Fields:
+`clickup_message_id`, `post_ts_ms`, `post_dt_ct`, `content_preview`, `ingested_at_utc`.
+
+### D. `bhaga_model` — derived, human-facing
+
+Detailed field semantics for the model tabs are in §4 (labor), §5 (tips), §6 (reviews), §7
+(forecast). Tab overview:
+
+| Tab | Grain | What it answers | Fields detailed in |
+|---|---|---|---|
+| `config` | key/value | Operator-tunable settings (sheet IDs, store TZ, exclusions, bonus $, forecast targets, saturation threshold) | §8 |
+| `daily` | per day | Quick ledger: `hours_total`, `hours_eligible_for_tip_pool`, `labor_cost_dollars`, `sales_dollars`, `labor_pct`, `tips_dollars`, `tips_per_hour`, `transaction_count`, `avg_ticket_dollars` | — |
+| `labor_daily` / `labor_weekly` / `labor_period` | day / ISO week / pay period | Deep labor model: hourly vs fulltime cost, labor-% variants, throughput, saturation | §4 |
+| `tip_alloc_daily` | (day, employee) | Pool-by-day fair share | §5 |
+| `tip_alloc_period` | (period, employee) | Period totals + payroll reconciliation | §5 |
+| `period_summary` | pay period | Period headline + diff count | §5 |
+| `dow_hour` | (weekday, hour) | Trailing-28-day heatmap (`transaction_count_28d`, `sales_dollars_28d`, `tips_dollars_28d`, `avg_sales_per_day`, `avg_tips_per_day`) | — |
+| `review_bonus_period` | (period, employee) | Review bonuses earned | §6 |
+| `labor_daily_forecast` | future day | Live staffing planner | §7 |
 
 ---
 
@@ -206,10 +307,57 @@ Forecast targets default from config: `forecast_target_labor_pct` (0.25), `forec
 
 ---
 
-## 8. Where to change things
+## 8. Growing the data model — the two directions
 
-- **Add a column / new tab:** `agents/bhaga/scripts/README.md` § Extending the model (Recipe A / B).
-- **Tune a number (bonus amounts, targets, saturation threshold, exclusions):** the Model `config`
-  tab — no code change.
-- **Add a new metric definition here:** keep this glossary in lock-step with the schema and the
-  `build_*_rows` functions whenever columns change.
+Data grows in exactly two directions. Know which one you're doing, because they touch different code.
+
+```
+  Direction 1 (capture more)            Direction 2 (derive more)
+  Square / ADP / reviews                raw sheets
+        │  scrape backend                     │  reader.py
+        ▼                                     ▼
+  raw sheets (bhaga_*_raw) ───────────▶ build_*_rows() ───▶ model tabs
+        ▲                                                        ▲
+    add a NEW raw field here                          add a NEW derived column/tab here
+```
+
+### Direction 1 — pull a NEW field straight from a source (source → raw sheet)
+
+Use when the data you want **isn't scraped yet** (e.g. a new Square column, an ADP field, a review
+attribute). You must teach the scrape backend to emit it, then widen the raw tab:
+
+1. **Emit the field in the scrape backend** — Square: `skills/square_tips/transactions_backend.py`;
+   ADP: `skills/adp_run_automation/shift_backend.py` or `compensation_backend.py`; reviews:
+   the parser in `agents/bhaga/scripts/process_reviews.py`.
+2. **Append the column to the raw tab's header** — ADP/Square in `skills/tip_ledger_writer/schema.py`
+   (`WORKBOOK_SCHEMAS`); reviews in the `*_HEADER_ROW` constants in `process_reviews.py`. **Append at
+   the end** — additive changes auto-migrate the live sheet.
+3. **Backfill** — re-scrape the window so the new column populates history
+   (`backfill_from_downloads.py` / re-run the gap window). Old rows stay blank for the new column
+   until re-scraped.
+4. **Then optionally surface it in the model** (Direction 2) and **document it in this file** (§3).
+
+> Most "add a field" requests are actually **Direction 2** — the raw sheets already capture more than
+> the model surfaces. Check the §3 field lists first; if the field is already in a raw tab, skip
+> straight to Direction 2 (no scraping change needed).
+
+### Direction 2 — derive NEW info in the model from the raw sheets (raw → model)
+
+Use when the raw data already exists and you just want a new derived column or tab. Read raw via
+`skills/tip_ledger_writer/reader.py` (the typed `read_raw_*` catalog — see scripts/README), compute
+in a `build_*_rows` function, and let the upsert path handle idempotency + header migration.
+
+**Step-by-step code recipes for both directions live in
+[`../scripts/README.md`](../scripts/README.md) § Extending the model** (Recipe A = add a column,
+Recipe B = new derived tab, Recipe C = new field from source). This file tells you *what the data
+means*; that file tells you *how to wire it*.
+
+### Just tuning a number?
+
+Bonus amounts, forecast targets, saturation threshold, exclusions, etc. live in the Model `config`
+tab — **edit them in-sheet, no code change**.
+
+### Keep this dictionary current
+
+When columns / metrics / domain meaning change, update §3 / §4–7 here in the same change (the
+`doc-maintenance` rule + `check_doc_freshness.py` will remind you).

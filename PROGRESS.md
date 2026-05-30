@@ -60,7 +60,9 @@ Drive) with a 3-slot pre-shared pool (`sandbox_pool.json`, operator `create-pool
 CI leases via Firestore `sandbox_slots`, clears/writes, releases. Enabled Drive API on
 `jarvis-bhaga-prod`; local full e2e green with ADC (`aditya.2ky@gmail.com`) + palmetto OAuth.
 **Claude review cost cap (2026-05-30):** Switched PR bot from Opus/40 turns (~$4–5/PR, ~4.7M input
-tokens) to Sonnet 4.6/10 turns + diff-only prompt (~$0.50–1 target).
+tokens) to Sonnet 4.6/10 turns + diff-only prompt (~$0.50–1 target). Added
+`scripts/post_claude_review_cost.py` — posts a PR comment after each review with model, turns,
+tokens, and reported USD from `execution_file`.
 
 Follow-up (2026-05-30): addressed Claude review's non-blocking notes on PR #3 — clarified `select_window`
 returns the span across the N most-recent *cached* dates (not N calendar days), flagged the bounded

@@ -153,6 +153,9 @@ gh pr create --base main --fill     # then fill the template
 - **Advisory, not a hard gate.** The review step is `continue-on-error`, so a bot infra hiccup (turn
   cap, transient API error) never red-X's the PR — the **operator's approval** is the hard merge gate
   (branch protection). Real review feedback is posted as PR comments regardless.
+- **Cost comment:** after each run, `scripts/post_claude_review_cost.py` posts a PR comment with
+  model, turns, input/output tokens, and reported USD cost (from the action's `execution_file`).
+  Budget target remains **~$0.50–1/PR** on Sonnet.
 - **What it looks for** is the rubric in `.github/claude-review-guidelines.md` — PR-description
   completeness, backward compatibility (feature-flagged / additive schema / legacy path proven), BHAGA
   correctness invariants (Decimal money, idempotent upserts, `America/Chicago`, GCS-not-laptop,

@@ -1653,6 +1653,8 @@ def main() -> int:
             # headless/container mode (where the 5/31 crash happened); skipped on
             # the laptop so a dev run doesn't flash a window. Non-fatal — the
             # scrape launch has its own retry; this just heals + leaves a crumb.
+            # The bool is intentionally discarded: it does NOT gate the OTP spend
+            # (a false negative here must not block a scrape that might succeed).
             if not headed:
                 _preflight_browser_ok()
 

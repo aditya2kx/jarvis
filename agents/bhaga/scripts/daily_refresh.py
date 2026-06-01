@@ -81,6 +81,7 @@ from core.config_loader import refresh_access_token, resolve_sheet_id
 from skills.bhaga_config.dates import coerce_iso_date
 from skills.bhaga_config.state_adapter import (
     clear_pending_otp as _adapter_clear_pending_otp,
+    clear_step as _adapter_clear_step,
     mark_step_done as _adapter_mark_step_done,
     run_state_dir as _adapter_run_state_dir,
     save_pending_otp as _adapter_save_pending_otp,
@@ -302,6 +303,92 @@ def step_already_done(refresh_date: datetime.date, step_name: str) -> bool:
 
 def mark_step_done(refresh_date: datetime.date, step_name: str, *, note: str = "") -> None:
     _adapter_mark_step_done(refresh_date, step_name, note=note)
+
+
+def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
+    """Invalidate a step's success marker (sanctioned, via the state adapter).
+
+    Used by the OTP-portal recovery path so stale downstream markers recompute
+    on fresh data. bhaga.md invariant: never `rm` a marker ad-hoc in a shell —
+    clearing goes through state_adapter.clear_step (local + firestore aware)."""
+    _adapter_clear_step(refresh_date, step_name)
+
+
+# Downstream steps whose markers must be invalidated when a previously-failed
+# OTP portal recovers with fresh data on a later run (otherwise run_step would
+# short-circuit them and the fresh data would never reach the Model sheet).
+_RECOVERY_DOWNSTREAM_STEPS = ("write_raw_sheets", "update_model_sheet", "process_reviews")
+
+
+def _auto_invalidate_enabled() -> bool:
+    """Feature flag (default OFF) for auto-invalidating stale downstream markers
+    when an OTP portal recovers. Off keeps the legacy short-circuit behavior."""
+    return os.environ.get("BHAGA_AUTO_INVALIDATE_ON_RECOVERY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _recover_stale_downstream_markers(
+    refresh_date: datetime.date,
+    results: dict,
+    *,
+    dry_run: bool,
+) -> list[str]:
+    """Invalidate stale downstream markers when an OTP portal recovers.
+
+    Trigger: an OTP portal (``square``/``adp``) produced FRESH data on THIS run
+    (``results[name].success``) while a downstream marker
+    (write_raw_sheets / update_model_sheet / process_reviews) is ALREADY done
+    from a prior partial run. Left alone, ``run_step`` would short-circuit those
+    steps and the fresh portal data would never reach the Model sheet
+    (``data_window_end`` stuck — the 2026-05-31 incident).
+
+    Returns the list of cleared step names ([] if the flag is off, this is a
+    dry run, no portal recovered, or no downstream marker was stale). Clearing
+    goes through the sanctioned state-adapter path (no ad-hoc ``rm``)."""
+    if dry_run or not _auto_invalidate_enabled():
+        return []
+    recovered = [
+        name
+        for name in ("square", "adp")
+        if name in results and getattr(results[name], "success", False)
+    ]
+    if not recovered:
+        return []
+    stale = [s for s in _RECOVERY_DOWNSTREAM_STEPS if step_already_done(refresh_date, s)]
+    for step in stale:
+        try:
+            clear_step_done(refresh_date, step)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[recovery] WARN: could not clear marker {step}: {exc}", file=sys.stderr)
+    if stale:
+        print(
+            f"[recovery] OTP portal(s) {recovered} produced fresh data for "
+            f"refresh_date={refresh_date.isoformat()} while downstream markers "
+            f"{stale} were already done from a prior partial run — invalidated "
+            f"them so they recompute on the fresh data."
+        )
+    return stale
+
+
+def _preflight_browser_ok() -> bool:
+    """Best-effort pre-flight smoke test before spending an OTP.
+
+    Launches a throwaway browser via the shared runtime (same retry path as the
+    real scrape) so a transient container crash heals here for free. Never
+    raises; returns the health verdict purely for the breadcrumb. Non-fatal: the
+    scrape launch has its own retry, so a False verdict only warns."""
+    try:
+        from skills._browser_runtime.runtime import browser_healthcheck  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        print(f"[preflight] browser healthcheck unavailable (non-fatal): {exc}")
+        return True
+    healthy = browser_healthcheck(portal="preflight")
+    print(f"[preflight] browser healthcheck: {'healthy' if healthy else 'UNHEALTHY'}")
+    return healthy
 
 
 # Cron triggers at 21:00 CT; the shop closes by ~20:00 CT so the +1h buffer
@@ -1545,6 +1632,15 @@ def main() -> int:
             # Serialize OTP portals so two SMS can't collide.
             os.environ.setdefault("BHAGA_OTP_WAIT_S", "900")
             serialize_otp = len(otp_portals) > 1
+            # Pre-flight smoke test before spending an OTP: launch a throwaway
+            # browser (same retry path as the real scrape) so a transient
+            # container crash heals here for free instead of burning the
+            # operator's SMS on a launch that would TargetClosedError. Only in
+            # headless/container mode (where the 5/31 crash happened); skipped on
+            # the laptop so a dev run doesn't flash a window. Non-fatal — the
+            # scrape launch has its own retry; this just heals + leaves a crumb.
+            if not headed:
+                _preflight_browser_ok()
 
     # ── Build + run the data-gathering pipelines ──────────────────────
     pipeline_specs: dict = {}
@@ -1653,6 +1749,15 @@ def main() -> int:
                     print("  [gcs_cache] no cached files found in GCS for this date")
             except Exception as exc:  # noqa: BLE001
                 print(f"  [gcs_cache] WARN: GCS restore failed (non-fatal): {exc}")
+
+    # ── Auto-recover stale downstream markers on OTP-portal recovery ──
+    # If an OTP portal (square/adp) produced FRESH data on THIS run while the
+    # downstream markers are already done from a PRIOR partial run, those steps
+    # would short-circuit and the fresh data would never reach the Model sheet
+    # (data_window_end stuck — the 2026-05-31 incident). Invalidate them so they
+    # recompute. Flag-gated (default off) for backward-compat; the post-condition
+    # guard below still verifies data_window_end actually advanced.
+    _recover_stale_downstream_markers(refresh_date, results, dry_run=args.dry_run)
 
     # ════════════════════════════════════════════════════════════════════
     # Phase 2: SEQUENTIAL downstream — write raw sheets, update model,

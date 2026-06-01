@@ -39,11 +39,15 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
+import types
+
 from agents.bhaga.scripts import daily_refresh
 from agents.bhaga.scripts.daily_refresh import (
     CT,
     _SHOP_CLOSE_BUFFER_HOUR_CT,
+    _recover_stale_downstream_markers,
     _run_state_dir,
+    clear_step_done,
     compute_gap_window,
     is_refresh_date_complete,
     mark_step_done,
@@ -304,6 +308,145 @@ def _patch_then_run(test_self, fixed_dt_cls, argv, load_profile_stub):
          mock.patch.object(daily_refresh, "_load_profile", side_effect=load_profile_stub), \
          mock.patch.object(sys, "argv", argv):
         return daily_refresh.main()
+
+
+class ClearStepDoneTests(unittest.TestCase):
+    """clear_step_done passthrough invalidates a marker (local backend)."""
+
+    def test_clear_removes_marker_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                rd = datetime.date(2026, 5, 31)
+                mark_step_done(rd, "write_raw_sheets")
+                self.assertTrue(step_already_done(rd, "write_raw_sheets"))
+                clear_step_done(rd, "write_raw_sheets")
+                self.assertFalse(step_already_done(rd, "write_raw_sheets"))
+                # Idempotent — clearing an absent marker is a no-op.
+                clear_step_done(rd, "write_raw_sheets")
+                self.assertFalse(step_already_done(rd, "write_raw_sheets"))
+
+
+class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
+    """The 2026-05-31 fix: when a previously-failed OTP portal recovers with
+    fresh data while downstream markers are already done from a prior partial
+    run, invalidate those markers so they recompute (flag-gated, default off)."""
+
+    DOWNSTREAM = ("write_raw_sheets", "update_model_sheet", "process_reviews")
+
+    def _ok(self):
+        return types.SimpleNamespace(success=True)
+
+    def _failed(self):
+        return types.SimpleNamespace(success=False)
+
+    def _seed_downstream_done(self, rd):
+        for step in self.DOWNSTREAM:
+            mark_step_done(rd, step)
+
+    def test_flag_off_is_a_noop_even_when_portal_recovers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                with mock.patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop("BHAGA_AUTO_INVALIDATE_ON_RECOVERY", None)
+                    rd = datetime.date(2026, 5, 31)
+                    self._seed_downstream_done(rd)
+                    cleared = _recover_stale_downstream_markers(
+                        rd, {"square": self._ok()}, dry_run=False
+                    )
+                    self.assertEqual(cleared, [])
+                    for step in self.DOWNSTREAM:
+                        self.assertTrue(step_already_done(rd, step))
+
+    def test_flag_on_clears_stale_markers_when_portal_recovers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                with mock.patch.dict(os.environ,
+                                     {"BHAGA_AUTO_INVALIDATE_ON_RECOVERY": "1"}):
+                    rd = datetime.date(2026, 5, 31)
+                    self._seed_downstream_done(rd)
+                    cleared = _recover_stale_downstream_markers(
+                        rd, {"square": self._ok()}, dry_run=False
+                    )
+                    self.assertEqual(set(cleared), set(self.DOWNSTREAM))
+                    for step in self.DOWNSTREAM:
+                        self.assertFalse(step_already_done(rd, step))
+
+    def test_flag_on_but_no_stale_markers_is_noop(self):
+        """A normal first run (downstream not yet done) clears nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                with mock.patch.dict(os.environ,
+                                     {"BHAGA_AUTO_INVALIDATE_ON_RECOVERY": "1"}):
+                    rd = datetime.date(2026, 5, 31)
+                    cleared = _recover_stale_downstream_markers(
+                        rd, {"square": self._ok()}, dry_run=False
+                    )
+                    self.assertEqual(cleared, [])
+
+    def test_flag_on_but_portal_failed_is_noop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                with mock.patch.dict(os.environ,
+                                     {"BHAGA_AUTO_INVALIDATE_ON_RECOVERY": "1"}):
+                    rd = datetime.date(2026, 5, 31)
+                    self._seed_downstream_done(rd)
+                    cleared = _recover_stale_downstream_markers(
+                        rd, {"square": self._failed()}, dry_run=False
+                    )
+                    self.assertEqual(cleared, [])
+                    for step in self.DOWNSTREAM:
+                        self.assertTrue(step_already_done(rd, step))
+
+    def test_dry_run_is_noop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                with mock.patch.dict(os.environ,
+                                     {"BHAGA_AUTO_INVALIDATE_ON_RECOVERY": "1"}):
+                    rd = datetime.date(2026, 5, 31)
+                    self._seed_downstream_done(rd)
+                    cleared = _recover_stale_downstream_markers(
+                        rd, {"square": self._ok()}, dry_run=True
+                    )
+                    self.assertEqual(cleared, [])
+                    for step in self.DOWNSTREAM:
+                        self.assertTrue(step_already_done(rd, step))
+
+    def test_adp_recovery_also_triggers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                with mock.patch.dict(os.environ,
+                                     {"BHAGA_AUTO_INVALIDATE_ON_RECOVERY": "1"}):
+                    rd = datetime.date(2026, 5, 31)
+                    self._seed_downstream_done(rd)
+                    cleared = _recover_stale_downstream_markers(
+                        rd, {"adp": self._ok()}, dry_run=False
+                    )
+                    self.assertEqual(set(cleared), set(self.DOWNSTREAM))
+
+
+class PreflightBrowserTests(unittest.TestCase):
+    """The pre-flight smoke test is best-effort and never raises."""
+
+    def test_healthy_returns_true(self):
+        with mock.patch(
+            "skills._browser_runtime.runtime.browser_healthcheck",
+            return_value=True,
+        ):
+            self.assertTrue(daily_refresh._preflight_browser_ok())
+
+    def test_unhealthy_returns_false_non_fatal(self):
+        with mock.patch(
+            "skills._browser_runtime.runtime.browser_healthcheck",
+            return_value=False,
+        ):
+            self.assertFalse(daily_refresh._preflight_browser_ok())
 
 
 if __name__ == "__main__":

@@ -29,6 +29,7 @@ __all__ = [
     "run_state_dir",
     "step_already_done",
     "mark_step_done",
+    "clear_step",
     "is_refresh_date_complete",
     "get_pending_otp",
     "save_pending_otp",
@@ -127,6 +128,39 @@ def mark_step_done(
     if note:
         body += f"\nnote: {note}"
     (state_dir / f"{step}.done").write_text(body)
+
+
+def clear_step(refresh_date: datetime.date, step: str) -> None:
+    """Remove a step's done-marker for refresh_date (idempotent).
+
+    Symmetric to mark_step_done. Used by the OTP-portal recovery path to
+    invalidate stale DOWNSTREAM markers (write_raw_sheets / update_model_sheet /
+    process_reviews) when a previously-failed portal succeeds on a later run, so
+    those steps recompute on the now-complete data instead of being skipped.
+
+    This is the sanctioned way to clear a marker (bhaga.md invariant: no ad-hoc
+    `rm`/field-delete in a shell) — both backends honor it:
+      - local:     unlink <step>.done (no-op if absent).
+      - firestore: DELETE_FIELD removes the key so step_already_done — which
+                   tests key PRESENCE — returns False. set(merge=True) is
+                   idempotent even if the run doc doesn't exist yet.
+    """
+    backend = _state_backend()
+
+    if backend == "firestore":
+        client = _get_firestore_client()
+        _doc_ref(client, refresh_date).set({step: _firestore.DELETE_FIELD}, merge=True)
+        return
+
+    # Local filesystem backend
+    marker = (
+        pathlib.Path.home() / ".bhaga" / "state"
+        / f"run-{refresh_date.isoformat()}" / f"{step}.done"
+    )
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def is_refresh_date_complete(

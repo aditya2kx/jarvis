@@ -34,8 +34,19 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
 7. **Heartbeat** success/failure DM to the BHAGA Slack channel (`notify.py`).
 
 Per-step **idempotency markers** live in Firestore `runs/<YYYY-MM-DD>`
-(`skills/bhaga_config/state_adapter.py`). A re-run skips steps already marked done. To force a step,
-clear its marker — see `RUNBOOK.md` § Common tasks.
+(`skills/bhaga_config/state_adapter.py`: `mark_step_done` / `step_already_done` / `clear_step`). A
+re-run skips steps already marked done. To force a step, clear its marker — see `RUNBOOK.md` § Common
+tasks. **Recovery:** when an OTP portal (Square/ADP) succeeds on a later run while downstream markers
+(`write_raw_sheets`/`update_model_sheet`/`process_reviews`) are already done from a prior partial run,
+`daily_refresh._recover_stale_downstream_markers` invalidates them (via `clear_step`, the sanctioned
+path) so they recompute on the fresh data — gated by `BHAGA_AUTO_INVALIDATE_ON_RECOVERY` (default off;
+RUNBOOK §13).
+
+**Browser-launch resilience:** all scrapes launch Chromium through
+`skills/_browser_runtime/runtime.py::launch_persistent`, which retries the launch _setup_ (not the
+scrape body, never an auth error) on transient `TargetClosedError` crashes, adds headless-only
+container-stability flags, and exposes `browser_healthcheck()` (pre-flight smoke test before an OTP is
+spent). Config: `BHAGA_BROWSER_LAUNCH_RETRIES` / `BHAGA_BROWSER_LAUNCH_BACKOFF_MS`. See RUNBOOK §13.
 
 ---
 

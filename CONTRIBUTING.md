@@ -91,6 +91,15 @@ tight build → verify → fix loop without the operator babysitting every step.
    description complete. The agent then stops and hands the PR to the operator. The **operator** does
    the final review and squash-merge to `main` (which triggers deploy). Merging is the human sign-off —
    never automate it, never ask the operator to delegate it to you.
+6. **Start every task from a clean base; never mix unrelated work into a plan's branch.** Before
+   beginning the work for a plan/ticket, run `git status`. If the working tree has **uncommitted
+   changes unrelated to the plan** (left over from another task), do **not** carry them into the new
+   branch: **save that work first** — commit it on its own appropriately-named branch (or stash it) —
+   then create the task branch fresh from the latest `main` (`git checkout -b <type>/<desc> origin/main`
+   after `git fetch`). One branch = one coherent change. This keeps PRs reviewable and prevents an
+   unrelated edit from silently riding along (and from being lost). If the stray work is on a file your
+   task also touches, decide the base explicitly with the operator (build on it vs. independent) rather
+   than guessing.
 
 > Bootstrapping note: branch protection (server-side enforcement of "no direct push to `main`") is a
 > GitHub **settings** change — see "Enabling enforcement" below. Until it's enabled, rule 1 is a

@@ -12,6 +12,29 @@
 
 ## BHAGA Agent (Tip Allocation & Payroll Prep)
 
+### 2026-06-01 — Browser-launch resilience, OTP-portal recovery, principles consult-first
+
+- **Incident (2026-05-31 nightly):** Square's Chromium died on launch (`TargetClosedError` in
+  `skills/_browser_runtime/runtime.py`) — a transient container crash (ADP launched fine ~1s later).
+  Square failed after ADP succeeded, so the downstream steps ran on stale 5/30 data and were marked
+  done; `data_window_end` stuck at 5/30 and 24 review bonuses held back.
+- **M1 — browser resilience:** `launch_persistent` now retries the launch _setup_ (not the yielded
+  body, never an auth/2FA error) on transient crashes with a full driver restart + exponential backoff;
+  headless-only container-stability flags (`--disable-dev-shm-usage`/`--no-sandbox`/`--disable-gpu`);
+  greppable breadcrumbs; new `browser_healthcheck()` pre-flight smoke test. Config:
+  `BHAGA_BROWSER_LAUNCH_RETRIES` / `BHAGA_BROWSER_LAUNCH_BACKOFF_MS`. `test_runtime.py` (13 tests).
+- **M2 — recovery:** `state_adapter.clear_step` (local + Firestore `DELETE_FIELD`) +
+  `daily_refresh._recover_stale_downstream_markers` invalidate stale downstream markers when an OTP
+  portal recovers, gated by `BHAGA_AUTO_INVALIDATE_ON_RECOVERY` (default off). Post-condition guard
+  preserved; all writes stay idempotent.
+- **M3 — principles consult-first:** new always-on `.cursor/rules/bhaga-principles.md`; `AGENTS.md`
+  consult-before-design directive; `jarvis.md` frontmatter + breadcrumb / no-reflexive-retry
+  conventions; HL#8 cloud nuances promoted into `bhaga.md` (so cloud agents see them).
+- **M4 — docs/freshness:** RUNBOOK §13 browser-resilience + recovery + the exact **5/31 recovery
+  runbook** (post-merge, operator-announced OTP); README code map; new `check_doc_freshness` couplings
+  for `_browser_runtime` + `state_adapter`.
+- **Status: in PR `feat/browser-resilience-and-recovery`.** 5/31 prod rerun is post-deploy.
+
 ### 2026-05-30 — Item-level operations tab (`item_lines` + `item_operations`)
 
 - **Raw `item_lines`:** persists every Square Item Sales Detail line (natural key includes

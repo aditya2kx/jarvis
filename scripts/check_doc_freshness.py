@@ -94,6 +94,14 @@ COUPLINGS: list[dict] = [
         "why": "sandbox e2e runner / CI changed → update RUNBOOK §13 + the scripts code map.",
     },
     {
+        "code": [
+            "skills/_browser_runtime/*.py",
+            "skills/bhaga_config/state_adapter.py",
+        ],
+        "docs": ["RUNBOOK.md", "agents/bhaga/scripts/README.md"],
+        "why": "browser-launch runtime (retry/smoke-test) or run-state markers (clear_step recovery) changed → update RUNBOOK retry/recovery + the scripts code map.",
+    },
+    {
         "code": ["agents/**/*.py", "skills/**/*.py", "cloud/**/*.py", "core/**/*.py"],
         "docs": ["PROGRESS.md"],
         "why": "notable code change → add a dated line to PROGRESS.md (status / decision / blocker).",

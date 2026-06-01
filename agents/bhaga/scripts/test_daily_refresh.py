@@ -395,6 +395,32 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
                 for step in self.DOWNSTREAM:
                     self.assertTrue(step_already_done(rd, step))
 
+    def test_partial_clear_failure_reports_only_cleared(self):
+        """If one clear_step_done raises mid-loop, the breadcrumb + return value
+        must report only the steps ACTUALLY cleared — never overstate a full
+        recovery (the breadcrumb principle)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                rd = datetime.date(2026, 5, 31)
+                self._seed_downstream_done(rd)
+                real_clear = daily_refresh.clear_step_done
+
+                def flaky(refresh_date, step):
+                    if step == "update_model_sheet":
+                        raise RuntimeError("firestore unavailable")
+                    return real_clear(refresh_date, step)
+
+                with mock.patch.object(daily_refresh, "clear_step_done", side_effect=flaky):
+                    cleared = _recover_stale_downstream_markers(
+                        rd, {"square": self._ok()}, dry_run=False
+                    )
+                self.assertEqual(set(cleared), {"write_raw_sheets", "process_reviews"})
+                self.assertNotIn("update_model_sheet", cleared)
+                # The step we couldn't clear is still present (will short-circuit).
+                self.assertTrue(step_already_done(rd, "update_model_sheet"))
+                self.assertFalse(step_already_done(rd, "write_raw_sheets"))
+
     def test_adp_recovery_also_triggers(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(daily_refresh.pathlib.Path, "home",

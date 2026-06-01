@@ -348,7 +348,12 @@ def _recover_stale_downstream_markers(
     nothing is cleared. (We can't gate on the portal's own marker here — it's
     named square_transactions/adp_reports and is set earlier in *this* run, so it
     can't distinguish a prior failure. The worst case — a forced full re-scrape of
-    an already-complete date — only recomputes idempotently, never corrupts.)"""
+    an already-complete date — only recomputes idempotently, never corrupts.)
+
+    Returns the steps that were **actually** cleared (not merely stale): if a
+    ``clear_step_done`` call fails mid-loop, that step is excluded from the
+    return value and the breadcrumb, so a partial recovery never looks like a
+    full one in a postmortem (the breadcrumb principle)."""
     if dry_run:
         return []
     recovered = [
@@ -359,19 +364,28 @@ def _recover_stale_downstream_markers(
     if not recovered:
         return []
     stale = [s for s in _RECOVERY_DOWNSTREAM_STEPS if step_already_done(refresh_date, s)]
+    cleared: list[str] = []
+    failed: list[str] = []
     for step in stale:
         try:
             clear_step_done(refresh_date, step)
+            cleared.append(step)
         except Exception as exc:  # noqa: BLE001
+            failed.append(step)
             print(f"[recovery] WARN: could not clear marker {step}: {exc}", file=sys.stderr)
-    if stale:
-        print(
+    if cleared:
+        msg = (
             f"[recovery] OTP portal(s) {recovered} produced fresh data for "
             f"refresh_date={refresh_date.isoformat()} while downstream markers "
             f"{stale} were already done from a prior partial run — invalidated "
-            f"them so they recompute on the fresh data."
+            f"{cleared} so they recompute on the fresh data."
         )
-    return stale
+        if failed:
+            # Be honest in the log: a step we couldn't clear will still
+            # short-circuit, so this is a PARTIAL recovery, not a full one.
+            msg += f" WARN: {failed} could NOT be cleared and will still short-circuit."
+        print(msg)
+    return cleared
 
 
 def _preflight_browser_ok() -> bool:

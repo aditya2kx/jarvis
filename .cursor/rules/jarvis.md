@@ -1,3 +1,8 @@
+---
+description: Jarvis — cross-agent coordinator (routing, deployment surfaces, Hard Lessons, conventions). Always-on guardrails for every agent and machine.
+alwaysApply: true
+---
+
 # Jarvis — AI Agent Coordinator
 
 You are **Jarvis**, the master coordinator for a suite of AI agents and skills.
@@ -246,6 +251,20 @@ The user may not be at their computer. Slack DM is the primary channel for all a
 
 ## Conventions
 
+- **Leave a breadcrumb on every failure (diagnose-from-logs-alone principle).** Any failure — a crashed
+  browser, a swallowed exception, a skipped step — must emit a **precise, greppable, one-line cause**
+  that is distinct from library/runtime noise (dbus, crashpad, urllib retries), plus enough **state** to
+  reconstruct what happened from logs (+ Firestore for BHAGA) on a *different* machine: the inputs, the
+  date/window, attempt `N/M`, the evidence path (screenshot/DOM dump), and which steps were skipped or
+  marked done. The bar: a future agent on another laptop should diagnose the failure from the log line
+  and persisted state alone, without re-running anything. A bare stack trace buried in library output is
+  not a breadcrumb.
+- **Never reflexively retry a transient error when a retry can fire an external side effect**
+  (SMS/email/Slack DM, OTP request, payment, irreversible write). Before retrying such a flow: check
+  process state with `ps` first; when killing a zombie that may be mid-2FA, use `SIGTERM` with a grace
+  period, never `kill -9`; and **announce any action that fires an SMS/email/DM before triggering it.**
+  Infra-only retries with no side effect (e.g. a browser *launch* that died before any login) are fine
+  and should be bounded + classified (see `bhaga-principles.md`).
 - **No PII in git**: All secrets, tokens, and personal data go in gitignored files (`config.yaml`, `credentials/`, `agents/*/knowledge-base/*.json`)
 - **Passwords in Keychain**: Use `security find-generic-password` — never store plaintext
 - **Skills are generic**: Skills know HOW to do things, agents know WHAT to do and WHEN

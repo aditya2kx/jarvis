@@ -11,6 +11,27 @@ authoritative doc for whatever you're doing. **Read this first, then jump to the
 
 ---
 
+## Consult before you plan or design (don't make the operator re-prompt you)
+
+Before proposing a plan, an architecture, or a non-trivial change — **on any machine, from any chat** —
+read the codified principles and **derive your proposal from them, citing what you used**. These travel
+with the repo, so a cloud agent or a fresh laptop has the same guardrails the operator does:
+
+1. **[`CONTRIBUTING.md`](CONTRIBUTING.md) § the development loop** — branch/PR/review/CI/merge/deploy,
+   milestone structure, secret-scan + `git push --no-verify` policy, "save unrelated work on its own
+   branch and start fresh from `main`."
+2. **[`.cursor/rules/bhaga-principles.md`](.cursor/rules/bhaga-principles.md)** — always-on BHAGA card
+   (invariants + operational rules + recovery), then **[`.cursor/rules/bhaga.md`](.cursor/rules/bhaga.md)**
+   for the full behavioral spec.
+3. **[`.cursor/rules/jarvis.md`](.cursor/rules/jarvis.md) § Hard Lessons + Conventions** — cross-agent
+   guardrails (breadcrumb-on-failure, never reflexively retry when a side effect can fire, etc.).
+4. **[`RUNBOOK.md`](RUNBOOK.md) § Operating rules + Common tasks** — for anything operational/cloud.
+
+If the operator has to remind you of a principle that's already written down, that's a miss — the fix
+is to load these first, not to wait for the prompt.
+
+---
+
 ## What this is
 
 Jarvis is a suite of domain agents plus shared skills:

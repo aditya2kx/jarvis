@@ -85,6 +85,20 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 - **OTP via Slack, never the IDE.** ADP/Square 2FA codes are requested via the Firestore+webhook
   round-trip. The operator is not at a laptop. Announce any action that fires an SMS/email before
   triggering it.
+- **Never reflexively retry a transient error when a retry can fire a side effect.** A "browser
+  context died" / "Execution backend unavailable" / timeout looks retryable, but if the next attempt
+  could re-fire an OTP SMS, a password-reset email, or a Slack DM, **stop and inspect first**: check
+  process state with `ps`; if a zombie may be mid-2FA, kill it with `SIGTERM` + a grace period, never
+  `kill -9`; and announce the imminent side effect to the operator before triggering it. Infra-only
+  failures with **no** side effect — e.g. a Chromium *launch* that crashed before any login — are the
+  one safe class to auto-retry, and that retry is bounded + classified in
+  `skills/_browser_runtime/runtime.py` (never retries an auth/2FA error). This is the cloud-relevant
+  half of Jarvis Hard Lesson #8; it lives here so cloud agents see it without the laptop rules.
+- **Leave a breadcrumb on every failure.** Each failure emits a precise, greppable, one-line cause
+  distinct from library noise (dbus/crashpad/patchright), plus enough state to diagnose from Cloud Run
+  logs + Firestore `runs/<date>` alone on another machine: the refresh_date/window, attempt `N/M`, the
+  screenshot/DOM evidence path, and which step markers were skipped or cleared. A future agent must be
+  able to reconstruct the failure without re-running. (Generalized in `jarvis.md` § Conventions.)
 - **Branch → PR → Claude-review → merge → deploy** for anything that must run in prod. Never push to
   `main` directly. See `CONTRIBUTING.md` and `RUNBOOK.md` § Operating rules.
 - **Prove changes with the per-PR sandbox e2e, not by touching prod sheets.**

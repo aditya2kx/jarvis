@@ -358,6 +358,16 @@ def _recover_stale_downstream_markers(
     ]
     if not recovered:
         return []
+    # The "prior partial run" signal is that a downstream marker is ALREADY done
+    # while a portal produced fresh data THIS run. In a normal first run the
+    # downstream markers don't exist yet at this point, so `stale` is empty and
+    # nothing is cleared. (We can't gate on the portal's own marker here — it's
+    # named square_transactions/adp_reports and is set earlier in *this* run, so
+    # it can't distinguish a prior failure.) Operational guard: set
+    # BHAGA_AUTO_INVALIDATE_ON_RECOVERY only per recovery invocation (the
+    # `gcloud run jobs execute` override in RUNBOOK §13), never as a permanent
+    # service env var — otherwise a forced full re-scrape of a complete date
+    # would needlessly (but harmlessly, writes are idempotent) recompute these.
     stale = [s for s in _RECOVERY_DOWNSTREAM_STEPS if step_already_done(refresh_date, s)]
     for step in stale:
         try:

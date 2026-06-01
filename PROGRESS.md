@@ -34,6 +34,11 @@
   runbook** (post-merge, operator-announced OTP); README code map; new `check_doc_freshness` couplings
   for `_browser_runtime` + `state_adapter`.
 - **Status: in PR `feat/browser-resilience-and-recovery`.** 5/31 prod rerun is post-deploy.
+- **Follow-ups (tracked here):** (1) after the 5/31 prod rerun proves the recovery path end-to-end,
+  decide whether to flip `BHAGA_AUTO_INVALIDATE_ON_RECOVERY` default-on (own PR + cleanup of the flag),
+  or keep it per-invocation and document why; (2) M1 has no real-Chromium-crash e2e (the sandbox replay
+  has no headless browser) — if a container e2e harness is added later, cover the `TargetClosedError`
+  retry path there.
 
 ### 2026-05-30 — Item-level operations tab (`item_lines` + `item_operations`)
 

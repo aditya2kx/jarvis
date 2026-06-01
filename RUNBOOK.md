@@ -419,6 +419,13 @@ sheet (`data_window_end` stuck — the 2026-05-31 incident). Set
 data. The post-condition guard still verifies `data_window_end` advanced. **Default off** for
 backward-compat; when off, recovery is the manual marker-clear in *Force a step to re-run* above.
 
+> **Set this flag only per recovery invocation** (the `--update-env-vars` override on a single
+> `gcloud run jobs execute`, as in the recovery runbook below) — **never as a permanent
+> `bhaga-daily-refresh` service env var.** Left on permanently, a forced full re-scrape of an
+> already-complete date would needlessly recompute the downstream steps (harmless — writes are
+> idempotent — but wasteful). The trigger is "a portal produced fresh data *and* a downstream marker
+> is already done", which is exactly a prior partial run.
+
 ### Recover a partial-failure date (e.g. the 2026-05-31 Square-launch crash)
 
 Concrete runbook for "an OTP portal crashed on launch, downstream ran on stale data, `data_window_end`

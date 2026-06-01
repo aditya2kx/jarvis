@@ -180,6 +180,12 @@ gh pr create --base main --fill     # then fill the template
 - **Advisory, not a hard gate.** The review step is `continue-on-error`, so a bot infra hiccup (turn
   cap, transient API error) never red-X's the PR — the **operator's approval** is the hard merge gate
   (branch protection). Real review feedback is posted as PR comments regardless.
+- **Reply to every comment individually, on its own thread.** When addressing review feedback (bot or
+  human), post a **separate reply on each inline comment thread** stating what you did — the fix +
+  commit SHA, or why you intentionally didn't. Do **not** batch the responses into one summary comment
+  and leave the individual threads silent: a reviewer scanning the threads must see each one resolved in
+  place. Reply with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<comment_id>/replies -f body=...`
+  (inline thread) and address top-level review/issue comments in kind. Then push the fixes so CI re-runs.
 - **Cost comment:** after each run, `scripts/post_claude_review_cost.py` posts a PR comment with
   model, turns, input/output tokens, and reported USD cost (from the action's `execution_file`).
   Budget target remains **~$0.50–1/PR** on Sonnet.

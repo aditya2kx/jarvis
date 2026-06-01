@@ -56,6 +56,17 @@ class TestLocalBackend:
         state_adapter.mark_step_done(d, "adp_timecard")
         assert state_adapter.is_refresh_date_complete(d, required) is True
 
+    def test_clear_step_removes_marker_idempotent(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        d = datetime.date(2026, 5, 31)
+        state_adapter.mark_step_done(d, "write_raw_sheets")
+        assert state_adapter.step_already_done(d, "write_raw_sheets") is True
+        state_adapter.clear_step(d, "write_raw_sheets")
+        assert state_adapter.step_already_done(d, "write_raw_sheets") is False
+        # Idempotent — clearing an absent marker is a no-op.
+        state_adapter.clear_step(d, "write_raw_sheets")
+        assert state_adapter.step_already_done(d, "write_raw_sheets") is False
+
     def test_refresh_date_keying_never_uses_today(self, tmp_path, monkeypatch):
         """CRITICAL: markers are keyed by refresh_date, not by wall-clock."""
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -224,6 +235,65 @@ class TestFirestoreBackend:
             # Clearing leaves the run doc but drops the checkpoint.
             state_adapter.clear_pending_otp(d)
             assert state_adapter.get_pending_otp(d) is None
+
+    def _delete_field_aware_client(self):
+        """Mock whose set(merge=True) honors firestore.DELETE_FIELD by popping
+        the key — so clear_step actually removes it (vs storing the sentinel)."""
+        from google.cloud import firestore
+
+        client = MagicMock()
+        docs: dict[str, dict] = {}
+
+        def _collection(name):
+            col = MagicMock()
+
+            def _document(doc_id):
+                doc_ref = MagicMock()
+
+                def _get():
+                    s = MagicMock()
+                    s.exists = doc_id in docs
+                    s.to_dict = lambda: docs.get(doc_id, {}).copy()
+                    return s
+
+                def _set(data, merge=False):
+                    if merge and doc_id in docs:
+                        for k, v in data.items():
+                            if v is firestore.DELETE_FIELD:
+                                docs[doc_id].pop(k, None)
+                            else:
+                                docs[doc_id][k] = v
+                    else:
+                        docs[doc_id] = {
+                            k: v for k, v in data.items()
+                            if v is not firestore.DELETE_FIELD
+                        }
+
+                doc_ref.get = _get
+                doc_ref.set = _set
+                return doc_ref
+
+            col.document = _document
+            return col
+
+        client.collection = _collection
+        return client, docs
+
+    def test_clear_step_deletes_field(self):
+        mock_client, docs = self._delete_field_aware_client()
+        with patch.object(state_adapter, "_get_firestore_client", return_value=mock_client):
+            d = datetime.date(2026, 5, 31)
+            state_adapter.mark_step_done(d, "write_raw_sheets")
+            state_adapter.mark_step_done(d, "update_model_sheet")
+            assert state_adapter.step_already_done(d, "write_raw_sheets") is True
+            state_adapter.clear_step(d, "write_raw_sheets")
+            # The cleared field is gone; the sibling marker survives (merge).
+            assert state_adapter.step_already_done(d, "write_raw_sheets") is False
+            assert state_adapter.step_already_done(d, "update_model_sheet") is True
+            assert "write_raw_sheets" not in docs["2026-05-31"]
+            # Idempotent on an already-clear field.
+            state_adapter.clear_step(d, "write_raw_sheets")
+            assert state_adapter.step_already_done(d, "write_raw_sheets") is False
 
     def test_pending_otp_coexists_with_step_markers(self):
         """pending_otp and step markers share the runs/<date> doc cleanly."""

@@ -143,6 +143,8 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
 | `BHAGA_HEADLESS` | `1` |
 | `SLACK_BOT_TOKEN` | secret → `slack-bot-token` |
 | `CLICKUP_PAT` | secret → `jarvis-clickup-palmetto-pat` |
+| `BHAGA_BROWSER_LAUNCH_RETRIES` | _(optional, default `3`)_ headless browser launch attempts on transient crash — see §13 Browser-launch resilience |
+| `BHAGA_BROWSER_LAUNCH_BACKOFF_MS` | _(optional, default `1000`)_ base backoff between launch retries (exponential) |
 
 ### `bhaga-webhook` environment
 
@@ -385,6 +387,64 @@ gcloud run jobs execute bhaga-daily-refresh \
 
 > Deleting the entire `runs/YYYY-MM-DD` doc forces a full re-run for that date. Writes stay idempotent
 > (upsert by natural key), so re-running is safe — it overwrites, never duplicates.
+
+### Browser-launch resilience (all portals)
+
+Every portal scrape launches Chromium through `skills/_browser_runtime/runtime.py::launch_persistent`.
+In the container this can hit a transient `TargetClosedError` — the browser dies on startup (the
+classic cause is the tiny 64 MB `/dev/shm`). The runtime now:
+
+- **Retries the launch _setup_** (start driver → launch → context → page) up to
+  `BHAGA_BROWSER_LAUNCH_RETRIES` (default 3) with exponential backoff
+  (`BHAGA_BROWSER_LAUNCH_BACKOFF_MS`, default 1000 ms), restarting the whole driver each attempt. It
+  **never** retries the scrape/OTP body and **never** retries an auth/2FA error (those can't be a launch
+  crash and a retry could re-fire an OTP).
+- Adds container-stability flags **only headless** (`--disable-dev-shm-usage`, `--no-sandbox`,
+  `--disable-gpu`); the laptop headed/real-Chrome anti-bot path is unchanged.
+- Leaves a greppable breadcrumb per failed attempt and on recovery: `grep '[runtime] .* chromium launch'`
+  in the Cloud Run logs.
+- Exposes `browser_healthcheck()` — a pre-flight smoke test (launch + `about:blank`) the orchestrator
+  runs before spending an OTP (headless only) so a transient crash heals before the operator's SMS is
+  spent. Non-fatal; the real launch has its own retry.
+
+### OTP-portal recovery (auto-invalidate stale downstream markers)
+
+When a previously-failed OTP portal (Square/ADP) succeeds on a later run **while** the downstream
+markers (`write_raw_sheets` / `update_model_sheet` / `process_reviews`) are already `done` from the
+prior partial run, those steps would short-circuit and the fresh data would never reach the Model
+sheet (`data_window_end` stuck — the 2026-05-31 incident). `daily_refresh` now **always** detects this
+and clears those markers (via `state_adapter.clear_step`, the sanctioned path — never a shell `rm`) so
+they recompute on the fresh data; the post-condition guard then verifies `data_window_end` advanced.
+
+This is **not** behind a feature flag — it's safe by construction: the trigger is precisely "a portal
+produced fresh data *and* a downstream marker is already done" (a prior partial run; on a normal first
+run the markers don't exist yet, so nothing is cleared), and the downstream re-run only upserts by
+natural key, so it can never duplicate or corrupt rows. The worst case — a forced full re-scrape of an
+already-complete date — merely recomputes idempotently.
+
+### Recover a partial-failure date (e.g. the 2026-05-31 Square-launch crash)
+
+Concrete runbook for "an OTP portal crashed on launch, downstream ran on stale data, `data_window_end`
+is stuck and bonuses are held back":
+
+1. **Confirm the state.** Read Firestore `runs/2026-05-31`: `square_transactions` will be **absent**
+   (it failed) while `write_raw_sheets` / `update_model_sheet` / `process_reviews` are **present** (they
+   ran on stale data). Read the Model `config` tab — `data_window_end` will be stuck at `2026-05-30`.
+2. **Announce the OTP.** Square will re-scrape and fire **one SMS** to the operator. Post in the BHAGA
+   DM that the rerun is about to fire an OTP **before** triggering it (Operating rule / HL#8).
+3. **Re-run the date as a Cloud Run job** (never a laptop). ADP skips its browser/OTP via the GCS
+   cache; Square re-scrapes (the one OTP). The recovery is automatic — when Square succeeds, the stale
+   `write_raw_sheets`/`update_model_sheet`/`process_reviews` markers are invalidated so they recompute:
+   ```bash
+   gcloud run jobs execute bhaga-daily-refresh \
+     --region=us-central1 --update-env-vars REFRESH_DATE=2026-05-31
+   ```
+4. **Verify** (the rerun isn't done until verified): `data_window_end` advanced to `2026-05-31`, the
+   master CSV gained the 5/31 Square rows, and the held-back review bonuses (24 on 5/31) released into
+   `review_bonus_period`. Re-read the sheets and diff expected vs actual.
+
+> This prod rerun happens **after this PR merges + the image redeploys** (the flag/marker behavior must
+> be in the deployed image), with operator involvement for the OTP. It is not part of the PR's CI.
 
 ### Rebuild model/history from scratch
 

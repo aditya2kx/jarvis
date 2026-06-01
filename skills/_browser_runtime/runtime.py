@@ -50,6 +50,7 @@ import datetime
 import os
 import pathlib
 import sys
+import time
 import traceback
 from typing import Iterator, Optional
 
@@ -132,6 +133,66 @@ _CHROME_LAUNCH_ARGS = [
     "--no-default-browser-check",
 ]
 
+# Extra Chromium flags applied ONLY in headless/container environments (Cloud
+# Run, Docker, CI). These harden the launch against the most common container
+# crash: `TargetClosedError` on startup caused by the tiny default /dev/shm
+# (64 MB) — `--disable-dev-shm-usage` routes shared memory to /tmp instead.
+# `--no-sandbox` is required because Cloud Run already sandboxes the container
+# and the Chrome sandbox needs user namespaces that aren't available there.
+# These are deliberately NOT applied on the operator's laptop (headed, real
+# Chrome channel) so the anti-bot fingerprint of a real browser is preserved.
+_HEADLESS_STABILITY_ARGS = [
+    "--disable-dev-shm-usage",
+    "--no-sandbox",
+    "--disable-gpu",
+]
+
+
+def _launch_retries() -> int:
+    """Number of browser-launch attempts before giving up. Config-driven."""
+    try:
+        return max(1, int(os.environ.get("BHAGA_BROWSER_LAUNCH_RETRIES", "3")))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _launch_backoff_ms() -> int:
+    """Base backoff between launch retries (exponential per attempt). 0 in tests."""
+    try:
+        return max(0, int(os.environ.get("BHAGA_BROWSER_LAUNCH_BACKOFF_MS", "1000")))
+    except (TypeError, ValueError):
+        return 1000
+
+
+def _launch_args(headed: bool) -> list[str]:
+    """Assemble Chromium launch args, adding container-stability flags headless."""
+    args = list(_CHROME_LAUNCH_ARGS)
+    if not headed or _force_headless():
+        args += _HEADLESS_STABILITY_ARGS
+    return args
+
+
+def _is_retryable_launch_error(exc: BaseException) -> bool:
+    """True only for transient browser-LAUNCH infra failures (crash on startup,
+    launch timeout).
+
+    Auth / 2FA / page-logic errors never reach the launch path — they are raised
+    inside the caller's `with` body, never during setup — and must NEVER be
+    auto-retried (a retry could re-fire an OTP/SMS; see HL#8). This classifier is
+    intentionally narrow: it matches the Chromium-died-on-launch signatures only.
+    """
+    name = type(exc).__name__
+    msg = str(exc).lower()
+    if name == "TargetClosedError":
+        return True
+    if name == "TimeoutError" and "launch" in msg:
+        return True
+    if "target page, context or browser has been closed" in msg:
+        return True
+    if "browsertype.launch" in msg or "browser has been closed" in msg:
+        return True
+    return False
+
 
 def _resolve_browser_channel() -> Optional[str]:
     """Determine the Chromium channel to use at launch time.
@@ -207,32 +268,16 @@ def launch_persistent(
 
     SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
-    pw = sync_playwright().start()
-    browser = None
-    context: Optional[BrowserContext] = None
+    # Setup (start driver + launch + context + page) is retried on transient
+    # launch crashes; the yielded BODY is never retried (it may have side
+    # effects — downloads, OTPs). See _start_browser_session.
+    pw, browser, context, page = _start_browser_session(
+        portal,
+        headed=headed,
+        slow_mo_ms=slow_mo_ms,
+        accept_downloads=accept_downloads,
+    )
     try:
-        # Ephemeral: launch a Chromium-family browser, then create an isolated
-        # context. No --user-data-dir → no persistent storage of any kind.
-        # In Docker/CI where only patchright-bundled Chromium is available,
-        # channel=None causes patchright to use its own binary.
-        channel = _resolve_browser_channel()
-        browser = pw.chromium.launch(
-            channel=channel,
-            headless=not headed,
-            slow_mo=slow_mo_ms,
-            args=_CHROME_LAUNCH_ARGS,
-        )
-        context = browser.new_context(
-            viewport=DEFAULT_VIEWPORT,
-            user_agent=REAL_UA,
-            accept_downloads=accept_downloads,
-            # Pin TZ + locale so portal date filters always interpret ranges
-            # in CT regardless of the operator's physical location. See
-            # module docstring (2026-05-22 IST-truncation incident).
-            timezone_id="America/Chicago",
-            locale="en-US",
-        )
-        page = context.new_page()
         try:
             yield context, page
         except Exception:
@@ -240,17 +285,146 @@ def launch_persistent(
             raise
     finally:
         if not keep_open_on_error:
-            if context is not None:
-                try:
-                    context.close()
-                except Exception:  # noqa: BLE001
-                    pass
+            try:
+                context.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                browser.close()
+            except Exception:  # noqa: BLE001
+                pass
+        pw.stop()
+
+
+def _start_browser_session(
+    portal: str,
+    *,
+    headed: bool,
+    slow_mo_ms: int,
+    accept_downloads: bool,
+):
+    """Start Playwright, launch Chromium, and open an isolated context+page,
+    retrying ONLY on transient launch-infra crashes.
+
+    Each attempt restarts the whole Playwright driver (a ``TargetClosedError``
+    at launch can leave the driver wedged, so re-calling ``launch`` on the same
+    driver is unreliable). On the final attempt — or on a non-retryable error —
+    the exception propagates. Returns ``(pw, browser, context, page)``; the
+    caller owns teardown.
+
+    Leaves a breadcrumb (precise, greppable, distinct from dbus/crashpad noise)
+    on every failed attempt and on recovery, so an investigator on another
+    machine can diagnose from logs alone.
+    """
+    retries = _launch_retries()
+    backoff_ms = _launch_backoff_ms()
+    channel = _resolve_browser_channel()
+
+    for attempt in range(1, retries + 1):
+        pw = sync_playwright().start()
+        browser = None
+        try:
+            # Ephemeral: launch a Chromium-family browser, then create an
+            # isolated context. No --user-data-dir → no persistent storage.
+            # In Docker/CI where only patchright-bundled Chromium is available,
+            # channel=None causes patchright to use its own binary.
+            browser = pw.chromium.launch(
+                channel=channel,
+                headless=not headed,
+                slow_mo=slow_mo_ms,
+                args=_launch_args(headed),
+            )
+            context = browser.new_context(
+                viewport=DEFAULT_VIEWPORT,
+                user_agent=REAL_UA,
+                accept_downloads=accept_downloads,
+                # Pin TZ + locale so portal date filters always interpret ranges
+                # in CT regardless of the operator's physical location. See
+                # module docstring (2026-05-22 IST-truncation incident).
+                timezone_id="America/Chicago",
+                locale="en-US",
+            )
+            page = context.new_page()
+            if attempt > 1:
+                print(
+                    f"[runtime] {portal} chromium launch recovered on attempt "
+                    f"{attempt}/{retries}",
+                    file=sys.stderr,
+                )
+            return pw, browser, context, page
+        except Exception as exc:  # noqa: BLE001
+            # Tear down the wedged driver before retrying / propagating.
             if browser is not None:
                 try:
                     browser.close()
                 except Exception:  # noqa: BLE001
                     pass
-        pw.stop()
+            try:
+                pw.stop()
+            except Exception:  # noqa: BLE001
+                pass
+
+            retryable = _is_retryable_launch_error(exc)
+            if not retryable or attempt == retries:
+                print(
+                    f"[runtime] {portal} chromium launch failed "
+                    f"(attempt {attempt}/{retries}): {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                raise
+            wait_s = (backoff_ms * (2 ** (attempt - 1))) / 1000.0
+            print(
+                f"[runtime] {portal} chromium launch failed "
+                f"(attempt {attempt}/{retries}): {type(exc).__name__}: {exc}; "
+                f"retrying in {wait_s:.1f}s",
+                file=sys.stderr,
+            )
+            if wait_s > 0:
+                time.sleep(wait_s)
+
+
+def browser_healthcheck(*, portal: str = "healthcheck") -> bool:
+    """Pre-flight smoke test: can we launch Chromium and open about:blank?
+
+    Call this BEFORE driving any OTP-gated portal so a crashy browser is
+    detected (and retried, via the same _start_browser_session path) before an
+    OTP/SMS is spent on a session that would crash anyway. Returns True if the
+    browser is healthy, False otherwise. Never raises.
+    """
+    headed = not _force_headless()
+    try:
+        pw, browser, context, page = _start_browser_session(
+            portal, headed=headed, slow_mo_ms=0, accept_downloads=False
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[runtime] browser healthcheck FAILED: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    try:
+        page.goto("about:blank")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[runtime] browser healthcheck FAILED post-launch: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    finally:
+        try:
+            context.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            browser.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            pw.stop()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _capture_failure_evidence(page: Optional[Page], *, portal: str) -> None:

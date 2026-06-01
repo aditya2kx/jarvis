@@ -50,9 +50,14 @@ tight build → verify → fix loop without the operator babysitting every step.
    directly against prod sheets only when sandbox isolation genuinely can't exercise the path. Unit
    tests are necessary but are *not* the evidence of doneness.
 5. **100% code coverage.** New code is fully covered by tests; the e2e is on top of that, not instead.
-6. **Record and present evidence in the PR.** Every claim ("it works", "it's backward compatible") is
-   backed by commands + output / sheet diffs / logs in the PR description (template §3 and §4). If the
-   reviewer or operator can't *see* what you did, it didn't happen.
+6. **Record and present evidence in the PR — per scenario, with real output.** Every claim ("it works",
+   "it's backward compatible") is backed by commands + **actual output / sheet diffs / log excerpts** in
+   the PR description (template §3 and §4). Evidence is **scenario-by-scenario**, not a single "all green"
+   line: enumerate the cases the change must handle (happy path, each failure/recovery path, the legacy
+   path) and show, for each, the command you ran and the **real output that proves that specific scenario
+   worked** — e.g. `pytest -v` output naming each scenario test, a job/replay log excerpt showing the
+   behavior firing, or a before→after sheet/marker state. "The suite passes" is necessary but is **not**
+   per-scenario evidence. If the reviewer or operator can't *see* each scenario verified, it didn't happen.
 
 ## Design & execution principles
 
@@ -62,10 +67,19 @@ tight build → verify → fix loop without the operator babysitting every step.
 - **Be mindful of tokens and cost — build *and* prod.** During the build: don't thrash or burn tokens;
   plan before you act. In prod: batch Sheets/API calls, bound LLM turns, cache, avoid per-row network.
   Call out the cost implication of a design in the plan and PR.
-- **Backward compatible by default; feature-flag; then clean up.** New behavior that changes an
-  existing flow goes behind a feature flag (default off), schema changes are additive, and you *prove*
-  the legacy path still works. Make the **cleanup** (remove the flag / retire the old path) an explicit
-  final milestone — don't leave dead flags and forks lying around.
+- **Feature-flag only when the numbers are genuinely at risk — don't reflexively flag.** A feature flag
+  earns its keep when a change could **corrupt data / money / the model numbers** and you need a fast
+  off-switch while it bakes (e.g. a new allocation formula, a schema migration, a write-path change with
+  non-obvious dedupe). For a change that is **safe by construction** — idempotent writes (upsert by
+  natural key), guarded by a post-condition check, additive schema, or a pure bug-fix — **ship it on by
+  default; do not add a flag.** A needless default-off flag hides the improvement, rots as dead config,
+  and means the fix isn't actually exercised in prod. Decision test before adding a flag: *"If this
+  misbehaves, can it silently produce wrong numbers?"* If no → no flag. If yes → flag it (default off),
+  prove the legacy path still works, and make removing the flag an explicit cleanup milestone. Either
+  way, never leave dead flags or forks lying around.
+- **Backward compatible by default.** Schema changes are additive (no column reorder/removal), existing
+  consumers and the nightly `daily_refresh` keep working, and you *prove* it (legacy suite green, or a
+  legacy-regression run).
 
 ## The rules
 
@@ -91,6 +105,15 @@ tight build → verify → fix loop without the operator babysitting every step.
    description complete. The agent then stops and hands the PR to the operator. The **operator** does
    the final review and squash-merge to `main` (which triggers deploy). Merging is the human sign-off —
    never automate it, never ask the operator to delegate it to you.
+6. **Start every task from a clean base; never mix unrelated work into a plan's branch.** Before
+   beginning the work for a plan/ticket, run `git status`. If the working tree has **uncommitted
+   changes unrelated to the plan** (left over from another task), do **not** carry them into the new
+   branch: **save that work first** — commit it on its own appropriately-named branch (or stash it) —
+   then create the task branch fresh from the latest `main` (`git checkout -b <type>/<desc> origin/main`
+   after `git fetch`). One branch = one coherent change. This keeps PRs reviewable and prevents an
+   unrelated edit from silently riding along (and from being lost). If the stray work is on a file your
+   task also touches, decide the base explicitly with the operator (build on it vs. independent) rather
+   than guessing.
 
 > Bootstrapping note: branch protection (server-side enforcement of "no direct push to `main`") is a
 > GitHub **settings** change — see "Enabling enforcement" below. Until it's enabled, rule 1 is a
@@ -157,6 +180,12 @@ gh pr create --base main --fill     # then fill the template
 - **Advisory, not a hard gate.** The review step is `continue-on-error`, so a bot infra hiccup (turn
   cap, transient API error) never red-X's the PR — the **operator's approval** is the hard merge gate
   (branch protection). Real review feedback is posted as PR comments regardless.
+- **Reply to every comment individually, on its own thread.** When addressing review feedback (bot or
+  human), post a **separate reply on each inline comment thread** stating what you did — the fix +
+  commit SHA, or why you intentionally didn't. Do **not** batch the responses into one summary comment
+  and leave the individual threads silent: a reviewer scanning the threads must see each one resolved in
+  place. Reply with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<comment_id>/replies -f body=...`
+  (inline thread) and address top-level review/issue comments in kind. Then push the fixes so CI re-runs.
 - **Cost comment:** after each run, `scripts/post_claude_review_cost.py` posts a PR comment with
   model, turns, input/output tokens, and reported USD cost (from the action's `execution_file`).
   Budget target remains **~$0.50–1/PR** on Sonnet.

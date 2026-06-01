@@ -145,7 +145,6 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
 | `CLICKUP_PAT` | secret → `jarvis-clickup-palmetto-pat` |
 | `BHAGA_BROWSER_LAUNCH_RETRIES` | _(optional, default `3`)_ headless browser launch attempts on transient crash — see §13 Browser-launch resilience |
 | `BHAGA_BROWSER_LAUNCH_BACKOFF_MS` | _(optional, default `1000`)_ base backoff between launch retries (exponential) |
-| `BHAGA_AUTO_INVALIDATE_ON_RECOVERY` | _(optional, default off)_ auto-invalidate stale downstream markers when an OTP portal recovers — see §13 OTP-portal recovery |
 
 ### `bhaga-webhook` environment
 
@@ -413,18 +412,15 @@ classic cause is the tiny 64 MB `/dev/shm`). The runtime now:
 When a previously-failed OTP portal (Square/ADP) succeeds on a later run **while** the downstream
 markers (`write_raw_sheets` / `update_model_sheet` / `process_reviews`) are already `done` from the
 prior partial run, those steps would short-circuit and the fresh data would never reach the Model
-sheet (`data_window_end` stuck — the 2026-05-31 incident). Set
-`BHAGA_AUTO_INVALIDATE_ON_RECOVERY=1` to have `daily_refresh` clear those markers (via
-`state_adapter.clear_step`, the sanctioned path — never a shell `rm`) so they recompute on the fresh
-data. The post-condition guard still verifies `data_window_end` advanced. **Default off** for
-backward-compat; when off, recovery is the manual marker-clear in *Force a step to re-run* above.
+sheet (`data_window_end` stuck — the 2026-05-31 incident). `daily_refresh` now **always** detects this
+and clears those markers (via `state_adapter.clear_step`, the sanctioned path — never a shell `rm`) so
+they recompute on the fresh data; the post-condition guard then verifies `data_window_end` advanced.
 
-> **Set this flag only per recovery invocation** (the `--update-env-vars` override on a single
-> `gcloud run jobs execute`, as in the recovery runbook below) — **never as a permanent
-> `bhaga-daily-refresh` service env var.** Left on permanently, a forced full re-scrape of an
-> already-complete date would needlessly recompute the downstream steps (harmless — writes are
-> idempotent — but wasteful). The trigger is "a portal produced fresh data *and* a downstream marker
-> is already done", which is exactly a prior partial run.
+This is **not** behind a feature flag — it's safe by construction: the trigger is precisely "a portal
+produced fresh data *and* a downstream marker is already done" (a prior partial run; on a normal first
+run the markers don't exist yet, so nothing is cleared), and the downstream re-run only upserts by
+natural key, so it can never duplicate or corrupt rows. The worst case — a forced full re-scrape of an
+already-complete date — merely recomputes idempotently.
 
 ### Recover a partial-failure date (e.g. the 2026-05-31 Square-launch crash)
 
@@ -437,15 +433,12 @@ is stuck and bonuses are held back":
 2. **Announce the OTP.** Square will re-scrape and fire **one SMS** to the operator. Post in the BHAGA
    DM that the rerun is about to fire an OTP **before** triggering it (Operating rule / HL#8).
 3. **Re-run the date as a Cloud Run job** (never a laptop). ADP skips its browser/OTP via the GCS
-   cache; Square re-scrapes (the one OTP):
+   cache; Square re-scrapes (the one OTP). The recovery is automatic — when Square succeeds, the stale
+   `write_raw_sheets`/`update_model_sheet`/`process_reviews` markers are invalidated so they recompute:
    ```bash
    gcloud run jobs execute bhaga-daily-refresh \
-     --region=us-central1 \
-     --update-env-vars REFRESH_DATE=2026-05-31,BHAGA_AUTO_INVALIDATE_ON_RECOVERY=1
+     --region=us-central1 --update-env-vars REFRESH_DATE=2026-05-31
    ```
-   If you prefer to leave the flag off, instead **clear the three downstream markers** on
-   `runs/2026-05-31` (Firestore console: delete the `write_raw_sheets`, `update_model_sheet`,
-   `process_reviews` fields) before executing, so they recompute.
 4. **Verify** (the rerun isn't done until verified): `data_window_end` advanced to `2026-05-31`, the
    master CSV gained the 5/31 Square rows, and the held-back review bonuses (24 on 5/31) released into
    `review_bonus_period`. Re-read the sheets and diff expected vs actual.

@@ -330,7 +330,8 @@ class ClearStepDoneTests(unittest.TestCase):
 class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
     """The 2026-05-31 fix: when a previously-failed OTP portal recovers with
     fresh data while downstream markers are already done from a prior partial
-    run, invalidate those markers so they recompute (flag-gated, default off)."""
+    run, invalidate those markers so they recompute. Always on (no feature
+    flag) — safe by construction (idempotent upserts + post-condition guard)."""
 
     DOWNSTREAM = ("write_raw_sheets", "update_model_sheet", "process_reviews")
 
@@ -344,91 +345,66 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
         for step in self.DOWNSTREAM:
             mark_step_done(rd, step)
 
-    def test_flag_off_is_a_noop_even_when_portal_recovers(self):
+    def test_clears_stale_markers_when_portal_recovers(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(daily_refresh.pathlib.Path, "home",
                                    return_value=daily_refresh.pathlib.Path(tmp)):
-                with mock.patch.dict(os.environ, {}, clear=False):
-                    os.environ.pop("BHAGA_AUTO_INVALIDATE_ON_RECOVERY", None)
-                    rd = datetime.date(2026, 5, 31)
-                    self._seed_downstream_done(rd)
-                    cleared = _recover_stale_downstream_markers(
-                        rd, {"square": self._ok()}, dry_run=False
-                    )
-                    self.assertEqual(cleared, [])
-                    for step in self.DOWNSTREAM:
-                        self.assertTrue(step_already_done(rd, step))
+                rd = datetime.date(2026, 5, 31)
+                self._seed_downstream_done(rd)
+                cleared = _recover_stale_downstream_markers(
+                    rd, {"square": self._ok()}, dry_run=False
+                )
+                self.assertEqual(set(cleared), set(self.DOWNSTREAM))
+                for step in self.DOWNSTREAM:
+                    self.assertFalse(step_already_done(rd, step))
 
-    def test_flag_on_clears_stale_markers_when_portal_recovers(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(daily_refresh.pathlib.Path, "home",
-                                   return_value=daily_refresh.pathlib.Path(tmp)):
-                with mock.patch.dict(os.environ,
-                                     {"BHAGA_AUTO_INVALIDATE_ON_RECOVERY": "1"}):
-                    rd = datetime.date(2026, 5, 31)
-                    self._seed_downstream_done(rd)
-                    cleared = _recover_stale_downstream_markers(
-                        rd, {"square": self._ok()}, dry_run=False
-                    )
-                    self.assertEqual(set(cleared), set(self.DOWNSTREAM))
-                    for step in self.DOWNSTREAM:
-                        self.assertFalse(step_already_done(rd, step))
-
-    def test_flag_on_but_no_stale_markers_is_noop(self):
+    def test_no_stale_markers_is_noop(self):
         """A normal first run (downstream not yet done) clears nothing."""
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(daily_refresh.pathlib.Path, "home",
                                    return_value=daily_refresh.pathlib.Path(tmp)):
-                with mock.patch.dict(os.environ,
-                                     {"BHAGA_AUTO_INVALIDATE_ON_RECOVERY": "1"}):
-                    rd = datetime.date(2026, 5, 31)
-                    cleared = _recover_stale_downstream_markers(
-                        rd, {"square": self._ok()}, dry_run=False
-                    )
-                    self.assertEqual(cleared, [])
+                rd = datetime.date(2026, 5, 31)
+                cleared = _recover_stale_downstream_markers(
+                    rd, {"square": self._ok()}, dry_run=False
+                )
+                self.assertEqual(cleared, [])
 
-    def test_flag_on_but_portal_failed_is_noop(self):
+    def test_portal_failed_is_noop(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(daily_refresh.pathlib.Path, "home",
                                    return_value=daily_refresh.pathlib.Path(tmp)):
-                with mock.patch.dict(os.environ,
-                                     {"BHAGA_AUTO_INVALIDATE_ON_RECOVERY": "1"}):
-                    rd = datetime.date(2026, 5, 31)
-                    self._seed_downstream_done(rd)
-                    cleared = _recover_stale_downstream_markers(
-                        rd, {"square": self._failed()}, dry_run=False
-                    )
-                    self.assertEqual(cleared, [])
-                    for step in self.DOWNSTREAM:
-                        self.assertTrue(step_already_done(rd, step))
+                rd = datetime.date(2026, 5, 31)
+                self._seed_downstream_done(rd)
+                cleared = _recover_stale_downstream_markers(
+                    rd, {"square": self._failed()}, dry_run=False
+                )
+                self.assertEqual(cleared, [])
+                for step in self.DOWNSTREAM:
+                    self.assertTrue(step_already_done(rd, step))
 
     def test_dry_run_is_noop(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(daily_refresh.pathlib.Path, "home",
                                    return_value=daily_refresh.pathlib.Path(tmp)):
-                with mock.patch.dict(os.environ,
-                                     {"BHAGA_AUTO_INVALIDATE_ON_RECOVERY": "1"}):
-                    rd = datetime.date(2026, 5, 31)
-                    self._seed_downstream_done(rd)
-                    cleared = _recover_stale_downstream_markers(
-                        rd, {"square": self._ok()}, dry_run=True
-                    )
-                    self.assertEqual(cleared, [])
-                    for step in self.DOWNSTREAM:
-                        self.assertTrue(step_already_done(rd, step))
+                rd = datetime.date(2026, 5, 31)
+                self._seed_downstream_done(rd)
+                cleared = _recover_stale_downstream_markers(
+                    rd, {"square": self._ok()}, dry_run=True
+                )
+                self.assertEqual(cleared, [])
+                for step in self.DOWNSTREAM:
+                    self.assertTrue(step_already_done(rd, step))
 
     def test_adp_recovery_also_triggers(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(daily_refresh.pathlib.Path, "home",
                                    return_value=daily_refresh.pathlib.Path(tmp)):
-                with mock.patch.dict(os.environ,
-                                     {"BHAGA_AUTO_INVALIDATE_ON_RECOVERY": "1"}):
-                    rd = datetime.date(2026, 5, 31)
-                    self._seed_downstream_done(rd)
-                    cleared = _recover_stale_downstream_markers(
-                        rd, {"adp": self._ok()}, dry_run=False
-                    )
-                    self.assertEqual(set(cleared), set(self.DOWNSTREAM))
+                rd = datetime.date(2026, 5, 31)
+                self._seed_downstream_done(rd)
+                cleared = _recover_stale_downstream_markers(
+                    rd, {"adp": self._ok()}, dry_run=False
+                )
+                self.assertEqual(set(cleared), set(self.DOWNSTREAM))
 
 
 class PreflightBrowserTests(unittest.TestCase):

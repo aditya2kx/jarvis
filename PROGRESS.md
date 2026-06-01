@@ -25,8 +25,9 @@
   `BHAGA_BROWSER_LAUNCH_RETRIES` / `BHAGA_BROWSER_LAUNCH_BACKOFF_MS`. `test_runtime.py` (13 tests).
 - **M2 — recovery:** `state_adapter.clear_step` (local + Firestore `DELETE_FIELD`) +
   `daily_refresh._recover_stale_downstream_markers` invalidate stale downstream markers when an OTP
-  portal recovers, gated by `BHAGA_AUTO_INVALIDATE_ON_RECOVERY` (default off). Post-condition guard
-  preserved; all writes stay idempotent.
+  portal recovers. **Always on (no feature flag)** — safe by construction (idempotent upserts +
+  post-condition guard verifies `data_window_end` advanced). Per the refined CONTRIBUTING flag policy:
+  only flag when a change could corrupt the numbers; this can't.
 - **M3 — principles consult-first:** new always-on `.cursor/rules/bhaga-principles.md`; `AGENTS.md`
   consult-before-design directive; `jarvis.md` frontmatter + breadcrumb / no-reflexive-retry
   conventions; HL#8 cloud nuances promoted into `bhaga.md` (so cloud agents see them).
@@ -34,11 +35,8 @@
   runbook** (post-merge, operator-announced OTP); README code map; new `check_doc_freshness` couplings
   for `_browser_runtime` + `state_adapter`.
 - **Status: in PR `feat/browser-resilience-and-recovery`.** 5/31 prod rerun is post-deploy.
-- **Follow-ups (tracked here):** (1) after the 5/31 prod rerun proves the recovery path end-to-end,
-  decide whether to flip `BHAGA_AUTO_INVALIDATE_ON_RECOVERY` default-on (own PR + cleanup of the flag),
-  or keep it per-invocation and document why; (2) M1 has no real-Chromium-crash e2e (the sandbox replay
-  has no headless browser) — if a container e2e harness is added later, cover the `TargetClosedError`
-  retry path there.
+- **Follow-up (tracked here):** M1 has no real-Chromium-crash e2e (the sandbox replay has no headless
+  browser) — if a container e2e harness is added later, cover the `TargetClosedError` retry path there.
 
 ### 2026-05-30 — Item-level operations tab (`item_lines` + `item_operations`)
 

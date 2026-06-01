@@ -63,5 +63,5 @@ derive proposals from them rather than from memory.
   **never** retried.
 - When a previously-failed OTP portal recovers with fresh data while downstream markers
   (`write_raw_sheets`/`update_model_sheet`/`process_reviews`) are already done from a partial run,
-  invalidate those markers so they recompute (`BHAGA_AUTO_INVALIDATE_ON_RECOVERY`, default off). The
-  post-condition guard still verifies `data_window_end` advanced.
+  those markers are invalidated so they recompute. Always on (no flag) — safe by construction
+  (idempotent upserts; the post-condition guard still verifies `data_window_end` advanced).

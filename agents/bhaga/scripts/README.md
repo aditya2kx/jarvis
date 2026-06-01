@@ -39,8 +39,8 @@ re-run skips steps already marked done. To force a step, clear its marker — se
 tasks. **Recovery:** when an OTP portal (Square/ADP) succeeds on a later run while downstream markers
 (`write_raw_sheets`/`update_model_sheet`/`process_reviews`) are already done from a prior partial run,
 `daily_refresh._recover_stale_downstream_markers` invalidates them (via `clear_step`, the sanctioned
-path) so they recompute on the fresh data — gated by `BHAGA_AUTO_INVALIDATE_ON_RECOVERY` (default off;
-RUNBOOK §13).
+path) so they recompute on the fresh data. Always on (no flag) — safe by construction: idempotent
+upserts + the post-condition guard verifies `data_window_end` advanced (RUNBOOK §13).
 
 **Browser-launch resilience:** all scrapes launch Chromium through
 `skills/_browser_runtime/runtime.py::launch_persistent`, which retries the launch _setup_ (not the

@@ -320,17 +320,6 @@ def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
 _RECOVERY_DOWNSTREAM_STEPS = ("write_raw_sheets", "update_model_sheet", "process_reviews")
 
 
-def _auto_invalidate_enabled() -> bool:
-    """Feature flag (default OFF) for auto-invalidating stale downstream markers
-    when an OTP portal recovers. Off keeps the legacy short-circuit behavior."""
-    return os.environ.get("BHAGA_AUTO_INVALIDATE_ON_RECOVERY", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-
-
 def _recover_stale_downstream_markers(
     refresh_date: datetime.date,
     results: dict,
@@ -346,10 +335,21 @@ def _recover_stale_downstream_markers(
     steps and the fresh portal data would never reach the Model sheet
     (``data_window_end`` stuck — the 2026-05-31 incident).
 
-    Returns the list of cleared step names ([] if the flag is off, this is a
-    dry run, no portal recovered, or no downstream marker was stale). Clearing
-    goes through the sanctioned state-adapter path (no ad-hoc ``rm``)."""
-    if dry_run or not _auto_invalidate_enabled():
+    Always on (no feature flag): the operation is safe by construction — clearing
+    goes through the sanctioned ``state_adapter.clear_step`` (never an ad-hoc
+    ``rm``), the downstream re-run only ever upserts by natural key (so it cannot
+    duplicate rows), and the post-condition guard in ``main`` still verifies
+    ``data_window_end`` advanced. Returns the list of cleared step names ([] on a
+    dry run, when no portal recovered, or when no downstream marker was stale).
+
+    The "prior partial run" signal is precisely "a downstream marker is already
+    done while a portal produced fresh data THIS run": in a normal first run the
+    downstream markers don't exist yet at this point, so ``stale`` is empty and
+    nothing is cleared. (We can't gate on the portal's own marker here — it's
+    named square_transactions/adp_reports and is set earlier in *this* run, so it
+    can't distinguish a prior failure. The worst case — a forced full re-scrape of
+    an already-complete date — only recomputes idempotently, never corrupts.)"""
+    if dry_run:
         return []
     recovered = [
         name
@@ -358,16 +358,6 @@ def _recover_stale_downstream_markers(
     ]
     if not recovered:
         return []
-    # The "prior partial run" signal is that a downstream marker is ALREADY done
-    # while a portal produced fresh data THIS run. In a normal first run the
-    # downstream markers don't exist yet at this point, so `stale` is empty and
-    # nothing is cleared. (We can't gate on the portal's own marker here — it's
-    # named square_transactions/adp_reports and is set earlier in *this* run, so
-    # it can't distinguish a prior failure.) Operational guard: set
-    # BHAGA_AUTO_INVALIDATE_ON_RECOVERY only per recovery invocation (the
-    # `gcloud run jobs execute` override in RUNBOOK §13), never as a permanent
-    # service env var — otherwise a forced full re-scrape of a complete date
-    # would needlessly (but harmlessly, writes are idempotent) recompute these.
     stale = [s for s in _RECOVERY_DOWNSTREAM_STEPS if step_already_done(refresh_date, s)]
     for step in stale:
         try:
@@ -1765,8 +1755,8 @@ def main() -> int:
     # downstream markers are already done from a PRIOR partial run, those steps
     # would short-circuit and the fresh data would never reach the Model sheet
     # (data_window_end stuck — the 2026-05-31 incident). Invalidate them so they
-    # recompute. Flag-gated (default off) for backward-compat; the post-condition
-    # guard below still verifies data_window_end actually advanced.
+    # recompute. Always on (safe by construction: idempotent upserts + the
+    # post-condition guard below verifies data_window_end actually advanced).
     _recover_stale_downstream_markers(refresh_date, results, dry_run=args.dry_run)
 
     # ════════════════════════════════════════════════════════════════════

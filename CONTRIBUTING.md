@@ -65,6 +65,23 @@ tight build → verify → fix loop without the operator babysitting every step.
      the PR evidence (auto-posted as a PR comment) → turn the scenario off → mark ready → merge → rerun
      prod for the affected date(s) → resume the scheduler.** OTP uses the prod Slack bot but the prompt
      is labeled `[SANDBOX · PR…]` and the reply resumes the sandbox job, not prod.
+   - **A live-sandbox PR's evidence is the live proof, not the unit suite.** For any change touching a
+     live-only path (login/2FA/magic-link, selector drift, browser/download behavior), the PR evidence
+     section MUST show, with links/excerpts a reviewer can open:
+     1. **The green run** — workflow run id + the `verify(<gate>)` line with the **concrete deliverable
+        count** (e.g. `item-sales OK — items-…csv (502 data rows)`), and `rc=0`. A bare "run passed" is
+        not enough; show the gate asserting the artifact landed.
+     2. **The reproduction** — the *failing* run/trace for the same scenario **before** the fix (so the
+        bug is shown, not just asserted), with its `gs://…/evidence/` DOM + screenshot.
+     3. **The step screenshot trace** — the `gs://<bucket>/<date>/trace/NN-<label>.png` sequence
+        (`BHAGA_TRACE_SCREENSHOTS=1`, on for sandbox runs) that walks the flow; embed/link the **decisive
+        before→after frames** (e.g. `item-sales-pill-not-found` → `item-sales-date-range-set`), and for
+        auth fixes the **redacted-URL log line** proving the input was well-formed. Capturing a screen of
+        *every step* is the standard — not just the final failure frame.
+     4. **The produced artifact** — the `gs://…/square/…csv` (or sheet/Firestore state) with size/row
+        count, proving the real deliverable exists in the isolated sandbox target (never prod).
+     Light evidence (only `pytest` + doc-freshness) for a live-only fix is a **rejectable** PR: it proves
+     the code parses, not that the live behavior is fixed.
 5. **100% code coverage.** New code is fully covered by tests; the e2e is on top of that, not instead.
 6. **Record and present evidence in the PR — per scenario, with real output.** Every claim ("it works",
    "it's backward compatible") is backed by commands + **actual output / sheet diffs / log excerpts** in

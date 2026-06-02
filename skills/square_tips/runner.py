@@ -142,6 +142,27 @@ def _is_on_dashboard(url: str) -> bool:
     return "squareup.com/dashboard" in url and "squareup.com/login" not in url
 
 
+def _is_magic_link_sent(page) -> bool:
+    """True if Square escalated to the email magic-link verification screen.
+
+    For an unrecognized device/browser Square may bypass the SMS-code 2FA and
+    instead email a passwordless 'magic link' ("Magic link sent. Use this device
+    to sign in."). Detected via the page's marker element/heading. The code-entry
+    flow cannot satisfy this screen — the link must be opened in THIS browser, so
+    callers relay the URL from the operator (see _handle_magic_link).
+    """
+    try:
+        if page.locator(".magic-link-sent__icon, [class*='magic-link-sent']").count() > 0:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        body = (page.locator("body").inner_text(timeout=2_000) or "").lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return "magic link sent" in body or "we sent a magic link" in body
+
+
 def _dismiss_cookie_banner(page) -> None:
     """OneTrust cookie banner sometimes blocks the login form. Accept all + move on.
 
@@ -238,10 +259,11 @@ def _ensure_logged_in(page, *, store: str) -> None:
             """() => {
                 const path = window.location.pathname;
                 if (path.startsWith('/dashboard')) return true;
-                // 2FA picker text — appears regardless of URL still being /login
+                // 2FA picker OR magic-link screen — both appear while still on /login
                 const body = document.body && document.body.innerText || '';
                 return /how would you like to receive the code/i.test(body)
-                    || /text me the code/i.test(body);
+                    || /text me the code/i.test(body)
+                    || /magic link sent/i.test(body);
             }""",
             timeout=30_000,
         )
@@ -255,8 +277,15 @@ def _ensure_logged_in(page, *, store: str) -> None:
     if _is_on_dashboard(page.url):
         return
 
-    # 2FA challenge — operator-in-the-loop via Slack DM.
-    _handle_square_two_factor(page, store=store)
+    # Verification. Square may show the SMS-code 2FA OR escalate an unrecognized
+    # device to an email magic link. Handle whichever appeared; if the SMS flow
+    # ends up bouncing to a magic link, relay that too.
+    if _is_magic_link_sent(page):
+        _handle_magic_link(page, store=store)
+    else:
+        _handle_square_two_factor(page, store=store)
+        if not _is_on_dashboard(page.url) and _is_magic_link_sent(page):
+            _handle_magic_link(page, store=store)
 
     if not _is_on_dashboard(page.url):
         try:
@@ -269,6 +298,106 @@ def _ensure_logged_in(page, *, store: str) -> None:
             f"Square login did not reach /dashboard even after 2FA flow. "
             f"Current URL: {page.url}\nScreenshot: {snap}"
         )
+
+
+_SESSION_TMP = "/tmp/bhaga-square-session.json"
+
+
+def _session_persist_enabled() -> bool:
+    import os as _os
+    return (_os.environ.get("BHAGA_SESSION_PERSIST", "") or "").lower() in ("1", "true", "yes")
+
+
+def restore_session_path(store: str) -> str | None:
+    """Return a local storage_state path to seed the Square context (trusted device),
+    or None. Downloads the run's persisted session from GCS when BHAGA_SESSION_PERSIST
+    is set. Never raises — a miss just means a full login."""
+    if not _session_persist_enabled():
+        return None
+    try:
+        from agents.bhaga.scripts import gcs_cache  # lazy: optional GCP dep
+        dest = pathlib.Path(_SESSION_TMP)
+        if gcs_cache.download_session(dest, portal="square", store=store):
+            return str(dest)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[square session] restore skipped: {exc}", file=sys.stderr)
+    return None
+
+
+def persist_session(ctx, store: str) -> None:
+    """Persist the Square context's storage_state to GCS so the next run is a trusted
+    device (skips 2FA). No-op unless BHAGA_SESSION_PERSIST is set. Never raises."""
+    if not _session_persist_enabled():
+        return
+    try:
+        from agents.bhaga.scripts import gcs_cache  # lazy: optional GCP dep
+        dest = pathlib.Path(_SESSION_TMP)
+        ctx.storage_state(path=str(dest))
+        gcs_cache.upload_session(dest, portal="square", store=store)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[square session] persist skipped: {exc}", file=sys.stderr)
+
+
+def _run_label_prefix() -> str:
+    """`[SANDBOX · <label>] ` prefix for sandbox runs, else ''. Mirrors notify._run_prefix
+    so an operator can tell a sandbox OTP/magic-link DM apart from a prod one."""
+    import os as _os
+    if (_os.environ.get("BHAGA_RUN_ENV") or "").lower() != "sandbox":
+        return ""
+    label = _os.environ.get("BHAGA_RUN_LABEL") or "sandbox"
+    return f"🧪 [SANDBOX · {label}] "
+
+
+def _handle_magic_link(page, *, store: str) -> None:
+    """Relay a Square email magic link through the operator to finish sign-in.
+
+    Square's magic link is passwordless and MUST be opened in the same browser
+    that requested it — the headless container. The operator therefore must NOT
+    click it on their phone (that would sign in the phone, not us); they paste
+    the URL here and we navigate to it. This is the fallback when the trusted
+    device session has expired / is absent and Square escalates a new device.
+    """
+    import os as _os
+    import re as _re
+    try:
+        email = get_credentials(store).get("username", "your Square email")
+    except Exception:  # noqa: BLE001
+        email = "your Square email"
+
+    from skills.slack.adapter import request_reply
+    wait_s = int(_os.environ.get("BHAGA_OTP_WAIT_S", "1800"))
+    prompt = (
+        f"{_run_label_prefix()}:link: *Square magic link required — {store}*\n\n"
+        f"Square emailed a *magic link* to `{email}` instead of an SMS code "
+        f"(it does this for an unrecognized device).\n"
+        f"⚠️ *Do NOT tap 'Sign in to Square' on your phone* — the link only works "
+        f"in the browser that requested it (this server).\n"
+        f"Instead: open the email, *copy the full link URL* "
+        f"(`https://squareup.com/login?rml=1&...`) and *paste it here* within "
+        f"{wait_s // 60} minutes."
+    )
+    print(f"[square magic-link] requesting magic-link URL via Slack for store={store!r} "
+          f"(wait={wait_s}s)...")
+    url = request_reply(user_id="U0APJRE5DC4", prompt=prompt, timeout_seconds=wait_s, agent="bhaga")
+    if not url:
+        raise RuntimeError(
+            "Square magic-link: operator did not paste the link within the window. "
+            "Retry the scrape (a new link will be requested) or complete login manually."
+        )
+    url = url.strip()
+    if not _re.match(r"^https://(www\.)?squareup\.com/login\?", url):
+        raise RuntimeError(
+            f"Square magic-link: pasted value is not a Square login URL: {url[:80]!r}. "
+            f"Copy the full 'https://squareup.com/login?...' link from the email."
+        )
+    print("[square magic-link] navigating to operator-supplied magic link.")
+    page.goto(url, wait_until="domcontentloaded")
+    try:
+        page.wait_for_function(
+            "() => location.pathname.startsWith('/dashboard')", timeout=30_000,
+        )
+    except Exception:  # noqa: BLE001
+        page.wait_for_timeout(2_000)  # let any post-link redirect settle
 
 
 def _handle_square_two_factor(page, *, store: str) -> None:
@@ -365,6 +494,21 @@ def _handle_square_two_factor(page, *, store: str) -> None:
         )
     code = code.strip().replace(" ", "").replace("-", "")
     print(f"[square 2fa] got code (len={len(code)}); submitting.")
+
+    # Tick "trust this device for 30 days" (when present) so Square remembers us
+    # and stops escalating future logins to a fresh code / magic link. Only
+    # durable if the session is persisted (storage_state) across runs — see
+    # gcs_cache.upload_session / BHAGA_SESSION_PERSIST.
+    try:
+        trust = page.get_by_role(
+            "checkbox",
+            name=_re.compile(r"trust|remember\s+this\s+(device|browser)|don'?t\s+ask", _re.I),
+        ).first
+        if trust.is_visible(timeout=2_000):
+            trust.check()
+            print("[square 2fa] ticked 'trust this device'.")
+    except Exception:  # noqa: BLE001
+        pass
 
     # Step 5: fill & submit.
     if code_input is not None:

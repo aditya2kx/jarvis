@@ -254,6 +254,7 @@ def launch_persistent(
     slow_mo_ms: int = 0,
     accept_downloads: bool = True,
     keep_open_on_error: bool = False,
+    storage_state: str | None = None,
 ) -> Iterator[tuple[BrowserContext, Page]]:
     """Launch an EPHEMERAL Chromium context for one portal.
 
@@ -290,6 +291,7 @@ def launch_persistent(
         headed=headed,
         slow_mo_ms=slow_mo_ms,
         accept_downloads=accept_downloads,
+        storage_state=storage_state,
     )
     try:
         try:
@@ -316,6 +318,7 @@ def _start_browser_session(
     headed: bool,
     slow_mo_ms: int,
     accept_downloads: bool,
+    storage_state: str | None = None,
 ):
     """Start Playwright, launch Chromium, and open an isolated context+page,
     retrying ONLY on transient launch-infra crashes.
@@ -348,7 +351,7 @@ def _start_browser_session(
                 slow_mo=slow_mo_ms,
                 args=_launch_args(headed),
             )
-            context = browser.new_context(
+            ctx_kwargs = dict(
                 viewport=DEFAULT_VIEWPORT,
                 user_agent=REAL_UA,
                 accept_downloads=accept_downloads,
@@ -358,6 +361,13 @@ def _start_browser_session(
                 timezone_id="America/Chicago",
                 locale="en-US",
             )
+            # Trusted-device reuse: seed cookies/localStorage from a previously
+            # persisted session so Square recognizes us and skips 2FA. Absent/
+            # invalid file → fresh jar (full login). See gcs_cache.*_session.
+            if storage_state and os.path.exists(storage_state):
+                ctx_kwargs["storage_state"] = storage_state
+                print(f"[runtime] {portal}: restoring trusted-device session", file=sys.stderr)
+            context = browser.new_context(**ctx_kwargs)
             page = context.new_page()
             if attempt > 1:
                 print(

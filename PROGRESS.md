@@ -57,6 +57,39 @@
   calibration are **operator-gated** (trigger the workflow + supply OTP); prod 5/31 + 6/1 reruns are
   post-merge, after suspending `bhaga-nightly`.
 
+### 2026-06-02 — Live-run hardening: prod-job inheritance, magic-link relay, trusted device, scoped scenario
+
+- **Operator setup done (no longer a blocker):** created `gs://bhaga-scrape-cache-sandbox` + granted the
+  run SA (`bhaga-orchestrator@…`) bucket-scoped `storage.admin`. First real sandbox execution then ran.
+- **Sandbox-job config inheritance (two real bugs the live run surfaced):** `gcloud run jobs describe
+  --format=json` emits the **KRM/v1** shape (deep nesting, `valueFrom.secretKeyRef` name/key), not the v2
+  shape the parsers assumed — so secret/SA inheritance silently produced an unconfigured job. Parsers are
+  now schema-robust (recursive search) and also inherit **cpu/memory/timeout/maxRetries** (a default job
+  is 512Mi/600s → OOM/timeout a Chromium scrape) and **prod's plain env vars** (`BHAGA_SECRETS_BACKEND=gcp`
+  etc. — without it the loader fell back to a missing `config.yaml` → FileNotFoundError). Isolation overlay
+  still layered on top and always wins.
+- **2026-06-01 incident — Square escalated an unrecognized device to an email magic link** ("Magic link
+  sent. Use this device to sign in.") instead of the SMS code; the code-entry flow can't satisfy it.
+  Captured to GCS evidence (observability win — diagnosed with zero reruns). Two-layer fix:
+  - **1st line — trusted device:** tick "trust this device for 30 days" during 2FA + persist the Square
+    `storage_state` (cookies) to GCS (`<bucket>/_session/square-<store>.json`) and restore it next run, so
+    Square recognizes the device and stops escalating. Opt-in `BHAGA_SESSION_PERSIST=1`; sandbox keeps its
+    OWN session in the sandbox bucket (isolation preserved). Augments — does **not** restore — the
+    2026-05-17 ephemeral default (persists only the cookie JSON, not a user-data-dir).
+  - **fallback — magic-link relay:** `runner._is_magic_link_sent` detects the page; `_handle_magic_link`
+    DMs the operator to **paste the magic-link URL** (explicitly: do NOT click on phone — the link only
+    works in the requesting browser) and `page.goto`s it in the container. New `adapter.request_reply`
+    handles the free-form URL reply (unwraps Slack `<url|label>`).
+- **Scenario scoped to the failure:** `item-sales-live` now skips ADP/reviews/model (Square-only download)
+  via a scenario `skip` list → `sandbox_live_run --skip` → `BHAGA_SKIP_<STEP>` env (read by
+  `daily_refresh.main`, ORed with CLI flags).
+- **Verification gate:** `sandbox_live_run.verify_item_sales` asserts `<date>/square/items-*.csv` exists
+  with >0 data rows; a "green" `item-sales-live` run now truly means item-sales downloaded (catches
+  "job exited 0 but the deliverable wasn't available"). Surfaced in the PR evidence comment.
+- **Tests:** +`test_runner_magic_link`, +`test_adapter_request_reply`, extended `test_sandbox_live_run`
+  (schema shapes, plain-env inheritance, skip-steps, item-sales verify) + `test_sandbox_scenarios`
+  (scoping). 472 BHAGA tests green.
+
 ### 2026-06-01 — Browser-launch resilience, OTP-portal recovery, principles consult-first
 
 - **Incident (2026-05-31 nightly):** Square's Chromium died on launch (`TargetClosedError` in

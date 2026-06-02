@@ -86,6 +86,7 @@ def build_sandbox_env(
     runs_collection: str = SANDBOX_RUNS_COLLECTION,
     target_job: str | None = None,
     base_env: dict[str, str] | None = None,
+    skip_steps: list[str] | None = None,
 ) -> dict[str, str]:
     """Construct the sandbox job's env overlay.
 
@@ -115,6 +116,11 @@ def build_sandbox_env(
         "REFRESH_DATE": refresh_date,
         "STORE": store,
     })
+    # Scenario scoping: skip steps outside the surface under test (e.g. item-sales
+    # only needs the Square download, so skip ADP/reviews/model). daily_refresh.main
+    # reads each BHAGA_SKIP_<STEP> and ORs it with the matching CLI flag.
+    for step in skip_steps or []:
+        env[f"BHAGA_SKIP_{step.strip().upper()}"] = "1"
     # Route the pipeline to the leased sandbox sheets.
     env.update(sandbox_provision.staging_env(staging_ids))
     return env
@@ -374,7 +380,44 @@ def execute_job(*, wait: bool = True) -> int:
     return r.returncode
 
 
-def _write_evidence(path: str, *, run_label: str, refresh_date: str, rc: int) -> None:
+def verify_item_sales(refresh_date: str, *, bucket: str = SANDBOX_CACHE_WRITE_BUCKET) -> tuple[bool, str]:
+    """Post-run gate: assert item-sales data was actually downloaded to the sandbox cache.
+
+    The job can exit 0 while the specific deliverable we're testing never landed
+    (e.g. login failed before item-sales, or another step failed). This reads the
+    sandbox cache for ``<date>/square/items-*.csv`` and requires >0 DATA rows, so a
+    'green' scenario run truly means item-sales downloaded. Returns (ok, message).
+    """
+    prefix = f"gs://{bucket}/{refresh_date}/square/"
+    ls = _gcloud(["storage", "ls", prefix], check=False, capture=True)
+    items = [ln.strip() for ln in (ls.stdout or "").splitlines()
+             if "/items-" in ln and ln.strip().endswith(".csv")]
+    if not items:
+        return False, (f"item-sales data NOT available — no items-*.csv under {prefix} "
+                       f"(the run did not produce the item-sales download we're testing).")
+    blob = items[0]
+    import tempfile
+    fd, tmp = tempfile.mkstemp(suffix=".csv")
+    os.close(fd)
+    try:
+        cp = _gcloud(["storage", "cp", blob, tmp], check=False, capture=True)
+        if cp.returncode != 0:
+            return False, f"item-sales file {blob} present but could not be read for row-count."
+        with open(tmp, encoding="utf-8", errors="ignore") as fh:
+            rows = [ln for ln in fh.read().splitlines() if ln.strip()]
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    data_rows = max(0, len(rows) - 1)  # minus header
+    if data_rows <= 0:
+        return False, f"item-sales file {blob} present but has 0 data rows (no data available)."
+    return True, f"item-sales OK — {blob} ({data_rows} data rows)."
+
+
+def _write_evidence(path: str, *, run_label: str, refresh_date: str, rc: int,
+                    verify_msg: str = "") -> None:
     """Emit a markdown summary the workflow posts back as a PR comment."""
     status = "✅ passed" if rc == 0 else f"❌ failed (rc={rc})"
     evidence = f"gs://{SANDBOX_CACHE_WRITE_BUCKET}/{refresh_date}/evidence/"
@@ -387,6 +430,8 @@ def _write_evidence(path: str, *, run_label: str, refresh_date: str, rc: int) ->
         f"collection `{SANDBOX_RUNS_COLLECTION}` (reads prod, writes sandbox)\n"
         f"- **failure evidence (if any):** `{evidence}` (screenshot + DOM + meta)\n"
     )
+    if verify_msg:
+        body += f"- **verification:** {verify_msg}\n"
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(body)
     print(f"[sandbox_live_run] wrote evidence summary → {path}")
@@ -411,8 +456,14 @@ def main(argv: list[str] | None = None) -> int:
                      help="Do not release the sandbox slot afterwards (debugging).")
     cli.add_argument("--evidence-file",
                      help="Write a markdown evidence summary here (for the PR comment).")
+    cli.add_argument("--skip", default="",
+                     help="Comma-separated pipeline steps to skip so the run is focused "
+                          "(e.g. 'adp,reviews,model' for a Square-only scenario).")
+    cli.add_argument("--verify", choices=["item_sales"], default=None,
+                     help="Post-run verification gate; fails the run if the deliverable is absent.")
     args = cli.parse_args(argv)
 
+    skip_steps = [s.strip() for s in args.skip.split(",") if s.strip()]
     run_label = f"PR#{args.pr_number} {args.pr_label}"
 
     print(f"[sandbox_live_run] provisioning slot for {run_label} ...")
@@ -434,7 +485,10 @@ def main(argv: list[str] | None = None) -> int:
         store=args.store,
         run_label=run_label,
         base_env=base_env,
+        skip_steps=skip_steps,
     )
+    if skip_steps:
+        print(f"[sandbox_live_run] scenario scoped — skipping steps: {', '.join(skip_steps)}")
     assert_sandbox_isolation(env)  # fail loud BEFORE any deploy/execute
     print("[sandbox_live_run] isolation pre-flight OK (sheets/cache/firestore all sandbox)")
 
@@ -451,9 +505,20 @@ def main(argv: list[str] | None = None) -> int:
               f"(OTP prompt will be labeled '{run_label}') ...")
         rc = execute_job(wait=True)
         print(f"[sandbox_live_run] job execution finished rc={rc}")
+
+        # Post-run verification gate: a run is only a PASS if the deliverable
+        # under test actually landed. Catches "job exited 0 but item-sales data
+        # wasn't available" (e.g. login failed before the item-sales download).
+        verify_msg = ""
+        if args.verify == "item_sales":
+            ok, verify_msg = verify_item_sales(args.refresh_date)
+            print(f"[sandbox_live_run] verify(item_sales): {verify_msg}")
+            if not ok and rc == 0:
+                rc = 2  # deliverable missing → fail loud despite a 0 job exit
+
         if args.evidence_file:
             _write_evidence(args.evidence_file, run_label=run_label,
-                            refresh_date=args.refresh_date, rc=rc)
+                            refresh_date=args.refresh_date, rc=rc, verify_msg=verify_msg)
         return rc
     finally:
         if not args.keep:

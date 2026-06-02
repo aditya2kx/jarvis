@@ -33,6 +33,12 @@ SCENARIOS: dict[str, dict] = {
             "Live Square scrape for a date. Reproduces the item-sales date-picker "
             "selector drift; on failure the DOM + screenshot land in GCS evidence."
         ),
+        # Scope to ONLY the Square data download (the surface that failed): skip
+        # ADP, the Google-reviews refresh, and the final model rollup. Keeps the
+        # full Square scrape (transactions + item-sales + KDS).
+        "skip": ["adp", "reviews", "model"],
+        # Post-run gate: the run is only a PASS if item-sales data was downloaded.
+        "verify": "item_sales",
     },
     "full-live": {
         "description": "Full live pipeline (Square + ADP) for a date, against the sandbox.",
@@ -105,6 +111,7 @@ def run_scenario(
     if name not in SCENARIOS:
         raise ValueError(f"unknown scenario {name!r}")
     from agents.bhaga.scripts import sandbox_live_run  # lazy: heavy GCP deps
+    meta = SCENARIOS[name]
     label = f"{name} · PR#{pr_number} {pr_label}".strip()
     argv = [
         "--store", "palmetto",
@@ -113,11 +120,16 @@ def run_scenario(
         "--refresh-date", date,
         "--image", image,
     ]
+    skip = meta.get("skip") or []
+    if skip:
+        argv += ["--skip", ",".join(skip)]
+    if meta.get("verify"):
+        argv += ["--verify", meta["verify"]]
     if evidence_file:
         argv += ["--evidence-file", evidence_file]
     if no_execute:
         argv.append("--no-execute")
-    print(f"[scenario:{name}] {SCENARIOS[name]['description']}")
+    print(f"[scenario:{name}] {meta['description']}")
     return sandbox_live_run.main(argv)
 
 

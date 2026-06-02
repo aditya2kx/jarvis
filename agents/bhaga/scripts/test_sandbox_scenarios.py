@@ -10,6 +10,28 @@ import pytest
 from agents.bhaga.scripts import sandbox_scenarios as sc
 
 
+class TestRunScenarioScoping:
+    def test_item_sales_passes_skip_and_verify(self, monkeypatch):
+        captured = {}
+        from agents.bhaga.scripts import sandbox_live_run as slr
+        monkeypatch.setattr(slr, "main", lambda argv: captured.update(argv=argv) or 0)
+        rc = sc.run_scenario("item-sales-live", date="2026-05-31", pr_number=9,
+                             pr_label="fix", image="img:sha")
+        assert rc == 0
+        argv = captured["argv"]
+        # Square-only scope + item-sales verification gate are threaded through.
+        assert "--skip" in argv and argv[argv.index("--skip") + 1] == "adp,reviews,model"
+        assert "--verify" in argv and argv[argv.index("--verify") + 1] == "item_sales"
+
+    def test_full_live_has_no_skip_or_verify(self, monkeypatch):
+        captured = {}
+        from agents.bhaga.scripts import sandbox_live_run as slr
+        monkeypatch.setattr(slr, "main", lambda argv: captured.update(argv=argv) or 0)
+        sc.run_scenario("full-live", date="2026-05-31", pr_number=9, pr_label="x", image="img")
+        argv = captured["argv"]
+        assert "--skip" not in argv and "--verify" not in argv
+
+
 class TestParseComment:
     def test_parses_scenario_and_date(self):
         got = sc.parse_comment("/sandbox run item-sales-live date=2026-05-31")

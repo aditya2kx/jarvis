@@ -140,6 +140,51 @@ def upload_evidence(local_path: pathlib.Path, *, refresh_date: datetime.date) ->
     return upload_file(local_path, refresh_date=refresh_date, category="evidence")
 
 
+_SESSION_PREFIX = "_session/"
+
+
+def _session_blob_name(portal: str, store: str) -> str:
+    return f"{_SESSION_PREFIX}{portal}-{store}.json"
+
+
+def upload_session(local_path: pathlib.Path, *, portal: str, store: str) -> str:
+    """Persist a portal browser session (Playwright ``storage_state`` cookies) so a
+    later run is a 'trusted device' and skips 2FA. Returns the gs:// URI.
+
+    Stored in the run's OWN write bucket (sandbox → sandbox bucket), so a sandbox
+    run never writes its session into the prod cache and never reuses prod's live
+    session — it maintains its own. Guarded by ``_assert_sandbox_write_isolation``.
+    """
+    client = _get_client()
+    name = _session_blob_name(portal, store)
+    blob = _write_bucket(client).blob(name)
+    blob.upload_from_filename(str(local_path))
+    uri = f"gs://{_write_bucket_name()}/{name}"
+    print(f"  [gcs_cache] persisted {portal} session → {uri}")
+    return uri
+
+
+def download_session(dest_path: pathlib.Path, *, portal: str, store: str) -> bool:
+    """Restore a persisted portal session into ``dest_path``. True on hit, False on miss.
+
+    Reads from the run's OWN bucket (the write bucket), so a sandbox reuses its own
+    trusted session — not prod's. Never raises (a miss/error just means full login).
+    """
+    try:
+        client = _get_client()
+        bucket = client.bucket(_write_bucket_name())
+        blob = bucket.blob(_session_blob_name(portal, store))
+        if not blob.exists():
+            return False
+        blob.download_to_filename(str(dest_path))
+        print(f"  [gcs_cache] restored {portal} session ← "
+              f"gs://{_write_bucket_name()}/{_session_blob_name(portal, store)}")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [gcs_cache] WARN: {portal} session restore failed (will full-login): {exc}")
+        return False
+
+
 def upload_scrape_artifacts(
     *,
     refresh_date: datetime.date,

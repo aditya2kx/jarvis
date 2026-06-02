@@ -611,7 +611,25 @@ gh workflow run sandbox-live-run.yml \
 
 Forks are refused (secrets never exposed) and comment commands require an
 OWNER/COLLABORATOR/MEMBER author. Add a scenario by extending
-`sandbox_scenarios.SCENARIOS`.
+`sandbox_scenarios.SCENARIOS`. A scenario may declare **`skip`** (pipeline steps to omit so the run is
+focused — e.g. `item-sales-live` skips `adp,reviews,model` to exercise **only** the Square download that
+broke; threaded as `--skip` → `BHAGA_SKIP_<STEP>` env, read by `daily_refresh.main`) and **`verify`** (a
+post-run gate; `item_sales` asserts `<date>/square/items-*.csv` exists with >0 data rows, so a "green"
+run truly means the deliverable landed — it fails the run even if the job exited 0 because login broke
+before item-sales). The verdict is shown in the auto-posted PR evidence comment.
+
+**Login escalation — magic link & trusted device.** Square may escalate an **unrecognized device** to an
+email **magic link** ("Magic link sent. Use this device to sign in.") instead of an SMS code; the
+code-entry flow cannot satisfy it (the link only works in the **requesting** browser). Two layers handle
+this:
+- *Trusted device (1st line):* the 2FA flow ticks "trust this device for 30 days" and, with
+  `BHAGA_SESSION_PERSIST=1`, persists the Square `storage_state` to `gs://<bucket>/_session/square-<store>.json`
+  and restores it next run — so Square recognizes the device and stops escalating. Sandbox keeps its OWN
+  session in the sandbox bucket (isolation preserved).
+- *Magic-link relay (fallback):* when the magic-link page is detected, BHAGA DMs the operator to **paste
+  the magic-link URL** — ⚠️ do **NOT** tap "Sign in" on your phone (that signs in the phone, not the
+  container); copy the `https://squareup.com/login?rml=1&…` URL from the email and paste it in the DM.
+  The container then navigates to it to finish sign-in.
 
 **One-time setup (operator).** By least privilege the run SA has GCS read + object write but not
 project bucket-create, so create the sandbox cache bucket once and grant the SA object access:
@@ -624,7 +642,11 @@ gcloud storage buckets add-iam-policy-binding gs://bhaga-scrape-cache-sandbox \
 ```
 
 The `bhaga-sandbox-refresh` job **self-wires** on first create — `sandbox_live_run` inherits the prod
-job's secret bindings + service account (same creds; only the isolation env differs). The webhook's
+job's secret bindings + service account + **resources/timeout** (cpu/mem/`task-timeout`/`max-retries`;
+a default job is 512Mi/600s and would OOM/timeout a Chromium scrape) **and the prod job's plain env
+vars** (`BHAGA_SECRETS_BACKEND=gcp`, `GCP_PROJECT`, `BHAGA_DM_CHANNEL`, … — without these the config
+loader falls back to a non-existent `config.yaml`). The describe-JSON parsers are schema-robust (handle
+both the v2 and KRM/v1 shapes). Same creds/sizing; only the isolation overlay differs. The webhook's
 `SANDBOX_RUNS_COLLECTION` now **defaults to `sandbox_runs`**, so OTP routing needs no extra config
 (supervised live runs also wait for the code inline via `BHAGA_OTP_ASSUME_READY`, so they don't even
 need the new webhook deployed). No scheduler is ever pointed at the sandbox job — execute-on-demand only.

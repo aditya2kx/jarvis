@@ -168,6 +168,65 @@ class TestSecretInheritanceKRM:
         assert "--max-retries" in flags and flags[flags.index("--max-retries") + 1] == "0"
 
 
+class _FakeProc:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+class TestScenarioScoping:
+    def test_skip_steps_become_env(self):
+        env = slr.build_sandbox_env(
+            staging_ids=_good_ids(), refresh_date="2026-05-31", store="palmetto",
+            run_label="x", skip_steps=["adp", "reviews", "model"],
+        )
+        assert env["BHAGA_SKIP_ADP"] == "1"
+        assert env["BHAGA_SKIP_REVIEWS"] == "1"
+        assert env["BHAGA_SKIP_MODEL"] == "1"
+        assert "BHAGA_SKIP_KDS" not in env  # only what was requested
+        slr.assert_sandbox_isolation(env)  # scoping doesn't break isolation
+
+    def test_no_skip_steps(self):
+        env = slr.build_sandbox_env(
+            staging_ids=_good_ids(), refresh_date="2026-05-31", store="palmetto",
+            run_label="x",
+        )
+        assert not any(k.startswith("BHAGA_SKIP_") for k in env)
+
+
+class TestItemSalesVerification:
+    def test_ok_when_rows_present(self, monkeypatch):
+        def fake_gcloud(args, check=True, capture=False):
+            if args[:2] == ["storage", "ls"]:
+                return _FakeProc(0, "gs://b/2026-05-31/square/items-2026-05-31-2026-06-01.csv\n")
+            if args[:2] == ["storage", "cp"]:
+                with open(args[3], "w") as fh:
+                    fh.write("name,qty\nLatte,3\nMocha,2\n")
+                return _FakeProc(0, "")
+            return _FakeProc(1, "")
+        monkeypatch.setattr(slr, "_gcloud", fake_gcloud)
+        ok, msg = slr.verify_item_sales("2026-05-31")
+        assert ok and "2 data rows" in msg
+
+    def test_fails_when_no_item_sales_file(self, monkeypatch):
+        monkeypatch.setattr(slr, "_gcloud", lambda *a, **k: _FakeProc(0, ""))
+        ok, msg = slr.verify_item_sales("2026-05-31")
+        assert not ok and "NOT available" in msg
+
+    def test_fails_when_header_only(self, monkeypatch):
+        def fake_gcloud(args, check=True, capture=False):
+            if args[:2] == ["storage", "ls"]:
+                return _FakeProc(0, "gs://b/2026-05-31/square/items-x.csv\n")
+            if args[:2] == ["storage", "cp"]:
+                with open(args[3], "w") as fh:
+                    fh.write("name,qty\n")  # header only — no data
+                return _FakeProc(0, "")
+            return _FakeProc(1, "")
+        monkeypatch.setattr(slr, "_gcloud", fake_gcloud)
+        ok, msg = slr.verify_item_sales("2026-05-31")
+        assert not ok and "0 data rows" in msg
+
+
 class TestParsersHandleEmpty:
     def test_no_secrets_yields_empty(self):
         assert slr.parse_secret_flags({"template": {"template": {"containers": [{"env": []}]}}}) == []

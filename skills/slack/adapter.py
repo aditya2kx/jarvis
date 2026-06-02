@@ -266,6 +266,35 @@ def request_otp(user_id, portal_name, timeout_seconds=300, poll_interval=10, pho
     return None
 
 
+def request_reply(user_id, prompt, timeout_seconds=900, poll_interval=10, agent=None):
+    """DM ``prompt`` to the operator and return their raw reply text.
+
+    Unlike :func:`request_otp` (which extracts a numeric code), this returns the
+    full reply — used for free-form values such as a magic-link URL. Slack wraps
+    bare URLs as ``<https://...>`` or ``<https://...|label>``; we unwrap to the
+    raw URL. Polling only (a URL is not a digit code, so the Socket-Mode OTP
+    reader does not apply). Returns the text, or None on timeout.
+    """
+    effective_agent = agent or _current_agent
+    dm_channel = open_dm(user_id, agent=effective_agent)
+    msg = send_message(dm_channel, prompt, agent=effective_agent)
+    sent_ts = msg["ts"]
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        time.sleep(poll_interval)
+        for reply in read_replies(dm_channel, oldest=sent_ts, limit=5):
+            if reply["ts"] != sent_ts and reply.get("user") == user_id:
+                text = (reply.get("text") or "").strip()
+                # Unwrap Slack auto-linked URLs: <url> or <url|label>.
+                if text.startswith("<") and text.endswith(">"):
+                    text = text[1:-1].split("|", 1)[0]
+                send_message(dm_channel, ":white_check_mark: Got it — continuing.", agent=effective_agent)
+                return text
+    send_message(dm_channel, f":x: Timed out after {timeout_seconds // 60} minutes with no reply.", agent=effective_agent)
+    return None
+
+
 def check_for_user_messages(since_ts=None, dm_channel=None, user_id=None, agent=None):
     """Check for new messages from the user in the DM channel.
 

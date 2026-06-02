@@ -1010,6 +1010,8 @@ def _run_square_pipeline(
             _release_scrape_lock,
             download_item_sales,
             download_kds_report,
+            restore_session_path,
+            persist_session,
         )
         from skills._browser_runtime.runtime import (
             DOWNLOADS_DIR as _DL_DIR,
@@ -1049,8 +1051,11 @@ def _run_square_pipeline(
             try:
                 with launch_persistent(
                     portal="square", headed=headed, slow_mo_ms=50,
+                    storage_state=restore_session_path(store),
                 ) as (ctx, page):
                     _ensure_logged_in(page, store=store)
+                    # Persist the (now trusted) session so the next run skips 2FA.
+                    persist_session(ctx, store)
 
                     # Download transactions
                     if txn_fresh:
@@ -1470,6 +1475,20 @@ def main() -> int:
     cli.add_argument("--no-slack", action="store_true",
                      help="Suppress all Slack messages (overrides notify.py).")
     args = cli.parse_args()
+
+    # Scenario scoping via env: a focused sandbox run (e.g. the item-sales-live
+    # scenario) sets BHAGA_SKIP_<STEP>=1 to exercise ONLY the surface that failed.
+    # Each ORs with the matching --skip-* CLI flag (env can add skips, never unset).
+    def _env_skip(name: str) -> bool:
+        return (os.environ.get(name, "") or "").lower() in ("1", "true", "yes")
+
+    args.skip_adp = args.skip_adp or _env_skip("BHAGA_SKIP_ADP")
+    args.skip_reviews = args.skip_reviews or _env_skip("BHAGA_SKIP_REVIEWS")
+    args.skip_model = args.skip_model or _env_skip("BHAGA_SKIP_MODEL")
+    args.skip_kds = args.skip_kds or _env_skip("BHAGA_SKIP_KDS")
+    args.skip_square = args.skip_square or _env_skip("BHAGA_SKIP_SQUARE")
+    args.skip_rates = args.skip_rates or _env_skip("BHAGA_SKIP_RATES")
+    args.skip_timecard = args.skip_timecard or _env_skip("BHAGA_SKIP_TIMECARD")
 
     # Unify --skip-adp / --skip-timecard
     if args.skip_adp:

@@ -714,15 +714,17 @@ def write_training_shifts(
             out_rows, token,
         )
     # Clear any stale rows below the write range (mirrors _upsert_tab cleanup).
-    # Only reachable if an operator hand-deleted a mid-sheet row, leaving a
-    # non-blank row physically below where the re-sorted set now ends; the
-    # reader dedups so tips are unaffected, but the sheet would show a stray
-    # duplicate without this.
-    existing_data_count = len([r for r in data_rows if r and str(r[0]).strip()])
-    if existing_data_count > len(out_rows):
+    # Reachable when the prior sheet was physically longer than the re-sorted
+    # set (operator hand-deleted a key, or a mid-sheet blank row pushed a real
+    # row past where the new write ends). Use the PHYSICAL extent (len(data_rows))
+    # like _upsert_tab — counting only non-blank rows would miss a real row that
+    # sits below a mid-sheet gap. The reader dedups so tips are unaffected, but
+    # the sheet would show a stray duplicate without this.
+    n_existing_rows = len(data_rows)
+    if n_existing_rows > len(out_rows):
         _clear_range(
             spreadsheet_id,
-            f"training_shifts!A{2 + len(out_rows)}:C{1 + existing_data_count}",
+            f"training_shifts!A{2 + len(out_rows)}:C{1 + n_existing_rows}",
             token,
         )
     return {

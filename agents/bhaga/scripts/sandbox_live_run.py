@@ -112,6 +112,9 @@ def build_sandbox_env(
         # checkpoint-and-resume handshake, so the existing prod webhook delivers
         # the code (works even before this PR's webhook routing is deployed).
         "BHAGA_OTP_ASSUME_READY": "1",
+        # Trusted device: persist/restore the Square session to the SANDBOX bucket
+        # so after one magic-link/2FA login, later sandbox runs skip the challenge.
+        "BHAGA_SESSION_PERSIST": "1",
         # The business date being reproduced.
         "REFRESH_DATE": refresh_date,
         "STORE": store,

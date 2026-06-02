@@ -85,14 +85,18 @@ def build_sandbox_env(
     cache_write_bucket: str = SANDBOX_CACHE_WRITE_BUCKET,
     runs_collection: str = SANDBOX_RUNS_COLLECTION,
     target_job: str | None = None,
+    base_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Construct the sandbox job's env overlay.
 
-    Layers the isolation overrides (staging sheets, sandbox cache write bucket,
-    sandbox run-state collection) plus the OTP-routing labels on top of the
-    prod-like base. Pure: returns a dict, performs no I/O.
+    Starts from ``base_env`` — the prod job's inherited plain env vars (runtime
+    config like BHAGA_SECRETS_BACKEND/STATE_BACKEND/GCP_PROJECT/DM_CHANNEL) — then
+    layers the isolation overrides (staging sheets, sandbox cache write bucket,
+    sandbox run-state collection) plus the OTP-routing labels ON TOP, so the
+    sandbox overlay always wins. Pure: returns a dict, performs no I/O.
     """
-    env: dict[str, str] = {
+    env: dict[str, str] = dict(base_env or {})
+    env.update({
         # Isolation: sheets.
         "BHAGA_SHEET_MODE": "staging",
         # Isolation: GCS cache — write to sandbox, read may still hit prod.
@@ -110,7 +114,7 @@ def build_sandbox_env(
         # The business date being reproduced.
         "REFRESH_DATE": refresh_date,
         "STORE": store,
-    }
+    })
     # Route the pipeline to the leased sandbox sheets.
     env.update(sandbox_provision.staging_env(staging_ids))
     return env
@@ -247,6 +251,28 @@ def parse_resource_flags(job_json: dict) -> list[str]:
     return flags
 
 
+def parse_env_vars(job_json: dict) -> dict[str, str]:
+    """Inherit the prod job's PLAIN (non-secret) env vars as the sandbox base.
+
+    These configure the runtime itself, not the data targets — e.g.
+    ``BHAGA_SECRETS_BACKEND=gcp`` (without it the loader falls back to a
+    file-based config that doesn't exist in the image → FileNotFoundError),
+    ``BHAGA_STATE_BACKEND``, ``GCP_PROJECT``, ``BHAGA_DM_CHANNEL`` (the prod Slack
+    bot DM, by design), ``BHAGA_HEADLESS``. Secret-sourced env vars are skipped
+    (they ride in via --set-secrets). The sandbox isolation overlay is layered on
+    top of this base and always wins.
+    """
+    base: dict[str, str] = {}
+    for container in _find_containers(job_json):
+        for entry in container.get("env", []) or []:
+            if (entry.get("valueSource") or entry.get("valueFrom") or {}).get("secretKeyRef"):
+                continue  # secret — mounted via --set-secrets, not as a literal
+            name, value = entry.get("name"), entry.get("value")
+            if name and value is not None:
+                base[name] = str(value)
+    return base
+
+
 def env_flag_args(env: dict[str, str]) -> list[str]:
     """Render an env dict as a single ``--set-env-vars`` gcloud flag value.
 
@@ -308,13 +334,14 @@ def _describe_prod_job() -> dict:
         return {}
 
 
-def deploy_sandbox_job(*, image: str, env: dict[str, str], base_job: str = PROD_JOB_NAME) -> None:
+def deploy_sandbox_job(*, image: str, env: dict[str, str], base_job: str = PROD_JOB_NAME,
+                       prod_json: dict | None = None) -> None:
     """Create-or-update the sandbox job from the PR image + sandbox env overlay.
 
     On CREATE the job self-wires by inheriting the prod orchestrator's secret
-    bindings + service account (same creds — only the isolation env differs), so
-    there is no separate sandbox secret store and no manual wiring. We never point
-    a scheduler at it — execute-on-demand only.
+    bindings + service account + resources (same creds/sizing — only the isolation
+    env differs), so there is no separate sandbox secret store and no manual
+    wiring. We never point a scheduler at it — execute-on-demand only.
     """
     flags = [f"--region={REGION}", f"--image={image}", *env_flag_args(env)]
     if job_exists(SANDBOX_JOB_NAME):
@@ -322,7 +349,7 @@ def deploy_sandbox_job(*, image: str, env: dict[str, str], base_job: str = PROD_
         _gcloud(["run", "jobs", "update", SANDBOX_JOB_NAME, *flags])
         return
 
-    prod = _describe_prod_job()
+    prod = prod_json if prod_json is not None else _describe_prod_job()
     secret_flags = parse_secret_flags(prod)
     if secret_flags:
         n = secret_flags[1].count(",") + 1
@@ -392,18 +419,28 @@ def main(argv: list[str] | None = None) -> int:
     prov = sandbox_provision.provision(store=args.store, pr_number=args.pr_number)
     ids = prov["ids"]
 
+    # Read prod once: its plain env vars seed the sandbox base (runtime config like
+    # BHAGA_SECRETS_BACKEND=gcp), and its secret/SA/resource bindings are inherited
+    # on create. The isolation overlay is layered on top and always wins.
+    prod_json = _describe_prod_job()
+    base_env = parse_env_vars(prod_json)
+    if base_env:
+        print(f"[sandbox_live_run] inheriting {len(base_env)} prod plain env var(s): "
+              f"{', '.join(sorted(base_env))}")
+
     env = build_sandbox_env(
         staging_ids=ids,
         refresh_date=args.refresh_date,
         store=args.store,
         run_label=run_label,
+        base_env=base_env,
     )
     assert_sandbox_isolation(env)  # fail loud BEFORE any deploy/execute
     print("[sandbox_live_run] isolation pre-flight OK (sheets/cache/firestore all sandbox)")
 
     try:
         assert_sandbox_bucket(SANDBOX_CACHE_WRITE_BUCKET)
-        deploy_sandbox_job(image=args.image, env=env)
+        deploy_sandbox_job(image=args.image, env=env, prod_json=prod_json)
         print(f"[sandbox_live_run] deployed {SANDBOX_JOB_NAME} @ {args.image}")
 
         if args.no_execute:

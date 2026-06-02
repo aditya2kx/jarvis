@@ -178,3 +178,47 @@ class TestParsersHandleEmpty:
 
     def test_resource_flags_absent(self):
         assert slr.parse_resource_flags({}) == []
+
+
+class TestPlainEnvInheritance:
+    def test_parses_plain_env_skips_secrets(self):
+        base = slr.parse_env_vars(_PROD_JOB_KRM)
+        # plain runtime config carried over...
+        assert base["STORE"] == "palmetto"
+        # ...secret-sourced env vars are NOT (they ride via --set-secrets)
+        assert "SLACK_BOT_TOKEN" not in base
+        assert "CLICKUP_PAT" not in base
+
+    def test_real_prod_keys_inherited(self):
+        # mirrors the actual prod job: the loader needs BHAGA_SECRETS_BACKEND=gcp
+        job = {"spec": {"template": {"spec": {"template": {"spec": {"containers": [{"env": [
+            {"name": "BHAGA_SECRETS_BACKEND", "value": "gcp"},
+            {"name": "BHAGA_STATE_BACKEND", "value": "firestore"},
+            {"name": "GCP_PROJECT", "value": "jarvis-bhaga-prod"},
+            {"name": "BHAGA_DM_CHANNEL", "value": "D0B67MW6J02"},
+            {"name": "BHAGA_HEADLESS", "value": "1"},
+            {"name": "SLACK_BOT_TOKEN", "valueFrom": {"secretKeyRef": {"name": "t", "key": "latest"}}},
+        ]}]}}}}}}
+        base = slr.parse_env_vars(job)
+        assert base["BHAGA_SECRETS_BACKEND"] == "gcp"
+        assert base["BHAGA_STATE_BACKEND"] == "firestore"
+        assert base["BHAGA_DM_CHANNEL"] == "D0B67MW6J02"
+        assert "SLACK_BOT_TOKEN" not in base
+
+    def test_base_env_merged_but_isolation_overlay_wins(self):
+        base = {
+            "BHAGA_SECRETS_BACKEND": "gcp",
+            "BHAGA_DM_CHANNEL": "D0B67MW6J02",
+            "BHAGA_STATE_BACKEND": "firestore",
+        }
+        env = slr.build_sandbox_env(
+            staging_ids=_good_ids(),
+            refresh_date="2026-05-31", store="palmetto", run_label="PR#9 fix",
+            base_env=base,
+        )
+        # base runtime config is present (fixes the FileNotFoundError)...
+        assert env["BHAGA_SECRETS_BACKEND"] == "gcp"
+        assert env["BHAGA_DM_CHANNEL"] == "D0B67MW6J02"
+        # ...and the isolation overlay still applies and passes the guard.
+        assert env["BHAGA_SHEET_MODE"] == "staging"
+        slr.assert_sandbox_isolation(env)

@@ -49,7 +49,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from agents.bhaga.scripts import backfill_from_downloads, gcs_cache, sandbox_provision, update_model_sheet  # noqa: E402
 from agents.bhaga.scripts.daily_refresh import CT, MODEL_VERIFY_MIN_ROWS, assert_model_tabs_populated  # noqa: E402
-from core.config_loader import _load_production_sheet_ids, refresh_access_token, resolve_sheet_id  # noqa: E402
+from core.config_loader import (  # noqa: E402
+    _load_production_sheet_ids,
+    allow_production_read,
+    refresh_access_token,
+    resolve_sheet_id,
+)
 from skills.tip_ledger_writer import reader as raw_reader  # noqa: E402
 from skills.tip_ledger_writer import writer as raw_writer  # noqa: E402
 
@@ -261,10 +266,11 @@ def seed_sandbox_raw_from_prod(
     the windowed rows to the staging-resolved sandbox sheets, so the model build
     runs over real prod data with zero scrape/login.
 
-    Isolation contract (hard-asserted per source): READS use the prod sid
-    (reading prod is sanctioned) and WRITES use the staging-resolved sandbox sid
-    (the production-sheet guard in resolve_sheet_id makes a prod write
-    impossible). Returns {tab: rows_written}.
+    Isolation contract (hard-asserted per source): READS use the prod sid inside
+    an explicit `allow_production_read()` scope (reading prod is sanctioned) and
+    WRITES use the staging-resolved sandbox sid. The staging guard blocks every
+    prod *write* even inside that read scope, so a misrouted write fails closed.
+    Returns {tab: rows_written}.
     """
     prod_ids = _load_production_sheet_ids()
     seeded: dict[str, int] = {}
@@ -281,7 +287,10 @@ def seed_sandbox_raw_from_prod(
                 f"seed: refusing to WRITE production sheet {sandbox_sid!r} for "
                 f"{profile_key} — sandbox isolation violated"
             )
-        rows = getattr(raw_reader, reader_attr)(prod_sid, account=account)
+        # Reading prod is sanctioned; scope it explicitly so the staging guard
+        # permits this read while still blocking every prod *write*.
+        with allow_production_read():
+            rows = getattr(raw_reader, reader_attr)(prod_sid, account=account)
         windowed = filter_rows_to_window(rows, date_field, start, end)
         if windowed:
             getattr(raw_writer, writer_attr)(sandbox_sid, windowed, account=account)

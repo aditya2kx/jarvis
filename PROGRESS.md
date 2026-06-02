@@ -25,6 +25,10 @@
   `assert_tip_pool_conserved` in `sandbox_e2e.py`; `--source {gcs-replay,prod-raw}` + `--period
   last-closed` CLI. The no-OTP structural guarantee (`test_sandbox_e2e_no_otp`) still holds — only
   reader/writer/model modules enter the import graph.
+- **Read-prod / write-sandbox guard:** the staging isolation guard now distinguishes read vs write
+  (`_assert_not_production_sheet(..., op=)`). Prod *writes* stay hard-blocked; prod *reads* are only
+  unlocked inside an explicit `allow_production_read()` scope (used solely by the seed step), so the
+  seed can copy real prod raw rows while a misrouted write still fails closed.
 - **Wiring:** `.github/workflows/sandbox-e2e.yml` runs `--source prod-raw --period last-closed`; stays
   the required per-PR status check.
 

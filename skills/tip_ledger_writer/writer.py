@@ -95,7 +95,7 @@ def _api(url: str, token: str, *, method: str = "GET", data: dict | None = None)
 
 def _read_tab(spreadsheet_id: str, tab: str, token: str) -> list[list[Any]]:
     """Return the full sheet as a list of rows. Returns [] if the tab doesn't exist."""
-    _assert_not_production_sheet(spreadsheet_id)
+    _assert_not_production_sheet(spreadsheet_id, op="read")
     range_a1 = urllib.parse.quote(f"{tab}!A:ZZ", safe="")
     url = f"{SHEETS_API}/spreadsheets/{spreadsheet_id}/values/{range_a1}"
     try:

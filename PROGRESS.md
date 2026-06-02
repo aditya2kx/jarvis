@@ -33,13 +33,17 @@
   tries JSON-driven patterns/locators in order. The exact fix for drift is now a **one-file** edit.
 - **M4 — incremental cache:** each Square artifact is uploaded to GCS immediately after download, so a
   later-step failure (like item sales) never discards already-scraped transactions.
-- **M5 — live sandbox run:** `sandbox_live_run.py` + `.github/workflows/sandbox-live-run.yml`
-  (`workflow_dispatch`) deploy unmerged PR code to `bhaga-sandbox-refresh` and run a **real** scrape
-  against a leased sandbox slot (the only way to reproduce/prove selector-drift fixes). Isolation
-  pre-flight fails before any deploy. **OTP routing:** prod Slack bot, but the prompt is labeled
-  `[SANDBOX · PR…]` and the pending-OTP checkpoint carries routing metadata so the webhook (sandbox
-  collection scanned **first**) resumes the **sandbox** job, never prod, even under a concurrent prod
-  OTP. Opt-in via `SANDBOX_RUNS_COLLECTION` on the webhook (unset = prod-only, unchanged).
+- **M5 — live sandbox run + scenario suite:** `sandbox_live_run.py` deploys unmerged PR code to
+  `bhaga-sandbox-refresh` (self-wires by **inheriting prod's secrets + SA** — same creds, only the
+  isolation env differs) and runs a **real** scrape against a leased sandbox slot. `sandbox_scenarios.py`
+  organizes runs as a named suite (`item-sales-live`, `full-live`) selectable three ways via
+  `.github/workflows/sandbox-live-run.yml`: committed `.github/sandbox-live.yml` + `sandbox-live` label
+  (`pull_request`, works **pre-merge**), `/sandbox run <scenario> [date=…]` PR comment (`issue_comment`,
+  post-merge), or manual dispatch. Forks refused; comment commands require OWNER/COLLABORATOR/MEMBER;
+  evidence auto-posted as a PR comment. Isolation pre-flight fails before any deploy. **OTP routing:**
+  prod Slack bot, but the prompt is labeled `[SANDBOX · PR…]` and the pending-OTP checkpoint carries
+  routing metadata so the webhook (sandbox collection scanned **first**, default `sandbox_runs`) resumes
+  the **sandbox** job, never prod, even under a concurrent prod OTP.
 - **Tests:** +new unit suites (`test_gcs_cache`, `test_runner_item_sales`, `test_sandbox_live_run`,
   `test_notify`) and extended `test_state_adapter` / `test_handler` (sandbox routing). 399 BHAGA tests green.
 - **Status: in PR `feat/bhaga-cloud-observability`.** Live reproduction of 5/31 + the exact selector

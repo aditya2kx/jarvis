@@ -83,3 +83,46 @@ class TestEnvFlagArgs:
         assert "B=x,y" in flag[1]
         # Pairs are @-joined so the embedded comma in B is not a separator.
         assert "A=1@B=x,y" in flag[1]
+
+
+# Cloud Run v2 `jobs describe --format=json` shape (trimmed to what we parse).
+_PROD_JOB_JSON = {
+    "template": {
+        "template": {
+            "serviceAccount": "bhaga-runner@jarvis-bhaga-prod.iam.gserviceaccount.com",
+            "containers": [
+                {
+                    "env": [
+                        {"name": "STORE", "value": "palmetto"},
+                        {"name": "SQUARE_PW", "valueSource": {
+                            "secretKeyRef": {"secret": "square-password", "version": "latest"}}},
+                        {"name": "ADP_PW", "valueSource": {
+                            "secretKeyRef": {"secret": "adp-password", "version": "3"}}},
+                    ]
+                }
+            ],
+        }
+    }
+}
+
+
+class TestSecretInheritance:
+    def test_parses_secret_bindings(self):
+        flags = slr.parse_secret_flags(_PROD_JOB_JSON)
+        assert flags[0] == "--set-secrets"
+        assert "SQUARE_PW=square-password:latest" in flags[1]
+        assert "ADP_PW=adp-password:3" in flags[1]
+        # Plain (non-secret) env vars are not mirrored as secrets.
+        assert "STORE" not in flags[1]
+
+    def test_no_secrets_yields_empty(self):
+        assert slr.parse_secret_flags({"template": {"template": {"containers": [{"env": []}]}}}) == []
+        assert slr.parse_secret_flags({}) == []
+
+    def test_parses_service_account(self):
+        assert slr.parse_service_account(_PROD_JOB_JSON) == (
+            "bhaga-runner@jarvis-bhaga-prod.iam.gserviceaccount.com"
+        )
+
+    def test_service_account_absent(self):
+        assert slr.parse_service_account({}) is None

@@ -1,0 +1,15 @@
+# BHAGA sandbox live-run config (read by .github/workflows/sandbox-live-run.yml).
+#
+# Scenarios listed here run on `pull_request` ONLY when this PR also carries the
+# `sandbox-live` label (so it never fires by accident). Each runs the real
+# pipeline against an isolated sandbox slot (reads prod, writes only sandbox) and
+# posts evidence as a PR comment. After you've captured the evidence, REMOVE the
+# scenarios (or the label) so it stops running — and delete this file before merge
+# so future PRs don't inherit it.
+#
+# Available scenario names: see agents/bhaga/scripts/sandbox_scenarios.SCENARIOS.
+
+scenarios:
+  # Reproduce + prove the fix for the 2026-05-31 item-sales selector drift.
+  - name: item-sales-live
+    date: 2026-05-31

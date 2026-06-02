@@ -56,11 +56,15 @@ tight build → verify → fix loop without the operator babysitting every step.
      workflow (`workflow_dispatch`): it deploys the unmerged PR image to `bhaga-sandbox-refresh` and
      runs the real pipeline for a chosen `REFRESH_DATE` under **full isolation** (staging sheets +
      sandbox GCS write bucket + sandbox Firestore collection — reads prod OK, **writes prod never**; an
-     isolation pre-flight fails before any deploy). The loop for a live incident is: **open the PR →
-     trigger the live sandbox run to reproduce → if it fails, fix and re-run; if it passes, capture the
-     `gs://…/evidence/` artifacts (screenshot/DOM) + the green run as the PR evidence → mark ready →
-     merge → rerun prod for the affected date(s) → resume the scheduler.** OTP uses the prod Slack bot
-     but the prompt is labeled `[SANDBOX · PR…]` and the reply resumes the sandbox job, not prod.
+     isolation pre-flight fails before any deploy). Runs are a **named scenario suite**
+     (`sandbox_scenarios.py`) you select via a committed `.github/sandbox-live.yml` + the `sandbox-live`
+     label (works **pre-merge**, so a PR can prove its own live fix), a `/sandbox run <scenario>
+     [date=…]` PR comment (steady-state, after the workflow is on main), or manual dispatch. The loop
+     for a live incident is: **open the PR → trigger the scenario to reproduce → if it fails, fix and
+     re-run; if it passes, capture the `gs://…/evidence/` artifacts (screenshot/DOM) + the green run as
+     the PR evidence (auto-posted as a PR comment) → turn the scenario off → mark ready → merge → rerun
+     prod for the affected date(s) → resume the scheduler.** OTP uses the prod Slack bot but the prompt
+     is labeled `[SANDBOX · PR…]` and the reply resumes the sandbox job, not prod.
 5. **100% code coverage.** New code is fully covered by tests; the e2e is on top of that, not instead.
 6. **Record and present evidence in the PR — per scenario, with real output.** Every claim ("it works",
    "it's backward compatible") is backed by commands + **actual output / sheet diffs / log excerpts** in

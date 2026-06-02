@@ -37,12 +37,13 @@ SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 CLOCK_SKEW_TOLERANCE_S = 5 * 60  # reject timestamps older than 5 minutes
 
 # Run-state collections. Prod is always "runs". A live sandbox run writes its
-# pending-OTP checkpoint to its own collection; setting SANDBOX_RUNS_COLLECTION
-# on this service makes the webhook scan it FIRST so a sandbox OTP reply resumes
-# the sandbox job — never prod — even when both await OTP. Empty (the default)
-# = no sandbox scanning, so prod behavior is byte-for-byte unchanged.
+# pending-OTP checkpoint to its own collection; the webhook scans it FIRST so a
+# sandbox OTP reply resumes the sandbox job — never prod — even when both await
+# OTP. Defaults to "sandbox_runs" so OTP routing is zero-setup (the scan is ~1
+# doc/day and a no-op when the collection is empty, so prod is unaffected). Set
+# to "" to disable sandbox scanning entirely.
 PROD_RUNS_COLLECTION = "runs"
-SANDBOX_RUNS_COLLECTION = os.environ.get("SANDBOX_RUNS_COLLECTION", "")
+SANDBOX_RUNS_COLLECTION = os.environ.get("SANDBOX_RUNS_COLLECTION", "sandbox_runs")
 
 # Agent config: maps DM channel IDs → agent names.
 # Loaded once at startup from AGENT_CONFIG_JSON env var, which mirrors the

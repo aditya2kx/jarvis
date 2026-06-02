@@ -41,6 +41,7 @@ Usage (CI, via .github/workflows/sandbox-live-run.yml workflow_dispatch):
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -142,6 +143,65 @@ def assert_sandbox_isolation(env: dict[str, str]) -> None:
         raise RuntimeError(f"sandbox isolation: missing staging sheet IDs: {missing}")
 
 
+def _find_containers(job_json: dict) -> list[dict]:
+    """Locate the container list across the v2/v1 describe JSON shapes."""
+    for path in (
+        ("template", "template", "containers"),
+        ("spec", "template", "spec", "containers"),
+        ("template", "containers"),
+    ):
+        node: object = job_json
+        for key in path:
+            if isinstance(node, dict) and key in node:
+                node = node[key]
+            else:
+                node = None
+                break
+        if isinstance(node, list):
+            return node
+    return []
+
+
+def parse_secret_flags(job_json: dict) -> list[str]:
+    """Build a ``--set-secrets`` flag mirroring the prod job's secret bindings.
+
+    The sandbox scrapes the REAL portals, so it needs the SAME credentials as
+    prod — only the isolation env differs. Inheriting prod's bindings means no
+    separate sandbox secret store and no manual secret wiring. Pure (parses
+    describe JSON); returns [] when there are no secret-sourced env vars.
+    """
+    mounts: list[str] = []
+    for container in _find_containers(job_json):
+        for entry in container.get("env", []) or []:
+            ref = (entry.get("valueSource") or {}).get("secretKeyRef") or entry.get("secretKeyRef")
+            if not ref:
+                continue
+            name = entry.get("name")
+            secret = ref.get("secret")
+            version = ref.get("version") or "latest"
+            if name and secret:
+                mounts.append(f"{name}={secret}:{version}")
+    return ["--set-secrets", ",".join(mounts)] if mounts else []
+
+
+def parse_service_account(job_json: dict) -> str | None:
+    """Extract the prod job's service account so the sandbox job runs as the same SA."""
+    for path in (
+        ("template", "template", "serviceAccount"),
+        ("spec", "template", "spec", "serviceAccountName"),
+    ):
+        node: object = job_json
+        for key in path:
+            if isinstance(node, dict) and key in node:
+                node = node[key]
+            else:
+                node = None
+                break
+        if isinstance(node, str) and node:
+            return node
+    return None
+
+
 def env_flag_args(env: dict[str, str]) -> list[str]:
     """Render an env dict as a single ``--set-env-vars`` gcloud flag value.
 
@@ -179,23 +239,44 @@ def ensure_sandbox_bucket(bucket: str) -> None:
              f"--location={REGION}", "--uniform-bucket-level-access"])
 
 
+def _describe_prod_job() -> dict:
+    """Fetch the prod job config (for secret + SA inheritance). {} on failure."""
+    r = _gcloud(["run", "jobs", "describe", PROD_JOB_NAME, f"--region={REGION}", "--format=json"],
+                check=False, capture=True)
+    if r.returncode != 0 or not (r.stdout or "").strip():
+        print(f"  WARN: could not read {PROD_JOB_NAME} config — sandbox secrets/SA must be wired manually")
+        return {}
+    try:
+        return json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return {}
+
+
 def deploy_sandbox_job(*, image: str, env: dict[str, str], base_job: str = PROD_JOB_NAME) -> None:
     """Create-or-update the sandbox job from the PR image + sandbox env overlay.
 
-    The job mirrors the prod orchestrator (same secrets/SA/resources). We do NOT
-    point a scheduler at it — it is execute-on-demand only.
+    On CREATE the job self-wires by inheriting the prod orchestrator's secret
+    bindings + service account (same creds — only the isolation env differs), so
+    there is no separate sandbox secret store and no manual wiring. We never point
+    a scheduler at it — execute-on-demand only.
     """
     flags = [f"--region={REGION}", f"--image={image}", *env_flag_args(env)]
     if job_exists(SANDBOX_JOB_NAME):
         print(f"  updating existing sandbox job {SANDBOX_JOB_NAME}")
         _gcloud(["run", "jobs", "update", SANDBOX_JOB_NAME, *flags])
-    else:
-        print(f"  creating sandbox job {SANDBOX_JOB_NAME} (mirrors {base_job} secrets/SA)")
-        # Inherit the prod job's secrets + service account by cloning its config
-        # is not a single gcloud call; the operator wires secrets once (see
-        # RUNBOOK §13.1). Here we create with the image + env; secrets/SA are
-        # attached by the one-time setup documented in the RUNBOOK.
-        _gcloud(["run", "jobs", "create", SANDBOX_JOB_NAME, *flags])
+        return
+
+    prod = _describe_prod_job()
+    secret_flags = parse_secret_flags(prod)
+    if secret_flags:
+        n = secret_flags[1].count(",") + 1
+        print(f"  inheriting {n} secret binding(s) from {base_job}")
+    sa = parse_service_account(prod)
+    sa_flags = [f"--service-account={sa}"] if sa else []
+    if sa:
+        print(f"  inheriting service account {sa}")
+    print(f"  creating sandbox job {SANDBOX_JOB_NAME} (mirrors {base_job} secrets/SA)")
+    _gcloud(["run", "jobs", "create", SANDBOX_JOB_NAME, *flags, *secret_flags, *sa_flags])
 
 
 def execute_job(*, wait: bool = True) -> int:
@@ -204,6 +285,24 @@ def execute_job(*, wait: bool = True) -> int:
         args.append("--wait")
     r = _gcloud(args, check=False)
     return r.returncode
+
+
+def _write_evidence(path: str, *, run_label: str, refresh_date: str, rc: int) -> None:
+    """Emit a markdown summary the workflow posts back as a PR comment."""
+    status = "✅ passed" if rc == 0 else f"❌ failed (rc={rc})"
+    evidence = f"gs://{SANDBOX_CACHE_WRITE_BUCKET}/{refresh_date}/evidence/"
+    body = (
+        f"### BHAGA live sandbox run — {status}\n\n"
+        f"- **scenario / label:** `{run_label}`\n"
+        f"- **date:** `{refresh_date}`\n"
+        f"- **job:** `{SANDBOX_JOB_NAME}` (image deployed from this branch)\n"
+        f"- **isolation:** staging sheets · write bucket `{SANDBOX_CACHE_WRITE_BUCKET}` · "
+        f"collection `{SANDBOX_RUNS_COLLECTION}` (reads prod, writes sandbox)\n"
+        f"- **failure evidence (if any):** `{evidence}` (screenshot + DOM + meta)\n"
+    )
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    print(f"[sandbox_live_run] wrote evidence summary → {path}")
 
 
 # ── Orchestration ─────────────────────────────────────────────────
@@ -223,6 +322,8 @@ def main(argv: list[str] | None = None) -> int:
                      help="Provision + deploy the sandbox job but do not run it (dry deploy).")
     cli.add_argument("--keep", action="store_true",
                      help="Do not release the sandbox slot afterwards (debugging).")
+    cli.add_argument("--evidence-file",
+                     help="Write a markdown evidence summary here (for the PR comment).")
     args = cli.parse_args(argv)
 
     run_label = f"PR#{args.pr_number} {args.pr_label}"
@@ -253,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
               f"(OTP prompt will be labeled '{run_label}') ...")
         rc = execute_job(wait=True)
         print(f"[sandbox_live_run] job execution finished rc={rc}")
+        if args.evidence_file:
+            _write_evidence(args.evidence_file, run_label=run_label,
+                            refresh_date=args.refresh_date, rc=rc)
         return rc
     finally:
         if not args.keep:

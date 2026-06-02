@@ -1,70 +1,109 @@
 name: Sandbox live run
 
-# Operator-triggered LIVE sandbox scrape: build the current ref's orchestrator
-# image, deploy it to the bhaga-sandbox-refresh Cloud Run job, and run the REAL
-# Square/ADP pipeline against a leased sandbox sheet pool slot — never prod.
+# Operator-controlled LIVE sandbox scrape of the BHAGA scenario suite
+# (agents/bhaga/scripts/sandbox_scenarios.py). Builds the PR branch's orchestrator
+# image, deploys it to bhaga-sandbox-refresh, and runs the selected scenario(s)
+# against a leased sandbox slot — full isolation (reads prod, writes ONLY sandbox).
 #
-# Unlike sandbox-e2e (replay-only, zero-OTP), this exercises a live browser +
-# OTP, so it can reproduce selector-drift incidents (e.g. 2026-05-31 item sales)
-# and PROVE a fix end-to-end on unmerged PR code.
+# Three ways to select WHAT runs (all route through sandbox_scenarios):
+#   • Committed config  — .github/sandbox-live.yml + the `sandbox-live` label on the
+#     PR. Runs on `pull_request` (reads the workflow from the merge ref), so it works
+#     PRE-MERGE. Remove the label/file to turn it off after capturing evidence.
+#   • PR comment        — `/sandbox run <scenario> [date=YYYY-MM-DD]`. Uses
+#     `issue_comment`, so it only works once this workflow is on the DEFAULT branch.
+#   • Manual dispatch   — workflow_dispatch (post-merge, single scenario).
 #
-# Isolation (hard invariant): reads prod data (GCS cache, raw sheets) but writes
-# ONLY to sandbox targets — staging sheets, the sandbox GCS write bucket, and the
-# sandbox Firestore collection. sandbox_live_run runs an isolation pre-flight that
-# fails before any deploy/execute if an override is missing.
-#
-# OTP: the prod BHAGA cloud Slack bot DMs the operator; the prompt is labeled
-# [SANDBOX · PR…] and the operator's READY/code reply resumes the SANDBOX job
-# (sandbox has precedence in the webhook), never prod.
+# Guards: forks are refused (secrets never exposed); comment commands require an
+# OWNER/COLLABORATOR/MEMBER author; concurrency keeps one run per PR.
 
 on:
   workflow_dispatch:
     inputs:
-      refresh_date:
-        description: 'Business date to reproduce (YYYY-MM-DD, CT)'
+      scenario:
+        description: 'Scenario name (see sandbox_scenarios.SCENARIOS)'
+        required: true
+        type: string
+      date:
+        description: 'Business date (YYYY-MM-DD, CT)'
         required: true
         type: string
       pr_number:
-        description: 'PR number (used to lease a stable sandbox pool slot)'
+        description: 'PR number (sandbox pool slot lease)'
         required: true
         type: string
-      pr_label:
-        description: 'Short label shown in the sandbox OTP prompt (e.g. branch/PR title)'
-        required: true
-        type: string
-      store:
-        description: 'Store key'
-        required: false
-        default: 'palmetto'
-        type: string
-      execute:
-        description: 'Execute the job (false = provision + deploy only, dry deploy)'
-        required: false
-        default: true
-        type: boolean
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  issue_comment:
+    types: [created]
 
 concurrency:
-  group: sandbox-live-run
+  group: sandbox-live-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
   cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
 
 env:
   PROJECT_ID: jarvis-bhaga-prod
   REGION: us-central1
   REGISTRY: us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images
 
-permissions:
-  contents: read
-  id-token: write
-
 jobs:
-  live-run:
-    name: Sandbox live run
+  resolve:
+    name: Resolve what to run
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      pr_number: ${{ steps.plan.outputs.pr_number }}
+      head_ref: ${{ steps.plan.outputs.head_ref }}
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Compute run plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          # workflow_dispatch
+          IN_SCENARIO: ${{ inputs.scenario }}
+          IN_DATE: ${{ inputs.date }}
+          IN_PR: ${{ inputs.pr_number }}
+          DISPATCH_REF: ${{ github.ref_name }}
+          # pull_request
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          PR_HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'sandbox-live') }}
+          # issue_comment
+          CMT_BODY: ${{ github.event.comment.body }}
+          CMT_IS_PR: ${{ github.event.issue.pull_request != null }}
+          CMT_ASSOC: ${{ github.event.comment.author_association }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: python3 agents/bhaga/scripts/sandbox_workflow_resolve.py
+
+  live:
+    name: Live sandbox run
+    needs: resolve
+    if: needs.resolve.outputs.run == 'true'
     runs-on: ubuntu-latest
     env:
       BHAGA_SECRETS_BACKEND: gcp
       BHAGA_STATE_BACKEND: firestore
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.head_ref }}
 
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
@@ -93,12 +132,43 @@ jobs:
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
-      - name: Deploy + run sandbox live job
+      - name: Run selected scenario(s)
         run: |
-          python3 -m agents.bhaga.scripts.sandbox_live_run \
-            --store "${{ inputs.store }}" \
-            --pr-number "${{ inputs.pr_number }}" \
-            --pr-label "${{ inputs.pr_label }}" \
-            --refresh-date "${{ inputs.refresh_date }}" \
-            --image "$IMAGE" \
-            ${{ inputs.execute == false && '--no-execute' || '' }}
+          : > sandbox-live-evidence.md
+          echo '${{ needs.resolve.outputs.plan }}' > /tmp/plan.json
+          python3 - "$IMAGE" "${{ needs.resolve.outputs.pr_number }}" <<'PY'
+          import json, subprocess, sys
+          image, pr_number = sys.argv[1], sys.argv[2]
+          plan = json.load(open("/tmp/plan.json"))
+          rc_all = 0
+          for item in plan:
+              ev = f"evidence-{item['name']}.md"
+              cmd = ["python3", "-m", "agents.bhaga.scripts.sandbox_scenarios", "run",
+                     item["name"], "--date", item["date"], "--pr-number", pr_number,
+                     "--pr-label", f"sandbox-live ({item['name']})", "--image", image,
+                     "--evidence-file", ev]
+              rc = subprocess.run(cmd).returncode
+              rc_all = rc_all or rc
+              try:
+                  with open(ev) as f, open("sandbox-live-evidence.md", "a") as out:
+                      out.write(f.read() + "\n")
+              except FileNotFoundError:
+                  pass
+          sys.exit(rc_all)
+          PY
+
+      - name: Post evidence comment
+        if: always() && needs.resolve.outputs.pr_number != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '### BHAGA live sandbox run\n_(no evidence file produced — see job logs)_';
+            try { body = fs.readFileSync('sandbox-live-evidence.md', 'utf8'); } catch (e) {}
+            body += `\n\n_job status: **${{ job.status }}**_`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ needs.resolve.outputs.pr_number }}'),
+              body,
+            });

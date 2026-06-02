@@ -322,10 +322,15 @@ class _FakeCollection:
 
 
 class _FakeDb:
-    def __init__(self, runs):
+    def __init__(self, runs, sandbox_runs=None):
         self._runs = _FakeCollection(runs)
+        # SANDBOX_RUNS_COLLECTION now defaults to "sandbox_runs", so the scan hits
+        # it first; an empty sandbox collection is a no-op and prod is found next.
+        self._sandbox = _FakeCollection(sandbox_runs or {})
 
     def collection(self, name):
+        if name == "sandbox_runs":
+            return self._sandbox
         assert name == "runs"
         return self._runs
 

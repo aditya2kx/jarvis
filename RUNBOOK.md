@@ -592,12 +592,26 @@ checkpoint (in `sandbox_runs`) carries routing metadata (`env`, `run_label`, `ta
 webhook scans `sandbox_runs` **first** (sandbox precedence), so the operator's READY/code reply
 resumes the **sandbox** job — never the nightly — even if a prod run is awaiting OTP at the same time.
 
+Runs are organized as a **named scenario suite** (`agents/bhaga/scripts/sandbox_scenarios.py`,
+e.g. `item-sales-live`, `full-live`) so you control **what** runs and **when**, with three selectors:
+
 ```bash
-# Trigger from the GitHub UI (Actions → Sandbox live run) or:
+# 1. Committed config (works PRE-MERGE): list scenarios in .github/sandbox-live.yml
+#    and add the `sandbox-live` label to the PR. Each runs the live pipeline and
+#    posts evidence as a PR comment. Remove the label/scenarios (and delete the
+#    file before merge) to turn it off.
+#
+# 2. PR comment (works once this workflow is on main): control a one-shot run —
+#    /sandbox run item-sales-live date=2026-05-31
+#
+# 3. Manual dispatch (post-merge):
 gh workflow run sandbox-live-run.yml \
-  -f refresh_date=2026-05-31 -f pr_number=<PR#> -f pr_label="fix/item-sales-selectors"
-# execute=false provisions + deploys only (dry deploy), no scrape.
+  -f scenario=item-sales-live -f date=2026-05-31 -f pr_number=<PR#>
 ```
+
+Forks are refused (secrets never exposed) and comment commands require an
+OWNER/COLLABORATOR/MEMBER author. Add a scenario by extending
+`sandbox_scenarios.SCENARIOS`.
 
 **One-time setup (operator):** create the sandbox cache bucket (the script does this idempotently),
 and wire the `bhaga-sandbox-refresh` job's **secrets + service account** to mirror

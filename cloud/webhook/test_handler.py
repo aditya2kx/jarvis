@@ -324,8 +324,8 @@ class _FakeCollection:
 class _FakeDb:
     def __init__(self, runs, sandbox_runs=None):
         self._runs = _FakeCollection(runs)
-        # SANDBOX_RUNS_COLLECTION now defaults to "sandbox_runs", so the scan hits
-        # it first; an empty sandbox collection is a no-op and prod is found next.
+        # SANDBOX_RUNS_COLLECTION defaults to "" (sandbox scan OFF); tests that
+        # exercise sandbox precedence monkeypatch it to "sandbox_runs" explicitly.
         self._sandbox = _FakeCollection(sandbox_runs or {})
 
     def collection(self, name):

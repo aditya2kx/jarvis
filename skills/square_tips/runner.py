@@ -113,13 +113,18 @@ def _item_sales_selectors() -> dict:
     return _item_sales_selectors_cache
 
 
-def _find_item_sales_pill(page, *, total_timeout_ms: int | None = None):
-    """Return a visible locator for the item-sales date-range pill, or ``None``.
+def _find_item_sales_pill(page):
+    """Return a visible locator for the item-sales date picker control, or ``None``.
 
-    JSON-driven + resilient: tries each ``pill_text_patterns`` entry on a
-    ``<button>`` first, then the structural ``pill_extra_locators`` (aria-haspopup
-    / data-testid / class). A single Square label-or-format change is absorbed by
-    adding one pattern to ``selectors/item_sales.json`` — no code edit.
+    JSON-driven + resilient: tries ``primary_locators`` (the stable data-test hook)
+    first with a generous wait, then each ``pill_text_patterns`` entry on a
+    ``<button>``, then the structural ``pill_extra_locators``. A single Square
+    label-or-format change is absorbed by adding one pattern to
+    ``selectors/item_sales.json`` — no code edit.
+
+    Wall-clock bound (no overall cap parameter, by design):
+    ``primary_wait_timeout_ms`` + (len(pill_text_patterns)+len(pill_extra_locators))
+    × ``pill_pattern_attempt_timeout_ms``.
     """
     dp = _item_sales_selectors()["date_picker"]
     per = dp.get("pill_pattern_attempt_timeout_ms", 5000)
@@ -741,18 +746,22 @@ def download_transactions(
         _release_scrape_lock()
 
 
-def _set_item_sales_date_range(page, *, start: datetime.date, end: datetime.date) -> None:
+def _set_item_sales_date_range(page, *, start: datetime.date, end: datetime.date, pill=None) -> None:
     """Open the item-sales date picker and type a precise start/end range.
 
-    Square has updated the item-sales page to use the same MM/DD/YYYY format
-    as the transactions page. Falls back to the old month-label format for
-    backward compatibility.
+    Square unified item-sales onto the shared date-filter dropdown (2026-06-02);
+    the popover exposes explicit begin/end inputs. Falls back to the generic
+    visible-text-input heuristic for older surfaces.
+
+    Pass ``pill`` (the already-located trigger from ``_find_item_sales_pill``) to
+    skip a redundant second pattern sweep; if ``None`` it is located here.
 
     Selectors are JSON-driven (skills/square_tips/selectors/item_sales.json →
     selectors.date_picker); a Square UI drift is a one-file edit, no code change.
     """
     dp = _item_sales_selectors()["date_picker"]
-    pill = _find_item_sales_pill(page)
+    if pill is None:
+        pill = _find_item_sales_pill(page)
     if pill is None:
         raise RuntimeError("Item Sales date picker pill not found")
     pill.click()
@@ -955,7 +964,8 @@ def _download_item_sales_with_page(
         )
     page.wait_for_timeout(1_500)
 
-    _set_item_sales_date_range(page, start=start_date, end=end_date)
+    # Reuse the already-found pill (avoid a second full pattern sweep + TOCTOU).
+    _set_item_sales_date_range(page, start=start_date, end=end_date, pill=pill)
     trace_step(page, "item-sales-date-range-set")
     result = _trigger_item_sales_export(page, start=start_date, end=end_date)
     trace_step(page, "item-sales-exported")

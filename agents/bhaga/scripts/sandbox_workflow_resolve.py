@@ -46,7 +46,11 @@ def _yesterday_ct() -> str:
         import zoneinfo
         now = datetime.datetime.now(zoneinfo.ZoneInfo("America/Chicago"))
     except Exception:  # noqa: BLE001
-        now = datetime.datetime.utcnow()
+        # zoneinfo is stdlib since 3.9 and the workflow is 3.12, so this should
+        # never fire. If it does, anchor to UTC-6 (CST): CT is never *ahead* of
+        # UTC-6, so "yesterday" can't be computed a day early and trip the
+        # CT-always invariant (a late-evening CT run mis-dated to the next UTC day).
+        now = datetime.datetime.utcnow() - datetime.timedelta(hours=6)
     return (now.date() - datetime.timedelta(days=1)).isoformat()
 
 

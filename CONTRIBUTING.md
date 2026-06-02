@@ -134,8 +134,10 @@ tight build → verify → fix loop without the operator babysitting every step.
    (see below). The agent addresses every finding autonomously (fix, or reply why not) and re-pushes —
    looping until the PR is merge-ready.
 5. **The agent NEVER merges. Only the operator merges.** The agent's job ends at *merge-ready*: all CI
-   green (`doc-freshness`, tests, Claude review ran), no unresolved `REQUEST CHANGES`, and the PR
-   description complete. The agent then stops and hands the PR to the operator. The **operator** does
+   green (`doc-freshness`, tests, Claude review ran), **every inline review comment replied-to in its own
+   thread** (mechanically gated — `python3 scripts/check_pr_review_replies.py` must exit 0; it lists any
+   thread missing a reply), no unresolved `REQUEST CHANGES`, and the PR description complete. The agent
+   then stops and hands the PR to the operator. The **operator** does
    the final review and squash-merge to `main` (which triggers deploy). Merging is the human sign-off —
    never automate it, never ask the operator to delegate it to you.
 6. **Start every task from a clean base; never mix unrelated work into a plan's branch.** Before
@@ -219,6 +221,9 @@ gh pr create --base main --fill     # then fill the template
   and leave the individual threads silent: a reviewer scanning the threads must see each one resolved in
   place. Reply with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<comment_id>/replies -f body=...`
   (inline thread) and address top-level review/issue comments in kind. Then push the fixes so CI re-runs.
+  **This is mechanically enforced:** `scripts/check_pr_review_replies.py` (run it before declaring
+  merge-ready, like `check_doc_freshness.py`) exits non-zero and lists any inline thread that still has no
+  reply — so a silently-skipped comment fails the readiness gate instead of slipping through.
 - **Cost comment:** after each run, `scripts/post_claude_review_cost.py` posts a PR comment with
   model, turns, input/output tokens, and reported USD cost (from the action's `execution_file`).
   Budget target remains **~$0.50–1/PR** on Sonnet.

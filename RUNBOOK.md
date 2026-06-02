@@ -655,9 +655,11 @@ a default job is 512Mi/600s and would OOM/timeout a Chromium scrape) **and the p
 vars** (`BHAGA_SECRETS_BACKEND=gcp`, `GCP_PROJECT`, `BHAGA_DM_CHANNEL`, … — without these the config
 loader falls back to a non-existent `config.yaml`). The describe-JSON parsers are schema-robust (handle
 both the v2 and KRM/v1 shapes). Same creds/sizing; only the isolation overlay differs. The webhook's
-`SANDBOX_RUNS_COLLECTION` now **defaults to `sandbox_runs`**, so OTP routing needs no extra config
-(supervised live runs also wait for the code inline via `BHAGA_OTP_ASSUME_READY`, so they don't even
-need the new webhook deployed). No scheduler is ever pointed at the sandbox job — execute-on-demand only.
+`SANDBOX_RUNS_COLLECTION` **defaults to `""` (sandbox OTP scan OFF — the prod READY path is byte-for-byte
+unchanged)**; set `SANDBOX_RUNS_COLLECTION=sandbox_runs` on the `bhaga-webhook` service to enable sandbox
+OTP routing. Supervised live runs don't need it — they wait for the code inline via
+`BHAGA_OTP_ASSUME_READY=1`, so the OTP round-trip works even before the new webhook deploys. No scheduler
+is ever pointed at the sandbox job — execute-on-demand only.
 
 **While iterating on a live incident, pause the nightly** so a 21:30 CT run doesn't race your fix or
 compete for the OTP, then resume it after the prod rerun:

@@ -39,11 +39,14 @@ CLOCK_SKEW_TOLERANCE_S = 5 * 60  # reject timestamps older than 5 minutes
 # Run-state collections. Prod is always "runs". A live sandbox run writes its
 # pending-OTP checkpoint to its own collection; the webhook scans it FIRST so a
 # sandbox OTP reply resumes the sandbox job — never prod — even when both await
-# OTP. Defaults to "sandbox_runs" so OTP routing is zero-setup (the scan is ~1
-# doc/day and a no-op when the collection is empty, so prod is unaffected). Set
-# to "" to disable sandbox scanning entirely.
+# OTP. Defaults to "" (DISABLED): the prod path is byte-for-byte unchanged unless
+# an operator explicitly opts in by setting SANDBOX_RUNS_COLLECTION=sandbox_runs on
+# the bhaga-webhook service (see RUNBOOK §13). This keeps the backward-compat
+# guarantee literally true — no extra Firestore scan on a prod READY reply by
+# default. (Supervised live runs don't need it anyway: BHAGA_OTP_ASSUME_READY=1
+# services the OTP inline via the agent-keyed `otps` collection.)
 PROD_RUNS_COLLECTION = "runs"
-SANDBOX_RUNS_COLLECTION = os.environ.get("SANDBOX_RUNS_COLLECTION", "sandbox_runs")
+SANDBOX_RUNS_COLLECTION = os.environ.get("SANDBOX_RUNS_COLLECTION", "")
 
 # Agent config: maps DM channel IDs → agent names.
 # Loaded once at startup from AGENT_CONFIG_JSON env var, which mirrors the

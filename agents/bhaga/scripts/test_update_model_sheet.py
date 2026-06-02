@@ -39,6 +39,7 @@ from agents.bhaga.scripts.update_model_sheet import (
     build_period_summary_rows,
     build_tip_alloc_daily_rows,
     build_tip_alloc_period_rows,
+    most_recent_closed_period,
 )
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
 
@@ -1091,6 +1092,47 @@ class ItemOperationsReconciliationTests(unittest.TestCase):
         self.assertEqual(items_sold_equiv, 2)
         self.assertEqual(units_sold_equiv, 3.0)
         self.assertTrue(all(r["staff_punched_in_total_count"] >= 1 for r in payment_lines))
+
+
+class TestMostRecentClosedPeriod(unittest.TestCase):
+    """Pure biweekly-period boundary helper (Palmetto anchor 2026-05-17)."""
+
+    ANCHOR = "2026-05-17"
+
+    def _mrcp(self, today: datetime.date):
+        return most_recent_closed_period(
+            anchor_end_date=self.ANCHOR, pay_frequency="Biweekly", today=today
+        )
+
+    def test_today_after_close_returns_5_18_to_5_31(self):
+        start, end = self._mrcp(datetime.date(2026, 6, 2))
+        self.assertEqual((start.isoformat(), end.isoformat()),
+                         ("2026-05-18", "2026-05-31"))
+
+    def test_day_after_end_is_already_closed(self):
+        # 6/1 is the first day the 5/18-5/31 period is closed.
+        start, end = self._mrcp(datetime.date(2026, 6, 1))
+        self.assertEqual((start.isoformat(), end.isoformat()),
+                         ("2026-05-18", "2026-05-31"))
+
+    def test_on_end_day_period_not_yet_closed(self):
+        # On 5/31 the current period is still open -> prior period (5/4-5/17).
+        start, end = self._mrcp(datetime.date(2026, 5, 31))
+        self.assertEqual((start.isoformat(), end.isoformat()),
+                         ("2026-05-04", "2026-05-17"))
+
+    def test_rolls_forward_into_next_period(self):
+        # Once 6/14 has passed, the closed period advances to 6/1-6/14.
+        start, end = self._mrcp(datetime.date(2026, 6, 16))
+        self.assertEqual((start.isoformat(), end.isoformat()),
+                         ("2026-06-01", "2026-06-14"))
+
+    def test_unsupported_frequency_raises(self):
+        with self.assertRaises(ValueError):
+            most_recent_closed_period(
+                anchor_end_date=self.ANCHOR, pay_frequency="Weekly",
+                today=datetime.date(2026, 6, 2),
+            )
 
 
 if __name__ == "__main__":

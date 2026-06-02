@@ -92,6 +92,141 @@ class TestPureHelpers(unittest.TestCase):
             e2e.select_window([D(2026, 5, 1)], 0)
 
 
+class TestWindowFilter(unittest.TestCase):
+    def test_filters_by_date_field_inclusive(self):
+        rows = [
+            {"date_local": "2026-05-17", "x": 1},  # before window
+            {"date_local": "2026-05-18", "x": 2},  # start boundary
+            {"date_local": "2026-05-25", "x": 3},
+            {"date_local": "2026-05-31", "x": 4},  # end boundary
+            {"date_local": "2026-06-01", "x": 5},  # after window
+        ]
+        out = e2e.filter_rows_to_window(rows, "date_local", D(2026, 5, 18), D(2026, 5, 31))
+        self.assertEqual([r["x"] for r in out], [2, 3, 4])
+
+    def test_none_date_field_keeps_all(self):
+        rows = [{"employee_id": "1"}, {"employee_id": "2"}]
+        self.assertEqual(e2e.filter_rows_to_window(rows, None, D(2026, 5, 18), D(2026, 5, 31)), rows)
+
+
+class _FakeRawReader:
+    """Stand-in for reader.py: every read_raw_* returns canned, mixed-window rows."""
+    def _square(self, sid, *, account):
+        return [
+            {"date_local": "2026-05-10", "v": "old"},   # out of window
+            {"date_local": "2026-05-20", "v": "in"},    # in window
+        ]
+    read_raw_square_transactions = _square
+    read_raw_square_daily_rollup = _square
+    read_raw_square_item_lines = _square
+    read_raw_square_item_daily_rollup = _square
+    read_raw_kds_daily = _square
+
+    def _adp_dated(self, sid, *, account):
+        return [
+            {"date": "2026-05-12", "employee_id": "1"},  # out
+            {"date": "2026-05-19", "employee_id": "1"},  # in
+        ]
+    read_raw_adp_shifts = _adp_dated
+    read_raw_adp_punches = _adp_dated
+
+    def read_raw_adp_rates(self, sid, *, account):
+        return [{"employee_id": "1"}, {"employee_id": "2"}]  # no date -> all kept
+
+
+class _FakeRawWriter:
+    def __init__(self):
+        self.writes = []  # (writer_name, sid, rows)
+    def _mk(self, name):
+        def w(sid, rows, *, account, scraped_at_utc=None):
+            self.writes.append((name, sid, rows))
+            return {"total_after": len(rows)}
+        return w
+    def __getattr__(self, name):
+        if name.startswith("write_raw_"):
+            return self._mk(name)
+        raise AttributeError(name)
+
+
+class TestSeedSandboxRawFromProd(unittest.TestCase):
+    PROFILE = {"google_sheets": {
+        "bhaga_adp_raw": {"spreadsheet_id": "PROD_ADP"},
+        "bhaga_square_raw": {"spreadsheet_id": "PROD_SQ"},
+    }}
+
+    def _patches(self, writer, *, sandbox_map=None):
+        sandbox_map = sandbox_map or {"bhaga_adp_raw": "SBX_ADP", "bhaga_square_raw": "SBX_SQ"}
+        return [
+            mock.patch.object(e2e, "raw_reader", _FakeRawReader()),
+            mock.patch.object(e2e, "raw_writer", writer),
+            mock.patch.object(e2e, "_load_production_sheet_ids", lambda: {"PROD_ADP", "PROD_SQ"}),
+            mock.patch.object(e2e, "resolve_sheet_id", lambda key, prof: sandbox_map[key]),
+        ]
+
+    def test_window_filter_and_writes_to_sandbox(self):
+        writer = _FakeRawWriter()
+        patches = self._patches(writer)
+        for p in patches:
+            p.start()
+        try:
+            seeded = e2e.seed_sandbox_raw_from_prod(
+                profile=self.PROFILE, account="palmetto",
+                start=D(2026, 5, 18), end=D(2026, 5, 31),
+            )
+        finally:
+            for p in patches:
+                p.stop()
+        # dated tabs keep only the in-window row; rates (no date) keep both.
+        self.assertEqual(seeded["square_transactions"], 1)
+        self.assertEqual(seeded["adp_shifts"], 1)
+        self.assertEqual(seeded["adp_rates"], 2)
+        # every write targeted a sandbox sid, never a prod sid.
+        for _name, sid, _rows in writer.writes:
+            self.assertIn(sid, {"SBX_ADP", "SBX_SQ"})
+            self.assertNotIn(sid, {"PROD_ADP", "PROD_SQ"})
+
+    def test_refuses_to_write_production_sheet(self):
+        # resolve_sheet_id mistakenly returns a prod sid -> hard isolation failure.
+        writer = _FakeRawWriter()
+        patches = self._patches(writer, sandbox_map={
+            "bhaga_adp_raw": "PROD_ADP", "bhaga_square_raw": "SBX_SQ"})
+        for p in patches:
+            p.start()
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                e2e.seed_sandbox_raw_from_prod(
+                    profile=self.PROFILE, account="palmetto",
+                    start=D(2026, 5, 18), end=D(2026, 5, 31),
+                )
+            self.assertIn("refusing to WRITE production sheet", str(ctx.exception))
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertEqual(writer.writes, [])  # nothing written
+
+
+class TestTipPoolConservation(unittest.TestCase):
+    HEADER = ["date_local", "employee_id", "employee_name", "hours_worked",
+              "share_of_day_hours_pct", "tip_pool_dollars", "tip_allocation_dollars"]
+
+    def test_conserved_passes(self):
+        grid = [self.HEADER,
+                ["2026-05-20", "1", "A", "5", "50", "100.00", "60.00"],
+                ["2026-05-20", "2", "B", "3", "50", "100.00", "40.00"],
+                ["2026-05-21", "1", "A", "4", "100", "30.00", "30.00"]]
+        res = e2e.assert_tip_pool_conserved(grid)
+        self.assertEqual(res["dates_checked"], 2)
+        self.assertEqual(res["max_residual_cents"], 0)
+
+    def test_leak_raises(self):
+        grid = [self.HEADER,
+                ["2026-05-20", "1", "A", "5", "50", "100.00", "60.00"],
+                ["2026-05-20", "2", "B", "3", "50", "100.00", "30.00"]]  # 90 != 100
+        with self.assertRaises(RuntimeError) as ctx:
+            e2e.assert_tip_pool_conserved(grid)
+        self.assertIn("NOT conserved", str(ctx.exception))
+
+
 class TestInvokeMain(unittest.TestCase):
     def test_invoke_main_sets_argv_and_restores(self):
         captured = {}
@@ -131,7 +266,7 @@ class TestRunE2E(unittest.TestCase):
         teardown = mock.Mock(return_value={"deleted": ["x"]})
         counts = {t: 1 for t in e2e.MODEL_VERIFY_MIN_ROWS}
         patches = self._common_mocks() + [
-            mock.patch.object(e2e, "_read_model_tab_counts", lambda t, s: counts),
+            mock.patch.object(e2e, "_read_model_tab_counts", lambda t, s, tabs=None: counts),
             mock.patch.object(e2e.sandbox_provision, "teardown", teardown),
         ]
         for p in patches:
@@ -149,7 +284,7 @@ class TestRunE2E(unittest.TestCase):
         teardown = mock.Mock(return_value={"deleted": []})
         under = {t: 0 for t in e2e.MODEL_VERIFY_MIN_ROWS}  # under-populated -> assertion raises
         patches = self._common_mocks() + [
-            mock.patch.object(e2e, "_read_model_tab_counts", lambda t, s: under),
+            mock.patch.object(e2e, "_read_model_tab_counts", lambda t, s, tabs=None: under),
             mock.patch.object(e2e.sandbox_provision, "teardown", teardown),
         ]
         for p in patches:
@@ -162,11 +297,49 @@ class TestRunE2E(unittest.TestCase):
                 p.stop()
         teardown.assert_called_once()  # finally guarantees cleanup
 
+    def test_prod_raw_source_seeds_and_checks_conservation(self):
+        from agents.bhaga.scripts import sandbox_provision as sp
+        ids = {k: f"id_{k}" for k in sp.PROFILE_KEYS}
+        counts = {t: 1 for t in e2e.PROD_RAW_VERIFY_MIN_ROWS}
+        balanced = [
+            ["date_local", "employee_id", "employee_name", "hours_worked",
+             "share_of_day_hours_pct", "tip_pool_dollars", "tip_allocation_dollars"],
+            ["2026-05-20", "1", "A", "5", "100", "50.00", "50.00"],
+        ]
+        teardown = mock.Mock(return_value={"deleted": []})
+        seed = mock.Mock(return_value={"adp_shifts": 10, "square_transactions": 200})
+        patches = [
+            mock.patch.object(e2e.sandbox_provision, "provision",
+                              lambda **k: {"ids": ids, "seed_counts": {}}),
+            mock.patch.object(e2e.sandbox_provision, "_load_pointer",
+                              lambda store: {"google_account_key": "palmetto"}),
+            mock.patch.object(e2e, "refresh_access_token", lambda account=None: "tok"),
+            mock.patch.object(e2e, "_apply_staging_env", mock.Mock()),
+            mock.patch.object(e2e, "seed_sandbox_raw_from_prod", seed),
+            mock.patch.object(e2e, "_run_model_build", mock.Mock(return_value=0)),
+            mock.patch.object(e2e, "_read_model_tab_counts", lambda t, s, tabs=None: counts),
+            mock.patch.object(e2e, "_read_model_grid", lambda t, s, tab: balanced),
+            mock.patch.object(e2e.sandbox_provision, "teardown", teardown),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            report = e2e.run_e2e(store="palmetto", pr_number=7, start=D(2026, 5, 18),
+                                 end=D(2026, 5, 31), source="prod-raw")
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["source"], "prod-raw")
+        seed.assert_called_once()
+        self.assertEqual(report["seeded_rows"], {"adp_shifts": 10, "square_transactions": 200})
+        self.assertEqual(report["tip_pool_conservation"]["dates_checked"], 1)
+
     def test_keep_skips_teardown(self):
         teardown = mock.Mock()
         counts = {t: 1 for t in e2e.MODEL_VERIFY_MIN_ROWS}
         patches = self._common_mocks() + [
-            mock.patch.object(e2e, "_read_model_tab_counts", lambda t, s: counts),
+            mock.patch.object(e2e, "_read_model_tab_counts", lambda t, s, tabs=None: counts),
             mock.patch.object(e2e.sandbox_provision, "teardown", teardown),
         ]
         for p in patches:
@@ -225,6 +398,28 @@ class TestMainCli(unittest.TestCase):
     def test_main_requires_window(self):
         with self.assertRaises(SystemExit):
             e2e.main(["--pr-number", "3"])
+
+    def test_main_period_last_closed_resolves_from_anchor(self):
+        captured = {}
+        report = {"status": "ok", "pr_number": 3, "days": 14,
+                  "window": {"start": "2026-05-18", "end": "2026-05-31"}}
+
+        def fake_run(**kwargs):
+            captured.update(kwargs)
+            return report
+
+        profile = {"adp_run": {"pay_periods_anchor_end_date": "2026-05-17",
+                               "pay_frequency": "Biweekly"}}
+        with mock.patch.object(e2e.sandbox_provision, "_load_pointer", lambda store: profile), \
+             mock.patch.object(e2e, "run_e2e", fake_run), \
+             mock.patch("agents.bhaga.scripts.sandbox_e2e.datetime") as mdt:
+            mdt.datetime.now.return_value = datetime.datetime(2026, 6, 2, 12, 0)
+            mdt.date = datetime.date
+            rc = e2e.main(["--pr-number", "3", "--source", "prod-raw", "--period", "last-closed"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured["start"], D(2026, 5, 18))
+        self.assertEqual(captured["end"], D(2026, 5, 31))
+        self.assertEqual(captured["source"], "prod-raw")
 
 
 class TestNoOtpStructuralGuarantee(unittest.TestCase):

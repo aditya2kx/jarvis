@@ -288,6 +288,12 @@ the denominator.
   - **`likely_reason`** — heuristic explanation when they diverge (open period, partial coverage, etc.).
   - **`coverage`** — how complete the period's source data is; **`is_open`** — period not yet closed/paid.
 
+**Conservation invariant (machine-checked).** Pool-by-day allocation is **cent-exact**: for every
+date, the per-employee allocations sum to that day's tip pool (largest-remainder distribution; see
+`skills/tip_pool_allocation/adapter.py`). Every PR proves this against real prod data over the
+most-recent **closed** pay period (boundaries from `most_recent_closed_period`, the same anchor +
+biweekly cadence as `discover_periods`) via the per-PR sandbox e2e (`assert_tip_pool_conserved`).
+
 ---
 
 ## 6. Review bonuses — `review_bonus_period`

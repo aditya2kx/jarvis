@@ -1,7 +1,10 @@
 name: Sandbox e2e
 
 # Prod-like end-to-end on every PR against a PRE-CREATED sandbox sheet pool
-# (never production workbooks). Replays GCS cache only — zero OTP.
+# (never production workbooks). Reads the PROD raw Square+ADP sheets directly for
+# the most-recent CLOSED pay period and writes them into the leased sandbox slot
+# (read-prod / write-sandbox only) — no scrape, no browser, zero OTP. Verifies the
+# full period builds incl. tip-pool conservation.
 # Leases a pool slot via Firestore (collection sandbox_slots only).
 # See RUNBOOK §13 and agents/bhaga/scripts/sandbox_pool.json.
 
@@ -60,12 +63,12 @@ jobs:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.SANDBOX_E2E_SERVICE_ACCOUNT || secrets.WIF_SERVICE_ACCOUNT }}
 
-      - name: Run sandbox e2e (replay-only, zero-OTP)
+      - name: Run sandbox e2e (prod-raw, last closed period, zero-OTP)
         if: github.event_name == 'pull_request' && vars.SANDBOX_E2E_ENABLED == 'true'
         run: |
           python3 -m agents.bhaga.scripts.sandbox_e2e \
             --pr-number "${{ github.event.number }}" \
-            --auto-window --max-days "${{ vars.SANDBOX_E2E_MAX_DAYS || '2' }}" \
+            --source prod-raw --period last-closed \
             --evidence-file sandbox-e2e-evidence.md
 
       - name: Post evidence comment

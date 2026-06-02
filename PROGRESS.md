@@ -12,6 +12,22 @@
 
 ## BHAGA Agent (Tip Allocation & Payroll Prep)
 
+### 2026-06-02 — Mandatory per-PR prod-data sandbox verification
+
+- **Two-tier sandbox mandate** (CONTRIBUTING): Tier 1 = the per-PR `Sandbox e2e`, now a no-OTP
+  **prod-data** run — reads the PROD raw Square+ADP sheets directly for the most-recent **closed** pay
+  period and writes only to a leased sandbox slot (read-prod / write-sandbox, hard-asserted), rebuilds
+  the model, and verifies the full period incl. **tip-pool conservation**. Because it never scrapes or
+  logs in, it blocks merge on every PR (no opt-out). Tier 2 = the live-OTP `sandbox_live_run` scenario,
+  kept on-demand for live-only paths (selector/login/2FA).
+- **New code:** `most_recent_closed_period` (pure, reuses the `discover_periods` anchor math) in
+  `update_model_sheet.py`; `seed_sandbox_raw_from_prod` + `filter_rows_to_window` +
+  `assert_tip_pool_conserved` in `sandbox_e2e.py`; `--source {gcs-replay,prod-raw}` + `--period
+  last-closed` CLI. The no-OTP structural guarantee (`test_sandbox_e2e_no_otp`) still holds — only
+  reader/writer/model modules enter the import graph.
+- **Wiring:** `.github/workflows/sandbox-e2e.yml` runs `--source prod-raw --period last-closed`; stays
+  the required per-PR status check.
+
 ### 2026-06-01 — Cloud observability, sandbox isolation, JSON selectors, live sandbox run
 
 - **Incident (2026-05-31 item sales):** both nightly attempts raised `RuntimeError: Item Sales page

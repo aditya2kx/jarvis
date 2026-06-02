@@ -48,10 +48,27 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
 from agents.bhaga.scripts import backfill_from_downloads, gcs_cache, sandbox_provision, update_model_sheet  # noqa: E402
-from agents.bhaga.scripts.daily_refresh import MODEL_VERIFY_MIN_ROWS, assert_model_tabs_populated  # noqa: E402
-from core.config_loader import refresh_access_token  # noqa: E402
+from agents.bhaga.scripts.daily_refresh import CT, MODEL_VERIFY_MIN_ROWS, assert_model_tabs_populated  # noqa: E402
+from core.config_loader import _load_production_sheet_ids, refresh_access_token, resolve_sheet_id  # noqa: E402
+from skills.tip_ledger_writer import reader as raw_reader  # noqa: E402
+from skills.tip_ledger_writer import writer as raw_writer  # noqa: E402
 
 DOWNLOADS = backfill_from_downloads.DOWNLOADS
+
+# PROD raw -> SANDBOX raw seeding sources for the no-OTP prod-data path.
+# Each tuple: (reader attr on reader.py, writer attr on writer.py, store-profile
+# google_sheets key, the row's ISO-date column for window filtering — None means
+# the tab has no date column and is copied whole, e.g. per-employee wage rates).
+_PROD_RAW_SOURCES: tuple[tuple[str, str, str, str | None], ...] = (
+    ("read_raw_adp_shifts", "write_raw_adp_shifts", "bhaga_adp_raw", "date"),
+    ("read_raw_adp_punches", "write_raw_adp_punches", "bhaga_adp_raw", "date"),
+    ("read_raw_adp_rates", "write_raw_adp_rates", "bhaga_adp_raw", None),
+    ("read_raw_square_transactions", "write_raw_square_transactions", "bhaga_square_raw", "date_local"),
+    ("read_raw_square_daily_rollup", "write_raw_square_daily_rollup", "bhaga_square_raw", "date_local"),
+    ("read_raw_square_item_lines", "write_raw_square_item_lines", "bhaga_square_raw", "date_local"),
+    ("read_raw_square_item_daily_rollup", "write_raw_square_item_daily_rollup", "bhaga_square_raw", "date_local"),
+    ("read_raw_kds_daily", "write_raw_kds_daily", "bhaga_square_raw", "date_local"),
+)
 
 # Shorter than MODEL_VERIFY_MIN_ROWS: the sandbox replay window is only a few
 # cached days (cost), so biweekly period tabs may legitimately be empty. Nightly
@@ -61,6 +78,20 @@ SANDBOX_E2E_VERIFY_MIN_ROWS: dict[str, int] = {
     "labor_daily": 1,
     "labor_weekly": 1,
     "labor_daily_forecast": 1,
+}
+
+# The prod-raw path covers a FULL closed pay period, so the period-grain tabs
+# MUST populate (a closed period is always complete) and the tip allocation is
+# verifiable end-to-end. Stricter than the GCS-replay auto-window contract.
+PROD_RAW_VERIFY_MIN_ROWS: dict[str, int] = {
+    "daily": 1,
+    "labor_daily": 1,
+    "labor_weekly": 1,
+    "labor_daily_forecast": 1,
+    "labor_period": 1,
+    "period_summary": 1,
+    "tip_alloc_daily": 1,
+    "tip_alloc_period": 1,
 }
 
 # Modules that, if ever imported by this runner's graph, would mean a scrape /
@@ -120,17 +151,47 @@ def tab_counts_from_columns(raw: dict[str, list[list]]) -> dict[str, int]:
     return {tab: max(0, len(rows) - 1) for tab, rows in raw.items()}
 
 
+def filter_rows_to_window(
+    rows: list[dict], date_field: str | None, start: datetime.date, end: datetime.date,
+) -> list[dict]:
+    """Keep rows whose ``date_field`` ISO value falls in [start, end] inclusive.
+
+    ``date_field=None`` means the tab has no per-day date (e.g. wage_rates) and
+    every row is kept. ISO ``YYYY-MM-DD`` strings sort lexicographically, so a
+    string compare is correct and avoids parsing every cell.
+    """
+    if date_field is None:
+        return list(rows)
+    lo, hi = start.isoformat(), end.isoformat()
+    out: list[dict] = []
+    for r in rows:
+        v = str(r.get(date_field, "")).strip()[:10]
+        if lo <= v <= hi:
+            out.append(r)
+    return out
+
+
 def format_evidence(report: dict) -> str:
     """Render a human/PR-comment-friendly evidence block from a run report."""
     lines: list[str] = []
     lines.append(f"### BHAGA sandbox e2e — PR #{report.get('pr_number')}")
     lines.append(f"- status: **{report.get('status', 'unknown')}**")
+    if report.get("source"):
+        lines.append(f"- source: **{report['source']}**")
     win = report.get("window", {})
     lines.append(f"- window: {win.get('start')} -> {win.get('end')} ({report.get('days')} day(s))")
     restored = report.get("restored_files", {})
     if restored:
         lines.append(f"- GCS files restored: {sum(restored.values())} "
                      f"({', '.join(f'{d}:{n}' for d, n in sorted(restored.items()))})")
+    seeded = report.get("seeded_rows")
+    if seeded:
+        lines.append(f"- prod raw seeded into sandbox: {sum(seeded.values())} row(s) "
+                     f"({', '.join(f'{t}:{n}' for t, n in sorted(seeded.items()))})")
+    cons = report.get("tip_pool_conservation")
+    if cons:
+        lines.append(f"- tip-pool conserved: {cons['dates_checked']} day(s), "
+                     f"max residual {cons['max_residual_cents']}c")
     counts = report.get("model_tab_counts") or {}
     if counts:
         lines.append("- model tab row counts:")
@@ -190,6 +251,44 @@ def _run_backfill(store: str, start: datetime.date, end: datetime.date) -> int:
     )
 
 
+def seed_sandbox_raw_from_prod(
+    *, profile: dict, account: str, start: datetime.date, end: datetime.date,
+) -> dict[str, int]:
+    """Copy PROD raw Square+ADP rows for [start, end] into the SANDBOX raw sheets.
+
+    The no-OTP alternative to the GCS replay: instead of re-parsing cached
+    downloads, it reads the already-scraped PROD raw sheets directly and writes
+    the windowed rows to the staging-resolved sandbox sheets, so the model build
+    runs over real prod data with zero scrape/login.
+
+    Isolation contract (hard-asserted per source): READS use the prod sid
+    (reading prod is sanctioned) and WRITES use the staging-resolved sandbox sid
+    (the production-sheet guard in resolve_sheet_id makes a prod write
+    impossible). Returns {tab: rows_written}.
+    """
+    prod_ids = _load_production_sheet_ids()
+    seeded: dict[str, int] = {}
+    for reader_attr, writer_attr, profile_key, date_field in _PROD_RAW_SOURCES:
+        prod_sid = profile["google_sheets"][profile_key]["spreadsheet_id"]
+        sandbox_sid = resolve_sheet_id(profile_key, profile)
+        if prod_sid not in prod_ids:
+            raise RuntimeError(
+                f"seed: read sid {prod_sid!r} for {profile_key} is not a known "
+                f"production sheet — refusing to seed from a non-prod source"
+            )
+        if sandbox_sid in prod_ids:
+            raise RuntimeError(
+                f"seed: refusing to WRITE production sheet {sandbox_sid!r} for "
+                f"{profile_key} — sandbox isolation violated"
+            )
+        rows = getattr(raw_reader, reader_attr)(prod_sid, account=account)
+        windowed = filter_rows_to_window(rows, date_field, start, end)
+        if windowed:
+            getattr(raw_writer, writer_attr)(sandbox_sid, windowed, account=account)
+        seeded[reader_attr.replace("read_raw_", "")] = len(windowed)
+    return seeded
+
+
 def _maybe_run_item_lines(store: str) -> bool:
     """Run the item-lines backfill if present (forward compat). Returns ran?"""
     if not _item_lines_module_available():
@@ -206,13 +305,78 @@ def _run_model_build(store: str) -> int:
     return _invoke_main(update_model_sheet.main, ["--store", store])
 
 
-def _read_model_tab_counts(token: str, model_sid: str) -> dict[str, int]:
+def _read_model_tab_counts(token: str, model_sid: str, tabs: list[str] | None = None) -> dict[str, int]:
     # One batchGet for all verify tabs instead of N single reads (quota-friendly).
-    tabs = list(MODEL_VERIFY_MIN_ROWS)
+    tabs = list(tabs) if tabs is not None else list(MODEL_VERIFY_MIN_ROWS)
     ranges = [f"{tab}!A1:A100000" for tab in tabs]
     by_range = sandbox_provision._batch_read_values(token, model_sid, ranges)
     raw = {tab: by_range.get(rng, []) for tab, rng in zip(tabs, ranges)}
     return tab_counts_from_columns(raw)
+
+
+def _read_model_grid(token: str, model_sid: str, tab: str) -> list[list]:
+    """Read a full tab grid (header + rows) for a value-level assertion."""
+    rng = f"{tab}!A1:ZZ100000"
+    by_range = sandbox_provision._batch_read_values(token, model_sid, [rng])
+    return by_range.get(rng, [])
+
+
+def _to_cents(cell: object) -> int:
+    """Parse a dollars cell ('$1,234.56' / '1234.56' / 1234.56) to integer cents."""
+    s = str(cell or "").strip().replace("$", "").replace(",", "")
+    if not s:
+        return 0
+    from decimal import Decimal
+    return int((Decimal(s) * 100).to_integral_value())
+
+
+def assert_tip_pool_conserved(tip_alloc_daily_values: list[list], *, tol_cents: int = 1) -> dict:
+    """Per-day conservation: sum of tip_allocation_dollars == that day's pool.
+
+    The allocator is cent-exact (largest-remainder), so for every date the
+    per-employee allocations must sum to the day's tip pool. This guards against
+    a builder bug silently dropping/duplicating cents on the way to the sheet.
+
+    tip_alloc_daily columns:
+        date_local | employee_id | employee_name | hours_worked |
+        share_of_day_hours_pct | tip_pool_dollars | tip_allocation_dollars
+
+    Returns {dates_checked, max_residual_cents}; raises RuntimeError if any
+    date's residual exceeds ``tol_cents``.
+    """
+    if not tip_alloc_daily_values or len(tip_alloc_daily_values) < 2:
+        raise RuntimeError("tip pool conservation: tip_alloc_daily is empty")
+    header = [str(c).strip() for c in tip_alloc_daily_values[0]]
+    try:
+        i_date = header.index("date_local")
+        i_pool = header.index("tip_pool_dollars")
+        i_alloc = header.index("tip_allocation_dollars")
+    except ValueError as exc:
+        raise RuntimeError(f"tip pool conservation: unexpected header {header}: {exc}")
+
+    pool_by_date: dict[str, int] = {}
+    alloc_by_date: dict[str, int] = {}
+    for row in tip_alloc_daily_values[1:]:
+        if not row or not str(row[0]).strip():
+            continue
+        date = str(row[i_date]).strip()[:10]
+        # Pool is constant per date; record once. Allocations sum.
+        pool_by_date.setdefault(date, _to_cents(row[i_pool]) if len(row) > i_pool else 0)
+        alloc_by_date[date] = alloc_by_date.get(date, 0) + (_to_cents(row[i_alloc]) if len(row) > i_alloc else 0)
+
+    problems: list[str] = []
+    max_residual = 0
+    for date, pool in sorted(pool_by_date.items()):
+        residual = abs(alloc_by_date.get(date, 0) - pool)
+        max_residual = max(max_residual, residual)
+        if residual > tol_cents:
+            problems.append(
+                f"{date}: allocations {alloc_by_date.get(date, 0)}c != pool {pool}c "
+                f"(residual {residual}c)"
+            )
+    if problems:
+        raise RuntimeError("tip pool NOT conserved: " + "; ".join(problems))
+    return {"dates_checked": len(pool_by_date), "max_residual_cents": max_residual}
 
 
 def run_e2e(
@@ -223,8 +387,16 @@ def run_e2e(
     end: datetime.date,
     teardown_after: bool = True,
     expect_kds: bool = False,
+    source: str = "gcs-replay",
 ) -> dict:
-    """Full provision -> replay -> backfill -> model -> verify -> teardown loop.
+    """Full provision -> seed -> model -> verify -> teardown loop.
+
+    ``source``:
+      - ``gcs-replay`` (default): restore the GCS scrape cache for the window and
+        re-parse it into the sandbox raw sheets (lenient verify — small window).
+      - ``prod-raw``: read the PROD raw Square+ADP sheets directly for the window
+        and write them into the sandbox raw sheets (stricter, full-period verify
+        + tip-pool conservation). No scrape, no OTP, read-prod/write-sandbox only.
 
     Teardown always runs (finally) unless ``teardown_after`` is False, so a
     failed run never leaks sandbox sheets.
@@ -232,6 +404,7 @@ def run_e2e(
     report: dict = {
         "store": store,
         "pr_number": pr_number,
+        "source": source,
         "window": {"start": start.isoformat(), "end": end.isoformat()},
         "days": len(dates_in_window(start, end)),
         "status": "error",
@@ -244,21 +417,31 @@ def run_e2e(
         report["seed_counts"] = prov.get("seed_counts")
         _apply_staging_env(ids)
 
-        account = sandbox_provision._load_pointer(store).get("google_account_key", store)
+        profile = sandbox_provision._load_pointer(store)
+        account = profile.get("google_account_key", store)
         token = refresh_access_token(account=account)
 
-        report["restored_files"] = _replay_from_gcs(start, end)
-        _run_backfill(store, start, end)
-        report["item_lines_ran"] = _maybe_run_item_lines(store)
+        if source == "prod-raw":
+            report["seeded_rows"] = seed_sandbox_raw_from_prod(
+                profile=profile, account=account, start=start, end=end,
+            )
+        else:
+            report["restored_files"] = _replay_from_gcs(start, end)
+            _run_backfill(store, start, end)
+            report["item_lines_ran"] = _maybe_run_item_lines(store)
         _run_model_build(store)
 
-        counts = _read_model_tab_counts(token, ids["bhaga_model"])
+        min_rows = PROD_RAW_VERIFY_MIN_ROWS if source == "prod-raw" else SANDBOX_E2E_VERIFY_MIN_ROWS
+        counts = _read_model_tab_counts(token, ids["bhaga_model"], tabs=list(min_rows))
         report["model_tab_counts"] = counts
         assert_model_tabs_populated(
             tab_row_counts=counts,
             expect_kds=expect_kds,
-            min_rows=SANDBOX_E2E_VERIFY_MIN_ROWS,
+            min_rows=min_rows,
         )
+        if source == "prod-raw":
+            grid = _read_model_grid(token, ids["bhaga_model"], "tip_alloc_daily")
+            report["tip_pool_conservation"] = assert_tip_pool_conserved(grid)
         report["status"] = "ok"
     except Exception as exc:  # noqa: BLE001
         report["error"] = f"{type(exc).__name__}: {exc}"
@@ -288,16 +471,32 @@ def main(argv: list[str] | None = None) -> int:
                      help="Also assert KDS-specific model invariants (cache must contain KDS).")
     cli.add_argument("--evidence-file", default=None,
                      help="Write the evidence block to this path (e.g. for a PR comment).")
+    cli.add_argument("--source", choices=["gcs-replay", "prod-raw"], default="gcs-replay",
+                     help="gcs-replay (default): re-parse the GCS scrape cache into sandbox raw. "
+                          "prod-raw: read the PROD raw sheets directly for the window (no scrape/OTP) "
+                          "and verify the full closed period incl. tip-pool conservation.")
+    cli.add_argument("--period", choices=["last-closed"], default=None,
+                     help="Resolve the window from the store's pay-period calendar instead of "
+                          "--start/--end. 'last-closed' = the most recent fully-elapsed pay period.")
     args = cli.parse_args(argv)
 
-    if args.auto_window:
+    if args.period == "last-closed":
+        profile = sandbox_provision._load_pointer(args.store)
+        today = datetime.datetime.now(CT).date()
+        start, end = update_model_sheet.most_recent_closed_period(
+            anchor_end_date=profile["adp_run"]["pay_periods_anchor_end_date"],
+            pay_frequency=profile["adp_run"].get("pay_frequency", ""),
+            today=today,
+        )
+        print(f"# resolved last-closed pay period (today={today}): {start} -> {end}")
+    elif args.auto_window:
         start, end = select_window(gcs_cache.list_cached_dates(), args.max_days)
         print(f"# auto-selected window from GCS cache: {start} -> {end}")
     elif args.start and args.end:
         start = datetime.date.fromisoformat(args.start)
         end = datetime.date.fromisoformat(args.end)
     else:
-        cli.error("provide --start and --end, or --auto-window")
+        cli.error("provide --start and --end, --auto-window, or --period last-closed")
     report = run_e2e(
         store=args.store,
         pr_number=args.pr_number,
@@ -305,6 +504,7 @@ def main(argv: list[str] | None = None) -> int:
         end=end,
         teardown_after=not args.keep,
         expect_kds=args.expect_kds,
+        source=args.source,
     )
     if args.evidence_file:
         with open(args.evidence_file, "w") as f:

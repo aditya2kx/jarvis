@@ -518,8 +518,23 @@ auto-migrate **additive** header changes; reordering/removing does not.
 `agents/bhaga/scripts/sandbox_e2e.py` is the prod-like end-to-end that proves a change without
 touching the production workbooks and **without ever calling Square / ADP / Google Reviews or
 triggering an OTP**. It **leases a slot** from a pre-created sheet pool (see below), clears +
-re-seeds it, replays the GCS scrape cache (read-only), backfills the sandbox raw sheets, builds the
-sandbox model, asserts core tabs are populated, prints evidence, then releases the slot.
+re-seeds it, seeds the sandbox raw sheets, builds the sandbox model, asserts the model tabs are
+populated, prints evidence, then releases the slot.
+
+**Two seeding sources (`--source`):**
+
+- `prod-raw` (**the per-PR default in CI**): reads the **PROD** raw Square+ADP sheets directly
+  (read-prod is sanctioned; reads use the prod sid, never the staging override) and writes the
+  windowed rows into the **sandbox** raw sheets (writes are staging-resolved, so the production-sheet
+  guard makes a prod write impossible). Pair with `--period last-closed` to cover the most-recent
+  **closed** pay period (the boundaries come from the store profile anchor —
+  `most_recent_closed_period`, identical to `discover_periods`). A closed period is always complete,
+  so the verify is **stricter**: the period-grain tabs (`labor_period`, `period_summary`,
+  `tip_alloc_period`) MUST populate and the **tip pool is checked for per-day conservation**
+  (`assert_tip_pool_conserved` — allocations sum to that day's pool, cent-exact).
+- `gcs-replay` (local/legacy): replays the GCS scrape cache (read-only), re-parses it via
+  `backfill_from_downloads`, and uses the lenient small-window verify. Use with `--auto-window` for a
+  fast local smoke.
 
 **Why a pool (not create-per-PR):** the Cloud Run service account can *edit* sheets shared with it
 but cannot *create* Drive files on a consumer Google account. The operator creates the pool once as
@@ -545,8 +560,11 @@ It runs automatically on every PR via `.github/workflows/sandbox-e2e.yml` (and
 Run it manually with ADC + palmetto OAuth:
 
 ```bash
-gcloud auth application-default login   # aditya.2ky@gmail.com — GCS read
-# auto-select the most recent cached window (preferred):
+gcloud auth application-default login   # aditya.2ky@gmail.com — prod read + GCS read
+# what CI runs: read prod raw for the last closed pay period, verify in sandbox:
+python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --source prod-raw --period last-closed
+
+# legacy GCS-replay smoke (auto-select the most recent cached window):
 python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --auto-window --max-days 2
 
 # keep the leased slot uncleared after the run (debugging):

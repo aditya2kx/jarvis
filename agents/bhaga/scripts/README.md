@@ -48,6 +48,13 @@ scrape body, never an auth error) on transient `TargetClosedError` crashes, adds
 container-stability flags, and exposes `browser_healthcheck()` (pre-flight smoke test before an OTP is
 spent). Config: `BHAGA_BROWSER_LAUNCH_RETRIES` / `BHAGA_BROWSER_LAUNCH_BACKOFF_MS`. See RUNBOOK §13.
 
+**Browser observability:** `runtime._capture_failure_evidence` uploads screenshot + DOM + meta to
+`gs://<cache>/<date>/evidence/` on failure, and `runtime.trace_step(page, label)` captures the full
+browser **after each login + item-sales action** to `gs://<cache>/<date>/trace/NN-<label>.png` so the
+whole flow is reviewable frame-by-frame with zero reruns. Trace is best-effort/never-raises and off by
+default; `BHAGA_TRACE_SCREENSHOTS=1` enables it (set automatically for sandbox runs, off for the prod
+nightly). Both honor sandbox write-bucket isolation via `gcs_cache`.
+
 ---
 
 ## Script catalog

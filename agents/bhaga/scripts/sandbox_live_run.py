@@ -115,6 +115,10 @@ def build_sandbox_env(
         # Trusted device: persist/restore the Square session to the SANDBOX bucket
         # so after one magic-link/2FA login, later sandbox runs skip the challenge.
         "BHAGA_SESSION_PERSIST": "1",
+        # Step-by-step screenshot trace: capture the full browser after each login /
+        # item-sales action and upload to gs://<sandbox>/<date>/trace/ so the whole
+        # flow is reviewable frame-by-frame (not just the final failure). Sandbox-only.
+        "BHAGA_TRACE_SCREENSHOTS": "1",
         # The business date being reproduced.
         "REFRESH_DATE": refresh_date,
         "STORE": store,

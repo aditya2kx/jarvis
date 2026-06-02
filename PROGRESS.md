@@ -86,9 +86,18 @@
 - **Verification gate:** `sandbox_live_run.verify_item_sales` asserts `<date>/square/items-*.csv` exists
   with >0 data rows; a "green" `item-sales-live` run now truly means item-sales downloaded (catches
   "job exited 0 but the deliverable wasn't available"). Surfaced in the PR evidence comment.
+- **Step-by-step screenshot trace (see the whole flow, not just the failure):** new
+  `runtime.trace_step(page, label)` captures the FULL browser after each login + item-sales action and
+  uploads it to `gs://<bucket>/<date>/trace/NN-<label>.png` (e.g. `landing`, `email-filled`,
+  `otp-code-screen`, `magic-link-sent-page`, `magic-link-navigated`, `magic-link-result`,
+  `item-sales-page`, `item-sales-exported`). Best-effort/never-raises; off by default, enabled by
+  `BHAGA_TRACE_SCREENSHOTS=1` (set automatically for sandbox runs in `build_sandbox_env`, off for the prod
+  nightly). Honors sandbox isolation via `gcs_cache` write bucket. This is what answers "show me a
+  screenshot of every step" with zero reruns.
 - **Tests:** +`test_runner_magic_link`, +`test_adapter_request_reply`, extended `test_sandbox_live_run`
   (schema shapes, plain-env inheritance, skip-steps, item-sales verify) + `test_sandbox_scenarios`
-  (scoping). 472 BHAGA tests green.
+  (scoping) + `test_runtime` (trace_step: disabled no-op, full-page upload w/ seq+slug label, never-raises).
+  476 BHAGA tests green.
 
 ### 2026-06-01 — Browser-launch resilience, OTP-portal recovery, principles consult-first
 

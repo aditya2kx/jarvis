@@ -32,6 +32,7 @@ from skills._browser_runtime.runtime import (
     download_to,
     is_fresh_download,
     launch_persistent,
+    trace_step,
 )
 from skills.square_tips.transactions_backend import parse_csv, get_credentials
 
@@ -228,7 +229,9 @@ def _ensure_logged_in(page, *, store: str) -> None:
     page.goto(TRANSACTIONS_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(1_500)  # let any redirect settle
     _dismiss_cookie_banner(page)
+    trace_step(page, "landing")
     if _is_on_dashboard(page.url):
+        trace_step(page, "already-logged-in-dashboard")
         return
 
     if not _is_on_login(page.url):
@@ -243,12 +246,15 @@ def _ensure_logged_in(page, *, store: str) -> None:
         "[data-testid='username-input'], input#mpui-combo-field-input"
     ).first
     email_input.wait_for(state="visible", timeout=10_000)
+    trace_step(page, "login-email-screen")
     email_input.fill(creds["username"])
+    trace_step(page, "email-filled")
     page.get_by_role("button", name=re.compile(r"continue|sign\s*in", re.I)).first.click()
 
     # Password step — visible input[type=password]. The hidden one with tabindex=-1 is decoy.
     pw_input = page.locator("input[type='password']:not([tabindex='-1'])").first
     pw_input.wait_for(state="visible", timeout=15_000)
+    trace_step(page, "password-screen")
     pw_input.fill(creds["password"])
     page.keyboard.press("Enter")
 
@@ -273,8 +279,10 @@ def _ensure_logged_in(page, *, store: str) -> None:
         # surface it with a screenshot.
         pass
     page.wait_for_timeout(1_500)
+    trace_step(page, "after-password-submit")
 
     if _is_on_dashboard(page.url):
+        trace_step(page, "dashboard-after-password")
         return
 
     # Verification. Square may show the SMS-code 2FA OR escalate an unrecognized
@@ -286,6 +294,7 @@ def _ensure_logged_in(page, *, store: str) -> None:
         _handle_square_two_factor(page, store=store)
         if not _is_on_dashboard(page.url) and _is_magic_link_sent(page):
             _handle_magic_link(page, store=store)
+    trace_step(page, "post-verification")
 
     if not _is_on_dashboard(page.url):
         try:
@@ -364,6 +373,7 @@ def _handle_magic_link(page, *, store: str) -> None:
     except Exception:  # noqa: BLE001
         email = "your Square email"
 
+    trace_step(page, "magic-link-sent-page")
     from skills.slack.adapter import request_reply
     wait_s = int(_os.environ.get("BHAGA_OTP_WAIT_S", "1800"))
     prompt = (
@@ -392,12 +402,14 @@ def _handle_magic_link(page, *, store: str) -> None:
         )
     print("[square magic-link] navigating to operator-supplied magic link.")
     page.goto(url, wait_until="domcontentloaded")
+    trace_step(page, "magic-link-navigated")
     try:
         page.wait_for_function(
             "() => location.pathname.startsWith('/dashboard')", timeout=30_000,
         )
     except Exception:  # noqa: BLE001
         page.wait_for_timeout(2_000)  # let any post-link redirect settle
+    trace_step(page, "magic-link-result")
 
 
 def _handle_square_two_factor(page, *, store: str) -> None:
@@ -470,6 +482,7 @@ def _handle_square_two_factor(page, *, store: str) -> None:
                 f"Current URL: {page.url}"
             )
 
+    trace_step(page, "otp-code-screen")
     # Step 4: request the code via Slack DM, block for reply.
     from skills.slack.adapter import request_otp  # local import: optional dep
 
@@ -520,6 +533,7 @@ def _handle_square_two_factor(page, *, store: str) -> None:
                 digit_inputs.nth(i).fill(ch)
             except Exception:
                 break
+    trace_step(page, "otp-code-filled")
     page.keyboard.press("Enter")
 
     # Wait for dashboard.
@@ -539,6 +553,7 @@ def _handle_square_two_factor(page, *, store: str) -> None:
             )
         except Exception:
             pass  # fall through to caller's dashboard check
+    trace_step(page, "after-otp-submit")
 
 
 def _set_date_range(page, *, start: datetime.date, end: datetime.date) -> None:
@@ -853,7 +868,9 @@ def _download_item_sales_with_page(
     incident); absorbing the next drift is a one-file selector edit.
     """
     page.goto(ITEM_SALES_URL, wait_until="domcontentloaded")
+    trace_step(page, "item-sales-page")
     if _find_item_sales_pill(page) is None:
+        trace_step(page, "item-sales-pill-not-found")
         raise RuntimeError(
             f"Item Sales page date picker not found within timeout. "
             f"Tried patterns + structural locators from "
@@ -863,7 +880,10 @@ def _download_item_sales_with_page(
     page.wait_for_timeout(1_500)
 
     _set_item_sales_date_range(page, start=start_date, end=end_date)
-    return _trigger_item_sales_export(page, start=start_date, end=end_date)
+    trace_step(page, "item-sales-date-range-set")
+    result = _trigger_item_sales_export(page, start=start_date, end=end_date)
+    trace_step(page, "item-sales-exported")
+    return result
 
 
 def _kds_navigate_calendar_to_month(page, *, target_year: int, target_month: int) -> None:

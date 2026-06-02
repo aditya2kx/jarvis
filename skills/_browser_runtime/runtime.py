@@ -49,6 +49,7 @@ import contextlib
 import datetime
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import time
@@ -485,6 +486,46 @@ def _upload_evidence_to_gcs(local_path: pathlib.Path) -> Optional[str]:
         return gcs_cache.upload_evidence(local_path, refresh_date=_evidence_refresh_date())
     except Exception as e:  # noqa: BLE001
         print(f"[runtime] evidence GCS upload failed for {local_path.name}: {e}", file=sys.stderr)
+        return None
+
+
+_TRACE_SEQ = 0
+
+
+def _trace_enabled() -> bool:
+    return (os.environ.get("BHAGA_TRACE_SCREENSHOTS", "") or "").lower() in ("1", "true", "yes")
+
+
+def trace_step(page: Optional[Page], label: str) -> Optional[str]:
+    """Capture a full-page screenshot AFTER an action and upload it to the durable
+    GCS trace prefix (``gs://<bucket>/<date>/trace/NN-<label>.png``), so an operator
+    can scrub the whole browser flow step-by-step — not just the final failure frame.
+
+    Off by default; enabled with ``BHAGA_TRACE_SCREENSHOTS=1`` (set for sandbox/debug
+    runs, not the prod nightly). Best-effort and never raises — a tracing hiccup must
+    never break a scrape. Honors sandbox isolation via ``gcs_cache`` (write bucket).
+    """
+    global _TRACE_SEQ
+    if page is None or not _trace_enabled():
+        return None
+    _TRACE_SEQ += 1
+    safe = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")[:40] or "step"
+    ts = datetime.datetime.now().strftime("%H%M%S")
+    EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+    png = EVIDENCE_DIR / f"trace-{_TRACE_SEQ:02d}-{safe}-{ts}.png"
+    try:
+        page.screenshot(path=str(png), full_page=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[runtime] trace screenshot failed ({label}): {e}", file=sys.stderr)
+        return None
+    try:
+        from agents.bhaga.scripts import gcs_cache  # lazy, optional dependency
+
+        uri = gcs_cache.upload_file(png, refresh_date=_evidence_refresh_date(), category="trace")
+        print(f"[runtime] TRACE {_TRACE_SEQ:02d} '{label}' url={page.url} → {uri}", file=sys.stderr)
+        return uri
+    except Exception as e:  # noqa: BLE001
+        print(f"[runtime] trace upload failed ({label}): {e}", file=sys.stderr)
         return None
 
 

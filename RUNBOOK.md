@@ -631,6 +631,14 @@ this:
   container); copy the `https://squareup.com/login?rml=1&…` URL from the email and paste it in the DM.
   The container then navigates to it to finish sign-in.
 
+**Step-by-step screenshot trace.** Sandbox runs set `BHAGA_TRACE_SCREENSHOTS=1`, so `runtime.trace_step`
+captures the **full browser after every login + item-sales action** and uploads each frame to
+`gs://<sandbox-bucket>/<date>/trace/NN-<label>.png` (`landing`, `email-filled`, `password-screen`,
+`otp-code-screen`/`otp-code-filled`/`after-otp-submit`, `magic-link-sent-page`/`magic-link-navigated`/
+`magic-link-result`, `item-sales-page`/`item-sales-date-range-set`/`item-sales-exported`). Pull the whole
+sequence with `gcloud storage cp -r gs://<sandbox-bucket>/<date>/trace .` to scrub the flow frame-by-frame
+without a rerun. Off by default for the prod nightly (cost/overhead); best-effort and never breaks a scrape.
+
 **One-time setup (operator).** By least privilege the run SA has GCS read + object write but not
 project bucket-create, so create the sandbox cache bucket once and grant the SA object access:
 

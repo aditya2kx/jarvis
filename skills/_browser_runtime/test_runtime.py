@@ -274,3 +274,82 @@ def test_launch_args_helper_gating(monkeypatch):
     monkeypatch.setattr(runtime, "_force_headless", lambda: True)
     forced = runtime._launch_args(headed=True)
     assert "--no-sandbox" in forced
+
+
+# --- trace_step: step-by-step screenshot trace -----------------------------
+
+
+class _TracePage:
+    """Records screenshot() calls and exposes a url, like a Playwright Page."""
+
+    def __init__(self, url: str = "https://app.squareup.com/login") -> None:
+        self.url = url
+        self.shots: list[dict] = []
+
+    def screenshot(self, *, path: str, full_page: bool = False) -> None:
+        self.shots.append({"path": path, "full_page": full_page})
+        # touch the file so any downstream existence check passes
+        import pathlib as _pl
+
+        _pl.Path(path).write_bytes(b"\x89PNG\r\n")
+
+
+def test_trace_step_noop_when_disabled(monkeypatch):
+    monkeypatch.delenv("BHAGA_TRACE_SCREENSHOTS", raising=False)
+    page = _TracePage()
+    assert runtime.trace_step(page, "landing") is None
+    assert page.shots == []  # no screenshot taken when tracing is off
+
+
+def test_trace_step_noop_when_page_none(monkeypatch):
+    monkeypatch.setenv("BHAGA_TRACE_SCREENSHOTS", "1")
+    assert runtime.trace_step(None, "landing") is None
+
+
+def test_trace_step_uploads_full_page_with_seq_and_label(monkeypatch, tmp_path):
+    monkeypatch.setenv("BHAGA_TRACE_SCREENSHOTS", "1")
+    monkeypatch.setattr(runtime, "EVIDENCE_DIR", tmp_path)
+    monkeypatch.setattr(runtime, "_evidence_refresh_date", lambda: __import__("datetime").date(2026, 5, 31))
+
+    uploads: list[dict] = []
+
+    def _fake_upload(local_path, *, refresh_date, category):
+        uploads.append(
+            {"name": local_path.name, "category": category, "date": refresh_date.isoformat()}
+        )
+        return f"gs://sandbox-bucket/{refresh_date.isoformat()}/{category}/{local_path.name}"
+
+    # Patch the REAL module's upload_file (the runtime does
+    # `from agents.bhaga.scripts import gcs_cache`, which binds the already-imported
+    # module attribute — so swapping sys.modules is order-dependent and would also
+    # risk a real GCS write). Patching the function in place is robust + side-effect-free.
+    from agents.bhaga.scripts import gcs_cache as _gcs_cache
+
+    monkeypatch.setattr(_gcs_cache, "upload_file", _fake_upload)
+
+    # reset the module-level sequence so the assertion on NN- is deterministic
+    monkeypatch.setattr(runtime, "_TRACE_SEQ", 0)
+
+    page = _TracePage()
+    uri = runtime.trace_step(page, "Login Email Screen!")
+
+    assert page.shots and page.shots[0]["full_page"] is True
+    assert uploads and uploads[0]["category"] == "trace"
+    assert uploads[0]["date"] == "2026-05-31"
+    # filename: trace-01-login-email-screen-<ts>.png (label slugified, seq zero-padded)
+    assert uploads[0]["name"].startswith("trace-01-login-email-screen-")
+    assert uri.startswith("gs://sandbox-bucket/2026-05-31/trace/")
+
+
+def test_trace_step_never_raises_on_screenshot_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("BHAGA_TRACE_SCREENSHOTS", "1")
+    monkeypatch.setattr(runtime, "EVIDENCE_DIR", tmp_path)
+
+    class _BoomPage:
+        url = "https://x"
+
+        def screenshot(self, **_kw):
+            raise RuntimeError("driver gone")
+
+    # a tracing hiccup must never break the scrape
+    assert runtime.trace_step(_BoomPage(), "boom") is None

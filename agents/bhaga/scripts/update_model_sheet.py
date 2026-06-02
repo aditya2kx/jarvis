@@ -1068,8 +1068,9 @@ def load_cc_tips_earnings_from_gcs(
                 print(f"# WARN: earnings download failed for {d.isoformat()}: {exc}")
                 continue
             for blob_name, local_path in restored.items():
-                if "Earnings" not in blob_name:
-                    continue
+                # download_cached_files(name_contains="Earnings") already
+                # restricts restored to Earnings artifacts, so no per-file
+                # filter is needed here.
                 try:
                     recs = compensation_backend.parse_xlsx(local_path, employee_aliases=aliases)
                 except Exception as exc:  # noqa: BLE001

@@ -67,7 +67,10 @@ findings triaged:
   miss once any covering export exists. Pre-cache periods (before ~2026-05-29) legitimately stay `N/A`.
 - **Follow-ups (tracked, not fixed here):** (a) `wage_rates` can go stale on an OTP-skip / empty-cache
   path (`backfill_from_downloads`) — needs its own staleness guard; (b) item/KDS WARN-skips are still
-  soft — candidate for a future semantic check once coverage windows are formalized.
+  soft — candidate for a future semantic check once coverage windows are formalized; (c) the nightly
+  cadence probe (`period_has_cc_tip_actuals`) re-lists+re-downloads the Earnings XLSX that
+  `update_model_sheet.main()` already loaded for the build (bounded, ~5–10 files/run, different windows
+  so a naïve memo won't dedupe) — thread the loaded earnings out of `main()` to drop the second fetch.
 
 **Why a human had to prompt this (process fix).** CI asserted the dead state was correct and no
 semantic post-condition existed, so the agent had no signal. The standing semantic guard (M2) + breaker

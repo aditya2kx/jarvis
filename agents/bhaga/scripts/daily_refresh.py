@@ -72,7 +72,7 @@ from agents.bhaga.notify import (
     ready_request,
     success_heartbeat,
 )
-from agents.bhaga.scripts import otp_gate
+from agents.bhaga.scripts import model_semantics, otp_gate
 from agents.bhaga.scripts.gcs_cache import (
     download_cached_files,
     evidence_prefix,
@@ -869,6 +869,13 @@ def _read_model_verification_data(
     kds_grid_tabs = ["labor_daily", "labor_weekly", "labor_period"]
     if expect_kds:
         ranges.extend(f"{t}!A1:ZZ100000" for t in kds_grid_tabs)
+    # Full grids for the SEMANTIC post-condition guard (model_semantics):
+    # tip-pool conservation + adp reconciliation + review-bonus presence. Read
+    # unconditionally (independent of KDS) and positioned AFTER the optional KDS
+    # grids so the existing positional parsing above is unaffected.
+    semantic_tabs = ["tip_alloc_daily", "tip_alloc_period", "review_bonus_period"]
+    sem_start = len(ranges)
+    ranges.extend(f"{t}!A1:ZZ100000" for t in semantic_tabs)
     data = _sheets_batch_get(spreadsheet_id, token, ranges)
     value_ranges = data.get("valueRanges", [])
 
@@ -886,6 +893,11 @@ def _read_model_verification_data(
         weekly_values = grids[1].get("values", [])
         period_values = grids[2].get("values", [])
         model_kds_nonempty = _labor_daily_has_kds(labor_daily_full)
+
+    sem = value_ranges[sem_start:sem_start + len(semantic_tabs)]
+    tip_alloc_daily_values = sem[0].get("values", []) if len(sem) > 0 else None
+    tip_alloc_period_values = sem[1].get("values", []) if len(sem) > 1 else None
+    review_bonus_values = sem[2].get("values", []) if len(sem) > 2 else None
 
     raw_kds_count: int | None = None
     kds_min_date: str | None = None
@@ -918,7 +930,63 @@ def _read_model_verification_data(
         "period_values": period_values,
         "kds_min_date": kds_min_date,
         "kds_max_date": kds_max_date,
+        "tip_alloc_daily_values": tip_alloc_daily_values,
+        "tip_alloc_period_values": tip_alloc_period_values,
+        "review_bonus_values": review_bonus_values,
     }
+
+
+def _read_review_bonus_row_count(*, spreadsheet_id: str, store: str) -> int:
+    """Pre-run ``review_bonus_period`` data-row count (0 if unreadable/empty).
+
+    Captured BEFORE the rebuild so the semantic guard can require bonuses to
+    SURVIVE a rebuild: if the tab had rows tonight-minus-one and the rebuild
+    drops them to 0, that's the 4059604 regression. A brand-new store with no
+    reviews yet reads 0 here and is therefore never falsely halted.
+    """
+    try:
+        token = refresh_access_token(store)
+        data = _sheets_batch_get(spreadsheet_id, token, ["review_bonus_period!A1:A100000"])
+        vals = (data.get("valueRanges") or [{}])[0].get("values", [])
+        return max(len(vals) - 1, 0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [verify_model] could not pre-read review_bonus_period "
+              f"(treating as 0): {exc}")
+        return 0
+
+
+def _latest_closed_period_with_earnings(
+    *, profile: dict, store: str, refresh_date: datetime.date,
+) -> tuple[str, str] | None:
+    """Latest CLOSED pay period (start_iso, end_iso) IFF a covering ADP Earnings
+    export exists in the GCS scrape cache (so adp_paid MUST reconcile), else None.
+
+    Cadence-safe: the nightly only requires adp reconciliation for a period whose
+    Earnings export it can actually find. Uses the SAME loader the model build
+    uses (read-only, bounded to the latest closed period's window). Lazy-imports
+    ``update_model_sheet`` to avoid its import cycle with this module.
+    """
+    try:
+        from agents.bhaga.scripts import update_model_sheet
+        adp = profile.get("adp_run", {})
+        anchor = adp.get("pay_periods_anchor_end_date")
+        freq = adp.get("pay_frequency", "")
+        if not anchor:
+            return None
+        ps, pe = update_model_sheet.most_recent_closed_period(
+            anchor_end_date=anchor, pay_frequency=freq, today=refresh_date,
+        )
+        earnings = update_model_sheet.load_cc_tips_earnings_from_gcs(
+            store=store, aliases={},
+            data_window_start=ps.isoformat(), last_data_date=refresh_date.isoformat(),
+        )
+        actuals = update_model_sheet.actual_cc_tips_by_period(earnings)
+        key = (ps.isoformat(), pe.isoformat())
+        return key if key in actuals else None
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [verify_model] adp cadence probe failed (treating as 'no "
+              f"covering export', non-fatal): {type(exc).__name__}: {exc}")
+        return None
 
 
 def _adp_bundle_then_raise(
@@ -1529,6 +1597,13 @@ def main() -> int:
     data_start = datetime.date.fromisoformat(profile["calibration"]["first_data_window"]["start"])
     spreadsheet_id = resolve_sheet_id("bhaga_model", profile)
 
+    # Pre-run review_bonus_period row count, for the post-rebuild semantic guard
+    # (require credited bonuses to survive the rebuild). Read once up front; soft.
+    prev_review_bonus_rows = (
+        0 if args.dry_run
+        else _read_review_bonus_row_count(spreadsheet_id=spreadsheet_id, store=args.store)
+    )
+
     # ---- Incremental window resolution ----------------------------------
     # Source of truth: Model sheet's config tab `data_window_end`.
     # gap = [data_window_end + 1, refresh_date]
@@ -1920,6 +1995,7 @@ def main() -> int:
     # process_reviews REQUIRES the pre-fetched JSON from review_fetch.
     # If review_fetch failed or produced no file, process_reviews is skipped.
     review_fetch_ok = "review_fetch" not in failed_steps
+    process_reviews_ran = False
     if not args.skip_reviews and raw_sheets_ok and review_fetch_ok:
         if not review_prefetch_path or not review_prefetch_path.exists():
             print("[process_reviews] SKIPPED — review_fetch produced no output file.")
@@ -1944,6 +2020,8 @@ def main() -> int:
             )
             if not ok:
                 failures.append(("process_reviews", val))
+            else:
+                process_reviews_ran = True
     elif args.skip_reviews:
         print("[process_reviews] SKIPPED — --skip-reviews flag set.")
     elif not review_fetch_ok:
@@ -2053,9 +2131,38 @@ def main() -> int:
             )
             print("[verify_model] OK — all expected model tabs are populated "
                   "(incl. weekly/period KDS metrics).")
+
+            # ── Semantic post-condition guard (model_semantics) ────────
+            # Mechanical population is necessary but NOT sufficient: a green run
+            # could still carry dead columns (the 6f87f9c adp_paid="N/A" and the
+            # 4059604 review_bonus regressions both passed every count check).
+            # These assert the numbers MEAN something — tips conserve, the latest
+            # closed period reconciles when its Earnings export exists, and
+            # credited review bonuses survived the rebuild. Cadence-safe: each
+            # check is gated on the precondition that makes it knowable.
+            require_adp_period = _latest_closed_period_with_earnings(
+                profile=profile, store=args.store, refresh_date=refresh_date,
+            )
+            reviews_credited = process_reviews_ran and prev_review_bonus_rows > 0
+            sem = model_semantics.assert_model_semantics(
+                tip_alloc_daily_values=vdata["tip_alloc_daily_values"],
+                tip_alloc_period_values=vdata["tip_alloc_period_values"],
+                review_bonus_values=vdata["review_bonus_values"],
+                require_adp_period=require_adp_period,
+                reviews_credited=reviews_credited,
+            )
+            print(f"[verify_model] semantics OK — {sem}")
         except RuntimeError as exc:
             print(f"\n!!! MODEL VERIFICATION FAILED: {exc}", file=sys.stderr)
             ev_uri = _record_failure(refresh_date, "verify_model_sheet", exc)
+            # Clear the update_model_sheet marker so a rerun REBUILDS rather than
+            # short-circuiting on the stale .done — a verification failure (either
+            # mechanical OR semantic) means the model output is suspect, so the
+            # next run must regenerate it after the fix, not just re-verify.
+            try:
+                clear_step_done(refresh_date, "update_model_sheet")
+            except Exception:  # noqa: BLE001, S110
+                pass
             try:
                 failure_alert(
                     step="verify_model_sheet",
@@ -2063,13 +2170,16 @@ def main() -> int:
                     date=refresh_date.isoformat(),
                     evidence_uri=ev_uri,
                     extra=(
-                        "update_model_sheet ran but the rebuilt Model sheet is "
-                        "missing expected non-empty tabs (e.g. labor_period / "
-                        "period_summary at 0 rows, or KDS columns empty). The "
-                        "model is NOT correct — investigate update_model_sheet "
-                        "(period derivation, raw-sheet reads) before relying on "
-                        "tonight's numbers. The other steps' .done markers are "
-                        "written, so re-running will re-verify after a fix."
+                        "update_model_sheet ran but the rebuilt Model sheet failed "
+                        "verification — either MECHANICAL (a tab like labor_period / "
+                        "period_summary at 0 rows, or KDS columns empty) or SEMANTIC "
+                        "(tip pool not conserved, the latest closed period's adp_paid "
+                        "still N/A despite a covering Earnings export in GCS, or "
+                        "credited review bonuses dropped from the rebuild). The model "
+                        "is NOT correct — investigate update_model_sheet (period "
+                        "derivation, raw-sheet reads, GCS earnings load) before relying "
+                        "on tonight's numbers. The update_model_sheet marker was "
+                        "cleared, so re-running will REBUILD and re-verify after a fix."
                     ),
                 )
             except Exception:  # noqa: BLE001, S110

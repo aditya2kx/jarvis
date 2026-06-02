@@ -451,5 +451,54 @@ class PreflightBrowserTests(unittest.TestCase):
             self.assertFalse(daily_refresh._preflight_browser_ok())
 
 
+class LatestClosedPeriodWithEarningsTests(unittest.TestCase):
+    """The cadence-safe probe: require adp reconciliation only when the GCS
+    cache actually holds a covering Earnings export for the latest closed period."""
+
+    PROFILE = {"adp_run": {"pay_periods_anchor_end_date": "2026-05-17",
+                           "pay_frequency": "biweekly"}}
+
+    def _patch_ums(self, *, period, actuals):
+        from agents.bhaga.scripts import update_model_sheet
+        return mock.patch.multiple(
+            update_model_sheet,
+            most_recent_closed_period=mock.Mock(return_value=period),
+            load_cc_tips_earnings_from_gcs=mock.Mock(return_value=[{"x": 1}]),
+            actual_cc_tips_by_period=mock.Mock(return_value=actuals),
+        )
+
+    def test_returns_period_when_earnings_cover_it(self):
+        period = (datetime.date(2026, 5, 18), datetime.date(2026, 5, 31))
+        with self._patch_ums(period=period,
+                             actuals={("2026-05-18", "2026-05-31"): {"A": 100}}):
+            out = daily_refresh._latest_closed_period_with_earnings(
+                profile=self.PROFILE, store="palmetto",
+                refresh_date=datetime.date(2026, 6, 2))
+        self.assertEqual(out, ("2026-05-18", "2026-05-31"))
+
+    def test_returns_none_when_no_covering_export(self):
+        period = (datetime.date(2026, 5, 18), datetime.date(2026, 5, 31))
+        with self._patch_ums(period=period, actuals={}):  # no export for it
+            out = daily_refresh._latest_closed_period_with_earnings(
+                profile=self.PROFILE, store="palmetto",
+                refresh_date=datetime.date(2026, 6, 2))
+        self.assertIsNone(out)
+
+    def test_returns_none_without_anchor(self):
+        out = daily_refresh._latest_closed_period_with_earnings(
+            profile={"adp_run": {}}, store="palmetto",
+            refresh_date=datetime.date(2026, 6, 2))
+        self.assertIsNone(out)
+
+    def test_soft_on_loader_error(self):
+        from agents.bhaga.scripts import update_model_sheet
+        with mock.patch.object(update_model_sheet, "most_recent_closed_period",
+                               side_effect=RuntimeError("boom")):
+            out = daily_refresh._latest_closed_period_with_earnings(
+                profile=self.PROFILE, store="palmetto",
+                refresh_date=datetime.date(2026, 6, 2))
+        self.assertIsNone(out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -83,13 +83,23 @@ from core.config_loader import refresh_access_token, resolve_sheet_id
 from skills.bhaga_config.dates import coerce_iso_date
 from skills.bhaga_config.state_adapter import (
     clear_pending_otp as _adapter_clear_pending_otp,
+    clear_pipeline_halt as _adapter_clear_pipeline_halt,
     clear_step as _adapter_clear_step,
+    get_pending_otp as _adapter_get_pending_otp,
+    get_pipeline_halt as _adapter_get_pipeline_halt,
     mark_step_done as _adapter_mark_step_done,
     record_step_failure as _adapter_record_step_failure,
     run_state_dir as _adapter_run_state_dir,
     save_pending_otp as _adapter_save_pending_otp,
+    set_pipeline_halt as _adapter_set_pipeline_halt,
     step_already_done as _adapter_step_already_done,
 )
+
+# Distinct main() exit codes so monitoring can tell the three "stopped" reasons
+# apart: 0 = success OR a clean OTP-pending wait; 1 = a step/verification
+# failure (the wrapper retries); EXIT_HALTED = the circuit breaker is tripped on
+# known-bad output and refuses to repeat it until cleared.
+EXIT_HALTED = 3
 # NOTE: Square/ADP scrape + browser imports are intentionally LAZY (inside the
 # functions that scrape) so that importing daily_refresh — e.g. for its pure
 # verification contract (MODEL_VERIFY_MIN_ROWS, assert_model_tabs_populated,
@@ -1542,6 +1552,10 @@ def main() -> int:
                      help="Print steps but do not actually scrape.")
     cli.add_argument("--no-slack", action="store_true",
                      help="Suppress all Slack messages (overrides notify.py).")
+    cli.add_argument("--ignore-halt", action="store_true",
+                     help="Run even if the pipeline circuit breaker is tripped "
+                          "(use after fixing a known-bad regression; a healthy "
+                          "run auto-clears the breaker).")
     args = cli.parse_args()
 
     # Scenario scoping via env: a focused sandbox run (e.g. the item-sales-live
@@ -1557,6 +1571,7 @@ def main() -> int:
     args.skip_square = args.skip_square or _env_skip("BHAGA_SKIP_SQUARE")
     args.skip_rates = args.skip_rates or _env_skip("BHAGA_SKIP_RATES")
     args.skip_timecard = args.skip_timecard or _env_skip("BHAGA_SKIP_TIMECARD")
+    args.ignore_halt = args.ignore_halt or _env_skip("BHAGA_IGNORE_HALT")
 
     # Unify --skip-adp / --skip-timecard
     if args.skip_adp:
@@ -1592,6 +1607,52 @@ def main() -> int:
             f"  Fix: wait until {_SHOP_CLOSE_BUFFER_HOUR_CT}:00 CT for today's "
             f"run, or pass --date <past-date> for backfill."
         )
+
+    # ── Circuit breaker: refuse a fresh scheduled run while HALTED ──────
+    # The breaker trips when a previous run produced semantically-bad output
+    # (e.g. dead adp_paid). Refusing here stops the nightly from silently
+    # repeating the known-bad computation. EXIT_HALTED is DISTINCT from the
+    # OTP-pending exit (return 0): "waiting for the operator" must never be
+    # read as "bad output". An in-flight OTP READY resume is allowed through
+    # (it's completing a handshake, not a fresh attempt); --ignore-halt /
+    # BHAGA_IGNORE_HALT lets the operator run a fix (which auto-clears below).
+    halt = None if args.dry_run else _adapter_get_pipeline_halt()
+    if halt and not args.ignore_halt:
+        pending = _adapter_get_pending_otp(refresh_date)
+        otp_resume = bool(pending and pending.get("ready_received"))
+        if not otp_resume:
+            msg = (
+                f"pipeline HALTED since {halt.get('since')} "
+                f"(tripped by refresh_date={halt.get('refresh_date')}): "
+                f"{halt.get('reason')}"
+            )
+            print(f"\n!!! REFUSING TO RUN — {msg}", file=sys.stderr)
+            print("    Fix the regression + deploy, then re-run with "
+                  "--ignore-halt (a healthy run auto-clears the breaker), or "
+                  "clear it manually via state_adapter.clear_pipeline_halt().",
+                  file=sys.stderr)
+            try:
+                failure_alert(
+                    step="pipeline_halt",
+                    exception=RuntimeError(msg),
+                    date=refresh_date.isoformat(),
+                    evidence_uri=None,
+                    extra=(
+                        "The circuit breaker is tripped: a prior run produced "
+                        "semantically-bad model output and the nightly is "
+                        "refusing to repeat it. Investigate the recorded reason, "
+                        "deploy the fix, then re-run with --ignore-halt — a fully "
+                        "healthy run clears the breaker automatically."
+                    ),
+                )
+            except Exception:  # noqa: BLE001, S110
+                pass
+            return EXIT_HALTED
+        print(f"[pipeline_halt] breaker is tripped but this is an OTP READY "
+              f"resume — allowing it to complete the handshake.")
+    elif halt and args.ignore_halt:
+        print(f"[pipeline_halt] breaker tripped ({halt.get('reason')}) but "
+              f"--ignore-halt set — proceeding (a healthy run will clear it).")
 
     profile = _load_profile(args.store)
     data_start = datetime.date.fromisoformat(profile["calibration"]["first_data_window"]["start"])
@@ -2102,6 +2163,7 @@ def main() -> int:
     # exit, so the operator is notified the same night. Skipped when the
     # model wasn't refreshed this run (--skip-model / dry-run / update
     # failed) so we never false-positive on legitimately-empty cases.
+    model_verified_ok = False
     if update_model_ran:
         expect_kds = not args.skip_kds
         try:
@@ -2144,14 +2206,33 @@ def main() -> int:
                 profile=profile, store=args.store, refresh_date=refresh_date,
             )
             reviews_credited = process_reviews_ran and prev_review_bonus_rows > 0
-            sem = model_semantics.assert_model_semantics(
-                tip_alloc_daily_values=vdata["tip_alloc_daily_values"],
-                tip_alloc_period_values=vdata["tip_alloc_period_values"],
-                review_bonus_values=vdata["review_bonus_values"],
-                require_adp_period=require_adp_period,
-                reviews_credited=reviews_credited,
-            )
+            try:
+                sem = model_semantics.assert_model_semantics(
+                    tip_alloc_daily_values=vdata["tip_alloc_daily_values"],
+                    tip_alloc_period_values=vdata["tip_alloc_period_values"],
+                    review_bonus_values=vdata["review_bonus_values"],
+                    require_adp_period=require_adp_period,
+                    reviews_credited=reviews_credited,
+                )
+            except RuntimeError as sem_exc:
+                # A SEMANTIC failure is a known-bad regression that WILL repeat
+                # every night (unlike a mechanical under-population, which is
+                # transient and meant to be retried) — so trip the circuit
+                # breaker. The shared except below still records/alerts/clears
+                # the marker; we just add the breaker before re-raising.
+                try:
+                    _adapter_set_pipeline_halt(
+                        reason=f"semantic guard failed: {sem_exc}",
+                        refresh_date=refresh_date,
+                    )
+                    print("[pipeline_halt] breaker TRIPPED on semantic-guard "
+                          "failure — the nightly will refuse to repeat this "
+                          "until a healthy run (or manual clear).", file=sys.stderr)
+                except Exception:  # noqa: BLE001, S110
+                    pass
+                raise
             print(f"[verify_model] semantics OK — {sem}")
+            model_verified_ok = True
         except RuntimeError as exc:
             print(f"\n!!! MODEL VERIFICATION FAILED: {exc}", file=sys.stderr)
             ev_uri = _record_failure(refresh_date, "verify_model_sheet", exc)
@@ -2194,6 +2275,18 @@ def main() -> int:
                   file=sys.stderr)
 
     print(f"\n=== DONE in {runtime_s:.1f}s ===")
+    # Auto-resume: a fully-healthy run that rebuilt AND semantically verified the
+    # model clears the circuit breaker (idempotent — a no-op when not tripped).
+    # Gated on model_verified_ok so a --skip-model run can't clear a halt that
+    # was about bad model output.
+    if not args.dry_run and model_verified_ok:
+        try:
+            if _adapter_get_pipeline_halt():
+                _adapter_clear_pipeline_halt()
+                print("[pipeline_halt] healthy verified run — breaker CLEARED "
+                      "(auto-resume).")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[pipeline_halt] WARN: could not clear breaker: {exc}")
     if not args.dry_run:
         success_heartbeat(
             date=refresh_date.isoformat(),

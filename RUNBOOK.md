@@ -569,3 +569,48 @@ python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --auto-window --keep
 > Reviews (ClickUp) are intentionally **out of scope** for the per-PR e2e (they need a live call). The
 > e2e proves the sales / labor / tip / model core. Item-level operations are picked up automatically if
 > `backfill_item_lines_from_cache` lands on main.
+
+### Run a LIVE sandbox run (real scrape + OTP, unmerged PR code)
+
+The replay e2e above can't exercise a live browser, so it can't reproduce or prove a fix for
+**selector drift** (e.g. the 2026-05-31 item-sales "date picker not found" incident). For that, use
+`agents/bhaga/scripts/sandbox_live_run.py` via **`.github/workflows/sandbox-live-run.yml`**
+(`workflow_dispatch`). It builds the current ref's orchestrator image, deploys it to the
+**`bhaga-sandbox-refresh`** Cloud Run job, and runs the **real** Square/ADP pipeline for a chosen
+`REFRESH_DATE`.
+
+**Sandbox isolation is enforced (read prod, never write prod).** The job runs with
+`BHAGA_SHEET_MODE=staging` (leased pool slot), `BHAGA_GCS_CACHE_WRITE_BUCKET=bhaga-scrape-cache-sandbox`
+(reads still come from the prod cache), and `BHAGA_FIRESTORE_COLLECTION=sandbox_runs`. The script runs
+an **isolation pre-flight** (`assert_sandbox_isolation`) that fails *before* any deploy/execute if an
+override is missing or points at a prod source — backstopped by the runtime guards in
+`config_loader`, `gcs_cache`, and `state_adapter`.
+
+**OTP routing.** The run uses the **same prod BHAGA cloud Slack bot**, but the prompt is **labeled**
+`:test_tube: *[SANDBOX · PR#… …]*` (via `BHAGA_RUN_ENV`/`BHAGA_RUN_LABEL`) and its pending-OTP
+checkpoint (in `sandbox_runs`) carries routing metadata (`env`, `run_label`, `target_job`). The
+webhook scans `sandbox_runs` **first** (sandbox precedence), so the operator's READY/code reply
+resumes the **sandbox** job — never the nightly — even if a prod run is awaiting OTP at the same time.
+
+```bash
+# Trigger from the GitHub UI (Actions → Sandbox live run) or:
+gh workflow run sandbox-live-run.yml \
+  -f refresh_date=2026-05-31 -f pr_number=<PR#> -f pr_label="fix/item-sales-selectors"
+# execute=false provisions + deploys only (dry deploy), no scrape.
+```
+
+**One-time setup (operator):** create the sandbox cache bucket (the script does this idempotently),
+and wire the `bhaga-sandbox-refresh` job's **secrets + service account** to mirror
+`bhaga-daily-refresh` (the script creates the job with image + env; secrets/SA are attached once).
+Set **`SANDBOX_RUNS_COLLECTION=sandbox_runs`** on the `bhaga-webhook` service to enable sandbox OTP
+routing (unset = prod-only, unchanged). No scheduler is ever pointed at the sandbox job — it is
+execute-on-demand only.
+
+**While iterating on a live incident, pause the nightly** so a 21:30 CT run doesn't race your fix or
+compete for the OTP, then resume it after the prod rerun:
+
+```bash
+gcloud scheduler jobs pause  bhaga-nightly --location=us-central1   # before the fix loop
+# … reproduce in sandbox → fix → prove green → merge → rerun prod 5/31 + 6/1 …
+gcloud scheduler jobs resume bhaga-nightly --location=us-central1   # after prod is caught up
+```

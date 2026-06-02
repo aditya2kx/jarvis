@@ -26,5 +26,34 @@
   "table_layout_reference": {
     "columns": ["Item", "GTIN", "SKU", "Category Rollup", "Category", "Unit", "Items Sold", "Units Sold", "Gross Sales"],
     "total_row_position": "bottom of the table, separate generic with 'Total' first cell"
+  },
+  "selectors": {
+    "_doc": "MACHINE-LOADABLE selectors consumed by skills/square_tips/runner.py (_item_sales_selectors). To fix item-sales UI drift (e.g. the 2026-05-31 'date picker not found' incident), edit THIS block ONLY — no code change. Every list is tried in order as resilient fallbacks; add the new pattern/locator to the front when Square changes the UI, then bump last_verified.",
+    "date_picker": {
+      "pill_text_patterns": [
+        "\\d{2}/\\d{2}/\\d{4}",
+        "(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\\s+\\d",
+        "(Today|Yesterday|This week|Last week|This month|Last month|This year|Last year|Custom)"
+      ],
+      "pill_extra_locators": [
+        "button[aria-haspopup='dialog']",
+        "button[aria-haspopup='true']",
+        "[data-testid*='date'] button",
+        "[data-test-id*='date'] button",
+        "button[class*='date-range']",
+        "button[class*='DateRange']"
+      ],
+      "pill_wait_timeout_ms": 15000,
+      "pill_pattern_attempt_timeout_ms": 5000,
+      "post_open_wait_ms": 800,
+      "date_input_selector": "input[type='text']:visible",
+      "date_input_label_keywords": ["date", "start", "end"]
+    },
+    "export": {
+      "export_button_patterns": ["^Export$", "Export"],
+      "detail_csv_patterns": ["Detail\\s+CSV", "Detail CSV Export"],
+      "menu_open_wait_ms": 800,
+      "download_timeout_ms": 120000
+    }
   }
 }

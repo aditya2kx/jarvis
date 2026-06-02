@@ -43,6 +43,12 @@ derive proposals from them rather than from memory.
   Marker clears go through `skills/bhaga_config/state_adapter.py::clear_step`, never a shell `rm`.
 - **Cloud reads from GCS (`bhaga-scrape-cache`), secrets from Secret Manager** — never laptop files.
 - **Prove changes with the per-PR sandbox e2e** (`sandbox_e2e.py`), not by touching prod sheets.
+- **Sandbox runs are read-only toward prod data sources.** A sandbox/staging run (`BHAGA_SHEET_MODE=staging`)
+  may **read** prod data (GCS cache, raw sheets) but must **never write** to any prod data source —
+  prod sheets, the prod GCS cache (`bhaga-scrape-cache`), or prod Firestore state. All sandbox writes
+  divert to isolated sandbox targets (staging sheets, `BHAGA_GCS_CACHE_WRITE_BUCKET`, a sandbox Firestore
+  namespace). Enforced by hard guards: `config_loader._assert_not_production_sheet` (sheets) and
+  `gcs_cache._assert_sandbox_write_isolation` (cache) — both fail loud rather than mutate prod.
 - **OTP via Slack/Firestore+webhook, never the IDE.** Announce any action that fires an SMS/email/DM
   before triggering it.
 - **Never reflexively retry a transient error when a retry can fire a side effect** (OTP/SMS/email/DM).

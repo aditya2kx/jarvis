@@ -16,6 +16,11 @@ def _reset_env(monkeypatch):
     """Ensure each test starts with a clean env (local backend)."""
     monkeypatch.delenv("BHAGA_STATE_BACKEND", raising=False)
     monkeypatch.delenv("BHAGA_FIRESTORE_DB", raising=False)
+    monkeypatch.delenv("BHAGA_FIRESTORE_COLLECTION", raising=False)
+    monkeypatch.delenv("BHAGA_SHEET_MODE", raising=False)
+    monkeypatch.delenv("BHAGA_RUN_ENV", raising=False)
+    monkeypatch.delenv("BHAGA_RUN_LABEL", raising=False)
+    monkeypatch.delenv("BHAGA_OTP_TARGET_JOB", raising=False)
 
 
 # ── Local backend tests ───────────────────────────────────────────────
@@ -131,6 +136,29 @@ class TestPendingOtpLocal:
         assert state_adapter.get_pending_otp(d) is None
         # Idempotent.
         state_adapter.clear_pending_otp(d)
+
+    def test_routing_metadata_defaults_to_prod(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        d = datetime.date(2026, 5, 28)
+        state_adapter.save_pending_otp(d, ["Square"], requested_at="2026-05-28T21:00:00-05:00")
+        p = state_adapter.get_pending_otp(d)
+        assert p["env"] == "prod"
+        assert p["target_job"] == ""
+
+    def test_routing_metadata_from_sandbox_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("BHAGA_RUN_ENV", "sandbox")
+        monkeypatch.setenv("BHAGA_RUN_LABEL", "PR#42 fix/item-sales")
+        monkeypatch.setenv(
+            "BHAGA_OTP_TARGET_JOB",
+            "projects/jarvis-bhaga-prod/locations/us-central1/jobs/bhaga-sandbox-refresh",
+        )
+        d = datetime.date(2026, 5, 28)
+        state_adapter.save_pending_otp(d, ["Square"], requested_at="2026-05-28T21:00:00-05:00")
+        p = state_adapter.get_pending_otp(d)
+        assert p["env"] == "sandbox"
+        assert p["run_label"] == "PR#42 fix/item-sales"
+        assert p["target_job"].endswith("bhaga-sandbox-refresh")
 
 
 # ── Firestore backend tests ───────────────────────────────────────────
@@ -305,6 +333,108 @@ class TestFirestoreBackend:
             # Step marker survives the pending write (merge semantics).
             assert state_adapter.step_already_done(d, "square_transactions") is True
             assert state_adapter.get_pending_otp(d)["portals"] == ["ADP"]
+
+
+# ── Per-step failure recording (observability) ────────────────────────
+
+
+class TestRecordStepFailureLocal:
+    def test_writes_failure_json_with_evidence(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        d = datetime.date(2026, 5, 31)
+        state_adapter.record_step_failure(
+            d, "square",
+            error="RuntimeError: Item Sales page date picker not found",
+            evidence_uri="gs://bhaga-scrape-cache/2026-05-31/evidence/",
+        )
+        path = tmp_path / ".bhaga" / "state" / "run-2026-05-31" / "square.failure.json"
+        assert path.exists()
+        import json
+        payload = json.loads(path.read_text())
+        assert "date picker not found" in payload["error"]
+        assert payload["evidence_uri"].endswith("/2026-05-31/evidence/")
+        assert payload["failed_at"]
+
+    def test_never_raises_on_io_error(self, tmp_path, monkeypatch):
+        # Point HOME at a file (not a dir) so mkdir fails — must be swallowed.
+        bad = tmp_path / "afile"
+        bad.write_text("x")
+        monkeypatch.setenv("HOME", str(bad))
+        # Must not raise even though the path is unwritable.
+        state_adapter.record_step_failure(
+            datetime.date(2026, 5, 31), "square", error="boom",
+        )
+
+
+class TestRecordStepFailureFirestore:
+    @pytest.fixture(autouse=True)
+    def _use_firestore(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_STATE_BACKEND", "firestore")
+
+    def test_writes_failures_map(self):
+        client = MagicMock()
+        docs: dict[str, dict] = {}
+
+        def _collection(name):
+            col = MagicMock()
+
+            def _document(doc_id):
+                ref = MagicMock()
+                ref.get = lambda: MagicMock(
+                    exists=doc_id in docs, to_dict=lambda: docs.get(doc_id, {}).copy()
+                )
+
+                def _set(data, merge=False):
+                    if merge and doc_id in docs:
+                        docs[doc_id].update(data)
+                    else:
+                        docs[doc_id] = data.copy()
+
+                ref.set = _set
+                return ref
+
+            col.document = _document
+            return col
+
+        client.collection = _collection
+        with patch.object(state_adapter, "_get_firestore_client", return_value=client):
+            state_adapter.record_step_failure(
+                datetime.date(2026, 5, 31), "square",
+                error="RuntimeError: pill not found",
+                evidence_uri="gs://b/2026-05-31/evidence/",
+            )
+        assert docs["2026-05-31"]["failures"]["square"]["error"].endswith("pill not found")
+        assert docs["2026-05-31"]["failures"]["square"]["evidence_uri"].startswith("gs://")
+
+
+# ── Sandbox isolation guard (Firestore run-state) ─────────────────────
+
+
+class TestSandboxStateIsolation:
+    def test_collection_name_default_is_runs(self):
+        assert state_adapter._collection_name() == "runs"
+
+    def test_collection_name_honors_override(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_FIRESTORE_COLLECTION", "sandbox_runs")
+        assert state_adapter._collection_name() == "sandbox_runs"
+
+    def test_guard_noop_when_not_staging(self):
+        # Prod (no staging) may use the prod collection.
+        state_adapter._assert_sandbox_state_isolation("runs")
+
+    def test_guard_blocks_prod_collection_in_staging(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_SHEET_MODE", "staging")
+        with pytest.raises(RuntimeError, match="prod"):
+            state_adapter._assert_sandbox_state_isolation("runs")
+
+    def test_guard_allows_sandbox_collection_in_staging(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_SHEET_MODE", "staging")
+        state_adapter._assert_sandbox_state_isolation("sandbox_runs")
+
+    def test_doc_ref_blocks_prod_collection_in_staging(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_SHEET_MODE", "staging")
+        with pytest.raises(RuntimeError):
+            state_adapter._doc_ref(MagicMock(), datetime.date(2026, 5, 31))
 
 
 # ── Backend-agnostic interface tests ──────────────────────────────────

@@ -12,6 +12,40 @@
 
 ## BHAGA Agent (Tip Allocation & Payroll Prep)
 
+### 2026-06-01 — Cloud observability, sandbox isolation, JSON selectors, live sandbox run
+
+- **Incident (2026-05-31 item sales):** both nightly attempts raised `RuntimeError: Item Sales page
+  date picker not found within timeout` — Square UI **selector drift**. Root cause was readable from
+  Cloud Run **logs** (no rerun), but the screenshot/DOM were written to the container's ephemeral
+  `~/.bhaga` and **lost** — the observability gap this change closes.
+- **M1 — observability:** `_capture_failure_evidence` now uploads screenshot + DOM + meta to
+  `gs://<cache>/<date>/evidence/` (lazy import, best-effort, greppable `gs://` breadcrumb). The URI is
+  threaded into the Slack failure DM (`notify.failure_alert(evidence_uri=…)`) and the Firestore
+  `runs/<date>` doc per failed step (`state_adapter.record_step_failure`). Complete per-run visibility
+  for postmortems without a rerun.
+- **M2 — sandbox isolation (read prod, NEVER write prod):** hard guards on the three write paths —
+  sheets (`config_loader._assert_not_production_sheet`), GCS cache
+  (`gcs_cache._assert_sandbox_write_isolation` + `BHAGA_GCS_CACHE_WRITE_BUCKET`), and run-state
+  (`state_adapter._assert_sandbox_state_isolation` + `BHAGA_FIRESTORE_COLLECTION`). Added to
+  `bhaga-principles.md` / `bhaga.md`.
+- **M3 — selector robustness:** item-sales date-picker + export selectors externalized to
+  `square_tips/selectors/item_sales.json` with resilient fallbacks; `runner._find_item_sales_pill`
+  tries JSON-driven patterns/locators in order. The exact fix for drift is now a **one-file** edit.
+- **M4 — incremental cache:** each Square artifact is uploaded to GCS immediately after download, so a
+  later-step failure (like item sales) never discards already-scraped transactions.
+- **M5 — live sandbox run:** `sandbox_live_run.py` + `.github/workflows/sandbox-live-run.yml`
+  (`workflow_dispatch`) deploy unmerged PR code to `bhaga-sandbox-refresh` and run a **real** scrape
+  against a leased sandbox slot (the only way to reproduce/prove selector-drift fixes). Isolation
+  pre-flight fails before any deploy. **OTP routing:** prod Slack bot, but the prompt is labeled
+  `[SANDBOX · PR…]` and the pending-OTP checkpoint carries routing metadata so the webhook (sandbox
+  collection scanned **first**) resumes the **sandbox** job, never prod, even under a concurrent prod
+  OTP. Opt-in via `SANDBOX_RUNS_COLLECTION` on the webhook (unset = prod-only, unchanged).
+- **Tests:** +new unit suites (`test_gcs_cache`, `test_runner_item_sales`, `test_sandbox_live_run`,
+  `test_notify`) and extended `test_state_adapter` / `test_handler` (sandbox routing). 399 BHAGA tests green.
+- **Status: in PR `feat/bhaga-cloud-observability`.** Live reproduction of 5/31 + the exact selector
+  calibration are **operator-gated** (trigger the workflow + supply OTP); prod 5/31 + 6/1 reruns are
+  post-merge, after suspending `bhaga-nightly`.
+
 ### 2026-06-01 — Browser-launch resilience, OTP-portal recovery, principles consult-first
 
 - **Incident (2026-05-31 nightly):** Square's Chromium died on launch (`TargetClosedError` in

@@ -581,3 +581,102 @@ class TestEdgeCases:
                     },
                 })
                 mock_find.assert_not_called()
+
+
+# ===========================================================================
+# 8. Sandbox OTP routing (live sandbox run)
+# ===========================================================================
+
+
+class _MultiCollectionDb:
+    """Fake Firestore holding several collections of {doc_id: data}."""
+
+    def __init__(self, data: dict[str, dict[str, dict]]):
+        self._data = data
+
+    def collection(self, name):
+        docs = self._data.setdefault(name, {})
+        col = MagicMock()
+
+        def _stream():
+            for doc_id, payload in docs.items():
+                snap = MagicMock()
+                snap.id = doc_id
+                snap.to_dict = lambda payload=payload: dict(payload)
+                yield snap
+
+        def _document(doc_id):
+            ref = MagicMock()
+
+            def _set(data, merge=False):
+                if merge and doc_id in docs:
+                    docs[doc_id].update(data)
+                else:
+                    docs[doc_id] = dict(data)
+
+            ref.set = _set
+            return ref
+
+        col.stream = _stream
+        col.document = _document
+        return col
+
+
+class TestSandboxOtpRouting:
+    def _pending(self, *, env="prod", target_job="", requested_at="2026-05-31T21:00:00-05:00"):
+        return {
+            "pending_otp": {
+                "agent": "bhaga",
+                "ready_received": False,
+                "requested_at": requested_at,
+                "portals": ["Square"],
+                "env": env,
+                "target_job": target_job,
+            }
+        }
+
+    def test_no_sandbox_collection_scans_only_prod(self, monkeypatch):
+        monkeypatch.setattr(handler, "SANDBOX_RUNS_COLLECTION", "")
+        db = _MultiCollectionDb({"runs": {"2026-05-31": self._pending()}})
+        with patch.object(handler, "db", db):
+            found = handler._find_pending_otp_run("bhaga")
+        assert found["collection"] == "runs"
+        assert found["date"] == "2026-05-31"
+
+    def test_sandbox_takes_precedence_over_prod(self, monkeypatch):
+        monkeypatch.setattr(handler, "SANDBOX_RUNS_COLLECTION", "sandbox_runs")
+        sandbox_job = "projects/p/locations/us-central1/jobs/bhaga-sandbox-refresh"
+        db = _MultiCollectionDb({
+            "runs": {"2026-05-31": self._pending()},
+            "sandbox_runs": {"2026-05-31": self._pending(env="sandbox", target_job=sandbox_job)},
+        })
+        with patch.object(handler, "db", db):
+            found = handler._find_pending_otp_run("bhaga")
+        # Sandbox wins even though a prod run is also pending.
+        assert found["collection"] == "sandbox_runs"
+        assert found["pending_otp"]["target_job"] == sandbox_job
+
+    def test_ready_reply_resumes_sandbox_job(self, monkeypatch):
+        monkeypatch.setattr(handler, "SANDBOX_RUNS_COLLECTION", "sandbox_runs")
+        sandbox_job = "projects/p/locations/us-central1/jobs/bhaga-sandbox-refresh"
+        db = _MultiCollectionDb({
+            "runs": {"2026-05-31": self._pending()},
+            "sandbox_runs": {"2026-05-31": self._pending(env="sandbox", target_job=sandbox_job)},
+        })
+        with patch.object(handler, "db", db), \
+                patch.object(handler, "_trigger_cloud_run_job") as mock_trigger:
+            assert handler._handle_ready_reply("bhaga") is True
+        # The sandbox job is triggered with its explicit resource name, NOT prod.
+        mock_trigger.assert_called_once_with("2026-05-31", job_name=sandbox_job)
+        # And the sandbox checkpoint (not prod) was marked ready.
+        assert db._data["sandbox_runs"]["2026-05-31"]["pending_otp"]["ready_received"] is True
+        assert db._data["runs"]["2026-05-31"]["pending_otp"]["ready_received"] is False
+
+    def test_prod_ready_reply_uses_default_job_single_arg(self, monkeypatch):
+        # No sandbox configured, prod pending with no target_job → legacy single-arg call.
+        monkeypatch.setattr(handler, "SANDBOX_RUNS_COLLECTION", "")
+        db = _MultiCollectionDb({"runs": {"2026-05-31": self._pending()}})
+        with patch.object(handler, "db", db), \
+                patch.object(handler, "_trigger_cloud_run_job") as mock_trigger:
+            assert handler._handle_ready_reply("bhaga") is True
+        mock_trigger.assert_called_once_with("2026-05-31")

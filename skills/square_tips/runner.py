@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import pathlib
 import re
 import sys
@@ -38,6 +39,96 @@ LOGIN_URL = "https://app.squareup.com/login"
 TRANSACTIONS_URL = "https://app.squareup.com/dashboard/sales/transactions"
 ITEM_SALES_URL = "https://app.squareup.com/dashboard/sales/reports/item-sales"
 KDS_PERFORMANCE_URL = "https://app.squareup.com/dashboard/kitchen/reports/performance"
+
+_SELECTORS_DIR = pathlib.Path(__file__).resolve().parent / "selectors"
+
+# Built-in fallback so a missing/partial selectors JSON never hard-crashes the
+# scrape. The JSON file is the SOURCE OF TRUTH for drift fixes; these defaults
+# only fill gaps. Keep them in sync with selectors/item_sales.json["selectors"].
+_ITEM_SALES_SELECTOR_DEFAULTS = {
+    "date_picker": {
+        "pill_text_patterns": [
+            r"\d{2}/\d{2}/\d{4}",
+            r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d",
+            r"(Today|Yesterday|This week|Last week|This month|Last month|This year|Last year|Custom)",
+        ],
+        "pill_extra_locators": [
+            "button[aria-haspopup='dialog']",
+            "button[aria-haspopup='true']",
+            "[data-testid*='date'] button",
+            "button[class*='date-range']",
+        ],
+        "pill_wait_timeout_ms": 15000,
+        "pill_pattern_attempt_timeout_ms": 5000,
+        "post_open_wait_ms": 800,
+        "date_input_selector": "input[type='text']:visible",
+        "date_input_label_keywords": ["date", "start", "end"],
+    },
+    "export": {
+        "export_button_patterns": [r"^Export$", "Export"],
+        "detail_csv_patterns": [r"Detail\s+CSV", "Detail CSV Export"],
+        "menu_open_wait_ms": 800,
+        "download_timeout_ms": 120000,
+    },
+}
+
+_item_sales_selectors_cache: dict | None = None
+
+
+def _item_sales_selectors() -> dict:
+    """Load (and cache) the machine-loadable item-sales selector block.
+
+    Source of truth is ``selectors/item_sales.json`` → ``selectors`` — so fixing
+    Square UI drift (e.g. the 2026-05-31 'date picker not found' incident) is a
+    one-file edit, no code change. Missing file/keys fall back to
+    ``_ITEM_SALES_SELECTOR_DEFAULTS`` per sub-block so a partial/malformed JSON
+    never hard-crashes the scrape.
+    """
+    global _item_sales_selectors_cache
+    if _item_sales_selectors_cache is not None:
+        return _item_sales_selectors_cache
+
+    merged = {k: dict(v) for k, v in _ITEM_SALES_SELECTOR_DEFAULTS.items()}
+    try:
+        raw = json.loads((_SELECTORS_DIR / "item_sales.json").read_text())
+        loaded = raw.get("selectors", {}) or {}
+        for block in ("date_picker", "export"):
+            merged[block] = {**merged[block], **(loaded.get(block, {}) or {})}
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[square_item_sales] WARN: could not load selectors/item_sales.json "
+            f"({exc}); using built-in selector defaults",
+            file=sys.stderr,
+        )
+    _item_sales_selectors_cache = merged
+    return _item_sales_selectors_cache
+
+
+def _find_item_sales_pill(page, *, total_timeout_ms: int | None = None):
+    """Return a visible locator for the item-sales date-range pill, or ``None``.
+
+    JSON-driven + resilient: tries each ``pill_text_patterns`` entry on a
+    ``<button>`` first, then the structural ``pill_extra_locators`` (aria-haspopup
+    / data-testid / class). A single Square label-or-format change is absorbed by
+    adding one pattern to ``selectors/item_sales.json`` — no code edit.
+    """
+    dp = _item_sales_selectors()["date_picker"]
+    per = dp.get("pill_pattern_attempt_timeout_ms", 5000)
+    for pat in dp.get("pill_text_patterns", []):
+        loc = page.locator("button").filter(has_text=re.compile(pat)).first
+        try:
+            loc.wait_for(state="visible", timeout=per)
+            return loc
+        except Exception:
+            continue
+    for css in dp.get("pill_extra_locators", []):
+        try:
+            loc = page.locator(css).first
+            loc.wait_for(state="visible", timeout=per)
+            return loc
+        except Exception:
+            continue
+    return None
 
 
 def _is_on_login(url: str) -> bool:
@@ -455,38 +546,28 @@ def _set_item_sales_date_range(page, *, start: datetime.date, end: datetime.date
     as the transactions page. Falls back to the old month-label format for
     backward compatibility.
 
-    Selectors calibrated via skills/square_tips/selectors/item_sales.json.
+    Selectors are JSON-driven (skills/square_tips/selectors/item_sales.json →
+    selectors.date_picker); a Square UI drift is a one-file edit, no code change.
     """
-    pill = None
-    for pattern in [
-        re.compile(r"\d{2}/\d{2}/\d{4}"),
-        re.compile(r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d"),
-    ]:
-        loc = page.locator("button").filter(has_text=pattern).first
-        try:
-            loc.wait_for(state="visible", timeout=5_000)
-            pill = loc
-            break
-        except Exception:
-            continue
+    dp = _item_sales_selectors()["date_picker"]
+    pill = _find_item_sales_pill(page)
     if pill is None:
         raise RuntimeError("Item Sales date picker pill not found")
     pill.click()
-    page.wait_for_timeout(800)
+    page.wait_for_timeout(dp.get("post_open_wait_ms", 800))
 
     start_str = start.strftime("%m/%d/%Y")
     end_str = end.strftime("%m/%d/%Y")
 
-    inputs = page.locator("input[type='text']:visible")
+    keywords = tuple(dp.get("date_input_label_keywords", ["date", "start", "end"]))
+    inputs = page.locator(dp.get("date_input_selector", "input[type='text']:visible"))
     n = inputs.count()
     date_inputs = []
     for i in range(n):
         el = inputs.nth(i)
         val = el.input_value() or ""
         label = (el.get_attribute("aria-label") or "").lower()
-        if re.search(r"\d{2}/\d{2}/\d{4}", val) or any(
-            kw in label for kw in ("date", "start", "end")
-        ):
+        if re.search(r"\d{2}/\d{2}/\d{4}", val) or any(kw in label for kw in keywords):
             date_inputs.append(el)
         if len(date_inputs) == 2:
             break
@@ -513,16 +594,48 @@ def _trigger_item_sales_export(
 
     Unlike Transactions (async Generate -> poll -> Download), the Item Sales
     Detail CSV is a direct download triggered from the Export dropdown.
+
+    Export-button and menu-item selectors are JSON-driven (selectors.export);
+    each pattern is tried in order so a label change is a one-file edit.
     """
-    page.get_by_role("button", name=re.compile(r"^Export$", re.I)).first.click()
-    page.wait_for_timeout(800)
+    ex = _item_sales_selectors()["export"]
+
+    export_patterns = ex.get("export_button_patterns", [r"^Export$"])
+    clicked = False
+    for pat in export_patterns:
+        try:
+            page.get_by_role("button", name=re.compile(pat, re.I)).first.click()
+            clicked = True
+            break
+        except Exception:
+            continue
+    if not clicked:
+        raise RuntimeError(
+            f"Item Sales Export button not found (patterns={export_patterns}). "
+            f"Current URL: {page.url}"
+        )
+    page.wait_for_timeout(ex.get("menu_open_wait_ms", 800))
+
+    detail_patterns = ex.get("detail_csv_patterns", [r"Detail\s+CSV"])
+
+    def _click_detail_csv():
+        for pat in detail_patterns:
+            loc = page.get_by_text(re.compile(pat, re.I)).first
+            try:
+                loc.click()
+                return
+            except Exception:
+                continue
+        raise RuntimeError(
+            f"Item Sales 'Detail CSV' menu item not found (patterns={detail_patterns})."
+        )
 
     rename = f"items-{start.isoformat()}-{(end + datetime.timedelta(days=1)).isoformat()}.csv"
     return download_to(
         page,
-        trigger=lambda: page.get_by_text(re.compile(r"Detail\s+CSV", re.I)).first.click(),
+        trigger=_click_detail_csv,
         rename_to=rename,
-        timeout_ms=120_000,
+        timeout_ms=ex.get("download_timeout_ms", 120_000),
     )
 
 
@@ -588,27 +701,19 @@ def _download_item_sales_with_page(
     start_date: datetime.date,
     end_date: datetime.date,
 ) -> pathlib.Path:
-    """Internal: navigate to item-sales report and export the Detail CSV."""
+    """Internal: navigate to item-sales report and export the Detail CSV.
+
+    The date-picker pill is detected via JSON-driven, ordered fallbacks
+    (selectors/item_sales.json → selectors.date_picker). Square has drifted this
+    control before (month-label → MM/DD/YYYY → the 2026-05-31 'not found'
+    incident); absorbing the next drift is a one-file selector edit.
+    """
     page.goto(ITEM_SALES_URL, wait_until="domcontentloaded")
-    # Square updated the item-sales date picker from "May 2026" (month label)
-    # to "05/28/2026" (MM/DD/YYYY format, same as transactions page). Try the
-    # new format first, fall back to old month-label format.
-    pill_found = False
-    for pattern in [
-        re.compile(r"\d{2}/\d{2}/\d{4}"),
-        re.compile(r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d"),
-    ]:
-        try:
-            page.locator("button").filter(has_text=pattern).first.wait_for(
-                state="visible", timeout=15_000,
-            )
-            pill_found = True
-            break
-        except Exception:
-            continue
-    if not pill_found:
+    if _find_item_sales_pill(page) is None:
         raise RuntimeError(
             f"Item Sales page date picker not found within timeout. "
+            f"Tried patterns + structural locators from "
+            f"selectors/item_sales.json (selectors.date_picker). "
             f"Current URL: {page.url}"
         )
     page.wait_for_timeout(1_500)

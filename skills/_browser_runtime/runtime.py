@@ -50,6 +50,7 @@ import datetime
 import os
 import pathlib
 import sys
+import tempfile
 import time
 import traceback
 from typing import Iterator, Optional
@@ -66,7 +67,19 @@ except ImportError:
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 DOWNLOADS_DIR = PROJECT_ROOT / "extracted" / "downloads"
-SCREENSHOT_DIR = pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
+
+# Local *staging* dir for failure-evidence artifacts (screenshot / DOM / meta)
+# before they are uploaded to GCS. This is NOT a durable source of truth: in a
+# Cloud Run Job the filesystem is ephemeral and discarded when the execution
+# exits, so a browser failure must be reconstructable from
+# gs://<cache>/<date>/evidence/ + Firestore + Cloud Run logs ALONE, without a
+# rerun (see .cursor/rules/bhaga-principles.md — observability). Override with
+# BHAGA_EVIDENCE_DIR; defaults to the system temp dir — never a hardcoded laptop
+# path (the laptop is retired; cloud reads from GCS, not local files).
+EVIDENCE_DIR = pathlib.Path(
+    os.environ.get("BHAGA_EVIDENCE_DIR")
+    or (pathlib.Path(tempfile.gettempdir()) / "bhaga-evidence")
+)
 
 # Central Time anchor for "today's mtime" checks. We use CT (not UTC) because
 # the daily refresh is scheduled at 9 PM CT and operators reason about
@@ -253,7 +266,8 @@ def launch_persistent(
     Yields (context, page). Both are torn down cleanly on with-block exit.
 
     On exception inside the with-block:
-        * Captures a screenshot + page HTML + URL to ~/.bhaga/state/screenshots/
+        * Captures a screenshot + page HTML + URL to EVIDENCE_DIR and uploads
+          each to the durable GCS evidence prefix (gs://<cache>/<date>/evidence/)
         * If keep_open_on_error=True, the browser stays open for manual debug
           (you must kill chrome yourself). Default closes cleanly.
 
@@ -266,7 +280,7 @@ def launch_persistent(
         headed = False
         print(f"[runtime] headless forced by environment (portal={portal})", file=sys.stderr)
 
-    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
 
     # Setup (start driver + launch + context + page) is retried on transient
     # launch crashes; the yielded BODY is never retried (it may have side
@@ -427,29 +441,103 @@ def browser_healthcheck(*, portal: str = "healthcheck") -> bool:
             pass
 
 
-def _capture_failure_evidence(page: Optional[Page], *, portal: str) -> None:
-    """Save screenshot + HTML + URL for postmortem. Never raises."""
-    if page is None:
-        return
-    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    base = SCREENSHOT_DIR / f"{portal}-fail-{ts}"
+def _evidence_refresh_date() -> datetime.date:
+    """Business date used to key failure evidence in GCS.
+
+    Mirrors ``daily_refresh``: the ``REFRESH_DATE`` env var (ISO ``YYYY-MM-DD``,
+    set by the nightly/webhook trigger) wins; otherwise fall back to today in CT.
+    """
+    raw = os.environ.get("REFRESH_DATE")
+    if raw:
+        try:
+            return datetime.date.fromisoformat(raw)
+        except ValueError:
+            pass
+    if _CT_TZ is not None:
+        return datetime.datetime.now(tz=_CT_TZ).date()
+    return datetime.date.today()
+
+
+def _upload_evidence_to_gcs(local_path: pathlib.Path) -> Optional[str]:
+    """Best-effort upload of one evidence artifact to the durable GCS evidence
+    prefix. Never raises; returns the ``gs://`` URI or ``None``.
+
+    Lazy import keeps the browser runtime importable without
+    ``google-cloud-storage`` (local dev / unit tests) and avoids an import cycle.
+    Honors sandbox isolation: writes go to ``gcs_cache``'s guarded write bucket,
+    so a staging run can never push evidence to the prod cache.
+    """
+    if not local_path.exists():
+        return None
     try:
-        page.screenshot(path=str(base) + ".png", full_page=True)
+        from agents.bhaga.scripts import gcs_cache  # lazy, optional dependency
+
+        return gcs_cache.upload_evidence(local_path, refresh_date=_evidence_refresh_date())
+    except Exception as e:  # noqa: BLE001
+        print(f"[runtime] evidence GCS upload failed for {local_path.name}: {e}", file=sys.stderr)
+        return None
+
+
+def _capture_failure_evidence(page: Optional[Page], *, portal: str) -> list[str]:
+    """Save screenshot + HTML + URL for postmortem and upload each to GCS.
+
+    Writes to the ephemeral local staging dir, then uploads every artifact to the
+    durable ``gs://<cache>/<date>/evidence/`` prefix and logs a single greppable
+    ``gs://`` breadcrumb so the failure is reconstructable from Cloud Run logs +
+    GCS + Firestore alone, without a rerun. Never raises; returns the list of
+    uploaded ``gs://`` URIs (empty if the page is None or uploads were skipped).
+    """
+    if page is None:
+        return []
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    base = EVIDENCE_DIR / f"{portal}-fail-{ts}"
+    local_artifacts: list[pathlib.Path] = []
+    try:
+        png = pathlib.Path(str(base) + ".png")
+        page.screenshot(path=str(png), full_page=True)
+        local_artifacts.append(png)
     except Exception as e:  # noqa: BLE001
         print(f"[runtime] screenshot save failed: {e}", file=sys.stderr)
     try:
-        (base.with_suffix(".html")).write_text(page.content())
+        html = base.with_suffix(".html")
+        html.write_text(page.content())
+        local_artifacts.append(html)
     except Exception as e:  # noqa: BLE001
         print(f"[runtime] html save failed: {e}", file=sys.stderr)
     try:
         url = page.url
-        (base.with_suffix(".meta.txt")).write_text(
+        meta = base.with_suffix(".meta.txt")
+        meta.write_text(
             f"url={url}\ntimestamp={ts}\nportal={portal}\n\n"
             f"traceback:\n{traceback.format_exc()}\n"
         )
+        local_artifacts.append(meta)
     except Exception as e:  # noqa: BLE001
         print(f"[runtime] meta save failed: {e}", file=sys.stderr)
-    print(f"[runtime] failure evidence saved to {base}.*", file=sys.stderr)
+
+    uploaded: list[str] = []
+    for artifact in local_artifacts:
+        uri = _upload_evidence_to_gcs(artifact)
+        if uri:
+            uploaded.append(uri)
+
+    # One greppable breadcrumb. The gs:// prefix is the durable evidence anchor
+    # surfaced into the Slack failure DM + Firestore runs/<date> (see notify.py /
+    # daily_refresh). Local staging path is logged only as a debugging aid.
+    if uploaded:
+        gs_prefix = uploaded[0].rsplit("/", 1)[0] + "/"
+        print(
+            f"[runtime] EVIDENCE portal={portal} gs_prefix={gs_prefix} "
+            f"uris={','.join(uploaded)} (local-staging={base}.*)",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"[runtime] EVIDENCE portal={portal} gs_prefix=NONE "
+            f"(GCS upload unavailable) local-staging={base}.*",
+            file=sys.stderr,
+        )
+    return uploaded
 
 
 def download_to(

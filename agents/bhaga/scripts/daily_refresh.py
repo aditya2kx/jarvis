@@ -75,6 +75,8 @@ from agents.bhaga.notify import (
 from agents.bhaga.scripts import otp_gate
 from agents.bhaga.scripts.gcs_cache import (
     download_cached_files,
+    evidence_prefix,
+    upload_file,
     upload_scrape_artifacts,
 )
 from core.config_loader import refresh_access_token, resolve_sheet_id
@@ -83,6 +85,7 @@ from skills.bhaga_config.state_adapter import (
     clear_pending_otp as _adapter_clear_pending_otp,
     clear_step as _adapter_clear_step,
     mark_step_done as _adapter_mark_step_done,
+    record_step_failure as _adapter_record_step_failure,
     run_state_dir as _adapter_run_state_dir,
     save_pending_otp as _adapter_save_pending_otp,
     step_already_done as _adapter_step_already_done,
@@ -303,6 +306,33 @@ def step_already_done(refresh_date: datetime.date, step_name: str) -> bool:
 
 def mark_step_done(refresh_date: datetime.date, step_name: str, *, note: str = "") -> None:
     _adapter_mark_step_done(refresh_date, step_name, note=note)
+
+
+def _record_failure(
+    refresh_date: datetime.date, step_name: str, exc: BaseException
+) -> str | None:
+    """Surface a step failure into durable run state for postmortem-from-state.
+
+    Records the error + the run's ``gs://`` evidence prefix into ``runs/<date>``
+    (best-effort) and returns that evidence prefix so the caller can also thread
+    it into the Slack failure DM. Never raises — observability must not mask the
+    real exception.
+    """
+    ev_uri: str | None = None
+    try:
+        ev_uri = evidence_prefix(refresh_date)
+    except Exception:  # noqa: BLE001, S110
+        ev_uri = None
+    try:
+        _adapter_record_step_failure(
+            refresh_date,
+            step_name,
+            error=f"{type(exc).__name__}: {exc}",
+            evidence_uri=ev_uri,
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return ev_uri
 
 
 def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
@@ -933,6 +963,26 @@ class PipelineResult:
     master_stats: dict[str, int] = field(default_factory=dict)
 
 
+def _cache_artifact_now(
+    path: object, *, refresh_date: datetime.date, category: str = "square"
+) -> None:
+    """Upload a freshly-downloaded raw artifact to GCS immediately.
+
+    A later in-session step can fail (e.g. the 2026-05-31 item-sales selector
+    drift, which crashed AFTER transactions had already downloaded). Uploading
+    each artifact the moment it lands means those earlier artifacts survive in
+    the cache, so the recovery run restores them from GCS and re-scrapes only the
+    failed step — zero extra OTP. Best-effort: never raises (the bulk upload at
+    the end of the pipeline is the backstop, incl. the skip-browser path).
+    """
+    if not isinstance(path, pathlib.Path) or not path.exists():
+        return
+    try:
+        upload_file(path, refresh_date=refresh_date, category=category)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[square_pipeline] WARN: incremental GCS upload failed for {path.name}: {exc}")
+
+
 def _run_square_pipeline(
     *,
     gap_start: datetime.date,
@@ -1017,6 +1067,9 @@ def _run_square_pipeline(
                             page, start=gap_start, end=end_date,
                         )
                         print(f"[square_pipeline] transactions OK → {csv_path}")
+                        # Cache immediately so a later item-sales/KDS failure in
+                        # this same session can't discard the transactions CSV.
+                        _cache_artifact_now(csv_path, refresh_date=refresh_date)
 
                     # Download item sales in the same session
                     if items_fresh:
@@ -1027,6 +1080,7 @@ def _run_square_pipeline(
                             page, start_date=gap_start, end_date=end_date, store=store,
                         )
                         print(f"[square_pipeline] item sales OK → {item_csv_path}")
+                        _cache_artifact_now(item_csv_path, refresh_date=refresh_date)
 
                     # Download KDS report in the same session
                     if needs_kds:
@@ -1034,6 +1088,7 @@ def _run_square_pipeline(
                             page, start_date=gap_start, end_date=end_date, store=store,
                         )
                         print(f"[square_pipeline] KDS OK → {kds_csv_path}")
+                        _cache_artifact_now(kds_csv_path, refresh_date=refresh_date)
                     else:
                         kds_csv_path = expected_kds if expected_kds.exists() else None
             finally:
@@ -1348,11 +1403,13 @@ def run_step(
     except Exception as exc:  # noqa: BLE001
         dt = time.monotonic() - t0
         print(f"[{step_name}] FAILED after {dt:.1f}s: {type(exc).__name__}: {exc}", file=sys.stderr)
+        ev_uri = _record_failure(refresh_date, step_name, exc)
         try:
             failure_alert(
                 step=step_name,
                 exception=exc,
                 date=refresh_date.isoformat(),
+                evidence_uri=ev_uri,
                 extra=(
                     f"This step failed after {dt:.1f}s. With strict-1-attempt "
                     "enabled, the wrapper writes the day marker and stops. "
@@ -1701,10 +1758,12 @@ def main() -> int:
                 failures.append((pipeline_name, pr.error))
                 if pipeline_name in ("square", "adp"):
                     otp_portal_failed = True
+                ev_uri = _record_failure(refresh_date, pipeline_name, pr.error)
                 try:
                     failure_alert(
                         step=pipeline_name, exception=pr.error,
                         date=refresh_date.isoformat(),
+                        evidence_uri=ev_uri,
                     )
                 except Exception:  # noqa: BLE001, S110
                     pass
@@ -1915,11 +1974,13 @@ def main() -> int:
         )
     except RuntimeError as exc:
         print(f"\n!!! POST-CONDITION GUARD FAILED: {exc}", file=sys.stderr)
+        ev_uri = _record_failure(refresh_date, "post_condition_guard", exc)
         try:
             failure_alert(
                 step="post_condition_guard",
                 exception=exc,
                 date=refresh_date.isoformat(),
+                evidence_uri=ev_uri,
                 extra=(
                     "The daily refresh completed every step's marker but the "
                     "Model sheet's data_window_end did not advance despite new "
@@ -1975,11 +2036,13 @@ def main() -> int:
                   "(incl. weekly/period KDS metrics).")
         except RuntimeError as exc:
             print(f"\n!!! MODEL VERIFICATION FAILED: {exc}", file=sys.stderr)
+            ev_uri = _record_failure(refresh_date, "verify_model_sheet", exc)
             try:
                 failure_alert(
                     step="verify_model_sheet",
                     exception=exc,
                     date=refresh_date.isoformat(),
+                    evidence_uri=ev_uri,
                     extra=(
                         "update_model_sheet ran but the rebuilt Model sheet is "
                         "missing expected non-empty tabs (e.g. labor_period / "

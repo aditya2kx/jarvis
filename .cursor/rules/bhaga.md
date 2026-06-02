@@ -105,6 +105,15 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
   `agents/bhaga/scripts/sandbox_e2e.py` (CI: `.github/workflows/sandbox-e2e.yml`) replays the GCS cache
   into ephemeral sandbox sheets — zero Square/ADP/Reviews calls, zero OTP. It is the standard
   "end-to-end evidence" for a BHAGA PR. See `RUNBOOK.md` §13.
+- **Sandbox runs are read-only toward prod data sources.** A sandbox/staging run
+  (`BHAGA_SHEET_MODE=staging`) may **read** prod data (the GCS scrape cache, raw sheets) but must
+  **never write** to any prod data source — prod sheets, the prod GCS cache (`bhaga-scrape-cache`), or
+  prod Firestore state. All sandbox writes divert to isolated sandbox targets: leased sandbox sheets,
+  `BHAGA_GCS_CACHE_WRITE_BUCKET` (a sandbox bucket), and a sandbox Firestore namespace. Two hard guards
+  enforce this and fail loud rather than mutate prod: `core/config_loader.py::_assert_not_production_sheet`
+  (sheets) and `agents/bhaga/scripts/gcs_cache.py::_assert_sandbox_write_isolation` (cache). This applies
+  equally to the live sandbox run (live scrape against sandbox sheets) — live scraping is allowed, but its
+  cache/evidence/state writes land only in sandbox targets.
 - **Cloud reads from GCS, never laptop files.** The canonical scrape cache is GCS `bhaga-scrape-cache`.
   `extracted/downloads/` is laptop-only and is NOT a source of truth for cloud sheets — never let a
   prod/cloud backfill read it. `backfill_item_lines_from_cache.py` defaults to GCS-only; only pass

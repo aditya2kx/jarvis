@@ -49,6 +49,18 @@ tight build → verify → fix loop without the operator babysitting every step.
    evidence as a PR comment (see `RUNBOOK.md` §13 and `agents/bhaga/scripts/sandbox_e2e.py`). Run
    directly against prod sheets only when sandbox isolation genuinely can't exercise the path. Unit
    tests are necessary but are *not* the evidence of doneness.
+   - **When the replay e2e can't exercise the path, use the LIVE sandbox run — never prod, never an
+     ad-hoc script.** The replay e2e is zero-OTP and uses the GCS cache, so it cannot reproduce a
+     **live-only** failure (selector drift, a login/2FA flow, a real browser crash). For those, the
+     sanctioned tool is `agents/bhaga/scripts/sandbox_live_run.py` via the **`Sandbox live run`**
+     workflow (`workflow_dispatch`): it deploys the unmerged PR image to `bhaga-sandbox-refresh` and
+     runs the real pipeline for a chosen `REFRESH_DATE` under **full isolation** (staging sheets +
+     sandbox GCS write bucket + sandbox Firestore collection — reads prod OK, **writes prod never**; an
+     isolation pre-flight fails before any deploy). The loop for a live incident is: **open the PR →
+     trigger the live sandbox run to reproduce → if it fails, fix and re-run; if it passes, capture the
+     `gs://…/evidence/` artifacts (screenshot/DOM) + the green run as the PR evidence → mark ready →
+     merge → rerun prod for the affected date(s) → resume the scheduler.** OTP uses the prod Slack bot
+     but the prompt is labeled `[SANDBOX · PR…]` and the reply resumes the sandbox job, not prod.
 5. **100% code coverage.** New code is fully covered by tests; the e2e is on top of that, not instead.
 6. **Record and present evidence in the PR — per scenario, with real output.** Every claim ("it works",
    "it's backward compatible") is backed by commands + **actual output / sheet diffs / log excerpts** in

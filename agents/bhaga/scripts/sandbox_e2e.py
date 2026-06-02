@@ -392,8 +392,16 @@ def assert_tip_pool_conserved(tip_alloc_daily_values: list[list], *, tol_cents: 
                 f"(need cols up to index {needed_cols}, got {len(row)})"
             )
         date = str(row[i_date]).strip()[:10]
-        # Pool is constant per date; record once. Allocations sum.
-        pool_by_date.setdefault(date, _to_cents(row[i_pool]))
+        # Pool is constant per date by construction; assert it (a per-date
+        # day_pool that disagrees row-to-row is a builder bug we want surfaced,
+        # not washed out in the residual). Allocations sum across employees.
+        row_pool = _to_cents(row[i_pool])
+        if date in pool_by_date and pool_by_date[date] != row_pool:
+            raise RuntimeError(
+                f"tip pool conservation: inconsistent day_pool for {date}: "
+                f"{pool_by_date[date]}c vs {row_pool}c (builder bug)"
+            )
+        pool_by_date.setdefault(date, row_pool)
         alloc_by_date[date] = alloc_by_date.get(date, 0) + _to_cents(row[i_alloc])
 
     if not pool_by_date:

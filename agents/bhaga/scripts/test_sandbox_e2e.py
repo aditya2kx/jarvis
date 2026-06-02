@@ -255,6 +255,15 @@ class TestTipPoolConservation(unittest.TestCase):
             e2e.assert_tip_pool_conserved(grid)
         self.assertIn("NOT conserved", str(ctx.exception))
 
+    def test_inconsistent_day_pool_raises(self):
+        # Same date, two different day_pool values -> builder bug, surface it.
+        grid = [self.HEADER,
+                self._row("2026-05-20", "A", "5", "100.00", "60.00"),
+                self._row("2026-05-20", "B", "3", "120.00", "40.00")]  # pool disagrees
+        with self.assertRaises(RuntimeError) as ctx:
+            e2e.assert_tip_pool_conserved(grid)
+        self.assertIn("inconsistent day_pool", str(ctx.exception))
+
     def test_short_row_raises_not_silently_passes(self):
         # A truncated row must fail loudly, not default pool/alloc to 0 and pass.
         grid = [self.HEADER,

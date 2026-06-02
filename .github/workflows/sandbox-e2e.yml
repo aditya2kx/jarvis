@@ -46,8 +46,12 @@ jobs:
       # change, never an unset variable.
       - name: Require sandbox e2e enabled (fail-fast)
         if: github.event_name == 'pull_request'
+        env:
+          # Map through env (never interpolate ${{ }} directly into the shell) to
+          # avoid a script-injection vector per GitHub's hardening guidance.
+          SANDBOX_E2E_ENABLED: ${{ vars.SANDBOX_E2E_ENABLED }}
         run: |
-          if [ "${{ vars.SANDBOX_E2E_ENABLED }}" != "true" ]; then
+          if [ "$SANDBOX_E2E_ENABLED" != "true" ]; then
             echo "::error::SANDBOX_E2E_ENABLED is not 'true' — the mandatory sandbox e2e gate cannot run."
             echo "Set repo variable SANDBOX_E2E_ENABLED=true and wire the WIF secrets (see CONTRIBUTING §4 / RUNBOOK §13)."
             exit 1

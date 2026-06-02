@@ -67,6 +67,18 @@ class TestSelectorLoading:
 
 
 class TestFindPill:
+    def test_found_via_primary_data_hook(self):
+        # 2026-06-02 drift: the unified date-filter dropdown's stable test hook is
+        # tried FIRST, before the text/structural fallbacks.
+        page = _FakePage(visible={"[data-test-sq-date-filter-dropdown-trigger]"})
+        assert runner._find_item_sales_pill(page) is not None
+
+    def test_primary_hook_present_in_defaults(self):
+        sel = runner._item_sales_selectors()
+        assert "[data-test-sq-date-filter-dropdown-trigger]" in sel["date_picker"]["primary_locators"]
+        assert sel["date_picker"]["range_input_selectors"]["start"] == ".begin-date input.input-date"
+        assert sel["date_picker"]["range_input_selectors"]["end"] == ".end-date input.input-date"
+
     def test_found_via_primary_pattern(self):
         page = _FakePage(visible={r"\d{2}/\d{2}/\d{4}"})
         assert runner._find_item_sales_pill(page) is not None

@@ -103,7 +103,22 @@
   link **and** `html.unescape`s the text (literal `&`); `_handle_magic_link` extracts the URL with a regex
   (tolerates surrounding text), accepts the `app.` subdomain, and logs `_redact_url_values(url)` (keys kept,
   values redacted) so we can prove the URL is well-formed without leaking the one-time token.
-- **Tests:** +`test_runner_magic_link` (URL-from-surrounding-text, `app.` subdomain, redaction),
+- **SELECTOR DRIFT ROOT-CAUSED + FIXED (the original 2026-05-31 incident, reproduced live):** with login
+  finally solved, the sandbox run reached the item-sales page and **reproduced** the "date picker not found"
+  failure (trace `item-sales-pill-not-found` + verify gate red). The captured DOM
+  (`…/evidence/square-fail-20260602-053441.html`) shows Square **unified item-sales onto the shared
+  date-filter dropdown** (same as KDS/transactions): the control is now a single-date dropdown trigger
+  `[data-test-sq-date-filter-dropdown-trigger]` (button text = current date, e.g. `05/31/2026`) with prev/next
+  arrows, NOT the old `MM/DD/YYYY` range pill; the popover exposes `.begin-date input.input-date` /
+  `.end-date input.input-date`. Fix is **JSON-first** as designed: `selectors/item_sales.json` gains
+  `primary_locators` (the data-test hook, tried FIRST with a 45s wait since the Ember filter bar renders
+  slowly post-`domcontentloaded`) and `range_input_selectors`; `runner._find_item_sales_pill` tries the hook
+  first and `_set_item_sales_date_range` fills the explicit begin/end inputs (KDS-style). `last_verified`
+  bumped to 2026-06-02.
+- **Trace timing fix:** `item-sales-page` is now captured *after* the pill finder returns (page settled),
+  not immediately post-`goto` (which produced blank SPA frames).
+- **Tests:** +`test_runner_item_sales` (primary data-hook tried first; range inputs present),
+  +`test_runner_magic_link` (URL-from-surrounding-text, `app.` subdomain, redaction),
   +`test_adapter_request_reply` (`&amp;` decode regression), extended `test_sandbox_live_run`
   (schema shapes, plain-env inheritance, skip-steps, item-sales verify) + `test_sandbox_scenarios`
   (scoping) + `test_runtime` (trace_step: disabled no-op, full-page upload w/ seq+slug label, never-raises).

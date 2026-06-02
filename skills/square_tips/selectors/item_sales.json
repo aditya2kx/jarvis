@@ -1,7 +1,7 @@
 {
   "_doc": "Calibrated selectors for the Square Item Sales report (https://app.squareup.com/dashboard/sales/reports/item-sales), used by AKSHAYA's refresh pipeline. Sibling of dashboard.json (Sales Summary). Login flow is identical and is owned by dashboard.json's `login` section.",
-  "last_verified": "2026-05-12",
-  "verified_by": "AKSHAYA refresh, end-to-end via user-playwright MCP",
+  "last_verified": "2026-06-02",
+  "verified_by": "BHAGA live sandbox run (PR#9) — captured DOM at gs://bhaga-scrape-cache-sandbox/2026-05-31/evidence/square-fail-20260602-053441.html",
   "page_urls": {
     "item_sales": "https://app.squareup.com/dashboard/sales/reports/item-sales"
   },
@@ -30,6 +30,11 @@
   "selectors": {
     "_doc": "MACHINE-LOADABLE selectors consumed by skills/square_tips/runner.py (_item_sales_selectors). To fix item-sales UI drift (e.g. the 2026-05-31 'date picker not found' incident), edit THIS block ONLY — no code change. Every list is tried in order as resilient fallbacks; add the new pattern/locator to the front when Square changes the UI, then bump last_verified.",
     "date_picker": {
+      "_drift_2026_06_02": "Square unified item-sales onto the same date-filter dropdown as the KDS/transactions reports. The control is now a single-date dropdown trigger `[data-test-sq-date-filter-dropdown-trigger]` (button text shows the current date e.g. '05/31/2026') with prev/next arrows, NOT the old MM/DD/YYYY range pill. Opening it reveals a range popover with `.begin-date input.input-date` / `.end-date input.input-date`. The data-test hook is the stable anchor — tried FIRST with a generous wait because the Ember filter bar can take >30s to render after domcontentloaded.",
+      "primary_locators": [
+        "[data-test-sq-date-filter-dropdown-trigger]"
+      ],
+      "primary_wait_timeout_ms": 45000,
       "pill_text_patterns": [
         "\\d{2}/\\d{2}/\\d{4}",
         "(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\\s+\\d",
@@ -45,7 +50,11 @@
       ],
       "pill_wait_timeout_ms": 15000,
       "pill_pattern_attempt_timeout_ms": 5000,
-      "post_open_wait_ms": 800,
+      "post_open_wait_ms": 1000,
+      "range_input_selectors": {
+        "start": ".begin-date input.input-date",
+        "end": ".end-date input.input-date"
+      },
       "date_input_selector": "input[type='text']:visible",
       "date_input_label_keywords": ["date", "start", "end"]
     },

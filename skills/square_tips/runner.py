@@ -48,6 +48,10 @@ _SELECTORS_DIR = pathlib.Path(__file__).resolve().parent / "selectors"
 # only fill gaps. Keep them in sync with selectors/item_sales.json["selectors"].
 _ITEM_SALES_SELECTOR_DEFAULTS = {
     "date_picker": {
+        "primary_locators": [
+            "[data-test-sq-date-filter-dropdown-trigger]",
+        ],
+        "primary_wait_timeout_ms": 45000,
         "pill_text_patterns": [
             r"\d{2}/\d{2}/\d{4}",
             r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d",
@@ -61,7 +65,11 @@ _ITEM_SALES_SELECTOR_DEFAULTS = {
         ],
         "pill_wait_timeout_ms": 15000,
         "pill_pattern_attempt_timeout_ms": 5000,
-        "post_open_wait_ms": 800,
+        "post_open_wait_ms": 1000,
+        "range_input_selectors": {
+            "start": ".begin-date input.input-date",
+            "end": ".end-date input.input-date",
+        },
         "date_input_selector": "input[type='text']:visible",
         "date_input_label_keywords": ["date", "start", "end"],
     },
@@ -115,6 +123,18 @@ def _find_item_sales_pill(page, *, total_timeout_ms: int | None = None):
     """
     dp = _item_sales_selectors()["date_picker"]
     per = dp.get("pill_pattern_attempt_timeout_ms", 5000)
+    # Stable data-test hook FIRST, with a generous wait: Square unified item-sales
+    # onto the shared date-filter dropdown (2026-06-02 drift), and the Ember filter
+    # bar can take tens of seconds to render after domcontentloaded. This anchor is
+    # far more reliable than the text/structural fallbacks below.
+    primary_to = dp.get("primary_wait_timeout_ms", 45000)
+    for css in dp.get("primary_locators", []):
+        try:
+            loc = page.locator(css).first
+            loc.wait_for(state="visible", timeout=primary_to)
+            return loc
+        except Exception:
+            continue
     for pat in dp.get("pill_text_patterns", []):
         loc = page.locator("button").filter(has_text=re.compile(pat)).first
         try:
@@ -741,6 +761,34 @@ def _set_item_sales_date_range(page, *, start: datetime.date, end: datetime.date
     start_str = start.strftime("%m/%d/%Y")
     end_str = end.strftime("%m/%d/%Y")
 
+    # Preferred path (2026-06-02 drift): the unified date-filter popover exposes
+    # explicit begin/end inputs (`.begin-date input.input-date` / `.end-date ...`),
+    # same as the KDS report. Click-select-all → fill → Tab/Enter, which is far
+    # more robust than guessing among all visible text inputs.
+    ris = dp.get("range_input_selectors") or {}
+    if ris.get("start") and ris.get("end"):
+        try:
+            start_el = page.locator(ris["start"]).first
+            start_el.wait_for(state="visible", timeout=5_000)
+            start_el.click(click_count=3)
+            page.wait_for_timeout(150)
+            start_el.fill(start_str)
+            page.wait_for_timeout(300)
+            page.keyboard.press("Tab")
+            end_el = page.locator(ris["end"]).first
+            end_el.wait_for(state="visible", timeout=5_000)
+            end_el.click(click_count=3)
+            page.wait_for_timeout(150)
+            end_el.fill(end_str)
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(1_500)
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(2_000)
+            return
+        except Exception:
+            # Fall through to the generic heuristic below if the popover differs.
+            pass
+
     keywords = tuple(dp.get("date_input_label_keywords", ["date", "start", "end"]))
     inputs = page.locator(dp.get("date_input_selector", "input[type='text']:visible"))
     n = inputs.count()
@@ -891,8 +939,13 @@ def _download_item_sales_with_page(
     incident); absorbing the next drift is a one-file selector edit.
     """
     page.goto(ITEM_SALES_URL, wait_until="domcontentloaded")
+    pill = _find_item_sales_pill(page)
+    # Trace AFTER the finder returns: the Ember filter bar renders slowly, so a
+    # screenshot taken immediately post-goto is blank. By now the page is settled
+    # (the finder waited for the control), so the frame is actually legible.
     trace_step(page, "item-sales-page")
-    if _find_item_sales_pill(page) is None:
+    if pill is None:
+        page.wait_for_timeout(2_000)  # let any late render settle so the frame is useful
         trace_step(page, "item-sales-pill-not-found")
         raise RuntimeError(
             f"Item Sales page date picker not found within timeout. "

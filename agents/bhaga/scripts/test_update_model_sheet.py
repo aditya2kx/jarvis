@@ -1288,6 +1288,20 @@ class TestMostRecentClosedPeriod(unittest.TestCase):
         self.assertEqual((start.isoformat(), end.isoformat()),
                          ("2026-06-01", "2026-06-14"))
 
+    def test_on_anchor_end_date_period_not_yet_closed(self):
+        # today == anchor_end_date (5/17): the anchor period is still open on its
+        # own end day, so the result is the period BEFORE it (4/20-5/3).
+        start, end = self._mrcp(datetime.date(2026, 5, 17))
+        self.assertEqual((start.isoformat(), end.isoformat()),
+                         ("2026-04-20", "2026-05-03"))
+
+    def test_day_after_anchor_end_closes_anchor_period(self):
+        # today == anchor_end_date + 1 (5/18): the anchor period (5/4-5/17) is
+        # now the most-recent CLOSED one.
+        start, end = self._mrcp(datetime.date(2026, 5, 18))
+        self.assertEqual((start.isoformat(), end.isoformat()),
+                         ("2026-05-04", "2026-05-17"))
+
     def test_unsupported_frequency_raises(self):
         with self.assertRaises(ValueError):
             most_recent_closed_period(

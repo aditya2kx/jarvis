@@ -381,16 +381,21 @@ def assert_tip_pool_conserved(tip_alloc_daily_values: list[list], *, tol_cents: 
     alloc_by_date: dict[str, int] = {}
     needed_cols = max(i_date, i_pool, i_alloc)
     for row in tip_alloc_daily_values[1:]:
-        if not row or not str(row[0]).strip():
+        if not row:
             continue
-        # A truncated row would otherwise default pool/alloc to 0 and pass the
-        # check trivially (0 == 0) — a silent false-negative is exactly what
-        # this gate must not do, so a short row is a hard schema regression.
+        # Enforce width before indexing any resolved column: a truncated row
+        # would otherwise default pool/alloc to 0 and pass the check trivially
+        # (0 == 0) — a silent false-negative is exactly what this gate must not
+        # do, so a short row is a hard schema regression.
         if len(row) <= needed_cols:
             raise RuntimeError(
                 f"tip pool conservation: row {row!r} is too short "
                 f"(need cols up to index {needed_cols}, got {len(row)})"
             )
+        # Skip on the resolved date column (not a hardcoded index) so the check
+        # stays correct if the header is ever reordered.
+        if not str(row[i_date]).strip():
+            continue
         date = str(row[i_date]).strip()[:10]
         # Pool is constant per date by construction; assert it (a per-date
         # day_pool that disagrees row-to-row is a builder bug we want surfaced,

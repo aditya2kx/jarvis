@@ -335,5 +335,59 @@ class ApiRetryTest(unittest.TestCase):
         self.assertEqual(m.call_count, 1)
 
 
+class TrainingShiftsWriteTest(unittest.TestCase):
+    """write_training_shifts: create-if-missing + idempotent (employee,date) upsert
+    for the human-owned per-shift training overlay tab."""
+
+    HEADER = ["employee_name", "date", "note"]
+
+    def setUp(self):
+        self.fake = FakeSheets()
+        self.sid = "staging-fake-sheet-id"
+        for p in [
+            mock.patch.object(writer, "_read_tab", self.fake.read_tab),
+            mock.patch.object(writer, "_write_range", self.fake.write_range),
+            mock.patch.object(writer, "_add_sheet_if_missing", self.fake.add_sheet),
+            mock.patch.object(writer, "refresh_access_token", lambda *a, **k: "tok"),
+        ]:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_creates_tab_and_writes_header_and_sorted_rows(self):
+        res = writer.write_training_shifts(self.sid, [
+            {"employee_name": "Ortiz, Ximena", "date": "2026-05-31", "note": "training"},
+            {"employee_name": "Flores, Juan", "date": "2026-05-18", "note": "training"},
+        ])
+        grid = self.fake.tabs["training_shifts"]
+        self.assertEqual(grid[0], self.HEADER)
+        # sorted by (name, date): Flores before Ortiz
+        self.assertEqual([r[:2] for r in grid[1:]],
+                         [["Flores, Juan", "2026-05-18"], ["Ortiz, Ximena", "2026-05-31"]])
+        self.assertEqual((res["inserted"], res["updated"], res["total_after"]), (2, 0, 2))
+
+    def test_idempotent_upsert_preserves_other_operator_rows(self):
+        # Operator already has a hand-added row for a different (emp, date).
+        self.fake.tabs["training_shifts"] = [
+            list(self.HEADER),
+            ["Steele, Isabel", "2026-06-03", "hand-added"],
+            ["Ortiz, Ximena", "2026-05-31", "old note"],
+        ]
+        res = writer.write_training_shifts(self.sid, [
+            {"employee_name": "Ortiz, Ximena", "date": "2026-05-31", "note": "new note"},  # update
+            {"employee_name": "Ortiz, Ximena", "date": "2026-05-29", "note": "training"},  # insert
+        ])
+        rows = {(r[0], r[1]): r[2] for r in self.fake.tabs["training_shifts"][1:] if r and r[0]}
+        self.assertEqual(rows[("Steele, Isabel", "2026-06-03")], "hand-added")  # preserved
+        self.assertEqual(rows[("Ortiz, Ximena", "2026-05-31")], "new note")     # updated in place
+        self.assertIn(("Ortiz, Ximena", "2026-05-29"), rows)                    # inserted
+        self.assertEqual((res["inserted"], res["updated"]), (1, 1))
+
+    def test_missing_name_or_date_raises(self):
+        with self.assertRaises(ValueError):
+            writer.write_training_shifts(self.sid, [{"employee_name": "X, Y"}])
+        with self.assertRaises(ValueError):
+            writer.write_training_shifts(self.sid, [{"date": "2026-05-18"}])
+
+
 if __name__ == "__main__":
     unittest.main()

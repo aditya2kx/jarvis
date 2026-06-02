@@ -24,10 +24,16 @@
 - **`write_training_shifts`** added to `tip_ledger_writer` (create-if-missing + idempotent
   `(employee,date)` upsert; preserves operator-added rows) so the tab is maintained through the writer
   skill, not ad-hoc Sheets calls. Tab registered in `palmetto.json`.
-- **Applied + verified on prod data** (local rebuild via impersonated `bhaga-orchestrator` SA): Lisette
-  `training_excluded:2026-05-31` + Ximena (5/29, 5/31) + Juan (5/18) → Lisette/Ximena $0, Juan 5/18
-  dropped, **pool conserved at $1,197.77**. **Durability note:** per-shift marks only stick once PR #10
-  is deployed; the nightly cron stays paused until then (the deployed image can't yet read the tab).
+- **Verification (two layers).** (1) *Isolated sandbox (CI gate):* the per-PR `Sandbox e2e` rebuilds
+  the model against isolated sandbox sheets, which exercises `_read_training_shifts_from_sheet` on
+  every build (reader runs unconditionally; absent/empty tab → empty overlay, covering the read +
+  parse + graceful-missing path this PR adds to the build). (2) *Manual prod rebuild (supplementary):*
+  local rebuild via impersonated `bhaga-orchestrator` SA — Lisette `training_excluded:2026-05-31` +
+  Ximena (5/29, 5/31) + Juan (5/18) → Lisette/Ximena $0, Juan 5/18 dropped, **pool conserved at
+  $1,197.77**. The populated-overlay → exclusion → **cent-exact conservation** end-to-end on prod data
+  is machine-checked by the companion mandatory prod-data sandbox gate (PR #11). **Durability note:**
+  per-shift marks only stick once PR #10 is deployed; the nightly cron stays paused until then (the
+  deployed image can't yet read the tab).
 
 ### 2026-06-01 — Cloud observability, sandbox isolation, JSON selectors, live sandbox run
 

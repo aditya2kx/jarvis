@@ -1090,6 +1090,28 @@ def load_cc_tips_earnings_from_gcs(
     return merged
 
 
+def period_has_cc_tip_actuals(
+    *, store: str, period_start: str, period_end: str, last_data_date: str,
+) -> bool:
+    """True IFF a covering GCS Earnings export carries 'Credit Card Tips Owed'
+    lines for the EXACT closed period ``(period_start, period_end)``.
+
+    This is the cadence gate shared by the nightly guard (``daily_refresh``) and
+    the per-PR sandbox e2e: ``adp_paid`` is only *expected* to reconcile once
+    payroll has actually run AND its CC-tip lines have been exported to ADP. A
+    period whose calendar window has elapsed but hasn't been paid yet — its
+    Earnings export exists but carries no CC-tip lines (e.g. a just-closed
+    period, only a misc reimbursement processed) — returns ``False`` so neither
+    guard falsely fails on the legitimate cadence gap. Read-only against the
+    prod GCS cache; any error inside the loader degrades to ``[]`` -> ``False``.
+    """
+    earnings = load_cc_tips_earnings_from_gcs(
+        store=store, aliases={},
+        data_window_start=period_start, last_data_date=last_data_date,
+    )
+    return (period_start, period_end) in actual_cc_tips_by_period(earnings)
+
+
 # ---------- Tab builders ----------
 
 

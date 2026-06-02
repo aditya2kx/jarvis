@@ -986,13 +986,12 @@ def _latest_closed_period_with_earnings(
         ps, pe = update_model_sheet.most_recent_closed_period(
             anchor_end_date=anchor, pay_frequency=freq, today=refresh_date,
         )
-        earnings = update_model_sheet.load_cc_tips_earnings_from_gcs(
-            store=store, aliases={},
-            data_window_start=ps.isoformat(), last_data_date=refresh_date.isoformat(),
-        )
-        actuals = update_model_sheet.actual_cc_tips_by_period(earnings)
         key = (ps.isoformat(), pe.isoformat())
-        return key if key in actuals else None
+        has_actuals = update_model_sheet.period_has_cc_tip_actuals(
+            store=store, period_start=key[0], period_end=key[1],
+            last_data_date=refresh_date.isoformat(),
+        )
+        return key if has_actuals else None
     except Exception as exc:  # noqa: BLE001
         print(f"  [verify_model] adp cadence probe failed (treating as 'no "
               f"covering export', non-fatal): {type(exc).__name__}: {exc}")

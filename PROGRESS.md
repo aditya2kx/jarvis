@@ -35,10 +35,21 @@ corrupted pay → shipped on by default, no flag.
 
 **Prevent (M2) — standing semantic post-conditions.** New `model_semantics.py` is the single source of
 truth (pure functions) shared by `sandbox_e2e` (per-PR) and `daily_refresh` (nightly): tip-pool
-conservation, latest-closed-period `adp_paid` reconciliation (cadence-gated on a covering Earnings
-export existing in GCS), and review-bonus survival. A semantic failure clears the `update_model_sheet`
-marker (rerun rebuilds) + alerts. The CI fixtures that blessed the bug are gone
-(`assert_adp_reconciliation_present` now asserts the latest closed period is populated).
+conservation, closed-period `adp_paid` reconciliation, and review-bonus survival. A semantic failure
+clears the `update_model_sheet` marker (rerun rebuilds) + alerts. The CI fixtures that blessed the bug
+are gone.
+
+**Reconciliation is CADENCE-SAFE (corrected after the first CI run).** The first sandbox run on this
+branch tripped the new guard: the latest closed period (5/18–5/31) showed `adp_paid=N/A` and a naïve
+"latest closed period must reconcile" assertion failed it. Ground-truth from the GCS Earnings exports
+proved the `N/A` was **correct**: 5/18–5/31's export (check date 6/01) carries **zero** "Credit Card
+Tips Owed" lines — only a misc reimbursement — because that payroll hasn't run yet, while the prior
+**paid** period 5/04–5/17 has 18 CC-tip lines totalling **$2,358.94** across 9 employees that the loader
+keys exactly to the model period. So both guards now gate on
+`update_model_sheet.period_has_cc_tip_actuals` (a covering export must actually contain CC-tip lines for
+that exact period) and assert via `model_semantics.assert_period_reconciled`; a just-closed/unpaid period
+is SKIPPED, not failed. The too-strict `assert_adp_reconciliation_present` was removed (no safe caller —
+deciding "this period should be paid" requires the cadence probe regardless).
 
 **Prevent (M3) — auto-halt + resume circuit breaker.** A semantic failure trips a GLOBAL halt flag
 (`state_adapter.{get,set,clear}_pipeline_halt`; Firestore `<collection>/_pipeline_state` / local file).

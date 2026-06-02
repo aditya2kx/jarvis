@@ -52,7 +52,7 @@ from agents.bhaga.scripts.daily_refresh import CT, MODEL_VERIFY_MIN_ROWS, assert
 from agents.bhaga.scripts.model_semantics import (  # noqa: E402
     _header_resolver,
     _to_cents,
-    assert_adp_reconciliation_present,
+    assert_period_reconciled,
     assert_tip_pool_conserved,
 )
 from core.config_loader import (  # noqa: E402
@@ -669,7 +669,29 @@ def run_e2e(
             grid = grids["tip_alloc_daily"]
             period_grid = grids["tip_alloc_period"]
             report["tip_pool_conservation"] = assert_tip_pool_conserved(grid)
-            report["adp_reconciliation"] = assert_adp_reconciliation_present(period_grid)
+            # ADP reconciliation is CADENCE-SAFE: require adp_paid only for a
+            # closed period that has actually been paid (a covering GCS Earnings
+            # export carries its 'Credit Card Tips Owed' lines). A just-closed
+            # period whose payroll hasn't run yet legitimately shows N/A, so we
+            # skip rather than fail — same gate the nightly guard uses, so CI and
+            # prod can never disagree on what "reconciled" means.
+            period_key = (start.isoformat(), end.isoformat())
+            if update_model_sheet.period_has_cc_tip_actuals(
+                store=store, period_start=period_key[0], period_end=period_key[1],
+                last_data_date=end.isoformat(),
+            ):
+                report["adp_reconciliation"] = assert_period_reconciled(
+                    period_grid, period_key
+                )
+            else:
+                report["adp_reconciliation"] = {
+                    "status": "cadence-skip",
+                    "reason": (
+                        f"closed period {period_key[0]}..{period_key[1]} has no "
+                        "covering Earnings export with CC-tip lines in GCS yet "
+                        "(payroll not run) — adp_paid legitimately N/A"
+                    ),
+                }
             worked_hours = _read_worked_hours(
                 ids["bhaga_adp_raw"], account=account, start=start, end=end,
             )

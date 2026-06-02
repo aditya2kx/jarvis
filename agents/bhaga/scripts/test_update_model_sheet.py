@@ -45,6 +45,7 @@ from agents.bhaga.scripts.update_model_sheet import (
     check_dates_by_period,
     load_cc_tips_earnings_from_gcs,
     most_recent_closed_period,
+    period_has_cc_tip_actuals,
 )
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
 
@@ -698,6 +699,39 @@ class LoadEarningsFromGcsTests(unittest.TestCase):
         out, dl = self._run(cached_dates=[d1], downloads=downloads, parsed={},
                             parse_error=ValueError("bad xlsx"))
         self.assertEqual(out, [])
+
+
+class PeriodHasCcTipActualsTests(unittest.TestCase):
+    """The cadence gate shared by daily_refresh + sandbox_e2e: True only when a
+    covering Earnings export carries CC-tip lines for the EXACT closed period."""
+
+    _LOADER = "agents.bhaga.scripts.update_model_sheet.load_cc_tips_earnings_from_gcs"
+
+    def test_true_when_period_has_cc_tip_lines(self):
+        earnings = [{"employee_name": "A", "period_start": "2026-05-04",
+                     "period_end": "2026-05-17", "check_date": "2026-05-26",
+                     "description": "Credit Card Tips Owed", "amount": 12.5}]
+        with mock.patch(self._LOADER, return_value=earnings):
+            self.assertTrue(period_has_cc_tip_actuals(
+                store="palmetto", period_start="2026-05-04",
+                period_end="2026-05-17", last_data_date="2026-05-31"))
+
+    def test_false_when_export_lacks_cc_tips(self):
+        # Period window elapsed but only a non-tip line exported (the real
+        # 5/18-5/31 case: a single 'Misc reimbursement', zero CC tips) -> N/A ok.
+        earnings = [{"employee_name": "A", "period_start": "2026-05-18",
+                     "period_end": "2026-05-31", "check_date": "2026-06-01",
+                     "description": "Misc reimbursement non-taxable", "amount": 40.0}]
+        with mock.patch(self._LOADER, return_value=earnings):
+            self.assertFalse(period_has_cc_tip_actuals(
+                store="palmetto", period_start="2026-05-18",
+                period_end="2026-05-31", last_data_date="2026-05-31"))
+
+    def test_false_when_no_export(self):
+        with mock.patch(self._LOADER, return_value=[]):
+            self.assertFalse(period_has_cc_tip_actuals(
+                store="palmetto", period_start="2026-05-18",
+                period_end="2026-05-31", last_data_date="2026-05-31"))
 
 
 class ZeroShiftDayTests(unittest.TestCase):

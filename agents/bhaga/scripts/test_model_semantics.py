@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Unit tests for the shared pure semantic post-conditions (model_semantics).
 
-assert_tip_pool_conserved + assert_adp_reconciliation_present also have coverage
-via test_sandbox_e2e (the sandbox re-exports them); here we focus on the nightly
-guard's cadence-gating orchestrator and the period/review helpers it adds.
+Covers the cadence-gating orchestrator (assert_model_semantics) and the
+period/review/conservation helpers it composes. Reconciliation is cadence-safe:
+a closed period is only required to populate adp_paid when the caller has
+confirmed a covering Earnings export with CC-tip lines exists (see
+update_model_sheet.period_has_cc_tip_actuals), so a just-closed/unpaid period
+that legitimately shows N/A never trips the guard.
 """
 
 from __future__ import annotations

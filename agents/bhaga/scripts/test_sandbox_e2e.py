@@ -510,54 +510,30 @@ class TestExemptionsApplied(unittest.TestCase):
         self.assertIn("no provable effect", str(ctx.exception))
 
 
-class TestAdpReconciliationPresent(unittest.TestCase):
-    """The regression guard that converts 'a human eyeballed the sheet' into a
-    loud CI assertion: the latest closed period must have a numeric adp_paid."""
+class TestProdRawAdpReconciliationCadence(unittest.TestCase):
+    """The prod-raw verify path is CADENCE-SAFE: it requires adp_paid only for a
+    closed period that has actually been paid (a covering GCS Earnings export
+    carries its CC-tip lines), and skips otherwise instead of failing. Proven via
+    the integration tests below; here we assert the cadence helper wiring."""
 
-    HEADER = ["period_start", "period_end", "coverage", "is_open", "employee",
-              "hours_worked", "our_calc", "adp_paid", "diff", "diff_pct",
-              "our_per_hour", "adp_per_hour", "likely_reason"]
+    def test_period_has_cc_tip_actuals_true_when_key_present(self):
+        from agents.bhaga.scripts import update_model_sheet as ums
+        with mock.patch.object(ums, "load_cc_tips_earnings_from_gcs",
+                               return_value=[{"x": 1}]), \
+             mock.patch.object(ums, "actual_cc_tips_by_period",
+                               return_value={("2026-05-18", "2026-05-31"): {"A": 5000}}):
+            self.assertTrue(ums.period_has_cc_tip_actuals(
+                store="palmetto", period_start="2026-05-18",
+                period_end="2026-05-31", last_data_date="2026-05-31"))
 
-    def _row(self, ps, pe, is_open, emp, adp):
-        return [ps, pe, "full", is_open, emp, "5", "50.00", adp,
-                "0", "0%", "10", "10", ""]
-
-    def test_latest_closed_period_populated_passes(self):
-        grid = [self.HEADER,
-                self._row("2026-05-18", "2026-05-31", "no", "A", "50.00"),
-                self._row("2026-05-18", "2026-05-31", "no", "B", "25.00")]
-        res = e2e.assert_adp_reconciliation_present(grid)
-        self.assertEqual(res["latest_period"], "2026-05-31")
-        self.assertEqual(res["reconciled_periods"], 1)
-
-    def test_latest_closed_period_na_raises(self):
-        grid = [self.HEADER,
-                self._row("2026-05-18", "2026-05-31", "no", "A", "N/A")]
-        with self.assertRaises(RuntimeError) as ctx:
-            e2e.assert_adp_reconciliation_present(grid)
-        self.assertIn("adp reconciliation DEAD", str(ctx.exception))
-
-    def test_old_na_period_ok_when_latest_populated(self):
-        # Pre-cache period legitimately N/A; latest closed reconciles -> pass.
-        grid = [self.HEADER,
-                self._row("2026-04-06", "2026-04-19", "no", "A", "N/A"),
-                self._row("2026-05-18", "2026-05-31", "no", "A", "50.00")]
-        res = e2e.assert_adp_reconciliation_present(grid)
-        self.assertEqual(res["latest_period"], "2026-05-31")
-        self.assertEqual(res["reconciled_periods"], 1)
-        self.assertEqual(res["closed_periods"], 2)
-
-    def test_open_period_ignored(self):
-        # An open (unpaid) period with N/A must not trip the guard.
-        grid = [self.HEADER,
-                self._row("2026-05-18", "2026-05-31", "no", "A", "50.00"),
-                self._row("2026-06-01", "2026-06-07", "yes", "A", "N/A")]
-        res = e2e.assert_adp_reconciliation_present(grid)
-        self.assertEqual(res["latest_period"], "2026-05-31")
-
-    def test_empty_grid_raises(self):
-        with self.assertRaises(RuntimeError):
-            e2e.assert_adp_reconciliation_present([self.HEADER])
+    def test_period_has_cc_tip_actuals_false_when_absent(self):
+        from agents.bhaga.scripts import update_model_sheet as ums
+        with mock.patch.object(ums, "load_cc_tips_earnings_from_gcs",
+                               return_value=[{"x": 1}]), \
+             mock.patch.object(ums, "actual_cc_tips_by_period", return_value={}):
+            self.assertFalse(ums.period_has_cc_tip_actuals(
+                store="palmetto", period_start="2026-05-18",
+                period_end="2026-05-31", last_data_date="2026-05-31"))
 
 
 class TestInvokeMain(unittest.TestCase):
@@ -671,6 +647,10 @@ class TestRunE2E(unittest.TestCase):
             mock.patch.object(e2e, "_read_worked_hours",
                               lambda sid, *, account, start, end: {}),
             mock.patch.object(e2e.sandbox_provision, "teardown", teardown),
+            # The seeded closed period HAS been paid (covering Earnings export
+            # carries CC-tip lines), so reconciliation is required + must be alive.
+            mock.patch.object(e2e.update_model_sheet, "period_has_cc_tip_actuals",
+                              lambda **k: True),
         ]
         for p in patches:
             p.start()
@@ -689,9 +669,65 @@ class TestRunE2E(unittest.TestCase):
         self.assertEqual(report["tip_pool_conservation"]["dates_checked"], 1)
         self.assertEqual(report["exemptions"]["period_our_calc_cents"], 5000)
         self.assertEqual(report["exemptions"]["period_pool_cents"], 5000)
-        # The revived adp_paid reconciliation must be asserted alive in CI.
-        self.assertEqual(report["adp_reconciliation"]["reconciled_periods"], 1)
-        self.assertEqual(report["adp_reconciliation"]["latest_period"], "2026-05-31")
+        # The revived adp_paid reconciliation must be asserted alive in CI for a
+        # PAID closed period (cadence gate satisfied).
+        self.assertEqual(report["adp_reconciliation"]["period"], "2026-05-31")
+        self.assertEqual(report["adp_reconciliation"]["rows_reconciled"], 1)
+
+    def test_prod_raw_adp_reconciliation_cadence_skips_when_unpaid(self):
+        # A just-closed period whose payroll hasn't run yet (no covering Earnings
+        # export with CC-tip lines) legitimately shows adp_paid=N/A: the verify
+        # path must SKIP reconciliation, not fail (the real 5/18-5/31 case).
+        from agents.bhaga.scripts import sandbox_provision as sp
+        ids = {k: f"id_{k}" for k in sp.PROFILE_KEYS}
+        counts = {t: 1 for t in e2e.PROD_RAW_VERIFY_MIN_ROWS}
+        balanced = [
+            ["date", "dow", "period_start", "period_end", "employee",
+             "hours_worked", "day_pool", "team_hours_eligible",
+             "pct_of_day_hours", "our_share"],
+            ["2026-05-20", "Tue", "2026-05-18", "2026-05-31", "A",
+             "5", "50.00", "8", "100", "50.00"],
+        ]
+        # adp_paid is N/A here — and that is CORRECT for an unpaid period.
+        period_grid = [
+            ["period_start", "period_end", "coverage", "is_open", "employee",
+             "hours_worked", "our_calc", "adp_paid", "diff", "diff_pct",
+             "our_per_hour", "adp_per_hour", "likely_reason"],
+            ["2026-05-18", "2026-05-31", "full", "no", "A",
+             "5", "50.00", "N/A", "N/A", "N/A", "10", "", "No ADP earnings export"],
+        ]
+        grids = {"tip_alloc_daily": balanced, "tip_alloc_period": period_grid}
+        patches = [
+            mock.patch.object(e2e.sandbox_provision, "provision",
+                              lambda **k: {"ids": ids, "seed_counts": {}}),
+            mock.patch.object(e2e.sandbox_provision, "_load_pointer",
+                              lambda store: {"google_account_key": "palmetto"}),
+            mock.patch.object(e2e, "refresh_access_token", lambda account=None: "tok"),
+            mock.patch.object(e2e, "_apply_staging_env", mock.Mock()),
+            mock.patch.object(e2e, "seed_sandbox_raw_from_prod",
+                              mock.Mock(return_value={"adp_shifts": 10})),
+            mock.patch.object(e2e, "seed_sandbox_training_shifts_from_prod",
+                              mock.Mock(return_value=[])),
+            mock.patch.object(e2e, "_run_model_build", mock.Mock(return_value=0)),
+            mock.patch.object(e2e, "_read_model_tab_counts", lambda t, s, tabs=None: counts),
+            mock.patch.object(e2e, "_read_model_grids", lambda t, s, tabs: grids),
+            mock.patch.object(e2e, "_read_worked_hours",
+                              lambda sid, *, account, start, end: {}),
+            mock.patch.object(e2e.sandbox_provision, "teardown",
+                              mock.Mock(return_value={"deleted": []})),
+            mock.patch.object(e2e.update_model_sheet, "period_has_cc_tip_actuals",
+                              lambda **k: False),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            report = e2e.run_e2e(store="palmetto", pr_number=7, start=D(2026, 5, 18),
+                                 end=D(2026, 5, 31), source="prod-raw")
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["adp_reconciliation"]["status"], "cadence-skip")
 
     def test_evidence_file_written_on_success_and_failure(self):
         # run_e2e writes the evidence file in its finally so it exists on BOTH

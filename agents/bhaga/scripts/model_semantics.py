@@ -150,56 +150,18 @@ def _closed_period_rows(tip_alloc_period_values: list[list]):
         )
 
 
-def assert_adp_reconciliation_present(tip_alloc_period_values: list[list]) -> dict:
-    """The adp_paid/diff reconciliation view must be ALIVE (regression guard).
-
-    Commit 6f87f9c stubbed ``actual_cc_tips_by_period(None)``, leaving
-    ``adp_paid``/``diff``/``diff_pct`` permanently ``"N/A"`` for every closed
-    period — and CI BLESSED it (the old fixtures asserted ``"N/A"`` was correct).
-    This gate asserts the MOST-RECENT closed period (which is within the GCS
-    Earnings-cache era, so a covering export must exist) has a populated, numeric
-    ``adp_paid`` — i.e. the cloud-native earnings load actually reconciled.
-
-    Older closed periods predating the cache (~2026-05-29) may legitimately stay
-    ``"N/A"`` (no export in GCS), so only the latest closed period is required to
-    reconcile. Returns ``{closed_periods, reconciled_periods, latest_period}``;
-    raises ``RuntimeError`` if the latest closed period is still ``"N/A"``.
-    """
-    if not tip_alloc_period_values or len(tip_alloc_period_values) < 2:
-        raise RuntimeError("adp reconciliation: tip_alloc_period is empty")
-    closed = list(_closed_period_rows(tip_alloc_period_values))
-    if not closed:
-        raise RuntimeError(
-            "adp reconciliation: no closed-period rows in tip_alloc_period"
-        )
-    latest_end = max(pe for _, pe, _ in closed)
-    latest_rows = [adp for _, pe, adp in closed if pe == latest_end]
-    na = [adp for adp in latest_rows if adp in ("", "N/A")]
-    if na:
-        raise RuntimeError(
-            f"adp reconciliation DEAD for latest closed period (end={latest_end}): "
-            f"{len(na)}/{len(latest_rows)} rows have adp_paid='N/A' — the earnings "
-            f"load is not wired (regression of commit 6f87f9c)"
-        )
-    reconciled = {pe for _, pe, adp in closed if adp not in ("", "N/A")}
-    return {
-        "closed_periods": len({pe for _, pe, _ in closed}),
-        "reconciled_periods": len(reconciled),
-        "latest_period": latest_end,
-    }
-
-
 def assert_period_reconciled(
     tip_alloc_period_values: list[list], period_key: tuple[str, str]
 ) -> dict:
     """Assert a SPECIFIC closed period reconciled (adp_paid populated).
 
-    Used by the nightly guard, which independently knows (from the GCS cache)
-    that a covering Earnings export exists for ``period_key`` = (start, end) and
-    therefore the model MUST have populated adp_paid for it. Distinct from
-    ``assert_adp_reconciliation_present`` (which infers the latest period from
-    the grid) because the nightly can be cadence-safe: it only requires the
-    period whose export it actually found.
+    The CADENCE-SAFE reconciliation gate, used by BOTH the nightly guard and the
+    per-PR sandbox e2e. The caller has independently confirmed (via
+    ``update_model_sheet.period_has_cc_tip_actuals``) that a covering Earnings
+    export carries 'Credit Card Tips Owed' lines for ``period_key`` = (start,
+    end), so the model MUST have populated adp_paid for it. A period whose
+    payroll has not run yet (no CC-tip lines exported) is never passed here —
+    the caller skips it — so a legitimate cadence gap can't trip this guard.
     """
     if not tip_alloc_period_values or len(tip_alloc_period_values) < 2:
         raise RuntimeError("adp reconciliation: tip_alloc_period is empty")

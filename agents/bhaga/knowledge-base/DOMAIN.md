@@ -303,6 +303,14 @@ redistributes to everyone else. Three sheet-driven sources, all funnelling throu
 (free text, e.g. "training"). It is **human-owned** (Lindsay/operator maintain it); the pipeline only
 reads it. The through-date shorthand and the per-shift tab **coexist** — use whichever is clearer.
 
+**Conservation invariant (machine-checked).** Pool-by-day allocation is **cent-exact (zero
+tolerance)**: for every date, the per-employee allocations sum to that day's tip pool *exactly*
+(largest-remainder distribution; see `skills/tip_pool_allocation/adapter.py`). The check
+(`assert_tip_pool_conserved`) defaults to `tol_cents=0`, so even a 1¢/day leak fails. Every PR proves
+this against real prod data over the most-recent **closed** pay period (boundaries from
+`most_recent_closed_period`, the same anchor + biweekly cadence as `discover_periods`) via the per-PR
+sandbox e2e (real-data rebuilds verify at max residual 0¢).
+
 ---
 
 ## 6. Review bonuses — `review_bonus_period`

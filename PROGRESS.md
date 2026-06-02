@@ -31,9 +31,30 @@
   local rebuild via impersonated `bhaga-orchestrator` SA — Lisette `training_excluded:2026-05-31` +
   Ximena (5/29, 5/31) + Juan (5/18) → Lisette/Ximena $0, Juan 5/18 dropped, **pool conserved at
   $1,197.77**. The populated-overlay → exclusion → **cent-exact conservation** end-to-end on prod data
-  is machine-checked by the companion mandatory prod-data sandbox gate (PR #11). **Durability note:**
-  per-shift marks only stick once PR #10 is deployed; the nightly cron stays paused until then (the
-  deployed image can't yet read the tab).
+  is machine-checked by the mandatory prod-data sandbox gate landed in **this same PR** (see next
+  entry). **Durability note:** per-shift marks only stick once this PR is deployed; the nightly cron
+  stays paused until then (the deployed image can't yet read the tab).
+
+### 2026-06-02 — Mandatory per-PR prod-data sandbox verification (same PR #10)
+
+- **Two-tier sandbox mandate** (CONTRIBUTING): Tier 1 = the per-PR `Sandbox e2e`, now a no-OTP
+  **prod-data** run — reads the PROD raw Square+ADP sheets directly for the most-recent **closed** pay
+  period and writes only to a leased sandbox slot (read-prod / write-sandbox, hard-asserted), rebuilds
+  the model, and verifies the full period incl. **tip-pool conservation**. Because it never scrapes or
+  logs in, it blocks merge on every PR (no opt-out). Tier 2 = the live-OTP `sandbox_live_run` scenario,
+  kept on-demand for live-only paths (selector/login/2FA).
+- **New code:** `most_recent_closed_period` (pure, reuses the `discover_periods` anchor math) in
+  `update_model_sheet.py`; `seed_sandbox_raw_from_prod` + `filter_rows_to_window` +
+  `assert_tip_pool_conserved` in `sandbox_e2e.py`; `--source {gcs-replay,prod-raw}` + `--period
+  last-closed` CLI. The no-OTP structural guarantee (`test_sandbox_e2e_no_otp`) still holds — only
+  reader/writer/model modules enter the import graph.
+- **Read-prod / write-sandbox guard:** the staging isolation guard now distinguishes read vs write
+  (`_assert_not_production_sheet(..., op=)`). Prod *writes* stay hard-blocked; prod *reads* are only
+  unlocked inside an explicit `allow_production_read()` scope (used solely by the seed step), so the
+  seed can copy real prod raw rows while a misrouted write still fails closed.
+- **Wiring:** `.github/workflows/sandbox-e2e.yml` runs `--source prod-raw --period last-closed`; stays
+  the required per-PR status check (**fail-fast** if `SANDBOX_E2E_ENABLED` is unset — red, never a
+  silent skip).
 
 ### 2026-06-01 — Cloud observability, sandbox isolation, JSON selectors, live sandbox run
 

@@ -51,15 +51,22 @@ new ambiguity or scope change appears — e.g. Agent→Plan if the approach turn
    (the operator isn't in the loop for routine correction). If a milestone can't be closed by your
    own verification, it's too big — split it. Include the per-milestone test plan (what you'll run
    to prove it) in the plan.
-4. **Verify with a real end-to-end run — not just unit tests.** The proof a milestone / PR works is a
-   **prod-like e2e against isolated sandbox sheets** with recorded evidence. For BHAGA, the per-PR
-   `Sandbox e2e` workflow does exactly this — it provisions ephemeral sandbox sheets, replays the GCS
-   scrape cache (read-only, zero-OTP), builds the model, asserts the tabs are populated, and posts the
-   evidence as a PR comment (see `RUNBOOK.md` §13 and `agents/bhaga/scripts/sandbox_e2e.py`). Run
-   directly against prod sheets only when sandbox isolation genuinely can't exercise the path. Unit
-   tests are necessary but are *not* the evidence of doneness.
-   - **When the replay e2e can't exercise the path, use the LIVE sandbox run — never prod, never an
-     ad-hoc script.** The replay e2e is zero-OTP and uses the GCS cache, so it cannot reproduce a
+4. **Verify with a real end-to-end run — not just unit tests.** Sandbox verification is **mandatory on
+   every PR**, in two tiers:
+   - **Tier 1 — the per-PR `Sandbox e2e` (no-OTP, REQUIRED on every PR, hard CI gate).** It provisions
+     an isolated sandbox slot, reads the **PROD raw** Square+ADP data for the most-recent **closed** pay
+     period (`--source prod-raw --period last-closed`), writes only to the sandbox (read-prod /
+     write-sandbox, isolation hard-asserted), rebuilds the model, asserts the full-period tabs populate,
+     **checks tip-pool conservation**, and posts the evidence as a PR comment (see `RUNBOOK.md` §13 and
+     `agents/bhaga/scripts/sandbox_e2e.py`). Because it never scrapes or logs in, it can block merge on
+     every PR — there is no opt-out. The gate is **fail-fast on misconfiguration**: if the prerequisite
+     repo variable `SANDBOX_E2E_ENABLED` is not `true` (or the WIF secrets are missing) the check goes
+     **red**, never silently green — a green status always means the e2e actually ran. Enabling it
+     (`SANDBOX_E2E_ENABLED=true` + WIF secrets) is a one-time org/admin prerequisite, not a per-PR
+     switch; disabling the gate is a deliberate branch-protection change. Unit tests are necessary but
+     are *not* the evidence of doneness.
+   - **Tier 2 — the LIVE sandbox run (on-demand, for live-only paths) — never prod, never an ad-hoc
+     script.** Tier 1 is zero-OTP and reads already-scraped data, so it cannot reproduce a
      **live-only** failure (selector drift, a login/2FA flow, a real browser crash). For those, the
      sanctioned tool is `agents/bhaga/scripts/sandbox_live_run.py` via the **`Sandbox live run`**
      workflow (`workflow_dispatch`): it deploys the unmerged PR image to `bhaga-sandbox-refresh` and

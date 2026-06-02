@@ -917,6 +917,33 @@ def discover_periods(
     return periods
 
 
+def most_recent_closed_period(
+    *,
+    anchor_end_date: str,
+    pay_frequency: str,
+    today: datetime.date,
+) -> tuple[datetime.date, datetime.date]:
+    """Return (start, end) of the most recent CLOSED pay period as of ``today``.
+
+    A period is *closed* once its end date is strictly in the past
+    (``end < today``): the whole biweekly window has fully elapsed. Uses the
+    SAME profile anchor + fixed-cadence calendar as ``discover_periods`` (no
+    data read needed), so the boundaries are identical. With Palmetto's anchor
+    (2026-05-17, Biweekly) and ``today`` = 2026-06-02 this is
+    (2026-05-18, 2026-05-31).
+
+    Subtracting a day before the floor-division means a period that ends *on*
+    ``today`` is treated as not-yet-closed (today is still its last business
+    day), so the result is the prior, fully-elapsed period.
+    """
+    period_len = _period_length_days(pay_frequency)
+    anchor_end = datetime.date.fromisoformat(anchor_end_date)
+    k = ((today - datetime.timedelta(days=1)) - anchor_end).days // period_len
+    end = anchor_end + datetime.timedelta(days=period_len * k)
+    start = end - datetime.timedelta(days=period_len - 1)
+    return start, end
+
+
 def append_open_period(
     canonical: list[dict],
     *,

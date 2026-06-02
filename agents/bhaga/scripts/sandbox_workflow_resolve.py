@@ -42,15 +42,16 @@ def _emit(run: bool, *, pr_number: str = "", head_ref: str = "", plan: list | No
 
 
 def _yesterday_ct() -> str:
-    try:
-        import zoneinfo
-        now = datetime.datetime.now(zoneinfo.ZoneInfo("America/Chicago"))
-    except Exception:  # noqa: BLE001
-        # zoneinfo is stdlib since 3.9 and the workflow is 3.12, so this should
-        # never fire. If it does, anchor to UTC-6 (CST): CT is never *ahead* of
-        # UTC-6, so "yesterday" can't be computed a day early and trip the
-        # CT-always invariant (a late-evening CT run mis-dated to the next UTC day).
-        now = datetime.datetime.utcnow() - datetime.timedelta(hours=6)
+    # America/Chicago via zoneinfo is the ONLY DST-aware source of CT (it is UTC-6
+    # in winter / CST but UTC-5 in summer / CDT). No fixed-offset fallback: any such
+    # fallback would be an hour wrong half the year and could compute the wrong
+    # "yesterday" around midnight, silently triggering a live scrape on the wrong
+    # date. zoneinfo is stdlib since 3.9 and the resolve job pins Python 3.12, so an
+    # ImportError/ZoneInfoNotFoundError here means the runner is broken — fail loud
+    # (let it propagate) rather than emit a quietly-wrong default date.
+    import zoneinfo
+
+    now = datetime.datetime.now(zoneinfo.ZoneInfo("America/Chicago"))
     return (now.date() - datetime.timedelta(days=1)).isoformat()
 
 

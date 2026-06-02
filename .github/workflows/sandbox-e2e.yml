@@ -86,8 +86,12 @@ jobs:
             --source prod-raw --period last-closed \
             --evidence-file sandbox-e2e-evidence.md
 
+      # always() so the evidence comment posts on FAILURE too (GitHub otherwise
+      # skips post-failure steps). run_e2e writes the evidence file in its
+      # finally block, so the file — incl. the `error:` line — exists on both
+      # pass and fail, giving the PR author the diagnostic without digging logs.
       - name: Post evidence comment
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && always()
         uses: actions/github-script@v7
         with:
           script: |

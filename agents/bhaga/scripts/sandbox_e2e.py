@@ -696,6 +696,7 @@ def run_e2e(
     teardown_after: bool = True,
     expect_kds: bool = False,
     source: str = "gcs-replay",
+    evidence_file: str | None = None,
 ) -> dict:
     """Full provision -> seed -> model -> verify -> teardown loop.
 
@@ -777,7 +778,19 @@ def run_e2e(
     finally:
         if teardown_after:
             report["teardown"] = sandbox_provision.teardown(store=store, pr_number=pr_number)
-        print(format_evidence(report))
+        evidence = format_evidence(report)
+        print(evidence)
+        # Write the evidence file HERE (not in main) so it exists even on the
+        # failure path — run_e2e re-raises on error, so a write in main() would
+        # be skipped exactly when the diagnostic (the `error:` line) matters
+        # most. The CI "Post evidence comment" step (if: always()) then has a
+        # file to post on both pass and fail.
+        if evidence_file:
+            try:
+                with open(evidence_file, "w") as fh:
+                    fh.write(evidence + "\n")
+            except OSError as exc:  # don't mask the real failure with an I/O error
+                print(f"# WARN: could not write evidence file {evidence_file}: {exc}")
     return report
 
 
@@ -833,10 +846,8 @@ def main(argv: list[str] | None = None) -> int:
         teardown_after=not args.keep,
         expect_kds=args.expect_kds,
         source=args.source,
+        evidence_file=args.evidence_file,
     )
-    if args.evidence_file:
-        with open(args.evidence_file, "w") as f:
-            f.write(format_evidence(report) + "\n")
     print("# report:")
     print(json.dumps(report, indent=2, default=str))
     return 0 if report.get("status") == "ok" else 1

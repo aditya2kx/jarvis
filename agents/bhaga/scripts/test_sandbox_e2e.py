@@ -640,6 +640,54 @@ class TestRunE2E(unittest.TestCase):
         self.assertEqual(report["exemptions"]["period_our_calc_cents"], 5000)
         self.assertEqual(report["exemptions"]["period_pool_cents"], 5000)
 
+    def test_evidence_file_written_on_success_and_failure(self):
+        # run_e2e writes the evidence file in its finally so it exists on BOTH
+        # paths — critical because the failure path re-raises (a write in main
+        # would be skipped) and that's exactly when the diagnostic matters.
+        import tempfile
+        teardown = mock.Mock(return_value={"deleted": []})
+
+        ok_counts = {t: 1 for t in e2e.MODEL_VERIFY_MIN_ROWS}
+        with tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False) as tf:
+            ev_ok = tf.name
+        patches = self._common_mocks() + [
+            mock.patch.object(e2e, "_read_model_tab_counts", lambda t, s, tabs=None: ok_counts),
+            mock.patch.object(e2e.sandbox_provision, "teardown", teardown),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            e2e.run_e2e(store="palmetto", pr_number=7, start=D(2026, 5, 1),
+                        end=D(2026, 5, 1), evidence_file=ev_ok)
+        finally:
+            for p in patches:
+                p.stop()
+        with open(ev_ok) as f:
+            self.assertIn("PR #7", f.read())
+        os.unlink(ev_ok)
+
+        under = {t: 0 for t in e2e.MODEL_VERIFY_MIN_ROWS}  # forces an assertion failure
+        with tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False) as tf:
+            ev_fail = tf.name
+        patches = self._common_mocks() + [
+            mock.patch.object(e2e, "_read_model_tab_counts", lambda t, s, tabs=None: under),
+            mock.patch.object(e2e.sandbox_provision, "teardown", teardown),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            with self.assertRaises(RuntimeError):
+                e2e.run_e2e(store="palmetto", pr_number=7, start=D(2026, 5, 1),
+                            end=D(2026, 5, 1), evidence_file=ev_fail)
+        finally:
+            for p in patches:
+                p.stop()
+        with open(ev_fail) as f:
+            body = f.read()
+        self.assertIn("PR #7", body)
+        self.assertIn("error:", body)  # the diagnostic line survives the re-raise
+        os.unlink(ev_fail)
+
     def test_keep_skips_teardown(self):
         teardown = mock.Mock()
         counts = {t: 1 for t in e2e.MODEL_VERIFY_MIN_ROWS}
@@ -660,21 +708,23 @@ class TestRunE2E(unittest.TestCase):
 
 
 class TestMainCli(unittest.TestCase):
-    def test_main_writes_evidence_and_returns_zero_on_ok(self):
-        import tempfile
-        with tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False) as tf:
-            ev = tf.name
-        try:
-            report = {"status": "ok", "pr_number": 3, "days": 1,
-                      "window": {"start": "2026-05-01", "end": "2026-05-01"}}
-            with mock.patch.object(e2e, "run_e2e", lambda **k: report):
-                rc = e2e.main(["--pr-number", "3", "--start", "2026-05-01",
-                               "--end", "2026-05-01", "--evidence-file", ev])
-            self.assertEqual(rc, 0)
-            with open(ev) as f:
-                self.assertIn("PR #3", f.read())
-        finally:
-            os.unlink(ev)
+    def test_main_passes_evidence_file_through_to_run_e2e(self):
+        # main no longer writes the evidence file itself — run_e2e owns the write
+        # (in its finally, so it survives the failure re-raise). main's only job
+        # is to thread --evidence-file through.
+        captured = {}
+        report = {"status": "ok", "pr_number": 3, "days": 1,
+                  "window": {"start": "2026-05-01", "end": "2026-05-01"}}
+
+        def fake_run(**kw):
+            captured.update(kw)
+            return report
+
+        with mock.patch.object(e2e, "run_e2e", fake_run):
+            rc = e2e.main(["--pr-number", "3", "--start", "2026-05-01",
+                           "--end", "2026-05-01", "--evidence-file", "/tmp/ev.md"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured["evidence_file"], "/tmp/ev.md")
 
     def test_main_returns_one_on_error_status(self):
         report = {"status": "error", "pr_number": 3, "days": 1,

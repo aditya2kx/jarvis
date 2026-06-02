@@ -50,7 +50,12 @@ tight build → verify → fix loop without the operator babysitting every step.
      write-sandbox, isolation hard-asserted), rebuilds the model, asserts the full-period tabs populate,
      **checks tip-pool conservation**, and posts the evidence as a PR comment (see `RUNBOOK.md` §13 and
      `agents/bhaga/scripts/sandbox_e2e.py`). Because it never scrapes or logs in, it can block merge on
-     every PR — there is no opt-out. Unit tests are necessary but are *not* the evidence of doneness.
+     every PR — there is no opt-out. The gate is **fail-fast on misconfiguration**: if the prerequisite
+     repo variable `SANDBOX_E2E_ENABLED` is not `true` (or the WIF secrets are missing) the check goes
+     **red**, never silently green — a green status always means the e2e actually ran. Enabling it
+     (`SANDBOX_E2E_ENABLED=true` + WIF secrets) is a one-time org/admin prerequisite, not a per-PR
+     switch; disabling the gate is a deliberate branch-protection change. Unit tests are necessary but
+     are *not* the evidence of doneness.
    - **Tier 2 — the LIVE sandbox run (on-demand, for live-only paths) — never prod, never an ad-hoc
      script.** Tier 1 is zero-OTP and reads already-scraped data, so it cannot reproduce a
      **live-only** failure (selector drift, a login/2FA flow, a real browser crash). For those, the

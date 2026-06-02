@@ -35,13 +35,24 @@ jobs:
       - name: Register check on main push
         if: github.event_name == 'push'
         run: |
-          echo "Full sandbox e2e runs on pull_request when SANDBOX_E2E_ENABLED=true."
+          echo "Full sandbox e2e runs on pull_request (mandatory)."
           echo "This step registers the job name on main for branch protection."
 
-      - name: Skip when sandbox e2e disabled
-        if: github.event_name == 'pull_request' && vars.SANDBOX_E2E_ENABLED != 'true'
+      # Mandatory gate (no per-PR opt-out): if the prerequisite repo variable is
+      # missing the check FAILS rather than silently skipping, so a green status
+      # always means the e2e actually ran. SANDBOX_E2E_ENABLED + the WIF secrets
+      # are an org/admin prerequisite (see CONTRIBUTING §4 / RUNBOOK §13), not a
+      # PR-author switch — disabling the gate is a deliberate branch-protection
+      # change, never an unset variable.
+      - name: Require sandbox e2e enabled (fail-fast)
+        if: github.event_name == 'pull_request'
         run: |
-          echo "SANDBOX_E2E_ENABLED is not true — skipping heavy e2e (by design)."
+          if [ "${{ vars.SANDBOX_E2E_ENABLED }}" != "true" ]; then
+            echo "::error::SANDBOX_E2E_ENABLED is not 'true' — the mandatory sandbox e2e gate cannot run."
+            echo "Set repo variable SANDBOX_E2E_ENABLED=true and wire the WIF secrets (see CONTRIBUTING §4 / RUNBOOK §13)."
+            exit 1
+          fi
+          echo "sandbox e2e enabled — proceeding."
 
       - uses: actions/checkout@v4
         if: github.event_name == 'pull_request' && vars.SANDBOX_E2E_ENABLED == 'true'

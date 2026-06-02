@@ -44,6 +44,7 @@ import importlib.util
 import json
 import os
 import sys
+from decimal import Decimal
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
@@ -335,7 +336,6 @@ def _to_cents(cell: object) -> int:
     s = str(cell or "").strip().replace("$", "").replace(",", "")
     if not s:
         return 0
-    from decimal import Decimal
     return int((Decimal(s) * 100).to_integral_value())
 
 

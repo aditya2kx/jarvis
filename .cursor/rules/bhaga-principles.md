@@ -47,8 +47,9 @@ derive proposals from them rather than from memory.
   may **read** prod data (GCS cache, raw sheets) but must **never write** to any prod data source —
   prod sheets, the prod GCS cache (`bhaga-scrape-cache`), or prod Firestore state. All sandbox writes
   divert to isolated sandbox targets (staging sheets, `BHAGA_GCS_CACHE_WRITE_BUCKET`, a sandbox Firestore
-  namespace). Enforced by hard guards: `config_loader._assert_not_production_sheet` (sheets) and
-  `gcs_cache._assert_sandbox_write_isolation` (cache) — both fail loud rather than mutate prod.
+  namespace). Enforced by hard guards: `config_loader._assert_not_production_sheet` (sheets),
+  `gcs_cache._assert_sandbox_write_isolation` (cache), and `state_adapter._assert_sandbox_state_isolation`
+  (Firestore run-state) — all fail loud rather than mutate prod.
 - **OTP via Slack/Firestore+webhook, never the IDE.** Announce any action that fires an SMS/email/DM
   before triggering it.
 - **Never reflexively retry a transient error when a retry can fire a side effect** (OTP/SMS/email/DM).
@@ -57,8 +58,14 @@ derive proposals from them rather than from memory.
 - **Leave a breadcrumb on every failure** — a precise, greppable one-line cause distinct from library
   noise, plus enough state (refresh_date/window, attempt `N/M`, evidence path, skipped/cleared markers)
   to diagnose from Cloud Run logs + Firestore alone on another machine.
-- **Build & verify autonomously** (tests, image build, deploy, re-read sheets). Pause only for
-  destructive/irreversible actions or genuine architecture forks.
+- **Drive end-to-end; own the whole loop.** Build, test, push, open/iterate the PR, and run the proof —
+  don't stop at a handoff you can do yourself. When credentials are present, do the operator setup with
+  the available tooling (`gcloud`/`gh`): create the sandbox bucket + IAM grants, deploy/execute the
+  sandbox job, trigger the workflow (add the `sandbox-live` label / dispatch), watch the run, and **fix
+  any failure (Python, IAM, config) and re-run** rather than asking. Inspect real artifacts (describe
+  JSON, Cloud Run logs, GCS evidence) instead of assuming a schema. Pause **only** for the irreducible
+  human step (replying to the OTP DM on the operator's phone), a truly destructive/irreversible **prod**
+  action, or a genuine architecture fork. Announce side-effecting actions; then proceed.
 - **Keep docs in lock-step** — pipeline/step/sheet/invariant changes update `RUNBOOK.md` +
   `agents/bhaga/scripts/README.md` + `bhaga.md` + a dated `PROGRESS.md` entry in the same change.
 

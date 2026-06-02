@@ -89,8 +89,8 @@ class TestEnvFlagArgs:
         assert "A=1@B=x,y" in flag[1]
 
 
-# Cloud Run v2 `jobs describe --format=json` shape (trimmed to what we parse).
-_PROD_JOB_JSON = {
+# Cloud Run v2 `jobs describe` shape.
+_PROD_JOB_V2 = {
     "template": {
         "template": {
             "serviceAccount": "bhaga-runner@jarvis-bhaga-prod.iam.gserviceaccount.com",
@@ -109,24 +109,72 @@ _PROD_JOB_JSON = {
     }
 }
 
+# KRM/v1 shape (what `gcloud run jobs describe --format=json` actually emits here):
+# deep nesting, valueFrom.secretKeyRef with name/key, resources.limits, timeoutSeconds.
+_PROD_JOB_KRM = {
+    "apiVersion": "run.googleapis.com/v1",
+    "kind": "Job",
+    "spec": {"template": {"spec": {"template": {"spec": {
+        "serviceAccountName": "bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com",
+        "maxRetries": 0,
+        "timeoutSeconds": 3600,
+        "containers": [{
+            "image": "us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images/bhaga-orchestrator:abc",
+            "resources": {"limits": {"cpu": "2", "memory": "2Gi"}},
+            "env": [
+                {"name": "STORE", "value": "palmetto"},
+                {"name": "SLACK_BOT_TOKEN", "valueFrom": {
+                    "secretKeyRef": {"name": "slack-bot-token", "key": "latest"}}},
+                {"name": "CLICKUP_PAT", "valueFrom": {
+                    "secretKeyRef": {"name": "jarvis-clickup-palmetto-pat", "key": "2"}}},
+            ],
+        }],
+    }}}}},
+}
 
-class TestSecretInheritance:
-    def test_parses_secret_bindings(self):
-        flags = slr.parse_secret_flags(_PROD_JOB_JSON)
+
+class TestSecretInheritanceV2:
+    def test_parses_v2_secret_bindings(self):
+        flags = slr.parse_secret_flags(_PROD_JOB_V2)
         assert flags[0] == "--set-secrets"
         assert "SQUARE_PW=square-password:latest" in flags[1]
         assert "ADP_PW=adp-password:3" in flags[1]
-        # Plain (non-secret) env vars are not mirrored as secrets.
+        assert "STORE" not in flags[1]  # plain env not mirrored as a secret
+
+    def test_parses_v2_service_account(self):
+        assert slr.parse_service_account(_PROD_JOB_V2) == (
+            "bhaga-runner@jarvis-bhaga-prod.iam.gserviceaccount.com"
+        )
+
+
+class TestSecretInheritanceKRM:
+    def test_parses_krm_secret_bindings(self):
+        flags = slr.parse_secret_flags(_PROD_JOB_KRM)
+        assert flags[0] == "--set-secrets"
+        assert "SLACK_BOT_TOKEN=slack-bot-token:latest" in flags[1]
+        assert "CLICKUP_PAT=jarvis-clickup-palmetto-pat:2" in flags[1]
         assert "STORE" not in flags[1]
 
+    def test_parses_krm_service_account(self):
+        assert slr.parse_service_account(_PROD_JOB_KRM) == (
+            "bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com"
+        )
+
+    def test_parses_krm_resources_timeout_retries(self):
+        flags = slr.parse_resource_flags(_PROD_JOB_KRM)
+        assert "--cpu" in flags and flags[flags.index("--cpu") + 1] == "2"
+        assert "--memory" in flags and flags[flags.index("--memory") + 1] == "2Gi"
+        assert "--task-timeout" in flags and flags[flags.index("--task-timeout") + 1] == "3600s"
+        assert "--max-retries" in flags and flags[flags.index("--max-retries") + 1] == "0"
+
+
+class TestParsersHandleEmpty:
     def test_no_secrets_yields_empty(self):
         assert slr.parse_secret_flags({"template": {"template": {"containers": [{"env": []}]}}}) == []
         assert slr.parse_secret_flags({}) == []
 
-    def test_parses_service_account(self):
-        assert slr.parse_service_account(_PROD_JOB_JSON) == (
-            "bhaga-runner@jarvis-bhaga-prod.iam.gserviceaccount.com"
-        )
-
     def test_service_account_absent(self):
         assert slr.parse_service_account({}) is None
+
+    def test_resource_flags_absent(self):
+        assert slr.parse_resource_flags({}) == []

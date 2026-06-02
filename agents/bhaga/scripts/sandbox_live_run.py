@@ -148,22 +148,50 @@ def assert_sandbox_isolation(env: dict[str, str]) -> None:
 
 
 def _find_containers(job_json: dict) -> list[dict]:
-    """Locate the container list across the v2/v1 describe JSON shapes."""
-    for path in (
-        ("template", "template", "containers"),
-        ("spec", "template", "spec", "containers"),
-        ("template", "containers"),
-    ):
-        node: object = job_json
-        for key in path:
-            if isinstance(node, dict) and key in node:
-                node = node[key]
-            else:
-                node = None
-                break
-        if isinstance(node, list):
-            return node
-    return []
+    """First container list in the describe JSON, regardless of schema nesting.
+
+    gcloud emits either the v2 shape (template.template.containers) or the KRM/v1
+    shape (spec.template.spec.template.spec.containers); a recursive search for the
+    first ``containers`` list is robust to both.
+    """
+    found: list[list] = []
+
+    def walk(node: object) -> None:
+        if found:
+            return
+        if isinstance(node, dict):
+            for key, val in node.items():
+                if key == "containers" and isinstance(val, list) and val:
+                    found.append(val)
+                    return
+                walk(val)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(job_json)
+    return found[0] if found else []
+
+
+def _find_scalar(job_json: dict, key: str):
+    """First scalar value for ``key`` anywhere in the JSON (schema-agnostic)."""
+    out = [None]
+
+    def walk(node: object) -> None:
+        if out[0] is not None:
+            return
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == key and not isinstance(v, (dict, list)) and v not in (None, ""):
+                    out[0] = v
+                    return
+                walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(job_json)
+    return out[0]
 
 
 def parse_secret_flags(job_json: dict) -> list[str]:
@@ -171,39 +199,52 @@ def parse_secret_flags(job_json: dict) -> list[str]:
 
     The sandbox scrapes the REAL portals, so it needs the SAME credentials as
     prod — only the isolation env differs. Inheriting prod's bindings means no
-    separate sandbox secret store and no manual secret wiring. Pure (parses
-    describe JSON); returns [] when there are no secret-sourced env vars.
+    separate sandbox secret store and no manual secret wiring. Handles both the
+    v2 (``valueSource.secretKeyRef`` → secret/version) and KRM
+    (``valueFrom.secretKeyRef`` → name/key) shapes. Returns [] when none.
     """
     mounts: list[str] = []
     for container in _find_containers(job_json):
         for entry in container.get("env", []) or []:
-            ref = (entry.get("valueSource") or {}).get("secretKeyRef") or entry.get("secretKeyRef")
+            ref = (entry.get("valueSource") or entry.get("valueFrom") or {}).get("secretKeyRef")
             if not ref:
                 continue
-            name = entry.get("name")
-            secret = ref.get("secret")
-            version = ref.get("version") or "latest"
-            if name and secret:
-                mounts.append(f"{name}={secret}:{version}")
+            env_name = entry.get("name")
+            secret = ref.get("secret") or ref.get("name")
+            version = ref.get("version") or ref.get("key") or "latest"
+            if env_name and secret:
+                mounts.append(f"{env_name}={secret}:{version}")
     return ["--set-secrets", ",".join(mounts)] if mounts else []
 
 
 def parse_service_account(job_json: dict) -> str | None:
-    """Extract the prod job's service account so the sandbox job runs as the same SA."""
-    for path in (
-        ("template", "template", "serviceAccount"),
-        ("spec", "template", "spec", "serviceAccountName"),
-    ):
-        node: object = job_json
-        for key in path:
-            if isinstance(node, dict) and key in node:
-                node = node[key]
-            else:
-                node = None
-                break
-        if isinstance(node, str) and node:
-            return node
-    return None
+    """Extract the prod job's service account (schema-agnostic)."""
+    return (_find_scalar(job_json, "serviceAccountName")
+            or _find_scalar(job_json, "serviceAccount"))
+
+
+def parse_resource_flags(job_json: dict) -> list[str]:
+    """Mirror prod's cpu/memory/timeout/retries so the sandbox job can run a browser.
+
+    A freshly-created Cloud Run job defaults to 512Mi / 600s, which would OOM or
+    time out a Chromium scrape (and the inline-OTP wait). Inheriting prod's limits
+    keeps the sandbox run faithful.
+    """
+    flags: list[str] = []
+    containers = _find_containers(job_json)
+    limits = ((containers[0] if containers else {}).get("resources") or {}).get("limits") or {}
+    if limits.get("cpu"):
+        flags += ["--cpu", str(limits["cpu"])]
+    if limits.get("memory"):
+        flags += ["--memory", str(limits["memory"])]
+    timeout = _find_scalar(job_json, "timeoutSeconds") or _find_scalar(job_json, "timeout")
+    if timeout is not None:
+        ts = str(timeout)
+        flags += ["--task-timeout", ts if ts.endswith("s") else f"{ts}s"]
+    retries = _find_scalar(job_json, "maxRetries")
+    if retries is not None:
+        flags += ["--max-retries", str(retries)]
+    return flags
 
 
 def env_flag_args(env: dict[str, str]) -> list[str]:
@@ -290,8 +331,12 @@ def deploy_sandbox_job(*, image: str, env: dict[str, str], base_job: str = PROD_
     sa_flags = [f"--service-account={sa}"] if sa else []
     if sa:
         print(f"  inheriting service account {sa}")
-    print(f"  creating sandbox job {SANDBOX_JOB_NAME} (mirrors {base_job} secrets/SA)")
-    _gcloud(["run", "jobs", "create", SANDBOX_JOB_NAME, *flags, *secret_flags, *sa_flags])
+    resource_flags = parse_resource_flags(prod)
+    if resource_flags:
+        print(f"  inheriting resources/timeout: {' '.join(resource_flags)}")
+    print(f"  creating sandbox job {SANDBOX_JOB_NAME} (mirrors {base_job} secrets/SA/resources)")
+    _gcloud(["run", "jobs", "create", SANDBOX_JOB_NAME, *flags,
+             *secret_flags, *sa_flags, *resource_flags])
 
 
 def execute_job(*, wait: bool = True) -> int:

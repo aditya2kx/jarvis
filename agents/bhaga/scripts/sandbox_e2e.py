@@ -339,12 +339,15 @@ def _to_cents(cell: object) -> int:
     return int((Decimal(s) * 100).to_integral_value())
 
 
-def assert_tip_pool_conserved(tip_alloc_daily_values: list[list], *, tol_cents: int = 1) -> dict:
+def assert_tip_pool_conserved(tip_alloc_daily_values: list[list], *, tol_cents: int = 0) -> dict:
     """Per-day conservation: sum of tip_allocation_dollars == that day's pool.
 
     The allocator is cent-exact (largest-remainder), so for every date the
-    per-employee allocations must sum to the day's tip pool. This guards against
-    a builder bug silently dropping/duplicating cents on the way to the sheet.
+    per-employee allocations must sum to the day's tip pool **exactly**. The
+    default tolerance is therefore 0 — a 1¢/day leak must fail this gate, not
+    pass silently. (Verified: real prod data rebuilds at max residual 0¢.) This
+    guards against a builder bug silently dropping/duplicating cents on the way
+    to the sheet.
 
     tip_alloc_daily columns (per the model builder):
         date | dow | period_start | period_end | employee | hours_worked |

@@ -569,3 +569,103 @@ python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --auto-window --keep
 > Reviews (ClickUp) are intentionally **out of scope** for the per-PR e2e (they need a live call). The
 > e2e proves the sales / labor / tip / model core. Item-level operations are picked up automatically if
 > `backfill_item_lines_from_cache` lands on main.
+
+### Run a LIVE sandbox run (real scrape + OTP, unmerged PR code)
+
+The replay e2e above can't exercise a live browser, so it can't reproduce or prove a fix for
+**selector drift** (e.g. the 2026-05-31 item-sales "date picker not found" incident). For that, use
+`agents/bhaga/scripts/sandbox_live_run.py` via **`.github/workflows/sandbox-live-run.yml`**
+(`workflow_dispatch`). It builds the current ref's orchestrator image, deploys it to the
+**`bhaga-sandbox-refresh`** Cloud Run job, and runs the **real** Square/ADP pipeline for a chosen
+`REFRESH_DATE`.
+
+**Sandbox isolation is enforced (read prod, never write prod).** The job runs with
+`BHAGA_SHEET_MODE=staging` (leased pool slot), `BHAGA_GCS_CACHE_WRITE_BUCKET=bhaga-scrape-cache-sandbox`
+(reads still come from the prod cache), and `BHAGA_FIRESTORE_COLLECTION=sandbox_runs`. The script runs
+an **isolation pre-flight** (`assert_sandbox_isolation`) that fails *before* any deploy/execute if an
+override is missing or points at a prod source — backstopped by the runtime guards in
+`config_loader`, `gcs_cache`, and `state_adapter`.
+
+**OTP routing.** The run uses the **same prod BHAGA cloud Slack bot**, but the prompt is **labeled**
+`:test_tube: *[SANDBOX · PR#… …]*` (via `BHAGA_RUN_ENV`/`BHAGA_RUN_LABEL`) and its pending-OTP
+checkpoint (in `sandbox_runs`) carries routing metadata (`env`, `run_label`, `target_job`). The
+webhook scans `sandbox_runs` **first** (sandbox precedence), so the operator's READY/code reply
+resumes the **sandbox** job — never the nightly — even if a prod run is awaiting OTP at the same time.
+
+Runs are organized as a **named scenario suite** (`agents/bhaga/scripts/sandbox_scenarios.py`,
+e.g. `item-sales-live`, `full-live`) so you control **what** runs and **when**, with three selectors:
+
+```bash
+# 1. Committed config (works PRE-MERGE): list scenarios in .github/sandbox-live.yml
+#    and add the `sandbox-live` label to the PR. Each runs the live pipeline and
+#    posts evidence as a PR comment. Remove the label/scenarios (and delete the
+#    file before merge) to turn it off.
+#
+# 2. PR comment (works once this workflow is on main): control a one-shot run —
+#    /sandbox run item-sales-live date=2026-05-31
+#
+# 3. Manual dispatch (post-merge):
+gh workflow run sandbox-live-run.yml \
+  -f scenario=item-sales-live -f date=2026-05-31 -f pr_number=<PR#>
+```
+
+Forks are refused (secrets never exposed) and comment commands require an
+OWNER/COLLABORATOR/MEMBER author. Add a scenario by extending
+`sandbox_scenarios.SCENARIOS`. A scenario may declare **`skip`** (pipeline steps to omit so the run is
+focused — e.g. `item-sales-live` skips `adp,reviews,model` to exercise **only** the Square download that
+broke; threaded as `--skip` → `BHAGA_SKIP_<STEP>` env, read by `daily_refresh.main`) and **`verify`** (a
+post-run gate; `item_sales` asserts `<date>/square/items-*.csv` exists with >0 data rows, so a "green"
+run truly means the deliverable landed — it fails the run even if the job exited 0 because login broke
+before item-sales). The verdict is shown in the auto-posted PR evidence comment.
+
+**Login escalation — magic link & trusted device.** Square may escalate an **unrecognized device** to an
+email **magic link** ("Magic link sent. Use this device to sign in.") instead of an SMS code; the
+code-entry flow cannot satisfy it (the link only works in the **requesting** browser). Two layers handle
+this:
+- *Trusted device (1st line):* the 2FA flow ticks "trust this device for 30 days" and, with
+  `BHAGA_SESSION_PERSIST=1`, persists the Square `storage_state` to `gs://<bucket>/_session/square-<store>.json`
+  and restores it next run — so Square recognizes the device and stops escalating. Sandbox keeps its OWN
+  session in the sandbox bucket (isolation preserved).
+- *Magic-link relay (fallback):* when the magic-link page is detected, BHAGA DMs the operator to **paste
+  the magic-link URL** — ⚠️ do **NOT** tap "Sign in" on your phone (that signs in the phone, not the
+  container); copy the `https://squareup.com/login?rml=1&…` URL from the email and paste it in the DM.
+  The container then navigates to it to finish sign-in.
+
+**Step-by-step screenshot trace.** Sandbox runs set `BHAGA_TRACE_SCREENSHOTS=1`, so `runtime.trace_step`
+captures the **full browser after every login + item-sales action** and uploads each frame to
+`gs://<sandbox-bucket>/<date>/trace/NN-<label>.png` (`landing`, `email-filled`, `password-screen`,
+`otp-code-screen`/`otp-code-filled`/`after-otp-submit`, `magic-link-sent-page`/`magic-link-navigated`/
+`magic-link-result`, `item-sales-page`/`item-sales-date-range-set`/`item-sales-exported`). Pull the whole
+sequence with `gcloud storage cp -r gs://<sandbox-bucket>/<date>/trace .` to scrub the flow frame-by-frame
+without a rerun. Off by default for the prod nightly (cost/overhead); best-effort and never breaks a scrape.
+
+**One-time setup (operator).** By least privilege the run SA has GCS read + object write but not
+project bucket-create, so create the sandbox cache bucket once and grant the SA object access:
+
+```bash
+gcloud storage buckets create gs://bhaga-scrape-cache-sandbox \
+  --location=us-central1 --uniform-bucket-level-access --project=jarvis-bhaga-prod
+gcloud storage buckets add-iam-policy-binding gs://bhaga-scrape-cache-sandbox \
+  --member=serviceAccount:<run-sa> --role=roles/storage.objectAdmin
+```
+
+The `bhaga-sandbox-refresh` job **self-wires** on first create — `sandbox_live_run` inherits the prod
+job's secret bindings + service account + **resources/timeout** (cpu/mem/`task-timeout`/`max-retries`;
+a default job is 512Mi/600s and would OOM/timeout a Chromium scrape) **and the prod job's plain env
+vars** (`BHAGA_SECRETS_BACKEND=gcp`, `GCP_PROJECT`, `BHAGA_DM_CHANNEL`, … — without these the config
+loader falls back to a non-existent `config.yaml`). The describe-JSON parsers are schema-robust (handle
+both the v2 and KRM/v1 shapes). Same creds/sizing; only the isolation overlay differs. The webhook's
+`SANDBOX_RUNS_COLLECTION` **defaults to `""` (sandbox OTP scan OFF — the prod READY path is byte-for-byte
+unchanged)**; set `SANDBOX_RUNS_COLLECTION=sandbox_runs` on the `bhaga-webhook` service to enable sandbox
+OTP routing. Supervised live runs don't need it — they wait for the code inline via
+`BHAGA_OTP_ASSUME_READY=1`, so the OTP round-trip works even before the new webhook deploys. No scheduler
+is ever pointed at the sandbox job — execute-on-demand only.
+
+**While iterating on a live incident, pause the nightly** so a 21:30 CT run doesn't race your fix or
+compete for the OTP, then resume it after the prod rerun:
+
+```bash
+gcloud scheduler jobs pause  bhaga-nightly --location=us-central1   # before the fix loop
+# … reproduce in sandbox → fix → prove green → merge → rerun prod 5/31 + 6/1 …
+gcloud scheduler jobs resume bhaga-nightly --location=us-central1   # after prod is caught up
+```

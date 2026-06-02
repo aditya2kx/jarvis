@@ -107,6 +107,21 @@ def _silenced() -> bool:
     return bool(os.environ.get(SLACK_DISABLED_ENV))
 
 
+def _run_prefix() -> str:
+    """Sandbox/PR label prepended to EVERY DM from a sandbox live run.
+
+    So the operator never mistakes a sandbox OTP prompt (or any sandbox message)
+    for prod — even if a prod run is messaging at the same time. Empty for prod
+    runs, so prod DMs are byte-for-byte unchanged (backward compatible).
+    Driven by BHAGA_RUN_ENV=sandbox + BHAGA_RUN_LABEL (set by sandbox_live_run).
+    """
+    if os.environ.get("BHAGA_RUN_ENV", "prod").lower() != "sandbox":
+        return ""
+    label = os.environ.get("BHAGA_RUN_LABEL", "").strip()
+    suffix = f" · {label}" if label else ""
+    return f":test_tube: *[SANDBOX{suffix}]* "
+
+
 def _safe_send(text: str) -> Optional[dict]:
     """Send to BHAGA's DM with full error swallowing.
 
@@ -119,6 +134,7 @@ def _safe_send(text: str) -> Optional[dict]:
          and only needs chat:write scope — works even when conversations.open
          fails due to missing im:write or users:read scopes)
     """
+    text = _run_prefix() + text
     if _silenced():
         print(f"[BHAGA_SLACK_DISABLED] would send: {text[:200]}")
         return None
@@ -165,10 +181,14 @@ def failure_alert(
     exception: BaseException,
     date: Optional[str] = None,
     extra: Optional[str] = None,
+    evidence_uri: Optional[str] = None,
 ) -> Optional[dict]:
     """Post a multi-line failure DM with step name, exception, and short traceback.
 
     The traceback is truncated to the last ~12 frames to keep DMs readable.
+    ``evidence_uri`` (the durable ``gs://<cache>/<date>/evidence/`` prefix) is
+    rendered as a clickable postmortem anchor so the operator/agent can pull the
+    screenshot + DOM + meta straight from GCS without a rerun.
     """
     tb = "".join(_tb.format_exception(type(exception), exception, exception.__traceback__))
     tb_lines = tb.strip().split("\n")
@@ -179,11 +199,12 @@ def failure_alert(
 
     date_str = f" for *{date}*" if date else ""
     extra_str = f"\n*Note:* {extra}" if extra else ""
+    evidence_str = f"\n*Evidence:* `{evidence_uri}`" if evidence_uri else ""
 
     text = (
         f"🚨 BHAGA daily refresh FAILED{date_str} on {_host_tag()}\n"
         f"*Step:* `{step}`\n"
-        f"*Error:* `{type(exception).__name__}: {exception}`{extra_str}\n"
+        f"*Error:* `{type(exception).__name__}: {exception}`{evidence_str}{extra_str}\n"
         f"```\n{tb_short}\n```"
     )
     # Slack hard-limits text at 40k; defensive truncation.

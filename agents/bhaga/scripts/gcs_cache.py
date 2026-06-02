@@ -29,6 +29,12 @@ except ImportError:
 
 BUCKET_NAME = os.environ.get("BHAGA_GCS_CACHE_BUCKET", "bhaga-scrape-cache")
 
+# The canonical PRODUCTION cache bucket. Sandbox/staging runs may READ from it
+# (read-only replay) but must NEVER write to it — see the sandbox-isolation
+# invariant in .cursor/rules/bhaga-principles.md. Writes in staging mode must be
+# diverted to BHAGA_GCS_CACHE_WRITE_BUCKET (a sandbox bucket).
+_PROD_CACHE_BUCKET = "bhaga-scrape-cache"
+
 _CATEGORY_MAP = {
     "square": ["transactions-*.csv", "items-*.csv", "kds-*.csv"],
     "adp": ["Timecard-*.xlsx", "Earnings-*.xlsx"],
@@ -45,7 +51,44 @@ def _get_client():
 
 
 def _bucket(client):
+    """Bucket used for READS. May point at the prod cache even in sandbox mode
+    (reading prod data from a sandbox run is allowed; writing it is not)."""
     return client.bucket(BUCKET_NAME)
+
+
+def _write_bucket_name() -> str:
+    """Bucket that WRITES (cache uploads, evidence) go to.
+
+    Defaults to the read bucket, but a sandbox/staging run sets
+    BHAGA_GCS_CACHE_WRITE_BUCKET to its own bucket so it never mutates the prod
+    cache. Reads may still come from the prod bucket via BUCKET_NAME.
+    """
+    return os.environ.get("BHAGA_GCS_CACHE_WRITE_BUCKET", BUCKET_NAME)
+
+
+def _assert_sandbox_write_isolation(bucket_name: str) -> None:
+    """Hard guard: in staging/sandbox mode, block any WRITE to the prod cache.
+
+    Mirrors ``core.config_loader._assert_not_production_sheet`` for GCS. Sandbox
+    runs may read prod data sources but must never write to them (caches or
+    sheets) — see .cursor/rules/bhaga-principles.md (sandbox isolation).
+    """
+    if os.environ.get("BHAGA_SHEET_MODE", "").lower() != "staging":
+        return
+    if bucket_name == _PROD_CACHE_BUCKET:
+        raise RuntimeError(
+            f"BLOCKED: a sandbox/staging run attempted to WRITE to the production "
+            f"GCS cache bucket '{bucket_name}'. Set BHAGA_GCS_CACHE_WRITE_BUCKET to a "
+            f"sandbox bucket. Sandbox runs may READ prod data but must NEVER write it "
+            f"(see .cursor/rules/bhaga-principles.md — sandbox isolation)."
+        )
+
+
+def _write_bucket(client):
+    """Bucket for WRITES, guarded so a sandbox run can never touch the prod cache."""
+    name = _write_bucket_name()
+    _assert_sandbox_write_isolation(name)
+    return client.bucket(name)
 
 
 def _blob_prefix(refresh_date: datetime.date, category: str) -> str:
@@ -58,14 +101,88 @@ def upload_file(
     refresh_date: datetime.date,
     category: str,
 ) -> str:
-    """Upload a single file to the GCS cache. Returns the gs:// URI."""
+    """Upload a single file to the GCS cache. Returns the gs:// URI.
+
+    Writes go to ``_write_bucket_name()`` and are blocked by
+    ``_assert_sandbox_write_isolation`` from ever touching the prod cache when
+    ``BHAGA_SHEET_MODE=staging``.
+    """
     client = _get_client()
     blob_name = f"{_blob_prefix(refresh_date, category)}{local_path.name}"
-    blob = _bucket(client).blob(blob_name)
+    blob = _write_bucket(client).blob(blob_name)
     blob.upload_from_filename(str(local_path))
-    uri = f"gs://{BUCKET_NAME}/{blob_name}"
+    uri = f"gs://{_write_bucket_name()}/{blob_name}"
     print(f"  [gcs_cache] uploaded {local_path.name} → {uri}")
     return uri
+
+
+def evidence_prefix(refresh_date: datetime.date) -> str:
+    """Deterministic ``gs://`` prefix where this run's failure evidence lives.
+
+    Surfaced verbatim into the Slack failure DM and the Firestore ``runs/<date>``
+    document so a postmortem has a durable anchor (screenshot / DOM / meta) WITHOUT
+    a rerun or a directory listing. Honors the sandbox write bucket, so a staging
+    run points at its own bucket, never the prod cache.
+    """
+    return f"gs://{_write_bucket_name()}/{_blob_prefix(refresh_date, 'evidence')}"
+
+
+def upload_evidence(local_path: pathlib.Path, *, refresh_date: datetime.date) -> str:
+    """Upload a failure-evidence artifact (screenshot / DOM / meta) under
+    ``<refresh_date>/evidence/``. Returns the gs:// URI.
+
+    Durable counterpart to the ephemeral container screenshot dir: in a Cloud
+    Run Job the local ``~/.bhaga/state/screenshots`` path is discarded when the
+    execution exits, so a browser failure must be reconstructable from
+    ``gs://<bucket>/<date>/evidence/`` + Firestore + Cloud Run logs ALONE,
+    without a rerun (see ``.cursor/rules/bhaga-principles.md`` — observability).
+    """
+    return upload_file(local_path, refresh_date=refresh_date, category="evidence")
+
+
+_SESSION_PREFIX = "_session/"
+
+
+def _session_blob_name(portal: str, store: str) -> str:
+    return f"{_SESSION_PREFIX}{portal}-{store}.json"
+
+
+def upload_session(local_path: pathlib.Path, *, portal: str, store: str) -> str:
+    """Persist a portal browser session (Playwright ``storage_state`` cookies) so a
+    later run is a 'trusted device' and skips 2FA. Returns the gs:// URI.
+
+    Stored in the run's OWN write bucket (sandbox → sandbox bucket), so a sandbox
+    run never writes its session into the prod cache and never reuses prod's live
+    session — it maintains its own. Guarded by ``_assert_sandbox_write_isolation``.
+    """
+    client = _get_client()
+    name = _session_blob_name(portal, store)
+    blob = _write_bucket(client).blob(name)
+    blob.upload_from_filename(str(local_path))
+    uri = f"gs://{_write_bucket_name()}/{name}"
+    print(f"  [gcs_cache] persisted {portal} session → {uri}")
+    return uri
+
+
+def download_session(dest_path: pathlib.Path, *, portal: str, store: str) -> bool:
+    """Restore a persisted portal session into ``dest_path``. True on hit, False on miss.
+
+    Reads from the run's OWN bucket (the write bucket), so a sandbox reuses its own
+    trusted session — not prod's. Never raises (a miss/error just means full login).
+    """
+    try:
+        client = _get_client()
+        bucket = client.bucket(_write_bucket_name())
+        blob = bucket.blob(_session_blob_name(portal, store))
+        if not blob.exists():
+            return False
+        blob.download_to_filename(str(dest_path))
+        print(f"  [gcs_cache] restored {portal} session ← "
+              f"gs://{_write_bucket_name()}/{_session_blob_name(portal, store)}")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [gcs_cache] WARN: {portal} session restore failed (will full-login): {exc}")
+        return False
 
 
 def upload_scrape_artifacts(

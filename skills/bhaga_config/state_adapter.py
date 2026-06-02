@@ -35,11 +35,16 @@ __all__ = [
     "save_pending_otp",
     "mark_otp_ready",
     "clear_pending_otp",
+    "record_step_failure",
 ]
 
 CT = ZoneInfo("America/Chicago")
 
-_FIRESTORE_COLLECTION = "runs"
+# The canonical PRODUCTION run-state collection. A sandbox/staging run must
+# divert ALL run-state (markers, pending-OTP, failures) to its own collection so
+# it never reads or writes prod run state — see .cursor/rules/bhaga-principles.md
+# (sandbox isolation). Override with BHAGA_FIRESTORE_COLLECTION.
+_PROD_FIRESTORE_COLLECTION = "runs"
 
 
 def _state_backend() -> str:
@@ -48,6 +53,28 @@ def _state_backend() -> str:
 
 def _firestore_db_id() -> str:
     return os.environ.get("BHAGA_FIRESTORE_DB", "(default)")
+
+
+def _collection_name() -> str:
+    """Firestore collection for run state. Defaults to the prod ``runs``; a
+    sandbox/staging run sets BHAGA_FIRESTORE_COLLECTION to its own collection."""
+    return os.environ.get("BHAGA_FIRESTORE_COLLECTION", _PROD_FIRESTORE_COLLECTION)
+
+
+def _assert_sandbox_state_isolation(collection: str) -> None:
+    """Hard guard: in staging/sandbox mode, block any use of the prod run-state
+    collection. Mirrors the sheet + GCS guards — sandbox runs must never touch
+    prod data sources (see .cursor/rules/bhaga-principles.md — sandbox isolation).
+    """
+    if os.environ.get("BHAGA_SHEET_MODE", "").lower() != "staging":
+        return
+    if collection == _PROD_FIRESTORE_COLLECTION:
+        raise RuntimeError(
+            f"BLOCKED: a sandbox/staging run targeted the production Firestore run-state "
+            f"collection '{collection}'. Set BHAGA_FIRESTORE_COLLECTION to a sandbox "
+            f"collection. Sandbox runs must never read or write prod run state "
+            f"(see .cursor/rules/bhaga-principles.md — sandbox isolation)."
+        )
 
 
 def _get_firestore_client():
@@ -64,7 +91,9 @@ def _get_firestore_client():
 
 def _doc_ref(client, refresh_date: datetime.date):
     """Return Firestore document reference keyed by refresh_date ISO string."""
-    return client.collection(_FIRESTORE_COLLECTION).document(refresh_date.isoformat())
+    collection = _collection_name()
+    _assert_sandbox_state_isolation(collection)
+    return client.collection(collection).document(refresh_date.isoformat())
 
 
 # ── Public API ────────────────────────────────────────────────────────
@@ -77,7 +106,7 @@ def run_state_dir(refresh_date: datetime.date) -> pathlib.Path:
     a virtual path (useful for logging/display but not for direct I/O).
     """
     if _state_backend() == "firestore":
-        return pathlib.Path(f"firestore://{_FIRESTORE_COLLECTION}/{refresh_date.isoformat()}")
+        return pathlib.Path(f"firestore://{_collection_name()}/{refresh_date.isoformat()}")
     return pathlib.Path.home() / ".bhaga" / "state" / f"run-{refresh_date.isoformat()}"
 
 
@@ -242,13 +271,23 @@ def save_pending_otp(
     requested_at: str,
     agent: str = "bhaga",
 ) -> dict:
-    """Persist a fresh pending-OTP checkpoint (ready_received=False)."""
+    """Persist a fresh pending-OTP checkpoint (ready_received=False).
+
+    The checkpoint self-describes its OTP routing (env / run_label / target_job)
+    from the run's environment, so the webhook can resume the correct job — prod
+    or a sandbox live run — even when both await OTP at once. Prod runs leave env
+    'prod' and target_job '' (the webhook falls back to CLOUD_RUN_JOB_NAME), so
+    behavior is unchanged for the nightly.
+    """
     payload = {
         "portals": list(portals),
         "agent": agent,
         "requested_at": requested_at,
         "ready_received": False,
         "ready_at": None,
+        "env": os.environ.get("BHAGA_RUN_ENV", "prod"),
+        "run_label": os.environ.get("BHAGA_RUN_LABEL", ""),
+        "target_job": os.environ.get("BHAGA_OTP_TARGET_JOB", ""),
     }
     if _state_backend() == "firestore":
         client = _get_firestore_client()
@@ -297,3 +336,47 @@ def clear_pending_otp(refresh_date: datetime.date) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _local_failure_path(refresh_date: datetime.date, step: str) -> pathlib.Path:
+    return (
+        pathlib.Path.home() / ".bhaga" / "state"
+        / f"run-{refresh_date.isoformat()}" / f"{step}.failure.json"
+    )
+
+
+def record_step_failure(
+    refresh_date: datetime.date,
+    step: str,
+    *,
+    error: str,
+    evidence_uri: str | None = None,
+    failed_at: str | None = None,
+) -> None:
+    """Record a per-step failure into the run state for postmortem-from-state.
+
+    Captures the error class/message and the ``gs://`` evidence prefix so a future
+    agent can diagnose the failure from Firestore + GCS + Cloud Run logs ALONE,
+    without a rerun (see .cursor/rules/bhaga-principles.md — observability). Keyed
+    by ``refresh_date`` like every other marker, NOT by wall-clock time.
+
+    - firestore: ``runs/<date>`` document, ``failures.<step>`` map field
+    - local:     ``~/.bhaga/state/run-<date>/<step>.failure.json``
+
+    Best-effort: never raises. Observability must never mask the real exception.
+    """
+    payload = {
+        "error": error,
+        "evidence_uri": evidence_uri,
+        "failed_at": failed_at or datetime.datetime.now(CT).isoformat(),
+    }
+    try:
+        if _state_backend() == "firestore":
+            client = _get_firestore_client()
+            _doc_ref(client, refresh_date).set({"failures": {step: payload}}, merge=True)
+            return
+        path = _local_failure_path(refresh_date, step)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[state_adapter] WARN: could not record step failure {step}: {exc}")

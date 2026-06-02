@@ -36,6 +36,18 @@ from google.cloud import firestore
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 CLOCK_SKEW_TOLERANCE_S = 5 * 60  # reject timestamps older than 5 minutes
 
+# Run-state collections. Prod is always "runs". A live sandbox run writes its
+# pending-OTP checkpoint to its own collection; the webhook scans it FIRST so a
+# sandbox OTP reply resumes the sandbox job — never prod — even when both await
+# OTP. Defaults to "" (DISABLED): the prod path is byte-for-byte unchanged unless
+# an operator explicitly opts in by setting SANDBOX_RUNS_COLLECTION=sandbox_runs on
+# the bhaga-webhook service (see RUNBOOK §13). This keeps the backward-compat
+# guarantee literally true — no extra Firestore scan on a prod READY reply by
+# default. (Supervised live runs don't need it anyway: BHAGA_OTP_ASSUME_READY=1
+# services the OTP inline via the agent-keyed `otps` collection.)
+PROD_RUNS_COLLECTION = "runs"
+SANDBOX_RUNS_COLLECTION = os.environ.get("SANDBOX_RUNS_COLLECTION", "")
+
 # Agent config: maps DM channel IDs → agent names.
 # Loaded once at startup from AGENT_CONFIG_JSON env var, which mirrors the
 # config.yaml slack.agents section. Build it from config.yaml via
@@ -270,52 +282,62 @@ def _complete_otp(doc_id: str, code: str) -> None:
 # (runs/<date> doc, `pending_otp` map). Keep field names in sync.
 
 
-def _find_pending_otp_run(agent: str) -> Optional[dict]:
-    """Return {"date", "pending_otp"} for the newest run awaiting READY.
+def _scan_pending_in_collection(agent: str, collection: str) -> Optional[dict]:
+    """Newest pending-OTP run for ``agent`` in one collection, or None.
 
-    Scans the `runs` collection for a doc whose `pending_otp` is owned by
-    ``agent`` and not yet ready_received. Volume is one doc/day so a full
-    stream + client-side filter is fine and avoids a composite-index
-    requirement.
+    Volume is one doc/day so a full stream + client-side filter is fine and
+    avoids a composite-index requirement.
+    """
+    candidates = []
+    for doc in db.collection(collection).stream():
+        data = doc.to_dict() or {}
+        pending = data.get("pending_otp")
+        if not pending or pending.get("ready_received"):
+            continue
+        if pending.get("agent", "bhaga") != agent:
+            continue
+        candidates.append((doc.id, pending))
+    if not candidates:
+        return None
+    # Newest by requested_at (fall back to doc id / date string).
+    candidates.sort(key=lambda c: (c[1].get("requested_at") or "", c[0]), reverse=True)
+    date_id, pending = candidates[0]
+    return {"date": date_id, "pending_otp": pending, "collection": collection}
+
+
+def _find_pending_otp_run(agent: str) -> Optional[dict]:
+    """Return {"date", "pending_otp", "collection"} for the newest run awaiting READY.
+
+    Sandbox precedence: if SANDBOX_RUNS_COLLECTION is configured, scan it FIRST so
+    a live sandbox run awaiting OTP wins over a concurrently-pending prod run —
+    the operator's reply then resumes the sandbox job, not the nightly. With no
+    sandbox collection configured, only prod `runs` is scanned (unchanged).
     """
     if db is None:
         return None
     try:
-        candidates = []
-        for doc in db.collection("runs").stream():
-            data = doc.to_dict() or {}
-            pending = data.get("pending_otp")
-            if not pending or pending.get("ready_received"):
-                continue
-            if pending.get("agent", "bhaga") != agent:
-                continue
-            candidates.append((doc.id, pending))
-        if not candidates:
-            return None
-        # Newest by requested_at (fall back to doc id / date string).
-        candidates.sort(
-            key=lambda c: (c[1].get("requested_at") or "", c[0]),
-            reverse=True,
-        )
-        date_id, pending = candidates[0]
-        return {"date": date_id, "pending_otp": pending}
+        if SANDBOX_RUNS_COLLECTION:
+            found = _scan_pending_in_collection(agent, SANDBOX_RUNS_COLLECTION)
+            if found:
+                return found
+        return _scan_pending_in_collection(agent, PROD_RUNS_COLLECTION)
     except Exception as exc:
         log.error("Firestore pending-OTP scan failed for agent=%s: %s", agent, exc)
         return None
 
 
-def _mark_otp_ready(date_id: str, pending: dict) -> None:
-    """Set pending_otp.ready_received=True on runs/<date_id>."""
+def _mark_otp_ready(date_id: str, pending: dict, collection: str = PROD_RUNS_COLLECTION) -> None:
+    """Set pending_otp.ready_received=True on <collection>/<date_id>."""
     if db is None:
         return
     try:
         updated = dict(pending)
         updated["ready_received"] = True
         updated["ready_at"] = firestore.SERVER_TIMESTAMP
-        db.collection("runs").document(date_id).set(
+        db.collection(collection).document(date_id).set(
             {"pending_otp": updated}, merge=True
         )
-        log.info("Pending OTP marked READY for run=%s", date_id)
+        log.info("Pending OTP marked READY for run=%s (%s)", date_id, collection)
     except Exception as exc:
         log.error("Firestore mark-ready failed for %s: %s", date_id, exc)
 
@@ -323,17 +345,30 @@ def _mark_otp_ready(date_id: str, pending: dict) -> None:
 def _handle_ready_reply(agent: str) -> bool:
     """Resume a checkpointed run when the operator replies READY.
 
-    Returns True if a pending run was found, marked ready, and a fresh job
-    execution was triggered; False if there was nothing pending for ``agent``.
+    Resumes whichever run the reply belongs to (sandbox has precedence): marks the
+    checkpoint ready in its OWN collection and triggers the job named in the
+    checkpoint's routing metadata (``target_job``), falling back to the prod
+    CLOUD_RUN_JOB_NAME for a normal nightly. Returns True if a pending run was
+    found and resumed; False if nothing was pending for ``agent``.
     """
     pending_run = _find_pending_otp_run(agent)
     if not pending_run:
         log.info("READY from agent=%s but no pending OTP run — ignoring", agent)
         return False
     date_id = pending_run["date"]
-    _mark_otp_ready(date_id, pending_run["pending_otp"])
-    log.info("READY from agent=%s → triggering fresh job for date=%s", agent, date_id)
-    _trigger_cloud_run_job(date_id)
+    pending = pending_run["pending_otp"]
+    collection = pending_run.get("collection", PROD_RUNS_COLLECTION)
+    _mark_otp_ready(date_id, pending, collection)
+    target_job = pending.get("target_job")
+    log.info(
+        "READY from agent=%s → resuming %s run for date=%s (job=%s)",
+        agent, collection, date_id, target_job or "<prod default>",
+    )
+    # Preserve the single-arg prod call (and its tests) when there's no routing.
+    if target_job:
+        _trigger_cloud_run_job(date_id, job_name=target_job)
+    else:
+        _trigger_cloud_run_job(date_id)
     return True
 
 
@@ -377,13 +412,14 @@ def _handle_slash_command(form: dict) -> Response:
     })
 
 
-def _trigger_cloud_run_job(date_str: str) -> None:
+def _trigger_cloud_run_job(date_str: str, job_name: Optional[str] = None) -> None:
     """Enqueue a Cloud Run Job execution for the given date.
 
-    Uses the Cloud Run v2 API to create a job execution. The job name is
-    read from CLOUD_RUN_JOB_NAME env var.
+    Uses the Cloud Run v2 API to create a job execution. ``job_name`` defaults to
+    the prod CLOUD_RUN_JOB_NAME env var; a sandbox OTP resume passes the sandbox
+    job's resource name so the reply runs the sandbox job, not prod.
     """
-    job_name = os.environ.get("CLOUD_RUN_JOB_NAME")
+    job_name = job_name or os.environ.get("CLOUD_RUN_JOB_NAME")
     if not job_name:
         log.warning("CLOUD_RUN_JOB_NAME not set — cannot trigger job")
         return

@@ -48,6 +48,13 @@ scrape body, never an auth error) on transient `TargetClosedError` crashes, adds
 container-stability flags, and exposes `browser_healthcheck()` (pre-flight smoke test before an OTP is
 spent). Config: `BHAGA_BROWSER_LAUNCH_RETRIES` / `BHAGA_BROWSER_LAUNCH_BACKOFF_MS`. See RUNBOOK §13.
 
+**Browser observability:** `runtime._capture_failure_evidence` uploads screenshot + DOM + meta to
+`gs://<cache>/<date>/evidence/` on failure, and `runtime.trace_step(page, label)` captures the full
+browser **after each login + item-sales action** to `gs://<cache>/<date>/trace/NN-<label>.png` so the
+whole flow is reviewable frame-by-frame with zero reruns. Trace is best-effort/never-raises and off by
+default; `BHAGA_TRACE_SCREENSHOTS=1` enables it (set automatically for sandbox runs, off for the prod
+nightly). Both honor sandbox write-bucket isolation via `gcs_cache`.
+
 ---
 
 ## Script catalog
@@ -64,10 +71,12 @@ spent). Config: `BHAGA_BROWSER_LAUNCH_RETRIES` / `BHAGA_BROWSER_LAUNCH_BACKOFF_M
 | `process_reviews.py` | Reviews → bonus allocation → rebuild `review_bonus_period`. |
 | `forecast.py` | Builds `labor_daily_forecast` (staffing solver, guardrails, anomaly detection). |
 | `notify.py` | Slack DMs under the BHAGA identity. Always DM through here, never `send_message` directly. |
-| `gcs_cache.py` | Read/write scrape artifacts in GCS `bhaga-scrape-cache`. |
+| `gcs_cache.py` | Read/write scrape artifacts in GCS `bhaga-scrape-cache`. Writes honor `BHAGA_GCS_CACHE_WRITE_BUCKET` (sandbox isolation: read prod, write sandbox); `evidence_prefix()` / `upload_evidence()` persist failure screenshots+DOM under `gs://<bucket>/<date>/evidence/` so a postmortem needs no rerun. `upload_session()`/`download_session()` persist a portal browser session (`storage_state`) under `<bucket>/_session/` for **trusted-device** reuse (skips 2FA next run); stored in the run's OWN bucket so sandbox keeps its own session. |
 | `bootstrap_sheets.py` / `share_sheets_with_sa.py` | One-time: create sheets / share with the service account. |
 | `sandbox_provision.py` | **Pool-based** sandbox for per-PR e2e: `create-pool` (operator, user creds) pre-creates N slots × 4 sheets shared with the SA; `provision` leases + clears + re-seeds; `teardown` releases. Registry: `sandbox_pool.json`. |
 | `sandbox_e2e.py` | **Prod-like, zero-OTP e2e.** provision → GCS-cache replay → backfill → model build → `assert_model_tabs_populated` → evidence → teardown. `--auto-window --max-days N` replays up to the **N most-recent *cached* dates** (the calendar span can be wider on a sparse cache). Imports **no** scrape/login code (enforced by `test_sandbox_e2e.py`). Runs on every PR via `.github/workflows/sandbox-e2e.yml` (plus a no-op `push` to `main` so the check registers for branch protection). See `RUNBOOK.md` §13. |
+| `sandbox_live_run.py` | **LIVE sandbox run** (real Square/ADP scrape + OTP on **unmerged PR code**) — the only way to reproduce/prove a fix for selector drift. Builds the PR image → deploys `bhaga-sandbox-refresh` (self-wires by inheriting prod's secrets + SA) → live pipeline for a `REFRESH_DATE`. Enforces isolation (`assert_sandbox_isolation`: staging sheets + sandbox GCS write bucket + sandbox Firestore collection — reads prod OK, writes prod NEVER) before any deploy. OTP uses the prod Slack bot but the prompt is labeled `[SANDBOX · PR…]` and the reply resumes the **sandbox** job (sandbox precedence in the webhook); supervised runs set `BHAGA_OTP_ASSUME_READY=1` to take the code inline (no webhook resume needed). On create it inherits prod's secrets + SA + **resources/timeout** + **plain env vars** (`BHAGA_SECRETS_BACKEND=gcp`, …); describe-JSON parsing is schema-robust (v2 + KRM). Supports `--skip <steps>` (scenario scoping → `BHAGA_SKIP_<STEP>`) and `--verify item_sales` (`verify_item_sales()`: a post-run gate that fails the run if `<date>/square/items-*.csv` is absent/empty, even on a 0 job exit). The sandbox cache bucket is a one-time operator setup (`assert_sandbox_bucket` fails with remediation if absent). See `RUNBOOK.md` §13. |
+| `sandbox_scenarios.py` | **Named scenario suite** for live sandbox runs (`item-sales-live` = Square-only via `skip:[adp,reviews,model]` + `verify:item_sales`; `full-live`; …). Selects what runs via committed `.github/sandbox-live.yml` (+ `sandbox-live` label, pre-merge), a `/sandbox run <scenario> [date=…]` PR comment (post-merge), or manual dispatch. `sandbox_workflow_resolve.py` turns the triggering event into a run plan for `.github/workflows/sandbox-live-run.yml`. Each scenario posts evidence as a PR comment. |
 | `verify_drilldown.py`, `verify_bq_parity.py`, `verify_against_historical_payroll.py` | Verification harnesses (parity vs historical payroll / BigQuery). |
 | `backfill_bigquery.py` | Backfill raw data into BigQuery. |
 | `test_*.py` | Unit tests. Run: `python3 -m pytest agents/bhaga/scripts/`. |

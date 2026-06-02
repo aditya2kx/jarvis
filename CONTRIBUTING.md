@@ -49,6 +49,39 @@ tight build → verify → fix loop without the operator babysitting every step.
    evidence as a PR comment (see `RUNBOOK.md` §13 and `agents/bhaga/scripts/sandbox_e2e.py`). Run
    directly against prod sheets only when sandbox isolation genuinely can't exercise the path. Unit
    tests are necessary but are *not* the evidence of doneness.
+   - **When the replay e2e can't exercise the path, use the LIVE sandbox run — never prod, never an
+     ad-hoc script.** The replay e2e is zero-OTP and uses the GCS cache, so it cannot reproduce a
+     **live-only** failure (selector drift, a login/2FA flow, a real browser crash). For those, the
+     sanctioned tool is `agents/bhaga/scripts/sandbox_live_run.py` via the **`Sandbox live run`**
+     workflow (`workflow_dispatch`): it deploys the unmerged PR image to `bhaga-sandbox-refresh` and
+     runs the real pipeline for a chosen `REFRESH_DATE` under **full isolation** (staging sheets +
+     sandbox GCS write bucket + sandbox Firestore collection — reads prod OK, **writes prod never**; an
+     isolation pre-flight fails before any deploy). Runs are a **named scenario suite**
+     (`sandbox_scenarios.py`) you select via a committed `.github/sandbox-live.yml` + the `sandbox-live`
+     label (works **pre-merge**, so a PR can prove its own live fix), a `/sandbox run <scenario>
+     [date=…]` PR comment (steady-state, after the workflow is on main), or manual dispatch. The loop
+     for a live incident is: **open the PR → trigger the scenario to reproduce → if it fails, fix and
+     re-run; if it passes, capture the `gs://…/evidence/` artifacts (screenshot/DOM) + the green run as
+     the PR evidence (auto-posted as a PR comment) → turn the scenario off → mark ready → merge → rerun
+     prod for the affected date(s) → resume the scheduler.** OTP uses the prod Slack bot but the prompt
+     is labeled `[SANDBOX · PR…]` and the reply resumes the sandbox job, not prod.
+   - **A live-sandbox PR's evidence is the live proof, not the unit suite.** For any change touching a
+     live-only path (login/2FA/magic-link, selector drift, browser/download behavior), the PR evidence
+     section MUST show, with links/excerpts a reviewer can open:
+     1. **The green run** — workflow run id + the `verify(<gate>)` line with the **concrete deliverable
+        count** (e.g. `item-sales OK — items-…csv (502 data rows)`), and `rc=0`. A bare "run passed" is
+        not enough; show the gate asserting the artifact landed.
+     2. **The reproduction** — the *failing* run/trace for the same scenario **before** the fix (so the
+        bug is shown, not just asserted), with its `gs://…/evidence/` DOM + screenshot.
+     3. **The step screenshot trace** — the `gs://<bucket>/<date>/trace/NN-<label>.png` sequence
+        (`BHAGA_TRACE_SCREENSHOTS=1`, on for sandbox runs) that walks the flow; embed/link the **decisive
+        before→after frames** (e.g. `item-sales-pill-not-found` → `item-sales-date-range-set`), and for
+        auth fixes the **redacted-URL log line** proving the input was well-formed. Capturing a screen of
+        *every step* is the standard — not just the final failure frame.
+     4. **The produced artifact** — the `gs://…/square/…csv` (or sheet/Firestore state) with size/row
+        count, proving the real deliverable exists in the isolated sandbox target (never prod).
+     Light evidence (only `pytest` + doc-freshness) for a live-only fix is a **rejectable** PR: it proves
+     the code parses, not that the live behavior is fixed.
 5. **100% code coverage.** New code is fully covered by tests; the e2e is on top of that, not instead.
 6. **Record and present evidence in the PR — per scenario, with real output.** Every claim ("it works",
    "it's backward compatible") is backed by commands + **actual output / sheet diffs / log excerpts** in
@@ -101,8 +134,10 @@ tight build → verify → fix loop without the operator babysitting every step.
    (see below). The agent addresses every finding autonomously (fix, or reply why not) and re-pushes —
    looping until the PR is merge-ready.
 5. **The agent NEVER merges. Only the operator merges.** The agent's job ends at *merge-ready*: all CI
-   green (`doc-freshness`, tests, Claude review ran), no unresolved `REQUEST CHANGES`, and the PR
-   description complete. The agent then stops and hands the PR to the operator. The **operator** does
+   green (`doc-freshness`, tests, Claude review ran), **every inline review comment replied-to in its own
+   thread** (mechanically gated — `python3 scripts/check_pr_review_replies.py` must exit 0; it lists any
+   thread missing a reply), no unresolved `REQUEST CHANGES`, and the PR description complete. The agent
+   then stops and hands the PR to the operator. The **operator** does
    the final review and squash-merge to `main` (which triggers deploy). Merging is the human sign-off —
    never automate it, never ask the operator to delegate it to you.
 6. **Start every task from a clean base; never mix unrelated work into a plan's branch.** Before
@@ -186,6 +221,9 @@ gh pr create --base main --fill     # then fill the template
   and leave the individual threads silent: a reviewer scanning the threads must see each one resolved in
   place. Reply with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<comment_id>/replies -f body=...`
   (inline thread) and address top-level review/issue comments in kind. Then push the fixes so CI re-runs.
+  **This is mechanically enforced:** `scripts/check_pr_review_replies.py` (run it before declaring
+  merge-ready, like `check_doc_freshness.py`) exits non-zero and lists any inline thread that still has no
+  reply — so a silently-skipped comment fails the readiness gate instead of slipping through.
 - **Cost comment:** after each run, `scripts/post_claude_review_cost.py` posts a PR comment with
   model, turns, input/output tokens, and reported USD cost (from the action's `execution_file`).
   Budget target remains **~$0.50–1/PR** on Sonnet.

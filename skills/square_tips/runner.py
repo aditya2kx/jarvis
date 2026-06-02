@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import pathlib
 import re
 import sys
@@ -31,6 +32,7 @@ from skills._browser_runtime.runtime import (
     download_to,
     is_fresh_download,
     launch_persistent,
+    trace_step,
 )
 from skills.square_tips.transactions_backend import parse_csv, get_credentials
 
@@ -38,6 +40,121 @@ LOGIN_URL = "https://app.squareup.com/login"
 TRANSACTIONS_URL = "https://app.squareup.com/dashboard/sales/transactions"
 ITEM_SALES_URL = "https://app.squareup.com/dashboard/sales/reports/item-sales"
 KDS_PERFORMANCE_URL = "https://app.squareup.com/dashboard/kitchen/reports/performance"
+
+_SELECTORS_DIR = pathlib.Path(__file__).resolve().parent / "selectors"
+
+# Built-in fallback so a missing/partial selectors JSON never hard-crashes the
+# scrape. The JSON file is the SOURCE OF TRUTH for drift fixes; these defaults
+# only fill gaps. Keep them in sync with selectors/item_sales.json["selectors"].
+_ITEM_SALES_SELECTOR_DEFAULTS = {
+    "date_picker": {
+        "primary_locators": [
+            "[data-test-sq-date-filter-dropdown-trigger]",
+        ],
+        "primary_wait_timeout_ms": 45000,
+        "pill_text_patterns": [
+            r"\d{2}/\d{2}/\d{4}",
+            r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d",
+            r"(Today|Yesterday|This week|Last week|This month|Last month|This year|Last year|Custom)",
+        ],
+        "pill_extra_locators": [
+            "button[aria-haspopup='dialog']",
+            "button[aria-haspopup='true']",
+            "[data-testid*='date'] button",
+            "button[class*='date-range']",
+        ],
+        "pill_wait_timeout_ms": 15000,
+        "pill_pattern_attempt_timeout_ms": 5000,
+        "post_open_wait_ms": 1000,
+        "range_input_selectors": {
+            "start": ".begin-date input.input-date",
+            "end": ".end-date input.input-date",
+        },
+        "date_input_selector": "input[type='text']:visible",
+        "date_input_label_keywords": ["date", "start", "end"],
+    },
+    "export": {
+        "export_button_patterns": [r"^Export$", "Export"],
+        "detail_csv_patterns": [r"Detail\s+CSV", "Detail CSV Export"],
+        "menu_open_wait_ms": 800,
+        "download_timeout_ms": 120000,
+    },
+}
+
+_item_sales_selectors_cache: dict | None = None
+
+
+def _item_sales_selectors() -> dict:
+    """Load (and cache) the machine-loadable item-sales selector block.
+
+    Source of truth is ``selectors/item_sales.json`` → ``selectors`` — so fixing
+    Square UI drift (e.g. the 2026-05-31 'date picker not found' incident) is a
+    one-file edit, no code change. Missing file/keys fall back to
+    ``_ITEM_SALES_SELECTOR_DEFAULTS`` per sub-block so a partial/malformed JSON
+    never hard-crashes the scrape.
+    """
+    global _item_sales_selectors_cache
+    if _item_sales_selectors_cache is not None:
+        return _item_sales_selectors_cache
+
+    merged = {k: dict(v) for k, v in _ITEM_SALES_SELECTOR_DEFAULTS.items()}
+    try:
+        raw = json.loads((_SELECTORS_DIR / "item_sales.json").read_text())
+        loaded = raw.get("selectors", {}) or {}
+        for block in ("date_picker", "export"):
+            merged[block] = {**merged[block], **(loaded.get(block, {}) or {})}
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[square_item_sales] WARN: could not load selectors/item_sales.json "
+            f"({exc}); using built-in selector defaults",
+            file=sys.stderr,
+        )
+    _item_sales_selectors_cache = merged
+    return _item_sales_selectors_cache
+
+
+def _find_item_sales_pill(page):
+    """Return a visible locator for the item-sales date picker control, or ``None``.
+
+    JSON-driven + resilient: tries ``primary_locators`` (the stable data-test hook)
+    first with a generous wait, then each ``pill_text_patterns`` entry on a
+    ``<button>``, then the structural ``pill_extra_locators``. A single Square
+    label-or-format change is absorbed by adding one pattern to
+    ``selectors/item_sales.json`` — no code edit.
+
+    Wall-clock bound (no overall cap parameter, by design):
+    ``primary_wait_timeout_ms`` + (len(pill_text_patterns)+len(pill_extra_locators))
+    × ``pill_pattern_attempt_timeout_ms``.
+    """
+    dp = _item_sales_selectors()["date_picker"]
+    per = dp.get("pill_pattern_attempt_timeout_ms", 5000)
+    # Stable data-test hook FIRST, with a generous wait: Square unified item-sales
+    # onto the shared date-filter dropdown (2026-06-02 drift), and the Ember filter
+    # bar can take tens of seconds to render after domcontentloaded. This anchor is
+    # far more reliable than the text/structural fallbacks below.
+    primary_to = dp.get("primary_wait_timeout_ms", 45000)
+    for css in dp.get("primary_locators", []):
+        try:
+            loc = page.locator(css).first
+            loc.wait_for(state="visible", timeout=primary_to)
+            return loc
+        except Exception:
+            continue
+    for pat in dp.get("pill_text_patterns", []):
+        loc = page.locator("button").filter(has_text=re.compile(pat)).first
+        try:
+            loc.wait_for(state="visible", timeout=per)
+            return loc
+        except Exception:
+            continue
+    for css in dp.get("pill_extra_locators", []):
+        try:
+            loc = page.locator(css).first
+            loc.wait_for(state="visible", timeout=per)
+            return loc
+        except Exception:
+            continue
+    return None
 
 
 def _is_on_login(url: str) -> bool:
@@ -49,6 +166,27 @@ def _is_on_login(url: str) -> bool:
 def _is_on_dashboard(url: str) -> bool:
     """True if we're on a dashboard page (real path /dashboard, not just a query param)."""
     return "squareup.com/dashboard" in url and "squareup.com/login" not in url
+
+
+def _is_magic_link_sent(page) -> bool:
+    """True if Square escalated to the email magic-link verification screen.
+
+    For an unrecognized device/browser Square may bypass the SMS-code 2FA and
+    instead email a passwordless 'magic link' ("Magic link sent. Use this device
+    to sign in."). Detected via the page's marker element/heading. The code-entry
+    flow cannot satisfy this screen — the link must be opened in THIS browser, so
+    callers relay the URL from the operator (see _handle_magic_link).
+    """
+    try:
+        if page.locator(".magic-link-sent__icon, [class*='magic-link-sent']").count() > 0:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        body = (page.locator("body").inner_text(timeout=2_000) or "").lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return "magic link sent" in body or "we sent a magic link" in body
 
 
 def _dismiss_cookie_banner(page) -> None:
@@ -116,7 +254,9 @@ def _ensure_logged_in(page, *, store: str) -> None:
     page.goto(TRANSACTIONS_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(1_500)  # let any redirect settle
     _dismiss_cookie_banner(page)
+    trace_step(page, "landing")
     if _is_on_dashboard(page.url):
+        trace_step(page, "already-logged-in-dashboard")
         return
 
     if not _is_on_login(page.url):
@@ -131,12 +271,15 @@ def _ensure_logged_in(page, *, store: str) -> None:
         "[data-testid='username-input'], input#mpui-combo-field-input"
     ).first
     email_input.wait_for(state="visible", timeout=10_000)
+    trace_step(page, "login-email-screen")
     email_input.fill(creds["username"])
+    trace_step(page, "email-filled")
     page.get_by_role("button", name=re.compile(r"continue|sign\s*in", re.I)).first.click()
 
     # Password step — visible input[type=password]. The hidden one with tabindex=-1 is decoy.
     pw_input = page.locator("input[type='password']:not([tabindex='-1'])").first
     pw_input.wait_for(state="visible", timeout=15_000)
+    trace_step(page, "password-screen")
     pw_input.fill(creds["password"])
     page.keyboard.press("Enter")
 
@@ -147,10 +290,11 @@ def _ensure_logged_in(page, *, store: str) -> None:
             """() => {
                 const path = window.location.pathname;
                 if (path.startsWith('/dashboard')) return true;
-                // 2FA picker text — appears regardless of URL still being /login
+                // 2FA picker OR magic-link screen — both appear while still on /login
                 const body = document.body && document.body.innerText || '';
                 return /how would you like to receive the code/i.test(body)
-                    || /text me the code/i.test(body);
+                    || /text me the code/i.test(body)
+                    || /magic link sent/i.test(body);
             }""",
             timeout=30_000,
         )
@@ -160,12 +304,22 @@ def _ensure_logged_in(page, *, store: str) -> None:
         # surface it with a screenshot.
         pass
     page.wait_for_timeout(1_500)
+    trace_step(page, "after-password-submit")
 
     if _is_on_dashboard(page.url):
+        trace_step(page, "dashboard-after-password")
         return
 
-    # 2FA challenge — operator-in-the-loop via Slack DM.
-    _handle_square_two_factor(page, store=store)
+    # Verification. Square may show the SMS-code 2FA OR escalate an unrecognized
+    # device to an email magic link. Handle whichever appeared; if the SMS flow
+    # ends up bouncing to a magic link, relay that too.
+    if _is_magic_link_sent(page):
+        _handle_magic_link(page, store=store)
+    else:
+        _handle_square_two_factor(page, store=store)
+        if not _is_on_dashboard(page.url) and _is_magic_link_sent(page):
+            _handle_magic_link(page, store=store)
+    trace_step(page, "post-verification")
 
     if not _is_on_dashboard(page.url):
         try:
@@ -178,6 +332,132 @@ def _ensure_logged_in(page, *, store: str) -> None:
             f"Square login did not reach /dashboard even after 2FA flow. "
             f"Current URL: {page.url}\nScreenshot: {snap}"
         )
+
+
+_SESSION_TMP = "/tmp/bhaga-square-session.json"
+
+
+def _session_persist_enabled() -> bool:
+    import os as _os
+    return (_os.environ.get("BHAGA_SESSION_PERSIST", "") or "").lower() in ("1", "true", "yes")
+
+
+def restore_session_path(store: str) -> str | None:
+    """Return a local storage_state path to seed the Square context (trusted device),
+    or None. Downloads the run's persisted session from GCS when BHAGA_SESSION_PERSIST
+    is set. Never raises — a miss just means a full login."""
+    if not _session_persist_enabled():
+        return None
+    try:
+        from agents.bhaga.scripts import gcs_cache  # lazy: optional GCP dep
+        dest = pathlib.Path(_SESSION_TMP)
+        if gcs_cache.download_session(dest, portal="square", store=store):
+            return str(dest)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[square session] restore skipped: {exc}", file=sys.stderr)
+    return None
+
+
+def persist_session(ctx, store: str) -> None:
+    """Persist the Square context's storage_state to GCS so the next run is a trusted
+    device (skips 2FA). No-op unless BHAGA_SESSION_PERSIST is set. Never raises."""
+    if not _session_persist_enabled():
+        return
+    try:
+        from agents.bhaga.scripts import gcs_cache  # lazy: optional GCP dep
+        dest = pathlib.Path(_SESSION_TMP)
+        ctx.storage_state(path=str(dest))
+        gcs_cache.upload_session(dest, portal="square", store=store)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[square session] persist skipped: {exc}", file=sys.stderr)
+
+
+def _run_label_prefix() -> str:
+    """`[SANDBOX · <label>] ` prefix for sandbox runs, else ''. Mirrors notify._run_prefix
+    so an operator can tell a sandbox OTP/magic-link DM apart from a prod one."""
+    import os as _os
+    if (_os.environ.get("BHAGA_RUN_ENV") or "").lower() != "sandbox":
+        return ""
+    label = _os.environ.get("BHAGA_RUN_LABEL") or "sandbox"
+    return f"🧪 [SANDBOX · {label}] "
+
+
+def _redact_url_values(url: str) -> str:
+    """Return ``scheme://host/path?key1=…&key2=…`` — query-param values redacted but
+    KEYS and structure kept, so a log line proves the URL is well-formed (separators
+    are real ``&``, not ``&amp;``) without leaking the one-time magic-link token."""
+    try:
+        from urllib.parse import urlsplit, parse_qsl
+
+        parts = urlsplit(url)
+        keys = [k for k, _ in parse_qsl(parts.query, keep_blank_values=True)]
+        q = "&".join(f"{k}=…" for k in keys)
+        base = f"{parts.scheme}://{parts.netloc}{parts.path}"
+        return f"{base}?{q}" if q else base
+    except Exception:  # noqa: BLE001
+        return "(unparseable url)"
+
+
+def _handle_magic_link(page, *, store: str) -> None:
+    """Relay a Square email magic link through the operator to finish sign-in.
+
+    Square's magic link is passwordless and MUST be opened in the same browser
+    that requested it — the headless container. The operator therefore must NOT
+    click it on their phone (that would sign in the phone, not us); they paste
+    the URL here and we navigate to it. This is the fallback when the trusted
+    device session has expired / is absent and Square escalates a new device.
+    """
+    import os as _os
+    import re as _re
+    try:
+        email = get_credentials(store).get("username", "your Square email")
+    except Exception:  # noqa: BLE001
+        email = "your Square email"
+
+    trace_step(page, "magic-link-sent-page")
+    from skills.slack.adapter import request_reply
+    wait_s = int(_os.environ.get("BHAGA_OTP_WAIT_S", "1800"))
+    prompt = (
+        f"{_run_label_prefix()}:link: *Square magic link required — {store}*\n\n"
+        f"Square emailed a *magic link* to `{email}` instead of an SMS code "
+        f"(it does this for an unrecognized device).\n"
+        f"⚠️ *Do NOT tap 'Sign in to Square' on your phone* — the link only works "
+        f"in the browser that requested it (this server).\n"
+        f"Instead: open the email, *copy the full link URL* "
+        f"(`https://squareup.com/login?rml=1&...`) and *paste it here* within "
+        f"{wait_s // 60} minutes."
+    )
+    print(f"[square magic-link] requesting magic-link URL via Slack for store={store!r} "
+          f"(wait={wait_s}s)...")
+    reply = request_reply(user_id="U0APJRE5DC4", prompt=prompt, timeout_seconds=wait_s, agent="bhaga")
+    if not reply:
+        raise RuntimeError(
+            "Square magic-link: operator did not paste the link within the window. "
+            "Retry the scrape (a new link will be requested) or complete login manually."
+        )
+    # Robustly extract the URL even if the operator added surrounding text. The
+    # reply is already HTML-unescaped + link-unwrapped by adapter._clean_slack_reply,
+    # so its `&` are literal (Slack returns `&amp;`, which would corrupt the token).
+    m = _re.search(r"https://[^\s<>'\"]+", reply.strip())
+    url = m.group(0) if m else reply.strip()
+    if not _re.match(r"^https://(www\.|app\.)?squareup\.com/login\?", url):
+        raise RuntimeError(
+            f"Square magic-link: pasted value is not a Square login URL: {url[:80]!r}. "
+            f"Copy the full 'https://squareup.com/login?...' link from the email."
+        )
+    # Observability: log the URL with query-param VALUES redacted (keys kept) so we
+    # can verify we navigated to a well-formed link — and never had a `&amp;`-mangled
+    # query — without leaking the one-time token.
+    print(f"[square magic-link] navigating to {_redact_url_values(url)}")
+    page.goto(url, wait_until="domcontentloaded")
+    trace_step(page, "magic-link-navigated")
+    try:
+        page.wait_for_function(
+            "() => location.pathname.startsWith('/dashboard')", timeout=30_000,
+        )
+    except Exception:  # noqa: BLE001
+        page.wait_for_timeout(2_000)  # let any post-link redirect settle
+    trace_step(page, "magic-link-result")
 
 
 def _handle_square_two_factor(page, *, store: str) -> None:
@@ -250,6 +530,7 @@ def _handle_square_two_factor(page, *, store: str) -> None:
                 f"Current URL: {page.url}"
             )
 
+    trace_step(page, "otp-code-screen")
     # Step 4: request the code via Slack DM, block for reply.
     from skills.slack.adapter import request_otp  # local import: optional dep
 
@@ -275,6 +556,21 @@ def _handle_square_two_factor(page, *, store: str) -> None:
     code = code.strip().replace(" ", "").replace("-", "")
     print(f"[square 2fa] got code (len={len(code)}); submitting.")
 
+    # Tick "trust this device for 30 days" (when present) so Square remembers us
+    # and stops escalating future logins to a fresh code / magic link. Only
+    # durable if the session is persisted (storage_state) across runs — see
+    # gcs_cache.upload_session / BHAGA_SESSION_PERSIST.
+    try:
+        trust = page.get_by_role(
+            "checkbox",
+            name=_re.compile(r"trust|remember\s+this\s+(device|browser)|don'?t\s+ask", _re.I),
+        ).first
+        if trust.is_visible(timeout=2_000):
+            trust.check()
+            print("[square 2fa] ticked 'trust this device'.")
+    except Exception:  # noqa: BLE001
+        pass
+
     # Step 5: fill & submit.
     if code_input is not None:
         code_input.fill(code)
@@ -285,6 +581,7 @@ def _handle_square_two_factor(page, *, store: str) -> None:
                 digit_inputs.nth(i).fill(ch)
             except Exception:
                 break
+    trace_step(page, "otp-code-filled")
     page.keyboard.press("Enter")
 
     # Wait for dashboard.
@@ -304,6 +601,7 @@ def _handle_square_two_factor(page, *, store: str) -> None:
             )
         except Exception:
             pass  # fall through to caller's dashboard check
+    trace_step(page, "after-otp-submit")
 
 
 def _set_date_range(page, *, start: datetime.date, end: datetime.date) -> None:
@@ -448,45 +746,67 @@ def download_transactions(
         _release_scrape_lock()
 
 
-def _set_item_sales_date_range(page, *, start: datetime.date, end: datetime.date) -> None:
+def _set_item_sales_date_range(page, *, start: datetime.date, end: datetime.date, pill=None) -> None:
     """Open the item-sales date picker and type a precise start/end range.
 
-    Square has updated the item-sales page to use the same MM/DD/YYYY format
-    as the transactions page. Falls back to the old month-label format for
-    backward compatibility.
+    Square unified item-sales onto the shared date-filter dropdown (2026-06-02);
+    the popover exposes explicit begin/end inputs. Falls back to the generic
+    visible-text-input heuristic for older surfaces.
 
-    Selectors calibrated via skills/square_tips/selectors/item_sales.json.
+    Pass ``pill`` (the already-located trigger from ``_find_item_sales_pill``) to
+    skip a redundant second pattern sweep; if ``None`` it is located here.
+
+    Selectors are JSON-driven (skills/square_tips/selectors/item_sales.json →
+    selectors.date_picker); a Square UI drift is a one-file edit, no code change.
     """
-    pill = None
-    for pattern in [
-        re.compile(r"\d{2}/\d{2}/\d{4}"),
-        re.compile(r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d"),
-    ]:
-        loc = page.locator("button").filter(has_text=pattern).first
-        try:
-            loc.wait_for(state="visible", timeout=5_000)
-            pill = loc
-            break
-        except Exception:
-            continue
+    dp = _item_sales_selectors()["date_picker"]
+    if pill is None:
+        pill = _find_item_sales_pill(page)
     if pill is None:
         raise RuntimeError("Item Sales date picker pill not found")
     pill.click()
-    page.wait_for_timeout(800)
+    page.wait_for_timeout(dp.get("post_open_wait_ms", 800))
 
     start_str = start.strftime("%m/%d/%Y")
     end_str = end.strftime("%m/%d/%Y")
 
-    inputs = page.locator("input[type='text']:visible")
+    # Preferred path (2026-06-02 drift): the unified date-filter popover exposes
+    # explicit begin/end inputs (`.begin-date input.input-date` / `.end-date ...`),
+    # same as the KDS report. Click-select-all → fill → Tab/Enter, which is far
+    # more robust than guessing among all visible text inputs.
+    ris = dp.get("range_input_selectors") or {}
+    if ris.get("start") and ris.get("end"):
+        try:
+            start_el = page.locator(ris["start"]).first
+            start_el.wait_for(state="visible", timeout=5_000)
+            start_el.click(click_count=3)
+            page.wait_for_timeout(150)
+            start_el.fill(start_str)
+            page.wait_for_timeout(300)
+            page.keyboard.press("Tab")
+            end_el = page.locator(ris["end"]).first
+            end_el.wait_for(state="visible", timeout=5_000)
+            end_el.click(click_count=3)
+            page.wait_for_timeout(150)
+            end_el.fill(end_str)
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(1_500)
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(2_000)
+            return
+        except Exception:
+            # Fall through to the generic heuristic below if the popover differs.
+            pass
+
+    keywords = tuple(dp.get("date_input_label_keywords", ["date", "start", "end"]))
+    inputs = page.locator(dp.get("date_input_selector", "input[type='text']:visible"))
     n = inputs.count()
     date_inputs = []
     for i in range(n):
         el = inputs.nth(i)
         val = el.input_value() or ""
         label = (el.get_attribute("aria-label") or "").lower()
-        if re.search(r"\d{2}/\d{2}/\d{4}", val) or any(
-            kw in label for kw in ("date", "start", "end")
-        ):
+        if re.search(r"\d{2}/\d{2}/\d{4}", val) or any(kw in label for kw in keywords):
             date_inputs.append(el)
         if len(date_inputs) == 2:
             break
@@ -513,16 +833,48 @@ def _trigger_item_sales_export(
 
     Unlike Transactions (async Generate -> poll -> Download), the Item Sales
     Detail CSV is a direct download triggered from the Export dropdown.
+
+    Export-button and menu-item selectors are JSON-driven (selectors.export);
+    each pattern is tried in order so a label change is a one-file edit.
     """
-    page.get_by_role("button", name=re.compile(r"^Export$", re.I)).first.click()
-    page.wait_for_timeout(800)
+    ex = _item_sales_selectors()["export"]
+
+    export_patterns = ex.get("export_button_patterns", [r"^Export$"])
+    clicked = False
+    for pat in export_patterns:
+        try:
+            page.get_by_role("button", name=re.compile(pat, re.I)).first.click()
+            clicked = True
+            break
+        except Exception:
+            continue
+    if not clicked:
+        raise RuntimeError(
+            f"Item Sales Export button not found (patterns={export_patterns}). "
+            f"Current URL: {page.url}"
+        )
+    page.wait_for_timeout(ex.get("menu_open_wait_ms", 800))
+
+    detail_patterns = ex.get("detail_csv_patterns", [r"Detail\s+CSV"])
+
+    def _click_detail_csv():
+        for pat in detail_patterns:
+            loc = page.get_by_text(re.compile(pat, re.I)).first
+            try:
+                loc.click()
+                return
+            except Exception:
+                continue
+        raise RuntimeError(
+            f"Item Sales 'Detail CSV' menu item not found (patterns={detail_patterns})."
+        )
 
     rename = f"items-{start.isoformat()}-{(end + datetime.timedelta(days=1)).isoformat()}.csv"
     return download_to(
         page,
-        trigger=lambda: page.get_by_text(re.compile(r"Detail\s+CSV", re.I)).first.click(),
+        trigger=_click_detail_csv,
         rename_to=rename,
-        timeout_ms=120_000,
+        timeout_ms=ex.get("download_timeout_ms", 120_000),
     )
 
 
@@ -588,33 +940,36 @@ def _download_item_sales_with_page(
     start_date: datetime.date,
     end_date: datetime.date,
 ) -> pathlib.Path:
-    """Internal: navigate to item-sales report and export the Detail CSV."""
+    """Internal: navigate to item-sales report and export the Detail CSV.
+
+    The date-picker pill is detected via JSON-driven, ordered fallbacks
+    (selectors/item_sales.json → selectors.date_picker). Square has drifted this
+    control before (month-label → MM/DD/YYYY → the 2026-05-31 'not found'
+    incident); absorbing the next drift is a one-file selector edit.
+    """
     page.goto(ITEM_SALES_URL, wait_until="domcontentloaded")
-    # Square updated the item-sales date picker from "May 2026" (month label)
-    # to "05/28/2026" (MM/DD/YYYY format, same as transactions page). Try the
-    # new format first, fall back to old month-label format.
-    pill_found = False
-    for pattern in [
-        re.compile(r"\d{2}/\d{2}/\d{4}"),
-        re.compile(r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d"),
-    ]:
-        try:
-            page.locator("button").filter(has_text=pattern).first.wait_for(
-                state="visible", timeout=15_000,
-            )
-            pill_found = True
-            break
-        except Exception:
-            continue
-    if not pill_found:
+    pill = _find_item_sales_pill(page)
+    # Trace AFTER the finder returns: the Ember filter bar renders slowly, so a
+    # screenshot taken immediately post-goto is blank. By now the page is settled
+    # (the finder waited for the control), so the frame is actually legible.
+    trace_step(page, "item-sales-page")
+    if pill is None:
+        page.wait_for_timeout(2_000)  # let any late render settle so the frame is useful
+        trace_step(page, "item-sales-pill-not-found")
         raise RuntimeError(
             f"Item Sales page date picker not found within timeout. "
+            f"Tried patterns + structural locators from "
+            f"selectors/item_sales.json (selectors.date_picker). "
             f"Current URL: {page.url}"
         )
     page.wait_for_timeout(1_500)
 
-    _set_item_sales_date_range(page, start=start_date, end=end_date)
-    return _trigger_item_sales_export(page, start=start_date, end=end_date)
+    # Reuse the already-found pill (avoid a second full pattern sweep + TOCTOU).
+    _set_item_sales_date_range(page, start=start_date, end=end_date, pill=pill)
+    trace_step(page, "item-sales-date-range-set")
+    result = _trigger_item_sales_export(page, start=start_date, end=end_date)
+    trace_step(page, "item-sales-exported")
+    return result
 
 
 def _kds_navigate_calendar_to_month(page, *, target_year: int, target_month: int) -> None:

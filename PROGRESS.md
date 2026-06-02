@@ -12,6 +12,134 @@
 
 ## BHAGA Agent (Tip Allocation & Payroll Prep)
 
+### 2026-06-01 — Cloud observability, sandbox isolation, JSON selectors, live sandbox run
+
+- **Incident (2026-05-31 item sales):** both nightly attempts raised `RuntimeError: Item Sales page
+  date picker not found within timeout` — Square UI **selector drift**. Root cause was readable from
+  Cloud Run **logs** (no rerun), but the screenshot/DOM were written to the container's ephemeral
+  `~/.bhaga` and **lost** — the observability gap this change closes.
+- **M1 — observability:** `_capture_failure_evidence` now uploads screenshot + DOM + meta to
+  `gs://<cache>/<date>/evidence/` (lazy import, best-effort, greppable `gs://` breadcrumb). The URI is
+  threaded into the Slack failure DM (`notify.failure_alert(evidence_uri=…)`) and the Firestore
+  `runs/<date>` doc per failed step (`state_adapter.record_step_failure`). Complete per-run visibility
+  for postmortems without a rerun.
+- **M2 — sandbox isolation (read prod, NEVER write prod):** hard guards on the three write paths —
+  sheets (`config_loader._assert_not_production_sheet`), GCS cache
+  (`gcs_cache._assert_sandbox_write_isolation` + `BHAGA_GCS_CACHE_WRITE_BUCKET`), and run-state
+  (`state_adapter._assert_sandbox_state_isolation` + `BHAGA_FIRESTORE_COLLECTION`). Added to
+  `bhaga-principles.md` / `bhaga.md`.
+- **M3 — selector robustness:** item-sales date-picker + export selectors externalized to
+  `square_tips/selectors/item_sales.json` with resilient fallbacks; `runner._find_item_sales_pill`
+  tries JSON-driven patterns/locators in order. The exact fix for drift is now a **one-file** edit.
+- **M4 — incremental cache:** each Square artifact is uploaded to GCS immediately after download, so a
+  later-step failure (like item sales) never discards already-scraped transactions.
+- **M5 — live sandbox run + scenario suite:** `sandbox_live_run.py` deploys unmerged PR code to
+  `bhaga-sandbox-refresh` (self-wires by **inheriting prod's secrets + SA** — same creds, only the
+  isolation env differs) and runs a **real** scrape against a leased sandbox slot. `sandbox_scenarios.py`
+  organizes runs as a named suite (`item-sales-live`, `full-live`) selectable three ways via
+  `.github/workflows/sandbox-live-run.yml`: committed `.github/sandbox-live.yml` + `sandbox-live` label
+  (`pull_request`, works **pre-merge**), `/sandbox run <scenario> [date=…]` PR comment (`issue_comment`,
+  post-merge), or manual dispatch. Forks refused; comment commands require OWNER/COLLABORATOR/MEMBER;
+  evidence auto-posted as a PR comment. Isolation pre-flight fails before any deploy. **OTP routing:**
+  prod Slack bot, but the prompt is labeled `[SANDBOX · PR…]` and the pending-OTP checkpoint carries
+  routing metadata so the webhook (sandbox collection scanned **first**, default `sandbox_runs`) resumes
+  the **sandbox** job, never prod, even under a concurrent prod OTP. Supervised live runs set
+  `BHAGA_OTP_ASSUME_READY=1` to wait for the code **inline** (serviced by the existing webhook via the
+  agent-keyed `otps` collection), so the OTP round-trip works **even before** this PR's webhook deploys.
+- **First live dispatch (2026-06-01, PR #9 `sandbox-live` label):** resolve → build/push image → lease
+  sandbox slot → seed model from prod (read-only) → isolation pre-flight all ✅; stopped at the expected
+  least-privilege gate (`storage.buckets.create` denied). Bucket creation is now a documented one-time
+  operator step (RUNBOOK §13); `assert_sandbox_bucket` fails with the exact remediation instead of
+  attempting create.
+- **Tests:** +new unit suites (`test_gcs_cache`, `test_runner_item_sales`, `test_sandbox_live_run`,
+  `test_notify`) and extended `test_state_adapter` / `test_handler` (sandbox routing). 399 BHAGA tests green.
+- **Status: in PR `feat/bhaga-cloud-observability`.** Live reproduction of 5/31 + the exact selector
+  calibration are **operator-gated** (trigger the workflow + supply OTP); prod 5/31 + 6/1 reruns are
+  post-merge, after suspending `bhaga-nightly`.
+
+### 2026-06-02 — Live-run hardening: prod-job inheritance, magic-link relay, trusted device, scoped scenario
+
+- **Operator setup done (no longer a blocker):** created `gs://bhaga-scrape-cache-sandbox` + granted the
+  run SA (`bhaga-orchestrator@…`) bucket-scoped `storage.admin`. First real sandbox execution then ran.
+- **Sandbox-job config inheritance (two real bugs the live run surfaced):** `gcloud run jobs describe
+  --format=json` emits the **KRM/v1** shape (deep nesting, `valueFrom.secretKeyRef` name/key), not the v2
+  shape the parsers assumed — so secret/SA inheritance silently produced an unconfigured job. Parsers are
+  now schema-robust (recursive search) and also inherit **cpu/memory/timeout/maxRetries** (a default job
+  is 512Mi/600s → OOM/timeout a Chromium scrape) and **prod's plain env vars** (`BHAGA_SECRETS_BACKEND=gcp`
+  etc. — without it the loader fell back to a missing `config.yaml` → FileNotFoundError). Isolation overlay
+  still layered on top and always wins.
+- **2026-06-01 incident — Square escalated an unrecognized device to an email magic link** ("Magic link
+  sent. Use this device to sign in.") instead of the SMS code; the code-entry flow can't satisfy it.
+  Captured to GCS evidence (observability win — diagnosed with zero reruns). Two-layer fix:
+  - **1st line — trusted device:** tick "trust this device for 30 days" during 2FA + persist the Square
+    `storage_state` (cookies) to GCS (`<bucket>/_session/square-<store>.json`) and restore it next run, so
+    Square recognizes the device and stops escalating. Opt-in `BHAGA_SESSION_PERSIST=1`; sandbox keeps its
+    OWN session in the sandbox bucket (isolation preserved). Augments — does **not** restore — the
+    2026-05-17 ephemeral default (persists only the cookie JSON, not a user-data-dir).
+  - **fallback — magic-link relay:** `runner._is_magic_link_sent` detects the page; `_handle_magic_link`
+    DMs the operator to **paste the magic-link URL** (explicitly: do NOT click on phone — the link only
+    works in the requesting browser) and `page.goto`s it in the container. New `adapter.request_reply`
+    handles the free-form URL reply (unwraps Slack `<url|label>`).
+- **Scenario scoped to the failure:** `item-sales-live` now skips ADP/reviews/model (Square-only download)
+  via a scenario `skip` list → `sandbox_live_run --skip` → `BHAGA_SKIP_<STEP>` env (read by
+  `daily_refresh.main`, ORed with CLI flags).
+- **Verification gate:** `sandbox_live_run.verify_item_sales` asserts `<date>/square/items-*.csv` exists
+  with >0 data rows; a "green" `item-sales-live` run now truly means item-sales downloaded (catches
+  "job exited 0 but the deliverable wasn't available"). Surfaced in the PR evidence comment.
+- **Step-by-step screenshot trace (see the whole flow, not just the failure):** new
+  `runtime.trace_step(page, label)` captures the FULL browser after each login + item-sales action and
+  uploads it to `gs://<bucket>/<date>/trace/NN-<label>.png` (e.g. `landing`, `email-filled`,
+  `otp-code-screen`, `magic-link-sent-page`, `magic-link-navigated`, `magic-link-result`,
+  `item-sales-page`, `item-sales-exported`). Best-effort/never-raises; off by default, enabled by
+  `BHAGA_TRACE_SCREENSHOTS=1` (set automatically for sandbox runs in `build_sandbox_env`, off for the prod
+  nightly). Honors sandbox isolation via `gcs_cache` write bucket. This is what answers "show me a
+  screenshot of every step" with zero reruns.
+- **Magic-link relay ROOT CAUSE (2026-06-02 live run, found via the new trace):** the trace frames
+  (`magic-link-sent-page → magic-link-navigated → magic-link-result`) showed we navigated to the pasted
+  link but bounced back to "Magic link sent" with a **blank email**. Cause: **Slack HTML-escapes `&`→`&amp;`
+  in message `text`**, so a magic link `…?rml=1&token=ABC&uid=123` arrived as `…?rml=1&amp;token=ABC&amp;uid=123`;
+  the old unwrap only stripped the `<…>` Slack link wrapper and left the `&amp;`, corrupting the query
+  string (`amp;token=…`) so Square rejected the token. Fix: `adapter._clean_slack_reply` now unwraps the
+  link **and** `html.unescape`s the text (literal `&`); `_handle_magic_link` extracts the URL with a regex
+  (tolerates surrounding text), accepts the `app.` subdomain, and logs `_redact_url_values(url)` (keys kept,
+  values redacted) so we can prove the URL is well-formed without leaking the one-time token.
+- **SELECTOR DRIFT ROOT-CAUSED + FIXED (the original 2026-05-31 incident, reproduced live):** with login
+  finally solved, the sandbox run reached the item-sales page and **reproduced** the "date picker not found"
+  failure (trace `item-sales-pill-not-found` + verify gate red). The captured DOM
+  (`…/evidence/square-fail-20260602-053441.html`) shows Square **unified item-sales onto the shared
+  date-filter dropdown** (same as KDS/transactions): the control is now a single-date dropdown trigger
+  `[data-test-sq-date-filter-dropdown-trigger]` (button text = current date, e.g. `05/31/2026`) with prev/next
+  arrows, NOT the old `MM/DD/YYYY` range pill; the popover exposes `.begin-date input.input-date` /
+  `.end-date input.input-date`. Fix is **JSON-first** as designed: `selectors/item_sales.json` gains
+  `primary_locators` (the data-test hook, tried FIRST with a 45s wait since the Ember filter bar renders
+  slowly post-`domcontentloaded`) and `range_input_selectors`; `runner._find_item_sales_pill` tries the hook
+  first and `_set_item_sales_date_range` fills the explicit begin/end inputs (KDS-style). `last_verified`
+  bumped to 2026-06-02.
+- **Trace timing fix:** `item-sales-page` is now captured *after* the pill finder returns (page settled),
+  not immediately post-`goto` (which produced blank SPA frames).
+- **Tests:** +`test_runner_item_sales` (primary data-hook tried first; range inputs present),
+  +`test_runner_magic_link` (URL-from-surrounding-text, `app.` subdomain, redaction),
+  +`test_adapter_request_reply` (`&amp;` decode regression), extended `test_sandbox_live_run`
+  (schema shapes, plain-env inheritance, skip-steps, item-sales verify) + `test_sandbox_scenarios`
+  (scoping) + `test_runtime` (trace_step: disabled no-op, full-page upload w/ seq+slug label, never-raises).
+  480 BHAGA tests green.
+- **Review round (PR #9 Claude bot, addressed inline):** dropped the dead `total_timeout_ms` param on
+  `_find_item_sales_pill`; thread the found `pill` into `_set_item_sales_date_range` (no double pattern
+  sweep / TOCTOU); `cloud/webhook/handler.py` `SANDBOX_RUNS_COLLECTION` now **defaults to `""`** (sandbox
+  OTP scan OFF → prod READY path byte-for-byte unchanged, matching the PR §4 / RUNBOOK claim; set
+  `=sandbox_runs` to opt in); `sandbox_workflow_resolve._yesterday_ct` UTC fallback anchored to **UTC-6
+  (CST)** so it can't compute "yesterday" a day early; the committed `.github/sandbox-live.yml` + label were
+  already removed. **Design fix so this isn't skipped again:** `scripts/check_pr_review_replies.py` is a new
+  merge-readiness gate (like `check_doc_freshness`) that fails if any inline review thread lacks a reply;
+  wired into CONTRIBUTING's merge-ready definition + the reply-inline policy.
+- **✅ VALIDATED GREEN end-to-end (live sandbox, run `26800841808`, commit `747beaa`):** `rc=0`,
+  `verify(item_sales): item-sales OK — …/items-2026-05-31-2026-06-01.csv (502 data rows)`. The trusted-device
+  session persisted from the prior magic-link login was restored, so **Square skipped 2FA entirely** (no OTP /
+  no magic link — `already-logged-in-dashboard` trace), then the new date-dropdown selector found the control,
+  set START/END `05/31/2026`, and exported the Detail CSV. Closes the 2026-05-31 incident on live data; the
+  committed `.github/sandbox-live.yml` + `sandbox-live` label were removed afterward so future pushes don't
+  auto-fire a live scrape (re-run on demand via `/sandbox run item-sales-live`).
+
 ### 2026-06-01 — Browser-launch resilience, OTP-portal recovery, principles consult-first
 
 - **Incident (2026-05-31 nightly):** Square's Chromium died on launch (`TargetClosedError` in

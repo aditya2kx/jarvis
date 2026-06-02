@@ -240,6 +240,16 @@ class TestTipPoolConservation(unittest.TestCase):
             e2e.assert_tip_pool_conserved(grid)
         self.assertIn("too short", str(ctx.exception))
 
+    def test_all_rows_skipped_raises(self):
+        # Header present + a non-header row, but the date column is blank for
+        # every row -> pool_by_date empty. Must fail, not return dates_checked=0.
+        grid = [self.HEADER,
+                ["", "Tue", "2026-05-18", "2026-05-31", "A",
+                 "5", "50.00", "8", "100", "50.00"]]
+        with self.assertRaises(RuntimeError) as ctx:
+            e2e.assert_tip_pool_conserved(grid)
+        self.assertIn("no parseable date rows", str(ctx.exception))
+
     def test_legacy_header_fallback(self):
         # Fallback column names keep the check alive across a header rename.
         legacy = ["date_local", "employee_name", "tip_pool_dollars", "tip_allocation_dollars"]

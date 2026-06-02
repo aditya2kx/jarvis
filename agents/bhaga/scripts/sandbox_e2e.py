@@ -396,6 +396,11 @@ def assert_tip_pool_conserved(tip_alloc_daily_values: list[list], *, tol_cents: 
         pool_by_date.setdefault(date, _to_cents(row[i_pool]))
         alloc_by_date[date] = alloc_by_date.get(date, 0) + _to_cents(row[i_alloc])
 
+    if not pool_by_date:
+        raise RuntimeError(
+            "tip pool conservation: no parseable date rows found in tip_alloc_daily "
+            "(all rows skipped — possible date-column format change)"
+        )
     problems: list[str] = []
     max_residual = 0
     for date, pool in sorted(pool_by_date.items()):

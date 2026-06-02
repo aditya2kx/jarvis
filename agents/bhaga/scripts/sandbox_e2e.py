@@ -395,11 +395,17 @@ def _read_model_tab_counts(token: str, model_sid: str, tabs: list[str] | None = 
     return tab_counts_from_columns(raw)
 
 
-def _read_model_grid(token: str, model_sid: str, tab: str) -> list[list]:
-    """Read a full tab grid (header + rows) for a value-level assertion."""
-    rng = f"{tab}!A1:ZZ100000"
-    by_range = sandbox_provision._batch_read_values(token, model_sid, [rng])
-    return by_range.get(rng, [])
+def _read_model_grids(token: str, model_sid: str, tabs: list[str]) -> dict[str, list[list]]:
+    """Read several full tab grids in ONE batchGet (quota-friendly).
+
+    Value-level assertions (conservation + exemptions) need the whole
+    tip_alloc_daily and tip_alloc_period grids; fetching them in a single
+    spreadsheets.values:batchGet round-trip avoids N separate reads against the
+    60-req/min Sheets quota (the 429 we otherwise lean on backoff to absorb).
+    """
+    ranges = [f"{tab}!A1:ZZ100000" for tab in tabs]
+    by_range = sandbox_provision._batch_read_values(token, model_sid, ranges)
+    return {tab: by_range.get(rng, []) for tab, rng in zip(tabs, ranges)}
 
 
 def _read_worked_hours(
@@ -752,9 +758,12 @@ def run_e2e(
             min_rows=min_rows,
         )
         if source == "prod-raw":
-            grid = _read_model_grid(token, ids["bhaga_model"], "tip_alloc_daily")
+            grids = _read_model_grids(
+                token, ids["bhaga_model"], ["tip_alloc_daily", "tip_alloc_period"],
+            )
+            grid = grids["tip_alloc_daily"]
+            period_grid = grids["tip_alloc_period"]
             report["tip_pool_conservation"] = assert_tip_pool_conserved(grid)
-            period_grid = _read_model_grid(token, ids["bhaga_model"], "tip_alloc_period")
             worked_hours = _read_worked_hours(
                 ids["bhaga_adp_raw"], account=account, start=start, end=end,
             )

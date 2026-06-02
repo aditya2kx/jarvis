@@ -617,7 +617,7 @@ class TestRunE2E(unittest.TestCase):
             mock.patch.object(e2e, "seed_sandbox_training_shifts_from_prod", seed_ts),
             mock.patch.object(e2e, "_run_model_build", mock.Mock(return_value=0)),
             mock.patch.object(e2e, "_read_model_tab_counts", lambda t, s, tabs=None: counts),
-            mock.patch.object(e2e, "_read_model_grid", lambda t, s, tab: grids[tab]),
+            mock.patch.object(e2e, "_read_model_grids", lambda t, s, tabs: grids),
             mock.patch.object(e2e, "_read_worked_hours",
                               lambda sid, *, account, start, end: {}),
             mock.patch.object(e2e.sandbox_provision, "teardown", teardown),

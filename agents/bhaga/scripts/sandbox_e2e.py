@@ -294,6 +294,10 @@ def seed_sandbox_raw_from_prod(
             rows = getattr(raw_reader, reader_attr)(prod_sid, account=account)
         windowed = filter_rows_to_window(rows, date_field, start, end)
         if windowed:
+            # write_raw_* upserts (preserves non-matching keys), but determinism
+            # is safe: provision() -> clear_slot() _batch_clears every tab in the
+            # raw sheets before this seed, so only this window's rows are present
+            # and the conservation check covers exactly the seeded period.
             getattr(raw_writer, writer_attr)(sandbox_sid, windowed, account=account)
         seeded[reader_attr.replace("read_raw_", "")] = len(windowed)
     return seeded
@@ -375,13 +379,22 @@ def assert_tip_pool_conserved(tip_alloc_daily_values: list[list], *, tol_cents: 
 
     pool_by_date: dict[str, int] = {}
     alloc_by_date: dict[str, int] = {}
+    needed_cols = max(i_date, i_pool, i_alloc)
     for row in tip_alloc_daily_values[1:]:
         if not row or not str(row[0]).strip():
             continue
+        # A truncated row would otherwise default pool/alloc to 0 and pass the
+        # check trivially (0 == 0) — a silent false-negative is exactly what
+        # this gate must not do, so a short row is a hard schema regression.
+        if len(row) <= needed_cols:
+            raise RuntimeError(
+                f"tip pool conservation: row {row!r} is too short "
+                f"(need cols up to index {needed_cols}, got {len(row)})"
+            )
         date = str(row[i_date]).strip()[:10]
         # Pool is constant per date; record once. Allocations sum.
-        pool_by_date.setdefault(date, _to_cents(row[i_pool]) if len(row) > i_pool else 0)
-        alloc_by_date[date] = alloc_by_date.get(date, 0) + (_to_cents(row[i_alloc]) if len(row) > i_alloc else 0)
+        pool_by_date.setdefault(date, _to_cents(row[i_pool]))
+        alloc_by_date[date] = alloc_by_date.get(date, 0) + _to_cents(row[i_alloc])
 
     problems: list[str] = []
     max_residual = 0

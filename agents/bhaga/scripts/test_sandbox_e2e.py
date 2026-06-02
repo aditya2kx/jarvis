@@ -232,6 +232,14 @@ class TestTipPoolConservation(unittest.TestCase):
             e2e.assert_tip_pool_conserved(grid)
         self.assertIn("NOT conserved", str(ctx.exception))
 
+    def test_short_row_raises_not_silently_passes(self):
+        # A truncated row must fail loudly, not default pool/alloc to 0 and pass.
+        grid = [self.HEADER,
+                ["2026-05-20", "Tue", "2026-05-18", "2026-05-31", "A"]]  # missing day_pool/our_share
+        with self.assertRaises(RuntimeError) as ctx:
+            e2e.assert_tip_pool_conserved(grid)
+        self.assertIn("too short", str(ctx.exception))
+
     def test_legacy_header_fallback(self):
         # Fallback column names keep the check alive across a header rename.
         legacy = ["date_local", "employee_name", "tip_pool_dollars", "tip_allocation_dollars"]

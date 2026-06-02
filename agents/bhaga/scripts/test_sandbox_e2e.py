@@ -316,10 +316,14 @@ class TestRunE2E(unittest.TestCase):
         from agents.bhaga.scripts import sandbox_provision as sp
         ids = {k: f"id_{k}" for k in sp.PROFILE_KEYS}
         counts = {t: 1 for t in e2e.PROD_RAW_VERIFY_MIN_ROWS}
+        # Canonical tip_alloc_daily schema (the primary _col() path that fires
+        # against the real model sheet), not the legacy fallback names.
         balanced = [
-            ["date_local", "employee_id", "employee_name", "hours_worked",
-             "share_of_day_hours_pct", "tip_pool_dollars", "tip_allocation_dollars"],
-            ["2026-05-20", "1", "A", "5", "100", "50.00", "50.00"],
+            ["date", "dow", "period_start", "period_end", "employee",
+             "hours_worked", "day_pool", "team_hours_eligible",
+             "pct_of_day_hours", "our_share"],
+            ["2026-05-20", "Tue", "2026-05-18", "2026-05-31", "A",
+             "5", "50.00", "8", "100", "50.00"],
         ]
         teardown = mock.Mock(return_value={"deleted": []})
         seed = mock.Mock(return_value={"adp_shifts": 10, "square_transactions": 200})

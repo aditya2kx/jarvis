@@ -114,5 +114,38 @@ class TestStagingIsolation(unittest.TestCase):
             self.assertIn("staging", str(e).lower())
 
 
+class TestProductionReadAllowance(unittest.TestCase):
+    """Read-prod / write-sandbox: prod reads need an explicit scope, prod
+    writes are never allowed (the sandbox seed flow depends on this)."""
+
+    def setUp(self):
+        config_loader._PRODUCTION_SHEET_IDS = frozenset(PROD_IDS.values())
+        os.environ["BHAGA_SHEET_MODE"] = "staging"
+        self.sid = next(iter(PROD_IDS.values()))
+
+    def tearDown(self):
+        os.environ.pop("BHAGA_SHEET_MODE", None)
+        config_loader._PRODUCTION_SHEET_IDS = None
+
+    def test_read_blocked_without_scope(self):
+        with self.assertRaises(RuntimeError):
+            config_loader._assert_not_production_sheet(self.sid, op="read")
+
+    def test_read_allowed_within_scope(self):
+        with config_loader.allow_production_read():
+            config_loader._assert_not_production_sheet(self.sid, op="read")
+
+    def test_write_blocked_even_within_read_scope(self):
+        with config_loader.allow_production_read():
+            with self.assertRaises(RuntimeError):
+                config_loader._assert_not_production_sheet(self.sid, op="write")
+
+    def test_scope_is_restored_after_exit(self):
+        with config_loader.allow_production_read():
+            pass
+        with self.assertRaises(RuntimeError):
+            config_loader._assert_not_production_sheet(self.sid, op="read")
+
+
 if __name__ == "__main__":
     unittest.main()

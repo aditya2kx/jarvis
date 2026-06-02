@@ -40,6 +40,7 @@ from agents.bhaga.scripts.update_model_sheet import (
     discover_periods,
     actual_cc_tips_by_period,
     _read_training_excluded_from_sheet,
+    _read_training_shifts_from_sheet,
     DEFAULT_SATURATION_THRESHOLD,
 )
 from core.config_loader import project_dir, refresh_access_token, resolve_sheet_id
@@ -315,8 +316,12 @@ def main() -> int:
     earnings = compensation_backend.parse_xlsx(earnings_xlsx, employee_aliases=aliases)
     print(f"    earnings:       {len(earnings)} rows (from XLSX)")
 
-    # Training exclusions
+    # Training exclusions (bulk through-date + per-shift overlay) — read both so
+    # the BigQuery parity recompute applies the SAME exclusions as the prod build.
     training_through = _read_training_excluded_from_sheet(
+        spreadsheet_id=model_sid, store=args.store,
+    )
+    training_shifts = _read_training_shifts_from_sheet(
         spreadsheet_id=model_sid, store=args.store,
     )
 
@@ -356,6 +361,7 @@ def main() -> int:
 
     daily_rows, daily_summary = build_daily_rows(
         txns=txns, shifts=shifts, excluded=excluded, training_through=training_through,
+        training_shifts=training_shifts,
     )
     labor_daily_rows = build_labor_daily_rows(
         txns=txns, shifts=shifts, wage_rates=wage_rates,
@@ -376,6 +382,7 @@ def main() -> int:
         actuals=actuals, excluded=excluded,
         square_data_start=square_data_start,
         training_through=training_through,
+        training_shifts=training_shifts,
     )
     period_rows = build_tip_alloc_period_rows(period_results)
     day_alloc_rows = build_tip_alloc_daily_rows(period_results, daily_summary)

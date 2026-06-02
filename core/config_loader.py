@@ -6,6 +6,8 @@ Google API authentication and resource IDs. Falls back to config.template.yaml
 for structure reference if config.yaml is missing.
 """
 
+import contextlib
+import contextvars
 import json
 import os
 import urllib.parse
@@ -48,17 +50,47 @@ def _load_production_sheet_ids() -> frozenset:
     return _PRODUCTION_SHEET_IDS
 
 
-def _assert_not_production_sheet(spreadsheet_id: str) -> None:
-    """Hard guard: when running in staging mode, block any access to production sheets."""
+_ALLOW_PROD_READ: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "bhaga_allow_prod_read", default=False
+)
+
+
+@contextlib.contextmanager
+def allow_production_read():
+    """Scope in which **reading** (never writing) production sheets is permitted.
+
+    Sandbox flows must read real prod raw data while remaining forbidden to write
+    to prod (read-prod / write-sandbox). Writes stay hard-blocked even inside this
+    scope — only `op="read"` access is unlocked, and only for the duration of the
+    `with` block, so accidental prod access anywhere else still fails closed.
+    """
+    token = _ALLOW_PROD_READ.set(True)
+    try:
+        yield
+    finally:
+        _ALLOW_PROD_READ.reset(token)
+
+
+def _assert_not_production_sheet(spreadsheet_id: str, *, op: str = "write") -> None:
+    """Hard guard: when in staging mode, block access to production sheets.
+
+    Writes are *always* blocked. Reads are blocked too, unless an explicit
+    `allow_production_read()` scope is active (read-prod / write-sandbox).
+    """
     if os.environ.get("BHAGA_SHEET_MODE", "").lower() != "staging":
         return
     prod_ids = _load_production_sheet_ids()
-    if spreadsheet_id in prod_ids:
-        raise RuntimeError(
-            f"BLOCKED: Cloud flow attempted to access production sheet {spreadsheet_id}. "
-            f"BHAGA_SHEET_MODE=staging requires exclusive use of staging sheets. "
-            f"Production sheet IDs are loaded from store-profiles/*.json google_sheets section."
-        )
+    if spreadsheet_id not in prod_ids:
+        return
+    if op == "read" and _ALLOW_PROD_READ.get():
+        return
+    raise RuntimeError(
+        f"BLOCKED: Cloud flow attempted to {op} production sheet {spreadsheet_id}. "
+        f"BHAGA_SHEET_MODE=staging requires exclusive use of staging sheets "
+        f"(prod reads need an explicit allow_production_read() scope; prod writes "
+        f"are never allowed). Production sheet IDs are loaded from "
+        f"store-profiles/*.json google_sheets section."
+    )
 
 
 def load_config():

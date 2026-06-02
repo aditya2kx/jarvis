@@ -513,13 +513,56 @@ tab from raw; **Recipe C**: capture a new field source→raw; **Recipe D**: a hi
 upserts incrementally instead of clear-and-write, like `item_operations`). Schema-backed tabs
 auto-migrate **additive** header changes; reordering/removing does not.
 
+### Exempt an employee/shift from the tip pool (training shifts)
+
+Tip-pool exclusions drop a `(employee, date)`'s hours from that day's **tip** denominator only
+(labor% unaffected), so the pool redistributes to everyone else. All three sources funnel through the
+single `_is_excluded` chokepoint in `update_model_sheet.py` — **no code change is needed to add an
+exemption**, only a sheet edit, then a model rebuild. See `README.md` § Extending the model **Recipe
+E** for the full table. Quick reference:
+
+- **Permanent** (manager/owner): `excluded_from_tip_pool_and_labor_pct` in `palmetto.json`.
+- **Through a date** (bulk "all shifts were training up to X"): add a `config`-tab row
+  `training_excluded:Last, First = YYYY-MM-DD` (inclusive).
+- **One specific shift**: add a row to the **`training_shifts`** tab (`employee_name | date | note`).
+  This tab is **human-owned** (Lindsay/operator keep it current); the pipeline only reads it. Seed/edit
+  it programmatically via `tip_ledger_writer.write_training_shifts` (idempotent `(employee,date)`
+  upsert; preserves other operator rows) or by hand.
+
+After editing, rebuild: `python3 -m agents.bhaga.scripts.update_model_sheet --store palmetto` (or let
+the nightly do it), then confirm `tip_alloc_period` shows $0 for the exempted shift and the pool total
+is conserved.
+
 ### Run the per-PR sandbox e2e (prod-like, zero-OTP)
 
 `agents/bhaga/scripts/sandbox_e2e.py` is the prod-like end-to-end that proves a change without
 touching the production workbooks and **without ever calling Square / ADP / Google Reviews or
 triggering an OTP**. It **leases a slot** from a pre-created sheet pool (see below), clears +
-re-seeds it, replays the GCS scrape cache (read-only), backfills the sandbox raw sheets, builds the
-sandbox model, asserts core tabs are populated, prints evidence, then releases the slot.
+re-seeds it, seeds the sandbox raw sheets, builds the sandbox model, asserts the model tabs are
+populated, prints evidence, then releases the slot.
+
+**Two seeding sources (`--source`):**
+
+- `prod-raw` (**the per-PR default in CI**): reads the **PROD** raw Square+ADP sheets directly
+  (read-prod is sanctioned; reads use the prod sid, never the staging override) and writes the
+  windowed rows into the **sandbox** raw sheets (writes are staging-resolved, so the production-sheet
+  guard makes a prod write impossible). Pair with `--period last-closed` to cover the most-recent
+  **closed** pay period (the boundaries come from the store profile anchor —
+  `most_recent_closed_period`, identical to `discover_periods`). A closed period is always complete,
+  so the verify is **stricter**: the period-grain tabs (`labor_period`, `period_summary`,
+  `tip_alloc_period`) MUST populate and the **tip pool is checked for per-day conservation**
+  (`assert_tip_pool_conserved` — allocations sum to that day's pool, cent-exact). It also
+  **mirrors the human-owned prod `training_shifts` overlay** into the sandbox model
+  (`seed_sandbox_training_shifts_from_prod`, read-prod/write-sandbox) and **verifies the
+  exemptions actually bite** (`assert_exemptions_applied`): every worked training shift is
+  dropped from `tip_alloc_daily`, the day's pool redistributes to the remaining staff, a
+  whole-period-exempt employee earns $0 over the period while a partially-exempt employee keeps
+  their non-exempt earnings (with the exempt-day hours removed from the denominator), and the
+  period total conserves. So a future PR that breaks the overlay fails the gate, not just one
+  that breaks conservation.
+- `gcs-replay` (local/legacy): replays the GCS scrape cache (read-only), re-parses it via
+  `backfill_from_downloads`, and uses the lenient small-window verify. Use with `--auto-window` for a
+  fast local smoke.
 
 **Why a pool (not create-per-PR):** the Cloud Run service account can *edit* sheets shared with it
 but cannot *create* Drive files on a consumer Google account. The operator creates the pool once as
@@ -545,8 +588,11 @@ It runs automatically on every PR via `.github/workflows/sandbox-e2e.yml` (and
 Run it manually with ADC + palmetto OAuth:
 
 ```bash
-gcloud auth application-default login   # aditya.2ky@gmail.com — GCS read
-# auto-select the most recent cached window (preferred):
+gcloud auth application-default login   # aditya.2ky@gmail.com — prod read + GCS read
+# what CI runs: read prod raw for the last closed pay period, verify in sandbox:
+python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --source prod-raw --period last-closed
+
+# legacy GCS-replay smoke (auto-select the most recent cached window):
 python3 -m agents.bhaga.scripts.sandbox_e2e --pr-number 0 --auto-window --max-days 2
 
 # keep the leased slot uncleared after the run (debugging):

@@ -39,6 +39,7 @@ from agents.bhaga.scripts.update_model_sheet import (
     build_period_summary_rows,
     build_tip_alloc_daily_rows,
     build_tip_alloc_period_rows,
+    most_recent_closed_period,
 )
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
 
@@ -1091,6 +1092,222 @@ class ItemOperationsReconciliationTests(unittest.TestCase):
         self.assertEqual(items_sold_equiv, 2)
         self.assertEqual(units_sold_equiv, 3.0)
         self.assertTrue(all(r["staff_punched_in_total_count"] >= 1 for r in payment_lines))
+
+
+class TestTrainingShiftsOverlay(unittest.TestCase):
+    """Per-shift training overlay (`training_shifts` tab → _is_excluded clause).
+
+    Marks an exact (employee, date) as a training shift: that shift gets NO tip
+    share and its hours leave the day's tip denominator, so the pool redistributes
+    to the remaining tipped staff (same redistribute model as the bulk through-date).
+    """
+
+    def test_is_excluded_per_shift_match_and_miss(self):
+        from agents.bhaga.scripts.update_model_sheet import _is_excluded
+
+        ts = {("Doe, Jane", "2026-05-05")}
+        # Exact (employee, date) match → excluded only on that day.
+        self.assertTrue(_is_excluded(
+            "Doe, Jane", "2026-05-05",
+            permanent=set(), training_through={}, training_shifts=ts))
+        # Same employee, different day → NOT excluded (per-shift, not through-date).
+        self.assertFalse(_is_excluded(
+            "Doe, Jane", "2026-05-06",
+            permanent=set(), training_through={}, training_shifts=ts))
+        # Different employee, same day → NOT excluded.
+        self.assertFalse(_is_excluded(
+            "Smith, John", "2026-05-05",
+            permanent=set(), training_through={}, training_shifts=ts))
+
+    def test_is_excluded_canonical_name_required(self):
+        from agents.bhaga.scripts.update_model_sheet import _is_excluded
+
+        # The overlay keys on the canonical "Last, First" form; a non-canonical
+        # alias does NOT match (documents why the tab must hold canonical names).
+        ts = {("Ortiz, Ximena", "2026-06-02")}
+        self.assertTrue(_is_excluded(
+            "Ortiz, Ximena", "2026-06-02",
+            permanent=set(), training_through={}, training_shifts=ts))
+        self.assertFalse(_is_excluded(
+            "Ximena Ortiz", "2026-06-02",
+            permanent=set(), training_through={}, training_shifts=ts))
+
+    def test_is_excluded_graceful_no_overlay(self):
+        from agents.bhaga.scripts.update_model_sheet import _is_excluded
+
+        # None / empty overlay must be a pure no-op (back-compat with callers
+        # that never pass training_shifts).
+        for ts in (None, set()):
+            self.assertFalse(_is_excluded(
+                "Doe, Jane", "2026-05-05",
+                permanent=set(), training_through={}, training_shifts=ts))
+        # Permanent + through-date clauses still fire regardless of overlay.
+        self.assertTrue(_is_excluded(
+            "Mgr, Boss", "2026-05-05",
+            permanent={"Mgr, Boss"}, training_through={}, training_shifts=None))
+        self.assertTrue(_is_excluded(
+            "New, Hire", "2026-05-05",
+            permanent=set(),
+            training_through={"New, Hire": datetime.date(2026, 5, 10)},
+            training_shifts=None))
+
+    @staticmethod
+    def _one_period():
+        return [{
+            "start": "2026-05-01", "end": "2026-05-14",
+            "check_dates": ["2026-05-20"], "variants": [], "is_open": False,
+        }]
+
+    def test_period_redistributes_tips_off_training_shift(self):
+        from agents.bhaga.scripts.update_model_sheet import build_period_results
+
+        # Two employees, equal hours, one $10 tip day. Without the overlay they
+        # split 50/50; marking B's shift as training gives the whole pool to A.
+        shifts = [
+            {"employee_name": "A, Aa", "date": "2026-05-05", "total_hours": 8.0},
+            {"employee_name": "B, Bb", "date": "2026-05-05", "total_hours": 8.0},
+        ]
+        txns = [{"date_local": "2026-05-05", "tip_cents": 1000}]
+        kw = dict(
+            periods=self._one_period(), shifts=shifts, txns=txns,
+            actuals={}, excluded=set(), square_data_start="2026-05-01",
+        )
+
+        base = build_period_results(**kw)[0]["per_period_ours"]
+        self.assertEqual(base.get("A, Aa"), 500)
+        self.assertEqual(base.get("B, Bb"), 500)
+
+        over = build_period_results(
+            training_shifts={("B, Bb", "2026-05-05")}, **kw
+        )[0]["per_period_ours"]
+        self.assertEqual(over.get("A, Aa"), 1000)
+        # B is dropped from the denominator → no share at all.
+        self.assertEqual(over.get("B, Bb", 0), 0)
+        # Pool conserved: total cents unchanged by the exclusion.
+        self.assertEqual(sum(base.values()), sum(over.values()))
+
+    def test_daily_rows_drop_training_hours_from_denominator(self):
+        from agents.bhaga.scripts.update_model_sheet import build_daily_rows
+
+        shifts = [
+            {"employee_name": "A, Aa", "date": "2026-05-05", "total_hours": 8.0},
+            {"employee_name": "B, Bb", "date": "2026-05-05", "total_hours": 8.0},
+        ]
+        # `team_hours` in the daily summary is the per-hour tip DENOMINATOR
+        # (excluded hours). Marking B's shift as training drops its 8h.
+        _, base = build_daily_rows(txns=[], shifts=shifts, excluded=set())
+        self.assertEqual(base["2026-05-05"]["team_hours"], 16.0)
+
+        _, over = build_daily_rows(
+            txns=[], shifts=shifts, excluded=set(),
+            training_shifts={("B, Bb", "2026-05-05")},
+        )
+        self.assertEqual(over["2026-05-05"]["team_hours"], 8.0)
+
+
+class TestReadTrainingShiftsFromSheet(unittest.TestCase):
+    """Parsing + graceful-degradation for the `training_shifts` tab reader."""
+
+    def _fake_resp(self, payload):
+        import io
+        import json as _json
+        from unittest import mock
+
+        class _Ctx:
+            def __enter__(self_):
+                return io.BytesIO(_json.dumps(payload).encode())
+
+            def __exit__(self_, *a):
+                return False
+
+        return mock.MagicMock(side_effect=lambda *a, **k: _Ctx())
+
+    def test_parses_rows_skips_header_and_blanks(self):
+        from unittest import mock
+        from agents.bhaga.scripts import update_model_sheet as ums
+
+        payload = {"values": [
+            ["employee_name", "date", "note"],            # header skipped
+            ["Padron, Lisette", "2026-05-20", "training"],
+            ["Ortiz, Ximena", "2026-06-02", ""],
+            ["", "2026-06-03", "blank name -> skip"],     # blank name skipped
+            ["No, Date"],                                  # missing date skipped
+            ["Bad, Date", "not-a-date", "x"],              # unparseable skipped
+        ]}
+        with mock.patch.object(ums, "refresh_access_token", lambda *a, **k: "tok"), \
+             mock.patch.object(ums.urllib.request, "urlopen", self._fake_resp(payload)):
+            out = ums._read_training_shifts_from_sheet(spreadsheet_id="sid", store="palmetto")
+        self.assertEqual(out, {
+            ("Padron, Lisette", "2026-05-20"),
+            ("Ortiz, Ximena", "2026-06-02"),
+        })
+
+    def test_missing_tab_degrades_to_empty(self):
+        from unittest import mock
+        from agents.bhaga.scripts import update_model_sheet as ums
+
+        def _boom(*_a, **_k):
+            raise Exception("400: Unable to parse range: training_shifts!A1:C500")
+
+        with mock.patch.object(ums, "refresh_access_token", lambda *a, **k: "tok"), \
+             mock.patch.object(ums.urllib.request, "urlopen", _boom):
+            out = ums._read_training_shifts_from_sheet(spreadsheet_id="sid", store="palmetto")
+        self.assertEqual(out, set())
+
+
+class TestMostRecentClosedPeriod(unittest.TestCase):
+    """Pure biweekly-period boundary helper (Palmetto anchor 2026-05-17)."""
+
+    ANCHOR = "2026-05-17"
+
+    def _mrcp(self, today: datetime.date):
+        return most_recent_closed_period(
+            anchor_end_date=self.ANCHOR, pay_frequency="Biweekly", today=today
+        )
+
+    def test_today_after_close_returns_5_18_to_5_31(self):
+        start, end = self._mrcp(datetime.date(2026, 6, 2))
+        self.assertEqual((start.isoformat(), end.isoformat()),
+                         ("2026-05-18", "2026-05-31"))
+
+    def test_day_after_end_is_already_closed(self):
+        # 6/1 is the first day the 5/18-5/31 period is closed.
+        start, end = self._mrcp(datetime.date(2026, 6, 1))
+        self.assertEqual((start.isoformat(), end.isoformat()),
+                         ("2026-05-18", "2026-05-31"))
+
+    def test_on_end_day_period_not_yet_closed(self):
+        # On 5/31 the current period is still open -> prior period (5/4-5/17).
+        start, end = self._mrcp(datetime.date(2026, 5, 31))
+        self.assertEqual((start.isoformat(), end.isoformat()),
+                         ("2026-05-04", "2026-05-17"))
+
+    def test_rolls_forward_into_next_period(self):
+        # Once 6/14 has passed, the closed period advances to 6/1-6/14.
+        start, end = self._mrcp(datetime.date(2026, 6, 16))
+        self.assertEqual((start.isoformat(), end.isoformat()),
+                         ("2026-06-01", "2026-06-14"))
+
+    def test_on_anchor_end_date_period_not_yet_closed(self):
+        # today == anchor_end_date (5/17): the anchor period is still open on its
+        # own end day, so the result is the period BEFORE it (4/20-5/3).
+        start, end = self._mrcp(datetime.date(2026, 5, 17))
+        self.assertEqual((start.isoformat(), end.isoformat()),
+                         ("2026-04-20", "2026-05-03"))
+
+    def test_day_after_anchor_end_closes_anchor_period(self):
+        # today == anchor_end_date + 1 (5/18): the anchor period (5/4-5/17) is
+        # now the most-recent CLOSED one.
+        start, end = self._mrcp(datetime.date(2026, 5, 18))
+        self.assertEqual((start.isoformat(), end.isoformat()),
+                         ("2026-05-04", "2026-05-17"))
+
+    def test_unsupported_frequency_raises(self):
+        with self.assertRaises(ValueError):
+            most_recent_closed_period(
+                anchor_end_date=self.ANCHOR, pay_frequency="Weekly",
+                today=datetime.date(2026, 6, 2),
+            )
 
 
 if __name__ == "__main__":

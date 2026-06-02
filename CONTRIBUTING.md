@@ -32,25 +32,41 @@ The goal is a clean split of ownership that lets the operator step back:
 Follow this for any non-trivial feature. It's designed so the agent can self-correct in a
 tight build → verify → fix loop without the operator babysitting every step.
 
+The canonical progression is **Ask → Plan → Agent**, and the agent **drives the transitions**:
+once you are aligned at a gate (requirements understood; plan agreed), *proactively request the next
+mode yourself* via `SwitchMode` (Ask→Plan when the ask is clear, Plan→Agent when the plan is
+approved) — and briefly say why. Don't sit in read-only mode waiting for the operator to flip it.
+The operator still consents to each switch; you initiate it. (Conversely, drop back a mode when a
+new ambiguity or scope change appears — e.g. Agent→Plan if the approach turns out to be wrong.)
+
 1. **Take requirements incrementally — Ask mode first.** Don't jump to code. Stay in **Ask /
    read-only mode** until you *fully* understand the ask. Pull requirements from the operator in
    increments, ask clarifying questions, and restate your understanding before proposing anything.
+   When the ask is clear and you are aligned, *request* the switch to Plan mode rather than waiting.
 2. **Plan mode before implementing.** Switch to **Plan mode** and present the *entire*
-   implementation plan for approval. No code until the plan is agreed.
+   implementation plan for approval. No code until the plan is agreed. Once it is, *request* the
+   switch to Agent mode and begin executing the milestones.
 3. **Plan = 3–4 milestones, max — each independently verifiable.** Every milestone must end in a
    state you can **verify and fix on your own**, so you can run the build→verify→fix loop yourself
    (the operator isn't in the loop for routine correction). If a milestone can't be closed by your
    own verification, it's too big — split it. Include the per-milestone test plan (what you'll run
    to prove it) in the plan.
-4. **Verify with a real end-to-end run — not just unit tests.** The proof a milestone / PR works is a
-   **prod-like e2e against isolated sandbox sheets** with recorded evidence. For BHAGA, the per-PR
-   `Sandbox e2e` workflow does exactly this — it provisions ephemeral sandbox sheets, replays the GCS
-   scrape cache (read-only, zero-OTP), builds the model, asserts the tabs are populated, and posts the
-   evidence as a PR comment (see `RUNBOOK.md` §13 and `agents/bhaga/scripts/sandbox_e2e.py`). Run
-   directly against prod sheets only when sandbox isolation genuinely can't exercise the path. Unit
-   tests are necessary but are *not* the evidence of doneness.
-   - **When the replay e2e can't exercise the path, use the LIVE sandbox run — never prod, never an
-     ad-hoc script.** The replay e2e is zero-OTP and uses the GCS cache, so it cannot reproduce a
+4. **Verify with a real end-to-end run — not just unit tests.** Sandbox verification is **mandatory on
+   every PR**, in two tiers:
+   - **Tier 1 — the per-PR `Sandbox e2e` (no-OTP, REQUIRED on every PR, hard CI gate).** It provisions
+     an isolated sandbox slot, reads the **PROD raw** Square+ADP data for the most-recent **closed** pay
+     period (`--source prod-raw --period last-closed`), writes only to the sandbox (read-prod /
+     write-sandbox, isolation hard-asserted), rebuilds the model, asserts the full-period tabs populate,
+     **checks tip-pool conservation**, and posts the evidence as a PR comment (see `RUNBOOK.md` §13 and
+     `agents/bhaga/scripts/sandbox_e2e.py`). Because it never scrapes or logs in, it can block merge on
+     every PR — there is no opt-out. The gate is **fail-fast on misconfiguration**: if the prerequisite
+     repo variable `SANDBOX_E2E_ENABLED` is not `true` (or the WIF secrets are missing) the check goes
+     **red**, never silently green — a green status always means the e2e actually ran. Enabling it
+     (`SANDBOX_E2E_ENABLED=true` + WIF secrets) is a one-time org/admin prerequisite, not a per-PR
+     switch; disabling the gate is a deliberate branch-protection change. Unit tests are necessary but
+     are *not* the evidence of doneness.
+   - **Tier 2 — the LIVE sandbox run (on-demand, for live-only paths) — never prod, never an ad-hoc
+     script.** Tier 1 is zero-OTP and reads already-scraped data, so it cannot reproduce a
      **live-only** failure (selector drift, a login/2FA flow, a real browser crash). For those, the
      sanctioned tool is `agents/bhaga/scripts/sandbox_live_run.py` via the **`Sandbox live run`**
      workflow (`workflow_dispatch`): it deploys the unmerged PR image to `bhaga-sandbox-refresh` and

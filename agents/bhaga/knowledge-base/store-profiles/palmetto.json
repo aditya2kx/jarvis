@@ -46,6 +46,7 @@
       "url": "https://docs.google.com/spreadsheets/d/18NH71JwMOAX6euFugSsSQlJhHPgBghWk09YWnsSuvDk/edit",
       "tabs": [
         "config",
+        "training_shifts",
         "daily",
         "labor_daily",
         "labor_weekly",
@@ -56,7 +57,8 @@
         "review_bonus_period",
         "labor_daily_forecast",
         "item_operations"
-      ]
+      ],
+      "_doc_training_shifts": "HUMAN-OWNED, read-only to the pipeline (like the employees tab). Columns: employee_name (canonical 'Last, First') | date (YYYY-MM-DD) | note. Each row marks one shift as training -> that (employee, date) gets NO tip share and its hours leave that day's tip denominator (redistributed to other tipped staff); labor% is unaffected. Precise per-shift complement to config's `training_excluded:<name>` bulk through-date. update_model_sheet._read_training_shifts_from_sheet reads it and degrades to a no-op if the tab is absent."
     },
     "bhaga_review_raw": {
       "spreadsheet_id": "16pkNefCOEcEUlhIU6zH03nEcg5PXmBpJhkHy3aUa-k4",

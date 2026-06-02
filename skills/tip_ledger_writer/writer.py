@@ -95,7 +95,7 @@ def _api(url: str, token: str, *, method: str = "GET", data: dict | None = None)
 
 def _read_tab(spreadsheet_id: str, tab: str, token: str) -> list[list[Any]]:
     """Return the full sheet as a list of rows. Returns [] if the tab doesn't exist."""
-    _assert_not_production_sheet(spreadsheet_id)
+    _assert_not_production_sheet(spreadsheet_id, op="read")
     range_a1 = urllib.parse.quote(f"{tab}!A:ZZ", safe="")
     url = f"{SHEETS_API}/spreadsheets/{spreadsheet_id}/values/{range_a1}"
     try:
@@ -647,6 +647,93 @@ def write_raw_kds_daily(
         spreadsheet_id, "BHAGA Square Raw", "kds_daily", rollups,
         account=account, scraped_at_utc=scraped_at_utc,
     )
+
+
+def write_training_shifts(
+    spreadsheet_id: str,
+    rows: list[dict],
+    *,
+    account: str = "palmetto",
+) -> dict:
+    """Create-if-missing + idempotent upsert into BHAGA Model > training_shifts.
+
+    This is the HUMAN-OWNED per-shift training overlay read by
+    update_model_sheet._read_training_shifts_from_sheet. Each record marks one
+    (employee, date) shift as training: no tip share, hours dropped from that
+    day's tip denominator (redistribute), labor% unaffected.
+
+    Unlike the schema-driven `_upsert_tab`, this tab has no schema entry (it is
+    operator-curated, not pipeline-written), so we manage its three fixed
+    columns directly: ``employee_name | date | note``. Upsert key is
+    ``(employee_name, date)`` so re-seeding is idempotent and never clobbers
+    rows the operator added by hand for other (employee, date) pairs.
+
+    Each record dict accepts keys: employee_name (canonical "Last, First"),
+    date (YYYY-MM-DD), note (optional).
+    """
+    header = ["employee_name", "date", "note"]
+    token = refresh_access_token(account=account)
+    _add_sheet_if_missing(spreadsheet_id, token, "training_shifts")
+
+    existing = _read_tab(spreadsheet_id, "training_shifts", token)
+    by_key: dict[tuple[str, str], list] = {}
+    if existing and existing[0][:3] == header:
+        data_rows = existing[1:]
+    else:
+        # Tab freshly created (empty) or header missing — (re)write the header.
+        _write_range(spreadsheet_id, "training_shifts!A1", [header], token)
+        data_rows = existing[1:] if existing else []
+    for r in data_rows:
+        if not r or not str(r[0]).strip():
+            continue
+        name = str(r[0]).strip()
+        date = str(r[1]).strip() if len(r) > 1 else ""
+        note = str(r[2]).strip() if len(r) > 2 else ""
+        by_key[(name, date)] = [name, date, note]
+
+    inserted = updated = 0
+    for rec in rows:
+        name = str(rec.get("employee_name", "")).strip()
+        date = str(rec.get("date", "")).strip()
+        note = str(rec.get("note", "")).strip()
+        if not name or not date:
+            raise ValueError(f"training_shifts record needs employee_name + date: {rec!r}")
+        key = (name, date)
+        if key in by_key:
+            updated += 1
+        else:
+            inserted += 1
+        by_key[key] = [name, date, note]
+
+    sorted_keys = sorted(by_key.keys())
+    out_rows = [by_key[k] for k in sorted_keys]
+    if out_rows:
+        _write_range(
+            spreadsheet_id,
+            f"training_shifts!A2:C{1 + len(out_rows)}",
+            out_rows, token,
+        )
+    # Clear any stale rows below the write range (mirrors _upsert_tab cleanup).
+    # Reachable when the prior sheet was physically longer than the re-sorted
+    # set (operator hand-deleted a key, or a mid-sheet blank row pushed a real
+    # row past where the new write ends). Use the PHYSICAL extent (len(data_rows))
+    # like _upsert_tab — counting only non-blank rows would miss a real row that
+    # sits below a mid-sheet gap. The reader dedups so tips are unaffected, but
+    # the sheet would show a stray duplicate without this.
+    n_existing_rows = len(data_rows)
+    if n_existing_rows > len(out_rows):
+        _clear_range(
+            spreadsheet_id,
+            f"training_shifts!A{2 + len(out_rows)}:C{1 + n_existing_rows}",
+            token,
+        )
+    return {
+        "tab": "training_shifts",
+        "spreadsheet_id": spreadsheet_id,
+        "inserted": inserted,
+        "updated": updated,
+        "total_after": len(out_rows),
+    }
 
 
 # ── CLI ───────────────────────────────────────────────────────────

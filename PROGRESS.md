@@ -12,6 +12,72 @@
 
 ## BHAGA Agent (Tip Allocation & Payroll Prep)
 
+### 2026-06-02 — Sandbox now PROVES the exemption (overlay mirror + tip_alloc_period verify, PR #10)
+
+- The mandatory prod-data `Sandbox e2e` previously proved **conservation** but never the
+  **exemption** (it seeded prod raw Square+ADP but not the human-owned `training_shifts` overlay,
+  so the sandbox built with an empty overlay) and the PR carried no per-scenario evidence report.
+  Both gaps closed.
+- **Prod overlay populated:** wrote the real 5/18–5/31 exemptions to the human-owned **prod**
+  `training_shifts` tab — `Padron, Lisette 2026-05-23` + `Urrutia, Emely 2026-05-23` (Lisette's only
+  worked day in the period; Emely's one training day), preserving the existing operator rows
+  (Juan 5/18, Ximena 5/29 + 5/31).
+- **Sandbox mirrors it:** `seed_sandbox_training_shifts_from_prod` copies the windowed prod overlay
+  into the sandbox model (read-prod/write-sandbox, same hard isolation as the raw seed), so the
+  sandbox build applies the SAME exemptions as prod.
+- **New verifier `assert_exemptions_applied`** (data-driven, no hardcoded names): proves each worked
+  training shift is dropped from `tip_alloc_daily`, the day's pool redistributes to the rest,
+  whole-period-exempt staff earn $0 over the period while partially-exempt staff keep their
+  non-exempt earnings (exempt-day hours removed from the denominator), and the period conserves.
+- **Verified on real 5/18–5/31 prod data (sandbox):** 5/5 worked exempt shifts dropped; whole-period
+  → **Lisette + Ximena $0** (absent from `tip_alloc_period`); partial → **Juan $95.10**,
+  **Emely $82.43** (hours 19.2, the 8.22h 5/23 shift removed); on 5/23 the full **$169.66** pool
+  goes to the 4 non-exempt staff; period our_calc **$1,197.77 == pool**, conservation 0¢ over 12 days.
+
+### 2026-06-02 — Per-shift training tip-exemption overlay (PR #10)
+
+- **New `training_shifts` overlay tab** (human-owned, `employee_name | date | note`): marks a specific
+  `(employee, date)` as **tips-exempt** — the day's hours are dropped from the **tip** denominator only
+  (labor% unaffected), so the full pool redistributes to the other tipped staff. Reader
+  `_read_training_shifts_from_sheet` mirrors `_read_training_excluded_from_sheet`; threaded through
+  `_is_excluded`, `build_daily_rows`, `build_period_results`, `main()`, and `verify_bq_parity` so parity
+  stays honest. The existing `training_excluded:<name>` through-date shorthand is **kept** (bulk
+  shorthand + precise per-shift marks coexist).
+- **`write_training_shifts`** added to `tip_ledger_writer` (create-if-missing + idempotent
+  `(employee,date)` upsert; preserves operator-added rows) so the tab is maintained through the writer
+  skill, not ad-hoc Sheets calls. Tab registered in `palmetto.json`.
+- **Verification (two layers).** (1) *Isolated sandbox (CI gate):* the per-PR `Sandbox e2e` rebuilds
+  the model against isolated sandbox sheets, which exercises `_read_training_shifts_from_sheet` on
+  every build (reader runs unconditionally; absent/empty tab → empty overlay, covering the read +
+  parse + graceful-missing path this PR adds to the build). (2) *Manual prod rebuild (supplementary):*
+  local rebuild via impersonated `bhaga-orchestrator` SA — Lisette `training_excluded:2026-05-31` +
+  Ximena (5/29, 5/31) + Juan (5/18) → Lisette/Ximena $0, Juan 5/18 dropped, **pool conserved at
+  $1,197.77**. The populated-overlay → exclusion → **cent-exact conservation** end-to-end on prod data
+  is machine-checked by the mandatory prod-data sandbox gate landed in **this same PR** (see next
+  entry). **Durability note:** per-shift marks only stick once this PR is deployed; the nightly cron
+  stays paused until then (the deployed image can't yet read the tab).
+
+### 2026-06-02 — Mandatory per-PR prod-data sandbox verification (same PR #10)
+
+- **Two-tier sandbox mandate** (CONTRIBUTING): Tier 1 = the per-PR `Sandbox e2e`, now a no-OTP
+  **prod-data** run — reads the PROD raw Square+ADP sheets directly for the most-recent **closed** pay
+  period and writes only to a leased sandbox slot (read-prod / write-sandbox, hard-asserted), rebuilds
+  the model, and verifies the full period incl. **tip-pool conservation**. Because it never scrapes or
+  logs in, it blocks merge on every PR (no opt-out). Tier 2 = the live-OTP `sandbox_live_run` scenario,
+  kept on-demand for live-only paths (selector/login/2FA).
+- **New code:** `most_recent_closed_period` (pure, reuses the `discover_periods` anchor math) in
+  `update_model_sheet.py`; `seed_sandbox_raw_from_prod` + `filter_rows_to_window` +
+  `assert_tip_pool_conserved` in `sandbox_e2e.py`; `--source {gcs-replay,prod-raw}` + `--period
+  last-closed` CLI. The no-OTP structural guarantee (`test_sandbox_e2e_no_otp`) still holds — only
+  reader/writer/model modules enter the import graph.
+- **Read-prod / write-sandbox guard:** the staging isolation guard now distinguishes read vs write
+  (`_assert_not_production_sheet(..., op=)`). Prod *writes* stay hard-blocked; prod *reads* are only
+  unlocked inside an explicit `allow_production_read()` scope (used solely by the seed step), so the
+  seed can copy real prod raw rows while a misrouted write still fails closed.
+- **Wiring:** `.github/workflows/sandbox-e2e.yml` runs `--source prod-raw --period last-closed`; stays
+  the required per-PR status check (**fail-fast** if `SANDBOX_E2E_ENABLED` is unset — red, never a
+  silent skip).
+
 ### 2026-06-01 — Cloud observability, sandbox isolation, JSON selectors, live sandbox run
 
 - **Incident (2026-05-31 item sales):** both nightly attempts raised `RuntimeError: Item Sales page

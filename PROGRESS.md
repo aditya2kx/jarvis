@@ -12,6 +12,57 @@
 
 ## BHAGA Agent (Tip Allocation & Payroll Prep)
 
+### 2026-06-02 — Revive ADP-paid reconciliation + guard against migration regressions
+
+**Regression (root cause).** Commit `6f87f9c` ("remove earnings XLSX dependency from model rebuild")
+stubbed `actual_cc_tips_by_period(None)` in `update_model_sheet.py`, so `adp_paid`/`diff`/`diff_pct`
+went permanently `N/A` for every closed period, and `period_summary.check_dates` went permanently
+empty. The commit framed it as intentional ("gracefully show N/A without earnings data"), and the one
+prod-like CI gate **encoded `N/A` as the EXPECTED value** — so nothing flagged it. A human had to
+eyeball the sheet. This was a silent **semantic** regression from the laptop→cloud migration: every
+mechanical guard (row counts, `data_window_end` advanced, KDS join) still passed.
+
+**Fix (M1) — re-wire, not rebuild (derive from existing cloud data, no new tab).** The Earnings XLSX
+(source of "Credit Card Tips Owed") is still cached in GCS at `gs://bhaga-scrape-cache/<date>/adp/
+Earnings-*.xlsx`. `update_model_sheet.load_cc_tips_earnings_from_gcs` enumerates cached dates in the
+window, downloads **only** the Earnings artifact (`gcs_cache.download_cached_files(name_contains=…)`),
+parses via `compensation_backend.parse_xlsx`, unions across dates (deduped), and feeds
+`actual_cc_tips_by_period(earnings)`. `check_dates_by_period` revives the check-dates column. Closed
+periods with no covering export in GCS (older than the cache's ~2026-05-29 inception) show a **distinct**
+reason ("No ADP earnings export in GCS for this period"), not the old blanket `N/A`. **adp_paid feeds
+ONLY the verification columns, never `our_calc`/allocations** → worst case is a blank comparison, not
+corrupted pay → shipped on by default, no flag.
+
+**Prevent (M2) — standing semantic post-conditions.** New `model_semantics.py` is the single source of
+truth (pure functions) shared by `sandbox_e2e` (per-PR) and `daily_refresh` (nightly): tip-pool
+conservation, latest-closed-period `adp_paid` reconciliation (cadence-gated on a covering Earnings
+export existing in GCS), and review-bonus survival. A semantic failure clears the `update_model_sheet`
+marker (rerun rebuilds) + alerts. The CI fixtures that blessed the bug are gone
+(`assert_adp_reconciliation_present` now asserts the latest closed period is populated).
+
+**Prevent (M3) — auto-halt + resume circuit breaker.** A semantic failure trips a GLOBAL halt flag
+(`state_adapter.{get,set,clear}_pipeline_halt`; Firestore `<collection>/_pipeline_state` / local file).
+While tripped, fresh runs refuse and exit `EXIT_HALTED` (=3, distinct from the OTP-pending `return 0`);
+`--ignore-halt`/OTP-resume pass through; a healthy verified run auto-clears it. In-job Firestore gate
+(no Cloud Scheduler API / new IAM).
+
+**Audit (M4) — pre/post-migration column review.** The empirical column-by-column diff on a known-good
+closed period runs as the per-PR `sandbox_e2e --source prod-raw --period last-closed` evidence. Latent
+findings triaged:
+- `adp_paid`/`diff`/`diff_pct` (dead) — **FIXED (M1)**; now guarded (M2).
+- `period_summary.check_dates` (empty) — **FIXED (M1)**.
+- Mon/Tue earnings **cadence**: a period's check date is issued after its end, so the export lands days
+  later — the loader unions across cached dates + a 21-day look-ahead, so cadence no longer causes a
+  miss once any covering export exists. Pre-cache periods (before ~2026-05-29) legitimately stay `N/A`.
+- **Follow-ups (tracked, not fixed here):** (a) `wage_rates` can go stale on an OTP-skip / empty-cache
+  path (`backfill_from_downloads`) — needs its own staleness guard; (b) item/KDS WARN-skips are still
+  soft — candidate for a future semantic check once coverage windows are formalized.
+
+**Why a human had to prompt this (process fix).** CI asserted the dead state was correct and no
+semantic post-condition existed, so the agent had no signal. The standing semantic guard (M2) + breaker
+(M3) convert "a human eyeballed the sheet" into a loud, automatic check; per-PR verification stays
+change-local (CONTRIBUTING §6) while the nightly guard watches the rest.
+
 ### 2026-06-02 — Sandbox now PROVES the exemption (overlay mirror + tip_alloc_period verify, PR #10)
 
 - The mandatory prod-data `Sandbox e2e` previously proved **conservation** but never the

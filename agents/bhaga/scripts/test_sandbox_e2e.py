@@ -204,6 +204,29 @@ class TestSeedSandboxRawFromProd(unittest.TestCase):
                 p.stop()
         self.assertEqual(writer.writes, [])  # nothing written
 
+    def test_refuses_non_prod_read_source(self):
+        # The read SID must be a known production sheet — refuse to seed from a
+        # non-prod source (the other half of the isolation invariant).
+        writer = _FakeRawWriter()
+        non_prod_profile = {"google_sheets": {
+            "bhaga_adp_raw": {"spreadsheet_id": "NOT_PROD_ADP"},
+            "bhaga_square_raw": {"spreadsheet_id": "NOT_PROD_SQ"},
+        }}
+        patches = self._patches(writer)
+        for p in patches:
+            p.start()
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                e2e.seed_sandbox_raw_from_prod(
+                    profile=non_prod_profile, account="palmetto",
+                    start=D(2026, 5, 18), end=D(2026, 5, 31),
+                )
+            self.assertIn("non-prod source", str(ctx.exception))
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertEqual(writer.writes, [])  # nothing written
+
 
 class TestTipPoolConservation(unittest.TestCase):
     # Real model-builder schema: date .. day_pool .. our_share.

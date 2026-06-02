@@ -626,6 +626,57 @@ def _read_training_excluded_from_sheet(
     return out
 
 
+def _read_training_shifts_from_sheet(
+    *, spreadsheet_id: str, store: str
+) -> set[tuple[str, str]]:
+    """Read the `training_shifts` overlay tab → set of (canonical_name, date_iso).
+
+    Each row marks ONE specific shift as a training shift: that ``(employee, date)``
+    receives no tip-pool share AND its hours are dropped from that day's per-hour
+    denominator (redistribute model — same as ``training_excluded``), but it does
+    NOT affect labor% (tips-only). This is the precise per-shift complement to the
+    bulk ``training_excluded:<name>`` through-date: use the tab for "their first 1-2
+    shifts" cases (e.g. a new hire's first worked days) that a single cutoff can't
+    express.
+
+    Human-owned and read-only to the pipeline (operators edit it directly in the
+    sheet), so it survives every refresh by construction. Columns:
+    ``employee_name | date | note`` with a header row. ``employee_name`` must be the
+    CANONICAL "Last, First" form (post-alias), or the (employee, date) won't match a
+    shift and the mark is silently inert — same caveat as ``training_excluded``.
+
+    Returns an empty set if the tab/key is missing or the sheet is unreachable, so a
+    store without the tab (or a transient API hiccup) degrades gracefully.
+    """
+    token = refresh_access_token(store)
+    rng = urllib.parse.quote("training_shifts!A1:C500", safe="!:")
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{rng}"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    out: set[tuple[str, str]] = set()
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:  # noqa: BLE001
+        # Missing tab → 400; unreachable → URLError. Either way, degrade to "no
+        # per-shift marks" rather than failing the whole model build.
+        print(f"  [training-shifts-read] could not read training_shifts tab: {exc}")
+        return out
+    for row in data.get("values", [])[1:]:  # skip header
+        if not row or not row[0].strip():
+            continue
+        name = row[0].strip()
+        if len(row) < 2 or not row[1].strip():
+            continue
+        raw_date = row[1].strip()
+        try:
+            date_iso = datetime.date.fromisoformat(raw_date).isoformat()
+        except ValueError:
+            print(f"  [training-shifts-read] unparseable date for {name!r}: {raw_date!r}")
+            continue
+        out.add((name, date_iso))
+    return out
+
+
 def _parse_sheet_bool(v) -> bool:
     """Coerce a sheet cell into a boolean.
 
@@ -760,16 +811,22 @@ def _is_excluded(
     *,
     permanent: set[str],
     training_through: dict[str, datetime.date],
+    training_shifts: set[tuple[str, str]] | None = None,
 ) -> bool:
     """Single-source exclusion check used by every tab builder.
 
     - Permanent: always excluded (manager, etc.)
-    - Training: excluded on or before their `last_training_date`.
+    - Training (bulk): excluded on or before their `last_training_date`.
+    - Training (per-shift): the exact `(employee, date)` is marked in the
+      `training_shifts` overlay tab — the precise complement to the bulk
+      through-date (e.g. a new hire's first 1-2 worked days).
     """
     if employee_name in permanent:
         return True
     last = training_through.get(employee_name)
     if last is not None and date_iso <= last.isoformat():
+        return True
+    if training_shifts and (employee_name, date_iso) in training_shifts:
         return True
     return False
 
@@ -1067,6 +1124,7 @@ def build_daily_rows(
     shifts: list[dict],
     excluded: set[str],
     training_through: dict[str, datetime.date] | None = None,
+    training_shifts: set[tuple[str, str]] | None = None,
     now_ct: datetime.datetime | None = None,
 ) -> tuple[list[list], dict[str, dict]]:
     training_through = training_through or {}
@@ -1077,7 +1135,8 @@ def build_daily_rows(
         d = s["date"]
         daily_hours_all[d] = daily_hours_all.get(d, 0.0) + s.get("total_hours", 0.0)
         if _is_excluded(s["employee_name"], d,
-                        permanent=excluded, training_through=training_through):
+                        permanent=excluded, training_through=training_through,
+                        training_shifts=training_shifts):
             continue
         daily_hours_excl[d] = daily_hours_excl.get(d, 0.0) + s.get("total_hours", 0.0)
 
@@ -2154,6 +2213,7 @@ def build_period_results(
     excluded: set[str],
     square_data_start: str,
     training_through: dict[str, datetime.date] | None = None,
+    training_shifts: set[tuple[str, str]] | None = None,
 ) -> list[dict]:
     training_through = training_through or {}
     """Run the allocator for each period; return list of period result dicts."""
@@ -2172,7 +2232,8 @@ def build_period_results(
             if not (start <= s["date"] <= end):
                 continue
             if _is_excluded(s["employee_name"], s["date"],
-                            permanent=excluded, training_through=training_through):
+                            permanent=excluded, training_through=training_through,
+                            training_shifts=training_shifts):
                 continue
             k = (s["employee_name"], s["date"])
             daily_hours[k] = daily_hours.get(k, 0.0) + s.get("total_hours", 0.0)
@@ -2406,6 +2467,17 @@ def main() -> int:
         for n, d in sorted(training_through.items()):
             print(f"    {n}: {d.isoformat()}")
 
+    # Per-shift training overlay (config-free; human-owned `training_shifts` tab).
+    # Precise complement to the bulk through-date above — marks individual
+    # (employee, date) shifts as training (tips-only, redistribute).
+    training_shifts = _read_training_shifts_from_sheet(
+        spreadsheet_id=model_sid, store=args.store
+    )
+    if training_shifts:
+        print("# per-shift training exclusions in effect (canonical_name, date):")
+        for n, d in sorted(training_shifts):
+            print(f"    {n}: {d}")
+
     # ARCHITECTURE: model sheet reads canonical data from RAW SHEETS only
     # (default) OR from BigQuery when --data-source=bigquery.
     # The orchestrator (daily_refresh.py) is responsible for keeping the raw
@@ -2618,6 +2690,7 @@ def main() -> int:
         actuals=actuals, excluded=excluded,
         square_data_start=square_data_start,
         training_through=training_through,
+        training_shifts=training_shifts,
     )
     print(f"# periods: {len(periods)} (open: {sum(1 for p in periods if p.get('is_open'))})")
 
@@ -2697,6 +2770,7 @@ def main() -> int:
     )
     daily_rows, daily_summary = build_daily_rows(
         txns=txns, shifts=shifts, excluded=excluded, training_through=training_through,
+        training_shifts=training_shifts,
     )
     # Load KDS daily data from raw sheet (graceful fallback if tab doesn't exist yet)
     kds_by_date: dict[str, dict] = {}

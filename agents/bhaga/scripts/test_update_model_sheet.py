@@ -1093,5 +1093,166 @@ class ItemOperationsReconciliationTests(unittest.TestCase):
         self.assertTrue(all(r["staff_punched_in_total_count"] >= 1 for r in payment_lines))
 
 
+class TestTrainingShiftsOverlay(unittest.TestCase):
+    """Per-shift training overlay (`training_shifts` tab → _is_excluded clause).
+
+    Marks an exact (employee, date) as a training shift: that shift gets NO tip
+    share and its hours leave the day's tip denominator, so the pool redistributes
+    to the remaining tipped staff (same redistribute model as the bulk through-date).
+    """
+
+    def test_is_excluded_per_shift_match_and_miss(self):
+        from agents.bhaga.scripts.update_model_sheet import _is_excluded
+
+        ts = {("Doe, Jane", "2026-05-05")}
+        # Exact (employee, date) match → excluded only on that day.
+        self.assertTrue(_is_excluded(
+            "Doe, Jane", "2026-05-05",
+            permanent=set(), training_through={}, training_shifts=ts))
+        # Same employee, different day → NOT excluded (per-shift, not through-date).
+        self.assertFalse(_is_excluded(
+            "Doe, Jane", "2026-05-06",
+            permanent=set(), training_through={}, training_shifts=ts))
+        # Different employee, same day → NOT excluded.
+        self.assertFalse(_is_excluded(
+            "Smith, John", "2026-05-05",
+            permanent=set(), training_through={}, training_shifts=ts))
+
+    def test_is_excluded_canonical_name_required(self):
+        from agents.bhaga.scripts.update_model_sheet import _is_excluded
+
+        # The overlay keys on the canonical "Last, First" form; a non-canonical
+        # alias does NOT match (documents why the tab must hold canonical names).
+        ts = {("Ortiz, Ximena", "2026-06-02")}
+        self.assertTrue(_is_excluded(
+            "Ortiz, Ximena", "2026-06-02",
+            permanent=set(), training_through={}, training_shifts=ts))
+        self.assertFalse(_is_excluded(
+            "Ximena Ortiz", "2026-06-02",
+            permanent=set(), training_through={}, training_shifts=ts))
+
+    def test_is_excluded_graceful_no_overlay(self):
+        from agents.bhaga.scripts.update_model_sheet import _is_excluded
+
+        # None / empty overlay must be a pure no-op (back-compat with callers
+        # that never pass training_shifts).
+        for ts in (None, set()):
+            self.assertFalse(_is_excluded(
+                "Doe, Jane", "2026-05-05",
+                permanent=set(), training_through={}, training_shifts=ts))
+        # Permanent + through-date clauses still fire regardless of overlay.
+        self.assertTrue(_is_excluded(
+            "Mgr, Boss", "2026-05-05",
+            permanent={"Mgr, Boss"}, training_through={}, training_shifts=None))
+        self.assertTrue(_is_excluded(
+            "New, Hire", "2026-05-05",
+            permanent=set(),
+            training_through={"New, Hire": datetime.date(2026, 5, 10)},
+            training_shifts=None))
+
+    @staticmethod
+    def _one_period():
+        return [{
+            "start": "2026-05-01", "end": "2026-05-14",
+            "check_dates": ["2026-05-20"], "variants": [], "is_open": False,
+        }]
+
+    def test_period_redistributes_tips_off_training_shift(self):
+        from agents.bhaga.scripts.update_model_sheet import build_period_results
+
+        # Two employees, equal hours, one $10 tip day. Without the overlay they
+        # split 50/50; marking B's shift as training gives the whole pool to A.
+        shifts = [
+            {"employee_name": "A, Aa", "date": "2026-05-05", "total_hours": 8.0},
+            {"employee_name": "B, Bb", "date": "2026-05-05", "total_hours": 8.0},
+        ]
+        txns = [{"date_local": "2026-05-05", "tip_cents": 1000}]
+        kw = dict(
+            periods=self._one_period(), shifts=shifts, txns=txns,
+            actuals={}, excluded=set(), square_data_start="2026-05-01",
+        )
+
+        base = build_period_results(**kw)[0]["per_period_ours"]
+        self.assertEqual(base.get("A, Aa"), 500)
+        self.assertEqual(base.get("B, Bb"), 500)
+
+        over = build_period_results(
+            training_shifts={("B, Bb", "2026-05-05")}, **kw
+        )[0]["per_period_ours"]
+        self.assertEqual(over.get("A, Aa"), 1000)
+        # B is dropped from the denominator → no share at all.
+        self.assertEqual(over.get("B, Bb", 0), 0)
+        # Pool conserved: total cents unchanged by the exclusion.
+        self.assertEqual(sum(base.values()), sum(over.values()))
+
+    def test_daily_rows_drop_training_hours_from_denominator(self):
+        from agents.bhaga.scripts.update_model_sheet import build_daily_rows
+
+        shifts = [
+            {"employee_name": "A, Aa", "date": "2026-05-05", "total_hours": 8.0},
+            {"employee_name": "B, Bb", "date": "2026-05-05", "total_hours": 8.0},
+        ]
+        # `team_hours` in the daily summary is the per-hour tip DENOMINATOR
+        # (excluded hours). Marking B's shift as training drops its 8h.
+        _, base = build_daily_rows(txns=[], shifts=shifts, excluded=set())
+        self.assertEqual(base["2026-05-05"]["team_hours"], 16.0)
+
+        _, over = build_daily_rows(
+            txns=[], shifts=shifts, excluded=set(),
+            training_shifts={("B, Bb", "2026-05-05")},
+        )
+        self.assertEqual(over["2026-05-05"]["team_hours"], 8.0)
+
+
+class TestReadTrainingShiftsFromSheet(unittest.TestCase):
+    """Parsing + graceful-degradation for the `training_shifts` tab reader."""
+
+    def _fake_resp(self, payload):
+        import io
+        import json as _json
+        from unittest import mock
+
+        class _Ctx:
+            def __enter__(self_):
+                return io.BytesIO(_json.dumps(payload).encode())
+
+            def __exit__(self_, *a):
+                return False
+
+        return mock.MagicMock(side_effect=lambda *a, **k: _Ctx())
+
+    def test_parses_rows_skips_header_and_blanks(self):
+        from unittest import mock
+        from agents.bhaga.scripts import update_model_sheet as ums
+
+        payload = {"values": [
+            ["employee_name", "date", "note"],            # header skipped
+            ["Padron, Lisette", "2026-05-20", "training"],
+            ["Ortiz, Ximena", "2026-06-02", ""],
+            ["", "2026-06-03", "blank name -> skip"],     # blank name skipped
+            ["No, Date"],                                  # missing date skipped
+            ["Bad, Date", "not-a-date", "x"],              # unparseable skipped
+        ]}
+        with mock.patch.object(ums, "refresh_access_token", lambda *a, **k: "tok"), \
+             mock.patch.object(ums.urllib.request, "urlopen", self._fake_resp(payload)):
+            out = ums._read_training_shifts_from_sheet(spreadsheet_id="sid", store="palmetto")
+        self.assertEqual(out, {
+            ("Padron, Lisette", "2026-05-20"),
+            ("Ortiz, Ximena", "2026-06-02"),
+        })
+
+    def test_missing_tab_degrades_to_empty(self):
+        from unittest import mock
+        from agents.bhaga.scripts import update_model_sheet as ums
+
+        def _boom(*_a, **_k):
+            raise Exception("400: Unable to parse range: training_shifts!A1:C500")
+
+        with mock.patch.object(ums, "refresh_access_token", lambda *a, **k: "tok"), \
+             mock.patch.object(ums.urllib.request, "urlopen", _boom):
+            out = ums._read_training_shifts_from_sheet(spreadsheet_id="sid", store="palmetto")
+        self.assertEqual(out, set())
+
+
 if __name__ == "__main__":
     unittest.main()

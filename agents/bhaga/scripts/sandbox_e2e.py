@@ -194,10 +194,23 @@ def format_evidence(report: dict) -> str:
     if seeded:
         lines.append(f"- prod raw seeded into sandbox: {sum(seeded.values())} row(s) "
                      f"({', '.join(f'{t}:{n}' for t, n in sorted(seeded.items()))})")
+    ts = report.get("seeded_training_shifts")
+    if ts is not None:
+        lines.append(f"- prod training_shifts overlay mirrored into sandbox: {ts} row(s)")
     cons = report.get("tip_pool_conservation")
     if cons:
         lines.append(f"- tip-pool conserved: {cons['dates_checked']} day(s), "
                      f"max residual {cons['max_residual_cents']}c")
+    ex = report.get("exemptions")
+    if ex:
+        lines.append(
+            f"- tip exemptions verified: {ex['worked_exempt_shifts_dropped']}/"
+            f"{ex['exempt_shifts_checked']} worked exempt shift(s) dropped from tips; "
+            f"whole-period-exempt {ex['whole_period_exempt'] or '[]'}; "
+            f"partial-exempt {ex['partial_exempt'] or '[]'}; "
+            f"redistributed on {', '.join(ex['exempt_days_redistributed']) or '[]'}; "
+            f"period our_calc {ex['period_our_calc_cents']}c == pool {ex['period_pool_cents']}c"
+        )
     counts = report.get("model_tab_counts") or {}
     if counts:
         lines.append("- model tab row counts:")
@@ -303,6 +316,60 @@ def seed_sandbox_raw_from_prod(
     return seeded
 
 
+def seed_sandbox_training_shifts_from_prod(
+    *, profile: dict, account: str, start: datetime.date, end: datetime.date,
+) -> list[dict]:
+    """Mirror the human-owned prod MODEL `training_shifts` overlay into the sandbox.
+
+    The raw seed copies Square+ADP raw, but the per-shift tip-exemption overlay
+    lives on the MODEL workbook's human-owned `training_shifts` tab — not a
+    schema/pipeline tab, so ``seed_sandbox_raw_from_prod`` never touches it. The
+    sandbox model build only honors the same exemptions as prod if this overlay
+    is mirrored too; without it the sandbox would prove conservation but NOT the
+    exemption (the gap this closes).
+
+    Read-prod / write-sandbox, identical isolation contract to the raw seed: the
+    prod READ is scoped by ``allow_production_read()`` (sanctioned) while the
+    WRITE targets the staging-resolved sandbox model sid (a prod write fails
+    closed via the staging guard). Only rows whose ``date`` falls in
+    [start, end] are mirrored so the sandbox overlay matches exactly the period
+    under test. Returns the list of mirrored ``{employee_name, date, note}``
+    records (so the caller can derive the exempt set for verification).
+    """
+    prod_ids = _load_production_sheet_ids()
+    prod_sid = profile["google_sheets"]["bhaga_model"]["spreadsheet_id"]
+    sandbox_sid = resolve_sheet_id("bhaga_model", profile)
+    if prod_sid not in prod_ids:
+        raise RuntimeError(
+            f"seed training_shifts: read sid {prod_sid!r} is not a known "
+            f"production sheet — refusing to seed from a non-prod source"
+        )
+    if sandbox_sid in prod_ids:
+        raise RuntimeError(
+            f"seed training_shifts: refusing to WRITE production sheet "
+            f"{sandbox_sid!r} — sandbox isolation violated"
+        )
+    token = refresh_access_token(account=account)
+    # The overlay is operator-curated (fixed columns: employee_name|date|note),
+    # so read it as a raw grid rather than through a schema reader.
+    with allow_production_read():
+        grid = raw_writer._read_tab(prod_sid, "training_shifts", token)
+    lo, hi = start.isoformat(), end.isoformat()
+    records: list[dict] = []
+    for r in (grid[1:] if grid else []):
+        if not r or not str(r[0]).strip():
+            continue
+        name = str(r[0]).strip()
+        date = (str(r[1]).strip()[:10] if len(r) > 1 else "")
+        note = (str(r[2]).strip() if len(r) > 2 else "")
+        if not date or not (lo <= date <= hi):
+            continue
+        records.append({"employee_name": name, "date": date, "note": note})
+    if records:
+        raw_writer.write_training_shifts(sandbox_sid, records, account=account)
+    return records
+
+
 def _maybe_run_item_lines(store: str) -> bool:
     """Run the item-lines backfill if present (forward compat). Returns ran?"""
     if not _item_lines_module_available():
@@ -333,6 +400,26 @@ def _read_model_grid(token: str, model_sid: str, tab: str) -> list[list]:
     rng = f"{tab}!A1:ZZ100000"
     by_range = sandbox_provision._batch_read_values(token, model_sid, [rng])
     return by_range.get(rng, [])
+
+
+def _read_worked_hours(
+    adp_sid: str, *, account: str, start: datetime.date, end: datetime.date,
+) -> dict[tuple[str, str], float]:
+    """{(canonical_employee, date): total_hours} for worked shifts in [start,end].
+
+    Read from the SANDBOX ADP raw (already seeded) — the ground truth of who
+    actually worked each day, so the exemption check can prove an exempt shift
+    was worked yet dropped from tips. Only shifts with total_hours>0 are kept.
+    """
+    lo, hi = start.isoformat(), end.isoformat()
+    out: dict[tuple[str, str], float] = {}
+    for s in raw_reader.read_raw_adp_shifts(adp_sid, account=account):
+        date = str(s.get("date", "")).strip()[:10]
+        emp = str(s.get("employee_name", "")).strip()
+        hours = float(s.get("total_hours") or 0)
+        if emp and lo <= date <= hi and hours > 0:
+            out[(emp, date)] = out.get((emp, date), 0.0) + hours
+    return out
 
 
 def _to_cents(cell: object) -> int:
@@ -429,6 +516,171 @@ def assert_tip_pool_conserved(tip_alloc_daily_values: list[list], *, tol_cents: 
     return {"dates_checked": len(pool_by_date), "max_residual_cents": max_residual}
 
 
+def _header_resolver(header: list[str], what: str):
+    """Return a `_col(*candidates)` that maps the first present name to its index."""
+    norm = [str(c).strip() for c in header]
+
+    def _col(*candidates: str) -> int:
+        for name in candidates:
+            if name in norm:
+                return norm.index(name)
+        raise RuntimeError(f"{what}: none of {candidates} in header {norm}")
+
+    return _col
+
+
+def assert_exemptions_applied(
+    tip_alloc_daily_values: list[list],
+    tip_alloc_period_values: list[list],
+    exempt_shifts: set[tuple[str, str]],
+    worked_hours: dict[tuple[str, str], float],
+) -> dict:
+    """Prove the per-shift training overlay dropped tips + redistributed + conserved.
+
+    Data-driven (no hardcoded employee names). ``exempt_shifts`` is the set of
+    ``(employee, date)`` pairs mirrored from the prod ``training_shifts`` overlay
+    for the period; ``worked_hours`` maps every ``(employee, date)`` that has a
+    real worked shift (from the sandbox ADP raw, total_hours>0) to its hours.
+
+    The model OMITS an exempt shift from ``tip_alloc_daily`` entirely (its hours
+    leave that day's denominator and the pool redistributes to the rest), so the
+    proof is "worked the shift, yet received no tip share". Asserts:
+
+      1. each exempt (employee, date) that was actually WORKED receives no tip
+         share (absent from tip_alloc_daily, or present with our_share == 0), and
+         at least one such worked-and-exempt shift exists (the overlay bites);
+      2. on each exempt DAY the day's pool is still fully distributed to the
+         remaining staff cent-exact (redistribution, no leak);
+      3. WHOLE-period-exempt employees (every worked day exempt) get $0 over the
+         period (absent from tip_alloc_period, or our_calc == 0); PARTIALLY-exempt
+         employees keep a positive ``our_calc`` AND their period ``hours_worked``
+         equals the sum of their NON-exempt worked hours (exempt hours dropped);
+      4. period-level conservation: sum of period ``our_calc`` == sum of the
+         distinct per-date ``day_pool`` (cent-exact).
+
+    Returns a summary dict; raises RuntimeError on any violation.
+    """
+    if not tip_alloc_daily_values or len(tip_alloc_daily_values) < 2:
+        raise RuntimeError("exemption check: tip_alloc_daily is empty")
+    if not tip_alloc_period_values or len(tip_alloc_period_values) < 2:
+        raise RuntimeError("exemption check: tip_alloc_period is empty")
+
+    dcol = _header_resolver(tip_alloc_daily_values[0], "exemption check (daily)")
+    di_date, di_emp = dcol("date", "date_local"), dcol("employee", "employee_name")
+    di_pool, di_share = dcol("day_pool", "tip_pool_dollars"), dcol("our_share", "tip_allocation_dollars")
+    dwidth = max(di_date, di_emp, di_pool, di_share)
+
+    share_by: dict[tuple[str, str], int] = {}
+    pool_by_date: dict[str, int] = {}
+    share_sum_by_date: dict[str, int] = {}
+    for row in tip_alloc_daily_values[1:]:
+        if not row or len(row) <= dwidth or not str(row[di_date]).strip():
+            continue
+        date = str(row[di_date]).strip()[:10]
+        emp = str(row[di_emp]).strip()
+        share = _to_cents(row[di_share])
+        share_by[(emp, date)] = share
+        pool_by_date.setdefault(date, _to_cents(row[di_pool]))
+        share_sum_by_date[date] = share_sum_by_date.get(date, 0) + share
+
+    # (1) exempt shift took no tip share; prove on at least one WORKED shift.
+    verified_worked_exempt = 0
+    for (emp, date) in sorted(exempt_shifts):
+        share = share_by.get((emp, date))
+        if share is not None and share != 0:
+            raise RuntimeError(
+                f"exemption check: {emp} on {date} is training-exempt but "
+                f"received our_share={share}c (expected dropped / 0)"
+            )
+        if worked_hours.get((emp, date), 0) > 0 and not share:
+            verified_worked_exempt += 1
+    if exempt_shifts and verified_worked_exempt == 0:
+        raise RuntimeError(
+            "exemption check: no exempt (employee,date) pair matched a real worked "
+            "shift that was dropped from tips — the overlay had no provable effect "
+            "(sandbox mirror or ADP seed broken?)"
+        )
+
+    # (2) redistribution: each exempt day's pool fully distributed, no leak.
+    exempt_dates = {d for (_e, d) in exempt_shifts if d in pool_by_date}
+    for date in sorted(exempt_dates):
+        pool, allocated = pool_by_date[date], share_sum_by_date.get(date, 0)
+        if pool != allocated:
+            raise RuntimeError(
+                f"exemption check: {date} pool {pool}c != distributed {allocated}c "
+                f"(redistribution leak on an exempt day)"
+            )
+
+    # (3) classify each exempt employee by their WORKED vs EXEMPT days.
+    pcol = _header_resolver(tip_alloc_period_values[0], "exemption check (period)")
+    pi_emp = pcol("employee", "employee_name")
+    pi_calc = pcol("our_calc", "our_total")
+    pi_hours = pcol("hours_worked", "hours")
+    pwidth = max(pi_emp, pi_calc, pi_hours)
+    our_calc_by_emp: dict[str, int] = {}
+    hours_by_emp: dict[str, float] = {}
+    total_our_calc = 0
+    for row in tip_alloc_period_values[1:]:
+        if not row or len(row) <= pwidth or not str(row[pi_emp]).strip():
+            continue
+        emp = str(row[pi_emp]).strip()
+        calc = _to_cents(row[pi_calc])
+        our_calc_by_emp[emp] = our_calc_by_emp.get(emp, 0) + calc
+        try:
+            hours_by_emp[emp] = float(str(row[pi_hours]).replace(",", "") or 0)
+        except ValueError:
+            pass
+        total_our_calc += calc
+
+    exempt_emps = {e for (e, _d) in exempt_shifts}
+    whole_period_exempt: list[str] = []
+    partial_exempt: list[str] = []
+    for emp in sorted(exempt_emps):
+        worked = {d for (e, d) in worked_hours if e == emp}
+        ex = {d for (e, d) in exempt_shifts if e == emp}
+        non_exempt_worked = worked - ex
+        if not non_exempt_worked:
+            whole_period_exempt.append(emp)
+            if our_calc_by_emp.get(emp, 0) != 0:
+                raise RuntimeError(
+                    f"exemption check: {emp} is exempt for every worked day but "
+                    f"tip_alloc_period.our_calc={our_calc_by_emp.get(emp)}c (expected 0)"
+                )
+        else:
+            partial_exempt.append(emp)
+            if our_calc_by_emp.get(emp, 0) <= 0:
+                raise RuntimeError(
+                    f"exemption check: {emp} worked non-exempt days too but "
+                    f"tip_alloc_period.our_calc={our_calc_by_emp.get(emp, 0)}c (expected > 0)"
+                )
+            expected_hours = sum(worked_hours[(emp, d)] for d in non_exempt_worked)
+            got_hours = hours_by_emp.get(emp)
+            if got_hours is not None and abs(got_hours - expected_hours) > 0.1:
+                raise RuntimeError(
+                    f"exemption check: {emp} period hours_worked={got_hours} != "
+                    f"non-exempt worked hours {round(expected_hours, 2)} "
+                    f"(exempt-day hours not dropped from the denominator)"
+                )
+
+    # (4) period-level conservation: total allocated == total of daily pools.
+    total_pool = sum(pool_by_date.values())
+    if total_our_calc != total_pool:
+        raise RuntimeError(
+            f"exemption check: period our_calc total {total_our_calc}c != "
+            f"sum of daily day_pool {total_pool}c (period not conserved)"
+        )
+
+    return {
+        "exempt_shifts_checked": len(exempt_shifts),
+        "worked_exempt_shifts_dropped": verified_worked_exempt,
+        "whole_period_exempt": sorted(whole_period_exempt),
+        "partial_exempt": sorted(partial_exempt),
+        "exempt_days_redistributed": sorted(exempt_dates),
+        "period_our_calc_cents": total_our_calc,
+        "period_pool_cents": total_pool,
+    }
+
+
 def run_e2e(
     *,
     store: str,
@@ -475,6 +727,16 @@ def run_e2e(
             report["seeded_rows"] = seed_sandbox_raw_from_prod(
                 profile=profile, account=account, start=start, end=end,
             )
+            # Mirror the human-owned tip-exemption overlay so the sandbox model
+            # build applies the SAME exemptions as prod (proves the exemption,
+            # not just conservation).
+            overlay_records = seed_sandbox_training_shifts_from_prod(
+                profile=profile, account=account, start=start, end=end,
+            )
+            report["seeded_training_shifts"] = len(overlay_records)
+            report["_exempt_shifts"] = {
+                (r["employee_name"], r["date"]) for r in overlay_records
+            }
         else:
             report["restored_files"] = _replay_from_gcs(start, end)
             _run_backfill(store, start, end)
@@ -492,6 +754,13 @@ def run_e2e(
         if source == "prod-raw":
             grid = _read_model_grid(token, ids["bhaga_model"], "tip_alloc_daily")
             report["tip_pool_conservation"] = assert_tip_pool_conserved(grid)
+            period_grid = _read_model_grid(token, ids["bhaga_model"], "tip_alloc_period")
+            worked_hours = _read_worked_hours(
+                ids["bhaga_adp_raw"], account=account, start=start, end=end,
+            )
+            report["exemptions"] = assert_exemptions_applied(
+                grid, period_grid, report.pop("_exempt_shifts", set()), worked_hours,
+            )
         report["status"] = "ok"
     except Exception as exc:  # noqa: BLE001
         report["error"] = f"{type(exc).__name__}: {exc}"

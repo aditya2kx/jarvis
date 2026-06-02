@@ -551,7 +551,15 @@ populated, prints evidence, then releases the slot.
   `most_recent_closed_period`, identical to `discover_periods`). A closed period is always complete,
   so the verify is **stricter**: the period-grain tabs (`labor_period`, `period_summary`,
   `tip_alloc_period`) MUST populate and the **tip pool is checked for per-day conservation**
-  (`assert_tip_pool_conserved` — allocations sum to that day's pool, cent-exact).
+  (`assert_tip_pool_conserved` — allocations sum to that day's pool, cent-exact). It also
+  **mirrors the human-owned prod `training_shifts` overlay** into the sandbox model
+  (`seed_sandbox_training_shifts_from_prod`, read-prod/write-sandbox) and **verifies the
+  exemptions actually bite** (`assert_exemptions_applied`): every worked training shift is
+  dropped from `tip_alloc_daily`, the day's pool redistributes to the remaining staff, a
+  whole-period-exempt employee earns $0 over the period while a partially-exempt employee keeps
+  their non-exempt earnings (with the exempt-day hours removed from the denominator), and the
+  period total conserves. So a future PR that breaks the overlay fails the gate, not just one
+  that breaks conservation.
 - `gcs-replay` (local/legacy): replays the GCS scrape cache (read-only), re-parses it via
   `backfill_from_downloads`, and uses the lenient small-window verify. Use with `--auto-window` for a
   fast local smoke.

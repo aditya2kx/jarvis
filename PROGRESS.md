@@ -12,6 +12,28 @@
 
 ## BHAGA Agent (Tip Allocation & Payroll Prep)
 
+### 2026-06-02 — Sandbox now PROVES the exemption (overlay mirror + tip_alloc_period verify, PR #10)
+
+- The mandatory prod-data `Sandbox e2e` previously proved **conservation** but never the
+  **exemption** (it seeded prod raw Square+ADP but not the human-owned `training_shifts` overlay,
+  so the sandbox built with an empty overlay) and the PR carried no per-scenario evidence report.
+  Both gaps closed.
+- **Prod overlay populated:** wrote the real 5/18–5/31 exemptions to the human-owned **prod**
+  `training_shifts` tab — `Padron, Lisette 2026-05-23` + `Urrutia, Emely 2026-05-23` (Lisette's only
+  worked day in the period; Emely's one training day), preserving the existing operator rows
+  (Juan 5/18, Ximena 5/29 + 5/31).
+- **Sandbox mirrors it:** `seed_sandbox_training_shifts_from_prod` copies the windowed prod overlay
+  into the sandbox model (read-prod/write-sandbox, same hard isolation as the raw seed), so the
+  sandbox build applies the SAME exemptions as prod.
+- **New verifier `assert_exemptions_applied`** (data-driven, no hardcoded names): proves each worked
+  training shift is dropped from `tip_alloc_daily`, the day's pool redistributes to the rest,
+  whole-period-exempt staff earn $0 over the period while partially-exempt staff keep their
+  non-exempt earnings (exempt-day hours removed from the denominator), and the period conserves.
+- **Verified on real 5/18–5/31 prod data (sandbox):** 5/5 worked exempt shifts dropped; whole-period
+  → **Lisette + Ximena $0** (absent from `tip_alloc_period`); partial → **Juan $95.10**,
+  **Emely $82.43** (hours 19.2, the 8.22h 5/23 shift removed); on 5/23 the full **$169.66** pool
+  goes to the 4 non-exempt staff; period our_calc **$1,197.77 == pool**, conservation 0¢ over 12 days.
+
 ### 2026-06-02 — Per-shift training tip-exemption overlay (PR #10)
 
 - **New `training_shifts` overlay tab** (human-owned, `employee_name | date | note`): marks a specific

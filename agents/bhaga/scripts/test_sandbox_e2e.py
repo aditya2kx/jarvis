@@ -228,6 +228,120 @@ class TestSeedSandboxRawFromProd(unittest.TestCase):
         self.assertEqual(writer.writes, [])  # nothing written
 
 
+class _FakeOverlayWriter:
+    """Stand-in for writer.py covering the training_shifts overlay path.
+
+    ``_read_tab`` returns a canned prod overlay grid (header + mixed-window
+    rows); ``write_training_shifts`` records the (sid, rows) it was handed.
+    """
+    def __init__(self, grid):
+        self._grid = grid
+        self.writes = []  # (sid, rows)
+
+    def _read_tab(self, sid, tab, token):
+        return self._grid
+
+    def write_training_shifts(self, sid, rows, *, account):
+        self.writes.append((sid, rows))
+        return {"total_after": len(rows)}
+
+
+class TestSeedSandboxTrainingShiftsFromProd(unittest.TestCase):
+    PROFILE = {"google_sheets": {"bhaga_model": {"spreadsheet_id": "PROD_MODEL"}}}
+    GRID = [
+        ["employee_name", "date", "note"],
+        ["Flores, Juan", "2026-05-18", "training"],     # in window
+        ["Ortiz, Ximena", "2026-05-29", "training"],    # in window
+        ["Padron, Lisette", "2026-05-23", "training"],  # in window
+        ["Urrutia, Emely", "2026-05-23", "training"],   # in window
+        ["Someone, Old", "2026-05-10", "training"],     # BEFORE window -> dropped
+        ["Someone, New", "2026-06-05", "training"],     # AFTER window -> dropped
+        ["", "", ""],                                   # blank -> skipped
+    ]
+
+    def _patches(self, writer, *, sandbox_sid="SBX_MODEL"):
+        return [
+            mock.patch.object(e2e, "raw_writer", writer),
+            mock.patch.object(e2e, "refresh_access_token", lambda account=None: "tok"),
+            mock.patch.object(e2e, "_load_production_sheet_ids", lambda: {"PROD_MODEL"}),
+            mock.patch.object(e2e, "resolve_sheet_id", lambda key, prof: sandbox_sid),
+        ]
+
+    def test_mirrors_in_window_rows_to_sandbox(self):
+        writer = _FakeOverlayWriter(self.GRID)
+        patches = self._patches(writer)
+        for p in patches:
+            p.start()
+        try:
+            recs = e2e.seed_sandbox_training_shifts_from_prod(
+                profile=self.PROFILE, account="palmetto",
+                start=D(2026, 5, 18), end=D(2026, 5, 31),
+            )
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertEqual(len(recs), 4)  # Juan, Ximena, Lisette, Emely — out-of-window dropped
+        self.assertEqual(len(writer.writes), 1)
+        sid, rows = writer.writes[0]
+        self.assertEqual(sid, "SBX_MODEL")
+        names = {r["employee_name"] for r in rows}
+        self.assertEqual(names, {"Flores, Juan", "Ortiz, Ximena",
+                                 "Padron, Lisette", "Urrutia, Emely"})
+        self.assertTrue(all(D(2026, 5, 18).isoformat() <= r["date"]
+                            <= D(2026, 5, 31).isoformat() for r in rows))
+
+    def test_refuses_to_write_production_model(self):
+        writer = _FakeOverlayWriter(self.GRID)
+        patches = self._patches(writer, sandbox_sid="PROD_MODEL")  # mis-resolve to prod
+        for p in patches:
+            p.start()
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                e2e.seed_sandbox_training_shifts_from_prod(
+                    profile=self.PROFILE, account="palmetto",
+                    start=D(2026, 5, 18), end=D(2026, 5, 31),
+                )
+            self.assertIn("refusing to WRITE production sheet", str(ctx.exception))
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertEqual(writer.writes, [])
+
+    def test_refuses_non_prod_read_source(self):
+        writer = _FakeOverlayWriter(self.GRID)
+        non_prod = {"google_sheets": {"bhaga_model": {"spreadsheet_id": "NOT_PROD"}}}
+        patches = self._patches(writer)
+        for p in patches:
+            p.start()
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                e2e.seed_sandbox_training_shifts_from_prod(
+                    profile=non_prod, account="palmetto",
+                    start=D(2026, 5, 18), end=D(2026, 5, 31),
+                )
+            self.assertIn("non-prod source", str(ctx.exception))
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertEqual(writer.writes, [])
+
+    def test_empty_overlay_writes_nothing(self):
+        writer = _FakeOverlayWriter([["employee_name", "date", "note"]])  # header only
+        patches = self._patches(writer)
+        for p in patches:
+            p.start()
+        try:
+            recs = e2e.seed_sandbox_training_shifts_from_prod(
+                profile=self.PROFILE, account="palmetto",
+                start=D(2026, 5, 18), end=D(2026, 5, 31),
+            )
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertEqual(recs, [])
+        self.assertEqual(writer.writes, [])
+
+
 class TestTipPoolConservation(unittest.TestCase):
     # Real model-builder schema: date .. day_pool .. our_share.
     HEADER = ["date", "dow", "period_start", "period_end", "employee",
@@ -290,6 +404,110 @@ class TestTipPoolConservation(unittest.TestCase):
                 ["2026-05-20", "B", "100.00", "40.00"]]
         res = e2e.assert_tip_pool_conserved(grid)
         self.assertEqual(res["dates_checked"], 1)
+
+
+class TestExemptionsApplied(unittest.TestCase):
+    DHEADER = ["date", "dow", "period_start", "period_end", "employee",
+               "hours_worked", "day_pool", "team_hours_eligible",
+               "pct_of_day_hours", "our_share"]
+    PHEADER = ["period_start", "period_end", "coverage", "is_open", "employee",
+               "hours_worked", "our_calc", "adp_paid", "diff", "diff_pct",
+               "our_per_hour", "adp_per_hour", "likely_reason"]
+
+    def _d(self, date, emp, pool, share):
+        return [date, "Fri", "2026-05-18", "2026-05-31", emp,
+                "5", pool, "10", "50%", share]
+
+    def _p(self, emp, hours, our_calc):
+        return ["2026-05-18", "2026-05-31", "full", "no", emp,
+                hours, our_calc, "N/A", "N/A", "N/A", "0", "N/A", ""]
+
+    def _scenario(self):
+        # The model OMITS exempt shifts from tip_alloc_daily entirely.
+        # 5/23: pool $100 — Lisette (whole-period exempt; only works 5/23) and
+        # Emely (partial: also works 5/24) are exempt, so neither appears; the
+        # full $100 redistributes to non-exempt Bob.
+        # 5/24: pool $80 — Emely (not exempt that day) + Bob split it.
+        daily = [self.DHEADER,
+                 self._d("2026-05-23", "Bob", "100.00", "100.00"),
+                 self._d("2026-05-24", "Urrutia, Emely", "80.00", "40.00"),
+                 self._d("2026-05-24", "Bob", "80.00", "40.00")]
+        # Lisette is absent from the period; Emely $40 (hours 5 = only 5/24),
+        # Bob $140 (hours 9). total our_calc 180 == 100+80 pool.
+        period = [self.PHEADER,
+                  self._p("Urrutia, Emely", "5", "40.00"),
+                  self._p("Bob", "9", "140.00")]
+        exempt = {("Padron, Lisette", "2026-05-23"), ("Urrutia, Emely", "2026-05-23")}
+        worked = {
+            ("Padron, Lisette", "2026-05-23"): 8.0,
+            ("Urrutia, Emely", "2026-05-23"): 8.0,
+            ("Bob", "2026-05-23"): 4.0,
+            ("Urrutia, Emely", "2026-05-24"): 5.0,
+            ("Bob", "2026-05-24"): 5.0,
+        }
+        return daily, period, exempt, worked
+
+    def test_happy_path_classifies_and_conserves(self):
+        daily, period, exempt, worked = self._scenario()
+        res = e2e.assert_exemptions_applied(daily, period, exempt, worked)
+        self.assertEqual(res["worked_exempt_shifts_dropped"], 2)
+        self.assertEqual(res["whole_period_exempt"], ["Padron, Lisette"])
+        self.assertEqual(res["partial_exempt"], ["Urrutia, Emely"])
+        self.assertEqual(res["exempt_days_redistributed"], ["2026-05-23"])
+        self.assertEqual(res["period_our_calc_cents"], 18000)
+        self.assertEqual(res["period_pool_cents"], 18000)
+
+    def test_exempt_shift_with_nonzero_share_raises(self):
+        daily, period, exempt, worked = self._scenario()
+        # Lisette wrongly receives a share on her exempt day.
+        daily.append(self._d("2026-05-23", "Padron, Lisette", "100.00", "10.00"))
+        with self.assertRaises(RuntimeError) as ctx:
+            e2e.assert_exemptions_applied(daily, period, exempt, worked)
+        self.assertIn("received our_share", str(ctx.exception))
+
+    def test_whole_period_exempt_nonzero_our_calc_raises(self):
+        daily, period, exempt, worked = self._scenario()
+        period.append(self._p("Padron, Lisette", "8", "5.00"))  # must be 0/absent
+        with self.assertRaises(RuntimeError) as ctx:
+            e2e.assert_exemptions_applied(daily, period, exempt, worked)
+        self.assertIn("exempt for every worked day", str(ctx.exception))
+
+    def test_partial_exempt_zero_our_calc_raises(self):
+        daily, period, exempt, worked = self._scenario()
+        period[1][6] = "0.00"  # Emely our_calc -> 0 though she worked 5/24
+        with self.assertRaises(RuntimeError) as ctx:
+            e2e.assert_exemptions_applied(daily, period, exempt, worked)
+        self.assertIn("worked non-exempt days too", str(ctx.exception))
+
+    def test_partial_hours_not_dropped_raises(self):
+        daily, period, exempt, worked = self._scenario()
+        period[1][5] = "13"  # Emely hours include the exempt 5/23 shift (5+8)
+        with self.assertRaises(RuntimeError) as ctx:
+            e2e.assert_exemptions_applied(daily, period, exempt, worked)
+        self.assertIn("not dropped from the denominator", str(ctx.exception))
+
+    def test_redistribution_leak_raises(self):
+        daily, period, exempt, worked = self._scenario()
+        daily[1][-1] = "90.00"  # Bob 5/23 share drops -> pool not fully distributed
+        with self.assertRaises(RuntimeError) as ctx:
+            e2e.assert_exemptions_applied(daily, period, exempt, worked)
+        self.assertIn("redistribution leak", str(ctx.exception))
+
+    def test_period_not_conserved_raises(self):
+        daily, period, exempt, worked = self._scenario()
+        period[2][6] = "150.00"  # Bob 140 -> 150, total 190 != 180
+        with self.assertRaises(RuntimeError) as ctx:
+            e2e.assert_exemptions_applied(daily, period, exempt, worked)
+        self.assertIn("period not conserved", str(ctx.exception))
+
+    def test_no_provable_effect_raises(self):
+        # Exempt pair never worked (not in worked_hours) -> can't prove the
+        # overlay dropped a real shift. Fail loudly (broken mirror/ADP seed).
+        daily, period, _, worked = self._scenario()
+        with self.assertRaises(RuntimeError) as ctx:
+            e2e.assert_exemptions_applied(
+                daily, period, {("Ghost, Nobody", "2026-05-23")}, worked)
+        self.assertIn("no provable effect", str(ctx.exception))
 
 
 class TestInvokeMain(unittest.TestCase):
@@ -375,8 +593,19 @@ class TestRunE2E(unittest.TestCase):
             ["2026-05-20", "Tue", "2026-05-18", "2026-05-31", "A",
              "5", "50.00", "8", "100", "50.00"],
         ]
+        period_grid = [
+            ["period_start", "period_end", "coverage", "is_open", "employee",
+             "hours_worked", "our_calc", "adp_paid", "diff", "diff_pct",
+             "our_per_hour", "adp_per_hour", "likely_reason"],
+            ["2026-05-18", "2026-05-31", "full", "no", "A",
+             "5", "50.00", "50.00", "0", "0%", "10", "10", ""],
+        ]
+        grids = {"tip_alloc_daily": balanced, "tip_alloc_period": period_grid}
         teardown = mock.Mock(return_value={"deleted": []})
         seed = mock.Mock(return_value={"adp_shifts": 10, "square_transactions": 200})
+        # No exempt shifts in this integration fixture; the exemption logic has
+        # its own dedicated unit tests (TestExemptionsApplied).
+        seed_ts = mock.Mock(return_value=[])
         patches = [
             mock.patch.object(e2e.sandbox_provision, "provision",
                               lambda **k: {"ids": ids, "seed_counts": {}}),
@@ -385,9 +614,12 @@ class TestRunE2E(unittest.TestCase):
             mock.patch.object(e2e, "refresh_access_token", lambda account=None: "tok"),
             mock.patch.object(e2e, "_apply_staging_env", mock.Mock()),
             mock.patch.object(e2e, "seed_sandbox_raw_from_prod", seed),
+            mock.patch.object(e2e, "seed_sandbox_training_shifts_from_prod", seed_ts),
             mock.patch.object(e2e, "_run_model_build", mock.Mock(return_value=0)),
             mock.patch.object(e2e, "_read_model_tab_counts", lambda t, s, tabs=None: counts),
-            mock.patch.object(e2e, "_read_model_grid", lambda t, s, tab: balanced),
+            mock.patch.object(e2e, "_read_model_grid", lambda t, s, tab: grids[tab]),
+            mock.patch.object(e2e, "_read_worked_hours",
+                              lambda sid, *, account, start, end: {}),
             mock.patch.object(e2e.sandbox_provision, "teardown", teardown),
         ]
         for p in patches:
@@ -401,8 +633,12 @@ class TestRunE2E(unittest.TestCase):
         self.assertEqual(report["status"], "ok")
         self.assertEqual(report["source"], "prod-raw")
         seed.assert_called_once()
+        seed_ts.assert_called_once()
         self.assertEqual(report["seeded_rows"], {"adp_shifts": 10, "square_transactions": 200})
+        self.assertEqual(report["seeded_training_shifts"], 0)
         self.assertEqual(report["tip_pool_conservation"]["dates_checked"], 1)
+        self.assertEqual(report["exemptions"]["period_our_calc_cents"], 5000)
+        self.assertEqual(report["exemptions"]["period_pool_cents"], 5000)
 
     def test_keep_skips_teardown(self):
         teardown = mock.Mock()

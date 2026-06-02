@@ -513,6 +513,26 @@ tab from raw; **Recipe C**: capture a new field source→raw; **Recipe D**: a hi
 upserts incrementally instead of clear-and-write, like `item_operations`). Schema-backed tabs
 auto-migrate **additive** header changes; reordering/removing does not.
 
+### Exempt an employee/shift from the tip pool (training shifts)
+
+Tip-pool exclusions drop a `(employee, date)`'s hours from that day's **tip** denominator only
+(labor% unaffected), so the pool redistributes to everyone else. All three sources funnel through the
+single `_is_excluded` chokepoint in `update_model_sheet.py` — **no code change is needed to add an
+exemption**, only a sheet edit, then a model rebuild. See `README.md` § Extending the model **Recipe
+E** for the full table. Quick reference:
+
+- **Permanent** (manager/owner): `excluded_from_tip_pool_and_labor_pct` in `palmetto.json`.
+- **Through a date** (bulk "all shifts were training up to X"): add a `config`-tab row
+  `training_excluded:Last, First = YYYY-MM-DD` (inclusive).
+- **One specific shift**: add a row to the **`training_shifts`** tab (`employee_name | date | note`).
+  This tab is **human-owned** (Lindsay/operator keep it current); the pipeline only reads it. Seed/edit
+  it programmatically via `tip_ledger_writer.write_training_shifts` (idempotent `(employee,date)`
+  upsert; preserves other operator rows) or by hand.
+
+After editing, rebuild: `python3 -m agents.bhaga.scripts.update_model_sheet --store palmetto` (or let
+the nightly do it), then confirm `tip_alloc_period` shows $0 for the exempted shift and the pool total
+is conserved.
+
 ### Run the per-PR sandbox e2e (prod-like, zero-OTP)
 
 `agents/bhaga/scripts/sandbox_e2e.py` is the prod-like end-to-end that proves a change without

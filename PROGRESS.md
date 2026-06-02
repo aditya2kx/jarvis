@@ -12,6 +12,23 @@
 
 ## BHAGA Agent (Tip Allocation & Payroll Prep)
 
+### 2026-06-02 — Per-shift training tip-exemption overlay (PR #10)
+
+- **New `training_shifts` overlay tab** (human-owned, `employee_name | date | note`): marks a specific
+  `(employee, date)` as **tips-exempt** — the day's hours are dropped from the **tip** denominator only
+  (labor% unaffected), so the full pool redistributes to the other tipped staff. Reader
+  `_read_training_shifts_from_sheet` mirrors `_read_training_excluded_from_sheet`; threaded through
+  `_is_excluded`, `build_daily_rows`, `build_period_results`, `main()`, and `verify_bq_parity` so parity
+  stays honest. The existing `training_excluded:<name>` through-date shorthand is **kept** (bulk
+  shorthand + precise per-shift marks coexist).
+- **`write_training_shifts`** added to `tip_ledger_writer` (create-if-missing + idempotent
+  `(employee,date)` upsert; preserves operator-added rows) so the tab is maintained through the writer
+  skill, not ad-hoc Sheets calls. Tab registered in `palmetto.json`.
+- **Applied + verified on prod data** (local rebuild via impersonated `bhaga-orchestrator` SA): Lisette
+  `training_excluded:2026-05-31` + Ximena (5/29, 5/31) + Juan (5/18) → Lisette/Ximena $0, Juan 5/18
+  dropped, **pool conserved at $1,197.77**. **Durability note:** per-shift marks only stick once PR #10
+  is deployed; the nightly cron stays paused until then (the deployed image can't yet read the tab).
+
 ### 2026-06-01 — Cloud observability, sandbox isolation, JSON selectors, live sandbox run
 
 - **Incident (2026-05-31 item sales):** both nightly attempts raised `RuntimeError: Item Sales page

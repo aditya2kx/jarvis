@@ -201,6 +201,27 @@ pattern:
 > Rule of thumb: if a model tab can exceed ~1–2k rows or grows unbounded with history, use Recipe D
 > (incremental upsert + gap-scoped recompute), not the default clear-and-write of Recipe B.
 
+### Recipe E — exempt an employee/shift from the tip pool
+
+All exclusions funnel through **one chokepoint**, `_is_excluded(employee, date, ...)` in
+`update_model_sheet.py`. An excluded `(employee, date)` is dropped from that day's **tip hours
+denominator only** (labor% is unaffected), so the full pool redistributes to the other tipped staff.
+There are three sources, all sheet-driven (no code change to add an exemption):
+
+| Source | Where | Granularity | Use for |
+|---|---|---|---|
+| `excluded_from_tip_pool_and_labor_pct` | store profile (`palmetto.json`) | permanent | managers/owners who never tip-pool |
+| `training_excluded:<name> = <through-date>` | `config` tab | through a date (inclusive) | bulk "all shifts up to date X were training" |
+| `training_shifts` tab (`employee_name \| date \| note`) | own tab | a single `(employee, date)` | precise per-shift training marks |
+
+The per-shift overlay is read by `_read_training_shifts_from_sheet` (mirrors
+`_read_training_excluded_from_sheet`), returns `set[(canonical_name, date_iso)]`, and degrades to a
+no-op if the tab is absent. It's threaded through `build_daily_rows`, `build_period_results`,
+`main()`, **and the verifiers** (`verify_bq_parity.py`) so recomputed parity stays honest. Seed/maintain
+rows via `tip_ledger_writer.write_training_shifts` (create-if-missing + idempotent `(employee,date)`
+upsert; it preserves rows a human added for other pairs). The tab is **human-owned** — Lindsay/operator
+keep it current; the pipeline only reads it.
+
 ### After any recipe
 
 - **Tests:** `python3 -m pytest agents/bhaga/scripts/ skills/tip_ledger_writer/`.

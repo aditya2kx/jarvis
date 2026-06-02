@@ -288,6 +288,21 @@ the denominator.
   - **`likely_reason`** — heuristic explanation when they diverge (open period, partial coverage, etc.).
   - **`coverage`** — how complete the period's source data is; **`is_open`** — period not yet closed/paid.
 
+**Tip-pool exclusions (who is dropped from the denominator).** A `(employee, date)` ruled excluded has
+its hours removed from that day's tip denominator only — **labor% is unaffected** — so the pool
+redistributes to everyone else. Three sheet-driven sources, all funnelling through the single
+`_is_excluded` chokepoint:
+
+| Source | Lives in | Granularity | Meaning |
+|---|---|---|---|
+| `excluded_from_tip_pool_and_labor_pct` | store profile (`palmetto.json`) | permanent | manager/owner — never in the pool |
+| `training_excluded:<name> = <date>` | Model `config` tab | through that date (inclusive) | bulk "all shifts up to date X were training" |
+| **`training_shifts`** tab | Model `bhaga_model` workbook | one `(employee, date)` row | precise per-shift training mark |
+
+`training_shifts` columns: `employee_name` (canonical `Last, First`), `date` (`YYYY-MM-DD`), `note`
+(free text, e.g. "training"). It is **human-owned** (Lindsay/operator maintain it); the pipeline only
+reads it. The through-date shorthand and the per-shift tab **coexist** — use whichever is clearer.
+
 ---
 
 ## 6. Review bonuses — `review_bonus_period`

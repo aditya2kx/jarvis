@@ -40,6 +40,10 @@ class TestBuildSandboxEnv:
         assert env["BHAGA_RUN_LABEL"] == "PR#42 fix/item-sales"
         assert env["BHAGA_OTP_TARGET_JOB"] == slr.sandbox_job_resource()
 
+    def test_enables_inline_otp(self):
+        # Supervised live run waits for the code inline (existing webhook delivers).
+        assert _good_env()["BHAGA_OTP_ASSUME_READY"] == "1"
+
     def test_routes_to_staging_sheets(self):
         env = _good_env()
         assert env["BHAGA_STAGING_BHAGA_MODEL_SID"] == "SID_MODEL"

@@ -84,6 +84,21 @@ def _gate(portals, pending, *, now=NOW, cap_hours=48):
                     get_pending=lambda _d: pending)
 
 
+class TestAssumeReady:
+    def test_assume_ready_proceeds_without_checkpoint(self, monkeypatch):
+        # Operator-supervised live run: BHAGA_OTP_ASSUME_READY=1 drives OTP inline
+        # (no checkpoint-and-resume), so a pending=None state still PROCEEDs.
+        monkeypatch.setenv("BHAGA_OTP_ASSUME_READY", "1")
+        decision, info = _gate(["Square"], None)
+        assert decision == PROCEED
+        assert "assume-ready" in info["reason"]
+
+    def test_unset_keeps_checkpoint_behavior(self, monkeypatch):
+        monkeypatch.delenv("BHAGA_OTP_ASSUME_READY", raising=False)
+        decision, _ = _gate(["Square"], None)
+        assert decision == EXIT_PENDING
+
+
 class TestGateEvaluate:
     def test_zero_otp_portals_proceeds(self):
         # The zero-OTP happy path: nothing will launch a browser → PROCEED

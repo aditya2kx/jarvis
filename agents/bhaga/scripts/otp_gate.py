@@ -32,6 +32,7 @@ the same code resumes in either environment.
 from __future__ import annotations
 
 import datetime
+import os
 from zoneinfo import ZoneInfo
 
 CT = ZoneInfo("America/Chicago")
@@ -130,6 +131,17 @@ def evaluate(
     if not otp_portals:
         # Zero-OTP happy path — nothing will launch a browser this run.
         return PROCEED, {"reason": "no OTP portals needed"}
+
+    if os.environ.get("BHAGA_OTP_ASSUME_READY") == "1":
+        # Operator-supervised run (e.g. a live sandbox run): skip the READY
+        # checkpoint-and-exit dance and drive the OTP portals INLINE, blocking for
+        # the code. This needs no webhook resume — the operator just replies with
+        # the code, which the existing webhook delivers via the otps collection
+        # (keyed by agent, env-agnostic). Off by default → the nightly is unchanged.
+        return PROCEED, {
+            "reason": "assume-ready (operator supervising — inline OTP)",
+            "portals": list(otp_portals),
+        }
 
     if now is None:
         now = datetime.datetime.now(CT)

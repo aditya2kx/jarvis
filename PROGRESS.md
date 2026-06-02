@@ -43,7 +43,14 @@
   evidence auto-posted as a PR comment. Isolation pre-flight fails before any deploy. **OTP routing:**
   prod Slack bot, but the prompt is labeled `[SANDBOX · PR…]` and the pending-OTP checkpoint carries
   routing metadata so the webhook (sandbox collection scanned **first**, default `sandbox_runs`) resumes
-  the **sandbox** job, never prod, even under a concurrent prod OTP.
+  the **sandbox** job, never prod, even under a concurrent prod OTP. Supervised live runs set
+  `BHAGA_OTP_ASSUME_READY=1` to wait for the code **inline** (serviced by the existing webhook via the
+  agent-keyed `otps` collection), so the OTP round-trip works **even before** this PR's webhook deploys.
+- **First live dispatch (2026-06-01, PR #9 `sandbox-live` label):** resolve → build/push image → lease
+  sandbox slot → seed model from prod (read-only) → isolation pre-flight all ✅; stopped at the expected
+  least-privilege gate (`storage.buckets.create` denied). Bucket creation is now a documented one-time
+  operator step (RUNBOOK §13); `assert_sandbox_bucket` fails with the exact remediation instead of
+  attempting create.
 - **Tests:** +new unit suites (`test_gcs_cache`, `test_runner_item_sales`, `test_sandbox_live_run`,
   `test_notify`) and extended `test_state_adapter` / `test_handler` (sandbox routing). 399 BHAGA tests green.
 - **Status: in PR `feat/bhaga-cloud-observability`.** Live reproduction of 5/31 + the exact selector

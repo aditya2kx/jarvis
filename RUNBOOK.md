@@ -613,12 +613,21 @@ Forks are refused (secrets never exposed) and comment commands require an
 OWNER/COLLABORATOR/MEMBER author. Add a scenario by extending
 `sandbox_scenarios.SCENARIOS`.
 
-**One-time setup (operator):** create the sandbox cache bucket (the script does this idempotently),
-and wire the `bhaga-sandbox-refresh` job's **secrets + service account** to mirror
-`bhaga-daily-refresh` (the script creates the job with image + env; secrets/SA are attached once).
-Set **`SANDBOX_RUNS_COLLECTION=sandbox_runs`** on the `bhaga-webhook` service to enable sandbox OTP
-routing (unset = prod-only, unchanged). No scheduler is ever pointed at the sandbox job — it is
-execute-on-demand only.
+**One-time setup (operator).** By least privilege the run SA has GCS read + object write but not
+project bucket-create, so create the sandbox cache bucket once and grant the SA object access:
+
+```bash
+gcloud storage buckets create gs://bhaga-scrape-cache-sandbox \
+  --location=us-central1 --uniform-bucket-level-access --project=jarvis-bhaga-prod
+gcloud storage buckets add-iam-policy-binding gs://bhaga-scrape-cache-sandbox \
+  --member=serviceAccount:<run-sa> --role=roles/storage.objectAdmin
+```
+
+The `bhaga-sandbox-refresh` job **self-wires** on first create — `sandbox_live_run` inherits the prod
+job's secret bindings + service account (same creds; only the isolation env differs). The webhook's
+`SANDBOX_RUNS_COLLECTION` now **defaults to `sandbox_runs`**, so OTP routing needs no extra config
+(supervised live runs also wait for the code inline via `BHAGA_OTP_ASSUME_READY`, so they don't even
+need the new webhook deployed). No scheduler is ever pointed at the sandbox job — execute-on-demand only.
 
 **While iterating on a live incident, pause the nightly** so a 21:30 CT run doesn't race your fix or
 compete for the OTP, then resume it after the prod rerun:

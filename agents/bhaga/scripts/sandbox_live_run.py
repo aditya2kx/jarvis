@@ -103,6 +103,10 @@ def build_sandbox_env(
         "BHAGA_RUN_ENV": "sandbox",
         "BHAGA_RUN_LABEL": run_label,
         "BHAGA_OTP_TARGET_JOB": target_job or sandbox_job_resource(),
+        # Operator-supervised: wait for the OTP code INLINE rather than the
+        # checkpoint-and-resume handshake, so the existing prod webhook delivers
+        # the code (works even before this PR's webhook routing is deployed).
+        "BHAGA_OTP_ASSUME_READY": "1",
         # The business date being reproduced.
         "REFRESH_DATE": refresh_date,
         "STORE": store,
@@ -227,16 +231,27 @@ def job_exists(job_name: str) -> bool:
     return r.returncode == 0
 
 
-def ensure_sandbox_bucket(bucket: str) -> None:
-    """Create the sandbox cache bucket if it does not exist (idempotent)."""
+def assert_sandbox_bucket(bucket: str) -> None:
+    """Verify the sandbox cache bucket exists; fail with remediation if not.
+
+    By least privilege the run service account has GCS *read* (+ object write on
+    the sandbox bucket) but NOT project-level bucket-create, so the bucket is a
+    one-time operator setup (like the sandbox sheet pool), not a CI action.
+    """
     r = _gcloud(["storage", "buckets", "describe", f"gs://{bucket}",
                  "--format=value(name)"], check=False, capture=True)
     if r.returncode == 0:
         print(f"  sandbox bucket exists: gs://{bucket}")
         return
-    print(f"  creating sandbox bucket gs://{bucket}")
-    _gcloud(["storage", "buckets", "create", f"gs://{bucket}",
-             f"--location={REGION}", "--uniform-bucket-level-access"])
+    raise SystemExit(
+        f"\nsandbox bucket gs://{bucket} is missing. Create it once (operator):\n"
+        f"  gcloud storage buckets create gs://{bucket} \\\n"
+        f"    --location={REGION} --uniform-bucket-level-access --project={PROJECT_ID}\n"
+        f"  # grant the run SA object read/write on it (objectAdmin), e.g.:\n"
+        f"  gcloud storage buckets add-iam-policy-binding gs://{bucket} \\\n"
+        f"    --member=serviceAccount:<run-sa> --role=roles/storage.objectAdmin\n"
+        f"See RUNBOOK.md §13 (live sandbox run setup)."
+    )
 
 
 def _describe_prod_job() -> dict:
@@ -342,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     print("[sandbox_live_run] isolation pre-flight OK (sheets/cache/firestore all sandbox)")
 
     try:
-        ensure_sandbox_bucket(SANDBOX_CACHE_WRITE_BUCKET)
+        assert_sandbox_bucket(SANDBOX_CACHE_WRITE_BUCKET)
         deploy_sandbox_job(image=args.image, env=env)
         print(f"[sandbox_live_run] deployed {SANDBOX_JOB_NAME} @ {args.image}")
 

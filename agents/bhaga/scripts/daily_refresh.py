@@ -72,7 +72,7 @@ from agents.bhaga.notify import (
     ready_request,
     success_heartbeat,
 )
-from agents.bhaga.scripts import otp_gate
+from agents.bhaga.scripts import model_semantics, otp_gate
 from agents.bhaga.scripts.gcs_cache import (
     download_cached_files,
     evidence_prefix,
@@ -83,13 +83,23 @@ from core.config_loader import refresh_access_token, resolve_sheet_id
 from skills.bhaga_config.dates import coerce_iso_date
 from skills.bhaga_config.state_adapter import (
     clear_pending_otp as _adapter_clear_pending_otp,
+    clear_pipeline_halt as _adapter_clear_pipeline_halt,
     clear_step as _adapter_clear_step,
+    get_pending_otp as _adapter_get_pending_otp,
+    get_pipeline_halt as _adapter_get_pipeline_halt,
     mark_step_done as _adapter_mark_step_done,
     record_step_failure as _adapter_record_step_failure,
     run_state_dir as _adapter_run_state_dir,
     save_pending_otp as _adapter_save_pending_otp,
+    set_pipeline_halt as _adapter_set_pipeline_halt,
     step_already_done as _adapter_step_already_done,
 )
+
+# Distinct main() exit codes so monitoring can tell the three "stopped" reasons
+# apart: 0 = success OR a clean OTP-pending wait; 1 = a step/verification
+# failure (the wrapper retries); EXIT_HALTED = the circuit breaker is tripped on
+# known-bad output and refuses to repeat it until cleared.
+EXIT_HALTED = 3
 # NOTE: Square/ADP scrape + browser imports are intentionally LAZY (inside the
 # functions that scrape) so that importing daily_refresh — e.g. for its pure
 # verification contract (MODEL_VERIFY_MIN_ROWS, assert_model_tabs_populated,
@@ -869,6 +879,13 @@ def _read_model_verification_data(
     kds_grid_tabs = ["labor_daily", "labor_weekly", "labor_period"]
     if expect_kds:
         ranges.extend(f"{t}!A1:ZZ100000" for t in kds_grid_tabs)
+    # Full grids for the SEMANTIC post-condition guard (model_semantics):
+    # tip-pool conservation + adp reconciliation + review-bonus presence. Read
+    # unconditionally (independent of KDS) and positioned AFTER the optional KDS
+    # grids so the existing positional parsing above is unaffected.
+    semantic_tabs = ["tip_alloc_daily", "tip_alloc_period", "review_bonus_period"]
+    sem_start = len(ranges)
+    ranges.extend(f"{t}!A1:ZZ100000" for t in semantic_tabs)
     data = _sheets_batch_get(spreadsheet_id, token, ranges)
     value_ranges = data.get("valueRanges", [])
 
@@ -886,6 +903,11 @@ def _read_model_verification_data(
         weekly_values = grids[1].get("values", [])
         period_values = grids[2].get("values", [])
         model_kds_nonempty = _labor_daily_has_kds(labor_daily_full)
+
+    sem = value_ranges[sem_start:sem_start + len(semantic_tabs)]
+    tip_alloc_daily_values = sem[0].get("values", []) if len(sem) > 0 else None
+    tip_alloc_period_values = sem[1].get("values", []) if len(sem) > 1 else None
+    review_bonus_values = sem[2].get("values", []) if len(sem) > 2 else None
 
     raw_kds_count: int | None = None
     kds_min_date: str | None = None
@@ -918,7 +940,62 @@ def _read_model_verification_data(
         "period_values": period_values,
         "kds_min_date": kds_min_date,
         "kds_max_date": kds_max_date,
+        "tip_alloc_daily_values": tip_alloc_daily_values,
+        "tip_alloc_period_values": tip_alloc_period_values,
+        "review_bonus_values": review_bonus_values,
     }
+
+
+def _read_review_bonus_row_count(*, spreadsheet_id: str, store: str) -> int:
+    """Pre-run ``review_bonus_period`` data-row count (0 if unreadable/empty).
+
+    Captured BEFORE the rebuild so the semantic guard can require bonuses to
+    SURVIVE a rebuild: if the tab had rows tonight-minus-one and the rebuild
+    drops them to 0, that's the 4059604 regression. A brand-new store with no
+    reviews yet reads 0 here and is therefore never falsely halted.
+    """
+    try:
+        token = refresh_access_token(store)
+        data = _sheets_batch_get(spreadsheet_id, token, ["review_bonus_period!A1:A100000"])
+        vals = (data.get("valueRanges") or [{}])[0].get("values", [])
+        return max(len(vals) - 1, 0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [verify_model] could not pre-read review_bonus_period "
+              f"(treating as 0): {exc}")
+        return 0
+
+
+def _latest_closed_period_with_earnings(
+    *, profile: dict, store: str, refresh_date: datetime.date,
+) -> tuple[str, str] | None:
+    """Latest CLOSED pay period (start_iso, end_iso) IFF a covering ADP Earnings
+    export exists in the GCS scrape cache (so adp_paid MUST reconcile), else None.
+
+    Cadence-safe: the nightly only requires adp reconciliation for a period whose
+    Earnings export it can actually find. Uses the SAME loader the model build
+    uses (read-only, bounded to the latest closed period's window). Lazy-imports
+    ``update_model_sheet`` to avoid its import cycle with this module.
+    """
+    try:
+        from agents.bhaga.scripts import update_model_sheet
+        adp = profile.get("adp_run", {})
+        anchor = adp.get("pay_periods_anchor_end_date")
+        freq = adp.get("pay_frequency", "")
+        if not anchor:
+            return None
+        ps, pe = update_model_sheet.most_recent_closed_period(
+            anchor_end_date=anchor, pay_frequency=freq, today=refresh_date,
+        )
+        key = (ps.isoformat(), pe.isoformat())
+        has_actuals = update_model_sheet.period_has_cc_tip_actuals(
+            store=store, period_start=key[0], period_end=key[1],
+            last_data_date=refresh_date.isoformat(),
+        )
+        return key if has_actuals else None
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [verify_model] adp cadence probe failed (treating as 'no "
+              f"covering export', non-fatal): {type(exc).__name__}: {exc}")
+        return None
 
 
 def _adp_bundle_then_raise(
@@ -1474,6 +1551,10 @@ def main() -> int:
                      help="Print steps but do not actually scrape.")
     cli.add_argument("--no-slack", action="store_true",
                      help="Suppress all Slack messages (overrides notify.py).")
+    cli.add_argument("--ignore-halt", action="store_true",
+                     help="Run even if the pipeline circuit breaker is tripped "
+                          "(use after fixing a known-bad regression; a healthy "
+                          "run auto-clears the breaker).")
     args = cli.parse_args()
 
     # Scenario scoping via env: a focused sandbox run (e.g. the item-sales-live
@@ -1489,6 +1570,7 @@ def main() -> int:
     args.skip_square = args.skip_square or _env_skip("BHAGA_SKIP_SQUARE")
     args.skip_rates = args.skip_rates or _env_skip("BHAGA_SKIP_RATES")
     args.skip_timecard = args.skip_timecard or _env_skip("BHAGA_SKIP_TIMECARD")
+    args.ignore_halt = args.ignore_halt or _env_skip("BHAGA_IGNORE_HALT")
 
     # Unify --skip-adp / --skip-timecard
     if args.skip_adp:
@@ -1525,9 +1607,62 @@ def main() -> int:
             f"run, or pass --date <past-date> for backfill."
         )
 
+    # ── Circuit breaker: refuse a fresh scheduled run while HALTED ──────
+    # The breaker trips when a previous run produced semantically-bad output
+    # (e.g. dead adp_paid). Refusing here stops the nightly from silently
+    # repeating the known-bad computation. EXIT_HALTED is DISTINCT from the
+    # OTP-pending exit (return 0): "waiting for the operator" must never be
+    # read as "bad output". An in-flight OTP READY resume is allowed through
+    # (it's completing a handshake, not a fresh attempt); --ignore-halt /
+    # BHAGA_IGNORE_HALT lets the operator run a fix (which auto-clears below).
+    halt = None if args.dry_run else _adapter_get_pipeline_halt()
+    if halt and not args.ignore_halt:
+        pending = _adapter_get_pending_otp(refresh_date)
+        otp_resume = bool(pending and pending.get("ready_received"))
+        if not otp_resume:
+            msg = (
+                f"pipeline HALTED since {halt.get('since')} "
+                f"(tripped by refresh_date={halt.get('refresh_date')}): "
+                f"{halt.get('reason')}"
+            )
+            print(f"\n!!! REFUSING TO RUN — {msg}", file=sys.stderr)
+            print("    Fix the regression + deploy, then re-run with "
+                  "--ignore-halt (a healthy run auto-clears the breaker), or "
+                  "clear it manually via state_adapter.clear_pipeline_halt().",
+                  file=sys.stderr)
+            try:
+                failure_alert(
+                    step="pipeline_halt",
+                    exception=RuntimeError(msg),
+                    date=refresh_date.isoformat(),
+                    evidence_uri=None,
+                    extra=(
+                        "The circuit breaker is tripped: a prior run produced "
+                        "semantically-bad model output and the nightly is "
+                        "refusing to repeat it. Investigate the recorded reason, "
+                        "deploy the fix, then re-run with --ignore-halt — a fully "
+                        "healthy run clears the breaker automatically."
+                    ),
+                )
+            except Exception:  # noqa: BLE001, S110
+                pass
+            return EXIT_HALTED
+        print(f"[pipeline_halt] breaker is tripped but this is an OTP READY "
+              f"resume — allowing it to complete the handshake.")
+    elif halt and args.ignore_halt:
+        print(f"[pipeline_halt] breaker tripped ({halt.get('reason')}) but "
+              f"--ignore-halt set — proceeding (a healthy run will clear it).")
+
     profile = _load_profile(args.store)
     data_start = datetime.date.fromisoformat(profile["calibration"]["first_data_window"]["start"])
     spreadsheet_id = resolve_sheet_id("bhaga_model", profile)
+
+    # Pre-run review_bonus_period row count, for the post-rebuild semantic guard
+    # (require credited bonuses to survive the rebuild). Read once up front; soft.
+    prev_review_bonus_rows = (
+        0 if args.dry_run
+        else _read_review_bonus_row_count(spreadsheet_id=spreadsheet_id, store=args.store)
+    )
 
     # ---- Incremental window resolution ----------------------------------
     # Source of truth: Model sheet's config tab `data_window_end`.
@@ -1920,6 +2055,7 @@ def main() -> int:
     # process_reviews REQUIRES the pre-fetched JSON from review_fetch.
     # If review_fetch failed or produced no file, process_reviews is skipped.
     review_fetch_ok = "review_fetch" not in failed_steps
+    process_reviews_ran = False
     if not args.skip_reviews and raw_sheets_ok and review_fetch_ok:
         if not review_prefetch_path or not review_prefetch_path.exists():
             print("[process_reviews] SKIPPED — review_fetch produced no output file.")
@@ -1944,6 +2080,8 @@ def main() -> int:
             )
             if not ok:
                 failures.append(("process_reviews", val))
+            else:
+                process_reviews_ran = True
     elif args.skip_reviews:
         print("[process_reviews] SKIPPED — --skip-reviews flag set.")
     elif not review_fetch_ok:
@@ -2024,6 +2162,7 @@ def main() -> int:
     # exit, so the operator is notified the same night. Skipped when the
     # model wasn't refreshed this run (--skip-model / dry-run / update
     # failed) so we never false-positive on legitimately-empty cases.
+    model_verified_ok = False
     if update_model_ran:
         expect_kds = not args.skip_kds
         try:
@@ -2053,9 +2192,57 @@ def main() -> int:
             )
             print("[verify_model] OK — all expected model tabs are populated "
                   "(incl. weekly/period KDS metrics).")
+
+            # ── Semantic post-condition guard (model_semantics) ────────
+            # Mechanical population is necessary but NOT sufficient: a green run
+            # could still carry dead columns (the 6f87f9c adp_paid="N/A" and the
+            # 4059604 review_bonus regressions both passed every count check).
+            # These assert the numbers MEAN something — tips conserve, the latest
+            # closed period reconciles when its Earnings export exists, and
+            # credited review bonuses survived the rebuild. Cadence-safe: each
+            # check is gated on the precondition that makes it knowable.
+            require_adp_period = _latest_closed_period_with_earnings(
+                profile=profile, store=args.store, refresh_date=refresh_date,
+            )
+            reviews_credited = process_reviews_ran and prev_review_bonus_rows > 0
+            try:
+                sem = model_semantics.assert_model_semantics(
+                    tip_alloc_daily_values=vdata["tip_alloc_daily_values"],
+                    tip_alloc_period_values=vdata["tip_alloc_period_values"],
+                    review_bonus_values=vdata["review_bonus_values"],
+                    require_adp_period=require_adp_period,
+                    reviews_credited=reviews_credited,
+                )
+            except RuntimeError as sem_exc:
+                # A SEMANTIC failure is a known-bad regression that WILL repeat
+                # every night (unlike a mechanical under-population, which is
+                # transient and meant to be retried) — so trip the circuit
+                # breaker. The shared except below still records/alerts/clears
+                # the marker; we just add the breaker before re-raising.
+                try:
+                    _adapter_set_pipeline_halt(
+                        reason=f"semantic guard failed: {sem_exc}",
+                        refresh_date=refresh_date,
+                    )
+                    print("[pipeline_halt] breaker TRIPPED on semantic-guard "
+                          "failure — the nightly will refuse to repeat this "
+                          "until a healthy run (or manual clear).", file=sys.stderr)
+                except Exception:  # noqa: BLE001, S110
+                    pass
+                raise
+            print(f"[verify_model] semantics OK — {sem}")
+            model_verified_ok = True
         except RuntimeError as exc:
             print(f"\n!!! MODEL VERIFICATION FAILED: {exc}", file=sys.stderr)
             ev_uri = _record_failure(refresh_date, "verify_model_sheet", exc)
+            # Clear the update_model_sheet marker so a rerun REBUILDS rather than
+            # short-circuiting on the stale .done — a verification failure (either
+            # mechanical OR semantic) means the model output is suspect, so the
+            # next run must regenerate it after the fix, not just re-verify.
+            try:
+                clear_step_done(refresh_date, "update_model_sheet")
+            except Exception:  # noqa: BLE001, S110
+                pass
             try:
                 failure_alert(
                     step="verify_model_sheet",
@@ -2063,13 +2250,16 @@ def main() -> int:
                     date=refresh_date.isoformat(),
                     evidence_uri=ev_uri,
                     extra=(
-                        "update_model_sheet ran but the rebuilt Model sheet is "
-                        "missing expected non-empty tabs (e.g. labor_period / "
-                        "period_summary at 0 rows, or KDS columns empty). The "
-                        "model is NOT correct — investigate update_model_sheet "
-                        "(period derivation, raw-sheet reads) before relying on "
-                        "tonight's numbers. The other steps' .done markers are "
-                        "written, so re-running will re-verify after a fix."
+                        "update_model_sheet ran but the rebuilt Model sheet failed "
+                        "verification — either MECHANICAL (a tab like labor_period / "
+                        "period_summary at 0 rows, or KDS columns empty) or SEMANTIC "
+                        "(tip pool not conserved, the latest closed period's adp_paid "
+                        "still N/A despite a covering Earnings export in GCS, or "
+                        "credited review bonuses dropped from the rebuild). The model "
+                        "is NOT correct — investigate update_model_sheet (period "
+                        "derivation, raw-sheet reads, GCS earnings load) before relying "
+                        "on tonight's numbers. The update_model_sheet marker was "
+                        "cleared, so re-running will REBUILD and re-verify after a fix."
                     ),
                 )
             except Exception:  # noqa: BLE001, S110
@@ -2084,6 +2274,18 @@ def main() -> int:
                   file=sys.stderr)
 
     print(f"\n=== DONE in {runtime_s:.1f}s ===")
+    # Auto-resume: a fully-healthy run that rebuilt AND semantically verified the
+    # model clears the circuit breaker (idempotent — a no-op when not tripped).
+    # Gated on model_verified_ok so a --skip-model run can't clear a halt that
+    # was about bad model output.
+    if not args.dry_run and model_verified_ok:
+        try:
+            if _adapter_get_pipeline_halt():
+                _adapter_clear_pipeline_halt()
+                print("[pipeline_halt] healthy verified run — breaker CLEARED "
+                      "(auto-resume).")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[pipeline_halt] WARN: could not clear breaker: {exc}")
     if not args.dry_run:
         success_heartbeat(
             date=refresh_date.isoformat(),

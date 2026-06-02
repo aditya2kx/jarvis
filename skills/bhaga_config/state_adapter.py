@@ -36,6 +36,9 @@ __all__ = [
     "mark_otp_ready",
     "clear_pending_otp",
     "record_step_failure",
+    "get_pipeline_halt",
+    "set_pipeline_halt",
+    "clear_pipeline_halt",
 ]
 
 CT = ZoneInfo("America/Chicago")
@@ -332,6 +335,97 @@ def clear_pending_otp(refresh_date: datetime.date) -> None:
         _doc_ref(client, refresh_date).set({"pending_otp": None}, merge=True)
         return
     path = _local_pending_otp_path(refresh_date)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+# ── Pipeline-halt circuit breaker ─────────────────────────────────────
+#
+# A GLOBAL (not per-refresh_date) flag that trips when a run produces
+# semantically-bad output (e.g. the latest closed period's adp_paid is dead, or
+# tips don't conserve). While tripped, daily_refresh refuses to start a fresh
+# scheduled run so the same known-bad computation can't repeat night after
+# night; a fully-healthy run auto-clears it. Mirrors the pending_otp checkpoint
+# shape, but lives in a SINGLETON document (not keyed by date) since the breaker
+# spans nights. Stored in the SAME (sandbox-isolated) collection as run state so
+# a staging run can never trip/clear the prod breaker.
+#   - local:     ~/.bhaga/state/pipeline_state.json
+#   - firestore: <collection>/_pipeline_state document
+#
+# Shape: {halted: bool, reason: str|None, since: <CT ISO>|None,
+#         refresh_date: <ISO>|None  # the run whose output tripped it}
+
+_PIPELINE_STATE_FILE = "pipeline_state.json"
+_PIPELINE_STATE_DOC = "_pipeline_state"
+
+
+def _local_pipeline_state_path() -> pathlib.Path:
+    return pathlib.Path.home() / ".bhaga" / "state" / _PIPELINE_STATE_FILE
+
+
+def _pipeline_state_doc_ref(client):
+    """Singleton run-state doc for the breaker (sandbox-isolated like run docs)."""
+    collection = _collection_name()
+    _assert_sandbox_state_isolation(collection)
+    return client.collection(collection).document(_PIPELINE_STATE_DOC)
+
+
+def get_pipeline_halt() -> dict | None:
+    """Return the halt record if the pipeline is currently HALTED, else None."""
+    if _state_backend() == "firestore":
+        client = _get_firestore_client()
+        doc = _pipeline_state_doc_ref(client).get()
+        if not doc.exists:
+            return None
+        data = doc.to_dict() or {}
+        return data if data.get("halted") else None
+
+    path = _local_pipeline_state_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if data.get("halted") else None
+
+
+def set_pipeline_halt(
+    *,
+    reason: str,
+    refresh_date: datetime.date | None = None,
+    since: str | None = None,
+) -> dict:
+    """Trip the breaker. Idempotent (a re-trip just refreshes reason/since)."""
+    payload = {
+        "halted": True,
+        "reason": reason,
+        "since": since or datetime.datetime.now(CT).isoformat(),
+        "refresh_date": refresh_date.isoformat() if refresh_date else None,
+    }
+    if _state_backend() == "firestore":
+        client = _get_firestore_client()
+        # Full set (not merge): the breaker doc is single-purpose.
+        _pipeline_state_doc_ref(client).set(payload)
+        return payload
+
+    path = _local_pipeline_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2))
+    return payload
+
+
+def clear_pipeline_halt() -> None:
+    """Reset the breaker to a healthy (not-halted) state. Idempotent."""
+    if _state_backend() == "firestore":
+        client = _get_firestore_client()
+        _pipeline_state_doc_ref(client).set(
+            {"halted": False, "reason": None, "since": None, "refresh_date": None}
+        )
+        return
+    path = _local_pipeline_state_path()
     try:
         path.unlink(missing_ok=True)
     except OSError:

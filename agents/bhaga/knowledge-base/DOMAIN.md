@@ -283,10 +283,26 @@ the denominator.
   `our_share`.
 - `tip_alloc_period`: per-employee period totals with **reconciliation** against payroll:
   - **`our_calc`** — BHAGA's computed allocation.
-  - **`adp_paid`** — what ADP actually paid (once earnings data lands).
+  - **`adp_paid`** — what ADP actually paid (the "Credit Card Tips Owed" earning line). Sourced
+    **cloud-natively from the GCS-cached Earnings XLSX** (`gs://bhaga-scrape-cache/<date>/adp/Earnings-*.xlsx`,
+    parsed by `compensation_backend.parse_xlsx`, unioned across cached dates) — **not** a raw sheet tab.
+    A closed period shows `N/A` (distinct reason "No ADP earnings export in GCS for this period") when no
+    covering export carries its "Credit Card Tips Owed" lines — either the period predates the cache's
+    ~2026-05-29 inception, **or its payroll simply hasn't run yet** (a just-closed period: the export
+    exists but carries no CC-tip lines, only e.g. a misc reimbursement — this is the normal pay cadence,
+    not a defect). (Reviving this was the fix for commit 6f87f9c, which had stubbed
+    `actual_cc_tips_by_period(None)` → permanent `N/A`.)
   - **`diff` / `diff_pct`** — `our_calc − adp_paid`.
   - **`likely_reason`** — heuristic explanation when they diverge (open period, partial coverage, etc.).
   - **`coverage`** — how complete the period's source data is; **`is_open`** — period not yet closed/paid.
+  - `period_summary.check_dates` is likewise re-derived from the parsed Earnings `check_date` values
+    (was always empty after the same migration).
+- **Semantic guards** (`agents/bhaga/scripts/model_semantics.py`) assert these columns stay meaningful:
+  per-day tip-pool conservation, **cadence-safe** `adp_paid` reconciliation (a closed period must populate
+  `adp_paid` only when `update_model_sheet.period_has_cc_tip_actuals` confirms a covering export actually
+  carries that period's CC-tip lines; an unpaid just-closed period is skipped, not failed), and credited
+  review bonuses survive a rebuild. They run in BOTH the per-PR sandbox e2e and the nightly
+  `daily_refresh` (which trips a circuit breaker on a semantic failure).
 
 **Tip-pool exclusions (who is dropped from the denominator).** A `(employee, date)` ruled excluded has
 its hours removed from that day's tip denominator only — **labor% is unaffected** — so the pool

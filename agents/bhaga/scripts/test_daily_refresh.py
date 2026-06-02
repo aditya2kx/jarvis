@@ -310,6 +310,81 @@ def _patch_then_run(test_self, fixed_dt_cls, argv, load_profile_stub):
         return daily_refresh.main()
 
 
+class MainHaltBreakerTests(unittest.TestCase):
+    """The circuit breaker at main() startup: refuse a fresh run while tripped
+    (distinct EXIT_HALTED), but let --ignore-halt and OTP READY resumes through.
+
+    The halt check sits between the completeness gate and _load_profile, so the
+    same minimal patch stack as MainHardRefuseTests reaches it (no Sheets /
+    Playwright / Slack). A past --date passes the gate; HOME points at a tmp dir
+    so the local state backend reads the breaker we plant.
+    """
+
+    NOW = datetime.datetime(2026, 6, 2, 13, 0, 0, tzinfo=CT)
+    PAST_ISO = "2026-06-01"
+
+    class _PostHaltSentinel(Exception):
+        pass
+
+    def _run(self, tmp, *, ignore_halt=False, otp_ready=False):
+        argv = ["daily_refresh", "--store", "palmetto", "--date", self.PAST_ISO,
+                "--no-slack", "--skip-square", "--skip-timecard",
+                "--skip-reviews", "--skip-model"]
+        if ignore_halt:
+            argv.append("--ignore-halt")
+
+        class _FixedNowDateTime(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return self.NOW if tz is not None else self.NOW.replace(tzinfo=None)
+
+        def _explode(*_a, **_k):
+            raise self._PostHaltSentinel("proceeded past the halt check")
+
+        if otp_ready:
+            from skills.bhaga_config.state_adapter import mark_otp_ready
+            rd = datetime.date.fromisoformat(self.PAST_ISO)
+            with mock.patch.dict(os.environ, {"HOME": tmp}):
+                daily_refresh._adapter_save_pending_otp(
+                    rd, ["Square"], requested_at="2026-06-01T21:00:00-05:00")
+                mark_otp_ready(rd)
+
+        with mock.patch.dict(os.environ, {"HOME": tmp}), \
+             mock.patch.object(daily_refresh.datetime, "datetime", _FixedNowDateTime), \
+             mock.patch.object(daily_refresh, "failure_alert", lambda **k: None), \
+             mock.patch.object(daily_refresh, "_load_profile", side_effect=_explode), \
+             mock.patch.object(sys, "argv", argv):
+            return daily_refresh.main()
+
+    def test_refuses_when_halted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"HOME": tmp}):
+                daily_refresh._adapter_set_pipeline_halt(
+                    reason="semantic guard failed: adp dead",
+                    refresh_date=datetime.date(2026, 6, 1))
+            rc = self._run(tmp)
+            self.assertEqual(rc, daily_refresh.EXIT_HALTED)
+
+    def test_ignore_halt_proceeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"HOME": tmp}):
+                daily_refresh._adapter_set_pipeline_halt(reason="boom")
+            with self.assertRaises(self._PostHaltSentinel):
+                self._run(tmp, ignore_halt=True)
+
+    def test_otp_ready_resume_proceeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"HOME": tmp}):
+                daily_refresh._adapter_set_pipeline_halt(reason="boom")
+            with self.assertRaises(self._PostHaltSentinel):
+                self._run(tmp, otp_ready=True)
+
+    def test_no_halt_proceeds_normally(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(self._PostHaltSentinel):
+                self._run(tmp)
+
+
 class ClearStepDoneTests(unittest.TestCase):
     """clear_step_done passthrough invalidates a marker (local backend)."""
 
@@ -449,6 +524,55 @@ class PreflightBrowserTests(unittest.TestCase):
             return_value=False,
         ):
             self.assertFalse(daily_refresh._preflight_browser_ok())
+
+
+class LatestClosedPeriodWithEarningsTests(unittest.TestCase):
+    """The cadence-safe probe: require adp reconciliation only when the GCS
+    cache actually holds a covering Earnings export for the latest closed period."""
+
+    PROFILE = {"adp_run": {"pay_periods_anchor_end_date": "2026-05-17",
+                           "pay_frequency": "biweekly"}}
+
+    def _patch_ums(self, *, period, actuals):
+        from agents.bhaga.scripts import update_model_sheet
+        return mock.patch.multiple(
+            update_model_sheet,
+            most_recent_closed_period=mock.Mock(return_value=period),
+            load_cc_tips_earnings_from_gcs=mock.Mock(return_value=[{"x": 1}]),
+            actual_cc_tips_by_period=mock.Mock(return_value=actuals),
+        )
+
+    def test_returns_period_when_earnings_cover_it(self):
+        period = (datetime.date(2026, 5, 18), datetime.date(2026, 5, 31))
+        with self._patch_ums(period=period,
+                             actuals={("2026-05-18", "2026-05-31"): {"A": 100}}):
+            out = daily_refresh._latest_closed_period_with_earnings(
+                profile=self.PROFILE, store="palmetto",
+                refresh_date=datetime.date(2026, 6, 2))
+        self.assertEqual(out, ("2026-05-18", "2026-05-31"))
+
+    def test_returns_none_when_no_covering_export(self):
+        period = (datetime.date(2026, 5, 18), datetime.date(2026, 5, 31))
+        with self._patch_ums(period=period, actuals={}):  # no export for it
+            out = daily_refresh._latest_closed_period_with_earnings(
+                profile=self.PROFILE, store="palmetto",
+                refresh_date=datetime.date(2026, 6, 2))
+        self.assertIsNone(out)
+
+    def test_returns_none_without_anchor(self):
+        out = daily_refresh._latest_closed_period_with_earnings(
+            profile={"adp_run": {}}, store="palmetto",
+            refresh_date=datetime.date(2026, 6, 2))
+        self.assertIsNone(out)
+
+    def test_soft_on_loader_error(self):
+        from agents.bhaga.scripts import update_model_sheet
+        with mock.patch.object(update_model_sheet, "most_recent_closed_period",
+                               side_effect=RuntimeError("boom")):
+            out = daily_refresh._latest_closed_period_with_earnings(
+                profile=self.PROFILE, store="palmetto",
+                refresh_date=datetime.date(2026, 6, 2))
+        self.assertIsNone(out)
 
 
 if __name__ == "__main__":

@@ -62,3 +62,56 @@ class TestEvidencePrefix:
         monkeypatch.setenv("BHAGA_GCS_CACHE_WRITE_BUCKET", "bhaga-scrape-cache-sandbox")
         prefix = gcs_cache.evidence_prefix(datetime.date(2026, 6, 1))
         assert prefix == "gs://bhaga-scrape-cache-sandbox/2026-06-01/evidence/"
+
+
+class _FakeBlob:
+    def __init__(self, name):
+        self.name = name
+        self.downloaded_to = None
+
+    def download_to_filename(self, path):
+        self.downloaded_to = path
+
+
+class _FakeBucket:
+    def __init__(self, blobs):
+        self._blobs = blobs
+
+    def list_blobs(self, prefix=None, max_results=None):
+        return [b for b in self._blobs if b.name.startswith(prefix or "")]
+
+
+class TestDownloadCachedFilesNameFilter:
+    """The name_contains filter must actually restrict WHICH blobs are
+    downloaded (the per-call bandwidth bound the earnings loader relies on),
+    not merely be accepted as a kwarg."""
+
+    def _patch_client(self, monkeypatch, blobs):
+        bucket = _FakeBucket(blobs)
+        monkeypatch.setattr(gcs_cache, "_get_client", lambda: object())
+        monkeypatch.setattr(gcs_cache, "_bucket", lambda client: bucket)
+        return blobs
+
+    def test_only_matching_blobs_downloaded(self, monkeypatch, tmp_path):
+        d = datetime.date(2026, 6, 1)
+        blobs = self._patch_client(monkeypatch, [
+            _FakeBlob("2026-06-01/adp/Earnings-and-Hours-V1-2026-06-02.xlsx"),
+            _FakeBlob("2026-06-01/adp/Timecard-2026-06-02.xlsx"),
+        ])
+        restored = gcs_cache.download_cached_files(
+            refresh_date=d, download_dir=tmp_path, name_contains="Earnings",
+        )
+        # Only the Earnings blob is restored; the Timecard is never downloaded.
+        assert list(restored) == ["2026-06-01/adp/Earnings-and-Hours-V1-2026-06-02.xlsx"]
+        assert blobs[0].downloaded_to is not None
+        assert blobs[1].downloaded_to is None
+
+    def test_no_filter_downloads_all(self, monkeypatch, tmp_path):
+        d = datetime.date(2026, 6, 1)
+        blobs = self._patch_client(monkeypatch, [
+            _FakeBlob("2026-06-01/adp/Earnings-1.xlsx"),
+            _FakeBlob("2026-06-01/adp/Timecard-1.xlsx"),
+        ])
+        restored = gcs_cache.download_cached_files(refresh_date=d, download_dir=tmp_path)
+        assert len(restored) == 2
+        assert all(b.downloaded_to is not None for b in blobs)

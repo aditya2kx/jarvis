@@ -161,6 +161,45 @@ class TestPendingOtpLocal:
         assert p["target_job"].endswith("bhaga-sandbox-refresh")
 
 
+# ── Pipeline-halt circuit breaker (local backend) ─────────────────────
+
+
+class TestPipelineHaltLocal:
+    def test_absent_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert state_adapter.get_pipeline_halt() is None
+
+    def test_set_then_get(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        rec = state_adapter.set_pipeline_halt(
+            reason="semantic guard failed: adp dead",
+            refresh_date=datetime.date(2026, 6, 1),
+        )
+        assert rec["halted"] is True
+        got = state_adapter.get_pipeline_halt()
+        assert got["reason"].endswith("adp dead")
+        assert got["refresh_date"] == "2026-06-01"
+        assert got["since"]
+        # The breaker doc is GLOBAL, not under a run-<date> dir.
+        assert (tmp_path / ".bhaga" / "state" / "pipeline_state.json").exists()
+
+    def test_clear_resets_to_healthy(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        state_adapter.set_pipeline_halt(reason="boom")
+        assert state_adapter.get_pipeline_halt() is not None
+        state_adapter.clear_pipeline_halt()
+        assert state_adapter.get_pipeline_halt() is None
+        # Idempotent.
+        state_adapter.clear_pipeline_halt()
+        assert state_adapter.get_pipeline_halt() is None
+
+    def test_not_keyed_by_refresh_date(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        # Trip referencing one date; the breaker is visible globally regardless.
+        state_adapter.set_pipeline_halt(reason="x", refresh_date=datetime.date(2026, 6, 1))
+        assert state_adapter.get_pipeline_halt() is not None
+
+
 # ── Firestore backend tests ───────────────────────────────────────────
 
 
@@ -333,6 +372,21 @@ class TestFirestoreBackend:
             # Step marker survives the pending write (merge semantics).
             assert state_adapter.step_already_done(d, "square_transactions") is True
             assert state_adapter.get_pending_otp(d)["portals"] == ["ADP"]
+
+    def test_pipeline_halt_set_get_clear(self):
+        mock_client = self._mock_client()
+        with patch.object(state_adapter, "_get_firestore_client", return_value=mock_client):
+            assert state_adapter.get_pipeline_halt() is None
+            state_adapter.set_pipeline_halt(
+                reason="semantic guard failed", refresh_date=datetime.date(2026, 6, 1))
+            got = state_adapter.get_pipeline_halt()
+            assert got["halted"] is True
+            assert got["refresh_date"] == "2026-06-01"
+            # Stored in the singleton breaker doc, NOT a date-keyed run doc.
+            assert "_pipeline_state" in self._docs
+            assert "2026-06-01" not in self._docs
+            state_adapter.clear_pipeline_halt()
+            assert state_adapter.get_pipeline_halt() is None
 
 
 # ── Per-step failure recording (observability) ────────────────────────

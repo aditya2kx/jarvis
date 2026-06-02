@@ -407,6 +407,32 @@ classic cause is the tiny 64 MB `/dev/shm`). The runtime now:
   runs before spending an OTP (headless only) so a transient crash heals before the operator's SMS is
   spent. Non-fatal; the real launch has its own retry.
 
+### Model semantic verification + the pipeline halt circuit breaker
+
+After the rebuild, `daily_refresh` verifies the Model **mechanically** (`assert_model_tabs_populated`)
+and then **semantically** (`model_semantics.assert_model_semantics`, the same pure checks the per-PR
+sandbox e2e runs): per-day tip-pool conservation, the **latest closed period's `adp_paid` is populated**
+when a covering ADP Earnings export exists in the GCS cache, and **credited review bonuses survived**
+the rebuild. (Mechanical guards alone missed commit 6f87f9c, which left `adp_paid` permanently `N/A`.)
+
+A **semantic** failure is treated as a known-bad regression (it will repeat every night), so it:
+1. records the failure + DMs the operator (`verify_model_sheet`),
+2. clears the `update_model_sheet` marker so a rerun **rebuilds** (not just re-verifies), and
+3. **trips the pipeline halt circuit breaker.**
+
+**Exit codes** (so monitoring can tell the stop reasons apart): `0` = success **or** a clean
+OTP-pending wait; `1` = a step/verification failure (the wrapper retries); `EXIT_HALTED` (`3`) = the
+breaker is tripped and the run **refused to start** so it can't repeat known-bad output.
+
+The breaker is a GLOBAL flag (Firestore `<collection>/_pipeline_state`, local
+`~/.bhaga/state/pipeline_state.json`), NOT keyed by date. While tripped, fresh scheduled runs refuse
+and exit `EXIT_HALTED`; an in-flight OTP READY resume passes through (it's completing a handshake, not
+a fresh attempt). **To recover:** fix + deploy the regression, then re-run with `--ignore-halt` (or set
+`BHAGA_IGNORE_HALT=1`) — **a fully-healthy verified run auto-clears the breaker.** To clear it manually
+without a run, use the sanctioned path `state_adapter.clear_pipeline_halt()` (never hand-edit
+Firestore). Inspect the current state with `state_adapter.get_pipeline_halt()` (returns the `reason` /
+`since` / `refresh_date` that tripped it, or `None` when healthy).
+
 ### OTP-portal recovery (auto-invalidate stale downstream markers)
 
 When a previously-failed OTP portal (Square/ADP) succeeds on a later run **while** the downstream

@@ -71,6 +71,14 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 7. **Timezone = Central (Texas).** All date selection on Square / ADP / reviews and all report
    timestamps use `ZoneInfo("America/Chicago")`. A date is "today" only after the shop closes (the
    nightly fires 21:30 CT). Never let local/PST/UTC leak into a date boundary.
+8. **Output must be semantically verified, not just populated.** A green run is not enough — the
+   nightly + per-PR sandbox both run `model_semantics.assert_model_semantics` (tip-pool conservation,
+   **cadence-safe** `adp_paid` reconciliation — required only when a covering GCS Earnings export actually
+   carries that period's CC-tip lines, i.e. payroll has run; an unpaid just-closed period is skipped, not
+   failed — and review-bonus survival). A semantic failure trips the pipeline halt circuit breaker so the
+   known-bad run
+   can't repeat (RUNBOOK §13). When you remove/replace a data source, **diff the affected sheet columns
+   before/after** and add a semantic guard — never let a column silently go dead (the 6f87f9c lesson).
 
 ## Edge cases
 

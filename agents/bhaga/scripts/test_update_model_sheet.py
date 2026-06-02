@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import datetime
 import os
+import pathlib
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
@@ -31,6 +33,7 @@ from agents.bhaga.scripts.update_model_sheet import (
     _parse_sheet_bool,
     _percent_column_indices,
     _seconds_column_indices,
+    actual_cc_tips_by_period,
     build_config_rows,
     build_daily_rows,
     build_labor_daily_rows,
@@ -39,7 +42,10 @@ from agents.bhaga.scripts.update_model_sheet import (
     build_period_summary_rows,
     build_tip_alloc_daily_rows,
     build_tip_alloc_period_rows,
+    check_dates_by_period,
+    load_cc_tips_earnings_from_gcs,
     most_recent_closed_period,
+    period_has_cc_tip_actuals,
 )
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell, coerce_iso_date
 
@@ -542,6 +548,190 @@ class RowBuilderDateApostropheTests(unittest.TestCase):
         for r in rows[1:]:
             self._assert_apostrophe_iso(r[0], "period_summary.period_start")
             self._assert_apostrophe_iso(r[1], "period_summary.period_end")
+
+
+class AdpReconciliationTests(unittest.TestCase):
+    """The adp_paid/diff/diff_pct verification view + check_dates, revived from
+    the GCS-cached Earnings export (regression fix for commit 6f87f9c)."""
+
+    def _earning(self, name, ps, pe, cd, desc, amt):
+        return {
+            "employee_name": name, "period_start": ps, "period_end": pe,
+            "check_date": cd, "description": desc, "amount": amt,
+        }
+
+    def test_actual_cc_tips_by_period_none_is_empty(self):
+        self.assertEqual(actual_cc_tips_by_period(None), {})
+        self.assertEqual(actual_cc_tips_by_period([]), {})
+
+    def test_actual_cc_tips_by_period_groups_only_cc_tips(self):
+        earnings = [
+            self._earning("Doe, Jane", "2026-05-18", "2026-05-31", "2026-06-05",
+                          "Credit Card Tips Owed", 50.00),
+            self._earning("Doe, Jane", "2026-05-18", "2026-05-31", "2026-06-05",
+                          "Regular", 800.00),  # ignored
+            self._earning("Roe, Sam", "2026-05-18", "2026-05-31", "2026-06-05",
+                          "Credit Card Tips Owed", 12.34),
+        ]
+        out = actual_cc_tips_by_period(earnings)
+        self.assertEqual(out[("2026-05-18", "2026-05-31")],
+                         {"Doe, Jane": 5000, "Roe, Sam": 1234})
+
+    def test_check_dates_by_period_sorted_unique(self):
+        earnings = [
+            self._earning("A", "2026-05-18", "2026-05-31", "2026-06-05", "Regular", 1),
+            self._earning("B", "2026-05-18", "2026-05-31", "2026-06-05", "Cash tips", 1),
+            self._earning("C", "2026-05-18", "2026-05-31", "2026-06-04", "Regular", 1),
+        ]
+        out = check_dates_by_period(earnings)
+        self.assertEqual(out[("2026-05-18", "2026-05-31")], ["2026-06-04", "2026-06-05"])
+        self.assertEqual(check_dates_by_period(None), {})
+
+    def test_build_tip_alloc_period_populated_when_actuals_present(self):
+        period_results = [{
+            "start": "2026-05-18", "end": "2026-05-31", "check_dates": ["2026-06-05"],
+            "is_open": False, "coverage": "full",
+            "per_period_ours": {"Doe, Jane": 5200},
+            "per_period_hours": {"Doe, Jane": 20.0},
+            "per_day_allocations": [],
+            "per_period_adp": {"Doe, Jane": 5000},
+        }]
+        rows = build_tip_alloc_period_rows(period_results)
+        header, row = rows[0], rows[1]
+        rec = dict(zip(header, row))
+        self.assertEqual(rec["adp_paid"], 50.00)
+        self.assertEqual(rec["diff"], 2.00)
+        self.assertNotIn(rec["diff_pct"], ("N/A",))
+
+    def test_build_tip_alloc_period_closed_no_actuals_uses_distinct_reason(self):
+        period_results = [{
+            "start": "2026-04-06", "end": "2026-04-19", "check_dates": [],
+            "is_open": False, "coverage": "full",
+            "per_period_ours": {"Doe, Jane": 5200},
+            "per_period_hours": {"Doe, Jane": 20.0},
+            "per_day_allocations": [],
+            "per_period_adp": {},  # no GCS earnings export covers this old period
+        }]
+        rows = build_tip_alloc_period_rows(period_results)
+        rec = dict(zip(rows[0], rows[1]))
+        self.assertEqual(rec["adp_paid"], "N/A")
+        self.assertEqual(rec["likely_reason"],
+                         "No ADP earnings export in GCS for this period")
+
+
+class LoadEarningsFromGcsTests(unittest.TestCase):
+    """The cloud-native earnings loader: union across cached dates, dedupe,
+    window-bounded, graceful on any GCS/parse error.
+
+    Patches the REAL module functions (the loader does
+    ``from agents.bhaga.scripts import gcs_cache`` / ``... import
+    compensation_backend`` and calls their attributes, so patching the module
+    attributes intercepts the calls; patching sys.modules would not, because the
+    submodules are already imported as package attributes).
+    """
+
+    _GCS_LIST = "agents.bhaga.scripts.gcs_cache.list_cached_dates"
+    _GCS_DL = "agents.bhaga.scripts.gcs_cache.download_cached_files"
+    _PARSE = "skills.adp_run_automation.compensation_backend.parse_xlsx"
+
+    def _run(self, *, cached_dates, downloads, parsed, list_error=None, parse_error=None):
+        import contextlib
+
+        def _list():
+            if list_error:
+                raise list_error
+            return cached_dates
+
+        dl = mock.MagicMock(
+            side_effect=lambda *, refresh_date, download_dir, name_contains=None:
+            downloads.get(refresh_date, {}))
+
+        def _parse(local_path, employee_aliases=None):
+            if parse_error:
+                raise parse_error
+            return parsed.get(local_path.name, [])
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch(self._GCS_LIST, _list))
+            stack.enter_context(mock.patch(self._GCS_DL, dl))
+            stack.enter_context(mock.patch(self._PARSE, _parse))
+            out = load_cc_tips_earnings_from_gcs(
+                store="palmetto", aliases={},
+                data_window_start="2026-03-22", last_data_date="2026-06-02")
+        return out, dl
+
+    def test_merges_and_dedupes_within_window(self):
+        d1 = datetime.date(2026, 6, 1)
+        d2 = datetime.date(2026, 6, 2)
+        rec_a = {"employee_name": "A", "period_start": "2026-05-18",
+                 "period_end": "2026-05-31", "check_date": "2026-06-05",
+                 "description": "Credit Card Tips Owed", "amount": 10.0}
+        rec_b = {"employee_name": "B", "period_start": "2026-05-18",
+                 "period_end": "2026-05-31", "check_date": "2026-06-05",
+                 "description": "Credit Card Tips Owed", "amount": 20.0}
+        downloads = {
+            d1: {"2026-06-01/adp/Earnings-1.xlsx": pathlib.Path("Earnings-1.xlsx")},
+            d2: {"2026-06-02/adp/Earnings-2.xlsx": pathlib.Path("Earnings-2.xlsx")},
+        }
+        parsed = {
+            "Earnings-1.xlsx": [rec_a, rec_b],
+            "Earnings-2.xlsx": [rec_b],  # duplicate of rec_b -> deduped
+        }
+        out, dl = self._run(cached_dates=[d1, d2], downloads=downloads, parsed=parsed)
+        self.assertEqual(len(out), 2)  # rec_a + one rec_b
+        for call in dl.call_args_list:  # only the Earnings artifact requested
+            self.assertEqual(call.kwargs["name_contains"], "Earnings")
+
+    def test_dates_outside_window_excluded(self):
+        old = datetime.date(2026, 1, 1)
+        out, dl = self._run(cached_dates=[old], downloads={}, parsed={})
+        self.assertEqual(out, [])
+        dl.assert_not_called()
+
+    def test_graceful_empty_on_list_error(self):
+        out, dl = self._run(cached_dates=[], downloads={}, parsed={},
+                            list_error=RuntimeError("gcs down"))
+        self.assertEqual(out, [])
+
+    def test_graceful_skip_on_parse_error(self):
+        d1 = datetime.date(2026, 6, 1)
+        downloads = {d1: {"2026-06-01/adp/Earnings-1.xlsx": pathlib.Path("Earnings-1.xlsx")}}
+        out, dl = self._run(cached_dates=[d1], downloads=downloads, parsed={},
+                            parse_error=ValueError("bad xlsx"))
+        self.assertEqual(out, [])
+
+
+class PeriodHasCcTipActualsTests(unittest.TestCase):
+    """The cadence gate shared by daily_refresh + sandbox_e2e: True only when a
+    covering Earnings export carries CC-tip lines for the EXACT closed period."""
+
+    _LOADER = "agents.bhaga.scripts.update_model_sheet.load_cc_tips_earnings_from_gcs"
+
+    def test_true_when_period_has_cc_tip_lines(self):
+        earnings = [{"employee_name": "A", "period_start": "2026-05-04",
+                     "period_end": "2026-05-17", "check_date": "2026-05-26",
+                     "description": "Credit Card Tips Owed", "amount": 12.5}]
+        with mock.patch(self._LOADER, return_value=earnings):
+            self.assertTrue(period_has_cc_tip_actuals(
+                store="palmetto", period_start="2026-05-04",
+                period_end="2026-05-17", last_data_date="2026-05-31"))
+
+    def test_false_when_export_lacks_cc_tips(self):
+        # Period window elapsed but only a non-tip line exported (the real
+        # 5/18-5/31 case: a single 'Misc reimbursement', zero CC tips) -> N/A ok.
+        earnings = [{"employee_name": "A", "period_start": "2026-05-18",
+                     "period_end": "2026-05-31", "check_date": "2026-06-01",
+                     "description": "Misc reimbursement non-taxable", "amount": 40.0}]
+        with mock.patch(self._LOADER, return_value=earnings):
+            self.assertFalse(period_has_cc_tip_actuals(
+                store="palmetto", period_start="2026-05-18",
+                period_end="2026-05-31", last_data_date="2026-05-31"))
+
+    def test_false_when_no_export(self):
+        with mock.patch(self._LOADER, return_value=[]):
+            self.assertFalse(period_has_cc_tip_actuals(
+                store="palmetto", period_start="2026-05-18",
+                period_end="2026-05-31", last_data_date="2026-05-31"))
 
 
 class ZeroShiftDayTests(unittest.TestCase):

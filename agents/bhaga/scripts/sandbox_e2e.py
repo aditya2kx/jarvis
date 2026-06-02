@@ -44,12 +44,17 @@ import importlib.util
 import json
 import os
 import sys
-from decimal import Decimal
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
 from agents.bhaga.scripts import backfill_from_downloads, gcs_cache, sandbox_provision, update_model_sheet  # noqa: E402
 from agents.bhaga.scripts.daily_refresh import CT, MODEL_VERIFY_MIN_ROWS, assert_model_tabs_populated  # noqa: E402
+from agents.bhaga.scripts.model_semantics import (  # noqa: E402
+    _header_resolver,
+    _to_cents,
+    assert_period_reconciled,
+    assert_tip_pool_conserved,
+)
 from core.config_loader import (  # noqa: E402
     _load_production_sheet_ids,
     allow_production_read,
@@ -428,111 +433,10 @@ def _read_worked_hours(
     return out
 
 
-def _to_cents(cell: object) -> int:
-    """Parse a dollars cell ('$1,234.56' / '1234.56' / 1234.56) to integer cents."""
-    s = str(cell or "").strip().replace("$", "").replace(",", "")
-    if not s:
-        return 0
-    return int((Decimal(s) * 100).to_integral_value())
-
-
-def assert_tip_pool_conserved(tip_alloc_daily_values: list[list], *, tol_cents: int = 0) -> dict:
-    """Per-day conservation: sum of tip_allocation_dollars == that day's pool.
-
-    The allocator is cent-exact (largest-remainder), so for every date the
-    per-employee allocations must sum to the day's tip pool **exactly**. The
-    default tolerance is therefore 0 — a 1¢/day leak must fail this gate, not
-    pass silently. (Verified: real prod data rebuilds at max residual 0¢.) This
-    guards against a builder bug silently dropping/duplicating cents on the way
-    to the sheet.
-
-    tip_alloc_daily columns (per the model builder):
-        date | dow | period_start | period_end | employee | hours_worked |
-        day_pool | team_hours_eligible | pct_of_day_hours | our_share
-
-    Column names are resolved with fallbacks so a future header rename doesn't
-    silently disable the check. Returns {dates_checked, max_residual_cents};
-    raises RuntimeError if any date's residual exceeds ``tol_cents``.
-    """
-    if not tip_alloc_daily_values or len(tip_alloc_daily_values) < 2:
-        raise RuntimeError("tip pool conservation: tip_alloc_daily is empty")
-    header = [str(c).strip() for c in tip_alloc_daily_values[0]]
-
-    def _col(*candidates: str) -> int:
-        for name in candidates:
-            if name in header:
-                return header.index(name)
-        raise RuntimeError(
-            f"tip pool conservation: none of {candidates} in header {header}"
-        )
-
-    i_date = _col("date", "date_local")
-    i_pool = _col("day_pool", "tip_pool_dollars")
-    i_alloc = _col("our_share", "tip_allocation_dollars")
-
-    pool_by_date: dict[str, int] = {}
-    alloc_by_date: dict[str, int] = {}
-    needed_cols = max(i_date, i_pool, i_alloc)
-    for row in tip_alloc_daily_values[1:]:
-        if not row:
-            continue
-        # Enforce width before indexing any resolved column: a truncated row
-        # would otherwise default pool/alloc to 0 and pass the check trivially
-        # (0 == 0) — a silent false-negative is exactly what this gate must not
-        # do, so a short row is a hard schema regression.
-        if len(row) <= needed_cols:
-            raise RuntimeError(
-                f"tip pool conservation: row {row!r} is too short "
-                f"(need cols up to index {needed_cols}, got {len(row)})"
-            )
-        # Skip on the resolved date column (not a hardcoded index) so the check
-        # stays correct if the header is ever reordered.
-        if not str(row[i_date]).strip():
-            continue
-        date = str(row[i_date]).strip()[:10]
-        # Pool is constant per date by construction; assert it (a per-date
-        # day_pool that disagrees row-to-row is a builder bug we want surfaced,
-        # not washed out in the residual). Allocations sum across employees.
-        row_pool = _to_cents(row[i_pool])
-        if date in pool_by_date and pool_by_date[date] != row_pool:
-            raise RuntimeError(
-                f"tip pool conservation: inconsistent day_pool for {date}: "
-                f"{pool_by_date[date]}c vs {row_pool}c (builder bug)"
-            )
-        pool_by_date.setdefault(date, row_pool)
-        alloc_by_date[date] = alloc_by_date.get(date, 0) + _to_cents(row[i_alloc])
-
-    if not pool_by_date:
-        raise RuntimeError(
-            "tip pool conservation: no parseable date rows found in tip_alloc_daily "
-            "(all rows skipped — possible date-column format change)"
-        )
-    problems: list[str] = []
-    max_residual = 0
-    for date, pool in sorted(pool_by_date.items()):
-        residual = abs(alloc_by_date.get(date, 0) - pool)
-        max_residual = max(max_residual, residual)
-        if residual > tol_cents:
-            problems.append(
-                f"{date}: allocations {alloc_by_date.get(date, 0)}c != pool {pool}c "
-                f"(residual {residual}c)"
-            )
-    if problems:
-        raise RuntimeError("tip pool NOT conserved: " + "; ".join(problems))
-    return {"dates_checked": len(pool_by_date), "max_residual_cents": max_residual}
-
-
-def _header_resolver(header: list[str], what: str):
-    """Return a `_col(*candidates)` that maps the first present name to its index."""
-    norm = [str(c).strip() for c in header]
-
-    def _col(*candidates: str) -> int:
-        for name in candidates:
-            if name in norm:
-                return norm.index(name)
-        raise RuntimeError(f"{what}: none of {candidates} in header {norm}")
-
-    return _col
+# Tip-pool conservation + adp reconciliation are the shared semantic checks
+# (model_semantics): the SAME pure functions the nightly daily_refresh guard
+# uses, so a regression can't pass one gate and fail the other. _to_cents /
+# _header_resolver are re-exported here for the sandbox-only exemption check.
 
 
 def assert_exemptions_applied(
@@ -765,6 +669,29 @@ def run_e2e(
             grid = grids["tip_alloc_daily"]
             period_grid = grids["tip_alloc_period"]
             report["tip_pool_conservation"] = assert_tip_pool_conserved(grid)
+            # ADP reconciliation is CADENCE-SAFE: require adp_paid only for a
+            # closed period that has actually been paid (a covering GCS Earnings
+            # export carries its 'Credit Card Tips Owed' lines). A just-closed
+            # period whose payroll hasn't run yet legitimately shows N/A, so we
+            # skip rather than fail — same gate the nightly guard uses, so CI and
+            # prod can never disagree on what "reconciled" means.
+            period_key = (start.isoformat(), end.isoformat())
+            if update_model_sheet.period_has_cc_tip_actuals(
+                store=store, period_start=period_key[0], period_end=period_key[1],
+                last_data_date=end.isoformat(),
+            ):
+                report["adp_reconciliation"] = assert_period_reconciled(
+                    period_grid, period_key
+                )
+            else:
+                report["adp_reconciliation"] = {
+                    "status": "cadence-skip",
+                    "reason": (
+                        f"closed period {period_key[0]}..{period_key[1]} has no "
+                        "covering Earnings export with CC-tip lines in GCS yet "
+                        "(payroll not run) — adp_paid legitimately N/A"
+                    ),
+                }
             worked_hours = _read_worked_hours(
                 ids["bhaga_adp_raw"], account=account, start=start, end=end,
             )

@@ -123,6 +123,13 @@
   (schema shapes, plain-env inheritance, skip-steps, item-sales verify) + `test_sandbox_scenarios`
   (scoping) + `test_runtime` (trace_step: disabled no-op, full-page upload w/ seq+slug label, never-raises).
   480 BHAGA tests green.
+- **✅ VALIDATED GREEN end-to-end (live sandbox, run `26800841808`, commit `747beaa`):** `rc=0`,
+  `verify(item_sales): item-sales OK — …/items-2026-05-31-2026-06-01.csv (502 data rows)`. The trusted-device
+  session persisted from the prior magic-link login was restored, so **Square skipped 2FA entirely** (no OTP /
+  no magic link — `already-logged-in-dashboard` trace), then the new date-dropdown selector found the control,
+  set START/END `05/31/2026`, and exported the Detail CSV. Closes the 2026-05-31 incident on live data; the
+  committed `.github/sandbox-live.yml` + `sandbox-live` label were removed afterward so future pushes don't
+  auto-fire a live scrape (re-run on demand via `/sandbox run item-sales-live`).
 
 ### 2026-06-01 — Browser-launch resilience, OTP-portal recovery, principles consult-first
 

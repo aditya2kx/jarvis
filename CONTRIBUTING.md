@@ -32,11 +32,20 @@ The goal is a clean split of ownership that lets the operator step back:
 Follow this for any non-trivial feature. It's designed so the agent can self-correct in a
 tight build → verify → fix loop without the operator babysitting every step.
 
+The canonical progression is **Ask → Plan → Agent**, and the agent **drives the transitions**:
+once you are aligned at a gate (requirements understood; plan agreed), *proactively request the next
+mode yourself* via `SwitchMode` (Ask→Plan when the ask is clear, Plan→Agent when the plan is
+approved) — and briefly say why. Don't sit in read-only mode waiting for the operator to flip it.
+The operator still consents to each switch; you initiate it. (Conversely, drop back a mode when a
+new ambiguity or scope change appears — e.g. Agent→Plan if the approach turns out to be wrong.)
+
 1. **Take requirements incrementally — Ask mode first.** Don't jump to code. Stay in **Ask /
    read-only mode** until you *fully* understand the ask. Pull requirements from the operator in
    increments, ask clarifying questions, and restate your understanding before proposing anything.
+   When the ask is clear and you are aligned, *request* the switch to Plan mode rather than waiting.
 2. **Plan mode before implementing.** Switch to **Plan mode** and present the *entire*
-   implementation plan for approval. No code until the plan is agreed.
+   implementation plan for approval. No code until the plan is agreed. Once it is, *request* the
+   switch to Agent mode and begin executing the milestones.
 3. **Plan = 3–4 milestones, max — each independently verifiable.** Every milestone must end in a
    state you can **verify and fix on your own**, so you can run the build→verify→fix loop yourself
    (the operator isn't in the loop for routine correction). If a milestone can't be closed by your

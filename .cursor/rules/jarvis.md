@@ -251,6 +251,11 @@ The user may not be at their computer. Slack DM is the primary channel for all a
 
 ## Conventions
 
+- **Ask → Plan → Agent, and you drive the transitions.** Default to read-only Ask mode for a new ask;
+  once aligned, *proactively request* the mode switch via `SwitchMode` (Ask→Plan when the ask is clear,
+  Plan→Agent when the plan is approved) instead of waiting for the operator to flip it — and drop back a
+  mode if a new ambiguity or scope change appears. The operator consents to each switch; you initiate it.
+  Full process in [`CONTRIBUTING.md`](../../CONTRIBUTING.md) § The development loop.
 - **Leave a breadcrumb on every failure (diagnose-from-logs-alone principle).** Any failure — a crashed
   browser, a swallowed exception, a skipped step — must emit a **precise, greppable, one-line cause**
   that is distinct from library/runtime noise (dbus, crashpad, urllib retries), plus enough **state** to

@@ -346,22 +346,29 @@ def assert_tip_pool_conserved(tip_alloc_daily_values: list[list], *, tol_cents: 
     per-employee allocations must sum to the day's tip pool. This guards against
     a builder bug silently dropping/duplicating cents on the way to the sheet.
 
-    tip_alloc_daily columns:
-        date_local | employee_id | employee_name | hours_worked |
-        share_of_day_hours_pct | tip_pool_dollars | tip_allocation_dollars
+    tip_alloc_daily columns (per the model builder):
+        date | dow | period_start | period_end | employee | hours_worked |
+        day_pool | team_hours_eligible | pct_of_day_hours | our_share
 
-    Returns {dates_checked, max_residual_cents}; raises RuntimeError if any
-    date's residual exceeds ``tol_cents``.
+    Column names are resolved with fallbacks so a future header rename doesn't
+    silently disable the check. Returns {dates_checked, max_residual_cents};
+    raises RuntimeError if any date's residual exceeds ``tol_cents``.
     """
     if not tip_alloc_daily_values or len(tip_alloc_daily_values) < 2:
         raise RuntimeError("tip pool conservation: tip_alloc_daily is empty")
     header = [str(c).strip() for c in tip_alloc_daily_values[0]]
-    try:
-        i_date = header.index("date_local")
-        i_pool = header.index("tip_pool_dollars")
-        i_alloc = header.index("tip_allocation_dollars")
-    except ValueError as exc:
-        raise RuntimeError(f"tip pool conservation: unexpected header {header}: {exc}")
+
+    def _col(*candidates: str) -> int:
+        for name in candidates:
+            if name in header:
+                return header.index(name)
+        raise RuntimeError(
+            f"tip pool conservation: none of {candidates} in header {header}"
+        )
+
+    i_date = _col("date", "date_local")
+    i_pool = _col("day_pool", "tip_pool_dollars")
+    i_alloc = _col("our_share", "tip_allocation_dollars")
 
     pool_by_date: dict[str, int] = {}
     alloc_by_date: dict[str, int] = {}

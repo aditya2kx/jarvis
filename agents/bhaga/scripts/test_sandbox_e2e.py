@@ -206,25 +206,40 @@ class TestSeedSandboxRawFromProd(unittest.TestCase):
 
 
 class TestTipPoolConservation(unittest.TestCase):
-    HEADER = ["date_local", "employee_id", "employee_name", "hours_worked",
-              "share_of_day_hours_pct", "tip_pool_dollars", "tip_allocation_dollars"]
+    # Real model-builder schema: date .. day_pool .. our_share.
+    HEADER = ["date", "dow", "period_start", "period_end", "employee",
+              "hours_worked", "day_pool", "team_hours_eligible",
+              "pct_of_day_hours", "our_share"]
+
+    def _row(self, date, emp, hours, day_pool, our_share):
+        return [date, "Tue", "2026-05-18", "2026-05-31", emp,
+                hours, day_pool, "8", "50", our_share]
 
     def test_conserved_passes(self):
         grid = [self.HEADER,
-                ["2026-05-20", "1", "A", "5", "50", "100.00", "60.00"],
-                ["2026-05-20", "2", "B", "3", "50", "100.00", "40.00"],
-                ["2026-05-21", "1", "A", "4", "100", "30.00", "30.00"]]
+                self._row("2026-05-20", "A", "5", "100.00", "60.00"),
+                self._row("2026-05-20", "B", "3", "100.00", "40.00"),
+                self._row("2026-05-21", "A", "4", "30.00", "30.00")]
         res = e2e.assert_tip_pool_conserved(grid)
         self.assertEqual(res["dates_checked"], 2)
         self.assertEqual(res["max_residual_cents"], 0)
 
     def test_leak_raises(self):
         grid = [self.HEADER,
-                ["2026-05-20", "1", "A", "5", "50", "100.00", "60.00"],
-                ["2026-05-20", "2", "B", "3", "50", "100.00", "30.00"]]  # 90 != 100
+                self._row("2026-05-20", "A", "5", "100.00", "60.00"),
+                self._row("2026-05-20", "B", "3", "100.00", "30.00")]  # 90 != 100
         with self.assertRaises(RuntimeError) as ctx:
             e2e.assert_tip_pool_conserved(grid)
         self.assertIn("NOT conserved", str(ctx.exception))
+
+    def test_legacy_header_fallback(self):
+        # Fallback column names keep the check alive across a header rename.
+        legacy = ["date_local", "employee_name", "tip_pool_dollars", "tip_allocation_dollars"]
+        grid = [legacy,
+                ["2026-05-20", "A", "100.00", "60.00"],
+                ["2026-05-20", "B", "100.00", "40.00"]]
+        res = e2e.assert_tip_pool_conserved(grid)
+        self.assertEqual(res["dates_checked"], 1)
 
 
 class TestInvokeMain(unittest.TestCase):

@@ -522,6 +522,59 @@ def assert_tip_pool_conserved(tip_alloc_daily_values: list[list], *, tol_cents: 
     return {"dates_checked": len(pool_by_date), "max_residual_cents": max_residual}
 
 
+def assert_adp_reconciliation_present(tip_alloc_period_values: list[list]) -> dict:
+    """The adp_paid/diff reconciliation view must be ALIVE (regression guard).
+
+    Commit 6f87f9c stubbed ``actual_cc_tips_by_period(None)``, leaving
+    ``adp_paid``/``diff``/``diff_pct`` permanently ``"N/A"`` for every closed
+    period — and CI BLESSED it (the old fixtures asserted ``"N/A"`` was correct).
+    This gate asserts the MOST-RECENT closed period (which is within the GCS
+    Earnings-cache era, so a covering export must exist) has a populated, numeric
+    ``adp_paid`` — i.e. the cloud-native earnings load actually reconciled.
+
+    Older closed periods predating the cache (~2026-05-29) may legitimately stay
+    ``"N/A"`` (no export in GCS), so only the latest closed period is required to
+    reconcile. Returns ``{closed_periods, reconciled_periods, latest_period}``;
+    raises ``RuntimeError`` if the latest closed period is still ``"N/A"``.
+    """
+    if not tip_alloc_period_values or len(tip_alloc_period_values) < 2:
+        raise RuntimeError("adp reconciliation: tip_alloc_period is empty")
+    col = _header_resolver(tip_alloc_period_values[0], "adp reconciliation")
+    i_ps, i_pe = col("period_start"), col("period_end")
+    i_open = col("is_open")
+    i_adp = col("adp_paid")
+    width = max(i_ps, i_pe, i_open, i_adp)
+
+    closed: list[tuple[str, str]] = []  # (period_end, adp_paid_cell)
+    for row in tip_alloc_period_values[1:]:
+        if not row or len(row) <= width:
+            continue
+        if str(row[i_open]).strip().lower() == "yes":
+            continue
+        period_end = str(row[i_pe]).strip().lstrip("'")
+        closed.append((period_end, str(row[i_adp]).strip()))
+    if not closed:
+        raise RuntimeError(
+            "adp reconciliation: no closed-period rows in tip_alloc_period"
+        )
+
+    latest_end = max(pe for pe, _ in closed)
+    latest_rows = [adp for pe, adp in closed if pe == latest_end]
+    na = [adp for adp in latest_rows if adp in ("", "N/A")]
+    if na:
+        raise RuntimeError(
+            f"adp reconciliation DEAD for latest closed period (end={latest_end}): "
+            f"{len(na)}/{len(latest_rows)} rows have adp_paid='N/A' — the earnings "
+            f"load is not wired (regression of commit 6f87f9c)"
+        )
+    reconciled = {pe for pe, adp in closed if adp not in ("", "N/A")}
+    return {
+        "closed_periods": len({pe for pe, _ in closed}),
+        "reconciled_periods": len(reconciled),
+        "latest_period": latest_end,
+    }
+
+
 def _header_resolver(header: list[str], what: str):
     """Return a `_col(*candidates)` that maps the first present name to its index."""
     norm = [str(c).strip() for c in header]
@@ -765,6 +818,7 @@ def run_e2e(
             grid = grids["tip_alloc_daily"]
             period_grid = grids["tip_alloc_period"]
             report["tip_pool_conservation"] = assert_tip_pool_conserved(grid)
+            report["adp_reconciliation"] = assert_adp_reconciliation_present(period_grid)
             worked_hours = _read_worked_hours(
                 ids["bhaga_adp_raw"], account=account, start=start, end=end,
             )

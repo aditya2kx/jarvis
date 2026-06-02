@@ -510,6 +510,56 @@ class TestExemptionsApplied(unittest.TestCase):
         self.assertIn("no provable effect", str(ctx.exception))
 
 
+class TestAdpReconciliationPresent(unittest.TestCase):
+    """The regression guard that converts 'a human eyeballed the sheet' into a
+    loud CI assertion: the latest closed period must have a numeric adp_paid."""
+
+    HEADER = ["period_start", "period_end", "coverage", "is_open", "employee",
+              "hours_worked", "our_calc", "adp_paid", "diff", "diff_pct",
+              "our_per_hour", "adp_per_hour", "likely_reason"]
+
+    def _row(self, ps, pe, is_open, emp, adp):
+        return [ps, pe, "full", is_open, emp, "5", "50.00", adp,
+                "0", "0%", "10", "10", ""]
+
+    def test_latest_closed_period_populated_passes(self):
+        grid = [self.HEADER,
+                self._row("2026-05-18", "2026-05-31", "no", "A", "50.00"),
+                self._row("2026-05-18", "2026-05-31", "no", "B", "25.00")]
+        res = e2e.assert_adp_reconciliation_present(grid)
+        self.assertEqual(res["latest_period"], "2026-05-31")
+        self.assertEqual(res["reconciled_periods"], 1)
+
+    def test_latest_closed_period_na_raises(self):
+        grid = [self.HEADER,
+                self._row("2026-05-18", "2026-05-31", "no", "A", "N/A")]
+        with self.assertRaises(RuntimeError) as ctx:
+            e2e.assert_adp_reconciliation_present(grid)
+        self.assertIn("adp reconciliation DEAD", str(ctx.exception))
+
+    def test_old_na_period_ok_when_latest_populated(self):
+        # Pre-cache period legitimately N/A; latest closed reconciles -> pass.
+        grid = [self.HEADER,
+                self._row("2026-04-06", "2026-04-19", "no", "A", "N/A"),
+                self._row("2026-05-18", "2026-05-31", "no", "A", "50.00")]
+        res = e2e.assert_adp_reconciliation_present(grid)
+        self.assertEqual(res["latest_period"], "2026-05-31")
+        self.assertEqual(res["reconciled_periods"], 1)
+        self.assertEqual(res["closed_periods"], 2)
+
+    def test_open_period_ignored(self):
+        # An open (unpaid) period with N/A must not trip the guard.
+        grid = [self.HEADER,
+                self._row("2026-05-18", "2026-05-31", "no", "A", "50.00"),
+                self._row("2026-06-01", "2026-06-07", "yes", "A", "N/A")]
+        res = e2e.assert_adp_reconciliation_present(grid)
+        self.assertEqual(res["latest_period"], "2026-05-31")
+
+    def test_empty_grid_raises(self):
+        with self.assertRaises(RuntimeError):
+            e2e.assert_adp_reconciliation_present([self.HEADER])
+
+
 class TestInvokeMain(unittest.TestCase):
     def test_invoke_main_sets_argv_and_restores(self):
         captured = {}
@@ -639,6 +689,9 @@ class TestRunE2E(unittest.TestCase):
         self.assertEqual(report["tip_pool_conservation"]["dates_checked"], 1)
         self.assertEqual(report["exemptions"]["period_our_calc_cents"], 5000)
         self.assertEqual(report["exemptions"]["period_pool_cents"], 5000)
+        # The revived adp_paid reconciliation must be asserted alive in CI.
+        self.assertEqual(report["adp_reconciliation"]["reconciled_periods"], 1)
+        self.assertEqual(report["adp_reconciliation"]["latest_period"], "2026-05-31")
 
     def test_evidence_file_written_on_success_and_failure(self):
         # run_e2e writes the evidence file in its finally so it exists on BOTH

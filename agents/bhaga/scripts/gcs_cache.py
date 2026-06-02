@@ -221,11 +221,17 @@ def download_cached_files(
     *,
     refresh_date: datetime.date,
     download_dir: pathlib.Path,
+    name_contains: str | None = None,
 ) -> dict[str, pathlib.Path]:
     """Download all cached files for a refresh_date into the local download dir.
 
     Returns a dict mapping category/filename to local path for files successfully
     downloaded. Silently skips missing blobs (cache miss is not an error).
+
+    ``name_contains`` (optional): when set, only blobs whose filename contains
+    this substring are downloaded (e.g. ``"Earnings"`` to fetch just the ADP
+    earnings export and skip the Timecard). Keeps bandwidth bounded for callers
+    that need a single artifact rather than the whole date prefix.
     """
     client = _get_client()
     bucket = _bucket(client)
@@ -242,6 +248,8 @@ def download_cached_files(
     for blob in blobs:
         filename = blob.name.split("/")[-1]
         if not filename:
+            continue
+        if name_contains is not None and name_contains not in filename:
             continue
         local_path = download_dir / filename
         if local_path.exists():

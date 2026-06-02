@@ -39,6 +39,7 @@ import logging
 import os
 import pathlib
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 from typing import Optional
@@ -987,6 +988,106 @@ def actual_cc_tips_by_period(earnings: list[dict] | None) -> dict[tuple, dict[st
         cents = int(round(r["amount"] * 100))
         bucket[r["employee_name"]] = bucket.get(r["employee_name"], 0) + cents
     return out
+
+
+def check_dates_by_period(earnings: list[dict] | None) -> dict[tuple, list[str]]:
+    """Map (period_start, period_end) -> sorted unique payroll check dates.
+
+    Re-derives the ``period_summary.check_dates`` column (always empty since the
+    2026-05-29 earnings-XLSX removal) from the parsed earnings lines.
+    """
+    out: dict[tuple, set] = {}
+    for r in (earnings or []):
+        ps, pe, cd = r.get("period_start"), r.get("period_end"), r.get("check_date")
+        if not (ps and pe and cd):
+            continue
+        out.setdefault((ps, pe), set()).add(cd)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def load_cc_tips_earnings_from_gcs(
+    *,
+    store: str,
+    aliases: dict,
+    data_window_start: str,
+    last_data_date: str,
+) -> list[dict]:
+    """Reconstruct ADP earnings lines (incl. 'Credit Card Tips Owed') from the
+    GCS scrape cache — cloud-native, WITHOUT a raw earnings tab.
+
+    Background: commit 6f87f9c removed the earnings raw tab and stubbed
+    ``actual_cc_tips_by_period(None)``, which left ``adp_paid``/``diff``/
+    ``diff_pct`` permanently "N/A". The Earnings XLSX is still cached per
+    refresh_date at ``gs://<bucket>/<date>/adp/Earnings-*.xlsx`` (gcs_cache), so
+    we read it back from the cloud instead of re-adding a sheet tab.
+
+    Each export carries multiple pay periods' lines, so we union the parsed
+    records across every cached date overlapping ``[data_window_start,
+    last_data_date + lookahead]`` (a period's check date is issued AFTER its end,
+    so the export that carries it is scraped days later), deduping by
+    (employee, period, check_date, description, amount). Periods with no covering
+    export in GCS (e.g. older than the cache's ~2026-05-29 inception) simply
+    yield no actuals.
+
+    Read-only against the PROD cache (sandbox/staging may READ prod GCS, never
+    write). Returns ``[]`` gracefully on any GCS/parse error so a reconciliation
+    data gap never fails the model rebuild itself.
+    """
+    try:
+        from agents.bhaga.scripts import gcs_cache
+        from skills.adp_run_automation import compensation_backend
+    except Exception as exc:  # noqa: BLE001
+        print(f"# WARN: earnings load unavailable (import failed): {exc}")
+        return []
+
+    try:
+        cached = gcs_cache.list_cached_dates()
+    except Exception as exc:  # noqa: BLE001
+        print(f"# WARN: could not list GCS cache dates for earnings: {exc}")
+        return []
+
+    start_d = datetime.date.fromisoformat(data_window_start)
+    last_d = datetime.date.fromisoformat(last_data_date)
+    horizon = last_d + datetime.timedelta(days=21)
+    candidate_dates = [d for d in cached if start_d <= d <= horizon]
+    if not candidate_dates:
+        print("# earnings: no GCS-cached dates overlap the data window — "
+              "adp_paid will be N/A (reason: missing earnings export)")
+        return []
+
+    seen: set[tuple] = set()
+    merged: list[dict] = []
+    with tempfile.TemporaryDirectory(prefix="bhaga-earnings-") as tmp:
+        tmp_dir = pathlib.Path(tmp)
+        for d in candidate_dates:
+            try:
+                restored = gcs_cache.download_cached_files(
+                    refresh_date=d, download_dir=tmp_dir, name_contains="Earnings",
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"# WARN: earnings download failed for {d.isoformat()}: {exc}")
+                continue
+            for blob_name, local_path in restored.items():
+                if "Earnings" not in blob_name:
+                    continue
+                try:
+                    recs = compensation_backend.parse_xlsx(local_path, employee_aliases=aliases)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"# WARN: earnings parse failed for {blob_name}: {exc}")
+                    continue
+                for r in recs:
+                    key = (
+                        r.get("employee_name"), r.get("period_start"),
+                        r.get("period_end"), r.get("check_date"),
+                        r.get("description"), r.get("amount"),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(r)
+    print(f"# earnings: merged {len(merged)} line(s) from {len(candidate_dates)} "
+          f"GCS-cached date(s) [{store}]")
+    return merged
 
 
 # ---------- Tab builders ----------
@@ -2363,7 +2464,10 @@ def build_tip_alloc_period_rows(period_results: list[dict]) -> list[list]:
                 diff_val = "N/A"
                 pct_val = "N/A"
                 adp_per_hour = "N/A"
-                reason = "No earnings data" if not p["is_open"] else "Open period — not yet paid"
+                reason = (
+                    "No ADP earnings export in GCS for this period"
+                    if not p["is_open"] else "Open period — not yet paid"
+                )
             rows.append([
                 _iso_date_for_sheet_cell(p["start"]),
                 _iso_date_for_sheet_cell(p["end"]),
@@ -2710,7 +2814,26 @@ def main() -> int:
         last_data_date=last_data_date,
     )
     periods = append_open_period(periods, last_data_date=last_data_date)
-    actuals = actual_cc_tips_by_period(None)
+    # Reconciliation actuals: read the ADP "Credit Card Tips Owed" lines back
+    # from the GCS scrape cache (cloud-native; no raw earnings tab). Sheets mode
+    # only — BigQuery mode has no GCS earnings concept and keeps the N/A path.
+    earnings = (
+        load_cc_tips_earnings_from_gcs(
+            store=args.store, aliases=aliases,
+            data_window_start=data_window_start, last_data_date=last_data_date,
+        )
+        if args.data_source == "sheets" else []
+    )
+    # Re-derive the period_summary check_dates column from the parsed earnings
+    # (union across each period's off-by-1-day variants).
+    cd_by_period = check_dates_by_period(earnings)
+    for p in periods:
+        cds: set[str] = set()
+        for v in p["variants"]:
+            cds.update(cd_by_period.get((v["start"], v["end"]), []))
+        if cds:
+            p["check_dates"] = sorted(cds)
+    actuals = actual_cc_tips_by_period(earnings)
     square_data_start = min(t["date_local"] for t in txns)
     period_results = build_period_results(
         periods=periods, shifts=shifts, txns=txns,

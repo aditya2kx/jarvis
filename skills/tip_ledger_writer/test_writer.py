@@ -347,6 +347,7 @@ class TrainingShiftsWriteTest(unittest.TestCase):
         for p in [
             mock.patch.object(writer, "_read_tab", self.fake.read_tab),
             mock.patch.object(writer, "_write_range", self.fake.write_range),
+            mock.patch.object(writer, "_clear_range", self.fake.clear_range),
             mock.patch.object(writer, "_add_sheet_if_missing", self.fake.add_sheet),
             mock.patch.object(writer, "refresh_access_token", lambda *a, **k: "tok"),
         ]:
@@ -381,6 +382,23 @@ class TrainingShiftsWriteTest(unittest.TestCase):
         self.assertEqual(rows[("Ortiz, Ximena", "2026-05-31")], "new note")     # updated in place
         self.assertIn(("Ortiz, Ximena", "2026-05-29"), rows)                    # inserted
         self.assertEqual((res["inserted"], res["updated"]), (1, 1))
+
+    def test_collapses_duplicate_rows_and_clears_trailing(self):
+        # Sheet somehow has a stray duplicate (e.g. operator hand-edit). The
+        # re-sorted write collapses to one row; the trailing stale row is cleared.
+        self.fake.tabs["training_shifts"] = [
+            list(self.HEADER),
+            ["Ortiz, Ximena", "2026-05-31", "training"],
+            ["Ortiz, Ximena", "2026-05-31", "dup"],
+        ]
+        writer.write_training_shifts(self.sid, [
+            {"employee_name": "Ortiz, Ximena", "date": "2026-05-31", "note": "training"},
+        ])
+        grid = self.fake.tabs["training_shifts"]
+        live = [r for r in grid[1:] if r and str(r[0]).strip()]
+        self.assertEqual(len(live), 1, "duplicate collapsed to a single row")
+        # row 3 (former duplicate) cleared to blanks
+        self.assertEqual([c for c in grid[2]], ["", "", ""])
 
     def test_missing_name_or_date_raises(self):
         with self.assertRaises(ValueError):

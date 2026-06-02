@@ -357,6 +357,22 @@ def _run_label_prefix() -> str:
     return f"🧪 [SANDBOX · {label}] "
 
 
+def _redact_url_values(url: str) -> str:
+    """Return ``scheme://host/path?key1=…&key2=…`` — query-param values redacted but
+    KEYS and structure kept, so a log line proves the URL is well-formed (separators
+    are real ``&``, not ``&amp;``) without leaking the one-time magic-link token."""
+    try:
+        from urllib.parse import urlsplit, parse_qsl
+
+        parts = urlsplit(url)
+        keys = [k for k, _ in parse_qsl(parts.query, keep_blank_values=True)]
+        q = "&".join(f"{k}=…" for k in keys)
+        base = f"{parts.scheme}://{parts.netloc}{parts.path}"
+        return f"{base}?{q}" if q else base
+    except Exception:  # noqa: BLE001
+        return "(unparseable url)"
+
+
 def _handle_magic_link(page, *, store: str) -> None:
     """Relay a Square email magic link through the operator to finish sign-in.
 
@@ -388,19 +404,26 @@ def _handle_magic_link(page, *, store: str) -> None:
     )
     print(f"[square magic-link] requesting magic-link URL via Slack for store={store!r} "
           f"(wait={wait_s}s)...")
-    url = request_reply(user_id="U0APJRE5DC4", prompt=prompt, timeout_seconds=wait_s, agent="bhaga")
-    if not url:
+    reply = request_reply(user_id="U0APJRE5DC4", prompt=prompt, timeout_seconds=wait_s, agent="bhaga")
+    if not reply:
         raise RuntimeError(
             "Square magic-link: operator did not paste the link within the window. "
             "Retry the scrape (a new link will be requested) or complete login manually."
         )
-    url = url.strip()
-    if not _re.match(r"^https://(www\.)?squareup\.com/login\?", url):
+    # Robustly extract the URL even if the operator added surrounding text. The
+    # reply is already HTML-unescaped + link-unwrapped by adapter._clean_slack_reply,
+    # so its `&` are literal (Slack returns `&amp;`, which would corrupt the token).
+    m = _re.search(r"https://[^\s<>'\"]+", reply.strip())
+    url = m.group(0) if m else reply.strip()
+    if not _re.match(r"^https://(www\.|app\.)?squareup\.com/login\?", url):
         raise RuntimeError(
             f"Square magic-link: pasted value is not a Square login URL: {url[:80]!r}. "
             f"Copy the full 'https://squareup.com/login?...' link from the email."
         )
-    print("[square magic-link] navigating to operator-supplied magic link.")
+    # Observability: log the URL with query-param VALUES redacted (keys kept) so we
+    # can verify we navigated to a well-formed link — and never had a `&amp;`-mangled
+    # query — without leaking the one-time token.
+    print(f"[square magic-link] navigating to {_redact_url_values(url)}")
     page.goto(url, wait_until="domcontentloaded")
     trace_step(page, "magic-link-navigated")
     try:

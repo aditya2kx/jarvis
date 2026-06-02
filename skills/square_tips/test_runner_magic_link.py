@@ -90,6 +90,36 @@ class TestMagicLinkRelay:
         with pytest.raises(RuntimeError, match="did not paste the link"):
             runner._handle_magic_link(_FakePage(), store="palmetto")
 
+    def test_extracts_url_from_surrounding_text(self, monkeypatch):
+        monkeypatch.setattr(runner, "get_credentials", lambda store: {"username": "a"})
+        import skills.slack.adapter as adapter
+        monkeypatch.setattr(
+            adapter, "request_reply",
+            lambda **kw: "here: https://squareup.com/login?rml=1&token=ABC please",
+        )
+        page = _FakePage(body="Magic link sent.")
+        runner._handle_magic_link(page, store="palmetto")
+        assert page.goto_url == "https://squareup.com/login?rml=1&token=ABC"
+
+    def test_accepts_app_subdomain(self, monkeypatch):
+        monkeypatch.setattr(runner, "get_credentials", lambda store: {"username": "a"})
+        import skills.slack.adapter as adapter
+        url = "https://app.squareup.com/login?rml=1&token=ABC"
+        monkeypatch.setattr(adapter, "request_reply", lambda **kw: url)
+        page = _FakePage(body="Magic link sent.")
+        runner._handle_magic_link(page, store="palmetto")
+        assert page.goto_url == url
+
+
+class TestRedactUrlValues:
+    def test_keeps_keys_redacts_values(self):
+        out = runner._redact_url_values("https://squareup.com/login?rml=1&token=SECRET&uid=42")
+        assert out == "https://squareup.com/login?rml=…&token=…&uid=…"
+        assert "SECRET" not in out and "42" not in out
+
+    def test_no_query(self):
+        assert runner._redact_url_values("https://squareup.com/login") == "https://squareup.com/login"
+
 
 class TestSandboxRunLabel:
     def test_prefix_only_for_sandbox(self, monkeypatch):

@@ -266,14 +266,40 @@ def request_otp(user_id, portal_name, timeout_seconds=300, poll_interval=10, pho
     return None
 
 
+def _clean_slack_reply(raw):
+    """Normalize a Slack message ``text`` into the literal characters the user typed.
+
+    Slack escapes ``&``, ``<``, ``>`` in the message ``text`` it returns over the
+    API (``&`` → ``&amp;``, etc.) and auto-links bare URLs as ``<url>`` /
+    ``<url|label>``. A magic-link URL is full of ``&`` separators, so a naive
+    "strip the angle brackets" leaves every ``&`` as ``&amp;`` — which corrupts the
+    query string and makes Square reject the link. We therefore:
+
+      1. unwrap one layer of Slack link markup (``<url|label>`` → ``url``), and
+      2. HTML-unescape (``&amp;`` → ``&``, ``&lt;`` → ``<``, ``&gt;`` → ``>``)
+
+    so the result is byte-for-byte what the user pasted. Order matters: unwrap the
+    angle brackets *before* unescaping (the wrapper ``<>`` are literal, not entities).
+    """
+    import html as _html
+
+    text = (raw or "").strip()
+    # Unwrap a single Slack auto-link: <url> or <url|label> → url (label dropped).
+    if text.startswith("<") and text.endswith(">"):
+        text = text[1:-1].split("|", 1)[0]
+    # Decode HTML entities Slack inserts into message text (notably &amp; in URLs).
+    return _html.unescape(text).strip()
+
+
 def request_reply(user_id, prompt, timeout_seconds=900, poll_interval=10, agent=None):
-    """DM ``prompt`` to the operator and return their raw reply text.
+    """DM ``prompt`` to the operator and return their reply text.
 
     Unlike :func:`request_otp` (which extracts a numeric code), this returns the
-    full reply — used for free-form values such as a magic-link URL. Slack wraps
-    bare URLs as ``<https://...>`` or ``<https://...|label>``; we unwrap to the
-    raw URL. Polling only (a URL is not a digit code, so the Socket-Mode OTP
-    reader does not apply). Returns the text, or None on timeout.
+    full reply — used for free-form values such as a magic-link URL. The reply is
+    normalized via :func:`_clean_slack_reply` so Slack's link-wrapping and HTML
+    entity escaping (``&amp;`` in URLs!) are undone and the caller gets exactly
+    what the user typed. Polling only (a URL is not a digit code, so the
+    Socket-Mode OTP reader does not apply). Returns the text, or None on timeout.
     """
     effective_agent = agent or _current_agent
     dm_channel = open_dm(user_id, agent=effective_agent)
@@ -285,10 +311,7 @@ def request_reply(user_id, prompt, timeout_seconds=900, poll_interval=10, agent=
         time.sleep(poll_interval)
         for reply in read_replies(dm_channel, oldest=sent_ts, limit=5):
             if reply["ts"] != sent_ts and reply.get("user") == user_id:
-                text = (reply.get("text") or "").strip()
-                # Unwrap Slack auto-linked URLs: <url> or <url|label>.
-                if text.startswith("<") and text.endswith(">"):
-                    text = text[1:-1].split("|", 1)[0]
+                text = _clean_slack_reply(reply.get("text"))
                 send_message(dm_channel, ":white_check_mark: Got it — continuing.", agent=effective_agent)
                 return text
     send_message(dm_channel, f":x: Timed out after {timeout_seconds // 60} minutes with no reply.", agent=effective_agent)

@@ -94,10 +94,20 @@
   `BHAGA_TRACE_SCREENSHOTS=1` (set automatically for sandbox runs in `build_sandbox_env`, off for the prod
   nightly). Honors sandbox isolation via `gcs_cache` write bucket. This is what answers "show me a
   screenshot of every step" with zero reruns.
-- **Tests:** +`test_runner_magic_link`, +`test_adapter_request_reply`, extended `test_sandbox_live_run`
+- **Magic-link relay ROOT CAUSE (2026-06-02 live run, found via the new trace):** the trace frames
+  (`magic-link-sent-page → magic-link-navigated → magic-link-result`) showed we navigated to the pasted
+  link but bounced back to "Magic link sent" with a **blank email**. Cause: **Slack HTML-escapes `&`→`&amp;`
+  in message `text`**, so a magic link `…?rml=1&token=ABC&uid=123` arrived as `…?rml=1&amp;token=ABC&amp;uid=123`;
+  the old unwrap only stripped the `<…>` Slack link wrapper and left the `&amp;`, corrupting the query
+  string (`amp;token=…`) so Square rejected the token. Fix: `adapter._clean_slack_reply` now unwraps the
+  link **and** `html.unescape`s the text (literal `&`); `_handle_magic_link` extracts the URL with a regex
+  (tolerates surrounding text), accepts the `app.` subdomain, and logs `_redact_url_values(url)` (keys kept,
+  values redacted) so we can prove the URL is well-formed without leaking the one-time token.
+- **Tests:** +`test_runner_magic_link` (URL-from-surrounding-text, `app.` subdomain, redaction),
+  +`test_adapter_request_reply` (`&amp;` decode regression), extended `test_sandbox_live_run`
   (schema shapes, plain-env inheritance, skip-steps, item-sales verify) + `test_sandbox_scenarios`
   (scoping) + `test_runtime` (trace_step: disabled no-op, full-page upload w/ seq+slug label, never-raises).
-  476 BHAGA tests green.
+  480 BHAGA tests green.
 
 ### 2026-06-01 — Browser-launch resilience, OTP-portal recovery, principles consult-first
 

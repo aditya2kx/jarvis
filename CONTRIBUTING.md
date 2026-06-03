@@ -220,6 +220,15 @@ gh pr create --base main --fill     # then fill the template
 ## The review bot (Claude Sonnet)
 
 - Workflow: `.github/workflows/claude-review.yml`. Triggers on PR `opened` / `synchronize` / `reopened`.
+- **Converges — no nitpick loop.** The bot classifies findings as **BLOCKING** (confirmed correctness
+  bug, security/PII leak, data-loss, missing/broken test for new behavior, invariant or unproven
+  backward-incompat break) or **OPTIONAL** (style, naming, "consider", extra robustness, more-tests on
+  already-tested code). Only **BLOCKING** findings are posted as **inline comments**; OPTIONAL ones go in
+  the summary under "Optional (non-blocking)" and never create an inline thread. With zero blocking
+  issues the verdict is **APPROVE**. On a re-push the bounded context is built with `--prev-head`
+  (`github.event.before`), so the MANIFEST flags it a **re-review** and the bot focuses on what changed
+  since the last round and must not re-raise prior feedback. This is what stops each push from spawning a
+  fresh batch of nits that re-trigger the cycle.
 - Model: **Claude Sonnet 4.6** (`--model claude-sonnet-4-6`), cost-budgeted for **~$0.50–1 per PR**:
   `--max-turns 12`, a 12-minute job timeout, and per-PR `concurrency` cancellation. Opus at 40 turns
   with repo-wide exploration was ~$4–5/PR (~4.7M input tokens); we do not do that.

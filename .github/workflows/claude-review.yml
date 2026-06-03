@@ -57,6 +57,7 @@ jobs:
           python3 scripts/build_claude_review_context.py \
             --base "${{ github.event.pull_request.base.sha }}" \
             --head "${{ github.event.pull_request.head.sha }}" \
+            --prev-head "${{ github.event.before }}" \
             --out-dir review-context
 
       - name: Claude Sonnet review
@@ -92,10 +93,28 @@ jobs:
             E. Security — no secrets/PII in diff
             F. Docs lock-step — coupled docs updated when code changed
 
+            SEVERITY POLICY (converge — do NOT nitpick-loop):
+            Classify every finding as BLOCKING or OPTIONAL.
+            - BLOCKING = a confirmed correctness bug, security/PII leak, data-loss,
+              broken or missing test for new behavior, BHAGA-invariant violation, or
+              an unproven backward-incompatible change. These are the ONLY things you
+              may post as inline comments.
+            - OPTIONAL = style, naming, "consider", extra-robustness/escape-hatches,
+              "you could also test X" on already-tested code, refactors, subjective
+              preferences. NEVER post these as inline comments. List them — at most 5,
+              terse — in the summary under a "Optional (non-blocking)" heading.
+            Convergence rules:
+            - If MANIFEST.md marks this a RE-REVIEW, review ONLY the changed-since-last
+              files and do NOT re-raise anything from earlier rounds.
+            - Do NOT invent new OPTIONAL findings on code that already exists and works.
+            - If there are zero BLOCKING issues, the verdict MUST be APPROVE (optional
+              suggestions never warrant COMMENT or REQUEST CHANGES).
+
             Output:
-            - Inline comments on exact diff lines for real issues only (confirmed: true).
-            - One `gh pr comment` summary: verdict (APPROVE / COMMENT / REQUEST CHANGES) +
-              ✅/⚠️/❌ checklist for A–F.
+            - Inline comments ONLY for BLOCKING issues (confirmed: true). If there are
+              none, post NO inline comments.
+            - One `gh pr comment` summary: verdict (APPROVE / COMMENT / REQUEST CHANGES)
+              + ✅/⚠️/❌ checklist for A–F + an "Optional (non-blocking)" list if any.
             Do not modify code. No chat reply — GitHub comments only.
           claude_args: |
             --model claude-sonnet-4-6

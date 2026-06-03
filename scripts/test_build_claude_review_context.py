@@ -7,7 +7,12 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from build_claude_review_context import expand_paths, paired_test_candidates
+from build_claude_review_context import (
+    _ref_resolves,
+    delta_paths_since,
+    expand_paths,
+    paired_test_candidates,
+)
 
 
 class TestPairedTests(unittest.TestCase):
@@ -28,6 +33,19 @@ class TestExpandPaths(unittest.TestCase):
         planned = expand_paths([], "HEAD")
         paths = [p for p, _ in planned]
         self.assertIn(".github/claude-review-guidelines.md", paths)
+
+
+class TestDeltaSinceLastReview(unittest.TestCase):
+    def test_all_zero_ref_does_not_resolve(self):
+        self.assertFalse(_ref_resolves("0" * 40))
+
+    def test_empty_ref_does_not_resolve(self):
+        self.assertFalse(_ref_resolves(""))
+
+    def test_delta_empty_when_prev_head_unresolvable(self):
+        # First review (no prior head) → [] meaning "review whole PR".
+        self.assertEqual(delta_paths_since("0" * 40, "HEAD"), [])
+        self.assertEqual(delta_paths_since(None, "HEAD"), [])
 
 
 if __name__ == "__main__":

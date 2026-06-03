@@ -155,6 +155,21 @@ class TestPrCostLedger(unittest.TestCase):
         self.assertEqual(rec["review"]["run_count"], 1)
         self.assertEqual(rec["review"]["cost_usd_total"], 0.50)
 
+    def test_capture_review_dedups_without_run_url(self):
+        # A cost comment with no [Workflow run] link → run_url and ts both absent.
+        # capture-review must still be idempotent via the content fingerprint.
+        body = (
+            "### Claude review — API cost\n| Model | `claude-sonnet-4-6` |\n"
+            "| Output tokens | 100 |\n| **Reported cost** | **$0.50** |\n"
+        )
+        with patch.object(L, "_fetch_pr_comment_bodies", return_value=[body, body]):
+            rec = L.capture_review(31)
+        self.assertEqual(rec["review"]["run_count"], 1)
+        # Re-running the whole capture must not duplicate either.
+        with patch.object(L, "_fetch_pr_comment_bodies", return_value=[body]):
+            rec = L.capture_review(31)
+        self.assertEqual(rec["review"]["run_count"], 1)
+
     def test_analyze_single_pr(self):
         L.set_meta(20, title="t")
         L.record_build_session(20, ts="a", tokens=1_000_000, cost_usd=1.5, model="claude-opus-4-8")

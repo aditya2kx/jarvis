@@ -214,6 +214,16 @@ def record_build_session(
     return rec
 
 
+def _review_fingerprint(row: dict[str, Any]) -> tuple:
+    """Stable identity for a review run lacking both run_url and ts."""
+    return (
+        row.get("model"), row.get("turns"), row.get("result"),
+        row.get("input_tokens"), row.get("output_tokens"),
+        row.get("cache_read_input_tokens"), row.get("cache_creation_input_tokens"),
+        row.get("cost_usd"),
+    )
+
+
 def record_review_run(
     pr: int, *, ts: str | None, model: str, turns: int | None,
     input_tokens: int, output_tokens: int, cache_read: int, cache_write: int,
@@ -231,11 +241,20 @@ def record_review_run(
         "cost_usd": round(float(cost_usd), 4) if cost_usd is not None else None,
         "result": result, "run_url": run_url,
     }
-    # De-dupe by run_url (one cost row per workflow run), or by ts when run_url absent.
+    # De-dupe by run_url (one cost row per workflow run), then ts, then a stable
+    # content fingerprint when neither identifier is present (e.g. a cost comment
+    # posted before --workflow-run-url was wired). The fingerprint keeps
+    # capture-review idempotent for those legacy/link-less comments.
     if run_url:
         rec["review"]["runs"] = [x for x in rec["review"]["runs"] if x.get("run_url") != run_url]
     elif ts:
         rec["review"]["runs"] = [x for x in rec["review"]["runs"] if x.get("ts") != ts]
+    else:
+        fp = _review_fingerprint(entry)
+        rec["review"]["runs"] = [
+            x for x in rec["review"]["runs"]
+            if x.get("run_url") or x.get("ts") or _review_fingerprint(x) != fp
+        ]
     rec["review"]["runs"].append(entry)
     rec["review"]["runs"].sort(key=lambda x: x.get("ts") or "")
     save_record(rec)

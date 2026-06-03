@@ -280,6 +280,27 @@ Commands:
 - **Post-merge analysis:** `pr_cost_ledger.py analyze --pr <n>` — prints the top cost areas and
   efficiency recommendations (drop to a smaller model for mechanical work, checkpoint marathon
   sessions, batch pushes to cut review re-runs, etc.). Omit `--pr` to analyze across all PRs.
+- **HTML report (team-visible, opens any/all ledgers):** `pr_cost_ledger.py report` renders a
+  standalone, dependency-free `metrics/pr_cost/report.html` (summary, build/review split, top cost
+  areas, top recommendations) from whatever `PR-*.json` records exist — open it in any browser, no
+  build step. `--pr <n>` for a single PR; `--out <path>` to override the destination.
+- **Before your final push (keep the commit's cost current):** run
+  `pr_cost_ledger.py sync --pr <n>` — one step that captures BUILD cost (Cursor usage API, auto-window)
+  + REVIEW cost (posted comments) and regenerates `report.html`, then commit `metrics/pr_cost/`. This
+  way the pushed commit carries the cost-so-far. The **only** cost it can't include is the review run
+  *this* push triggers (a commit can't contain its own review cost) — that tail is finalized at merge by
+  `pr-cost-finalize.yml`, and skipping it on the branch is fine. Don't run `sync` on every commit: each
+  ledger commit is itself a push that re-runs review, so sync once before you're ready.
+- **Optional pre-push hook (automates the above):** `bash scripts/install-git-hooks.sh` points
+  `core.hooksPath` at `scripts/git-hooks`; the `pre-push` hook runs `sync` for the branch's PR and
+  blocks the push if the ledger changed, asking you to commit + push again (no auto-commit). Undo with
+  `git config --unset core.hooksPath`.
+- **Automatic on merge:** `.github/workflows/pr-cost-finalize.yml` runs when a PR merges — it
+  `capture-review`s the final review cost from the posted comments (gh-only; **build cost is
+  local-only and must already be committed via the pre-merge gate**), regenerates `report.html`,
+  posts the post-merge analysis as a PR comment, and commits the refreshed ledger + report to `main`.
+  (Committing to `main` needs the actions bot to be allowed to push to the protected branch; if it
+  isn't, the comment is still posted and you commit the ledger manually.)
 
 **How build cost is captured (individual account, no team plan):** Cursor's *documented* per-request
 feed (`/teams/filtered-usage-events`) needs a team/Enterprise Admin key. But the dashboard's own
@@ -288,9 +309,14 @@ token+cost+model data for a personal account when called with the local Cursor s
 read-only from the desktop app's `state.vscdb`; never printed or stored). `scripts/cursor_usage.py`
 does exactly that. It is an **undocumented** endpoint, so treat it as best-effort — if it breaks, fall
 back to `record-build` (manual, from the dashboard UI), or wire the supported Admin API if we move to a
-team plan. Attribution to a branch/PR is by time window (Cursor's usage events carry no branch/PR field;
-the local `~/.cursor/ai-tracking/ai-code-tracking.db` maps requests→branch by timestamp if tighter
-attribution is ever needed).
+team plan. Attribution to a branch/PR is by **time window** derived from the branch's commits in the
+local `~/.cursor/ai-tracking/ai-code-tracking.db`, with a **non-overlap clamp**: the window can't start
+before the most recent commit of any *prior* branch, so back-to-back PRs built in one session don't
+double-count each other (the bug that made PR #14 first read $25.91 instead of ~$10 by folding in PR
+#13's sessions). **Residual limitation:** the dashboard usage feed is *account-global* (every Cursor
+request, any repo) — within a window, concurrent work in OTHER projects would still be counted. So
+capture when you've been focused on one branch, or pass an explicit `--start/--end`. The conversationId
+does **not** separate back-to-back PRs (one chat session = one id).
 
 Empirically (PR #12): **build was ~94% of total cost** ($34.44 build vs $2.14 review = $36.58),
 dominated by one 44M-token Opus request ($30.76 = 84% of the PR) — so cost-efficiency work belongs in

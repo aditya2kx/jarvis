@@ -170,6 +170,50 @@ class TestPrCostLedger(unittest.TestCase):
             rec = L.capture_review(31)
         self.assertEqual(rec["review"]["run_count"], 1)
 
+    def test_render_report_html_contains_key_content_and_escapes(self):
+        rec = L._empty_record(7)
+        rec["title"] = "Feature <X> & Y"
+        rec["merged_at"] = "2026-06-03T06:40:36Z"
+        rec["build"]["sessions"] = [
+            {"ts": "2026-06-03T04:19:32Z", "model": "claude-opus-4-8", "tokens": 15_000_000, "cost_usd": 18.0},
+        ]
+        rec["review"]["runs"] = [
+            {"result": "success", "cost_usd": 0.5, "tokens": 400_000, "turns": 12},
+        ]
+        html = L._render_report_html([rec])
+        self.assertIn("<!doctype html>", html)
+        self.assertIn("#7", html)
+        self.assertIn("Top recommendations", html)
+        self.assertIn("Where the effort went", html)
+        # HTML-escaped title — no raw angle brackets from user content.
+        self.assertIn("Feature &lt;X&gt; &amp; Y", html)
+        self.assertNotIn("Feature <X>", html)
+
+    def test_sync_is_tolerant_and_writes_report(self):
+        # Both capture surfaces unavailable (new branch / no comments) must not be
+        # fatal — sync still regenerates the report from committed data.
+        L.set_meta(9, title="t9")
+        L.record_build_session(9, ts="2026-01-01T00:00:00Z", tokens=1000, cost_usd=0.5, model="m")
+        out = Path(self._tmpdir.name) / "report.html"
+        with patch.object(L, "capture_build", side_effect=SystemExit("no window")), \
+             patch.object(L, "capture_review", side_effect=RuntimeError("no comments")):
+            rec = L.sync(9, repo="o/r", report_out=str(out))
+        self.assertTrue(out.is_file())
+        self.assertIn("#9", out.read_text())
+        self.assertEqual(rec["pr_number"], 9)
+
+    def test_report_writes_file_for_all_prs(self):
+        L.set_meta(3, title="t3")
+        L.record_build_session(3, ts="2026-01-01T00:00:00Z", tokens=1_000_000, cost_usd=2.0, model="claude-opus-4-8")
+        L.set_meta(4, title="t4")
+        L.record_build_session(4, ts="2026-01-02T00:00:00Z", tokens=500_000, cost_usd=1.0, model="composer-2.5")
+        out = Path(self._tmpdir.name) / "report.html"
+        self.assertEqual(L.main(["report", "--out", str(out)]), 0)
+        text = out.read_text()
+        self.assertIn("#3", text)
+        self.assertIn("#4", text)
+        self.assertEqual(text.count("<section class=\"pr\">"), 2)
+
     def test_analyze_single_pr(self):
         L.set_meta(20, title="t")
         L.record_build_session(20, ts="a", tokens=1_000_000, cost_usd=1.5, model="claude-opus-4-8")

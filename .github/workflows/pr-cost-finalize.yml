@@ -1,0 +1,86 @@
+name: PR cost finalize (post-merge)
+
+# Requirement #12: when a PR merges, finalize and publish its cost record so the
+# in-repo ledger + HTML report are always current for everyone — no local step.
+#
+# WHAT THIS CAN AND CANNOT DO (hard constraint):
+#   * REVIEW cost is reconstructable from the PR's posted cost comments via `gh`,
+#     so `capture-review` runs here to catch the final review run (incl. the one
+#     triggered by the last push) and persist it.
+#   * BUILD cost is LOCAL-ONLY (Cursor session token + ai-code-tracking.db live on
+#     the developer laptop), so it CANNOT be captured on a CI runner. It must
+#     already be in metrics/pr_cost/PR-<n>.json from the pre-merge gate. This job
+#     only finalizes review cost + regenerates the report from the committed data.
+#
+# It then regenerates metrics/pr_cost/report.html, posts the post-merge analysis
+# as a PR comment, and commits the refreshed ledger + report back to main.
+#
+# NOTE: committing to main requires the actions bot to be permitted to push to the
+# protected branch (allow GitHub Actions, or a bypass for github-actions[bot]). If
+# the push is rejected, the job still posts the analysis comment and does not fail.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: pr-cost-finalize-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    name: Finalize cost record
+    # Only on real merges, not closed-without-merge.
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Finalize review cost from posted comments
+        run: |
+          python3 scripts/pr_cost_ledger.py set-meta --pr "$PR" \
+            --merged "${{ github.event.pull_request.merged_at }}" || true
+          python3 scripts/pr_cost_ledger.py capture-review --pr "$PR" --repo "$REPO" || \
+            echo "::notice::capture-review found no cost comments to reconcile."
+
+      - name: Regenerate HTML cost report
+        run: python3 scripts/pr_cost_ledger.py report
+
+      - name: Post post-merge cost analysis comment
+        run: |
+          {
+            echo "### Post-merge cost analysis — PR #$PR"
+            echo ""
+            echo '```'
+            python3 scripts/pr_cost_ledger.py analyze --pr "$PR"
+            echo '```'
+            echo ""
+            echo "_Full breakdown: \`metrics/pr_cost/PR-$PR.json\` · team report: \`metrics/pr_cost/report.html\`._"
+          } > /tmp/cost_analysis.md
+          gh pr comment "$PR" --body-file /tmp/cost_analysis.md || \
+            echo "::warning::Could not post analysis comment."
+
+      - name: Commit refreshed ledger + report to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add metrics/pr_cost/ || true
+          if git diff --cached --quiet; then
+            echo "No ledger/report changes to commit."
+            exit 0
+          fi
+          git commit -m "chore(cost): finalize PR #$PR cost record + regenerate report [skip ci]"
+          git push origin HEAD:main || \
+            echo "::warning::Push to main rejected (branch protection?). Comment was still posted; commit the ledger manually or grant the actions bot push access."

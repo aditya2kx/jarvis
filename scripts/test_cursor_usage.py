@@ -98,6 +98,24 @@ class TestDeriveWindowForBranch(unittest.TestCase):
         self.assertLess(start_ms, edit_ms)
         self.assertGreater(end_ms, edit_ms)
 
+    def test_clamps_lower_bound_to_prior_branch_commit(self):
+        # Regression for the PR #14 double-count: a prior branch's commit at 18:00Z
+        # precedes this branch's first commit (18:26Z). An AI edit at 17:00Z (older
+        # than the prior commit) must NOT pull the window back into that prior PR.
+        with sqlite3.connect(self.db) as con:
+            con.execute(
+                "INSERT INTO scored_commits VALUES (?, ?, ?, ?)",
+                ("old", "old/y", 1, "Tue Jun 2 13:00:00 2026 -0500"),  # 18:00Z
+            )
+            early = int(datetime.datetime(2026, 6, 2, 17, 0, tzinfo=datetime.timezone.utc).timestamp() * 1000)
+            late = int(datetime.datetime(2026, 6, 2, 18, 10, tzinfo=datetime.timezone.utc).timestamp() * 1000)
+            con.execute("INSERT INTO ai_code_hashes VALUES (?, ?, ?, ?, ?)", ("e1", "composer", early, "m", early))
+            con.execute("INSERT INTO ai_code_hashes VALUES (?, ?, ?, ?, ?)", ("e2", "composer", late, "m", late))
+        start_ms, _ = U.derive_window_for_branch("feat/x", merged_at="2026-06-02T20:00:00Z", db=self.db)
+        prior_ms = int(datetime.datetime(2026, 6, 2, 18, 0, tzinfo=datetime.timezone.utc).timestamp() * 1000)
+        self.assertGreaterEqual(start_ms, prior_ms)  # clamped to the prior commit
+        self.assertGreater(start_ms, early)          # the 17:00Z edit is excluded
+
     def test_falls_back_to_commit_bounded_window_when_no_ai_edits(self):
         # Branch with scored commits but ZERO ai_code_hashes rows in range:
         # the window must fall back to (first_commit - pre_buffer, merged_at).

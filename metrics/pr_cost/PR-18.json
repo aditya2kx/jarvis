@@ -4,7 +4,7 @@
   "requirement": "BigQuery parallel data store + Grafana Cloud dashboard-as-code",
   "branch": "feat/dashboard",
   "created_at": null,
-  "merged_at": null,
+  "merged_at": "2026-06-03T23:38:26Z",
   "diff": {
     "files": null,
     "additions": null,
@@ -118,14 +118,40 @@
         "cost_usd": 0.2445,
         "result": "success",
         "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26918253251"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 9,
+        "input_tokens": 8,
+        "output_tokens": 2484,
+        "cache_read_input_tokens": 223281,
+        "cache_creation_input_tokens": 20751,
+        "tokens": 246524,
+        "cost_usd": 0.1833,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26918948383"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 8,
+        "input_tokens": 6,
+        "output_tokens": 1673,
+        "cache_read_input_tokens": 170354,
+        "cache_creation_input_tokens": 30544,
+        "tokens": 202577,
+        "cost_usd": 0.1919,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26918992842"
       }
     ],
-    "tokens_total": 362465,
-    "cost_usd_total": 0.4331,
-    "run_count": 2
+    "tokens_total": 811566,
+    "cost_usd_total": 0.8083,
+    "run_count": 4
   },
   "totals": {
-    "tokens": 51080810,
-    "cost_usd": 20.6283
+    "tokens": 51529911,
+    "cost_usd": 21.0035
   }
 }

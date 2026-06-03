@@ -76,7 +76,7 @@ def _session_cookie(token: str) -> str:
     return f"WorkosCursorSessionToken={user_id}::{token}"
 
 
-def _to_ms(value: str | int) -> int:
+def to_ms(value: str | int) -> int:
     if isinstance(value, int):
         return value
     s = str(value).strip()
@@ -153,7 +153,7 @@ def fetch_usage_events(
     """
     token = _read_access_token(state_db)
     cookie = _session_cookie(token)
-    start_ms, end_ms = _to_ms(start), _to_ms(end)
+    start_ms, end_ms = to_ms(start), to_ms(end)
     out: list[dict[str, Any]] = []
     seen: set[tuple] = set()
     for page in range(1, max_pages + 1):

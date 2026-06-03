@@ -167,10 +167,9 @@ def capture_build(
         "request->PR by time window)"
     )
     rec["build"]["approximate"] = False
-    _ms = cursor_usage._to_ms
     rec["build"]["window"] = {
-        "start": datetime.datetime.fromtimestamp(_ms(start) / 1000, datetime.timezone.utc).isoformat(),
-        "end": datetime.datetime.fromtimestamp(_ms(end) / 1000, datetime.timezone.utc).isoformat(),
+        "start": datetime.datetime.fromtimestamp(cursor_usage.to_ms(start) / 1000, datetime.timezone.utc).isoformat(),
+        "end": datetime.datetime.fromtimestamp(cursor_usage.to_ms(end) / 1000, datetime.timezone.utc).isoformat(),
     }
     # Full-window pull is authoritative: replace prior build rows so re-running is idempotent.
     rec["build"]["sessions"] = []

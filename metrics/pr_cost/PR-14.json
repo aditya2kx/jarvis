@@ -1,0 +1,228 @@
+{
+  "pr_number": 14,
+  "title": "feat(cost): checked-in HTML cost report + post-merge finalize + pre-push sync",
+  "requirement": "#12 \u2014 one-click finalize / team-visible cost report",
+  "branch": "feat/pr-cost-html-report",
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor dashboard usage API (local session token; exact cost, request->PR by time window)",
+    "approximate": false,
+    "sessions": [
+      {
+        "ts": "2026-06-03T05:07:59.389000+00:00",
+        "model": "claude-opus-4-8-thinking-high",
+        "tokens": 991746,
+        "cost_usd": 1.4853,
+        "input_tokens": 24,
+        "output_tokens": 7776,
+        "cache_read_input_tokens": 845030,
+        "cache_creation_input_tokens": 138916,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T05:28:50.336000+00:00",
+        "model": "composer-2.5",
+        "tokens": 842265,
+        "cost_usd": 0.1959,
+        "input_tokens": 70447,
+        "output_tokens": 2762,
+        "cache_read_input_tokens": 769056,
+        "cache_creation_input_tokens": 0,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T05:32:12.318000+00:00",
+        "model": "composer-2.5",
+        "tokens": 797532,
+        "cost_usd": 0.1716,
+        "input_tokens": 13354,
+        "output_tokens": 3506,
+        "cache_read_input_tokens": 780672,
+        "cache_creation_input_tokens": 0,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T05:35:09.415000+00:00",
+        "model": "composer-2.5",
+        "tokens": 1207830,
+        "cost_usd": 0.2573,
+        "input_tokens": 15837,
+        "output_tokens": 4761,
+        "cache_read_input_tokens": 1187232,
+        "cache_creation_input_tokens": 0,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T05:44:46.065000+00:00",
+        "model": "composer-2.5",
+        "tokens": 4592183,
+        "cost_usd": 0.9528,
+        "input_tokens": 35731,
+        "output_tokens": 10276,
+        "cache_read_input_tokens": 4546176,
+        "cache_creation_input_tokens": 0,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T05:57:33.068000+00:00",
+        "model": "claude-opus-4-8-thinking-high",
+        "tokens": 4239019,
+        "cost_usd": 3.851,
+        "input_tokens": 34,
+        "output_tokens": 10460,
+        "cache_read_input_tokens": 3972000,
+        "cache_creation_input_tokens": 256525,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T06:02:14.132000+00:00",
+        "model": "claude-opus-4-8-thinking-high",
+        "tokens": 2894630,
+        "cost_usd": 1.6218,
+        "input_tokens": 22,
+        "output_tokens": 4791,
+        "cache_read_input_tokens": 2879910,
+        "cache_creation_input_tokens": 9907,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T06:07:04.291000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 5708686,
+        "cost_usd": 4.7815,
+        "input_tokens": 42,
+        "output_tokens": 13451,
+        "cache_read_input_tokens": 5417380,
+        "cache_creation_input_tokens": 277813,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T06:15:20.450000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 3531032,
+        "cost_usd": 2.5202,
+        "input_tokens": 15493,
+        "output_tokens": 26036,
+        "cache_read_input_tokens": 3425659,
+        "cache_creation_input_tokens": 63844,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T06:33:17.031000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 3072510,
+        "cost_usd": 2.2178,
+        "input_tokens": 56,
+        "output_tokens": 20279,
+        "cache_read_input_tokens": 3020092,
+        "cache_creation_input_tokens": 32083,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T06:40:52.072000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 3105954,
+        "cost_usd": 2.3169,
+        "input_tokens": 44,
+        "output_tokens": 19269,
+        "cache_read_input_tokens": 3035918,
+        "cache_creation_input_tokens": 50723,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T06:48:08.886000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 5096233,
+        "cost_usd": 3.1617,
+        "input_tokens": 54,
+        "output_tokens": 18343,
+        "cache_read_input_tokens": 5049333,
+        "cache_creation_input_tokens": 28503,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T06:54:59.764000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 203188,
+        "cost_usd": 0.1615,
+        "input_tokens": 2,
+        "output_tokens": 2190,
+        "cache_read_input_tokens": 199907,
+        "cache_creation_input_tokens": 1089,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T06:57:35.550000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 3188887,
+        "cost_usd": 1.966,
+        "input_tokens": 30,
+        "output_tokens": 11596,
+        "cache_read_input_tokens": 3162083,
+        "cache_creation_input_tokens": 15178,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T07:03:45.714000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 436006,
+        "cost_usd": 0.2505,
+        "input_tokens": 4,
+        "output_tokens": 907,
+        "cache_read_input_tokens": 433312,
+        "cache_creation_input_tokens": 1783,
+        "note": null
+      }
+    ],
+    "tokens_total": 39907701,
+    "cost_usd_total": 25.9118,
+    "window": {
+      "start": "2026-06-03T05:01:55.576000+00:00",
+      "end": "2026-06-03T07:04:55.033000+00:00"
+    }
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 12,
+        "input_tokens": 10,
+        "output_tokens": 7094,
+        "cache_read_input_tokens": 315721,
+        "cache_creation_input_tokens": 79506,
+        "tokens": 402331,
+        "cost_usd": 0.5005,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26868698446"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 8,
+        "input_tokens": 7,
+        "output_tokens": 3506,
+        "cache_read_input_tokens": 186318,
+        "cache_creation_input_tokens": 35515,
+        "tokens": 225346,
+        "cost_usd": 0.2428,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26869016743"
+      }
+    ],
+    "tokens_total": 627677,
+    "cost_usd_total": 0.7433,
+    "run_count": 2
+  },
+  "totals": {
+    "tokens": 40535378,
+    "cost_usd": 26.6551
+  }
+}

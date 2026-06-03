@@ -1,0 +1,69 @@
+{
+  "pr_number": 13,
+  "title": "Add per-PR cost-monitoring framework (build + review tokens/cost)",
+  "requirement": "Requirement #7 \u2014 cost/token monitoring per PR",
+  "branch": "feat/pr-cost-monitoring",
+  "created_at": "2026-06-03T05:29:09Z",
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor dashboard usage API (local session token; exact cost, request->PR by time window)",
+    "approximate": false,
+    "sessions": [
+      {
+        "ts": "2026-06-03T04:19:32.862000+00:00",
+        "model": "claude-opus-4-8-thinking-high",
+        "tokens": 15441490,
+        "cost_usd": 18.1648,
+        "input_tokens": 116844,
+        "output_tokens": 102644,
+        "cache_read_input_tokens": 13810335,
+        "cache_creation_input_tokens": 1411667,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T05:07:59.389000+00:00",
+        "model": "claude-opus-4-8-thinking-high",
+        "tokens": 991746,
+        "cost_usd": 1.4853,
+        "input_tokens": 24,
+        "output_tokens": 7776,
+        "cache_read_input_tokens": 845030,
+        "cache_creation_input_tokens": 138916,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T05:28:50.336000+00:00",
+        "model": "composer-2.5",
+        "tokens": 528778,
+        "cost_usd": 0.131,
+        "input_tokens": 68740,
+        "output_tokens": 2022,
+        "cache_read_input_tokens": 458016,
+        "cache_creation_input_tokens": 0,
+        "note": null
+      }
+    ],
+    "tokens_total": 16962014,
+    "cost_usd_total": 19.7811,
+    "window": {
+      "start": "2026-06-03T04:00:00+00:00",
+      "end": "2026-06-03T06:30:00+00:00"
+    }
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 16962014,
+    "cost_usd": 19.7811
+  }
+}

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Tests for post_claude_review_cost.parse_execution."""
 
+import json
 import os
 import sys
+import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -11,6 +14,7 @@ from post_claude_review_cost import (
     cost_breakdown_usd,
     estimate_cost_usd,
     format_comment,
+    main,
     parse_execution,
 )
 
@@ -157,6 +161,36 @@ class TestFormatCompositionAndLabels(unittest.TestCase):
         self.assertIn("Review did not run", body)
         self.assertNotIn("| Turns | 0 |", body)
         self.assertIn("byte-identical", body)
+
+
+class TestMainLedgerIntegration(unittest.TestCase):
+    def test_dry_run_records_ledger_without_posting(self):
+        msgs = [
+            {"type": "system", "subtype": "init", "model": "claude-sonnet-4-6"},
+            {
+                "type": "result",
+                "subtype": "success",
+                "num_turns": 3,
+                "total_cost_usd": 0.42,
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+            },
+        ]
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(msgs, f)
+            exec_path = f.name
+        try:
+            ledger_mock = MagicMock()
+            with patch.dict(sys.modules, {"pr_cost_ledger": ledger_mock}):
+                rc = main([
+                    "--pr-number", "99",
+                    "--execution-file", exec_path,
+                    "--repo", "owner/repo",
+                    "--dry-run",
+                ])
+            self.assertEqual(rc, 0)
+            ledger_mock.record_review_run.assert_called_once()
+        finally:
+            os.unlink(exec_path)
 
 
 if __name__ == "__main__":

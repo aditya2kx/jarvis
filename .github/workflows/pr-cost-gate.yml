@@ -1,0 +1,37 @@
+name: PR cost gate
+
+# Hard pre-merge gate (requirement #7): a PR may not merge until its cost is
+# accounted for in the in-repo ledger (metrics/pr_cost/PR-<n>.json) — including
+# the Cursor BUILD cost, which has no per-PR API for individual accounts and so
+# must be recorded from the dashboard and committed. Review cost is appended
+# automatically by scripts/post_claude_review_cost.py.
+#
+# Make this a REQUIRED status check in branch protection to actually block merge
+# (see CONTRIBUTING.md § Enabling enforcement).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Register the job name on main so branch protection can require it.
+  push:
+    branches: [main]
+
+jobs:
+  cost-gate:
+    name: PR cost gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Register check on main push
+        if: github.event_name == 'push'
+        run: echo "Cost gate runs on pull_request only; this registers the check name on main."
+
+      - name: Checkout PR head
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+
+      - name: Validate cost ledger (hard gate — requires build cost)
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 scripts/pr_cost_ledger.py validate \
+            --pr "${{ github.event.pull_request.number }}" \
+            --require-build

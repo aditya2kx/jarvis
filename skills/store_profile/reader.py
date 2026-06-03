@@ -66,15 +66,17 @@ def _is_cloud_run() -> bool:
 
 
 def _get_sheets_service():
-    """Build and cache a Google Sheets API service using ADC (Cloud Run)."""
+    """Build and cache a Google Sheets API service using ADC (Cloud Run).
+
+    Delegates to get_google_credentials so BHAGA_IMPERSONATE_SA is respected
+    for local dev — allows running model scripts without per-account OAuth files.
+    """
     global _sheets_service_cache
     if _sheets_service_cache is not None:
         return _sheets_service_cache
-    import google.auth
+    from core.config_loader import get_google_credentials
     from googleapiclient.discovery import build
-    creds, _ = google.auth.default(
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
-    )
+    creds = get_google_credentials(["https://www.googleapis.com/auth/spreadsheets"])
     _sheets_service_cache = build("sheets", "v4", credentials=creds)
     return _sheets_service_cache
 

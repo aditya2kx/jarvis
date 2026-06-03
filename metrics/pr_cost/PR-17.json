@@ -4,7 +4,7 @@
   "requirement": "Robust multi-chat cost attribution via conversationId + session_started_at",
   "branch": "feat/cost-conversation-attribution",
   "created_at": null,
-  "merged_at": null,
+  "merged_at": "2026-06-03T21:06:34Z",
   "diff": {
     "files": null,
     "additions": null,
@@ -36,14 +36,28 @@
   },
   "review": {
     "source": "claude-code-action execution_file (exact)",
-    "runs": [],
-    "tokens_total": 0,
-    "cost_usd_total": 0,
-    "run_count": 0
+    "runs": [
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 8,
+        "input_tokens": 7,
+        "output_tokens": 2327,
+        "cache_read_input_tokens": 173879,
+        "cache_creation_input_tokens": 19230,
+        "tokens": 195443,
+        "cost_usd": 0.1604,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26912920445"
+      }
+    ],
+    "tokens_total": 195443,
+    "cost_usd_total": 0.1604,
+    "run_count": 1
   },
   "totals": {
-    "tokens": 500000,
-    "cost_usd": 0.0
+    "tokens": 695443,
+    "cost_usd": 0.1604
   },
   "session_started_at": "2026-06-03T21:00:00Z"
 }

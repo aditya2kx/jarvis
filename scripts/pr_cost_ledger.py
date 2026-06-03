@@ -56,9 +56,47 @@ LEDGER_DIR = Path(__file__).resolve().parent.parent / "metrics" / "pr_cost"
 # A build session is considered the "dominant" cost hotspot when it alone is at
 # least this fraction of total build cost — the single thing most worth fixing.
 _DOMINANT_SESSION_FRACTION = 0.40
-# Review is "expensive relative to its job" if it crosses this many dollars or
-# re-ran this many times (each push re-runs the full bounded review).
+# Review is "expensive relative to its job" if it crosses this many $ per run.
 _REVIEW_RUN_WARN = 3
+
+# ── Model rate table (Cursor per-1M-token prices, verified 2026-06-03) ──────
+# https://cursor.com/docs/models-and-pricing — Cursor charges at API rates, no markup.
+# Update the date comment when you verify rates are still current.
+_MODEL_RATES: dict[str, dict[str, float]] = {
+    # key matched against lowercase model name by _model_tier()
+    "opus":     {"input": 5.00, "cache_write": 6.25, "cache_read": 0.50, "output": 25.00},
+    "sonnet":   {"input": 3.00, "cache_write": 3.75, "cache_read": 0.30, "output": 15.00},
+    "haiku":    {"input": 1.00, "cache_write": 1.25, "cache_read": 0.10, "output":  5.00},
+    "composer": {"input": 0.50, "cache_write": 0.00, "cache_read": 0.20, "output":  2.50},
+}
+_RATES_DATE = "2026-06-03"
+
+
+def _model_tier(model: str) -> str:
+    """Map a raw model string to a tier key in _MODEL_RATES."""
+    m = (model or "").lower()
+    if "opus" in m:
+        return "opus"
+    if "sonnet" in m:
+        return "sonnet"
+    if "haiku" in m:
+        return "haiku"
+    return "composer"
+
+
+def _recompute_cost(session: dict[str, Any], tier: str) -> float:
+    """Estimate what this session would cost on a different model tier."""
+    r = _MODEL_RATES[tier]
+    inp  = int(session.get("input_tokens") or 0)
+    outp = int(session.get("output_tokens") or 0)
+    cr   = int(session.get("cache_read_input_tokens") or 0)
+    cw   = int(session.get("cache_creation_input_tokens") or 0)
+    if not (inp + outp + cr + cw):
+        # No token breakdown — fall back to a simple cache-read-dominant estimate
+        tokens = int(session.get("tokens") or 0)
+        return tokens * r["cache_read"] / 1_000_000
+    return (inp * r["input"] + outp * r["output"]
+            + cr * r["cache_read"] + cw * r["cache_write"]) / 1_000_000
 
 
 # ── record I/O ──────────────────────────────────────────────────────
@@ -373,51 +411,148 @@ def validate(pr: int, *, require_build: bool = False) -> tuple[bool, list[str]]:
 
 # ── post-merge analysis ─────────────────────────────────────────────
 
+def _observations(rec: dict[str, Any]) -> list[str]:
+    """Diagnostic observations — facts about where cost went, not actions."""
+    obs: list[str] = []
+    b, r = rec["build"], rec["review"]
+    total = rec["totals"]["cost_usd"] or 1.0
+
+    # Build/review split
+    build_pct = b["cost_usd_total"] / total * 100
+    obs.append(
+        f"Build is {build_pct:.0f}% of total cost (${b['cost_usd_total']:.2f}) vs "
+        f"review {100 - build_pct:.0f}% (${r['cost_usd_total']:.2f}). "
+        f"{'Optimization leverage is in the build loop.' if build_pct >= 70 else 'Build and review costs are comparable.'}"
+    )
+
+    # Cache-read dominance (the single biggest surprise in the data)
+    if b["sessions"]:
+        total_build_tokens = b["tokens_total"] or 1
+        cache_tokens = sum(int(s.get("cache_read_input_tokens") or 0) for s in b["sessions"])
+        cache_pct = cache_tokens / total_build_tokens * 100
+        if cache_pct >= 50:
+            obs.append(
+                f"Cache reads are {cache_pct:.0f}% of build tokens ({cache_tokens:,} tok) — "
+                f"context re-reads, not new work. Each agent turn re-reads the entire "
+                f"conversation history as cache-read tokens. Start a fresh chat per PR to "
+                f"reset this counter."
+            )
+
+    # Model mix
+    if b["sessions"]:
+        by_tier: dict[str, float] = {}
+        for s in b["sessions"]:
+            t = _model_tier(s.get("model") or "")
+            by_tier[t] = by_tier.get(t, 0.0) + float(s.get("cost_usd") or 0)
+        mix = sorted(by_tier.items(), key=lambda x: x[1], reverse=True)
+        mix_str = ", ".join(f"{t} ${v:.2f} ({v/b['cost_usd_total']*100:.0f}%)" for t, v in mix if b["cost_usd_total"])
+        obs.append(f"Model mix: {mix_str}.")
+
+    # Dominant single session
+    if b["sessions"] and b["cost_usd_total"]:
+        top = max(b["sessions"], key=lambda s: s.get("cost_usd") or 0)
+        frac = float(top.get("cost_usd") or 0) / b["cost_usd_total"]
+        if frac >= _DOMINANT_SESSION_FRACTION:
+            obs.append(
+                f"One session ({(top.get('ts') or '')[:19]}, ${top.get('cost_usd', 0):.2f}, "
+                f"{top.get('tokens', 0):,} tok) is {frac*100:.0f}% of build cost — "
+                f"a marathon thread with an ever-growing context."
+            )
+
+    # Review $/run trend
+    if r["run_count"] >= 2:
+        per_run = r["cost_usd_total"] / r["run_count"]
+        obs.append(
+            f"Review: {r['run_count']} runs × ~${per_run:.2f}/run = ${r['cost_usd_total']:.2f}. "
+            f"Convergence policy (inline = blocking only, delta re-review) is active since PR #13."
+        )
+    elif r["run_count"] == 1:
+        obs.append(f"Review ran once (${r['cost_usd_total']:.2f}) — ideal.")
+
+    return obs
+
+
 def _recommendations(rec: dict[str, Any]) -> list[str]:
+    """Tactical actions you can take, each with an estimated $ saving."""
     recs: list[str] = []
     b, r = rec["build"], rec["review"]
-    total = rec["totals"]["cost_usd"] or 0.0
-    build_share = (b["cost_usd_total"] / total * 100) if total else 0
 
-    if build_share >= 70:
-        recs.append(
-            f"Build is {build_share:.0f}% of total cost — optimization leverage is in the "
-            f"agent build loop, not the review bot. Review-side tuning is rounding error."
-        )
-    # Dominant build session
+    # 1. Context discipline (new chat per PR) — only if cache-read dominated
+    if b["sessions"] and b["tokens_total"]:
+        cache_tokens = sum(int(s.get("cache_read_input_tokens") or 0) for s in b["sessions"])
+        cache_pct = cache_tokens / b["tokens_total"] * 100
+        if cache_pct >= 70:
+            # Rough saving: if context had been reset mid-session, cache-read tokens
+            # would be ~50% lower on average — conservative model-independent estimate.
+            est_saving = b["cost_usd_total"] * 0.30
+            recs.append(
+                f"Start a new Cursor chat for each PR/requirement (run "
+                f"`scripts/start_pr_session.py --pr {rec['pr_number']}` to get a seeded "
+                f"brief + cursor:// link). Each turn re-reads the entire history as "
+                f"cache-read tokens; a fresh chat resets the counter. "
+                f"Est. saving: ~${est_saving:.2f} ({30:.0f}% of build)."
+            )
+
+    # 2. Model routing — per Opus session that looks mechanical
     if b["sessions"]:
-        top = max(b["sessions"], key=lambda s: s.get("cost_usd") or 0)
-        frac = (top["cost_usd"] / b["cost_usd_total"]) if b["cost_usd_total"] else 0
-        if frac >= _DOMINANT_SESSION_FRACTION:
-            recs.append(
-                f"One build session ({top['ts']}, {top['tokens']:,} tokens, "
-                f"${top['cost_usd']:.2f}) is {frac*100:.0f}% of build cost. Break long "
-                f"marathon sessions into checkpointed sub-tasks; avoid re-reading large "
-                f"files/transcripts/.venv into context; prefer Plan mode + targeted reads."
+        opus_sessions = [s for s in b["sessions"] if _model_tier(s.get("model") or "") == "opus"
+                         and float(s.get("cost_usd") or 0) >= 0.50]
+        if opus_sessions:
+            total_opus = sum(float(s.get("cost_usd") or 0) for s in opus_sessions)
+            total_sonnet = sum(_recompute_cost(s, "sonnet") for s in opus_sessions)
+            saving = total_opus - total_sonnet
+            sessions_desc = ", ".join(
+                f"{(s.get('ts') or '')[:19]} (${s.get('cost_usd', 0):.2f})"
+                for s in sorted(opus_sessions, key=lambda s: s.get("cost_usd") or 0, reverse=True)[:3]
             )
-        big_model = any("opus" in (s.get("model") or "").lower() for s in b["sessions"])
-        if big_model:
             recs.append(
-                "Build ran on an Opus-class model. Route mechanical work (renames, test "
-                "scaffolding, doc edits, log spelunking) to a Sonnet/Haiku-class model and "
-                "reserve Opus for genuinely hard reasoning — biggest $/token lever."
+                f"Route standard feature work to Sonnet 4.6 (default) — reserve Opus 4.8 "
+                f"only for hard multi-file reasoning or subtle bugs. "
+                f"{len(opus_sessions)} Opus session(s) ({sessions_desc}) cost ${total_opus:.2f}; "
+                f"same work on Sonnet ≈ ${total_sonnet:.2f}. "
+                f"Est. saving: ~${saving:.2f}. "
+                f"Rates (verified {_RATES_DATE}): Opus cache-read $0.50/M vs Sonnet $0.30/M; "
+                f"output $25/M vs $15/M."
             )
-    # Review cycles
-    if r["run_count"] >= _REVIEW_RUN_WARN:
+
+    # 3. Thinking effort — flag high-effort when medium likely sufficient
+    high_sessions = [s for s in b["sessions"] if "thinking-high" in (s.get("model") or "").lower()
+                     and float(s.get("cost_usd") or 0) >= 0.50]
+    if high_sessions:
+        total_high = sum(float(s.get("cost_usd") or 0) for s in high_sessions)
+        # thinking-high vs medium: output tokens (thinking) roughly 30% more on high
+        est_saving = total_high * 0.20
         recs.append(
-            f"Review ran {r['run_count']}× (each push re-runs the full bounded review at "
-            f"~${(r['cost_usd_total']/max(r['run_count'],1)):.2f}/run). Batch pushes, or keep "
-            f"the PR in Draft until ready, so review fires fewer times."
+            f"Use thinking=medium instead of thinking=high for non-hard sessions. "
+            f"{len(high_sessions)} session(s) used thinking-high (${total_high:.2f} total). "
+            f"Medium is indistinguishable for routine feature work; high adds ~20–30% output tokens. "
+            f"Est. saving: ~${est_saving:.2f}."
         )
+
+    # 4. Review: only flag if convergence not yet working (high run count + high per-run cost)
+    if r["run_count"] >= _REVIEW_RUN_WARN:
+        per_run = r["cost_usd_total"] / r["run_count"]
+        if per_run >= 0.50:
+            recs.append(
+                f"Batch pushes or keep the PR in Draft until it's ready — each push "
+                f"re-runs the full review. Convergence policy (inline = blocking only, "
+                f"delta re-review from PR #13) should already be cutting $/run; "
+                f"if per-run cost remains high, tighten the review rubric scope."
+            )
+
+    # 5. Turn cap hits
     maxturn = [x for x in r["runs"] if (x.get("result") or "") == "error_max_turns"]
     if maxturn:
+        wasted = sum(float(x.get("cost_usd") or 0) for x in maxturn)
         recs.append(
-            f"{len(maxturn)} review run(s) hit the turn cap (error_max_turns) — they spent "
-            f"tokens without finishing. Tighten the review context/rubric so it converges "
-            f"inside the cap, or raise the cap only if reviews are genuinely incomplete."
+            f"{len(maxturn)} review run(s) hit the turn cap (error_max_turns), "
+            f"spending ${wasted:.2f} without finishing. "
+            f"Raise --max-turns in claude-review.yml or tighten the rubric so it "
+            f"converges inside the cap."
         )
+
     if not recs:
-        recs.append("No obvious inefficiency flags — costs look proportional to the change.")
+        recs.append("No obvious efficiency wins — costs look proportional to the change.")
     return recs
 
 
@@ -457,6 +592,7 @@ def analyze(prs: list[int], top_n: int = 5) -> dict[str, Any]:
             "build_cost_usd": rec["build"]["cost_usd_total"],
             "review_cost_usd": rec["review"]["cost_usd_total"],
             "top_areas": areas[:top_n],
+            "observations": _observations(rec),
             "recommendations": _recommendations(rec),
         }
         reports.append(report)
@@ -474,9 +610,12 @@ def analyze(prs: list[int], top_n: int = 5) -> dict[str, Any]:
                 f"    {i}. ${a['cost_usd']:>7.2f} ({share:4.1f}%)  {a['tokens']:>12,} tok  "
                 f"{a['area']}  [{a['model']}]"
             )
-        out_lines.append("  recommendations:")
+        out_lines.append("  observations:")
+        for ob in report["observations"]:
+            out_lines.append(f"    • {ob}")
+        out_lines.append("  recommendations (tactical):")
         for rc in report["recommendations"]:
-            out_lines.append(f"    - {rc}")
+            out_lines.append(f"    → {rc}")
     return {"reports": reports, "text": "\n".join(out_lines)}
 
 
@@ -504,10 +643,12 @@ table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #21262d; }
 th { color: #768390; font-weight: 600; } td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
 tr.build td:first-child { border-left: 3px solid #bb8009; } tr.review td:first-child { border-left: 3px solid #316dca; }
+.obs { border: 1px solid #30363d; border-left: 3px solid #444c56; border-radius: 6px; padding: 10px 12px; margin: 8px 0;
+  background: #0d1117; color: #adbac7; font-size: 13px; }
+.obs b { color: #768390; margin-right: 6px; }
 .rec { border: 1px solid #30363d; border-left: 3px solid #d29922; border-radius: 6px; padding: 10px 12px; margin: 8px 0;
   background: #15191f; }
-.rec.info { border-left-color: #539bf5; }
-.rec b { display: block; margin-bottom: 2px; }
+.rec b { display: block; margin-bottom: 2px; color: #d29922; }
 code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 """
 
@@ -545,9 +686,14 @@ def _render_pr_html(rec: dict[str, Any]) -> str:
         f'<td class="n">{(a["cost_usd"] / total * 100):.1f}%</td></tr>'
         for a in areas
     )
+    obs = _observations(rec)
+    obs_html = "".join(
+        f'<div class="obs"><b>•</b>{_esc(ob)}</div>'
+        for ob in obs
+    )
     recs = _recommendations(rec)
     rec_html = "".join(
-        f'<div class="rec{(" info" if i >= 3 else "")}"><b>#{i + 1}</b>{_esc(rc)}</div>'
+        f'<div class="rec"><b>#{i + 1}</b>{_esc(rc)}</div>'
         for i, rc in enumerate(recs)
     )
     return f"""
@@ -565,7 +711,9 @@ def _render_pr_html(rec: dict[str, Any]) -> str:
       <h2>Where the effort went — top {len(areas)} cost areas</h2>
       <table><thead><tr><th>Area</th><th>Model</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">% of PR</th></tr></thead>
       <tbody>{area_rows}</tbody></table>
-      <h2>Top recommendations to cut cost</h2>
+      <h2>Diagnosis</h2>
+      {obs_html}
+      <h2>Tactical recommendations</h2>
       {rec_html}
     </section>
     """
@@ -582,7 +730,7 @@ def _render_report_html(records: list[dict[str, Any]]) -> str:
 <style>{_REPORT_CSS}</style></head>
 <body><div class="wrap">
 <h1>PR cost monitoring</h1>
-<p class="muted">{len(records)} PR(s) · ${grand:.2f} total · generated {now} · source: <code>metrics/pr_cost/PR-*.json</code> via <code>pr_cost_ledger.py report</code></p>
+<p class="muted">{len(records)} PR(s) · ${grand:.2f} total · generated {now} · source: <code>metrics/pr_cost/PR-*.json</code> · rates verified {_RATES_DATE} (<a href="https://cursor.com/docs/models-and-pricing" style="color:#539bf5">cursor.com/docs/models-and-pricing</a>)</p>
 {body}
 </div></body></html>
 """

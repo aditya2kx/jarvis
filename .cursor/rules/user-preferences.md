@@ -22,6 +22,7 @@ Maintained by `skills/user_model/`. Source corpus (gitignored) at `skills/user_m
 | 5 | Cross-reference rather than restate when info already exists elsewhere | this session 2026-04-19 (Fork 5 pick) |
 | 6 | Use `markdown citations to existing files` when discussing them, not full path repeated each time | observed |
 | 7 | Be honest about what's working vs broken; precise terminology on failure modes (e.g. 'browser context closed' not 'MCP broken') | this session 2026-04-19 (Hard Lesson #11 update) |
+| 8 | **For ANY options/decision, ALWAYS present a trade-off comparison table (options × criteria) followed by an explicit recommendation with reasoning — never a bare list.** Make this the default format for tool picks, hosting, architecture, library choices, etc. | explicit user instruction 2026-06-03 ("make it part of how you present me options always for anything") |
 
 ## Design principles
 
@@ -41,6 +42,7 @@ Maintained by `skills/user_model/`. Source corpus (gitignored) at `skills/user_m
 | 12 | Slack is the async communication channel for any user-input-needed moment; Cursor IDE is co-equal but not assumed | jarvis.md HL#7 |
 | 13 | Workspace restart is the canonical Playwright recovery; do NOT silently fall back to `cursor-ide-browser` MCP | jarvis.md HL#11 |
 | 14 | Build a predictive user model proactively — capture preference signals as they appear, not only as corrections after they fail | this session 2026-04-19 (this skill exists) |
+| 17 | **Prod/runtime must run on hosted infra (Cloud Run, BQ, Grafana Cloud, GH Actions) — never on the laptop.** Laptop is only for build/implementation/one-time provisioning. If a prod step requires a local script, that is a gap — build the hosted equivalent. | jarvis.md Conventions (2026-06-03, PR #16) |
 | 15 | Passkey-gated portals (Touch ID / FIDO2 / WebAuthn) can NOT be automated via stored password — pivot to persistent Playwright browser-profile/ for session-cookie reuse. User authenticates with biometric once, session persists for days/weeks, Touch ID re-prompts only on session expiry. Do NOT capture 'something password-shaped' as a fallback — it's likely the Mac login or another service's password, not the portal's. | 2026-04-20 ADP RUN discovery (user logs in via Touch ID, no ADP password exists) |
 | 16 | The collaborative-browser credential interceptor should detect passkey-only flows and abort capture rather than storing whatever text-shaped input appears. Heuristic: if the portal never shows a password field during normal auth (only biometric prompts), suppress capture. Until that's implemented, ALWAYS test captured creds by running a from-scratch login before persisting — don't trust the capture blindly. | 2026-04-20 ADP — captured a 12-char password that was not the ADP password; deleted from Keychain on discovery |
 

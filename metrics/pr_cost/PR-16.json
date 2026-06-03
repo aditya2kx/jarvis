@@ -1,6 +1,6 @@
 {
-  "pr_number": 17,
-  "title": "fix(cost): BYOK Anthropic key \u2014 use tokenUsage.totalCents when chargedCents=0",
+  "pr_number": 16,
+  "title": "fix(cost): BYOK Anthropic key \u2014 restore build $ attribution",
   "requirement": "BYOK cost fallback for build attribution when Anthropic API key is configured in Cursor",
   "branch": "feat/cost-byok-fallback",
   "created_at": null,
@@ -149,18 +149,18 @@
       {
         "ts": "2026-06-03T20:47:52.024000+00:00",
         "model": "composer-2.5",
-        "tokens": 1263793,
-        "cost_usd": 0.2692,
+        "tokens": 1916067,
+        "cost_usd": 0.4026,
         "cost_source": "cursor_charged",
-        "input_tokens": 10029,
-        "output_tokens": 5828,
-        "cache_read_input_tokens": 1247936,
+        "input_tokens": 12086,
+        "output_tokens": 6861,
+        "cache_read_input_tokens": 1897120,
         "cache_creation_input_tokens": 0,
         "note": null
       }
     ],
-    "tokens_total": 9524744,
-    "cost_usd_total": 8.6904,
+    "tokens_total": 10177018,
+    "cost_usd_total": 8.8238,
     "window": {
       "start": "2026-06-03T20:00:00+00:00",
       "end": "2026-06-04T02:00:00+00:00"
@@ -174,7 +174,7 @@
     "run_count": 0
   },
   "totals": {
-    "tokens": 9524744,
-    "cost_usd": 8.6904
+    "tokens": 10177018,
+    "cost_usd": 8.8238
   }
 }

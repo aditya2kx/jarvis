@@ -147,7 +147,12 @@ def capture_build(
     import cursor_usage  # noqa: PLC0415
 
     rec0 = load_record(pr)
-    if not start or not end:
+    if not (start and end):
+        if start or end:
+            raise SystemExit(
+                "capture-build: --start and --end must be provided together, "
+                "or both omitted for auto-derive."
+            )
         branch = rec0.get("branch")
         if not branch:
             raise SystemExit(

@@ -34,7 +34,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-STATE_DB = Path.home() / "Library/Application Support/Cursor/User/globalStorage/state.vscdb"
+STATE_DB = Path.home() / "Library/Application Support/Cursor/User/globalStorage/state.vscdb"  # macOS only
 AI_TRACKING_DB = Path.home() / ".cursor/ai-tracking/ai-code-tracking.db"
 ENDPOINT = "https://cursor.com/api/dashboard/get-filtered-usage-events"
 

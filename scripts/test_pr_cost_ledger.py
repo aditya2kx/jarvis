@@ -59,6 +59,12 @@ class TestPrCostLedger(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(any("no build sessions" in p for p in problems))
 
+    def test_capture_build_rejects_partial_window(self):
+        L.set_meta(10, title="t", branch="feat/x")
+        with self.assertRaises(SystemExit) as ctx:
+            L.capture_build(10, start="2026-06-01T00:00:00Z", end=None)
+        self.assertIn("together", str(ctx.exception))
+
     def test_record_review_run_round_trip(self):
         L.record_review_run(
             5, ts="2026-06-01T12:00:00Z", model="claude-sonnet-4-6", turns=7,

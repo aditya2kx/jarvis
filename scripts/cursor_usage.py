@@ -184,7 +184,7 @@ def fetch_usage_events(
         for e in events:
             tu = e.get("tokenUsage") or {}
             ts_ms = int(e["timestamp"])
-            key = (ts_ms, e.get("model"), tu.get("totalCents"))
+            key = (ts_ms, e.get("model"), e.get("chargedCents"))
             if key in seen:
                 continue
             seen.add(key)

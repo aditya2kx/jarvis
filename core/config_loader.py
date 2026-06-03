@@ -285,6 +285,36 @@ def get_forecast_config(config_rows: list[list] | None = None) -> dict:
     return result
 
 
+def get_google_credentials(scopes: list[str]):
+    """Return authenticated Google credentials with the given scopes.
+
+    Respects BHAGA_IMPERSONATE_SA: when set, impersonates that service account
+    via the active ADC user.  This is the canonical way to get Sheets/Drive
+    credentials locally without per-account OAuth files; the bhaga-orchestrator
+    SA already has the required Sheets/Drive grants.
+
+    Called by refresh_access_token (gcp path) and _get_sheets_service in
+    skills/store_profile/reader.py — keep both callers in sync.
+    """
+    import google.auth
+    import google.auth.transport.requests
+
+    impersonate_sa = os.environ.get("BHAGA_IMPERSONATE_SA", "").strip()
+    if impersonate_sa:
+        import google.auth.impersonated_credentials
+        source_creds, _ = google.auth.default()
+        credentials = google.auth.impersonated_credentials.Credentials(
+            source_credentials=source_creds,
+            target_principal=impersonate_sa,
+            target_scopes=scopes,
+            lifetime=3600,
+        )
+    else:
+        credentials, _ = google.auth.default(scopes=scopes)
+    credentials.refresh(google.auth.transport.requests.Request())
+    return credentials
+
+
 def refresh_access_token(account=None):
     """Refresh and return a Google API access token.
 
@@ -295,18 +325,19 @@ def refresh_access_token(account=None):
 
     In cloud environments (BHAGA_SECRETS_BACKEND=gcp), uses Application
     Default Credentials (service account) instead of local OAuth files.
+
+    When BHAGA_IMPERSONATE_SA is set (local dev only), impersonates that
+    service account using the active ADC user.  This allows running backfill
+    and model scripts locally without per-account OAuth credential files —
+    the bhaga-orchestrator SA already has the Sheets/Drive grants that
+    Cloud Run uses in prod.
     """
     if os.environ.get("BHAGA_SECRETS_BACKEND", "").lower() == "gcp":
-        import google.auth
-        import google.auth.transport.requests
-
         SCOPES = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
         ]
-        credentials, _ = google.auth.default(scopes=SCOPES)
-        credentials.refresh(google.auth.transport.requests.Request())
-        return credentials.token
+        return get_google_credentials(SCOPES).token
 
     creds_path, env_path = get_auth_paths(account)
     with open(creds_path) as f:

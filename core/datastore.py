@@ -108,11 +108,21 @@ def ensure_schema() -> list[str]:
     return newly_applied
 
 
-def load_rows(table_name: str, rows: list[dict], *, merge_keys: list[str] | None = None) -> int:
+def load_rows(
+    table_name: str,
+    rows: list[dict],
+    *,
+    merge_keys: list[str] | None = None,
+    column_bq_types: dict[str, str] | None = None,
+) -> int:
     """Bulk-insert rows into a BigQuery table.
 
     If merge_keys is provided, performs a MERGE (upsert) using those columns
     as the match condition. Otherwise does a simple INSERT.
+
+    column_bq_types: optional {col: bq_type} override for columns whose type
+    cannot be inferred from the data (e.g. all-None batches).  Takes priority
+    over inferred types.
 
     Returns number of rows affected.
     """
@@ -124,7 +134,7 @@ def load_rows(table_name: str, rows: list[dict], *, merge_keys: list[str] | None
     columns = list(rows[0].keys())
 
     if merge_keys:
-        return _merge_rows(client, fq_table, columns, rows, merge_keys)
+        return _merge_rows(client, fq_table, columns, rows, merge_keys, column_bq_types or {})
     return _insert_rows(client, fq_table, columns, rows)
 
 
@@ -180,9 +190,67 @@ def _scan_migration_files() -> list[tuple[int, str, pathlib.Path]]:
 
 
 def _split_statements(sql: str) -> list[str]:
-    """Split a SQL file on semicolons, respecting that BigQuery DDL uses
-    semicolons as statement terminators."""
-    return [s.strip() for s in sql.split(";") if s.strip()]
+    """Split a SQL file into individual statements.
+
+    Splits on semicolons that are NOT inside a line comment (-- ...) or a
+    block comment (/* ... */).  This avoids incorrectly splitting on semicolons
+    that appear in comment prose.
+    """
+    statements: list[str] = []
+    current: list[str] = []
+    i = 0
+    n = len(sql)
+    in_line_comment = False
+    in_block_comment = False
+
+    while i < n:
+        ch = sql[i]
+
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+            current.append(ch)
+            i += 1
+            continue
+
+        if in_block_comment:
+            if ch == "*" and i + 1 < n and sql[i + 1] == "/":
+                current.append("*/")
+                i += 2
+                in_block_comment = False
+            else:
+                current.append(ch)
+                i += 1
+            continue
+
+        if ch == "-" and i + 1 < n and sql[i + 1] == "-":
+            in_line_comment = True
+            current.append("--")
+            i += 2
+            continue
+
+        if ch == "/" and i + 1 < n and sql[i + 1] == "*":
+            in_block_comment = True
+            current.append("/*")
+            i += 2
+            continue
+
+        if ch == ";":
+            stmt = "".join(current).strip()
+            if stmt:
+                statements.append(stmt)
+            current = []
+            i += 1
+            continue
+
+        current.append(ch)
+        i += 1
+
+    trailing = "".join(current).strip()
+    if trailing:
+        statements.append(trailing)
+
+    return statements
 
 
 def _insert_rows(client, fq_table: str, columns: list[str], rows: list[dict]) -> int:
@@ -217,26 +285,58 @@ def _insert_rows(client, fq_table: str, columns: list[str], rows: list[dict]) ->
 
 
 def _merge_rows(
-    client, fq_table: str, columns: list[str], rows: list[dict], merge_keys: list[str],
+    client,
+    fq_table: str,
+    columns: list[str],
+    rows: list[dict],
+    merge_keys: list[str],
+    column_bq_types_hint: dict[str, str] | None = None,
 ) -> int:
-    """MERGE (upsert) rows into the target table."""
+    """MERGE (upsert) rows into the target table.
+
+    NULL handling: infers the BQ type for each column from the first non-None
+    value in the batch.  NULL values are emitted as CAST(NULL AS <type>) in
+    the SQL rather than as @parameters so that UNION ALL sees uniform types.
+
+    column_bq_types_hint: explicit type overrides that take priority, used when
+    all values in a batch are None (so inference falls back to STRING).
+    """
     from google.cloud import bigquery
 
     non_key_cols = [c for c in columns if c not in merge_keys]
+    hints = column_bq_types_hint or {}
 
     merged = 0
     batch_size = 200
     for i in range(0, len(rows), batch_size):
         batch = rows[i : i + batch_size]
+
+        # Determine the canonical BQ type for each column; hints take priority
+        col_types: dict[str, str] = {}
+        for c in columns:
+            if c in hints:
+                col_types[c] = hints[c]
+                continue
+            for row in batch:
+                v = row.get(c)
+                if v is not None:
+                    col_types[c] = _infer_bq_type(v)
+                    break
+            else:
+                col_types[c] = "STRING"
+
         source_rows = []
         params = []
         for idx, row in enumerate(batch):
             fields = []
             for c in columns:
                 val = row.get(c)
-                param_name = f"{c}_{idx}"
-                fields.append(f"@{param_name} AS {c}")
-                params.append((param_name, _infer_bq_type(val), val))
+                if val is None:
+                    fields.append(f"CAST(NULL AS {col_types[c]}) AS {c}")
+                else:
+                    param_name = f"{c}_{idx}"
+                    fields.append(f"@{param_name} AS {c}")
+                    params.append((param_name, col_types[c], val))
             source_rows.append(f"SELECT {', '.join(fields)}")
 
         source_sql = " UNION ALL ".join(source_rows)

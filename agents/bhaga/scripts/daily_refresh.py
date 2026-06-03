@@ -2028,6 +2028,28 @@ def main() -> int:
     else:
         print("[write_raw_sheets] SKIPPED — no fresh inputs to mirror.")
 
+    # ── Mirror raw data to BigQuery (additive; Sheets is still the source of truth) ──
+    # Runs after write_raw_sheets so BQ raw tables stay in sync with Sheets.
+    # Non-fatal: if BQ write fails, Sheets is still updated and the run continues.
+    if raw_sheets_ok:
+        bq_raw_env = {
+            **os.environ,
+            "BHAGA_DATASTORE": "bigquery",
+            "PYTHONUNBUFFERED": "1",
+        }
+        ok, _ = run_step(
+            "load_bigquery",
+            lambda: subprocess.run(
+                [sys.executable, "-m", "agents.bhaga.scripts.backfill_bigquery",
+                 "--store", args.store],
+                cwd=str(PROJECT_ROOT), check=True, env=bq_raw_env,
+            ),
+            refresh_date=refresh_date,
+            dry_run=args.dry_run,
+        )
+        if not ok:
+            print("[load_bigquery] WARNING: BQ raw sync failed — Sheets is unaffected, continuing.")
+
     failed_steps = {name for name, _ in failures}
     if not args.skip_model and (raw_sheets_ok or (args.skip_square and args.skip_timecard)):
         model_cmd = [
@@ -2049,6 +2071,26 @@ def main() -> int:
         )
         if not ok:
             failures.append(("update_model_sheet", val))
+        else:
+            # ── Materialize computed model into BigQuery (after Sheets model is rebuilt) ──
+            # Non-fatal: Sheets model is the source of truth; BQ is a parallel mirror.
+            bq_model_env = {
+                **os.environ,
+                "BHAGA_DATASTORE": "bigquery",
+                "PYTHONUNBUFFERED": "1",
+            }
+            ok2, _ = run_step(
+                "materialize_model_bq",
+                lambda: subprocess.run(
+                    [sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
+                     "--store", args.store],
+                    cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
+                ),
+                refresh_date=refresh_date,
+                dry_run=args.dry_run,
+            )
+            if not ok2:
+                print("[materialize_model_bq] WARNING: BQ model sync failed — Sheets is unaffected.")
 
     # Step: Google Review attribution (sequential, uses pre-fetched messages).
     # Architecture rule: ALL data fetching happens in the parallel phase.

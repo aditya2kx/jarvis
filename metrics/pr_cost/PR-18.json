@@ -12,16 +12,82 @@
   },
   "build": {
     "source": "cursor dashboard usage API (local session token; request->PR by time window)",
-    "approximate": false,
-    "attribution_mode": "branch_window",
+    "approximate": true,
+    "attribution_mode": "manual_window",
     "session_started_at": null,
     "conversation_ids": [],
-    "sessions": [],
-    "tokens_total": 0,
-    "cost_usd_total": 0,
+    "sessions": [
+      {
+        "ts": "2026-06-03T21:01:39.018000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 131755,
+        "cost_usd": 0.502,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 3,
+        "output_tokens": 702,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 131050,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-03T21:08:32.268000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 36393127,
+        "cost_usd": 14.2368,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 261069,
+        "output_tokens": 136246,
+        "cache_read_input_tokens": 35503671,
+        "cache_creation_input_tokens": 492141,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-03T21:54:54.194000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 1031785,
+        "cost_usd": 0.3498,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 8,
+        "output_tokens": 1999,
+        "cache_read_input_tokens": 1026638,
+        "cache_creation_input_tokens": 3140,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-03T22:41:58.374000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 12863355,
+        "cost_usd": 4.8587,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 154027,
+        "output_tokens": 28398,
+        "cache_read_input_tokens": 12484872,
+        "cache_creation_input_tokens": 196058,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-03T23:12:45.694000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 298323,
+        "cost_usd": 0.2479,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 8,
+        "output_tokens": 1673,
+        "cache_read_input_tokens": 257868,
+        "cache_creation_input_tokens": 38774,
+        "note": "byok"
+      }
+    ],
+    "tokens_total": 50718345,
+    "cost_usd_total": 20.1952,
     "window": {
-      "start": "2026-06-03T22:52:27+00:00",
-      "end": "2026-06-03T22:56:28+00:00"
+      "start": "2026-06-03T21:00:00+00:00",
+      "end": "2026-06-04T04:00:00+00:00"
     }
   },
   "review": {
@@ -59,7 +125,7 @@
     "run_count": 2
   },
   "totals": {
-    "tokens": 362465,
-    "cost_usd": 0.4331
+    "tokens": 51080810,
+    "cost_usd": 20.6283
   }
 }

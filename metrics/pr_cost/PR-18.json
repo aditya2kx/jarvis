@@ -1,0 +1,91 @@
+{
+  "pr_number": 18,
+  "title": "feat: BQ parallel store + Grafana Cloud analytics dashboard",
+  "requirement": "BigQuery parallel data store + Grafana Cloud dashboard-as-code",
+  "branch": "feat/dashboard",
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor dashboard usage API (local session token; request->PR by time window)",
+    "approximate": true,
+    "attribution_mode": "manual_window",
+    "session_started_at": null,
+    "conversation_ids": [],
+    "sessions": [
+      {
+        "ts": "2026-06-03T21:01:39.018000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 131755,
+        "cost_usd": 0.502,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 3,
+        "output_tokens": 702,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 131050,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-03T21:08:32.268000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 36393127,
+        "cost_usd": 14.2368,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 261069,
+        "output_tokens": 136246,
+        "cache_read_input_tokens": 35503671,
+        "cache_creation_input_tokens": 492141,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-03T21:54:54.194000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 1031785,
+        "cost_usd": 0.3498,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 8,
+        "output_tokens": 1999,
+        "cache_read_input_tokens": 1026638,
+        "cache_creation_input_tokens": 3140,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-03T22:41:58.374000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 8592554,
+        "cost_usd": 3.3371,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 59,
+        "output_tokens": 13888,
+        "cache_read_input_tokens": 8417736,
+        "cache_creation_input_tokens": 160871,
+        "note": "byok"
+      }
+    ],
+    "tokens_total": 46149221,
+    "cost_usd_total": 18.4257,
+    "window": {
+      "start": "2026-06-03T21:00:00+00:00",
+      "end": "2026-06-04T04:00:00+00:00"
+    }
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 46149221,
+    "cost_usd": 18.4257
+  }
+}

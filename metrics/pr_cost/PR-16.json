@@ -1,0 +1,180 @@
+{
+  "pr_number": 16,
+  "title": "fix(cost): BYOK Anthropic key \u2014 restore build $ attribution",
+  "requirement": "BYOK cost fallback for build attribution when Anthropic API key is configured in Cursor",
+  "branch": "feat/cost-byok-fallback",
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor dashboard usage API (local session token; exact cost, request->PR by time window)",
+    "approximate": false,
+    "sessions": [
+      {
+        "ts": "2026-06-03T20:06:16.431000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 515026,
+        "cost_usd": 0.8803,
+        "cost_source": "cursor_charged",
+        "input_tokens": 7,
+        "output_tokens": 981,
+        "cache_read_input_tokens": 307841,
+        "cache_creation_input_tokens": 206197,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T20:10:24.744000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 870583,
+        "cost_usd": 0.3376,
+        "cost_source": "cursor_charged",
+        "input_tokens": 10,
+        "output_tokens": 3249,
+        "cache_read_input_tokens": 859034,
+        "cache_creation_input_tokens": 8290,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T20:17:51.761000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 228813,
+        "cost_usd": 0.4893,
+        "cost_source": "byok_token_usage",
+        "input_tokens": 4,
+        "output_tokens": 1710,
+        "cache_read_input_tokens": 112445,
+        "cache_creation_input_tokens": 114654,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-03T20:18:47.793000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 117455,
+        "cost_usd": 0.0572,
+        "cost_source": "byok_token_usage",
+        "input_tokens": 3,
+        "output_tokens": 1091,
+        "cache_read_input_tokens": 114654,
+        "cache_creation_input_tokens": 1707,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-03T20:19:37.857000+00:00",
+        "model": "composer-2.5",
+        "tokens": 859150,
+        "cost_usd": 0.2102,
+        "cost_source": "cursor_charged",
+        "input_tokens": 92409,
+        "output_tokens": 4629,
+        "cache_read_input_tokens": 762112,
+        "cache_creation_input_tokens": 0,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T20:20:01.250000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 89122,
+        "cost_usd": 0.1541,
+        "cost_source": "byok_token_usage",
+        "input_tokens": 5,
+        "output_tokens": 561,
+        "cache_read_input_tokens": 54021,
+        "cache_creation_input_tokens": 34535,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-03T20:21:34.239000+00:00",
+        "model": "composer-2.5",
+        "tokens": 426305,
+        "cost_usd": 0.1127,
+        "cost_source": "cursor_charged",
+        "input_tokens": 39722,
+        "output_tokens": 6743,
+        "cache_read_input_tokens": 379840,
+        "cache_creation_input_tokens": 0,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T20:23:28.271000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 762476,
+        "cost_usd": 1.5099,
+        "cost_source": "byok_token_usage",
+        "input_tokens": 16,
+        "output_tokens": 2852,
+        "cache_read_input_tokens": 575475,
+        "cache_creation_input_tokens": 184133,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-03T20:24:52.871000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 3018990,
+        "cost_usd": 3.1983,
+        "cost_source": "byok_token_usage",
+        "input_tokens": 42,
+        "output_tokens": 25152,
+        "cache_read_input_tokens": 2807291,
+        "cache_creation_input_tokens": 186505,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-03T20:36:45.053000+00:00",
+        "model": "composer-2.5",
+        "tokens": 1022964,
+        "cost_usd": 0.2201,
+        "cost_source": "cursor_charged",
+        "input_tokens": 18701,
+        "output_tokens": 4295,
+        "cache_read_input_tokens": 999968,
+        "cache_creation_input_tokens": 0,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T20:46:32.130000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 350067,
+        "cost_usd": 1.2515,
+        "cost_source": "byok_token_usage",
+        "input_tokens": 4,
+        "output_tokens": 2859,
+        "cache_read_input_tokens": 172186,
+        "cache_creation_input_tokens": 175018,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-03T20:47:52.024000+00:00",
+        "model": "composer-2.5",
+        "tokens": 1916067,
+        "cost_usd": 0.4026,
+        "cost_source": "cursor_charged",
+        "input_tokens": 12086,
+        "output_tokens": 6861,
+        "cache_read_input_tokens": 1897120,
+        "cache_creation_input_tokens": 0,
+        "note": null
+      }
+    ],
+    "tokens_total": 10177018,
+    "cost_usd_total": 8.8238,
+    "window": {
+      "start": "2026-06-03T20:00:00+00:00",
+      "end": "2026-06-04T02:00:00+00:00"
+    }
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 10177018,
+    "cost_usd": 8.8238
+  }
+}

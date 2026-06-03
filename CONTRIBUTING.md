@@ -318,6 +318,13 @@ request, any repo) — within a window, concurrent work in OTHER projects would 
 capture when you've been focused on one branch, or pass an explicit `--start/--end`. The conversationId
 does **not** separate back-to-back PRs (one chat session = one id).
 
+**BYOK (Anthropic API key in Cursor):** when you configure your own Anthropic key, Cursor sets
+`chargedCents=0` on Claude model events but still returns `tokenUsage.totalCents` (list-price model
+cost). `cursor_usage.py` falls back to `totalCents + cursorTokenFee` in that case and tags those
+sessions `cost_source=byok_token_usage` in the ledger (`note: byok`). This approximates what
+Anthropic bills; reconcile against the Anthropic console for authoritative BYOK totals. Composer and
+other non-BYOK models still use `chargedCents` directly.
+
 Empirically (PR #12): **build was ~94% of total cost** ($34.44 build vs $2.14 review = $36.58),
 dominated by one 44M-token Opus request ($30.76 = 84% of the PR) — so cost-efficiency work belongs in
 the build loop, not the review bot.

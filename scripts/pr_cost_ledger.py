@@ -220,9 +220,11 @@ def record_review_run(
         "cost_usd": round(float(cost_usd), 4) if cost_usd is not None else None,
         "result": result, "run_url": run_url,
     }
-    # De-dupe by run_url (one cost row per workflow run).
+    # De-dupe by run_url (one cost row per workflow run), or by ts when run_url absent.
     if run_url:
         rec["review"]["runs"] = [x for x in rec["review"]["runs"] if x.get("run_url") != run_url]
+    elif ts:
+        rec["review"]["runs"] = [x for x in rec["review"]["runs"] if x.get("ts") != ts]
     rec["review"]["runs"].append(entry)
     rec["review"]["runs"].sort(key=lambda x: x.get("ts") or "")
     save_record(rec)

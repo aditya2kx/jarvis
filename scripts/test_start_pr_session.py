@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for start_pr_session.py."""
 
+import html
 import os
 import sys
 import tempfile
@@ -31,9 +32,38 @@ class TestStartPrSession(unittest.TestCase):
         self.assertNotIn(" ", link)  # spaces must be percent-encoded
         self.assertIn("mode=agent", link)
 
-    def test_make_deeplink_special_chars(self):
-        link = S.make_deeplink("feat/my-branch → plan")
-        self.assertNotIn("→", link)  # non-ASCII must be encoded
+    def test_make_deeplink_rejects_overlong_text(self):
+        with self.assertRaises(ValueError):
+            S.make_deeplink("x" * 3000)
+
+    def test_seed_prompt_is_short(self):
+        req = (
+            "Dashboard on a free visualization tool (Looker Studio / Chartio) — "
+            "shareable with team, backed by BigQuery."
+        )
+        p = S.seed_prompt(16, brief_rel="metrics/pr_cost/PR-16-brief.md", requirement=req)
+        link = S.make_deeplink(p)
+        self.assertLess(len(link), S._MAX_DEEPLINK_CHARS)
+        self.assertIn("PR-16-brief.md", p)
+        self.assertIn("Dashboard", p)
+        self.assertIn("do not ask what to build", p)
+
+    def test_truncate_requirement(self):
+        long = "x" * 200
+        t = S._truncate_requirement(long, max_len=50)
+        self.assertLessEqual(len(t), 50)
+        self.assertTrue(t.endswith("…"))
+
+    def test_write_launch_html(self):
+        link = S.make_deeplink("hello")
+        brief = Path(self._tmpdir.name) / "PR-99-brief.md"
+        brief.write_text("# brief", encoding="utf-8")
+        out = S.write_launch_html(99, link, brief_path=brief, seed_text="PR #99 seed")
+        text = out.read_text()
+        self.assertIn("Open new chat for PR #99", text)
+        self.assertIn(html.escape(link, quote=True), text)
+        self.assertIn("PR #99 seed", text)
+        self.assertIn("Test PR 99", text)  # anti-placeholder warning
 
     def test_generate_brief_writes_file(self):
         with patch.object(S, "_gh", return_value=""):

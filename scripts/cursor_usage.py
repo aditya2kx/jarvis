@@ -29,6 +29,7 @@ import base64
 import datetime
 import json
 import sqlite3
+import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -37,6 +38,9 @@ from typing import Any
 STATE_DB = Path.home() / "Library/Application Support/Cursor/User/globalStorage/state.vscdb"  # macOS only
 AI_TRACKING_DB = Path.home() / ".cursor/ai-tracking/ai-code-tracking.db"
 ENDPOINT = "https://cursor.com/api/dashboard/get-filtered-usage-events"
+# Usage events have no conversationId — attribution uses edit windows from ai_code_hashes.
+_CONVERSATION_EVENT_PAD_MS = 5 * 60_000  # allow usage slightly before first edit
+_MAX_MANUAL_WINDOW_MS = 4 * 3600 * 1000  # reject wide manual windows (parallel-chat bleed)
 
 
 class CursorUsageError(RuntimeError):
@@ -159,6 +163,184 @@ def derive_window_for_branch(
     start_ms = max(lo_ms, int(edit[0]) - lead_pad_min * 60_000)
     end_ms = min(hi_ms, int(edit[1]) + tail_pad_min * 60_000)
     return start_ms, end_ms
+
+
+def git_branch_commit_range_ms(
+    branch: str, *, base: str = "main", repo_root: Path | None = None,
+) -> tuple[int, int]:
+    """First/last commit time on branch vs base (fallback when scored_commits missing)."""
+    cwd = repo_root or Path(__file__).resolve().parent.parent
+    for ref in (f"origin/{base}..{branch}", f"{base}..{branch}"):
+        try:
+            lines = subprocess.check_output(
+                ["git", "log", ref, "--format=%cI"],
+                cwd=cwd, text=True, stderr=subprocess.DEVNULL,
+            ).strip().splitlines()
+        except subprocess.CalledProcessError:
+            continue
+        if lines:
+            dates = [
+                datetime.datetime.fromisoformat(ln.replace("Z", "+00:00"))
+                for ln in lines if ln.strip()
+            ]
+            if dates:
+                lo, hi = min(dates), max(dates)
+                return int(lo.timestamp() * 1000), int(hi.timestamp() * 1000)
+    raise CursorUsageError(f"no git commits for {branch!r} vs {base}")
+
+
+def conversation_profiles(
+    start_ms: int, end_ms: int, *, db: Path = AI_TRACKING_DB,
+) -> dict[str, dict[str, Any]]:
+    """Per-conversation edit activity in [start_ms, end_ms] from ai_code_hashes."""
+    if not db.is_file():
+        return {}
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        rows = con.execute(
+            "select conversationId, model, timestamp from ai_code_hashes "
+            "where conversationId is not null and conversationId != '' "
+            "and timestamp between ? and ?",
+            (start_ms, end_ms),
+        ).fetchall()
+    finally:
+        con.close()
+    profiles: dict[str, dict[str, Any]] = {}
+    for cid, model, ts in rows:
+        p = profiles.setdefault(cid, {
+            "conversation_id": cid,
+            "min_ts": ts, "max_ts": ts,
+            "edit_count": 0,
+            "models": set(),
+        })
+        p["min_ts"] = min(p["min_ts"], ts)
+        p["max_ts"] = max(p["max_ts"], ts)
+        p["edit_count"] += 1
+        if model:
+            p["models"].add(model)
+    for p in profiles.values():
+        p["dominant_model"] = _dominant_model(p["models"])
+        p["models"] = sorted(p["models"])
+    return profiles
+
+
+def _dominant_model(models: set[str]) -> str | None:
+    if not models:
+        return None
+    # Prefer the most specific (longest) model string — usually the full name.
+    return max(models, key=len)
+
+
+def _model_tier(model: str | None) -> str:
+    m = (model or "").lower()
+    if "opus" in m:
+        return "opus"
+    if "sonnet" in m:
+        return "sonnet"
+    if "haiku" in m:
+        return "haiku"
+    if "composer" in m:
+        return "composer"
+    return "other"
+
+
+def _models_compatible(event_model: str | None, conv_model: str | None) -> bool:
+    """Usage event model must match the conversation's dominant model tier."""
+    if not conv_model:
+        return True
+    return _model_tier(event_model) == _model_tier(conv_model)
+
+
+def auto_bind_conversations(
+    start_ms: int, end_ms: int, *, db: Path = AI_TRACKING_DB,
+    min_edits: int = 1, min_share: float = 0.55,
+) -> list[str]:
+    """Pick conversationId(s) with enough edit activity in the window.
+
+    Returns one id when a single conversation dominates edit share; otherwise
+    returns all ids above min_edits (caller may bind explicitly).
+    """
+    profiles = conversation_profiles(start_ms, end_ms, db=db)
+    ranked = sorted(
+        profiles.values(), key=lambda p: p["edit_count"], reverse=True,
+    )
+    ranked = [p for p in ranked if p["edit_count"] >= min_edits]
+    if not ranked:
+        return []
+    total_edits = sum(p["edit_count"] for p in ranked)
+    if len(ranked) == 1 or ranked[0]["edit_count"] / total_edits >= min_share:
+        return [ranked[0]["conversation_id"]]
+    return [p["conversation_id"] for p in ranked]
+
+
+def filter_events_for_conversations(
+    events: list[dict[str, Any]],
+    conversation_ids: list[str],
+    start_ms: int,
+    end_ms: int,
+    *,
+    db: Path = AI_TRACKING_DB,
+) -> list[dict[str, Any]]:
+    """Keep usage events attributable to the given chat space(s).
+
+    The usage API is account-global and has no conversationId. We match each
+    event to a bound conversation when its timestamp falls in that chat's edit
+    window and its model tier matches the chat's dominant model.
+    """
+    if not conversation_ids:
+        return events
+    profiles = conversation_profiles(start_ms, end_ms, db=db)
+    bound = {cid: profiles[cid] for cid in conversation_ids if cid in profiles}
+    if not bound:
+        # Bound ids may predate edits in window — widen profile lookup to full range.
+        for cid in conversation_ids:
+            if not db.is_file():
+                continue
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                row = con.execute(
+                    "select min(timestamp), max(timestamp), group_concat(distinct model) "
+                    "from ai_code_hashes where conversationId=?",
+                    (cid,),
+                ).fetchone()
+            finally:
+                con.close()
+            if row and row[0] is not None:
+                models = set(filter(None, (row[2] or "").split(",")))
+                bound[cid] = {
+                    "conversation_id": cid,
+                    "min_ts": row[0], "max_ts": row[1],
+                    "edit_count": 0,
+                    "models": sorted(models),
+                    "dominant_model": _dominant_model(models),
+                }
+    out: list[dict[str, Any]] = []
+    for e in events:
+        ts = e["ts_ms"]
+        if ts < start_ms or ts > end_ms:
+            continue
+        candidates: list[tuple[str, int]] = []
+        for cid, prof in bound.items():
+            lo = max(start_ms, prof["min_ts"] - _CONVERSATION_EVENT_PAD_MS)
+            hi = min(end_ms, prof["max_ts"] + _CONVERSATION_EVENT_PAD_MS)
+            if ts < lo or ts > hi:
+                continue
+            if not _models_compatible(e.get("model"), prof.get("dominant_model")):
+                continue
+            # Prefer the conversation whose edit window is closest to this event.
+            dist = min(abs(ts - prof["min_ts"]), abs(ts - prof["max_ts"]))
+            candidates.append((cid, dist))
+        if not candidates:
+            continue
+        candidates.sort(key=lambda x: x[1])
+        row = dict(e)
+        row["conversation_id"] = candidates[0][0]
+        out.append(row)
+    return out
+
+
+def manual_window_span_ms(start: str | int, end: str | int) -> int:
+    return abs(to_ms(end) - to_ms(start))
 
 
 def resolve_event_cost_cents(event: dict[str, Any]) -> tuple[float, str]:

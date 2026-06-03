@@ -311,6 +311,28 @@ class TestPrCostLedger(unittest.TestCase):
         self.assertEqual(L._model_tier("composer-2.5"), "composer")
         self.assertEqual(L._model_tier(""), "composer")  # unknown → composer (cheapest bucket)
 
+    def test_bind_conversations_sets_ledger_fields(self):
+        pr = 99
+        L.set_meta(pr, session_started_at="2026-06-01T10:00:00Z")
+        rec = L.bind_conversations(pr, conversation_ids=["conv-test-uuid"])
+        self.assertEqual(rec["build"]["conversation_ids"], ["conv-test-uuid"])
+
+    def test_validate_rejects_wide_manual_window(self):
+        pr = 98
+        L.set_meta(pr, title="t", requirement="r")
+        L.record_build_session(pr, ts="2026-06-01T12:00:00Z", tokens=100, cost_usd=0.1, model="m")
+        rec = L.load_record(pr)
+        rec["build"]["attribution_mode"] = "manual_window"
+        rec["build"]["approximate"] = False
+        rec["build"]["window"] = {
+            "start": "2026-06-01T00:00:00Z",
+            "end": "2026-06-02T00:00:00Z",
+        }
+        L.save_record(rec)
+        ok, issues = L.validate(pr)
+        self.assertFalse(ok)
+        self.assertTrue(any("parallel chat" in i.lower() for i in issues))
+
 
 if __name__ == "__main__":
     unittest.main()

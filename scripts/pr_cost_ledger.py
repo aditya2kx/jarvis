@@ -5,9 +5,12 @@ Tracks the full cost of landing a change, from the moment a requirement is
 picked up until the PR merges, across BOTH cost surfaces:
 
   * BUILD  — the Cursor agent sessions that wrote the code (model =
-             claude-opus-*, etc.). Cursor has no per-PR usage API, so build
-             rows come from the Cursor usage dashboard (scraped via Playwright
-             or pasted) and are time-windowed to the PR. Marked approximate.
+             claude-opus-*, etc.). Auto path: `capture-build` pulls exact
+             per-request token+cost from the Cursor usage API via
+             `cursor_usage.py` (local session token). Manual fallback:
+             `record-build` from the dashboard UI — marked approximate.
+             PR attribution: auto-window from `ai-code-tracking.db` (edit-
+             anchored, capped at merge) or explicit `--start/--end`.
   * REVIEW — the Claude PR-review GitHub Action (model = claude-sonnet-*).
              Exact: sourced from each run's `execution_file` by
              `post_claude_review_cost.py`, which also calls

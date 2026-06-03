@@ -4,7 +4,7 @@
   "requirement": "Restructure reco engine to separate Tactical actions from Diagnosis/Observations, add per-model dated rate table, model-efficiency flag, de-stale review reco, CONTRIBUTING cost-efficiency playbook, start_pr_session.py + canvas button for new-chat-per-PR",
   "branch": "feat/cost-framework-v2",
   "created_at": null,
-  "merged_at": null,
+  "merged_at": "2026-06-03T20:05:52Z",
   "diff": {
     "files": null,
     "additions": null,
@@ -112,13 +112,40 @@
   },
   "review": {
     "source": "claude-code-action execution_file (exact)",
-    "runs": [],
-    "tokens_total": 0,
-    "cost_usd_total": 0,
-    "run_count": 0
+    "runs": [
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 12,
+        "input_tokens": 7,
+        "output_tokens": 7548,
+        "cache_read_input_tokens": 203568,
+        "cache_creation_input_tokens": 44614,
+        "tokens": 255737,
+        "cost_usd": 0.3428,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26871021506"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 6,
+        "input_tokens": 5,
+        "output_tokens": 4225,
+        "cache_read_input_tokens": 94829,
+        "cache_creation_input_tokens": 15086,
+        "tokens": 114145,
+        "cost_usd": 0.1496,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26871219543"
+      }
+    ],
+    "tokens_total": 369882,
+    "cost_usd_total": 0.4924,
+    "run_count": 2
   },
   "totals": {
-    "tokens": 16781550,
-    "cost_usd": 12.5425
+    "tokens": 17151432,
+    "cost_usd": 13.0349
   }
 }

@@ -4,7 +4,7 @@
   "requirement": "BYOK cost fallback for build attribution when Anthropic API key is configured in Cursor",
   "branch": "feat/cost-byok-fallback",
   "created_at": null,
-  "merged_at": null,
+  "merged_at": "2026-06-03T20:54:41Z",
   "diff": {
     "files": null,
     "additions": null,
@@ -168,13 +168,27 @@
   },
   "review": {
     "source": "claude-code-action execution_file (exact)",
-    "runs": [],
-    "tokens_total": 0,
-    "cost_usd_total": 0,
-    "run_count": 0
+    "runs": [
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 8,
+        "input_tokens": 5,
+        "output_tokens": 4861,
+        "cache_read_input_tokens": 122339,
+        "cache_creation_input_tokens": 33965,
+        "tokens": 161170,
+        "cost_usd": 0.2382,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26912155678"
+      }
+    ],
+    "tokens_total": 161170,
+    "cost_usd_total": 0.2382,
+    "run_count": 1
   },
   "totals": {
-    "tokens": 10177018,
-    "cost_usd": 8.8238
+    "tokens": 10338188,
+    "cost_usd": 9.062
   }
 }

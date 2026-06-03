@@ -280,6 +280,16 @@ Commands:
 - **Post-merge analysis:** `pr_cost_ledger.py analyze --pr <n>` — prints the top cost areas and
   efficiency recommendations (drop to a smaller model for mechanical work, checkpoint marathon
   sessions, batch pushes to cut review re-runs, etc.). Omit `--pr` to analyze across all PRs.
+- **HTML report (team-visible, opens any/all ledgers):** `pr_cost_ledger.py report` renders a
+  standalone, dependency-free `metrics/pr_cost/report.html` (summary, build/review split, top cost
+  areas, top recommendations) from whatever `PR-*.json` records exist — open it in any browser, no
+  build step. `--pr <n>` for a single PR; `--out <path>` to override the destination.
+- **Automatic on merge:** `.github/workflows/pr-cost-finalize.yml` runs when a PR merges — it
+  `capture-review`s the final review cost from the posted comments (gh-only; **build cost is
+  local-only and must already be committed via the pre-merge gate**), regenerates `report.html`,
+  posts the post-merge analysis as a PR comment, and commits the refreshed ledger + report to `main`.
+  (Committing to `main` needs the actions bot to be allowed to push to the protected branch; if it
+  isn't, the comment is still posted and you commit the ledger manually.)
 
 **How build cost is captured (individual account, no team plan):** Cursor's *documented* per-request
 feed (`/teams/filtered-usage-events`) needs a team/Enterprise Admin key. But the dashboard's own

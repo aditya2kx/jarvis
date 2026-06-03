@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import glob
+import html
 import json
 import os
 import re
@@ -479,6 +480,118 @@ def analyze(prs: list[int], top_n: int = 5) -> dict[str, Any]:
     return {"reports": reports, "text": "\n".join(out_lines)}
 
 
+# ── HTML report (checked-in, opens any/all PR ledgers) ──────────────
+
+_REPORT_CSS = """
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #0d1117; color: #e6edf3; }
+.wrap { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
+h1 { font-size: 24px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 24px 0 8px; color: #adbac7; font-weight: 600; }
+.muted { color: #768390; font-size: 12px; }
+.pr { border: 1px solid #21262d; border-radius: 10px; padding: 20px; margin: 24px 0; background: #11151b; }
+.pr-title { font-size: 17px; font-weight: 600; margin: 0 0 2px; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 14px 0; }
+.stat { border: 1px solid #21262d; border-radius: 8px; padding: 12px; }
+.stat .v { font-size: 22px; font-weight: 600; }
+.stat .l { color: #768390; font-size: 12px; margin-top: 2px; }
+.v.build { color: #d29922; } .v.review { color: #539bf5; }
+.bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; margin: 6px 0 2px; }
+.bar .b { background: #bb8009; } .bar .r { background: #316dca; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #21262d; }
+th { color: #768390; font-weight: 600; } td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+tr.build td:first-child { border-left: 3px solid #bb8009; } tr.review td:first-child { border-left: 3px solid #316dca; }
+.rec { border: 1px solid #30363d; border-left: 3px solid #d29922; border-radius: 6px; padding: 10px 12px; margin: 8px 0;
+  background: #15191f; }
+.rec.info { border-left-color: #539bf5; }
+.rec b { display: block; margin-bottom: 2px; }
+code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+"""
+
+
+def _esc(s: Any) -> str:
+    return html.escape(str(s if s is not None else ""))
+
+
+def _hhmm(ts: str) -> str:
+    return ts[11:16] if ts and len(ts) >= 16 else _esc(ts)
+
+
+def _fmt_tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}k"
+    return str(n)
+
+
+def _render_pr_html(rec: dict[str, Any]) -> str:
+    _recompute_totals(rec)
+    t = rec["totals"]
+    total = t["cost_usd"] or 1.0
+    b, r = rec["build"], rec["review"]
+    build_pct = b["cost_usd_total"] / total * 100
+    review_pct = r["cost_usd_total"] / total * 100
+    areas = _areas(rec)[:5]
+
+    area_rows = "".join(
+        f'<tr class="{("review" if a["area"].startswith("claude review") else "build")}">'
+        f"<td>{_esc(a['area'])}</td><td>{_esc(a['model'])}</td>"
+        f'<td class="n">{_fmt_tokens(a["tokens"])}</td>'
+        f'<td class="n">${a["cost_usd"]:.2f}</td>'
+        f'<td class="n">{(a["cost_usd"] / total * 100):.1f}%</td></tr>'
+        for a in areas
+    )
+    recs = _recommendations(rec)
+    rec_html = "".join(
+        f'<div class="rec{(" info" if i >= 3 else "")}"><b>#{i + 1}</b>{_esc(rc)}</div>'
+        for i, rc in enumerate(recs)
+    )
+    return f"""
+    <section class="pr">
+      <p class="pr-title">#{rec['pr_number']} — {_esc(rec.get('title') or '(untitled)')}</p>
+      <p class="muted">merged {_esc((rec.get('merged_at') or '')[:10])} · build = Cursor usage API · review = Claude Sonnet bot</p>
+      <div class="stats">
+        <div class="stat"><div class="v">${t['cost_usd']:.2f}</div><div class="l">Total cost</div></div>
+        <div class="stat"><div class="v build">${b['cost_usd_total']:.2f}</div><div class="l">Build ({build_pct:.0f}%)</div></div>
+        <div class="stat"><div class="v review">${r['cost_usd_total']:.2f}</div><div class="l">Review · {r['run_count']} runs</div></div>
+        <div class="stat"><div class="v">{_fmt_tokens(t['tokens'])}</div><div class="l">Tokens</div></div>
+      </div>
+      <div class="bar"><div class="b" style="width:{build_pct:.1f}%"></div><div class="r" style="width:{review_pct:.1f}%"></div></div>
+      <p class="muted">Build {build_pct:.0f}% · Review {review_pct:.0f}%</p>
+      <h2>Where the effort went — top {len(areas)} cost areas</h2>
+      <table><thead><tr><th>Area</th><th>Model</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">% of PR</th></tr></thead>
+      <tbody>{area_rows}</tbody></table>
+      <h2>Top recommendations to cut cost</h2>
+      {rec_html}
+    </section>
+    """
+
+
+def _render_report_html(records: list[dict[str, Any]]) -> str:
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    grand = sum((rec["totals"]["cost_usd"] or 0) for rec in records)
+    body = "".join(_render_pr_html(rec) for rec in records)
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PR cost monitoring</title>
+<style>{_REPORT_CSS}</style></head>
+<body><div class="wrap">
+<h1>PR cost monitoring</h1>
+<p class="muted">{len(records)} PR(s) · ${grand:.2f} total · generated {now} · source: <code>metrics/pr_cost/PR-*.json</code> via <code>pr_cost_ledger.py report</code></p>
+{body}
+</div></body></html>
+"""
+
+
+def build_html_report(prs: list[int]) -> str:
+    return _render_report_html([load_record(p) for p in prs])
+
+
 # ── CLI ─────────────────────────────────────────────────────────────
 
 def _all_prs() -> list[int]:
@@ -527,6 +640,11 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--top", type=int, default=5)
     a.add_argument("--json", action="store_true")
 
+    rp = sub.add_parser("report", help="Render a standalone HTML cost report (any/all PRs)")
+    rp.add_argument("--pr", type=int, help="single PR; omit for all recorded PRs")
+    rp.add_argument("--out", default=str(LEDGER_DIR / "report.html"),
+                    help="output HTML path (default: metrics/pr_cost/report.html)")
+
     args = cli.parse_args(argv)
 
     if args.cmd == "set-meta":
@@ -574,6 +692,17 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result["reports"], indent=2))
         else:
             print(result["text"])
+        return 0
+    if args.cmd == "report":
+        prs = [args.pr] if args.pr else _all_prs()
+        if not prs:
+            print("no PR cost records found in metrics/pr_cost/")
+            return 0
+        # Newest PR first so the most recent change leads the report.
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(build_html_report(sorted(prs, reverse=True)), encoding="utf-8")
+        print(f"wrote HTML cost report for {len(prs)} PR(s) → {out}")
         return 0
     return 0
 

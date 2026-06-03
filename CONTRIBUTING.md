@@ -242,7 +242,47 @@ gh pr create --base main --fill     # then fill the template
   reply — so a silently-skipped comment fails the readiness gate instead of slipping through.
 - **Cost comment:** after each run, `scripts/post_claude_review_cost.py` posts a PR comment with
   model, turns, input/output tokens, and reported USD cost (from the action's `execution_file`).
-  Budget target remains **~$0.50–1/PR** on Sonnet.
+  Budget target remains **~$0.50–1/PR** on Sonnet. The same script ALSO appends the run to the
+  in-repo cost ledger (see below) so review cost is captured automatically.
+
+## Per-PR cost ledger (build + review)
+
+Every change carries two cost surfaces; both are tracked per-PR in `metrics/pr_cost/PR-<n>.json`
+via `scripts/pr_cost_ledger.py`:
+
+- **Review** (exact, automatic) — each Claude-review run is appended by `post_claude_review_cost.py`
+  (model = Sonnet). No action needed.
+- **Build** (exact, automatic) — the Cursor agent sessions that wrote the code (model = Opus-class).
+  Pulled from the Cursor usage API by `scripts/cursor_usage.py` and recorded with:
+  `pr_cost_ledger.py capture-build --pr <n> [--model-filter opus]`. With no `--start/--end`, the
+  window is **auto-derived from the PR's branch** via Cursor's local `ai-code-tracking.db` (anchored
+  to AI code edits, capped at merge) — so attribution is automatic and edit-accurate. Pass explicit
+  `--start/--end` to override. Cost is exact (billed `chargedCents`). `record-build` (manual) remains
+  a fallback if the API path breaks.
+
+Commands:
+- **Pre-merge gate (HARD):** `pr_cost_ledger.py validate --pr <n> --require-build` — fails unless the
+  committed record exists AND build cost is recorded. Enforced in CI by `.github/workflows/pr-cost-gate.yml`;
+  make **PR cost gate** a required status check (see § Enabling enforcement) to actually block merge.
+  Run it locally alongside `check_doc_freshness.py` before declaring merge-ready.
+- **Post-merge analysis:** `pr_cost_ledger.py analyze --pr <n>` — prints the top cost areas and
+  efficiency recommendations (drop to a smaller model for mechanical work, checkpoint marathon
+  sessions, batch pushes to cut review re-runs, etc.). Omit `--pr` to analyze across all PRs.
+
+**How build cost is captured (individual account, no team plan):** Cursor's *documented* per-request
+feed (`/teams/filtered-usage-events`) needs a team/Enterprise Admin key. But the dashboard's own
+endpoint `https://cursor.com/api/dashboard/get-filtered-usage-events` returns the same per-request
+token+cost+model data for a personal account when called with the local Cursor session token (read
+read-only from the desktop app's `state.vscdb`; never printed or stored). `scripts/cursor_usage.py`
+does exactly that. It is an **undocumented** endpoint, so treat it as best-effort — if it breaks, fall
+back to `record-build` (manual, from the dashboard UI), or wire the supported Admin API if we move to a
+team plan. Attribution to a branch/PR is by time window (Cursor's usage events carry no branch/PR field;
+the local `~/.cursor/ai-tracking/ai-code-tracking.db` maps requests→branch by timestamp if tighter
+attribution is ever needed).
+
+Empirically (PR #12): **build was ~94% of total cost** ($34.44 build vs $2.14 review = $36.58),
+dominated by one 44M-token Opus request ($30.76 = 84% of the PR) — so cost-efficiency work belongs in
+the build loop, not the review bot.
 - **Workflow bootstrap PRs:** `claude-code-action` refuses to run when
   `.github/workflows/claude-review.yml` on the PR branch differs from `main` (GitHub app token
   validation). On those PRs the cost comment says **review did not run** (not fake zeros) and CI
@@ -297,6 +337,7 @@ the **job name** (not the workflow filename):
 | --- | --- | --- |
 | `Doc Freshness` | `doc-freshness.yml` | **Yes** — always runs, cheap |
 | `Sandbox e2e` | `sandbox-e2e.yml` | **Yes** — prod-like replay (needs `SANDBOX_E2E_ENABLED=true`) |
+| `PR cost gate` | `pr-cost-gate.yml` | **Yes** — blocks merge until `metrics/pr_cost/PR-<n>.json` records build cost |
 | `Claude review` | `claude-review.yml` | Optional — advisory (`continue-on-error`); still useful as signal |
 
 Do **not** expect `Sandbox teardown` here — it runs on PR **close**, not on the PR commit.
@@ -309,7 +350,8 @@ this repo — not an org template with no runs yet.
 
 1. `Doc Freshness`
 2. `Sandbox e2e`
-3. Enable **Require branches to be up to date before merging**
+3. `PR cost gate`
+4. Enable **Require branches to be up to date before merging**
 
 Skip requiring `Claude review` as a hard gate if you want merges to survive bot turn-cap/API blips
 (it is intentionally advisory).

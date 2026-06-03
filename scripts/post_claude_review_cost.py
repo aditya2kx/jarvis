@@ -16,6 +16,7 @@ Usage (CI):
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import subprocess
@@ -305,6 +306,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Why the review did not run (e.g. workflow file differs from main).",
     )
     cli.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
+    cli.add_argument("--no-ledger", action="store_true",
+                     help="Skip appending this run to metrics/pr_cost/PR-<n>.json.")
     cli.add_argument("--dry-run", action="store_true")
     args = cli.parse_args(argv)
 
@@ -332,6 +335,36 @@ def main(argv: list[str] | None = None) -> int:
         skip_reason=args.skip_reason,
     )
     print(body)
+
+    # Append this run to the in-repo per-PR cost ledger (the cost-monitoring
+    # framework's data source). Best-effort: a ledger hiccup must never fail the
+    # cost comment (which is the human-visible artifact). Skipped when the review
+    # didn't actually run (no execution file / bootstrap workflow).
+    if not execution_missing and not args.skip_reason and not args.no_ledger:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import pr_cost_ledger  # noqa: PLC0415
+
+            model = stats.get("model") if stats.get("model") != "unknown" else args.default_model
+            pr_cost_ledger.record_review_run(
+                args.pr_number,
+                ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                model=model,
+                turns=stats.get("num_turns"),
+                input_tokens=stats.get("input_tokens", 0),
+                output_tokens=stats.get("output_tokens", 0),
+                cache_read=stats.get("cache_read_input_tokens", 0),
+                cache_write=stats.get("cache_creation_input_tokens", 0),
+                cost_usd=stats.get("total_cost_usd")
+                if stats.get("total_cost_usd") is not None
+                else (cost_breakdown_usd(model, stats) or {}).get("total"),
+                result=stats.get("conclusion"),
+                run_url=args.workflow_run_url or None,
+            )
+            print(f"[ledger] recorded review run for PR #{args.pr_number}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ledger] WARN: failed to record review run (non-fatal): {exc}")
+
     if args.dry_run:
         return 0
     if not args.repo:

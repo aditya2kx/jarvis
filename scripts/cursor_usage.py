@@ -214,10 +214,13 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--start", required=True, help="ISO8601 or epoch-ms")
     ev.add_argument("--end", required=True, help="ISO8601 or epoch-ms")
     ev.add_argument("--json", action="store_true")
+    ev.add_argument("--state-db", default=None,
+                    help="Override the Cursor state DB path (default: macOS ~/Library/.../state.vscdb)")
     args = cli.parse_args(argv)
 
     if args.cmd == "events":
-        events = fetch_usage_events(args.start, args.end)
+        state_db = Path(args.state_db) if args.state_db else STATE_DB
+        events = fetch_usage_events(args.start, args.end, state_db=state_db)
         if args.json:
             print(json.dumps(events, indent=2))
             return 0

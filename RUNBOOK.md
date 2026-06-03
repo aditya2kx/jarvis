@@ -55,6 +55,9 @@ Cloud Run Service  bhaga-webhook  (image: bhaga-webhook)
   OTP/READY path**.
 - Deploys are fully automated via **GitHub Actions + Workload Identity Federation** (no static
   service-account keys).
+- **BigQuery** (`jarvis-bhaga-prod.bhaga`) is a **parallel read-only mirror** of Sheets (not replacing
+  it). The nightly cron writes raw + model data to BQ after each Sheets update. Grafana Cloud reads from
+  BQ views (`vw_*`, `model_*`) via the `grafana-bq-reader` SA. See §14 for BQ + Grafana operations.
 
 ---
 
@@ -740,4 +743,57 @@ compete for the OTP, then resume it after the prod rerun:
 gcloud scheduler jobs pause  bhaga-nightly --location=us-central1   # before the fix loop
 # … reproduce in sandbox → fix → prove green → merge → rerun prod 5/31 + 6/1 …
 gcloud scheduler jobs resume bhaga-nightly --location=us-central1   # after prod is caught up
+```
+
+---
+
+## 14. BigQuery + Grafana Cloud (added PR #16, 2026-06-03)
+
+### Architecture
+
+- **BQ dataset:** `jarvis-bhaga-prod.bhaga`
+- **Raw tables:** `square_transactions`, `adp_shifts`, `adp_punches`, `adp_wage_rates`, `square_daily_rollup`
+- **Curated views:** `vw_daily_sales`, `vw_tips_by_hour`, `vw_labor_daily`, `vw_labor_weekly`, `vw_sales_labor_daily`, `vw_employee_hours_summary`
+- **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`
+- **Model views (Grafana BI contract):** `vw_model_labor_daily`, `vw_model_period_summary`
+- **Grafana org:** `steadyangelfish2985`
+- **Dashboard URL:** `https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics`
+- **Read-only SA:** `grafana-bq-reader@jarvis-bhaga-prod.iam.gserviceaccount.com` (DataViewer + JobUser)
+- **SA key:** stored in Secret Manager secret `grafana-bq-reader-key`
+- **API token:** stored in macOS Keychain (`security find-generic-password -s grafana-cloud-api-token -a steadyangelfish2985 -w`)
+- **GitHub secrets required:** `GRAFANA_API_TOKEN`, `GRAFANA_ORG_SLUG` (= `steadyangelfish2985`)
+
+### Daily cron integration
+
+After each `write_raw_sheets` step, `daily_refresh.py` calls `backfill_bigquery.py` (the `load_bigquery` step) to mirror raw tables to BQ. After each `update_model_sheet` step, it calls `materialize_model_bq.py` (the `materialize_model_bq` step) to rebuild `model_*` tables. Both steps are **non-fatal** — a BQ failure never blocks the Sheets update.
+
+### Re-deploying the dashboard
+
+```bash
+# from repo root, after activating venv:
+python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985
+
+# or CI: push a change to agents/bhaga/grafana/** → GitHub Action auto-deploys
+```
+
+### Running SQL migrations
+
+```bash
+python3 -c "from core.datastore import run_migrations; run_migrations()"
+```
+
+Migrations live in `core/migrations/001_initial_schema.sql`, `002_views.sql`, `003_model_tables.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`).
+
+### BQ backfill (one-shot)
+
+```bash
+BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
+  python3 -m agents.bhaga.scripts.backfill_bigquery --store palmetto
+```
+
+### Materialize model into BQ (one-shot)
+
+```bash
+BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
+  python3 -m agents.bhaga.scripts.materialize_model_bq --store palmetto
 ```

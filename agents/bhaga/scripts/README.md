@@ -25,11 +25,17 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
 4. **Mirror scrapes → raw Google Sheets** (`backfill_from_downloads.py`): `bhaga_adp_raw`,
    `bhaga_square_raw` (including **`item_lines`** from the same Item Sales CSV as
    `item_daily_rollup`). **Contract: downstream reads only the raw sheets, never local files.**
-5. **Recompute the Model tabs** (`update_model_sheet.py`): `config, daily, labor_daily,
+5. **Mirror raw data → BigQuery** (`backfill_bigquery.py` called via `load_bigquery` step, non-fatal):
+   keeps `square_transactions`, `adp_shifts`, `adp_punches`, `adp_wage_rates` in BQ in sync with
+   Sheets. Sheets is still the source of truth; BQ is a parallel mirror for BI.
+6. **Recompute the Model tabs** (`update_model_sheet.py`): `config, daily, labor_daily,
    labor_weekly, labor_period, tip_alloc_period, tip_alloc_daily, period_summary`
    (+ `labor_daily_forecast` via `forecast.py`), then **upsert `item_operations`** for the gap
    window (`item_operations.py` — incremental, not full-tab rewrite).
-6. **Reviews** (`process_reviews.py`): pull Google reviews from ClickUp, allocate bonuses, rebuild
+7. **Materialize Model → BigQuery** (`materialize_model_bq.py` called via `materialize_model_bq` step,
+   non-fatal): rebuilds all 7 model tabs from BQ raw data (using the same `build_*` functions) and
+   writes to `model_*` BQ tables via MERGE. The Grafana Cloud dashboard reads these BQ tables.
+8. **Reviews** (`process_reviews.py`): pull Google reviews from ClickUp, allocate bonuses, rebuild
    `review_bonus_period`. Idempotent on rerun.
 7. **Verify the rebuilt Model** — first **mechanically** (`assert_model_tabs_populated`: tabs non-empty,
    KDS joined), then **semantically** (`model_semantics.assert_model_semantics`: tip-pool conservation,
@@ -95,7 +101,8 @@ nightly). Both honor sandbox write-bucket isolation via `gcs_cache`.
 | `sandbox_live_run.py` | **LIVE sandbox run** (real Square/ADP scrape + OTP on **unmerged PR code**) — the only way to reproduce/prove a fix for selector drift. Builds the PR image → deploys `bhaga-sandbox-refresh` (self-wires by inheriting prod's secrets + SA) → live pipeline for a `REFRESH_DATE`. Enforces isolation (`assert_sandbox_isolation`: staging sheets + sandbox GCS write bucket + sandbox Firestore collection — reads prod OK, writes prod NEVER) before any deploy. OTP uses the prod Slack bot but the prompt is labeled `[SANDBOX · PR…]` and the reply resumes the **sandbox** job (sandbox precedence in the webhook); supervised runs set `BHAGA_OTP_ASSUME_READY=1` to take the code inline (no webhook resume needed). On create it inherits prod's secrets + SA + **resources/timeout** + **plain env vars** (`BHAGA_SECRETS_BACKEND=gcp`, …); describe-JSON parsing is schema-robust (v2 + KRM). Supports `--skip <steps>` (scenario scoping → `BHAGA_SKIP_<STEP>`) and `--verify item_sales` (`verify_item_sales()`: a post-run gate that fails the run if `<date>/square/items-*.csv` is absent/empty, even on a 0 job exit). The sandbox cache bucket is a one-time operator setup (`assert_sandbox_bucket` fails with remediation if absent). See `RUNBOOK.md` §13. |
 | `sandbox_scenarios.py` | **Named scenario suite** for live sandbox runs (`item-sales-live` = Square-only via `skip:[adp,reviews,model]` + `verify:item_sales`; `full-live`; …). Selects what runs via committed `.github/sandbox-live.yml` (+ `sandbox-live` label, pre-merge), a `/sandbox run <scenario> [date=…]` PR comment (post-merge), or manual dispatch. `sandbox_workflow_resolve.py` turns the triggering event into a run plan for `.github/workflows/sandbox-live-run.yml`. Each scenario posts evidence as a PR comment. |
 | `verify_drilldown.py`, `verify_bq_parity.py`, `verify_against_historical_payroll.py` | Verification harnesses (parity vs historical payroll / BigQuery). |
-| `backfill_bigquery.py` | Backfill raw data into BigQuery. |
+| `backfill_bigquery.py` | Backfill raw data into BigQuery (called by `load_bigquery` step in `daily_refresh`). |
+| `materialize_model_bq.py` | Rebuild the computed model from BQ raw data and write to `model_*` BigQuery tables via MERGE. Called by `materialize_model_bq` step in `daily_refresh`. Reuses the same `build_*_rows` functions as `update_model_sheet.py`. Used by the Grafana Cloud dashboard. |
 | `test_*.py` | Unit tests. Run: `python3 -m pytest agents/bhaga/scripts/`. |
 
 ---
@@ -107,7 +114,22 @@ Square / ADP / ClickUp  ──scrape──▶  raw Google Sheets  ──read─�
   (skills/square_tips,              (bhaga_*_raw;          (skills/tip_ledger_      (update_model_sheet.py)   (config, daily,
    adp_run_automation,              schema in             writer/reader.py)                                   labor_*, tip_alloc_*,
    ClickUp)                         tip_ledger_writer)                                                         review_bonus_period…)
+
+            │ (parallel)                                           │ (parallel, via materialize_model_bq.py)
+            ▼                                                      ▼
+       BigQuery raw tables                                   model_* BigQuery tables
+       (square_transactions,                                 (model_daily, model_labor_*,
+        adp_shifts, adp_punches,                             model_tip_alloc_*, model_period_summary)
+        adp_wage_rates)                                            │
+            │                                                      │
+            └──────────────────── vw_* BigQuery views ─────────────┘
+                                        │
+                                        ▼
+                              Grafana Cloud Dashboard
+                      (https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1)
 ```
+
+Sheets is the **source of truth**; BigQuery is a **parallel read-only mirror** updated each daily cron run. The Grafana Cloud dashboard reads from BQ views (`vw_daily_sales`, `vw_model_labor_daily`, etc.) via the `grafana-bq-reader` service account. See `agents/bhaga/grafana/` for dashboard-as-code and `skills/grafana_cloud_provisioning/` for provisioning helpers.
 
 - **Schema registry:** `skills/tip_ledger_writer/schema.py` (`WORKBOOK_SCHEMAS`) defines every tab's
   `header` + `natural_key_columns`. `get_tab_spec(workbook_title, tab_name)` returns it.

@@ -184,12 +184,18 @@ def fetch_usage_events(
         for e in events:
             tu = e.get("tokenUsage") or {}
             ts_ms = int(e["timestamp"])
-            key = (ts_ms, e.get("model"), e.get("chargedCents"))
+            inp = int(tu.get("inputTokens", 0)); outp = int(tu.get("outputTokens", 0))
+            cr = int(tu.get("cacheReadTokens", 0)); cw = int(tu.get("cacheWriteTokens", 0))
+            # Dedup only removes true page-overlap repeats. Prefer a stable event
+            # id when present; otherwise fingerprint the full content so two
+            # distinct same-ms events (e.g. both with chargedCents=None) aren't
+            # collapsed onto one another.
+            key = e.get("requestId") or e.get("id") or (
+                ts_ms, e.get("model"), e.get("chargedCents"), inp, outp, cr, cw,
+            )
             if key in seen:
                 continue
             seen.add(key)
-            inp = int(tu.get("inputTokens", 0)); outp = int(tu.get("outputTokens", 0))
-            cr = int(tu.get("cacheReadTokens", 0)); cw = int(tu.get("cacheWriteTokens", 0))
             out.append({
                 "ts_ms": ts_ms,
                 "ts_iso": datetime.datetime.fromtimestamp(ts_ms / 1000, datetime.timezone.utc).isoformat(),

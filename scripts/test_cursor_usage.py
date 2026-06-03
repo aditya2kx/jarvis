@@ -123,5 +123,64 @@ class TestSessionCookie(unittest.TestCase):
             U._session_cookie(tok)
 
 
+class TestFetchUsageEvents(unittest.TestCase):
+    """Mock the HTTP/pagination loop — no live Cursor session needed."""
+
+    def _resp(self, payload: dict):
+        from unittest import mock
+        cm = mock.MagicMock()
+        cm.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+        return cm
+
+    def _event(self, ts_ms: int, model: str, cents: int, inp: int = 10, outp: int = 5):
+        return {
+            "timestamp": str(ts_ms), "model": model, "chargedCents": cents,
+            "isHeadless": False, "kind": "code",
+            "tokenUsage": {"inputTokens": inp, "outputTokens": outp,
+                           "cacheReadTokens": 0, "cacheWriteTokens": 0},
+        }
+
+    def test_paginates_dedups_and_sorts(self):
+        from unittest import mock
+        page1 = {"usageEventsDisplay": [
+            self._event(2000, "claude-opus", 100),
+            self._event(1000, "claude-sonnet", 50),
+            self._event(2000, "claude-opus", 100),  # exact page-overlap dup
+        ]}
+        page2 = {"usageEventsDisplay": [self._event(3000, "composer", 0)]}
+        page3 = {"usageEventsDisplay": []}
+        with mock.patch.object(U, "_read_access_token", return_value="t"), \
+             mock.patch.object(U, "_session_cookie", return_value="c"), \
+             mock.patch.object(U.urllib.request, "urlopen",
+                               side_effect=[self._resp(page1), self._resp(page2), self._resp(page3)]):
+            events = U.fetch_usage_events(0, 9999, page_size=3)  # full page → fetch next
+        self.assertEqual([e["ts_ms"] for e in events], [1000, 2000, 3000])  # sorted, dup dropped
+        self.assertEqual(events[1]["cost_usd"], 1.0)  # 100 cents
+        self.assertEqual(events[0]["tokens"], 15)
+
+    def test_keeps_distinct_same_ms_events_with_none_cents(self):
+        from unittest import mock
+        page = {"usageEventsDisplay": [
+            self._event(5000, "m", None, inp=10),
+            self._event(5000, "m", None, inp=20),  # same ts/model/cents, different tokens
+        ]}
+        with mock.patch.object(U, "_read_access_token", return_value="t"), \
+             mock.patch.object(U, "_session_cookie", return_value="c"), \
+             mock.patch.object(U.urllib.request, "urlopen", side_effect=[self._resp(page), self._resp({"usageEventsDisplay": []})]):
+            events = U.fetch_usage_events(0, 9999, page_size=200)
+        self.assertEqual(len(events), 2)
+
+    def test_stops_on_short_page(self):
+        from unittest import mock
+        page = {"usageEventsDisplay": [self._event(1000, "m", 10)]}
+        urlopen = mock.MagicMock(side_effect=[self._resp(page)])
+        with mock.patch.object(U, "_read_access_token", return_value="t"), \
+             mock.patch.object(U, "_session_cookie", return_value="c"), \
+             mock.patch.object(U.urllib.request, "urlopen", urlopen):
+            events = U.fetch_usage_events(0, 9999, page_size=200)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(urlopen.call_count, 1)  # short page → no second request
+
+
 if __name__ == "__main__":
     unittest.main()

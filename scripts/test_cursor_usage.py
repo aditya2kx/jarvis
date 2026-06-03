@@ -98,6 +98,24 @@ class TestDeriveWindowForBranch(unittest.TestCase):
         self.assertLess(start_ms, edit_ms)
         self.assertGreater(end_ms, edit_ms)
 
+    def test_falls_back_to_commit_bounded_window_when_no_ai_edits(self):
+        # Branch with scored commits but ZERO ai_code_hashes rows in range:
+        # the window must fall back to (first_commit - pre_buffer, merged_at).
+        with sqlite3.connect(self.db) as con:
+            con.execute("DELETE FROM ai_code_hashes")
+        commit = U._parse_git_date("Tue Jun 2 13:26:27 2026 -0500")
+        pre_buffer_min = 120
+        merged_at = "2026-06-02T20:00:00Z"
+        start_ms, end_ms = U.derive_window_for_branch(
+            "feat/x", merged_at=merged_at, pre_buffer_min=pre_buffer_min, db=self.db,
+        )
+        expected_lo = int((commit - datetime.timedelta(minutes=pre_buffer_min)).timestamp() * 1000)
+        expected_hi = int(
+            datetime.datetime(2026, 6, 2, 20, 0, tzinfo=datetime.timezone.utc).timestamp() * 1000
+        )
+        self.assertEqual(start_ms, expected_lo)
+        self.assertEqual(end_ms, expected_hi)
+
 
 class TestSessionCookie(unittest.TestCase):
     def _make_token(self, sub: str, exp: int | None = None) -> str:

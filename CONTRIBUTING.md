@@ -250,8 +250,11 @@ gh pr create --base main --fill     # then fill the template
 Every change carries two cost surfaces; both are tracked per-PR in `metrics/pr_cost/PR-<n>.json`
 via `scripts/pr_cost_ledger.py`:
 
-- **Review** (exact, automatic) — each Claude-review run is appended by `post_claude_review_cost.py`
-  (model = Sonnet). No action needed.
+- **Review** (exact) — each Claude-review run posts a cost comment (model = Sonnet). The CI-side
+  ledger append is **ephemeral** (the runner filesystem is discarded, and committing back inside the
+  review workflow would re-trigger it in a loop), so reconcile the committed ledger pre-merge with
+  `pr_cost_ledger.py capture-review --pr <n>` — it rebuilds the review rows from the posted cost
+  comments (idempotent by workflow-run URL).
 - **Build** (exact, automatic) — the Cursor agent sessions that wrote the code (model = Opus-class).
   Pulled from the Cursor usage API by `scripts/cursor_usage.py` and recorded with:
   `pr_cost_ledger.py capture-build --pr <n> [--model-filter opus]`. With no `--start/--end`, the

@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -112,6 +113,47 @@ class TestPrCostLedger(unittest.TestCase):
         self.assertEqual(rec["review"]["tokens_total"], 100)
         self.assertAlmostEqual(rec["review"]["cost_usd_total"], 0.25)
         self.assertAlmostEqual(rec["totals"]["cost_usd"], 1.75)
+
+    def test_parse_cost_comment_real_format(self):
+        body = (
+            "### Claude review — API cost\n\n"
+            "| Metric | Value |\n| --- | --- |\n"
+            "| Model | `claude-sonnet-4-6` |\n"
+            "| Turns | 13 |\n"
+            "| Input tokens (uncached) | 13 |\n"
+            "| Output tokens | 3,461 |\n"
+            "| Cache read tokens (0.10×) | 589,918 |\n"
+            "| Cache write tokens (1.25×) | 78,310 |\n"
+            "| **Reported cost** | **$0.5235** |\n"
+            "| Run result | `success` |\n\n"
+            "[Workflow run](https://github.com/o/r/actions/runs/123)"
+        )
+        p = L._parse_cost_comment(body)
+        self.assertEqual(p["model"], "claude-sonnet-4-6")
+        self.assertEqual(p["turns"], 13)
+        self.assertEqual(p["output_tokens"], 3461)
+        self.assertEqual(p["cache_read"], 589918)
+        self.assertEqual(p["cache_write"], 78310)
+        self.assertEqual(p["cost_usd"], 0.5235)
+        self.assertEqual(p["result"], "success")
+        self.assertEqual(p["run_url"], "https://github.com/o/r/actions/runs/123")
+
+    def test_parse_cost_comment_skips_bootstrap(self):
+        self.assertIsNone(L._parse_cost_comment("unrelated comment"))
+        self.assertIsNone(L._parse_cost_comment(
+            "### Claude review — API cost\nNo execution file was produced (review skipped)."
+        ))
+
+    def test_capture_review_dedups_by_run_url(self):
+        body = (
+            "### Claude review — API cost\n| Model | `claude-sonnet-4-6` |\n"
+            "| Output tokens | 100 |\n| **Reported cost** | **$0.50** |\n"
+            "[Workflow run](https://github.com/o/r/actions/runs/999)"
+        )
+        with patch.object(L, "_fetch_pr_comment_bodies", return_value=[body, body]):
+            rec = L.capture_review(30)
+        self.assertEqual(rec["review"]["run_count"], 1)
+        self.assertEqual(rec["review"]["cost_usd_total"], 0.50)
 
     def test_analyze_single_pr(self):
         L.set_meta(20, title="t")

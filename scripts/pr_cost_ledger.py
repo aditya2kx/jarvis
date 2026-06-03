@@ -12,9 +12,11 @@ picked up until the PR merges, across BOTH cost surfaces:
              PR attribution: auto-window from `ai-code-tracking.db` (edit-
              anchored, capped at merge) or explicit `--start/--end`.
   * REVIEW — the Claude PR-review GitHub Action (model = claude-sonnet-*).
-             Exact: sourced from each run's `execution_file` by
-             `post_claude_review_cost.py`, which also calls
-             `record_review_run()` here so the ledger fills automatically.
+             Exact: each run posts a cost comment (from its `execution_file`).
+             The CI-side ledger append is ephemeral (runner FS is discarded;
+             committing back would loop the review), so `capture-review` rebuilds
+             the rows from those posted comments at the same pre-merge checkpoint
+             as build — committed once by the operator.
 
 Data source (committed in-repo, the "some data source" the spec asks for):
     metrics/pr_cost/PR-<n>.json    — one record per PR.
@@ -43,6 +45,8 @@ import datetime
 import glob
 import json
 import os
+import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -238,6 +242,82 @@ def record_review_run(
     return rec
 
 
+# ── review capture from posted PR cost comments ─────────────────────
+#
+# The CI append (post_claude_review_cost.py writing the ledger on the runner) is
+# ephemeral — the runner filesystem is discarded. Committing back inside the
+# review workflow would re-trigger `synchronize` → another review → another
+# commit (an infinite cost loop), so we DON'T do that. Instead the durable record
+# of each review run is its posted PR cost comment; `capture-review` reconstructs
+# the ledger rows from those comments at the same pre-merge checkpoint where build
+# cost is captured, so the operator commits the complete record once.
+
+_NUM = r"([\d,]+)"
+_COST = r"\*?\*?~?\$([\d.]+)"
+
+
+def _parse_cost_comment(body: str) -> dict[str, Any] | None:
+    """Parse one `### Claude review — API cost` comment body into a run dict.
+
+    Returns None for the bootstrap/"review did not run" comments (no real data).
+    """
+    if "Claude review — API cost" not in body:
+        return None
+    if "No execution file was produced" in body or "Review did not run" in body:
+        return None
+
+    def _row(label_re: str, pat: str = _NUM) -> str | None:
+        m = re.search(rf"\|\s*{label_re}\s*\|\s*{pat}", body)
+        return m.group(1) if m else None
+
+    def _int(label_re: str) -> int:
+        v = _row(label_re)
+        return int(v.replace(",", "")) if v else 0
+
+    model_m = re.search(r"\|\s*Model\s*\|\s*`([^`]+)`", body)
+    cost_m = re.search(rf"\|\s*\*?\*?(?:Reported|Estimated) cost\*?\*?\s*\|\s*{_COST}", body)
+    run_m = re.search(r"\[Workflow run\]\((https?://[^)]+)\)", body)
+    result_m = re.search(r"\|\s*Run result\s*\|\s*`([^`]+)`", body)
+    turns = _row(r"Turns")
+    return {
+        "model": model_m.group(1) if model_m else "claude-sonnet-4-6",
+        "turns": int(turns) if turns else None,
+        "input_tokens": _int(r"Input tokens \(uncached\)"),
+        "output_tokens": _int(r"Output tokens"),
+        "cache_read": _int(r"Cache read tokens[^|]*"),
+        "cache_write": _int(r"Cache write tokens[^|]*"),
+        "cost_usd": float(cost_m.group(1)) if cost_m else None,
+        "result": result_m.group(1) if result_m else None,
+        "run_url": run_m.group(1) if run_m else None,
+    }
+
+
+def _fetch_pr_comment_bodies(pr: int, repo: str | None) -> list[str]:
+    cmd = ["gh", "api", f"repos/{repo}/issues/{pr}/comments", "--paginate",
+           "--jq", ".[].body"] if repo else \
+          ["gh", "api", f"repos/{{owner}}/{{repo}}/issues/{pr}/comments", "--paginate",
+           "--jq", ".[].body"]
+    out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+    # --jq .[].body emits one (possibly multi-line) body per record; bodies are
+    # separated by newlines but a body can contain newlines, so split on the header.
+    chunks = out.split("### Claude review — API cost")
+    return ["### Claude review — API cost" + c for c in chunks[1:]]
+
+
+def capture_review(pr: int, *, repo: str | None = None) -> dict[str, Any]:
+    """Reconstruct review-cost rows from the PR's posted cost comments (via gh).
+
+    Idempotent: dedups by workflow run URL, so re-running after more review
+    rounds just adds the new runs.
+    """
+    for body in _fetch_pr_comment_bodies(pr, repo):
+        parsed = _parse_cost_comment(body)
+        if not parsed:
+            continue
+        record_review_run(pr, ts=None, **parsed)
+    return load_record(pr)
+
+
 # ── pre-merge gate ──────────────────────────────────────────────────
 
 def validate(pr: int, *, require_build: bool = False) -> tuple[bool, list[str]]:
@@ -414,6 +494,10 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--end", help="window end (ISO8601 or epoch-ms); omit to auto-derive from branch")
     c.add_argument("--model-filter", help="only include events whose model contains this substring")
 
+    cr = sub.add_parser("capture-review", help="Reconstruct review runs from the PR's posted cost comments")
+    cr.add_argument("--pr", type=int, required=True)
+    cr.add_argument("--repo", help="owner/name (defaults to the current gh repo)")
+
     v = sub.add_parser("validate", help="Pre-merge gate: ensure costs are accounted")
     v.add_argument("--pr", type=int, required=True)
     v.add_argument("--require-build", action="store_true",
@@ -445,6 +529,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"captured {n} build session(s) from Cursor usage API [{mode}]")
         print(f"  window: {w.get('start')} → {w.get('end')}")
         print(f"  build total ${rec['build']['cost_usd_total']:.2f} → {_record_path(args.pr)}")
+        return 0
+    if args.cmd == "capture-review":
+        rec = capture_review(args.pr, repo=args.repo)
+        r = rec["review"]
+        print(f"captured {r['run_count']} review run(s) from PR cost comments "
+              f"(review total ${r['cost_usd_total']:.2f}) → {_record_path(args.pr)}")
         return 0
     if args.cmd == "validate":
         ok, problems = validate(args.pr, require_build=args.require_build)

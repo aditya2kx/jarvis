@@ -59,9 +59,12 @@ def _read_access_token(state_db: Path = STATE_DB) -> str:
 
 
 def _jwt_claims(token: str) -> dict[str, Any]:
-    payload = token.split(".")[1]
-    payload += "=" * (-len(payload) % 4)
-    return json.loads(base64.urlsafe_b64decode(payload))
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload))
+    except Exception as exc:  # noqa: BLE001 — any malformed token → one clear error
+        raise CursorUsageError(f"could not decode session token as JWT: {exc}") from exc
 
 
 def _session_cookie(token: str) -> str:

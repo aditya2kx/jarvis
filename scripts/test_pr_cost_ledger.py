@@ -113,6 +113,15 @@ class TestPrCostLedger(unittest.TestCase):
         self.assertAlmostEqual(rec["review"]["cost_usd_total"], 0.25)
         self.assertAlmostEqual(rec["totals"]["cost_usd"], 1.75)
 
+    def test_analyze_single_pr(self):
+        L.set_meta(20, title="t")
+        L.record_build_session(20, ts="a", tokens=1_000_000, cost_usd=1.5, model="claude-opus-4-8")
+        result = L.analyze([20])
+        self.assertEqual(len(result["reports"]), 1)
+        self.assertAlmostEqual(result["reports"][0]["build_cost_usd"], 1.5)
+        self.assertIn("1.50", result["text"])
+        self.assertEqual(result["reports"][0]["top_areas"][0]["cost_usd"], 1.5)
+
     def test_recommendations_build_dominant_and_max_turns(self):
         rec = L._empty_record(9)
         rec["build"]["sessions"] = [

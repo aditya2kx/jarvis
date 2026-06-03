@@ -47,6 +47,12 @@ class TestJwtClaims(unittest.TestCase):
         claims = U._jwt_claims(tok)
         self.assertEqual(claims["sub"], "auth0|abc")
 
+    def test_malformed_token_raises_cursor_usage_error(self):
+        with self.assertRaises(U.CursorUsageError):
+            U._jwt_claims("not-a-jwt")
+        with self.assertRaises(U.CursorUsageError):
+            U._jwt_claims("hdr.@@@notbase64@@@.sig")
+
 
 class TestDeriveWindowForBranch(unittest.TestCase):
     def setUp(self):

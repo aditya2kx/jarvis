@@ -34,8 +34,28 @@ code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12p
 </style></head>
 <body><div class="wrap">
 <h1>PR cost monitoring</h1>
-<p class="muted">5 PR(s) · $104.79 total · generated 2026-06-03 21:01 UTC · source: <code>metrics/pr_cost/PR-*.json</code> · rates verified 2026-06-03 (<a href="https://cursor.com/docs/models-and-pricing" style="color:#539bf5">cursor.com/docs/models-and-pricing</a>)</p>
+<p class="muted">6 PR(s) · $104.79 total · generated 2026-06-03 21:04 UTC · source: <code>metrics/pr_cost/PR-*.json</code> · rates verified 2026-06-03 (<a href="https://cursor.com/docs/models-and-pricing" style="color:#539bf5">cursor.com/docs/models-and-pricing</a>)</p>
 
+    <section class="pr">
+      <p class="pr-title">#17 — feat(cost): conversation-scoped build attribution for parallel chats</p>
+      <p class="muted">merged  · build = Cursor usage API · review = Claude Sonnet bot</p>
+      <div class="stats">
+        <div class="stat"><div class="v">$0.00</div><div class="l">Total cost</div></div>
+        <div class="stat"><div class="v build">$0.00</div><div class="l">Build (0%)</div></div>
+        <div class="stat"><div class="v review">$0.00</div><div class="l">Review · 0 runs</div></div>
+        <div class="stat"><div class="v">500k</div><div class="l">Tokens</div></div>
+      </div>
+      <div class="bar"><div class="b" style="width:0.0%"></div><div class="r" style="width:0.0%"></div></div>
+      <p class="muted">Build 0% · Review 0%</p>
+      <h2>Where the effort went — top 1 cost areas</h2>
+      <table><thead><tr><th>Area</th><th>Model</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">% of PR</th></tr></thead>
+      <tbody><tr class="build"><td>build session 2026-06-03T21:00:00Z</td><td>composer-2.5</td><td class="n">500k</td><td class="n">$0.00</td><td class="n">0.0%</td></tr></tbody></table>
+      <h2>Diagnosis</h2>
+      <div class="obs"><b>•</b>Build attributed to 1 chat space(s): b16a2b02… (conversation-scoped via ai_code_hashes + model tier).</div><div class="obs"><b>•</b>Build is 0% of total cost ($0.00) vs review 100% ($0.00). Build and review costs are comparable.</div><div class="obs"><b>•</b>Model mix: .</div>
+      <h2>Tactical recommendations</h2>
+      <div class="rec"><b>#1</b>No obvious efficiency wins — costs look proportional to the change.</div>
+    </section>
+    
     <section class="pr">
       <p class="pr-title">#16 — fix(cost): BYOK Anthropic key — restore build $ attribution</p>
       <p class="muted">merged 2026-06-03 · build = Cursor usage API · review = Claude Sonnet bot</p>

@@ -183,7 +183,8 @@ class TestPrCostLedger(unittest.TestCase):
         html = L._render_report_html([rec])
         self.assertIn("<!doctype html>", html)
         self.assertIn("#7", html)
-        self.assertIn("Top recommendations", html)
+        self.assertIn("Tactical recommendations", html)
+        self.assertIn("Diagnosis", html)
         self.assertIn("Where the effort went", html)
         # HTML-escaped title — no raw angle brackets from user content.
         self.assertIn("Feature &lt;X&gt; &amp; Y", html)
@@ -223,26 +224,92 @@ class TestPrCostLedger(unittest.TestCase):
         self.assertIn("1.50", result["text"])
         self.assertEqual(result["reports"][0]["top_areas"][0]["cost_usd"], 1.5)
 
-    def test_recommendations_build_dominant_and_max_turns(self):
+    def test_observations_build_dominant_and_cache_read(self):
         rec = L._empty_record(9)
         rec["build"]["sessions"] = [
-            {"ts": "a", "model": "claude-opus-4-8", "tokens": 44_000_000, "cost_usd": 30.0},
-            {"ts": "b", "model": "claude-opus-4-8", "tokens": 1_000_000, "cost_usd": 2.0},
+            {
+                "ts": "a", "model": "claude-opus-4-8", "tokens": 44_000_000, "cost_usd": 30.0,
+                "input_tokens": 44, "output_tokens": 1000,
+                "cache_read_input_tokens": 40_000_000, "cache_creation_input_tokens": 0,
+            },
         ]
-        rec["build"]["cost_usd_total"] = 32.0
-        rec["review"]["runs"] = [
-            {"result": "error_max_turns", "cost_usd": 0.5},
-            {"result": "error_max_turns", "cost_usd": 0.5},
-            {"result": "success", "cost_usd": 0.5},
+        rec["build"]["cost_usd_total"] = 30.0
+        rec["build"]["tokens_total"] = 44_000_000
+        rec["review"]["runs"] = [{"result": "success", "cost_usd": 0.5, "tokens": 500_000, "turns": 5}]
+        rec["review"]["run_count"] = 1
+        rec["review"]["cost_usd_total"] = 0.5
+        rec["totals"]["cost_usd"] = 30.5
+        obs = L._observations(rec)
+        joined = "\n".join(obs)
+        self.assertIn("Build is", joined)  # build-dominant
+        self.assertIn("Cache reads", joined)  # high cache-read pct flagged
+        self.assertIn("Model mix", joined)   # tier summary present
+
+    def test_recommendations_opus_sessions_suggest_sonnet_saving(self):
+        rec = L._empty_record(10)
+        rec["build"]["sessions"] = [
+            {
+                "ts": "2026-06-01T10:00:00Z", "model": "claude-opus-4-8", "cost_usd": 3.0,
+                "tokens": 5_000_000,
+                "input_tokens": 1000, "output_tokens": 5000,
+                "cache_read_input_tokens": 4_000_000, "cache_creation_input_tokens": 10_000,
+            },
         ]
-        rec["review"]["run_count"] = 3
-        rec["review"]["cost_usd_total"] = 1.5
-        rec["totals"]["cost_usd"] = 33.5
+        rec["build"]["cost_usd_total"] = 3.0
+        rec["build"]["tokens_total"] = 5_000_000
+        rec["review"]["runs"] = []
+        rec["review"]["run_count"] = 0
+        rec["review"]["cost_usd_total"] = 0.0
+        rec["totals"]["cost_usd"] = 3.0
         recs = L._recommendations(rec)
         joined = "\n".join(recs)
-        self.assertIn("Build is 9", joined)  # build-dominant (>70%)
+        self.assertIn("Sonnet", joined)
+        self.assertIn("Est. saving", joined)
+        # Sonnet is cheaper — saving must be positive
+        saving_line = [r for r in recs if "Est. saving" in r][0]
+        self.assertIn("$", saving_line)
+
+    def test_recommendations_max_turns_and_review_run_count(self):
+        rec = L._empty_record(11)
+        rec["build"]["sessions"] = []
+        rec["build"]["cost_usd_total"] = 0.0
+        rec["build"]["tokens_total"] = 0
+        rec["review"]["runs"] = [
+            {"result": "error_max_turns", "cost_usd": 0.7},
+            {"result": "error_max_turns", "cost_usd": 0.7},
+            {"result": "success", "cost_usd": 0.7},
+        ]
+        rec["review"]["run_count"] = 3
+        rec["review"]["cost_usd_total"] = 2.1
+        rec["totals"]["cost_usd"] = 2.1
+        recs = L._recommendations(rec)
+        joined = "\n".join(recs)
         self.assertIn("error_max_turns", joined)
-        self.assertIn("3×", joined)
+
+    def test_recompute_cost_with_token_breakdown(self):
+        session = {
+            "input_tokens": 1000, "output_tokens": 2000,
+            "cache_read_input_tokens": 500_000, "cache_creation_input_tokens": 10_000,
+        }
+        opus_cost = L._recompute_cost(session, "opus")
+        sonnet_cost = L._recompute_cost(session, "sonnet")
+        self.assertGreater(opus_cost, sonnet_cost)
+        # Verify the main term: cache_read dominates
+        expected_opus = (1000 * 5.0 + 2000 * 25.0 + 500_000 * 0.50 + 10_000 * 6.25) / 1_000_000
+        self.assertAlmostEqual(opus_cost, expected_opus, places=6)
+
+    def test_recompute_cost_fallback_no_breakdown(self):
+        session = {"tokens": 1_000_000, "cost_usd": 0.5}
+        cost = L._recompute_cost(session, "sonnet")
+        # fallback: 1M tokens × $0.30/M = $0.30
+        self.assertAlmostEqual(cost, 0.30, places=6)
+
+    def test_model_tier_mapping(self):
+        self.assertEqual(L._model_tier("claude-opus-4-8-thinking-high"), "opus")
+        self.assertEqual(L._model_tier("claude-sonnet-4-6"), "sonnet")
+        self.assertEqual(L._model_tier("claude-haiku-4-5"), "haiku")
+        self.assertEqual(L._model_tier("composer-2.5"), "composer")
+        self.assertEqual(L._model_tier(""), "composer")  # unknown → composer (cheapest bucket)
 
 
 if __name__ == "__main__":

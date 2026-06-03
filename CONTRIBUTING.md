@@ -335,6 +335,88 @@ the build loop, not the review bot.
 - **Dormant until activated:** the job no-ops unless the repo secret `ANTHROPIC_API_KEY` is set, so the
   workflow itself costs nothing to merge.
 
+## Cost-efficiency playbook
+
+The cost ledger exists so you can act on data. These are the **tactical levers**, ordered by impact.
+
+### 0. One chat per PR — biggest single lever
+
+Each Cursor agent turn re-reads the **entire conversation history** as cache-read tokens
+(billed at $0.50/M on Opus). Reusing a merged PR's thread drags its full history into every
+new turn. A fresh chat resets this counter to near-zero.
+
+**Rule:** for every new requirement/PR, **open a new Cursor chat** before writing the first
+line of code. The two ways to do this:
+
+1. **Canvas button** — open `pr-cost.canvas.tsx`, scroll to *Start next requirement*, type the
+   requirement, and click **Open new chat for next PR**. The button dispatches a `newComposerChat`
+   action that opens a new IDE composer tab pre-seeded with the brief and these routing rules.
+2. **CLI** — `python3 scripts/start_pr_session.py --pr <n> --requirement "..."` writes
+   `metrics/pr_cost/PR-<n>-brief.md`, prints a `cursor://` deeplink you can click to open a
+   new seeded chat, and prints the brief for manual copy-paste.
+
+Do **not** continue the previous PR's Composer thread. Do not use `/clear` as a substitute —
+it clears the display but the history is still in memory and still billed.
+
+Within a PR, also `/clear` or start a new sub-task chat between unrelated areas (e.g. after
+finishing the main feature, start a new chat for the test scaffolding).
+
+### 1. Model routing table (rates verified 2026-06-03)
+
+| Model | Use for | Cache-read $/M | Output $/M | vs Opus saving |
+|---|---|---|---|---|
+| **Opus 4.8 medium** | Hard multi-file reasoning, subtle bugs, architecture | $0.50 | $25 | — baseline |
+| **Opus 4.8 high** | Only when genuinely stuck; adds ~30% output tokens vs medium | $0.50 | $25 | **never default** |
+| **Sonnet 4.6** | **DEFAULT** — feature code, refactors, most edits, test writing | $0.30 | $15 | ~40% on cache-read, ~40% on output |
+| **Composer 2.5** | Mechanical bulk — renames, test scaffolding, doc edits, log reads | $0.20 | $2.50 | ~60% on cache-read, ~90% on output |
+
+Routing heuristic:
+- **Sonnet 4.6 is the default.** Start here. Only escalate when you're genuinely stuck for > 2 turns.
+- **Opus 4.8 medium** — multi-file refactors with non-obvious interactions, tracing subtle logic bugs,
+  initial architecture decisions with non-obvious trade-offs. If you can articulate the sub-task
+  clearly, Sonnet handles it. If you can't, and you've tried, escalate to Opus medium.
+- **Opus 4.8 high** — reserved for genuinely stuck situations only. High thinking adds ~30% output tokens
+  vs medium with marginal quality gain on most tasks. Default to medium; switch to high only if medium
+  repeatedly misses the mark.
+- **Composer 2.5** — renames across N files, test scaffolding, doc edits, any task where correctness
+  is locally obvious (search-and-replace, paste-and-adapt). Dramatically cheaper output.
+
+**How the analyzer flags this:** `pr_cost_ledger.py analyze` will flag any Opus build session ≥ $0.50
+and estimate the Sonnet equivalent cost, so you can see the saving per PR.
+
+### 2. Context discipline (applies within a chat)
+
+- **Prefer `Read` + `Grep` over `SemanticSearch` + open-ended exploration.** Semantic search reads
+  many files into context; targeted reads pull only the lines you need.
+- **Use Plan mode before implementing.** Ask + Plan mode does not run code or add to the build
+  context; switching to Agent only when the plan is agreed bounds the per-turn context.
+- **Avoid re-reading large files repeatedly.** If you've already read a file this session, reference
+  it by line range on subsequent turns instead of re-reading from scratch.
+- **Checkpoint marathon sessions.** If a task is going to take > 15 agent turns, commit what you have
+  and start a fresh chat for the remaining work. Each new chat resets cache-read token accumulation.
+
+### 3. Review cost
+
+- **Batch pushes, or keep the PR in Draft until it's ready.** Each push re-triggers the Claude review
+  (~$0.30–0.70/run at Sonnet). The **convergence policy** (inline = blocking only, delta re-review)
+  has been active since PR #13 and dramatically cuts per-run cost on re-reviews, but the number of
+  pushes still multiplies the review budget.
+- **The remaining lever is human:** if a PR has 5 review runs, it got 5 pushes. Batch fixes into one
+  push, or open Draft → push all iterations → mark Ready when confident.
+
+### 4. Session start checklist
+
+Before opening a new Cursor chat for a PR, run:
+
+```bash
+python3 scripts/start_pr_session.py --pr <n> --requirement "<brief requirement text>"
+```
+
+Or use the canvas button. Either way, the model routing rules and context discipline rules are
+pre-seeded into the new chat, so you don't have to re-state them every time.
+
+---
+
 ## Enabling enforcement (one-time, requires repo admin)
 
 These are GitHub-side and can't be done from the repo alone:

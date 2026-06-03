@@ -117,6 +117,9 @@ def _empty_record(pr: int) -> dict[str, Any]:
         "build": {
             "source": None,
             "approximate": True,
+            "attribution_mode": None,
+            "session_started_at": None,
+            "conversation_ids": [],
             "sessions": [],
             "tokens_total": 0,
             "cost_usd_total": 0.0,
@@ -165,9 +168,11 @@ def _recompute_totals(rec: dict[str, Any]) -> None:
 
 def set_meta(pr: int, **fields: Any) -> dict[str, Any]:
     rec = load_record(pr)
-    for k in ("title", "requirement", "branch", "created_at", "merged_at"):
+    for k in ("title", "requirement", "branch", "created_at", "merged_at", "session_started_at"):
         if fields.get(k) is not None:
             rec[k] = fields[k]
+    if fields.get("conversation_ids") is not None:
+        rec["build"]["conversation_ids"] = list(fields["conversation_ids"])
     for dk in ("files", "additions", "deletions"):
         if fields.get(dk) is not None:
             rec["diff"][dk] = int(fields[dk])
@@ -175,22 +180,133 @@ def set_meta(pr: int, **fields: Any) -> dict[str, Any]:
     return rec
 
 
+def bind_conversations(
+    pr: int, *,
+    conversation_ids: list[str] | None = None,
+    auto: bool = False,
+    session_started_at: str | None = None,
+) -> dict[str, Any]:
+    """Bind one or more Cursor chat spaces (conversationId) to a PR ledger."""
+    import cursor_usage  # noqa: PLC0415
+
+    rec = load_record(pr)
+    if session_started_at:
+        rec["session_started_at"] = session_started_at
+    if not rec.get("session_started_at") and not auto and not conversation_ids:
+        raise SystemExit(
+            "bind-conversation: pass --session-started, --auto, or explicit --conversation-id"
+        )
+    end_ms = cursor_usage.to_ms(rec["merged_at"]) if rec.get("merged_at") else int(
+        datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000
+    )
+    start_ms = cursor_usage.to_ms(rec["session_started_at"]) if rec.get("session_started_at") else None
+    if auto:
+        if start_ms is None:
+            branch = rec.get("branch")
+            if branch:
+                try:
+                    start_ms, _ = cursor_usage.derive_window_for_branch(
+                        branch, merged_at=rec.get("merged_at")
+                    )
+                except cursor_usage.CursorUsageError:
+                    try:
+                        start_ms, _ = cursor_usage.git_branch_commit_range_ms(branch)
+                    except cursor_usage.CursorUsageError:
+                        start_ms = None
+            if start_ms is None:
+                raise SystemExit(
+                    f"bind-conversation --auto: set session_started_at via start_pr_session "
+                    f"or set-meta --pr {pr} --session-started <ISO>"
+                )
+        ids = cursor_usage.auto_bind_conversations(start_ms, end_ms)
+        if not ids:
+            raise SystemExit(
+                f"bind-conversation --auto: no conversation activity for PR #{pr} "
+                f"after {rec.get('session_started_at') or 'derived start'}"
+            )
+        rec["build"]["conversation_ids"] = ids
+    elif conversation_ids is not None:
+        rec["build"]["conversation_ids"] = list(conversation_ids)
+    save_record(rec)
+    return rec
+
+
+def _session_row_from_event(e: dict[str, Any]) -> dict[str, Any]:
+    notes: list[str] = []
+    if e.get("is_headless"):
+        notes.append("headless")
+    if e.get("cost_source") == "byok_token_usage":
+        notes.append("byok")
+    if e.get("conversation_id"):
+        notes.append(f"chat:{e['conversation_id'][:8]}")
+    return {
+        "ts": e["ts_iso"], "model": e["model"], "tokens": e["tokens"],
+        "cost_usd": e["cost_usd"],
+        "cost_source": e.get("cost_source"),
+        "conversation_id": e.get("conversation_id"),
+        "input_tokens": e["input_tokens"], "output_tokens": e["output_tokens"],
+        "cache_read_input_tokens": e["cache_read"],
+        "cache_creation_input_tokens": e["cache_write"],
+        "note": "; ".join(notes) if notes else None,
+    }
+
+
 def capture_build(
     pr: int, *, start: str | None = None, end: str | None = None,
     model_filter: str | None = None,
+    conversation_auto: bool = False,
+    allow_wide_manual: bool = False,
 ) -> dict[str, Any]:
-    """Auto-fill build sessions from the Cursor usage API for a time window.
+    """Auto-fill build sessions from the Cursor usage API.
 
-    Pulls exact per-request token+cost via scripts/cursor_usage.py (local session
-    token) and records one build session per request. Cost is exact. If start/end
-    are omitted, the window is derived from the PR's branch via Cursor's local
-    ai-code-tracking.db (anchored to AI code edits, capped at merge) — so the
-    request->PR mapping is automatic and edit-accurate.
+    Attribution priority:
+      1. conversation — bound conversation_ids (+ optional session_started_at)
+      2. branch_window — ai-code-tracking.db commit/edit window
+      3. manual — explicit --start/--end (rejected if >4h unless approximate)
     """
     import cursor_usage  # noqa: PLC0415
 
     rec0 = load_record(pr)
-    if not (start and end):
+    attribution_mode = "branch_window"
+    start_ms: int | None = None
+    end_ms: int | None = None
+
+    conv_ids = list(rec0["build"].get("conversation_ids") or [])
+    if conversation_auto or (not conv_ids and rec0.get("session_started_at")):
+        bind_conversations(pr, auto=True)
+        rec0 = load_record(pr)
+        conv_ids = list(rec0["build"].get("conversation_ids") or [])
+
+    if conv_ids:
+        attribution_mode = "conversation"
+        end_ms = (
+            cursor_usage.to_ms(rec0["merged_at"]) if rec0.get("merged_at")
+            else int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
+        )
+        if rec0.get("session_started_at"):
+            start_ms = cursor_usage.to_ms(rec0["session_started_at"])
+        elif start and end:
+            start_ms, end_ms = cursor_usage.to_ms(start), cursor_usage.to_ms(end)
+        else:
+            branch = rec0.get("branch")
+            if branch:
+                try:
+                    start_ms, end_ms = cursor_usage.git_branch_commit_range_ms(branch)
+                except cursor_usage.CursorUsageError:
+                    start_ms = end_ms - 3600_000
+            else:
+                start_ms = end_ms - 3600_000
+    elif start and end:
+        attribution_mode = "manual_window"
+        start_ms, end_ms = cursor_usage.to_ms(start), cursor_usage.to_ms(end)
+        span = cursor_usage.manual_window_span_ms(start, end)
+        if span > cursor_usage._MAX_MANUAL_WINDOW_MS and not allow_wide_manual:
+            raise SystemExit(
+                f"capture-build: manual window is {span / 3600_000:.1f}h — too wide for "
+                f"parallel-chat attribution. Use start_pr_session + conversation bind, "
+                f"or pass --allow-wide-manual to mark approximate."
+            )
+    else:
         if start or end:
             raise SystemExit(
                 "capture-build: --start and --end must be provided together, "
@@ -202,40 +318,37 @@ def capture_build(
                 f"PR #{pr} has no branch recorded — run `set-meta --pr {pr} --branch <name>` "
                 f"or pass --start/--end explicitly."
             )
-        start_ms, end_ms = cursor_usage.derive_window_for_branch(
-            branch, merged_at=rec0.get("merged_at")
+        try:
+            start_ms, end_ms = cursor_usage.derive_window_for_branch(
+                branch, merged_at=rec0.get("merged_at")
+            )
+        except cursor_usage.CursorUsageError:
+            start_ms, end_ms = cursor_usage.git_branch_commit_range_ms(branch)
+
+    assert start_ms is not None and end_ms is not None
+    events = cursor_usage.fetch_usage_events(start_ms, end_ms)
+    if conv_ids:
+        events = cursor_usage.filter_events_for_conversations(
+            events, conv_ids, start_ms, end_ms,
         )
-        start, end = str(start_ms), str(end_ms)
-    events = cursor_usage.fetch_usage_events(start, end)
     if model_filter:
         events = [e for e in events if model_filter.lower() in (e.get("model") or "").lower()]
+
     rec = load_record(pr)
+    rec["build"]["attribution_mode"] = attribution_mode
+    rec["build"]["approximate"] = attribution_mode == "manual_window"
     rec["build"]["source"] = (
-        "cursor dashboard usage API (local session token; exact cost, "
-        "request->PR by time window)"
+        "cursor dashboard usage API (conversation-scoped via ai_code_hashes)"
+        if attribution_mode == "conversation"
+        else "cursor dashboard usage API (local session token; request->PR by time window)"
     )
-    rec["build"]["approximate"] = False
     rec["build"]["window"] = {
-        "start": datetime.datetime.fromtimestamp(cursor_usage.to_ms(start) / 1000, datetime.timezone.utc).isoformat(),
-        "end": datetime.datetime.fromtimestamp(cursor_usage.to_ms(end) / 1000, datetime.timezone.utc).isoformat(),
+        "start": datetime.datetime.fromtimestamp(start_ms / 1000, datetime.timezone.utc).isoformat(),
+        "end": datetime.datetime.fromtimestamp(end_ms / 1000, datetime.timezone.utc).isoformat(),
     }
-    # Full-window pull is authoritative: replace prior build rows so re-running is idempotent.
-    rec["build"]["sessions"] = []
-    for e in events:
-        notes: list[str] = []
-        if e["is_headless"]:
-            notes.append("headless")
-        if e.get("cost_source") == "byok_token_usage":
-            notes.append("byok")
-        rec["build"]["sessions"].append({
-            "ts": e["ts_iso"], "model": e["model"], "tokens": e["tokens"],
-            "cost_usd": e["cost_usd"],
-            "cost_source": e.get("cost_source"),
-            "input_tokens": e["input_tokens"], "output_tokens": e["output_tokens"],
-            "cache_read_input_tokens": e["cache_read"],
-            "cache_creation_input_tokens": e["cache_write"],
-            "note": "; ".join(notes) if notes else None,
-        })
+    if conv_ids:
+        rec["build"]["conversation_ids"] = conv_ids
+    rec["build"]["sessions"] = [_session_row_from_event(e) for e in events]
     rec["build"]["sessions"].sort(key=lambda s: s.get("ts") or "")
     save_record(rec)
     return rec
@@ -409,8 +522,27 @@ def validate(pr: int, *, require_build: bool = False) -> tuple[bool, list[str]]:
     if require_build and not has_build:
         problems.append(
             "no build sessions recorded — the hard gate requires the Cursor build cost. "
-            f"Add it: `pr_cost_ledger.py record-build --pr {pr} --ts <iso> --tokens <n> "
-            f"--cost <usd> --model <m>` (rows from the Cursor usage dashboard), then commit."
+            f"Run `start_pr_session.py --pr {pr}` then `pr_cost_ledger.py sync --pr {pr}` "
+            f"before merge."
+        )
+    b = rec.get("build") or {}
+    window = b.get("window") or {}
+    if window.get("start") and window.get("end"):
+        import cursor_usage  # noqa: PLC0415
+        span = cursor_usage.manual_window_span_ms(window["start"], window["end"])
+        if (
+            b.get("attribution_mode") == "manual_window"
+            and span > cursor_usage._MAX_MANUAL_WINDOW_MS
+            and not b.get("approximate")
+        ):
+            problems.append(
+                f"build window is {span / 3600_000:.1f}h with manual attribution — "
+                "likely includes parallel chat spaces; re-capture with start_pr_session + sync"
+            )
+    if rec.get("session_started_at") and b.get("attribution_mode") != "conversation":
+        problems.append(
+            "session_started_at is set but build was not conversation-scoped — "
+            f"run `pr_cost_ledger.py sync --pr {pr}` after binding the chat"
         )
     return (not problems), problems
 
@@ -423,7 +555,19 @@ def _observations(rec: dict[str, Any]) -> list[str]:
     b, r = rec["build"], rec["review"]
     total = rec["totals"]["cost_usd"] or 1.0
 
-    # Build/review split
+    # Attribution mode
+    mode = b.get("attribution_mode")
+    convs = b.get("conversation_ids") or []
+    if mode == "conversation" and convs:
+        obs.append(
+            f"Build attributed to {len(convs)} chat space(s): "
+            + ", ".join(c[:8] + "…" for c in convs)
+            + " (conversation-scoped via ai_code_hashes + model tier)."
+        )
+    elif mode == "manual_window":
+        obs.append(
+            "Build used a manual time window — may include parallel chat spaces if wide."
+        )
     build_pct = b["cost_usd_total"] / total * 100
     obs.append(
         f"Build is {build_pct:.0f}% of total cost (${b['cost_usd_total']:.2f}) vs "
@@ -760,7 +904,11 @@ def sync(pr: int, *, repo: str | None = None, report_out: str | None = None) -> 
     pr-cost-finalize.yml at merge.
     """
     try:
-        capture_build(pr)
+        rec0 = load_record(pr)
+        capture_build(
+            pr,
+            conversation_auto=bool(rec0.get("session_started_at") or rec0["build"].get("conversation_ids")),
+        )
     except (SystemExit, Exception) as exc:  # noqa: BLE001 — best-effort surface
         print(f"  [build] skipped: {exc}")
     try:
@@ -806,11 +954,26 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--cost", type=float, required=True); b.add_argument("--model", required=True)
     b.add_argument("--source", default="cursor_dashboard"); b.add_argument("--note")
 
+    m.add_argument("--session-started", help="ISO8601 — when this PR's chat session began")
+    m.add_argument("--conversation-id", action="append", dest="conversation_ids",
+                   help="Cursor chat UUID (repeatable); from agent-transcripts/<uuid>/")
+
+    bc = sub.add_parser("bind-conversation", help="Bind Cursor chat space(s) to a PR")
+    bc.add_argument("--pr", type=int, required=True)
+    bc.add_argument("--conversation-id", action="append", dest="conversation_ids")
+    bc.add_argument("--auto", action="store_true",
+                    help="Auto-pick conversationId(s) from ai_code_hashes since session_started_at")
+    bc.add_argument("--session-started", help="ISO8601 session start (also stored on the record)")
+
     c = sub.add_parser("capture-build", help="Auto-fill build sessions from the Cursor usage API")
     c.add_argument("--pr", type=int, required=True)
     c.add_argument("--start", help="window start (ISO8601 or epoch-ms); omit to auto-derive from branch")
     c.add_argument("--end", help="window end (ISO8601 or epoch-ms); omit to auto-derive from branch")
     c.add_argument("--model-filter", help="only include events whose model contains this substring")
+    c.add_argument("--conversation-auto", action="store_true",
+                   help="auto-bind conversationId(s) from session_started_at before capture")
+    c.add_argument("--allow-wide-manual", action="store_true",
+                   help="allow manual windows >4h (marks approximate; parallel-chat bleed risk)")
 
     cr = sub.add_parser("capture-review", help="Reconstruct review runs from the PR's posted cost comments")
     cr.add_argument("--pr", type=int, required=True)
@@ -841,8 +1004,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "set-meta":
         rec = set_meta(args.pr, title=args.title, requirement=args.requirement,
                        branch=args.branch, created_at=args.created, merged_at=args.merged,
-                       files=args.files, additions=args.additions, deletions=args.deletions)
+                       files=args.files, additions=args.additions, deletions=args.deletions,
+                       session_started_at=getattr(args, "session_started", None),
+                       conversation_ids=getattr(args, "conversation_ids", None))
         print(f"updated {_record_path(args.pr)}")
+        return 0
+    if args.cmd == "bind-conversation":
+        rec = bind_conversations(
+            args.pr,
+            conversation_ids=args.conversation_ids,
+            auto=args.auto,
+            session_started_at=args.session_started,
+        )
+        ids = rec["build"].get("conversation_ids") or []
+        print(f"bound {len(ids)} conversation(s) on {_record_path(args.pr)}: {ids}")
         return 0
     if args.cmd == "record-build":
         record_build_session(args.pr, ts=args.ts, tokens=args.tokens, cost_usd=args.cost,
@@ -850,10 +1025,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"recorded build session {args.ts} on {_record_path(args.pr)}")
         return 0
     if args.cmd == "capture-build":
-        rec = capture_build(args.pr, start=args.start, end=args.end, model_filter=args.model_filter)
+        rec = capture_build(
+            args.pr, start=args.start, end=args.end, model_filter=args.model_filter,
+            conversation_auto=args.conversation_auto,
+            allow_wide_manual=args.allow_wide_manual,
+        )
         n = len(rec["build"]["sessions"])
         w = rec["build"].get("window") or {}
-        mode = "manual window" if (args.start or args.end) else "auto window (branch→ai-code-tracking.db)"
+        mode = rec["build"].get("attribution_mode") or "unknown"
         print(f"captured {n} build session(s) from Cursor usage API [{mode}]")
         print(f"  window: {w.get('start')} → {w.get('end')}")
         print(f"  build total ${rec['build']['cost_usd_total']:.2f} → {_record_path(args.pr)}")

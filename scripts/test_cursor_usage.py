@@ -269,5 +269,46 @@ class TestFetchUsageEvents(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 1)  # short page → no second request
 
 
+class TestConversationAttribution(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self.db = Path(self._tmpdir) / "ai.db"
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "create table ai_code_hashes (hash text, conversationId text, model text, timestamp integer)"
+        )
+        # conv-a: composer edits 1000-2000; conv-b: sonnet edits 1500-2500 (overlap)
+        con.executemany(
+            "insert into ai_code_hashes values (?,?,?,?)",
+            [
+                ("h1", "conv-a", "composer-2.5", 1000),
+                ("h2", "conv-a", "composer-2.5", 1800),
+                ("h3", "conv-a", "composer-2.5", 2000),
+                ("h4", "conv-b", "claude-sonnet-4-6", 1500),
+                ("h5", "conv-b", "claude-sonnet-4-6", 2500),
+            ],
+        )
+        con.commit()
+        con.close()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_auto_bind_single_dominant(self):
+        ids = U.auto_bind_conversations(900, 2600, db=self.db, min_edits=1)
+        self.assertEqual(len(ids), 1)
+
+    def test_filter_by_model_tier(self):
+        events = [
+            {"ts_ms": 1800, "model": "composer-2.5", "tokens": 100, "cost_usd": 0.1},
+            {"ts_ms": 1800, "model": "claude-sonnet-4-6", "tokens": 200, "cost_usd": 0.2},
+        ]
+        out = U.filter_events_for_conversations(events, ["conv-a"], 900, 2600, db=self.db)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["model"], "composer-2.5")
+        self.assertEqual(out[0]["conversation_id"], "conv-a")
+
+
 if __name__ == "__main__":
     unittest.main()

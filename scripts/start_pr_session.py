@@ -6,9 +6,11 @@ The single thing to run before opening a new Cursor chat for a requirement:
   2. Writes a brief Markdown scaffold (metrics/pr_cost/PR-<n>-brief.md) with
      requirement, branch, model-routing reminder, context discipline, and a
      link to the prior PR's post-merge analysis.
-  3. Prints a cursor:// deeplink — click it to open a new IDE chat pre-seeded
-     with the brief (one user click, no auto-submit).
-  4. Prints the brief text for manual copy-paste if you prefer.
+  3. Writes metrics/pr_cost/PR-<n>-launch.html — open in a browser and click the
+     button (chat markdown links do NOT invoke cursor://; full deeplinks also exceed
+     macOS URL length limits if the brief is embedded).
+  4. Prints a short cursor:// deeplink + the brief for manual copy-paste.
+  5. Optional: --open launches the HTML launcher in your default browser.
 
 Why one-chat-per-PR: each Cursor turn re-reads the entire conversation history
 as cache-read tokens ($0.50/M on Opus). A fresh chat resets this counter;
@@ -22,7 +24,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
+import datetime
+import html
 import subprocess
 import sys
 import urllib.parse
@@ -65,7 +68,7 @@ def _prior_analysis(pr: int) -> str:
     b = rec.get("build", {})
     r = rec.get("review", {})
     return (
-        f"PR #{prior} '{rec.get('title', '?')[:60]}': "
+        f"PR #{prior} '{(rec.get('title') or '?')[:60]}': "
         f"${t.get('cost_usd', 0):.2f} total "
         f"(build ${b.get('cost_usd_total', 0):.2f} / review ${r.get('cost_usd_total', 0):.2f}, "
         f"{r.get('run_count', 0)} review runs)"
@@ -88,10 +91,16 @@ def generate_brief(
     if not branch and not rec.get("branch"):
         branch = _gh("pr", "view", str(pr), "--json", "headRefName", "--jq", ".headRefName") or None
 
-    # Update meta
-    if title or branch:
-        L.set_meta(pr, title=title or rec.get("title"), branch=branch or rec.get("branch"))
-        rec = L.load_record(pr)
+    # Stamp session start — cost sync attributes usage only after this moment.
+    session_started = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+    L.set_meta(
+        pr,
+        title=title or rec.get("title"),
+        branch=branch or rec.get("branch"),
+        requirement=requirement or rec.get("requirement"),
+        session_started_at=session_started,
+    )
+    rec = L.load_record(pr)
 
     req = requirement or rec.get("requirement") or rec.get("title") or f"(PR #{pr})"
     br = rec.get("branch") or branch or "(unknown branch)"
@@ -104,6 +113,12 @@ def generate_brief(
 
 ## Branch
 `{br}`
+
+## Session started (cost attribution anchor)
+`{session_started}`
+
+Open a **new** Cursor chat for this PR, then implement. Build cost is attributed to
+chat space(s) with AI edits after this timestamp (see `pr_cost_ledger.py sync`).
 
 ## Prior PR cost reference
 {prior}
@@ -118,10 +133,85 @@ Then: `git add metrics/pr_cost/ && git commit -m "chore(cost): sync PR #{pr} led
     return brief
 
 
+# macOS / browser URL handlers often fail silently above ~2 KB.
+_MAX_DEEPLINK_CHARS = 1800
+
+# Requirement one-liner in the deeplink — keeps the chat title meaningful without
+# embedding the full brief (that lives in PR-<n>-brief.md).
+_SEED_REQUIREMENT_MAX = 140
+
+
+def _truncate_requirement(text: str, *, max_len: int = _SEED_REQUIREMENT_MAX) -> str:
+    one_line = " ".join(text.split())
+    if len(one_line) <= max_len:
+        return one_line
+    return one_line[: max_len - 1].rstrip() + "…"
+
+
+def seed_prompt(pr: int, *, brief_rel: str, requirement: str | None = None) -> str:
+    """Short seed text — full brief lives in the markdown file, not the URL."""
+    header = f"PR #{pr}"
+    if requirement:
+        header = f"{header} — {_truncate_requirement(requirement)}"
+    return (
+        f"{header}\n\n"
+        f"Read `{brief_rel}` first (requirement, branch, model-routing, cost gate). "
+        f"Acknowledge those rules from the brief, then implement the requirement — "
+        f"do not ask what to build; it is already specified in the brief."
+    )
+
+
 def make_deeplink(text: str) -> str:
     """cursor:// deeplink that opens a new IDE chat pre-seeded with text."""
     encoded = urllib.parse.quote(text, safe="")
-    return f"cursor://anysphere.cursor-deeplink/prompt?text={encoded}&mode=agent"
+    link = f"cursor://anysphere.cursor-deeplink/prompt?text={encoded}&mode=agent"
+    if len(link) > _MAX_DEEPLINK_CHARS:
+        raise ValueError(
+            f"deeplink too long ({len(link)} chars > {_MAX_DEEPLINK_CHARS}); "
+            "use seed_prompt() + brief file instead of embedding the full brief"
+        )
+    return link
+
+
+def write_launch_html(
+    pr: int, deeplink: str, *, brief_path: Path, seed_text: str,
+) -> Path:
+    """Browser launcher — the reliable click target (chat UI won't open cursor://)."""
+    out = L.LEDGER_DIR / f"PR-{pr}-launch.html"
+    brief_uri = brief_path.resolve().as_uri()
+    safe_link = html.escape(deeplink, quote=True)
+    safe_brief = html.escape(brief_uri, quote=True)
+    safe_seed = html.escape(seed_text)
+    out.write_text(
+        f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>PR #{pr} — open new Cursor chat</title>
+<style>
+  body {{ font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; }}
+  a.btn {{ display: inline-block; background: #0969da; color: #fff; padding: 12px 20px;
+    border-radius: 8px; text-decoration: none; font-weight: 600; }}
+  a.btn:hover {{ background: #0550ae; }}
+  .muted {{ color: #57606a; font-size: 14px; margin-top: 1.5rem; }}
+  code {{ background: #f6f8fa; padding: 2px 6px; border-radius: 4px; }}
+  pre.seed {{ background: #f6f8fa; padding: 12px; border-radius: 8px; white-space: pre-wrap;
+    font-size: 14px; line-height: 1.45; border: 1px solid #d0d7de; }}
+</style></head><body>
+  <h1>PR #{pr} — new Cursor chat</h1>
+  <p>Click below to open a <strong>new Agent chat</strong> in Cursor with the PR brief seeded.
+     Cursor may show a confirmation dialog first — approve it.</p>
+  <p><a class="btn" href="{safe_link}">Open new chat for PR #{pr}</a></p>
+  <h2>First message (if the button fails)</h2>
+  <p class="muted">Copy this into Cursor → <strong>New Chat</strong> (Agent mode). Do not use a
+     placeholder like &ldquo;Test PR {pr}&rdquo; — it hides the requirement.</p>
+  <pre class="seed">{safe_seed}</pre>
+  <p class="muted">Full brief:
+    <a href="{safe_brief}"><code>{html.escape(brief_path.name)}</code></a></p>
+  <p class="muted">Fallback terminal: <code>open '{html.escape(deeplink)}'</code></p>
+</body></html>
+""",
+        encoding="utf-8",
+    )
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -132,21 +222,33 @@ def main(argv: list[str] | None = None) -> int:
     cli.add_argument("--requirement", help="Requirement text (overrides what's in the ledger)")
     cli.add_argument("--title", help="PR title (optional; fetched from gh if omitted)")
     cli.add_argument("--branch", help="Branch name (optional; fetched from gh if omitted)")
+    cli.add_argument("--open", action="store_true",
+                     help="Open PR-<n>-launch.html in the default browser (macOS: use the button there)")
     args = cli.parse_args(argv)
 
     brief = generate_brief(args.pr, requirement=args.requirement,
                            title=args.title, branch=args.branch)
     brief_path = L.LEDGER_DIR / f"PR-{args.pr}-brief.md"
+    brief_rel = f"metrics/pr_cost/PR-{args.pr}-brief.md"
+    rec = L.load_record(args.pr)
+    req = args.requirement or rec.get("requirement") or rec.get("title") or ""
+    seed = seed_prompt(args.pr, brief_rel=brief_rel, requirement=req or None)
     print(f"\nBrief written → {brief_path}\n")
 
-    deeplink = make_deeplink(
-        f"Starting work on PR #{args.pr}. Brief:\n\n{brief}\n\n"
-        "Acknowledge the model routing and context discipline rules, then ask me what to build."
-    )
-    print("─── cursor:// deeplink (click to open a new seeded chat) ─────────────────")
+    deeplink = make_deeplink(seed)
+    launch_path = write_launch_html(args.pr, deeplink, brief_path=brief_path, seed_text=seed)
+    launch_uri = launch_path.resolve().as_uri()
+    print(f"Launcher → {launch_path}")
+    print(f"  Open in browser: {launch_uri}\n")
+    if args.open:
+        subprocess.run(["open", str(launch_path)], check=False)
+    print("─── FIRST MESSAGE — paste into New Chat if you skip the launcher button ───")
+    print("(Do NOT use a placeholder like 'Test PR N'; use this text verbatim.)\n")
+    print(seed)
+    print("\n─── cursor:// deeplink (browser address bar if needed) ───")
     print(deeplink)
-    print("──────────────────────────────────────────────────────────────────────────\n")
-    print("Or paste this brief into a New Chat manually:\n")
+    print(f"  ({len(deeplink)} chars)\n")
+    print("─── full brief (fallback) ───\n")
     print(brief)
     return 0
 

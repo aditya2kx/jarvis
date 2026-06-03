@@ -313,10 +313,23 @@ team plan. Attribution to a branch/PR is by **time window** derived from the bra
 local `~/.cursor/ai-tracking/ai-code-tracking.db`, with a **non-overlap clamp**: the window can't start
 before the most recent commit of any *prior* branch, so back-to-back PRs built in one session don't
 double-count each other (the bug that made PR #14 first read $25.91 instead of ~$10 by folding in PR
-#13's sessions). **Residual limitation:** the dashboard usage feed is *account-global* (every Cursor
-request, any repo) — within a window, concurrent work in OTHER projects would still be counted. So
-capture when you've been focused on one branch, or pass an explicit `--start/--end`. The conversationId
-does **not** separate back-to-back PRs (one chat session = one id).
+#13's sessions).
+
+**Parallel chat spaces (multi-requirement):** the usage API is account-global and events have
+**no conversationId**. Wide time windows bleed parallel chats together (PR #16 showed $8.82
+when only ~$0.68 of Composer work belonged to that PR). The scalable fix:
+
+1. **`start_pr_session.py --pr <n>`** stamps `session_started_at` on the ledger — the cost anchor.
+2. **Open a new chat** for that PR (Hard Lesson #19).
+3. **`pr_cost_ledger.py sync --pr <n>`** auto-binds `conversationId`(s) from
+   `~/.cursor/ai-tracking/ai-code-tracking.db` (AI edits after `session_started_at`) and keeps
+   only usage events whose **model tier matches** that chat's dominant model.
+4. **Explicit bind** when auto-bind is ambiguous:
+   `pr_cost_ledger.py bind-conversation --pr <n> --conversation-id <uuid>`
+   (UUID = folder name under `~/.cursor/projects/.../agent-transcripts/<uuid>/`).
+5. **Manual windows >4h are rejected** unless `--allow-wide-manual` (marks approximate).
+
+Attribution modes stored on the ledger: `conversation` (preferred), `branch_window`, `manual_window`.
 
 **BYOK (Anthropic API key in Cursor):** when you configure your own Anthropic key, Cursor sets
 `chargedCents=0` on Claude model events but still returns `tokenUsage.totalCents` (list-price model
@@ -358,9 +371,10 @@ line of code. The two ways to do this:
 1. **Canvas button** — open `pr-cost.canvas.tsx`, scroll to *Start next requirement*, type the
    requirement, and click **Open new chat for next PR**. The button dispatches a `newComposerChat`
    action that opens a new IDE composer tab pre-seeded with the brief and these routing rules.
-2. **CLI** — `python3 scripts/start_pr_session.py --pr <n> --requirement "..."` writes
-   `metrics/pr_cost/PR-<n>-brief.md`, prints a `cursor://` deeplink you can click to open a
-   new seeded chat, and prints the brief for manual copy-paste.
+2. **CLI** — `python3 scripts/start_pr_session.py --pr <n> --requirement "..." --open` writes
+   `metrics/pr_cost/PR-<n>-brief.md`, stamps **`session_started_at`**, opens **`PR-<n>-launch.html`**
+   in your browser (click the button to open a seeded chat). Paste the seed message if the button
+   fails.
 
 Do **not** continue the previous PR's Composer thread. Do not use `/clear` as a substitute —
 it clears the display but the history is still in memory and still billed.

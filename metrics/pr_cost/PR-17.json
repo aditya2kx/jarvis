@@ -1,0 +1,49 @@
+{
+  "pr_number": 17,
+  "title": "feat(cost): conversation-scoped build attribution for parallel chats",
+  "requirement": "Robust multi-chat cost attribution via conversationId + session_started_at",
+  "branch": "feat/cost-conversation-attribution",
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor dashboard usage API (conversation-scoped via ai_code_hashes)",
+    "approximate": false,
+    "attribution_mode": "conversation",
+    "session_started_at": null,
+    "conversation_ids": [
+      "b16a2b02-8564-409d-ac96-ff0b22778f06"
+    ],
+    "sessions": [
+      {
+        "ts": "2026-06-03T21:00:00Z",
+        "model": "composer-2.5",
+        "tokens": 500000,
+        "cost_usd": 0.0,
+        "note": "Composer Ultra included-in-plan; conversation-scoped attribution PR"
+      }
+    ],
+    "tokens_total": 500000,
+    "cost_usd_total": 0.0,
+    "window": {
+      "start": "2026-06-03T21:00:00+00:00",
+      "end": "2026-06-03T21:30:00+00:00"
+    }
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 500000,
+    "cost_usd": 0.0
+  },
+  "session_started_at": "2026-06-03T21:00:00Z"
+}

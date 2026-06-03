@@ -93,5 +93,29 @@ class TestDeriveWindowForBranch(unittest.TestCase):
         self.assertGreater(end_ms, edit_ms)
 
 
+class TestSessionCookie(unittest.TestCase):
+    def _make_token(self, sub: str, exp: int | None = None) -> str:
+        claims: dict = {"sub": sub}
+        if exp is not None:
+            claims["exp"] = exp
+        payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+        return f"hdr.{payload}.sig"
+
+    def test_formats_cookie(self):
+        tok = self._make_token("auth0|user123", exp=9999999999)
+        cookie = U._session_cookie(tok)
+        self.assertIn("WorkosCursorSessionToken=user123::", cookie)
+
+    def test_raises_on_expired_token(self):
+        tok = self._make_token("auth0|u", exp=1)
+        with self.assertRaises(U.CursorUsageError):
+            U._session_cookie(tok)
+
+    def test_raises_when_user_id_empty(self):
+        tok = self._make_token("", exp=9999999999)
+        with self.assertRaises(U.CursorUsageError):
+            U._session_cookie(tok)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -32,24 +32,24 @@ code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12p
 </style></head>
 <body><div class="wrap">
 <h1>PR cost monitoring</h1>
-<p class="muted">3 PR(s) · $90.18 total · generated 2026-06-03 07:12 UTC · source: <code>metrics/pr_cost/PR-*.json</code> via <code>pr_cost_ledger.py report</code></p>
+<p class="muted">3 PR(s) · $90.84 total · generated 2026-06-03 07:16 UTC · source: <code>metrics/pr_cost/PR-*.json</code> via <code>pr_cost_ledger.py report</code></p>
 
     <section class="pr">
       <p class="pr-title">#14 — feat(cost): checked-in HTML cost report + post-merge finalize + pre-push sync</p>
-      <p class="muted">merged  · build = Cursor usage API · review = Claude Sonnet bot</p>
+      <p class="muted">merged 2026-06-03 · build = Cursor usage API · review = Claude Sonnet bot</p>
       <div class="stats">
-        <div class="stat"><div class="v">$11.15</div><div class="l">Total cost</div></div>
-        <div class="stat"><div class="v build">$10.41</div><div class="l">Build (93%)</div></div>
-        <div class="stat"><div class="v review">$0.74</div><div class="l">Review · 2 runs</div></div>
-        <div class="stat"><div class="v">16.4M</div><div class="l">Tokens</div></div>
+        <div class="stat"><div class="v">$11.81</div><div class="l">Total cost</div></div>
+        <div class="stat"><div class="v build">$10.41</div><div class="l">Build (88%)</div></div>
+        <div class="stat"><div class="v review">$1.40</div><div class="l">Review · 5 runs</div></div>
+        <div class="stat"><div class="v">17.0M</div><div class="l">Tokens</div></div>
       </div>
-      <div class="bar"><div class="b" style="width:93.3%"></div><div class="r" style="width:6.7%"></div></div>
-      <p class="muted">Build 93% · Review 7%</p>
+      <div class="bar"><div class="b" style="width:88.1%"></div><div class="r" style="width:11.9%"></div></div>
+      <p class="muted">Build 88% · Review 12%</p>
       <h2>Where the effort went — top 5 cost areas</h2>
       <table><thead><tr><th>Area</th><th>Model</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">% of PR</th></tr></thead>
-      <tbody><tr class="build"><td>build session 2026-06-03T06:48:08.886000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">5.1M</td><td class="n">$3.16</td><td class="n">28.3%</td></tr><tr class="build"><td>build session 2026-06-03T06:40:52.072000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">3.1M</td><td class="n">$2.32</td><td class="n">20.8%</td></tr><tr class="build"><td>build session 2026-06-03T06:57:35.550000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">3.2M</td><td class="n">$1.97</td><td class="n">17.6%</td></tr><tr class="build"><td>build session 2026-06-03T07:03:45.714000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">2.5M</td><td class="n">$1.49</td><td class="n">13.4%</td></tr><tr class="build"><td>build session 2026-06-03T07:07:34.931000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">1.7M</td><td class="n">$1.31</td><td class="n">11.7%</td></tr></tbody></table>
+      <tbody><tr class="build"><td>build session 2026-06-03T06:48:08.886000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">5.1M</td><td class="n">$3.16</td><td class="n">26.8%</td></tr><tr class="build"><td>build session 2026-06-03T06:40:52.072000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">3.1M</td><td class="n">$2.32</td><td class="n">19.6%</td></tr><tr class="build"><td>build session 2026-06-03T06:57:35.550000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">3.2M</td><td class="n">$1.97</td><td class="n">16.6%</td></tr><tr class="build"><td>build session 2026-06-03T07:03:45.714000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">2.5M</td><td class="n">$1.49</td><td class="n">12.6%</td></tr><tr class="review"><td>claude review (×5 runs)</td><td>claude-sonnet-4-6</td><td class="n">1.2M</td><td class="n">$1.40</td><td class="n">11.9%</td></tr></tbody></table>
       <h2>Top recommendations to cut cost</h2>
-      <div class="rec"><b>#1</b>Build is 93% of total cost — optimization leverage is in the agent build loop, not the review bot. Review-side tuning is rounding error.</div><div class="rec"><b>#2</b>Build ran on an Opus-class model. Route mechanical work (renames, test scaffolding, doc edits, log spelunking) to a Sonnet/Haiku-class model and reserve Opus for genuinely hard reasoning — biggest $/token lever.</div>
+      <div class="rec"><b>#1</b>Build is 88% of total cost — optimization leverage is in the agent build loop, not the review bot. Review-side tuning is rounding error.</div><div class="rec"><b>#2</b>Build ran on an Opus-class model. Route mechanical work (renames, test scaffolding, doc edits, log spelunking) to a Sonnet/Haiku-class model and reserve Opus for genuinely hard reasoning — biggest $/token lever.</div><div class="rec"><b>#3</b>Review ran 5× (each push re-runs the full bounded review at ~$0.28/run). Batch pushes, or keep the PR in Draft until ready, so review fires fewer times.</div>
     </section>
     
     <section class="pr">

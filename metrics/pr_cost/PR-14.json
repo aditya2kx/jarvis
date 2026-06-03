@@ -4,7 +4,7 @@
   "requirement": "#12 \u2014 one-click finalize / team-visible cost report",
   "branch": "feat/pr-cost-html-report",
   "created_at": null,
-  "merged_at": null,
+  "merged_at": "2026-06-03T07:16:32Z",
   "diff": {
     "files": null,
     "additions": null,
@@ -116,14 +116,53 @@
         "cost_usd": 0.2428,
         "result": "success",
         "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26869016743"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 6,
+        "input_tokens": 5,
+        "output_tokens": 2104,
+        "cache_read_input_tokens": 99609,
+        "cache_creation_input_tokens": 17345,
+        "tokens": 119063,
+        "cost_usd": 0.1277,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26869192914"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 7,
+        "input_tokens": 6,
+        "output_tokens": 3413,
+        "cache_read_input_tokens": 164223,
+        "cache_creation_input_tokens": 45313,
+        "tokens": 212955,
+        "cost_usd": 0.2716,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26869242183"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 10,
+        "input_tokens": 7,
+        "output_tokens": 4574,
+        "cache_read_input_tokens": 213136,
+        "cache_creation_input_tokens": 34243,
+        "tokens": 251960,
+        "cost_usd": 0.2622,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26869525528"
       }
     ],
-    "tokens_total": 627677,
-    "cost_usd_total": 0.7433,
-    "run_count": 2
+    "tokens_total": 1211655,
+    "cost_usd_total": 1.4048,
+    "run_count": 5
   },
   "totals": {
-    "tokens": 16396549,
-    "cost_usd": 11.153
+    "tokens": 16980527,
+    "cost_usd": 11.8145
   }
 }

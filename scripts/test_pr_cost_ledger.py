@@ -189,6 +189,19 @@ class TestPrCostLedger(unittest.TestCase):
         self.assertIn("Feature &lt;X&gt; &amp; Y", html)
         self.assertNotIn("Feature <X>", html)
 
+    def test_sync_is_tolerant_and_writes_report(self):
+        # Both capture surfaces unavailable (new branch / no comments) must not be
+        # fatal — sync still regenerates the report from committed data.
+        L.set_meta(9, title="t9")
+        L.record_build_session(9, ts="2026-01-01T00:00:00Z", tokens=1000, cost_usd=0.5, model="m")
+        out = Path(self._tmpdir.name) / "report.html"
+        with patch.object(L, "capture_build", side_effect=SystemExit("no window")), \
+             patch.object(L, "capture_review", side_effect=RuntimeError("no comments")):
+            rec = L.sync(9, repo="o/r", report_out=str(out))
+        self.assertTrue(out.is_file())
+        self.assertIn("#9", out.read_text())
+        self.assertEqual(rec["pr_number"], 9)
+
     def test_report_writes_file_for_all_prs(self):
         L.set_meta(3, title="t3")
         L.record_build_session(3, ts="2026-01-01T00:00:00Z", tokens=1_000_000, cost_usd=2.0, model="claude-opus-4-8")

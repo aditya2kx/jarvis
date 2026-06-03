@@ -284,6 +284,17 @@ Commands:
   standalone, dependency-free `metrics/pr_cost/report.html` (summary, build/review split, top cost
   areas, top recommendations) from whatever `PR-*.json` records exist — open it in any browser, no
   build step. `--pr <n>` for a single PR; `--out <path>` to override the destination.
+- **Before your final push (keep the commit's cost current):** run
+  `pr_cost_ledger.py sync --pr <n>` — one step that captures BUILD cost (Cursor usage API, auto-window)
+  + REVIEW cost (posted comments) and regenerates `report.html`, then commit `metrics/pr_cost/`. This
+  way the pushed commit carries the cost-so-far. The **only** cost it can't include is the review run
+  *this* push triggers (a commit can't contain its own review cost) — that tail is finalized at merge by
+  `pr-cost-finalize.yml`, and skipping it on the branch is fine. Don't run `sync` on every commit: each
+  ledger commit is itself a push that re-runs review, so sync once before you're ready.
+- **Optional pre-push hook (automates the above):** `bash scripts/install-git-hooks.sh` points
+  `core.hooksPath` at `scripts/git-hooks`; the `pre-push` hook runs `sync` for the branch's PR and
+  blocks the push if the ledger changed, asking you to commit + push again (no auto-commit). Undo with
+  `git config --unset core.hooksPath`.
 - **Automatic on merge:** `.github/workflows/pr-cost-finalize.yml` runs when a PR merges — it
   `capture-review`s the final review cost from the posted comments (gh-only; **build cost is
   local-only and must already be committed via the pre-merge gate**), regenerates `report.html`,

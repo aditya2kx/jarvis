@@ -592,6 +592,38 @@ def build_html_report(prs: list[int]) -> str:
     return _render_report_html([load_record(p) for p in prs])
 
 
+# ── sync (the one pre-push step: capture build + review + report) ───
+
+def sync(pr: int, *, repo: str | None = None, report_out: str | None = None) -> dict[str, Any]:
+    """Refresh a PR's full cost record + the HTML report — best-effort per surface.
+
+    The single thing to run before your final push so the commit carries the
+    cost-so-far: pulls BUILD cost (Cursor usage API, auto-window) and REVIEW cost
+    (posted PR comments), then regenerates metrics/pr_cost/report.html. A surface
+    that can't be captured yet (e.g. no PR comments, no scored commits on a brand
+    new branch) is warned and skipped, not fatal. The only cost it can never hold
+    is the review run triggered by this very push — captured later by
+    pr-cost-finalize.yml at merge.
+    """
+    try:
+        capture_build(pr)
+    except (SystemExit, Exception) as exc:  # noqa: BLE001 — best-effort surface
+        print(f"  [build] skipped: {exc}")
+    try:
+        capture_review(pr, repo=repo)
+    except (SystemExit, Exception) as exc:  # noqa: BLE001 — best-effort surface
+        print(f"  [review] skipped: {exc}")
+    out = Path(report_out) if report_out else (LEDGER_DIR / "report.html")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    prs = _all_prs() or [pr]
+    out.write_text(build_html_report(sorted(prs, reverse=True)), encoding="utf-8")
+    rec = load_record(pr)
+    print(f"  report → {out}")
+    print(f"  PR #{pr}: build ${rec['build']['cost_usd_total']:.2f} | "
+          f"review ${rec['review']['cost_usd_total']:.2f} | total ${rec['totals']['cost_usd']:.2f}")
+    return rec
+
+
 # ── CLI ─────────────────────────────────────────────────────────────
 
 def _all_prs() -> list[int]:
@@ -644,6 +676,11 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--pr", type=int, help="single PR; omit for all recorded PRs")
     rp.add_argument("--out", default=str(LEDGER_DIR / "report.html"),
                     help="output HTML path (default: metrics/pr_cost/report.html)")
+
+    sy = sub.add_parser("sync", help="Pre-push: capture build + review cost and regenerate the report")
+    sy.add_argument("--pr", type=int, required=True)
+    sy.add_argument("--repo", help="owner/name (defaults to the current gh repo)")
+    sy.add_argument("--out", help="report output path (default: metrics/pr_cost/report.html)")
 
     args = cli.parse_args(argv)
 
@@ -703,6 +740,10 @@ def main(argv: list[str] | None = None) -> int:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(build_html_report(sorted(prs, reverse=True)), encoding="utf-8")
         print(f"wrote HTML cost report for {len(prs)} PR(s) → {out}")
+        return 0
+    if args.cmd == "sync":
+        print(f"syncing cost for PR #{args.pr} …")
+        sync(args.pr, repo=args.repo, report_out=args.out)
         return 0
     return 0
 

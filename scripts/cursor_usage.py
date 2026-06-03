@@ -106,9 +106,15 @@ def derive_window_for_branch(
     ai-code-tracking.db — anchored to actual AI *code edits* on that branch.
 
     Strategy: bound a search range from (first scored commit − pre_buffer) to
-    (merged_at, or last commit + pre_buffer), then tighten to the min/max
-    timestamp of AI edits in that range (usage events that produced code).
-    The lead pad accounts for a request starting slightly before its edits land.
+    (merged_at, or now), then tighten to the min/max timestamp of AI edits in
+    that range (usage events that produced code). The lead pad accounts for a
+    request starting slightly before its edits land.
+
+    Non-overlap guard: the lower bound is clamped so it can never reach before
+    the most recent commit of ANY OTHER branch that predates this branch's first
+    commit. Without this, the pre_buffer reaches back into a previous PR built in
+    the same session and double-counts its (often expensive) build cost — the
+    failure seen on PR #14, which folded in all of PR #13's sessions.
     Returns (start_ms, end_ms). Raises if the branch has no scored commits.
     """
     if not db.is_file():
@@ -126,10 +132,21 @@ def derive_window_for_branch(
         dates = [_parse_git_date(r[0]) for r in rows]
         c_start, c_end = min(dates), max(dates)
         lo = c_start - datetime.timedelta(minutes=pre_buffer_min)
+        # Clamp to the last commit of prior work so we don't bleed into the
+        # previous back-to-back PR/branch from the same session.
+        others = con.execute(
+            "select commitDate from scored_commits where branchName != ?", (branch,)
+        ).fetchall()
+        prior = [d for d in (_parse_git_date(o[0]) for o in others) if d < c_start]
+        if prior:
+            lo = max(lo, max(prior))
         if merged_at:
             hi = datetime.datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
         else:
-            hi = c_end + datetime.timedelta(minutes=pre_buffer_min)
+            # Unmerged: cap at now, never a fixed buffer into the future (which
+            # would sweep in later, unrelated activity).
+            hi = min(c_end + datetime.timedelta(minutes=pre_buffer_min),
+                     datetime.datetime.now(datetime.timezone.utc))
         lo_ms, hi_ms = int(lo.timestamp() * 1000), int(hi.timestamp() * 1000)
         edit = con.execute(
             "select min(timestamp), max(timestamp) from ai_code_hashes "

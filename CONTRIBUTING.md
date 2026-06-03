@@ -309,9 +309,14 @@ token+cost+model data for a personal account when called with the local Cursor s
 read-only from the desktop app's `state.vscdb`; never printed or stored). `scripts/cursor_usage.py`
 does exactly that. It is an **undocumented** endpoint, so treat it as best-effort — if it breaks, fall
 back to `record-build` (manual, from the dashboard UI), or wire the supported Admin API if we move to a
-team plan. Attribution to a branch/PR is by time window (Cursor's usage events carry no branch/PR field;
-the local `~/.cursor/ai-tracking/ai-code-tracking.db` maps requests→branch by timestamp if tighter
-attribution is ever needed).
+team plan. Attribution to a branch/PR is by **time window** derived from the branch's commits in the
+local `~/.cursor/ai-tracking/ai-code-tracking.db`, with a **non-overlap clamp**: the window can't start
+before the most recent commit of any *prior* branch, so back-to-back PRs built in one session don't
+double-count each other (the bug that made PR #14 first read $25.91 instead of ~$10 by folding in PR
+#13's sessions). **Residual limitation:** the dashboard usage feed is *account-global* (every Cursor
+request, any repo) — within a window, concurrent work in OTHER projects would still be counted. So
+capture when you've been focused on one branch, or pass an explicit `--start/--end`. The conversationId
+does **not** separate back-to-back PRs (one chat session = one id).
 
 Empirically (PR #12): **build was ~94% of total cost** ($34.44 build vs $2.14 review = $36.58),
 dominated by one 44M-token Opus request ($30.76 = 84% of the PR) — so cost-efficiency work belongs in

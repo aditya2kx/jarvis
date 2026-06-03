@@ -15,116 +15,6 @@
     "approximate": false,
     "sessions": [
       {
-        "ts": "2026-06-03T05:07:59.389000+00:00",
-        "model": "claude-opus-4-8-thinking-high",
-        "tokens": 991746,
-        "cost_usd": 1.4853,
-        "input_tokens": 24,
-        "output_tokens": 7776,
-        "cache_read_input_tokens": 845030,
-        "cache_creation_input_tokens": 138916,
-        "note": null
-      },
-      {
-        "ts": "2026-06-03T05:28:50.336000+00:00",
-        "model": "composer-2.5",
-        "tokens": 842265,
-        "cost_usd": 0.1959,
-        "input_tokens": 70447,
-        "output_tokens": 2762,
-        "cache_read_input_tokens": 769056,
-        "cache_creation_input_tokens": 0,
-        "note": null
-      },
-      {
-        "ts": "2026-06-03T05:32:12.318000+00:00",
-        "model": "composer-2.5",
-        "tokens": 797532,
-        "cost_usd": 0.1716,
-        "input_tokens": 13354,
-        "output_tokens": 3506,
-        "cache_read_input_tokens": 780672,
-        "cache_creation_input_tokens": 0,
-        "note": null
-      },
-      {
-        "ts": "2026-06-03T05:35:09.415000+00:00",
-        "model": "composer-2.5",
-        "tokens": 1207830,
-        "cost_usd": 0.2573,
-        "input_tokens": 15837,
-        "output_tokens": 4761,
-        "cache_read_input_tokens": 1187232,
-        "cache_creation_input_tokens": 0,
-        "note": null
-      },
-      {
-        "ts": "2026-06-03T05:44:46.065000+00:00",
-        "model": "composer-2.5",
-        "tokens": 4592183,
-        "cost_usd": 0.9528,
-        "input_tokens": 35731,
-        "output_tokens": 10276,
-        "cache_read_input_tokens": 4546176,
-        "cache_creation_input_tokens": 0,
-        "note": null
-      },
-      {
-        "ts": "2026-06-03T05:57:33.068000+00:00",
-        "model": "claude-opus-4-8-thinking-high",
-        "tokens": 4239019,
-        "cost_usd": 3.851,
-        "input_tokens": 34,
-        "output_tokens": 10460,
-        "cache_read_input_tokens": 3972000,
-        "cache_creation_input_tokens": 256525,
-        "note": null
-      },
-      {
-        "ts": "2026-06-03T06:02:14.132000+00:00",
-        "model": "claude-opus-4-8-thinking-high",
-        "tokens": 2894630,
-        "cost_usd": 1.6218,
-        "input_tokens": 22,
-        "output_tokens": 4791,
-        "cache_read_input_tokens": 2879910,
-        "cache_creation_input_tokens": 9907,
-        "note": null
-      },
-      {
-        "ts": "2026-06-03T06:07:04.291000+00:00",
-        "model": "claude-opus-4-8-thinking-medium",
-        "tokens": 5708686,
-        "cost_usd": 4.7815,
-        "input_tokens": 42,
-        "output_tokens": 13451,
-        "cache_read_input_tokens": 5417380,
-        "cache_creation_input_tokens": 277813,
-        "note": null
-      },
-      {
-        "ts": "2026-06-03T06:15:20.450000+00:00",
-        "model": "claude-opus-4-8-thinking-medium",
-        "tokens": 3531032,
-        "cost_usd": 2.5202,
-        "input_tokens": 15493,
-        "output_tokens": 26036,
-        "cache_read_input_tokens": 3425659,
-        "cache_creation_input_tokens": 63844,
-        "note": null
-      },
-      {
-        "ts": "2026-06-03T06:33:17.031000+00:00",
-        "model": "claude-opus-4-8-thinking-medium",
-        "tokens": 3072510,
-        "cost_usd": 2.2178,
-        "input_tokens": 56,
-        "output_tokens": 20279,
-        "cache_read_input_tokens": 3020092,
-        "cache_creation_input_tokens": 32083,
-        "note": null
-      },
-      {
         "ts": "2026-06-03T06:40:52.072000+00:00",
         "model": "claude-opus-4-8-thinking-medium",
         "tokens": 3105954,
@@ -171,20 +61,31 @@
       {
         "ts": "2026-06-03T07:03:45.714000+00:00",
         "model": "claude-opus-4-8-thinking-medium",
-        "tokens": 436006,
-        "cost_usd": 0.2505,
-        "input_tokens": 4,
-        "output_tokens": 907,
-        "cache_read_input_tokens": 433312,
-        "cache_creation_input_tokens": 1783,
+        "tokens": 2469206,
+        "cost_usd": 1.4934,
+        "input_tokens": 22,
+        "output_tokens": 6903,
+        "cache_read_input_tokens": 2446698,
+        "cache_creation_input_tokens": 15583,
+        "note": null
+      },
+      {
+        "ts": "2026-06-03T07:07:34.931000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 1705404,
+        "cost_usd": 1.3102,
+        "input_tokens": 14,
+        "output_tokens": 14532,
+        "cache_read_input_tokens": 1673223,
+        "cache_creation_input_tokens": 17635,
         "note": null
       }
     ],
-    "tokens_total": 39907701,
-    "cost_usd_total": 25.9118,
+    "tokens_total": 15768872,
+    "cost_usd_total": 10.4097,
     "window": {
-      "start": "2026-06-03T05:01:55.576000+00:00",
-      "end": "2026-06-03T07:04:55.033000+00:00"
+      "start": "2026-06-03T06:38:37+00:00",
+      "end": "2026-06-03T07:11:13.260000+00:00"
     }
   },
   "review": {
@@ -222,7 +123,7 @@
     "run_count": 2
   },
   "totals": {
-    "tokens": 40535378,
-    "cost_usd": 26.6551
+    "tokens": 16396549,
+    "cost_usd": 11.153
   }
 }

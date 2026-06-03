@@ -1,0 +1,31 @@
+{
+  "pr_number": 17,
+  "title": "fix(cost): BYOK Anthropic key \u2014 use tokenUsage.totalCents when chargedCents=0",
+  "requirement": "BYOK cost fallback for build attribution when Anthropic API key is configured in Cursor",
+  "branch": "feat/cost-byok-fallback",
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": null,
+    "approximate": true,
+    "sessions": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 0,
+    "cost_usd": 0
+  }
+}

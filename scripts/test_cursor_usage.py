@@ -159,6 +159,40 @@ class TestSessionCookie(unittest.TestCase):
             U._session_cookie(tok)
 
 
+class TestResolveEventCostCents(unittest.TestCase):
+    def test_cursor_charged_when_positive(self):
+        cents, src = U.resolve_event_cost_cents({
+            "chargedCents": 150,
+            "cursorTokenFee": 5,
+            "tokenUsage": {"totalCents": 100},
+        })
+        self.assertEqual(cents, 150)
+        self.assertEqual(src, "cursor_charged")
+
+    def test_byok_fallback_when_charged_zero(self):
+        cents, src = U.resolve_event_cost_cents({
+            "chargedCents": 0,
+            "cursorTokenFee": 0,
+            "tokenUsage": {"totalCents": 206.457275390625},
+        })
+        self.assertAlmostEqual(cents, 206.457275390625)
+        self.assertEqual(src, "byok_token_usage")
+
+    def test_byok_includes_cursor_token_fee(self):
+        cents, src = U.resolve_event_cost_cents({
+            "chargedCents": 0,
+            "cursorTokenFee": 2.5,
+            "tokenUsage": {"totalCents": 10},
+        })
+        self.assertEqual(cents, 12.5)
+        self.assertEqual(src, "byok_token_usage")
+
+    def test_zero_when_no_cost_fields(self):
+        cents, src = U.resolve_event_cost_cents({"chargedCents": 0, "tokenUsage": {}})
+        self.assertEqual(cents, 0.0)
+        self.assertEqual(src, "zero")
+
+
 class TestFetchUsageEvents(unittest.TestCase):
     """Mock the HTTP/pagination loop — no live Cursor session needed."""
 
@@ -168,13 +202,30 @@ class TestFetchUsageEvents(unittest.TestCase):
         cm.__enter__.return_value.read.return_value = json.dumps(payload).encode()
         return cm
 
-    def _event(self, ts_ms: int, model: str, cents: int, inp: int = 10, outp: int = 5):
-        return {
+    def _event(self, ts_ms: int, model: str, cents: int | None, inp: int = 10, outp: int = 5,
+               *, total_cents: float | None = None):
+        ev = {
             "timestamp": str(ts_ms), "model": model, "chargedCents": cents,
-            "isHeadless": False, "kind": "code",
+            "cursorTokenFee": 0, "isHeadless": False, "kind": "code",
             "tokenUsage": {"inputTokens": inp, "outputTokens": outp,
                            "cacheReadTokens": 0, "cacheWriteTokens": 0},
         }
+        if total_cents is not None:
+            ev["tokenUsage"]["totalCents"] = total_cents
+        return ev
+
+    def test_byok_event_uses_total_cents(self):
+        from unittest import mock
+        page = {"usageEventsDisplay": [
+            self._event(1000, "claude-opus-4-8", 0, total_cents=206.45),
+        ]}
+        with mock.patch.object(U, "_read_access_token", return_value="t"), \
+             mock.patch.object(U, "_session_cookie", return_value="c"), \
+             mock.patch.object(U.urllib.request, "urlopen",
+                               side_effect=[self._resp(page), self._resp({"usageEventsDisplay": []})]):
+            events = U.fetch_usage_events(0, 9999)
+        self.assertAlmostEqual(events[0]["cost_usd"], 2.0645)
+        self.assertEqual(events[0]["cost_source"], "byok_token_usage")
 
     def test_paginates_dedups_and_sorts(self):
         from unittest import mock

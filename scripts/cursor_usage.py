@@ -161,6 +161,24 @@ def derive_window_for_branch(
     return start_ms, end_ms
 
 
+def resolve_event_cost_cents(event: dict[str, Any]) -> tuple[float, str]:
+    """Map a raw dashboard usage event to billed cents + source label.
+
+    Cursor sets chargedCents=0 for BYOK Anthropic requests but still populates
+    tokenUsage.totalCents (list-price model cost, ~what Anthropic bills). When
+    chargedCents is absent/zero, fall back to totalCents + cursorTokenFee.
+    """
+    tu = event.get("tokenUsage") or {}
+    charged = event.get("chargedCents")
+    token_fee = float(event.get("cursorTokenFee") or 0)
+    total = float(tu.get("totalCents") or 0)
+    if charged is not None and float(charged) > 0:
+        return float(charged), "cursor_charged"
+    if total > 0 or token_fee > 0:
+        return total + token_fee, "byok_token_usage"
+    return 0.0, "zero"
+
+
 def fetch_usage_events(
     start: str | int, end: str | int, *,
     page_size: int = 200, max_pages: int = 25,
@@ -168,8 +186,14 @@ def fetch_usage_events(
 ) -> list[dict[str, Any]]:
     """Return normalized per-request usage events in [start, end] (inclusive-ish).
 
-    Each item: {ts_iso, ts_ms, model, input_tokens, output_tokens, cache_read,
-    cache_write, tokens, cost_usd, is_headless, kind}.
+Each item: {ts_iso, ts_ms, model, input_tokens, output_tokens, cache_read,
+    cache_write, tokens, cost_usd, cost_source, is_headless, kind}.
+
+    cost_source:
+      - cursor_charged — chargedCents from Cursor (subscription / Cursor-billed)
+      - byok_token_usage — chargedCents is 0 but tokenUsage.totalCents (+ cursorTokenFee)
+        is present; typical when an Anthropic API key is configured in Cursor (BYOK).
+      - zero — no cost fields on the event
     """
     token = _read_access_token(state_db)
     cookie = _session_cookie(token)
@@ -213,6 +237,7 @@ def fetch_usage_events(
             if key in seen:
                 continue
             seen.add(key)
+            cost_cents, cost_source = resolve_event_cost_cents(e)
             out.append({
                 "ts_ms": ts_ms,
                 "ts_iso": datetime.datetime.fromtimestamp(ts_ms / 1000, datetime.timezone.utc).isoformat(),
@@ -220,7 +245,8 @@ def fetch_usage_events(
                 "input_tokens": inp, "output_tokens": outp,
                 "cache_read": cr, "cache_write": cw,
                 "tokens": inp + outp + cr + cw,
-                "cost_usd": round((e.get("chargedCents") or 0) / 100, 4),
+                "cost_usd": round(cost_cents / 100, 4),
+                "cost_source": cost_source,
                 "is_headless": bool(e.get("isHeadless")),
                 "kind": e.get("kind"),
             })

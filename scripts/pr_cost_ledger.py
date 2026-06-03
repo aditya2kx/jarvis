@@ -222,13 +222,19 @@ def capture_build(
     # Full-window pull is authoritative: replace prior build rows so re-running is idempotent.
     rec["build"]["sessions"] = []
     for e in events:
+        notes: list[str] = []
+        if e["is_headless"]:
+            notes.append("headless")
+        if e.get("cost_source") == "byok_token_usage":
+            notes.append("byok")
         rec["build"]["sessions"].append({
             "ts": e["ts_iso"], "model": e["model"], "tokens": e["tokens"],
             "cost_usd": e["cost_usd"],
+            "cost_source": e.get("cost_source"),
             "input_tokens": e["input_tokens"], "output_tokens": e["output_tokens"],
             "cache_read_input_tokens": e["cache_read"],
             "cache_creation_input_tokens": e["cache_write"],
-            "note": "headless" if e["is_headless"] else None,
+            "note": "; ".join(notes) if notes else None,
         })
     rec["build"]["sessions"].sort(key=lambda s: s.get("ts") or "")
     save_record(rec)

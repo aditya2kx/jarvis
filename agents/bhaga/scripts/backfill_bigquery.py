@@ -88,10 +88,21 @@ def _parse_bool(val) -> bool:
 
 
 def _parse_timestamp(val) -> datetime.datetime | None:
-    """Parse a scraped_at_utc string into a datetime."""
+    """Parse a timestamp string into a datetime (UTC).
+
+    Handles common formats from Google Sheets and process_reviews.py:
+      2026-01-15T08:30:00Z, 2026-01-15T08:30:00.000Z,
+      2026-01-15 08:30:00, 2026-01-15T08:30:00+00:00, etc.
+    """
     if val is None or str(val).strip() == "":
         return None
     s = str(val).strip()
+    # Try stdlib fromisoformat which handles +00:00 and bare ISO variants
+    try:
+        dt = datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt.astimezone(datetime.timezone.utc).replace(tzinfo=datetime.timezone.utc)
+    except (ValueError, AttributeError):
+        pass
     for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
             return datetime.datetime.strptime(s, fmt).replace(tzinfo=datetime.timezone.utc)
@@ -541,7 +552,8 @@ def backfill(store: str, *, tables: set[str] | None = None, dry_run: bool = Fals
         bq_rows = [r for r in bq_rows if r.get("review_id")]
         print(f"  {len(sheet_rows)} rows in sheet, {len(bq_rows)} valid rows for BQ")
         if not dry_run:
-            loaded = load_rows("google_reviews", bq_rows, merge_keys=["review_id"])
+            loaded = load_rows("google_reviews", bq_rows, merge_keys=["review_id"],
+                               column_bq_types={"ingested_at_utc": "TIMESTAMP"})
             print(f"  Loaded {loaded} rows into google_reviews")
         else:
             loaded = 0

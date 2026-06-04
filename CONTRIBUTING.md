@@ -143,9 +143,25 @@ new ambiguity or scope change appears — e.g. Agent→Plan if the approach turn
    git push -u origin HEAD
    gh pr create --base main --fill   # then complete the template (see below)
    ```
-3. **Fill in the PR template completely** (`.github/pull_request_template.md`): **what** the change is,
-   **motivation**, **end-to-end test with evidence**, and **backward compatibility + proof**. Empty or
-   placeholder sections get a REQUEST CHANGES.
+3. **Fill in the PR template completely** (`.github/pull_request_template.md`). All 5 sections are
+   required — **CI will fail** (`PR Description` check) if any section is missing or contains placeholder
+   text. The template must be used verbatim (5 numbered headings); do not substitute a free-form body.
+   Write `gh pr create --base main --fill` and then edit the opened template — do not pass `--body`
+   with a custom string.
+
+   **Purpose of the PR description:** The operator reads it to decide whether to approve — without
+   follow-up questions. Every section must answer a specific question:
+
+   | Section | Answers |
+   |---|---|
+   | §1 What is the change | What exactly changed and where (concrete, 2–5 sentences) |
+   | §2 Motivation | Why; linked to ticket / chat / `PROGRESS.md` |
+   | §3 End-to-end test | Does it work? Real commands + real output — "it should work" is not evidence |
+   | §4 Backward compat | Will it break existing behavior? Prove it (diff, flag default, legacy test run) |
+   | §5 Checklist | Every item checked [x] or explicitly noted as N/A with reason |
+
+   **Diagrams are strongly preferred** over paragraphs for architecture, data flow, or before/after
+   state. Mermaid blocks, ASCII diagrams, and screenshots all render in GitHub PR descriptions.
 4. **The Claude Opus reviewer bot runs automatically** on every PR and posts inline + summary comments
    (see below). The agent addresses every finding autonomously (fix, or reply why not) and re-pushes —
    looping until the PR is merge-ready.

@@ -1,0 +1,26 @@
+name: PR Description
+
+# Fails if the PR body is missing or has unfilled sections from the template.
+# This is a HARD gate — it must pass before the PR can be approved.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  check:
+    name: PR Description
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check PR description completeness
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 scripts/check_pr_description.py --body "$PR_BODY"

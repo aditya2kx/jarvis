@@ -1,0 +1,103 @@
+{
+  "pr_number": 24,
+  "title": null,
+  "requirement": "[P0] BHAGA operational issues: BQ incremental run failure (SA missing BigQuery roles), Square prod magic-link/trust-device not persisting, BQ backfill behind Sheets by a day.",
+  "branch": "fix/bhaga-bq-iam-square-session",
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor dashboard usage API (local session token; request->PR by time window)",
+    "approximate": false,
+    "attribution_mode": "branch_window",
+    "session_started_at": null,
+    "sessions": [
+      {
+        "ts": "2026-06-04T03:11:44.713000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 277276,
+        "cost_usd": 0.1252,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 4,
+        "output_tokens": 2203,
+        "cache_read_input_tokens": 272275,
+        "cache_creation_input_tokens": 2794,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T03:13:09.625000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 423459,
+        "cost_usd": 0.1568,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 5,
+        "output_tokens": 1344,
+        "cache_read_input_tokens": 419205,
+        "cache_creation_input_tokens": 2905,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T03:14:12.146000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 1923657,
+        "cost_usd": 0.9745,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 36,
+        "output_tokens": 15533,
+        "cache_read_input_tokens": 1859105,
+        "cache_creation_input_tokens": 48983,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T03:14:50.383000+00:00",
+        "model": "claude-opus-4-8-thinking-high",
+        "tokens": 8719245,
+        "cost_usd": 6.7244,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 124,
+        "output_tokens": 53905,
+        "cache_read_input_tokens": 8483728,
+        "cache_creation_input_tokens": 181488,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T03:15:33.395000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 7844677,
+        "cost_usd": 2.7579,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 52,
+        "output_tokens": 20466,
+        "cache_read_input_tokens": 7794160,
+        "cache_creation_input_tokens": 29999,
+        "note": "byok"
+      }
+    ],
+    "tokens_total": 19188314,
+    "cost_usd_total": 10.7388,
+    "window": {
+      "start": "2026-06-04T03:09:17+00:00",
+      "end": "2026-06-04T03:39:41.145000+00:00"
+    }
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 19188314,
+    "cost_usd": 10.7388
+  }
+}

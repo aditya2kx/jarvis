@@ -1,5 +1,19 @@
 # Jarvis Build Progress
 
+## 2026-06-04 — Cost ledger commit-back on every push (feat/cost-commit-on-push)
+
+Fixed the broken `pr-cost-finalize.yml` post-merge push. Root cause: the repo ruleset
+(`enforcement: active`, `bypass_actors: []`) blocks all direct pushes to `main`, including from
+`ADMIN_PAT`. The workflow silently swallowed the error (exit 0) so CI showed green but the
+`report.html` was never committed.
+
+**Fix:** `pr-cost-gate.yml` now commits the refreshed ledger (`capture-review` + `report.html`)
+back to the **PR branch** after each validation pass (every push). The cost commit (prefix
+`chore(cost):`) is the last commit before squash merge, so the ledger lands on `main` naturally
+without any bypass. Loop-break: `sandbox-e2e` and `claude-review` detect the `chore(cost):` prefix
+and skip their expensive steps; all required checks still report success. `pr-cost-finalize.yml`
+retains only the post-merge analysis comment; the broken commit-to-main step is removed.
+
 ## 2026-06-04 — BHAGA status doctor CLI (feat/bhaga-status-doctor)
 
 Added `agents/bhaga/scripts/status.py` — a read-only ops freshness checker that answers "did yesterday's run land in Sheets, BigQuery, and Grafana?" with one command so a cold agent on any machine never has to re-derive coordinates or hand-write queries.

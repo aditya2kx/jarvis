@@ -143,9 +143,9 @@ new ambiguity or scope change appears — e.g. Agent→Plan if the approach turn
    git push -u origin HEAD
    gh pr create --base main --fill   # then complete the template (see below)
    ```
-3. **Fill in the PR template completely** (`.github/pull_request_template.md`). All 5 sections are
+3. **Fill in the PR template completely** (`.github/pull_request_template.md`). All 6 sections are
    required — **CI will fail** (`PR Description` check) if any section is missing or contains placeholder
-   text. The template must be used verbatim (5 numbered headings); do not substitute a free-form body.
+   text. The template must be used verbatim (6 numbered headings); do not substitute a free-form body.
    Write `gh pr create --base main --fill` and then edit the opened template — do not pass `--body`
    with a custom string.
 

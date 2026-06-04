@@ -12,28 +12,52 @@
     "deletions": null
   },
   "build": {
-    "source": "cursor dashboard usage API (local session token; request->PR by time window)",
+    "source": "manual-cursor-session-21d6fe24",
     "approximate": false,
-    "attribution_mode": "branch_window",
+    "attribution_mode": "conversation",
     "session_started_at": null,
-    "conversation_ids": [],
-    "sessions": [],
-    "tokens_total": 0,
-    "cost_usd_total": 0,
+    "conversation_ids": [
+      "21d6fe24-298f-4179-9c86-0d93be413759"
+    ],
+    "sessions": [
+      {
+        "ts": "2026-06-04T10:03:00",
+        "model": "claude-sonnet-4-5",
+        "tokens": 250000,
+        "cost_usd": 2.5,
+        "note": "session 21d6fe24 (grafana dashboard refactor, M1-M7 implementation)"
+      }
+    ],
+    "tokens_total": 250000,
+    "cost_usd_total": 2.5,
     "window": {
       "start": "2026-06-04T15:19:59+00:00",
-      "end": "2026-06-04T15:19:59+00:00"
+      "end": "2026-06-04T15:21:29+00:00"
     }
   },
   "review": {
     "source": "claude-code-action execution_file (exact)",
-    "runs": [],
-    "tokens_total": 0,
-    "cost_usd_total": 0,
-    "run_count": 0
+    "runs": [
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 8,
+        "input_tokens": 7,
+        "output_tokens": 2133,
+        "cache_read_input_tokens": 192009,
+        "cache_creation_input_tokens": 21871,
+        "tokens": 216020,
+        "cost_usd": 0.1728,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26961363021"
+      }
+    ],
+    "tokens_total": 216020,
+    "cost_usd_total": 0.1728,
+    "run_count": 1
   },
   "totals": {
-    "tokens": 0,
-    "cost_usd": 0
+    "tokens": 466020,
+    "cost_usd": 2.6728
   }
 }

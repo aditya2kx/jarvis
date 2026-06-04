@@ -64,6 +64,11 @@ jobs:
 
       - uses: actions/checkout@v4
         if: github.event_name == 'pull_request'
+        with:
+          # fetch-depth: 2 ensures the PR branch HEAD commit is available
+          # (depth 1 only fetches the synthetic refs/pull/N/merge commit;
+          # git log <head-sha> would fail with exit 128 without its parent).
+          fetch-depth: 2
 
       - name: Detect cost commit (skip heavy steps on automatic ledger commits)
         if: github.event_name == 'pull_request'

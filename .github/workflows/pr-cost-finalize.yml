@@ -1,30 +1,24 @@
 name: PR cost finalize (post-merge)
 
-# Requirement #12: when a PR merges, finalize and publish its cost record so the
-# in-repo ledger + HTML report are always current for everyone — no local step.
+# Post-merge: capture any final review costs and post the cost analysis comment.
 #
-# WHAT THIS CAN AND CANNOT DO (hard constraint):
-#   * REVIEW cost is reconstructable from the PR's posted cost comments via `gh`,
-#     so `capture-review` runs here to catch the final review run (incl. the one
-#     triggered by the last push) and persist it.
-#   * BUILD cost is LOCAL-ONLY (Cursor session token + ai-code-tracking.db live on
-#     the developer laptop), so it CANNOT be captured on a CI runner. It must
-#     already be in metrics/pr_cost/PR-<n>.json from the pre-merge gate. This job
-#     only finalizes review cost + regenerates the report from the committed data.
+# NOTE: This workflow no longer commits to main. The cost ledger is committed to
+# the PR branch before merge by pr-cost-gate.yml (on every push), so it lands
+# in the squash merge automatically. The direct push-to-main was removed because
+# the repo ruleset (enforcement: active, bypass_actors: []) blocks all direct
+# pushes, including from ADMIN_PAT.
 #
-# It then regenerates metrics/pr_cost/report.html, posts the post-merge analysis
-# as a PR comment, and commits the refreshed ledger + report back to main.
-#
-# NOTE: committing to main requires the actions bot to be permitted to push to the
-# protected branch (allow GitHub Actions, or a bypass for github-actions[bot]). If
-# the push is rejected, the job still posts the analysis comment and does not fail.
+# What this still does:
+#  - Finalises the review cost record from any late-posted cost comments.
+#  - Regenerates the HTML report on the runner (ephemeral, not committed).
+#  - Posts a post-merge cost analysis comment to the PR thread.
 
 on:
   pull_request:
     types: [closed]
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
 
 concurrency:
@@ -74,23 +68,3 @@ jobs:
           } > /tmp/cost_analysis.md
           gh pr comment "$PR" --body-file /tmp/cost_analysis.md || \
             echo "::warning::Could not post analysis comment."
-
-      - name: Commit refreshed ledger + report to main
-        env:
-          # ADMIN_PAT is aditya2kx's personal token — admin bypass lets this
-          # commit land directly on main without a PR (cost report only).
-          ADMIN_PAT: ${{ secrets.ADMIN_PAT }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add metrics/pr_cost/ || true
-          if git diff --cached --quiet; then
-            echo "No ledger/report changes to commit."
-            exit 0
-          fi
-          git commit -m "chore(cost): finalize PR #$PR cost record + regenerate report [skip ci]"
-          # Use the admin PAT so the push bypasses the PR-review branch protection
-          # (personal-repo branch protection is bypassed by the repo owner/admin).
-          REMOTE_URL="https://x-access-token:${ADMIN_PAT}@github.com/$REPO.git"
-          git push "$REMOTE_URL" HEAD:main || \
-            echo "::warning::Push to main rejected. Comment was still posted; run 'python3 scripts/pr_cost_ledger.py sync --pr $PR' locally and push."

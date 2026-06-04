@@ -751,6 +751,35 @@ gcloud scheduler jobs resume bhaga-nightly --location=us-central1   # after prod
 
 ## 14. BigQuery + Grafana Cloud (added PR #16, 2026-06-03)
 
+### Status doctor — check freshness first
+
+Before hand-investigating whether a run landed, use the read-only doctor CLI:
+
+```bash
+BHAGA_SECRETS_BACKEND=gcp \
+BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
+python3 -m agents.bhaga.scripts.status --store palmetto
+# or for a specific date:
+python3 -m agents.bhaga.scripts.status --store palmetto --date 2026-06-03
+# machine-readable:
+python3 -m agents.bhaga.scripts.status --store palmetto --json
+# verify registry columns exist in live BQ (catches schema drift):
+python3 -m agents.bhaga.scripts.status --store palmetto --check-schema
+```
+
+It prints a compact freshness table across all three layers (Sheets → BQ → Grafana BI
+views) and exits nonzero if any layer is missing the date — so it is usable in scripts
+and alerts.  Don't hand-investigate; run this first.
+
+**Anti-drift contract:** `status.py` keeps a declarative registry (`BQ_TARGETS`,
+`GRAFANA_VIEWS`) that must track `core/migrations/*.sql` and
+`agents/bhaga/grafana/dashboard.json`.  Sync is enforced by:
+- Static tests in `agents/bhaga/scripts/test_status.py` (parse migration SQL + dashboard
+  JSON and assert the registry covers them — fails CI if a new table or panel appears
+  without an update to the registry).
+- `scripts/check_doc_freshness.py --strict` coupling (CI hard-fails a migration or
+  dashboard PR that doesn't also update `status.py`).
+
 ### Architecture
 
 - **BQ dataset:** `jarvis-bhaga-prod.bhaga`

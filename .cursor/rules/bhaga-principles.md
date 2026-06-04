@@ -66,6 +66,7 @@ derive proposals from them rather than from memory.
   JSON, Cloud Run logs, GCS evidence) instead of assuming a schema. Pause **only** for the irreducible
   human step (replying to the OTP DM on the operator's phone), a truly destructive/irreversible **prod**
   action, or a genuine architecture fork. Announce side-effecting actions; then proceed.
+- **Run `status` first for any operational question about whether a run landed.** Before hand-investigating whether yesterday's incremental run landed in Sheets, BigQuery, and Grafana, run `python3 -m agents.bhaga.scripts.status --store palmetto` — it prints a compact freshness table across all three layers and exits nonzero if any layer is missing the date. Don't re-derive coordinates or hand-write queries.
 - **Keep docs in lock-step** — pipeline/step/sheet/invariant changes update `RUNBOOK.md` +
   `agents/bhaga/scripts/README.md` + `bhaga.md` + a dated `PROGRESS.md` entry in the same change.
 

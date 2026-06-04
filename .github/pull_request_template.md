@@ -30,10 +30,15 @@ placeholder text. Delete these HTML comments before submitting.
 
 
 ## 4. End-to-end test (with evidence)
-<!-- How you verified this works end-to-end — not just unit tests.
-     Paste the REAL commands you ran and the REAL output / sheet diff / log excerpt.
-     "It should work" or "tests pass" alone is not evidence.
-     For BHAGA: show the affected sheet/tab before→after or the job log + a row spot-check. -->
+<!-- How you verified this works end-to-end.
+     REQUIRED: paste the REAL commands you ran AND the REAL output they produced.
+     "Tests pass" alone is NOT evidence — it will FAIL CI.
+     Unit test output (pytest PASSED/FAILED lines) counts only as a supplement,
+     not as the primary evidence. Show what the TOOL actually does when run:
+       - For a new script: run it and paste its output (real data, real rows).
+       - For a pipeline change: paste the job log or the sheet before→after.
+       - For a BHAGA change: show the sandbox e2e output or a real model tab spot-check.
+     CI will reject evidence that consists ONLY of pytest output. -->
 
 <details><summary>Evidence</summary>
 

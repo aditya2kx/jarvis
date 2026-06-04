@@ -31,6 +31,11 @@ class TestStartPrSession(unittest.TestCase):
         self.assertIn("Hello", link)
         self.assertNotIn(" ", link)  # spaces must be percent-encoded
         self.assertIn("mode=agent", link)
+        self.assertIn("model=claude-4.6-sonnet-medium-thinking", link)
+
+    def test_make_deeplink_no_model_when_disabled(self):
+        link = S.make_deeplink("hello", model=None)
+        self.assertNotIn("model=", link)
 
     def test_make_deeplink_rejects_overlong_text(self):
         with self.assertRaises(ValueError):
@@ -63,7 +68,7 @@ class TestStartPrSession(unittest.TestCase):
         self.assertIn("Open new chat for PR #99", text)
         self.assertIn(html.escape(link, quote=True), text)
         self.assertIn("PR #99 seed", text)
-        self.assertIn("Test PR 99", text)  # anti-placeholder warning
+        self.assertIn("Test PR #99", text)  # anti-placeholder warning
 
     def test_generate_brief_writes_file(self):
         with patch.object(S, "_gh", return_value=""):

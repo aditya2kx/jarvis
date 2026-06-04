@@ -1,0 +1,38 @@
+{
+  "pr_number": 23,
+  "title": null,
+  "requirement": null,
+  "branch": "fix/bhaga-bq-iam-square-session",
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor dashboard usage API (local session token; request->PR by time window)",
+    "approximate": false,
+    "attribution_mode": "branch_window",
+    "session_started_at": null,
+    "conversation_ids": [],
+    "sessions": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "window": {
+      "start": "2026-06-04T03:33:41+00:00",
+      "end": "2026-06-04T03:33:41+00:00"
+    }
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 0,
+    "cost_usd": 0
+  }
+}

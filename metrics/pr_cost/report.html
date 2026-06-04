@@ -34,8 +34,28 @@ code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12p
 </style></head>
 <body><div class="wrap">
 <h1>PR cost monitoring</h1>
-<p class="muted">19 PR(s) · $217.50 total · generated 2026-06-04 17:22 UTC · source: <code>metrics/pr_cost/PR-*.json</code> · rates verified 2026-06-03 (<a href="https://cursor.com/docs/models-and-pricing" style="color:#539bf5">cursor.com/docs/models-and-pricing</a>)</p>
+<p class="muted">20 PR(s) · $219.60 total · generated 2026-06-04 18:51 UTC · source: <code>metrics/pr_cost/PR-*.json</code> · rates verified 2026-06-03 (<a href="https://cursor.com/docs/models-and-pricing" style="color:#539bf5">cursor.com/docs/models-and-pricing</a>)</p>
 
+    <section class="pr">
+      <p class="pr-title">#34 — feat(ci): commit cost ledger back to PR branch on every push</p>
+      <p class="muted">merged 2026-06-04 · build = Cursor usage API · review = Claude Sonnet bot</p>
+      <div class="stats">
+        <div class="stat"><div class="v">$2.10</div><div class="l">Total cost</div></div>
+        <div class="stat"><div class="v build">$2.10</div><div class="l">Build (100%)</div></div>
+        <div class="stat"><div class="v review">$0.00</div><div class="l">Review · 0 runs</div></div>
+        <div class="stat"><div class="v">2.8M</div><div class="l">Tokens</div></div>
+      </div>
+      <div class="bar"><div class="b" style="width:100.0%"></div><div class="r" style="width:0.0%"></div></div>
+      <p class="muted">Build 100% · Review 0%</p>
+      <h2>Where the effort went — top 1 cost areas</h2>
+      <table><thead><tr><th>Area</th><th>Model</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">% of PR</th></tr></thead>
+      <tbody><tr class="build"><td>build session 2026-06-04T17:22:25Z</td><td>claude-sonnet-4-6-thinking</td><td class="n">2.8M</td><td class="n">$2.10</td><td class="n">100.0%</td></tr></tbody></table>
+      <h2>Diagnosis</h2>
+      <div class="obs"><b>•</b>Build attributed to 1 chat space(s): 8401d8b5… (conversation-scoped via ai_code_hashes + model tier).</div><div class="obs"><b>•</b>Build is 100% of total cost ($2.10) vs review 0% ($0.00). Optimization leverage is in the build loop.</div><div class="obs"><b>•</b>Model mix: sonnet $2.10 (100%).</div><div class="obs"><b>•</b>One session (2026-06-04T17:22:25, $2.10, 2,800,000 tok) is 100% of build cost — a marathon thread with an ever-growing context.</div>
+      <h2>Tactical recommendations</h2>
+      <div class="rec"><b>#1</b>No obvious efficiency wins — costs look proportional to the change.</div>
+    </section>
+    
     <section class="pr">
       <p class="pr-title">#32 — feat(bhaga): read-only status doctor CLI + anti-drift enforcement</p>
       <p class="muted">merged 2026-06-04 · build = Cursor usage API · review = Claude Sonnet bot</p>

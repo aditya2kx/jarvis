@@ -12,6 +12,7 @@ Do NOT ask whether to babysit — just do it.
 
 ## The full lifecycle every time
 
+0. **Check for open PRs first** → `gh pr list --state open` before creating any new PR. If a PR from the current session is still open, add the new changes to that branch instead of opening a second PR. Never have two in-flight PRs from the same session.
 1. **Create PR** → `gh pr create …`
 2. **Seed cost ledger** → `pr_cost_ledger.py set-meta --pr N --branch <branch>` then `sync --pr N`
 3. **Babysit immediately** — read `/Users/adiniekkajj/.cursor/skills-cursor/babysit/SKILL.md` and follow it:

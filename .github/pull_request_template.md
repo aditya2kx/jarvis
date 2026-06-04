@@ -1,41 +1,59 @@
 <!--
-Fill in every section. The Claude reviewer bot and reviewers will REQUEST CHANGES
-if any section is missing or left as placeholder text. Delete these comments.
+PURPOSE OF THIS DESCRIPTION
+The operator reads this to decide whether to approve — without asking follow-up
+questions. It must answer:
+  • What exactly changed and why?
+  • How was it designed? (Architecture, data flow, key decisions — diagrams preferred.)
+  • Does it work end-to-end? (Prove it with real output, not "it should work".)
+  • Is it backward compatible and regression-free? (Prove it.)
+
+Keep it concise. Diagrams (Mermaid, ASCII, screenshots) are strongly preferred
+over paragraphs for architecture and data flow.
+
+Fill in every section. CI will FAIL if any section is missing or left as
+placeholder text. Delete these HTML comments before submitting.
 -->
 
 ## 1. What is the change
-<!-- The concrete change in 2–5 sentences. What was added/modified/removed and where. -->
+<!-- Concrete change in 2–5 sentences: what was added/modified/removed and where. -->
 
 
 ## 2. Motivation
-<!-- Why this change exists. The problem it solves or the capability it adds. Link the
-ticket / chat / PROGRESS.md entry if there is one. -->
+<!-- Why this change exists. Problem it solves or capability it adds.
+     Link the ticket / chat session / PROGRESS.md entry. -->
 
 
-## 3. End-to-end test (with evidence)
-<!-- How you verified this works END TO END, not just unit tests. Paste the command(s)
-you ran and the real output / sheet diff / log excerpt. "It should work" is not evidence.
-For BHAGA: show the affected sheet/tab before→after, or the job/backfill log + a row spot-check. -->
+## 3. Design / Approach
+<!-- How the change is structured: key design decisions, data flow, component interactions.
+     Diagrams are strongly preferred — Mermaid blocks, ASCII art, and screenshots all render in GitHub.
+     For non-trivial changes: why this approach over alternatives? What did you rule out and why? -->
+
+
+## 4. End-to-end test (with evidence)
+<!-- How you verified this works end-to-end — not just unit tests.
+     Paste the REAL commands you ran and the REAL output / sheet diff / log excerpt.
+     "It should work" or "tests pass" alone is not evidence.
+     For BHAGA: show the affected sheet/tab before→after or the job log + a row spot-check. -->
 
 <details><summary>Evidence</summary>
 
 ```
-<paste commands + output here>
+<paste real commands + real output here>
 ```
 
 </details>
 
 
-## 4. Backward compatibility — and proof
-<!-- Is this backward compatible? State explicitly. Then PROVE it:
-- New behavior behind a feature flag? Name the flag + its default (off).
-- Schema change additive only (no column reorder/removal)? Show the header diff.
-- Existing tabs / consumers / nightly daily_refresh unaffected? Show the legacy path still passes
-  (e.g. the existing test suite green, or a legacy-regression run).
-If it is NOT backward compatible, say so loudly here and describe the migration. -->
+## 5. Backward compatibility — and proof
+<!-- State explicitly: yes or no, then PROVE it.
+     - New behavior behind a flag? Name it + its default.
+     - Schema change additive only? Show the header diff.
+     - Existing paths / nightly unaffected? Show the legacy test run or log.
+     - No regression? State which tests cover the affected path and that they pass.
+     If NOT backward compatible, say so and describe the migration. -->
 
 
-## 5. Checklist
+## 6. Checklist
 - [ ] Tests added/updated and passing (`python3 -m pytest agents/bhaga/scripts/ skills/ core/ cloud/`)
 - [ ] Docs updated in lock-step (`python3 scripts/check_doc_freshness.py` is clean)
 - [ ] No secrets / PII in the diff (credentials live in Secret Manager / Keychain)

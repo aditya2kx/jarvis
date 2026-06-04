@@ -143,9 +143,26 @@ new ambiguity or scope change appears — e.g. Agent→Plan if the approach turn
    git push -u origin HEAD
    gh pr create --base main --fill   # then complete the template (see below)
    ```
-3. **Fill in the PR template completely** (`.github/pull_request_template.md`): **what** the change is,
-   **motivation**, **end-to-end test with evidence**, and **backward compatibility + proof**. Empty or
-   placeholder sections get a REQUEST CHANGES.
+3. **Fill in the PR template completely** (`.github/pull_request_template.md`). All 6 sections are
+   required — **CI will fail** (`PR Description` check) if any section is missing or contains placeholder
+   text. The template must be used verbatim (6 numbered headings); do not substitute a free-form body.
+   Write `gh pr create --base main --fill` and then edit the opened template — do not pass `--body`
+   with a custom string.
+
+   **Purpose of the PR description:** The operator reads it to decide whether to approve — without
+   follow-up questions. Every section must answer a specific question:
+
+   | Section | Answers |
+   |---|---|
+   | §1 What is the change | What exactly changed and where (concrete, 2–5 sentences) |
+   | §2 Motivation | Why; linked to ticket / chat / `PROGRESS.md` |
+   | §3 Design / Approach | How it's built — architecture, data flow, key decisions; diagrams > paragraphs |
+   | §4 End-to-end test | Does it work? Real commands + real output — "it should work" is not evidence |
+   | §5 Backward compat | Will it break existing behavior or cause a regression? Prove it (diff, flag, test run) |
+   | §6 Checklist | Every item checked [x] or explicitly noted as N/A with reason |
+
+   **Diagrams are strongly preferred** over paragraphs for architecture, data flow, or before/after
+   state. Mermaid blocks, ASCII diagrams, and screenshots all render in GitHub PR descriptions.
 4. **The Claude Opus reviewer bot runs automatically** on every PR and posts inline + summary comments
    (see below). The agent addresses every finding autonomously (fix, or reply why not) and re-pushes —
    looping until the PR is merge-ready.
@@ -179,8 +196,8 @@ work around them.
 ### 1. The enterprise pre-push hook blocks the push
 
 On the operator's machine a **machine-global DoorDash push-protection hook** runs on every `git push`.
-For this **personal** repo (`aditya2kx/jarvis`, pushed via the `github.com-personal` SSH alias with
-personal `aditya.2ky@gmail.com` creds) it refuses the push with:
+For this repo (`aditya2kx/jarvis`, pushed by the `jarvis-agent-bot328` bot account via HTTPS with
+`GH_TOKEN` loaded from Keychain) it refuses the push with:
 
 ```
 🚨 SECURITY BLOCK: PREVENTING POTENTIAL DATA LEAK 🚨
@@ -207,14 +224,21 @@ it is **not** a credential problem and **not** evidence of an actual leak. The s
 > the control is understood, the repo is personal, and the bypass is pre-authorized for non-secret
 > diffs. Stalling just blocks the work.
 
-### 2. `gh pr create` fails with "must be a collaborator"
+### 2. `gh pr create` runs as the bot account
 
-The `gh` CLI may be active as a different account than the repo owner. This repo is owned by
-**`aditya2kx`**, so switch first:
+All agent GitHub operations use **`jarvis-agent-bot328`** — the dedicated bot collaborator on this
+repo. `GH_TOKEN` is always pre-loaded from Keychain in `~/.zshrc` so `gh` picks it up automatically.
+No `gh auth switch` is needed; simply run:
 
 ```bash
-gh auth switch --user aditya2kx     # repo owner; creating PRs as another account fails
-gh pr create --base main --fill     # then fill the template
+gh pr create --base main --fill
+```
+
+If you need to perform a GitHub operation as **your personal account** (`aditya2kx`), use the alias:
+
+```bash
+gh-adi pr list          # or any other gh subcommand
+gh-adi pr merge <n>     # only you (aditya2kx) can approve + merge
 ```
 
 ## The review bot (Claude Sonnet)

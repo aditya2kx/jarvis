@@ -214,6 +214,18 @@ These are mistakes that actually happened. Read them before acting.
     ```
     Then tell the user to open **`metrics/pr_cost/PR-<n>-launch.html`** in a browser and click the button (or paste the script's printed **FIRST MESSAGE** block verbatim into a New Chat). **Never** tell them to type a placeholder like "Test PR N" — that hides the requirement and confuses the next agent. Do NOT continue building in the current chat after handing off. Rationale: reusing the current chat drags the entire conversation history as cache-read tokens into every new turn ($0.50/M on Opus). A fresh chat resets the counter, saving ~30% of build cost. **`start_pr_session.py` also stamps `session_started_at`** so `pr_cost_ledger.py sync` can bind your chat's `conversationId` and attribute build cost when multiple chat spaces run in parallel (PR #16: $8.82 reported vs ~$0.68 actual Composer build without this). The platform limitation is real — you cannot open a new tab yourself; the launcher HTML + seed text is the lightest reliable handoff. Concrete misses to prevent: (a) continuing to implement a new requirement in the same chat as the previous PR's discussion, as on PR #15 (90% cache-read tokens, ~$3.76 avoidable); (b) opening the new chat with "Test PR N" instead of the seeded first message, as on PR #16; (c) wide manual capture windows instead of `sync` after session start.
 
+20. **PR descriptions MUST use the 6-section template verbatim — CI fails otherwise.** Never pass `--body` with a free-form string to `gh pr create`. Always use `gh pr create --base main --fill` and fill in the opened template. The `PR Description` CI check (`scripts/check_pr_description.py`) will fail on PRs where any of the 6 sections are missing, empty, or contain placeholder text:
+    - §1 What is the change (2–5 sentences)
+    - §2 Motivation (why, linked to ticket/chat/PROGRESS.md)
+    - §3 Design / Approach (how it's built — **diagrams strongly preferred** over paragraphs)
+    - §4 End-to-end test (real commands + real output — "it should work" is not evidence)
+    - §5 Backward compatibility — and proof (explicit yes/no + evidence; covers regression too)
+    - §6 Checklist (each item checked [x] or explained)
+
+    Concrete repeated misses: PR #18 used `## Summary`/`## Context`; PR #19 also used a non-template structure. **The template is not optional.** The operator reads the description to decide approval — it must answer without follow-up questions.
+
+21. **The agent NEVER merges a PR. Only the operator merges.** Your job ends at *merge-ready*: all CI checks green, cost gate satisfied, every comment triaged. Do NOT run `gh pr merge`, `git merge`, or any equivalent. The operator does the final review and squash-merge to `main` — that is their explicit sign-off and cannot be delegated. Concrete miss (2026-06-03, PR #18): I ran `gh pr merge 18 --squash --auto` after CI went green. User correctly pointed to CONTRIBUTING § "The agent NEVER merges." **Trigger to internalize:** the moment all CI checks pass, your action is to report "PR #N is merge-ready — all checks green" and STOP. Never proceed to the merge step regardless of confidence level.
+
 ### Bidirectional Slack Communication
 
 The user may not be at their computer. Slack DM is the primary channel for all async communication.
@@ -258,6 +270,8 @@ The user may not be at their computer. Slack DM is the primary channel for all a
 - **Never skip incremental validation.** After every file upload to Drive, diff that folder against the benchmark immediately.
 
 ## Conventions
+
+- **All GitHub operations run as `jarvis-agent-bot328`, never as `aditya2kx`.** `GH_TOKEN` is always loaded from Keychain (`security find-generic-password -s github-bot-pat -a jarvis-agent-bot328 -w`) via `~/.zshrc`. Git author/committer identity inside `build-workspace/` resolves to `jarvis-agent-bot328 <aditya.2ky+jarvisbot@gmail.com>` via `~/.gitconfig includeIf`. Never substitute your own PAT or personal git identity in any agent script or shell command — every PR, commit, push, and `gh` call must appear on GitHub as the bot. To rotate the bot PAT: regenerate on github.com/jarvis-agent-bot328, then `security add-generic-password -a jarvis-agent-bot328 -s github-bot-pat -w <new> -U`.
 
 - **Ask → Plan → Agent, and you drive the transitions.** Default to read-only Ask mode for a new ask;
   once aligned, *proactively request* the mode switch via `SwitchMode` (Ask→Plan when the ask is clear,

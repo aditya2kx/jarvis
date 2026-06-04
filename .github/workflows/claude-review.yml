@@ -64,10 +64,10 @@ jobs:
         id: claude
         if: github.event_name == 'pull_request' && steps.gate.outputs.enabled == 'true'
         timeout-minutes: 12
-        # Advisory gate: the operator's approval is the hard merge gate (branch
-        # protection), so a bot infra hiccup (turn cap, transient API error)
-        # must not red-X the PR and block the human. Real review feedback is
-        # posted as PR comments regardless of this step's exit code.
+        # continue-on-error here isolates Claude's infra from the verdict gate.
+        # A bot hiccup (turn cap, API error) → execution file missing → caught
+        # by "Verify Claude review ran" step. The actual REQUEST CHANGES verdict
+        # is enforced by the "Gate on Claude verdict" step below.
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -86,7 +86,7 @@ jobs:
             find, list directories, or read any other repo path.
 
             Rubric (A–F):
-            A. PR description — What, Motivation, E2E evidence, Backward compat + proof, Checklist
+            A. PR description — What, Motivation, Design/Approach, E2E evidence, Backward compat + proof, Checklist
             B. Backward compatibility — additive / feature-flagged; breaking changes need proof
             C. BHAGA invariants — Decimal money, America/Chicago, GCS-not-laptop, staging guards
             D. Testing — prod-like sandbox e2e or justified gap; meaningful coverage on new code
@@ -155,3 +155,53 @@ jobs:
           fi
           echo "::error::Claude review did not run (no execution file) and claude-review.yml was not changed — unexpected failure."
           exit 1
+
+      - name: Gate on Claude verdict (fail if REQUEST CHANGES)
+        if: github.event_name == 'pull_request' && steps.gate.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Fetch the most recent claude[bot] summary comment and check the verdict.
+          # Fails if Claude posted REQUEST CHANGES — agent must fix + re-push.
+          # Passes silently if no Claude comment found (infra hiccup already caught above).
+          python3 - <<'PYEOF'
+          import json, subprocess, sys, re
+
+          result = subprocess.run(
+              ["gh", "api", f"repos/${{ github.repository }}/issues/$PR_NUMBER/comments",
+               "--jq", '[.[] | select(.user.login == "claude[bot]" or (.user.login | startswith("claude")))]'],
+              capture_output=True, text=True
+          )
+          if result.returncode != 0 or not result.stdout.strip():
+              print("No Claude comments found — skipping verdict check.")
+              sys.exit(0)
+
+          comments = json.loads(result.stdout)
+          if not comments:
+              print("No Claude summary comment found — skipping verdict check.")
+              sys.exit(0)
+
+          latest = comments[-1]["body"]
+          first_lines = "\n".join(latest.splitlines()[:3]).upper()
+
+          if "REQUEST CHANGES" in first_lines:
+              print("::error::Claude review verdict: REQUEST CHANGES — blocking issues must be addressed before merge.")
+              print("Fix the issues, reply to each inline thread with 'fixed in <sha>', then push.")
+              sys.exit(1)
+
+          if "APPROVE" in first_lines:
+              print("Claude review verdict: APPROVE — no blocking issues.")
+              sys.exit(0)
+
+          print(f"Claude verdict unclear from comment header. First lines:\n{first_lines}\nAllowing (non-blocking).")
+          PYEOF
+
+      - name: Check all inline review threads are replied to
+        if: github.event_name == 'pull_request' && steps.gate.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/check_pr_review_replies.py \
+            --pr "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}"

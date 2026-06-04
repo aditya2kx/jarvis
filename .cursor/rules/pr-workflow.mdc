@@ -1,0 +1,35 @@
+---
+description: PR lifecycle — always babysit after creating a PR, never leave it unattended.
+alwaysApply: true
+---
+
+# PR Workflow — Mandatory Babysitting
+
+**After creating or pushing to any PR, immediately read and follow the `babysit` skill.**
+
+Do NOT stop at "PR is up at https://…" and hand back to the user.
+Do NOT ask whether to babysit — just do it.
+
+## The full lifecycle every time
+
+1. **Create PR** → `gh pr create …`
+2. **Seed cost ledger** → `pr_cost_ledger.py set-meta --pr N --branch <branch>` then `sync --pr N`
+3. **Babysit immediately** — read `/Users/adiniekkajj/.cursor/skills-cursor/babysit/SKILL.md` and follow it:
+   - Resolve merge conflicts (take ours/theirs intelligently; never blindly prefer one side)
+   - Wait for CI; fix any failures within this PR's scope
+   - Triage review comments (Claude review bot + Adi's comments)
+   - Loop until all checks are green and no open blocking comments remain
+4. **Arm auto-merge** → `gh pr merge N --auto --squash` once the PR is approved and green
+5. **Confirm merged** → verify `state == MERGED` before ending the session
+
+## What "babysitting" is NOT
+
+- Changing CI workflow files just to suppress failures
+- Making out-of-scope code changes to fix pre-existing issues
+- Marking things done without actually verifying CI output
+
+## Reminders
+
+- `pr_cost_ledger.py validate --pr N --require-build` must pass before merge
+- Always resolve `CHANGES_REQUESTED` reviews — reply if the concern is already addressed on the branch
+- The `auto-merge-on-approval` workflow (`.github/workflows/auto-merge-on-approval.yml`) arms `--auto` when Adi approves, but babysitting still needs to fix CI first

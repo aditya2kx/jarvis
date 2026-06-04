@@ -1,0 +1,40 @@
+name: Auto-merge on approval
+
+# When you approve a PR, arm auto-merge so GitHub merges it automatically
+# once every required status check is green — no manual "Enable auto-merge" click needed.
+#
+# Behaviour:
+#   - Triggers on: your APPROVED review
+#   - Action: `gh pr merge --auto --squash` (idempotent — safe to re-run)
+#   - If all required checks are already green at approval time → merges immediately
+#   - If CI is still running → GitHub waits and merges once checks pass
+#   - Dismisses if approval is later dismissed (GitHub handles this natively via --auto)
+#
+# Requirements:
+#   - "Allow auto-merge" must be enabled in repo Settings → General (it is)
+#   - ADMIN_PAT secret must be set (used in other workflows; bypasses push protection)
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    name: Arm auto-merge
+    # Only act on approved reviews by the repo owner
+    if: github.event.review.state == 'APPROVED'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ADMIN_PAT }}
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Enable auto-merge (squash)
+        run: |
+          gh pr merge "$PR" --auto --squash --repo "$REPO" && \
+            echo "Auto-merge armed on PR #$PR — will merge once all required checks pass." || \
+            echo "::warning::Could not arm auto-merge on PR #$PR (may already be merged or draft)."

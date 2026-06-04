@@ -80,24 +80,207 @@
         "cache_read_input_tokens": 7794160,
         "cache_creation_input_tokens": 29999,
         "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T04:14:56.653000+00:00",
+        "model": "claude-opus-4-8-thinking-high",
+        "tokens": 6772216,
+        "cost_usd": 5.495,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 66,
+        "output_tokens": 31654,
+        "cache_read_input_tokens": 6508666,
+        "cache_creation_input_tokens": 231830,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T04:15:10.465000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 564582,
+        "cost_usd": 0.4348,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 10,
+        "output_tokens": 1206,
+        "cache_read_input_tokens": 491574,
+        "cache_creation_input_tokens": 71792,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T04:15:22.077000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 3012707,
+        "cost_usd": 1.571,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 19,
+        "output_tokens": 7422,
+        "cache_read_input_tokens": 2843530,
+        "cache_creation_input_tokens": 161736,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T04:18:41.920000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 145420,
+        "cost_usd": 0.0543,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 4,
+        "output_tokens": 518,
+        "cache_read_input_tokens": 144013,
+        "cache_creation_input_tokens": 885,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T04:19:16.013000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 2036591,
+        "cost_usd": 0.7267,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 27,
+        "output_tokens": 4443,
+        "cache_read_input_tokens": 2017522,
+        "cache_creation_input_tokens": 14599,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T04:20:16.937000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 914545,
+        "cost_usd": 0.2953,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 7,
+        "output_tokens": 1014,
+        "cache_read_input_tokens": 911788,
+        "cache_creation_input_tokens": 1736,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T04:24:00.141000+00:00",
+        "model": "claude-opus-4-8-thinking-high",
+        "tokens": 11287322,
+        "cost_usd": 7.4677,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 134933,
+        "output_tokens": 53570,
+        "cache_read_input_tokens": 10967025,
+        "cache_creation_input_tokens": 131794,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T04:25:52.837000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 352710,
+        "cost_usd": 0.1171,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 6,
+        "output_tokens": 510,
+        "cache_read_input_tokens": 351099,
+        "cache_creation_input_tokens": 1095,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T04:26:34.967000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 88612,
+        "cost_usd": 0.3351,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 3,
+        "output_tokens": 251,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 88358,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T04:27:48.403000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 359206,
+        "cost_usd": 0.1283,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 6,
+        "output_tokens": 860,
+        "cache_read_input_tokens": 356058,
+        "cache_creation_input_tokens": 2282,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T04:28:16.177000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 564617,
+        "cost_usd": 0.2174,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 8,
+        "output_tokens": 1557,
+        "cache_read_input_tokens": 555764,
+        "cache_creation_input_tokens": 7288,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T04:30:11.577000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 1752994,
+        "cost_usd": 0.6357,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 19,
+        "output_tokens": 4412,
+        "cache_read_input_tokens": 1735541,
+        "cache_creation_input_tokens": 13022,
+        "note": "byok"
       }
     ],
-    "tokens_total": 19188314,
-    "cost_usd_total": 10.7388,
+    "tokens_total": 47039836,
+    "cost_usd_total": 28.2172,
     "window": {
       "start": "2026-06-04T03:09:17+00:00",
-      "end": "2026-06-04T03:39:41.145000+00:00"
+      "end": "2026-06-04T04:34:13.294000+00:00"
     }
   },
   "review": {
     "source": "claude-code-action execution_file (exact)",
-    "runs": [],
-    "tokens_total": 0,
-    "cost_usd_total": 0,
-    "run_count": 0
+    "runs": [
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 10,
+        "input_tokens": 5,
+        "output_tokens": 4615,
+        "cache_read_input_tokens": 127949,
+        "cache_creation_input_tokens": 34742,
+        "tokens": 167311,
+        "cost_usd": 0.2391,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26930284849"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 8,
+        "input_tokens": 6,
+        "output_tokens": 2650,
+        "cache_read_input_tokens": 165602,
+        "cache_creation_input_tokens": 31850,
+        "tokens": 200108,
+        "cost_usd": 0.2101,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26930545569"
+      }
+    ],
+    "tokens_total": 367419,
+    "cost_usd_total": 0.4492,
+    "run_count": 2
   },
   "totals": {
-    "tokens": 19188314,
-    "cost_usd": 10.7388
+    "tokens": 47407255,
+    "cost_usd": 28.6664
   }
 }

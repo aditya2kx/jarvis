@@ -343,9 +343,13 @@ double-count each other (the bug that made PR #14 first read $25.91 instead of ~
 **no conversationId**. Wide time windows bleed parallel chats together (PR #16 showed $8.82
 when only ~$0.68 of Composer work belonged to that PR). The scalable fix:
 
-1. **`start_pr_session.py --pr <n>`** stamps `session_started_at` on the ledger — the cost anchor.
-2. **Open a new chat** for that PR (Hard Lesson #19).
-3. **`pr_cost_ledger.py sync --pr <n>`** auto-binds `conversationId`(s) from
+1. **`start_pr_session.py --branch <branch>`** stamps `session_started_at` on a **provisional,
+   branch-keyed** ledger record (`session-<slug>.json`) — the cost anchor. **Do not pass a guessed
+   `--pr <n>`**: the PR number is assigned only at `gh pr create`, and parallel chats compete for it.
+   After the PR opens, `pr_cost_ledger.py bind-pr --branch <branch>` promotes the record to
+   `PR-<real-n>.json` (auto-resolving the number via `gh`).
+2. **Open a new chat** for that requirement (Hard Lesson #19).
+3. **`pr_cost_ledger.py sync --pr <n>`** (after `bind-pr`) auto-binds `conversationId`(s) from
    `~/.cursor/ai-tracking/ai-code-tracking.db` (AI edits after `session_started_at`) and keeps
    only usage events whose **model tier matches** that chat's dominant model.
 4. **Explicit bind** when auto-bind is ambiguous:
@@ -395,10 +399,11 @@ line of code. The two ways to do this:
 1. **Canvas button** — open `pr-cost.canvas.tsx`, scroll to *Start next requirement*, type the
    requirement, and click **Open new chat for next PR**. The button dispatches a `newComposerChat`
    action that opens a new IDE composer tab pre-seeded with the brief and these routing rules.
-2. **CLI** — `python3 scripts/start_pr_session.py --pr <n> --requirement "..." --open` writes
-   `metrics/pr_cost/PR-<n>-brief.md`, stamps **`session_started_at`**, opens **`PR-<n>-launch.html`**
-   in your browser (click the button to open a seeded chat). Paste the seed message if the button
-   fails.
+2. **CLI** — `python3 scripts/start_pr_session.py --branch <branch> --requirement "..." --open`
+   writes `metrics/pr_cost/session-<slug>-brief.md`, stamps **`session_started_at`**, opens
+   **`session-<slug>-launch.html`** in your browser (click the button to open a seeded chat). Paste
+   the seed message if the button fails. **Don't guess a PR number** — run `bind-pr --branch <branch>`
+   after `gh pr create` to attach the real one. (`--pr <n>` is still accepted for an already-open PR.)
 
 Do **not** continue the previous PR's Composer thread. Do not use `/clear` as a substitute —
 it clears the display but the history is still in memory and still billed.
@@ -451,10 +456,13 @@ and estimate the Sonnet equivalent cost, so you can see the saving per PR.
 
 ### 4. Session start checklist
 
-Before opening a new Cursor chat for a PR, run:
+Before opening a new Cursor chat for a new requirement, run (keying by **branch**, not a guessed
+PR number — that number doesn't exist until `gh pr create`):
 
 ```bash
-python3 scripts/start_pr_session.py --pr <n> --requirement "<brief requirement text>"
+python3 scripts/start_pr_session.py --branch <branch> --requirement "<brief requirement text>"
+# …after you open the PR:
+python3 scripts/pr_cost_ledger.py bind-pr --branch <branch>   # promotes session-<slug>.json → PR-<n>.json
 ```
 
 Or use the canvas button. Either way, the model routing rules and context discipline rules are

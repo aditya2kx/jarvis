@@ -22,6 +22,32 @@
 
 ## BHAGA Agent (Tip Allocation & Payroll Prep)
 
+### 2026-06-03 — PR #23: BHAGA P0 operational fixes (BQ IAM + Square trusted-device)
+
+Three operational issues, all diagnosed against live prod (Cloud Run logs + IAM + BQ):
+
+1. **BQ incremental run failed (root cause).** The orchestrator SA
+   `bhaga-orchestrator@jarvis-bhaga-prod` held **no BigQuery roles**, so every BQ job returned
+   `403 …bigquery.jobs.create`. The non-fatal `load_bigquery` / `materialize_model_bq` steps swallowed
+   it, so the nightly stayed green while the BQ mirror silently stalled. `core.datastore.read_query`
+   also swallowed the 403 into `[]` → `materialize_model_bq` crashed with a misleading
+   `max() iterable argument is empty`. **Fixes:** granted `roles/bigquery.jobUser` +
+   `roles/bigquery.dataEditor` to the SA; `read_query` now **re-raises** access errors;
+   `materialize_model_bq` raises a precise breadcrumb on empty raw. Verified by re-running the BQ steps
+   **as the SA** (Cloud Run job) — they now succeed.
+2. **Square prod always prompted magic link / 2FA.** The prod job lacked `BHAGA_SESSION_PERSIST=1`
+   (only `sandbox_live_run.py` set it), so `persist_session`/`restore_session_path` no-op'd → no
+   trusted-device `storage_state` was ever saved/restored. **Fix:** set `BHAGA_SESSION_PERSIST=1` on the
+   prod job and codified it in `deploy.yml` (survives a job recreate). First post-fix nightly still does
+   one login to seed the session; subsequent runs reuse it.
+3. **BQ trailed Sheets by a day** (same 403 root cause). **Fix:** re-backfilled via the RUNBOOK §14
+   command-override path (no OTP); BQ raw + model are now current at `2026-06-03` (was `2026-06-02`).
+
+Code: `core/datastore.py` (re-raise BQ access errors), `agents/bhaga/scripts/materialize_model_bq.py`
+(empty-raw guard), `.github/workflows/deploy.yml` (`BHAGA_SESSION_PERSIST=1`), new tests
+(`core/test_datastore_access_error.py`, `agents/bhaga/scripts/test_materialize_empty_guard.py`). Docs:
+RUNBOOK §3 env table, §14 SA-IAM + incident note.
+
 ### 2026-06-02 — Revive ADP-paid reconciliation + guard against migration regressions
 
 **Regression (root cause).** Commit `6f87f9c` ("remove earnings XLSX dependency from model rebuild")

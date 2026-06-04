@@ -233,6 +233,23 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     wage_rates = read_wage_rates_bq()
     print(f"  shifts={len(shifts)} txns={len(txns)} wage_rates={len(wage_rates)}")
 
+    # Defensive breadcrumb: the model is derived from Square transactions, so an
+    # empty `txns` means there is nothing to materialize. Without this guard the
+    # next line (`max(... for t in txns ...)`) raises a cryptic
+    # "max() iterable argument is empty" that hides the real cause. A genuinely
+    # empty BQ raw table is itself a signal worth surfacing loudly (the BQ mirror
+    # never got populated — historically the orchestrator SA lacked
+    # bigquery.dataEditor; see RUNBOOK §14). Access errors are re-raised upstream
+    # in core.datastore.read_query, so reaching here with empty txns means the
+    # query succeeded but returned no rows.
+    if not txns:
+        raise RuntimeError(
+            "materialize_model_bq: BigQuery raw `square_transactions` is empty — "
+            "nothing to materialize. Run backfill_bigquery first (RUNBOOK §14) and "
+            "confirm the orchestrator SA has roles/bigquery.jobUser + "
+            "roles/bigquery.dataEditor."
+        )
+
     # Normalize employee names using store aliases
     for rec in shifts + wage_rates:
         for k in ("employee_name", "employee_id", "canonical_name"):

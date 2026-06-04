@@ -60,6 +60,66 @@ class TestPrCostLedger(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(any("no build sessions" in p for p in problems))
 
+    # ── provisional (branch-keyed) sessions + bind-pr ──────────────────────
+    # The PR number is only known once `gh pr create` runs (and parallel chat
+    # spaces compete for it), so a new requirement is tracked by its branch
+    # until then. These guard that flow.
+
+    def test_provisional_record_path_and_key(self):
+        self.assertEqual(L._record_path(7).name, "PR-7.json")
+        self.assertEqual(L._record_path("7").name, "PR-7.json")
+        self.assertEqual(L._record_path("feat/foo-bar").name, "session-feat-foo-bar.json")
+
+    def test_provisional_record_has_no_pr_number(self):
+        rec = L._empty_record("feat/new-thing")
+        self.assertIsNone(rec["pr_number"])
+        self.assertEqual(rec["provisional_id"], "feat/new-thing")
+
+    def test_all_prs_ignores_provisional(self):
+        L.set_meta(8, title="real")
+        L.set_meta("feat/branchy", title="provisional", requirement="r")
+        # provisional record is on disk but invisible to the numeric report/gate
+        self.assertIn((L.LEDGER_DIR / "session-feat-branchy.json").is_file(), (True,))
+        self.assertEqual(L._all_prs(), [8])
+
+    def test_bind_pr_promotes_provisional_to_number(self):
+        L.set_meta("feat/cool", branch="feat/cool", requirement="do cool",
+                   session_started_at="2026-06-04T03:00:00+00:00")
+        L.bind_pr("feat/cool", pr_number=42)
+        # provisional file gone; PR-42.json exists with carried-over meta
+        self.assertFalse((L.LEDGER_DIR / "session-feat-cool.json").is_file())
+        rec = L.load_record(42)
+        self.assertEqual(rec["pr_number"], 42)
+        self.assertIsNone(rec["provisional_id"])
+        self.assertEqual(rec["branch"], "feat/cool")
+        self.assertEqual(rec["requirement"], "do cool")
+        self.assertEqual(rec["session_started_at"], "2026-06-04T03:00:00+00:00")
+        self.assertEqual(L._all_prs(), [42])
+
+    def test_bind_pr_preserves_existing_review_runs(self):
+        # CI may record review cost on PR-<n>.json before bind runs.
+        L.record_review_run(
+            50, ts="2026-06-04T05:00:00Z", model="claude-sonnet-4-6", turns=1,
+            input_tokens=1, output_tokens=1, cache_read=0, cache_write=0,
+            cost_usd=0.2, result="success", run_url="u1",
+        )
+        L.set_meta("feat/late", branch="feat/late", requirement="r")
+        prov = L.load_record("feat/late")
+        prov["build"]["sessions"] = [
+            {"ts": "2026-06-04T03:30:00Z", "model": "m", "tokens": 10, "cost_usd": 1.0}
+        ]
+        L.save_record(prov)
+        L.bind_pr("feat/late", pr_number=50)
+        rec = L.load_record(50)
+        self.assertEqual(len(rec["review"]["runs"]), 1)          # review preserved
+        self.assertEqual(rec["build"]["cost_usd_total"], 1.0)    # build carried over
+        self.assertEqual(rec["requirement"], "r")
+
+    def test_bind_pr_missing_provisional_raises(self):
+        with self.assertRaises(SystemExit) as ctx:
+            L.bind_pr("feat/never-started", pr_number=1)
+        self.assertIn("no provisional", str(ctx.exception))
+
     def test_capture_build_rejects_partial_window(self):
         L.set_meta(10, title="t", branch="feat/x")
         with self.assertRaises(SystemExit) as ctx:

@@ -146,6 +146,7 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
 | `BHAGA_HEADLESS` | `1` |
 | `SLACK_BOT_TOKEN` | secret → `slack-bot-token` |
 | `CLICKUP_PAT` | secret → `jarvis-clickup-palmetto-pat` |
+| `BHAGA_SESSION_PERSIST` | `1` — persist/restore the Square `storage_state` (trusted device) to/from `gs://bhaga-scrape-cache/_session/square-palmetto.json` so prod stops re-prompting magic link / 2FA every night. Codified in `deploy.yml` so it survives a job recreate. See §13 "Login escalation". |
 | `BHAGA_BROWSER_LAUNCH_RETRIES` | _(optional, default `3`)_ headless browser launch attempts on transient crash — see §13 Browser-launch resilience |
 | `BHAGA_BROWSER_LAUNCH_BACKOFF_MS` | _(optional, default `1000`)_ base backoff between launch retries (exponential) |
 
@@ -763,6 +764,35 @@ gcloud scheduler jobs resume bhaga-nightly --location=us-central1   # after prod
 - **SA key:** stored in Secret Manager secret `grafana-bq-reader-key`
 - **API token:** stored in macOS Keychain (`security find-generic-password -s grafana-cloud-api-token -a steadyangelfish2985 -w`)
 - **GitHub secrets required:** `GRAFANA_API_TOKEN`, `GRAFANA_ORG_SLUG` (= `steadyangelfish2985`)
+
+### Orchestrator SA IAM (BigQuery) — required, easy to miss
+
+The nightly job runs as `bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com`. For the BQ
+mirror steps to work it **must** hold both:
+
+| Role | Why | Grant |
+|---|---|---|
+| `roles/bigquery.jobUser` | `bigquery.jobs.create` — run any read/write query | `gcloud projects add-iam-policy-binding jarvis-bhaga-prod --member=serviceAccount:bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com --role=roles/bigquery.jobUser` |
+| `roles/bigquery.dataEditor` | create/MERGE into the `bhaga` dataset tables | `…--role=roles/bigquery.dataEditor` |
+
+> **Incident (2026-06-03, PR #23).** The SA was missing **both** roles, so every BQ job returned
+> `403 Access Denied: …does not have bigquery.jobs.create`. Because `load_bigquery` /
+> `materialize_model_bq` are **non-fatal**, the nightly stayed green while the BQ mirror silently
+> stopped advancing (Sheets ran ahead by a day). The read path (`core.datastore.read_query`) also
+> **swallowed** the 403 into `[]`, so `materialize_model_bq` failed with a misleading
+> `max() iterable argument is empty` instead of the real cause. Fixes: granted the two roles;
+> `read_query` now **re-raises** access errors (only genuinely-empty / not-found degrade to `[]`);
+> `materialize_model_bq` raises a precise breadcrumb when raw is empty. **Symptom to grep for:**
+> `bigquery.jobs.create` or `BigQuery access denied` in the Cloud Run job logs.
+
+Verify the roles any time:
+
+```bash
+gcloud projects get-iam-policy jarvis-bhaga-prod \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com" \
+  --format="value(bindings.role)" | grep bigquery
+```
 
 ### Daily cron integration
 

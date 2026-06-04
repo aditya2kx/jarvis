@@ -149,16 +149,50 @@ def read_table(table_name: str, *, where: str = "", limit: int | None = None) ->
 
 
 def read_query(sql: str) -> list[dict]:
-    """Run arbitrary SQL and return results as list[dict]."""
+    """Run arbitrary SQL and return results as list[dict].
+
+    An access/permission error (e.g. the orchestrator SA missing
+    ``bigquery.jobUser``/``bigquery.dataEditor``) is **re-raised**, never
+    swallowed into an empty result: a silent ``[]`` masks the real cause and
+    surfaces downstream as a misleading crash (e.g. ``max() iterable argument is
+    empty`` in ``materialize_model_bq``). All other errors keep the lenient
+    no-op so the migration bootstrap (querying a not-yet-created table) still
+    degrades to ``[]``.
+    """
     client = get_client()
     if client is None:
         return []
     try:
         result = client.query(sql).result()
         return [dict(row) for row in result]
-    except Exception:
+    except Exception as exc:
+        if _is_access_error(exc):
+            logger.error(
+                "BigQuery access denied — the caller's identity lacks BigQuery "
+                "permission. The orchestrator SA needs roles/bigquery.jobUser + "
+                "roles/bigquery.dataEditor on %s. See RUNBOOK §7/§14.",
+                _PROJECT_ID,
+                exc_info=True,
+            )
+            raise
         logger.warning("BigQuery query failed", exc_info=True)
         return []
+
+
+def _is_access_error(exc: BaseException) -> bool:
+    """True if ``exc`` is a BigQuery access/permission/auth error (403/401).
+
+    Matched structurally (HTTP status / exception type) so it survives an
+    upgrade of google-cloud-bigquery without depending on message text.
+    """
+    try:
+        from google.api_core import exceptions as gexc
+
+        if isinstance(exc, (gexc.Forbidden, gexc.Unauthorized, gexc.PermissionDenied)):
+            return True
+    except Exception:  # noqa: BLE001 — google libs optional / import-time issues
+        pass
+    return getattr(exc, "code", None) in (401, 403)
 
 
 # ---------------------------------------------------------------------------

@@ -58,10 +58,18 @@ jobs:
       - name: Deploy orchestrator (Cloud Run Job)
         if: ${{ !inputs.rollback_sha }}
         run: |
+          # --update-env-vars is additive (only touches the named keys), so the
+          # manually-set prod env (BHAGA_SECRETS_BACKEND, GCP_PROJECT, …) is
+          # preserved. BHAGA_SESSION_PERSIST=1 keeps Square's trusted-device
+          # storage_state in GCS so prod stops re-prompting magic link / 2FA
+          # every night (it was previously set for sandbox runs only). Codified
+          # here so it survives a job recreate-from-scratch, not just a manual
+          # `gcloud run jobs update`.
           gcloud run jobs update bhaga-daily-refresh \
             --image ${{ env.REGISTRY }}/bhaga-orchestrator:${{ github.sha }} \
             --region ${{ env.REGION }} \
-            --project ${{ env.PROJECT_ID }}
+            --project ${{ env.PROJECT_ID }} \
+            --update-env-vars BHAGA_SESSION_PERSIST=1
 
       - name: Deploy webhook (Cloud Run Service)
         if: ${{ !inputs.rollback_sha }}

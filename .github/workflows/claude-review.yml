@@ -58,8 +58,11 @@ jobs:
       - name: Detect cost commit (skip review on automatic ledger commits)
         if: github.event_name == 'pull_request' && steps.gate.outputs.enabled == 'true'
         id: costcheck
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          MSG=$(git log -1 --format='%s')
+          # Read the branch HEAD commit message, not the synthetic PR merge commit.
+          MSG=$(git log -1 --format='%s' "$HEAD_SHA")
           echo "Head commit: $MSG"
           if [[ "$MSG" == "chore(cost):"* ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"

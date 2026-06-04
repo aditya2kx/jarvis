@@ -11,8 +11,9 @@ name: PR cost gate
 # squash merge without needing any push-to-main bypass.
 #
 # Loop-break: if the triggering commit message starts with "chore(cost):" it is
-# a cost-only commit from this very job — validation still runs (fast) but the
-# commit-back step is skipped to terminate the loop.
+# a cost commit from this very job — validation still runs but the commit-back
+# step is skipped to avoid an infinite push loop. CI (sandbox-e2e, claude-review)
+# still runs normally on the cost commit; it contains all real code changes.
 #
 # Make this a REQUIRED status check in branch protection to actually block merge
 # (see CONTRIBUTING.md § Enabling enforcement).

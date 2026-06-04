@@ -4,9 +4,8 @@ name: Claude PR Review
 # DORMANT until the repo secret ANTHROPIC_API_KEY is set (the job no-ops without it),
 # so merging this workflow incurs no cost on its own. See CONTRIBUTING.md § Review bot.
 #
-# Skip policy: commits with message prefix "chore(cost):" are automatic cost-ledger
-# commits from pr-cost-gate.yml. They contain no code changes — skip the full review
-# to avoid wasting API budget (the job still reports success for branch protection).
+# Runs on every PR push including automatic cost-ledger commits (chore(cost):).
+# The cost commit contains all real code changes, so the review is testing real code.
 
 on:
   pull_request:
@@ -55,27 +54,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect cost commit (skip review on automatic ledger commits)
-        if: github.event_name == 'pull_request' && steps.gate.outputs.enabled == 'true'
-        id: costcheck
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          # Read the branch HEAD commit message, not the synthetic PR merge commit.
-          MSG=$(git log -1 --format='%s' "$HEAD_SHA")
-          echo "Head commit: $MSG"
-          if [[ "$MSG" == "chore(cost):"* ]]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Cost-only commit detected — skipping Claude review (no code changes)."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build bounded review context
         if: >
           github.event_name == 'pull_request' &&
-          steps.gate.outputs.enabled == 'true' &&
-          steps.costcheck.outputs.skip != 'true'
+          steps.gate.outputs.enabled == 'true'
         run: |
           python3 scripts/build_claude_review_context.py \
             --base "${{ github.event.pull_request.base.sha }}" \
@@ -87,8 +69,7 @@ jobs:
         id: claude
         if: >
           github.event_name == 'pull_request' &&
-          steps.gate.outputs.enabled == 'true' &&
-          steps.costcheck.outputs.skip != 'true'
+          steps.gate.outputs.enabled == 'true'
         timeout-minutes: 12
         # continue-on-error here isolates Claude's infra from the verdict gate.
         # A bot hiccup (turn cap, API error) → execution file missing → caught
@@ -151,7 +132,6 @@ jobs:
         if: >
           github.event_name == 'pull_request' &&
           steps.gate.outputs.enabled == 'true' &&
-          steps.costcheck.outputs.skip != 'true' &&
           always()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -172,8 +152,7 @@ jobs:
       - name: Verify Claude review ran
         if: >
           github.event_name == 'pull_request' &&
-          steps.gate.outputs.enabled == 'true' &&
-          steps.costcheck.outputs.skip != 'true'
+          steps.gate.outputs.enabled == 'true'
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -192,8 +171,7 @@ jobs:
       - name: Gate on Claude verdict (fail if REQUEST CHANGES)
         if: >
           github.event_name == 'pull_request' &&
-          steps.gate.outputs.enabled == 'true' &&
-          steps.costcheck.outputs.skip != 'true'
+          steps.gate.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -236,8 +214,7 @@ jobs:
       - name: Check all inline review threads are replied to
         if: >
           github.event_name == 'pull_request' &&
-          steps.gate.outputs.enabled == 'true' &&
-          steps.costcheck.outputs.skip != 'true'
+          steps.gate.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

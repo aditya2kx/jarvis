@@ -616,10 +616,6 @@ It runs automatically on every PR via `.github/workflows/sandbox-e2e.yml` (and
 (full e2e still runs only on `pull_request` when `SANDBOX_E2E_ENABLED=true`). See
 `CONTRIBUTING.md` § Enabling enforcement.
 
-**Cost-commit skip:** `sandbox-e2e.yml` detects commits whose message starts with `chore(cost):`
-(automatic cost-ledger commits from `pr-cost-gate.yml`) and skips the heavy e2e steps. The job
-still runs and reports success so branch protection clears. No sandbox slot is leased on cost commits.
-
 Run it manually with ADC + palmetto OAuth:
 
 ```bash

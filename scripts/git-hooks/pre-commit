@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Pre-commit hook: fold the current cost-so-far into the commit you're making.
+#
+# Install once per clone with: bash scripts/install-git-hooks.sh
+#
+# Why a hook (and why pre-commit): the per-PR cost ledger
+# (metrics/pr_cost/PR-<n>.json + report.html) must land on `main` inside the
+# squash merge. The cost script's own design is "the operator commits the
+# complete record once" — NOT a bot pushing a second commit from CI (that forces
+# an extra commit per push and either suppresses CI or duplicates every check).
+# So we capture the ledger locally and stage it into the author's own commit.
+#
+# Behavior: on a feature branch that already has an open PR, run
+# `pr_cost_ledger.py sync` (best-effort: capture build + review cost, regenerate
+# report.html) and `git add metrics/pr_cost/` so the refreshed ledger rides in
+# THIS commit. Never blocks the commit — a capture that isn't possible yet
+# (no PR, no scored commits, gh unauthed) is skipped silently. The only cost it
+# can't hold is the review run THIS push will trigger; that tail is captured by a
+# later commit's sync, or finalized at merge by pr-cost-finalize.yml.
+#
+# Safe to run on every commit: a no-op when nothing changed, and it only touches
+# metrics/pr_cost/. Set PR_COST_HOOK=0 to skip (e.g. a quick WIP commit).
+set -euo pipefail
+
+[ "${PR_COST_HOOK:-1}" = "0" ] && exit 0
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+[ "$branch" = "main" ] && exit 0
+
+# Skip cleanly if gh isn't available/authed or there's no PR for this branch yet
+# (the ledger is keyed by PR number, which only exists after `gh pr create`).
+command -v gh >/dev/null 2>&1 || exit 0
+pr="$(gh pr view "$branch" --json number -q .number 2>/dev/null || true)"
+[ -z "$pr" ] && exit 0
+
+echo "pr-cost: syncing ledger for PR #$pr into this commit…" >&2
+# Best-effort: never let a sync hiccup block the commit.
+python3 scripts/pr_cost_ledger.py sync --pr "$pr" >&2 2>&1 || \
+  echo "pr-cost: sync skipped (non-fatal)." >&2
+
+# Fold any ledger/report changes into the commit being created.
+git add metrics/pr_cost/ 2>/dev/null || true
+exit 0

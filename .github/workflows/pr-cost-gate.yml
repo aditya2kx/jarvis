@@ -3,16 +3,16 @@ name: PR cost gate
 # Hard pre-merge gate (requirement #7): a PR may not merge until its cost is
 # accounted for in the in-repo ledger (metrics/pr_cost/PR-<n>.json) — including
 # the Cursor BUILD cost, which has no per-PR API for individual accounts and so
-# must be recorded from the dashboard and committed. Review cost is appended
-# automatically by scripts/post_claude_review_cost.py.
+# must be recorded from the dashboard and committed.
 #
-# After validation passes, this job also commits the refreshed cost ledger
-# (capture-review + report) back to the PR branch so the data lands in the
-# squash merge without needing any push-to-main bypass.
-#
-# Loop-break: if the triggering commit message starts with "chore(cost):" it is
-# a cost-only commit from this very job — validation still runs (fast) but the
-# commit-back step is skipped to terminate the loop.
+# This is a PURE VALIDATOR — it never writes to the repo. The cost ledger is
+# kept current and committed by the author's own commits via the pre-commit hook
+# (scripts/git-hooks/pre-commit → pr_cost_ledger.py sync, auto-staged). That is
+# the design the ledger script itself documents: "the operator commits the
+# complete record once." An earlier version committed the ledger back to the PR
+# branch from CI; that forced a second commit per push, which either suppressed
+# CI (GITHUB_TOKEN) or duplicated every check + churned via cancel-in-progress
+# (ADMIN_PAT). Validating only — no bot commit — removes that entire class of bug.
 #
 # Make this a REQUIRED status check in branch protection to actually block merge
 # (see CONTRIBUTING.md § Enabling enforcement).
@@ -25,8 +25,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
-  pull-requests: read
+  contents: read
 
 jobs:
   cost-gate:
@@ -35,33 +34,14 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       PR: ${{ github.event.pull_request.number }}
-      REPO: ${{ github.repository }}
     steps:
       - name: Register check on main push
         if: github.event_name == 'push'
         run: echo "Cost gate runs on pull_request only; this registers the check name on main."
 
-      - name: Checkout PR head
+      - name: Checkout
         if: github.event_name == 'pull_request'
         uses: actions/checkout@v4
-        with:
-          # Fetch the actual branch ref so we can push back to it.
-          ref: ${{ github.event.pull_request.head.ref }}
-          # Persist credentials so the later push uses GITHUB_TOKEN automatically.
-          persist-credentials: true
-
-      - name: Detect cost commit (loop-break guard)
-        if: github.event_name == 'pull_request'
-        id: costcheck
-        run: |
-          MSG=$(git log -1 --format='%s')
-          echo "Head commit: $MSG"
-          if [[ "$MSG" == "chore(cost):"* ]]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Cost commit detected — skipping commit-back to break the loop."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Validate cost ledger (hard gate — requires build cost)
         if: github.event_name == 'pull_request'
@@ -69,42 +49,3 @@ jobs:
           python3 scripts/pr_cost_ledger.py validate \
             --pr "$PR" \
             --require-build
-
-      - name: Sync cost ledger and commit back to PR branch
-        if: >
-          github.event_name == 'pull_request' &&
-          steps.costcheck.outputs.skip != 'true'
-        env:
-          # ADMIN_PAT is used for the git push (not GITHUB_TOKEN) so that GitHub
-          # fires a new pull_request:synchronize event on the cost commit, allowing
-          # the required status checks to run on it. GITHUB_TOKEN pushes suppress
-          # workflow triggers, which would leave the cost commit without required
-          # checks and block auto-merge. The cost commit is skipped cheaply by
-          # sandbox-e2e and claude-review via the "chore(cost):" prefix guard.
-          PUSH_TOKEN: ${{ secrets.ADMIN_PAT }}
-        run: |
-          # Capture any review cost comments posted since the last sync.
-          python3 scripts/pr_cost_ledger.py capture-review \
-            --pr "$PR" --repo "$REPO" || \
-            echo "::notice::capture-review found no new cost comments."
-
-          # Regenerate the HTML report.
-          python3 scripts/pr_cost_ledger.py report
-
-          # Commit back to the PR branch so the ledger is the last commit.
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add metrics/pr_cost/
-
-          if git diff --cached --quiet; then
-            echo "No ledger changes — nothing to commit."
-            exit 0
-          fi
-
-          git commit -m "chore(cost): sync PR #${PR} ledger"
-
-          # Push via ADMIN_PAT so the push triggers a synchronize event and
-          # required checks run on the cost commit (clearing auto-merge block).
-          REMOTE_URL="https://x-access-token:${PUSH_TOKEN}@github.com/${REPO}.git"
-          git push "$REMOTE_URL" HEAD:${{ github.event.pull_request.head.ref }}
-          echo "Cost ledger committed to branch ${{ github.event.pull_request.head.ref }}."

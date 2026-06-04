@@ -425,6 +425,26 @@ class TestPrCostLedger(unittest.TestCase):
             records = L._records_for_report()
         self.assertEqual([r["pr_number"] for r in records], [50])
 
+    def test_report_persists_confirmed_merge_and_is_sticky(self):
+        """A merged PR missing local merged_at is included AND backfilled, so a
+        later regeneration with NO GitHub access still reports it (regression:
+        merged PRs intermittently dropped out when the live lookup was flaky)."""
+        rec = L._empty_record(52)
+        rec["pr_number"] = 52
+        rec["title"] = "needs gh confirm"
+        rec["merged_at"] = None
+        L.save_record(rec)
+        meta = {"state": "MERGED", "merged_at": "2026-06-03T00:00:00Z", "title": "needs gh confirm"}
+        with patch.object(L, "_fetch_gh_pr_meta", return_value=meta):
+            first = L._records_for_report()
+        self.assertEqual([r["pr_number"] for r in first], [52])
+        # merged_at is now persisted on disk
+        self.assertEqual(L.load_record(52)["merged_at"], "2026-06-03T00:00:00Z")
+        # Sticky: a second pass with the lookup unavailable still includes it
+        with patch.object(L, "_fetch_gh_pr_meta", return_value=None):
+            second = L._records_for_report()
+        self.assertEqual([r["pr_number"] for r in second], [52])
+
     def test_backfill_titles_from_gh(self):
         L.set_meta(60, title=None, branch=None)
         with patch.object(

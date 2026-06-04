@@ -19,35 +19,60 @@ the BQ service-account key into Grafana Cloud via the Grafana API.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import subprocess
 
 _KEYCHAIN_SERVICE = "grafana-cloud-api-token"
 _KEYCHAIN_ACCOUNT_DEFAULT = "steadyangelfish2985"
+_ENV_TOKEN_VAR = "GRAFANA_API_TOKEN"
 GRAFANA_CLOUD_URL = "https://grafana.com"
 GRAFANA_SIGNUP_URL = "https://grafana.com/auth/sign-up/create-user?pg=hp&plcmt=hero-btn1"
 
 
 def get_api_token(org_slug: str = _KEYCHAIN_ACCOUNT_DEFAULT) -> str | None:
-    """Retrieve the Grafana Cloud API token from macOS Keychain."""
-    result = subprocess.run(
-        ["security", "find-generic-password", "-s", _KEYCHAIN_SERVICE,
-         "-a", org_slug, "-w"],
-        capture_output=True, text=True,
-    )
+    """Resolve the Grafana Cloud API token.
+
+    Cloud-native first: the ``GRAFANA_API_TOKEN`` env var (set from the repo
+    secret in CI). macOS Keychain is only a *local* fallback — the `security`
+    binary does not exist on a Linux CI runner, so Keychain must never be the
+    sole source (RUNBOOK §0: operable from a fresh machine with GitHub + GCP
+    only, no laptop/Keychain dependency).
+    """
+    env_token = os.environ.get(_ENV_TOKEN_VAR, "").strip()
+    if env_token:
+        return env_token
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", _KEYCHAIN_SERVICE,
+             "-a", org_slug, "-w"],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return None  # no `security` (non-macOS / CI) and no env token
     if result.returncode == 0:
         return result.stdout.strip()
     return None
 
 
 def store_api_token(token: str, org_slug: str = _KEYCHAIN_ACCOUNT_DEFAULT) -> None:
-    """Store the Grafana Cloud API token in macOS Keychain."""
-    subprocess.run(
-        ["security", "add-generic-password",
-         "-s", _KEYCHAIN_SERVICE, "-a", org_slug, "-w", token,
-         "-U"],
-        check=True,
-    )
+    """Store the Grafana Cloud API token in macOS Keychain (local convenience).
+
+    No-ops gracefully when the `security` binary is absent (e.g. a Linux CI
+    runner) — there the token already lives in the ``GRAFANA_API_TOKEN`` env
+    var, so persisting to Keychain is neither possible nor needed.
+    """
+    try:
+        subprocess.run(
+            ["security", "add-generic-password",
+             "-s", _KEYCHAIN_SERVICE, "-a", org_slug, "-w", token,
+             "-U"],
+            check=True,
+        )
+    except FileNotFoundError:
+        print("[grafana-provision] `security` unavailable (non-macOS) — "
+              f"relying on {_ENV_TOKEN_VAR} env var; skipping Keychain store.")
+        return
     print(f"[grafana-provision] API token stored in Keychain "
           f"(service={_KEYCHAIN_SERVICE}, account={org_slug})")
 

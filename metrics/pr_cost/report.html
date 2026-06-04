@@ -34,11 +34,31 @@ code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12p
 </style></head>
 <body><div class="wrap">
 <h1>PR cost monitoring</h1>
-<p class="muted">16 PR(s) · $197.67 total · generated 2026-06-04 05:34 UTC · source: <code>metrics/pr_cost/PR-*.json</code> · rates verified 2026-06-03 (<a href="https://cursor.com/docs/models-and-pricing" style="color:#539bf5">cursor.com/docs/models-and-pricing</a>)</p>
+<p class="muted">17 PR(s) · $202.59 total · generated 2026-06-04 05:39 UTC · source: <code>metrics/pr_cost/PR-*.json</code> · rates verified 2026-06-03 (<a href="https://cursor.com/docs/models-and-pricing" style="color:#539bf5">cursor.com/docs/models-and-pricing</a>)</p>
 
     <section class="pr">
+      <p class="pr-title">#31 — revert(ci): remove post-merge-ci.yml</p>
+      <p class="muted">merged 2026-06-04 · build = Cursor usage API · review = Claude Sonnet bot</p>
+      <div class="stats">
+        <div class="stat"><div class="v">$4.93</div><div class="l">Total cost</div></div>
+        <div class="stat"><div class="v build">$4.93</div><div class="l">Build (100%)</div></div>
+        <div class="stat"><div class="v review">$0.00</div><div class="l">Review · 0 runs</div></div>
+        <div class="stat"><div class="v">8.4M</div><div class="l">Tokens</div></div>
+      </div>
+      <div class="bar"><div class="b" style="width:100.0%"></div><div class="r" style="width:0.0%"></div></div>
+      <p class="muted">Build 100% · Review 0%</p>
+      <h2>Where the effort went — top 5 cost areas</h2>
+      <table><thead><tr><th>Area</th><th>Model</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">% of PR</th></tr></thead>
+      <tbody><tr class="build"><td>build session 2026-06-04T05:30:11.302000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">4.6M</td><td class="n">$2.89</td><td class="n">58.7%</td></tr><tr class="build"><td>build session 2026-06-04T05:27:37.110000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">2.0M</td><td class="n">$1.07</td><td class="n">21.7%</td></tr><tr class="build"><td>build session 2026-06-04T05:28:52.631000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">1.1M</td><td class="n">$0.70</td><td class="n">14.2%</td></tr><tr class="build"><td>build session 2026-06-04T05:34:11.860000+00:00</td><td>claude-4.6-sonnet-medium-thinking</td><td class="n">456k</td><td class="n">$0.17</td><td class="n">3.4%</td></tr><tr class="build"><td>build session 2026-06-04T05:33:25.490000+00:00</td><td>claude-4.6-sonnet-medium-thinking</td><td class="n">267k</td><td class="n">$0.10</td><td class="n">2.0%</td></tr></tbody></table>
+      <h2>Diagnosis</h2>
+      <div class="obs"><b>•</b>Build is 100% of total cost ($4.93) vs review 0% ($0.00). Optimization leverage is in the build loop.</div><div class="obs"><b>•</b>Cache reads are 99% of build tokens (8,322,297 tok) — context re-reads, not new work. Each agent turn re-reads the entire conversation history as cache-read tokens. Start a fresh chat per PR to reset this counter.</div><div class="obs"><b>•</b>Model mix: opus $4.66 (95%), sonnet $0.27 (5%).</div><div class="obs"><b>•</b>One session (2026-06-04T05:30:11, $2.89, 4,601,698 tok) is 59% of build cost — a marathon thread with an ever-growing context.</div>
+      <h2>Tactical recommendations</h2>
+      <div class="rec"><b>#1</b>Start a new Cursor chat for each PR/requirement (run `scripts/start_pr_session.py --pr 31` to get a seeded brief + cursor:// link). Each turn re-reads the entire history as cache-read tokens; a fresh chat resets the counter. Est. saving: ~$1.48 (30% of build).</div><div class="rec"><b>#2</b>Route standard feature work to Sonnet 4.6 (default) — reserve Opus 4.8 only for hard multi-file reasoning or subtle bugs. 3 Opus session(s) (2026-06-04T05:30:11 ($2.89), 2026-06-04T05:27:37 ($1.07), 2026-06-04T05:28:52 ($0.70)) cost $4.66; same work on Sonnet ≈ $2.99. Est. saving: ~$1.67. Rates (verified 2026-06-03): Opus cache-read $0.50/M vs Sonnet $0.30/M; output $25/M vs $15/M.</div>
+    </section>
+    
+    <section class="pr">
       <p class="pr-title">#29 — feat(ci): babysit MERGED exit, post-merge CI, multi-req consolidation, auto-open Cursor</p>
-      <p class="muted">merged  · build = Cursor usage API · review = Claude Sonnet bot</p>
+      <p class="muted">merged 2026-06-04 · build = Cursor usage API · review = Claude Sonnet bot</p>
       <div class="stats">
         <div class="stat"><div class="v">$1.08</div><div class="l">Total cost</div></div>
         <div class="stat"><div class="v build">$1.08</div><div class="l">Build (100%)</div></div>
@@ -58,7 +78,7 @@ code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12p
     
     <section class="pr">
       <p class="pr-title">#28 — fix(grafana): render daily series on store-local (Central) dates</p>
-      <p class="muted">merged  · build = Cursor usage API · review = Claude Sonnet bot</p>
+      <p class="muted">merged 2026-06-04 · build = Cursor usage API · review = Claude Sonnet bot</p>
       <div class="stats">
         <div class="stat"><div class="v">$9.86</div><div class="l">Total cost</div></div>
         <div class="stat"><div class="v build">$9.86</div><div class="l">Build (100%)</div></div>
@@ -78,7 +98,7 @@ code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12p
     
     <section class="pr">
       <p class="pr-title">#27 — feat(cost): new_requirement.py — isolated worktree + Cursor handoff on Sonnet 4.6</p>
-      <p class="muted">merged  · build = Cursor usage API · review = Claude Sonnet bot</p>
+      <p class="muted">merged 2026-06-04 · build = Cursor usage API · review = Claude Sonnet bot</p>
       <div class="stats">
         <div class="stat"><div class="v">$15.17</div><div class="l">Total cost</div></div>
         <div class="stat"><div class="v build">$14.95</div><div class="l">Build (98%)</div></div>
@@ -98,7 +118,7 @@ code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12p
     
     <section class="pr">
       <p class="pr-title">#26 — fix(cost): decontaminate PR ledger, merged-only report, dedup tooling</p>
-      <p class="muted">merged  · build = Cursor usage API · review = Claude Sonnet bot</p>
+      <p class="muted">merged 2026-06-04 · build = Cursor usage API · review = Claude Sonnet bot</p>
       <div class="stats">
         <div class="stat"><div class="v">$5.67</div><div class="l">Total cost</div></div>
         <div class="stat"><div class="v build">$5.67</div><div class="l">Build (100%)</div></div>

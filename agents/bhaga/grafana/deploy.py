@@ -29,7 +29,7 @@ from skills.grafana_cloud_provisioning.register import (
     push_dashboard,
     get_dashboard_url,
 )
-from skills.grafana_cloud_provisioning.provision import store_api_token, _KEYCHAIN_ACCOUNT_DEFAULT
+from skills.grafana_cloud_provisioning.provision import _KEYCHAIN_ACCOUNT_DEFAULT
 
 _DASHBOARD_JSON = pathlib.Path(__file__).parent / "dashboard.json"
 _DEFAULT_ORG = _KEYCHAIN_ACCOUNT_DEFAULT
@@ -58,11 +58,10 @@ def main() -> int:
     org_slug = args.org_slug
     print(f"[bhaga-grafana-deploy] org_slug={org_slug}")
 
-    # Monkey-patch the token into register if env var is set (CI path)
-    env_token = os.environ.get("GRAFANA_API_TOKEN", "").strip()
-    if env_token:
-        store_api_token(env_token, org_slug)
-        print("[bhaga-grafana-deploy] Stored GRAFANA_API_TOKEN from env into Keychain")
+    # No Keychain write needed in CI: get_api_token() resolves GRAFANA_API_TOKEN
+    # from the env first (Linux runners have no `security` binary). RUNBOOK §0.
+    if os.environ.get("GRAFANA_API_TOKEN", "").strip():
+        print("[bhaga-grafana-deploy] Using GRAFANA_API_TOKEN from env.")
 
     if args.create_sa:
         from skills.grafana_cloud_provisioning.register import create_read_only_sa

@@ -274,14 +274,30 @@ def backfill_titles(*, repo: str | None = None, prs: list[int] | None = None) ->
 
 
 def _is_merged_for_report(rec: dict[str, Any], *, repo: str | None = None) -> bool:
-    """Report includes only merged PRs — closed-without-merge ledgers are excluded."""
+    """Report includes only merged PRs — closed-without-merge ledgers are excluded.
+
+    When the local record lacks ``merged_at`` we consult GitHub once and, on a
+    confirmed merge, PERSIST ``merged_at`` back into the ledger. This makes the
+    merged determination sticky and network-independent on the next run: a flaky,
+    rate-limited, or freshly-merged (racing) ``gh pr view`` lookup would otherwise
+    silently drop a genuinely-merged PR from the report on every regeneration.
+    """
     if rec.get("merged_at"):
         return True
     pr = rec.get("pr_number")
     if pr is None:
         return False
     meta = _fetch_gh_pr_meta(int(pr), repo=repo)
-    return bool(meta and meta.get("state") == "MERGED" and meta.get("merged_at"))
+    if meta and meta.get("state") == "MERGED" and meta.get("merged_at"):
+        rec["merged_at"] = meta["merged_at"]
+        if not rec.get("title") and meta.get("title"):
+            rec["title"] = meta["title"]
+        try:
+            save_record(rec)
+        except Exception:  # noqa: BLE001
+            pass  # best-effort backfill; report still renders this run
+        return True
+    return False
 
 
 def _records_for_report(*, repo: str | None = None) -> list[dict[str, Any]]:

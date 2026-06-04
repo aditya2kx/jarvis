@@ -5,7 +5,7 @@
   "requirement": "1) babysit skill: check state==MERGED at loop top and exit immediately; 2) post-merge CI: run Claude review + sandbox e2e after merge; 3) new_requirement.py: consolidate multiple requirements into one worktree/PR by default unless user says otherwise; 4) handoff must auto-open Cursor + Sonnet 4.6 + seed text \u2014 agents never pass --no-open-cursor",
   "branch": "feat/babysit-postmerge-ci-consolidation",
   "created_at": "2026-06-04T05:24:25Z",
-  "merged_at": null,
+  "merged_at": "2026-06-04T05:31:01Z",
   "diff": {
     "files": null,
     "additions": null,

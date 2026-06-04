@@ -319,12 +319,13 @@ Commands:
   `core.hooksPath` at `scripts/git-hooks`; the `pre-push` hook runs `sync` for the branch's PR and
   blocks the push if the ledger changed, asking you to commit + push again (no auto-commit). Undo with
   `git config --unset core.hooksPath`.
-- **Commit-back on every push (automatic, pre-merge):** `pr-cost-gate.yml` now also commits the
-  refreshed ledger (`capture-review` + `report.html`) back to the **PR branch** after each
-  validation pass. The cost commit (message: `chore(cost): sync PR #N ledger`) is the last commit
-  before the squash merge, so the ledger lands on `main` automatically. `sandbox-e2e` and
-  `claude-review` detect this message prefix and skip their expensive work to avoid wasting cloud
-  resources (all other checks pass naturally on a cost-only diff). No direct push to `main` is ever
+- **Commit-back on every push (automatic, pre-merge):** `pr-cost-gate.yml` commits the refreshed
+  ledger (`capture-review` + `report.html`) back to the **PR branch** after each validation pass.
+  The cost commit (message: `chore(cost): sync PR #N ledger`) is the last commit before the squash
+  merge, so the ledger lands on `main` automatically. All CI checks (`sandbox-e2e`, `claude-review`,
+  etc.) run normally on the cost commit — it contains all real code changes plus the ledger update.
+  A loop-break guard in `pr-cost-gate.yml` detects the `chore(cost):` prefix and skips the
+  commit-back step only (not CI) to prevent infinite push loops. No direct push to `main` is ever
   needed.
 - **Automatic post-merge analysis:** `.github/workflows/pr-cost-finalize.yml` runs when a PR
   merges — it `capture-review`s any last review cost comments and posts the post-merge analysis as

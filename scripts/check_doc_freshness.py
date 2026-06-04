@@ -106,6 +106,18 @@ COUPLINGS: list[dict] = [
         "docs": ["PROGRESS.md"],
         "why": "notable code change → add a dated line to PROGRESS.md (status / decision / blocker).",
     },
+    {
+        "code": [
+            "core/migrations/*.sql",
+            "agents/bhaga/grafana/dashboard.json",
+        ],
+        "docs": ["agents/bhaga/scripts/status.py"],
+        "why": (
+            "schema migration or Grafana dashboard changed → update the status doctor's "
+            "target registry (BQ_TARGETS / GRAFANA_VIEWS / KNOWN_UNCHECKED_GRAFANA_REFS) "
+            "and its anti-drift sync tests so the freshness checker stays in sync."
+        ),
+    },
 ]
 
 # Files that never *trigger* a doc reminder. Docs (*.md) are excluded because a

@@ -92,7 +92,7 @@ BQ_TARGETS: list[Target] = [
     Target("model_tip_alloc_daily", "date"),
     Target("model_period_summary", "period_start", "period_coverage"),
     Target("model_labor_weekly", "iso_week", "iso_week"),
-    Target("model_review_bonus_period", "period_start"),  # migration 004
+    Target("model_review_bonus_period", "period_start", "period_coverage"),  # migration 004
     # ── Raw tables (mirrored by backfill_bigquery.py) ────────────────────────
     Target("square_transactions", "date_local"),
     Target("adp_shifts", "date"),
@@ -119,7 +119,7 @@ GRAFANA_VIEWS: list[Target] = [
     Target("vw_model_period_summary", "period_start", "period_coverage"),
     # migration 004 / dashboard refactor views
     Target("vw_model_labor_weekly", "iso_week", "iso_week"),
-    Target("vw_model_payroll_period", "period_start"),
+    Target("vw_model_payroll_period", "period_start", "period_coverage"),
     # migration 005 / 5-section dashboard views
     Target("vw_order_quality_daily", "date"),
     Target("vw_kds_item_investigation", "date_local"),

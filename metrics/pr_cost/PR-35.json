@@ -1,0 +1,43 @@
+{
+  "pr_number": 35,
+  "provisional_id": null,
+  "title": "fix(babysit): add post-merge pull+verify step to pr-workflow lifecycle",
+  "requirement": null,
+  "branch": "fix/babysit-post-merge-pull",
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor_dashboard",
+    "approximate": true,
+    "attribution_mode": null,
+    "session_started_at": null,
+    "conversation_ids": [],
+    "sessions": [
+      {
+        "ts": "2026-06-04T18:04:46Z",
+        "model": "claude-sonnet-4-6",
+        "tokens": 150000,
+        "cost_usd": 0.15,
+        "note": null
+      }
+    ],
+    "tokens_total": 150000,
+    "cost_usd_total": 0.15
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 150000,
+    "cost_usd": 0.15
+  }
+}

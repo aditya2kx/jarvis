@@ -33,8 +33,19 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    (+ `labor_daily_forecast` via `forecast.py`), then **upsert `item_operations`** for the gap
    window (`item_operations.py` — incremental, not full-tab rewrite).
 7. **Materialize Model → BigQuery** (`materialize_model_bq.py` called via `materialize_model_bq` step,
-   non-fatal): rebuilds all 7 model tabs from BQ raw data (using the same `build_*` functions) and
-   writes to `model_*` BQ tables via MERGE. The Grafana Cloud dashboard reads these BQ tables.
+   non-fatal on legacy path; **canonical model producer** on BQ-canonical path): rebuilds all 7+
+   model tabs from BQ raw data (using the same `build_*` functions) and writes to `model_*` BQ
+   tables via MERGE. Includes a post-build tip-pool **conservation check** (raises on drift > $0.01).
+   Exposes `load_model_rows()` as a shared BQ-write helper used by `process_reviews.py` (M3) and
+   `render_model_sheet_from_bq.py` (M2). See `docs/FEATURE_FLAGS.md` for `BHAGA_SHEET_FROM_BQ` cutover.
+7b. **Render Sheet from BQ** (`render_model_sheet_from_bq.py`, `render_model_sheet_from_bq` step,
+    flag-gated `BHAGA_SHEET_FROM_BQ=1`): reads each BQ `model_*` table and writes the corresponding
+    Sheet model tab as a projection. Only runs when `BHAGA_SHEET_FROM_BQ=1`; otherwise the legacy
+    `update_model_sheet` Sheet-write path runs unchanged.
+7c. **Reconcile Sheet ⇆ BQ** (`reconcile_model.py`, `reconcile_model` step, non-fatal nightly):
+    compares each Sheet model tab against its BQ model table cell-by-cell using the same helpers as
+    `verify_bq_parity.py` (`_cells_match`, `_compare_tabs`). Fails CI on drift; Slacks on nightly
+    drift. See also `.github/workflows/model-reconciliation.yml`.
 8. **Reviews** (`process_reviews.py`): pull Google reviews from ClickUp, allocate bonuses, rebuild
    `review_bonus_period`. Idempotent on rerun.
 7. **Verify the rebuilt Model** — first **mechanically** (`assert_model_tabs_populated`: tabs non-empty,
@@ -102,7 +113,9 @@ nightly). Both honor sandbox write-bucket isolation via `gcs_cache`.
 | `sandbox_scenarios.py` | **Named scenario suite** for live sandbox runs (`item-sales-live` = Square-only via `skip:[adp,reviews,model]` + `verify:item_sales`; `full-live`; …). Selects what runs via committed `.github/sandbox-live.yml` (+ `sandbox-live` label, pre-merge), a `/sandbox run <scenario> [date=…]` PR comment (post-merge), or manual dispatch. `sandbox_workflow_resolve.py` turns the triggering event into a run plan for `.github/workflows/sandbox-live-run.yml`. Each scenario posts evidence as a PR comment. |
 | `verify_drilldown.py`, `verify_bq_parity.py`, `verify_against_historical_payroll.py` | Verification harnesses (parity vs historical payroll / BigQuery). |
 | `backfill_bigquery.py` | Backfill raw data into BigQuery (called by `load_bigquery` step in `daily_refresh`). |
-| `materialize_model_bq.py` | Rebuild the computed model from BQ raw data and write to `model_*` BigQuery tables via MERGE. Called by `materialize_model_bq` step in `daily_refresh`. Reuses the same `build_*_rows` functions as `update_model_sheet.py`. Used by the Grafana Cloud dashboard. **Requires the orchestrator SA to hold `roles/bigquery.jobUser` + `roles/bigquery.dataEditor`** (RUNBOOK §14) — without them every BQ job 403s. Guards an **empty BQ raw `square_transactions`** read with a precise `RuntimeError` breadcrumb instead of the old cryptic `max() iterable argument is empty` (run `backfill_bigquery` first). Access errors in `core.datastore.read_query` are re-raised (no longer swallowed into `[]`). |
+| `materialize_model_bq.py` | Rebuild the computed model from BQ raw data and write to `model_*` BigQuery tables via MERGE. Called by `materialize_model_bq` step in `daily_refresh`. Reuses the same `build_*_rows` functions as `update_model_sheet.py`. Used by the Grafana Cloud dashboard. **Requires the orchestrator SA to hold `roles/bigquery.jobUser` + `roles/bigquery.dataEditor`** (RUNBOOK §14) — without them every BQ job 403s. Guards an **empty BQ raw `square_transactions`** read with a precise `RuntimeError` breadcrumb instead of the old cryptic `max() iterable argument is empty` (run `backfill_bigquery` first). Access errors in `core.datastore.read_query` are re-raised (no longer swallowed into `[]`). Also exposes `load_model_rows()` as the canonical BQ-write helper (used by `process_reviews.py` and `render_model_sheet_from_bq.py`). |
+| `render_model_sheet_from_bq.py` | **BQ-canonical path only** (`BHAGA_SHEET_FROM_BQ=1`): reads each BQ `model_*` table and renders the corresponding Sheet model tab as a projection. Called by `render_model_sheet_from_bq` step. See `docs/FEATURE_FLAGS.md` for flip criteria and cleanup plan. |
+| `reconcile_model.py` | Compares Sheet model tabs against BQ model tables cell-by-cell (reusing `verify_bq_parity._compare_tabs`). Non-fatal nightly step; CI-blocking when run in the `model-reconciliation` workflow. Reports tip-pool conservation violations. |
 | `test_*.py` | Unit tests. Run: `python3 -m pytest agents/bhaga/scripts/`. |
 
 ---

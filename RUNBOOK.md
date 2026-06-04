@@ -796,7 +796,18 @@ gcloud projects get-iam-policy jarvis-bhaga-prod \
 
 ### Daily cron integration
 
-After each `write_raw_sheets` step, `daily_refresh.py` calls `backfill_bigquery.py` (the `load_bigquery` step) to mirror raw tables to BQ. After each `update_model_sheet` step, it calls `materialize_model_bq.py` (the `materialize_model_bq` step) to rebuild `model_*` tables. Both steps are **non-fatal** — a BQ failure never blocks the Sheets update.
+After each `write_raw_sheets` step, `daily_refresh.py` calls `backfill_bigquery.py` (the `load_bigquery` step) to mirror raw tables to BQ. The model compute then follows one of two paths:
+
+- **Legacy path (default, `BHAGA_SHEET_FROM_BQ` unset):** `update_model_sheet` computes the model from Sheet raw and writes the Sheet; `materialize_model_bq` then mirrors to BQ (non-fatal).
+- **BQ-canonical path (`BHAGA_SHEET_FROM_BQ=1`):** `materialize_model_bq` runs first (BQ is canonical); `render_model_sheet_from_bq` projects the Sheet from BQ. This eliminates dual-compute drift. See `docs/FEATURE_FLAGS.md` for flip criteria.
+
+After model writes, `reconcile_model.py` (non-fatal) compares each Sheet model tab against its BQ table and alerts on drift. See `agents/bhaga/scripts/reconcile_model.py`.
+
+**Flip procedure (`BHAGA_SHEET_FROM_BQ`):**
+1. Confirm `reconcile_model` has been green in prod for ≥ 2 consecutive nights.
+2. Set `BHAGA_SHEET_FROM_BQ=1` in the Cloud Run job env (Cloud Console → Jobs → `bhaga-daily-refresh` → Edit → Environment variables).
+3. Run a manual job and confirm the Sheet renders from BQ correctly.
+4. Record the flip in `docs/FEATURE_FLAGS.md`.
 
 ### Re-deploying the dashboard
 
@@ -810,7 +821,7 @@ python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985
 ### Running SQL migrations
 
 ```bash
-python3 -c "from core.datastore import run_migrations; run_migrations()"
+python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
 ```
 
 Migrations live in `core/migrations/001_initial_schema.sql`, `002_views.sql`, `003_model_tables.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`).

@@ -348,6 +348,24 @@ night.
 
 ---
 
+## 6b. BigQuery model tables and Grafana views
+
+All Sheet model tabs have corresponding BQ model tables (populated by `materialize_model_bq.py`
+or `process_reviews.py`). Grafana reads from BQ views defined in `core/migrations/`.
+
+**Migration 004 additions** (`core/migrations/004_dashboard_refactor.sql`):
+
+| BQ table / view | Grain | Key columns | Purpose |
+|---|---|---|---|
+| `model_review_bonus_period` | (period_start, employee) | `reviews_credited`, `named_count`, `base_dollars`, `named_dollars`, `total_bonus` | BQ mirror of the `review_bonus_period` Sheet tab; written by `process_reviews.py` when `BHAGA_DATASTORE=bigquery`. Merge keys: (period_start, employee). |
+| `vw_model_labor_daily` (extended) | day | All `model_labor_daily` cols + `labor_pct`, `hourly_pct`, `fulltime_pct` aliases | Extended view for the Grafana Labor Cost section. No view-on-view — source: `model_labor_daily`. |
+| `vw_model_labor_weekly` (new) | ISO week | All `model_labor_weekly` cols + `labor_pct`, `hourly_pct`, `fulltime_pct` aliases | Weekly labor view for Grafana. Source: `model_labor_weekly`. |
+| `vw_model_payroll_period` (new) | (period, employee) | `hours_worked`, `est_gross_pay`, `tips_allocated`, `adp_tips_paid`, `review_bonus`, `est_total_pay` | Consolidated payroll view joining `model_tip_alloc_period` + `model_review_bonus_period` + `adp_wage_rates`. `est_gross_pay = hours_worked × wage_rate_dollars` (base rate; salaried → NULL). |
+
+**Grafana dashboard** (`agents/bhaga/grafana/dashboard.json`) reads from these views in 3 sections: Order Volume, Labor Cost, Payroll.
+
+---
+
 ## 7. Forecast & staffing — `labor_daily_forecast`
 
 A **live, in-sheet planning tool**: a trailing window of frozen past days + future rows where

@@ -60,6 +60,8 @@ _BOOL_COLS: dict[str, set[str]] = {
     "model_tip_alloc_period": {"is_open"},
     "model_tip_alloc_daily": set(),
     "model_period_summary": {"is_open"},
+    # Added by migration 004 (dashboard refactor)
+    "model_review_bonus_period": {"is_open"},
 }
 
 _DATE_COLS: dict[str, set[str]] = {
@@ -70,6 +72,8 @@ _DATE_COLS: dict[str, set[str]] = {
     "model_tip_alloc_period": {"period_start", "period_end"},
     "model_tip_alloc_daily": {"date", "period_start", "period_end"},
     "model_period_summary": {"period_start", "period_end"},
+    # Added by migration 004 (dashboard refactor)
+    "model_review_bonus_period": {"period_start", "period_end"},
 }
 
 
@@ -81,6 +85,8 @@ _MERGE_KEYS: dict[str, list[str]] = {
     "model_tip_alloc_period": ["period_start", "employee"],
     "model_tip_alloc_daily": ["date", "employee"],
     "model_period_summary": ["period_start"],
+    # Added by migration 004 (dashboard refactor)
+    "model_review_bonus_period": ["period_start", "employee"],
 }
 
 
@@ -211,6 +217,54 @@ def _load(table: str, dicts: list[dict], materialized_at: datetime.datetime, dry
     )
     print(f"  {table}: {loaded} rows merged")
     return loaded
+
+
+def load_model_rows(
+    table: str,
+    header_rows: list[list],
+    *,
+    dry_run: bool = False,
+    materialized_at: datetime.datetime | None = None,
+) -> int:
+    """Convert build_*-style header+rows output and upsert into a BQ model table.
+
+    This is the single BQ-write path shared by materialize(), render (M2),
+    and process_reviews (M3) so coercion logic is never duplicated.
+
+    ``header_rows`` is the raw build_* output (first element = header list,
+    rest = data rows). Returns the number of rows merged (0 on dry-run or empty).
+    """
+    if not header_rows or len(header_rows) < 2:
+        return 0
+    if materialized_at is None:
+        materialized_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    dicts = _header_rows_to_dicts(header_rows)
+    return _load(table, dicts, materialized_at, dry_run)
+
+
+def _assert_conservation(period_results: list[dict]) -> None:
+    """Verify tip-pool conservation for every period: allocated == pool.
+
+    The allocator distributes the full tip pool across employees — the sum of
+    per-employee allocations must equal the total pool within $0.01 rounding
+    tolerance (1 cent). Raises RuntimeError with the offending period + delta
+    on violation so the pipeline fails loudly rather than silently writing
+    incorrect BQ rows.
+    """
+    for p in period_results:
+        if p.get("is_open"):
+            # Open periods are in-progress; conservation holds only for closed ones.
+            continue
+        pool_cents = sum(a["share_cents"] for a in p["per_day_allocations"])
+        our_total_cents = sum(p["per_period_ours"].values())
+        delta_cents = abs(pool_cents - our_total_cents)
+        if delta_cents > 1:
+            raise RuntimeError(
+                f"materialize_model_bq: tip-pool conservation violated for period "
+                f"{p['start']} – {p['end']}: pool=${pool_cents/100:.2f}, "
+                f"allocated=${our_total_cents/100:.2f}, delta=${delta_cents/100:.2f} "
+                f"(max allowed $0.01). Investigate build_period_results / allocate()."
+            )
 
 
 def materialize(store: str, *, dry_run: bool = False) -> None:
@@ -347,17 +401,20 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     day_alloc_rows = build_tip_alloc_daily_rows(period_results, daily_summary)
     summary_rows = build_period_summary_rows(period_results)
 
+    # ── Post-build conservation check (fail loudly on any tip-pool drift) ────
+    _assert_conservation(period_results)
+
     materialized_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
-    # ── Write to BQ model tables ─────────────────────────────────────────────
+    # ── Write to BQ model tables via the shared loader ───────────────────────
     print("# Writing to BigQuery...")
-    _load("model_daily", _header_rows_to_dicts(daily_rows), materialized_at, dry_run)
-    _load("model_labor_daily", _header_rows_to_dicts(labor_daily_rows), materialized_at, dry_run)
-    _load("model_labor_weekly", _header_rows_to_dicts(labor_weekly_rows), materialized_at, dry_run)
-    _load("model_labor_period", _header_rows_to_dicts(labor_period_rows), materialized_at, dry_run)
-    _load("model_tip_alloc_period", _header_rows_to_dicts(period_rows), materialized_at, dry_run)
-    _load("model_tip_alloc_daily", _header_rows_to_dicts(day_alloc_rows), materialized_at, dry_run)
-    _load("model_period_summary", _header_rows_to_dicts(summary_rows), materialized_at, dry_run)
+    load_model_rows("model_daily", daily_rows, dry_run=dry_run, materialized_at=materialized_at)
+    load_model_rows("model_labor_daily", labor_daily_rows, dry_run=dry_run, materialized_at=materialized_at)
+    load_model_rows("model_labor_weekly", labor_weekly_rows, dry_run=dry_run, materialized_at=materialized_at)
+    load_model_rows("model_labor_period", labor_period_rows, dry_run=dry_run, materialized_at=materialized_at)
+    load_model_rows("model_tip_alloc_period", period_rows, dry_run=dry_run, materialized_at=materialized_at)
+    load_model_rows("model_tip_alloc_daily", day_alloc_rows, dry_run=dry_run, materialized_at=materialized_at)
+    load_model_rows("model_period_summary", summary_rows, dry_run=dry_run, materialized_at=materialized_at)
     print("# Done.")
 
 

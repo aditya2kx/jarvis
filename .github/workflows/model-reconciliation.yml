@@ -1,0 +1,117 @@
+name: Model reconciliation
+
+# Compares Sheet model tabs against BQ model tables to detect drift.
+# Runs against the sandbox sheet + BQ (read-prod/write-sandbox isolation like sandbox-e2e).
+# Exit non-zero if any grain diverges or tip-pool conservation fails.
+#
+# When BHAGA_SHEET_FROM_BQ is off (default), Sheet and BQ are separately computed so
+# minor floating-point differences are expected — the check is informational on this PR.
+# After the flag is flipped in prod (M7), failures become blocking.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "agents/bhaga/scripts/materialize_model_bq.py"
+      - "agents/bhaga/scripts/render_model_sheet_from_bq.py"
+      - "agents/bhaga/scripts/reconcile_model.py"
+      - "agents/bhaga/scripts/process_reviews.py"
+      - "agents/bhaga/scripts/update_model_sheet.py"
+      - "agents/bhaga/scripts/daily_refresh.py"
+      - "core/migrations/004_dashboard_refactor.sql"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: model-reconciliation-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  reconcile:
+    name: Model reconciliation (Sheet ⇆ BQ)
+    runs-on: ubuntu-latest
+    env:
+      BHAGA_SECRETS_BACKEND: gcp
+      BHAGA_DATASTORE: bigquery
+      BHAGA_SHEET_MODE: staging   # read-prod / write-sandbox
+    steps:
+      - name: Register check on main push
+        if: github.event_name == 'push'
+        run: |
+          echo "Reconciliation check runs on pull_request. This registers the job name on main."
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Authenticate to GCP (Workload Identity Federation)
+        if: github.event_name == 'pull_request'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Run model reconciliation
+        if: github.event_name == 'pull_request'
+        env:
+          STORE: palmetto
+        run: |
+          python3 -m agents.bhaga.scripts.reconcile_model \
+            --store "$STORE" \
+            --json \
+            2>&1 | tee /tmp/reconcile_output.json
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_ENV"
+
+      - name: Post reconciliation summary to PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '### Model reconciliation (Sheet ⇆ BQ)\n\n';
+            try {
+              const raw = fs.readFileSync('/tmp/reconcile_output.json', 'utf8');
+              // Find the JSON block in the output (may have print() lines above it)
+              const jsonMatch = raw.match(/\{[\s\S]*\}/);
+              if (jsonMatch) {
+                const result = JSON.parse(jsonMatch[0]);
+                const icon = result.passed ? '✅' : '⚠️';
+                body += `${icon} **${result.passed ? 'PASS' : 'DRIFT DETECTED'}**\n\n`;
+                body += '| Tab | Status | Cells | Mismatches |\n';
+                body += '|-----|--------|-------|------------|\n';
+                for (const g of (result.grains || [])) {
+                  const s = g.status === 'OK' ? '✅' : '⚠️';
+                  body += `| ${g.tab} | ${s} ${g.status} | ${g.cells} | ${g.mismatches?.length ?? 0} |\n`;
+                }
+                if (result.conservation_violations?.length > 0) {
+                  body += '\n**Conservation violations:**\n';
+                  for (const v of result.conservation_violations) {
+                    body += `- ${v}\n`;
+                  }
+                }
+              } else {
+                body += '_Could not parse reconciliation output._\n';
+              }
+            } catch (e) {
+              body += `_Reconciliation output unavailable: ${e.message}_\n`;
+            }
+            body += '\n> Note: `BHAGA_SHEET_FROM_BQ` is **off** by default. ';
+            body += 'Minor differences between Sheet (legacy compute) and BQ are expected until M7 flip.';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

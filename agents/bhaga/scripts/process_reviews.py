@@ -74,6 +74,7 @@ from agents.bhaga.scripts.update_model_sheet import (  # noqa: E402
     format_currency_columns,
 )
 from core.config_loader import refresh_access_token, resolve_sheet_id  # noqa: E402
+from core.datastore import _is_enabled as _bq_enabled  # noqa: E402
 from skills.adp_run_automation.shift_backend import normalize_employee_name  # noqa: E402
 from skills.bhaga_config.dates import (  # noqa: E402
     _iso_date_for_sheet_cell,
@@ -842,6 +843,20 @@ def rebuild_review_bonus_period(
     periods = append_open_period(periods, last_data_date=window_end_iso)
     rollup_rows = build_period_rollup(all_reviews, periods)
 
+    # ── BQ sink (canonical write, non-fatal) ─────────────────────────────────
+    # When BHAGA_DATASTORE=bigquery, persist the same rollup to BQ so
+    # model_review_bonus_period is always the canonical source and the Grafana
+    # payroll view (vw_model_payroll_period) can join against it.
+    # Errors are logged as a breadcrumb but never fail the Sheet write.
+    if _bq_enabled():
+        try:
+            from agents.bhaga.scripts.materialize_model_bq import load_model_rows  # noqa: PLC0415
+            n_bq = load_model_rows("model_review_bonus_period", rollup_rows)
+            print(f"  [review_bonus_period→BQ] {n_bq} rows merged into model_review_bonus_period")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [review_bonus_period→BQ] WARNING: BQ write failed (Sheet is unaffected): {exc}")
+
+    # ── Sheet sink (legacy write, always runs) ────────────────────────────────
     sheet_id = add_sheet_if_missing(
         model_sid, token, tab_name="review_bonus_period", column_count=12,
     )

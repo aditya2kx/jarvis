@@ -2051,35 +2051,26 @@ def main() -> int:
             print("[load_bigquery] WARNING: BQ raw sync failed — Sheets is unaffected, continuing.")
 
     failed_steps = {name for name, _ in failures}
+    # ── BHAGA_SHEET_FROM_BQ=1: BQ-canonical path ─────────────────────────────
+    # When enabled, BQ is the system of record: materialize_model_bq runs FIRST
+    # (computing the model from BQ raw), then render_model_sheet_from_bq renders
+    # the Sheet as a projection of BQ. This eliminates the dual-compute drift
+    # where update_model_sheet and materialize_model_bq could produce different
+    # numbers from their respective raw inputs. Feature flag: default off until
+    # reconciliation gate (reconcile_model.py) proves Sheet == BQ in prod.
+    # See docs/FEATURE_FLAGS.md for removal criteria.
+    _bq_canonical = os.environ.get("BHAGA_SHEET_FROM_BQ", "").strip() in ("1", "true", "yes")
+
     if not args.skip_model and (raw_sheets_ok or (args.skip_square and args.skip_timecard)):
-        model_cmd = [
-            sys.executable, "-m", "agents.bhaga.scripts.update_model_sheet",
-            "--store", args.store,
-            "--item-ops-date-from", gap_start.isoformat(),
-            "--item-ops-date-to", refresh_date.isoformat(),
-        ]
-        if os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery":
-            model_cmd += ["--data-source", "bigquery"]
-        ok, val = run_step(
-            "update_model_sheet",
-            lambda: subprocess.run(
-                model_cmd,
-                cwd=str(PROJECT_ROOT), check=True,
-            ),
-            refresh_date=refresh_date,
-            dry_run=args.dry_run,
-        )
-        if not ok:
-            failures.append(("update_model_sheet", val))
-        else:
-            # ── Materialize computed model into BigQuery (after Sheets model is rebuilt) ──
-            # Non-fatal: Sheets model is the source of truth; BQ is a parallel mirror.
+        if _bq_canonical:
+            # ── BQ-canonical path (BHAGA_SHEET_FROM_BQ=1) ────────────────────
+            # Step 1: compute model from BQ raw into BQ model tables.
             bq_model_env = {
                 **os.environ,
                 "BHAGA_DATASTORE": "bigquery",
                 "PYTHONUNBUFFERED": "1",
             }
-            ok2, _ = run_step(
+            ok, val = run_step(
                 "materialize_model_bq",
                 lambda: subprocess.run(
                     [sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
@@ -2089,8 +2080,70 @@ def main() -> int:
                 refresh_date=refresh_date,
                 dry_run=args.dry_run,
             )
-            if not ok2:
-                print("[materialize_model_bq] WARNING: BQ model sync failed — Sheets is unaffected.")
+            if not ok:
+                failures.append(("materialize_model_bq", val))
+                print("[materialize_model_bq] FAILED — Sheet render skipped; falling back to legacy path.")
+                # Fall back to legacy update_model_sheet so the Sheet is never left stale.
+                _bq_canonical = False
+            else:
+                # Step 2: render Sheet from BQ model tables.
+                ok2, _ = run_step(
+                    "render_model_sheet_from_bq",
+                    lambda: subprocess.run(
+                        [sys.executable, "-m", "agents.bhaga.scripts.render_model_sheet_from_bq",
+                         "--store", args.store],
+                        cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
+                    ),
+                    refresh_date=refresh_date,
+                    dry_run=args.dry_run,
+                )
+                if not ok2:
+                    print("[render_model_sheet_from_bq] WARNING: Sheet render failed — "
+                          "BQ model is canonical but Sheet may be stale.")
+
+        if not _bq_canonical:
+            # ── Legacy path (BHAGA_SHEET_FROM_BQ not set or fallback) ────────
+            # update_model_sheet computes the model from Sheet raw and writes the Sheet.
+            # materialize_model_bq then mirrors the result to BQ (non-fatal).
+            model_cmd = [
+                sys.executable, "-m", "agents.bhaga.scripts.update_model_sheet",
+                "--store", args.store,
+                "--item-ops-date-from", gap_start.isoformat(),
+                "--item-ops-date-to", refresh_date.isoformat(),
+            ]
+            if os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery":
+                model_cmd += ["--data-source", "bigquery"]
+            ok, val = run_step(
+                "update_model_sheet",
+                lambda: subprocess.run(
+                    model_cmd,
+                    cwd=str(PROJECT_ROOT), check=True,
+                ),
+                refresh_date=refresh_date,
+                dry_run=args.dry_run,
+            )
+            if not ok:
+                failures.append(("update_model_sheet", val))
+            else:
+                # ── Mirror computed model into BigQuery (after Sheet rebuild) ──
+                # Non-fatal: Sheets model is the source of truth on this path.
+                bq_model_env = {
+                    **os.environ,
+                    "BHAGA_DATASTORE": "bigquery",
+                    "PYTHONUNBUFFERED": "1",
+                }
+                ok2, _ = run_step(
+                    "materialize_model_bq",
+                    lambda: subprocess.run(
+                        [sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
+                         "--store", args.store],
+                        cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
+                    ),
+                    refresh_date=refresh_date,
+                    dry_run=args.dry_run,
+                )
+                if not ok2:
+                    print("[materialize_model_bq] WARNING: BQ model sync failed — Sheets is unaffected.")
 
     # Step: Google Review attribution (sequential, uses pre-fetched messages).
     # Architecture rule: ALL data fetching happens in the parallel phase.
@@ -2131,6 +2184,30 @@ def main() -> int:
     else:
         print("[process_reviews] SKIPPED — raw_sheets_ok=False (need fresh ADP punches).")
 
+    # ── Nightly reconciliation gate (non-fatal, alerts on drift) ─────────────
+    # Runs after all model writes so both Sheet and BQ are current.
+    # On drift: prints the mismatch report and sends a Slack alert; does NOT
+    # fail the run (the operator needs to investigate without losing tonight's data).
+    if os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery" and not args.dry_run:
+        recon_env = {
+            **os.environ,
+            "BHAGA_DATASTORE": "bigquery",
+            "PYTHONUNBUFFERED": "1",
+        }
+        _, recon_result = run_step(
+            "reconcile_model",
+            lambda: subprocess.run(
+                [sys.executable, "-m", "agents.bhaga.scripts.reconcile_model",
+                 "--store", args.store, "--json"],
+                cwd=str(PROJECT_ROOT), check=True, env=recon_env,
+            ),
+            refresh_date=refresh_date,
+            dry_run=False,  # always run even if other steps dry-ran
+        )
+        if recon_result is not None and not isinstance(recon_result, bool):
+            # reconcile_model exited non-zero — drift detected.
+            print("[reconcile_model] WARNING: Sheet/BQ drift detected — see output above.")
+
     runtime_s = time.monotonic() - t_start
 
     if failures:
@@ -2146,9 +2223,17 @@ def main() -> int:
     # (2026-05-23 incident). Fail loudly BEFORE writing the success
     # heartbeat — the wrapper will retry on the next 15-min wakeup.
     failed_step_names = {name for name, _ in failures}
+    # On the BQ-canonical path the model step is materialize_model_bq (not
+    # update_model_sheet), but the post-condition guard reads data_window_end
+    # from the Sheet config tab which is written by render_model_sheet_from_bq.
+    # The guard fires correctly for both paths as long as the Sheet was updated.
+    _model_step_ok = (
+        "update_model_sheet" not in failed_step_names
+        and "materialize_model_bq" not in failed_step_names
+    )
     update_model_ran = (
         not args.skip_model
-        and "update_model_sheet" not in failed_step_names
+        and _model_step_ok
         and not args.dry_run
         # If --skip-square AND --skip-timecard both set, model is being
         # re-derived from existing raw data; data_window_end may legitimately

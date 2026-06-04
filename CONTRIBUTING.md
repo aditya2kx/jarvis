@@ -126,6 +126,20 @@ new ambiguity or scope change appears — e.g. Agent→Plan if the approach turn
   misbehaves, can it silently produce wrong numbers?"* If no → no flag. If yes → flag it (default off),
   prove the legacy path still works, and make removing the flag an explicit cleanup milestone. Either
   way, never leave dead flags or forks lying around.
+  All behavioral feature flags **must** be tracked in [`docs/FEATURE_FLAGS.md`](docs/FEATURE_FLAGS.md)
+  with a safe-to-remove condition and a planned cleanup PR. Add the entry in the same PR that
+  introduces the flag.
+
+### Additive prod data-source exception
+Changes that are **additive and idempotent** on prod data sources may be applied directly
+to prod without a sandbox round-trip for the data-source step (but sandbox e2e must still pass):
+- New BigQuery tables and views (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`)
+- New Google Sheet tabs (`add_sheet_if_missing` — no-op if already present)
+- Grafana dashboard changes (new panels, reorganized sections)
+
+For these exceptions, record the prod-apply step as PR evidence (evidence §4 of the PR template).
+Non-additive schema changes (column removal, rename, reorder) are never exempt.
+
 - **Backward compatible by default.** Schema changes are additive (no column reorder/removal), existing
   consumers and the nightly `daily_refresh` keep working, and you *prove* it (legacy suite green, or a
   legacy-regression run).

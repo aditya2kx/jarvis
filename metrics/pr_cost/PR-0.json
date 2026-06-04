@@ -1,0 +1,43 @@
+{
+  "pr_number": 0,
+  "provisional_id": null,
+  "title": "fix(ci): remove CI skip on cost commits",
+  "requirement": null,
+  "branch": "fix/remove-ci-skip-on-cost-commits",
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor_dashboard",
+    "approximate": true,
+    "attribution_mode": null,
+    "session_started_at": null,
+    "conversation_ids": [],
+    "sessions": [
+      {
+        "ts": "2026-06-04T18:17:29Z",
+        "model": "claude-sonnet-4-6",
+        "tokens": 80000,
+        "cost_usd": 0.08,
+        "note": null
+      }
+    ],
+    "tokens_total": 80000,
+    "cost_usd_total": 0.08
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 80000,
+    "cost_usd": 0.08
+  }
+}

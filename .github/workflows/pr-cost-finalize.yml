@@ -72,41 +72,7 @@ jobs:
           gh pr comment "$PR" --body-file /tmp/cost_analysis.md || \
             echo "::warning::Could not post analysis comment."
 
-      - name: Mark linked requirement Done in tracker
-        env:
-          PR_LABELS: ${{ toJson(github.event.pull_request.labels) }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          # Extract requirement-id from PR labels (label format: "req:N") or
-          # from the PR title (format: "... (req:N)" anywhere in the title).
-          REQ_ID=""
-          # Check labels first
-          REQ_ID=$(echo "$PR_LABELS" | python3 -c "
-          import json, sys, re
-          labels = json.load(sys.stdin)
-          for l in labels:
-              m = re.match(r'req:(\w+)', l.get('name',''))
-              if m:
-                  print(m.group(1))
-                  break
-          " 2>/dev/null || true)
-          # Fall back to PR title
-          if [ -z "$REQ_ID" ]; then
-            REQ_ID=$(echo "$PR_TITLE" | python3 -c "
-          import sys, re
-          m = re.search(r'\breq:(\w+)\b', sys.stdin.read())
-          if m: print(m.group(1))
-          " 2>/dev/null || true)
-          fi
-          if [ -n "$REQ_ID" ]; then
-            python3 scripts/requirements_tracker.py mark-done --req "$REQ_ID" --pr "$PR" && \
-              echo "Requirements tracker → #$REQ_ID marked ✅ Done (PR #$PR)" || true
-          else
-            echo "No req: label or title tag found — requirements tracker not updated."
-          fi
-          python3 scripts/requirements_tracker.py report || true
-
-      - name: Commit refreshed ledger + report + tracker to main
+      - name: Commit refreshed ledger + report to main
         env:
           # ADMIN_PAT is aditya2kx's personal token — admin bypass lets this
           # commit land directly on main without a PR (cost report only).
@@ -114,7 +80,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add metrics/pr_cost/ Playground/REQUIREMENTS.md Playground/requirements_report.html || true
+          git add metrics/pr_cost/ || true
           if git diff --cached --quiet; then
             echo "No ledger/report changes to commit."
             exit 0

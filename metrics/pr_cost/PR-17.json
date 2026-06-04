@@ -3,7 +3,7 @@
   "title": "feat(cost): conversation-scoped build attribution for parallel chats",
   "requirement": "Robust multi-chat cost attribution via conversationId + session_started_at",
   "branch": "feat/cost-conversation-attribution",
-  "created_at": null,
+  "created_at": "2026-06-03T21:02:51Z",
   "merged_at": "2026-06-03T21:06:34Z",
   "diff": {
     "files": null,

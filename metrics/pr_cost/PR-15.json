@@ -3,7 +3,7 @@
   "title": "feat(cost): reco engine v2 + tactical playbook + new-chat-per-PR tooling",
   "requirement": "Restructure reco engine to separate Tactical actions from Diagnosis/Observations, add per-model dated rate table, model-efficiency flag, de-stale review reco, CONTRIBUTING cost-efficiency playbook, start_pr_session.py + canvas button for new-chat-per-PR",
   "branch": "feat/cost-framework-v2",
-  "created_at": null,
+  "created_at": "2026-06-03T07:45:56Z",
   "merged_at": "2026-06-03T20:05:52Z",
   "diff": {
     "files": null,
@@ -14,17 +14,6 @@
     "source": "cursor dashboard usage API (local session token; exact cost, request->PR by time window)",
     "approximate": false,
     "sessions": [
-      {
-        "ts": "2026-06-03T07:03:45.714000+00:00",
-        "model": "claude-opus-4-8-thinking-medium",
-        "tokens": 2469206,
-        "cost_usd": 1.4934,
-        "input_tokens": 22,
-        "output_tokens": 6903,
-        "cache_read_input_tokens": 2446698,
-        "cache_creation_input_tokens": 15583,
-        "note": null
-      },
       {
         "ts": "2026-06-03T07:07:34.931000+00:00",
         "model": "claude-opus-4-8-thinking-medium",
@@ -103,8 +92,8 @@
         "note": null
       }
     ],
-    "tokens_total": 16781550,
-    "cost_usd_total": 12.5425,
+    "tokens_total": 14312344,
+    "cost_usd_total": 11.0491,
     "window": {
       "start": "2026-06-03T07:00:00+00:00",
       "end": "2026-06-03T09:00:00+00:00"
@@ -145,7 +134,7 @@
     "run_count": 2
   },
   "totals": {
-    "tokens": 17151432,
-    "cost_usd": 13.0349
+    "tokens": 14682226,
+    "cost_usd": 11.5415
   }
 }

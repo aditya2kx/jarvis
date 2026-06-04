@@ -51,6 +51,9 @@ jobs:
       - name: Finalize review cost from posted comments
         run: |
           python3 scripts/pr_cost_ledger.py set-meta --pr "$PR" \
+            --title "${{ github.event.pull_request.title }}" \
+            --branch "${{ github.event.pull_request.head.ref }}" \
+            --created "${{ github.event.pull_request.created_at }}" \
             --merged "${{ github.event.pull_request.merged_at }}" || true
           python3 scripts/pr_cost_ledger.py capture-review --pr "$PR" --repo "$REPO" || \
             echo "::notice::capture-review found no cost comments to reconcile."

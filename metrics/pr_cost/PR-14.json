@@ -3,7 +3,7 @@
   "title": "feat(cost): checked-in HTML cost report + post-merge finalize + pre-push sync",
   "requirement": "#12 \u2014 one-click finalize / team-visible cost report",
   "branch": "feat/pr-cost-html-report",
-  "created_at": null,
+  "created_at": "2026-06-03T06:52:44Z",
   "merged_at": "2026-06-03T07:16:32Z",
   "diff": {
     "files": null,

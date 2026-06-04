@@ -3,8 +3,8 @@
   "title": "chore: requirements tracker, HTML report, HL#22, post-PR-#21 follow-up",
   "requirement": "Requirements HTML report (colour-coded, filterable, auto-generated)",
   "branch": "chore/requirements-tracker-and-html-report",
-  "created_at": null,
-  "merged_at": null,
+  "created_at": "2026-06-04T03:30:47Z",
+  "merged_at": "2026-06-04T04:26:02Z",
   "diff": {
     "files": null,
     "additions": null,
@@ -17,71 +17,6 @@
     "session_started_at": null,
     "conversation_ids": [],
     "sessions": [
-      {
-        "ts": "2026-06-04T02:51:28.813000+00:00",
-        "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 159412,
-        "cost_usd": 0.0635,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 4,
-        "output_tokens": 761,
-        "cache_read_input_tokens": 157335,
-        "cache_creation_input_tokens": 1312,
-        "note": "byok"
-      },
-      {
-        "ts": "2026-06-04T02:52:28.665000+00:00",
-        "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 1374519,
-        "cost_usd": 0.5142,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 18,
-        "output_tokens": 3791,
-        "cache_read_input_tokens": 1357362,
-        "cache_creation_input_tokens": 13348,
-        "note": "byok"
-      },
-      {
-        "ts": "2026-06-04T02:54:48.900000+00:00",
-        "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 282343,
-        "cost_usd": 0.0978,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 5,
-        "output_tokens": 602,
-        "cache_read_input_tokens": 280498,
-        "cache_creation_input_tokens": 1238,
-        "note": "byok"
-      },
-      {
-        "ts": "2026-06-04T02:55:59.175000+00:00",
-        "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 289731,
-        "cost_usd": 0.4493,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 5,
-        "output_tokens": 1848,
-        "cache_read_input_tokens": 190732,
-        "cache_creation_input_tokens": 97146,
-        "note": "byok"
-      },
-      {
-        "ts": "2026-06-04T02:58:03.518000+00:00",
-        "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 98335,
-        "cost_usd": 0.0361,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 3,
-        "output_tokens": 226,
-        "cache_read_input_tokens": 97146,
-        "cache_creation_input_tokens": 960,
-        "note": "byok"
-      },
       {
         "ts": "2026-06-04T02:58:13.228000+00:00",
         "model": "claude-4.6-sonnet-medium-thinking",
@@ -171,19 +106,6 @@
         "output_tokens": 1344,
         "cache_read_input_tokens": 419205,
         "cache_creation_input_tokens": 2905,
-        "note": "byok"
-      },
-      {
-        "ts": "2026-06-04T03:14:12.146000+00:00",
-        "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 1923657,
-        "cost_usd": 0.9745,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 36,
-        "output_tokens": 15533,
-        "cache_read_input_tokens": 1859105,
-        "cache_creation_input_tokens": 48983,
         "note": "byok"
       },
       {
@@ -278,8 +200,8 @@
         "note": "byok"
       }
     ],
-    "tokens_total": 35167805,
-    "cost_usd_total": 20.0933,
+    "tokens_total": 31039808,
+    "cost_usd_total": 17.9579,
     "window": {
       "start": "2026-06-04T02:49:37+00:00",
       "end": "2026-06-04T04:19:47+00:00"
@@ -293,7 +215,7 @@
     "run_count": 0
   },
   "totals": {
-    "tokens": 35167805,
-    "cost_usd": 20.0933
+    "tokens": 31039808,
+    "cost_usd": 17.9579
   }
 }

@@ -6,6 +6,14 @@ name: PR cost gate
 # must be recorded from the dashboard and committed. Review cost is appended
 # automatically by scripts/post_claude_review_cost.py.
 #
+# After validation passes, this job also commits the refreshed cost ledger
+# (capture-review + report) back to the PR branch so the data lands in the
+# squash merge without needing any push-to-main bypass.
+#
+# Loop-break: if the triggering commit message starts with "chore(cost):" it is
+# a cost-only commit from this very job — validation still runs (fast) but the
+# commit-back step is skipped to terminate the loop.
+#
 # Make this a REQUIRED status check in branch protection to actually block merge
 # (see CONTRIBUTING.md § Enabling enforcement).
 
@@ -16,10 +24,18 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+  pull-requests: read
+
 jobs:
   cost-gate:
     name: PR cost gate
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
     steps:
       - name: Register check on main push
         if: github.event_name == 'push'
@@ -28,10 +44,55 @@ jobs:
       - name: Checkout PR head
         if: github.event_name == 'pull_request'
         uses: actions/checkout@v4
+        with:
+          # Fetch the actual branch ref so we can push back to it.
+          ref: ${{ github.event.pull_request.head.ref }}
+          # Persist credentials so the later push uses GITHUB_TOKEN automatically.
+          persist-credentials: true
+
+      - name: Detect cost commit (loop-break guard)
+        if: github.event_name == 'pull_request'
+        id: costcheck
+        run: |
+          MSG=$(git log -1 --format='%s')
+          echo "Head commit: $MSG"
+          if [[ "$MSG" == "chore(cost):"* ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Cost commit detected — skipping commit-back to break the loop."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Validate cost ledger (hard gate — requires build cost)
         if: github.event_name == 'pull_request'
         run: |
           python3 scripts/pr_cost_ledger.py validate \
-            --pr "${{ github.event.pull_request.number }}" \
+            --pr "$PR" \
             --require-build
+
+      - name: Sync cost ledger and commit back to PR branch
+        if: >
+          github.event_name == 'pull_request' &&
+          steps.costcheck.outputs.skip != 'true'
+        run: |
+          # Capture any review cost comments posted since the last sync.
+          python3 scripts/pr_cost_ledger.py capture-review \
+            --pr "$PR" --repo "$REPO" || \
+            echo "::notice::capture-review found no new cost comments."
+
+          # Regenerate the HTML report.
+          python3 scripts/pr_cost_ledger.py report
+
+          # Commit back to the PR branch so the ledger is the last commit.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add metrics/pr_cost/
+
+          if git diff --cached --quiet; then
+            echo "No ledger changes — nothing to commit."
+            exit 0
+          fi
+
+          git commit -m "chore(cost): sync PR #${PR} ledger"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          echo "Cost ledger committed to branch ${{ github.event.pull_request.head.ref }}."

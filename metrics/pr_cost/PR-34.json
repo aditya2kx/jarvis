@@ -26,10 +26,17 @@
         "tokens": 2800000,
         "cost_usd": 2.1,
         "note": null
+      },
+      {
+        "ts": "2026-06-04T17:18:52Z",
+        "model": "claude-sonnet-4-6-thinking",
+        "tokens": 2800000,
+        "cost_usd": 2.1,
+        "note": null
       }
     ],
-    "tokens_total": 2800000,
-    "cost_usd_total": 2.1,
+    "tokens_total": 5600000,
+    "cost_usd_total": 4.2,
     "window": {
       "start": "2026-06-04T17:04:25+00:00",
       "end": "2026-06-04T17:07:15+00:00"
@@ -43,7 +50,7 @@
     "run_count": 0
   },
   "totals": {
-    "tokens": 2800000,
-    "cost_usd": 2.1
+    "tokens": 5600000,
+    "cost_usd": 4.2
   }
 }

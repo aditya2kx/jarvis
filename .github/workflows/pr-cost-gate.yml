@@ -74,6 +74,14 @@ jobs:
         if: >
           github.event_name == 'pull_request' &&
           steps.costcheck.outputs.skip != 'true'
+        env:
+          # ADMIN_PAT is used for the git push (not GITHUB_TOKEN) so that GitHub
+          # fires a new pull_request:synchronize event on the cost commit, allowing
+          # the required status checks to run on it. GITHUB_TOKEN pushes suppress
+          # workflow triggers, which would leave the cost commit without required
+          # checks and block auto-merge. The cost commit is skipped cheaply by
+          # sandbox-e2e and claude-review via the "chore(cost):" prefix guard.
+          PUSH_TOKEN: ${{ secrets.ADMIN_PAT }}
         run: |
           # Capture any review cost comments posted since the last sync.
           python3 scripts/pr_cost_ledger.py capture-review \
@@ -94,5 +102,9 @@ jobs:
           fi
 
           git commit -m "chore(cost): sync PR #${PR} ledger"
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
+          # Push via ADMIN_PAT so the push triggers a synchronize event and
+          # required checks run on the cost commit (clearing auto-merge block).
+          REMOTE_URL="https://x-access-token:${PUSH_TOKEN}@github.com/${REPO}.git"
+          git push "$REMOTE_URL" HEAD:${{ github.event.pull_request.head.ref }}
           echo "Cost ledger committed to branch ${{ github.event.pull_request.head.ref }}."

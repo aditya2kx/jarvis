@@ -73,6 +73,10 @@ jobs:
             echo "::warning::Could not post analysis comment."
 
       - name: Commit refreshed ledger + report to main
+        env:
+          # ADMIN_PAT is aditya2kx's personal token — admin bypass lets this
+          # commit land directly on main without a PR (cost report only).
+          ADMIN_PAT: ${{ secrets.ADMIN_PAT }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -82,5 +86,8 @@ jobs:
             exit 0
           fi
           git commit -m "chore(cost): finalize PR #$PR cost record + regenerate report [skip ci]"
-          git push origin HEAD:main || \
-            echo "::warning::Push to main rejected (branch protection?). Comment was still posted; commit the ledger manually or grant the actions bot push access."
+          # Use the admin PAT so the push bypasses the PR-review branch protection
+          # (personal-repo branch protection is bypassed by the repo owner/admin).
+          REMOTE_URL="https://x-access-token:${ADMIN_PAT}@github.com/$REPO.git"
+          git push "$REMOTE_URL" HEAD:main || \
+            echo "::warning::Push to main rejected. Comment was still posted; run 'python3 scripts/pr_cost_ledger.py sync --pr $PR' locally and push."

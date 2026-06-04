@@ -104,6 +104,7 @@ jobs:
           else
             echo "No req: label or title tag found — requirements tracker not updated."
           fi
+          python3 scripts/requirements_tracker.py report || true
 
       - name: Commit refreshed ledger + report + tracker to main
         env:
@@ -113,7 +114,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add metrics/pr_cost/ Playground/REQUIREMENTS.md || true
+          git add metrics/pr_cost/ Playground/REQUIREMENTS.md Playground/requirements_report.html || true
           if git diff --cached --quiet; then
             echo "No ledger/report changes to commit."
             exit 0

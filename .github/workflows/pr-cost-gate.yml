@@ -80,8 +80,8 @@ jobs:
           # fires a new pull_request:synchronize event on the cost commit, allowing
           # the required status checks to run on it. GITHUB_TOKEN pushes suppress
           # workflow triggers, which would leave the cost commit without required
-          # checks and block auto-merge. The cost commit is skipped cheaply by
-          # sandbox-e2e and claude-review via the "chore(cost):" prefix guard.
+          # checks and block auto-merge. CI (sandbox-e2e, claude-review) runs
+          # fully on the cost commit — it contains all real code changes.
           PUSH_TOKEN: ${{ secrets.ADMIN_PAT }}
         run: |
           # Capture any review cost comments posted since the last sync.

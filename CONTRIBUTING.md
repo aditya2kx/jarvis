@@ -156,9 +156,10 @@ new ambiguity or scope change appears — e.g. Agent→Plan if the approach turn
    |---|---|
    | §1 What is the change | What exactly changed and where (concrete, 2–5 sentences) |
    | §2 Motivation | Why; linked to ticket / chat / `PROGRESS.md` |
-   | §3 End-to-end test | Does it work? Real commands + real output — "it should work" is not evidence |
-   | §4 Backward compat | Will it break existing behavior? Prove it (diff, flag default, legacy test run) |
-   | §5 Checklist | Every item checked [x] or explicitly noted as N/A with reason |
+   | §3 Design / Approach | How it's built — architecture, data flow, key decisions; diagrams > paragraphs |
+   | §4 End-to-end test | Does it work? Real commands + real output — "it should work" is not evidence |
+   | §5 Backward compat | Will it break existing behavior or cause a regression? Prove it (diff, flag, test run) |
+   | §6 Checklist | Every item checked [x] or explicitly noted as N/A with reason |
 
    **Diagrams are strongly preferred** over paragraphs for architecture, data flow, or before/after
    state. Mermaid blocks, ASCII diagrams, and screenshots all render in GitHub PR descriptions.

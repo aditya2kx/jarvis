@@ -3,12 +3,12 @@ PURPOSE OF THIS DESCRIPTION
 The operator reads this to decide whether to approve — without asking follow-up
 questions. It must answer:
   • What exactly changed and why?
+  • How was it designed? (Architecture, data flow, key decisions — diagrams preferred.)
   • Does it work end-to-end? (Prove it with real output, not "it should work".)
-  • Is it backward compatible? (Prove it — diff, flag default, test run.)
-  • Will it cause a regression? (Show the legacy path still passes.)
+  • Is it backward compatible and regression-free? (Prove it.)
 
 Keep it concise. Diagrams (Mermaid, ASCII, screenshots) are strongly preferred
-over paragraphs when they communicate structure or flow.
+over paragraphs for architecture and data flow.
 
 Fill in every section. CI will FAIL if any section is missing or left as
 placeholder text. Delete these HTML comments before submitting.
@@ -23,12 +23,17 @@ placeholder text. Delete these HTML comments before submitting.
      Link the ticket / chat session / PROGRESS.md entry. -->
 
 
-## 3. End-to-end test (with evidence)
+## 3. Design / Approach
+<!-- How the change is structured: key design decisions, data flow, component interactions.
+     Diagrams are strongly preferred — Mermaid blocks, ASCII art, and screenshots all render in GitHub.
+     For non-trivial changes: why this approach over alternatives? What did you rule out and why? -->
+
+
+## 4. End-to-end test (with evidence)
 <!-- How you verified this works end-to-end — not just unit tests.
      Paste the REAL commands you ran and the REAL output / sheet diff / log excerpt.
      "It should work" or "tests pass" alone is not evidence.
-     For BHAGA: show the affected sheet/tab before→after or the job log + a row spot-check.
-     Diagrams showing the data flow or before/after state are encouraged. -->
+     For BHAGA: show the affected sheet/tab before→after or the job log + a row spot-check. -->
 
 <details><summary>Evidence</summary>
 
@@ -39,15 +44,16 @@ placeholder text. Delete these HTML comments before submitting.
 </details>
 
 
-## 4. Backward compatibility — and proof
+## 5. Backward compatibility — and proof
 <!-- State explicitly: yes or no, then PROVE it.
      - New behavior behind a flag? Name it + its default.
      - Schema change additive only? Show the header diff.
      - Existing paths / nightly unaffected? Show the legacy test run or log.
+     - No regression? State which tests cover the affected path and that they pass.
      If NOT backward compatible, say so and describe the migration. -->
 
 
-## 5. Checklist
+## 6. Checklist
 - [ ] Tests added/updated and passing (`python3 -m pytest agents/bhaga/scripts/ skills/ core/ cloud/`)
 - [ ] Docs updated in lock-step (`python3 scripts/check_doc_freshness.py` is clean)
 - [ ] No secrets / PII in the diff (credentials live in Secret Manager / Keychain)

@@ -17,7 +17,6 @@
     "attribution_mode": "conversation",
     "session_started_at": null,
     "conversation_ids": [
-      "8401d8b5-7c42-47ba-9af6-7c022d5caa06",
       "21d6fe24-298f-4179-9c86-0d93be413759"
     ],
     "sessions": [
@@ -37,47 +36,61 @@
       {
         "ts": "2026-06-04T14:59:16.308000+00:00",
         "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 4866400,
-        "cost_usd": 2.4217,
+        "tokens": 7415994,
+        "cost_usd": 3.3491,
         "cost_source": "byok_token_usage",
         "conversation_id": "21d6fe24-298f-4179-9c86-0d93be413759",
-        "input_tokens": 40,
-        "output_tokens": 31921,
-        "cache_read_input_tokens": 4691707,
-        "cache_creation_input_tokens": 142732,
+        "input_tokens": 57,
+        "output_tokens": 38250,
+        "cache_read_input_tokens": 7214826,
+        "cache_creation_input_tokens": 162861,
         "note": "byok; chat:21d6fe24"
       },
       {
         "ts": "2026-06-04T15:03:56.846000+00:00",
         "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 2434977,
-        "cost_usd": 1.5021,
+        "tokens": 6929235,
+        "cost_usd": 3.6113,
         "cost_source": "byok_token_usage",
         "conversation_id": "21d6fe24-298f-4179-9c86-0d93be413759",
-        "input_tokens": 18,
-        "output_tokens": 13184,
-        "cache_read_input_tokens": 2254312,
-        "cache_creation_input_tokens": 167463,
+        "input_tokens": 121237,
+        "output_tokens": 43544,
+        "cache_read_input_tokens": 6485768,
+        "cache_creation_input_tokens": 278686,
         "note": "byok; chat:21d6fe24"
       }
     ],
-    "tokens_total": 7720130,
-    "cost_usd_total": 4.3631,
+    "tokens_total": 14763982,
+    "cost_usd_total": 7.3997,
     "window": {
       "start": "2026-06-04T14:38:29+00:00",
-      "end": "2026-06-04T15:08:41.937000+00:00"
+      "end": "2026-06-04T15:14:59.475000+00:00"
     }
   },
   "review": {
     "source": "claude-code-action execution_file (exact)",
-    "runs": [],
-    "tokens_total": 0,
-    "cost_usd_total": 0,
-    "run_count": 0
+    "runs": [
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 10,
+        "input_tokens": 7,
+        "output_tokens": 3153,
+        "cache_read_input_tokens": 214837,
+        "cache_creation_input_tokens": 39474,
+        "tokens": 257471,
+        "cost_usd": 0.261,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26960606551"
+      }
+    ],
+    "tokens_total": 257471,
+    "cost_usd_total": 0.261,
+    "run_count": 1
   },
   "totals": {
-    "tokens": 7720130,
-    "cost_usd": 4.3631
+    "tokens": 15021453,
+    "cost_usd": 7.6607
   },
   "session_started_at": "2026-06-04T14:38:29+00:00"
 }

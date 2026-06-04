@@ -100,14 +100,39 @@ def _recompute_cost(session: dict[str, Any], tier: str) -> float:
 
 
 # ── record I/O ──────────────────────────────────────────────────────
+#
+# A ledger record is keyed by the GitHub PR number once it exists
+# (`PR-<n>.json`). But the PR number is only assigned when `gh pr create`
+# actually runs — and several chat spaces may be opening PRs concurrently, so
+# the number cannot be guessed up front. Before the PR exists, a session is
+# tracked by a *provisional* key (the branch name) in `session-<slug>.json`,
+# which is invisible to `_all_prs()` / the report / the cost gate (they only
+# match `PR-<int>.json`). `bind_pr()` renames the provisional record to
+# `PR-<n>.json` once the real number is known. See `start_pr_session.py`.
 
-def _record_path(pr: int) -> Path:
-    return LEDGER_DIR / f"PR-{pr}.json"
+
+def _slug(text: str) -> str:
+    """Filename-safe slug for a provisional (branch-keyed) record."""
+    out = re.sub(r"[^A-Za-z0-9._-]+", "-", str(text).strip()).strip("-._")
+    return out or "session"
 
 
-def _empty_record(pr: int) -> dict[str, Any]:
+def _record_path(key: int | str) -> Path:
+    """Resolve a record key to its on-disk path.
+
+    Numeric key → `PR-<n>.json` (a real PR). Non-numeric key → a provisional
+    `session-<slug>.json` (branch-keyed, before the PR number is assigned).
+    """
+    if isinstance(key, int) or (isinstance(key, str) and key.isdigit()):
+        return LEDGER_DIR / f"PR-{int(key)}.json"
+    return LEDGER_DIR / f"session-{_slug(str(key))}.json"
+
+
+def _empty_record(pr: int | str) -> dict[str, Any]:
+    is_numeric = isinstance(pr, int) or (isinstance(pr, str) and pr.isdigit())
     return {
-        "pr_number": pr,
+        "pr_number": int(pr) if is_numeric else None,
+        "provisional_id": None if is_numeric else str(pr),
         "title": None,
         "requirement": None,
         "branch": None,
@@ -135,17 +160,28 @@ def _empty_record(pr: int) -> dict[str, Any]:
     }
 
 
-def load_record(pr: int) -> dict[str, Any]:
+def load_record(pr: int | str) -> dict[str, Any]:
     path = _record_path(pr)
     if path.is_file():
         return json.loads(path.read_text())
     return _empty_record(pr)
 
 
+def _record_key(rec: dict[str, Any]) -> int | str:
+    """The on-disk key for a record: the PR number if assigned, else the
+    provisional id (branch-keyed session)."""
+    if rec.get("pr_number") is not None:
+        return int(rec["pr_number"])
+    pid = rec.get("provisional_id")
+    if not pid:
+        raise ValueError("record has neither pr_number nor provisional_id")
+    return str(pid)
+
+
 def save_record(rec: dict[str, Any]) -> Path:
     _recompute_totals(rec)
     LEDGER_DIR.mkdir(parents=True, exist_ok=True)
-    path = _record_path(rec["pr_number"])
+    path = _record_path(_record_key(rec))
     path.write_text(json.dumps(rec, indent=2, sort_keys=False) + "\n")
     return path
 
@@ -229,6 +265,73 @@ def bind_conversations(
         rec["build"]["conversation_ids"] = list(conversation_ids)
     save_record(rec)
     return rec
+
+
+def _resolve_pr_number_from_branch(branch: str, *, repo: str | None = None) -> int | None:
+    """Look up the GitHub PR number for a head branch via `gh` (None if unknown)."""
+    args = ["gh", "pr", "list", "--head", branch, "--state", "all",
+            "--json", "number", "--limit", "1"]
+    if repo:
+        args += ["--repo", repo]
+    try:
+        out = subprocess.check_output(args, text=True, stderr=subprocess.DEVNULL).strip()
+        data = json.loads(out or "[]")
+        return int(data[0]["number"]) if data else None
+    except Exception:  # noqa: BLE001 — gh missing / not authed / no match
+        return None
+
+
+def bind_pr(
+    provisional: str, *, pr_number: int | None = None,
+    branch: str | None = None, repo: str | None = None,
+) -> dict[str, Any]:
+    """Promote a provisional (branch-keyed) session record to `PR-<n>.json`.
+
+    The PR number only exists after `gh pr create` runs, so a session started
+    before that lives in `session-<slug>.json`. This renames it to the real
+    `PR-<n>.json`, preserving the captured build cost. If a `PR-<n>.json`
+    already exists (e.g. review cost was recorded by CI first), the provisional
+    build sessions + metadata are merged in and the existing review runs kept.
+    """
+    prov_path = _record_path(provisional)
+    if not prov_path.is_file():
+        prov_path = _record_path(_slug(provisional))
+    if not prov_path.is_file():
+        raise SystemExit(
+            f"bind-pr: no provisional session record for '{provisional}' "
+            f"(looked for {prov_path.name}). Did you start the session with "
+            f"start_pr_session.py --branch {provisional!r}?"
+        )
+    prov = json.loads(prov_path.read_text())
+    br = branch or prov.get("branch") or provisional
+    if pr_number is None:
+        pr_number = _resolve_pr_number_from_branch(br, repo=repo)
+    if pr_number is None:
+        raise SystemExit(
+            f"bind-pr: could not resolve a PR number for branch '{br}'. "
+            f"Open the PR first (`gh pr create`), then pass --pr <n> explicitly."
+        )
+
+    merged = load_record(int(pr_number))  # existing PR-<n>.json or a fresh record
+    for k in ("title", "requirement", "branch", "created_at", "session_started_at"):
+        if prov.get(k):
+            merged[k] = prov[k]
+    # The provisional record is where the build cost was captured — it wins.
+    if prov["build"].get("sessions") or not merged["build"].get("sessions"):
+        merged["build"] = prov["build"]
+    merged["pr_number"] = int(pr_number)
+    merged["provisional_id"] = None
+    out_path = save_record(merged)
+
+    # Remove the provisional record + its brief/launcher so the namespace is clean.
+    prov_path.unlink(missing_ok=True)
+    slug = _slug(prov.get("provisional_id") or br)
+    for sidecar in (LEDGER_DIR / f"session-{slug}-brief.md",
+                    LEDGER_DIR / f"session-{slug}-launch.html"):
+        sidecar.unlink(missing_ok=True)
+    print(f"bind-pr: {prov_path.name} → {out_path.name} (PR #{pr_number}, "
+          f"build ${merged['build']['cost_usd_total']:.2f})")
+    return merged
 
 
 def _session_row_from_event(e: dict[str, Any]) -> dict[str, Any]:
@@ -999,7 +1102,22 @@ def main(argv: list[str] | None = None) -> int:
     sy.add_argument("--repo", help="owner/name (defaults to the current gh repo)")
     sy.add_argument("--out", help="report output path (default: metrics/pr_cost/report.html)")
 
+    bp = sub.add_parser(
+        "bind-pr",
+        help="Promote a provisional branch-keyed session to PR-<n>.json once the "
+             "PR is actually opened (the number isn't known before `gh pr create`)",
+    )
+    bp.add_argument("--branch", required=True,
+                    help="The session's branch (its provisional key)")
+    bp.add_argument("--pr", type=int,
+                    help="Real PR number; omit to auto-resolve from the branch via gh")
+    bp.add_argument("--repo", help="owner/name (defaults to the current gh repo)")
+
     args = cli.parse_args(argv)
+
+    if args.cmd == "bind-pr":
+        bind_pr(args.branch, pr_number=args.pr, branch=args.branch, repo=args.repo)
+        return 0
 
     if args.cmd == "set-meta":
         rec = set_meta(args.pr, title=args.title, requirement=args.requirement,

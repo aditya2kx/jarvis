@@ -12,14 +12,22 @@
     "deletions": null
   },
   "build": {
-    "source": "cursor dashboard usage API (local session token; request->PR by time window)",
+    "source": "cursor_dashboard",
     "approximate": false,
     "attribution_mode": "branch_window",
     "session_started_at": null,
     "conversation_ids": [],
-    "sessions": [],
-    "tokens_total": 0,
-    "cost_usd_total": 0,
+    "sessions": [
+      {
+        "ts": "2026-06-04T18:52:31Z",
+        "model": "claude-opus-4-8",
+        "tokens": 220000,
+        "cost_usd": 0.22,
+        "note": null
+      }
+    ],
+    "tokens_total": 220000,
+    "cost_usd_total": 0.22,
     "window": {
       "start": "2026-06-04T18:50:08+00:00",
       "end": "2026-06-04T18:50:08+00:00"
@@ -33,7 +41,7 @@
     "run_count": 0
   },
   "totals": {
-    "tokens": 0,
-    "cost_usd": 0
+    "tokens": 220000,
+    "cost_usd": 0.22
   }
 }

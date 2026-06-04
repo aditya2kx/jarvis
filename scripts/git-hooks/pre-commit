@@ -10,16 +10,22 @@
 # an extra commit per push and either suppresses CI or duplicates every check).
 # So we capture the ledger locally and stage it into the author's own commit.
 #
-# Behavior: on a feature branch that already has an open PR, run
-# `pr_cost_ledger.py sync` (best-effort: capture build + review cost, regenerate
-# report.html) and `git add metrics/pr_cost/` so the refreshed ledger rides in
-# THIS commit. Never blocks the commit — a capture that isn't possible yet
-# (no PR, no scored commits, gh unauthed) is skipped silently. The only cost it
-# can't hold is the review run THIS push will trigger; that tail is captured by a
-# later commit's sync, or finalized at merge by pr-cost-finalize.yml.
+# Behavior: on a feature branch that already has an open PR, refresh the ledger
+# with the NON-DESTRUCTIVE surfaces only — `capture-review` (pull review costs
+# from posted PR comments; additive + idempotent) and `report` (regenerate
+# report.html) — then `git add metrics/pr_cost/` so the refreshed ledger rides in
+# THIS commit. Never blocks the commit; skipped silently when no PR exists yet.
 #
-# Safe to run on every commit: a no-op when nothing changed, and it only touches
-# metrics/pr_cost/. Set PR_COST_HOOK=0 to skip (e.g. a quick WIP commit).
+# IMPORTANT: the hook deliberately does NOT run `sync`/`capture-build`. Build cost
+# is recorded explicitly by the author (`record-build` from the dashboard, or
+# `capture-build` with proper session attribution). `capture-build`'s branch-window
+# fallback REPLACES the build sessions and would wipe a manual entry on every
+# commit (and can double-count parallel chats). So the hook only touches review +
+# report; build cost stays exactly as the author recorded it.
+#
+# The only cost it can't hold is the review run THIS push will trigger; that tail
+# is captured by a later commit's hook run, or finalized at merge by
+# pr-cost-finalize.yml. Set PR_COST_HOOK=0 to skip (e.g. a quick WIP commit).
 set -euo pipefail
 
 [ "${PR_COST_HOOK:-1}" = "0" ] && exit 0
@@ -36,10 +42,13 @@ command -v gh >/dev/null 2>&1 || exit 0
 pr="$(gh pr view "$branch" --json number -q .number 2>/dev/null || true)"
 [ -z "$pr" ] && exit 0
 
-echo "pr-cost: syncing ledger for PR #$pr into this commit…" >&2
-# Best-effort: never let a sync hiccup block the commit.
-python3 scripts/pr_cost_ledger.py sync --pr "$pr" >&2 2>&1 || \
-  echo "pr-cost: sync skipped (non-fatal)." >&2
+echo "pr-cost: refreshing review cost + report for PR #$pr into this commit…" >&2
+# Best-effort: never let a hiccup block the commit. Review capture is additive
+# (idempotent dedup); report regeneration is pure output. Neither touches build.
+python3 scripts/pr_cost_ledger.py capture-review --pr "$pr" >&2 2>&1 || \
+  echo "pr-cost: capture-review skipped (non-fatal)." >&2
+python3 scripts/pr_cost_ledger.py report >&2 2>&1 || \
+  echo "pr-cost: report skipped (non-fatal)." >&2
 
 # Fold any ledger/report changes into the commit being created.
 git add metrics/pr_cost/ 2>/dev/null || true

@@ -13,5 +13,5 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 chmod +x scripts/git-hooks/* 2>/dev/null || true
 git config core.hooksPath scripts/git-hooks
-echo "installed: core.hooksPath=scripts/git-hooks (pre-commit runs pr_cost_ledger.py sync)"
+echo "installed: core.hooksPath=scripts/git-hooks (pre-commit runs capture-review + report)"
 echo "uninstall: git config --unset core.hooksPath"

@@ -310,16 +310,19 @@ Commands:
   build step. `--pr <n>` for a single PR; `--out <path>` to override the destination.
 - **Required pre-commit hook (keeps the ledger in your own commits):** run
   `bash scripts/install-git-hooks.sh` once per clone / worktree (including cloud agents). It points
-  `core.hooksPath` at `scripts/git-hooks`; the `pre-commit` hook runs `pr_cost_ledger.py sync` for the
-  branch's PR and **auto-stages** `metrics/pr_cost/` into the commit you're making. So the ledger +
-  `report.html` ride in your own commits and land on `main` in the squash merge — no bot commit, no
-  CI push-back. This is the design the cost script itself documents ("the operator commits the
-  complete record once"). The hook never blocks a commit and is a no-op until the PR exists. Skip it
-  for a throwaway WIP commit with `PR_COST_HOOK=0 git commit …`. Undo with
-  `git config --unset core.hooksPath`.
+  `core.hooksPath` at `scripts/git-hooks`; the `pre-commit` hook runs the **non-destructive** ledger
+  surfaces — `capture-review` (pull review cost from posted PR comments; additive + idempotent) and
+  `report` (regenerate `report.html`) — and **auto-stages** `metrics/pr_cost/` into the commit you're
+  making. So the ledger rides in your own commits and lands on `main` in the squash merge — no bot
+  commit, no CI push-back. This is the design the cost script itself documents ("the operator commits
+  the complete record once"). The hook **does not** run `capture-build`/`sync`: build cost is recorded
+  explicitly by you (`record-build` from the dashboard, or `capture-build` with session attribution),
+  and the hook must not re-derive it (the branch-window fallback would overwrite your manual entry on
+  every commit). The hook never blocks and is a no-op until the PR exists. Skip a throwaway WIP commit
+  with `PR_COST_HOOK=0 git commit …`. Undo with `git config --unset core.hooksPath`.
   The **only** cost that can't be captured this way is the review run *this* push triggers (a commit
-  can't contain its own review cost). That tail is picked up by your next commit's sync, or finalized
-  at merge by `pr-cost-finalize.yml`.
+  can't contain its own review cost). That tail is picked up by your next commit, or finalized at
+  merge by `pr-cost-finalize.yml`.
 - **`PR cost gate` is a pure validator:** `pr-cost-gate.yml` only runs
   `validate --pr <n> --require-build` — it never writes to the repo. (An earlier version committed the
   ledger back to the PR branch from CI; that forced a second commit per push which either suppressed

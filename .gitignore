@@ -15,6 +15,7 @@ config.yaml
 
 # Local scratch / planning space — never ships to GitHub.
 Playground/
+!Playground/REQUIREMENTS.md
 # Dev chat transcripts dropped at the repo root for analysis.
 chat transcript*
 

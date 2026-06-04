@@ -403,17 +403,23 @@ Each Cursor agent turn re-reads the **entire conversation history** as cache-rea
 (billed at $0.50/M on Opus). Reusing a merged PR's thread drags its full history into every
 new turn. A fresh chat resets this counter to near-zero.
 
-**Rule:** for every new requirement/PR, **open a new Cursor chat** before writing the first
-line of code. The two ways to do this:
+**Rule:** for every new requirement/PR, **open a new Cursor chat in an isolated git worktree** before writing the first line of code.
 
-1. **Canvas button** — open `pr-cost.canvas.tsx`, scroll to *Start next requirement*, type the
-   requirement, and click **Open new chat for next PR**. The button dispatches a `newComposerChat`
-   action that opens a new IDE composer tab pre-seeded with the brief and these routing rules.
-2. **CLI** — `python3 scripts/start_pr_session.py --branch <branch> --requirement "..." --open`
-   writes `metrics/pr_cost/session-<slug>-brief.md`, stamps **`session_started_at`**, opens
-   **`session-<slug>-launch.html`** in your browser (click the button to open a seeded chat). Paste
-   the seed message if the button fails. **Don't guess a PR number** — run `bind-pr --branch <branch>`
-   after `gh pr create` to attach the real one. (`--pr <n>` is still accepted for an already-open PR.)
+**Preferred — one command (worktree + session + Cursor handoff):**
+
+```bash
+python3 scripts/new_requirement.py --requirement "<what to build>" [--branch fix/<slug>] [--requirement-id N]
+```
+
+Creates `../jarvis-wt-<slug>/` (sibling worktree), stamps a branch-keyed cost session, opens Cursor on that folder in a **new window**, and seeds the Agent chat. **Do not implement the requirement in the chat that ran this command.**
+
+**Alternatives:**
+
+1. **Canvas button** — open `pr-cost.canvas.tsx`, scroll to *Start next requirement*, type the requirement, and click **Open new chat for next PR**.
+2. **Already in a worktree** — `python3 scripts/start_pr_session.py --branch <branch> --requirement "…" --open-cursor`
+3. **Browser launcher only** — add `--open` instead of `--open-cursor`; open the worktree folder in Cursor first, then click the launcher button.
+
+**Don't guess a PR number** — run `bind-pr --branch <branch>` after `gh pr create`.
 
 Do **not** continue the previous PR's Composer thread. Do not use `/clear` as a substitute —
 it clears the display but the history is still in memory and still billed.
@@ -466,17 +472,22 @@ and estimate the Sonnet equivalent cost, so you can see the saving per PR.
 
 ### 4. Session start checklist
 
-Before opening a new Cursor chat for a new requirement, run (keying by **branch**, not a guessed
-PR number — that number doesn't exist until `gh pr create`):
+When the user shares a **new requirement**, run (from the shared repo — do not checkout a new branch there):
 
 ```bash
-python3 scripts/start_pr_session.py --branch <branch> --requirement "<brief requirement text>"
-# …after you open the PR:
-python3 scripts/pr_cost_ledger.py bind-pr --branch <branch>   # promotes session-<slug>.json → PR-<n>.json
+python3 scripts/new_requirement.py --requirement "<brief requirement text>"
+# optional: --branch fix/my-slug  --requirement-id <ID from REQUIREMENTS.md>
 ```
 
-Or use the canvas button. Either way, the model routing rules and context discipline rules are
-pre-seeded into the new chat, so you don't have to re-state them every time.
+Switch to the new Cursor window it opens; implement only there. After `gh pr create` in that worktree:
+
+```bash
+python3 scripts/pr_cost_ledger.py bind-pr --branch <branch>
+python3 scripts/pr_cost_ledger.py sync --pr <n>
+git add metrics/pr_cost/ && git commit -m "chore(cost): sync PR #<n> ledger"
+```
+
+When the worktree already exists, `cd` into it and use `start_pr_session.py --open-cursor` instead.
 
 ---
 

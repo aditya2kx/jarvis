@@ -97,9 +97,13 @@ def update_requirement_status(
     _REQUIREMENTS_MD.write_text(text, encoding="utf-8")
     return True
 
+# Default Agent model for new-requirement handoffs (matches Cursor usage API slug).
+# Sonnet 4.6 medium thinking — CONTRIBUTING § Cost-efficiency playbook default.
+DEFAULT_HANDOFF_MODEL = "claude-4.6-sonnet-medium-thinking"
+
 # Model routing guidance (keep in sync with CONTRIBUTING.md § Cost-efficiency playbook).
 _ROUTING_REMINDER = """Model routing (CONTRIBUTING § Cost-efficiency playbook):
-  • Sonnet 4.6     — DEFAULT for feature code, refactors, most edits
+  • Sonnet 4.6 medium thinking — DEFAULT for new chats (handoff pre-selects this model)
   • Opus 4.8 med   — Hard multi-file reasoning, subtle bugs, architecture decisions
   • Opus 4.8 high  — Only when genuinely stuck; adds ~30% output tokens vs medium
   • Composer 2.5   — Mechanical: renames, test scaffolding, doc edits, log reading
@@ -254,6 +258,10 @@ git add metrics/pr_cost/ && git commit -m "chore(cost): sync PR #<n> ledger"
 ## Session started (cost attribution anchor)
 `{session_started}`
 
+## Default model
+**Sonnet 4.6 medium thinking** (`{DEFAULT_HANDOFF_MODEL}`) — the handoff deeplink
+pre-selects this. Stay on Sonnet for feature work; escalate to Opus only when stuck.
+
 Open a **new** Cursor chat for this requirement, then implement. Build cost is
 attributed to chat space(s) with AI edits after this timestamp (see
 `pr_cost_ledger.py sync`).
@@ -297,20 +305,91 @@ def seed_prompt(key: int | str, *, brief_rel: str, requirement: str | None = Non
         f"Read `{brief_rel}` first (requirement, branch, model-routing, cost gate). "
         f"Acknowledge those rules from the brief, then implement the requirement — "
         f"do not ask what to build; it is already specified in the brief. "
-        f"Do NOT assume a PR number; it is assigned only when you run `gh pr create`."
+        f"Do NOT assume a PR number; it is assigned only when you run `gh pr create`. "
+        f"Use **Sonnet 4.6 medium thinking** for this session (handoff should pre-select it)."
     )
 
 
-def make_deeplink(text: str) -> str:
-    """cursor:// deeplink that opens a new IDE chat pre-seeded with text."""
+def make_deeplink(
+    text: str,
+    *,
+    mode: str = "agent",
+    model: str | None = DEFAULT_HANDOFF_MODEL,
+) -> str:
+    """cursor:// deeplink that opens a new IDE chat pre-seeded with text.
+
+    ``mode=agent`` and ``model=…`` are Cursor-specific extensions beyond the
+    documented ``text`` param; the deeplink handler in Cursor 3.6+ honors them
+    for Agent chat handoffs (Sonnet 4.6 medium by default).
+    """
     encoded = urllib.parse.quote(text, safe="")
-    link = f"cursor://anysphere.cursor-deeplink/prompt?text={encoded}&mode=agent"
+    link = f"cursor://anysphere.cursor-deeplink/prompt?text={encoded}&mode={mode}"
+    if model:
+        link += f"&model={urllib.parse.quote(model, safe='')}"
     if len(link) > _MAX_DEEPLINK_CHARS:
         raise ValueError(
             f"deeplink too long ({len(link)} chars > {_MAX_DEEPLINK_CHARS}); "
             "use seed_prompt() + brief file instead of embedding the full brief"
         )
     return link
+
+
+_CURSOR_CANDIDATES = (
+    "cursor",
+    "/Applications/Cursor.app/Contents/Resources/app/bin/cursor",
+)
+
+
+def find_cursor_cli() -> Path | None:
+    """Locate the Cursor CLI (``cursor`` on PATH or macOS app bundle)."""
+    for candidate in _CURSOR_CANDIDATES:
+        p = Path(candidate)
+        if p.is_file():
+            return p
+        try:
+            out = subprocess.check_output(
+                ["which", candidate], text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            if out:
+                return Path(out)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+    return None
+
+
+def open_cursor_handoff(
+    *,
+    folder: Path,
+    deeplink: str,
+    launch_html: Path,
+    delay_sec: float = 3.5,
+) -> None:
+    """Open ``folder`` in a new Cursor window, then seed Agent chat + launcher backup.
+
+    Order matters: open the worktree folder **first**, then fire the deeplink so
+    the new chat attaches to the correct workspace (not whichever window was focused).
+    """
+    import time
+
+    cursor = find_cursor_cli()
+    folder = folder.resolve()
+    launch_html = launch_html.resolve()
+
+    if cursor is None:
+        print(
+            "⚠️  Cursor CLI not found — open the folder manually, then use the launcher:\n"
+            f"    {folder}\n"
+            f"    {launch_html}"
+        )
+        subprocess.run(["open", str(launch_html)], check=False)
+        return
+
+    print(f"Opening Cursor → {folder}")
+    subprocess.Popen([str(cursor), "-n", str(folder)])
+    time.sleep(delay_sec)
+    print("Seeding Agent chat (approve Cursor's deeplink dialog if prompted)…")
+    subprocess.run(["open", deeplink], check=False)
+    subprocess.run(["open", str(launch_html)], check=False)
 
 
 def write_launch_html(
@@ -369,6 +448,12 @@ def main(argv: list[str] | None = None) -> int:
                                       "provisional key that `bind-pr` later maps to the real PR number.")
     cli.add_argument("--open", action="store_true",
                      help="Open the launcher HTML in the default browser (macOS: use the button there)")
+    cli.add_argument("--open-cursor", action="store_true",
+                     help="Open this folder in a new Cursor window + seed Agent chat (macOS)")
+    cli.add_argument("--cursor-delay", type=float, default=3.5,
+                     help="Seconds to wait before deeplink when using --open-cursor")
+    cli.add_argument("--model", default=DEFAULT_HANDOFF_MODEL,
+                     help=f"Agent model slug for the handoff deeplink (default: {DEFAULT_HANDOFF_MODEL})")
     args = cli.parse_args(argv)
 
     # The PR number is assigned by GitHub at `gh pr create` and parallel chats
@@ -401,13 +486,20 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"⚠️  Requirement #{args.requirement_id} not found in REQUIREMENTS.md — update manually")
 
-    deeplink = make_deeplink(seed)
+    deeplink = make_deeplink(seed, model=args.model)
     launch_path = write_launch_html(key, deeplink, brief_path=brief_path, seed_text=seed)
     launch_uri = launch_path.resolve().as_uri()
     print(f"Launcher → {launch_path}")
     print(f"  Open in browser: {launch_uri}\n")
     if args.open:
         subprocess.run(["open", str(launch_path)], check=False)
+    if args.open_cursor:
+        open_cursor_handoff(
+            folder=Path.cwd(),
+            deeplink=deeplink,
+            launch_html=launch_path,
+            delay_sec=args.cursor_delay,
+        )
     print("─── FIRST MESSAGE — paste into New Chat if you skip the launcher button ───")
     print("(Do NOT use a placeholder like 'Test PR N'; use this text verbatim.)\n")
     print(seed)

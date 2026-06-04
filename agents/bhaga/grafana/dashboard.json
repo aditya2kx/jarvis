@@ -4,8 +4,9 @@
   "description": "Daily sales, labor, and tip allocation metrics for BHAGA (Palmetto).",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 3,
+  "version": 4,
   "refresh": "1h",
+  "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
   "timepicker": {},
   "tags": ["bhaga", "palmetto", "analytics"],
@@ -58,7 +59,7 @@
         {
           "refId": "A",
           "rawQuery": true,
-          "rawSql": "SELECT TIMESTAMP(date_local) AS time, gross_sales_cents / 100.0 AS gross_sales FROM `jarvis-bhaga-prod.bhaga.vw_daily_sales` WHERE date_local >= DATE('$date_from') ORDER BY date_local",
+          "rawSql": "SELECT TIMESTAMP(date_local, 'America/Chicago') AS time, gross_sales_cents / 100.0 AS gross_sales FROM `jarvis-bhaga-prod.bhaga.vw_daily_sales` WHERE date_local >= DATE('$date_from') ORDER BY date_local",
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga"
@@ -85,7 +86,7 @@
         {
           "refId": "B",
           "rawQuery": true,
-          "rawSql": "SELECT TIMESTAMP(date_local) AS time, tip_rate FROM `jarvis-bhaga-prod.bhaga.vw_daily_sales` WHERE date_local >= DATE('$date_from') ORDER BY date_local",
+          "rawSql": "SELECT TIMESTAMP(date_local, 'America/Chicago') AS time, tip_rate FROM `jarvis-bhaga-prod.bhaga.vw_daily_sales` WHERE date_local >= DATE('$date_from') ORDER BY date_local",
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga"
@@ -127,7 +128,7 @@
         {
           "refId": "C",
           "rawQuery": true,
-          "rawSql": "SELECT TIMESTAMP(date) AS time, labor_pct FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date",
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, labor_pct FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date",
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga"
@@ -154,7 +155,7 @@
         {
           "refId": "D",
           "rawQuery": true,
-          "rawSql": "SELECT TIMESTAMP(date) AS time, orders_per_labor_hour FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date",
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, orders_per_labor_hour FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date",
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga"
@@ -188,7 +189,7 @@
         {
           "refId": "E",
           "rawQuery": true,
-          "rawSql": "SELECT TIMESTAMP(date) AS time, SUM(day_pool) AS tip_pool FROM `jarvis-bhaga-prod.bhaga.model_tip_alloc_daily` WHERE date >= DATE('$date_from') GROUP BY date ORDER BY date",
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, SUM(day_pool) AS tip_pool FROM `jarvis-bhaga-prod.bhaga.model_tip_alloc_daily` WHERE date >= DATE('$date_from') GROUP BY date ORDER BY date",
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga"

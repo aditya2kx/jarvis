@@ -1,5 +1,30 @@
 # Jarvis Build Progress
 
+## 2026-06-04 — Cost ledger via pre-commit hook; PR cost gate is now a pure validator (feat/cost-ledger-precommit-hook)
+
+Reverted the commit-back approach (below) — it was the root cause of duplicate CI and churn. The
+commit-back pushed a second `chore(cost):` commit per push, which forced a bad trade-off:
+`GITHUB_TOKEN` push → no CI on the cost commit → auto-merge blocked; `ADMIN_PAT` push → CI fires but
+`cancel-in-progress: true` kills the in-flight run on the real commit and starts a second round on the
+cost commit → every required check shows up twice and the "real" CI runs on a bot commit. The cost
+script's own docstring already documented the correct design: *"the operator commits the complete
+record once"* — not a bot pushing from CI.
+
+**Fix:**
+- **`scripts/git-hooks/pre-commit`** (new) — runs `pr_cost_ledger.py sync` and **auto-stages**
+  `metrics/pr_cost/` into the author's own commit, so the ledger + `report.html` land on `main` in the
+  squash merge with no CI push-back. Never blocks; no-op until the PR exists. Replaces the old
+  block-and-retry `pre-push` hook (removed).
+- **`pr-cost-gate.yml`** — stripped to a pure validator (`validate --require-build`); no
+  `contents: write`, no PAT, no commit-back, no identity/fetch hacks.
+- **`sandbox-e2e.yml` / `claude-review.yml`** — removed the `chore(cost):` skip steps; CI runs fully
+  on every push because there are no more automatic cost commits to skip.
+- **`pr-cost-finalize.yml`** — unchanged (post-merge analysis comment).
+- **`pr-workflow.mdc`** — added: check for open PRs before creating a new one; install the cost hook;
+  post-merge `git pull` + artifact spot-check (the main working copy was left 2 PRs stale after #32/#34).
+- Tradeoff (inherent to any design): a push's own review cost can't be in the commit that triggered
+  it; it's captured by the next commit's sync or finalized at merge.
+
 ## 2026-06-04 — Cost ledger commit-back on every push (feat/cost-commit-on-push)
 
 Fixed the broken `pr-cost-finalize.yml` post-merge push. Root cause: the repo ruleset

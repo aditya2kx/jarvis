@@ -616,9 +616,10 @@ It runs automatically on every PR via `.github/workflows/sandbox-e2e.yml` (and
 (full e2e still runs only on `pull_request` when `SANDBOX_E2E_ENABLED=true`). See
 `CONTRIBUTING.md` § Enabling enforcement.
 
-**Cost-commit skip:** `sandbox-e2e.yml` detects commits whose message starts with `chore(cost):`
-(automatic cost-ledger commits from `pr-cost-gate.yml`) and skips the heavy e2e steps. The job
-still runs and reports success so branch protection clears. No sandbox slot is leased on cost commits.
+**Cost ledger rides in your own commits:** the per-PR cost ledger (`metrics/pr_cost/`) is kept current
+by the `pre-commit` hook (`bash scripts/install-git-hooks.sh` once per clone), which `sync`s and
+auto-stages it into your commits. CI does **not** push a cost commit — `pr-cost-gate.yml` is a pure
+validator. So every CI run is on real code and there are no automatic `chore(cost):` commits to skip.
 
 Run it manually with ADC + palmetto OAuth:
 

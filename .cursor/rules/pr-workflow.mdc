@@ -12,15 +12,21 @@ Do NOT ask whether to babysit — just do it.
 
 ## The full lifecycle every time
 
-1. **Create PR** → `gh pr create …`
-2. **Seed cost ledger** → `pr_cost_ledger.py set-meta --pr N --branch <branch>` then `sync --pr N`
-3. **Babysit immediately** — read `/Users/adiniekkajj/.cursor/skills-cursor/babysit/SKILL.md` and follow it:
+0. **Check for open PRs first** → `gh pr list --state open`. If a PR from this session is still open, push the new changes to **that** branch instead of opening a second PR. Never have two in-flight PRs from the same session.
+1. **Install the cost hook (once per clone/worktree)** → `bash scripts/install-git-hooks.sh`. The `pre-commit` hook syncs and auto-stages the cost ledger into your own commits, so it lands on `main` in the squash merge. There is no CI cost commit.
+2. **Create PR** → `gh pr create …`
+3. **Seed cost ledger** → `pr_cost_ledger.py set-meta --pr N --branch <branch>`, record build cost (`record-build` / `capture-build`), then commit `metrics/pr_cost/` so `validate --require-build` passes.
+4. **Babysit immediately** — read `/Users/adiniekkajj/.cursor/skills-cursor/babysit/SKILL.md` and follow it:
    - Resolve merge conflicts (take ours/theirs intelligently; never blindly prefer one side)
    - Wait for CI; fix any failures within this PR's scope
    - Triage review comments (Claude review bot + Adi's comments)
    - Loop until all checks are green and no open blocking comments remain
-4. **Arm auto-merge** → `gh pr merge N --auto --squash` once the PR is approved and green
-5. **Confirm merged** → verify `state == MERGED` before ending the session
+5. **Arm auto-merge** → `gh pr merge N --auto --squash` once the PR is approved and green
+6. **Confirm merged** → verify `state == MERGED` before ending the session
+7. **Post-merge pull + verify** — after confirmed merged:
+   - `git -C /Users/adiniekkajj/Documents/build-workspace/jarvis pull` to bring the squash commit into the main working copy
+   - Spot-check that expected artifacts landed: `metrics/pr_cost/report.html` shows the new PR, doc changes appear, nothing was omitted from the squash
+   - Report what SHA landed. Do NOT skip — the main working copy is what Adi reads; leaving it stale is a miss.
 
 ## What "babysitting" is NOT
 
@@ -31,5 +37,6 @@ Do NOT ask whether to babysit — just do it.
 ## Reminders
 
 - `pr_cost_ledger.py validate --pr N --require-build` must pass before merge
+- The cost ledger lands via **your own commits** (pre-commit hook), never a CI bot commit — `pr-cost-gate.yml` only validates
 - Always resolve `CHANGES_REQUESTED` reviews — reply if the concern is already addressed on the branch
 - The `auto-merge-on-approval` workflow (`.github/workflows/auto-merge-on-approval.yml`) arms `--auto` when Adi approves, but babysitting still needs to fix CI first

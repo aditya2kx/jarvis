@@ -179,8 +179,8 @@ work around them.
 ### 1. The enterprise pre-push hook blocks the push
 
 On the operator's machine a **machine-global DoorDash push-protection hook** runs on every `git push`.
-For this **personal** repo (`aditya2kx/jarvis`, pushed via the `github.com-personal` SSH alias with
-personal `aditya.2ky@gmail.com` creds) it refuses the push with:
+For this repo (`aditya2kx/jarvis`, pushed by the `jarvis-agent-bot328` bot account via HTTPS with
+`GH_TOKEN` loaded from Keychain) it refuses the push with:
 
 ```
 🚨 SECURITY BLOCK: PREVENTING POTENTIAL DATA LEAK 🚨
@@ -207,14 +207,21 @@ it is **not** a credential problem and **not** evidence of an actual leak. The s
 > the control is understood, the repo is personal, and the bypass is pre-authorized for non-secret
 > diffs. Stalling just blocks the work.
 
-### 2. `gh pr create` fails with "must be a collaborator"
+### 2. `gh pr create` runs as the bot account
 
-The `gh` CLI may be active as a different account than the repo owner. This repo is owned by
-**`aditya2kx`**, so switch first:
+All agent GitHub operations use **`jarvis-agent-bot328`** — the dedicated bot collaborator on this
+repo. `GH_TOKEN` is always pre-loaded from Keychain in `~/.zshrc` so `gh` picks it up automatically.
+No `gh auth switch` is needed; simply run:
 
 ```bash
-gh auth switch --user aditya2kx     # repo owner; creating PRs as another account fails
-gh pr create --base main --fill     # then fill the template
+gh pr create --base main --fill
+```
+
+If you need to perform a GitHub operation as **your personal account** (`aditya2kx`), use the alias:
+
+```bash
+gh-adi pr list          # or any other gh subcommand
+gh-adi pr merge <n>     # only you (aditya2kx) can approve + merge
 ```
 
 ## The review bot (Claude Sonnet)

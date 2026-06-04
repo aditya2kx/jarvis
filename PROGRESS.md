@@ -10,6 +10,16 @@
 | Asked user what could be self-checked (county, portal availability) | `chitra-playbook.md` Step 4 triage table | Derive from address/portal before asking |
 | Validation done once at end instead of after each action | `orchestrator.py` `upload_and_validate()` | After each upload/folder creation, re-inventory and diff |
 
+## 2026-06-03 — Dedicated bot account for all agent GitHub operations
+
+**Decision:** All Jarvis agent GitHub operations now run as `jarvis-agent-bot328` (not `aditya2kx`).
+
+- `jarvis-agent-bot328` is a Write collaborator on `aditya2kx/jarvis`; its classic PAT (`repo` + `workflow` scopes, no expiry) is stored in Keychain under `github-bot-pat`.
+- `GH_TOKEN` in `~/.zshrc` always resolves to the bot PAT — every `gh` / `git push` from an agent session appears on GitHub as the bot.
+- **Server-side merge lock:** `main` branch protection requires 1 approval + `require_last_push_approval: true`. Since the bot is always the last pusher it cannot approve its own PRs; only `aditya2kx` can approve → merge unlocks.
+- **Aliases for operator personal use:** `gh-adi` / `git-adi` (personal account), `gh-jarvis` / `git-jarvis` (bot, explicit).
+- Updated: `~/.zshrc`, `~/.gitconfig` (bot local config for jarvis repo), `CONTRIBUTING.md`, `RUNBOOK.md`, `jarvis.md` (Conventions + Hard Lesson #20).
+
 ## BHAGA Agent (Tip Allocation & Payroll Prep)
 
 ### 2026-06-02 — Revive ADP-paid reconciliation + guard against migration regressions

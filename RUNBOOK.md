@@ -7,7 +7,7 @@ GitHub + GCP access** — no dependency on the old laptop, its Keychain, or its 
 - **GCP project:** `jarvis-bhaga-prod`
 - **Region:** `us-central1`
 - **Store:** `palmetto` (Palmetto Superfoods, Austin) — `AK JUICY BOWLS LLC`
-- **Repo:** `git@github.com-personal:aditya2kx/jarvis.git` (branch `main`)
+- **Repo:** `https://github.com/aditya2kx/jarvis` (branch `main`; agent pushes via `jarvis-agent-bot328` HTTPS, PAT in Keychain)
 
 ---
 
@@ -331,7 +331,8 @@ Before wiping the laptop, confirm ALL of the following are captured online / off
 - [ ] **Credentials in an independent password manager** (ADP, Square, Google `palmetto`, ClickUp,
       all Slack tokens) — NOT just the macOS Keychain. See §7.
 - [ ] You can authenticate `gcloud` from a fresh machine and see project `jarvis-bhaga-prod`.
-- [ ] You have GitHub access to `aditya2kx/jarvis` (push to `main` triggers deploy).
+- [ ] `jarvis-agent-bot328` PAT is in Keychain (`security find-generic-password -s github-bot-pat -a jarvis-agent-bot328 -w`). This bot is a Write collaborator on the repo and is used for all agent pushes and PRs.
+- [ ] You (as `aditya2kx`) have GitHub access to approve and merge PRs — use `gh-adi` alias in terminal. Bot pushes; you approve + merge.
 - [ ] WIF secrets (`WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`) are configured in the repo (they are; no
       laptop dependency).
 - [ ] `bhaga-nightly` scheduler is `ENABLED` and the webhook `/health` returns OK.
@@ -356,11 +357,11 @@ Only after every box is checked is the laptop safe to decommission.
 3. **No PII / secrets in git.** Credentials live in Secret Manager (§7). Sheet IDs / emails live in
    the store profile and docs — see the git-hook note below.
 4. **Corporate pre-push hook (`--no-verify`).** A machine-global DoorDash pre-push hook scans pushes
-   for "potential data leaks" (sheet IDs, email addresses) and can block a push to this **personal**
-   repo (`aditya2kx/jarvis`, pushed with personal `aditya.2ky@gmail.com` creds — not DoorDash). It is
-   a generic security control, **not** a credential problem. When a push is blocked solely by this
-   hook and the diff contains only non-secret config (sheet IDs, the operator's own email),
-   `git push --no-verify` is the sanctioned bypass. Do **not** `--no-verify` to push actual secrets.
+   for "potential data leaks" (sheet IDs, email addresses) and can block a push to this repo
+   (pushed as `jarvis-agent-bot328` via HTTPS — not DoorDash). It is a generic security control,
+   **not** a credential problem. When a push is blocked solely by this hook and the diff contains
+   only non-secret config (sheet IDs, the operator's own email), `git push --no-verify` is the
+   sanctioned bypass. Do **not** `--no-verify` to push actual secrets.
 5. **Keep docs in lock-step (the reason this repo stays portable).** Any behavior change updates the
    matching doc in the **same** change. Targets: pipeline/sheets/secrets/scheduler → this file; a
    script or extension recipe → `agents/bhaga/scripts/README.md`; an invariant → `.cursor/rules/bhaga.md`;

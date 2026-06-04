@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Start a fresh cost-tracked Cursor session for a PR or new requirement.
 
+Also updates Playground/REQUIREMENTS.md — marks the linked requirement as
+🔄 In Progress when --requirement-id is supplied.
+
 The single thing to run before opening a new Cursor chat for a requirement:
   1. Creates/updates the cost ledger meta for the PR.
   2. Writes a brief Markdown scaffold (metrics/pr_cost/PR-<n>-brief.md) with
@@ -26,6 +29,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import html
+import re
 import subprocess
 import sys
 import urllib.parse
@@ -33,6 +37,65 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import pr_cost_ledger as L
+
+_REQUIREMENTS_MD = Path(__file__).parent.parent / "Playground" / "REQUIREMENTS.md"
+
+# Status emoji used in the requirements table
+_STATUS_PENDING     = "🔲 Pending"
+_STATUS_IN_PROGRESS = "🔄 In Progress"
+_STATUS_DONE        = "✅ Done"
+_STATUS_P0          = "🔴 P0"
+
+
+def _req_status_line_pattern(req_id: int | str) -> re.Pattern:
+    """Match a table row for the given requirement ID."""
+    return re.compile(
+        r"^(\| *(?:✅ Done|🔄 In Progress|🔲 Pending|🔴 P0) *\| *"
+        + re.escape(str(req_id))
+        + r" *\|.*)",
+        re.MULTILINE,
+    )
+
+
+def update_requirement_status(
+    req_id: int | str,
+    new_status: str,
+    pr: int | None = None,
+) -> bool:
+    """Update a requirement row's status in REQUIREMENTS.md.
+
+    Returns True if a row was found and updated, False if not found.
+    """
+    if not _REQUIREMENTS_MD.exists():
+        return False
+    text = _REQUIREMENTS_MD.read_text(encoding="utf-8")
+    pattern = _req_status_line_pattern(req_id)
+    match = pattern.search(text)
+    if not match:
+        return False
+    old_row = match.group(1)
+    # Replace just the status cell (first pipe-delimited column after leading |)
+    new_row = re.sub(
+        r"^(\| *)(?:✅ Done|🔄 In Progress|🔲 Pending|🔴 P0)( *\|)",
+        rf"\g<1>{new_status}\g<2>",
+        old_row,
+    )
+    # If a PR number is provided, append it to the PR(s) column if not already there
+    if pr is not None:
+        # PR(s) is the 4th column (index 3 in split by |)
+        cols = new_row.split("|")
+        if len(cols) > 4:
+            pr_cell = cols[4].strip()
+            pr_ref = f"#{pr}"
+            if pr_ref not in pr_cell:
+                if pr_cell in ("", "—"):
+                    cols[4] = f" {pr_ref} "
+                else:
+                    cols[4] = f" {pr_cell}, {pr_ref} "
+                new_row = "|".join(cols)
+    text = text[: match.start()] + new_row + text[match.end():]
+    _REQUIREMENTS_MD.write_text(text, encoding="utf-8")
+    return True
 
 # Model routing guidance (keep in sync with CONTRIBUTING.md § Cost-efficiency playbook).
 _ROUTING_REMINDER = """Model routing (CONTRIBUTING § Cost-efficiency playbook):
@@ -220,6 +283,8 @@ def main(argv: list[str] | None = None) -> int:
     cli.add_argument("--pr", type=int, required=True,
                      help="PR number (creates the ledger record if it doesn't exist yet)")
     cli.add_argument("--requirement", help="Requirement text (overrides what's in the ledger)")
+    cli.add_argument("--requirement-id", type=str, dest="requirement_id",
+                     help="ID from Playground/REQUIREMENTS.md to mark as 🔄 In Progress")
     cli.add_argument("--title", help="PR title (optional; fetched from gh if omitted)")
     cli.add_argument("--branch", help="Branch name (optional; fetched from gh if omitted)")
     cli.add_argument("--open", action="store_true",
@@ -234,6 +299,15 @@ def main(argv: list[str] | None = None) -> int:
     req = args.requirement or rec.get("requirement") or rec.get("title") or ""
     seed = seed_prompt(args.pr, brief_rel=brief_rel, requirement=req or None)
     print(f"\nBrief written → {brief_path}\n")
+
+    if args.requirement_id:
+        updated = update_requirement_status(
+            args.requirement_id, _STATUS_IN_PROGRESS, pr=args.pr
+        )
+        if updated:
+            print(f"Requirements tracker → #{args.requirement_id} marked 🔄 In Progress (PR #{args.pr})")
+        else:
+            print(f"⚠️  Requirement #{args.requirement_id} not found in REQUIREMENTS.md — update manually")
 
     deeplink = make_deeplink(seed)
     launch_path = write_launch_html(args.pr, deeplink, brief_path=brief_path, seed_text=seed)

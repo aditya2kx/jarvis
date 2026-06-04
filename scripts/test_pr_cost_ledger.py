@@ -253,7 +253,7 @@ class TestPrCostLedger(unittest.TestCase):
     def test_sync_is_tolerant_and_writes_report(self):
         # Both capture surfaces unavailable (new branch / no comments) must not be
         # fatal — sync still regenerates the report from committed data.
-        L.set_meta(9, title="t9")
+        L.set_meta(9, title="t9", merged_at="2026-06-01T00:00:00Z")
         L.record_build_session(9, ts="2026-01-01T00:00:00Z", tokens=1000, cost_usd=0.5, model="m")
         out = Path(self._tmpdir.name) / "report.html"
         with patch.object(L, "capture_build", side_effect=SystemExit("no window")), \
@@ -264,9 +264,9 @@ class TestPrCostLedger(unittest.TestCase):
         self.assertEqual(rec["pr_number"], 9)
 
     def test_report_writes_file_for_all_prs(self):
-        L.set_meta(3, title="t3")
+        L.set_meta(3, title="t3", merged_at="2026-06-01T00:00:00Z")
         L.record_build_session(3, ts="2026-01-01T00:00:00Z", tokens=1_000_000, cost_usd=2.0, model="claude-opus-4-8")
-        L.set_meta(4, title="t4")
+        L.set_meta(4, title="t4", merged_at="2026-06-02T00:00:00Z")
         L.record_build_session(4, ts="2026-01-02T00:00:00Z", tokens=500_000, cost_usd=1.0, model="composer-2.5")
         out = Path(self._tmpdir.name) / "report.html"
         self.assertEqual(L.main(["report", "--out", str(out)]), 0)
@@ -376,6 +376,72 @@ class TestPrCostLedger(unittest.TestCase):
         L.set_meta(pr, session_started_at="2026-06-01T10:00:00Z")
         rec = L.bind_conversations(pr, conversation_ids=["conv-test-uuid"])
         self.assertEqual(rec["build"]["conversation_ids"], ["conv-test-uuid"])
+
+    def test_dedup_sessions_keeps_one_owner(self):
+        shared = {
+            "ts": "2026-06-04T03:14:12.146000+00:00",
+            "model": "claude-4.6-sonnet-medium-thinking",
+            "tokens": 1000,
+            "cost_usd": 0.9745,
+        }
+        for pr, anchor in ((21, "2026-06-04T02:00:00Z"), (23, "2026-06-04T03:10:00Z")):
+            rec = L._empty_record(pr)
+            rec["pr_number"] = pr
+            rec["session_started_at"] = anchor
+            rec["build"]["sessions"] = [dict(shared)]
+            L.save_record(rec)
+        result = L.dedup_sessions()
+        self.assertEqual(result["duplicates"], 1)
+        owners = []
+        for pr in (21, 23):
+            sessions = L.load_record(pr)["build"]["sessions"]
+            if sessions:
+                owners.append(pr)
+        self.assertEqual(owners, [23])
+
+    def test_validate_flags_cross_pr_duplicate_sessions(self):
+        sess = {"ts": "2026-06-01T12:00:00Z", "model": "m", "tokens": 1, "cost_usd": 1.0}
+        for pr in (40, 41):
+            L.set_meta(pr, title=f"t{pr}", requirement="r")
+            rec = L.load_record(pr)
+            rec["build"]["sessions"] = [dict(sess)]
+            L.save_record(rec)
+        ok, problems = L.validate(40)
+        self.assertFalse(ok)
+        self.assertTrue(any("PR #41" in p for p in problems))
+
+    def test_merged_only_report_excludes_closed_pr(self):
+        merged = L._empty_record(50)
+        merged["pr_number"] = 50
+        merged["title"] = "merged"
+        merged["merged_at"] = "2026-06-01T00:00:00Z"
+        L.save_record(merged)
+        closed = L._empty_record(51)
+        closed["pr_number"] = 51
+        closed["title"] = "closed"
+        closed["merged_at"] = None
+        L.save_record(closed)
+        with patch.object(L, "_fetch_gh_pr_meta", return_value={"state": "CLOSED", "merged_at": None}):
+            records = L._records_for_report()
+        self.assertEqual([r["pr_number"] for r in records], [50])
+
+    def test_backfill_titles_from_gh(self):
+        L.set_meta(60, title=None, branch=None)
+        with patch.object(
+            L, "_fetch_gh_pr_meta",
+            return_value={
+                "title": "From GitHub",
+                "branch": "feat/x",
+                "created_at": "2026-06-01T00:00:00Z",
+                "merged_at": "2026-06-02T00:00:00Z",
+                "state": "MERGED",
+            },
+        ):
+            updated = L.backfill_titles(prs=[60])
+        self.assertEqual(updated, [60])
+        rec = L.load_record(60)
+        self.assertEqual(rec["title"], "From GitHub")
+        self.assertEqual(rec["branch"], "feat/x")
 
     def test_validate_rejects_wide_manual_window(self):
         pr = 98

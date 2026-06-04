@@ -48,6 +48,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -201,6 +202,180 @@ def _recompute_totals(rec: dict[str, Any]) -> None:
 
 
 # ── mutation helpers (used by CLI + post_claude_review_cost) ─────────
+
+def _session_key(session: dict[str, Any]) -> tuple[str, float]:
+    """Stable identity for a build session row (ts + cost)."""
+    ts = session.get("ts") or ""
+    cost = round(float(session.get("cost_usd") or 0), 4)
+    return (str(ts), cost)
+
+
+def _iso_to_ms(iso: str | None) -> int | None:
+    if not iso:
+        return None
+    import cursor_usage  # noqa: PLC0415
+    try:
+        return cursor_usage.to_ms(iso)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _fetch_gh_pr_meta(pr: int, *, repo: str | None = None) -> dict[str, Any] | None:
+    """Return title, branch, created_at, merged_at, state from GitHub (None if unavailable)."""
+    cmd = [
+        "gh", "pr", "view", str(pr),
+        "--json", "title,headRefName,createdAt,mergedAt,state",
+    ]
+    if repo:
+        cmd += ["--repo", repo]
+    try:
+        out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).strip()
+        data = json.loads(out)
+        return {
+            "title": data.get("title"),
+            "branch": data.get("headRefName"),
+            "created_at": data.get("createdAt"),
+            "merged_at": data.get("mergedAt"),
+            "state": data.get("state"),
+        }
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def enrich_meta_from_gh(pr: int, *, repo: str | None = None) -> dict[str, Any]:
+    """Backfill missing title/branch/timestamps from `gh pr view`."""
+    rec = load_record(pr)
+    meta = _fetch_gh_pr_meta(pr, repo=repo)
+    if not meta:
+        return rec
+    if not rec.get("title") and meta.get("title"):
+        rec["title"] = meta["title"]
+    if not rec.get("branch") and meta.get("branch"):
+        rec["branch"] = meta["branch"]
+    if not rec.get("created_at") and meta.get("created_at"):
+        rec["created_at"] = meta["created_at"]
+    if not rec.get("merged_at") and meta.get("merged_at"):
+        rec["merged_at"] = meta["merged_at"]
+    save_record(rec)
+    return rec
+
+
+def backfill_titles(*, repo: str | None = None, prs: list[int] | None = None) -> list[int]:
+    """Fill null titles (and related GH fields) for all ledger PRs."""
+    meta_keys = ("title", "branch", "created_at", "merged_at")
+    updated: list[int] = []
+    for pr in prs or _all_prs():
+        before = tuple(load_record(pr).get(k) for k in meta_keys)
+        enrich_meta_from_gh(pr, repo=repo)
+        after = tuple(load_record(pr).get(k) for k in meta_keys)
+        if after != before:
+            updated.append(pr)
+    return updated
+
+
+def _is_merged_for_report(rec: dict[str, Any], *, repo: str | None = None) -> bool:
+    """Report includes only merged PRs — closed-without-merge ledgers are excluded."""
+    if rec.get("merged_at"):
+        return True
+    pr = rec.get("pr_number")
+    if pr is None:
+        return False
+    meta = _fetch_gh_pr_meta(int(pr), repo=repo)
+    return bool(meta and meta.get("state") == "MERGED" and meta.get("merged_at"))
+
+
+def _records_for_report(*, repo: str | None = None) -> list[dict[str, Any]]:
+    records = [load_record(p) for p in _all_prs()]
+    return [r for r in records if _is_merged_for_report(r, repo=repo)]
+
+
+def _index_sessions_by_key() -> dict[tuple[str, float], list[tuple[int, dict[str, Any]]]]:
+    """Map session fingerprint → [(pr_number, session_row), …]."""
+    index: dict[tuple[str, float], list[tuple[int, dict[str, Any]]]] = {}
+    for pr in _all_prs():
+        for sess in load_record(pr)["build"].get("sessions") or []:
+            key = _session_key(sess)
+            index.setdefault(key, []).append((pr, sess))
+    return index
+
+
+def _choose_session_owner(
+    pr_nums: list[int], session: dict[str, Any],
+) -> int:
+    """Pick the single PR that should own a duplicated build session."""
+    merged = [p for p in pr_nums if load_record(p).get("merged_at")]
+    pr_nums = merged if merged else pr_nums
+
+    conv_id = session.get("conversation_id")
+    if conv_id:
+        owners = [
+            p for p in pr_nums
+            if conv_id in (load_record(p)["build"].get("conversation_ids") or [])
+        ]
+        if len(owners) == 1:
+            return owners[0]
+        if owners:
+            return min(owners)
+
+    ts_ms = _iso_to_ms(session.get("ts"))
+    if ts_ms is not None:
+        anchors: list[tuple[int, int]] = []
+        for pr in pr_nums:
+            rec = load_record(pr)
+            anchor_iso = rec.get("session_started_at") or rec.get("created_at")
+            anchor_ms = _iso_to_ms(anchor_iso)
+            if anchor_ms is not None:
+                anchors.append((anchor_ms, pr))
+        if anchors:
+            before = [(a, p) for a, p in anchors if a <= ts_ms]
+            if before:
+                return max(before, key=lambda x: x[0])[1]
+            return min(anchors, key=lambda x: x[0])[1]
+
+    return min(pr_nums)
+
+
+def find_cross_pr_session_duplicates() -> dict[tuple[str, float], list[int]]:
+    """Sessions billed to more than one PR (same ts + cost_usd)."""
+    dupes: dict[tuple[str, float], list[int]] = {}
+    for key, entries in _index_sessions_by_key().items():
+        prs = sorted({pr for pr, _ in entries})
+        if len(prs) > 1:
+            dupes[key] = prs
+    return dupes
+
+
+def dedup_sessions(*, dry_run: bool = False) -> dict[str, Any]:
+    """Remove build sessions duplicated across PR ledgers (keep one owner per session)."""
+    dupes = find_cross_pr_session_duplicates()
+    if not dupes:
+        return {"duplicates": 0, "removed": [], "dry_run": dry_run}
+
+    removed: list[dict[str, Any]] = []
+    touched: set[int] = set()
+    for key, pr_nums in dupes.items():
+        session = next(s for p, s in _index_sessions_by_key()[key] if p == pr_nums[0])
+        owner = _choose_session_owner(pr_nums, session)
+        for pr in pr_nums:
+            if pr == owner:
+                continue
+            rec = load_record(pr)
+            before = len(rec["build"]["sessions"])
+            rec["build"]["sessions"] = [
+                s for s in rec["build"]["sessions"] if _session_key(s) != key
+            ]
+            if len(rec["build"]["sessions"]) < before:
+                removed.append({"pr": pr, "ts": key[0], "cost_usd": key[1], "kept_on": owner})
+                touched.add(pr)
+                if not dry_run:
+                    save_record(rec)
+
+    return {
+        "duplicates": len(dupes),
+        "removed": removed,
+        "dry_run": dry_run,
+    }
+
 
 def set_meta(pr: int, **fields: Any) -> dict[str, Any]:
     rec = load_record(pr)
@@ -427,6 +602,12 @@ def capture_build(
             )
         except cursor_usage.CursorUsageError:
             start_ms, end_ms = cursor_usage.git_branch_commit_range_ms(branch)
+        print(
+            "WARNING: capture-build used branch_window attribution — parallel chat spaces "
+            "can double-count the same Cursor session. Prefer start_pr_session.py "
+            "(session_started_at) + conversation-scoped sync, or bind-conversation.",
+            file=sys.stderr,
+        )
 
     assert start_ms is not None and end_ms is not None
     events = cursor_usage.fetch_usage_events(start_ms, end_ms)
@@ -647,6 +828,16 @@ def validate(pr: int, *, require_build: bool = False) -> tuple[bool, list[str]]:
             "session_started_at is set but build was not conversation-scoped — "
             f"run `pr_cost_ledger.py sync --pr {pr}` after binding the chat"
         )
+    my_keys = {_session_key(s) for s in b.get("sessions") or []}
+    for other in _all_prs():
+        if other == pr:
+            continue
+        for s in load_record(other)["build"].get("sessions") or []:
+            if _session_key(s) in my_keys:
+                problems.append(
+                    f"build session {s.get('ts')} (${s.get('cost_usd')}) is also billed to PR #{other} "
+                    "— run `pr_cost_ledger.py dedup-sessions`"
+                )
     return (not problems), problems
 
 
@@ -989,8 +1180,14 @@ def _render_report_html(records: list[dict[str, Any]]) -> str:
 """
 
 
-def build_html_report(prs: list[int]) -> str:
-    return _render_report_html([load_record(p) for p in prs])
+def build_html_report(prs: list[int], *, repo: str | None = None) -> str:
+    if prs:
+        records = [load_record(p) for p in prs]
+        records = [r for r in records if _is_merged_for_report(r, repo=repo)]
+    else:
+        records = _records_for_report(repo=repo)
+    records.sort(key=lambda r: int(r["pr_number"] or 0), reverse=True)
+    return _render_report_html(records)
 
 
 # ── sync (the one pre-push step: capture build + review + report) ───
@@ -1007,6 +1204,7 @@ def sync(pr: int, *, repo: str | None = None, report_out: str | None = None) -> 
     pr-cost-finalize.yml at merge.
     """
     try:
+        enrich_meta_from_gh(pr, repo=repo)
         rec0 = load_record(pr)
         capture_build(
             pr,
@@ -1021,7 +1219,7 @@ def sync(pr: int, *, repo: str | None = None, report_out: str | None = None) -> 
     out = Path(report_out) if report_out else (LEDGER_DIR / "report.html")
     out.parent.mkdir(parents=True, exist_ok=True)
     prs = _all_prs() or [pr]
-    out.write_text(build_html_report(sorted(prs, reverse=True)), encoding="utf-8")
+    out.write_text(build_html_report(sorted(prs, reverse=True), repo=repo), encoding="utf-8")
     rec = load_record(pr)
     print(f"  report → {out}")
     print(f"  PR #{pr}: build ${rec['build']['cost_usd_total']:.2f} | "
@@ -1113,10 +1311,43 @@ def main(argv: list[str] | None = None) -> int:
                     help="Real PR number; omit to auto-resolve from the branch via gh")
     bp.add_argument("--repo", help="owner/name (defaults to the current gh repo)")
 
+    dd = sub.add_parser(
+        "dedup-sessions",
+        help="Remove build sessions duplicated across PR ledgers (same ts + cost)",
+    )
+    dd.add_argument("--dry-run", action="store_true", help="Report only; do not write files")
+
+    bt = sub.add_parser("backfill-titles", help="Fill null titles/branches from GitHub")
+    bt.add_argument("--pr", type=int, help="single PR; omit for all ledger PRs")
+    bt.add_argument("--repo", help="owner/name (defaults to the current gh repo)")
+
     args = cli.parse_args(argv)
 
     if args.cmd == "bind-pr":
         bind_pr(args.branch, pr_number=args.pr, branch=args.branch, repo=args.repo)
+        return 0
+
+    if args.cmd == "dedup-sessions":
+        result = dedup_sessions(dry_run=args.dry_run)
+        n = result["duplicates"]
+        if n == 0:
+            print("dedup-sessions: no cross-PR duplicate build sessions found.")
+            return 0
+        prefix = "would remove" if args.dry_run else "removed"
+        print(f"dedup-sessions: {n} shared session(s); {prefix} {len(result['removed'])} row(s)")
+        for row in result["removed"][:20]:
+            print(f"  PR #{row['pr']}: {row['ts']} ${row['cost_usd']:.4f} → kept on PR #{row['kept_on']}")
+        if len(result["removed"]) > 20:
+            print(f"  … and {len(result['removed']) - 20} more")
+        return 0
+
+    if args.cmd == "backfill-titles":
+        prs = [args.pr] if args.pr else None
+        updated = backfill_titles(repo=args.repo, prs=prs)
+        if updated:
+            print(f"backfill-titles: updated PR(s) {updated}")
+        else:
+            print("backfill-titles: nothing to update")
         return 0
 
     if args.cmd == "set-meta":
@@ -1189,8 +1420,10 @@ def main(argv: list[str] | None = None) -> int:
         # Newest PR first so the most recent change leads the report.
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(build_html_report(sorted(prs, reverse=True)), encoding="utf-8")
-        print(f"wrote HTML cost report for {len(prs)} PR(s) → {out}")
+        html_body = build_html_report(sorted(prs, reverse=True))
+        out.write_text(html_body, encoding="utf-8")
+        n_merged = html_body.count('<section class="pr">')
+        print(f"wrote HTML cost report for {n_merged} merged PR(s) → {out}")
         return 0
     if args.cmd == "sync":
         print(f"syncing cost for PR #{args.pr} …")

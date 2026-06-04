@@ -3,7 +3,7 @@
   "title": "fix(cost): BYOK Anthropic key \u2014 restore build $ attribution",
   "requirement": "BYOK cost fallback for build attribution when Anthropic API key is configured in Cursor",
   "branch": "feat/cost-byok-fallback",
-  "created_at": null,
+  "created_at": "2026-06-03T20:48:55Z",
   "merged_at": "2026-06-03T20:54:41Z",
   "diff": {
     "files": null,

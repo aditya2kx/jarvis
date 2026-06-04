@@ -47,6 +47,11 @@ skills/user_model/data/
 *.xlsx
 *.eml
 
+# Per-PR cost handoff scaffolding (local session briefs; ledgers + report.html stay tracked)
+metrics/pr_cost/*-brief.md
+metrics/pr_cost/*-launch.html
+metrics/pr_cost/session-*.json
+
 # OS / IDE
 .DS_Store
 __pycache__/

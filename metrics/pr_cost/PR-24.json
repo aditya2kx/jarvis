@@ -1,8 +1,8 @@
 {
   "pr_number": 24,
   "title": null,
-  "requirement": "[P0] BHAGA operational issues: (1) BQ incremental run failed today \u2014 investigate Cloud Run logs and fix. (2) Square prod always prompts magic link / trust-device not persisting (works in sandbox). (3) BQ backfill only reached 6/1 but Sheets had data through 6/2 \u2014 re-backfill missing day. Investigate any related review/reconciliation issues.",
-  "branch": null,
+  "requirement": "[P0] BHAGA operational issues: BQ incremental run failure (SA missing BigQuery roles), Square prod magic-link/trust-device not persisting, BQ backfill behind Sheets by a day.",
+  "branch": "fix/bhaga-bq-iam-square-session",
   "created_at": null,
   "merged_at": null,
   "diff": {
@@ -11,14 +11,20 @@
     "deletions": null
   },
   "build": {
-    "source": null,
-    "approximate": true,
-    "attribution_mode": null,
+    "source": "cursor dashboard usage API (conversation-scoped via ai_code_hashes)",
+    "approximate": false,
+    "attribution_mode": "conversation",
     "session_started_at": null,
-    "conversation_ids": [],
+    "conversation_ids": [
+      "540ecd6c-53af-480c-aef6-710ff1f1a1d2"
+    ],
     "sessions": [],
     "tokens_total": 0,
-    "cost_usd_total": 0
+    "cost_usd_total": 0,
+    "window": {
+      "start": "2026-06-04T03:16:44+00:00",
+      "end": "2026-06-04T04:19:15.120000+00:00"
+    }
   },
   "review": {
     "source": "claude-code-action execution_file (exact)",

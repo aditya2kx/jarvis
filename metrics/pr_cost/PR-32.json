@@ -36,35 +36,35 @@
       {
         "ts": "2026-06-04T14:59:16.308000+00:00",
         "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 7415994,
-        "cost_usd": 3.3491,
+        "tokens": 8072397,
+        "cost_usd": 3.566,
         "cost_source": "byok_token_usage",
         "conversation_id": "21d6fe24-298f-4179-9c86-0d93be413759",
-        "input_tokens": 57,
-        "output_tokens": 38250,
-        "cache_read_input_tokens": 7214826,
-        "cache_creation_input_tokens": 162861,
+        "input_tokens": 61,
+        "output_tokens": 39258,
+        "cache_read_input_tokens": 7868722,
+        "cache_creation_input_tokens": 164356,
         "note": "byok; chat:21d6fe24"
       },
       {
         "ts": "2026-06-04T15:03:56.846000+00:00",
         "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 6929235,
-        "cost_usd": 3.6113,
+        "tokens": 17400479,
+        "cost_usd": 7.42,
         "cost_source": "byok_token_usage",
         "conversation_id": "21d6fe24-298f-4179-9c86-0d93be413759",
-        "input_tokens": 121237,
-        "output_tokens": 43544,
-        "cache_read_input_tokens": 6485768,
-        "cache_creation_input_tokens": 278686,
+        "input_tokens": 121307,
+        "output_tokens": 73964,
+        "cache_read_input_tokens": 16862755,
+        "cache_creation_input_tokens": 342453,
         "note": "byok; chat:21d6fe24"
       }
     ],
-    "tokens_total": 14763982,
-    "cost_usd_total": 7.3997,
+    "tokens_total": 25891629,
+    "cost_usd_total": 11.4253,
     "window": {
       "start": "2026-06-04T14:38:29+00:00",
-      "end": "2026-06-04T15:14:59.475000+00:00"
+      "end": "2026-06-04T16:42:35.219000+00:00"
     }
   },
   "review": {
@@ -82,15 +82,28 @@
         "cost_usd": 0.261,
         "result": "success",
         "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26960606551"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 11,
+        "input_tokens": 9,
+        "output_tokens": 3583,
+        "cache_read_input_tokens": 351262,
+        "cache_creation_input_tokens": 38363,
+        "tokens": 393217,
+        "cost_usd": 0.3042,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26960982239"
       }
     ],
-    "tokens_total": 257471,
-    "cost_usd_total": 0.261,
-    "run_count": 1
+    "tokens_total": 650688,
+    "cost_usd_total": 0.5652,
+    "run_count": 2
   },
   "totals": {
-    "tokens": 15021453,
-    "cost_usd": 7.6607
+    "tokens": 26542317,
+    "cost_usd": 11.9905
   },
   "session_started_at": "2026-06-04T14:38:29+00:00"
 }

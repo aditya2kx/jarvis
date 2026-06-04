@@ -1,0 +1,144 @@
+{
+  "pr_number": 30,
+  "provisional_id": null,
+  "title": "fix(cost): persist confirmed merge so report never drops a merged PR",
+  "requirement": "Report should include latest merged PR",
+  "branch": "fix/report-include-latest-merged",
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor dashboard usage API (local session token; request->PR by time window)",
+    "approximate": true,
+    "attribution_mode": "manual_window",
+    "session_started_at": null,
+    "conversation_ids": [],
+    "sessions": [
+      {
+        "ts": "2026-06-04T05:14:07.735000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 299766,
+        "cost_usd": 0.1059,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 6,
+        "output_tokens": 703,
+        "cache_read_input_tokens": 297425,
+        "cache_creation_input_tokens": 1632,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T05:15:12.894000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 311641,
+        "cost_usd": 0.1347,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 6,
+        "output_tokens": 1440,
+        "cache_read_input_tokens": 304400,
+        "cache_creation_input_tokens": 5795,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T05:16:21.782000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 249393,
+        "cost_usd": 0.0969,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 5,
+        "output_tokens": 682,
+        "cache_read_input_tokens": 245220,
+        "cache_creation_input_tokens": 3486,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T05:17:25.058000+00:00",
+        "model": "composer-2.5",
+        "tokens": 258403,
+        "cost_usd": 0.0748,
+        "cost_source": "cursor_charged",
+        "conversation_id": null,
+        "input_tokens": 61332,
+        "output_tokens": 2063,
+        "cache_read_input_tokens": 195008,
+        "cache_creation_input_tokens": 0,
+        "note": null
+      },
+      {
+        "ts": "2026-06-04T05:18:14.483000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 2327591,
+        "cost_usd": 1.2586,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 40,
+        "output_tokens": 20752,
+        "cache_read_input_tokens": 2232837,
+        "cache_creation_input_tokens": 73962,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T05:18:54.379000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 723967,
+        "cost_usd": 1.7774,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 6,
+        "output_tokens": 440,
+        "cache_read_input_tokens": 479234,
+        "cache_creation_input_tokens": 244287,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T05:19:54.966000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 2251724,
+        "cost_usd": 1.2818,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 18,
+        "output_tokens": 4444,
+        "cache_read_input_tokens": 2239096,
+        "cache_creation_input_tokens": 8166,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T05:21:37.932000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 5326619,
+        "cost_usd": 3.0854,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 40,
+        "output_tokens": 12147,
+        "cache_read_input_tokens": 5292819,
+        "cache_creation_input_tokens": 21613,
+        "note": "byok"
+      }
+    ],
+    "tokens_total": 11749104,
+    "cost_usd_total": 7.8155,
+    "window": {
+      "start": "2026-06-04T05:12:00+00:00",
+      "end": "2026-06-04T05:25:34+00:00"
+    }
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 11749104,
+    "cost_usd": 7.8155
+  }
+}

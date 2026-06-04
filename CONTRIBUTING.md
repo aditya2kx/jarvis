@@ -359,6 +359,16 @@ when only ~$0.68 of Composer work belonged to that PR). The scalable fix:
 
 Attribution modes stored on the ledger: `conversation` (preferred), `branch_window`, `manual_window`.
 
+**De-duplication & report hygiene:** `pr_cost_ledger.py dedup-sessions` removes build rows that
+were billed to more than one PR (same timestamp + cost). The HTML report includes **merged PRs
+only** (records with `merged_at`, or GitHub `state=MERGED`). Closed-without-merge ledgers are
+ignored. `backfill-titles` fills null titles from `gh pr view`. The cost gate also fails when a
+PR's sessions overlap another ledger — run `dedup-sessions` before merge.
+
+**Parallel chats → isolated worktrees:** `python3 scripts/new_worktree.py --branch <name>
+--requirement "…"` creates `../jarvis-wt-<slug>` on that branch and seeds the session brief.
+Stay in that worktree; do not checkout sibling branches in the shared repo while other chats run.
+
 **BYOK (Anthropic API key in Cursor):** when you configure your own Anthropic key, Cursor sets
 `chargedCents=0` on Claude model events but still returns `tokenUsage.totalCents` (list-price model
 cost). `cursor_usage.py` falls back to `totalCents + cursorTokenFee` in that case and tags those

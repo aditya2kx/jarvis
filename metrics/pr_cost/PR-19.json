@@ -3,8 +3,8 @@
   "title": "chore: document jarvis-agent-bot328 GitHub identity across all Jarvis docs",
   "requirement": "Bot GitHub account + docs update",
   "branch": "chore/bot-github-identity",
-  "created_at": null,
-  "merged_at": null,
+  "created_at": "2026-06-04T02:09:38Z",
+  "merged_at": "2026-06-04T02:44:29Z",
   "diff": {
     "files": null,
     "additions": null,

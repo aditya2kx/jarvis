@@ -1,10 +1,10 @@
 {
   "pr_number": 24,
-  "title": null,
+  "title": "fix(bhaga): BQ mirror IAM + Square trusted-device persistence (PR #23)",
   "requirement": "[P0] BHAGA operational issues: BQ incremental run failure (SA missing BigQuery roles), Square prod magic-link/trust-device not persisting, BQ backfill behind Sheets by a day.",
   "branch": "fix/bhaga-bq-iam-square-session",
-  "created_at": null,
-  "merged_at": null,
+  "created_at": "2026-06-04T03:34:52Z",
+  "merged_at": "2026-06-04T04:41:58Z",
   "diff": {
     "files": null,
     "additions": null,
@@ -17,71 +17,6 @@
     "session_started_at": null,
     "sessions": [
       {
-        "ts": "2026-06-04T03:11:44.713000+00:00",
-        "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 277276,
-        "cost_usd": 0.1252,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 4,
-        "output_tokens": 2203,
-        "cache_read_input_tokens": 272275,
-        "cache_creation_input_tokens": 2794,
-        "note": "byok"
-      },
-      {
-        "ts": "2026-06-04T03:13:09.625000+00:00",
-        "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 423459,
-        "cost_usd": 0.1568,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 5,
-        "output_tokens": 1344,
-        "cache_read_input_tokens": 419205,
-        "cache_creation_input_tokens": 2905,
-        "note": "byok"
-      },
-      {
-        "ts": "2026-06-04T03:14:12.146000+00:00",
-        "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 1923657,
-        "cost_usd": 0.9745,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 36,
-        "output_tokens": 15533,
-        "cache_read_input_tokens": 1859105,
-        "cache_creation_input_tokens": 48983,
-        "note": "byok"
-      },
-      {
-        "ts": "2026-06-04T03:14:50.383000+00:00",
-        "model": "claude-opus-4-8-thinking-high",
-        "tokens": 8719245,
-        "cost_usd": 6.7244,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 124,
-        "output_tokens": 53905,
-        "cache_read_input_tokens": 8483728,
-        "cache_creation_input_tokens": 181488,
-        "note": "byok"
-      },
-      {
-        "ts": "2026-06-04T03:15:33.395000+00:00",
-        "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 7844677,
-        "cost_usd": 2.7579,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 52,
-        "output_tokens": 20466,
-        "cache_read_input_tokens": 7794160,
-        "cache_creation_input_tokens": 29999,
-        "note": "byok"
-      },
-      {
         "ts": "2026-06-04T04:14:56.653000+00:00",
         "model": "claude-opus-4-8-thinking-high",
         "tokens": 6772216,
@@ -92,45 +27,6 @@
         "output_tokens": 31654,
         "cache_read_input_tokens": 6508666,
         "cache_creation_input_tokens": 231830,
-        "note": "byok"
-      },
-      {
-        "ts": "2026-06-04T04:15:10.465000+00:00",
-        "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 564582,
-        "cost_usd": 0.4348,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 10,
-        "output_tokens": 1206,
-        "cache_read_input_tokens": 491574,
-        "cache_creation_input_tokens": 71792,
-        "note": "byok"
-      },
-      {
-        "ts": "2026-06-04T04:15:22.077000+00:00",
-        "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 3012707,
-        "cost_usd": 1.571,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 19,
-        "output_tokens": 7422,
-        "cache_read_input_tokens": 2843530,
-        "cache_creation_input_tokens": 161736,
-        "note": "byok"
-      },
-      {
-        "ts": "2026-06-04T04:18:41.920000+00:00",
-        "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 145420,
-        "cost_usd": 0.0543,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 4,
-        "output_tokens": 518,
-        "cache_read_input_tokens": 144013,
-        "cache_creation_input_tokens": 885,
         "note": "byok"
       },
       {
@@ -238,8 +134,8 @@
         "note": "byok"
       }
     ],
-    "tokens_total": 47039836,
-    "cost_usd_total": 28.2172,
+    "tokens_total": 24128813,
+    "cost_usd_total": 15.4183,
     "window": {
       "start": "2026-06-04T03:09:17+00:00",
       "end": "2026-06-04T04:34:13.294000+00:00"
@@ -280,7 +176,7 @@
     "run_count": 2
   },
   "totals": {
-    "tokens": 47407255,
-    "cost_usd": 28.6664
+    "tokens": 24496232,
+    "cost_usd": 15.8675
   }
 }

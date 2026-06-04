@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Requirements tracker — Jarvis</title>
+<style>
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #0d1117; color: #e6edf3; }
+.wrap { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
+h1 { font-size: 24px; margin: 0 0 4px; }
+.muted { color: #768390; font-size: 12px; }
+a { color: #539bf5; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* stat pills */
+.stats { display: flex; gap: 12px; flex-wrap: wrap; margin: 20px 0 16px; }
+.stat { border: 1px solid #21262d; border-radius: 8px; padding: 10px 16px; min-width: 90px; }
+.stat .v { font-size: 22px; font-weight: 600; }
+.stat .l { color: #768390; font-size: 11px; margin-top: 1px; }
+
+/* filter bar */
+.filters { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 20px; }
+.filter-btn { border: 1px solid #30363d; border-radius: 20px; padding: 5px 14px;
+  background: #161b22; color: #e6edf3; font-size: 13px; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s; }
+.filter-btn:hover { border-color: var(--acc); }
+.filter-btn.active { background: color-mix(in srgb, var(--acc) 20%, transparent);
+  border-color: var(--acc); color: #fff; }
+.filter-btn .cnt { background: #21262d; border-radius: 10px; padding: 0 6px;
+  font-size: 11px; margin-left: 4px; }
+
+/* table */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; padding: 8px 10px; border-bottom: 2px solid #21262d;
+  color: #768390; font-weight: 600; white-space: nowrap; }
+td { padding: 9px 10px; border-bottom: 1px solid #21262d; vertical-align: top; }
+.req-row { background: var(--row-bg); }
+.req-row td:first-child { border-left: 3px solid var(--row-border); }
+.req-row.hidden { display: none; }
+.id-cell { color: #768390; font-variant-numeric: tabular-nums; white-space: nowrap; width: 40px; }
+.title-cell { min-width: 280px; }
+.pr-cell { white-space: nowrap; }
+.pr-link { background: #21262d; border-radius: 4px; padding: 1px 6px;
+  font-size: 12px; color: #adbac7; border: 1px solid #30363d; }
+.pr-link:hover { border-color: #539bf5; color: #539bf5; text-decoration: none; }
+
+/* badge */
+.badge { border-radius: 12px; padding: 2px 8px; font-size: 11px;
+  font-weight: 600; white-space: nowrap; }
+
+/* no-results */
+#no-results { display: none; color: #768390; padding: 24px 0; text-align: center; }
+</style></head>
+<body><div class="wrap">
+<h1>Requirements tracker</h1>
+<p class="muted">Source: <code>Playground/REQUIREMENTS.md</code> · 13 requirement(s) · generated 2026-06-04 03:16 UTC</p>
+
+<div class="stats">
+  <div class="stat"><div class="v">13</div><div class="l">Total</div></div>
+  <div class="stat"><div class="v" style="color:#f85149">0</div><div class="l">P0</div></div>
+  <div class="stat"><div class="v" style="color:#d29922">4</div><div class="l">In Progress</div></div>
+  <div class="stat"><div class="v" style="color:#768390">8</div><div class="l">Pending</div></div>
+  <div class="stat"><div class="v" style="color:#2ea043">1</div><div class="l">Done</div></div>
+</div>
+
+<div class="filters">
+  <button class="filter-btn active" data-status="all" style="--acc:#539bf5"
+    onclick="toggleFilter(this)">All <span class="cnt">13</span></button>
+<button class="filter-btn" data-status="p0" style="--acc:#da3633" onclick="toggleFilter(this)">P0 <span class="cnt">0</span></button>
+<button class="filter-btn" data-status="in-progress" style="--acc:#bb8009" onclick="toggleFilter(this)">In Progress <span class="cnt">4</span></button>
+<button class="filter-btn" data-status="pending" style="--acc:#30363d" onclick="toggleFilter(this)">Pending <span class="cnt">8</span></button>
+<button class="filter-btn" data-status="done" style="--acc:#2ea043" onclick="toggleFilter(this)">Done <span class="cnt">1</span></button>
+</div>
+
+<table>
+<thead><tr>
+  <th>#</th><th>Status</th><th>Title</th><th>Added</th><th>PR</th>
+</tr></thead>
+<tbody id="req-tbody">
+<tr class="req-row" data-status="in-progress" style="--row-bg:#3d2e0a;--row-border:#bb8009"><td class="id-cell">#3</td><td><span class="badge" style="background:#d2992220;color:#d29922;border:1px solid #d2992240">In Progress</span></td><td class="title-cell">Auto-halt + auto-resume on known-bad runs</td><td class="muted">2026-06-01</td><td class="pr-cell"><a href="../../.." class="pr-link">#12</a></td></tr>
+<tr class="req-row" data-status="in-progress" style="--row-bg:#3d2e0a;--row-border:#bb8009"><td class="id-cell">#6</td><td><span class="badge" style="background:#d2992220;color:#d29922;border:1px solid #d2992240">In Progress</span></td><td class="title-cell">Smarter sandbox suite selection on PR CI</td><td class="muted">2026-06-01</td><td class="pr-cell">—</td></tr>
+<tr class="req-row" data-status="in-progress" style="--row-bg:#3d2e0a;--row-border:#bb8009"><td class="id-cell">#7</td><td><span class="badge" style="background:#d2992220;color:#d29922;border:1px solid #d2992240">In Progress</span></td><td class="title-cell">Cost / token monitoring per PR</td><td class="muted">2026-06-01</td><td class="pr-cell"><a href="../../.." class="pr-link">#13</a></td></tr>
+<tr class="req-row" data-status="in-progress" style="--row-bg:#3d2e0a;--row-border:#bb8009"><td class="id-cell">#12</td><td><span class="badge" style="background:#d2992220;color:#d29922;border:1px solid #d2992240">In Progress</span></td><td class="title-cell">One-click "finalize-and-merge" (auto-commit complete cost record at merge)</td><td class="muted">2026-06-03</td><td class="pr-cell"><a href="../../.." class="pr-link">#14</a></td></tr>
+<tr class="req-row" data-status="pending" style="--row-bg:#161b22;--row-border:#30363d"><td class="id-cell">#1</td><td><span class="badge" style="background:#76839020;color:#768390;border:1px solid #76839040">Pending</span></td><td class="title-cell">Developer / Onboarding Guide</td><td class="muted">2026-06-01</td><td class="pr-cell">—</td></tr>
+<tr class="req-row" data-status="pending" style="--row-bg:#161b22;--row-border:#30363d"><td class="id-cell">#2</td><td><span class="badge" style="background:#76839020;color:#768390;border:1px solid #76839040">Pending</span></td><td class="title-cell">Fix 5/31 root causes + observability gaps</td><td class="muted">2026-06-01</td><td class="pr-cell">—</td></tr>
+<tr class="req-row" data-status="pending" style="--row-bg:#161b22;--row-border:#30363d"><td class="id-cell">#4</td><td><span class="badge" style="background:#76839020;color:#768390;border:1px solid #76839040">Pending</span></td><td class="title-cell">Ask + code against BHAGA from Slack</td><td class="muted">2026-06-01</td><td class="pr-cell">—</td></tr>
+<tr class="req-row" data-status="pending" style="--row-bg:#161b22;--row-border:#30363d"><td class="id-cell">#5</td><td><span class="badge" style="background:#76839020;color:#768390;border:1px solid #76839040">Pending</span></td><td class="title-cell">Zero-shift guard (ADP shifts vs sales)</td><td class="muted">2026-06-01</td><td class="pr-cell">—</td></tr>
+<tr class="req-row" data-status="pending" style="--row-bg:#161b22;--row-border:#30363d"><td class="id-cell">#8</td><td><span class="badge" style="background:#76839020;color:#768390;border:1px solid #76839040">Pending</span></td><td class="title-cell">Feature-build automation ("PR Babysitter")</td><td class="muted">2026-06-01</td><td class="pr-cell">—</td></tr>
+<tr class="req-row" data-status="pending" style="--row-bg:#161b22;--row-border:#30363d"><td class="id-cell">#9</td><td><span class="badge" style="background:#76839020;color:#768390;border:1px solid #76839040">Pending</span></td><td class="title-cell">ADP Earnings Report unavailable / empty (cadence edge case)</td><td class="muted">2026-06-02</td><td class="pr-cell">—</td></tr>
+<tr class="req-row" data-status="pending" style="--row-bg:#161b22;--row-border:#30363d"><td class="id-cell">#10</td><td><span class="badge" style="background:#76839020;color:#768390;border:1px solid #76839040">Pending</span></td><td class="title-cell">Smart scraping — skip already-scraped sources</td><td class="muted">2026-06-02</td><td class="pr-cell">—</td></tr>
+<tr class="req-row" data-status="pending" style="--row-bg:#161b22;--row-border:#30363d"><td class="id-cell">#11</td><td><span class="badge" style="background:#76839020;color:#768390;border:1px solid #76839040">Pending</span></td><td class="title-cell">Cost framework v2 — speed, reliability & file-level drill-down</td><td class="muted">2026-06-03</td><td class="pr-cell">—</td></tr>
+<tr class="req-row" data-status="done" style="--row-bg:#1a4a2e;--row-border:#2ea043"><td class="id-cell">#13</td><td><span class="badge" style="background:#2ea04320;color:#2ea043;border:1px solid #2ea04340">Done</span></td><td class="title-cell">Requirements HTML report (this tracker as a standalone colour-coded page)</td><td class="muted">2026-06-03</td><td class="pr-cell"><a href="../../.." class="pr-link">#22</a></td></tr>
+</tbody>
+</table>
+<div id="no-results">No requirements match the current filter.</div>
+
+<script>
+var activeFilters = new Set(['all']);
+function toggleFilter(btn) {
+  var status = btn.dataset.status;
+  if (status === 'all') {
+    activeFilters = new Set(['all']);
+  } else {
+    activeFilters.delete('all');
+    if (activeFilters.has(status)) {
+      activeFilters.delete(status);
+      if (activeFilters.size === 0) activeFilters.add('all');
+    } else {
+      activeFilters.add(status);
+    }
+  }
+  document.querySelectorAll('.filter-btn').forEach(function(b) {
+    b.classList.toggle('active',
+      activeFilters.has(b.dataset.status) ||
+      (activeFilters.has('all') && b.dataset.status === 'all'));
+  });
+  var rows = document.querySelectorAll('.req-row');
+  var visible = 0;
+  rows.forEach(function(r) {
+    var show = activeFilters.has('all') || activeFilters.has(r.dataset.status);
+    r.classList.toggle('hidden', !show);
+    if (show) visible++;
+  });
+  document.getElementById('no-results').style.display = visible === 0 ? 'block' : 'none';
+}
+</script>
+</div></body></html>

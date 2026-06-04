@@ -308,27 +308,28 @@ Commands:
   standalone, dependency-free `metrics/pr_cost/report.html` (summary, build/review split, top cost
   areas, top recommendations) from whatever `PR-*.json` records exist — open it in any browser, no
   build step. `--pr <n>` for a single PR; `--out <path>` to override the destination.
-- **Before your final push (optional manual sync):** `pr-cost-gate.yml` automatically runs
-  `capture-review` + `report.html` and commits the result back to the branch on every push, so manual
-  syncing is no longer required. You can still run `pr_cost_ledger.py sync --pr <n>` locally if you
-  want to review costs before pushing — just don't commit it separately; the gate will update it.
-  The **only** cost that can't be captured pre-merge is the review run *this* push triggers (a commit
-  can't contain its own review cost). Don't run `sync` on every commit: each
-  ledger commit is itself a push that re-runs review, so sync once before you're ready.
-- **Optional pre-push hook (automates the above):** `bash scripts/install-git-hooks.sh` points
-  `core.hooksPath` at `scripts/git-hooks`; the `pre-push` hook runs `sync` for the branch's PR and
-  blocks the push if the ledger changed, asking you to commit + push again (no auto-commit). Undo with
-  `git config --unset core.hooksPath`.
-- **Commit-back on every push (automatic, pre-merge):** `pr-cost-gate.yml` now also commits the
-  refreshed ledger (`capture-review` + `report.html`) back to the **PR branch** after each
-  validation pass. The cost commit (message: `chore(cost): sync PR #N ledger`) is the last commit
-  before the squash merge, so the ledger lands on `main` automatically. `sandbox-e2e` and
-  `claude-review` detect this message prefix and skip their expensive work to avoid wasting cloud
-  resources (all other checks pass naturally on a cost-only diff). No direct push to `main` is ever
-  needed.
+- **Required pre-commit hook (keeps the ledger in your own commits):** run
+  `bash scripts/install-git-hooks.sh` once per clone / worktree (including cloud agents). It points
+  `core.hooksPath` at `scripts/git-hooks`; the `pre-commit` hook runs the **non-destructive** ledger
+  surfaces — `capture-review` (pull review cost from posted PR comments; additive + idempotent) and
+  `report` (regenerate `report.html`) — and **auto-stages** `metrics/pr_cost/` into the commit you're
+  making. So the ledger rides in your own commits and lands on `main` in the squash merge — no bot
+  commit, no CI push-back. This is the design the cost script itself documents ("the operator commits
+  the complete record once"). The hook **does not** run `capture-build`/`sync`: build cost is recorded
+  explicitly by you (`record-build` from the dashboard, or `capture-build` with session attribution),
+  and the hook must not re-derive it (the branch-window fallback would overwrite your manual entry on
+  every commit). The hook never blocks and is a no-op until the PR exists. Skip a throwaway WIP commit
+  with `PR_COST_HOOK=0 git commit …`. Undo with `git config --unset core.hooksPath`.
+  The **only** cost that can't be captured this way is the review run *this* push triggers (a commit
+  can't contain its own review cost). That tail is picked up by your next commit, or finalized at
+  merge by `pr-cost-finalize.yml`.
+- **`PR cost gate` is a pure validator:** `pr-cost-gate.yml` only runs
+  `validate --pr <n> --require-build` — it never writes to the repo. (An earlier version committed the
+  ledger back to the PR branch from CI; that forced a second commit per push which either suppressed
+  CI or duplicated every required check via `cancel-in-progress`. The pre-commit hook replaces it.)
 - **Automatic post-merge analysis:** `.github/workflows/pr-cost-finalize.yml` runs when a PR
   merges — it `capture-review`s any last review cost comments and posts the post-merge analysis as
-  a PR comment. It no longer commits to `main` (the ledger is already there via the commit-back).
+  a PR comment. It does not commit to `main` (the ledger is already there via your commits).
 
 **How build cost is captured (individual account, no team plan):** Cursor's *documented* per-request
 feed (`/teams/filtered-usage-events`) needs a team/Enterprise Admin key. But the dashboard's own

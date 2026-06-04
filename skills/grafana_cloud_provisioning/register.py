@@ -23,14 +23,15 @@ _KEYCHAIN_SERVICE = "grafana-cloud-api-token"
 
 
 def _get_token(org_slug: str) -> str:
-    """Read Grafana Cloud API token from Keychain."""
+    """Resolve the Grafana Cloud API token (GRAFANA_API_TOKEN env var, then Keychain)."""
     from skills.grafana_cloud_provisioning.provision import get_api_token
     token = get_api_token(org_slug)
     if not token:
         raise RuntimeError(
-            f"Grafana Cloud API token not found in Keychain "
-            f"(service={_KEYCHAIN_SERVICE}, account={org_slug}). "
-            "Run the signup_playbook first."
+            "Grafana Cloud API token not found. Set the GRAFANA_API_TOKEN env "
+            "var (the repo secret used by .github/workflows/grafana-dashboard-sync.yml) "
+            f"or, locally, store it in Keychain (service={_KEYCHAIN_SERVICE}, "
+            f"account={org_slug}) via the signup_playbook."
         )
     return token
 

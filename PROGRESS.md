@@ -1,5 +1,9 @@
 # Jarvis Build Progress
 
+## 2026-06-04 — Branch protection: Claude review + Sandbox e2e now required checks
+
+Added `Claude review`, `Sandbox e2e`, `PR Description`, `Doc Freshness`, and `PR cost gate` as **required status checks** in the "Protect Master" ruleset (id 17062025). Auto-merge now waits for all five to pass before merging — previously the ruleset had no required checks, so auto-merge fired immediately on approval regardless of CI state.
+
 ## 2026-06-04 — Grafana deploy: cloud-native token (no laptop dep)
 
 `grafana-dashboard-sync` was failing post-merge of #28: `deploy.py` resolved

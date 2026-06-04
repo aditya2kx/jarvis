@@ -19,6 +19,8 @@
 | 🔄 In Progress | 12 | One-click "finalize-and-merge" (auto-commit complete cost record at merge) | 2026-06-03 | #14 |
 | ✅ Done | 13 | Requirements HTML report (this tracker as a standalone colour-coded page) | 2026-06-03 | #22 |
 
+| 🔄 In Progress | 14 | BHAGA status doctor CLI | #32 | |
+
 ---
 ## Archive
 

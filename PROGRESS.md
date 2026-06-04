@@ -1,5 +1,14 @@
 # Jarvis Build Progress
 
+## 2026-06-04 — BHAGA status doctor CLI (feat/bhaga-status-doctor)
+
+Added `agents/bhaga/scripts/status.py` — a read-only ops freshness checker that answers "did yesterday's run land in Sheets, BigQuery, and Grafana?" with one command so a cold agent on any machine never has to re-derive coordinates or hand-write queries.
+
+- **Deliverable A:** `status.py` — checks all three layers (Sheets `data_window_end`/`daily`/`tip_alloc_daily`, BQ model_*/raw tables, Grafana vw_* views), exits nonzero if any layer is missing the date. Single declarative registry (`BQ_TARGETS`, `GRAFANA_VIEWS`, `KNOWN_UNCHECKED_GRAFANA_REFS`) is the introspection target for anti-drift tests. Supports `--json` for scripting and `--check-schema` for live INFORMATION_SCHEMA validation.
+- **Deliverable B:** Discovery wiring — one-liner in `bhaga-principles.md` + catalog row in `scripts/README.md` so a fresh agent finds it without spelunking.
+- **Anti-drift:** 3 sync tests in `test_status.py` parse `dashboard.json` + migration SQL to enforce registry coverage; `check_doc_freshness.py` coupling makes a migration/dashboard PR that skips updating `status.py` a **hard CI failure**.
+- Docs updated: RUNBOOK.md §14 "Status doctor" section added.
+
 ## 2026-06-04 — Branch protection: Claude review + Sandbox e2e now required checks
 
 Added `Claude review`, `Sandbox e2e`, `PR Description`, `Doc Freshness`, and `PR cost gate` as **required status checks** in the "Protect Master" ruleset (id 17062025). Auto-merge now waits for all five to pass before merging — previously the ruleset had no required checks, so auto-merge fired immediately on approval regardless of CI state.

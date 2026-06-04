@@ -80,6 +80,63 @@ EVIDENCE_SKELETON = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Patterns that identify pytest output lines (used to detect pytest-only evidence).
+_PYTEST_LINE_PATTERNS = [
+    re.compile(r"::test_\w+\s+(PASSED|FAILED|ERROR|SKIPPED)", re.IGNORECASE),
+    re.compile(r"^\s*={3,}.*={3,}\s*$"),           # ====...====
+    re.compile(r"^\s*-{3,}.*-{3,}\s*$"),           # ----...----
+    re.compile(r"\d+\s+passed\b.*\bin\b.*[\d.]+s"),  # "16 passed in 0.04s"
+    re.compile(r"\bcollected\b.*\bitem"),            # "collected N items"
+    re.compile(r"\bno tests ran\b", re.IGNORECASE),
+    re.compile(r"^\s*PASSED\s*$", re.IGNORECASE),
+    re.compile(r"^\s*FAILED\s*$", re.IGNORECASE),
+    re.compile(r"test session starts", re.IGNORECASE),
+    re.compile(r"rootdir:", re.IGNORECASE),
+    re.compile(r"cachedir:", re.IGNORECASE),
+    re.compile(r"platform\s+\w+\s+--\s+Python", re.IGNORECASE),
+    re.compile(r"^\s*short test summary", re.IGNORECASE),
+    re.compile(r"^\s*warnings summary", re.IGNORECASE),
+]
+
+_EVIDENCE_BLOCK_RE = re.compile(
+    r"<details><summary>Evidence</summary>(.*?)</details>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _is_real_evidence(evidence_block_content: str) -> bool:
+    """Return True if evidence contains real tool output beyond just pytest results.
+
+    Fails when the entire evidence block consists only of:
+      - pytest test names / PASSED / FAILED lines
+      - pytest header/summary lines
+      - blank lines
+      - $ command invocations (without real output after them)
+
+    A PR whose only evidence is "all tests PASSED" is not proof the tool works
+    end-to-end.  Real evidence means actual command output with real data.
+    """
+    has_pytest_content = False
+    has_real_data = False
+
+    for line in evidence_block_content.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Shell prompt lines (just commands) — not counted as real data output.
+        if stripped.startswith("$") or stripped.startswith("```"):
+            continue
+        # Classify as pytest vs real output.
+        if any(p.search(stripped) for p in _PYTEST_LINE_PATTERNS):
+            has_pytest_content = True
+        else:
+            has_real_data = True
+
+    # If we found pytest content but no real data output, flag it.
+    if has_pytest_content and not has_real_data:
+        return False
+    return True
+
 
 def _strip_html_comments(text: str) -> str:
     return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
@@ -130,6 +187,18 @@ def _check_body(body: str) -> list[str]:
         errors.append(
             "  ✗ §4 End-to-end test: evidence block still contains the template skeleton. "
             "Replace with real commands + real output."
+        )
+
+    # Evidence must contain real tool output, not just pytest results.
+    evidence_match = _EVIDENCE_BLOCK_RE.search(body)
+    if evidence_match and not _is_real_evidence(evidence_match.group(1)):
+        errors.append(
+            "  ✗ §4 End-to-end test: evidence appears to contain only unit test results "
+            "(pytest PASSED/FAILED lines). "
+            "Unit tests are necessary but are not proof the tool works end-to-end. "
+            "Add real output from running the actual command (e.g. "
+            "`python3 -m agents.bhaga.scripts.status --store palmetto`) "
+            "showing actual data rows / sheet diffs / job logs."
         )
 
     # At least 3 checklist items must be checked [x]

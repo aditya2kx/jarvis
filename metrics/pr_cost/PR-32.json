@@ -1,0 +1,109 @@
+{
+  "pr_number": 32,
+  "provisional_id": null,
+  "title": "feat(bhaga): read-only status doctor CLI + anti-drift enforcement",
+  "requirement": "Build a reusable, token-cheap way to answer recurring BHAGA/Jarvis operational questions (e.g. \"did yesterday's incremental run land in Sheets, BQ, and Grafana?\") so a fresh chat on any machine never has to re-derive coordinates or hand-write verification queries. Two deliverables: (A) a read-only ops \"doctor\" CLI, and (B) wire it into the rules as the standard first check.\n\nCONTEXT (already derived \u2014 don't re-investigate): The BHAGA nightly pipeline (agents/bhaga/scripts/daily_refresh.py) advances data through three layers: Google Sheets (source of truth) -> BigQuery mirror -> Grafana Cloud (reads BQ vw_* views). Coordinates: GCP project jarvis-bhaga-prod, BQ dataset `jarvis-bhaga-prod.bhaga`. Model sheet ID + raw sheet IDs come from agents/bhaga/knowledge-base/store-profiles/palmetto.json (gitignored PII \u2014 resolve at runtime, never hardcode). Auth pattern that works locally: BHAGA_SECRETS_BACKEND=gcp + BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com, then core.config_loader.refresh_access_token('palmetto') for Sheets and a google.cloud.bigquery.Client(project='jarvis-bhaga-prod') for BQ. Read sheet tabs via skills/tip_ledger_writer/writer._read_tab; the prod-read guard only blocks under BHAGA_SHEET_MODE=staging. RUNBOOK.md section 14 lists the model_* tables and vw_* views.\n\nDELIVERABLE A \u2014 agents/bhaga/scripts/status.py (module: python3 -m agents.bhaga.scripts.status --store palmetto [--date YYYY-MM-DD]). Default --date = yesterday in America/Chicago. For the date it prints a compact freshness table across all three layers and a one-line verdict, exiting nonzero if any layer is missing the date (so it is alert/CI usable):\n  - Sheets: model config tab data_window_end; presence + row counts of the date in `daily` and `tip_alloc_daily`.\n  - BigQuery: max date + row count for the date in model_daily, model_labor_daily, model_tip_alloc_daily, model_period_summary, and raw square_transactions/adp_shifts/adp_punches/square_daily_rollup (note model_labor_weekly is keyed by iso_week \u2014 compare the ISO week, not the literal date).\n  - Grafana BI contract: confirm the date is present in the exact views Grafana renders (vw_daily_sales, vw_model_labor_daily, vw_model_period_summary, vw_labor_daily, vw_tips_by_hour, vw_sales_labor_daily). Print the dashboard URL (steadyangelfish2985.grafana.net/d/bhaga-analytics-v1) in the output. Do NOT browser-render Grafana; data-layer confirmation of its views is the contract.\n  Reuse core.datastore for BQ reads where it fits; resolve all IDs from the store profile. Read-only only \u2014 never write to any prod data source (honor the bhaga-principles sandbox/prod-write guards).\n\nDELIVERABLE B \u2014 discovery wiring so a cold agent finds it without spelunking: add a one-liner to .cursor/rules/bhaga-principles.md (always-on card) and the script catalog in agents/bhaga/scripts/README.md: \"To check whether a run landed in Sheets/BQ/Grafana, run `status` first \u2014 don't hand-investigate.\" Wire it as the standard first operational check.\n\nALSO: add tests (agents/bhaga/scripts/test_status.py) mocking the readers + BQ client (follow test_update_model_sheet.py / verify_bq_parity.py patterns; no live network in tests). Keep docs in lock-step: RUNBOOK.md section 14 + scripts/README.md + a dated PROGRESS.md entry, and register this as a new row in Playground/REQUIREMENTS.md via scripts/requirements_tracker.py (mark In Progress with the PR). Follow CONTRIBUTING.md: branch -> PR -> Claude review -> CI -> merge -> deploy; prove with the sandbox e2e, never by touching prod sheets.",
+  "branch": "feat/bhaga-status-doctor",
+  "created_at": "2026-06-04T15:08:33Z",
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor dashboard usage API (conversation-scoped via ai_code_hashes)",
+    "approximate": false,
+    "attribution_mode": "conversation",
+    "session_started_at": null,
+    "conversation_ids": [
+      "21d6fe24-298f-4179-9c86-0d93be413759"
+    ],
+    "sessions": [
+      {
+        "ts": "2026-06-04T14:58:39.666000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 418753,
+        "cost_usd": 0.4393,
+        "cost_source": "byok_token_usage",
+        "conversation_id": "21d6fe24-298f-4179-9c86-0d93be413759",
+        "input_tokens": 7,
+        "output_tokens": 1566,
+        "cache_read_input_tokens": 332944,
+        "cache_creation_input_tokens": 84236,
+        "note": "byok; chat:21d6fe24"
+      },
+      {
+        "ts": "2026-06-04T14:59:16.308000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 8072397,
+        "cost_usd": 3.566,
+        "cost_source": "byok_token_usage",
+        "conversation_id": "21d6fe24-298f-4179-9c86-0d93be413759",
+        "input_tokens": 61,
+        "output_tokens": 39258,
+        "cache_read_input_tokens": 7868722,
+        "cache_creation_input_tokens": 164356,
+        "note": "byok; chat:21d6fe24"
+      },
+      {
+        "ts": "2026-06-04T15:03:56.846000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 17400479,
+        "cost_usd": 7.42,
+        "cost_source": "byok_token_usage",
+        "conversation_id": "21d6fe24-298f-4179-9c86-0d93be413759",
+        "input_tokens": 121307,
+        "output_tokens": 73964,
+        "cache_read_input_tokens": 16862755,
+        "cache_creation_input_tokens": 342453,
+        "note": "byok; chat:21d6fe24"
+      }
+    ],
+    "tokens_total": 25891629,
+    "cost_usd_total": 11.4253,
+    "window": {
+      "start": "2026-06-04T14:38:29+00:00",
+      "end": "2026-06-04T16:42:35.219000+00:00"
+    }
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 10,
+        "input_tokens": 7,
+        "output_tokens": 3153,
+        "cache_read_input_tokens": 214837,
+        "cache_creation_input_tokens": 39474,
+        "tokens": 257471,
+        "cost_usd": 0.261,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26960606551"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 11,
+        "input_tokens": 9,
+        "output_tokens": 3583,
+        "cache_read_input_tokens": 351262,
+        "cache_creation_input_tokens": 38363,
+        "tokens": 393217,
+        "cost_usd": 0.3042,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/26960982239"
+      }
+    ],
+    "tokens_total": 650688,
+    "cost_usd_total": 0.5652,
+    "run_count": 2
+  },
+  "totals": {
+    "tokens": 26542317,
+    "cost_usd": 11.9905
+  },
+  "session_started_at": "2026-06-04T14:38:29+00:00"
+}

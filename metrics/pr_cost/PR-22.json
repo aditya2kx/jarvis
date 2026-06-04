@@ -22,35 +22,35 @@
       {
         "ts": "2026-06-04T03:14:12.146000+00:00",
         "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 463915,
-        "cost_usd": 0.3331,
+        "tokens": 1062197,
+        "cost_usd": 0.6445,
         "cost_source": "byok_token_usage",
         "conversation_id": "ef0916d0-3a3e-4534-9c35-b7b07cdb7f26",
-        "input_tokens": 13,
-        "output_tokens": 5693,
-        "cache_read_input_tokens": 426257,
-        "cache_creation_input_tokens": 31952,
+        "input_tokens": 23,
+        "output_tokens": 11857,
+        "cache_read_input_tokens": 1006421,
+        "cache_creation_input_tokens": 43896,
         "note": "byok; chat:ef0916d0"
       },
       {
         "ts": "2026-06-04T03:15:33.395000+00:00",
         "model": "claude-4.6-sonnet-medium-thinking",
-        "tokens": 430597,
-        "cost_usd": 0.1596,
+        "tokens": 1015747,
+        "cost_usd": 0.3698,
         "cost_source": "byok_token_usage",
         "conversation_id": "ef0916d0-3a3e-4534-9c35-b7b07cdb7f26",
-        "input_tokens": 5,
-        "output_tokens": 1680,
-        "cache_read_input_tokens": 427259,
-        "cache_creation_input_tokens": 1653,
+        "input_tokens": 9,
+        "output_tokens": 3225,
+        "cache_read_input_tokens": 1007400,
+        "cache_creation_input_tokens": 5113,
         "note": "byok; chat:ef0916d0"
       }
     ],
-    "tokens_total": 894512,
-    "cost_usd_total": 0.4927,
+    "tokens_total": 2077944,
+    "cost_usd_total": 1.0143,
     "window": {
       "start": "2026-06-04T03:13:29+00:00",
-      "end": "2026-06-04T03:16:29.022000+00:00"
+      "end": "2026-06-04T03:17:27.028000+00:00"
     }
   },
   "review": {
@@ -61,8 +61,8 @@
     "run_count": 0
   },
   "totals": {
-    "tokens": 894512,
-    "cost_usd": 0.4927
+    "tokens": 2077944,
+    "cost_usd": 1.0143
   },
   "session_started_at": "2026-06-04T03:13:29+00:00"
 }

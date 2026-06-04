@@ -1,7 +1,7 @@
-# PR #23 session brief
+# PR #24 session brief
 
 ## Requirement
-Requirements HTML report: render Playground/REQUIREMENTS.md as a standalone HTML page (like report.html for costs) — status colour-coded rows, filterable by status, auto-generated and committed on every change to the tracker.
+[P0] BHAGA operational issues: (1) BQ incremental run failed today — investigate Cloud Run logs and fix. (2) Square prod always prompts magic link / trust-device not persisting (works in sandbox). (3) BQ backfill only reached 6/1 but Sheets had data through 6/2 — re-backfill missing day. Investigate any related review/reconciliation issues.
 
 ## Branch
 `(unknown branch)`
@@ -13,7 +13,7 @@ Open a **new** Cursor chat for this PR, then implement. Build cost is attributed
 chat space(s) with AI edits after this timestamp (see `pr_cost_ledger.py sync`).
 
 ## Prior PR cost reference
-PR #22 'chore: requirements tracker + jarvis.md HL#22 + PR-21 cost l': $0.49 total (build $0.49 / review $0.00, 0 review runs)
+PR #23 '?': $0.00 total (build $0.00 / review $0.00, 0 review runs)
 
 ## Model routing (CONTRIBUTING § Cost-efficiency playbook):
   • Sonnet 4.6     — DEFAULT for feature code, refactors, most edits
@@ -29,5 +29,5 @@ Context discipline:
   • Run `pr_cost_ledger.py sync --pr <n>` before your final push to commit build+review cost
 
 ## Cost gate reminder
-Before your final push: `python3 scripts/pr_cost_ledger.py sync --pr 23`
-Then: `git add metrics/pr_cost/ && git commit -m "chore(cost): sync PR #23 ledger"`
+Before your final push: `python3 scripts/pr_cost_ledger.py sync --pr 24`
+Then: `git add metrics/pr_cost/ && git commit -m "chore(cost): sync PR #24 ledger"`

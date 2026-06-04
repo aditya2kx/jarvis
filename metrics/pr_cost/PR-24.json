@@ -1,7 +1,7 @@
 {
-  "pr_number": 23,
+  "pr_number": 24,
   "title": null,
-  "requirement": "Requirements HTML report: render Playground/REQUIREMENTS.md as a standalone HTML page (like report.html for costs) \u2014 status colour-coded rows, filterable by status, auto-generated and committed on every change to the tracker.",
+  "requirement": "[P0] BHAGA operational issues: (1) BQ incremental run failed today \u2014 investigate Cloud Run logs and fix. (2) Square prod always prompts magic link / trust-device not persisting (works in sandbox). (3) BQ backfill only reached 6/1 but Sheets had data through 6/2 \u2014 re-backfill missing day. Investigate any related review/reconciliation issues.",
   "branch": null,
   "created_at": null,
   "merged_at": null,

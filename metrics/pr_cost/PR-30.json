@@ -19,32 +19,6 @@
     "conversation_ids": [],
     "sessions": [
       {
-        "ts": "2026-06-04T05:27:37.110000+00:00",
-        "model": "claude-opus-4-8-thinking-medium",
-        "tokens": 1965426,
-        "cost_usd": 1.0705,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 14,
-        "output_tokens": 2183,
-        "cache_read_input_tokens": 1957273,
-        "cache_creation_input_tokens": 5956,
-        "note": "byok"
-      },
-      {
-        "ts": "2026-06-04T05:28:52.631000+00:00",
-        "model": "claude-opus-4-8-thinking-medium",
-        "tokens": 1146753,
-        "cost_usd": 0.6997,
-        "cost_source": "byok_token_usage",
-        "conversation_id": null,
-        "input_tokens": 8,
-        "output_tokens": 3902,
-        "cache_read_input_tokens": 1137501,
-        "cache_creation_input_tokens": 5342,
-        "note": "byok"
-      },
-      {
         "ts": "2026-06-04T05:30:11.302000+00:00",
         "model": "claude-opus-4-8-thinking-medium",
         "tokens": 4323325,
@@ -71,8 +45,8 @@
         "note": "byok"
       }
     ],
-    "tokens_total": 7612290,
-    "cost_usd_total": 4.5494,
+    "tokens_total": 4500111,
+    "cost_usd_total": 2.7792,
     "window": {
       "start": "2026-06-04T05:24:02+00:00",
       "end": "2026-06-04T05:33:59.034000+00:00"
@@ -100,7 +74,7 @@
     "run_count": 1
   },
   "totals": {
-    "tokens": 7748149,
-    "cost_usd": 4.6883
+    "tokens": 4635970,
+    "cost_usd": 2.9181
   }
 }

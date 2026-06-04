@@ -1,5 +1,18 @@
 # Jarvis Build Progress
 
+## 2026-06-04 — Grafana deploy: cloud-native token (no laptop dep)
+
+`grafana-dashboard-sync` was failing post-merge of #28: `deploy.py` resolved
+`GRAFANA_API_TOKEN` from env but then unconditionally wrote it into macOS
+Keychain via `security`, which doesn't exist on the Linux runner. Fix (in #30):
+`provision.get_api_token` now resolves the env var first and only falls back to
+Keychain locally (returning `None` instead of crashing when `security` is
+absent); `store_api_token` no-ops gracefully off-macOS; `deploy.py` drops the
+pointless CI-path Keychain write. Bootstrapped `GRAFANA_API_TOKEN` +
+`GRAFANA_ORG_SLUG` into GitHub repo secrets. Verified: a `workflow_dispatch`
+run deployed the dashboard green using the env token (RUNBOOK §0 — no
+laptop/Keychain dependency).
+
 ## 2026-06-04 — babysit + post-merge CI + multi-requirement consolidation
 
 Four improvements consolidated into one PR (`feat/babysit-postmerge-ci-consolidation`):

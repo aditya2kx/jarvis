@@ -5,7 +5,7 @@
   "requirement": "De-contaminate the per-PR cost ledger + report.html after concurrent chat spaces double-counted build sessions; fix untitled PRs; exclude closed/non-merged PRs; gitignore throwaway brief/launch scaffolding; and harden the tooling (conversation-scoped de-dup, GH title backfill, worktree isolation) to prevent recurrence.",
   "branch": "fix/cost-ledger-decontamination",
   "created_at": "2026-06-04T05:00:56Z",
-  "merged_at": null,
+  "merged_at": "2026-06-04T05:04:52Z",
   "diff": {
     "files": null,
     "additions": null,

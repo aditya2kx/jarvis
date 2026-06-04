@@ -1,5 +1,14 @@
 # Jarvis Build Progress
 
+## 2026-06-04 — babysit + post-merge CI + multi-requirement consolidation
+
+Four improvements consolidated into one PR (`feat/babysit-postmerge-ci-consolidation`):
+
+1. **babysit skill** (`~/.cursor/skills-cursor/babysit/SKILL.md`): explicit loop with `state==MERGED` check at top — exits immediately on merge; adds Post-merge CI section to watch `post-merge-ci.yml` after merge.
+2. **post-merge CI** (`.github/workflows/post-merge-ci.yml`): new workflow triggered on `pull_request: closed` + `merged == true`; runs sandbox e2e and a Claude post-merge audit on the merged code and posts evidence + cost stats to the merged PR.
+3. **multi-requirement consolidation** (`scripts/new_requirement.py`): `--requirement` is now repeatable; multiple requirements go into one worktree/PR by default. Pass `--split` to create one PR each.
+4. **handoff always opens Cursor** (`scripts/new_requirement.py`): removed `--no-open-cursor` flag — Cursor is always opened; launcher HTML is the fallback only when the Cursor CLI is not found.
+
 ## Recurring Mistakes (read before every task)
 
 | Mistake | Where the fix lives | Pre-check |

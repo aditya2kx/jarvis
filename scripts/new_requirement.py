@@ -13,10 +13,27 @@ The single command when the user shares a new requirement (or an agent hears
 
 The agent in the *current* chat must NOT implement the requirement — hand off.
 
+**Multiple requirements** are consolidated into **one** worktree / PR by default.
+Pass ``--split`` to create a separate worktree and PR for each requirement.
+
 Usage:
+    # Single requirement
     python3 scripts/new_requirement.py \\
         --requirement "Fix cost report titles and de-contaminate ledgers"
 
+    # Multiple requirements → one consolidated worktree/PR (default)
+    python3 scripts/new_requirement.py \\
+        --requirement "Add zero-shift guard" \\
+        --requirement "Auto-halt on known-bad runs" \\
+        --branch feat/zero-shift-and-auto-halt
+
+    # Multiple requirements → one PR each (opt-out of consolidation)
+    python3 scripts/new_requirement.py \\
+        --requirement "Add zero-shift guard" \\
+        --requirement "Auto-halt on known-bad runs" \\
+        --split
+
+    # Legacy single form (also still works)
     python3 scripts/new_requirement.py \\
         --requirement "Add zero-shift guard" \\
         --branch fix/zero-shift-guard \\
@@ -165,18 +182,101 @@ def json_load(worktree: Path, branch: str) -> dict:
     return {}
 
 
+def _consolidated_requirement(requirements: list[str]) -> str:
+    """Join multiple requirements into a single numbered-list string."""
+    if len(requirements) == 1:
+        return requirements[0]
+    lines = "\n".join(f"{i + 1}) {r}" for i, r in enumerate(requirements))
+    return lines
+
+
+def _run_one(
+    *,
+    repo_root: Path,
+    branch: str,
+    worktree: Path | None,
+    base: str,
+    requirement: str,
+    requirement_id: str | None,
+    model: str,
+    cursor_delay: float,
+    dry_run: bool,
+) -> int:
+    """Create one worktree for a single (possibly consolidated) requirement."""
+    wt = worktree or default_worktree_path(repo_root, branch)
+
+    print(f"Repo:     {repo_root}")
+    print(f"Branch:   {branch}")
+    print(f"Worktree: {wt}")
+    print(f"Base:     {base}\n")
+
+    create_worktree(
+        repo_root=repo_root,
+        branch=branch,
+        worktree_path=wt,
+        base=base,
+        dry_run=dry_run,
+    )
+
+    brief, launch, deeplink = start_session_in_worktree(
+        worktree=wt,
+        branch=branch,
+        requirement=requirement,
+        requirement_id=requirement_id,
+        model=model,
+        dry_run=dry_run,
+    )
+
+    print(f"\nBrief   → {brief}")
+    print(f"Launcher → {launch}\n")
+
+    if dry_run:
+        print("(dry-run — no Cursor opened)")
+        return 0
+
+    S.open_cursor_handoff(
+        folder=wt,
+        deeplink=deeplink,
+        launch_html=launch,
+        delay_sec=cursor_delay,
+    )
+
+    print("\n─── HANDOFF ───")
+    print("Do NOT implement this requirement in the current chat.")
+    print(f"Switch to the new Cursor window on: {wt}")
+    print("After `gh pr create` in that worktree:")
+    print(f"  python3 scripts/pr_cost_ledger.py bind-pr --branch {branch}")
+    print("  python3 scripts/pr_cost_ledger.py sync --pr <n>")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     cli = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     cli.add_argument(
-        "--requirement", required=True,
-        help="What to build (passed to the brief + seeded Agent chat)",
+        "--requirement", dest="requirements", action="append", required=True,
+        metavar="REQUIREMENT",
+        help=(
+            "What to build. Repeat to add multiple requirements. "
+            "Multiple requirements are consolidated into one worktree/PR by default "
+            "(use --split to create one PR per requirement instead)."
+        ),
+    )
+    cli.add_argument(
+        "--split", action="store_true",
+        help=(
+            "When multiple --requirement flags are given, create a separate "
+            "worktree and PR for each instead of consolidating into one."
+        ),
     )
     cli.add_argument(
         "--branch",
-        help="Git branch name (default: fix/<slug-from-requirement>)",
+        help=(
+            "Git branch name. For a single (or consolidated) requirement the "
+            "default is fix/<slug>. Ignored when --split is used with multiple requirements."
+        ),
     )
     cli.add_argument(
         "--worktree",
@@ -189,11 +289,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     cli.add_argument(
         "--requirement-id",
-        help="ID from Playground/REQUIREMENTS.md → mark 🔄 In Progress",
-    )
-    cli.add_argument(
-        "--no-open-cursor", action="store_true",
-        help="Skip opening Cursor (print paths + seed text only)",
+        help=(
+            "ID from Playground/REQUIREMENTS.md → mark 🔄 In Progress. "
+            "Applied to the first (or consolidated) requirement."
+        ),
     )
     cli.add_argument(
         "--cursor-delay", type=float, default=3.5,
@@ -207,53 +306,49 @@ def main(argv: list[str] | None = None) -> int:
     args = cli.parse_args(argv)
 
     repo_root = _repo_root()
-    branch = args.branch or default_branch(args.requirement)
-    worktree = args.worktree or default_worktree_path(repo_root, branch)
+    requirements: list[str] = args.requirements
 
-    print(f"Repo:     {repo_root}")
-    print(f"Branch:   {branch}")
-    print(f"Worktree: {worktree}")
-    print(f"Base:     {args.base}\n")
+    if len(requirements) > 1 and args.split:
+        # One worktree per requirement
+        print(f"--split: creating {len(requirements)} separate worktrees/PRs.\n")
+        rc = 0
+        for i, req in enumerate(requirements, 1):
+            print(f"\n{'=' * 60}")
+            print(f"Requirement {i}/{len(requirements)}: {req[:80]}")
+            print('=' * 60)
+            branch = default_branch(req)
+            rc = rc or _run_one(
+                repo_root=repo_root,
+                branch=branch,
+                worktree=None,
+                base=args.base,
+                requirement=req,
+                requirement_id=args.requirement_id if i == 1 else None,
+                model=args.model,
+                cursor_delay=args.cursor_delay,
+                dry_run=args.dry_run,
+            )
+        return rc
 
-    create_worktree(
+    # Consolidate all requirements into one worktree/PR (default)
+    combined = _consolidated_requirement(requirements)
+    branch = args.branch or default_branch(combined if len(requirements) == 1 else requirements[0])
+
+    if len(requirements) > 1:
+        print(f"Consolidating {len(requirements)} requirements into one PR (branch: {branch}).")
+        print("Pass --split to create one PR per requirement.\n")
+
+    return _run_one(
         repo_root=repo_root,
         branch=branch,
-        worktree_path=worktree,
+        worktree=args.worktree,
         base=args.base,
-        dry_run=args.dry_run,
-    )
-
-    brief, launch, deeplink = start_session_in_worktree(
-        worktree=worktree,
-        branch=branch,
-        requirement=args.requirement,
+        requirement=combined,
         requirement_id=args.requirement_id,
         model=args.model,
+        cursor_delay=args.cursor_delay,
         dry_run=args.dry_run,
     )
-
-    print(f"\nBrief   → {brief}")
-    print(f"Launcher → {launch}\n")
-
-    if args.dry_run:
-        print("(dry-run — no Cursor opened)")
-        return 0
-
-    if not args.no_open_cursor:
-        S.open_cursor_handoff(
-            folder=worktree,
-            deeplink=deeplink,
-            launch_html=launch,
-            delay_sec=args.cursor_delay,
-        )
-
-    print("\n─── HANDOFF ───")
-    print("Do NOT implement this requirement in the current chat.")
-    print(f"Switch to the new Cursor window on: {worktree}")
-    print("After `gh pr create` in that worktree:")
-    print(f"  python3 scripts/pr_cost_ledger.py bind-pr --branch {branch}")
-    print("  python3 scripts/pr_cost_ledger.py sync --pr <n>")
-    return 0
 
 
 if __name__ == "__main__":

@@ -43,7 +43,9 @@ from skills.tip_ledger_writer import (
     write_raw_square_transactions,
 )
 from skills.tip_ledger_writer.writer import (
+    write_raw_adp_earnings,
     write_raw_kds_daily,
+    write_raw_kds_tickets,
     write_raw_square_item_daily_rollup,
     write_raw_square_item_lines,
 )
@@ -343,6 +345,36 @@ def main() -> int:
                 if n_bq:
                     print(f"  wage_rates (BQ): {n_bq} rows upserted")
 
+            # Persist per-line earnings rows to the new adp_earnings Sheet tab.
+            # Each row from parse_xlsx is already one earning line.
+            import datetime as _dt
+            _now_utc = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            earnings_rows = [
+                {
+                    "period_start": str(e.get("period_start", "")),
+                    "period_end": str(e.get("period_end", "")),
+                    "check_date": str(e.get("check_date", "")),
+                    "employee_name": str(e.get("employee_name", "")),
+                    "raw_employee_name": str(e.get("raw_employee_name", "")),
+                    "description": str(e.get("description", "")),
+                    "hours": e.get("hours", 0) or 0,
+                    "hourly_rate": e.get("hourly_rate", 0) or 0,
+                    "amount": e.get("amount", 0) or 0,
+                    "scraped_at_utc": e.get("scraped_at_utc", _now_utc),
+                }
+                for e in earnings
+                if e.get("period_start")
+            ]
+            if args.dry_run:
+                print(f"  DRY: would write {len(earnings_rows)} adp_earnings rows")
+            else:
+                s_earn = write_raw_adp_earnings(adp_raw_sid, earnings_rows, account=google_account)
+                summaries.append(s_earn)
+                print(
+                    f"  earnings: +{s_earn['inserted']} new, "
+                    f"{s_earn['updated']} updated, {s_earn['total_after']} total"
+                )
+
     # ── Square transactions + daily rollup ────────────────────────
     if "square" not in args.skip:
         tx_csv = _newest("transactions-*.csv")
@@ -456,11 +488,14 @@ def main() -> int:
             ]
             print(f"  computed KDS daily rollup: {len(kds_rollups)} days")
             if args.dry_run:
-                print(f"  DRY: would write {len(kds_rollups)} KDS daily rows")
+                print(f"  DRY: would write {len(kds_rollups)} KDS daily rows and {len(kds_tickets)} ticket rows")
             else:
                 s = write_raw_kds_daily(square_raw_sid, kds_rollups, account=google_account)
                 summaries.append(s)
                 print(f"  kds_daily: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
+                s2 = write_raw_kds_tickets(square_raw_sid, kds_tickets, account=google_account)
+                summaries.append(s2)
+                print(f"  kds_tickets: +{s2['inserted']} new, {s2['updated']} updated, {s2['total_after']} total")
 
     print()
     print("=" * 60)

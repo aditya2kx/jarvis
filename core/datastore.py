@@ -226,9 +226,9 @@ def _scan_migration_files() -> list[tuple[int, str, pathlib.Path]]:
 def _split_statements(sql: str) -> list[str]:
     """Split a SQL file into individual statements.
 
-    Splits on semicolons that are NOT inside a line comment (-- ...) or a
-    block comment (/* ... */).  This avoids incorrectly splitting on semicolons
-    that appear in comment prose.
+    Splits on semicolons that are NOT inside a line comment (-- ...), a
+    block comment (/* ... */), or a single-quoted string literal ('...').
+    Single-quoted strings handle escaped quotes via doubling ('').
     """
     statements: list[str] = []
     current: list[str] = []
@@ -236,6 +236,7 @@ def _split_statements(sql: str) -> list[str]:
     n = len(sql)
     in_line_comment = False
     in_block_comment = False
+    in_string = False  # inside a single-quoted SQL string literal
 
     while i < n:
         ch = sql[i]
@@ -255,6 +256,24 @@ def _split_statements(sql: str) -> list[str]:
             else:
                 current.append(ch)
                 i += 1
+            continue
+
+        if in_string:
+            current.append(ch)
+            i += 1
+            if ch == "'":
+                # SQL escaped quote: '' is a literal single quote, not end-of-string.
+                if i < n and sql[i] == "'":
+                    current.append(sql[i])
+                    i += 1
+                else:
+                    in_string = False
+            continue
+
+        if ch == "'":
+            in_string = True
+            current.append(ch)
+            i += 1
             continue
 
         if ch == "-" and i + 1 < n and sql[i + 1] == "-":

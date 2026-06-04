@@ -51,6 +51,24 @@ WORKBOOK_SCHEMAS: dict[str, list[dict]] = {
             ),
         },
         {
+            "tab_name": "earnings",
+            "natural_key_columns": (
+                "period_start", "period_end", "employee_name", "description", "check_date",
+            ),
+            "header": [
+                "period_start", "period_end", "check_date",
+                "employee_name", "raw_employee_name", "description",
+                "hours", "hourly_rate", "amount", "scraped_at_utc",
+            ],
+            "notes": (
+                "Per earning-line from ADP Earnings & Hours XLSX. One row per "
+                "employee per pay period per earning code. amount can be negative "
+                "(voids/reissues). Codes: Regular, Overtime, Bonus, "
+                "Credit Card Tips Owed, Misc reimbursement non-taxable. "
+                "Source: compensation_backend.parse_xlsx."
+            ),
+        },
+        {
             "tab_name": "wage_rates",
             "natural_key_columns": ("employee_id",),
             "header": [
@@ -160,6 +178,22 @@ WORKBOOK_SCHEMAS: dict[str, list[dict]] = {
                 "was removed (percentiles + median replace it)."
             ),
         },
+        {
+            "tab_name": "kds_tickets",
+            "natural_key_columns": ("date_local", "time_created", "ticket_name"),
+            "header": [
+                "date_local", "device_name", "ticket_name", "order_source",
+                "num_items", "items_in_ticket", "completion_time_sec",
+                "time_created", "time_completed", "time_due", "scraped_at_utc",
+            ],
+            "notes": (
+                "Per-ticket KDS rows — NEW grain. Needed for the 'Slow Items — "
+                "Investigation' Grafana panel. Per-item minutes = "
+                "completion_time_sec / num_items. Natural key: "
+                "(date_local, time_created, ticket_name). Source: "
+                "transactions_backend.parse_kds_csv."
+            ),
+        },
     ],
     "BHAGA Model": [
         {
@@ -248,6 +282,27 @@ WORKBOOK_SCHEMAS: dict[str, list[dict]] = {
         },
     ],
 }
+
+
+WORKBOOK_SCHEMAS["BHAGA Review Raw"] = [
+    {
+        "tab_name": "reviews",
+        "natural_key_columns": ("review_id",),
+        "header": [
+            "review_id", "post_ts_ct", "post_date_ct", "rating", "reviewer",
+            "comment", "named_baristas", "named_status", "shift_date_credited",
+            "shift_assignment_reason", "shift_members", "trainees_on_shift",
+            "named_credit_each", "base_credit_each", "total_bonus",
+            "review_url", "clickup_message_id", "ingested_at_utc",
+        ],
+        "notes": (
+            "Per-review audit trail. review_id is a sha1 content hash (stable "
+            "across re-ingestion). Source: process_reviews.py; header matches "
+            "REVIEW_HEADER_ROW. BQ mirror: google_reviews (clickup_message_id "
+            "is Sheet-only — not in the BQ table)."
+        ),
+    },
+]
 
 
 def get_tab_spec(workbook_title: str, tab_name: str) -> dict:

@@ -23,11 +23,15 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
 3. **Scrape ADP** timecards / earnings for overlapping pay periods (`skills/adp_run_automation/`).
    2FA, if challenged, goes through the **OTP gate** (see below).
 4. **Mirror scrapes → raw Google Sheets** (`backfill_from_downloads.py`): `bhaga_adp_raw`,
-   `bhaga_square_raw` (including **`item_lines`** from the same Item Sales CSV as
-   `item_daily_rollup`). **Contract: downstream reads only the raw sheets, never local files.**
+   `bhaga_square_raw`, `bhaga_review_raw`. At scrape time, writes: `item_lines`, `item_daily_rollup`,
+   `kds_daily` (existing), plus **new** `kds_tickets` (per-ticket KDS grain for slow-item drilldown)
+   and **new** `earnings` (per-line ADP Earnings data for payroll reconciliation). **Contract:
+   downstream reads only the raw sheets, never local files.**
 5. **Mirror raw data → BigQuery** (`backfill_bigquery.py` called via `load_bigquery` step, non-fatal):
-   keeps `square_transactions`, `adp_shifts`, `adp_punches`, `adp_wage_rates` in BQ in sync with
-   Sheets. Sheets is still the source of truth; BQ is a parallel mirror for BI.
+   mirrors all raw Sheet tabs to BQ. Tables: `square_transactions`, `adp_shifts`, `adp_punches`,
+   `adp_wage_rates` (existing) + **new** `square_item_lines`, `square_item_daily`, `square_kds_daily`,
+   `square_kds_tickets`, `adp_earnings`, `google_reviews` (migration 005). Sheets remains the source of
+   truth; BQ is the canonical analytic layer and Grafana source.
 6. **Recompute the Model tabs** (`update_model_sheet.py`): `config, daily, labor_daily,
    labor_weekly, labor_period, tip_alloc_period, tip_alloc_daily, period_summary`
    (+ `labor_daily_forecast` via `forecast.py`), then **upsert `item_operations`** for the gap

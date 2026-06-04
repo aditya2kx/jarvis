@@ -649,6 +649,44 @@ def write_raw_kds_daily(
     )
 
 
+def write_raw_kds_tickets(
+    spreadsheet_id: str,
+    tickets: list[dict],
+    *,
+    account: str = "palmetto",
+    scraped_at_utc: Optional[str] = None,
+) -> dict:
+    """Idempotent upsert into BHAGA Square Raw > kds_tickets. Natural key:
+    (date_local, time_created, ticket_name).
+
+    Source records come from transactions_backend.parse_kds_csv(). Each record
+    carries one KDS ticket with its item list and completion time.
+    """
+    return _upsert_tab(
+        spreadsheet_id, "BHAGA Square Raw", "kds_tickets", tickets,
+        account=account, scraped_at_utc=scraped_at_utc,
+    )
+
+
+def write_raw_adp_earnings(
+    spreadsheet_id: str,
+    earnings: list[dict],
+    *,
+    account: str = "palmetto",
+    scraped_at_utc: Optional[str] = None,
+) -> dict:
+    """Idempotent upsert into BHAGA ADP Raw > earnings. Natural key:
+    (period_start, period_end, employee_name, description, check_date).
+
+    Source records come from compensation_backend.parse_xlsx(). Each record
+    carries one earning-line per employee per pay period.
+    """
+    return _upsert_tab(
+        spreadsheet_id, "BHAGA ADP Raw", "earnings", earnings,
+        account=account, scraped_at_utc=scraped_at_utc,
+    )
+
+
 def write_training_shifts(
     spreadsheet_id: str,
     rows: list[dict],

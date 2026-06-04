@@ -351,7 +351,8 @@ night.
 ## 6b. BigQuery model tables and Grafana views
 
 All Sheet model tabs have corresponding BQ model tables (populated by `materialize_model_bq.py`
-or `process_reviews.py`). Grafana reads from BQ views defined in `core/migrations/`.
+or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored nightly by
+`backfill_bigquery.py`). Grafana reads from BQ views defined in `core/migrations/`.
 
 **Migration 004 additions** (`core/migrations/004_dashboard_refactor.sql`):
 
@@ -359,10 +360,32 @@ or `process_reviews.py`). Grafana reads from BQ views defined in `core/migration
 |---|---|---|---|
 | `model_review_bonus_period` | (period_start, employee) | `reviews_credited`, `named_count`, `base_dollars`, `named_dollars`, `total_bonus` | BQ mirror of the `review_bonus_period` Sheet tab; written by `process_reviews.py` when `BHAGA_DATASTORE=bigquery`. Merge keys: (period_start, employee). |
 | `vw_model_labor_daily` (extended) | day | All `model_labor_daily` cols + `labor_pct`, `hourly_pct`, `fulltime_pct` aliases | Extended view for the Grafana Labor Cost section. No view-on-view — source: `model_labor_daily`. |
-| `vw_model_labor_weekly` (new) | ISO week | All `model_labor_weekly` cols + `labor_pct`, `hourly_pct`, `fulltime_pct` aliases | Weekly labor view for Grafana. Source: `model_labor_weekly`. |
-| `vw_model_payroll_period` (new) | (period, employee) | `hours_worked`, `est_gross_pay`, `tips_allocated`, `adp_tips_paid`, `review_bonus`, `est_total_pay` | Consolidated payroll view joining `model_tip_alloc_period` + `model_review_bonus_period` + `adp_wage_rates`. `est_gross_pay = hours_worked × wage_rate_dollars` (base rate; salaried → NULL). |
+| `vw_model_labor_daily` (ext 005) | day | All prior cols + `total_hours`, `hourly/fulltime_hours_per_item`, `*_hours_per_1k_net_sales` | Adds per-$1k and per-item hours ratios for the Labor section charts. |
+| `vw_model_labor_weekly` (ext 005) | ISO week | All `model_labor_weekly` cols + same new Labor section cols | Same extensions as daily. Source: `model_labor_weekly`. |
+| `vw_model_payroll_period` (ext 005) | (period, employee) | `hours_worked`, `est_gross_pay`, `adp_wages_paid`, `wage_diff`, `tips_allocated`, `adp_tips_paid`, `tip_diff`, `review_bonus`, `adp_bonus_paid`, `bonus_diff`, `est_total_pay`, `adp_total_paid` | Joins `model_tip_alloc_period` + `model_review_bonus_period` + `adp_wage_rates` + `adp_earnings`. ADP actuals come from `adp_earnings`; diffs = estimated − actual. |
 
-**Grafana dashboard** (`agents/bhaga/grafana/dashboard.json`) reads from these views in 3 sections: Order Volume, Labor Cost, Payroll.
+### Raw BQ tables (migration 005 — 1:1 mirrors of scrape output)
+
+| BQ table | Date column | Source Sheet tab | Merge keys |
+|---|---|---|---|
+| `square_item_lines` | `date_local` | BHAGA Square Raw > item_lines | `(transaction_id, line_seq)` |
+| `square_item_daily` | `date_local` | BHAGA Square Raw > item_daily_rollup | `(date_local,)` |
+| `square_kds_daily` | `date_local` | BHAGA Square Raw > kds_daily | `(date_local,)` |
+| `square_kds_tickets` | `date_local` | BHAGA Square Raw > kds_tickets (NEW) | `(date_local, time_created, ticket_name)` |
+| `adp_earnings` | `period_start` | BHAGA ADP Raw > earnings (NEW) | `(period_start, period_end, employee, description, check_date)` |
+| `google_reviews` | `post_date_ct` | BHAGA Review Raw > reviews | `(review_id,)` |
+
+`square_kds_tickets` and `adp_earnings` are new tabs written by `backfill_from_downloads.py` at scrape time (M3). All six are mirrored nightly by `backfill_bigquery.py`.
+
+### Order Quality views (migration 005)
+
+| View | Key | Columns | Notes |
+|---|---|---|---|
+| `vw_order_quality_daily` | date | `kds_median_min`, `kds_p90_min`, `kds_p95_min`, `kds_p99_min`, `kds_pct_items_over_goal`, `kds_pct_tickets_late` | Converts `model_labor_daily` seconds → minutes for Grafana. |
+| `vw_kds_item_investigation` | (date_local, item) | `item_name`, `category`, `qty`, `per_item_min`, `ticket_min`, `device_name`, `time_created` | Explodes `items_in_ticket` from `square_kds_tickets`; `per_item_min = ROUND(completion_time_sec / num_items / 60)` (integer). category is best-effort from `square_item_lines` dimension. Delimiter: `"; "` (semicolon + space). Item format: `"<qty>x <name>"`. |
+| `vw_staff_on_shift` | date | `employee`, `in_time`, `out_time`, `total_hours` | From `adp_shifts`. |
+
+**Grafana dashboard** (`agents/bhaga/grafana/dashboard.json`) reads from these views in 5 sections: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll.
 
 ---
 

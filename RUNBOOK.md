@@ -858,13 +858,24 @@ python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985
 python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
 ```
 
-Migrations live in `core/migrations/001_initial_schema.sql`, `002_views.sql`, `003_model_tables.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`).
+Migrations live in `core/migrations/001_initial_schema.sql` … `005_raw_parity.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`). Migration 005 adds: `square_item_lines`, `square_kds_daily`, `square_kds_tickets`, `adp_earnings`, `google_reviews` raw tables; and `vw_order_quality_daily`, `vw_kds_item_investigation`, `vw_staff_on_shift`, extended `vw_model_labor_daily/weekly`, extended `vw_model_payroll_period` (with ADP actuals + diffs).
 
 ### BQ backfill (one-shot)
 
+Backfills all 11 tables (existing + new raw-parity tables from migration 005):
 ```bash
 BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
   python3 -m agents.bhaga.scripts.backfill_bigquery --store palmetto
+```
+
+To backfill specific tables only:
+```bash
+python3 -m agents.bhaga.scripts.backfill_bigquery --store palmetto --tables square_kds_daily,square_kds_tickets,adp_earnings,google_reviews
+```
+
+To backfill the new raw scrape tabs from downloads (writes `kds_tickets` + `adp_earnings` to Sheets first):
+```bash
+python3 -m agents.bhaga.scripts.backfill_from_downloads --store palmetto
 ```
 
 ### Materialize model into BQ (one-shot)

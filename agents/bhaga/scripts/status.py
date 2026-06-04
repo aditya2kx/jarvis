@@ -98,6 +98,13 @@ BQ_TARGETS: list[Target] = [
     Target("adp_shifts", "date"),
     Target("adp_punches", "date"),
     Target("square_daily_rollup", "date_local"),
+    # ── Raw-parity tables (migration 005) ────────────────────────────────────
+    Target("square_item_lines", "date_local"),
+    Target("square_item_daily", "date_local"),
+    Target("square_kds_daily", "date_local"),
+    Target("square_kds_tickets", "date_local"),
+    Target("adp_earnings", "period_start", "period_coverage"),
+    Target("google_reviews", "post_date_ct"),
 ]
 
 GRAFANA_VIEWS: list[Target] = [
@@ -113,6 +120,10 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 004 / dashboard refactor views
     Target("vw_model_labor_weekly", "iso_week", "iso_week"),
     Target("vw_model_payroll_period", "period_start"),
+    # migration 005 / 5-section dashboard views
+    Target("vw_order_quality_daily", "date"),
+    Target("vw_kds_item_investigation", "date_local"),
+    Target("vw_staff_on_shift", "date"),
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

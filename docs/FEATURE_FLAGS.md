@@ -26,6 +26,8 @@ Some changes are safe to apply directly without a flag because they are additive
 
 These are noted here so future reviewers understand the policy: flags gate **cutover** risk, not additive additions.
 
+Migration 005 raw-parity tables and the 5-section Grafana dashboard redesign fall into this category — all changes are additive and are applied without a flag.
+
 ---
 
 ## Flag flip log

@@ -45,13 +45,22 @@ _STORE_PROFILES = pathlib.Path(__file__).resolve().parents[3] / "agents" / "bhag
 # Columns that exist in BQ but not in the Sheet (metadata/internal) — skip in diff.
 _SKIP_COLS: set[str] = {"materialized_at_utc", "last_refreshed_ct", "scraped_at_utc"}
 
-# Tab name → BQ table name + sort columns.
+# Tab name → BQ table name + sort columns + workbook key (default: "bhaga_model").
+# raw_mirror=True grains compare the raw Sheet tabs against their 1:1 BQ raw tables.
 _GRAINS: list[dict] = [
+    # ── Model grains (Sheet model tabs ⇆ BQ model tables) ───────────────────
     {"tab": "labor_daily",         "bq_table": "model_labor_daily",         "sort_by": ["date"]},
     {"tab": "labor_weekly",        "bq_table": "model_labor_weekly",         "sort_by": ["iso_week"]},
     {"tab": "tip_alloc_period",    "bq_table": "model_tip_alloc_period",     "sort_by": ["period_start", "employee"]},
     {"tab": "review_bonus_period", "bq_table": "model_review_bonus_period",  "sort_by": ["period_start", "employee"]},
     {"tab": "period_summary",      "bq_table": "model_period_summary",       "sort_by": ["period_start"]},
+    # ── Raw-mirror grains (raw Sheet tabs ⇆ BQ raw tables, migration 005) ───
+    # These grains ensure nightly backfill_bigquery doesn't drift from the source sheets.
+    {"tab": "item_lines",       "bq_table": "square_item_lines",  "sort_by": ["date_local", "transaction_id", "line_seq"], "workbook": "bhaga_square_raw", "raw_mirror": True},
+    {"tab": "kds_daily",        "bq_table": "square_kds_daily",   "sort_by": ["date_local"], "workbook": "bhaga_square_raw", "raw_mirror": True},
+    {"tab": "kds_tickets",      "bq_table": "square_kds_tickets", "sort_by": ["date_local", "time_created", "ticket_name"], "workbook": "bhaga_square_raw", "raw_mirror": True},
+    {"tab": "earnings",         "bq_table": "adp_earnings",       "sort_by": ["period_start", "employee", "description"], "workbook": "bhaga_adp_raw", "raw_mirror": True},
+    {"tab": "reviews",          "bq_table": "google_reviews",     "sort_by": ["post_date_ct", "review_id"], "workbook": "bhaga_review_raw", "raw_mirror": True},
 ]
 
 
@@ -132,6 +141,14 @@ def reconcile(
     profile = json.loads((_STORE_PROFILES / f"{store}.json").read_text())
     model_sid = resolve_sheet_id("bhaga_model", profile)
 
+    # Pre-resolve workbook IDs for raw-mirror grains.
+    _workbook_ids: dict[str, str] = {
+        "bhaga_model": model_sid,
+        "bhaga_square_raw": resolve_sheet_id("bhaga_square_raw", profile),
+        "bhaga_adp_raw": resolve_sheet_id("bhaga_adp_raw", profile),
+        "bhaga_review_raw": resolve_sheet_id("bhaga_review_raw", profile),
+    }
+
     token = refresh_access_token(account=store)
     grains_to_check = grains if grains is not None else _GRAINS
 
@@ -140,8 +157,16 @@ def reconcile(
 
     for grain in grains_to_check:
         tab = grain["tab"]
-        print(f"  [{tab}] reading Sheet tab…", end=" ", flush=True)
-        sheet_rows = _read_sheet_tab(model_sid, tab, token)
+        workbook_key = grain.get("workbook", "bhaga_model")
+        sid = _workbook_ids.get(workbook_key, model_sid)
+        is_raw = grain.get("raw_mirror", False)
+        print(f"  [{tab}{'(raw)' if is_raw else ''}] reading Sheet tab…", end=" ", flush=True)
+        try:
+            sheet_rows = _read_sheet_tab(sid, tab, token)
+        except Exception as exc:  # noqa: BLE001
+            print(f"SKIP (Sheet read error: {exc})")
+            results.append({"tab": tab, "status": "SKIP_SHEET_ERROR", "cells": 0, "mismatches": []})
+            continue
 
         if not sheet_rows:
             print("SKIP (empty Sheet tab)")

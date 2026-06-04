@@ -47,6 +47,10 @@ _INT_COLUMNS = {
     "items_sold", "units_sold", "avg_item_price_cents",
     "completed_tickets", "completed_items",
     "late_tickets", "due_tickets",
+    # kds_tickets
+    "num_items",
+    # google_reviews
+    "rating",
 }
 # Columns whose string value should become float. Hours and dollar amounts
 # typed as decimal.
@@ -57,6 +61,10 @@ _FLOAT_COLUMNS = {
     "median_time_per_item_sec",
     "p90_time_per_item_sec", "p95_time_per_item_sec", "p99_time_per_item_sec",
     "pct_tickets_late",
+    # kds_tickets
+    "completion_time_sec",
+    # google_reviews
+    "named_credit_each", "base_credit_each", "total_bonus",
 }
 _BOOL_COLUMNS = {"is_salaried", "multi_rate", "excluded_from_labor_pct"}
 _JSON_COLUMNS = {"rate_history_json", "raw_employee_names_json", "per_item_times_json"}
@@ -200,3 +208,51 @@ def read_raw_kds_daily(spreadsheet_id: str, *, account: str = "palmetto") -> lis
     kds_pct_items_over_goal across days.
     """
     return _read_raw_tab(spreadsheet_id, "BHAGA Square Raw", "kds_daily", account=account)
+
+
+# Aliases for backfill_bigquery — same underlying tab, explicit name for clarity.
+read_raw_square_kds_daily = read_raw_kds_daily
+
+
+def read_raw_square_item_daily(spreadsheet_id: str, *, account: str = "palmetto") -> list[dict]:
+    """Return all rows of BHAGA Square Raw > item_daily_rollup as list[dict].
+
+    Each record: date_local, items_sold (int), units_sold (int),
+    gross_sales_cents (int), avg_item_price_cents (int), scraped_at_utc.
+    """
+    return _read_raw_tab(spreadsheet_id, "BHAGA Square Raw", "item_daily_rollup", account=account)
+
+
+def read_raw_kds_tickets(spreadsheet_id: str, *, account: str = "palmetto") -> list[dict]:
+    """Return all rows of BHAGA Square Raw > kds_tickets as list[dict].
+
+    Each record: date_local, device_name, ticket_name, order_source,
+    num_items (int), items_in_ticket, completion_time_sec (float),
+    time_created, time_completed, time_due, scraped_at_utc.
+    Natural key: (date_local, time_created, ticket_name).
+    """
+    return _read_raw_tab(spreadsheet_id, "BHAGA Square Raw", "kds_tickets", account=account)
+
+
+def read_raw_adp_earnings(spreadsheet_id: str, *, account: str = "palmetto") -> list[dict]:
+    """Return all rows of BHAGA ADP Raw > earnings as list[dict].
+
+    Each record: period_start, period_end, check_date, employee_name,
+    raw_employee_name, description, hours (float), hourly_rate (float),
+    amount (float), scraped_at_utc.
+    Natural key: (period_start, period_end, employee_name, description, check_date).
+    """
+    return _read_raw_tab(spreadsheet_id, "BHAGA ADP Raw", "earnings", account=account)
+
+
+def read_raw_google_reviews(spreadsheet_id: str, *, account: str = "palmetto") -> list[dict]:
+    """Return all rows of BHAGA Review Raw > reviews as list[dict].
+
+    Each record: review_id, post_ts_ct, post_date_ct, rating (int), reviewer,
+    comment, named_baristas, named_status, shift_date_credited,
+    shift_assignment_reason, shift_members, trainees_on_shift,
+    named_credit_each (float), base_credit_each (float), total_bonus (float),
+    review_url, clickup_message_id, ingested_at_utc.
+    Natural key: review_id.
+    """
+    return _read_raw_tab(spreadsheet_id, "BHAGA Review Raw", "reviews", account=account)

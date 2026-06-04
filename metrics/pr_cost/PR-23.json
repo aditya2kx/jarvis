@@ -1,0 +1,35 @@
+{
+  "pr_number": 23,
+  "title": null,
+  "requirement": "[P0] BHAGA operational issues: (1) BQ incremental run failed today \u2014 investigate Cloud Run logs and fix. (2) Square prod always prompts magic link / trust-device not persisting (works in sandbox). (3) BQ backfill only reached 6/1 but Sheets had data through 6/2 \u2014 re-backfill the missing day. Address any related review/reconciliation issues surfaced during investigation.",
+  "branch": null,
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": null,
+    "approximate": true,
+    "attribution_mode": null,
+    "session_started_at": null,
+    "conversation_ids": [],
+    "sessions": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 0,
+    "cost_usd": 0
+  },
+  "session_started_at": "2026-06-04T03:13:37+00:00"
+}

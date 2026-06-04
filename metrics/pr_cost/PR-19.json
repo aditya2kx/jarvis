@@ -1,0 +1,130 @@
+{
+  "pr_number": 19,
+  "title": "chore: document jarvis-agent-bot328 GitHub identity across all Jarvis docs",
+  "requirement": "Bot GitHub account + docs update",
+  "branch": "chore/bot-github-identity",
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor dashboard usage API (local session token; request->PR by time window)",
+    "approximate": true,
+    "attribution_mode": "manual_window",
+    "session_started_at": null,
+    "conversation_ids": [],
+    "sessions": [
+      {
+        "ts": "2026-06-04T01:45:06.753000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 57133,
+        "cost_usd": 0.0441,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 3,
+        "output_tokens": 1708,
+        "cache_read_input_tokens": 54875,
+        "cache_creation_input_tokens": 547,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T01:46:24.911000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 2118196,
+        "cost_usd": 0.8037,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 33,
+        "output_tokens": 6468,
+        "cache_read_input_tokens": 2090502,
+        "cache_creation_input_tokens": 21193,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T01:50:57.444000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 863671,
+        "cost_usd": 0.2922,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 13,
+        "output_tokens": 1275,
+        "cache_read_input_tokens": 858233,
+        "cache_creation_input_tokens": 4150,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T01:55:53.131000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 2689739,
+        "cost_usd": 1.0248,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 29,
+        "output_tokens": 7643,
+        "cache_read_input_tokens": 2651512,
+        "cache_creation_input_tokens": 30555,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T01:59:18.898000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 1281160,
+        "cost_usd": 0.482,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 13,
+        "output_tokens": 5013,
+        "cache_read_input_tokens": 1269211,
+        "cache_creation_input_tokens": 6923,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T02:04:38.840000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 733658,
+        "cost_usd": 0.2925,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 8,
+        "output_tokens": 3738,
+        "cache_read_input_tokens": 724861,
+        "cache_creation_input_tokens": 5051,
+        "note": "byok"
+      },
+      {
+        "ts": "2026-06-04T02:06:20.295000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 3360160,
+        "cost_usd": 1.1473,
+        "cost_source": "byok_token_usage",
+        "conversation_id": null,
+        "input_tokens": 28,
+        "output_tokens": 6650,
+        "cache_read_input_tokens": 3341469,
+        "cache_creation_input_tokens": 12013,
+        "note": "byok"
+      }
+    ],
+    "tokens_total": 11103717,
+    "cost_usd_total": 4.0866,
+    "window": {
+      "start": "2026-06-04T01:45:00+00:00",
+      "end": "2026-06-04T03:30:00+00:00"
+    }
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 11103717,
+    "cost_usd": 4.0866
+  }
+}

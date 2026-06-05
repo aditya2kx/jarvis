@@ -9,5 +9,5 @@
 scenarios:
   - name: unified-window
     date: "2026-05-31"
-    window_from: "2026-05-18"
+    window_from: "2026-05-04"
     window_to: "2026-05-31"

@@ -1007,6 +1007,9 @@ def _adp_bundle_then_raise(
     target_date: datetime.date,
     include_earnings: bool,
     headed: bool,
+    earnings_start: datetime.date | None = None,
+    earnings_end: datetime.date | None = None,
+    earnings_custom_range: bool = False,
 ) -> dict:
     """Wrap download_adp_bundle so the orchestrator's run_step sees a clean
     success/exception contract.
@@ -1025,6 +1028,9 @@ def _adp_bundle_then_raise(
         target_date=target_date,
         include_earnings=include_earnings,
         headed=headed,
+        earnings_start=earnings_start,
+        earnings_end=earnings_end,
+        earnings_custom_range=earnings_custom_range,
     )
     errs = result.get("errors") or {}
     if errs:
@@ -1217,6 +1223,9 @@ def _run_adp_pipeline(
     headed: bool,
     refresh_date: datetime.date,
     dry_run: bool,
+    earnings_start: datetime.date | None = None,
+    earnings_end: datetime.date | None = None,
+    earnings_custom_range: bool = False,
 ) -> PipelineResult:
     """Thread 2: ADP Timecard + Earnings scrape → GCS upload."""
     result = PipelineResult(name="adp")
@@ -1231,6 +1240,9 @@ def _run_adp_pipeline(
             target_date=target_date,
             include_earnings=include_earnings,
             headed=headed,
+            earnings_start=earnings_start,
+            earnings_end=earnings_end,
+            earnings_custom_range=earnings_custom_range,
         )
         result.artifacts["adp_timecard_xlsx"] = bundle.get("timecard_xlsx")
         result.artifacts["adp_earnings_xlsx"] = bundle.get("earnings_xlsx")
@@ -1268,11 +1280,17 @@ def _run_review_fetch(
     *,
     store: str,
     dry_run: bool,
+    since_override: str | None = None,
 ) -> PipelineResult:
     """Thread 3: Fetch ClickUp review messages and cache locally as JSON.
 
     Does NOT do attribution — that requires punch data from raw sheets
     and must run after write_raw_sheets + update_model_sheet.
+
+    Args:
+        since_override: YYYY-MM-DD string. When set (e.g. via --from/--to unified
+            window or --reviews-since), bypasses the BQ high-water mark and fetches
+            from this date forward. Allows historical review backfill.
     """
     from agents.bhaga.scripts.process_reviews import (  # noqa: PLC0415
         REVIEW_CHANNEL_ID, CLICKUP_TEAM_ID, REVIEW_CHANNEL_NAME,
@@ -1291,16 +1309,30 @@ def _run_review_fetch(
 
         profile = _load_review_profile(store)
 
-        # High-water mark now comes from google_reviews BQ (BQ-primary architecture).
-        # _latest_review_ts_ms() reads from BQ; returns None if BQ is unavailable or empty.
-        latest_in_bq_ms = _latest_review_ts_ms()
-        if latest_in_bq_ms is not None:
-            since_ts_ms = latest_in_bq_ms
-        else:
-            bonus_start_dt = datetime.datetime.combine(
-                BONUS_START_DATE, datetime.time.min, tzinfo=REVIEW_CT,
+        # Resolve the ClickUp fetch start. Priority:
+        # 1. since_override (from --from/--to unified window or --reviews-since)
+        # 2. BQ high-water mark (google_reviews.max(post_ts_ct))
+        # 3. bonus_start_date fallback
+        if since_override:
+            since_dt = datetime.datetime.fromisoformat(since_override).replace(
+                tzinfo=REVIEW_CT,
+            ) if "T" in since_override else datetime.datetime.combine(
+                datetime.date.fromisoformat(since_override),
+                datetime.time.min,
+                tzinfo=REVIEW_CT,
             )
-            since_ts_ms = int(bonus_start_dt.timestamp() * 1000) - 1
+            since_ts_ms = int(since_dt.timestamp() * 1000) - 1
+            print(f"[review_fetch] since_override={since_override} → since_ts_ms={since_ts_ms}")
+        else:
+            # High-water mark now comes from google_reviews BQ (BQ-primary architecture).
+            latest_in_bq_ms = _latest_review_ts_ms()
+            if latest_in_bq_ms is not None:
+                since_ts_ms = latest_in_bq_ms
+            else:
+                bonus_start_dt = datetime.datetime.combine(
+                    BONUS_START_DATE, datetime.time.min, tzinfo=REVIEW_CT,
+                )
+                since_ts_ms = int(bonus_start_dt.timestamp() * 1000) - 1
 
         msgs = fetch_review_messages(
             since_ts_ms=since_ts_ms, max_pages=40,
@@ -1540,6 +1572,18 @@ def main() -> int:
                      help="Override reviews anchor timestamp (YYYY-MM-DD). Default: auto from sheet.")
     cli.add_argument("--reviews-until", default=None, metavar="DATE",
                      help="Override reviews end cap (YYYY-MM-DD). Default: data_window_end.")
+    # Unified window — fans out to every source (Square, ADP timecard, ADP earnings,
+    # reviews) unless a per-source flag overrides. Also accepts env vars
+    # BHAGA_WINDOW_FROM / BHAGA_WINDOW_TO so Cloud Run jobs can set the window
+    # without rewriting the container command.
+    cli.add_argument("--from", dest="window_from", default=None, metavar="DATE",
+                     help="Unified backfill window START (YYYY-MM-DD). Fans out to "
+                          "Square/ADP/reviews unless a per-source flag overrides. "
+                          "Env fallback: BHAGA_WINDOW_FROM.")
+    cli.add_argument("--to", dest="window_to", default=None, metavar="DATE",
+                     help="Unified backfill window END (YYYY-MM-DD). Also sets "
+                          "refresh_date (the GCS cache folder). "
+                          "Env fallback: BHAGA_WINDOW_TO.")
     cli.add_argument("--dry-run", action="store_true",
                      help="Print steps but do not actually scrape.")
     cli.add_argument("--no-slack", action="store_true",
@@ -1549,6 +1593,11 @@ def main() -> int:
                           "(use after fixing a known-bad regression; a healthy "
                           "run auto-clears the breaker).")
     args = cli.parse_args()
+
+    # Env-var fallbacks for the unified window (mirrors how REFRESH_DATE works).
+    # CLI flags win; env is a second-choice for Cloud Run job overrides.
+    args.window_from = args.window_from or os.environ.get("BHAGA_WINDOW_FROM") or None
+    args.window_to = args.window_to or os.environ.get("BHAGA_WINDOW_TO") or None
 
     # Scenario scoping via env: a focused sandbox run (e.g. the item-sales-live
     # scenario) sets BHAGA_SKIP_<STEP>=1 to exercise ONLY the surface that failed.
@@ -1572,10 +1621,9 @@ def main() -> int:
     if args.no_slack:
         os.environ["BHAGA_SLACK_DISABLED"] = "1"
 
-    # --date wins; otherwise honor the REFRESH_DATE env var (set by the cloud
-    # webhook's job-execution trigger when resuming from a pending checkpoint),
-    # falling back to today CT for the nightly cron.
-    date_arg = args.date or os.environ.get("REFRESH_DATE") or None
+    # --date wins; then --to (unified window end); then REFRESH_DATE env (cloud
+    # webhook); then today CT for the nightly cron.
+    date_arg = args.date or args.window_to or os.environ.get("REFRESH_DATE") or None
     refresh_date = (
         datetime.date.fromisoformat(date_arg) if date_arg else _today_ct()
     )
@@ -1668,9 +1716,10 @@ def main() -> int:
     # so we set it unconditionally here (None in the --from-date /
     # --skip-square branches where there's nothing to compare against).
     prev_end: datetime.date | None = None
-    if args.from_date:
-        gap_start = datetime.date.fromisoformat(args.from_date)
-        gap_source = "--from-date override"
+    _from_override = args.from_date or args.window_from
+    if _from_override:
+        gap_start = datetime.date.fromisoformat(_from_override)
+        gap_source = "--from/--to window" if args.window_from and not args.from_date else "--from-date override"
     elif args.skip_square:
         gap_start = refresh_date
         gap_source = "(square skipped)"
@@ -1709,6 +1758,9 @@ def main() -> int:
     print(f"  gap source:     {gap_source}")
     print(f"  gap window:     {gap_start.isoformat()} → {refresh_date.isoformat()}"
           + ("  (empty — nothing to scrape)" if not needs_square_scrape and not args.skip_square else ""))
+    if args.window_from or args.window_to:
+        print(f"  unified window: {args.window_from or '(start)'} → {args.window_to or '(end)'}"
+              f"  earnings_custom_range={earnings_custom_range}")
     print(f"  fresh_install:  {is_fresh_install}")
     print(f"  adp_target:     {adp_target_date!r}{'  (Select All pay periods)' if adp_target_date is None else ''}")
     print(f"  include_rates:  {include_rates}")
@@ -1731,6 +1783,27 @@ def main() -> int:
     elif args.adp_to:
         adp_target_date = datetime.date.fromisoformat(args.adp_to)
     # else: adp_target_date was already set above (None for fresh install, refresh_date otherwise)
+
+    # Unified window defaults for ADP earnings: explicit --adp-from/--adp-to win;
+    # otherwise fall back to the unified --from/--to window.
+    adp_window_from = (
+        datetime.date.fromisoformat(args.adp_from) if args.adp_from
+        else (datetime.date.fromisoformat(args.window_from) if args.window_from else None)
+    )
+    adp_window_to = (
+        datetime.date.fromisoformat(args.adp_to) if args.adp_to
+        else (datetime.date.fromisoformat(args.window_to) if args.window_to else None)
+    )
+    # Use custom-range earnings when a window is explicitly set (backfill mode).
+    # Keep "Last payroll" for nightly incremental (no --from/--to, no --adp-from).
+    earnings_custom_range = bool(adp_window_from and adp_window_to)
+    # A windowed run with no explicit pay-period override => Select All periods
+    # (extra periods upsert harmlessly via keyed BQ MERGE).
+    if args.window_from and not args.adp_pay_period and not args.adp_to:
+        adp_target_date = None  # Select All pay periods
+    # Always include earnings on an explicit backfill window.
+    if args.window_from:
+        include_rates = True
 
     t_start = time.monotonic()
     info_ping(
@@ -1886,12 +1959,17 @@ def main() -> int:
             headed=headed,
             refresh_date=refresh_date,
             dry_run=args.dry_run,
+            earnings_start=adp_window_from,
+            earnings_end=adp_window_to,
+            earnings_custom_range=earnings_custom_range,
         )
     if needs_review_fetch:
+        _rev_since_override = args.reviews_since or args.window_from
         pipeline_specs["review_fetch"] = functools.partial(
             _run_review_fetch,
             store=args.store,
             dry_run=args.dry_run,
+            since_override=_rev_since_override,
         )
 
     results = _execute_pipelines(pipeline_specs, serialize_otp=serialize_otp)
@@ -2167,8 +2245,12 @@ def main() -> int:
             if args.no_slack:
                 review_cmd.append("--no-slack")
             review_cmd.extend(["--prefetched-messages", str(review_prefetch_path)])
-            if args.reviews_since:
-                review_cmd.extend(["--since", args.reviews_since])
+            _rev_since = args.reviews_since or args.window_from
+            _rev_until = args.reviews_until or args.window_to
+            if _rev_since:
+                review_cmd.extend(["--since", _rev_since])
+            if _rev_until:
+                review_cmd.extend(["--until", _rev_until])
 
             ok, val = run_step(
                 "process_reviews",

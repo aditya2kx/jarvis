@@ -87,6 +87,8 @@ def build_sandbox_env(
     target_job: str | None = None,
     base_env: dict[str, str] | None = None,
     skip_steps: list[str] | None = None,
+    window_from: str | None = None,
+    window_to: str | None = None,
 ) -> dict[str, str]:
     """Construct the sandbox job's env overlay.
 
@@ -123,6 +125,11 @@ def build_sandbox_env(
         "REFRESH_DATE": refresh_date,
         "STORE": store,
     })
+    # Unified backfill window: injected so daily_refresh fans out to all sources.
+    if window_from:
+        env["BHAGA_WINDOW_FROM"] = window_from
+    if window_to:
+        env["BHAGA_WINDOW_TO"] = window_to
     # Scenario scoping: skip steps outside the surface under test (e.g. item-sales
     # only needs the Square download, so skip ADP/reviews/model). daily_refresh.main
     # reads each BHAGA_SKIP_<STEP> and ORs it with the matching CLI flag.
@@ -468,6 +475,14 @@ def main(argv: list[str] | None = None) -> int:
                           "(e.g. 'adp,reviews,model' for a Square-only scenario).")
     cli.add_argument("--verify", choices=["item_sales"], default=None,
                      help="Post-run verification gate; fails the run if the deliverable is absent.")
+    cli.add_argument("--from", dest="window_from", default=None, metavar="DATE",
+                     help="Unified backfill window START (YYYY-MM-DD). Injected as "
+                          "BHAGA_WINDOW_FROM into the sandbox job env so daily_refresh "
+                          "fans it out to Square/ADP/reviews.")
+    cli.add_argument("--to", dest="window_to", default=None, metavar="DATE",
+                     help="Unified backfill window END (YYYY-MM-DD). Injected as "
+                          "BHAGA_WINDOW_TO into the sandbox job env. Should match "
+                          "--refresh-date for a closed backfill window.")
     args = cli.parse_args(argv)
 
     skip_steps = [s.strip() for s in args.skip.split(",") if s.strip()]
@@ -493,6 +508,8 @@ def main(argv: list[str] | None = None) -> int:
         run_label=run_label,
         base_env=base_env,
         skip_steps=skip_steps,
+        window_from=args.window_from,
+        window_to=args.window_to,
     )
     if skip_steps:
         print(f"[sandbox_live_run] scenario scoped — skipping steps: {', '.join(skip_steps)}")

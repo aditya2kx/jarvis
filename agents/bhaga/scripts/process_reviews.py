@@ -901,6 +901,12 @@ def main() -> int:
              "last_processed_ts_ms from Review Raw config tab; if missing, "
              "use the bonus_start_date (2026-05-11).",
     )
+    cli.add_argument(
+        "--until", default=None,
+        help="End cap for review processing (YYYY-MM-DD). Reviews posted "
+             "after end-of-day CT on this date are skipped. Default: "
+             "data_window_end from the model config tab.",
+    )
     cli.add_argument("--max-pages", type=int, default=40,
                      help="Cap on ClickUp pagination depth (default 40).")
     cli.add_argument(
@@ -993,12 +999,17 @@ def main() -> int:
     #   - `review_bonus_period` only rolls up credited reviews ≤ same date
     #   - high-water mark never advances past the window end, so tomorrow's
     #     run will re-fetch the held-back messages.
+    # --until overrides data_window_end for historical backfills.
     model_cfg = _read_config_tab(model_sid, token)
-    try:
-        data_window_end = _resolve_data_window_end(model_cfg)
-    except RuntimeError as exc:
-        print(f"ERROR: {exc}")
-        return 2
+    if args.until:
+        data_window_end = datetime.date.fromisoformat(args.until)
+        print(f"# --until override: data_window_end={data_window_end}")
+    else:
+        try:
+            data_window_end = _resolve_data_window_end(model_cfg)
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}")
+            return 2
     end_of_window_dt = datetime.datetime.combine(
         data_window_end, datetime.time.max, tzinfo=CT,
     )

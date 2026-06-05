@@ -206,14 +206,27 @@
         "cost_usd": 0.4552,
         "result": "success",
         "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/27034000541"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 13,
+        "input_tokens": 12,
+        "output_tokens": 5543,
+        "cache_read_input_tokens": 349370,
+        "cache_creation_input_tokens": 32635,
+        "tokens": 387560,
+        "cost_usd": 0.3115,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/27034968674"
       }
     ],
-    "tokens_total": 5259134,
-    "cost_usd_total": 5.1623,
-    "run_count": 13
+    "tokens_total": 5646694,
+    "cost_usd_total": 5.4738,
+    "run_count": 14
   },
   "totals": {
-    "tokens": 5509134,
-    "cost_usd": 7.6623
+    "tokens": 5896694,
+    "cost_usd": 7.9738
   }
 }

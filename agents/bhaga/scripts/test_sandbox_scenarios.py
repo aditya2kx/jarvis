@@ -61,7 +61,11 @@ class TestLoadConfig:
                 date: 2026-05-31
         """))
         plan = sc.load_config(str(p))
-        assert plan == [{"name": "item-sales-live", "date": "2026-05-31"}]
+        assert len(plan) == 1
+        assert plan[0]["name"] == "item-sales-live"
+        assert plan[0]["date"] == "2026-05-31"
+        assert plan[0].get("window_from") is None
+        assert plan[0].get("window_to") is None
 
     def test_missing_file_is_empty(self, tmp_path):
         assert sc.load_config(str(tmp_path / "nope.yml")) == []

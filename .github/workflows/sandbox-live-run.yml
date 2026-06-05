@@ -147,6 +147,10 @@ jobs:
                      item["name"], "--date", item["date"], "--pr-number", pr_number,
                      "--pr-label", f"sandbox-live ({item['name']})", "--image", image,
                      "--evidence-file", ev]
+              if item.get("window_from"):
+                  cmd += ["--from", item["window_from"]]
+              if item.get("window_to"):
+                  cmd += ["--to", item["window_to"]]
               rc = subprocess.run(cmd).returncode
               rc_all = rc_all or rc
               try:

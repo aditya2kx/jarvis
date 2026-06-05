@@ -1,0 +1,13 @@
+# Sandbox live run config for PR #33 — unified-window backfill verification.
+#
+# Runs the "unified-window" scenario over a short closed pay period
+# (2026-05-18 to 2026-05-31) to prove all four sources (Square, ADP timecard,
+# ADP earnings custom-range, Google Reviews) honor the --from/--to window
+# and land in BQ → sandbox Sheets correctly.
+#
+# Remove this file (or empty the scenarios list) once PR evidence is captured.
+scenarios:
+  - name: unified-window
+    date: "2026-05-31"
+    window_from: "2026-05-18"
+    window_to: "2026-05-31"

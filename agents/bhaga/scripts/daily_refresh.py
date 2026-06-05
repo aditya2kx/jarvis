@@ -1753,21 +1753,6 @@ def main() -> int:
 
     headed = not args.headless  # default headed
 
-    print(f"\n{'='*60}")
-    print(f"BHAGA daily_refresh  store={args.store}  refresh_date={refresh_date.isoformat()}")
-    print(f"  gap source:     {gap_source}")
-    print(f"  gap window:     {gap_start.isoformat()} → {refresh_date.isoformat()}"
-          + ("  (empty — nothing to scrape)" if not needs_square_scrape and not args.skip_square else ""))
-    if args.window_from or args.window_to:
-        print(f"  unified window: {args.window_from or '(start)'} → {args.window_to or '(end)'}"
-              f"  earnings_custom_range={earnings_custom_range}")
-    print(f"  fresh_install:  {is_fresh_install}")
-    print(f"  adp_target:     {adp_target_date!r}{'  (Select All pay periods)' if adp_target_date is None else ''}")
-    print(f"  include_rates:  {include_rates}")
-    print(f"  headed:         {headed}")
-    print(f"  dry_run:        {args.dry_run}")
-    print(f"{'='*60}")
-
     # ── Resolve per-source date overrides ──────────────────────────────
     square_from = (
         datetime.date.fromisoformat(args.square_from) if args.square_from
@@ -1804,6 +1789,21 @@ def main() -> int:
     # Always include earnings on an explicit backfill window.
     if args.window_from:
         include_rates = True
+
+    print(f"\n{'='*60}")
+    print(f"BHAGA daily_refresh  store={args.store}  refresh_date={refresh_date.isoformat()}")
+    print(f"  gap source:     {gap_source}")
+    print(f"  gap window:     {gap_start.isoformat()} → {refresh_date.isoformat()}"
+          + ("  (empty — nothing to scrape)" if not needs_square_scrape and not args.skip_square else ""))
+    if args.window_from or args.window_to:
+        print(f"  unified window: {args.window_from or '(start)'} → {args.window_to or '(end)'}"
+              f"  earnings_custom_range={earnings_custom_range}")
+    print(f"  fresh_install:  {is_fresh_install}")
+    print(f"  adp_target:     {adp_target_date!r}{'  (Select All pay periods)' if adp_target_date is None else ''}")
+    print(f"  include_rates:  {include_rates}")
+    print(f"  headed:         {headed}")
+    print(f"  dry_run:        {args.dry_run}")
+    print(f"{'='*60}")
 
     t_start = time.monotonic()
     info_ping(

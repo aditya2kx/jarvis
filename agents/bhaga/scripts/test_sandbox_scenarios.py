@@ -67,6 +67,25 @@ class TestLoadConfig:
         assert plan[0].get("window_from") is None
         assert plan[0].get("window_to") is None
 
+    def test_loads_window_from_to(self, tmp_path):
+        """Positive path: window_from and window_to are loaded and normalized."""
+        p = tmp_path / "sandbox-live.yml"
+        p.write_text(textwrap.dedent("""
+            scenarios:
+              - name: unified-window
+                date: 2026-05-31
+                window_from: 2026-05-18
+                window_to: 2026-05-31
+        """))
+        plan = sc.load_config(str(p))
+        assert len(plan) == 1
+        assert plan[0]["name"] == "unified-window"
+        assert plan[0]["date"] == "2026-05-31"
+        # PyYAML coerces unquoted YYYY-MM-DD to a date object; load_config
+        # normalizes it back to an ISO string.
+        assert plan[0]["window_from"] == "2026-05-18"
+        assert plan[0]["window_to"] == "2026-05-31"
+
     def test_missing_file_is_empty(self, tmp_path):
         assert sc.load_config(str(tmp_path / "nope.yml")) == []
 

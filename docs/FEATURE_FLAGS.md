@@ -26,7 +26,19 @@ Some changes are safe to apply directly without a flag because they are additive
 
 These are noted here so future reviewers understand the policy: flags gate **cutover** risk, not additive additions.
 
-Migration 005 raw-parity tables and the 5-section Grafana dashboard redesign fall into this category — all changes are additive and are applied without a flag.
+Migration 005 raw-parity tables, the 5-section Grafana dashboard redesign, and the **BQ-primary raw layer** (PR #33) fall into this category — all changes are additive and idempotent:
+
+### BQ-primary raw layer (PR #33, 2026-06) — hard cutover, no flag
+
+The switch from "scrape → Sheets (primary) → BQ (mirror)" to "scrape → BQ (primary) → Sheets (projection)" is implemented as a **hard cutover** (no environment flag):
+
+- `backfill_from_downloads.py` now **requires** `BHAGA_DATASTORE=bigquery` (exits non-zero without it) and writes only to BQ via `load_rows` (MERGE upsert). Raw Sheets are no longer the primary sink.
+- `render_raw_sheet_from_bq.py` (new) renders raw Sheets from BQ as non-fatal projections. Historical rows are preserved via incremental upsert by natural key.
+- `render_model_sheet_from_bq.py` now uses **incremental upsert** (by natural key, `--since` windowing) instead of `clear_and_write_tab`. Historical model rows outside the window are preserved.
+- `process_reviews.py` writes `google_reviews` to BQ as the **only** review sink. The `reviews` Sheet tab is rendered from BQ. `_latest_review_ts_ms` and `_read_all_reviews` read from BQ.
+- Migration 006 adds `multi_rate BOOL` to `adp_wage_rates` for lossless wage-rate round-trip.
+
+**Why no flag:** The load direction inversion is the architectural invariant. A half-flag state (writes go to Sheets but BQ is also written) was the dual-sink anti-pattern we're removing. The `BHAGA_DATASTORE=bigquery` env var (already permanent infrastructure toggle) enforces BQ writes; removing it would revert to Sheets-only which is no longer supported.
 
 ---
 

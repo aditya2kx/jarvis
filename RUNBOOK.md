@@ -441,7 +441,7 @@ Firestore). Inspect the current state with `state_adapter.get_pipeline_halt()` (
 ### OTP-portal recovery (auto-invalidate stale downstream markers)
 
 When a previously-failed OTP portal (Square/ADP) succeeds on a later run **while** the downstream
-markers (`write_raw_sheets` / `update_model_sheet` / `process_reviews`) are already `done` from the
+markers (`load_raw_bigquery` / `update_model_sheet` / `process_reviews`) are already `done` from the
 prior partial run, those steps would short-circuit and the fresh data would never reach the Model
 sheet (`data_window_end` stuck — the 2026-05-31 incident). `daily_refresh` now **always** detects this
 and clears those markers (via `state_adapter.clear_step`, the sanctioned path — never a shell `rm`) so
@@ -459,13 +459,13 @@ Concrete runbook for "an OTP portal crashed on launch, downstream ran on stale d
 is stuck and bonuses are held back":
 
 1. **Confirm the state.** Read Firestore `runs/2026-05-31`: `square_transactions` will be **absent**
-   (it failed) while `write_raw_sheets` / `update_model_sheet` / `process_reviews` are **present** (they
+   (it failed) while `load_raw_bigquery` / `update_model_sheet` / `process_reviews` are **present** (they
    ran on stale data). Read the Model `config` tab — `data_window_end` will be stuck at `2026-05-30`.
 2. **Announce the OTP.** Square will re-scrape and fire **one SMS** to the operator. Post in the BHAGA
    DM that the rerun is about to fire an OTP **before** triggering it (Operating rule / HL#8).
 3. **Re-run the date as a Cloud Run job** (never a laptop). ADP skips its browser/OTP via the GCS
    cache; Square re-scrapes (the one OTP). The recovery is automatic — when Square succeeds, the stale
-   `write_raw_sheets`/`update_model_sheet`/`process_reviews` markers are invalidated so they recompute:
+   `load_raw_bigquery`/`update_model_sheet`/`process_reviews` markers are invalidated so they recompute:
    ```bash
    gcloud run jobs execute bhaga-daily-refresh \
      --region=us-central1 --update-env-vars REFRESH_DATE=2026-05-31
@@ -830,10 +830,18 @@ gcloud projects get-iam-policy jarvis-bhaga-prod \
 
 ### Daily cron integration
 
-After each `write_raw_sheets` step, `daily_refresh.py` calls `backfill_bigquery.py` (the `load_bigquery` step) to mirror raw tables to BQ. The model compute then follows one of two paths:
+The nightly pipeline is now **BQ-primary for raw data** (hard cutover, no feature flag):
 
+1. **`load_raw_bigquery` step:** `backfill_from_downloads` (with `BHAGA_DATASTORE=bigquery`) loads scrape
+   files directly into BQ raw tables. BQ is the system of record.
+2. **`render_raw_sheets` step (non-fatal):** `render_raw_sheet_from_bq` renders raw Sheets as projections
+   from BQ (Square/ADP tabs, windowed by `--since gap_start`).
+3. **Reviews:** `process_reviews` writes `google_reviews` to BQ; then `render_raw_sheet_from_bq --tabs reviews`
+   renders the reviews Sheet tab from BQ (non-fatal).
+
+The model compute follows one of two paths:
 - **Legacy path (default, `BHAGA_SHEET_FROM_BQ` unset):** `update_model_sheet` computes the model from Sheet raw and writes the Sheet; `materialize_model_bq` then mirrors to BQ (non-fatal).
-- **BQ-canonical path (`BHAGA_SHEET_FROM_BQ=1`):** `materialize_model_bq` runs first (BQ is canonical); `render_model_sheet_from_bq` projects the Sheet from BQ. This eliminates dual-compute drift. See `docs/FEATURE_FLAGS.md` for flip criteria.
+- **BQ-canonical path (`BHAGA_SHEET_FROM_BQ=1`):** `materialize_model_bq` runs first (BQ is canonical); `render_model_sheet_from_bq` **incrementally upserts** (by natural key, `--since` window) the Sheet tabs from BQ. This eliminates dual-compute drift. See `docs/FEATURE_FLAGS.md` for flip criteria.
 
 After model writes, `reconcile_model.py` (non-fatal) compares each Sheet model tab against its BQ table and alerts on drift. See `agents/bhaga/scripts/reconcile_model.py`.
 
@@ -873,9 +881,16 @@ To backfill specific tables only:
 python3 -m agents.bhaga.scripts.backfill_bigquery --store palmetto --tables square_kds_daily,square_kds_tickets,adp_earnings,google_reviews
 ```
 
-To backfill the new raw scrape tabs from downloads (writes `kds_tickets` + `adp_earnings` to Sheets first):
+To load scrape files directly to BQ (primary path, no Sheet write):
 ```bash
-python3 -m agents.bhaga.scripts.backfill_from_downloads --store palmetto
+BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
+  python3 -m agents.bhaga.scripts.backfill_from_downloads --store palmetto
+```
+
+To render raw Sheets from BQ (projections, non-fatal):
+```bash
+BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
+  python3 -m agents.bhaga.scripts.render_raw_sheet_from_bq --store palmetto --since 2026-01-01
 ```
 
 ### Materialize model into BQ (one-shot)

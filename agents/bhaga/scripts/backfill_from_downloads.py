@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
-"""BHAGA end-to-end backfill from already-downloaded scrape files.
+"""BHAGA end-to-end scrape-file loader: parse downloads → write BigQuery (primary).
 
-Reads the most recent files in extracted/downloads/ (Square Transactions CSV,
-ADP Timecard XLSX, ADP Earnings XLSX), parses them via the source skills, and
-upserts the results into the three BHAGA workbooks via tip_ledger_writer.
+Reads the most-recent files in extracted/downloads/ (Square Transactions CSV,
+Square Items CSV, Square KDS CSV, ADP Timecard XLSX, ADP Earnings XLSX),
+parses them via the source skills, maps the parser dicts through the canonical
+``map_*`` functions from ``backfill_bigquery``, and upserts the results into
+BigQuery as the single system of record.
 
-This is the offline equivalent of the future M3 orchestrator daily_refresh.py
-which will also drive the scrapes. Used in M1 for the initial backfill and as
-a re-run mechanism if the operator manually re-downloads a report.
+Raw Google Sheets are NOT written by this script. They are rendered as
+projections afterward by ``render_raw_sheet_from_bq.py``.
+
+Requires BHAGA_DATASTORE=bigquery (enforced at startup).
 
 Usage:
-    python3 -m agents.bhaga.scripts.backfill_from_downloads --store palmetto
-    python3 -m agents.bhaga.scripts.backfill_from_downloads --store palmetto --start 2026-03-22 --end 2026-05-15
-    python3 -m agents.bhaga.scripts.backfill_from_downloads --store palmetto --skip square    # only ADP
+    BHAGA_DATASTORE=bigquery \\
+        python3 -m agents.bhaga.scripts.backfill_from_downloads --store palmetto
+    BHAGA_DATASTORE=bigquery \\
+        python3 -m agents.bhaga.scripts.backfill_from_downloads --store palmetto \\
+            --start 2026-03-22 --end 2026-05-15
+    BHAGA_DATASTORE=bigquery \\
+        python3 -m agents.bhaga.scripts.backfill_from_downloads --store palmetto \\
+            --skip square --dry-run
 """
 
 from __future__ import annotations
@@ -28,26 +36,27 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
 from core.config_loader import project_dir, resolve_sheet_id
+from core.datastore import load_rows
 from skills.adp_run_automation import compensation_backend, shift_backend
 from skills.adp_run_automation.employee_aliases import (
     detect_new_employees,
     update_sheet_with_new_aliases,
 )
 from skills.square_tips import transactions_backend
-from skills.tip_ledger_writer import (
-    read_raw_adp_rates,
-    write_raw_adp_punches,
-    write_raw_adp_rates,
-    write_raw_adp_shifts,
-    write_raw_square_daily_rollup,
-    write_raw_square_transactions,
-)
-from skills.tip_ledger_writer.writer import (
-    write_raw_adp_earnings,
-    write_raw_kds_daily,
-    write_raw_kds_tickets,
-    write_raw_square_item_daily_rollup,
-    write_raw_square_item_lines,
+from skills.tip_ledger_writer import read_raw_adp_rates
+
+from agents.bhaga.scripts.backfill_bigquery import (
+    map_adp_earnings_row,
+    map_adp_punch,
+    map_adp_shift,
+    map_adp_wage_rate,
+    map_kds_ticket,
+    map_square_daily_rollup,
+    map_square_item_daily,
+    map_square_item_line,
+    map_square_kds_daily,
+    map_square_transaction,
+    load_store_profile,
 )
 
 # Notify is optional — backfill may run in environments without Slack creds.
@@ -58,26 +67,8 @@ except Exception:  # noqa: BLE001
         return None
 
 
-def _bq_enabled() -> bool:
-    return os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery"
-
-
-def _write_to_bq(table_name: str, rows: list[dict], merge_keys: list[str]) -> int:
-    """Dual-write to BigQuery when enabled. Returns rows affected or 0."""
-    if not _bq_enabled() or not rows:
-        return 0
-    from core.datastore import load_rows
-    try:
-        n = load_rows(table_name, rows, merge_keys=merge_keys)
-        return n
-    except Exception as exc:
-        print(f"  WARN: BigQuery write to {table_name} failed: {exc}")
-        return 0
-
-
 PROJECT = pathlib.Path(project_dir())
 DOWNLOADS = PROJECT / "extracted" / "downloads"
-STORE_PROFILE_DIR = PROJECT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
 
 
 def _newest(pattern: str) -> pathlib.Path | None:
@@ -85,13 +76,6 @@ def _newest(pattern: str) -> pathlib.Path | None:
     if not paths:
         return None
     return max(paths, key=lambda p: p.stat().st_mtime)
-
-
-def load_store_profile(store: str) -> dict:
-    path = STORE_PROFILE_DIR / f"{store}.json"
-    if not path.exists():
-        raise FileNotFoundError(f"Store profile not found: {path}")
-    return json.loads(path.read_text())
 
 
 def aggregate_square_daily(records: list[dict]) -> list[dict]:
@@ -110,8 +94,6 @@ def aggregate_square_daily(records: list[dict]) -> list[dict]:
         bucket["txn_count"] += 1
         bucket["gross_sales_cents"] += r.get("gross_sales_cents", 0)
         bucket["tip_cents"] += r.get("tip_cents", 0)
-        # net_sales = gross + discount (discount is negative); refund handled
-        # separately so net_sales here is "what we billed" excluding refunds.
         if r.get("event_type") == "Refund":
             bucket["refund_cents"] += r.get("total_collected_cents", 0)
         else:
@@ -130,17 +112,24 @@ def main() -> int:
         help="Skip a specific write. Can pass multiple times.",
     )
     cli.add_argument("--dry-run", action="store_true",
-        help="Parse and aggregate but do NOT write to Google Sheets.")
+        help="Parse and aggregate but do NOT write to BigQuery.")
     args = cli.parse_args()
 
+    # BQ is now the system of record — this script must not run without it.
+    if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":
+        print(
+            "ERROR: BHAGA_DATASTORE=bigquery is required. "
+            "backfill_from_downloads writes BigQuery as the primary sink; "
+            "Sheets are rendered afterward by render_raw_sheet_from_bq.py.",
+            file=sys.stderr,
+        )
+        return 1
+
     profile = load_store_profile(args.store)
-    # Aliases + exclusions now live in bhaga_model > employees + > config.
-    # The local JSON is just a bootstrap pointer for sheet IDs.
     from skills.store_profile import load_aliases, load_exclusions
     aliases = load_aliases(args.store)
     excluded = load_exclusions(args.store)["permanent"]
     adp_raw_sid = resolve_sheet_id("bhaga_adp_raw", profile)
-    square_raw_sid = resolve_sheet_id("bhaga_square_raw", profile)
     shop_tz = profile["timezone"]["shop_tz"]
     google_account = profile["google_account_key"]
 
@@ -168,18 +157,10 @@ def main() -> int:
             print(f"# parsing ADP timecard: {timecard_xlsx.name}")
             punches = shift_backend.parse_xlsx(timecard_xlsx, employee_aliases=aliases)
 
-            # AUTO-DETECT new employees: parse_xlsx with an incomplete alias map
-            # falls through to raw_name as employee_id, which would fork the
-            # ledger identity (one person becomes two rows). Catch those here,
-            # auto-add canonical "Last, First" aliases to the profile JSON,
-            # Slack-notify the operator, then RE-PARSE with the updated map so
-            # the writes land canonical employee_ids the first time.
             new_pairs = detect_new_employees(punches, aliases)
             if new_pairs:
                 print(f"  detected {len(new_pairs)} new employee(s): "
                       + ", ".join(f"{r!r}→{c!r}" for r, c in new_pairs))
-                # Write the new aliases to bhaga_model > employees (canonical SOT).
-                # No more local JSON mutation — the sheet survives laptop loss.
                 added = update_sheet_with_new_aliases(args.store, new_pairs)
                 print(f"  wrote {added} new alias entries to bhaga_model > employees")
                 from skills.store_profile import load_aliases as _reload_aliases
@@ -188,7 +169,6 @@ def main() -> int:
                     new_pairs,
                     profile_path="bhaga_model > employees (sheet)",
                 )
-                # Re-parse with the now-complete alias map.
                 punches = shift_backend.parse_xlsx(timecard_xlsx, employee_aliases=aliases)
                 print(f"  re-parsed with updated aliases: {len(punches)} punches")
 
@@ -197,58 +177,27 @@ def main() -> int:
             print(f"  parsed: {len(punches)} punches, {len(shifts)} shift-days")
 
             if "adp_shifts" not in args.skip:
+                bq_rows = [map_adp_shift(r) for r in shifts]
+                bq_rows = [r for r in bq_rows if r["date"] is not None]
                 if args.dry_run:
-                    print(f"  DRY: would write {len(shifts)} shift rows")
+                    print(f"  DRY: would load {len(bq_rows)} shift rows into BQ")
                 else:
-                    s = write_raw_adp_shifts(adp_raw_sid, shifts, account=google_account)
-                    summaries.append(s)
-                    print(f"  shifts: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
-                    # Dual-write to BigQuery
-                    bq_rows = [{
-                        "date": r["date"],
-                        "employee_id": r["employee_id"],
-                        "canonical_name": r.get("employee_name", r["employee_id"]),
-                        "raw_employee_name": r.get("raw_employee_name", ""),
-                        "in_time": r.get("in_time", ""),
-                        "out_time": r.get("out_time", ""),
-                        "regular_hours": float(r.get("regular_hours") or 0),
-                        "ot_hours": float(r.get("ot_hours") or 0),
-                        "doubletime_hours": float(r.get("doubletime_hours") or 0),
-                        "total_hours": float(r.get("total_hours") or 0),
-                        "shift_count": int(r.get("punch_count") or 1),
-                        "scraped_at_utc": r.get("scraped_at_utc", ""),
-                    } for r in shifts]
-                    n_bq = _write_to_bq("adp_shifts", bq_rows, merge_keys=["date", "employee_id"])
-                    if n_bq:
-                        print(f"  shifts (BQ): {n_bq} rows upserted")
+                    n = load_rows("adp_shifts", bq_rows, merge_keys=["date", "employee_id"])
+                    print(f"  adp_shifts (BQ): {n} rows upserted")
+                    summaries.append({"table": "adp_shifts", "rows": n})
 
             if "adp_punches" not in args.skip:
+                bq_rows = [map_adp_punch(r) for r in punches]
+                bq_rows = [r for r in bq_rows if r["date"] is not None]
                 if args.dry_run:
-                    print(f"  DRY: would write {len(punches)} punch rows")
+                    print(f"  DRY: would load {len(bq_rows)} punch rows into BQ")
                 else:
-                    s = write_raw_adp_punches(adp_raw_sid, punches, account=google_account)
-                    summaries.append(s)
-                    print(f"  punches: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
-                    # Dual-write to BigQuery
-                    bq_rows = [{
-                        "date": r["date"],
-                        "employee_id": r["employee_id"],
-                        "canonical_name": r.get("employee_name", r["employee_id"]),
-                        "raw_employee_name": r.get("raw_employee_name", ""),
-                        "punch_index": int(r.get("punch_idx_in_day") or 0),
-                        "in_time": r.get("in_time", ""),
-                        "out_time": r.get("out_time", ""),
-                        "regular_hours": float(r.get("regular_hours") or 0),
-                        "ot_hours": float(r.get("ot_hours") or 0),
-                        "doubletime_hours": float(r.get("doubletime_hours") or 0),
-                        "total_hours": float(r.get("total_hours") or 0),
-                        "scraped_at_utc": r.get("scraped_at_utc", ""),
-                    } for r in punches]
-                    n_bq = _write_to_bq("adp_punches", bq_rows, merge_keys=["date", "employee_id", "punch_index"])
-                    if n_bq:
-                        print(f"  punches (BQ): {n_bq} rows upserted")
+                    n = load_rows("adp_punches", bq_rows,
+                                  merge_keys=["date", "employee_id", "punch_index"])
+                    print(f"  adp_punches (BQ): {n} rows upserted")
+                    summaries.append({"table": "adp_punches", "rows": n})
 
-    # ── ADP wage rates ────────────────────────────────────────────
+    # ── ADP wage rates + per-line earnings ───────────────────────
     if "adp_rates" not in args.skip:
         earnings_xlsx = _newest("Earnings*.xlsx")
         if not earnings_xlsx:
@@ -259,12 +208,9 @@ def main() -> int:
             rates = compensation_backend.infer_wage_rates(earnings, excluded_employees=excluded)
             print(f"  inferred rates for {len(rates)} employees")
 
-            # Ensure roster employees missing from ADP earnings still get a
-            # wage_rates row. Covers former employees (Latham, Steele) whose
-            # historical shifts are in the data window but who no longer
-            # appear in ADP payroll downloads. Only adds stubs for employees
-            # absent from BOTH the current rates AND the existing raw sheet
-            # (so we never overwrite a previously-written real rate).
+            # Roster stubs: ensure employees absent from current ADP download
+            # still have a wage_rates row (covers former employees whose
+            # historical shifts are in the data window).
             from skills.store_profile import load_employee_roster
             roster = load_employee_roster(args.store)
             rate_names = {r["employee_name"] for r in rates}
@@ -289,66 +235,18 @@ def main() -> int:
                     })
                     roster_stubs += 1
             if roster_stubs:
-                print(f"  added {roster_stubs} roster stub(s) for employees without ADP earnings")
+                print(f"  added {roster_stubs} roster stub(s)")
 
-            # Detect stale wage_rates rows left behind by alias corrections.
-            # When an alias change renames an employee_id (e.g., "Johnson,
-            # Dolce J" → "Johnson, Dolce"), the old row persists because the
-            # upsert keys on employee_id. Find old rows whose
-            # raw_employee_names overlap with incoming rows under a *different*
-            # employee_id, and mark them for removal.
-            incoming_raw_to_id: dict[str, str] = {}
-            for r in rates:
-                for rn in r.get("raw_employee_names", []):
-                    incoming_raw_to_id[rn] = r["employee_id"]
-
-            stale_keys: set[tuple] = set()
-            for er in existing_rates:
-                eid = er["employee_id"]
-                raw_names = er.get("raw_employee_names_json", [])
-                if not isinstance(raw_names, list):
-                    continue
-                for rn in raw_names:
-                    incoming_id = incoming_raw_to_id.get(rn)
-                    if incoming_id and incoming_id != eid:
-                        stale_keys.add((eid,))
-                        print(f"  stale wage_rate row: {eid!r} "
-                              f"(raw name {rn!r} now belongs to {incoming_id!r})")
-                        break
-
-            if stale_keys:
-                print(f"  will supersede {len(stale_keys)} stale wage_rate row(s)")
-
+            bq_rows = [map_adp_wage_rate(r, profile) for r in rates]
             if args.dry_run:
-                print(f"  DRY: would write {len(rates)} wage rows")
+                print(f"  DRY: would load {len(bq_rows)} wage_rate rows into BQ")
             else:
-                s = write_raw_adp_rates(
-                    adp_raw_sid, rates, account=google_account,
-                    superseded_keys=stale_keys or None,
-                )
-                summaries.append(s)
-                print(f"  wage_rates: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
-                # Dual-write to BigQuery
-                bq_rows = [{
-                    "employee_id": r["employee_id"],
-                    "canonical_name": r.get("employee_name", r["employee_id"]),
-                    "wage_rate_dollars": float(r["wage_rate_dollars"]) if r.get("wage_rate_dollars") else None,
-                    "ot_rate_dollars": float(r["ot_rate_dollars"]) if r.get("ot_rate_dollars") else None,
-                    "is_salaried": bool(r.get("is_salaried")),
-                    "excluded_from_labor_pct": bool(r.get("excluded_from_labor_pct")),
-                    "excluded_from_tip_pool": bool(r.get("excluded_from_labor_pct")),
-                    "raw_employee_names_json": json.dumps(r.get("raw_employee_names", [])),
-                    "earnings_json": json.dumps(r.get("rate_history", [])),
-                    "scraped_at_utc": r.get("scraped_at_utc", ""),
-                } for r in rates]
-                n_bq = _write_to_bq("adp_wage_rates", bq_rows, merge_keys=["employee_id"])
-                if n_bq:
-                    print(f"  wage_rates (BQ): {n_bq} rows upserted")
+                n = load_rows("adp_wage_rates", bq_rows, merge_keys=["employee_id"])
+                print(f"  adp_wage_rates (BQ): {n} rows upserted")
+                summaries.append({"table": "adp_wage_rates", "rows": n})
 
-            # Persist per-line earnings rows to the new adp_earnings Sheet tab.
-            # Each row from parse_xlsx is already one earning line.
-            import datetime as _dt
-            _now_utc = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            # Per-line earnings (adp_earnings table)
+            now_utc = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
             earnings_rows = [
                 {
                     "period_start": str(e.get("period_start", "")),
@@ -360,146 +258,126 @@ def main() -> int:
                     "hours": e.get("hours", 0) or 0,
                     "hourly_rate": e.get("hourly_rate", 0) or 0,
                     "amount": e.get("amount", 0) or 0,
-                    "scraped_at_utc": e.get("scraped_at_utc", _now_utc),
+                    "scraped_at_utc": e.get("scraped_at_utc", now_utc),
                 }
                 for e in earnings
                 if e.get("period_start")
             ]
+            bq_earnings_rows = [map_adp_earnings_row(r) for r in earnings_rows]
+            bq_earnings_rows = [r for r in bq_earnings_rows if r["period_start"] is not None]
             if args.dry_run:
-                print(f"  DRY: would write {len(earnings_rows)} adp_earnings rows")
+                print(f"  DRY: would load {len(bq_earnings_rows)} adp_earnings rows into BQ")
             else:
-                s_earn = write_raw_adp_earnings(adp_raw_sid, earnings_rows, account=google_account)
-                summaries.append(s_earn)
-                print(
-                    f"  earnings: +{s_earn['inserted']} new, "
-                    f"{s_earn['updated']} updated, {s_earn['total_after']} total"
+                n = load_rows(
+                    "adp_earnings", bq_earnings_rows,
+                    merge_keys=["period_start", "period_end", "employee", "description", "check_date"],
                 )
+                print(f"  adp_earnings (BQ): {n} rows upserted")
+                summaries.append({"table": "adp_earnings", "rows": n})
 
     # ── Square transactions + daily rollup ────────────────────────
     if "square" not in args.skip:
         tx_csv = _newest("transactions-*.csv")
         if not tx_csv:
-            print("WARN: no transactions-*.csv found — skipping Square")
+            print("WARN: no transactions-*.csv found — skipping Square transactions")
         else:
             print(f"# parsing Square transactions: {tx_csv.name}")
             txns = transactions_backend.parse_csv(tx_csv, shop_tz=shop_tz)
             txns = [t for t in txns if _in_window(t["date_local"])]
             print(f"  parsed {len(txns)} txns")
 
+            bq_rows = [map_square_transaction(r) for r in txns]
+            bq_rows = [r for r in bq_rows if r["date_local"] is not None]
             if args.dry_run:
-                print(f"  DRY: would write {len(txns)} txn rows")
+                print(f"  DRY: would load {len(bq_rows)} transaction rows into BQ")
             else:
-                s = write_raw_square_transactions(square_raw_sid, txns, account=google_account)
-                summaries.append(s)
-                print(f"  transactions: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
-                # Dual-write to BigQuery
-                bq_rows = [{
-                    "transaction_id": t["transaction_id"],
-                    "date_local": t["date_local"],
-                    "event_type": t.get("event_type", ""),
-                    "gross_sales_cents": int(t.get("gross_sales_cents") or 0),
-                    "discount_cents": int(t.get("discount_cents") or 0),
-                    "net_sales_cents": int(t.get("net_sales_cents") or 0),
-                    "tip_cents": int(t.get("tip_cents") or 0),
-                    "total_collected_cents": int(t.get("total_collected_cents") or 0),
-                    "net_total_cents": int(t.get("net_total_cents") or 0),
-                    "source": t.get("source", ""),
-                    "staff_name": t.get("staff_name", ""),
-                    "location": t.get("location", ""),
-                    "created_at_src_iso": t.get("created_at_src_iso", ""),
-                    "created_at_local_iso": t.get("created_at_local_iso", ""),
-                    "scraped_at_utc": t.get("scraped_at_utc", ""),
-                } for t in txns]
-                n_bq = _write_to_bq("square_transactions", bq_rows, merge_keys=["transaction_id"])
-                if n_bq:
-                    print(f"  transactions (BQ): {n_bq} rows upserted")
+                n = load_rows("square_transactions", bq_rows, merge_keys=["transaction_id"])
+                print(f"  square_transactions (BQ): {n} rows upserted")
+                summaries.append({"table": "square_transactions", "rows": n})
 
             if "square_rollup" not in args.skip:
                 rollup = aggregate_square_daily(txns)
                 print(f"  computed daily rollup: {len(rollup)} days")
+                bq_rollup_rows = [map_square_daily_rollup(r) for r in rollup]
+                bq_rollup_rows = [r for r in bq_rollup_rows if r["date_local"] is not None]
                 if args.dry_run:
-                    print(f"  DRY: would write {len(rollup)} rollup rows")
+                    print(f"  DRY: would load {len(bq_rollup_rows)} daily_rollup rows into BQ")
                 else:
-                    s = write_raw_square_daily_rollup(square_raw_sid, rollup, account=google_account)
-                    summaries.append(s)
-                    print(f"  daily_rollup: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
-                    # Dual-write to BigQuery
-                    bq_rows = [{
-                        "date_local": r["date_local"],
-                        "txn_count": int(r.get("txn_count") or 0),
-                        "gross_sales_cents": int(r.get("gross_sales_cents") or 0),
-                        "tip_cents": int(r.get("tip_cents") or 0),
-                        "net_sales_cents": int(r.get("net_sales_cents") or 0),
-                        "refund_cents": int(r.get("refund_cents") or 0),
-                        "order_count": int(r.get("txn_count") or 0),
-                        "scraped_at_utc": r.get("scraped_at_utc", ""),
-                    } for r in rollup]
-                    n_bq = _write_to_bq("square_daily_rollup", bq_rows, merge_keys=["date_local"])
-                    if n_bq:
-                        print(f"  daily_rollup (BQ): {n_bq} rows upserted")
+                    n = load_rows("square_daily_rollup", bq_rollup_rows, merge_keys=["date_local"])
+                    print(f"  square_daily_rollup (BQ): {n} rows upserted")
+                    summaries.append({"table": "square_daily_rollup", "rows": n})
 
     # ── Square item sales + item daily rollup ────────────────────
     if "square" not in args.skip:
         item_csv = _newest("items-*.csv")
         if not item_csv:
-            print("WARN: no items-*.csv found — skipping item daily rollup")
+            print("WARN: no items-*.csv found — skipping Square item sales")
         else:
             print(f"# parsing Square item sales: {item_csv.name}")
             item_records = transactions_backend.parse_item_sales_csv(item_csv, shop_tz=shop_tz)
             item_records = [r for r in item_records if _in_window(r["date_local"])]
             print(f"  parsed {len(item_records)} item records")
 
+            bq_lines = [map_square_item_line(r) for r in item_records]
+            bq_lines = [r for r in bq_lines if r["date_local"] is not None]
+            if args.dry_run:
+                print(f"  DRY: would load {len(bq_lines)} item_lines rows into BQ")
+            else:
+                n = load_rows(
+                    "square_item_lines", bq_lines,
+                    merge_keys=["transaction_id", "item_name", "item_sold_at_local", "line_seq"],
+                )
+                print(f"  square_item_lines (BQ): {n} rows upserted")
+                summaries.append({"table": "square_item_lines", "rows": n})
+
             item_daily = transactions_backend.aggregate_daily_item_stats(item_records)
             print(f"  computed item daily rollup: {len(item_daily)} days")
+            bq_item_daily = [map_square_item_daily(r) for r in item_daily]
+            bq_item_daily = [r for r in bq_item_daily if r["date_local"] is not None]
             if args.dry_run:
-                print(f"  DRY: would write {len(item_records)} item_lines rows")
-                print(f"  DRY: would write {len(item_daily)} item rollup rows")
+                print(f"  DRY: would load {len(bq_item_daily)} item_daily rows into BQ")
             else:
-                s_lines = write_raw_square_item_lines(
-                    square_raw_sid, item_records, account=google_account,
-                )
-                summaries.append(s_lines)
-                print(
-                    f"  item_lines: +{s_lines['inserted']} new, "
-                    f"{s_lines['updated']} updated, {s_lines['total_after']} total"
-                )
-                s = write_raw_square_item_daily_rollup(square_raw_sid, item_daily, account=google_account)
-                summaries.append(s)
-                print(f"  item_daily_rollup: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
+                n = load_rows("square_item_daily", bq_item_daily, merge_keys=["date_local"])
+                print(f"  square_item_daily (BQ): {n} rows upserted")
+                summaries.append({"table": "square_item_daily", "rows": n})
 
     # ── Square KDS performance report ─────────────────────────────
     if "square" not in args.skip:
         kds_csv = _newest("kds-*.csv")
         if not kds_csv:
-            print("WARN: no kds-*.csv found — skipping KDS daily rollup")
+            print("WARN: no kds-*.csv found — skipping KDS report")
         else:
             print(f"# parsing Square KDS report: {kds_csv.name}")
             kds_tickets = transactions_backend.parse_kds_csv(kds_csv, shop_tz=shop_tz)
             kds_tickets = [t for t in kds_tickets if _in_window(t["date_local"])]
             print(f"  parsed {len(kds_tickets)} KDS tickets")
 
-            # No upper cap: KDS is a purely operational-efficiency metric (it
-            # never feeds the staffing solver), so we surface the full tail via
-            # percentiles. Only the 15s lower floor inside aggregate_daily_kds_stats
-            # applies.
-            kds_daily = transactions_backend.aggregate_daily_kds_stats(kds_tickets)
-            kds_rollups = [
-                {"date_local": d, **stats} for d, stats in sorted(kds_daily.items())
-            ]
+            kds_daily_agg = transactions_backend.aggregate_daily_kds_stats(kds_tickets)
+            kds_rollups = [{"date_local": d, **stats} for d, stats in sorted(kds_daily_agg.items())]
             print(f"  computed KDS daily rollup: {len(kds_rollups)} days")
+
+            bq_kds_daily = [map_square_kds_daily(r) for r in kds_rollups]
+            bq_kds_daily = [r for r in bq_kds_daily if r["date_local"] is not None]
             if args.dry_run:
-                print(f"  DRY: would write {len(kds_rollups)} KDS daily rows and {len(kds_tickets)} ticket rows")
+                print(f"  DRY: would load {len(bq_kds_daily)} kds_daily rows into BQ")
+                print(f"  DRY: would load {len(kds_tickets)} kds_tickets rows into BQ")
             else:
-                s = write_raw_kds_daily(square_raw_sid, kds_rollups, account=google_account)
-                summaries.append(s)
-                print(f"  kds_daily: +{s['inserted']} new, {s['updated']} updated, {s['total_after']} total")
-                s2 = write_raw_kds_tickets(square_raw_sid, kds_tickets, account=google_account)
-                summaries.append(s2)
-                print(f"  kds_tickets: +{s2['inserted']} new, {s2['updated']} updated, {s2['total_after']} total")
+                n = load_rows("square_kds_daily", bq_kds_daily, merge_keys=["date_local"])
+                print(f"  square_kds_daily (BQ): {n} rows upserted")
+                summaries.append({"table": "square_kds_daily", "rows": n})
+
+                bq_tickets = [map_kds_ticket(r) for r in kds_tickets]
+                bq_tickets = [r for r in bq_tickets if r["date_local"] is not None]
+                n = load_rows(
+                    "square_kds_tickets", bq_tickets,
+                    merge_keys=["date_local", "time_created", "ticket_name"],
+                )
+                print(f"  square_kds_tickets (BQ): {n} rows upserted")
+                summaries.append({"table": "square_kds_tickets", "rows": n})
 
     print()
     print("=" * 60)
-    print("SUMMARY")
+    print("SUMMARY (BigQuery upserts)")
     print(json.dumps(summaries, indent=2))
     return 0
 

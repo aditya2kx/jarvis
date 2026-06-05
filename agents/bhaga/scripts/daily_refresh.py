@@ -11,16 +11,19 @@ End-to-end nightly flow:
        (Skipped via --skip-timecard until iframe selectors are calibrated.)
     5. (When --include-rates) Scrape ADP Earnings & Hours V1 XLSX.
        Defaults: ON only on Mondays and Tuesdays.
-    6. Mirror local scrapes into the canonical raw Google Sheets
-       (bhaga_adp_raw, bhaga_square_raw) via backfill_from_downloads. Per
-       architecture contract, all downstream code reads only from these.
+    6. Load local scrapes into BigQuery as primary sink via backfill_from_downloads
+       (BHAGA_DATASTORE=bigquery). BQ is now the system of record for raw data.
+    6b. Render raw Google Sheets (bhaga_adp_raw, bhaga_square_raw) as projections
+       from BQ via render_raw_sheet_from_bq (non-fatal; BQ is canonical).
     7. Run update_model_sheet to refresh the 8 Model workbook tabs:
        config, daily, labor_daily, labor_weekly, labor_period,
        tip_alloc_period, tip_alloc_daily, period_summary.
        (Reads from raw sheets, NOT local files.)
     8. Run process_reviews to fetch Google reviews from ClickUp, allocate
-       bonuses, and rebuild review_bonus_period on the Model sheet.
+       bonuses, write google_reviews to BQ (primary), and rebuild
+       review_bonus_period on the Model sheet.
        (Skippable via --skip-reviews; idempotent on rerun.)
+    8b. Render reviews Sheet tab from google_reviews BQ (non-fatal; BQ is canonical).
     9. Send success heartbeat to BHAGA Slack DM.
 
 INCREMENTAL CONTRACT (per skill spec):
@@ -357,7 +360,7 @@ def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
 # Downstream steps whose markers must be invalidated when a previously-failed
 # OTP portal recovers with fresh data on a later run (otherwise run_step would
 # short-circuit them and the fresh data would never reach the Model sheet).
-_RECOVERY_DOWNSTREAM_STEPS = ("write_raw_sheets", "update_model_sheet", "process_reviews")
+_RECOVERY_DOWNSTREAM_STEPS = ("load_raw_bigquery", "update_model_sheet", "process_reviews")
 
 
 def _recover_stale_downstream_markers(
@@ -524,20 +527,20 @@ def _assert_master_not_older_than_gap(
         return
     if not master_csv.exists():
         raise RuntimeError(
-            f"[write_raw_sheets] precondition violated: gap CSV exists "
+            f"[load_raw_bigquery] precondition violated: gap CSV exists "
             f"({gap_csv.name}) but master CSV does not ({master_csv.name}). "
-            f"consolidate_csv must have failed silently — refusing to write "
-            f"raw sheets from an incomplete master."
+            f"consolidate_csv must have failed silently — refusing to load "
+            f"raw BQ from an incomplete master."
         )
     gap_mtime = gap_csv.stat().st_mtime
     master_mtime = master_csv.stat().st_mtime
     if master_mtime < gap_mtime:
         raise RuntimeError(
-            f"[write_raw_sheets] precondition violated: master CSV "
+            f"[load_raw_bigquery] precondition violated: master CSV "
             f"({master_csv.name}, mtime={master_mtime}) is OLDER than the gap "
             f"CSV ({gap_csv.name}, mtime={gap_mtime}). consolidate_csv did "
             f"not rewrite the master after the gap was downloaded — "
-            f"refusing to write raw sheets from stale master."
+            f"refusing to load raw BQ from stale master."
         )
 
 
@@ -593,8 +596,8 @@ def _assert_data_advanced_post_condition(
             f"{refresh_date.isoformat()}, but bhaga_model > config."
             f"data_window_end did NOT advance past {prev_end.isoformat()} "
             f"(post-run value={post_end.isoformat()}). This means "
-            f"write_raw_sheets or update_model_sheet silently dropped the "
-            f"new rows. Inspect the raw_square_transactions tab vs the "
+            f"load_raw_bigquery or update_model_sheet silently dropped the "
+            f"new rows. Inspect the square_transactions BQ table vs the "
             f"master CSV before retrying."
         )
 
@@ -1278,10 +1281,6 @@ def _run_review_fetch(
         BONUS_START_DATE, CT as REVIEW_CT,
         fetch_review_messages,
     )
-    from core.config_loader import (  # noqa: PLC0415
-        refresh_access_token as _refresh_token,
-        resolve_sheet_id as _resolve_sid,
-    )
 
     result = PipelineResult(name="review_fetch")
     try:
@@ -1291,18 +1290,12 @@ def _run_review_fetch(
             return result
 
         profile = _load_review_profile(store)
-        raw_sheet_cfg = profile["google_sheets"].get("bhaga_review_raw")
-        if not raw_sheet_cfg or not raw_sheet_cfg.get("spreadsheet_id"):
-            print("[review_fetch] WARN: no bhaga_review_raw configured — skipping.")
-            result.success = True
-            return result
 
-        raw_sid = _resolve_sid("bhaga_review_raw", profile)
-        token = _refresh_token(store)
-
-        latest_in_sheet_ms = _latest_review_ts_ms(raw_sid, token)
-        if latest_in_sheet_ms is not None:
-            since_ts_ms = latest_in_sheet_ms
+        # High-water mark now comes from google_reviews BQ (BQ-primary architecture).
+        # _latest_review_ts_ms() reads from BQ; returns None if BQ is unavailable or empty.
+        latest_in_bq_ms = _latest_review_ts_ms()
+        if latest_in_bq_ms is not None:
+            since_ts_ms = latest_in_bq_ms
         else:
             bonus_start_dt = datetime.datetime.combine(
                 BONUS_START_DATE, datetime.time.min, tzinfo=REVIEW_CT,
@@ -2004,7 +1997,13 @@ def main() -> int:
     if square_ok or not args.skip_timecard:
         gap_csv_for_check = artifacts.get("square_csv") if isinstance(artifacts.get("square_csv"), pathlib.Path) else None
 
-        def _write_raw_sheets_step():
+        bq_raw_env = {
+            **os.environ,
+            "BHAGA_DATASTORE": "bigquery",
+            "PYTHONUNBUFFERED": "1",
+        }
+
+        def _load_raw_bigquery_step():
             _assert_master_not_older_than_gap(
                 master_csv=MASTER_TXN_CSV, gap_csv=gap_csv_for_check,
             )
@@ -2012,43 +2011,48 @@ def main() -> int:
                 [sys.executable, "-m", "agents.bhaga.scripts.backfill_from_downloads",
                  "--store", args.store],
                 cwd=str(PROJECT_ROOT), check=True,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env=bq_raw_env,
             )
 
         ok, _ = run_step(
-            "write_raw_sheets",
-            _write_raw_sheets_step,
+            "load_raw_bigquery",
+            _load_raw_bigquery_step,
             refresh_date=refresh_date,
             dry_run=args.dry_run,
         )
         if ok:
             raw_sheets_ok = True
         else:
-            failures.append(("write_raw_sheets", RuntimeError("see step log")))
+            failures.append(("load_raw_bigquery", RuntimeError("see step log")))
     else:
-        print("[write_raw_sheets] SKIPPED — no fresh inputs to mirror.")
+        print("[load_raw_bigquery] SKIPPED — no fresh inputs to load.")
 
-    # ── Mirror raw data to BigQuery (additive; Sheets is still the source of truth) ──
-    # Runs after write_raw_sheets so BQ raw tables stay in sync with Sheets.
-    # Non-fatal: if BQ write fails, Sheets is still updated and the run continues.
+    # ── Render raw Sheets from BQ (BQ is primary; Sheet is projection) ──────────
+    # Runs after load_raw_bigquery so BQ raw tables are current.
+    # Non-fatal: BQ already has the data; a Sheet projection failure must not
+    # fail the nightly run. Square/ADP tabs only; reviews rendered after process_reviews.
     if raw_sheets_ok:
-        bq_raw_env = {
+        bq_raw_env_local = {
             **os.environ,
             "BHAGA_DATASTORE": "bigquery",
             "PYTHONUNBUFFERED": "1",
         }
         ok, _ = run_step(
-            "load_bigquery",
+            "render_raw_sheets",
             lambda: subprocess.run(
-                [sys.executable, "-m", "agents.bhaga.scripts.backfill_bigquery",
-                 "--store", args.store],
-                cwd=str(PROJECT_ROOT), check=True, env=bq_raw_env,
+                [sys.executable, "-m", "agents.bhaga.scripts.render_raw_sheet_from_bq",
+                 "--store", args.store,
+                 "--since", gap_start.isoformat(),
+                 "--tabs", "adp_shifts,adp_punches,adp_wage_rates,adp_earnings,"
+                            "square_transactions,square_daily_rollup,square_item_lines,"
+                            "square_item_daily,square_kds_daily,square_kds_tickets"],
+                cwd=str(PROJECT_ROOT), check=True, env=bq_raw_env_local,
             ),
             refresh_date=refresh_date,
             dry_run=args.dry_run,
         )
         if not ok:
-            print("[load_bigquery] WARNING: BQ raw sync failed — Sheets is unaffected, continuing.")
+            print("[render_raw_sheets] WARNING: Sheet projection failed — BQ is unaffected, continuing.")
 
     failed_steps = {name for name, _ in failures}
     # ── BHAGA_SHEET_FROM_BQ=1: BQ-canonical path ─────────────────────────────
@@ -2091,7 +2095,8 @@ def main() -> int:
                     "render_model_sheet_from_bq",
                     lambda: subprocess.run(
                         [sys.executable, "-m", "agents.bhaga.scripts.render_model_sheet_from_bq",
-                         "--store", args.store],
+                         "--store", args.store,
+                         "--since", gap_start.isoformat()],
                         cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
                     ),
                     refresh_date=refresh_date,
@@ -2177,6 +2182,28 @@ def main() -> int:
                 failures.append(("process_reviews", val))
             else:
                 process_reviews_ran = True
+                # ── Render reviews Sheet tab from BQ (non-fatal) ───────────────────
+                # process_reviews wrote google_reviews to BQ; now render the Sheet
+                # tab as a projection. Runs inline (not a separate step marker) so
+                # it re-runs if process_reviews re-runs.
+                if not args.dry_run:
+                    bq_raw_env_r = {
+                        **os.environ,
+                        "BHAGA_DATASTORE": "bigquery",
+                        "PYTHONUNBUFFERED": "1",
+                    }
+                    try:
+                        subprocess.run(
+                            [sys.executable, "-m",
+                             "agents.bhaga.scripts.render_raw_sheet_from_bq",
+                             "--store", args.store,
+                             "--tabs", "reviews"],
+                            cwd=str(PROJECT_ROOT), check=True, env=bq_raw_env_r,
+                        )
+                        print("[render_reviews_sheet] reviews Sheet tab rendered from BQ.")
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[render_reviews_sheet] WARNING: reviews Sheet render failed "
+                              f"(non-fatal — BQ is canonical): {exc}")
     elif args.skip_reviews:
         print("[process_reviews] SKIPPED — --skip-reviews flag set.")
     elif not review_fetch_ok:

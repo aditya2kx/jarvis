@@ -67,10 +67,16 @@ class TestTabSpecs(unittest.TestCase):
         self.m = _load()
 
     def test_all_specs_have_required_keys(self):
-        required = {"tab", "bq_table", "sort_by", "header", "currency_cols", "number_cols"}
+        required = {"tab", "bq_table", "sort_by", "header", "natural_key", "since_col", "currency_cols", "number_cols"}
         for spec in self.m._TAB_SPECS:
             missing = required - set(spec.keys())
             self.assertFalse(missing, f"Spec for {spec.get('tab')} missing keys: {missing}")
+
+    def test_natural_key_cols_in_header(self):
+        for spec in self.m._TAB_SPECS:
+            for col in spec["natural_key"]:
+                self.assertIn(col, spec["header"],
+                              f"{spec['tab']}: natural_key col {col!r} not in header")
 
     def test_currency_cols_in_range(self):
         for spec in self.m._TAB_SPECS:
@@ -102,9 +108,9 @@ class TestTabSpecs(unittest.TestCase):
 
 
 class TestReadBqTab(unittest.TestCase):
-    """_read_bq_tab returns header-only on BQ read failure (graceful degradation)."""
+    """_read_bq_tab returns [] on BQ read failure (graceful degradation — caller upserts nothing)."""
 
-    def test_returns_header_only_on_error(self):
+    def test_returns_empty_on_error(self):
         m = _load()
         import unittest.mock as mock
 
@@ -112,13 +118,71 @@ class TestReadBqTab(unittest.TestCase):
             "tab": "daily",
             "bq_table": "model_daily",
             "sort_by": ["date"],
+            "natural_key": ("date",),
+            "since_col": "date",
             "header": ["date", "dow"],
             "currency_cols": [],
             "number_cols": [],
         }
         with mock.patch.object(m, "read_query", side_effect=Exception("BQ unavailable")):
             result = m._read_bq_tab(spec)
-        self.assertEqual(result, [["date", "dow"]])
+        self.assertEqual(result, [])
+
+
+class TestIncrementalUpsertPreservesHistoricalRows(unittest.TestCase):
+    """Verify that incremental upsert leaves rows outside the window untouched."""
+
+    def test_out_of_window_row_preserved(self):
+        """An existing Sheet row whose key is NOT in the incoming batch must survive."""
+        import unittest.mock as mock
+
+        os.environ.setdefault("BHAGA_DATASTORE", "disabled")
+        from skills.tip_ledger_writer.writer import upsert_tab
+
+        header = ["date", "value"]
+        key = ("date",)
+
+        existing_tab_data = [
+            ["date", "value"],   # header row
+            ["2026-01-01", "100"],  # historical row (outside window)
+        ]
+
+        calls: list = []
+
+        def fake_read_tab(sid, tab, token):
+            return existing_tab_data
+
+        def fake_write_range(sid, rng, rows, token):
+            calls.append(("write", rng, rows))
+
+        def fake_clear_range(sid, rng, token):
+            calls.append(("clear", rng))
+
+        def fake_add_sheet(sid, token, tab_name):
+            pass
+
+        def fake_refresh_token(account):
+            return "fake-token"
+
+        with mock.patch("skills.tip_ledger_writer.writer._read_tab", fake_read_tab), \
+             mock.patch("skills.tip_ledger_writer.writer._write_range", fake_write_range), \
+             mock.patch("skills.tip_ledger_writer.writer._clear_range", fake_clear_range), \
+             mock.patch("skills.tip_ledger_writer.writer._add_sheet_if_missing", fake_add_sheet), \
+             mock.patch("skills.tip_ledger_writer.writer.refresh_access_token", fake_refresh_token):
+
+            # Only upsert a new row for 2026-05-01 (simulating a windowed BQ read)
+            result = upsert_tab(
+                "fake-sid", "daily",
+                [{"date": "'2026-05-01", "value": "200"}],
+                header=header,
+                natural_key_columns=key,
+                account="palmetto",
+            )
+
+        # Both rows must exist after the upsert
+        self.assertEqual(result["total_after"], 2, "Historical row should be preserved")
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(result["updated"], 0)
 
 
 if __name__ == "__main__":

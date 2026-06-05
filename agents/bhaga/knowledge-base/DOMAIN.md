@@ -375,7 +375,9 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 | `adp_earnings` | `period_start` | BHAGA ADP Raw > earnings (NEW) | `(period_start, period_end, employee, description, check_date)` |
 | `google_reviews` | `post_date_ct` | BHAGA Review Raw > reviews | `(review_id,)` |
 
-`square_kds_tickets` and `adp_earnings` are new tabs written by `backfill_from_downloads.py` at scrape time (M3). All six are mirrored nightly by `backfill_bigquery.py`.
+`square_kds_tickets` and `adp_earnings` are written at scrape time to BQ by `backfill_from_downloads.py` (M3); their raw Sheet tabs are rendered from BQ by `render_raw_sheet_from_bq.py`.
+
+**Raw layer is BQ-primary (PR #33, 2026-06):** scrapes land in BQ via `load_rows` (MERGE upsert); Google Sheets raw tabs are non-fatal projections rendered by `render_raw_sheet_from_bq.py`. `backfill_bigquery.py` is a one-shot historical repair tool, not the nightly path. Google Reviews follow the same path: `process_reviews.py` writes `google_reviews` to BQ; the `reviews` Sheet tab is rendered from BQ.
 
 ### Order Quality views (migration 005)
 
@@ -418,12 +420,16 @@ Data grows in exactly two directions. Know which one you're doing, because they 
 
 ```
   Direction 1 (capture more)            Direction 2 (derive more)
-  Square / ADP / reviews                raw sheets
-        │  scrape backend                     │  reader.py
+  Square / ADP / reviews                BQ raw tables (→ Sheet projection)
+        │  scrape backend                     │  reader.py / BQ query
         ▼                                     ▼
-  raw sheets (bhaga_*_raw) ───────────▶ build_*_rows() ───▶ model tabs
-        ▲                                                        ▲
-    add a NEW raw field here                          add a NEW derived column/tab here
+  BQ raw tables ──────────────────────▶ build_*_rows() ───▶ model tabs
+  (bhaga dataset;                                                ▲
+   11 tables via              raw Sheets (projection)            │
+   backfill_from_downloads)        ▲                  add a NEW derived column/tab here
+        ▲                          │ render_raw_sheet_from_bq
+    add a NEW raw field here       └─────────────────────────
+                                    (non-fatal; BQ is authoritative)
 ```
 
 ### Direction 1 — pull a NEW field straight from a source (source → raw sheet)

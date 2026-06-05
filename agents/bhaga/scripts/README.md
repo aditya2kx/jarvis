@@ -22,16 +22,15 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
 2. **Scrape Square** transactions for the gap (`skills/square_tips/`), cache to GCS, dedupe-append.
 3. **Scrape ADP** timecards / earnings for overlapping pay periods (`skills/adp_run_automation/`).
    2FA, if challenged, goes through the **OTP gate** (see below).
-4. **Mirror scrapes → raw Google Sheets** (`backfill_from_downloads.py`): `bhaga_adp_raw`,
-   `bhaga_square_raw`, `bhaga_review_raw`. At scrape time, writes: `item_lines`, `item_daily_rollup`,
-   `kds_daily` (existing), plus **new** `kds_tickets` (per-ticket KDS grain for slow-item drilldown)
-   and **new** `earnings` (per-line ADP Earnings data for payroll reconciliation). **Contract:
-   downstream reads only the raw sheets, never local files.**
-5. **Mirror raw data → BigQuery** (`backfill_bigquery.py` called via `load_bigquery` step, non-fatal):
-   mirrors all raw Sheet tabs to BQ. Tables: `square_transactions`, `adp_shifts`, `adp_punches`,
-   `adp_wage_rates` (existing) + **new** `square_item_lines`, `square_item_daily`, `square_kds_daily`,
-   `square_kds_tickets`, `adp_earnings`, `google_reviews` (migration 005). Sheets remains the source of
-   truth; BQ is the canonical analytic layer and Grafana source.
+4. **Load scrapes → BigQuery (primary)** (`backfill_from_downloads.py`, requires `BHAGA_DATASTORE=bigquery`):
+   maps parse-output dicts through `map_*` functions and calls `load_rows` (MERGE upsert) for all 11 raw
+   BQ tables. BQ is the system of record. Handles: `square_transactions`, `square_daily_rollup`,
+   `square_item_lines`, `square_item_daily`, `square_kds_daily`, `square_kds_tickets`,
+   `adp_shifts`, `adp_punches`, `adp_wage_rates`, `adp_earnings`.
+4b. **Render raw Sheets from BQ** (`render_raw_sheet_from_bq.py`, non-fatal): inverse-maps each BQ raw
+   table row → Sheet-header dict and calls `write_raw_*` upsert functions. Preserves historical rows
+   outside the `--since` window. Reviews tab rendered separately after `process_reviews`.
+   **Contract: raw Sheets are projections of BQ — BQ is authoritative.**
 6. **Recompute the Model tabs** (`update_model_sheet.py`): `config, daily, labor_daily,
    labor_weekly, labor_period, tip_alloc_period, tip_alloc_daily, period_summary`
    (+ `labor_daily_forecast` via `forecast.py`), then **upsert `item_operations`** for the gap
@@ -74,7 +73,7 @@ Per-step **idempotency markers** live in Firestore `runs/<YYYY-MM-DD>`
 (`skills/bhaga_config/state_adapter.py`: `mark_step_done` / `step_already_done` / `clear_step`). A
 re-run skips steps already marked done. To force a step, clear its marker — see `RUNBOOK.md` § Common
 tasks. **Recovery:** when an OTP portal (Square/ADP) succeeds on a later run while downstream markers
-(`write_raw_sheets`/`update_model_sheet`/`process_reviews`) are already done from a prior partial run,
+(`load_raw_bigquery`/`update_model_sheet`/`process_reviews`) are already done from a prior partial run,
 `daily_refresh._recover_stale_downstream_markers` invalidates them (via `clear_step`, the sanctioned
 path) so they recompute on the fresh data. Always on (no flag) — safe by construction: idempotent
 upserts + the post-condition guard verifies `data_window_end` advanced (RUNBOOK §13).
@@ -102,7 +101,7 @@ nightly). Both honor sandbox write-bucket isolation via `gcs_cache`.
 | `daily_refresh.py` | **Nightly orchestrator.** Gap compute → scrape → raw → model → reviews → **mechanical + semantic verify** → notify. After `assert_model_tabs_populated` it runs `model_semantics.assert_model_semantics` (conservation + adp reconciliation + review-bonus survival) and trips the **pipeline halt circuit breaker** on a semantic failure (refuses fresh runs with `EXIT_HALTED` until a healthy run / `--ignore-halt` clears it). CLI: `python3 -m agents.bhaga.scripts.daily_refresh --store palmetto [--date YYYY-MM-DD] [--skip-reviews] [--ignore-halt] [--dry-run]`. |
 | `daily_refresh_wrapper.py` | Thin wrapper / Cloud Run entrypoint around `daily_refresh`. |
 | `otp_gate.py` | OTP **checkpoint-and-resume**: writes a pending request to Firestore + Slack, blocks until the webhook records the operator's reply. |
-| `backfill_from_downloads.py` | Mirror local/GCS scrape artifacts into the canonical **raw** sheets (`_upsert_tab`, additive header migration). |
+| `backfill_from_downloads.py` | **BQ-primary scrape sink.** Load local/GCS scrape artifacts directly into BigQuery raw tables via `map_*` + `load_rows` (MERGE upsert). Requires `BHAGA_DATASTORE=bigquery`. Raw Sheets are rendered afterward by `render_raw_sheet_from_bq.py`. |
 | `backfill_item_lines_from_cache.py` | **No extra OTP** — replay GCS-cached `items-*.csv` into raw `item_lines` (GCS default; `--local-only` for tests). |
 | `item_operations.py` | Build + upsert Model `item_operations` from `item_lines` + punches. |
 | `update_model_sheet.py` | Recompute the **Model** workbook tabs from the raw sheets. Houses the `build_*_rows` functions (one per tab). Loads ADP "Credit Card Tips Owed" **actuals cloud-natively** via `load_cc_tips_earnings_from_gcs` (parses the GCS-cached `Earnings-*.xlsx`, no raw tab) to populate `adp_paid`/`diff`/`diff_pct` + `period_summary.check_dates`. |
@@ -117,9 +116,10 @@ nightly). Both honor sandbox write-bucket isolation via `gcs_cache`.
 | `sandbox_live_run.py` | **LIVE sandbox run** (real Square/ADP scrape + OTP on **unmerged PR code**) — the only way to reproduce/prove a fix for selector drift. Builds the PR image → deploys `bhaga-sandbox-refresh` (self-wires by inheriting prod's secrets + SA) → live pipeline for a `REFRESH_DATE`. Enforces isolation (`assert_sandbox_isolation`: staging sheets + sandbox GCS write bucket + sandbox Firestore collection — reads prod OK, writes prod NEVER) before any deploy. OTP uses the prod Slack bot but the prompt is labeled `[SANDBOX · PR…]` and the reply resumes the **sandbox** job (sandbox precedence in the webhook); supervised runs set `BHAGA_OTP_ASSUME_READY=1` to take the code inline (no webhook resume needed). On create it inherits prod's secrets + SA + **resources/timeout** + **plain env vars** (`BHAGA_SECRETS_BACKEND=gcp`, …); describe-JSON parsing is schema-robust (v2 + KRM). Supports `--skip <steps>` (scenario scoping → `BHAGA_SKIP_<STEP>`) and `--verify item_sales` (`verify_item_sales()`: a post-run gate that fails the run if `<date>/square/items-*.csv` is absent/empty, even on a 0 job exit). The sandbox cache bucket is a one-time operator setup (`assert_sandbox_bucket` fails with remediation if absent). See `RUNBOOK.md` §13. |
 | `sandbox_scenarios.py` | **Named scenario suite** for live sandbox runs (`item-sales-live` = Square-only via `skip:[adp,reviews,model]` + `verify:item_sales`; `full-live`; …). Selects what runs via committed `.github/sandbox-live.yml` (+ `sandbox-live` label, pre-merge), a `/sandbox run <scenario> [date=…]` PR comment (post-merge), or manual dispatch. `sandbox_workflow_resolve.py` turns the triggering event into a run plan for `.github/workflows/sandbox-live-run.yml`. Each scenario posts evidence as a PR comment. |
 | `verify_drilldown.py`, `verify_bq_parity.py`, `verify_against_historical_payroll.py` | Verification harnesses (parity vs historical payroll / BigQuery). |
-| `backfill_bigquery.py` | Backfill raw data into BigQuery (called by `load_bigquery` step in `daily_refresh`). |
+| `backfill_bigquery.py` | **One-shot historical backfill only.** Reads existing raw Sheets → writes BQ. NOT the nightly path. Use to bootstrap BQ raw tables from Sheet history or repair BQ after a migration/truncation. The nightly path is `backfill_from_downloads.py` (scrape files → BQ directly). |
 | `materialize_model_bq.py` | Rebuild the computed model from BQ raw data and write to `model_*` BigQuery tables via MERGE. Called by `materialize_model_bq` step in `daily_refresh`. Reuses the same `build_*_rows` functions as `update_model_sheet.py`. Used by the Grafana Cloud dashboard. **Requires the orchestrator SA to hold `roles/bigquery.jobUser` + `roles/bigquery.dataEditor`** (RUNBOOK §14) — without them every BQ job 403s. Guards an **empty BQ raw `square_transactions`** read with a precise `RuntimeError` breadcrumb instead of the old cryptic `max() iterable argument is empty` (run `backfill_bigquery` first). Access errors in `core.datastore.read_query` are re-raised (no longer swallowed into `[]`). Also exposes `load_model_rows()` as the canonical BQ-write helper (used by `process_reviews.py` and `render_model_sheet_from_bq.py`). |
-| `render_model_sheet_from_bq.py` | **BQ-canonical path only** (`BHAGA_SHEET_FROM_BQ=1`): reads each BQ `model_*` table and renders the corresponding Sheet model tab as a projection. Called by `render_model_sheet_from_bq` step. See `docs/FEATURE_FLAGS.md` for flip criteria and cleanup plan. |
+| `render_raw_sheet_from_bq.py` | **Raw Sheet projector.** Reads each BQ raw table (windowed by `--since`; `wage_rates` always all), inverse-maps rows to Sheet-header dicts, and incrementally upserts via `write_raw_*` functions. Non-fatal nightly step. Reviews tab rendered after `process_reviews`. |
+| `render_model_sheet_from_bq.py` | **BQ-canonical path only** (`BHAGA_SHEET_FROM_BQ=1`): reads each BQ `model_*` table and **incrementally upserts** (by natural key, `--since` windowing) the corresponding Sheet model tab. Historical rows outside the window are preserved. Called by `render_model_sheet_from_bq` step. See `docs/FEATURE_FLAGS.md` for flip criteria and cleanup plan. |
 | `reconcile_model.py` | Compares Sheet model tabs against BQ model tables cell-by-cell (reusing `verify_bq_parity._compare_tabs`). Non-fatal nightly step; CI-blocking when run in the `model-reconciliation` workflow. Reports tip-pool conservation violations. |
 | `test_*.py` | Unit tests. Run: `python3 -m pytest agents/bhaga/scripts/`. |
 
@@ -128,10 +128,15 @@ nightly). Both honor sandbox write-bucket isolation via `gcs_cache`.
 ## Raw → Model data flow (the mental model)
 
 ```
-Square / ADP / ClickUp  ──scrape──▶  raw Google Sheets  ──read──▶  build_*_rows()  ──upsert──▶  Model tabs
-  (skills/square_tips,              (bhaga_*_raw;          (skills/tip_ledger_      (update_model_sheet.py)   (config, daily,
-   adp_run_automation,              schema in             writer/reader.py)                                   labor_*, tip_alloc_*,
-   ClickUp)                         tip_ledger_writer)                                                         review_bonus_period…)
+Square / ADP / ClickUp  ──scrape──▶  BigQuery raw tables  ──read──▶  build_*_rows()  ──upsert──▶  Model tabs
+  (skills/square_tips,              (bhaga dataset;          (skills/tip_ledger_      (update_model_sheet.py)   (config, daily,
+   adp_run_automation,              11 tables via            writer/reader.py)                                   labor_*, tip_alloc_*,
+   ClickUp)                         backfill_from_downloads)                                                     review_bonus_period…)
+                                         │
+                                         ▼  (non-fatal projection)
+                               raw Google Sheets  (bhaga_*_raw;
+                               schema in tip_ledger_writer;
+                               rendered by render_raw_sheet_from_bq)
 
             │ (parallel)                                           │ (parallel, via materialize_model_bq.py)
             ▼                                                      ▼

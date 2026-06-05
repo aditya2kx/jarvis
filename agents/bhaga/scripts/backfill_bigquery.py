@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""Backfill BigQuery tables from production Google Sheets.
+"""One-shot historical backfill: read raw Google Sheets → write BigQuery.
 
-Reads all data from the BHAGA raw Google Sheets (ADP Raw + Square Raw),
-maps Sheet column names to the BigQuery schema, converts types, and
-bulk-inserts into the bhaga dataset.
+Used to bootstrap BQ raw tables from the existing Sheet history, or as a
+repair tool when BQ gets out of sync (e.g. after a schema migration or an
+accidental table truncation). This is NOT the nightly pipeline path.
+
+Nightly pipeline (BQ-primary architecture):
+    scrape files → backfill_from_downloads (BHAGA_DATASTORE=bigquery) → BQ
+    BQ → render_raw_sheet_from_bq → raw Sheets (projection)
+
+This script reads in the opposite direction (Sheet → BQ), so it is useful
+only for one-off historical loads. It is safe to re-run: load_rows uses
+MERGE (upsert) by natural key, so re-running is idempotent.
 
 Usage:
-    python3 -m agents.bhaga.scripts.backfill_bigquery --store palmetto
+    BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@... \\
+        python3 -m agents.bhaga.scripts.backfill_bigquery --store palmetto
     python3 -m agents.bhaga.scripts.backfill_bigquery --store palmetto --tables adp_shifts,square_transactions
     python3 -m agents.bhaga.scripts.backfill_bigquery --store palmetto --dry-run
 """
@@ -235,6 +244,7 @@ def map_adp_wage_rate(rec: dict, profile: dict) -> dict:
         "wage_rate_dollars": _parse_float(rec.get("wage_rate_dollars")),
         "ot_rate_dollars": _parse_float(rec.get("ot_rate_dollars")),
         "is_salaried": _parse_bool(rec.get("is_salaried")),
+        "multi_rate": _parse_bool(rec.get("multi_rate")),
         "excluded_from_labor_pct": _parse_bool(rec.get("excluded_from_labor_pct")),
         "excluded_from_tip_pool": excluded_tip,
         "raw_employee_names_json": raw_names,

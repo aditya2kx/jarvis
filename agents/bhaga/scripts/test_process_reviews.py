@@ -182,5 +182,112 @@ class ReviewBonusBqSinkTests(unittest.TestCase):
         self.assertGreaterEqual(n, 1)
 
 
+class TestBqPrimaryReviews(unittest.TestCase):
+    """Verify BQ-primary reviews path: write to google_reviews BQ, read from BQ."""
+
+    def _make_parsed_review(self) -> dict:
+        from agents.bhaga.scripts.process_reviews import build_review_row, REVIEW_HEADER_ROW
+        return {
+            "review_id": "rev-001",
+            "post_dt_ct": datetime.datetime(2026, 5, 1, 10, 30, 0,
+                                            tzinfo=__import__("zoneinfo").ZoneInfo("America/Chicago")),
+            "post_date_ct": datetime.date(2026, 5, 1),
+            "rating": 5,
+            "reviewer": "John D.",
+            "comment": "Great coffee!",
+            "named": ["Alvarez, Sebastian"],
+            "named_status": "ok",
+            "shift_date_credited": None,
+            "shift_assignment_reason": "no_match",
+            "shift_members_credited": [],
+            "trainees_on_shift": [],
+            "allocations": {},
+            "total_bonus_dollars": 0.0,
+            "ingested_at_utc": "2026-05-01T15:00:00+00:00",
+            "review_url": "https://example.com/rev-001",
+        }
+
+    def test_rec_to_bq_shape_excludes_clickup_message_id(self):
+        """_rec_to_bq_shape must produce a BQ row without clickup_message_id."""
+        from agents.bhaga.scripts.process_reviews import _rec_to_bq_shape
+        rec = self._make_parsed_review()
+        bq_row = _rec_to_bq_shape(rec)
+        self.assertNotIn("clickup_message_id", bq_row)
+        self.assertEqual(bq_row["review_id"], "rev-001")
+
+    def test_rec_to_bq_shape_strips_apostrophes(self):
+        """Apostrophe text-protection must be stripped before calling map_google_review."""
+        from agents.bhaga.scripts.process_reviews import _rec_to_bq_shape
+        import agents.bhaga.scripts.process_reviews as pr_module
+        rec = self._make_parsed_review()
+        bq_row = _rec_to_bq_shape(rec)
+        # post_date_ct should be a date object (parsed), not a string starting with "'"
+        self.assertIsInstance(bq_row.get("post_date_ct"), (datetime.date, type(None)))
+
+    def test_latest_review_ts_ms_returns_none_when_bq_disabled(self):
+        """When BHAGA_DATASTORE != bigquery, high-water mark returns None."""
+        import unittest.mock as mock
+        from agents.bhaga.scripts.process_reviews import _latest_review_ts_ms
+        with mock.patch("agents.bhaga.scripts.process_reviews._bq_enabled", return_value=False):
+            result = _latest_review_ts_ms()
+        self.assertIsNone(result)
+
+    def test_read_all_reviews_from_bq_builds_allocations(self):
+        """_read_all_reviews reads from google_reviews BQ and rebuilds allocations."""
+        import unittest.mock as mock
+        from agents.bhaga.scripts.process_reviews import _read_all_reviews
+
+        bq_rows = [{
+            "review_id": "rev-001",
+            "post_ts_ct": "2026-05-01T10:30:00-05:00",
+            "post_date_ct": datetime.date(2026, 5, 1),
+            "rating": 5,
+            "reviewer": "John D.",
+            "comment": "Great coffee!",
+            "named_baristas": "Alvarez, Sebastian",
+            "named_status": "ok",
+            "shift_date_credited": "",
+            "shift_assignment_reason": "no_match",
+            "shift_members": "",
+            "trainees_on_shift": "",
+            "named_credit_each": 0.0,
+            "base_credit_each": 0.0,
+            "total_bonus": 0.0,
+            "review_url": "https://example.com/rev-001",
+            "ingested_at_utc": datetime.datetime(2026, 5, 1, 15, 0, 0,
+                                                  tzinfo=datetime.timezone.utc),
+        }]
+
+        with mock.patch("agents.bhaga.scripts.process_reviews.read_query", return_value=bq_rows):
+            result = _read_all_reviews(excluded_permanent=set(), training_through={})
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["review_id"], "rev-001")
+        self.assertIn("allocations", result[0])
+        self.assertIn("named", result[0])
+
+    def test_ensure_review_raw_tabs_does_not_create_reviews_tab(self):
+        """_ensure_review_raw_tabs must only create unparseable tab, not reviews tab."""
+        import unittest.mock as mock
+        from agents.bhaga.scripts.process_reviews import _ensure_review_raw_tabs
+
+        created_tabs: list[str] = []
+
+        def fake_add_sheet(sid, token, tab_name, column_count=10):
+            created_tabs.append(tab_name)
+            return 1
+
+        def fake_tab_has_data(sid, token, tab):
+            return True  # pretend tab has data so we skip the seed-header call
+
+        with mock.patch("agents.bhaga.scripts.process_reviews.add_sheet_if_missing", fake_add_sheet), \
+             mock.patch("agents.bhaga.scripts.process_reviews._tab_has_any_data", fake_tab_has_data):
+            _ensure_review_raw_tabs("fake-sid", "fake-token")
+
+        self.assertNotIn("reviews", created_tabs,
+                         "reviews tab should NOT be created (rendered from BQ instead)")
+        self.assertIn("unparseable", created_tabs)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -393,13 +393,13 @@ class ClearStepDoneTests(unittest.TestCase):
             with mock.patch.object(daily_refresh.pathlib.Path, "home",
                                    return_value=daily_refresh.pathlib.Path(tmp)):
                 rd = datetime.date(2026, 5, 31)
-                mark_step_done(rd, "write_raw_sheets")
-                self.assertTrue(step_already_done(rd, "write_raw_sheets"))
-                clear_step_done(rd, "write_raw_sheets")
-                self.assertFalse(step_already_done(rd, "write_raw_sheets"))
+                mark_step_done(rd, "load_raw_bigquery")
+                self.assertTrue(step_already_done(rd, "load_raw_bigquery"))
+                clear_step_done(rd, "load_raw_bigquery")
+                self.assertFalse(step_already_done(rd, "load_raw_bigquery"))
                 # Idempotent — clearing an absent marker is a no-op.
-                clear_step_done(rd, "write_raw_sheets")
-                self.assertFalse(step_already_done(rd, "write_raw_sheets"))
+                clear_step_done(rd, "load_raw_bigquery")
+                self.assertFalse(step_already_done(rd, "load_raw_bigquery"))
 
 
 class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
@@ -408,7 +408,7 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
     run, invalidate those markers so they recompute. Always on (no feature
     flag) — safe by construction (idempotent upserts + post-condition guard)."""
 
-    DOWNSTREAM = ("write_raw_sheets", "update_model_sheet", "process_reviews")
+    DOWNSTREAM = ("load_raw_bigquery", "update_model_sheet", "process_reviews")
 
     def _ok(self):
         return types.SimpleNamespace(success=True)
@@ -490,11 +490,11 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
                     cleared = _recover_stale_downstream_markers(
                         rd, {"square": self._ok()}, dry_run=False
                     )
-                self.assertEqual(set(cleared), {"write_raw_sheets", "process_reviews"})
+                self.assertEqual(set(cleared), {"load_raw_bigquery", "process_reviews"})
                 self.assertNotIn("update_model_sheet", cleared)
                 # The step we couldn't clear is still present (will short-circuit).
                 self.assertTrue(step_already_done(rd, "update_model_sheet"))
-                self.assertFalse(step_already_done(rd, "write_raw_sheets"))
+                self.assertFalse(step_already_done(rd, "load_raw_bigquery"))
 
     def test_adp_recovery_also_triggers(self):
         with tempfile.TemporaryDirectory() as tmp:

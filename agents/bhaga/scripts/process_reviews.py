@@ -74,7 +74,8 @@ from agents.bhaga.scripts.update_model_sheet import (  # noqa: E402
     format_currency_columns,
 )
 from core.config_loader import refresh_access_token, resolve_sheet_id  # noqa: E402
-from core.datastore import _is_enabled as _bq_enabled  # noqa: E402
+from core.datastore import _is_enabled as _bq_enabled, load_rows, read_query  # noqa: E402
+from agents.bhaga.scripts.backfill_bigquery import map_google_review  # noqa: E402
 from skills.adp_run_automation.shift_backend import normalize_employee_name  # noqa: E402
 from skills.bhaga_config.dates import (  # noqa: E402
     _iso_date_for_sheet_cell,
@@ -971,16 +972,16 @@ def main() -> int:
         since_ts_ms = int(since_dt.timestamp() * 1000) - 1
         source = f"--since override ({args.since})"
     else:
-        latest_in_sheet_ms = _latest_review_ts_ms(raw_sid, token)
-        if latest_in_sheet_ms is not None:
-            since_ts_ms = latest_in_sheet_ms
-            source = f"reviews tab max(post_ts_ct) [{latest_in_sheet_ms} ms]"
+        latest_in_bq_ms = _latest_review_ts_ms()
+        if latest_in_bq_ms is not None:
+            since_ts_ms = latest_in_bq_ms
+            source = f"google_reviews BQ max(post_ts_ct) [{latest_in_bq_ms} ms]"
         else:
             bonus_start_dt = datetime.datetime.combine(
                 BONUS_START_DATE, datetime.time.min, tzinfo=CT,
             )
             since_ts_ms = int(bonus_start_dt.timestamp() * 1000) - 1
-            source = f"empty reviews tab -> bonus_start_date ({BONUS_START_DATE})"
+            source = f"empty google_reviews BQ -> bonus_start_date ({BONUS_START_DATE})"
 
     training_through = _read_training_excluded(model_sid, token)
 
@@ -1181,29 +1182,33 @@ def main() -> int:
               f"named={','.join(rec['named']) or '-'}  total=${rec['total_bonus_dollars']}")
 
     if args.dry_run:
-        print("\nDRY RUN — no sheet writes, no Slack.")
+        print("\nDRY RUN — no BQ writes, no sheet writes, no Slack.")
         return 0
 
-    # ── Write to Review Raw sheet ──
-    # Append parsed reviews to existing rows (idempotent by review_id).
-    existing_review_ids = _read_existing_review_ids(raw_sid, token)
-    new_review_rows = [
-        build_review_row(r) for r in parsed_reviews
-        if r["review_id"] not in existing_review_ids
-    ]
-    skipped = len(parsed_reviews) - len(new_review_rows)
-    if skipped:
-        print(f"# skipped {skipped} already-seen review(s) by review_id")
+    # ── Write google_reviews to BQ (primary sink) ──
+    # BQ is the system of record. The reviews Sheet tab is rendered afterward
+    # by render_raw_sheet_from_bq.py (reviews spec). load_rows is idempotent
+    # via merge_keys=["review_id"].
+    bq_review_rows = [_rec_to_bq_shape(r) for r in parsed_reviews]
+    bq_review_rows = [r for r in bq_review_rows if r.get("review_id")]
+    n_bq_loaded = 0
+    if bq_review_rows:
+        n_bq_loaded = load_rows(
+            "google_reviews", bq_review_rows,
+            merge_keys=["review_id"],
+            column_bq_types={"ingested_at_utc": "TIMESTAMP"},
+        )
+    print(f"# google_reviews (BQ): {n_bq_loaded} rows upserted "
+          f"({len(bq_review_rows)} parsed reviews)")
 
+    # ── Write unparseable tab (operator triage surface, not mirrored to BQ) ──
     _ensure_review_raw_tabs(raw_sid, token)
-    if new_review_rows:
-        _append_rows(raw_sid, token, tab="reviews", rows=new_review_rows)
     if unparseable_rows:
         _append_rows(raw_sid, token, tab="unparseable", rows=unparseable_rows)
 
     # Note: there is intentionally NO config tab on bhaga_review_raw.
-    # The incremental high-water mark is derived from the reviews tab itself
-    # on the next run; the bonus constants and bonus_started_date live in
+    # The incremental high-water mark is derived from google_reviews BQ on
+    # each run; the bonus constants and bonus_started_date live in
     # bhaga_model > config. Architecture rule: one config, on the model.
 
     # ── Rebuild review_bonus_period on Model sheet ──
@@ -1213,7 +1218,6 @@ def main() -> int:
     # already prevent any post-window review from making it into the raw
     # tab, but a manual backfill or human edit could still introduce one.
     all_reviews = _read_all_reviews(
-        raw_sid, token,
         excluded_permanent=excluded_permanent,
         training_through=training_through,
     )
@@ -1245,7 +1249,7 @@ def main() -> int:
     # ADP/Square data to advance the window. Surfacing the count here is
     # essential because the previous "+0" summary made it look like nothing
     # was missed even when 17 reviews were dropped.
-    parts = [f"Reviews: +{len(new_review_rows)} (master now {len(all_reviews)})"]
+    parts = [f"Reviews: +{n_bq_loaded} BQ upserted (master now {len(all_reviews)} in BQ)"]
     if held_back > 0:
         parts.append(
             f"HELD-BACK: {held_back} "
@@ -1269,27 +1273,39 @@ def main() -> int:
     return 0
 
 
+# ── BQ helpers ───────────────────────────────────────────────────────
+
+
+def _rec_to_bq_shape(rec: dict) -> dict:
+    """Map a parsed review rec dict to the google_reviews BQ row shape.
+
+    Uses build_review_row to produce the canonical sheet-order list, then
+    strips text-protection apostrophes from date/ts fields before calling
+    map_google_review for type coercion.
+    """
+    row = build_review_row(rec)
+    sheet_dict = dict(zip(REVIEW_HEADER_ROW, row))
+    for col in ("post_ts_ct", "post_date_ct", "shift_date_credited"):
+        v = sheet_dict.get(col)
+        if isinstance(v, str):
+            sheet_dict[col] = v.lstrip("'")
+    return map_google_review(sheet_dict)
+
+
 # ── Sheet I/O helpers (Review Raw specific) ──────────────────────────
 
 
 def _ensure_review_raw_tabs(spreadsheet_id: str, token: str) -> None:
-    """Create reviews + unparseable tabs if missing, with headers.
+    """Create the unparseable tab if missing.
+
+    The reviews tab is no longer created here — it is rendered from BQ by
+    render_raw_sheet_from_bq.py (reviews spec) after process_reviews completes.
 
     No config tab — by architecture, all config lives in bhaga_model. The
-    incremental high-water mark is derived from the reviews tab on each run.
+    incremental high-water mark is derived from google_reviews BQ on each run.
     """
-    sid_reviews = add_sheet_if_missing(spreadsheet_id, token, tab_name="reviews",
-                                       column_count=len(REVIEW_HEADER_ROW))
     sid_unparseable = add_sheet_if_missing(spreadsheet_id, token, tab_name="unparseable",
                                            column_count=len(UNPARSEABLE_HEADER_ROW))
-    # Seed headers iff tab is empty.
-    if not _tab_has_any_data(spreadsheet_id, token, "reviews"):
-        clear_and_write_tab(spreadsheet_id, token, tab_name="reviews",
-                            values=[REVIEW_HEADER_ROW])
-        bold_header_row(spreadsheet_id, token, sheet_id=sid_reviews)
-        # Dollar columns: named_credit_each(12), base_credit_each(13), total_bonus(14)
-        format_currency_columns(spreadsheet_id, token, sheet_id=sid_reviews,
-                                column_indices=[12, 13, 14])
     if not _tab_has_any_data(spreadsheet_id, token, "unparseable"):
         clear_and_write_tab(spreadsheet_id, token, tab_name="unparseable",
                             values=[UNPARSEABLE_HEADER_ROW])
@@ -1345,31 +1361,28 @@ def _split_names(blob: str) -> list[str]:
     return parts
 
 
-def _latest_review_ts_ms(spreadsheet_id: str, token: str) -> Optional[int]:
-    """Return the latest post_ts_ms across all rows in the reviews tab.
+def _latest_review_ts_ms() -> Optional[int]:
+    """Return the latest post_ts_ct epoch-ms from the google_reviews BQ table.
 
-    This IS the incremental high-water mark — no separate config row needed.
-    Reads only column B (post_ts_ct) which is stored as ISO text with a
-    leading-quote (see build_review_row). Returns None for an empty sheet.
+    This IS the incremental high-water mark — BQ is the system of record for
+    reviews. post_ts_ct is stored as STRING (CT ISO with DST offset), so we
+    parse each value in Python rather than relying on lexicographic SQL MAX.
+    Returns None for an empty table or when BQ is unavailable.
     """
-    rng = urllib.parse.quote("reviews!B2:B100000", safe="!:")
-    url = f"{SHEETS_API}/spreadsheets/{spreadsheet_id}/values/{rng}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    if not _bq_enabled():
+        return None
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        if e.code == 400:
-            return None
-        raise
-    rows = data.get("values", [])
+        rows = read_query(
+            "SELECT post_ts_ct FROM `jarvis-bhaga-prod.bhaga.google_reviews`"
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN: could not read google_reviews high-water mark: {exc}")
+        return None
     if not rows:
         return None
     latest: Optional[int] = None
-    for r in rows:
-        if not r:
-            continue
-        s = (r[0] or "").strip().lstrip("'")
+    for row in rows:
+        s = (row.get("post_ts_ct") or "").strip()
         if not s:
             continue
         try:
@@ -1406,39 +1419,38 @@ def _sheets_serial_to_iso(val: str) -> Optional[str]:
 
 
 def _read_all_reviews(
-    spreadsheet_id: str,
-    token: str,
     *,
     excluded_permanent: set[str],
     training_through: dict[str, datetime.date],
 ) -> list[dict]:
-    """Read the reviews tab back for the rollup pass.
+    """Read all reviews from google_reviews BQ (primary source) for the rollup pass.
 
-    Rebuilds per-row `allocations` using the CURRENT allocate_bonus policy
-    (not whatever was in force when the row was written). That way a policy
-    change like the 2026-05-17 shoutout-only switch automatically takes
-    effect on the next rollup without needing to rewrite the sheet.
+    Rebuilds per-row `allocations` using the CURRENT allocate_bonus policy so
+    a policy change (e.g. the 2026-05-17 shoutout-only switch) takes effect on
+    the next rollup without needing to rewrite any storage.
+
+    BQ column names match the Sheet header keys consumed by the rollup logic:
+    rating, named_baristas, shift_date_credited, shift_members, trainees_on_shift.
+    shift_date_credited is a STRING in BQ (ISO date or ""); no serial coercion needed.
     """
-    rng = urllib.parse.quote("reviews!A1:Z100000", safe="!:")
-    url = f"{SHEETS_API}/spreadsheets/{spreadsheet_id}/values/{rng}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read())
-    rows = data.get("values", [])
+    rows = read_query(
+        "SELECT * FROM `jarvis-bhaga-prod.bhaga.google_reviews`"
+    )
     if not rows:
         return []
-    header = rows[0]
     out: list[dict] = []
-    for r in rows[1:]:
-        padded = r + [""] * (len(header) - len(r))
-        d = dict(zip(header, padded))
-        try:
-            d["rating"] = int(d.get("rating") or 0) or None
-        except ValueError:
+    for bq_row in rows:
+        d = dict(bq_row)
+        # post_date_ct comes back as datetime.date from BQ — coerce to ISO string
+        if isinstance(d.get("post_date_ct"), datetime.date):
+            d["post_date_ct"] = d["post_date_ct"].isoformat()
+        # rating: INT64 from BQ; coerce None to None (not 0)
+        if d.get("rating") == 0:
             d["rating"] = None
+        # shift_date_credited: STRING in BQ (clean ISO or ""); no serial coercion needed
+        shift_date = str(d.get("shift_date_credited") or "").strip()
+        d["shift_date_credited"] = shift_date or None
         d["named"] = _split_names(d.get("named_baristas") or "")
-        raw_shift = d.get("shift_date_credited") or ""
-        d["shift_date_credited"] = _sheets_serial_to_iso(raw_shift) or (raw_shift or None)
         members = _split_names(d.get("shift_members") or "")
         if d["shift_date_credited"]:
             d["allocations"] = allocate_bonus(

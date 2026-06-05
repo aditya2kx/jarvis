@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Render BQ model tables → Google Sheet model tabs.
+"""Render BQ model tables → Google Sheet model tabs (incremental upsert).
 
 This is the Sheet-side sink for the BQ-canonical pipeline path
 (BHAGA_SHEET_FROM_BQ=1). It reads each BQ model table, projects columns
 into the exact build_* header order, converts values to Sheet-compatible
-representations, then calls clear_and_write_tab + the existing formatters
-from update_model_sheet.py.
+representations, then incrementally upserts by natural key via upsert_tab().
+
+Incremental behavior: existing rows outside the query window are preserved
+(historical rows are never wiped). Only new/changed rows in the window are
+written. This replaces the earlier clear_and_write_tab full-rewrite.
 
 Operator INPUT tabs (config, training_excluded, training_shifts) are never
 written by this projector — only read by the compute step (materialize_model_bq).
@@ -13,6 +16,11 @@ written by this projector — only read by the compute step (materialize_model_b
 Usage (flag on):
     BHAGA_SHEET_FROM_BQ=1 BHAGA_DATASTORE=bigquery \\
         python3 -m agents.bhaga.scripts.render_model_sheet_from_bq --store palmetto
+
+Usage (with since window):
+    BHAGA_SHEET_FROM_BQ=1 BHAGA_DATASTORE=bigquery \\
+        python3 -m agents.bhaga.scripts.render_model_sheet_from_bq --store palmetto \\
+            --since 2026-05-01
 
 Usage (dry-run):
     BHAGA_SHEET_FROM_BQ=1 BHAGA_DATASTORE=bigquery \\
@@ -31,13 +39,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 from core.datastore import read_query
 from core.config_loader import refresh_access_token, resolve_sheet_id
 from agents.bhaga.scripts.update_model_sheet import (
-    clear_and_write_tab,
     format_currency_columns,
     format_number_columns,
     bold_header_row,
     add_sheet_if_missing,
 )
 from skills.bhaga_config.dates import _iso_date_for_sheet_cell
+from skills.tip_ledger_writer.writer import upsert_tab
 
 _PROJECT = "jarvis-bhaga-prod"
 _DATASET = "bhaga"
@@ -171,12 +179,17 @@ _REVIEW_BONUS_PERIOD_HEADER = [
 ]
 
 # currency_cols are 0-indexed matching the tab payloads in update_model_sheet main().
+# natural_key: columns for incremental upsert (historical rows outside the since
+# window are preserved — not wiped).
+# since_col: BQ column to filter >= since date; None = render all rows.
 _TAB_SPECS: list[dict] = [
     {
         "tab": "daily",
         "bq_table": "model_daily",
         "sort_by": ["date"],
         "header": _DAILY_HEADER,
+        "natural_key": ("date",),
+        "since_col": "date",
         "currency_cols": [2, 3, 7],
         "number_cols": [4, 5, 6, 8],
     },
@@ -185,6 +198,8 @@ _TAB_SPECS: list[dict] = [
         "bq_table": "model_labor_daily",
         "sort_by": ["date"],
         "header": _LABOR_DAILY_HEADER,
+        "natural_key": ("date",),
+        "since_col": "date",
         "currency_cols": [2, 3, 4, 5, 6, 9, 11, 12, 21, 22, 23, 28, 29, 33],
         "number_cols": [7, 8, 10, 13, 14, 15, 16, 17, 18, 19, 20, 24, 25, 27, 30, 31, 32, 34, 35, 36, 37],
     },
@@ -193,6 +208,8 @@ _TAB_SPECS: list[dict] = [
         "bq_table": "model_labor_weekly",
         "sort_by": ["iso_week"],
         "header": _LABOR_WEEKLY_HEADER,
+        "natural_key": ("iso_week",),
+        "since_col": "week_start",
         "currency_cols": [5, 6, 7, 8, 9, 12, 14, 15, 24, 25, 26, 31, 32, 36],
         "number_cols": [10, 11, 13, 16, 17, 18, 19, 20, 21, 22, 23, 27, 28, 30, 33, 34, 35, 37, 38],
     },
@@ -201,6 +218,8 @@ _TAB_SPECS: list[dict] = [
         "bq_table": "model_labor_period",
         "sort_by": ["pay_period_start"],
         "header": _LABOR_PERIOD_HEADER,
+        "natural_key": ("pay_period_start",),
+        "since_col": "pay_period_start",
         "currency_cols": [4, 5, 6, 7, 8, 11, 13, 14, 23, 24, 25, 30, 31, 35],
         "number_cols": [9, 10, 12, 15, 16, 17, 18, 19, 20, 21, 22, 26, 27, 29, 32, 33, 34, 36, 37],
     },
@@ -209,6 +228,8 @@ _TAB_SPECS: list[dict] = [
         "bq_table": "model_tip_alloc_period",
         "sort_by": ["period_start", "employee"],
         "header": _TIP_ALLOC_PERIOD_HEADER,
+        "natural_key": ("period_start", "employee"),
+        "since_col": "period_start",
         "currency_cols": [6, 7, 8, 10, 11],
         "number_cols": [5, 9],
     },
@@ -217,6 +238,8 @@ _TAB_SPECS: list[dict] = [
         "bq_table": "model_tip_alloc_daily",
         "sort_by": ["date", "employee"],
         "header": _TIP_ALLOC_DAILY_HEADER,
+        "natural_key": ("date", "employee"),
+        "since_col": "date",
         "currency_cols": [6, 9],
         "number_cols": [5, 7, 8],
     },
@@ -225,6 +248,8 @@ _TAB_SPECS: list[dict] = [
         "bq_table": "model_period_summary",
         "sort_by": ["period_start"],
         "header": _PERIOD_SUMMARY_HEADER,
+        "natural_key": ("period_start",),
+        "since_col": "period_start",
         "currency_cols": [7, 8, 9, 10],
         "number_cols": [5, 6, 11],
     },
@@ -233,6 +258,8 @@ _TAB_SPECS: list[dict] = [
         "bq_table": "model_review_bonus_period",
         "sort_by": ["period_start", "employee"],
         "header": _REVIEW_BONUS_PERIOD_HEADER,
+        "natural_key": ("period_start", "employee"),
+        "since_col": "period_start",
         "currency_cols": [6, 7, 8],
         "number_cols": [4, 5],
     },
@@ -270,26 +297,36 @@ def _render_cell(col_name: str, value) -> object:
     return value
 
 
-def _read_bq_tab(spec: dict) -> list[list]:
-    """Read a BQ model table and project to the tab header order."""
+def _read_bq_tab(spec: dict, since: datetime.date | None = None) -> list[dict]:
+    """Read a BQ model table and return list of BQ row dicts.
+
+    When ``since`` is provided and the spec has a ``since_col``, only rows
+    on/after that date are returned. Rows outside the window remain in the
+    Sheet (preserved by the incremental upsert).
+    """
     table = f"`{_PROJECT}.{_DATASET}.{spec['bq_table']}`"
     order_cols = ", ".join(spec["sort_by"])
-    sql = f"SELECT * FROM {table} ORDER BY {order_cols}"
+    since_col = spec.get("since_col")
+    if since and since_col:
+        sql = (
+            f"SELECT * FROM {table} "
+            f"WHERE {since_col} >= DATE('{since.isoformat()}') "
+            f"ORDER BY {order_cols}"
+        )
+    else:
+        sql = f"SELECT * FROM {table} ORDER BY {order_cols}"
     try:
-        rows = read_query(sql)
+        return read_query(sql)
     except Exception as exc:  # noqa: BLE001
         print(f"  [render] WARN: could not read {spec['bq_table']}: {exc}")
-        return [spec["header"]]  # header-only on error
-
-    header = spec["header"]
-    out: list[list] = [header]
-    for bq_row in rows:
-        out.append([_render_cell(col, bq_row.get(col)) for col in header])
-    return out
+        return []
 
 
-def render(store: str, *, dry_run: bool = False) -> None:
-    """Read each BQ model table and write the corresponding Sheet model tab.
+def render(store: str, *, since: datetime.date | None = None, dry_run: bool = False) -> None:
+    """Read each BQ model table and incrementally upsert the corresponding Sheet model tab.
+
+    Incremental: only rows in the since-window are read from BQ and overlaid
+    onto the Sheet. Rows outside the window (historical) are left untouched.
 
     Operator input tabs (config, training_excluded, training_shifts,
     labor_daily_forecast) are never written — only read by the compute step.
@@ -303,18 +340,28 @@ def render(store: str, *, dry_run: bool = False) -> None:
     else:
         token = None
 
-    print(f"# render_model_sheet_from_bq [{store}] dry_run={dry_run} sheet={model_sid}")
+    print(f"# render_model_sheet_from_bq [{store}] since={since} dry_run={dry_run} sheet={model_sid}")
 
     for spec in _TAB_SPECS:
-        rows = _read_bq_tab(spec)
-        n_data = len(rows) - 1
-        print(f"  {spec['tab']:<24} {n_data:>5} rows from {spec['bq_table']}")
+        bq_rows = _read_bq_tab(spec, since=since)
+        records = [
+            {col: _render_cell(col, row.get(col)) for col in spec["header"]}
+            for row in bq_rows
+        ]
+        print(f"  {spec['tab']:<24} {len(records):>5} rows from {spec['bq_table']}")
 
         if dry_run:
             continue
 
-        sheet_id = add_sheet_if_missing(model_sid, token, tab_name=spec["tab"], column_count=len(spec["header"]) + 2)
-        clear_and_write_tab(model_sid, token, tab_name=spec["tab"], values=rows)
+        sheet_id = add_sheet_if_missing(
+            model_sid, token, tab_name=spec["tab"], column_count=len(spec["header"]) + 2,
+        )
+        upsert_tab(
+            model_sid, spec["tab"], records,
+            header=spec["header"],
+            natural_key_columns=spec["natural_key"],
+            account=store,
+        )
         bold_header_row(model_sid, token, sheet_id=sheet_id)
 
         if spec["currency_cols"]:
@@ -328,9 +375,15 @@ def render(store: str, *, dry_run: bool = False) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--store", required=True, help="Store name (e.g. palmetto)")
+    parser.add_argument(
+        "--since", default=None,
+        help="YYYY-MM-DD; only upsert rows on/after this date (default: all rows). "
+             "Historical rows outside the window are preserved in the Sheet.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print row counts without writing to Sheet")
     args = parser.parse_args()
-    render(args.store, dry_run=args.dry_run)
+    since_date = datetime.date.fromisoformat(args.since) if args.since else None
+    render(args.store, since=since_date, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

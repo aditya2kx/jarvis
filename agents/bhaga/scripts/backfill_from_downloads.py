@@ -70,6 +70,10 @@ except Exception:  # noqa: BLE001
 PROJECT = pathlib.Path(project_dir())
 DOWNLOADS = PROJECT / "extracted" / "downloads"
 
+# BQ type hints for TIMESTAMP columns that can be None. Without this, load_rows
+# infers type STRING for None values, causing a BQ type conflict.
+_TS_TYPES = {"scraped_at_utc": "TIMESTAMP"}
+
 
 def _newest(pattern: str) -> pathlib.Path | None:
     paths = [pathlib.Path(p) for p in glob.glob(str(DOWNLOADS / pattern))]
@@ -182,7 +186,8 @@ def main() -> int:
                 if args.dry_run:
                     print(f"  DRY: would load {len(bq_rows)} shift rows into BQ")
                 else:
-                    n = load_rows("adp_shifts", bq_rows, merge_keys=["date", "employee_id"])
+                    n = load_rows("adp_shifts", bq_rows, merge_keys=["date", "employee_id"],
+                                 column_bq_types=_TS_TYPES)
                     print(f"  adp_shifts (BQ): {n} rows upserted")
                     summaries.append({"table": "adp_shifts", "rows": n})
 
@@ -193,7 +198,8 @@ def main() -> int:
                     print(f"  DRY: would load {len(bq_rows)} punch rows into BQ")
                 else:
                     n = load_rows("adp_punches", bq_rows,
-                                  merge_keys=["date", "employee_id", "punch_index"])
+                                  merge_keys=["date", "employee_id", "punch_index"],
+                                  column_bq_types=_TS_TYPES)
                     print(f"  adp_punches (BQ): {n} rows upserted")
                     summaries.append({"table": "adp_punches", "rows": n})
 
@@ -241,7 +247,8 @@ def main() -> int:
             if args.dry_run:
                 print(f"  DRY: would load {len(bq_rows)} wage_rate rows into BQ")
             else:
-                n = load_rows("adp_wage_rates", bq_rows, merge_keys=["employee_id"])
+                n = load_rows("adp_wage_rates", bq_rows, merge_keys=["employee_id"],
+                             column_bq_types=_TS_TYPES)
                 print(f"  adp_wage_rates (BQ): {n} rows upserted")
                 summaries.append({"table": "adp_wage_rates", "rows": n})
 
@@ -271,6 +278,7 @@ def main() -> int:
                 n = load_rows(
                     "adp_earnings", bq_earnings_rows,
                     merge_keys=["period_start", "period_end", "employee", "description", "check_date"],
+                    column_bq_types=_TS_TYPES,
                 )
                 print(f"  adp_earnings (BQ): {n} rows upserted")
                 summaries.append({"table": "adp_earnings", "rows": n})
@@ -291,7 +299,8 @@ def main() -> int:
             if args.dry_run:
                 print(f"  DRY: would load {len(bq_rows)} transaction rows into BQ")
             else:
-                n = load_rows("square_transactions", bq_rows, merge_keys=["transaction_id"])
+                n = load_rows("square_transactions", bq_rows, merge_keys=["transaction_id"],
+                             column_bq_types=_TS_TYPES)
                 print(f"  square_transactions (BQ): {n} rows upserted")
                 summaries.append({"table": "square_transactions", "rows": n})
 
@@ -303,7 +312,8 @@ def main() -> int:
                 if args.dry_run:
                     print(f"  DRY: would load {len(bq_rollup_rows)} daily_rollup rows into BQ")
                 else:
-                    n = load_rows("square_daily_rollup", bq_rollup_rows, merge_keys=["date_local"])
+                    n = load_rows("square_daily_rollup", bq_rollup_rows, merge_keys=["date_local"],
+                                 column_bq_types=_TS_TYPES)
                     print(f"  square_daily_rollup (BQ): {n} rows upserted")
                     summaries.append({"table": "square_daily_rollup", "rows": n})
 
@@ -326,6 +336,7 @@ def main() -> int:
                 n = load_rows(
                     "square_item_lines", bq_lines,
                     merge_keys=["transaction_id", "item_name", "item_sold_at_local", "line_seq"],
+                    column_bq_types=_TS_TYPES,
                 )
                 print(f"  square_item_lines (BQ): {n} rows upserted")
                 summaries.append({"table": "square_item_lines", "rows": n})
@@ -337,7 +348,8 @@ def main() -> int:
             if args.dry_run:
                 print(f"  DRY: would load {len(bq_item_daily)} item_daily rows into BQ")
             else:
-                n = load_rows("square_item_daily", bq_item_daily, merge_keys=["date_local"])
+                n = load_rows("square_item_daily", bq_item_daily, merge_keys=["date_local"],
+                             column_bq_types=_TS_TYPES)
                 print(f"  square_item_daily (BQ): {n} rows upserted")
                 summaries.append({"table": "square_item_daily", "rows": n})
 
@@ -362,7 +374,8 @@ def main() -> int:
                 print(f"  DRY: would load {len(bq_kds_daily)} kds_daily rows into BQ")
                 print(f"  DRY: would load {len(kds_tickets)} kds_tickets rows into BQ")
             else:
-                n = load_rows("square_kds_daily", bq_kds_daily, merge_keys=["date_local"])
+                n = load_rows("square_kds_daily", bq_kds_daily, merge_keys=["date_local"],
+                             column_bq_types=_TS_TYPES)
                 print(f"  square_kds_daily (BQ): {n} rows upserted")
                 summaries.append({"table": "square_kds_daily", "rows": n})
 
@@ -371,6 +384,7 @@ def main() -> int:
                 n = load_rows(
                     "square_kds_tickets", bq_tickets,
                     merge_keys=["date_local", "time_created", "ticket_name"],
+                    column_bq_types=_TS_TYPES,
                 )
                 print(f"  square_kds_tickets (BQ): {n} rows upserted")
                 summaries.append({"table": "square_kds_tickets", "rows": n})

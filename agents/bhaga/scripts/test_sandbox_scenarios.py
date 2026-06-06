@@ -31,6 +31,19 @@ class TestRunScenarioScoping:
         argv = captured["argv"]
         assert "--skip" not in argv and "--verify" not in argv
 
+    def test_full_history_backfill_threads_fresh_scrape_and_window(self, monkeypatch):
+        captured = {}
+        from agents.bhaga.scripts import sandbox_live_run as slr
+        monkeypatch.setattr(slr, "main", lambda argv: captured.update(argv=argv) or 0)
+        sc.run_scenario("full-history-bq-sandbox", date="2026-06-05", pr_number=33,
+                        pr_label="x", image="img", window_from="2026-03-23",
+                        window_to="2026-06-05")
+        argv = captured["argv"]
+        assert "--fresh-scrape" in argv
+        assert "--from" in argv and argv[argv.index("--from") + 1] == "2026-03-23"
+        assert "--to" in argv and argv[argv.index("--to") + 1] == "2026-06-05"
+        assert "--skip" not in argv  # full fan-out to all sources
+
 
 class TestParseComment:
     def test_parses_scenario_and_date(self):

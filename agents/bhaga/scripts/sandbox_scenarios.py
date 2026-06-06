@@ -52,6 +52,18 @@ SCENARIOS: dict[str, dict] = {
         # No steps skipped — exercises the complete unified window fan-out.
         # Evidence: per-source row counts written to the evidence file.
     },
+    "full-history-bq-sandbox": {
+        "description": (
+            "Scrape-from-source backfill of the ENTIRE history into the isolated "
+            "bhaga_sandbox BQ dataset (Square + ADP timecard + ADP earnings + reviews). "
+            "fresh_scrape forces the cache READ bucket to the empty sandbox bucket so "
+            "every source is pulled from the actual upstream portals — never prod GCS "
+            "or Sheets. window_from/window_to must be set (e.g. 2026-03-23 → last closed "
+            "day). Evidence: per-source BQ row counts vs prod Sheets via verify_prod_parity."
+        ),
+        # No steps skipped — full fan-out to all sources.
+        "fresh_scrape": True,
+    },
 }
 
 _COMMENT_RE = re.compile(
@@ -142,6 +154,8 @@ def run_scenario(
         argv += ["--skip", ",".join(skip)]
     if meta.get("verify"):
         argv += ["--verify", meta["verify"]]
+    if meta.get("fresh_scrape"):
+        argv.append("--fresh-scrape")
     if evidence_file:
         argv += ["--evidence-file", evidence_file]
     if no_execute:

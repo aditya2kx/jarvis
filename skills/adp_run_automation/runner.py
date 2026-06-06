@@ -200,7 +200,10 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
     except Exception:
         # Diagnose: incorrect creds, 2FA, or unexpected redirect.
         url = page.url.lower()
-        on_2fa_url = any(t in url for t in ("verify", "challenge", "step-up", "mfa"))
+        on_2fa_url = any(
+            t in url
+            for t in ("verify", "challenge", "step-up", "mfa", "mobile_collection", "channel")
+        )
         # Fallback: ADP sometimes serves 2FA on the bare login origin without a
         # URL marker — check the visible body for the "Verify your identity"
         # headline before deciding it's not 2FA.
@@ -236,6 +239,53 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
         )
 
 
+def _dismiss_adp_channel_collection(page) -> bool:
+    """Skip ADP's "verify/add your mobile number" interstitial if it's showing.
+
+    ADP RUN began inserting a contact-channel-collection page (custom
+    ``<sdf-phone-number-input>`` + a "Verify mobile number" / "Remind me later"
+    pair, ids ``channel-collection-save`` / ``channel-collection-remind``)
+    between the password step and the actual OTP challenge. It carries no
+    code-entry box, so the OTP handler would land here and raise "selector
+    drift". We click "Remind me later" to dismiss it and let ADP continue.
+
+    Returns True if the interstitial was detected and dismissed, else False.
+    Never raises — a miss just means we weren't on that page.
+    """
+    # Detect by the page-unique elements (id is stable; fall back to role/text).
+    detectors = (
+        lambda: page.locator("#channel-collection-remind").first,
+        lambda: page.locator("#phone-number-input").first,
+        lambda: page.get_by_role("button", name=re.compile(r"remind me later", re.I)).first,
+    )
+    present = False
+    for det in detectors:
+        try:
+            det().wait_for(state="visible", timeout=2_000)
+            present = True
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    if not present:
+        return False
+
+    print("[adp 2fa] mobile-number verify interstitial detected; clicking 'Remind me later'.")
+    for clicker in (
+        lambda: page.locator("#channel-collection-remind").first,
+        lambda: page.get_by_role("button", name=re.compile(r"remind me later", re.I)).first,
+    ):
+        try:
+            clicker().click(timeout=4_000)
+            page.wait_for_timeout(2_000)  # let the dismissal navigate/settle
+            return True
+        except Exception:  # noqa: BLE001
+            continue
+    # Detected the page but couldn't click the skip control; report not-dismissed
+    # so the caller's OTP flow raises its own evidence breadcrumb.
+    print("[adp 2fa] WARN: interstitial detected but 'Remind me later' not clickable.")
+    return False
+
+
 def _handle_adp_two_factor(page, *, store: str) -> None:
     """Drive ADP RUN's SMS-OTP 2FA flow with operator-in-the-loop via Slack.
 
@@ -258,6 +308,21 @@ def _handle_adp_two_factor(page, *, store: str) -> None:
     so we don't end up in a silent infinite wait.
     """
     print(f"[adp 2fa] starting handler; URL={page.url}")
+
+    # Step 0: dismiss the "verify/add your mobile number" interstitial (ADP's
+    # channel-collection page) if present. ADP began inserting this between
+    # password submit and the OTP challenge; it has no code-entry box, so the
+    # OTP flow below would mis-fire as "selector drift". Clicking "Remind me
+    # later" skips it and lets ADP proceed to the real challenge / dashboard.
+    if _dismiss_adp_channel_collection(page):
+        # After skipping, we may already be on the dashboard (device trusted) —
+        # if so there's no OTP to enter and we're done.
+        try:
+            page.wait_for_url(POST_LOGIN_URL_RE, timeout=15_000)
+            print("[adp 2fa] reached dashboard after skipping mobile-verify; no OTP needed.")
+            return
+        except Exception:  # noqa: BLE001 — not on dashboard yet → continue OTP flow
+            print("[adp 2fa] mobile-verify skipped; continuing to OTP challenge.")
 
     # Step 1: pick text-message delivery. ADP's picker varies between sdf-radio
     # and clickable sdf-card. Try several patterns.

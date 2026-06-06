@@ -2212,10 +2212,20 @@ def main() -> int:
             if _rev_until:
                 review_cmd.extend(["--until", _rev_until])
 
+            # process_reviews writes google_reviews to BQ (the system of record)
+            # via load_rows. It MUST run with BHAGA_DATASTORE=bigquery or the BQ
+            # client is None and the upsert silently no-ops (0 rows). Set it
+            # explicitly per-step like every other BQ-writing step — do NOT rely
+            # on the parent env (the sandbox job env doesn't set it globally).
+            review_env = {
+                **os.environ,
+                "BHAGA_DATASTORE": "bigquery",
+                "PYTHONUNBUFFERED": "1",
+            }
             ok, val = run_step(
                 "process_reviews",
                 lambda: subprocess.run(
-                    review_cmd, cwd=str(PROJECT_ROOT), check=True,
+                    review_cmd, cwd=str(PROJECT_ROOT), check=True, env=review_env,
                 ),
                 refresh_date=refresh_date,
                 dry_run=args.dry_run,

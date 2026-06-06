@@ -1205,6 +1205,20 @@ def main() -> int:
     # via merge_keys=["review_id"].
     bq_review_rows = [_rec_to_bq_shape(r) for r in parsed_reviews]
     bq_review_rows = [r for r in bq_review_rows if r.get("review_id")]
+    # google_reviews is BQ-primary. If the BQ client is unavailable (e.g.
+    # BHAGA_DATASTORE != bigquery) load_rows silently returns 0 and the reviews
+    # vanish — a confusing "parsed N, upserted 0". Fail loudly instead of
+    # silently dropping rows that were successfully parsed.
+    from core.datastore import get_client as _get_bq_client  # noqa: PLC0415
+    if bq_review_rows and _get_bq_client() is None:
+        print(
+            "ERROR: parsed reviews but the BigQuery client is unavailable — "
+            "google_reviews is BQ-primary. Set BHAGA_DATASTORE=bigquery so the "
+            "reviews actually persist (refusing to silently drop "
+            f"{len(bq_review_rows)} parsed review(s)).",
+            file=sys.stderr,
+        )
+        return 3
     n_bq_loaded = 0
     if bq_review_rows:
         n_bq_loaded = load_rows(

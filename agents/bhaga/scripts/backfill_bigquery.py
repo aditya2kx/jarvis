@@ -288,8 +288,17 @@ def map_square_item_daily(rec: dict) -> dict:
 
 
 def map_square_kds_daily(rec: dict) -> dict:
-    """Map a Sheet kds_daily row to the BQ square_kds_daily schema."""
+    """Map a kds_daily row to the BQ square_kds_daily schema.
+
+    Accepts rows from two sources: Sheet-sourced rows carry the JSON-encoded
+    ``per_item_times_json`` column, while rows straight off
+    ``aggregate_daily_kds_stats`` (the from-downloads backfill path) carry the
+    raw list under ``per_item_times``. Either populates the BQ column so
+    weekly/period rollups can re-pool the per-item distribution.
+    """
     pij = rec.get("per_item_times_json")
+    if pij is None or pij == "":
+        pij = rec.get("per_item_times")
     if isinstance(pij, list):
         pij = json.dumps(pij)
     elif not pij:

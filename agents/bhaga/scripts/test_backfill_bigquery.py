@@ -218,5 +218,55 @@ class TestMapGoogleReview(unittest.TestCase):
         self.assertIsInstance(bq_row["post_date_ct"], (datetime.date, type(None)))
 
 
+class TestMapSquareKdsDailyPerItemTimes(unittest.TestCase):
+    """per_item_times_json must populate from either source key.
+
+    Sheet-sourced rows carry ``per_item_times_json`` (JSON string); rows straight
+    off ``aggregate_daily_kds_stats`` (the from-downloads backfill path) carry the
+    raw list under ``per_item_times``. Both must reach the BQ column so
+    weekly/period rollups can re-pool the per-item distribution exactly.
+    """
+
+    def test_aggregate_per_item_times_list_is_encoded(self):
+        # Mirrors aggregate_daily_kds_stats output: key is per_item_times (list).
+        rec = {
+            "date_local": "2026-05-04",
+            "completed_tickets": 94,
+            "completed_items": 153,
+            "per_item_times": [120, 200, 200, 368],
+        }
+        bq_row = map_square_kds_daily(rec)
+        self.assertEqual(bq_row["per_item_times_json"], "[120, 200, 200, 368]")
+
+    def test_sheet_per_item_times_json_string_passthrough(self):
+        rec = {
+            "date_local": "2026-05-04",
+            "per_item_times_json": "[1, 2, 3]",
+        }
+        bq_row = map_square_kds_daily(rec)
+        self.assertEqual(bq_row["per_item_times_json"], "[1, 2, 3]")
+
+    def test_sheet_per_item_times_json_list_passthrough(self):
+        rec = {
+            "date_local": "2026-05-04",
+            "per_item_times_json": [4, 5, 6],
+        }
+        bq_row = map_square_kds_daily(rec)
+        self.assertEqual(bq_row["per_item_times_json"], "[4, 5, 6]")
+
+    def test_empty_defaults_to_empty_array(self):
+        bq_row = map_square_kds_daily({"date_local": "2026-05-04"})
+        self.assertEqual(bq_row["per_item_times_json"], "[]")
+
+    def test_json_key_wins_over_list_key(self):
+        rec = {
+            "date_local": "2026-05-04",
+            "per_item_times_json": "[7, 8]",
+            "per_item_times": [1, 2, 3],
+        }
+        bq_row = map_square_kds_daily(rec)
+        self.assertEqual(bq_row["per_item_times_json"], "[7, 8]")
+
+
 if __name__ == "__main__":
     unittest.main()

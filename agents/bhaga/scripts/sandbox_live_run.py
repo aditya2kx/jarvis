@@ -96,6 +96,7 @@ def build_sandbox_env(
     window_from: str | None = None,
     window_to: str | None = None,
     fresh_scrape: bool = False,
+    sheet_from_bq: bool = False,
 ) -> dict[str, str]:
     """Construct the sandbox job's env overlay.
 
@@ -142,6 +143,12 @@ def build_sandbox_env(
     # (GCS is deprecated as a source; Sheets are a projection of BQ).
     if fresh_scrape:
         env["BHAGA_GCS_CACHE_BUCKET"] = cache_write_bucket
+    # BQ-canonical model path: materialize_model_bq (BQ raw → BQ model) →
+    # render_model_sheet_from_bq (BQ model → Sheet), instead of the legacy
+    # update_model_sheet (which reads raw SHEETS). Required when proving BQ as
+    # the source of truth — the model must be computed FROM BQ, not from Sheets.
+    if sheet_from_bq:
+        env["BHAGA_SHEET_FROM_BQ"] = "1"
     # Unified backfill window: injected so daily_refresh fans out to all sources.
     if window_from:
         env["BHAGA_WINDOW_FROM"] = window_from
@@ -515,6 +522,11 @@ def main(argv: list[str] | None = None) -> int:
                           "the run cannot reuse prod's cached scrape files — it must "
                           "hit the actual upstream sources. Use for a BQ-from-scratch "
                           "backfill (data must come from real portals, not GCS/Sheets).")
+    cli.add_argument("--sheet-from-bq", action="store_true",
+                     help="Run the BQ-canonical model path (BHAGA_SHEET_FROM_BQ=1): "
+                          "materialize_model_bq from BQ raw, then render the Sheet from "
+                          "the BQ model — instead of the legacy update_model_sheet that "
+                          "reads raw Sheets. Required to prove BQ as the source of truth.")
     args = cli.parse_args(argv)
 
     skip_steps = [s.strip() for s in args.skip.split(",") if s.strip()]
@@ -543,6 +555,7 @@ def main(argv: list[str] | None = None) -> int:
         window_from=args.window_from,
         window_to=args.window_to,
         fresh_scrape=args.fresh_scrape,
+        sheet_from_bq=args.sheet_from_bq,
     )
     if skip_steps:
         print(f"[sandbox_live_run] scenario scoped — skipping steps: {', '.join(skip_steps)}")

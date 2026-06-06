@@ -40,6 +40,7 @@ class TestRunScenarioScoping:
                         window_to="2026-06-05")
         argv = captured["argv"]
         assert "--fresh-scrape" in argv
+        assert "--sheet-from-bq" in argv  # BQ-canonical model path
         assert "--from" in argv and argv[argv.index("--from") + 1] == "2026-03-23"
         assert "--to" in argv and argv[argv.index("--to") + 1] == "2026-06-05"
         assert "--skip" not in argv  # full fan-out to all sources

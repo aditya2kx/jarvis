@@ -63,6 +63,9 @@ SCENARIOS: dict[str, dict] = {
         ),
         # No steps skipped — full fan-out to all sources.
         "fresh_scrape": True,
+        # Prove BQ as the source of truth: compute the model FROM BQ raw
+        # (materialize_model_bq → render_model_sheet_from_bq), not from raw Sheets.
+        "sheet_from_bq": True,
     },
 }
 
@@ -156,6 +159,8 @@ def run_scenario(
         argv += ["--verify", meta["verify"]]
     if meta.get("fresh_scrape"):
         argv.append("--fresh-scrape")
+    if meta.get("sheet_from_bq"):
+        argv.append("--sheet-from-bq")
     if evidence_file:
         argv += ["--evidence-file", evidence_file]
     if no_execute:

@@ -36,10 +36,10 @@ from agents.bhaga.scripts.verify_bq_parity import (
     _read_sheet_tab,
 )
 from core.config_loader import refresh_access_token, resolve_sheet_id
-from core.datastore import read_query
+from core.datastore import dataset, read_query
 
 _PROJECT = "jarvis-bhaga-prod"
-_DATASET = "bhaga"
+_DATASET = dataset()  # env-driven (BHAGA_BQ_DATASET); prod `bhaga` by default
 _STORE_PROFILES = pathlib.Path(__file__).resolve().parents[3] / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
 
 # Columns that exist in BQ but not in the Sheet (metadata/internal) — skip in diff.

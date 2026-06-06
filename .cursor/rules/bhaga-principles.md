@@ -54,11 +54,14 @@ derive proposals from them rather than from memory.
 - **Prove changes with the per-PR sandbox e2e** (`sandbox_e2e.py`), not by touching prod sheets.
 - **Sandbox runs are read-only toward prod data sources.** A sandbox/staging run (`BHAGA_SHEET_MODE=staging`)
   may **read** prod data (GCS cache, raw sheets) but must **never write** to any prod data source —
-  prod sheets, the prod GCS cache (`bhaga-scrape-cache`), or prod Firestore state. All sandbox writes
-  divert to isolated sandbox targets (staging sheets, `BHAGA_GCS_CACHE_WRITE_BUCKET`, a sandbox Firestore
-  namespace). Enforced by hard guards: `config_loader._assert_not_production_sheet` (sheets),
-  `gcs_cache._assert_sandbox_write_isolation` (cache), and `state_adapter._assert_sandbox_state_isolation`
-  (Firestore run-state) — all fail loud rather than mutate prod.
+  prod sheets, the prod GCS cache (`bhaga-scrape-cache`), the prod BQ dataset (`bhaga`), or prod
+  Firestore state. All sandbox writes divert to isolated sandbox targets (staging sheets,
+  `BHAGA_GCS_CACHE_WRITE_BUCKET`, `BHAGA_BQ_DATASET=bhaga_sandbox`, a sandbox Firestore namespace).
+  Enforced by hard guards: `config_loader._assert_not_production_sheet` (sheets),
+  `gcs_cache._assert_sandbox_write_isolation` (cache), `datastore._assert_sandbox_write_isolation`
+  (BQ dataset), and `state_adapter._assert_sandbox_state_isolation` (Firestore run-state) — all fail
+  loud rather than mutate prod. The BQ guard is the fix for the leak that previously let a sandbox test
+  row strand itself in prod `bhaga` (sandbox writes shared the prod dataset before `BHAGA_BQ_DATASET`).
 - **OTP via Slack/Firestore+webhook, never the IDE.** Announce any action that fires an SMS/email/DM
   before triggering it.
 - **Never reflexively retry a transient error when a retry can fire a side effect** (OTP/SMS/email/DM).

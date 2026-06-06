@@ -28,7 +28,13 @@ if "BHAGA_DATASTORE" not in os.environ:
     os.environ["BHAGA_DATASTORE"] = "bigquery"
 
 from core.datastore import load_rows
-from core.datastore_reader import read_shifts_bq, read_transactions_bq, read_wage_rates_bq
+from core.datastore_reader import (
+    read_item_daily_bq,
+    read_kds_daily_bq,
+    read_shifts_bq,
+    read_transactions_bq,
+    read_wage_rates_bq,
+)
 from agents.bhaga.scripts.update_model_sheet import (
     DEFAULT_SATURATION_THRESHOLD,
     actual_cc_tips_by_period,
@@ -225,6 +231,7 @@ def load_model_rows(
     *,
     dry_run: bool = False,
     materialized_at: datetime.datetime | None = None,
+    replace: bool = False,
 ) -> int:
     """Convert build_*-style header+rows output and upsert into a BQ model table.
 
@@ -233,11 +240,23 @@ def load_model_rows(
 
     ``header_rows`` is the raw build_* output (first element = header list,
     rest = data rows). Returns the number of rows merged (0 on dry-run or empty).
+
+    ``replace=True`` truncates the table before loading, mirroring the Sheet's
+    clear-and-write semantics for tabs that are FULLY rebuilt each run (e.g.
+    review_bonus_period). Without it the MERGE-upsert leaves ghost rows whenever
+    a (period_start, employee) key drops out of the rebuild — which is how a
+    leaked sandbox 'Alice' row stranded itself in prod model_review_bonus_period.
     """
     if not header_rows or len(header_rows) < 2:
         return 0
     if materialized_at is None:
         materialized_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    if replace and not dry_run:
+        from core.datastore import (  # noqa: PLC0415
+            read_query, _PROJECT_ID, _DATASET, _assert_sandbox_write_isolation,
+        )
+        _assert_sandbox_write_isolation()
+        read_query(f"DELETE FROM `{_PROJECT_ID}.{_DATASET}.{table}` WHERE TRUE")
     dicts = _header_rows_to_dicts(header_rows)
     return _load(table, dicts, materialized_at, dry_run)
 
@@ -285,7 +304,14 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     shifts = read_shifts_bq()
     txns = read_transactions_bq()
     wage_rates = read_wage_rates_bq()
-    print(f"  shifts={len(shifts)} txns={len(txns)} wage_rates={len(wage_rates)}")
+    # Item + KDS daily rollups feed the per-item operations metrics on
+    # labor_daily/weekly/period (items_sold, avg_item_price, KDS percentiles).
+    # Without these, those columns materialize as NULL (the historical gap that
+    # left model_labor_daily.items_sold empty for every row).
+    items_by_date = {r["date_local"]: r for r in read_item_daily_bq()}
+    kds_by_date = {r["date_local"]: r for r in read_kds_daily_bq()}
+    print(f"  shifts={len(shifts)} txns={len(txns)} wage_rates={len(wage_rates)} "
+          f"item_days={len(items_by_date)} kds_days={len(kds_by_date)}")
 
     # Defensive breadcrumb: the model is derived from Square transactions, so an
     # empty `txns` means there is nothing to materialize. Without this guard the
@@ -336,6 +362,14 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
             "saturation_orders_per_labor_hour", DEFAULT_SATURATION_THRESHOLD
         )
     )
+    # Flat staffing-solver target prep time per item; doubles as the goal for
+    # kds_pct_items_over_goal. Mirrors update_model_sheet's profile fallback so
+    # the BQ model matches the Sheet when the operator hasn't overridden it.
+    kds_goal_sec = float(
+        profile.get("labor_config", {}).get(
+            "forecast_target_completion_time_per_item_sec", 420.0
+        )
+    )
     periods = discover_periods(
         anchor_end_date=profile["adp_run"]["pay_periods_anchor_end_date"],
         pay_frequency=profile["adp_run"].get("pay_frequency", ""),
@@ -376,15 +410,22 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
         wage_rates=wage_rates,
         excluded_from_tip_pool=excluded,
         saturation_threshold=sat_thresh,
+        items_by_date=items_by_date,
+        kds_by_date=kds_by_date,
+        kds_goal_sec=kds_goal_sec,
     )
     labor_period_rows = build_labor_period_rows(
         periods=periods,
         labor_daily_rows=labor_daily_rows,
         saturation_threshold=sat_thresh,
+        kds_by_date=kds_by_date,
+        kds_goal_sec=kds_goal_sec,
     )
     labor_weekly_rows = build_labor_weekly_rows(
         labor_daily_rows=labor_daily_rows,
         saturation_threshold=sat_thresh,
+        kds_by_date=kds_by_date,
+        kds_goal_sec=kds_goal_sec,
     )
     period_results = build_period_results(
         periods=periods,

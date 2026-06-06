@@ -1,5 +1,32 @@
 # Jarvis Build Progress
 
+## 2026-06-06 — Sandbox BQ dataset isolation + scrape-from-source evidence (PR #33)
+
+**Goal:** Produce trustworthy parity evidence (BQ raw/model vs prod Sheets, from 2026-03-23) WITHOUT
+letting PR-branch code touch prod data. Discovered the sandbox isolated sheets/cache/Firestore but
+**not** BQ — sandbox runs wrote the shared prod `bhaga` dataset (the path that leaked a test row into
+prod `model_review_bonus_period`).
+
+**What landed:**
+- `core/datastore.py` — BQ dataset is now env-driven (`BHAGA_BQ_DATASET`, default `bhaga`):
+  `dataset()` / `fq(table)` helpers, `ensure_dataset()` (create-if-missing), `ensure_schema()` rewrites
+  migration DDL to the active dataset, and `_assert_sandbox_write_isolation()` blocks a
+  staging run from writing the prod dataset. Used by `load_rows` and `load_model_rows` (replace path).
+- Repointed hardcoded dataset literals to the env-driven dataset: `render_raw_sheet_from_bq`,
+  `render_model_sheet_from_bq`, `reconcile_model`, `status`, `bq_coverage`, `process_reviews`,
+  `update_model_sheet`, `core/store_config`, `cloud/webhook/handler`.
+- `sandbox_live_run.py` — sandbox env overlay sets `BHAGA_BQ_DATASET=bhaga_sandbox` + isolation
+  assertion; new `--fresh-scrape` flag points the cache READ bucket at the empty sandbox bucket so a
+  windowed backfill must hit the **actual upstream sources** (not prod GCS cache / not Sheets).
+- `materialize_model_bq.py` — `load_model_rows(replace=True)` now also runs the sandbox write guard;
+  item-metrics (`items_sold`/KDS) now computed from BQ via `read_item_daily_bq`/`read_kds_daily_bq`.
+- `agents/bhaga/scripts/verify_prod_parity.py` (new) — cloud-runnable e2e parity tool: BQ raw/model row
+  counts + key-joined, unit-aware value diffs vs prod Sheets; dataset is env-driven so it can verify
+  either prod or `bhaga_sandbox`.
+- Created the `bhaga_sandbox` BQ dataset and ran migrations 001–007 into it (20 tables + 13 views).
+- Tests: `core/test_datastore_dataset_isolation.py`, `core/test_datastore_reader.py`, sandbox isolation
+  + fresh-scrape cases. Full suite green (859+ passed).
+
 ## 2026-06-05 — BQ as single source of truth (PR #33, feat/grafana-dashboard-refactor)
 
 **Goal:** Make BigQuery the single source of truth for all BHAGA data (raw scrapes, ADP earnings,

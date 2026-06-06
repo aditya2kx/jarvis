@@ -74,7 +74,7 @@ from agents.bhaga.scripts.update_model_sheet import (  # noqa: E402
     format_currency_columns,
 )
 from core.config_loader import refresh_access_token, resolve_sheet_id  # noqa: E402
-from core.datastore import _is_enabled as _bq_enabled, load_rows, read_query  # noqa: E402
+from core.datastore import _is_enabled as _bq_enabled, fq, load_rows, read_query  # noqa: E402
 from agents.bhaga.scripts.backfill_bigquery import map_google_review  # noqa: E402
 from skills.adp_run_automation.shift_backend import normalize_employee_name  # noqa: E402
 from skills.bhaga_config.dates import (  # noqa: E402
@@ -852,8 +852,11 @@ def rebuild_review_bonus_period(
     if _bq_enabled():
         try:
             from agents.bhaga.scripts.materialize_model_bq import load_model_rows  # noqa: PLC0415
-            n_bq = load_model_rows("model_review_bonus_period", rollup_rows)
-            print(f"  [review_bonus_period→BQ] {n_bq} rows merged into model_review_bonus_period")
+            # replace=True: this rollup is a FULL rebuild (every period/employee),
+            # so truncate-then-load mirrors the Sheet's clear-and-write and prevents
+            # ghost rows from periods/employees that dropped out of the rebuild.
+            n_bq = load_model_rows("model_review_bonus_period", rollup_rows, replace=True)
+            print(f"  [review_bonus_period→BQ] {n_bq} rows written (full replace) into model_review_bonus_period")
         except Exception as exc:  # noqa: BLE001
             print(f"  [review_bonus_period→BQ] WARNING: BQ write failed (Sheet is unaffected): {exc}")
 
@@ -1384,7 +1387,7 @@ def _latest_review_ts_ms() -> Optional[int]:
         return None
     try:
         rows = read_query(
-            "SELECT post_ts_ct FROM `jarvis-bhaga-prod.bhaga.google_reviews`"
+            f"SELECT post_ts_ct FROM {fq('google_reviews')}"
         )
     except Exception as exc:  # noqa: BLE001
         print(f"WARN: could not read google_reviews high-water mark: {exc}")
@@ -1445,7 +1448,7 @@ def _read_all_reviews(
     shift_date_credited is a STRING in BQ (ISO date or ""); no serial coercion needed.
     """
     rows = read_query(
-        "SELECT * FROM `jarvis-bhaga-prod.bhaga.google_reviews`"
+        f"SELECT * FROM {fq('google_reviews')}"
     )
     if not rows:
         return []

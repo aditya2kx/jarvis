@@ -32,7 +32,12 @@ class TestBuildSandboxEnv:
         assert env["BHAGA_SHEET_MODE"] == "staging"
         assert env["BHAGA_GCS_CACHE_WRITE_BUCKET"] == slr.SANDBOX_CACHE_WRITE_BUCKET
         assert env["BHAGA_FIRESTORE_COLLECTION"] == slr.SANDBOX_RUNS_COLLECTION
+        assert env["BHAGA_BQ_DATASET"] == slr.SANDBOX_BQ_DATASET
         assert env["REFRESH_DATE"] == "2026-05-31"
+
+    def test_bq_dataset_is_isolated(self):
+        # Sandbox writes must land in an isolated dataset, never prod `bhaga`.
+        assert _good_env()["BHAGA_BQ_DATASET"] != "bhaga"
 
     def test_sets_otp_routing_labels(self):
         env = _good_env()
@@ -70,6 +75,22 @@ class TestBuildSandboxEnv:
         assert "BHAGA_WINDOW_FROM" not in env
         assert "BHAGA_WINDOW_TO" not in env
 
+    def test_fresh_scrape_points_read_bucket_at_sandbox(self):
+        """fresh_scrape forces cache READS off prod so the run scrapes upstream."""
+        env = slr.build_sandbox_env(
+            staging_ids=_good_ids(),
+            refresh_date="2026-05-31",
+            store="palmetto",
+            run_label="test",
+            fresh_scrape=True,
+        )
+        assert env["BHAGA_GCS_CACHE_BUCKET"] == slr.SANDBOX_CACHE_WRITE_BUCKET
+        assert env["BHAGA_GCS_CACHE_BUCKET"] != "bhaga-scrape-cache"
+
+    def test_no_fresh_scrape_leaves_read_bucket_default(self):
+        """Without fresh_scrape, reads still hit prod (normal sandbox behavior)."""
+        assert "BHAGA_GCS_CACHE_BUCKET" not in _good_env()
+
 
 class TestAssertIsolation:
     def test_passes_for_good_env(self):
@@ -91,6 +112,18 @@ class TestAssertIsolation:
         env = _good_env()
         env["BHAGA_FIRESTORE_COLLECTION"] = "runs"
         with pytest.raises(RuntimeError, match="collection"):
+            slr.assert_sandbox_isolation(env)
+
+    def test_blocks_prod_bq_dataset(self):
+        env = _good_env()
+        env["BHAGA_BQ_DATASET"] = "bhaga"
+        with pytest.raises(RuntimeError, match="dataset"):
+            slr.assert_sandbox_isolation(env)
+
+    def test_blocks_missing_bq_dataset(self):
+        env = _good_env()
+        del env["BHAGA_BQ_DATASET"]
+        with pytest.raises(RuntimeError, match="dataset"):
             slr.assert_sandbox_isolation(env)
 
     def test_blocks_missing_staging_sheet(self):

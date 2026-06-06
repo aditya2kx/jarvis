@@ -31,10 +31,10 @@ _TABLE = "store_config"
 
 def get_config(store: str, key: str) -> str | None:
     """Return the latest value for *key* in *store*, or None if absent."""
-    from core.datastore import read_query
+    from core.datastore import fq, read_query
 
     rows = read_query(
-        f"SELECT value FROM `jarvis-bhaga-prod.bhaga.{_TABLE}`"
+        f"SELECT value FROM {fq(_TABLE)}"
         f" WHERE store = '{store}' AND key = '{key}'"
         f" ORDER BY updated_at DESC LIMIT 1"
     )
@@ -45,12 +45,12 @@ def get_config(store: str, key: str) -> str | None:
 
 def get_all(store: str) -> dict[str, str]:
     """Return all (key, value) pairs for *store* (latest value per key)."""
-    from core.datastore import read_query
+    from core.datastore import fq, read_query
 
     rows = read_query(
         f"SELECT key, value FROM ("
         f"  SELECT key, value, ROW_NUMBER() OVER (PARTITION BY key ORDER BY updated_at DESC) AS rn"
-        f"  FROM `jarvis-bhaga-prod.bhaga.{_TABLE}`"
+        f"  FROM {fq(_TABLE)}"
         f"  WHERE store = '{store}'"
         f") WHERE rn = 1"
     )

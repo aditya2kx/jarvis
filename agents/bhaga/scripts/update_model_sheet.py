@@ -1120,12 +1120,12 @@ def load_cc_tips_earnings_from_bq(
     this reader converts them to ISO strings to match what the GCS path returns
     (date comparison in ``actual_cc_tips_by_period`` uses ``.isoformat()`` strings).
     """
-    from core.datastore import read_query
+    from core.datastore import fq, read_query
 
     rows = read_query(
         "SELECT period_start, period_end, check_date, employee AS employee_name,"
         " description, amount"
-        " FROM `jarvis-bhaga-prod.bhaga.adp_earnings`"
+        f" FROM {fq('adp_earnings')}"
         f" WHERE period_end >= DATE('{data_window_start}')"
     )
     for r in rows:

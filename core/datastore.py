@@ -21,12 +21,65 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _PROJECT_ID = "jarvis-bhaga-prod"
-_DATASET = "bhaga"
+# BQ dataset is env-driven so sandbox runs write to an ISOLATED dataset
+# (BHAGA_BQ_DATASET=bhaga_sandbox) instead of polluting prod `bhaga`. Defaults
+# to prod. Resolved at import; every process (nightly, sandbox, backfill) sets
+# the env before launching python, so import-time resolution is correct.
+_DEFAULT_DATASET = "bhaga"
+_DATASET = os.environ.get("BHAGA_BQ_DATASET", _DEFAULT_DATASET)
 _MIGRATIONS_DIR = pathlib.Path(__file__).parent / "migrations"
+
+
+def dataset() -> str:
+    """The active BQ dataset (prod `bhaga` unless BHAGA_BQ_DATASET overrides)."""
+    return _DATASET
+
+
+def fq(table: str) -> str:
+    """Fully-qualified, backtick-quoted table ref for the active dataset.
+
+    Use this instead of hardcoding `jarvis-bhaga-prod.bhaga.<table>` so sandbox
+    runs (BHAGA_BQ_DATASET=bhaga_sandbox) target the isolated dataset.
+    """
+    return f"`{_PROJECT_ID}.{_DATASET}.{table}`"
 
 
 def _is_enabled() -> bool:
     return os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery"
+
+
+def _assert_sandbox_write_isolation() -> None:
+    """Hard guard: a sandbox/staging run must never WRITE to the prod dataset.
+
+    Mirrors ``gcs_cache._assert_sandbox_write_isolation`` for BigQuery. A sandbox
+    run (``BHAGA_SHEET_MODE=staging``) may READ prod tables but must write only to
+    its isolated dataset (``BHAGA_BQ_DATASET=bhaga_sandbox``). This is the missing
+    guard that previously let a sandbox test row leak into prod BQ.
+    """
+    if os.environ.get("BHAGA_SHEET_MODE", "").lower() != "staging":
+        return
+    if _DATASET == _DEFAULT_DATASET:
+        raise RuntimeError(
+            f"BLOCKED: a sandbox/staging run attempted to WRITE to the production "
+            f"BigQuery dataset '{_DEFAULT_DATASET}'. Set BHAGA_BQ_DATASET to a sandbox "
+            f"dataset. Sandbox runs may READ prod data but must NEVER write it "
+            f"(see .cursor/rules/bhaga-principles.md — sandbox isolation)."
+        )
+
+
+def ensure_dataset() -> None:
+    """Create the active dataset if it doesn't exist (idempotent).
+
+    Lets a sandbox/one-off point BHAGA_BQ_DATASET at a fresh dataset and have it
+    materialized on first ensure_schema(). No-op when BQ is disabled.
+    """
+    client = get_client()
+    if client is None:
+        return
+    from google.cloud import bigquery
+    ds_ref = bigquery.Dataset(f"{_PROJECT_ID}.{_DATASET}")
+    ds_ref.location = "US"
+    client.create_dataset(ds_ref, exists_ok=True)
 
 
 def get_client():
@@ -80,6 +133,10 @@ def ensure_schema() -> list[str]:
     if client is None:
         return []
 
+    # Make sure the target dataset exists (matters for an isolated sandbox
+    # dataset on first run; no-op for the already-existing prod dataset).
+    ensure_dataset()
+
     applied = _get_applied_versions(client)
     pending = _scan_migration_files()
     newly_applied: list[str] = []
@@ -87,8 +144,8 @@ def ensure_schema() -> list[str]:
     for version, name, path in sorted(pending, key=lambda t: t[0]):
         if version in applied:
             continue
-        sql = path.read_text()
-        logger.info("Applying migration %03d_%s ...", version, name)
+        sql = _rewrite_dataset(path.read_text())
+        logger.info("Applying migration %03d_%s into %s ...", version, name, _DATASET)
         for statement in _split_statements(sql):
             statement = statement.strip()
             if not statement:
@@ -130,6 +187,7 @@ def load_rows(
     if client is None or not rows:
         return 0
 
+    _assert_sandbox_write_isolation()
     fq_table = f"`{_PROJECT_ID}.{_DATASET}.{table_name}`"
     columns = list(rows[0].keys())
 
@@ -208,6 +266,19 @@ def _get_applied_versions(client) -> set[int]:
         return {row.version for row in rows}
     except Exception:
         return set()
+
+
+def _rewrite_dataset(sql: str) -> str:
+    """Point migration DDL at the active dataset when it isn't the prod default.
+
+    Migration files hardcode the `bhaga.` dataset qualifier (both bare
+    `bhaga.<table>` and `jarvis-bhaga-prod.bhaga.<table>`). Replacing the
+    substring ``bhaga.`` is safe: the project id ``jarvis-bhaga-prod`` contains
+    ``bhaga-`` (hyphen, no dot), so only dataset qualifiers are rewritten.
+    """
+    if _DATASET == _DEFAULT_DATASET:
+        return sql
+    return sql.replace(f"{_DEFAULT_DATASET}.", f"{_DATASET}.")
 
 
 def _scan_migration_files() -> list[tuple[int, str, pathlib.Path]]:

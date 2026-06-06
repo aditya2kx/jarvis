@@ -6,6 +6,7 @@ import importlib
 import sys
 import types
 import unittest
+from unittest import mock
 
 
 def _load_module():
@@ -168,6 +169,49 @@ class TestLoadModelRows(unittest.TestCase):
         row = {"over_saturation": "FALSE"}
         coerced = m._coerce("model_labor_daily", row, materialized_at)
         self.assertFalse(coerced["over_saturation"])
+
+
+class TestReplaceMode(unittest.TestCase):
+    """load_model_rows(replace=True) truncates before loading (ghost-row guard)."""
+
+    def test_replace_issues_delete_before_load(self):
+        import core.datastore as ds
+        m = _load_module()
+        delete_sql = []
+        loaded = []
+
+        def fake_read_query(sql):
+            if sql.strip().upper().startswith("DELETE"):
+                delete_sql.append(sql)
+            return []
+
+        def fake_load_rows(table, rows, *, merge_keys, column_bq_types=None):
+            loaded.append((table, len(rows)))
+            return len(rows)
+
+        with mock.patch.object(ds, "read_query", fake_read_query), \
+             mock.patch.object(m, "load_rows", fake_load_rows), \
+             mock.patch.object(m, "_col_type_hints", return_value={}):
+            rows = [["period_start", "employee"], ["2026-05-04", "Bob"]]
+            n = m.load_model_rows("model_review_bonus_period", rows, replace=True)
+
+        self.assertEqual(n, 1)
+        self.assertEqual(len(delete_sql), 1, "expected exactly one DELETE before load")
+        self.assertIn("model_review_bonus_period", delete_sql[0])
+        self.assertEqual(loaded, [("model_review_bonus_period", 1)])
+
+    def test_replace_dry_run_skips_delete(self):
+        import core.datastore as ds
+        m = _load_module()
+        called = []
+        with mock.patch.object(ds, "read_query", lambda sql: called.append(sql) or []):
+            n = m.load_model_rows(
+                "model_review_bonus_period",
+                [["period_start", "employee"], ["2026-05-04", "Bob"]],
+                replace=True, dry_run=True,
+            )
+        self.assertEqual(n, 0)
+        self.assertEqual(called, [], "dry-run must not issue a DELETE")
 
 
 if __name__ == "__main__":

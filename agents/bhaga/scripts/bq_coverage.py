@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import datetime
 
-from core.datastore import read_query
+from core.datastore import dataset, read_query
 
 _PROJECT = "jarvis-bhaga-prod"
-_DS = "bhaga"
+_DS = dataset()  # env-driven (BHAGA_BQ_DATASET); prod `bhaga` by default
 
 # Logical source name -> (bq_table, date_column)
 SOURCE_COVERAGE: dict[str, tuple[str, str]] = {

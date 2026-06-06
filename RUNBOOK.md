@@ -667,10 +667,17 @@ The replay e2e above can't exercise a live browser, so it can't reproduce or pro
 
 **Sandbox isolation is enforced (read prod, never write prod).** The job runs with
 `BHAGA_SHEET_MODE=staging` (leased pool slot), `BHAGA_GCS_CACHE_WRITE_BUCKET=bhaga-scrape-cache-sandbox`
-(reads still come from the prod cache), and `BHAGA_FIRESTORE_COLLECTION=sandbox_runs`. The script runs
+(reads still come from the prod cache), `BHAGA_BQ_DATASET=bhaga_sandbox` (BQ writes divert to the
+isolated dataset — never prod `bhaga`), and `BHAGA_FIRESTORE_COLLECTION=sandbox_runs`. The script runs
 an **isolation pre-flight** (`assert_sandbox_isolation`) that fails *before* any deploy/execute if an
 override is missing or points at a prod source — backstopped by the runtime guards in
-`config_loader`, `gcs_cache`, and `state_adapter`.
+`config_loader`, `gcs_cache`, `datastore` (BQ), and `state_adapter`.
+
+**Scrape-from-source backfill (`--fresh-scrape`).** A windowed backfill that must populate
+`bhaga_sandbox` from the **actual upstream portals** (not prod GCS cache, not Sheets) passes
+`--fresh-scrape`, which also points the cache READ bucket at the empty sandbox bucket so no cached
+scrape file can shortcut the browser. Create the dataset + tables first with
+`BHAGA_DATASTORE=bigquery BHAGA_BQ_DATASET=bhaga_sandbox python3 -c "from core import datastore; datastore.ensure_schema()"`.
 
 **OTP routing.** The run uses the **same prod BHAGA cloud Slack bot**, but the prompt is **labeled**
 `:test_tube: *[SANDBOX · PR#… …]*` (via `BHAGA_RUN_ENV`/`BHAGA_RUN_LABEL`) and its pending-OTP

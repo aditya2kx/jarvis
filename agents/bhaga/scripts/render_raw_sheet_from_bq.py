@@ -34,7 +34,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
 from core.config_loader import resolve_sheet_id
-from core.datastore import read_query
+from core.datastore import dataset, read_query
 from skills.tip_ledger_writer.writer import (
     write_raw_adp_earnings,
     write_raw_adp_punches,
@@ -50,7 +50,7 @@ from skills.tip_ledger_writer.writer import (
 )
 
 _PROJECT = "jarvis-bhaga-prod"
-_DATASET = "bhaga"
+_DATASET = dataset()  # env-driven (BHAGA_BQ_DATASET); prod `bhaga` by default
 _DEFAULT_LOOKBACK_DAYS = 120
 
 # ---------------------------------------------------------------------------

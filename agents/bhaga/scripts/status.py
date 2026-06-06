@@ -46,7 +46,7 @@ from skills.bhaga_config.dates import coerce_iso_date
 from skills.tip_ledger_writer.writer import _read_tab
 
 _PROJECT = "jarvis-bhaga-prod"
-_DATASET = "bhaga"
+_DATASET = os.environ.get("BHAGA_BQ_DATASET", "bhaga")
 _STORE_PROFILE_DIR = (
     pathlib.Path(project_dir())
     / "agents"

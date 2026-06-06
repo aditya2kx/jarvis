@@ -36,7 +36,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
-from core.datastore import read_query
+from core.datastore import dataset, read_query
 from core.config_loader import refresh_access_token, resolve_sheet_id
 from agents.bhaga.scripts.update_model_sheet import (
     format_currency_columns,
@@ -48,7 +48,7 @@ from skills.bhaga_config.dates import _iso_date_for_sheet_cell
 from skills.tip_ledger_writer.writer import upsert_tab
 
 _PROJECT = "jarvis-bhaga-prod"
-_DATASET = "bhaga"
+_DATASET = dataset()  # env-driven (BHAGA_BQ_DATASET); prod `bhaga` by default
 _STORE_PROFILES = pathlib.Path(__file__).resolve().parents[3] / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
 
 # Boolean columns that the build_* functions write as "yes" / "no" (NOT "TRUE"/"FALSE").

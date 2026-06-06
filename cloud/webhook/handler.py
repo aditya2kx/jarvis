@@ -115,7 +115,7 @@ def _init_firestore() -> None:
 
 _bq: Optional[object] = None  # google.cloud.bigquery.Client | None
 _BQ_PROJECT = "jarvis-bhaga-prod"
-_BQ_DATASET = "bhaga"
+_BQ_DATASET = os.environ.get("BHAGA_BQ_DATASET", "bhaga")
 _BQ_STORE_CONFIG_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.store_config"
 
 

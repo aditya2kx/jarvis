@@ -49,6 +49,27 @@ class TestBuildSandboxEnv:
         assert env["BHAGA_STAGING_BHAGA_MODEL_SID"] == "SID_MODEL"
         assert env["BHAGA_STAGING_BHAGA_SQUARE_RAW_SID"] == "SID_SQUARE"
 
+    def test_window_vars_and_ignore_halt_set(self):
+        """window_from/to injects BHAGA_WINDOW_* and sets BHAGA_IGNORE_HALT=1."""
+        env = slr.build_sandbox_env(
+            staging_ids=_good_ids(),
+            refresh_date="2026-05-31",
+            store="palmetto",
+            run_label="test",
+            window_from="2026-05-04",
+            window_to="2026-05-31",
+        )
+        assert env["BHAGA_WINDOW_FROM"] == "2026-05-04"
+        assert env["BHAGA_WINDOW_TO"] == "2026-05-31"
+        assert env["BHAGA_IGNORE_HALT"] == "1"
+
+    def test_no_window_no_ignore_halt(self):
+        """When no window is set, BHAGA_IGNORE_HALT and window vars must be absent."""
+        env = _good_env()  # no window_from / window_to
+        assert "BHAGA_IGNORE_HALT" not in env
+        assert "BHAGA_WINDOW_FROM" not in env
+        assert "BHAGA_WINDOW_TO" not in env
+
 
 class TestAssertIsolation:
     def test_passes_for_good_env(self):

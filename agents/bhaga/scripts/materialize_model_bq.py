@@ -42,7 +42,7 @@ from agents.bhaga.scripts.update_model_sheet import (
     build_tip_alloc_daily_rows,
     build_tip_alloc_period_rows,
     discover_periods,
-    load_cc_tips_earnings_from_gcs,
+    load_cc_tips_earnings_from_bq,
     _read_training_excluded_from_sheet,
     _read_training_shifts_from_sheet,
 )
@@ -344,9 +344,8 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     )
     periods = append_open_period(periods, last_data_date=last_data_date)
 
-    earnings = load_cc_tips_earnings_from_gcs(
+    earnings = load_cc_tips_earnings_from_bq(
         store=store,
-        aliases=aliases,
         data_window_start=periods[0]["start"],
         last_data_date=last_data_date,
     )

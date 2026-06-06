@@ -77,7 +77,6 @@ from agents.bhaga.notify import (
 )
 from agents.bhaga.scripts import model_semantics, otp_gate
 from agents.bhaga.scripts.gcs_cache import (
-    download_cached_files,
     evidence_prefix,
     upload_file,
     upload_scrape_artifacts,
@@ -1724,15 +1723,39 @@ def main() -> int:
         gap_start = refresh_date
         gap_source = "(square skipped)"
     else:
-        prev_end, cell_was_empty = _read_data_window_end_from_sheet(
-            spreadsheet_id=spreadsheet_id, store=args.store
-        )
-        gap_start, gap_source = compute_gap_window(
-            prev_end=prev_end,
-            cell_was_empty=cell_was_empty,
-            data_start=data_start,
-            refresh_date=refresh_date,
-        )
+        # BQ-coverage-based gap resolver (BQ = single source of truth).
+        # Ask BQ which days are already present; scrape only the missing prefix.
+        # Falls back to the sheet-based path when BQ is unavailable (e.g. local dev
+        # with BHAGA_DATASTORE unset) so the laptop flow keeps working.
+        _bq_client_available = False
+        try:
+            from core.datastore import get_client as _bq_get_client
+            _bq_client_available = _bq_get_client() is not None
+        except Exception:  # noqa: BLE001
+            pass
+
+        if _bq_client_available:
+            from agents.bhaga.scripts.bq_coverage import SOURCE_COVERAGE, missing_ranges as _missing_ranges
+            _sq_table, _sq_col = SOURCE_COVERAGE["square_transactions"]
+            _bq_gaps = _missing_ranges(_sq_table, _sq_col, data_start, refresh_date)
+            if _bq_gaps:
+                gap_start = _bq_gaps[0][0]
+                gap_source = f"bq-coverage: earliest-missing={gap_start}"
+            else:
+                # All days already in BQ; still refresh today for idempotency.
+                gap_start = refresh_date
+                gap_source = "bq-coverage: fully-covered -> today"
+        else:
+            # BQ unavailable — fall back to sheet-based window (laptop dev path).
+            prev_end, cell_was_empty = _read_data_window_end_from_sheet(
+                spreadsheet_id=spreadsheet_id, store=args.store
+            )
+            gap_start, gap_source = compute_gap_window(
+                prev_end=prev_end,
+                cell_was_empty=cell_was_empty,
+                data_start=data_start,
+                refresh_date=refresh_date,
+            )
 
     needs_square_scrape = (not args.skip_square) and (gap_start <= refresh_date)
 
@@ -1743,7 +1766,13 @@ def main() -> int:
     #      period containing refresh_date.  One login, one OTP, all data.
     #   2. Earnings should always be included so wage-rate data is present for
     #      the model sheet (override the Mon/Tue auto-gate).
-    is_fresh_install = prev_end is None and "fresh install" in gap_source
+    # Fresh install: gap covers the entire history from data_start.
+    # With BQ coverage, this is when the gap starts at data_start.
+    # With the sheet-based fallback path, it's the legacy "cell_was_empty" case.
+    is_fresh_install = (
+        gap_start == data_start
+        and ("fresh install" in gap_source or "bq-coverage: earliest-missing" in gap_source)
+    )
     adp_target_date: datetime.date | None = None if is_fresh_install else refresh_date
 
     include_rates = (
@@ -1835,34 +1864,6 @@ def main() -> int:
 
     # ── GCS cache PRE-restore (no-OTP retry path) ──────────────────────
     # On a fresh Cloud Run container the scrape CSVs are not on disk, so the
-    # Square pipeline's is_fresh_download() check would fail and fall through
-    # to a browser login (→ Square 2FA OTP). For an already-scraped date the
-    # CSVs live in GCS, so we restore them HERE — before the parallel phase —
-    # which makes is_fresh_download() return True inside _run_square_pipeline
-    # and SKIPS the browser entirely. This is what makes "retry an
-    # already-scraped date with cleared markers" cost ZERO OTP.
-    #
-    # Safe for the normal nightly: a brand-new refresh_date has no cache yet,
-    # so download_cached_files is a graceful no-op and the browser scrapes
-    # as usual. The post-parallel restore below still runs to cover the
-    # master CSV needed by write_raw_sheets when Square is skipped outright.
-    if not args.dry_run and needs_square:
-        print("\n[gcs_cache] pre-restoring scrape cache (if any) so a retry "
-              "of an already-scraped date skips the browser / OTP...")
-        try:
-            pre_restored = download_cached_files(
-                refresh_date=refresh_date,
-                download_dir=DOWNLOAD_DIR,
-            )
-            if pre_restored:
-                print(f"  [gcs_cache] pre-restored {len(pre_restored)} file(s) "
-                      f"from GCS before scrape decision")
-            else:
-                print("  [gcs_cache] no cached files for this date — "
-                      "Square will scrape fresh (expected on a new date)")
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [gcs_cache] WARN: pre-restore failed (non-fatal): {exc}")
-
     # ── OTP availability gate (two-step READY handshake) ──────────────
     # Decide which portals THIS run will actually need an OTP for (i.e. will
     # launch a browser). If none, this is the zero-OTP happy path — no READY
@@ -2030,26 +2031,6 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"[otp_gate] WARN: could not clear pending checkpoint: {exc}")
 
-    # ── GCS cache: restore missing files before downstream steps ──
-    if not args.dry_run:
-        critical_missing = (
-            not MASTER_TXN_CSV.exists()
-            or (not args.skip_timecard and not any(DOWNLOAD_DIR.glob("Timecard-*.xlsx")))
-        )
-        if critical_missing:
-            print("\n[gcs_cache] local files missing — attempting restore from GCS cache...")
-            try:
-                restored = download_cached_files(
-                    refresh_date=refresh_date,
-                    download_dir=DOWNLOAD_DIR,
-                )
-                if restored:
-                    print(f"  [gcs_cache] restored {len(restored)} file(s) from GCS")
-                else:
-                    print("  [gcs_cache] no cached files found in GCS for this date")
-            except Exception as exc:  # noqa: BLE001
-                print(f"  [gcs_cache] WARN: GCS restore failed (non-fatal): {exc}")
-
     # ── Auto-recover stale downstream markers on OTP-portal recovery ──
     # If an OTP portal (square/adp) produced FRESH data on THIS run while the
     # downstream markers are already done from a PRIOR partial run, those steps
@@ -2102,6 +2083,14 @@ def main() -> int:
             raw_sheets_ok = True
         else:
             failures.append(("load_raw_bigquery", RuntimeError("see step log")))
+            # Gate: clear the scrape-done markers so the next retry re-scrapes
+            # from upstream rather than trying to load absent local files.
+            # (Cloud Run containers are ephemeral; local files vanish between runs.)
+            for _scrape_step in ("square", "adp"):
+                if step_already_done(refresh_date, _scrape_step):
+                    clear_step_done(refresh_date, _scrape_step)
+                    print(f"  [load_raw_bigquery] cleared {_scrape_step}.done "
+                          "marker so next retry re-scrapes fresh data")
     else:
         print("[load_raw_bigquery] SKIPPED — no fresh inputs to load.")
 

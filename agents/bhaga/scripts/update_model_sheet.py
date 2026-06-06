@@ -570,11 +570,21 @@ TRAINING_EXCLUDED_PREFIX = "training_excluded:"
 def _read_config_value(
     *, spreadsheet_id: str, store: str, key: str
 ) -> Optional[str]:
-    """Read a single value from the model config tab (returns None if absent).
+    """Read a single config/tunable value: BQ-first, Sheet as fallback.
 
-    Used to preserve user-edited bonus tunables across refreshes —
-    build_config_rows() echoes back whatever the operator set in-sheet.
+    BQ is the single source of truth for operator-editable tunables.  The
+    Sheet config tab is a read-only projection and is only consulted when BQ
+    returns nothing (e.g. during the initial BQ seed run).
     """
+    try:
+        from core.store_config import get_config
+        bq_val = get_config(store, key)
+        if bq_val is not None:
+            return bq_val
+    except Exception:  # noqa: BLE001 — BQ unavailable; fall through to Sheet
+        pass
+
+    # Sheet fallback (legacy path; consulted only when BQ has no value yet)
     token = refresh_access_token(store)
     rng = urllib.parse.quote("config!A1:B200", safe="!:")
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{rng}"
@@ -1091,11 +1101,47 @@ def load_cc_tips_earnings_from_gcs(
     return merged
 
 
+def load_cc_tips_earnings_from_bq(
+    *,
+    store: str,
+    data_window_start: str,
+    last_data_date: str,
+) -> list[dict]:
+    """Load ADP earnings lines from BigQuery (the BQ single-source-of-truth path).
+
+    Returns rows in the same shape as ``load_cc_tips_earnings_from_gcs`` so all
+    downstream consumers (``actual_cc_tips_by_period``, ``check_dates_by_period``,
+    ``period_has_cc_tip_actuals``) work unchanged.
+
+    Shape: [{"employee_name": str, "period_start": str, "period_end": str,
+             "check_date": str | None, "description": str, "amount": float}, ...]
+
+    Note: BQ stores ``period_start``/``period_end``/``check_date`` as DATE objects;
+    this reader converts them to ISO strings to match what the GCS path returns
+    (date comparison in ``actual_cc_tips_by_period`` uses ``.isoformat()`` strings).
+    """
+    from core.datastore import read_query
+
+    rows = read_query(
+        "SELECT period_start, period_end, check_date, employee AS employee_name,"
+        " description, amount"
+        " FROM `jarvis-bhaga-prod.bhaga.adp_earnings`"
+        f" WHERE period_end >= DATE('{data_window_start}')"
+    )
+    for r in rows:
+        for k in ("period_start", "period_end", "check_date"):
+            if r.get(k) is not None:
+                r[k] = r[k].isoformat()
+    print(f"# earnings (BQ): {len(rows)} line(s) for {store} "
+          f"(period_end >= {data_window_start})")
+    return rows
+
+
 def period_has_cc_tip_actuals(
     *, store: str, period_start: str, period_end: str, last_data_date: str,
 ) -> bool:
-    """True IFF a covering GCS Earnings export carries 'Credit Card Tips Owed'
-    lines for the EXACT closed period ``(period_start, period_end)``.
+    """True IFF BQ ``adp_earnings`` carries 'Credit Card Tips Owed' lines for
+    the EXACT closed period ``(period_start, period_end)``.
 
     This is the cadence gate shared by the nightly guard (``daily_refresh``) and
     the per-PR sandbox e2e: ``adp_paid`` is only *expected* to reconcile once
@@ -1103,11 +1149,11 @@ def period_has_cc_tip_actuals(
     period whose calendar window has elapsed but hasn't been paid yet — its
     Earnings export exists but carries no CC-tip lines (e.g. a just-closed
     period, only a misc reimbursement processed) — returns ``False`` so neither
-    guard falsely fails on the legitimate cadence gap. Read-only against the
-    prod GCS cache; any error inside the loader degrades to ``[]`` -> ``False``.
+    guard falsely fails on the legitimate cadence gap. Reads from BQ; any error
+    degrades to ``[]`` -> ``False``.
     """
-    earnings = load_cc_tips_earnings_from_gcs(
-        store=store, aliases={},
+    earnings = load_cc_tips_earnings_from_bq(
+        store=store,
         data_window_start=period_start, last_data_date=last_data_date,
     )
     return (period_start, period_end) in actual_cc_tips_by_period(earnings)
@@ -2837,15 +2883,11 @@ def main() -> int:
         last_data_date=last_data_date,
     )
     periods = append_open_period(periods, last_data_date=last_data_date)
-    # Reconciliation actuals: read the ADP "Credit Card Tips Owed" lines back
-    # from the GCS scrape cache (cloud-native; no raw earnings tab). Sheets mode
-    # only — BigQuery mode has no GCS earnings concept and keeps the N/A path.
-    earnings = (
-        load_cc_tips_earnings_from_gcs(
-            store=args.store, aliases=aliases,
-            data_window_start=data_window_start, last_data_date=last_data_date,
-        )
-        if args.data_source == "sheets" else []
+    # Reconciliation actuals: read ADP earnings from BQ (single source of truth).
+    # load_cc_tips_earnings_from_gcs is retained for one-off backfill tooling only.
+    earnings = load_cc_tips_earnings_from_bq(
+        store=args.store,
+        data_window_start=data_window_start, last_data_date=last_data_date,
     )
     # Re-derive the period_summary check_dates column from the parsed earnings
     # (union across each period's off-by-1-day variants).

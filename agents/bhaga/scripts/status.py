@@ -105,6 +105,8 @@ BQ_TARGETS: list[Target] = [
     Target("square_kds_tickets", "date_local"),
     Target("adp_earnings", "period_start", "period_coverage"),
     Target("google_reviews", "post_date_ct"),
+    # store_config (migration 007) intentionally NOT a freshness target — it is a
+    # config/tunables store (no date partition) edited via /bhaga-cloud config set.
 ]
 
 GRAFANA_VIEWS: list[Target] = [

@@ -705,7 +705,7 @@ class PeriodHasCcTipActualsTests(unittest.TestCase):
     """The cadence gate shared by daily_refresh + sandbox_e2e: True only when a
     covering Earnings export carries CC-tip lines for the EXACT closed period."""
 
-    _LOADER = "agents.bhaga.scripts.update_model_sheet.load_cc_tips_earnings_from_gcs"
+    _LOADER = "agents.bhaga.scripts.update_model_sheet.load_cc_tips_earnings_from_bq"
 
     def test_true_when_period_has_cc_tip_lines(self):
         earnings = [{"employee_name": "A", "period_start": "2026-05-04",

@@ -1,5 +1,40 @@
 # Jarvis Build Progress
 
+## 2026-06-05 — BQ as single source of truth (PR #33, feat/grafana-dashboard-refactor)
+
+**Goal:** Make BigQuery the single source of truth for all BHAGA data (raw scrapes, ADP earnings,
+operator tunables). Retire GCS as a data source (keep sessions + evidence only). Replace the
+sheet-based gap-resolver with BQ coverage. Add `/bhaga-cloud config set/get` Slack commands.
+
+**What landed:**
+- `agents/bhaga/scripts/bq_coverage.py` — `present_days` / `missing_ranges` / `SOURCE_COVERAGE`; 11
+  unit tests.
+- `core/migrations/007_store_config.sql` — `bhaga.store_config` table for operator tunables.
+- `core/store_config.py` — `get_config` / `get_all` / `set_config` over `core.datastore`.
+- `agents/bhaga/scripts/update_model_sheet.py`:
+  - `load_cc_tips_earnings_from_bq` — reads `bhaga.adp_earnings`, returns ISO-string date keys (hard
+    cutover; GCS XLSX path retired as live source).
+  - `_read_config_value` — BQ-first (`core.store_config.get_config`), Sheet fallback.
+  - `period_has_cc_tip_actuals` — repointed to `load_cc_tips_earnings_from_bq`.
+  - main() earnings call repointed to BQ.
+- `agents/bhaga/scripts/materialize_model_bq.py` — earnings call repointed to `load_cc_tips_earnings_from_bq`.
+- `agents/bhaga/scripts/verify_bq_parity.py` — earnings call repointed to BQ; XLSX fallback removed.
+- `agents/bhaga/scripts/daily_refresh.py`:
+  - Gap-resolver replaced: `bq_coverage.missing_ranges` → `gap_start = earliest_missing_day` (BQ
+    path); sheet-based fallback when BQ unavailable.
+  - `download_cached_files` skip-scrape role removed (both pre-scrape and post-parallel calls).
+  - `load_raw_bigquery` failure clears `square.done`/`adp.done` markers (retry-skips-rescrape).
+- `cloud/webhook/handler.py` — `/bhaga-cloud config get <key>` and `/bhaga-cloud config set <key> <value>`
+  using `google.cloud.bigquery` directly (standalone deploy unit constraint).
+- `cloud/webhook/requirements.txt` — added `google-cloud-bigquery>=3.0,<4`.
+- Tests: `test_bq_coverage.py` (11), `test_bq_sot.py` (7), `core/test_store_config.py` (6),
+  `cloud/webhook/test_handler.py` (5 new); 509 total passing.
+- Docs: RUNBOOK §1 + §15, README pipeline description, DOMAIN adp_paid, bhaga.md data flow +
+  invariants, bhaga-principles.md BQ SoT rules + plan-execution-readiness pointer.
+
+**Next:** apply migration 007, seed `bhaga.store_config`, run OTP-supported prod backfill to fill
+`adp_earnings` gaps, verify Grafana `adp_paid`/`diff` populated.
+
 ## 2026-06-04 — Cost ledger via pre-commit hook; PR cost gate is now a pure validator (feat/cost-ledger-precommit-hook)
 
 Reverted the commit-back approach (below) — it was the root cause of duplicate CI and churn. The

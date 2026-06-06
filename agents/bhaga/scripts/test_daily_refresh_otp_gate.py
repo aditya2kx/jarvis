@@ -70,7 +70,6 @@ def _patched_main(
     p(mock.patch.object(daily_refresh, "_read_data_window_end_from_sheet",
                         return_value=(PREV_END, False)))
     p(mock.patch.object(daily_refresh, "step_already_done", return_value=False))
-    p(mock.patch.object(daily_refresh, "download_cached_files", return_value=[]))
     p(mock.patch.object(daily_refresh, "_square_will_launch_browser", return_value=square_launch))
     p(mock.patch.object(daily_refresh, "_adp_will_launch_browser", return_value=adp_launch))
     p(mock.patch("skills.bhaga_config.state_adapter.get_pending_otp", return_value=pending))

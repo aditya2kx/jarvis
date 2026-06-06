@@ -284,14 +284,12 @@ the denominator.
 - `tip_alloc_period`: per-employee period totals with **reconciliation** against payroll:
   - **`our_calc`** — BHAGA's computed allocation.
   - **`adp_paid`** — what ADP actually paid (the "Credit Card Tips Owed" earning line). Sourced
-    **cloud-natively from the GCS-cached Earnings XLSX** (`gs://bhaga-scrape-cache/<date>/adp/Earnings-*.xlsx`,
-    parsed by `compensation_backend.parse_xlsx`, unioned across cached dates) — **not** a raw sheet tab.
-    A closed period shows `N/A` (distinct reason "No ADP earnings export in GCS for this period") when no
-    covering export carries its "Credit Card Tips Owed" lines — either the period predates the cache's
-    ~2026-05-29 inception, **or its payroll simply hasn't run yet** (a just-closed period: the export
-    exists but carries no CC-tip lines, only e.g. a misc reimbursement — this is the normal pay cadence,
-    not a defect). (Reviving this was the fix for commit 6f87f9c, which had stubbed
-    `actual_cc_tips_by_period(None)` → permanent `N/A`.)
+    from **`bhaga.adp_earnings` in BigQuery** via `load_cc_tips_earnings_from_bq` — the single
+    source of truth for earnings. The old GCS XLSX path is retired as a live source (kept only for
+    one-off backfill tooling).
+    A closed period shows `N/A` when `bhaga.adp_earnings` has no CC-tip lines for the period —
+    either the period predates the backfill, **or its payroll simply hasn't run yet** (a just-closed
+    period: earnings exist but carry no CC-tip lines — this is the normal pay cadence, not a defect).
   - **`diff` / `diff_pct`** — `our_calc − adp_paid`.
   - **`likely_reason`** — heuristic explanation when they diverge (open period, partial coverage, etc.).
   - **`coverage`** — how complete the period's source data is; **`is_open`** — period not yet closed/paid.

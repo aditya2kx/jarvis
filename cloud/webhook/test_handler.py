@@ -685,3 +685,77 @@ class TestSandboxOtpRouting:
                 patch.object(handler, "_trigger_cloud_run_job") as mock_trigger:
             assert handler._handle_ready_reply("bhaga") is True
         mock_trigger.assert_called_once_with("2026-05-31")
+
+
+# ---------------------------------------------------------------------------
+# Slash command: config get / config set
+# ---------------------------------------------------------------------------
+
+
+class TestConfigCommands:
+    """Verify /bhaga-cloud config get/set parse and call BQ correctly."""
+
+    def _make_bq_row(self, value: str, updated_by: str = "alice", updated_at: str = "2026-06-01 00:00:00") -> object:
+        """Return a minimal fake BQ row dict."""
+        class _Row(dict):
+            pass
+        row = _Row(value=value, updated_by=updated_by, updated_at=updated_at)
+        return row
+
+    def test_config_get_returns_value(self, monkeypatch):
+        """config get returns the stored value."""
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = [
+            self._make_bq_row("12.5", updated_by="alice"),
+        ]
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, "config get saturation_orders_per_labor_hour",
+                                 user_name="alice")
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "12.5" in body["text"]
+        assert "saturation_orders_per_labor_hour" in body["text"]
+
+    def test_config_get_not_found(self, monkeypatch):
+        """config get with missing key returns informational message."""
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, "config get nonexistent_key")
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "not set" in body["text"]
+
+    def test_config_set_upserts_and_confirms(self, monkeypatch):
+        """config set calls BQ MERGE and confirms the new value."""
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, "config set saturation_orders_per_labor_hour 11.5",
+                                 user_name="bob")
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "11.5" in body["text"]
+        assert "saturation_orders_per_labor_hour" in body["text"]
+        assert fake_bq.query.called
+
+    def test_config_unavailable_without_bq(self, monkeypatch):
+        """When BQ is unavailable, config commands return a warning."""
+        monkeypatch.setattr(handler, "_bq", None)
+        with app.test_client() as client:
+            resp = _post_command(client, "config get some_key")
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "unavailable" in body["text"].lower() or "not available" in body["text"].lower()
+
+    def test_help_text_lists_config_commands(self):
+        """The help text (unknown command) lists config get/set."""
+        with app.test_client() as client:
+            resp = _post_command(client, "unknown-command")
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "config get" in body["text"]
+        assert "config set" in body["text"]

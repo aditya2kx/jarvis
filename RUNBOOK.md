@@ -55,9 +55,13 @@ Cloud Run Service  bhaga-webhook  (image: bhaga-webhook)
   OTP/READY path**.
 - Deploys are fully automated via **GitHub Actions + Workload Identity Federation** (no static
   service-account keys).
-- **BigQuery** (`jarvis-bhaga-prod.bhaga`) is a **parallel read-only mirror** of Sheets (not replacing
-  it). The nightly cron writes raw + model data to BQ after each Sheets update. Grafana Cloud reads from
-  BQ views (`vw_*`, `model_*`) via the `grafana-bq-reader` SA. See §14 for BQ + Grafana operations.
+- **BigQuery** (`jarvis-bhaga-prod.bhaga`) is the **single source of truth** for ALL data: scraped raw
+  data (Square, ADP, KDS, Reviews), ADP earnings, and operator-editable tunables (`bhaga.store_config`).
+  Sheets are a **read-only projection** — written by the pipeline, never authoritative. See §14 for
+  BQ + Grafana operations and §15 for the BQ SoT details.
+- **GCS** (`bhaga-scrape-cache`) retains **only** trusted-device browser sessions (`_session/`) and
+  failure evidence/logs (`<date>/evidence/`). Raw data files are **no longer written to GCS** — BQ
+  is the persistent store. The old scrape-file cache (`download_cached_files`) is retired.
 
 ---
 
@@ -899,3 +903,76 @@ BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-pr
 BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
   python3 -m agents.bhaga.scripts.materialize_model_bq --store palmetto
 ```
+
+---
+
+## 15. BQ as single source of truth (added PR #33, 2026-06-05)
+
+### Principle
+
+BigQuery is the **single source of truth** for all BHAGA data:
+- **Scraped raw data** — `square_transactions`, `adp_shifts`, `square_kds_daily`, `square_kds_tickets`,
+  `square_item_lines`, `google_reviews`, `adp_earnings`.
+- **ADP earnings** — `bhaga.adp_earnings`; the model reads actuals from here (not from GCS XLSX).
+- **Operator tunables (config)** — `bhaga.store_config`; replaces the Sheet config tab as the
+  authoritative read source (Sheet config tab is now a read-only projection).
+
+**GCS retains only:** browser sessions (`_session/`) and failure evidence (`<date>/evidence/`).
+No pipeline code reads data files from GCS.
+
+### Coverage-aware gap resolver
+
+The nightly and windowed backfill use `agents/bhaga/scripts/bq_coverage.py` to determine which
+business days are already in BQ and scrape upstream **only for missing days**:
+
+```python
+from agents.bhaga.scripts.bq_coverage import SOURCE_COVERAGE, missing_ranges
+sq_table, sq_col = SOURCE_COVERAGE["square_transactions"]
+gaps = missing_ranges(sq_table, sq_col, data_start, refresh_date)
+# gaps = [(gap_start, gap_end), ...] or [] if fully covered
+```
+
+If BQ is unavailable (e.g. `BHAGA_DATASTORE` unset), falls back to the legacy
+sheet-based `_read_data_window_end_from_sheet` / `compute_gap_window` path.
+
+### Retry-skips-rescrape guarantee
+
+If `load_raw_bigquery` fails (BQ upsert error), `daily_refresh` immediately clears the `square.done`
+and `adp.done` Firestore markers so the next retry re-scrapes from upstream with fresh data (rather
+than failing with no local files in the ephemeral Cloud Run container).
+
+### Operator tunables — edit via Slack
+
+```
+/bhaga-cloud config get <key>          — read a tunable from bhaga.store_config
+/bhaga-cloud config set <key> <value>  — update a tunable (audit: updated_by + updated_at)
+```
+
+Pipeline reads `store_config` via `core.store_config.get_config(store, key)` — BQ first, Sheet as
+fallback while the BQ table is being seeded. After seeding, Sheet config becomes display-only.
+
+**Seed the BQ config from the current Sheet values (one-time, idempotent):**
+```bash
+BHAGA_DATASTORE=bigquery python3 - <<'EOF'
+from core.store_config import set_config
+from agents.bhaga.scripts.update_model_sheet import REVIEW_TUNABLE_KEYS, LABOR_TUNABLE_KEYS, _read_config_value
+from core.config_loader import resolve_sheet_id
+# read current Sheet values and upsert to BQ
+store = "palmetto"
+sid = resolve_sheet_id(store, "bhaga_model")
+all_keys = list(REVIEW_TUNABLE_KEYS) + list(LABOR_TUNABLE_KEYS)
+for k in all_keys:
+    v = _read_config_value(spreadsheet_id=sid, store=store, key=k)
+    if v is not None:
+        set_config(store, k, v, updated_by="seed-from-sheet")
+        print(f"  seeded {k} = {v}")
+EOF
+```
+
+### Apply migration 007 (store_config table)
+
+```bash
+BHAGA_DATASTORE=bigquery python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
+```
+
+Expected output: `['007_store_config']` (first run) or `[]` (already applied).

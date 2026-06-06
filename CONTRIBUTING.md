@@ -45,7 +45,10 @@ new ambiguity or scope change appears — e.g. Agent→Plan if the approach turn
    When the ask is clear and you are aligned, *request* the switch to Plan mode rather than waiting.
 2. **Plan mode before implementing.** Switch to **Plan mode** and present the *entire*
    implementation plan for approval. No code until the plan is agreed. Once it is, *request* the
-   switch to Agent mode and begin executing the milestones.
+   switch to Agent mode and begin executing the milestones. Before switching Plan→Agent if a
+   lower-tier model will execute, run the `plan-execution-readiness` review
+   (`.cursor/rules/plan-execution-readiness.md`) to confirm every change cites exact files and
+   line numbers.
 3. **Plan = 3–4 milestones, max — each independently verifiable.** Every milestone must end in a
    state you can **verify and fix on your own**, so you can run the build→verify→fix loop yourself
    (the operator isn't in the loop for routine correction). If a milestone can't be closed by your

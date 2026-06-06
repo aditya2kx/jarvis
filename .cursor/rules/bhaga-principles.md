@@ -41,7 +41,16 @@ derive proposals from them rather than from memory.
 - **Sheets/BQ are the production database — write only through the sanctioned layer**
   (`skills/tip_ledger_writer/`). No ad-hoc `values:clear`, `python -c`, or raw API writes against prod.
   Marker clears go through `skills/bhaga_config/state_adapter.py::clear_step`, never a shell `rm`.
-- **Cloud reads from GCS (`bhaga-scrape-cache`), secrets from Secret Manager** — never laptop files.
+- **BQ is the single source of truth for all data.** Raw scraped data, ADP earnings, and operator
+  tunables all live in BigQuery (`jarvis-bhaga-prod.bhaga`). GCS retains only browser sessions and
+  failure evidence. Sheets are read-only projections. Never read data files from GCS in pipeline code.
+- **Coverage-aware scraping.** Before scraping, check `bq_coverage.missing_ranges` to determine which
+  business days need upstream data. A fully-covered window scrapes nothing new.
+- **Operator tunables live in `bhaga.store_config`.** Edit via `/bhaga-cloud config set <key> <value>`
+  (Slack). Never manually edit the Sheet config tab — it is a read-only projection of BQ.
+  Read tunables in code via `core.store_config.get_config(store, key)`.
+- **Cloud reads from BQ, secrets from Secret Manager** — never laptop files or GCS data files.
+- `.cursor/rules/plan-execution-readiness.md` — make a plan executable by a lower-tier LLM.
 - **Prove changes with the per-PR sandbox e2e** (`sandbox_e2e.py`), not by touching prod sheets.
 - **Sandbox runs are read-only toward prod data sources.** A sandbox/staging run (`BHAGA_SHEET_MODE=staging`)
   may **read** prod data (GCS cache, raw sheets) but must **never write** to any prod data source —

@@ -17,16 +17,20 @@ as a Cloud Run Job.
 
 Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrapper.py`). Order:
 
-1. **Read `data_window_end`** from the Model sheet `config` tab → compute the gap window
-   `[data_window_end+1 .. refresh_date]` (Central time). Empty gap → nothing to scrape.
-2. **Scrape Square** transactions for the gap (`skills/square_tips/`), cache to GCS, dedupe-append.
+1. **BQ coverage gap resolver**: query `bhaga.square_transactions` via `bq_coverage.missing_ranges`
+   to find which business days are absent → set `gap_start = earliest_missing_day`. If BQ is
+   unavailable, falls back to reading `data_window_end` from the Model sheet config tab. This replaces
+   the old sheet-based `_read_data_window_end_from_sheet` / `compute_gap_window` as the primary path.
+2. **Scrape Square** transactions for the gap (`skills/square_tips/`), dedupe-append.
 3. **Scrape ADP** timecards / earnings for overlapping pay periods (`skills/adp_run_automation/`).
    2FA, if challenged, goes through the **OTP gate** (see below).
 4. **Load scrapes → BigQuery (primary)** (`backfill_from_downloads.py`, requires `BHAGA_DATASTORE=bigquery`):
    maps parse-output dicts through `map_*` functions and calls `load_rows` (MERGE upsert) for all 11 raw
-   BQ tables. BQ is the system of record. Handles: `square_transactions`, `square_daily_rollup`,
+   BQ tables. BQ is the **single source of truth**. Handles: `square_transactions`, `square_daily_rollup`,
    `square_item_lines`, `square_item_daily`, `square_kds_daily`, `square_kds_tickets`,
    `adp_shifts`, `adp_punches`, `adp_wage_rates`, `adp_earnings`.
+   If `load_raw_bigquery` fails, `square.done` and `adp.done` markers are **cleared** so the next
+   retry re-scrapes fresh data (retry-skips-rescrape guarantee).
 4b. **Render raw Sheets from BQ** (`render_raw_sheet_from_bq.py`, non-fatal): inverse-maps each BQ raw
    table row → Sheet-header dict and calls `write_raw_*` upsert functions. Preserves historical rows
    outside the `--since` window. Reviews tab rendered separately after `process_reviews`.
@@ -35,6 +39,10 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    labor_weekly, labor_period, tip_alloc_period, tip_alloc_daily, period_summary`
    (+ `labor_daily_forecast` via `forecast.py`), then **upsert `item_operations`** for the gap
    window (`item_operations.py` — incremental, not full-tab rewrite).
+   - Config/tunables are read from `bhaga.store_config` via `core.store_config.get_config` (BQ-first,
+     Sheet fallback while being seeded). Edit tunables via `/bhaga-cloud config set`.
+   - ADP earnings actuals (`adp_paid`, `diff`, `diff_pct`) read from `bhaga.adp_earnings` via
+     `load_cc_tips_earnings_from_bq` (hard cutover; GCS XLSX no longer consulted).
 7. **Materialize Model → BigQuery** (`materialize_model_bq.py` called via `materialize_model_bq` step,
    non-fatal on legacy path; **canonical model producer** on BQ-canonical path): rebuilds all 7+
    model tabs from BQ raw data (using the same `build_*` functions) and writes to `model_*` BQ
@@ -102,9 +110,10 @@ nightly). Both honor sandbox write-bucket isolation via `gcs_cache`.
 | `daily_refresh_wrapper.py` | Thin wrapper / Cloud Run entrypoint around `daily_refresh`. |
 | `otp_gate.py` | OTP **checkpoint-and-resume**: writes a pending request to Firestore + Slack, blocks until the webhook records the operator's reply. |
 | `backfill_from_downloads.py` | **BQ-primary scrape sink.** Load local/GCS scrape artifacts directly into BigQuery raw tables via `map_*` + `load_rows` (MERGE upsert). Requires `BHAGA_DATASTORE=bigquery`. Raw Sheets are rendered afterward by `render_raw_sheet_from_bq.py`. |
+| `bq_coverage.py` | **BQ coverage helper.** `present_days(table, date_col, start, end) -> set[date]` and `missing_ranges(table, date_col, start, end) -> [(start, end), ...]`. Used by `daily_refresh` to determine which business days are absent from BQ and need upstream scraping. `SOURCE_COVERAGE` maps logical source names to `(table, date_col)` pairs. |
 | `backfill_item_lines_from_cache.py` | **No extra OTP** — replay GCS-cached `items-*.csv` into raw `item_lines` (GCS default; `--local-only` for tests). |
 | `item_operations.py` | Build + upsert Model `item_operations` from `item_lines` + punches. |
-| `update_model_sheet.py` | Recompute the **Model** workbook tabs from the raw sheets. Houses the `build_*_rows` functions (one per tab). Loads ADP "Credit Card Tips Owed" **actuals cloud-natively** via `load_cc_tips_earnings_from_gcs` (parses the GCS-cached `Earnings-*.xlsx`, no raw tab) to populate `adp_paid`/`diff`/`diff_pct` + `period_summary.check_dates`. |
+| `update_model_sheet.py` | Recompute the **Model** workbook tabs from the raw sheets. Houses the `build_*_rows` functions (one per tab). Loads ADP "Credit Card Tips Owed" **actuals from BQ** via `load_cc_tips_earnings_from_bq` (reads `bhaga.adp_earnings`, returns ISO-string date keys) to populate `adp_paid`/`diff`/`diff_pct` + `period_summary.check_dates`. Reads operator tunables via `_read_config_value` (BQ-first via `core.store_config.get_config`, Sheet fallback). |
 | `model_semantics.py` | **Pure, shared semantic post-conditions** (no I/O): `assert_tip_pool_conserved`, the cadence-safe `assert_period_reconciled`, `assert_review_bonus_present`, and the cadence-gating `assert_model_semantics`. One source of truth used by BOTH `sandbox_e2e` (per-PR gate) and `daily_refresh` (nightly), so a regression can't pass one and fail the other. The reconciliation cadence gate itself (`period_has_cc_tip_actuals`) lives in `update_model_sheet` next to the earnings loader it depends on. |
 | `process_reviews.py` | Reviews → bonus allocation → rebuild `review_bonus_period`. |
 | `forecast.py` | Builds `labor_daily_forecast` (staffing solver, guardrails, anomaly detection). |

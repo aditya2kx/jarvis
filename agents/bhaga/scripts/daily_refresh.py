@@ -11,10 +11,30 @@ End-to-end nightly flow:
        (Skipped via --skip-timecard until iframe selectors are calibrated.)
     5. (When --include-rates) Scrape ADP Earnings & Hours V1 XLSX.
        Defaults: ON only on Mondays and Tuesdays.
-    6. Load local scrapes into BigQuery as primary sink via backfill_from_downloads
-       (BHAGA_DATASTORE=bigquery). BQ is now the system of record for raw data.
+    6. Parse the just-downloaded scrape exports straight into BigQuery as the
+       primary sink via backfill_from_downloads (BHAGA_DATASTORE=bigquery). BQ is
+       the system of record for raw data.
     6b. Render raw Google Sheets (bhaga_adp_raw, bhaga_square_raw) as projections
        from BQ via render_raw_sheet_from_bq (non-fatal; BQ is canonical).
+
+DATA ARCHITECTURE — BigQuery is the SINGLE SOURCE OF TRUTH (read this first):
+    upstream portal (Square / ADP / ClickUp)
+        → Playwright/API scrape (browser writes a transient export file to
+          extracted/downloads/ — Square/ADP have no row API, so a local file is
+          unavoidable; it is ephemeral scratch, never a source of truth)
+        → backfill_from_downloads parses that file → BQ raw tables (MERGE upsert;
+          or TRUNCATE-then-load for a fresh full-history scrape, see --replace)
+        → model computed FROM BQ (materialize_model_bq) and Sheets/Grafana are
+          read-only PROJECTIONS of BQ.
+
+    GCS is NOT part of any data pipeline. It is never read as a data source and
+    no scrape data files are written to it. GCS holds ONLY:
+        • trusted-device browser sessions (storage_state) → skip 2FA next run
+        • failure evidence (screenshots + DOM) for postmortems
+    Do not reintroduce GCS data uploads/downloads here — that was the old
+    scrape→Sheets→GCS→BQ-mirror path this PR retired (it created dual writers
+    and Sheet/BQ drift). If you need to "rebuild from scratch", re-scrape into BQ
+    (--replace), do NOT restore data from GCS.
     7. Run update_model_sheet to refresh the 8 Model workbook tabs:
        config, daily, labor_daily, labor_weekly, labor_period,
        tip_alloc_period, tip_alloc_daily, period_summary.
@@ -78,8 +98,6 @@ from agents.bhaga.notify import (
 from agents.bhaga.scripts import model_semantics, otp_gate
 from agents.bhaga.scripts.gcs_cache import (
     evidence_prefix,
-    upload_file,
-    upload_scrape_artifacts,
 )
 from core.config_loader import refresh_access_token, resolve_sheet_id
 from skills.bhaga_config.dates import coerce_iso_date
@@ -1048,26 +1066,6 @@ class PipelineResult:
     master_stats: dict[str, int] = field(default_factory=dict)
 
 
-def _cache_artifact_now(
-    path: object, *, refresh_date: datetime.date, category: str = "square"
-) -> None:
-    """Upload a freshly-downloaded raw artifact to GCS immediately.
-
-    A later in-session step can fail (e.g. the 2026-05-31 item-sales selector
-    drift, which crashed AFTER transactions had already downloaded). Uploading
-    each artifact the moment it lands means those earlier artifacts survive in
-    the cache, so the recovery run restores them from GCS and re-scrapes only the
-    failed step — zero extra OTP. Best-effort: never raises (the bulk upload at
-    the end of the pipeline is the backstop, incl. the skip-browser path).
-    """
-    if not isinstance(path, pathlib.Path) or not path.exists():
-        return
-    try:
-        upload_file(path, refresh_date=refresh_date, category=category)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[square_pipeline] WARN: incremental GCS upload failed for {path.name}: {exc}")
-
-
 def _run_square_pipeline(
     *,
     gap_start: datetime.date,
@@ -1157,9 +1155,6 @@ def _run_square_pipeline(
                             page, start=gap_start, end=end_date,
                         )
                         print(f"[square_pipeline] transactions OK → {csv_path}")
-                        # Cache immediately so a later item-sales/KDS failure in
-                        # this same session can't discard the transactions CSV.
-                        _cache_artifact_now(csv_path, refresh_date=refresh_date)
 
                     # Download item sales in the same session
                     if items_fresh:
@@ -1170,7 +1165,6 @@ def _run_square_pipeline(
                             page, start_date=gap_start, end_date=end_date, store=store,
                         )
                         print(f"[square_pipeline] item sales OK → {item_csv_path}")
-                        _cache_artifact_now(item_csv_path, refresh_date=refresh_date)
 
                     # Download KDS report in the same session
                     if needs_kds:
@@ -1178,7 +1172,6 @@ def _run_square_pipeline(
                             page, start_date=gap_start, end_date=end_date, store=store,
                         )
                         print(f"[square_pipeline] KDS OK → {kds_csv_path}")
-                        _cache_artifact_now(kds_csv_path, refresh_date=refresh_date)
                     else:
                         kds_csv_path = expected_kds if expected_kds.exists() else None
             finally:
@@ -1193,17 +1186,10 @@ def _run_square_pipeline(
             result.master_stats = {"master_rows": total, "rows_added": added}
             print(f"[square_pipeline] consolidate OK — master={total}, added={added}")
 
-        try:
-            upload_scrape_artifacts(
-                refresh_date=refresh_date,
-                download_dir=DOWNLOAD_DIR,
-                square_csv=csv_path if isinstance(csv_path, pathlib.Path) else None,
-                master_csv=MASTER_TXN_CSV if MASTER_TXN_CSV.exists() else None,
-                item_sales_csv=item_csv_path if isinstance(item_csv_path, pathlib.Path) else None,
-                kds_csv=kds_csv_path if isinstance(kds_csv_path, pathlib.Path) else None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"[square_pipeline] WARN: GCS upload failed (non-fatal): {exc}")
+        # NOTE: scrape CSVs are NOT uploaded to GCS. BigQuery is the single
+        # system of record — the just-downloaded files are parsed straight into
+        # BQ raw tables by the load_raw_bigquery step (backfill_from_downloads).
+        # GCS holds only browser sessions + failure evidence, never data files.
 
         result.success = True
     except Exception as exc:  # noqa: BLE001
@@ -1226,7 +1212,8 @@ def _run_adp_pipeline(
     earnings_end: datetime.date | None = None,
     earnings_custom_range: bool = False,
 ) -> PipelineResult:
-    """Thread 2: ADP Timecard + Earnings scrape → GCS upload."""
+    """Thread 2: ADP Timecard + Earnings scrape → parsed into BigQuery raw
+    tables by load_raw_bigquery. No data files are written to GCS."""
     result = PipelineResult(name="adp")
     try:
         if dry_run:
@@ -1247,24 +1234,10 @@ def _run_adp_pipeline(
         result.artifacts["adp_earnings_xlsx"] = bundle.get("earnings_xlsx")
         print(f"[adp_pipeline] bundle OK → {list(bundle.keys())}")
 
-        adp_tc = result.artifacts.get("adp_timecard_xlsx")
-        adp_er = result.artifacts.get("adp_earnings_xlsx")
-        if not isinstance(adp_tc, pathlib.Path):
-            tc_glob = sorted(DOWNLOAD_DIR.glob("Timecard-*.xlsx"))
-            adp_tc = tc_glob[-1] if tc_glob else None
-        if not isinstance(adp_er, pathlib.Path):
-            er_glob = sorted(DOWNLOAD_DIR.glob("Earnings-*.xlsx"))
-            adp_er = er_glob[-1] if er_glob else None
-        if adp_tc or adp_er:
-            try:
-                upload_scrape_artifacts(
-                    refresh_date=refresh_date,
-                    download_dir=DOWNLOAD_DIR,
-                    adp_timecard_xlsx=adp_tc,
-                    adp_earnings_xlsx=adp_er,
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"[adp_pipeline] WARN: GCS upload failed (non-fatal): {exc}")
+        # NOTE: ADP Timecard/Earnings XLSX are NOT uploaded to GCS. They are
+        # parsed straight into the BQ raw tables (adp_shifts/adp_punches/
+        # adp_wage_rates/adp_earnings) by load_raw_bigquery. BigQuery is the
+        # single system of record; GCS holds only sessions + failure evidence.
 
         result.success = True
     except Exception as exc:  # noqa: BLE001
@@ -1862,8 +1835,6 @@ def main() -> int:
     if not needs_square and not args.skip_square and not needs_square_scrape:
         print("[square_transactions] SKIPPED — already covered through refresh_date.")
 
-    # ── GCS cache PRE-restore (no-OTP retry path) ──────────────────────
-    # On a fresh Cloud Run container the scrape CSVs are not on disk, so the
     # ── OTP availability gate (two-step READY handshake) ──────────────
     # Decide which portals THIS run will actually need an OTP for (i.e. will
     # launch a browser). If none, this is the zero-OTP happy path — no READY

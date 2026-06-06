@@ -36,7 +36,21 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
 from core.config_loader import project_dir, resolve_sheet_id
-from core.datastore import load_rows
+from core.datastore import load_rows as _ds_load_rows
+
+# Fresh-scrape replace mode (set from --replace / BHAGA_RAW_REPLACE in main()).
+# When True, every load_rows() below TRUNCATEs its target table before loading,
+# so a full-history scrape fully owns each table. Data always lands directly in
+# BigQuery — this script never reads from or writes data files to GCS.
+_REPLACE_TABLES = False
+
+
+def load_rows(*args, **kwargs):
+    """Module wrapper around core.datastore.load_rows that injects the
+    fresh-scrape ``replace=True`` when this run is in replace mode."""
+    if _REPLACE_TABLES:
+        kwargs.setdefault("replace", True)
+    return _ds_load_rows(*args, **kwargs)
 from skills.adp_run_automation import compensation_backend, shift_backend
 from skills.adp_run_automation.employee_aliases import (
     detect_new_employees,
@@ -117,7 +131,23 @@ def main() -> int:
     )
     cli.add_argument("--dry-run", action="store_true",
         help="Parse and aggregate but do NOT write to BigQuery.")
+    cli.add_argument(
+        "--replace", action="store_true",
+        default=os.environ.get("BHAGA_RAW_REPLACE", "").strip() in ("1", "true", "yes"),
+        help="Fresh-scrape mode: TRUNCATE each target BQ table before loading, "
+             "so the scrape fully owns the table contents (and duplicate natural "
+             "keys within a batch don't trip the MERGE one-source-row rule). Use "
+             "ONLY for a full-history backfill — a windowed --replace drops "
+             "out-of-window rows. Defaults to on when BHAGA_RAW_REPLACE=1 (set by "
+             "the fresh-scrape sandbox path).")
     args = cli.parse_args()
+
+    # Fresh-scrape replace applies to every load_rows() call in this run (the
+    # module wrapper reads this flag and injects replace=True).
+    if args.replace:
+        global _REPLACE_TABLES
+        _REPLACE_TABLES = True
+        print("# --replace: TRUNCATE-then-load (fresh full-history scrape owns each table)")
 
     # BQ is now the system of record — this script must not run without it.
     if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":

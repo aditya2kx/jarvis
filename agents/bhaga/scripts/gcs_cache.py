@@ -1,19 +1,26 @@
-"""GCS file cache for scraped data — eliminates re-scrape on downstream failures.
+"""GCS helpers for BHAGA — SESSIONS + FAILURE EVIDENCE ONLY (not a data pipeline).
 
-Cloud Run Jobs have ephemeral filesystems. After a successful scrape (Square CSV,
-ADP XLSX), this module uploads the raw files to a GCS bucket keyed by refresh_date.
-On re-runs where the Firestore marker says "done" but local files are missing,
-the orchestrator downloads from GCS instead of re-scraping — no OTP cost.
+IMPORTANT (read before adding callers): BigQuery is the single source of truth
+for all scraped data. GCS is **not** part of any data pipeline — the nightly
+orchestrator (daily_refresh.py) parses scrape exports straight into BQ and never
+reads data back from GCS. This module's *supported* uses are:
 
-Bucket layout:
-    gs://bhaga-scrape-cache/{refresh_date}/square/transactions-*.csv
-    gs://bhaga-scrape-cache/{refresh_date}/square/transactions-master.csv
-    gs://bhaga-scrape-cache/{refresh_date}/square/items-*.csv
-    gs://bhaga-scrape-cache/{refresh_date}/square/kds-*.csv
-    gs://bhaga-scrape-cache/{refresh_date}/adp/Timecard-*.xlsx
-    gs://bhaga-scrape-cache/{refresh_date}/adp/Earnings-*.xlsx
+    • upload_session() / restore via skills.*.restore_session_path — persist a
+      trusted-device browser session (storage_state) so the next run skips 2FA.
+        gs://<bucket>/_session/<portal>-<store>.json
+    • upload_evidence() / evidence_prefix() — failure screenshots + DOM for
+      postmortems (no rerun needed).
+        gs://<bucket>/<refresh_date>/evidence/...
 
-The service account needs roles/storage.objectUser on the bucket.
+The data-file helpers below (upload_file, upload_scrape_artifacts,
+download_cached_files) are LEGACY. They are retained only for offline backfill
+tooling and the sandbox_e2e replay harness — they are intentionally NOT called
+from the live nightly pipeline. Do NOT wire them back into daily_refresh: the
+old scrape→GCS→BQ-mirror path created dual writers and Sheet/BQ drift, which is
+exactly what the BQ-single-source-of-truth cutover removed.
+
+Sandbox isolation: writes honor BHAGA_GCS_CACHE_WRITE_BUCKET so staging runs
+never write to the prod bucket (see .cursor/rules/bhaga-principles.md).
 """
 
 from __future__ import annotations
@@ -101,8 +108,11 @@ def upload_file(
     refresh_date: datetime.date,
     category: str,
 ) -> str:
-    """Upload a single file to the GCS cache. Returns the gs:// URI.
+    """LEGACY (offline tooling only — NOT the live pipeline). Upload a single
+    data file to the GCS cache. Returns the gs:// URI.
 
+    The nightly pipeline parses scrape exports directly into BigQuery and does
+    not call this. Used only by upload_scrape_artifacts (backfill/e2e tooling).
     Writes go to ``_write_bucket_name()`` and are blocked by
     ``_assert_sandbox_write_isolation`` from ever touching the prod cache when
     ``BHAGA_SHEET_MODE=staging``.
@@ -196,7 +206,13 @@ def upload_scrape_artifacts(
     adp_timecard_xlsx: pathlib.Path | None = None,
     adp_earnings_xlsx: pathlib.Path | None = None,
 ) -> list[str]:
-    """Upload all available scrape artifacts for a refresh_date. Returns list of gs:// URIs."""
+    """LEGACY (offline tooling only — NOT the live pipeline). Upload all
+    available scrape artifacts for a refresh_date. Returns list of gs:// URIs.
+
+    The nightly orchestrator no longer calls this — scrape exports go straight
+    into BigQuery (the single source of truth). Kept for offline backfill +
+    the sandbox_e2e replay harness; do not reintroduce into daily_refresh.
+    """
     uploaded: list[str] = []
 
     for path, category in [
@@ -223,7 +239,13 @@ def download_cached_files(
     download_dir: pathlib.Path,
     name_contains: str | None = None,
 ) -> dict[str, pathlib.Path]:
-    """Download all cached files for a refresh_date into the local download dir.
+    """LEGACY (offline tooling only — NOT the live pipeline). Download cached
+    files for a refresh_date into the local download dir.
+
+    GCS is not a data source for the nightly pipeline — daily_refresh re-scrapes
+    into BQ rather than restoring data here. Remaining callers are offline
+    backfill tooling (update_model_sheet's one-off GCS earnings reader) and the
+    sandbox_e2e replay harness.
 
     Returns a dict mapping category/filename to local path for files successfully
     downloaded. Silently skips missing blobs (cache miss is not an error).

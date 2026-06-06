@@ -1,5 +1,34 @@
 # Jarvis Build Progress
 
+## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
+
+**Goal:** Make the implementation match the PR's stated design — *BQ is the single source of truth;
+GCS = sessions/evidence only* — and unblock the fresh-scrape sandbox backfill (which was failing the
+`load_raw_bigquery` step on `MERGE must match at most one source row for each target row` when a single
+ADP earnings scrape batch carried duplicate natural keys).
+
+**What landed:**
+- `daily_refresh.py` — removed ALL scrape-data uploads to GCS (`upload_scrape_artifacts` ×2 +
+  `_cache_artifact_now`). Scrape exports are parsed straight into BQ by `load_raw_bigquery`; GCS now
+  holds only browser sessions + failure evidence. Added an explicit **DATA ARCHITECTURE** docstring
+  (scrape → transient local file → BQ; never GCS) so future agents don't reintroduce the retired
+  scrape→GCS→BQ-mirror path. Dropped now-unused `upload_file`/`upload_scrape_artifacts` imports.
+- `gcs_cache.py` — module + function docstrings narrowed to "sessions + evidence only"; the data-file
+  helpers (`upload_file`, `upload_scrape_artifacts`, `download_cached_files`) flagged **LEGACY**
+  (offline backfill + `sandbox_e2e` replay only; not the live pipeline).
+- `core/datastore.py` — `load_rows(..., replace=True)` = TRUNCATE-then-INSERT for a fresh full-history
+  scrape (the scrape owns the whole table; sidesteps the MERGE one-source-row error on duplicate keys).
+  `_insert_rows` is now hint-aware (all-None columns type correctly) and used by every non-merge load.
+- `backfill_from_downloads.py` — `--replace` flag (defaults on when `BHAGA_RAW_REPLACE=1`); a module
+  `load_rows` wrapper injects `replace=True` across all ~10 call sites.
+- `sandbox_live_run.py` — fresh-scrape path also sets `BHAGA_RAW_REPLACE=1`; `--sheet-from-bq`
+  (`BHAGA_SHEET_FROM_BQ=1`) so the sandbox runs the BQ-canonical model path
+  (`materialize_model_bq` → `render_model_sheet_from_bq`) instead of the legacy raw-Sheet-reading
+  `update_model_sheet`. `full-history-bq-sandbox` scenario enables both.
+- Tests: `core/test_datastore_dataset_isolation.py` (replace truncate-then-insert, dup-key keep,
+  merge-path unaffected), `test_backfill_from_downloads_replace.py` (wrapper plumbing),
+  `test_sandbox_live_run.py`/`test_sandbox_scenarios.py` (sheet_from_bq). Full suite green (869 passed).
+
 ## 2026-06-06 — Sandbox BQ dataset isolation + scrape-from-source evidence (PR #33)
 
 **Goal:** Produce trustworthy parity evidence (BQ raw/model vs prod Sheets, from 2026-03-23) WITHOUT

@@ -52,6 +52,58 @@ class TestRewriteDataset(unittest.TestCase):
         self.assertNotIn("jarvis-bhaga_sandbox-prod", out)
 
 
+class _FakeQueryJob:
+    def __init__(self, recorder, sql):
+        recorder.append(sql)
+
+    def result(self):
+        return []
+
+
+class _FakeClient:
+    def __init__(self):
+        self.queries: list[str] = []
+
+    def query(self, sql, job_config=None):
+        return _FakeQueryJob(self.queries, sql)
+
+
+class TestLoadRowsReplace(unittest.TestCase):
+    """replace=True must TRUNCATE the table, then INSERT (no MERGE)."""
+
+    def _run(self, **load_kwargs):
+        client = _FakeClient()
+        with mock.patch.dict(os.environ, {"BHAGA_SHEET_MODE": "prod"}, clear=False), \
+             mock.patch.object(datastore, "_DATASET", "bhaga"), \
+             mock.patch.object(datastore, "get_client", return_value=client):
+            n = datastore.load_rows(
+                "adp_earnings",
+                [{"employee": "A", "amount": 1.0}, {"employee": "A", "amount": 2.0}],
+                **load_kwargs,
+            )
+        return client.queries, n
+
+    def test_replace_truncates_then_inserts(self):
+        queries, n = self._run(replace=True,
+                                merge_keys=["employee"])  # merge_keys ignored
+        self.assertEqual(n, 2)
+        self.assertTrue(queries[0].startswith("TRUNCATE TABLE"))
+        self.assertIn("bhaga.adp_earnings", queries[0])
+        self.assertTrue(any(q.startswith("INSERT INTO") for q in queries[1:]))
+        # A fresh-scrape replace must never emit a MERGE (that's the bug it fixes).
+        self.assertFalse(any("MERGE" in q for q in queries))
+
+    def test_replace_keeps_duplicate_natural_keys(self):
+        # Both rows share employee="A"; INSERT must keep both (no merge collapse).
+        queries, n = self._run(replace=True, merge_keys=["employee"])
+        self.assertEqual(n, 2)
+
+    def test_merge_path_unaffected_when_not_replace(self):
+        queries, n = self._run(merge_keys=["employee"])
+        self.assertTrue(any("MERGE" in q for q in queries))
+        self.assertFalse(any(q.startswith("TRUNCATE") for q in queries))
+
+
 class TestSandboxWriteIsolation(unittest.TestCase):
     def test_allows_non_staging_run_to_prod(self):
         with mock.patch.dict(os.environ, {"BHAGA_SHEET_MODE": "prod"}, clear=False):

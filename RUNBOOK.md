@@ -196,8 +196,11 @@ gcloud scheduler jobs resume  bhaga-nightly --location=us-central1
     (`skills/bhaga_config/state_adapter.py`, collection `runs`).
   - `otps/<portal>` — pending/answered OTP records written by the job (request) and the webhook
     (operator reply). Portals e.g. `adp`, `square`.
-- **GCS** bucket `bhaga-scrape-cache` — raw scrape artifacts (XLSX/CSV downloads) keyed by date,
-  so a re-run can reuse a scrape instead of re-driving the portal.
+- **GCS** bucket `bhaga-scrape-cache` — **trusted-device browser sessions** (`_session/`) and
+  **failure evidence** (`<date>/evidence/`) ONLY. The nightly pipeline parses scrape exports
+  straight into BigQuery (the single source of truth) and does **not** write scrape data files to GCS
+  or read them back. Legacy date-keyed `<date>/square|adp/*.csv|xlsx` blobs may linger from before the
+  cutover and from offline backfill/`sandbox_e2e` tooling, but are not part of the live data path.
 - **Artifact Registry** `jarvis-images` (DOCKER, `us-central1`) — orchestrator + webhook images.
 
 ---

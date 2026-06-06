@@ -171,17 +171,33 @@ def load_rows(
     *,
     merge_keys: list[str] | None = None,
     column_bq_types: dict[str, str] | None = None,
+    replace: bool = False,
 ) -> int:
-    """Bulk-insert rows into a BigQuery table.
+    """Bulk-load rows into a BigQuery table.
 
-    If merge_keys is provided, performs a MERGE (upsert) using those columns
-    as the match condition. Otherwise does a simple INSERT.
+    Three modes:
+
+    * ``replace=True`` — TRUNCATE the table, then INSERT every row. This is the
+      correct mode for a **fresh full-history scrape/backfill**: the scrape is
+      authoritative for the whole window, so the table is emptied and rebuilt.
+      It also sidesteps the "MERGE must match at most one source row per target
+      row" error that a MERGE raises when a single scrape batch legitimately
+      contains multiple rows sharing a natural key (e.g. several ADP earnings
+      line-items for the same employee/period/description). ``merge_keys`` is
+      ignored in this mode. Use ONLY when the incoming rows cover the table's
+      full intended contents — a windowed replace would drop out-of-window rows.
+    * ``merge_keys`` given — MERGE (idempotent upsert) on those columns. This is
+      the nightly/incremental default: re-running converges values, never dupes.
+    * neither — a plain INSERT (append).
 
     column_bq_types: optional {col: bq_type} override for columns whose type
-    cannot be inferred from the data (e.g. all-None batches).  Takes priority
+    cannot be inferred from the data (e.g. all-None batches). Takes priority
     over inferred types.
 
-    Returns number of rows affected.
+    Returns number of rows affected. NOTE: data ALWAYS lands directly in
+    BigQuery here — BQ is the single system of record. Nothing in this path
+    reads from or writes data files to GCS; GCS holds only browser sessions and
+    failure evidence (see agents/bhaga/scripts/gcs_cache.py).
     """
     client = get_client()
     if client is None or not rows:
@@ -191,9 +207,13 @@ def load_rows(
     fq_table = f"`{_PROJECT_ID}.{_DATASET}.{table_name}`"
     columns = list(rows[0].keys())
 
+    if replace:
+        # Empty the table first so the fresh scrape fully owns its contents.
+        client.query(f"TRUNCATE TABLE {fq_table}").result()
+        return _insert_rows(client, fq_table, columns, rows, column_bq_types or {})
     if merge_keys:
         return _merge_rows(client, fq_table, columns, rows, merge_keys, column_bq_types or {})
-    return _insert_rows(client, fq_table, columns, rows)
+    return _insert_rows(client, fq_table, columns, rows, column_bq_types or {})
 
 
 def read_table(table_name: str, *, where: str = "", limit: int | None = None) -> list[dict]:
@@ -377,25 +397,53 @@ def _split_statements(sql: str) -> list[str]:
     return statements
 
 
-def _insert_rows(client, fq_table: str, columns: list[str], rows: list[dict]) -> int:
-    """Simple streaming insert using the client library."""
-    from google.cloud import bigquery
+def _insert_rows(
+    client,
+    fq_table: str,
+    columns: list[str],
+    rows: list[dict],
+    column_bq_types_hint: dict[str, str] | None = None,
+) -> int:
+    """Simple INSERT of every row (no merge — duplicate keys are preserved).
 
+    Per-column BQ types are resolved hint-first, then from the first non-None
+    value in the batch, else STRING — so an all-None column (e.g. a nullable
+    rate in one batch) is typed correctly instead of defaulting to a type that
+    rejects the NULL. This mirrors the typing logic in ``_merge_rows``.
+    """
     col_list = ", ".join(columns)
-    placeholders = ", ".join(f"@{c}" for c in columns)
+    hints = column_bq_types_hint or {}
 
     inserted = 0
     batch_size = 500
     for i in range(0, len(rows), batch_size):
         batch = rows[i : i + batch_size]
+
+        col_types: dict[str, str] = {}
+        for c in columns:
+            if c in hints:
+                col_types[c] = hints[c]
+                continue
+            for row in batch:
+                v = row.get(c)
+                if v is not None:
+                    col_types[c] = _infer_bq_type(v)
+                    break
+            else:
+                col_types[c] = "STRING"
+
         values_clauses = []
         params = []
         for idx, row in enumerate(batch):
-            suffixed_cols = [f"@{c}_{idx}" for c in columns]
-            values_clauses.append(f"({', '.join(suffixed_cols)})")
+            field_refs = []
             for c in columns:
                 val = row.get(c)
-                params.append((f"{c}_{idx}", _infer_bq_type(val), val))
+                if val is None:
+                    field_refs.append(f"CAST(NULL AS {col_types[c]})")
+                else:
+                    field_refs.append(f"@{c}_{idx}")
+                    params.append((f"{c}_{idx}", col_types[c], val))
+            values_clauses.append(f"({', '.join(field_refs)})")
 
         sql = f"INSERT INTO {fq_table} ({col_list}) VALUES {', '.join(values_clauses)}"
         try:

@@ -143,6 +143,12 @@ def build_sandbox_env(
     # (GCS is deprecated as a source; Sheets are a projection of BQ).
     if fresh_scrape:
         env["BHAGA_GCS_CACHE_BUCKET"] = cache_write_bucket
+        # A fresh full-history scrape is authoritative for the whole window, so
+        # the BQ raw tables are TRUNCATEd then reloaded (backfill_from_downloads
+        # --replace). This also avoids the MERGE "one source row per target"
+        # error when a scrape batch has duplicate natural keys (e.g. ADP
+        # earnings line-items). Safe only because the window covers all history.
+        env["BHAGA_RAW_REPLACE"] = "1"
     # BQ-canonical model path: materialize_model_bq (BQ raw → BQ model) →
     # render_model_sheet_from_bq (BQ model → Sheet), instead of the legacy
     # update_model_sheet (which reads raw SHEETS). Required when proving BQ as

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 
 import pytest
 
@@ -38,6 +39,18 @@ class TestDispatch:
         assert out["pr_number"] == "9"
         assert '"item-sales-live"' in out["plan"]
         assert '"2026-05-31"' in out["plan"]
+
+    def test_dispatch_threads_backfill_window(self, tmp_path, monkeypatch):
+        out = _outputs(tmp_path, monkeypatch, {
+            "EVENT_NAME": "workflow_dispatch",
+            "IN_SCENARIO": "full-history-bq-sandbox", "IN_DATE": "2026-06-05",
+            "IN_PR": "33", "DISPATCH_REF": "feat/x",
+            "IN_WINDOW_FROM": "2026-03-23", "IN_WINDOW_TO": "2026-06-05",
+        })
+        assert out["run"] == "true"
+        plan = json.loads(out["plan"])
+        assert plan[0]["window_from"] == "2026-03-23"
+        assert plan[0]["window_to"] == "2026-06-05"
 
     def test_unknown_scenario_skips(self, tmp_path, monkeypatch):
         out = _outputs(tmp_path, monkeypatch, {

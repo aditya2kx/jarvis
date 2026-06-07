@@ -25,6 +25,12 @@
   contract note. Deployed to prod; `verify_panels.py` → **14/14 panels OK**.
 - **Deferred (Phase 3, operator-driven):** `$inv_date` default, pre-window flat-zero forecast rows,
   `time.from` vs `$date_from` alignment — cosmetic/UX, not blockers.
+- **Operator-feedback refinements (same PR #38):** (1) labor ratio panels renamed off "$1k net sales"
+  with goal **baseline lines** on the total daily/weekly panels, driven by new `$goal_hours_per_net_sales`
+  / `$goal_hours_per_item` template vars; (2) KDS "Time per Item" panel y-axis capped at 30 min;
+  (3) migration `008_kds_order_grouping.sql` adds `ticket_name` (order id) + `order_source` to
+  `vw_kds_item_investigation`, and the slow-items table is restructured to group items by order
+  (honest note: KDS times are per-order, not per-item).
 
 ## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
 

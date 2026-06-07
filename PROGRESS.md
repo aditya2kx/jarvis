@@ -1,5 +1,31 @@
 # Jarvis Build Progress
 
+## 2026-06-07 — Grafana "No data" fix: deploy-time datasource-UID binding + BQ panel aliases (PR #38)
+
+**Goal:** Every panel on the BHAGA Analytics dashboard showed "No data". Root-cause and fix.
+
+**Two independent bugs:**
+- **Datasource wiring (global):** the `ds_bigquery` template variable stored the datasource *name*
+  (`"BHAGA BigQuery"`) while every panel references `"uid": "${ds_bigquery}"` → Grafana resolves a
+  datasource whose UID == the name → "Data source not found" → all panels blank.
+- **Invalid SQL:** the 11 timeseries panels used double-quoted aliases (`AS "Orders"`) — a string
+  literal in BigQuery Standard SQL → syntax error. Output field names also can't contain `/` or `$`.
+
+**What landed:**
+- `skills/grafana_cloud_provisioning/register.py` — `configure_bigquery_datasource` now returns the
+  datasource `uid`; new `get_bigquery_datasource_uid()` helper.
+- `agents/bhaga/grafana/deploy.py` — `bind_datasource_uid()` rewrites every `${ds_bigquery}` ref + the
+  var `current` to the real UID before push; `dashboard.json` stays UID-free. `--dashboard-only` looks
+  up the UID too. Fails loudly if the UID can't be resolved.
+- `agents/bhaga/grafana/dashboard.json` — backtick aliases; `Hrs / $1k Net Sales`/`Hrs / Item` →
+  `Hrs per 1k Net Sales`/`Hrs per Item`; `byName` field overrides kept in sync.
+- `agents/bhaga/grafana/verify_panels.py` — read-only per-panel harness via Grafana `/api/ds/query`;
+  **it caught the alias bug** that earlier ad-hoc testing had masked.
+- Docs: RUNBOOK §14 (deploy-time UID binding + alias contract + incident); `status.py` panel-SQL
+  contract note. Deployed to prod; `verify_panels.py` → **14/14 panels OK**.
+- **Deferred (Phase 3, operator-driven):** `$inv_date` default, pre-window flat-zero forecast rows,
+  `time.from` vs `$date_from` alignment — cosmetic/UX, not blockers.
+
 ## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
 
 **Goal:** Make the implementation match the PR's stated design — *BQ is the single source of truth;

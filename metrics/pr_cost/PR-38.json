@@ -1,0 +1,67 @@
+{
+  "pr_number": 38,
+  "provisional_id": null,
+  "title": "fix(grafana): bind datasource UID at deploy + fix BQ panel SQL aliases",
+  "requirement": null,
+  "branch": "fix/grafana-datasource-uid",
+  "created_at": "2026-06-07T21:38:08Z",
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor dashboard usage API (local session token; request->PR by time window)",
+    "approximate": false,
+    "attribution_mode": "branch_window",
+    "session_started_at": null,
+    "conversation_ids": [],
+    "sessions": [
+      {
+        "ts": "2026-06-07T21:24:07.242000+00:00",
+        "model": "claude-opus-4-8-thinking-high",
+        "tokens": 10613839,
+        "cost_usd": 8.8628,
+        "cost_source": "cursor_charged",
+        "conversation_id": null,
+        "input_tokens": 113619,
+        "output_tokens": 58385,
+        "cache_read_input_tokens": 10036446,
+        "cache_creation_input_tokens": 405389,
+        "note": null
+      }
+    ],
+    "tokens_total": 10613839,
+    "cost_usd_total": 8.8628,
+    "window": {
+      "start": "2026-06-07T21:17:21.150000+00:00",
+      "end": "2026-06-07T21:38:20.909000+00:00"
+    }
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "tokens": 0,
+        "cost_usd": 0.0,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/27105564759"
+      }
+    ],
+    "tokens_total": 0,
+    "cost_usd_total": 0.0,
+    "run_count": 1
+  },
+  "totals": {
+    "tokens": 10613839,
+    "cost_usd": 8.8628
+  }
+}

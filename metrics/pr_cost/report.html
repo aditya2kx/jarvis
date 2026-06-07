@@ -34,7 +34,7 @@ code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12p
 </style></head>
 <body><div class="wrap">
 <h1>PR cost monitoring</h1>
-<p class="muted">21 PR(s) · $219.82 total · generated 2026-06-07 17:26 UTC · source: <code>metrics/pr_cost/PR-*.json</code> · rates verified 2026-06-03 (<a href="https://cursor.com/docs/models-and-pricing" style="color:#539bf5">cursor.com/docs/models-and-pricing</a>)</p>
+<p class="muted">22 PR(s) · $267.89 total · generated 2026-06-07 21:41 UTC · source: <code>metrics/pr_cost/PR-*.json</code> · rates verified 2026-06-03 (<a href="https://cursor.com/docs/models-and-pricing" style="color:#539bf5">cursor.com/docs/models-and-pricing</a>)</p>
 
     <section class="pr">
       <p class="pr-title">#37 — fix(cost): pre-commit hook for ledger; PR cost gate is a pure validator</p>
@@ -74,6 +74,26 @@ code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12p
       <div class="obs"><b>•</b>Build attributed to 1 chat space(s): 8401d8b5… (conversation-scoped via ai_code_hashes + model tier).</div><div class="obs"><b>•</b>Build is 100% of total cost ($2.10) vs review 0% ($0.00). Optimization leverage is in the build loop.</div><div class="obs"><b>•</b>Model mix: sonnet $2.10 (100%).</div><div class="obs"><b>•</b>One session (2026-06-04T17:22:25, $2.10, 2,800,000 tok) is 100% of build cost — a marathon thread with an ever-growing context.</div>
       <h2>Tactical recommendations</h2>
       <div class="rec"><b>#1</b>No obvious efficiency wins — costs look proportional to the change.</div>
+    </section>
+    
+    <section class="pr">
+      <p class="pr-title">#33 — feat(dashboard+etl): BQ-canonical compute, 3-section Grafana dashboard, Sheet-BQ reconciliation gate</p>
+      <p class="muted">merged 2026-06-07 · build = Cursor usage API · review = Claude Sonnet bot</p>
+      <div class="stats">
+        <div class="stat"><div class="v">$48.07</div><div class="l">Total cost</div></div>
+        <div class="stat"><div class="v build">$42.27</div><div class="l">Build (88%)</div></div>
+        <div class="stat"><div class="v review">$5.80</div><div class="l">Review · 26 runs</div></div>
+        <div class="stat"><div class="v">98.6M</div><div class="l">Tokens</div></div>
+      </div>
+      <div class="bar"><div class="b" style="width:87.9%"></div><div class="r" style="width:12.1%"></div></div>
+      <p class="muted">Build 88% · Review 12%</p>
+      <h2>Where the effort went — top 5 cost areas</h2>
+      <table><thead><tr><th>Area</th><th>Model</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">% of PR</th></tr></thead>
+      <tbody><tr class="build"><td>build session 2026-06-04T23:15:56.495000+00:00</td><td>claude-4.6-sonnet-medium-thinking</td><td class="n">17.1M</td><td class="n">$7.54</td><td class="n">15.7%</td></tr><tr class="build"><td>build session 2026-06-05T00:49:00.566000+00:00</td><td>claude-4.6-sonnet-medium-thinking</td><td class="n">16.4M</td><td class="n">$7.51</td><td class="n">15.6%</td></tr><tr class="build"><td>build session 2026-06-06T03:11:56.480000+00:00</td><td>claude-4.6-sonnet-medium-thinking</td><td class="n">16.8M</td><td class="n">$7.11</td><td class="n">14.8%</td></tr><tr class="review"><td>claude review (×26 runs)</td><td>claude-sonnet-4-6</td><td class="n">6.0M</td><td class="n">$5.80</td><td class="n">12.1%</td></tr><tr class="build"><td>build session 2026-06-05T18:37:14.245000+00:00</td><td>claude-4.6-sonnet-medium-thinking</td><td class="n">12.9M</td><td class="n">$5.62</td><td class="n">11.7%</td></tr></tbody></table>
+      <h2>Diagnosis</h2>
+      <div class="obs"><b>•</b>Build attributed to 1 chat space(s): 21d6fe24… (conversation-scoped via ai_code_hashes + model tier).</div><div class="obs"><b>•</b>Build is 88% of total cost ($42.27) vs review 12% ($5.80). Optimization leverage is in the build loop.</div><div class="obs"><b>•</b>Cache reads are 95% of build tokens (87,889,393 tok) — context re-reads, not new work. Each agent turn re-reads the entire conversation history as cache-read tokens. Start a fresh chat per PR to reset this counter.</div><div class="obs"><b>•</b>Model mix: sonnet $42.27 (100%).</div><div class="obs"><b>•</b>Review: 26 runs × ~$0.22/run = $5.80. Convergence policy (inline = blocking only, delta re-review) is active since PR #13.</div>
+      <h2>Tactical recommendations</h2>
+      <div class="rec"><b>#1</b>Start a new Cursor chat for each PR/requirement (run `scripts/start_pr_session.py --pr 33` to get a seeded brief + cursor:// link). Each turn re-reads the entire history as cache-read tokens; a fresh chat resets the counter. Est. saving: ~$12.68 (30% of build).</div><div class="rec"><b>#2</b>1 review run(s) hit the turn cap (error_max_turns), spending $0.65 without finishing. Raise --max-turns in claude-review.yml or tighten the rubric so it converges inside the cap.</div>
     </section>
     
     <section class="pr">

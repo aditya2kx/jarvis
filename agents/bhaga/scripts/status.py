@@ -72,6 +72,12 @@ GRAFANA_DASHBOARD_URL = "https://steadyangelfish2985.grafana.net/d/bhaga-analyti
 #
 # (CI runs check_doc_freshness.py --strict which enforces editing this file
 # alongside schema/dashboard changes.)
+#
+# Panel-SQL contract (learned the hard way — see RUNBOOK §14 incident
+# 2026-06-07): dashboard.json column aliases MUST use BigQuery-valid identifiers
+# — backticks, not double quotes (`AS "x"` is a string-literal syntax error) —
+# and output field names may not contain `/` or `$` (spaces/hyphens are fine).
+# Validate any panel SQL change with `python3 agents/bhaga/grafana/verify_panels.py`.
 
 SHEET_TABS: tuple[str, ...] = ("config", "daily", "tip_alloc_daily")
 

@@ -164,6 +164,8 @@ Square / ADP / ClickUp  ──scrape──▶  BigQuery raw tables  ──read�
 
 Sheets is the **source of truth**; BigQuery is a **parallel read-only mirror** updated each daily cron run. The Grafana Cloud dashboard reads from BQ views (`vw_daily_sales`, `vw_model_labor_daily`, etc.) via the `grafana-bq-reader` service account. See `agents/bhaga/grafana/` for dashboard-as-code and `skills/grafana_cloud_provisioning/` for provisioning helpers.
 
+> **Dashboard gotchas (RUNBOOK §14):** panels are datasource-agnostic in `dashboard.json` (they point at the `${ds_bigquery}` variable); `deploy.py` binds the **real datasource UID** at push time — committing a name there yields "No data" on every panel. Panel SQL must use **backtick** column aliases (BigQuery rejects `AS "x"`), and output field names can't contain `/` or `$`. Validate any panel change with `python3 agents/bhaga/grafana/verify_panels.py` (runs each panel's SQL via Grafana `/api/ds/query`).
+
 - **Schema registry:** `skills/tip_ledger_writer/schema.py` (`WORKBOOK_SCHEMAS`) defines every tab's
   `header` + `natural_key_columns`. `get_tab_spec(workbook_title, tab_name)` returns it.
 - **Writing:** `skills/tip_ledger_writer/writer.py::_upsert_tab` reads the tab, overlays incoming

@@ -344,7 +344,9 @@ def main() -> int:
         print("\nRESULT: PASS — BQ row counts and model values match prod Sheets.")
         return 0
     n_raw = sum(1 for r in result["raw"] if not r["ok"])
-    n_model = sum(1 for m in result["model"] if not m["ok"])
+    # --no-values leaves model grains as {"status": "SKIPPED"} (no "ok" key);
+    # only count grains that actually diverged.
+    n_model = sum(1 for m in result["model"] if m.get("status") not in ("OK", "SKIPPED"))
     print(f"\nRESULT: FAIL — {n_raw} raw + {n_model} model grain(s) diverge.")
     return 1
 

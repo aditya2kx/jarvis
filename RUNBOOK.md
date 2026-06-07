@@ -986,3 +986,28 @@ BHAGA_DATASTORE=bigquery python3 -c "from core.datastore import ensure_schema; p
 ```
 
 Expected output: `['007_store_config']` (first run) or `[]` (already applied).
+
+### Post-merge cutover checklist (one-time)
+
+After PR #33 merges and the new image deploys, run the **one-time prod cutover**:
+migrations → seed `store_config` → **full-history `--replace` rebuild of raw BQ** (retires the
+`square_item_lines` double-count; needs OTP) → verify parity → flip `BHAGA_SHEET_FROM_BQ=1`.
+
+The ordered, copy-pasteable runbook is **[`docs/POST_MERGE_BQ_CUTOVER.md`](docs/POST_MERGE_BQ_CUTOVER.md)**.
+
+**Fresh-scrape `--replace` (`BHAGA_RAW_REPLACE=1`).** TRUNCATE-then-load each raw table so a fresh
+full-history scrape owns the whole table. This is the correct mode for the cutover rebuild (and for
+the `full-history-bq-sandbox` sandbox scenario) because (a) the scrape is authoritative for the full
+window and (b) it sidesteps the MERGE "must match at most one source row per target row" error when a
+single scrape batch carries duplicate natural keys (e.g. ADP earnings line-items). **Only ever use it
+with a full-history window** — a partial-window `--replace` would TRUNCATE then drop out-of-window
+rows. Nightly runs never set it (they MERGE-upsert the coverage gap, idempotent by natural key).
+
+### `square_item_lines` dedupe — why a one-time rebuild, then normal incremental
+
+`line_seq` used to be a file-global row index; it is now a **stable per-group counter**
+(`skills/square_tips/transactions_backend.py`). Legacy rows with the old global index (e.g. `3500`)
+never collided with new per-group rows (`0`) under the merge key, so prod accumulated ~2× duplicate
+item lines. The fix is the one-time Step 3 `--replace` rebuild above; after that, nightly MERGE is
+idempotent (re-scrapes hit identical keys) and the model self-heals via `materialize_model_bq`. No
+daily wipe. Full reasoning in `docs/POST_MERGE_BQ_CUTOVER.md` § "Why a one-time rebuild".

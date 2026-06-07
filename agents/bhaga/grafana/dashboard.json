@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 6,
+  "version": 7,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -92,7 +92,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, orders AS \"Orders\", items_sold AS \"Items Sold\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, orders AS `Orders`, items_sold AS `Items Sold` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
@@ -138,7 +138,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, orders AS \"Orders\", items_sold AS \"Items Sold\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, orders AS `Orders`, items_sold AS `Items Sold` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -168,7 +168,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, total_hours AS \"Total\", hourly_hours AS \"Part-time\", fulltime_hours AS \"Full-time\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, total_hours AS `Total`, hourly_hours AS `Part-time`, fulltime_hours AS `Full-time` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
@@ -186,7 +186,7 @@
         "defaults": {"unit": "h"},
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Hrs / Item"},
+            "matcher": {"id": "byName", "options": "Hrs per Item"},
             "properties": [{"id": "custom.axisPlacement", "value": "right"}]
           }
         ]
@@ -197,7 +197,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, total_hours_per_1k_net_sales AS \"Hrs / $1k Net Sales\", hours_per_item AS \"Hrs / Item\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, total_hours_per_1k_net_sales AS `Hrs per 1k Net Sales`, hours_per_item AS `Hrs per Item` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
@@ -215,7 +215,7 @@
         "defaults": {"unit": "h"},
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Hrs / Item"},
+            "matcher": {"id": "byName", "options": "Hrs per Item"},
             "properties": [{"id": "custom.axisPlacement", "value": "right"}]
           }
         ]
@@ -226,7 +226,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, hourly_hours_per_1k_net_sales AS \"Hrs / $1k Net Sales\", hourly_hours_per_item AS \"Hrs / Item\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, hourly_hours_per_1k_net_sales AS `Hrs per 1k Net Sales`, hourly_hours_per_item AS `Hrs per Item` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
@@ -244,7 +244,7 @@
         "defaults": {"unit": "h"},
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Hrs / Item"},
+            "matcher": {"id": "byName", "options": "Hrs per Item"},
             "properties": [{"id": "custom.axisPlacement", "value": "right"}]
           }
         ]
@@ -255,7 +255,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, fulltime_hours_per_1k_net_sales AS \"Hrs / $1k Net Sales\", fulltime_hours_per_item AS \"Hrs / Item\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, fulltime_hours_per_1k_net_sales AS `Hrs per 1k Net Sales`, fulltime_hours_per_item AS `Hrs per Item` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
@@ -277,7 +277,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, total_hours AS \"Total\", hourly_hours AS \"Part-time\", fulltime_hours AS \"Full-time\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, total_hours AS `Total`, hourly_hours AS `Part-time`, fulltime_hours AS `Full-time` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -295,7 +295,7 @@
         "defaults": {"unit": "h"},
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Hrs / Item"},
+            "matcher": {"id": "byName", "options": "Hrs per Item"},
             "properties": [{"id": "custom.axisPlacement", "value": "right"}]
           }
         ]
@@ -306,7 +306,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, total_hours_per_1k_net_sales AS \"Hrs / $1k Net Sales\", hours_per_item AS \"Hrs / Item\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, total_hours_per_1k_net_sales AS `Hrs per 1k Net Sales`, hours_per_item AS `Hrs per Item` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -324,7 +324,7 @@
         "defaults": {"unit": "h"},
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Hrs / Item"},
+            "matcher": {"id": "byName", "options": "Hrs per Item"},
             "properties": [{"id": "custom.axisPlacement", "value": "right"}]
           }
         ]
@@ -335,7 +335,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, hourly_hours_per_1k_net_sales AS \"Hrs / $1k Net Sales\", hourly_hours_per_item AS \"Hrs / Item\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, hourly_hours_per_1k_net_sales AS `Hrs per 1k Net Sales`, hourly_hours_per_item AS `Hrs per Item` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -353,7 +353,7 @@
         "defaults": {"unit": "h"},
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Hrs / Item"},
+            "matcher": {"id": "byName", "options": "Hrs per Item"},
             "properties": [{"id": "custom.axisPlacement", "value": "right"}]
           }
         ]
@@ -364,7 +364,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, fulltime_hours_per_1k_net_sales AS \"Hrs / $1k Net Sales\", fulltime_hours_per_item AS \"Hrs / Item\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, fulltime_hours_per_1k_net_sales AS `Hrs per 1k Net Sales`, fulltime_hours_per_item AS `Hrs per Item` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -395,7 +395,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, kds_p90_min AS \"p90\", kds_p95_min AS \"p95\", kds_p99_min AS \"p99\", kds_median_min AS \"median\" FROM `jarvis-bhaga-prod.bhaga.vw_order_quality_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, kds_p90_min AS `p90`, kds_p95_min AS `p95`, kds_p99_min AS `p99`, kds_median_min AS `median` FROM `jarvis-bhaga-prod.bhaga.vw_order_quality_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },

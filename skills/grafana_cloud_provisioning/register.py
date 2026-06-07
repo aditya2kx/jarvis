@@ -85,7 +85,8 @@ def configure_bigquery_datasource(
         gcp_secret_project: GCP project hosting the secret.
 
     Returns:
-        Grafana API response dict.
+        Grafana API response dict, augmented with a top-level ``uid`` key holding
+        the datasource's canonical UID (so the deploy step can bind panels to it).
     """
     token = _get_token(org_slug)
 
@@ -123,13 +124,47 @@ def configure_bigquery_datasource(
                         token=token)
         ds_id = existing["id"]
         print(f"[grafana] Updating existing datasource id={ds_id}")
-        return _api("PUT", f"{grafana_url}/api/datasources/{ds_id}",
+        resp = _api("PUT", f"{grafana_url}/api/datasources/{ds_id}",
                     token=token, body=datasource_payload)
     except RuntimeError as e:
         if "404" in str(e):
             print("[grafana] Creating new datasource")
-            return _api("POST", f"{grafana_url}/api/datasources",
+            resp = _api("POST", f"{grafana_url}/api/datasources",
                         token=token, body=datasource_payload)
+        else:
+            raise
+
+    # Resolve the canonical UID. Panels bind to this at deploy time instead of
+    # the datasource *name*, which Grafana cannot resolve from a `uid:` field.
+    uid = (resp.get("datasource") or {}).get("uid") or resp.get("uid")
+    if not uid:
+        ds = _api("GET", f"{grafana_url}/api/datasources/name/BHAGA%20BigQuery",
+                  token=token)
+        uid = ds.get("uid")
+    if uid:
+        print(f"[grafana] Datasource uid={uid}")
+    return {**resp, "uid": uid}
+
+
+def get_bigquery_datasource_uid(
+    *, org_slug: str, name: str = "BHAGA BigQuery"
+) -> str | None:
+    """Return the UID of the BigQuery datasource by name, or None if absent.
+
+    Used by the deploy step when only the dashboard is pushed (so it can still
+    bind panels to the real UID without reconfiguring the datasource).
+    """
+    import urllib.parse
+
+    token = _get_token(org_slug)
+    grafana_url = f"https://{org_slug}.grafana.net"
+    quoted = urllib.parse.quote(name)
+    try:
+        ds = _api("GET", f"{grafana_url}/api/datasources/name/{quoted}", token=token)
+        return ds.get("uid")
+    except RuntimeError as e:
+        if "404" in str(e):
+            return None
         raise
 
 

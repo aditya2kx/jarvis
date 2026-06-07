@@ -21,12 +21,65 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _PROJECT_ID = "jarvis-bhaga-prod"
-_DATASET = "bhaga"
+# BQ dataset is env-driven so sandbox runs write to an ISOLATED dataset
+# (BHAGA_BQ_DATASET=bhaga_sandbox) instead of polluting prod `bhaga`. Defaults
+# to prod. Resolved at import; every process (nightly, sandbox, backfill) sets
+# the env before launching python, so import-time resolution is correct.
+_DEFAULT_DATASET = "bhaga"
+_DATASET = os.environ.get("BHAGA_BQ_DATASET", _DEFAULT_DATASET)
 _MIGRATIONS_DIR = pathlib.Path(__file__).parent / "migrations"
+
+
+def dataset() -> str:
+    """The active BQ dataset (prod `bhaga` unless BHAGA_BQ_DATASET overrides)."""
+    return _DATASET
+
+
+def fq(table: str) -> str:
+    """Fully-qualified, backtick-quoted table ref for the active dataset.
+
+    Use this instead of hardcoding `jarvis-bhaga-prod.bhaga.<table>` so sandbox
+    runs (BHAGA_BQ_DATASET=bhaga_sandbox) target the isolated dataset.
+    """
+    return f"`{_PROJECT_ID}.{_DATASET}.{table}`"
 
 
 def _is_enabled() -> bool:
     return os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery"
+
+
+def _assert_sandbox_write_isolation() -> None:
+    """Hard guard: a sandbox/staging run must never WRITE to the prod dataset.
+
+    Mirrors ``gcs_cache._assert_sandbox_write_isolation`` for BigQuery. A sandbox
+    run (``BHAGA_SHEET_MODE=staging``) may READ prod tables but must write only to
+    its isolated dataset (``BHAGA_BQ_DATASET=bhaga_sandbox``). This is the missing
+    guard that previously let a sandbox test row leak into prod BQ.
+    """
+    if os.environ.get("BHAGA_SHEET_MODE", "").lower() != "staging":
+        return
+    if _DATASET == _DEFAULT_DATASET:
+        raise RuntimeError(
+            f"BLOCKED: a sandbox/staging run attempted to WRITE to the production "
+            f"BigQuery dataset '{_DEFAULT_DATASET}'. Set BHAGA_BQ_DATASET to a sandbox "
+            f"dataset. Sandbox runs may READ prod data but must NEVER write it "
+            f"(see .cursor/rules/bhaga-principles.md — sandbox isolation)."
+        )
+
+
+def ensure_dataset() -> None:
+    """Create the active dataset if it doesn't exist (idempotent).
+
+    Lets a sandbox/one-off point BHAGA_BQ_DATASET at a fresh dataset and have it
+    materialized on first ensure_schema(). No-op when BQ is disabled.
+    """
+    client = get_client()
+    if client is None:
+        return
+    from google.cloud import bigquery
+    ds_ref = bigquery.Dataset(f"{_PROJECT_ID}.{_DATASET}")
+    ds_ref.location = "US"
+    client.create_dataset(ds_ref, exists_ok=True)
 
 
 def get_client():
@@ -80,6 +133,10 @@ def ensure_schema() -> list[str]:
     if client is None:
         return []
 
+    # Make sure the target dataset exists (matters for an isolated sandbox
+    # dataset on first run; no-op for the already-existing prod dataset).
+    ensure_dataset()
+
     applied = _get_applied_versions(client)
     pending = _scan_migration_files()
     newly_applied: list[str] = []
@@ -87,8 +144,8 @@ def ensure_schema() -> list[str]:
     for version, name, path in sorted(pending, key=lambda t: t[0]):
         if version in applied:
             continue
-        sql = path.read_text()
-        logger.info("Applying migration %03d_%s ...", version, name)
+        sql = _rewrite_dataset(path.read_text())
+        logger.info("Applying migration %03d_%s into %s ...", version, name, _DATASET)
         for statement in _split_statements(sql):
             statement = statement.strip()
             if not statement:
@@ -114,28 +171,49 @@ def load_rows(
     *,
     merge_keys: list[str] | None = None,
     column_bq_types: dict[str, str] | None = None,
+    replace: bool = False,
 ) -> int:
-    """Bulk-insert rows into a BigQuery table.
+    """Bulk-load rows into a BigQuery table.
 
-    If merge_keys is provided, performs a MERGE (upsert) using those columns
-    as the match condition. Otherwise does a simple INSERT.
+    Three modes:
+
+    * ``replace=True`` — TRUNCATE the table, then INSERT every row. This is the
+      correct mode for a **fresh full-history scrape/backfill**: the scrape is
+      authoritative for the whole window, so the table is emptied and rebuilt.
+      It also sidesteps the "MERGE must match at most one source row per target
+      row" error that a MERGE raises when a single scrape batch legitimately
+      contains multiple rows sharing a natural key (e.g. several ADP earnings
+      line-items for the same employee/period/description). ``merge_keys`` is
+      ignored in this mode. Use ONLY when the incoming rows cover the table's
+      full intended contents — a windowed replace would drop out-of-window rows.
+    * ``merge_keys`` given — MERGE (idempotent upsert) on those columns. This is
+      the nightly/incremental default: re-running converges values, never dupes.
+    * neither — a plain INSERT (append).
 
     column_bq_types: optional {col: bq_type} override for columns whose type
-    cannot be inferred from the data (e.g. all-None batches).  Takes priority
+    cannot be inferred from the data (e.g. all-None batches). Takes priority
     over inferred types.
 
-    Returns number of rows affected.
+    Returns number of rows affected. NOTE: data ALWAYS lands directly in
+    BigQuery here — BQ is the single system of record. Nothing in this path
+    reads from or writes data files to GCS; GCS holds only browser sessions and
+    failure evidence (see agents/bhaga/scripts/gcs_cache.py).
     """
     client = get_client()
     if client is None or not rows:
         return 0
 
+    _assert_sandbox_write_isolation()
     fq_table = f"`{_PROJECT_ID}.{_DATASET}.{table_name}`"
     columns = list(rows[0].keys())
 
+    if replace:
+        # Empty the table first so the fresh scrape fully owns its contents.
+        client.query(f"TRUNCATE TABLE {fq_table}").result()
+        return _insert_rows(client, fq_table, columns, rows, column_bq_types or {})
     if merge_keys:
         return _merge_rows(client, fq_table, columns, rows, merge_keys, column_bq_types or {})
-    return _insert_rows(client, fq_table, columns, rows)
+    return _insert_rows(client, fq_table, columns, rows, column_bq_types or {})
 
 
 def read_table(table_name: str, *, where: str = "", limit: int | None = None) -> list[dict]:
@@ -210,6 +288,19 @@ def _get_applied_versions(client) -> set[int]:
         return set()
 
 
+def _rewrite_dataset(sql: str) -> str:
+    """Point migration DDL at the active dataset when it isn't the prod default.
+
+    Migration files hardcode the `bhaga.` dataset qualifier (both bare
+    `bhaga.<table>` and `jarvis-bhaga-prod.bhaga.<table>`). Replacing the
+    substring ``bhaga.`` is safe: the project id ``jarvis-bhaga-prod`` contains
+    ``bhaga-`` (hyphen, no dot), so only dataset qualifiers are rewritten.
+    """
+    if _DATASET == _DEFAULT_DATASET:
+        return sql
+    return sql.replace(f"{_DEFAULT_DATASET}.", f"{_DATASET}.")
+
+
 def _scan_migration_files() -> list[tuple[int, str, pathlib.Path]]:
     """Scan migrations/ for NNN_name.sql files. Returns [(version, name, path)]."""
     pattern = re.compile(r"^(\d+)_(.+)\.sql$")
@@ -226,9 +317,9 @@ def _scan_migration_files() -> list[tuple[int, str, pathlib.Path]]:
 def _split_statements(sql: str) -> list[str]:
     """Split a SQL file into individual statements.
 
-    Splits on semicolons that are NOT inside a line comment (-- ...) or a
-    block comment (/* ... */).  This avoids incorrectly splitting on semicolons
-    that appear in comment prose.
+    Splits on semicolons that are NOT inside a line comment (-- ...), a
+    block comment (/* ... */), or a single-quoted string literal ('...').
+    Single-quoted strings handle escaped quotes via doubling ('').
     """
     statements: list[str] = []
     current: list[str] = []
@@ -236,6 +327,7 @@ def _split_statements(sql: str) -> list[str]:
     n = len(sql)
     in_line_comment = False
     in_block_comment = False
+    in_string = False  # inside a single-quoted SQL string literal
 
     while i < n:
         ch = sql[i]
@@ -255,6 +347,24 @@ def _split_statements(sql: str) -> list[str]:
             else:
                 current.append(ch)
                 i += 1
+            continue
+
+        if in_string:
+            current.append(ch)
+            i += 1
+            if ch == "'":
+                # SQL escaped quote: '' is a literal single quote, not end-of-string.
+                if i < n and sql[i] == "'":
+                    current.append(sql[i])
+                    i += 1
+                else:
+                    in_string = False
+            continue
+
+        if ch == "'":
+            in_string = True
+            current.append(ch)
+            i += 1
             continue
 
         if ch == "-" and i + 1 < n and sql[i + 1] == "-":
@@ -287,25 +397,53 @@ def _split_statements(sql: str) -> list[str]:
     return statements
 
 
-def _insert_rows(client, fq_table: str, columns: list[str], rows: list[dict]) -> int:
-    """Simple streaming insert using the client library."""
-    from google.cloud import bigquery
+def _insert_rows(
+    client,
+    fq_table: str,
+    columns: list[str],
+    rows: list[dict],
+    column_bq_types_hint: dict[str, str] | None = None,
+) -> int:
+    """Simple INSERT of every row (no merge — duplicate keys are preserved).
 
+    Per-column BQ types are resolved hint-first, then from the first non-None
+    value in the batch, else STRING — so an all-None column (e.g. a nullable
+    rate in one batch) is typed correctly instead of defaulting to a type that
+    rejects the NULL. This mirrors the typing logic in ``_merge_rows``.
+    """
     col_list = ", ".join(columns)
-    placeholders = ", ".join(f"@{c}" for c in columns)
+    hints = column_bq_types_hint or {}
 
     inserted = 0
     batch_size = 500
     for i in range(0, len(rows), batch_size):
         batch = rows[i : i + batch_size]
+
+        col_types: dict[str, str] = {}
+        for c in columns:
+            if c in hints:
+                col_types[c] = hints[c]
+                continue
+            for row in batch:
+                v = row.get(c)
+                if v is not None:
+                    col_types[c] = _infer_bq_type(v)
+                    break
+            else:
+                col_types[c] = "STRING"
+
         values_clauses = []
         params = []
         for idx, row in enumerate(batch):
-            suffixed_cols = [f"@{c}_{idx}" for c in columns]
-            values_clauses.append(f"({', '.join(suffixed_cols)})")
+            field_refs = []
             for c in columns:
                 val = row.get(c)
-                params.append((f"{c}_{idx}", _infer_bq_type(val), val))
+                if val is None:
+                    field_refs.append(f"CAST(NULL AS {col_types[c]})")
+                else:
+                    field_refs.append(f"@{c}_{idx}")
+                    params.append((f"{c}_{idx}", col_types[c], val))
+            values_clauses.append(f"({', '.join(field_refs)})")
 
         sql = f"INSERT INTO {fq_table} ({col_list}) VALUES {', '.join(values_clauses)}"
         try:

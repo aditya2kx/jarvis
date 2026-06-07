@@ -28,7 +28,13 @@ if "BHAGA_DATASTORE" not in os.environ:
     os.environ["BHAGA_DATASTORE"] = "bigquery"
 
 from core.datastore import load_rows
-from core.datastore_reader import read_shifts_bq, read_transactions_bq, read_wage_rates_bq
+from core.datastore_reader import (
+    read_item_daily_bq,
+    read_kds_daily_bq,
+    read_shifts_bq,
+    read_transactions_bq,
+    read_wage_rates_bq,
+)
 from agents.bhaga.scripts.update_model_sheet import (
     DEFAULT_SATURATION_THRESHOLD,
     actual_cc_tips_by_period,
@@ -42,7 +48,7 @@ from agents.bhaga.scripts.update_model_sheet import (
     build_tip_alloc_daily_rows,
     build_tip_alloc_period_rows,
     discover_periods,
-    load_cc_tips_earnings_from_gcs,
+    load_cc_tips_earnings_from_bq,
     _read_training_excluded_from_sheet,
     _read_training_shifts_from_sheet,
 )
@@ -60,6 +66,8 @@ _BOOL_COLS: dict[str, set[str]] = {
     "model_tip_alloc_period": {"is_open"},
     "model_tip_alloc_daily": set(),
     "model_period_summary": {"is_open"},
+    # Added by migration 004 (dashboard refactor)
+    "model_review_bonus_period": {"is_open"},
 }
 
 _DATE_COLS: dict[str, set[str]] = {
@@ -70,6 +78,8 @@ _DATE_COLS: dict[str, set[str]] = {
     "model_tip_alloc_period": {"period_start", "period_end"},
     "model_tip_alloc_daily": {"date", "period_start", "period_end"},
     "model_period_summary": {"period_start", "period_end"},
+    # Added by migration 004 (dashboard refactor)
+    "model_review_bonus_period": {"period_start", "period_end"},
 }
 
 
@@ -81,6 +91,8 @@ _MERGE_KEYS: dict[str, list[str]] = {
     "model_tip_alloc_period": ["period_start", "employee"],
     "model_tip_alloc_daily": ["date", "employee"],
     "model_period_summary": ["period_start"],
+    # Added by migration 004 (dashboard refactor)
+    "model_review_bonus_period": ["period_start", "employee"],
 }
 
 
@@ -213,6 +225,67 @@ def _load(table: str, dicts: list[dict], materialized_at: datetime.datetime, dry
     return loaded
 
 
+def load_model_rows(
+    table: str,
+    header_rows: list[list],
+    *,
+    dry_run: bool = False,
+    materialized_at: datetime.datetime | None = None,
+    replace: bool = False,
+) -> int:
+    """Convert build_*-style header+rows output and upsert into a BQ model table.
+
+    This is the single BQ-write path shared by materialize(), render (M2),
+    and process_reviews (M3) so coercion logic is never duplicated.
+
+    ``header_rows`` is the raw build_* output (first element = header list,
+    rest = data rows). Returns the number of rows merged (0 on dry-run or empty).
+
+    ``replace=True`` truncates the table before loading, mirroring the Sheet's
+    clear-and-write semantics for tabs that are FULLY rebuilt each run (e.g.
+    review_bonus_period). Without it the MERGE-upsert leaves ghost rows whenever
+    a (period_start, employee) key drops out of the rebuild — which is how a
+    leaked sandbox 'Alice' row stranded itself in prod model_review_bonus_period.
+    """
+    if not header_rows or len(header_rows) < 2:
+        return 0
+    if materialized_at is None:
+        materialized_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    if replace and not dry_run:
+        from core.datastore import (  # noqa: PLC0415
+            read_query, _PROJECT_ID, _DATASET, _assert_sandbox_write_isolation,
+        )
+        _assert_sandbox_write_isolation()
+        read_query(f"DELETE FROM `{_PROJECT_ID}.{_DATASET}.{table}` WHERE TRUE")
+    dicts = _header_rows_to_dicts(header_rows)
+    return _load(table, dicts, materialized_at, dry_run)
+
+
+def _assert_conservation(period_results: list[dict]) -> None:
+    """Verify tip-pool conservation for every period: allocated == pool.
+
+    The allocator distributes the full tip pool across employees — the sum of
+    per-employee allocations must equal the total pool within $0.01 rounding
+    tolerance (1 cent). Raises RuntimeError with the offending period + delta
+    on violation so the pipeline fails loudly rather than silently writing
+    incorrect BQ rows.
+    """
+    for p in period_results:
+        if p.get("is_open"):
+            # Open periods are in-progress; conservation holds only for closed ones.
+            continue
+        pool_cents = sum(a["share_cents"] for a in p["per_day_allocations"])
+        our_total_cents = sum(p["per_period_ours"].values())
+        delta_cents = abs(pool_cents - our_total_cents)
+        if delta_cents > 1:
+            raise RuntimeError(
+                f"materialize_model_bq: tip-pool conservation violated for period "
+                f"{p['start']} – {p['end']}: pool=${pool_cents/100:.2f}, "
+                f"allocated=${our_total_cents/100:.2f}, delta=${delta_cents/100:.2f} "
+                f"(max allowed $0.01). Investigate build_period_results / allocate()."
+            )
+
+
 def materialize(store: str, *, dry_run: bool = False) -> None:
     """Build all model tabs from BQ raw data and write to model_* tables."""
     import json
@@ -231,7 +304,14 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     shifts = read_shifts_bq()
     txns = read_transactions_bq()
     wage_rates = read_wage_rates_bq()
-    print(f"  shifts={len(shifts)} txns={len(txns)} wage_rates={len(wage_rates)}")
+    # Item + KDS daily rollups feed the per-item operations metrics on
+    # labor_daily/weekly/period (items_sold, avg_item_price, KDS percentiles).
+    # Without these, those columns materialize as NULL (the historical gap that
+    # left model_labor_daily.items_sold empty for every row).
+    items_by_date = {r["date_local"]: r for r in read_item_daily_bq()}
+    kds_by_date = {r["date_local"]: r for r in read_kds_daily_bq()}
+    print(f"  shifts={len(shifts)} txns={len(txns)} wage_rates={len(wage_rates)} "
+          f"item_days={len(items_by_date)} kds_days={len(kds_by_date)}")
 
     # Defensive breadcrumb: the model is derived from Square transactions, so an
     # empty `txns` means there is nothing to materialize. Without this guard the
@@ -282,6 +362,14 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
             "saturation_orders_per_labor_hour", DEFAULT_SATURATION_THRESHOLD
         )
     )
+    # Flat staffing-solver target prep time per item; doubles as the goal for
+    # kds_pct_items_over_goal. Mirrors update_model_sheet's profile fallback so
+    # the BQ model matches the Sheet when the operator hasn't overridden it.
+    kds_goal_sec = float(
+        profile.get("labor_config", {}).get(
+            "forecast_target_completion_time_per_item_sec", 420.0
+        )
+    )
     periods = discover_periods(
         anchor_end_date=profile["adp_run"]["pay_periods_anchor_end_date"],
         pay_frequency=profile["adp_run"].get("pay_frequency", ""),
@@ -290,9 +378,8 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     )
     periods = append_open_period(periods, last_data_date=last_data_date)
 
-    earnings = load_cc_tips_earnings_from_gcs(
+    earnings = load_cc_tips_earnings_from_bq(
         store=store,
-        aliases=aliases,
         data_window_start=periods[0]["start"],
         last_data_date=last_data_date,
     )
@@ -323,15 +410,22 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
         wage_rates=wage_rates,
         excluded_from_tip_pool=excluded,
         saturation_threshold=sat_thresh,
+        items_by_date=items_by_date,
+        kds_by_date=kds_by_date,
+        kds_goal_sec=kds_goal_sec,
     )
     labor_period_rows = build_labor_period_rows(
         periods=periods,
         labor_daily_rows=labor_daily_rows,
         saturation_threshold=sat_thresh,
+        kds_by_date=kds_by_date,
+        kds_goal_sec=kds_goal_sec,
     )
     labor_weekly_rows = build_labor_weekly_rows(
         labor_daily_rows=labor_daily_rows,
         saturation_threshold=sat_thresh,
+        kds_by_date=kds_by_date,
+        kds_goal_sec=kds_goal_sec,
     )
     period_results = build_period_results(
         periods=periods,
@@ -347,17 +441,20 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     day_alloc_rows = build_tip_alloc_daily_rows(period_results, daily_summary)
     summary_rows = build_period_summary_rows(period_results)
 
+    # ── Post-build conservation check (fail loudly on any tip-pool drift) ────
+    _assert_conservation(period_results)
+
     materialized_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
-    # ── Write to BQ model tables ─────────────────────────────────────────────
+    # ── Write to BQ model tables via the shared loader ───────────────────────
     print("# Writing to BigQuery...")
-    _load("model_daily", _header_rows_to_dicts(daily_rows), materialized_at, dry_run)
-    _load("model_labor_daily", _header_rows_to_dicts(labor_daily_rows), materialized_at, dry_run)
-    _load("model_labor_weekly", _header_rows_to_dicts(labor_weekly_rows), materialized_at, dry_run)
-    _load("model_labor_period", _header_rows_to_dicts(labor_period_rows), materialized_at, dry_run)
-    _load("model_tip_alloc_period", _header_rows_to_dicts(period_rows), materialized_at, dry_run)
-    _load("model_tip_alloc_daily", _header_rows_to_dicts(day_alloc_rows), materialized_at, dry_run)
-    _load("model_period_summary", _header_rows_to_dicts(summary_rows), materialized_at, dry_run)
+    load_model_rows("model_daily", daily_rows, dry_run=dry_run, materialized_at=materialized_at)
+    load_model_rows("model_labor_daily", labor_daily_rows, dry_run=dry_run, materialized_at=materialized_at)
+    load_model_rows("model_labor_weekly", labor_weekly_rows, dry_run=dry_run, materialized_at=materialized_at)
+    load_model_rows("model_labor_period", labor_period_rows, dry_run=dry_run, materialized_at=materialized_at)
+    load_model_rows("model_tip_alloc_period", period_rows, dry_run=dry_run, materialized_at=materialized_at)
+    load_model_rows("model_tip_alloc_daily", day_alloc_rows, dry_run=dry_run, materialized_at=materialized_at)
+    load_model_rows("model_period_summary", summary_rows, dry_run=dry_run, materialized_at=materialized_at)
     print("# Done.")
 
 

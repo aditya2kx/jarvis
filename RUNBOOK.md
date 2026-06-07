@@ -55,9 +55,13 @@ Cloud Run Service  bhaga-webhook  (image: bhaga-webhook)
   OTP/READY path**.
 - Deploys are fully automated via **GitHub Actions + Workload Identity Federation** (no static
   service-account keys).
-- **BigQuery** (`jarvis-bhaga-prod.bhaga`) is a **parallel read-only mirror** of Sheets (not replacing
-  it). The nightly cron writes raw + model data to BQ after each Sheets update. Grafana Cloud reads from
-  BQ views (`vw_*`, `model_*`) via the `grafana-bq-reader` SA. See §14 for BQ + Grafana operations.
+- **BigQuery** (`jarvis-bhaga-prod.bhaga`) is the **single source of truth** for ALL data: scraped raw
+  data (Square, ADP, KDS, Reviews), ADP earnings, and operator-editable tunables (`bhaga.store_config`).
+  Sheets are a **read-only projection** — written by the pipeline, never authoritative. See §14 for
+  BQ + Grafana operations and §15 for the BQ SoT details.
+- **GCS** (`bhaga-scrape-cache`) retains **only** trusted-device browser sessions (`_session/`) and
+  failure evidence/logs (`<date>/evidence/`). Raw data files are **no longer written to GCS** — BQ
+  is the persistent store. The old scrape-file cache (`download_cached_files`) is retired.
 
 ---
 
@@ -192,8 +196,11 @@ gcloud scheduler jobs resume  bhaga-nightly --location=us-central1
     (`skills/bhaga_config/state_adapter.py`, collection `runs`).
   - `otps/<portal>` — pending/answered OTP records written by the job (request) and the webhook
     (operator reply). Portals e.g. `adp`, `square`.
-- **GCS** bucket `bhaga-scrape-cache` — raw scrape artifacts (XLSX/CSV downloads) keyed by date,
-  so a re-run can reuse a scrape instead of re-driving the portal.
+- **GCS** bucket `bhaga-scrape-cache` — **trusted-device browser sessions** (`_session/`) and
+  **failure evidence** (`<date>/evidence/`) ONLY. The nightly pipeline parses scrape exports
+  straight into BigQuery (the single source of truth) and does **not** write scrape data files to GCS
+  or read them back. Legacy date-keyed `<date>/square|adp/*.csv|xlsx` blobs may linger from before the
+  cutover and from offline backfill/`sandbox_e2e` tooling, but are not part of the live data path.
 - **Artifact Registry** `jarvis-images` (DOCKER, `us-central1`) — orchestrator + webhook images.
 
 ---
@@ -441,7 +448,7 @@ Firestore). Inspect the current state with `state_adapter.get_pipeline_halt()` (
 ### OTP-portal recovery (auto-invalidate stale downstream markers)
 
 When a previously-failed OTP portal (Square/ADP) succeeds on a later run **while** the downstream
-markers (`write_raw_sheets` / `update_model_sheet` / `process_reviews`) are already `done` from the
+markers (`load_raw_bigquery` / `update_model_sheet` / `process_reviews`) are already `done` from the
 prior partial run, those steps would short-circuit and the fresh data would never reach the Model
 sheet (`data_window_end` stuck — the 2026-05-31 incident). `daily_refresh` now **always** detects this
 and clears those markers (via `state_adapter.clear_step`, the sanctioned path — never a shell `rm`) so
@@ -459,13 +466,13 @@ Concrete runbook for "an OTP portal crashed on launch, downstream ran on stale d
 is stuck and bonuses are held back":
 
 1. **Confirm the state.** Read Firestore `runs/2026-05-31`: `square_transactions` will be **absent**
-   (it failed) while `write_raw_sheets` / `update_model_sheet` / `process_reviews` are **present** (they
+   (it failed) while `load_raw_bigquery` / `update_model_sheet` / `process_reviews` are **present** (they
    ran on stale data). Read the Model `config` tab — `data_window_end` will be stuck at `2026-05-30`.
 2. **Announce the OTP.** Square will re-scrape and fire **one SMS** to the operator. Post in the BHAGA
    DM that the rerun is about to fire an OTP **before** triggering it (Operating rule / HL#8).
 3. **Re-run the date as a Cloud Run job** (never a laptop). ADP skips its browser/OTP via the GCS
    cache; Square re-scrapes (the one OTP). The recovery is automatic — when Square succeeds, the stale
-   `write_raw_sheets`/`update_model_sheet`/`process_reviews` markers are invalidated so they recompute:
+   `load_raw_bigquery`/`update_model_sheet`/`process_reviews` markers are invalidated so they recompute:
    ```bash
    gcloud run jobs execute bhaga-daily-refresh \
      --region=us-central1 --update-env-vars REFRESH_DATE=2026-05-31
@@ -663,10 +670,17 @@ The replay e2e above can't exercise a live browser, so it can't reproduce or pro
 
 **Sandbox isolation is enforced (read prod, never write prod).** The job runs with
 `BHAGA_SHEET_MODE=staging` (leased pool slot), `BHAGA_GCS_CACHE_WRITE_BUCKET=bhaga-scrape-cache-sandbox`
-(reads still come from the prod cache), and `BHAGA_FIRESTORE_COLLECTION=sandbox_runs`. The script runs
+(reads still come from the prod cache), `BHAGA_BQ_DATASET=bhaga_sandbox` (BQ writes divert to the
+isolated dataset — never prod `bhaga`), and `BHAGA_FIRESTORE_COLLECTION=sandbox_runs`. The script runs
 an **isolation pre-flight** (`assert_sandbox_isolation`) that fails *before* any deploy/execute if an
 override is missing or points at a prod source — backstopped by the runtime guards in
-`config_loader`, `gcs_cache`, and `state_adapter`.
+`config_loader`, `gcs_cache`, `datastore` (BQ), and `state_adapter`.
+
+**Scrape-from-source backfill (`--fresh-scrape`).** A windowed backfill that must populate
+`bhaga_sandbox` from the **actual upstream portals** (not prod GCS cache, not Sheets) passes
+`--fresh-scrape`, which also points the cache READ bucket at the empty sandbox bucket so no cached
+scrape file can shortcut the browser. Create the dataset + tables first with
+`BHAGA_DATASTORE=bigquery BHAGA_BQ_DATASET=bhaga_sandbox python3 -c "from core import datastore; datastore.ensure_schema()"`.
 
 **OTP routing.** The run uses the **same prod BHAGA cloud Slack bot**, but the prompt is **labeled**
 `:test_tube: *[SANDBOX · PR#… …]*` (via `BHAGA_RUN_ENV`/`BHAGA_RUN_LABEL`) and its pending-OTP
@@ -830,7 +844,26 @@ gcloud projects get-iam-policy jarvis-bhaga-prod \
 
 ### Daily cron integration
 
-After each `write_raw_sheets` step, `daily_refresh.py` calls `backfill_bigquery.py` (the `load_bigquery` step) to mirror raw tables to BQ. After each `update_model_sheet` step, it calls `materialize_model_bq.py` (the `materialize_model_bq` step) to rebuild `model_*` tables. Both steps are **non-fatal** — a BQ failure never blocks the Sheets update.
+The nightly pipeline is now **BQ-primary for raw data** (hard cutover, no feature flag):
+
+1. **`load_raw_bigquery` step:** `backfill_from_downloads` (with `BHAGA_DATASTORE=bigquery`) loads scrape
+   files directly into BQ raw tables. BQ is the system of record.
+2. **`render_raw_sheets` step (non-fatal):** `render_raw_sheet_from_bq` renders raw Sheets as projections
+   from BQ (Square/ADP tabs, windowed by `--since gap_start`).
+3. **Reviews:** `process_reviews` writes `google_reviews` to BQ; then `render_raw_sheet_from_bq --tabs reviews`
+   renders the reviews Sheet tab from BQ (non-fatal).
+
+The model compute follows one of two paths:
+- **Legacy path (default, `BHAGA_SHEET_FROM_BQ` unset):** `update_model_sheet` computes the model from Sheet raw and writes the Sheet; `materialize_model_bq` then mirrors to BQ (non-fatal).
+- **BQ-canonical path (`BHAGA_SHEET_FROM_BQ=1`):** `materialize_model_bq` runs first (BQ is canonical); `render_model_sheet_from_bq` **incrementally upserts** (by natural key, `--since` window) the Sheet tabs from BQ. This eliminates dual-compute drift. See `docs/FEATURE_FLAGS.md` for flip criteria.
+
+After model writes, `reconcile_model.py` (non-fatal) compares each Sheet model tab against its BQ table and alerts on drift. See `agents/bhaga/scripts/reconcile_model.py`.
+
+**Flip procedure (`BHAGA_SHEET_FROM_BQ`):**
+1. Confirm `reconcile_model` has been green in prod for ≥ 2 consecutive nights.
+2. Set `BHAGA_SHEET_FROM_BQ=1` in the Cloud Run job env (Cloud Console → Jobs → `bhaga-daily-refresh` → Edit → Environment variables).
+3. Run a manual job and confirm the Sheet renders from BQ correctly.
+4. Record the flip in `docs/FEATURE_FLAGS.md`.
 
 ### Re-deploying the dashboard
 
@@ -844,16 +877,34 @@ python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985
 ### Running SQL migrations
 
 ```bash
-python3 -c "from core.datastore import run_migrations; run_migrations()"
+python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
 ```
 
-Migrations live in `core/migrations/001_initial_schema.sql`, `002_views.sql`, `003_model_tables.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`).
+Migrations live in `core/migrations/001_initial_schema.sql` … `005_raw_parity.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`). Migration 005 adds: `square_item_lines`, `square_kds_daily`, `square_kds_tickets`, `adp_earnings`, `google_reviews` raw tables; and `vw_order_quality_daily`, `vw_kds_item_investigation`, `vw_staff_on_shift`, extended `vw_model_labor_daily/weekly`, extended `vw_model_payroll_period` (with ADP actuals + diffs).
 
 ### BQ backfill (one-shot)
 
+Backfills all 11 tables (existing + new raw-parity tables from migration 005):
 ```bash
 BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
   python3 -m agents.bhaga.scripts.backfill_bigquery --store palmetto
+```
+
+To backfill specific tables only:
+```bash
+python3 -m agents.bhaga.scripts.backfill_bigquery --store palmetto --tables square_kds_daily,square_kds_tickets,adp_earnings,google_reviews
+```
+
+To load scrape files directly to BQ (primary path, no Sheet write):
+```bash
+BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
+  python3 -m agents.bhaga.scripts.backfill_from_downloads --store palmetto
+```
+
+To render raw Sheets from BQ (projections, non-fatal):
+```bash
+BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
+  python3 -m agents.bhaga.scripts.render_raw_sheet_from_bq --store palmetto --since 2026-01-01
 ```
 
 ### Materialize model into BQ (one-shot)
@@ -862,3 +913,101 @@ BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-pr
 BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
   python3 -m agents.bhaga.scripts.materialize_model_bq --store palmetto
 ```
+
+---
+
+## 15. BQ as single source of truth (added PR #33, 2026-06-05)
+
+### Principle
+
+BigQuery is the **single source of truth** for all BHAGA data:
+- **Scraped raw data** — `square_transactions`, `adp_shifts`, `square_kds_daily`, `square_kds_tickets`,
+  `square_item_lines`, `google_reviews`, `adp_earnings`.
+- **ADP earnings** — `bhaga.adp_earnings`; the model reads actuals from here (not from GCS XLSX).
+- **Operator tunables (config)** — `bhaga.store_config`; replaces the Sheet config tab as the
+  authoritative read source (Sheet config tab is now a read-only projection).
+
+**GCS retains only:** browser sessions (`_session/`) and failure evidence (`<date>/evidence/`).
+No pipeline code reads data files from GCS.
+
+### Coverage-aware gap resolver
+
+The nightly and windowed backfill use `agents/bhaga/scripts/bq_coverage.py` to determine which
+business days are already in BQ and scrape upstream **only for missing days**:
+
+```python
+from agents.bhaga.scripts.bq_coverage import SOURCE_COVERAGE, missing_ranges
+sq_table, sq_col = SOURCE_COVERAGE["square_transactions"]
+gaps = missing_ranges(sq_table, sq_col, data_start, refresh_date)
+# gaps = [(gap_start, gap_end), ...] or [] if fully covered
+```
+
+If BQ is unavailable (e.g. `BHAGA_DATASTORE` unset), falls back to the legacy
+sheet-based `_read_data_window_end_from_sheet` / `compute_gap_window` path.
+
+### Retry-skips-rescrape guarantee
+
+If `load_raw_bigquery` fails (BQ upsert error), `daily_refresh` immediately clears the `square.done`
+and `adp.done` Firestore markers so the next retry re-scrapes from upstream with fresh data (rather
+than failing with no local files in the ephemeral Cloud Run container).
+
+### Operator tunables — edit via Slack
+
+```
+/bhaga-cloud config get <key>          — read a tunable from bhaga.store_config
+/bhaga-cloud config set <key> <value>  — update a tunable (audit: updated_by + updated_at)
+```
+
+Pipeline reads `store_config` via `core.store_config.get_config(store, key)` — BQ first, Sheet as
+fallback while the BQ table is being seeded. After seeding, Sheet config becomes display-only.
+
+**Seed the BQ config from the current Sheet values (one-time, idempotent):**
+```bash
+BHAGA_DATASTORE=bigquery python3 - <<'EOF'
+from core.store_config import set_config
+from agents.bhaga.scripts.update_model_sheet import REVIEW_TUNABLE_KEYS, LABOR_TUNABLE_KEYS, _read_config_value
+from core.config_loader import resolve_sheet_id
+# read current Sheet values and upsert to BQ
+store = "palmetto"
+sid = resolve_sheet_id(store, "bhaga_model")
+all_keys = list(REVIEW_TUNABLE_KEYS) + list(LABOR_TUNABLE_KEYS)
+for k in all_keys:
+    v = _read_config_value(spreadsheet_id=sid, store=store, key=k)
+    if v is not None:
+        set_config(store, k, v, updated_by="seed-from-sheet")
+        print(f"  seeded {k} = {v}")
+EOF
+```
+
+### Apply migration 007 (store_config table)
+
+```bash
+BHAGA_DATASTORE=bigquery python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
+```
+
+Expected output: `['007_store_config']` (first run) or `[]` (already applied).
+
+### Post-merge cutover checklist (one-time)
+
+After PR #33 merges and the new image deploys, run the **one-time prod cutover**:
+migrations → seed `store_config` → **full-history `--replace` rebuild of raw BQ** (retires the
+`square_item_lines` double-count; needs OTP) → verify parity → flip `BHAGA_SHEET_FROM_BQ=1`.
+
+The ordered, copy-pasteable runbook is **[`docs/POST_MERGE_BQ_CUTOVER.md`](docs/POST_MERGE_BQ_CUTOVER.md)**.
+
+**Fresh-scrape `--replace` (`BHAGA_RAW_REPLACE=1`).** TRUNCATE-then-load each raw table so a fresh
+full-history scrape owns the whole table. This is the correct mode for the cutover rebuild (and for
+the `full-history-bq-sandbox` sandbox scenario) because (a) the scrape is authoritative for the full
+window and (b) it sidesteps the MERGE "must match at most one source row per target row" error when a
+single scrape batch carries duplicate natural keys (e.g. ADP earnings line-items). **Only ever use it
+with a full-history window** — a partial-window `--replace` would TRUNCATE then drop out-of-window
+rows. Nightly runs never set it (they MERGE-upsert the coverage gap, idempotent by natural key).
+
+### `square_item_lines` dedupe — why a one-time rebuild, then normal incremental
+
+`line_seq` used to be a file-global row index; it is now a **stable per-group counter**
+(`skills/square_tips/transactions_backend.py`). Legacy rows with the old global index (e.g. `3500`)
+never collided with new per-group rows (`0`) under the merge key, so prod accumulated ~2× duplicate
+item lines. The fix is the one-time Step 3 `--replace` rebuild above; after that, nightly MERGE is
+idempotent (re-scrapes hit identical keys) and the model self-heals via `materialize_model_bq`. No
+daily wipe. Full reasoning in `docs/POST_MERGE_BQ_CUTOVER.md` § "Why a one-time rebuild".

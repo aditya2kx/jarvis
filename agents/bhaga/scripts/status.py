@@ -46,7 +46,7 @@ from skills.bhaga_config.dates import coerce_iso_date
 from skills.tip_ledger_writer.writer import _read_tab
 
 _PROJECT = "jarvis-bhaga-prod"
-_DATASET = "bhaga"
+_DATASET = os.environ.get("BHAGA_BQ_DATASET", "bhaga")
 _STORE_PROFILE_DIR = (
     pathlib.Path(project_dir())
     / "agents"
@@ -92,11 +92,21 @@ BQ_TARGETS: list[Target] = [
     Target("model_tip_alloc_daily", "date"),
     Target("model_period_summary", "period_start", "period_coverage"),
     Target("model_labor_weekly", "iso_week", "iso_week"),
+    Target("model_review_bonus_period", "period_start", "period_coverage"),  # migration 004
     # ── Raw tables (mirrored by backfill_bigquery.py) ────────────────────────
     Target("square_transactions", "date_local"),
     Target("adp_shifts", "date"),
     Target("adp_punches", "date"),
     Target("square_daily_rollup", "date_local"),
+    # ── Raw-parity tables (migration 005) ────────────────────────────────────
+    Target("square_item_lines", "date_local"),
+    Target("square_item_daily", "date_local"),
+    Target("square_kds_daily", "date_local"),
+    Target("square_kds_tickets", "date_local"),
+    Target("adp_earnings", "period_start", "period_coverage"),
+    Target("google_reviews", "post_date_ct"),
+    # store_config (migration 007) intentionally NOT a freshness target — it is a
+    # config/tunables store (no date partition) edited via /bhaga-cloud config set.
 ]
 
 GRAFANA_VIEWS: list[Target] = [
@@ -109,6 +119,13 @@ GRAFANA_VIEWS: list[Target] = [
     Target("vw_sales_labor_daily", "date_local"),
     Target("vw_model_labor_daily", "date"),
     Target("vw_model_period_summary", "period_start", "period_coverage"),
+    # migration 004 / dashboard refactor views
+    Target("vw_model_labor_weekly", "iso_week", "iso_week"),
+    Target("vw_model_payroll_period", "period_start", "period_coverage"),
+    # migration 005 / 5-section dashboard views
+    Target("vw_order_quality_daily", "date"),
+    Target("vw_kds_item_investigation", "date_local"),
+    Target("vw_staff_on_shift", "date"),
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

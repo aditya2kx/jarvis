@@ -39,18 +39,17 @@ from agents.bhaga.scripts.update_model_sheet import (
     append_open_period,
     discover_periods,
     actual_cc_tips_by_period,
+    load_cc_tips_earnings_from_bq,
     _read_training_excluded_from_sheet,
     _read_training_shifts_from_sheet,
     DEFAULT_SATURATION_THRESHOLD,
 )
 from core.config_loader import project_dir, refresh_access_token, resolve_sheet_id
 from core.datastore_reader import read_shifts_bq, read_transactions_bq, read_wage_rates_bq
-from skills.adp_run_automation import compensation_backend
 from skills.adp_run_automation.shift_backend import normalize_employee_name
 from skills.bhaga_config.dates import coerce_iso_date
 
 PROJECT = pathlib.Path(project_dir())
-DOWNLOADS = PROJECT / "extracted" / "downloads"
 STORE_PROFILE_DIR = PROJECT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
 SHEETS_API = "https://sheets.googleapis.com/v4"
 
@@ -306,16 +305,6 @@ def main() -> int:
         _deduped_rates.append(rec)
     wage_rates = _deduped_rates
 
-    # Load earnings (still from XLSX — BQ doesn't have these yet)
-    import glob
-    earnings_paths = [pathlib.Path(p) for p in glob.glob(str(DOWNLOADS / "Earnings*.xlsx"))]
-    if not earnings_paths:
-        print("ERROR: no Earnings*.xlsx found — cannot build period data")
-        return 1
-    earnings_xlsx = max(earnings_paths, key=lambda p: p.stat().st_mtime)
-    earnings = compensation_backend.parse_xlsx(earnings_xlsx, employee_aliases=aliases)
-    print(f"    earnings:       {len(earnings)} rows (from XLSX)")
-
     # Training exclusions (bulk through-date + per-shift overlay) — read both so
     # the BigQuery parity recompute applies the SAME exclusions as the prod build.
     training_through = _read_training_excluded_from_sheet(
@@ -336,6 +325,14 @@ def main() -> int:
         return 1
     last_data_date = max(both_covered_complete)
     print(f"    last_data_date: {last_data_date}")
+
+    # Load earnings from BQ (single source of truth; needs last_data_date for log)
+    earnings = load_cc_tips_earnings_from_bq(
+        store=args.store,
+        data_window_start=profile["calibration"]["first_data_window"]["start"],
+        last_data_date=last_data_date,
+    )
+    print(f"    earnings:       {len(earnings)} rows (from BQ)")
 
     # Discover periods algorithmically from the store profile (biweekly
     # anchor), not from earnings rows — see update_model_sheet.discover_periods.

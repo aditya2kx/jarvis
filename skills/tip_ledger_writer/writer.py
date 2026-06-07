@@ -353,6 +353,7 @@ def _upsert_tab(
     account: str,
     scraped_at_utc: Optional[str] = None,
     superseded_keys: set[tuple] | None = None,
+    spec_override: dict | None = None,
 ) -> dict:
     """Read tab, overlay records by natural key, write back. Returns a summary dict.
 
@@ -363,12 +364,21 @@ def _upsert_tab(
     caller detects the stale key (via raw_employee_names overlap) and passes it
     here so the upsert removes it in the same write transaction.
 
+    ``spec_override``, when provided as ``{"header": [...], "natural_key_columns": (...)}``
+    bypasses ``get_tab_spec`` entirely. Use this for tabs that are not in WORKBOOK_SCHEMAS
+    (e.g. model tabs rendered from BQ). All other logic (read-overlay-write, header
+    reconciliation, formatting) is unchanged.
+
     Summary keys:
         existing_rows, incoming_records, inserted, updated, total_after, tab
     """
-    spec = get_tab_spec(workbook_title, tab_name)
-    header_expected = spec["header"]
-    key_cols = spec["natural_key_columns"]
+    if spec_override is not None:
+        header_expected = spec_override["header"]
+        key_cols = spec_override["natural_key_columns"]
+    else:
+        spec = get_tab_spec(workbook_title, tab_name)
+        header_expected = spec["header"]
+        key_cols = spec["natural_key_columns"]
     if scraped_at_utc is None:
         scraped_at_utc = (
             datetime.datetime.now(datetime.timezone.utc)
@@ -484,6 +494,37 @@ def _upsert_tab(
         "total_after": len(sorted_rows),
         "scraped_at_utc": scraped_at_utc,
     }
+
+
+# ── Public upsert with explicit spec (for non-schema tabs) ───────
+
+
+def upsert_tab(
+    spreadsheet_id: str,
+    tab_name: str,
+    records: Iterable[dict],
+    *,
+    header: list[str],
+    natural_key_columns: tuple,
+    account: str,
+    scraped_at_utc: Optional[str] = None,
+) -> dict:
+    """Public incremental upsert for tabs not registered in WORKBOOK_SCHEMAS.
+
+    Thin wrapper around ``_upsert_tab`` with an explicit spec_override.
+    Used by ``render_model_sheet_from_bq`` to render model tabs incrementally
+    (preserving historical rows outside the query window) without requiring
+    model tabs to be registered in the raw-schema WORKBOOK_SCHEMAS.
+    """
+    return _upsert_tab(
+        spreadsheet_id,
+        "<override>",
+        tab_name,
+        records,
+        account=account,
+        scraped_at_utc=scraped_at_utc,
+        spec_override={"header": header, "natural_key_columns": natural_key_columns},
+    )
 
 
 # ── Public write functions ────────────────────────────────────────
@@ -645,6 +686,64 @@ def write_raw_kds_daily(
     """
     return _upsert_tab(
         spreadsheet_id, "BHAGA Square Raw", "kds_daily", rollups,
+        account=account, scraped_at_utc=scraped_at_utc,
+    )
+
+
+def write_raw_kds_tickets(
+    spreadsheet_id: str,
+    tickets: list[dict],
+    *,
+    account: str = "palmetto",
+    scraped_at_utc: Optional[str] = None,
+) -> dict:
+    """Idempotent upsert into BHAGA Square Raw > kds_tickets. Natural key:
+    (date_local, time_created, ticket_name).
+
+    Source records come from transactions_backend.parse_kds_csv(). Each record
+    carries one KDS ticket with its item list and completion time.
+    """
+    return _upsert_tab(
+        spreadsheet_id, "BHAGA Square Raw", "kds_tickets", tickets,
+        account=account, scraped_at_utc=scraped_at_utc,
+    )
+
+
+def write_raw_adp_earnings(
+    spreadsheet_id: str,
+    earnings: list[dict],
+    *,
+    account: str = "palmetto",
+    scraped_at_utc: Optional[str] = None,
+) -> dict:
+    """Idempotent upsert into BHAGA ADP Raw > earnings. Natural key:
+    (period_start, period_end, employee_name, description, check_date).
+
+    Source records come from compensation_backend.parse_xlsx(). Each record
+    carries one earning-line per employee per pay period.
+    """
+    return _upsert_tab(
+        spreadsheet_id, "BHAGA ADP Raw", "earnings", earnings,
+        account=account, scraped_at_utc=scraped_at_utc,
+    )
+
+
+def write_raw_google_reviews(
+    spreadsheet_id: str,
+    reviews: list[dict],
+    *,
+    account: str = "palmetto",
+    scraped_at_utc: Optional[str] = None,
+) -> dict:
+    """Idempotent upsert into BHAGA Review Raw > reviews. Natural key: (review_id,).
+
+    Source records come from render_raw_sheet_from_bq (BQ google_reviews →
+    inverse-mapped sheet-header dict). clickup_message_id (Sheet-only) should
+    be set to "" in the record; ingested_at_utc is passed via scraped_at_utc
+    override or left blank.
+    """
+    return _upsert_tab(
+        spreadsheet_id, "BHAGA Review Raw", "reviews", reviews,
         account=account, scraped_at_utc=scraped_at_utc,
     )
 

@@ -1,5 +1,96 @@
 # Jarvis Build Progress
 
+## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
+
+**Goal:** Make the implementation match the PR's stated design — *BQ is the single source of truth;
+GCS = sessions/evidence only* — and unblock the fresh-scrape sandbox backfill (which was failing the
+`load_raw_bigquery` step on `MERGE must match at most one source row for each target row` when a single
+ADP earnings scrape batch carried duplicate natural keys).
+
+**What landed:**
+- `daily_refresh.py` — removed ALL scrape-data uploads to GCS (`upload_scrape_artifacts` ×2 +
+  `_cache_artifact_now`). Scrape exports are parsed straight into BQ by `load_raw_bigquery`; GCS now
+  holds only browser sessions + failure evidence. Added an explicit **DATA ARCHITECTURE** docstring
+  (scrape → transient local file → BQ; never GCS) so future agents don't reintroduce the retired
+  scrape→GCS→BQ-mirror path. Dropped now-unused `upload_file`/`upload_scrape_artifacts` imports.
+- `gcs_cache.py` — module + function docstrings narrowed to "sessions + evidence only"; the data-file
+  helpers (`upload_file`, `upload_scrape_artifacts`, `download_cached_files`) flagged **LEGACY**
+  (offline backfill + `sandbox_e2e` replay only; not the live pipeline).
+- `core/datastore.py` — `load_rows(..., replace=True)` = TRUNCATE-then-INSERT for a fresh full-history
+  scrape (the scrape owns the whole table; sidesteps the MERGE one-source-row error on duplicate keys).
+  `_insert_rows` is now hint-aware (all-None columns type correctly) and used by every non-merge load.
+- `backfill_from_downloads.py` — `--replace` flag (defaults on when `BHAGA_RAW_REPLACE=1`); a module
+  `load_rows` wrapper injects `replace=True` across all ~10 call sites.
+- `sandbox_live_run.py` — fresh-scrape path also sets `BHAGA_RAW_REPLACE=1`; `--sheet-from-bq`
+  (`BHAGA_SHEET_FROM_BQ=1`) so the sandbox runs the BQ-canonical model path
+  (`materialize_model_bq` → `render_model_sheet_from_bq`) instead of the legacy raw-Sheet-reading
+  `update_model_sheet`. `full-history-bq-sandbox` scenario enables both.
+- Tests: `core/test_datastore_dataset_isolation.py` (replace truncate-then-insert, dup-key keep,
+  merge-path unaffected), `test_backfill_from_downloads_replace.py` (wrapper plumbing),
+  `test_sandbox_live_run.py`/`test_sandbox_scenarios.py` (sheet_from_bq). Full suite green (869 passed).
+
+## 2026-06-06 — Sandbox BQ dataset isolation + scrape-from-source evidence (PR #33)
+
+**Goal:** Produce trustworthy parity evidence (BQ raw/model vs prod Sheets, from 2026-03-23) WITHOUT
+letting PR-branch code touch prod data. Discovered the sandbox isolated sheets/cache/Firestore but
+**not** BQ — sandbox runs wrote the shared prod `bhaga` dataset (the path that leaked a test row into
+prod `model_review_bonus_period`).
+
+**What landed:**
+- `core/datastore.py` — BQ dataset is now env-driven (`BHAGA_BQ_DATASET`, default `bhaga`):
+  `dataset()` / `fq(table)` helpers, `ensure_dataset()` (create-if-missing), `ensure_schema()` rewrites
+  migration DDL to the active dataset, and `_assert_sandbox_write_isolation()` blocks a
+  staging run from writing the prod dataset. Used by `load_rows` and `load_model_rows` (replace path).
+- Repointed hardcoded dataset literals to the env-driven dataset: `render_raw_sheet_from_bq`,
+  `render_model_sheet_from_bq`, `reconcile_model`, `status`, `bq_coverage`, `process_reviews`,
+  `update_model_sheet`, `core/store_config`, `cloud/webhook/handler`.
+- `sandbox_live_run.py` — sandbox env overlay sets `BHAGA_BQ_DATASET=bhaga_sandbox` + isolation
+  assertion; new `--fresh-scrape` flag points the cache READ bucket at the empty sandbox bucket so a
+  windowed backfill must hit the **actual upstream sources** (not prod GCS cache / not Sheets).
+- `materialize_model_bq.py` — `load_model_rows(replace=True)` now also runs the sandbox write guard;
+  item-metrics (`items_sold`/KDS) now computed from BQ via `read_item_daily_bq`/`read_kds_daily_bq`.
+- `agents/bhaga/scripts/verify_prod_parity.py` (new) — cloud-runnable e2e parity tool: BQ raw/model row
+  counts + key-joined, unit-aware value diffs vs prod Sheets; dataset is env-driven so it can verify
+  either prod or `bhaga_sandbox`.
+- Created the `bhaga_sandbox` BQ dataset and ran migrations 001–007 into it (20 tables + 13 views).
+- Tests: `core/test_datastore_dataset_isolation.py`, `core/test_datastore_reader.py`, sandbox isolation
+  + fresh-scrape cases. Full suite green (859+ passed).
+
+## 2026-06-05 — BQ as single source of truth (PR #33, feat/grafana-dashboard-refactor)
+
+**Goal:** Make BigQuery the single source of truth for all BHAGA data (raw scrapes, ADP earnings,
+operator tunables). Retire GCS as a data source (keep sessions + evidence only). Replace the
+sheet-based gap-resolver with BQ coverage. Add `/bhaga-cloud config set/get` Slack commands.
+
+**What landed:**
+- `agents/bhaga/scripts/bq_coverage.py` — `present_days` / `missing_ranges` / `SOURCE_COVERAGE`; 11
+  unit tests.
+- `core/migrations/007_store_config.sql` — `bhaga.store_config` table for operator tunables.
+- `core/store_config.py` — `get_config` / `get_all` / `set_config` over `core.datastore`.
+- `agents/bhaga/scripts/update_model_sheet.py`:
+  - `load_cc_tips_earnings_from_bq` — reads `bhaga.adp_earnings`, returns ISO-string date keys (hard
+    cutover; GCS XLSX path retired as live source).
+  - `_read_config_value` — BQ-first (`core.store_config.get_config`), Sheet fallback.
+  - `period_has_cc_tip_actuals` — repointed to `load_cc_tips_earnings_from_bq`.
+  - main() earnings call repointed to BQ.
+- `agents/bhaga/scripts/materialize_model_bq.py` — earnings call repointed to `load_cc_tips_earnings_from_bq`.
+- `agents/bhaga/scripts/verify_bq_parity.py` — earnings call repointed to BQ; XLSX fallback removed.
+- `agents/bhaga/scripts/daily_refresh.py`:
+  - Gap-resolver replaced: `bq_coverage.missing_ranges` → `gap_start = earliest_missing_day` (BQ
+    path); sheet-based fallback when BQ unavailable.
+  - `download_cached_files` skip-scrape role removed (both pre-scrape and post-parallel calls).
+  - `load_raw_bigquery` failure clears `square.done`/`adp.done` markers (retry-skips-rescrape).
+- `cloud/webhook/handler.py` — `/bhaga-cloud config get <key>` and `/bhaga-cloud config set <key> <value>`
+  using `google.cloud.bigquery` directly (standalone deploy unit constraint).
+- `cloud/webhook/requirements.txt` — added `google-cloud-bigquery>=3.0,<4`.
+- Tests: `test_bq_coverage.py` (11), `test_bq_sot.py` (7), `core/test_store_config.py` (6),
+  `cloud/webhook/test_handler.py` (5 new); 509 total passing.
+- Docs: RUNBOOK §1 + §15, README pipeline description, DOMAIN adp_paid, bhaga.md data flow +
+  invariants, bhaga-principles.md BQ SoT rules + plan-execution-readiness pointer.
+
+**Next:** apply migration 007, seed `bhaga.store_config`, run OTP-supported prod backfill to fill
+`adp_earnings` gaps, verify Grafana `adp_paid`/`diff` populated.
+
 ## 2026-06-04 — Cost ledger via pre-commit hook; PR cost gate is now a pure validator (feat/cost-ledger-precommit-hook)
 
 Reverted the commit-back approach (below) — it was the root cause of duplicate CI and churn. The
@@ -1174,6 +1265,7 @@ Successfully tested autonomous document discovery and login:
 - 2026-06-03 (PR #16): **BI tool = Grafana** over Superset / Metabase / Looker Studio. Decider: only tool that offers a true shared crosshair line across charts as a first-class feature AND is fully dashboards-as-code (JSON model + REST API + Terraform), so the agent owns the entire lifecycle. BigQuery datasource uses the existing `jarvis-bhaga-prod` service account. Looker Studio rejected despite native-BQ/free because it has no shared crosshair and no real creation API (Playwright-only) — fails the two headline asks.
 - 2026-06-03 (PR #16): **Grafana hosting = Grafana Cloud free tier** over Cloud Run / Cloud Run+Cloud SQL / GCE. Decider: cost (must be free while still proving the stack out) + zero ops + it persists the occasional manual UI tweak. Accepted trade-offs: external Grafana Labs account + BQ query egress from Grafana's cloud. Revisit (move in-project to Cloud Run+file-provisioning) if/when usage grows or egress/security matters.
 - 2026-06-03 (PR #16): **BigQuery becomes the source of truth; Google Sheets is to be retired as the analytical store.** Root cause found: the daily cron writes raw + model only to Sheets; `backfill_bigquery.py` was a one-shot Sheets→BQ load that went stale (~5/26) and was never wired into the cron. Plan: backfill the gap, wire incremental BQ writes (raw + materialized `model_*` tables) into `daily_refresh.py`, flip `BHAGA_DATASTORE=bigquery` so the model also reads from BQ, expose curated `vw_*` views as the BI contract, then drop Sheets as the analytical layer.
+- 2026-06-04 (PR feat/grafana-dashboard-refactor): **BQ-canonical compute + 3-section Grafana dashboard.** Key decisions: (1) `materialize_model_bq` is now the canonical model producer (not a Sheets mirror); tip-pool conservation check added post-build. (2) `render_model_sheet_from_bq.py` projector added behind `BHAGA_SHEET_FROM_BQ` flag (default off) — Sheet model tabs rendered from BQ when on. (3) `process_reviews.py` dual-sinks `model_review_bonus_period` to BQ (non-fatal) via shared `load_model_rows()` helper. (4) `reconcile_model.py` compares Sheet tabs against BQ tables cell-by-cell (reusing `verify_bq_parity` helpers); CI workflow + non-fatal nightly step. (5) Migration 004 adds `model_review_bonus_period` table + `vw_model_labor_daily` (extended), `vw_model_labor_weekly` (new), `vw_model_payroll_period` (new — joins tips + review bonus + wage rates). (6) Dashboard rewritten into 3 collapsible row sections: Order Volume (daily/weekly orders+items), Labor Cost (daily/weekly labor%+hours/item), Payroll (full-width table via `vw_model_payroll_period`). (7) `docs/FEATURE_FLAGS.md` tracker added. CONTRIBUTING: additive-prod-data-source exception documented. `RUNBOOK.md`: stale `run_migrations` → `ensure_schema` fixed; BQ-canonical path and flip procedure added.
 
 ## Git State
 - Branch: `main`

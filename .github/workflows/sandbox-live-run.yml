@@ -31,6 +31,14 @@ on:
         description: 'PR number (sandbox pool slot lease)'
         required: true
         type: string
+      window_from:
+        description: 'Backfill window START (YYYY-MM-DD); optional, for windowed scenarios'
+        required: false
+        type: string
+      window_to:
+        description: 'Backfill window END (YYYY-MM-DD); optional, for windowed scenarios'
+        required: false
+        type: string
   pull_request:
     types: [labeled, synchronize, reopened]
   issue_comment:
@@ -79,6 +87,8 @@ jobs:
           IN_SCENARIO: ${{ inputs.scenario }}
           IN_DATE: ${{ inputs.date }}
           IN_PR: ${{ inputs.pr_number }}
+          IN_WINDOW_FROM: ${{ inputs.window_from }}
+          IN_WINDOW_TO: ${{ inputs.window_to }}
           DISPATCH_REF: ${{ github.ref_name }}
           # pull_request
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -147,6 +157,10 @@ jobs:
                      item["name"], "--date", item["date"], "--pr-number", pr_number,
                      "--pr-label", f"sandbox-live ({item['name']})", "--image", image,
                      "--evidence-file", ev]
+              if item.get("window_from"):
+                  cmd += ["--from", item["window_from"]]
+              if item.get("window_to"):
+                  cmd += ["--to", item["window_to"]]
               rc = subprocess.run(cmd).returncode
               rc_all = rc_all or rc
               try:

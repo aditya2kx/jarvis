@@ -70,9 +70,15 @@ def main() -> int:
             print(f"unknown scenario {scenario!r}")
             _emit(False)
             return 0
+        item = {"name": scenario, "date": os.environ.get("IN_DATE", "")}
+        # Optional backfill window (windowed scenarios fan it out to all sources).
+        if os.environ.get("IN_WINDOW_FROM"):
+            item["window_from"] = os.environ["IN_WINDOW_FROM"]
+        if os.environ.get("IN_WINDOW_TO"):
+            item["window_to"] = os.environ["IN_WINDOW_TO"]
         _emit(True, pr_number=os.environ.get("IN_PR", ""),
               head_ref=os.environ.get("DISPATCH_REF", ""),
-              plan=[{"name": scenario, "date": os.environ.get("IN_DATE", "")}])
+              plan=[item])
         return 0
 
     if event == "pull_request":

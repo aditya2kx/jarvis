@@ -31,6 +31,20 @@ class TestRunScenarioScoping:
         argv = captured["argv"]
         assert "--skip" not in argv and "--verify" not in argv
 
+    def test_full_history_backfill_threads_fresh_scrape_and_window(self, monkeypatch):
+        captured = {}
+        from agents.bhaga.scripts import sandbox_live_run as slr
+        monkeypatch.setattr(slr, "main", lambda argv: captured.update(argv=argv) or 0)
+        sc.run_scenario("full-history-bq-sandbox", date="2026-06-05", pr_number=33,
+                        pr_label="x", image="img", window_from="2026-03-23",
+                        window_to="2026-06-05")
+        argv = captured["argv"]
+        assert "--fresh-scrape" in argv
+        assert "--sheet-from-bq" in argv  # BQ-canonical model path
+        assert "--from" in argv and argv[argv.index("--from") + 1] == "2026-03-23"
+        assert "--to" in argv and argv[argv.index("--to") + 1] == "2026-06-05"
+        assert "--skip" not in argv  # full fan-out to all sources
+
 
 class TestParseComment:
     def test_parses_scenario_and_date(self):
@@ -61,7 +75,30 @@ class TestLoadConfig:
                 date: 2026-05-31
         """))
         plan = sc.load_config(str(p))
-        assert plan == [{"name": "item-sales-live", "date": "2026-05-31"}]
+        assert len(plan) == 1
+        assert plan[0]["name"] == "item-sales-live"
+        assert plan[0]["date"] == "2026-05-31"
+        assert plan[0].get("window_from") is None
+        assert plan[0].get("window_to") is None
+
+    def test_loads_window_from_to(self, tmp_path):
+        """Positive path: window_from and window_to are loaded and normalized."""
+        p = tmp_path / "sandbox-live.yml"
+        p.write_text(textwrap.dedent("""
+            scenarios:
+              - name: unified-window
+                date: 2026-05-31
+                window_from: 2026-05-18
+                window_to: 2026-05-31
+        """))
+        plan = sc.load_config(str(p))
+        assert len(plan) == 1
+        assert plan[0]["name"] == "unified-window"
+        assert plan[0]["date"] == "2026-05-31"
+        # PyYAML coerces unquoted YYYY-MM-DD to a date object; load_config
+        # normalizes it back to an ISO string.
+        assert plan[0]["window_from"] == "2026-05-18"
+        assert plan[0]["window_to"] == "2026-05-31"
 
     def test_missing_file_is_empty(self, tmp_path):
         assert sc.load_config(str(tmp_path / "nope.yml")) == []

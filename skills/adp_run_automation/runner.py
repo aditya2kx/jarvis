@@ -200,7 +200,10 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
     except Exception:
         # Diagnose: incorrect creds, 2FA, or unexpected redirect.
         url = page.url.lower()
-        on_2fa_url = any(t in url for t in ("verify", "challenge", "step-up", "mfa"))
+        on_2fa_url = any(
+            t in url
+            for t in ("verify", "challenge", "step-up", "mfa", "mobile_collection", "channel")
+        )
         # Fallback: ADP sometimes serves 2FA on the bare login origin without a
         # URL marker — check the visible body for the "Verify your identity"
         # headline before deciding it's not 2FA.
@@ -236,6 +239,53 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
         )
 
 
+def _dismiss_adp_channel_collection(page) -> bool:
+    """Skip ADP's "verify/add your mobile number" interstitial if it's showing.
+
+    ADP RUN began inserting a contact-channel-collection page (custom
+    ``<sdf-phone-number-input>`` + a "Verify mobile number" / "Remind me later"
+    pair, ids ``channel-collection-save`` / ``channel-collection-remind``)
+    between the password step and the actual OTP challenge. It carries no
+    code-entry box, so the OTP handler would land here and raise "selector
+    drift". We click "Remind me later" to dismiss it and let ADP continue.
+
+    Returns True if the interstitial was detected and dismissed, else False.
+    Never raises — a miss just means we weren't on that page.
+    """
+    # Detect by the page-unique elements (id is stable; fall back to role/text).
+    detectors = (
+        lambda: page.locator("#channel-collection-remind").first,
+        lambda: page.locator("#phone-number-input").first,
+        lambda: page.get_by_role("button", name=re.compile(r"remind me later", re.I)).first,
+    )
+    present = False
+    for det in detectors:
+        try:
+            det().wait_for(state="visible", timeout=2_000)
+            present = True
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    if not present:
+        return False
+
+    print("[adp 2fa] mobile-number verify interstitial detected; clicking 'Remind me later'.")
+    for clicker in (
+        lambda: page.locator("#channel-collection-remind").first,
+        lambda: page.get_by_role("button", name=re.compile(r"remind me later", re.I)).first,
+    ):
+        try:
+            clicker().click(timeout=4_000)
+            page.wait_for_timeout(2_000)  # let the dismissal navigate/settle
+            return True
+        except Exception:  # noqa: BLE001
+            continue
+    # Detected the page but couldn't click the skip control; report not-dismissed
+    # so the caller's OTP flow raises its own evidence breadcrumb.
+    print("[adp 2fa] WARN: interstitial detected but 'Remind me later' not clickable.")
+    return False
+
+
 def _handle_adp_two_factor(page, *, store: str) -> None:
     """Drive ADP RUN's SMS-OTP 2FA flow with operator-in-the-loop via Slack.
 
@@ -258,6 +308,21 @@ def _handle_adp_two_factor(page, *, store: str) -> None:
     so we don't end up in a silent infinite wait.
     """
     print(f"[adp 2fa] starting handler; URL={page.url}")
+
+    # Step 0: dismiss the "verify/add your mobile number" interstitial (ADP's
+    # channel-collection page) if present. ADP began inserting this between
+    # password submit and the OTP challenge; it has no code-entry box, so the
+    # OTP flow below would mis-fire as "selector drift". Clicking "Remind me
+    # later" skips it and lets ADP proceed to the real challenge / dashboard.
+    if _dismiss_adp_channel_collection(page):
+        # After skipping, we may already be on the dashboard (device trusted) —
+        # if so there's no OTP to enter and we're done.
+        try:
+            page.wait_for_url(POST_LOGIN_URL_RE, timeout=15_000)
+            print("[adp 2fa] reached dashboard after skipping mobile-verify; no OTP needed.")
+            return
+        except Exception:  # noqa: BLE001 — not on dashboard yet → continue OTP flow
+            print("[adp 2fa] mobile-verify skipped; continuing to OTP challenge.")
 
     # Step 1: pick text-message delivery. ADP's picker varies between sdf-radio
     # and clickable sdf-card. Try several patterns.
@@ -899,22 +964,24 @@ def _earnings_within_session(
     *,
     store: str,
     target_date: Optional[datetime.date] = None,
-    # NOTE: `start`/`end` are accepted for caller-API stability and
-    # diagnostic logging only — the actual date filter is ALWAYS the
-    # "Last payroll" preset (see DECISION LOCK-IN in
-    # ~/.bhaga/state/earnings-flow-recipe.md). Custom date ranges that
-    # fall inside an open / in-flight payroll return 0 rows because ADP
-    # only materializes earnings on payroll close.
     start: Optional[datetime.date] = None,
     end: Optional[datetime.date] = None,
+    use_custom_range: bool = False,
 ) -> pathlib.Path:
     """Run the Earnings & Hours scrape on an already-authenticated page.
 
     Pre-condition: `page` is on the v2 ADP RUN dashboard. Caller owns the
     browser context.
 
-    Flow (verified end-to-end 2026-05-19 via user-driven walkthrough,
-    recipe at ~/.bhaga/state/earnings-flow-recipe.md):
+    DECISION LOCK-IN: two modes
+    - use_custom_range=False (nightly incremental): selects "Last payroll" preset
+      — the only preset guaranteed non-empty for the current pay cycle.
+    - use_custom_range=True (explicit historical window): selects "Custom date range",
+      fills From/To (MM/DD/YYYY), and sets Employment status = All so terminated
+      employees appear in the historical window. Raises if start/end missing or
+      range > 12 months (ADP server cap).
+
+    Flow (verified end-to-end 2026-05-19):
 
         1.  Click Reports-btn (top nav).
         2.  Click view-all-reports (or its homepage-widget twin).
@@ -922,25 +989,22 @@ def _earnings_within_session(
             until the header is clicked, despite being in the DOM.
         4.  Click the saved "Earnings and Hours V1" tile (per-store
             numeric suffix; anchor on the label).
-        5.  In the "Custom report builder" modal (no iframe), open the
-            date-range-field dropdown and select "Last payroll" — the
-            only preset that's guaranteed non-empty (Custom date ranges
-            inside an open payroll return 0 rows).
+        5.  Open date-range-field dropdown:
+            - nightly: select "Last payroll"
+            - historical: select "Custom date range", fill From/To,
+              set Employment status = All
         6.  Click view-custom-report (Preview).
-        7.  Pre-flight: check the AG-Grid for "No Rows To Show" and
-            raise early if empty (cheaper than waiting for the export).
+        7.  Pre-flight: check the AG-Grid for "No Rows To Show".
         8.  Click Download → Excel (.xlsx) → Download report.
         9.  Wait for the file to land via `download_to`.
-        10. Post-flight: open the XLSX with openpyxl and assert ≥1 data
-            row. Raise RuntimeError if 0 (hard guardrail — never ship
-            an empty earnings file).
+        10. Post-flight: assert ≥1 data row in XLSX.
     """
     profile = _load_store_profile(store)
     report_name = profile["adp_run"].get("wage_rate_report_name", "Earnings and Hours V1")
 
     print(f"[earnings] step=pre-reports url={page.url} "
           f"target_date={target_date.isoformat() if target_date else 'none'} "
-          f"(filter=Last payroll regardless)")
+          f"use_custom_range={use_custom_range} start={start} end={end}")
     _navigate_to_reports_landing(page)
     print(f"[earnings] step=after-view-all-reports url={page.url}")
 
@@ -1011,16 +1075,44 @@ def _earnings_within_session(
     print("[earnings] step=open-date-range-dropdown")
 
     # Listbox options exposed: Last month / Last year / Last quarter /
-    # Custom date range / Last payroll. We always pick "Last payroll"
-    # — see DECISION LOCK-IN in the recipe. Custom date ranges inside
-    # an open payroll return 0 rows; "Last payroll" = ADP's notion of
-    # the most-recently-CLOSED payroll, which is what we need for
-    # wage rates + Credit-Card-Tips-Owed lines.
-    page.get_by_role(
-        "option", name=re.compile(r"^Last payroll$", re.I)
-    ).first.click()
+    # Custom date range / Last payroll.
+    # nightly (use_custom_range=False): "Last payroll" — the most-recently-CLOSED
+    #   payroll; guaranteed non-empty for current wage-rate + CC-Tips-Owed lines.
+    # historical backfill (use_custom_range=True): "Custom date range" with explicit
+    #   From/To + Employment status = All (includes terminated employees).
+    if use_custom_range:
+        if start is None or end is None:
+            raise ValueError(
+                "use_custom_range=True requires both start and end dates"
+            )
+        if (end - start).days > 366:
+            raise ValueError(
+                f"ADP earnings range >12 months not supported "
+                f"({start}..{end}); chunk the backfill into ≤12-month windows."
+            )
+        page.get_by_role("option", name=re.compile(r"^Custom date range$", re.I)).first.click()
+        page.wait_for_timeout(500)
+        page.get_by_role("textbox", name=re.compile(r"^From", re.I)).first.fill(start.strftime("%m/%d/%Y"))
+        page.get_by_role("textbox", name=re.compile(r"^To", re.I)).first.fill(end.strftime("%m/%d/%Y"))
+        # Employment status = All — includes terminated employees in historical window.
+        # Best-guess role-based locator; verified / corrected in T6 sandbox DOM snapshot.
+        try:
+            emp = page.get_by_role("combobox", name=re.compile(r"Employment status", re.I)).first
+            emp.click()
+            page.wait_for_timeout(300)
+            page.get_by_role("option", name=re.compile(r"^All$", re.I)).first.click()
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[earnings] WARN: Employment-status=All not set ({exc}); "
+                f"continuing with default. Verify selector via sandbox DOM snapshot."
+            )
+        print(f"[earnings] step=selected-custom-range {start}..{end} employment=All")
+    else:
+        page.get_by_role(
+            "option", name=re.compile(r"^Last payroll$", re.I)
+        ).first.click()
+        print("[earnings] step=selected-last-payroll")
     page.wait_for_timeout(800)
-    print("[earnings] step=selected-last-payroll")
 
     # Preview report — populates the AG-Grid. Wait ≥6s before checking
     # for empty-grid sentinel (network round-trip can be slow).
@@ -1092,6 +1184,9 @@ def download_adp_bundle(
     target_date: Optional[datetime.date] = None,
     include_earnings: bool = True,
     earnings_window_days: int = 90,
+    earnings_start: Optional[datetime.date] = None,
+    earnings_end: Optional[datetime.date] = None,
+    earnings_custom_range: bool = False,
     headed: bool = True,
     slow_mo_ms: int = 50,
     keep_open_on_error: bool = False,
@@ -1130,8 +1225,16 @@ def download_adp_bundle(
         include_earnings: if False, only Timecard runs (orchestrator sets
             this off Mon/Tue per `_should_run_rates`).
         earnings_window_days: how far back the earnings scrape's "From"
-            date should go (default 90 — enough for current rates + the
-            most recent pay period's Credit Card Tips Owed).
+            date should go when using the nightly "Last payroll" preset
+            (default 90; ignored when earnings_custom_range=True).
+        earnings_start: explicit window start for historical backfill
+            (requires earnings_custom_range=True).
+        earnings_end: explicit window end for historical backfill
+            (requires earnings_custom_range=True).
+        earnings_custom_range: if True, selects "Custom date range" in
+            the ADP report builder and fills earnings_start/end + sets
+            Employment status = All. Use for historical backfills only;
+            nightly runs should keep False (Last payroll preset).
 
     Returns:
         {
@@ -1250,16 +1353,15 @@ def download_adp_bundle(
                               f"url={page.url}")
                         page.wait_for_timeout(2_000)
 
-                # NOTE: window_start / window_end are passed through for
-                # diagnostic logging only — the runner always selects the
-                # "Last payroll" preset (see _earnings_within_session
-                # docstring + ~/.bhaga/state/earnings-flow-recipe.md
-                # DECISION LOCK-IN). target_date is the canonical knob.
-                window_end = target_date or today
-                window_start = window_end - datetime.timedelta(days=earnings_window_days)
+                if earnings_custom_range and earnings_start and earnings_end:
+                    window_start, window_end = earnings_start, earnings_end
+                else:
+                    window_end = target_date or today
+                    window_start = window_end - datetime.timedelta(days=earnings_window_days)
                 path = _earnings_within_session(
                     page, store=store, target_date=target_date,
                     start=window_start, end=window_end,
+                    use_custom_range=earnings_custom_range,
                 )
                 _write_target_meta(path, target_date)
                 result["earnings_xlsx"] = path

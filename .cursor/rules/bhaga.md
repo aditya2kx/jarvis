@@ -33,15 +33,19 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 
 ## Data flow (raw → model)
 
-1. **Scrape** Square (transactions) and ADP (timecards / earnings) via `skills/square_tips/` and
-   `skills/adp_run_automation/` (Playwright, `user-playwright` MCP). Cached in GCS `bhaga-scrape-cache`.
-2. **Mirror** scrapes into the canonical **raw** Google Sheets (`bhaga_adp_raw`, `bhaga_square_raw`)
-   via `backfill_from_downloads.py`. **Contract: all downstream code reads only from the raw sheets,
-   never local files.**
-3. **`update_model_sheet.py`** recomputes the Model workbook tabs from the raw sheets:
+1. **BQ coverage check**: `bq_coverage.missing_ranges` determines which business days are absent from
+   `bhaga.square_transactions` and scrapes upstream **only for those missing days**.
+2. **Scrape** Square (transactions) and ADP (timecards / earnings) via `skills/square_tips/` and
+   `skills/adp_run_automation/` (Playwright, `user-playwright` MCP). GCS retains browser sessions and
+   failure evidence only — no raw data files.
+3. **Load scrapes → BigQuery** (`backfill_from_downloads.py`). BQ is the single source of truth for
+   all data: `square_transactions`, `adp_shifts`, `adp_earnings`, `square_kds_daily`, etc.
+4. **Render raw Sheets from BQ** (`render_raw_sheet_from_bq.py`, non-fatal) — Sheets are projections.
+5. **`update_model_sheet.py`** recomputes the Model workbook tabs from BQ raw data:
    `config, daily, labor_daily, labor_weekly, labor_period, tip_alloc_period, tip_alloc_daily,
-   period_summary` (+ `labor_daily_forecast`).
-4. **`process_reviews.py`** pulls Google reviews from ClickUp, allocates bonuses, rebuilds
+   period_summary` (+ `labor_daily_forecast`). Reads tunables from `bhaga.store_config`
+   (`core.store_config.get_config`) and ADP earnings from `bhaga.adp_earnings`.
+6. **`process_reviews.py`** pulls Google reviews from ClickUp, allocates bonuses, rebuilds
    `review_bonus_period` on the Model sheet (idempotent on rerun).
 
 ## Sheet source of truth
@@ -73,12 +77,11 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
    nightly fires 21:30 CT). Never let local/PST/UTC leak into a date boundary.
 8. **Output must be semantically verified, not just populated.** A green run is not enough — the
    nightly + per-PR sandbox both run `model_semantics.assert_model_semantics` (tip-pool conservation,
-   **cadence-safe** `adp_paid` reconciliation — required only when a covering GCS Earnings export actually
-   carries that period's CC-tip lines, i.e. payroll has run; an unpaid just-closed period is skipped, not
-   failed — and review-bonus survival). A semantic failure trips the pipeline halt circuit breaker so the
-   known-bad run
-   can't repeat (RUNBOOK §13). When you remove/replace a data source, **diff the affected sheet columns
-   before/after** and add a semantic guard — never let a column silently go dead (the 6f87f9c lesson).
+   **cadence-safe** `adp_paid` reconciliation — required only when `bhaga.adp_earnings` actually
+   carries that period's CC-tip lines, i.e. payroll has run; an unpaid just-closed period is skipped,
+   not failed — and review-bonus survival). A semantic failure trips the pipeline halt circuit breaker
+   so the known-bad run can't repeat (RUNBOOK §13). When you remove/replace a data source, **diff the
+   affected sheet columns before/after** and add a semantic guard — never let a column silently go dead.
 
 ## Edge cases
 
@@ -122,11 +125,16 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
   (sheets) and `agents/bhaga/scripts/gcs_cache.py::_assert_sandbox_write_isolation` (cache). This applies
   equally to the live sandbox run (live scrape against sandbox sheets) — live scraping is allowed, but its
   cache/evidence/state writes land only in sandbox targets.
-- **Cloud reads from GCS, never laptop files.** The canonical scrape cache is GCS `bhaga-scrape-cache`.
-  `extracted/downloads/` is laptop-only and is NOT a source of truth for cloud sheets — never let a
-  prod/cloud backfill read it. `backfill_item_lines_from_cache.py` defaults to GCS-only; only pass
-  `--local-only` in tests. The laptop is retired; if you find yourself reaching for a local download
-  to populate a cloud sheet, stop — that's the bug. See `RUNBOOK.md` § Common tasks.
+- **BQ is the single source of truth.** All raw data (Square, ADP, Reviews, earnings) lives in BQ.
+  GCS retains only trusted-device browser sessions (`_session/`) and failure evidence (`<date>/evidence/`).
+  No pipeline code reads data files from GCS. Sheets are read-only projections.
+- **Cloud reads from BQ, never laptop files.** `extracted/downloads/` is laptop-only and is NOT a source
+  of truth. The laptop is retired for BHAGA; all prod data flows through BQ.
+- **Operator tunables live in `bhaga.store_config`.** Edit via `/bhaga-cloud config set <key> <value>`.
+  Never manually edit the Sheet config tab — it is a read-only projection of BQ.
+- **Coverage-aware scraping.** `bq_coverage.missing_ranges` determines what to scrape; a fully-covered
+  window scrapes nothing new. The BQ coverage check is the primary gap-resolver; sheet-based fallback
+  applies only when BQ is unavailable.
 - **Run one-offs in the cloud, not on a laptop.** Backfills / maintenance scripts that touch prod run
   as a Cloud Run job (or from an ADC-authenticated cloud shell resolving secrets from Secret Manager) —
   not against laptop Keychain or laptop downloads. See `RUNBOOK.md` § Common tasks.

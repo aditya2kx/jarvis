@@ -170,6 +170,76 @@ def read_wage_rates_bq() -> list[dict]:
     return out
 
 
+def read_item_daily_bq() -> list[dict]:
+    """Read bhaga.square_item_daily and return in Sheets-reader format.
+
+    Mirrors read_raw_square_item_daily_rollup so it can feed
+    build_labor_daily_rows(items_by_date=...). BQ columns → Sheets keys:
+        date_local (DATE) → date_local (str)
+        items_sold → items_sold (int)
+        units_sold → units_sold (int)
+        gross_sales_cents → gross_sales_cents (int)
+        avg_item_price_cents → avg_item_price_cents (int)
+        scraped_at_utc → scraped_at_utc (str)
+    """
+    rows = read_table("square_item_daily")
+    if not rows:
+        return []
+    out: list[dict] = []
+    for r in rows:
+        out.append({
+            "date_local": _date_to_str(r.get("date_local")),
+            "items_sold": _int_or_zero(r.get("items_sold")),
+            "units_sold": _int_or_zero(r.get("units_sold")),
+            "gross_sales_cents": _int_or_zero(r.get("gross_sales_cents")),
+            "avg_item_price_cents": _int_or_zero(r.get("avg_item_price_cents")),
+            "scraped_at_utc": _ts_to_str(r.get("scraped_at_utc")),
+        })
+    return out
+
+
+def read_kds_daily_bq() -> list[dict]:
+    """Read bhaga.square_kds_daily and return in Sheets-reader format.
+
+    Mirrors read_raw_kds_daily so it can feed build_labor_daily_rows /
+    build_labor_period_rows / build_labor_weekly_rows (kds_by_date=...).
+    per_item_times_json is parsed back into a list[int] so the weekly/period
+    accumulators can pool TRUE per-item percentiles + over-goal share.
+    """
+    rows = read_table("square_kds_daily")
+    if not rows:
+        return []
+    out: list[dict] = []
+    for r in rows:
+        raw_times = r.get("per_item_times_json")
+        if isinstance(raw_times, str) and raw_times:
+            try:
+                per_item_times = json.loads(raw_times)
+            except (json.JSONDecodeError, TypeError):
+                per_item_times = []
+        elif isinstance(raw_times, list):
+            per_item_times = raw_times
+        else:
+            per_item_times = []
+        out.append({
+            "date_local": _date_to_str(r.get("date_local")),
+            "completed_tickets": _int_or_zero(r.get("completed_tickets")),
+            "completed_items": _int_or_zero(r.get("completed_items")),
+            "median_time_per_item_sec": _float_or_zero(r.get("median_time_per_item_sec")),
+            "p90_time_per_item_sec": _float_or_zero(r.get("p90_time_per_item_sec")),
+            "p95_time_per_item_sec": _float_or_zero(r.get("p95_time_per_item_sec")),
+            "p99_time_per_item_sec": _float_or_zero(r.get("p99_time_per_item_sec")),
+            "pct_tickets_late": _float_or_zero(r.get("pct_tickets_late")),
+            "shift_start": _str_or_empty(r.get("shift_start")),
+            "shift_end": _str_or_empty(r.get("shift_end")),
+            "late_tickets": _int_or_zero(r.get("late_tickets")),
+            "due_tickets": _int_or_zero(r.get("due_tickets")),
+            "per_item_times_json": per_item_times,
+            "scraped_at_utc": _ts_to_str(r.get("scraped_at_utc")),
+        })
+    return out
+
+
 def read_transactions_bq() -> list[dict]:
     """Read bhaga.square_transactions and return in Sheets-reader format.
 

@@ -43,6 +43,30 @@ SCENARIOS: dict[str, dict] = {
     "full-live": {
         "description": "Full live pipeline (Square + ADP) for a date, against the sandbox.",
     },
+    "unified-window": {
+        "description": (
+            "Full live pipeline over a closed historical window (Square + ADP timecard "
+            "+ ADP earnings custom-range + reviews), proving all four sources honor "
+            "--from/--to. window_from and window_to must be set in the scenario config."
+        ),
+        # No steps skipped — exercises the complete unified window fan-out.
+        # Evidence: per-source row counts written to the evidence file.
+    },
+    "full-history-bq-sandbox": {
+        "description": (
+            "Scrape-from-source backfill of the ENTIRE history into the isolated "
+            "bhaga_sandbox BQ dataset (Square + ADP timecard + ADP earnings + reviews). "
+            "fresh_scrape forces the cache READ bucket to the empty sandbox bucket so "
+            "every source is pulled from the actual upstream portals — never prod GCS "
+            "or Sheets. window_from/window_to must be set (e.g. 2026-03-23 → last closed "
+            "day). Evidence: per-source BQ row counts vs prod Sheets via verify_prod_parity."
+        ),
+        # No steps skipped — full fan-out to all sources.
+        "fresh_scrape": True,
+        # Prove BQ as the source of truth: compute the model FROM BQ raw
+        # (materialize_model_bq → render_model_sheet_from_bq), not from raw Sheets.
+        "sheet_from_bq": True,
+    },
 }
 
 _COMMENT_RE = re.compile(
@@ -93,7 +117,13 @@ def load_config(path: str) -> list[dict]:
         date = item.get("date")
         if hasattr(date, "isoformat"):
             date = date.isoformat()
-        out.append({"name": name, "date": date})
+        window_from = item.get("window_from")
+        if hasattr(window_from, "isoformat"):
+            window_from = window_from.isoformat()
+        window_to = item.get("window_to")
+        if hasattr(window_to, "isoformat"):
+            window_to = window_to.isoformat()
+        out.append({"name": name, "date": date, "window_from": window_from, "window_to": window_to})
     return out
 
 
@@ -106,6 +136,8 @@ def run_scenario(
     image: str,
     evidence_file: str | None = None,
     no_execute: bool = False,
+    window_from: str | None = None,
+    window_to: str | None = None,
 ) -> int:
     """Drive one scenario through sandbox_live_run. Returns its exit code."""
     if name not in SCENARIOS:
@@ -125,10 +157,21 @@ def run_scenario(
         argv += ["--skip", ",".join(skip)]
     if meta.get("verify"):
         argv += ["--verify", meta["verify"]]
+    if meta.get("fresh_scrape"):
+        argv.append("--fresh-scrape")
+    if meta.get("sheet_from_bq"):
+        argv.append("--sheet-from-bq")
     if evidence_file:
         argv += ["--evidence-file", evidence_file]
     if no_execute:
         argv.append("--no-execute")
+    # Unified window: thread --from/--to from scenario config or caller override.
+    _wf = window_from or meta.get("window_from")
+    _wt = window_to or meta.get("window_to")
+    if _wf:
+        argv += ["--from", _wf]
+    if _wt:
+        argv += ["--to", _wt]
     print(f"[scenario:{name}] {meta['description']}")
     return sandbox_live_run.main(argv)
 
@@ -148,6 +191,10 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--image", required=True)
     run.add_argument("--evidence-file")
     run.add_argument("--no-execute", action="store_true")
+    run.add_argument("--from", dest="window_from", default=None, metavar="DATE",
+                     help="Unified window START (YYYY-MM-DD). Overrides scenario meta.")
+    run.add_argument("--to", dest="window_to", default=None, metavar="DATE",
+                     help="Unified window END (YYYY-MM-DD). Overrides scenario meta.")
 
     args = cli.parse_args(argv)
 
@@ -159,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
     return run_scenario(
         args.name, date=args.date, pr_number=args.pr_number, pr_label=args.pr_label,
         image=args.image, evidence_file=args.evidence_file, no_execute=args.no_execute,
+        window_from=getattr(args, "window_from", None),
+        window_to=getattr(args, "window_to", None),
     )
 
 

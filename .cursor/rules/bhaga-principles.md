@@ -41,15 +41,27 @@ derive proposals from them rather than from memory.
 - **Sheets/BQ are the production database — write only through the sanctioned layer**
   (`skills/tip_ledger_writer/`). No ad-hoc `values:clear`, `python -c`, or raw API writes against prod.
   Marker clears go through `skills/bhaga_config/state_adapter.py::clear_step`, never a shell `rm`.
-- **Cloud reads from GCS (`bhaga-scrape-cache`), secrets from Secret Manager** — never laptop files.
+- **BQ is the single source of truth for all data.** Raw scraped data, ADP earnings, and operator
+  tunables all live in BigQuery (`jarvis-bhaga-prod.bhaga`). GCS retains only browser sessions and
+  failure evidence. Sheets are read-only projections. Never read data files from GCS in pipeline code.
+- **Coverage-aware scraping.** Before scraping, check `bq_coverage.missing_ranges` to determine which
+  business days need upstream data. A fully-covered window scrapes nothing new.
+- **Operator tunables live in `bhaga.store_config`.** Edit via `/bhaga-cloud config set <key> <value>`
+  (Slack). Never manually edit the Sheet config tab — it is a read-only projection of BQ.
+  Read tunables in code via `core.store_config.get_config(store, key)`.
+- **Cloud reads from BQ, secrets from Secret Manager** — never laptop files or GCS data files.
+- `.cursor/rules/plan-execution-readiness.md` — make a plan executable by a lower-tier LLM.
 - **Prove changes with the per-PR sandbox e2e** (`sandbox_e2e.py`), not by touching prod sheets.
 - **Sandbox runs are read-only toward prod data sources.** A sandbox/staging run (`BHAGA_SHEET_MODE=staging`)
   may **read** prod data (GCS cache, raw sheets) but must **never write** to any prod data source —
-  prod sheets, the prod GCS cache (`bhaga-scrape-cache`), or prod Firestore state. All sandbox writes
-  divert to isolated sandbox targets (staging sheets, `BHAGA_GCS_CACHE_WRITE_BUCKET`, a sandbox Firestore
-  namespace). Enforced by hard guards: `config_loader._assert_not_production_sheet` (sheets),
-  `gcs_cache._assert_sandbox_write_isolation` (cache), and `state_adapter._assert_sandbox_state_isolation`
-  (Firestore run-state) — all fail loud rather than mutate prod.
+  prod sheets, the prod GCS cache (`bhaga-scrape-cache`), the prod BQ dataset (`bhaga`), or prod
+  Firestore state. All sandbox writes divert to isolated sandbox targets (staging sheets,
+  `BHAGA_GCS_CACHE_WRITE_BUCKET`, `BHAGA_BQ_DATASET=bhaga_sandbox`, a sandbox Firestore namespace).
+  Enforced by hard guards: `config_loader._assert_not_production_sheet` (sheets),
+  `gcs_cache._assert_sandbox_write_isolation` (cache), `datastore._assert_sandbox_write_isolation`
+  (BQ dataset), and `state_adapter._assert_sandbox_state_isolation` (Firestore run-state) — all fail
+  loud rather than mutate prod. The BQ guard is the fix for the leak that previously let a sandbox test
+  row strand itself in prod `bhaga` (sandbox writes shared the prod dataset before `BHAGA_BQ_DATASET`).
 - **OTP via Slack/Firestore+webhook, never the IDE.** Announce any action that fires an SMS/email/DM
   before triggering it.
 - **Never reflexively retry a transient error when a retry can fire a side effect** (OTP/SMS/email/DM).

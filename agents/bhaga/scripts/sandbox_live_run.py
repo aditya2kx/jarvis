@@ -62,10 +62,15 @@ SANDBOX_CACHE_WRITE_BUCKET = os.environ.get(
     "BHAGA_SANDBOX_CACHE_BUCKET", "bhaga-scrape-cache-sandbox"
 )
 SANDBOX_RUNS_COLLECTION = os.environ.get("BHAGA_SANDBOX_RUNS_COLLECTION", "sandbox_runs")
+# Isolation: BQ dataset. Sandbox writes (raw scrape, model, config) land in an
+# isolated dataset so a sandbox run can never pollute the prod `bhaga` dataset
+# (this is the gap that previously leaked a sandbox test row into prod BQ).
+SANDBOX_BQ_DATASET = os.environ.get("BHAGA_SANDBOX_BQ_DATASET", "bhaga_sandbox")
 
 # The canonical PROD values a sandbox run must never write.
 _PROD_CACHE_BUCKET = "bhaga-scrape-cache"
 _PROD_RUNS_COLLECTION = "runs"
+_PROD_BQ_DATASET = "bhaga"
 
 
 # ── Pure helpers (no I/O — unit-tested) ───────────────────────────
@@ -84,9 +89,14 @@ def build_sandbox_env(
     run_label: str,
     cache_write_bucket: str = SANDBOX_CACHE_WRITE_BUCKET,
     runs_collection: str = SANDBOX_RUNS_COLLECTION,
+    bq_dataset: str = SANDBOX_BQ_DATASET,
     target_job: str | None = None,
     base_env: dict[str, str] | None = None,
     skip_steps: list[str] | None = None,
+    window_from: str | None = None,
+    window_to: str | None = None,
+    fresh_scrape: bool = False,
+    sheet_from_bq: bool = False,
 ) -> dict[str, str]:
     """Construct the sandbox job's env overlay.
 
@@ -104,6 +114,9 @@ def build_sandbox_env(
         "BHAGA_GCS_CACHE_WRITE_BUCKET": cache_write_bucket,
         # Isolation: Firestore run-state.
         "BHAGA_FIRESTORE_COLLECTION": runs_collection,
+        # Isolation: BQ dataset — all writes (raw/model/config) go to the
+        # sandbox dataset, never prod `bhaga`.
+        "BHAGA_BQ_DATASET": bq_dataset,
         # OTP routing / observability labels.
         "BHAGA_RUN_ENV": "sandbox",
         "BHAGA_RUN_LABEL": run_label,
@@ -123,6 +136,34 @@ def build_sandbox_env(
         "REFRESH_DATE": refresh_date,
         "STORE": store,
     })
+    # Fresh-scrape mode: point the cache READ bucket at the (empty) sandbox bucket
+    # too, so the run cannot restore prod's cached scrape files and shortcut the
+    # browser — it MUST hit the actual upstream sources. This is required for a
+    # BQ-from-scratch backfill where the data must come from the real portals
+    # (GCS is deprecated as a source; Sheets are a projection of BQ).
+    if fresh_scrape:
+        env["BHAGA_GCS_CACHE_BUCKET"] = cache_write_bucket
+        # A fresh full-history scrape is authoritative for the whole window, so
+        # the BQ raw tables are TRUNCATEd then reloaded (backfill_from_downloads
+        # --replace). This also avoids the MERGE "one source row per target"
+        # error when a scrape batch has duplicate natural keys (e.g. ADP
+        # earnings line-items). Safe only because the window covers all history.
+        env["BHAGA_RAW_REPLACE"] = "1"
+    # BQ-canonical model path: materialize_model_bq (BQ raw → BQ model) →
+    # render_model_sheet_from_bq (BQ model → Sheet), instead of the legacy
+    # update_model_sheet (which reads raw SHEETS). Required when proving BQ as
+    # the source of truth — the model must be computed FROM BQ, not from Sheets.
+    if sheet_from_bq:
+        env["BHAGA_SHEET_FROM_BQ"] = "1"
+    # Unified backfill window: injected so daily_refresh fans out to all sources.
+    if window_from:
+        env["BHAGA_WINDOW_FROM"] = window_from
+    if window_to:
+        env["BHAGA_WINDOW_TO"] = window_to
+    # When running a windowed backfill, clear any tripped circuit breaker so the
+    # operator-supervised sandbox run can proceed (a healthy run auto-clears it).
+    if window_from or window_to:
+        env["BHAGA_IGNORE_HALT"] = "1"
     # Scenario scoping: skip steps outside the surface under test (e.g. item-sales
     # only needs the Square download, so skip ADP/reviews/model). daily_refresh.main
     # reads each BHAGA_SKIP_<STEP> and ORs it with the matching CLI flag.
@@ -152,6 +193,12 @@ def assert_sandbox_isolation(env: dict[str, str]) -> None:
         raise RuntimeError(
             f"sandbox isolation: BHAGA_FIRESTORE_COLLECTION must be a sandbox collection, "
             f"got {collection!r} (prod is {_PROD_RUNS_COLLECTION!r})"
+        )
+    bq_dataset = env.get("BHAGA_BQ_DATASET", "")
+    if not bq_dataset or bq_dataset == _PROD_BQ_DATASET:
+        raise RuntimeError(
+            f"sandbox isolation: BHAGA_BQ_DATASET must be a sandbox dataset, "
+            f"got {bq_dataset!r} (prod is {_PROD_BQ_DATASET!r})"
         )
     # Every staging sheet SID must be present so resolve_sheet_id never falls back
     # to a prod sheet (the staging guard would block it anyway, but be explicit).
@@ -468,6 +515,24 @@ def main(argv: list[str] | None = None) -> int:
                           "(e.g. 'adp,reviews,model' for a Square-only scenario).")
     cli.add_argument("--verify", choices=["item_sales"], default=None,
                      help="Post-run verification gate; fails the run if the deliverable is absent.")
+    cli.add_argument("--from", dest="window_from", default=None, metavar="DATE",
+                     help="Unified backfill window START (YYYY-MM-DD). Injected as "
+                          "BHAGA_WINDOW_FROM into the sandbox job env so daily_refresh "
+                          "fans it out to Square/ADP/reviews.")
+    cli.add_argument("--to", dest="window_to", default=None, metavar="DATE",
+                     help="Unified backfill window END (YYYY-MM-DD). Injected as "
+                          "BHAGA_WINDOW_TO into the sandbox job env. Should match "
+                          "--refresh-date for a closed backfill window.")
+    cli.add_argument("--fresh-scrape", action="store_true",
+                     help="Point the cache READ bucket at the empty sandbox bucket so "
+                          "the run cannot reuse prod's cached scrape files — it must "
+                          "hit the actual upstream sources. Use for a BQ-from-scratch "
+                          "backfill (data must come from real portals, not GCS/Sheets).")
+    cli.add_argument("--sheet-from-bq", action="store_true",
+                     help="Run the BQ-canonical model path (BHAGA_SHEET_FROM_BQ=1): "
+                          "materialize_model_bq from BQ raw, then render the Sheet from "
+                          "the BQ model — instead of the legacy update_model_sheet that "
+                          "reads raw Sheets. Required to prove BQ as the source of truth.")
     args = cli.parse_args(argv)
 
     skip_steps = [s.strip() for s in args.skip.split(",") if s.strip()]
@@ -493,6 +558,10 @@ def main(argv: list[str] | None = None) -> int:
         run_label=run_label,
         base_env=base_env,
         skip_steps=skip_steps,
+        window_from=args.window_from,
+        window_to=args.window_to,
+        fresh_scrape=args.fresh_scrape,
+        sheet_from_bq=args.sheet_from_bq,
     )
     if skip_steps:
         print(f"[sandbox_live_run] scenario scoped — skipping steps: {', '.join(skip_steps)}")

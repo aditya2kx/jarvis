@@ -32,7 +32,12 @@ class TestBuildSandboxEnv:
         assert env["BHAGA_SHEET_MODE"] == "staging"
         assert env["BHAGA_GCS_CACHE_WRITE_BUCKET"] == slr.SANDBOX_CACHE_WRITE_BUCKET
         assert env["BHAGA_FIRESTORE_COLLECTION"] == slr.SANDBOX_RUNS_COLLECTION
+        assert env["BHAGA_BQ_DATASET"] == slr.SANDBOX_BQ_DATASET
         assert env["REFRESH_DATE"] == "2026-05-31"
+
+    def test_bq_dataset_is_isolated(self):
+        # Sandbox writes must land in an isolated dataset, never prod `bhaga`.
+        assert _good_env()["BHAGA_BQ_DATASET"] != "bhaga"
 
     def test_sets_otp_routing_labels(self):
         env = _good_env()
@@ -48,6 +53,58 @@ class TestBuildSandboxEnv:
         env = _good_env()
         assert env["BHAGA_STAGING_BHAGA_MODEL_SID"] == "SID_MODEL"
         assert env["BHAGA_STAGING_BHAGA_SQUARE_RAW_SID"] == "SID_SQUARE"
+
+    def test_window_vars_and_ignore_halt_set(self):
+        """window_from/to injects BHAGA_WINDOW_* and sets BHAGA_IGNORE_HALT=1."""
+        env = slr.build_sandbox_env(
+            staging_ids=_good_ids(),
+            refresh_date="2026-05-31",
+            store="palmetto",
+            run_label="test",
+            window_from="2026-05-04",
+            window_to="2026-05-31",
+        )
+        assert env["BHAGA_WINDOW_FROM"] == "2026-05-04"
+        assert env["BHAGA_WINDOW_TO"] == "2026-05-31"
+        assert env["BHAGA_IGNORE_HALT"] == "1"
+
+    def test_no_window_no_ignore_halt(self):
+        """When no window is set, BHAGA_IGNORE_HALT and window vars must be absent."""
+        env = _good_env()  # no window_from / window_to
+        assert "BHAGA_IGNORE_HALT" not in env
+        assert "BHAGA_WINDOW_FROM" not in env
+        assert "BHAGA_WINDOW_TO" not in env
+
+    def test_fresh_scrape_points_read_bucket_at_sandbox(self):
+        """fresh_scrape forces cache READS off prod so the run scrapes upstream."""
+        env = slr.build_sandbox_env(
+            staging_ids=_good_ids(),
+            refresh_date="2026-05-31",
+            store="palmetto",
+            run_label="test",
+            fresh_scrape=True,
+        )
+        assert env["BHAGA_GCS_CACHE_BUCKET"] == slr.SANDBOX_CACHE_WRITE_BUCKET
+        assert env["BHAGA_GCS_CACHE_BUCKET"] != "bhaga-scrape-cache"
+
+    def test_no_fresh_scrape_leaves_read_bucket_default(self):
+        """Without fresh_scrape, reads still hit prod (normal sandbox behavior)."""
+        assert "BHAGA_GCS_CACHE_BUCKET" not in _good_env()
+
+    def test_sheet_from_bq_sets_canonical_flag(self):
+        """sheet_from_bq enables the BQ-canonical model path."""
+        env = slr.build_sandbox_env(
+            staging_ids=_good_ids(),
+            refresh_date="2026-05-31",
+            store="palmetto",
+            run_label="test",
+            sheet_from_bq=True,
+        )
+        assert env["BHAGA_SHEET_FROM_BQ"] == "1"
+
+    def test_no_sheet_from_bq_leaves_flag_unset(self):
+        """Without sheet_from_bq, the legacy Sheet-computed model path is used."""
+        assert "BHAGA_SHEET_FROM_BQ" not in _good_env()
 
 
 class TestAssertIsolation:
@@ -70,6 +127,18 @@ class TestAssertIsolation:
         env = _good_env()
         env["BHAGA_FIRESTORE_COLLECTION"] = "runs"
         with pytest.raises(RuntimeError, match="collection"):
+            slr.assert_sandbox_isolation(env)
+
+    def test_blocks_prod_bq_dataset(self):
+        env = _good_env()
+        env["BHAGA_BQ_DATASET"] = "bhaga"
+        with pytest.raises(RuntimeError, match="dataset"):
+            slr.assert_sandbox_isolation(env)
+
+    def test_blocks_missing_bq_dataset(self):
+        env = _good_env()
+        del env["BHAGA_BQ_DATASET"]
+        with pytest.raises(RuntimeError, match="dataset"):
             slr.assert_sandbox_isolation(env)
 
     def test_blocks_missing_staging_sheet(self):

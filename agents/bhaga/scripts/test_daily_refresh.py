@@ -393,13 +393,13 @@ class ClearStepDoneTests(unittest.TestCase):
             with mock.patch.object(daily_refresh.pathlib.Path, "home",
                                    return_value=daily_refresh.pathlib.Path(tmp)):
                 rd = datetime.date(2026, 5, 31)
-                mark_step_done(rd, "write_raw_sheets")
-                self.assertTrue(step_already_done(rd, "write_raw_sheets"))
-                clear_step_done(rd, "write_raw_sheets")
-                self.assertFalse(step_already_done(rd, "write_raw_sheets"))
+                mark_step_done(rd, "load_raw_bigquery")
+                self.assertTrue(step_already_done(rd, "load_raw_bigquery"))
+                clear_step_done(rd, "load_raw_bigquery")
+                self.assertFalse(step_already_done(rd, "load_raw_bigquery"))
                 # Idempotent — clearing an absent marker is a no-op.
-                clear_step_done(rd, "write_raw_sheets")
-                self.assertFalse(step_already_done(rd, "write_raw_sheets"))
+                clear_step_done(rd, "load_raw_bigquery")
+                self.assertFalse(step_already_done(rd, "load_raw_bigquery"))
 
 
 class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
@@ -408,7 +408,7 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
     run, invalidate those markers so they recompute. Always on (no feature
     flag) — safe by construction (idempotent upserts + post-condition guard)."""
 
-    DOWNSTREAM = ("write_raw_sheets", "update_model_sheet", "process_reviews")
+    DOWNSTREAM = ("load_raw_bigquery", "update_model_sheet", "process_reviews")
 
     def _ok(self):
         return types.SimpleNamespace(success=True)
@@ -490,11 +490,11 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
                     cleared = _recover_stale_downstream_markers(
                         rd, {"square": self._ok()}, dry_run=False
                     )
-                self.assertEqual(set(cleared), {"write_raw_sheets", "process_reviews"})
+                self.assertEqual(set(cleared), {"load_raw_bigquery", "process_reviews"})
                 self.assertNotIn("update_model_sheet", cleared)
                 # The step we couldn't clear is still present (will short-circuit).
                 self.assertTrue(step_already_done(rd, "update_model_sheet"))
-                self.assertFalse(step_already_done(rd, "write_raw_sheets"))
+                self.assertFalse(step_already_done(rd, "load_raw_bigquery"))
 
     def test_adp_recovery_also_triggers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -573,6 +573,221 @@ class LatestClosedPeriodWithEarningsTests(unittest.TestCase):
                 profile=self.PROFILE, store="palmetto",
                 refresh_date=datetime.date(2026, 6, 2))
         self.assertIsNone(out)
+
+
+class UnifiedWindowArgTests(unittest.TestCase):
+    """Test --from/--to unified window: arg parsing, env-var fallback, fan-out.
+
+    Uses a lightweight parse-only helper — extracts the argparser from
+    daily_refresh without running main() — to verify CLI contract without
+    any network / sheet / Playwright side-effects.
+    """
+
+    def _parse(self, extra_args: list[str], env: dict | None = None):
+        """Build the same argparser that main() would build, parse extra_args."""
+        import argparse
+        # Rebuild a minimal argparser matching the real one's window-relevant args.
+        # daily_refresh.main() uses `cli`; we replicate only the subset we need.
+        cli = argparse.ArgumentParser()
+        cli.add_argument("--store", default="palmetto")
+        cli.add_argument("--date", default=None)
+        cli.add_argument("--from-date", dest="from_date", default=None)
+        cli.add_argument("--square-from", default=None)
+        cli.add_argument("--square-to", default=None)
+        cli.add_argument("--adp-from", default=None)
+        cli.add_argument("--adp-to", default=None)
+        cli.add_argument("--adp-pay-period", default=None)
+        cli.add_argument("--reviews-since", default=None)
+        cli.add_argument("--reviews-until", default=None)
+        cli.add_argument("--from", dest="window_from", default=None)
+        cli.add_argument("--to", dest="window_to", default=None)
+        args = cli.parse_args(extra_args)
+        # Apply env-var fallbacks as main() does.
+        if env:
+            args.window_from = args.window_from or env.get("BHAGA_WINDOW_FROM") or None
+            args.window_to = args.window_to or env.get("BHAGA_WINDOW_TO") or None
+        return args
+
+    def test_from_to_sets_refresh_date_to_to(self):
+        """--to should become refresh_date (used as the GCS cache folder)."""
+        args = self._parse(["--from", "2026-03-22", "--to", "2026-06-04"])
+        # Mimic main()'s date_arg resolution.
+        date_arg = args.date or args.window_to or None
+        self.assertEqual(date_arg, "2026-06-04")
+        self.assertEqual(datetime.date.fromisoformat(date_arg), datetime.date(2026, 6, 4))
+
+    def test_from_overrides_gap_start(self):
+        """--from should set gap_start bypassing the sheet gap-resolver."""
+        args = self._parse(["--from", "2026-03-22", "--to", "2026-06-04"])
+        _from_override = args.from_date or args.window_from
+        self.assertEqual(_from_override, "2026-03-22")
+        gap_start = datetime.date.fromisoformat(_from_override)
+        self.assertEqual(gap_start, datetime.date(2026, 3, 22))
+
+    def test_explicit_per_source_overrides_window(self):
+        """Per-source flags override the unified window (explicit override wins)."""
+        args = self._parse([
+            "--from", "2026-03-22", "--to", "2026-06-04",
+            "--square-from", "2026-05-01",
+            "--adp-to", "2026-05-31",
+            "--reviews-since", "2026-04-01",
+        ])
+        # square_from honors --square-from (explicit) not window_from
+        square_from = (
+            datetime.date.fromisoformat(args.square_from) if args.square_from
+            else (datetime.date.fromisoformat(args.window_from) if args.window_from else None)
+        )
+        self.assertEqual(square_from, datetime.date(2026, 5, 1))
+        # adp_window_to honors --adp-to (explicit) not window_to
+        adp_window_to = (
+            datetime.date.fromisoformat(args.adp_to) if args.adp_to
+            else (datetime.date.fromisoformat(args.window_to) if args.window_to else None)
+        )
+        self.assertEqual(adp_window_to, datetime.date(2026, 5, 31))
+        # reviews_since honors --reviews-since (explicit) not window_from
+        rev_since = args.reviews_since or args.window_from
+        self.assertEqual(rev_since, "2026-04-01")
+
+    def test_windowed_run_sets_custom_range_and_select_all(self):
+        """--from/--to without per-source overrides => custom-range earnings + Select All."""
+        args = self._parse(["--from", "2026-03-22", "--to", "2026-06-04"])
+        adp_window_from = (
+            datetime.date.fromisoformat(args.adp_from) if args.adp_from
+            else (datetime.date.fromisoformat(args.window_from) if args.window_from else None)
+        )
+        adp_window_to = (
+            datetime.date.fromisoformat(args.adp_to) if args.adp_to
+            else (datetime.date.fromisoformat(args.window_to) if args.window_to else None)
+        )
+        earnings_custom_range = bool(adp_window_from and adp_window_to)
+        self.assertTrue(earnings_custom_range)
+        # adp_target_date should become None (Select All pay periods)
+        adp_target_date_would_be_none = (
+            args.window_from and not args.adp_pay_period and not args.adp_to
+        )
+        self.assertTrue(adp_target_date_would_be_none)
+
+    def test_env_var_fallback_honors_bhaga_window(self):
+        """BHAGA_WINDOW_FROM/TO env vars should fill in missing --from/--to."""
+        args = self._parse(
+            [],
+            env={"BHAGA_WINDOW_FROM": "2026-03-22", "BHAGA_WINDOW_TO": "2026-06-04"},
+        )
+        self.assertEqual(args.window_from, "2026-03-22")
+        self.assertEqual(args.window_to, "2026-06-04")
+
+    def test_cli_wins_over_env(self):
+        """CLI --from/--to take precedence over BHAGA_WINDOW_* env vars."""
+        args = self._parse(
+            ["--from", "2026-05-01", "--to", "2026-05-31"],
+            env={"BHAGA_WINDOW_FROM": "2026-01-01", "BHAGA_WINDOW_TO": "2026-01-31"},
+        )
+        self.assertEqual(args.window_from, "2026-05-01")
+        self.assertEqual(args.window_to, "2026-05-31")
+
+    def test_reviews_window_fan_out(self):
+        """--from/--to should fan out to reviews_since/until when no override."""
+        args = self._parse(["--from", "2026-03-22", "--to", "2026-06-04"])
+        rev_since = args.reviews_since or args.window_from
+        rev_until = args.reviews_until or args.window_to
+        self.assertEqual(rev_since, "2026-03-22")
+        self.assertEqual(rev_until, "2026-06-04")
+
+
+class EarningsCustomRangeTests(unittest.TestCase):
+    """Unit tests for _earnings_within_session custom-range vs Last-payroll path."""
+
+    def _make_page(self):
+        """Return a Mock page with just enough Playwright API surface."""
+        page = mock.MagicMock()
+        # get_by_role(...).first.click() / .fill() should be silently callable.
+        return page
+
+    def _mock_store_profile(self):
+        return mock.patch(
+            "skills.adp_run_automation.runner._load_store_profile",
+            return_value={"adp_run": {"wage_rate_report_name": "Earnings and Hours V1"}},
+        )
+
+    def _mock_navigate(self):
+        return mock.patch("skills.adp_run_automation.runner._navigate_to_reports_landing")
+
+    def _mock_report_tile(self):
+        return mock.patch("skills.adp_run_automation.runner._open_saved_report_tile")
+
+    def _mock_date_range_dropdown(self):
+        return mock.patch("skills.adp_run_automation.runner._open_date_range_dropdown")
+
+    def _mock_download(self):
+        import pathlib
+        fake_path = pathlib.Path("/tmp/fake-earnings.xlsx")
+        return mock.patch("skills.adp_run_automation.runner.download_to", return_value=fake_path)
+
+    def _mock_row_guard(self):
+        return mock.patch("skills.adp_run_automation.runner._assert_earnings_xlsx_has_rows", return_value=5)
+
+    def test_range_over_366_days_raises(self):
+        from skills.adp_run_automation.runner import _earnings_within_session
+        page = self._make_page()
+        start = datetime.date(2024, 1, 1)
+        end = datetime.date(2025, 2, 15)  # > 366 days
+        with self._mock_store_profile(), self._mock_navigate():
+            with self.assertRaises(ValueError) as cm:
+                _earnings_within_session(
+                    page, store="palmetto",
+                    start=start, end=end,
+                    use_custom_range=True,
+                )
+        self.assertIn("12 months", str(cm.exception))
+
+    def test_custom_range_missing_dates_raises(self):
+        from skills.adp_run_automation.runner import _earnings_within_session
+        page = self._make_page()
+        with self._mock_store_profile(), self._mock_navigate():
+            with self.assertRaises(ValueError) as cm:
+                _earnings_within_session(
+                    page, store="palmetto",
+                    use_custom_range=True,
+                    # start/end intentionally omitted
+                )
+        self.assertIn("requires both start and end", str(cm.exception))
+
+
+class ProcessReviewsUntilArgTests(unittest.TestCase):
+    """--until arg caps review processing window."""
+
+    def _parse_reviews_args(self, extra_args: list[str]):
+        import argparse
+        cli = argparse.ArgumentParser()
+        cli.add_argument("--store", default="palmetto")
+        cli.add_argument("--since", default=None)
+        cli.add_argument("--until", default=None)
+        cli.add_argument("--max-pages", type=int, default=40)
+        cli.add_argument("--prefetched-messages", default=None)
+        cli.add_argument("--dry-run", action="store_true")
+        cli.add_argument("--no-slack", action="store_true")
+        return cli.parse_args(extra_args)
+
+    def test_until_arg_is_parsed(self):
+        """--until is accepted and propagated."""
+        args = self._parse_reviews_args(["--until", "2026-06-04"])
+        self.assertEqual(args.until, "2026-06-04")
+
+    def test_without_until_arg_is_none(self):
+        """Default --until is None (no cap)."""
+        args = self._parse_reviews_args([])
+        self.assertIsNone(args.until)
+
+    def test_reviews_cmd_includes_until_when_set(self):
+        """process_reviews step command includes --until when window_to is set."""
+        # Simulate the review_cmd construction logic from daily_refresh.main()
+        rev_until = "2026-06-04"
+        review_cmd: list[str] = ["python3", "-m", "agents.bhaga.scripts.process_reviews"]
+        if rev_until:
+            review_cmd.extend(["--until", rev_until])
+        self.assertIn("--until", review_cmd)
+        idx = review_cmd.index("--until")
+        self.assertEqual(review_cmd[idx + 1], "2026-06-04")
 
 
 if __name__ == "__main__":

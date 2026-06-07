@@ -113,10 +113,28 @@ def _init_firestore() -> None:
         db = None
 
 
+_bq: Optional[object] = None  # google.cloud.bigquery.Client | None
+_BQ_PROJECT = "jarvis-bhaga-prod"
+_BQ_DATASET = os.environ.get("BHAGA_BQ_DATASET", "bhaga")
+_BQ_STORE_CONFIG_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.store_config"
+
+
+def _init_bigquery() -> None:
+    global _bq
+    try:
+        from google.cloud import bigquery  # type: ignore[import]
+        _bq = bigquery.Client(project=_BQ_PROJECT)
+        log.info("BigQuery client initialized")
+    except Exception as exc:
+        log.error("BigQuery init failed (config commands will be unavailable): %s", exc)
+        _bq = None
+
+
 def init_app() -> None:
     """One-time initialisation called at import time and by tests."""
     _init_agent_config()
     _init_firestore()
+    _init_bigquery()
 
 
 # Run init when gunicorn imports this module
@@ -402,14 +420,113 @@ def _handle_slash_command(form: dict) -> Response:
             "text": summary,
         })
 
+    # config get <key>
+    config_get_match = re.match(r"^config\s+get\s+(\S+)$", command_text, re.IGNORECASE)
+    if config_get_match:
+        key = config_get_match.group(1)
+        return _handle_config_get(key, form)
+
+    # config set <key> <value>
+    config_set_match = re.match(r"^config\s+set\s+(\S+)\s+(.+)$", command_text, re.IGNORECASE)
+    if config_set_match:
+        key = config_set_match.group(1)
+        value = config_set_match.group(2).strip()
+        return _handle_config_set(key, value, form)
+
     return jsonify({
         "response_type": "ephemeral",
         "text": (
             ":robot_face: *BHAGA Commands*\n"
             "  `/bhaga-cloud refresh 2025-05-26` — trigger daily refresh for a date\n"
-            "  `/bhaga-cloud status` — latest run summary"
+            "  `/bhaga-cloud status` — latest run summary\n"
+            "  `/bhaga-cloud config get <key>` — read a store config tunable\n"
+            "  `/bhaga-cloud config set <key> <value>` — update a store config tunable"
         ),
     })
+
+
+def _handle_config_get(key: str, form: dict) -> Response:
+    """Return the current value of a store config key from BQ."""
+    if _bq is None:
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": ":warning: BigQuery not available — config commands are unavailable.",
+        })
+    store = os.environ.get("BHAGA_STORE", "palmetto")
+    try:
+        rows = list(_bq.query(  # type: ignore[union-attr]
+            f"SELECT value, updated_by, CAST(updated_at AS STRING) AS updated_at"
+            f" FROM `{_BQ_STORE_CONFIG_TABLE}`"
+            f" WHERE store = @store AND key = @key"
+            f" ORDER BY updated_at DESC LIMIT 1",
+            job_config=_bq_param_config([("store", "STRING", store), ("key", "STRING", key)]),
+        ).result())
+        if not rows:
+            return jsonify({
+                "response_type": "ephemeral",
+                "text": f":information_source: `{key}` is not set in `{store}` config.",
+            })
+        row = dict(rows[0])
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": (
+                f":white_check_mark: `{key}` = *{row['value']}*"
+                + (f"  _(set by {row['updated_by']} at {row['updated_at']})_" if row.get("updated_by") else "")
+            ),
+        })
+    except Exception as exc:
+        log.error("config get failed: %s", exc)
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": f":x: config get failed: {exc}",
+        })
+
+
+def _handle_config_set(key: str, value: str, form: dict) -> Response:
+    """Upsert a store config key in BQ."""
+    if _bq is None:
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": ":warning: BigQuery not available — config commands are unavailable.",
+        })
+    store = os.environ.get("BHAGA_STORE", "palmetto")
+    user_name = form.get("user_name") or form.get("user_id") or "slack"
+    try:
+        from google.cloud import bigquery as _bq_mod  # type: ignore[import]
+        fq = f"`{_BQ_STORE_CONFIG_TABLE}`"
+        _bq.query(  # type: ignore[union-attr]
+            f"MERGE {fq} T"
+            f" USING (SELECT @store AS store, @key AS key) S"
+            f" ON T.store = S.store AND T.key = S.key"
+            f" WHEN MATCHED THEN UPDATE SET value = @value, updated_at = CURRENT_TIMESTAMP(), updated_by = @by"
+            f" WHEN NOT MATCHED THEN INSERT (store, key, value, updated_at, updated_by)"
+            f"   VALUES (@store, @key, @value, CURRENT_TIMESTAMP(), @by)",
+            job_config=_bq_param_config([
+                ("store", "STRING", store),
+                ("key", "STRING", key),
+                ("value", "STRING", value),
+                ("by", "STRING", user_name),
+            ]),
+        ).result()
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": f":white_check_mark: `{key}` set to *{value}* (by {user_name})",
+        })
+    except Exception as exc:
+        log.error("config set failed: %s", exc)
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": f":x: config set failed: {exc}",
+        })
+
+
+def _bq_param_config(params: list[tuple]) -> object:
+    """Build a BigQuery QueryJobConfig with scalar parameters."""
+    from google.cloud import bigquery as _bq_mod  # type: ignore[import]
+    return _bq_mod.QueryJobConfig(query_parameters=[
+        _bq_mod.ScalarQueryParameter(name, typ, val)
+        for name, typ, val in params
+    ])
 
 
 def _trigger_cloud_run_job(date_str: str, job_name: Optional[str] = None) -> None:

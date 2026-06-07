@@ -11,16 +11,39 @@ End-to-end nightly flow:
        (Skipped via --skip-timecard until iframe selectors are calibrated.)
     5. (When --include-rates) Scrape ADP Earnings & Hours V1 XLSX.
        Defaults: ON only on Mondays and Tuesdays.
-    6. Mirror local scrapes into the canonical raw Google Sheets
-       (bhaga_adp_raw, bhaga_square_raw) via backfill_from_downloads. Per
-       architecture contract, all downstream code reads only from these.
+    6. Parse the just-downloaded scrape exports straight into BigQuery as the
+       primary sink via backfill_from_downloads (BHAGA_DATASTORE=bigquery). BQ is
+       the system of record for raw data.
+    6b. Render raw Google Sheets (bhaga_adp_raw, bhaga_square_raw) as projections
+       from BQ via render_raw_sheet_from_bq (non-fatal; BQ is canonical).
+
+DATA ARCHITECTURE — BigQuery is the SINGLE SOURCE OF TRUTH (read this first):
+    upstream portal (Square / ADP / ClickUp)
+        → Playwright/API scrape (browser writes a transient export file to
+          extracted/downloads/ — Square/ADP have no row API, so a local file is
+          unavoidable; it is ephemeral scratch, never a source of truth)
+        → backfill_from_downloads parses that file → BQ raw tables (MERGE upsert;
+          or TRUNCATE-then-load for a fresh full-history scrape, see --replace)
+        → model computed FROM BQ (materialize_model_bq) and Sheets/Grafana are
+          read-only PROJECTIONS of BQ.
+
+    GCS is NOT part of any data pipeline. It is never read as a data source and
+    no scrape data files are written to it. GCS holds ONLY:
+        • trusted-device browser sessions (storage_state) → skip 2FA next run
+        • failure evidence (screenshots + DOM) for postmortems
+    Do not reintroduce GCS data uploads/downloads here — that was the old
+    scrape→Sheets→GCS→BQ-mirror path this PR retired (it created dual writers
+    and Sheet/BQ drift). If you need to "rebuild from scratch", re-scrape into BQ
+    (--replace), do NOT restore data from GCS.
     7. Run update_model_sheet to refresh the 8 Model workbook tabs:
        config, daily, labor_daily, labor_weekly, labor_period,
        tip_alloc_period, tip_alloc_daily, period_summary.
        (Reads from raw sheets, NOT local files.)
     8. Run process_reviews to fetch Google reviews from ClickUp, allocate
-       bonuses, and rebuild review_bonus_period on the Model sheet.
+       bonuses, write google_reviews to BQ (primary), and rebuild
+       review_bonus_period on the Model sheet.
        (Skippable via --skip-reviews; idempotent on rerun.)
+    8b. Render reviews Sheet tab from google_reviews BQ (non-fatal; BQ is canonical).
     9. Send success heartbeat to BHAGA Slack DM.
 
 INCREMENTAL CONTRACT (per skill spec):
@@ -74,10 +97,7 @@ from agents.bhaga.notify import (
 )
 from agents.bhaga.scripts import model_semantics, otp_gate
 from agents.bhaga.scripts.gcs_cache import (
-    download_cached_files,
     evidence_prefix,
-    upload_file,
-    upload_scrape_artifacts,
 )
 from core.config_loader import refresh_access_token, resolve_sheet_id
 from skills.bhaga_config.dates import coerce_iso_date
@@ -357,7 +377,7 @@ def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
 # Downstream steps whose markers must be invalidated when a previously-failed
 # OTP portal recovers with fresh data on a later run (otherwise run_step would
 # short-circuit them and the fresh data would never reach the Model sheet).
-_RECOVERY_DOWNSTREAM_STEPS = ("write_raw_sheets", "update_model_sheet", "process_reviews")
+_RECOVERY_DOWNSTREAM_STEPS = ("load_raw_bigquery", "update_model_sheet", "process_reviews")
 
 
 def _recover_stale_downstream_markers(
@@ -524,20 +544,20 @@ def _assert_master_not_older_than_gap(
         return
     if not master_csv.exists():
         raise RuntimeError(
-            f"[write_raw_sheets] precondition violated: gap CSV exists "
+            f"[load_raw_bigquery] precondition violated: gap CSV exists "
             f"({gap_csv.name}) but master CSV does not ({master_csv.name}). "
-            f"consolidate_csv must have failed silently — refusing to write "
-            f"raw sheets from an incomplete master."
+            f"consolidate_csv must have failed silently — refusing to load "
+            f"raw BQ from an incomplete master."
         )
     gap_mtime = gap_csv.stat().st_mtime
     master_mtime = master_csv.stat().st_mtime
     if master_mtime < gap_mtime:
         raise RuntimeError(
-            f"[write_raw_sheets] precondition violated: master CSV "
+            f"[load_raw_bigquery] precondition violated: master CSV "
             f"({master_csv.name}, mtime={master_mtime}) is OLDER than the gap "
             f"CSV ({gap_csv.name}, mtime={gap_mtime}). consolidate_csv did "
             f"not rewrite the master after the gap was downloaded — "
-            f"refusing to write raw sheets from stale master."
+            f"refusing to load raw BQ from stale master."
         )
 
 
@@ -593,8 +613,8 @@ def _assert_data_advanced_post_condition(
             f"{refresh_date.isoformat()}, but bhaga_model > config."
             f"data_window_end did NOT advance past {prev_end.isoformat()} "
             f"(post-run value={post_end.isoformat()}). This means "
-            f"write_raw_sheets or update_model_sheet silently dropped the "
-            f"new rows. Inspect the raw_square_transactions tab vs the "
+            f"load_raw_bigquery or update_model_sheet silently dropped the "
+            f"new rows. Inspect the square_transactions BQ table vs the "
             f"master CSV before retrying."
         )
 
@@ -1004,6 +1024,9 @@ def _adp_bundle_then_raise(
     target_date: datetime.date,
     include_earnings: bool,
     headed: bool,
+    earnings_start: datetime.date | None = None,
+    earnings_end: datetime.date | None = None,
+    earnings_custom_range: bool = False,
 ) -> dict:
     """Wrap download_adp_bundle so the orchestrator's run_step sees a clean
     success/exception contract.
@@ -1022,6 +1045,9 @@ def _adp_bundle_then_raise(
         target_date=target_date,
         include_earnings=include_earnings,
         headed=headed,
+        earnings_start=earnings_start,
+        earnings_end=earnings_end,
+        earnings_custom_range=earnings_custom_range,
     )
     errs = result.get("errors") or {}
     if errs:
@@ -1038,26 +1064,6 @@ class PipelineResult:
     error: Exception | None = None
     artifacts: dict[str, pathlib.Path | None] = field(default_factory=dict)
     master_stats: dict[str, int] = field(default_factory=dict)
-
-
-def _cache_artifact_now(
-    path: object, *, refresh_date: datetime.date, category: str = "square"
-) -> None:
-    """Upload a freshly-downloaded raw artifact to GCS immediately.
-
-    A later in-session step can fail (e.g. the 2026-05-31 item-sales selector
-    drift, which crashed AFTER transactions had already downloaded). Uploading
-    each artifact the moment it lands means those earlier artifacts survive in
-    the cache, so the recovery run restores them from GCS and re-scrapes only the
-    failed step — zero extra OTP. Best-effort: never raises (the bulk upload at
-    the end of the pipeline is the backstop, incl. the skip-browser path).
-    """
-    if not isinstance(path, pathlib.Path) or not path.exists():
-        return
-    try:
-        upload_file(path, refresh_date=refresh_date, category=category)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[square_pipeline] WARN: incremental GCS upload failed for {path.name}: {exc}")
 
 
 def _run_square_pipeline(
@@ -1149,9 +1155,6 @@ def _run_square_pipeline(
                             page, start=gap_start, end=end_date,
                         )
                         print(f"[square_pipeline] transactions OK → {csv_path}")
-                        # Cache immediately so a later item-sales/KDS failure in
-                        # this same session can't discard the transactions CSV.
-                        _cache_artifact_now(csv_path, refresh_date=refresh_date)
 
                     # Download item sales in the same session
                     if items_fresh:
@@ -1162,7 +1165,6 @@ def _run_square_pipeline(
                             page, start_date=gap_start, end_date=end_date, store=store,
                         )
                         print(f"[square_pipeline] item sales OK → {item_csv_path}")
-                        _cache_artifact_now(item_csv_path, refresh_date=refresh_date)
 
                     # Download KDS report in the same session
                     if needs_kds:
@@ -1170,7 +1172,6 @@ def _run_square_pipeline(
                             page, start_date=gap_start, end_date=end_date, store=store,
                         )
                         print(f"[square_pipeline] KDS OK → {kds_csv_path}")
-                        _cache_artifact_now(kds_csv_path, refresh_date=refresh_date)
                     else:
                         kds_csv_path = expected_kds if expected_kds.exists() else None
             finally:
@@ -1185,17 +1186,10 @@ def _run_square_pipeline(
             result.master_stats = {"master_rows": total, "rows_added": added}
             print(f"[square_pipeline] consolidate OK — master={total}, added={added}")
 
-        try:
-            upload_scrape_artifacts(
-                refresh_date=refresh_date,
-                download_dir=DOWNLOAD_DIR,
-                square_csv=csv_path if isinstance(csv_path, pathlib.Path) else None,
-                master_csv=MASTER_TXN_CSV if MASTER_TXN_CSV.exists() else None,
-                item_sales_csv=item_csv_path if isinstance(item_csv_path, pathlib.Path) else None,
-                kds_csv=kds_csv_path if isinstance(kds_csv_path, pathlib.Path) else None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"[square_pipeline] WARN: GCS upload failed (non-fatal): {exc}")
+        # NOTE: scrape CSVs are NOT uploaded to GCS. BigQuery is the single
+        # system of record — the just-downloaded files are parsed straight into
+        # BQ raw tables by the load_raw_bigquery step (backfill_from_downloads).
+        # GCS holds only browser sessions + failure evidence, never data files.
 
         result.success = True
     except Exception as exc:  # noqa: BLE001
@@ -1214,8 +1208,12 @@ def _run_adp_pipeline(
     headed: bool,
     refresh_date: datetime.date,
     dry_run: bool,
+    earnings_start: datetime.date | None = None,
+    earnings_end: datetime.date | None = None,
+    earnings_custom_range: bool = False,
 ) -> PipelineResult:
-    """Thread 2: ADP Timecard + Earnings scrape → GCS upload."""
+    """Thread 2: ADP Timecard + Earnings scrape → parsed into BigQuery raw
+    tables by load_raw_bigquery. No data files are written to GCS."""
     result = PipelineResult(name="adp")
     try:
         if dry_run:
@@ -1228,29 +1226,18 @@ def _run_adp_pipeline(
             target_date=target_date,
             include_earnings=include_earnings,
             headed=headed,
+            earnings_start=earnings_start,
+            earnings_end=earnings_end,
+            earnings_custom_range=earnings_custom_range,
         )
         result.artifacts["adp_timecard_xlsx"] = bundle.get("timecard_xlsx")
         result.artifacts["adp_earnings_xlsx"] = bundle.get("earnings_xlsx")
         print(f"[adp_pipeline] bundle OK → {list(bundle.keys())}")
 
-        adp_tc = result.artifacts.get("adp_timecard_xlsx")
-        adp_er = result.artifacts.get("adp_earnings_xlsx")
-        if not isinstance(adp_tc, pathlib.Path):
-            tc_glob = sorted(DOWNLOAD_DIR.glob("Timecard-*.xlsx"))
-            adp_tc = tc_glob[-1] if tc_glob else None
-        if not isinstance(adp_er, pathlib.Path):
-            er_glob = sorted(DOWNLOAD_DIR.glob("Earnings-*.xlsx"))
-            adp_er = er_glob[-1] if er_glob else None
-        if adp_tc or adp_er:
-            try:
-                upload_scrape_artifacts(
-                    refresh_date=refresh_date,
-                    download_dir=DOWNLOAD_DIR,
-                    adp_timecard_xlsx=adp_tc,
-                    adp_earnings_xlsx=adp_er,
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"[adp_pipeline] WARN: GCS upload failed (non-fatal): {exc}")
+        # NOTE: ADP Timecard/Earnings XLSX are NOT uploaded to GCS. They are
+        # parsed straight into the BQ raw tables (adp_shifts/adp_punches/
+        # adp_wage_rates/adp_earnings) by load_raw_bigquery. BigQuery is the
+        # single system of record; GCS holds only sessions + failure evidence.
 
         result.success = True
     except Exception as exc:  # noqa: BLE001
@@ -1265,11 +1252,17 @@ def _run_review_fetch(
     *,
     store: str,
     dry_run: bool,
+    since_override: str | None = None,
 ) -> PipelineResult:
     """Thread 3: Fetch ClickUp review messages and cache locally as JSON.
 
     Does NOT do attribution — that requires punch data from raw sheets
     and must run after write_raw_sheets + update_model_sheet.
+
+    Args:
+        since_override: YYYY-MM-DD string. When set (e.g. via --from/--to unified
+            window or --reviews-since), bypasses the BQ high-water mark and fetches
+            from this date forward. Allows historical review backfill.
     """
     from agents.bhaga.scripts.process_reviews import (  # noqa: PLC0415
         REVIEW_CHANNEL_ID, CLICKUP_TEAM_ID, REVIEW_CHANNEL_NAME,
@@ -1277,10 +1270,6 @@ def _run_review_fetch(
         _read_config_tab, _latest_review_ts_ms,
         BONUS_START_DATE, CT as REVIEW_CT,
         fetch_review_messages,
-    )
-    from core.config_loader import (  # noqa: PLC0415
-        refresh_access_token as _refresh_token,
-        resolve_sheet_id as _resolve_sid,
     )
 
     result = PipelineResult(name="review_fetch")
@@ -1291,23 +1280,31 @@ def _run_review_fetch(
             return result
 
         profile = _load_review_profile(store)
-        raw_sheet_cfg = profile["google_sheets"].get("bhaga_review_raw")
-        if not raw_sheet_cfg or not raw_sheet_cfg.get("spreadsheet_id"):
-            print("[review_fetch] WARN: no bhaga_review_raw configured — skipping.")
-            result.success = True
-            return result
 
-        raw_sid = _resolve_sid("bhaga_review_raw", profile)
-        token = _refresh_token(store)
-
-        latest_in_sheet_ms = _latest_review_ts_ms(raw_sid, token)
-        if latest_in_sheet_ms is not None:
-            since_ts_ms = latest_in_sheet_ms
-        else:
-            bonus_start_dt = datetime.datetime.combine(
-                BONUS_START_DATE, datetime.time.min, tzinfo=REVIEW_CT,
+        # Resolve the ClickUp fetch start. Priority:
+        # 1. since_override (from --from/--to unified window or --reviews-since)
+        # 2. BQ high-water mark (google_reviews.max(post_ts_ct))
+        # 3. bonus_start_date fallback
+        if since_override:
+            since_dt = datetime.datetime.fromisoformat(since_override).replace(
+                tzinfo=REVIEW_CT,
+            ) if "T" in since_override else datetime.datetime.combine(
+                datetime.date.fromisoformat(since_override),
+                datetime.time.min,
+                tzinfo=REVIEW_CT,
             )
-            since_ts_ms = int(bonus_start_dt.timestamp() * 1000) - 1
+            since_ts_ms = int(since_dt.timestamp() * 1000) - 1
+            print(f"[review_fetch] since_override={since_override} → since_ts_ms={since_ts_ms}")
+        else:
+            # High-water mark now comes from google_reviews BQ (BQ-primary architecture).
+            latest_in_bq_ms = _latest_review_ts_ms()
+            if latest_in_bq_ms is not None:
+                since_ts_ms = latest_in_bq_ms
+            else:
+                bonus_start_dt = datetime.datetime.combine(
+                    BONUS_START_DATE, datetime.time.min, tzinfo=REVIEW_CT,
+                )
+                since_ts_ms = int(bonus_start_dt.timestamp() * 1000) - 1
 
         msgs = fetch_review_messages(
             since_ts_ms=since_ts_ms, max_pages=40,
@@ -1547,6 +1544,18 @@ def main() -> int:
                      help="Override reviews anchor timestamp (YYYY-MM-DD). Default: auto from sheet.")
     cli.add_argument("--reviews-until", default=None, metavar="DATE",
                      help="Override reviews end cap (YYYY-MM-DD). Default: data_window_end.")
+    # Unified window — fans out to every source (Square, ADP timecard, ADP earnings,
+    # reviews) unless a per-source flag overrides. Also accepts env vars
+    # BHAGA_WINDOW_FROM / BHAGA_WINDOW_TO so Cloud Run jobs can set the window
+    # without rewriting the container command.
+    cli.add_argument("--from", dest="window_from", default=None, metavar="DATE",
+                     help="Unified backfill window START (YYYY-MM-DD). Fans out to "
+                          "Square/ADP/reviews unless a per-source flag overrides. "
+                          "Env fallback: BHAGA_WINDOW_FROM.")
+    cli.add_argument("--to", dest="window_to", default=None, metavar="DATE",
+                     help="Unified backfill window END (YYYY-MM-DD). Also sets "
+                          "refresh_date (the GCS cache folder). "
+                          "Env fallback: BHAGA_WINDOW_TO.")
     cli.add_argument("--dry-run", action="store_true",
                      help="Print steps but do not actually scrape.")
     cli.add_argument("--no-slack", action="store_true",
@@ -1556,6 +1565,11 @@ def main() -> int:
                           "(use after fixing a known-bad regression; a healthy "
                           "run auto-clears the breaker).")
     args = cli.parse_args()
+
+    # Env-var fallbacks for the unified window (mirrors how REFRESH_DATE works).
+    # CLI flags win; env is a second-choice for Cloud Run job overrides.
+    args.window_from = args.window_from or os.environ.get("BHAGA_WINDOW_FROM") or None
+    args.window_to = args.window_to or os.environ.get("BHAGA_WINDOW_TO") or None
 
     # Scenario scoping via env: a focused sandbox run (e.g. the item-sales-live
     # scenario) sets BHAGA_SKIP_<STEP>=1 to exercise ONLY the surface that failed.
@@ -1579,10 +1593,9 @@ def main() -> int:
     if args.no_slack:
         os.environ["BHAGA_SLACK_DISABLED"] = "1"
 
-    # --date wins; otherwise honor the REFRESH_DATE env var (set by the cloud
-    # webhook's job-execution trigger when resuming from a pending checkpoint),
-    # falling back to today CT for the nightly cron.
-    date_arg = args.date or os.environ.get("REFRESH_DATE") or None
+    # --date wins; then --to (unified window end); then REFRESH_DATE env (cloud
+    # webhook); then today CT for the nightly cron.
+    date_arg = args.date or args.window_to or os.environ.get("REFRESH_DATE") or None
     refresh_date = (
         datetime.date.fromisoformat(date_arg) if date_arg else _today_ct()
     )
@@ -1675,22 +1688,47 @@ def main() -> int:
     # so we set it unconditionally here (None in the --from-date /
     # --skip-square branches where there's nothing to compare against).
     prev_end: datetime.date | None = None
-    if args.from_date:
-        gap_start = datetime.date.fromisoformat(args.from_date)
-        gap_source = "--from-date override"
+    _from_override = args.from_date or args.window_from
+    if _from_override:
+        gap_start = datetime.date.fromisoformat(_from_override)
+        gap_source = "--from/--to window" if args.window_from and not args.from_date else "--from-date override"
     elif args.skip_square:
         gap_start = refresh_date
         gap_source = "(square skipped)"
     else:
-        prev_end, cell_was_empty = _read_data_window_end_from_sheet(
-            spreadsheet_id=spreadsheet_id, store=args.store
-        )
-        gap_start, gap_source = compute_gap_window(
-            prev_end=prev_end,
-            cell_was_empty=cell_was_empty,
-            data_start=data_start,
-            refresh_date=refresh_date,
-        )
+        # BQ-coverage-based gap resolver (BQ = single source of truth).
+        # Ask BQ which days are already present; scrape only the missing prefix.
+        # Falls back to the sheet-based path when BQ is unavailable (e.g. local dev
+        # with BHAGA_DATASTORE unset) so the laptop flow keeps working.
+        _bq_client_available = False
+        try:
+            from core.datastore import get_client as _bq_get_client
+            _bq_client_available = _bq_get_client() is not None
+        except Exception:  # noqa: BLE001
+            pass
+
+        if _bq_client_available:
+            from agents.bhaga.scripts.bq_coverage import SOURCE_COVERAGE, missing_ranges as _missing_ranges
+            _sq_table, _sq_col = SOURCE_COVERAGE["square_transactions"]
+            _bq_gaps = _missing_ranges(_sq_table, _sq_col, data_start, refresh_date)
+            if _bq_gaps:
+                gap_start = _bq_gaps[0][0]
+                gap_source = f"bq-coverage: earliest-missing={gap_start}"
+            else:
+                # All days already in BQ; still refresh today for idempotency.
+                gap_start = refresh_date
+                gap_source = "bq-coverage: fully-covered -> today"
+        else:
+            # BQ unavailable — fall back to sheet-based window (laptop dev path).
+            prev_end, cell_was_empty = _read_data_window_end_from_sheet(
+                spreadsheet_id=spreadsheet_id, store=args.store
+            )
+            gap_start, gap_source = compute_gap_window(
+                prev_end=prev_end,
+                cell_was_empty=cell_was_empty,
+                data_start=data_start,
+                refresh_date=refresh_date,
+            )
 
     needs_square_scrape = (not args.skip_square) and (gap_start <= refresh_date)
 
@@ -1701,7 +1739,13 @@ def main() -> int:
     #      period containing refresh_date.  One login, one OTP, all data.
     #   2. Earnings should always be included so wage-rate data is present for
     #      the model sheet (override the Mon/Tue auto-gate).
-    is_fresh_install = prev_end is None and "fresh install" in gap_source
+    # Fresh install: gap covers the entire history from data_start.
+    # With BQ coverage, this is when the gap starts at data_start.
+    # With the sheet-based fallback path, it's the legacy "cell_was_empty" case.
+    is_fresh_install = (
+        gap_start == data_start
+        and ("fresh install" in gap_source or "bq-coverage: earliest-missing" in gap_source)
+    )
     adp_target_date: datetime.date | None = None if is_fresh_install else refresh_date
 
     include_rates = (
@@ -1710,18 +1754,6 @@ def main() -> int:
     )
 
     headed = not args.headless  # default headed
-
-    print(f"\n{'='*60}")
-    print(f"BHAGA daily_refresh  store={args.store}  refresh_date={refresh_date.isoformat()}")
-    print(f"  gap source:     {gap_source}")
-    print(f"  gap window:     {gap_start.isoformat()} → {refresh_date.isoformat()}"
-          + ("  (empty — nothing to scrape)" if not needs_square_scrape and not args.skip_square else ""))
-    print(f"  fresh_install:  {is_fresh_install}")
-    print(f"  adp_target:     {adp_target_date!r}{'  (Select All pay periods)' if adp_target_date is None else ''}")
-    print(f"  include_rates:  {include_rates}")
-    print(f"  headed:         {headed}")
-    print(f"  dry_run:        {args.dry_run}")
-    print(f"{'='*60}")
 
     # ── Resolve per-source date overrides ──────────────────────────────
     square_from = (
@@ -1738,6 +1770,42 @@ def main() -> int:
     elif args.adp_to:
         adp_target_date = datetime.date.fromisoformat(args.adp_to)
     # else: adp_target_date was already set above (None for fresh install, refresh_date otherwise)
+
+    # Unified window defaults for ADP earnings: explicit --adp-from/--adp-to win;
+    # otherwise fall back to the unified --from/--to window.
+    adp_window_from = (
+        datetime.date.fromisoformat(args.adp_from) if args.adp_from
+        else (datetime.date.fromisoformat(args.window_from) if args.window_from else None)
+    )
+    adp_window_to = (
+        datetime.date.fromisoformat(args.adp_to) if args.adp_to
+        else (datetime.date.fromisoformat(args.window_to) if args.window_to else None)
+    )
+    # Use custom-range earnings when a window is explicitly set (backfill mode).
+    # Keep "Last payroll" for nightly incremental (no --from/--to, no --adp-from).
+    earnings_custom_range = bool(adp_window_from and adp_window_to)
+    # A windowed run with no explicit pay-period override => Select All periods
+    # (extra periods upsert harmlessly via keyed BQ MERGE).
+    if args.window_from and not args.adp_pay_period and not args.adp_to:
+        adp_target_date = None  # Select All pay periods
+    # Always include earnings on an explicit backfill window.
+    if args.window_from:
+        include_rates = True
+
+    print(f"\n{'='*60}")
+    print(f"BHAGA daily_refresh  store={args.store}  refresh_date={refresh_date.isoformat()}")
+    print(f"  gap source:     {gap_source}")
+    print(f"  gap window:     {gap_start.isoformat()} → {refresh_date.isoformat()}"
+          + ("  (empty — nothing to scrape)" if not needs_square_scrape and not args.skip_square else ""))
+    if args.window_from or args.window_to:
+        print(f"  unified window: {args.window_from or '(start)'} → {args.window_to or '(end)'}"
+              f"  earnings_custom_range={earnings_custom_range}")
+    print(f"  fresh_install:  {is_fresh_install}")
+    print(f"  adp_target:     {adp_target_date!r}{'  (Select All pay periods)' if adp_target_date is None else ''}")
+    print(f"  include_rates:  {include_rates}")
+    print(f"  headed:         {headed}")
+    print(f"  dry_run:        {args.dry_run}")
+    print(f"{'='*60}")
 
     t_start = time.monotonic()
     info_ping(
@@ -1766,36 +1834,6 @@ def main() -> int:
 
     if not needs_square and not args.skip_square and not needs_square_scrape:
         print("[square_transactions] SKIPPED — already covered through refresh_date.")
-
-    # ── GCS cache PRE-restore (no-OTP retry path) ──────────────────────
-    # On a fresh Cloud Run container the scrape CSVs are not on disk, so the
-    # Square pipeline's is_fresh_download() check would fail and fall through
-    # to a browser login (→ Square 2FA OTP). For an already-scraped date the
-    # CSVs live in GCS, so we restore them HERE — before the parallel phase —
-    # which makes is_fresh_download() return True inside _run_square_pipeline
-    # and SKIPS the browser entirely. This is what makes "retry an
-    # already-scraped date with cleared markers" cost ZERO OTP.
-    #
-    # Safe for the normal nightly: a brand-new refresh_date has no cache yet,
-    # so download_cached_files is a graceful no-op and the browser scrapes
-    # as usual. The post-parallel restore below still runs to cover the
-    # master CSV needed by write_raw_sheets when Square is skipped outright.
-    if not args.dry_run and needs_square:
-        print("\n[gcs_cache] pre-restoring scrape cache (if any) so a retry "
-              "of an already-scraped date skips the browser / OTP...")
-        try:
-            pre_restored = download_cached_files(
-                refresh_date=refresh_date,
-                download_dir=DOWNLOAD_DIR,
-            )
-            if pre_restored:
-                print(f"  [gcs_cache] pre-restored {len(pre_restored)} file(s) "
-                      f"from GCS before scrape decision")
-            else:
-                print("  [gcs_cache] no cached files for this date — "
-                      "Square will scrape fresh (expected on a new date)")
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [gcs_cache] WARN: pre-restore failed (non-fatal): {exc}")
 
     # ── OTP availability gate (two-step READY handshake) ──────────────
     # Decide which portals THIS run will actually need an OTP for (i.e. will
@@ -1893,12 +1931,17 @@ def main() -> int:
             headed=headed,
             refresh_date=refresh_date,
             dry_run=args.dry_run,
+            earnings_start=adp_window_from,
+            earnings_end=adp_window_to,
+            earnings_custom_range=earnings_custom_range,
         )
     if needs_review_fetch:
+        _rev_since_override = args.reviews_since or args.window_from
         pipeline_specs["review_fetch"] = functools.partial(
             _run_review_fetch,
             store=args.store,
             dry_run=args.dry_run,
+            since_override=_rev_since_override,
         )
 
     results = _execute_pipelines(pipeline_specs, serialize_otp=serialize_otp)
@@ -1959,26 +2002,6 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"[otp_gate] WARN: could not clear pending checkpoint: {exc}")
 
-    # ── GCS cache: restore missing files before downstream steps ──
-    if not args.dry_run:
-        critical_missing = (
-            not MASTER_TXN_CSV.exists()
-            or (not args.skip_timecard and not any(DOWNLOAD_DIR.glob("Timecard-*.xlsx")))
-        )
-        if critical_missing:
-            print("\n[gcs_cache] local files missing — attempting restore from GCS cache...")
-            try:
-                restored = download_cached_files(
-                    refresh_date=refresh_date,
-                    download_dir=DOWNLOAD_DIR,
-                )
-                if restored:
-                    print(f"  [gcs_cache] restored {len(restored)} file(s) from GCS")
-                else:
-                    print("  [gcs_cache] no cached files found in GCS for this date")
-            except Exception as exc:  # noqa: BLE001
-                print(f"  [gcs_cache] WARN: GCS restore failed (non-fatal): {exc}")
-
     # ── Auto-recover stale downstream markers on OTP-portal recovery ──
     # If an OTP portal (square/adp) produced FRESH data on THIS run while the
     # downstream markers are already done from a PRIOR partial run, those steps
@@ -2004,7 +2027,13 @@ def main() -> int:
     if square_ok or not args.skip_timecard:
         gap_csv_for_check = artifacts.get("square_csv") if isinstance(artifacts.get("square_csv"), pathlib.Path) else None
 
-        def _write_raw_sheets_step():
+        bq_raw_env = {
+            **os.environ,
+            "BHAGA_DATASTORE": "bigquery",
+            "PYTHONUNBUFFERED": "1",
+        }
+
+        def _load_raw_bigquery_step():
             _assert_master_not_older_than_gap(
                 master_csv=MASTER_TXN_CSV, gap_csv=gap_csv_for_check,
             )
@@ -2012,74 +2041,78 @@ def main() -> int:
                 [sys.executable, "-m", "agents.bhaga.scripts.backfill_from_downloads",
                  "--store", args.store],
                 cwd=str(PROJECT_ROOT), check=True,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env=bq_raw_env,
             )
 
         ok, _ = run_step(
-            "write_raw_sheets",
-            _write_raw_sheets_step,
+            "load_raw_bigquery",
+            _load_raw_bigquery_step,
             refresh_date=refresh_date,
             dry_run=args.dry_run,
         )
         if ok:
             raw_sheets_ok = True
         else:
-            failures.append(("write_raw_sheets", RuntimeError("see step log")))
+            failures.append(("load_raw_bigquery", RuntimeError("see step log")))
+            # Gate: clear the scrape-done markers so the next retry re-scrapes
+            # from upstream rather than trying to load absent local files.
+            # (Cloud Run containers are ephemeral; local files vanish between runs.)
+            for _scrape_step in ("square", "adp"):
+                if step_already_done(refresh_date, _scrape_step):
+                    clear_step_done(refresh_date, _scrape_step)
+                    print(f"  [load_raw_bigquery] cleared {_scrape_step}.done "
+                          "marker so next retry re-scrapes fresh data")
     else:
-        print("[write_raw_sheets] SKIPPED — no fresh inputs to mirror.")
+        print("[load_raw_bigquery] SKIPPED — no fresh inputs to load.")
 
-    # ── Mirror raw data to BigQuery (additive; Sheets is still the source of truth) ──
-    # Runs after write_raw_sheets so BQ raw tables stay in sync with Sheets.
-    # Non-fatal: if BQ write fails, Sheets is still updated and the run continues.
+    # ── Render raw Sheets from BQ (BQ is primary; Sheet is projection) ──────────
+    # Runs after load_raw_bigquery so BQ raw tables are current.
+    # Non-fatal: BQ already has the data; a Sheet projection failure must not
+    # fail the nightly run. Square/ADP tabs only; reviews rendered after process_reviews.
     if raw_sheets_ok:
-        bq_raw_env = {
+        bq_raw_env_local = {
             **os.environ,
             "BHAGA_DATASTORE": "bigquery",
             "PYTHONUNBUFFERED": "1",
         }
         ok, _ = run_step(
-            "load_bigquery",
+            "render_raw_sheets",
             lambda: subprocess.run(
-                [sys.executable, "-m", "agents.bhaga.scripts.backfill_bigquery",
-                 "--store", args.store],
-                cwd=str(PROJECT_ROOT), check=True, env=bq_raw_env,
+                [sys.executable, "-m", "agents.bhaga.scripts.render_raw_sheet_from_bq",
+                 "--store", args.store,
+                 "--since", gap_start.isoformat(),
+                 "--tabs", "adp_shifts,adp_punches,adp_wage_rates,adp_earnings,"
+                            "square_transactions,square_daily_rollup,square_item_lines,"
+                            "square_item_daily,square_kds_daily,square_kds_tickets"],
+                cwd=str(PROJECT_ROOT), check=True, env=bq_raw_env_local,
             ),
             refresh_date=refresh_date,
             dry_run=args.dry_run,
         )
         if not ok:
-            print("[load_bigquery] WARNING: BQ raw sync failed — Sheets is unaffected, continuing.")
+            print("[render_raw_sheets] WARNING: Sheet projection failed — BQ is unaffected, continuing.")
 
     failed_steps = {name for name, _ in failures}
+    # ── BHAGA_SHEET_FROM_BQ=1: BQ-canonical path ─────────────────────────────
+    # When enabled, BQ is the system of record: materialize_model_bq runs FIRST
+    # (computing the model from BQ raw), then render_model_sheet_from_bq renders
+    # the Sheet as a projection of BQ. This eliminates the dual-compute drift
+    # where update_model_sheet and materialize_model_bq could produce different
+    # numbers from their respective raw inputs. Feature flag: default off until
+    # reconciliation gate (reconcile_model.py) proves Sheet == BQ in prod.
+    # See docs/FEATURE_FLAGS.md for removal criteria.
+    _bq_canonical = os.environ.get("BHAGA_SHEET_FROM_BQ", "").strip() in ("1", "true", "yes")
+
     if not args.skip_model and (raw_sheets_ok or (args.skip_square and args.skip_timecard)):
-        model_cmd = [
-            sys.executable, "-m", "agents.bhaga.scripts.update_model_sheet",
-            "--store", args.store,
-            "--item-ops-date-from", gap_start.isoformat(),
-            "--item-ops-date-to", refresh_date.isoformat(),
-        ]
-        if os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery":
-            model_cmd += ["--data-source", "bigquery"]
-        ok, val = run_step(
-            "update_model_sheet",
-            lambda: subprocess.run(
-                model_cmd,
-                cwd=str(PROJECT_ROOT), check=True,
-            ),
-            refresh_date=refresh_date,
-            dry_run=args.dry_run,
-        )
-        if not ok:
-            failures.append(("update_model_sheet", val))
-        else:
-            # ── Materialize computed model into BigQuery (after Sheets model is rebuilt) ──
-            # Non-fatal: Sheets model is the source of truth; BQ is a parallel mirror.
+        if _bq_canonical:
+            # ── BQ-canonical path (BHAGA_SHEET_FROM_BQ=1) ────────────────────
+            # Step 1: compute model from BQ raw into BQ model tables.
             bq_model_env = {
                 **os.environ,
                 "BHAGA_DATASTORE": "bigquery",
                 "PYTHONUNBUFFERED": "1",
             }
-            ok2, _ = run_step(
+            ok, val = run_step(
                 "materialize_model_bq",
                 lambda: subprocess.run(
                     [sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
@@ -2089,8 +2122,71 @@ def main() -> int:
                 refresh_date=refresh_date,
                 dry_run=args.dry_run,
             )
-            if not ok2:
-                print("[materialize_model_bq] WARNING: BQ model sync failed — Sheets is unaffected.")
+            if not ok:
+                failures.append(("materialize_model_bq", val))
+                print("[materialize_model_bq] FAILED — Sheet render skipped; falling back to legacy path.")
+                # Fall back to legacy update_model_sheet so the Sheet is never left stale.
+                _bq_canonical = False
+            else:
+                # Step 2: render Sheet from BQ model tables.
+                ok2, _ = run_step(
+                    "render_model_sheet_from_bq",
+                    lambda: subprocess.run(
+                        [sys.executable, "-m", "agents.bhaga.scripts.render_model_sheet_from_bq",
+                         "--store", args.store,
+                         "--since", gap_start.isoformat()],
+                        cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
+                    ),
+                    refresh_date=refresh_date,
+                    dry_run=args.dry_run,
+                )
+                if not ok2:
+                    print("[render_model_sheet_from_bq] WARNING: Sheet render failed — "
+                          "BQ model is canonical but Sheet may be stale.")
+
+        if not _bq_canonical:
+            # ── Legacy path (BHAGA_SHEET_FROM_BQ not set or fallback) ────────
+            # update_model_sheet computes the model from Sheet raw and writes the Sheet.
+            # materialize_model_bq then mirrors the result to BQ (non-fatal).
+            model_cmd = [
+                sys.executable, "-m", "agents.bhaga.scripts.update_model_sheet",
+                "--store", args.store,
+                "--item-ops-date-from", gap_start.isoformat(),
+                "--item-ops-date-to", refresh_date.isoformat(),
+            ]
+            if os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery":
+                model_cmd += ["--data-source", "bigquery"]
+            ok, val = run_step(
+                "update_model_sheet",
+                lambda: subprocess.run(
+                    model_cmd,
+                    cwd=str(PROJECT_ROOT), check=True,
+                ),
+                refresh_date=refresh_date,
+                dry_run=args.dry_run,
+            )
+            if not ok:
+                failures.append(("update_model_sheet", val))
+            else:
+                # ── Mirror computed model into BigQuery (after Sheet rebuild) ──
+                # Non-fatal: Sheets model is the source of truth on this path.
+                bq_model_env = {
+                    **os.environ,
+                    "BHAGA_DATASTORE": "bigquery",
+                    "PYTHONUNBUFFERED": "1",
+                }
+                ok2, _ = run_step(
+                    "materialize_model_bq",
+                    lambda: subprocess.run(
+                        [sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
+                         "--store", args.store],
+                        cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
+                    ),
+                    refresh_date=refresh_date,
+                    dry_run=args.dry_run,
+                )
+                if not ok2:
+                    print("[materialize_model_bq] WARNING: BQ model sync failed — Sheets is unaffected.")
 
     # Step: Google Review attribution (sequential, uses pre-fetched messages).
     # Architecture rule: ALL data fetching happens in the parallel phase.
@@ -2109,13 +2205,27 @@ def main() -> int:
             if args.no_slack:
                 review_cmd.append("--no-slack")
             review_cmd.extend(["--prefetched-messages", str(review_prefetch_path)])
-            if args.reviews_since:
-                review_cmd.extend(["--since", args.reviews_since])
+            _rev_since = args.reviews_since or args.window_from
+            _rev_until = args.reviews_until or args.window_to
+            if _rev_since:
+                review_cmd.extend(["--since", _rev_since])
+            if _rev_until:
+                review_cmd.extend(["--until", _rev_until])
 
+            # process_reviews writes google_reviews to BQ (the system of record)
+            # via load_rows. It MUST run with BHAGA_DATASTORE=bigquery or the BQ
+            # client is None and the upsert silently no-ops (0 rows). Set it
+            # explicitly per-step like every other BQ-writing step — do NOT rely
+            # on the parent env (the sandbox job env doesn't set it globally).
+            review_env = {
+                **os.environ,
+                "BHAGA_DATASTORE": "bigquery",
+                "PYTHONUNBUFFERED": "1",
+            }
             ok, val = run_step(
                 "process_reviews",
                 lambda: subprocess.run(
-                    review_cmd, cwd=str(PROJECT_ROOT), check=True,
+                    review_cmd, cwd=str(PROJECT_ROOT), check=True, env=review_env,
                 ),
                 refresh_date=refresh_date,
                 dry_run=args.dry_run,
@@ -2124,12 +2234,58 @@ def main() -> int:
                 failures.append(("process_reviews", val))
             else:
                 process_reviews_ran = True
+                # ── Render reviews Sheet tab from BQ (non-fatal) ───────────────────
+                # process_reviews wrote google_reviews to BQ; now render the Sheet
+                # tab as a projection. Runs inline (not a separate step marker) so
+                # it re-runs if process_reviews re-runs.
+                if not args.dry_run:
+                    bq_raw_env_r = {
+                        **os.environ,
+                        "BHAGA_DATASTORE": "bigquery",
+                        "PYTHONUNBUFFERED": "1",
+                    }
+                    try:
+                        subprocess.run(
+                            [sys.executable, "-m",
+                             "agents.bhaga.scripts.render_raw_sheet_from_bq",
+                             "--store", args.store,
+                             "--tabs", "reviews"],
+                            cwd=str(PROJECT_ROOT), check=True, env=bq_raw_env_r,
+                        )
+                        print("[render_reviews_sheet] reviews Sheet tab rendered from BQ.")
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[render_reviews_sheet] WARNING: reviews Sheet render failed "
+                              f"(non-fatal — BQ is canonical): {exc}")
     elif args.skip_reviews:
         print("[process_reviews] SKIPPED — --skip-reviews flag set.")
     elif not review_fetch_ok:
         print("[process_reviews] SKIPPED — review_fetch failed in parallel phase.")
     else:
         print("[process_reviews] SKIPPED — raw_sheets_ok=False (need fresh ADP punches).")
+
+    # ── Nightly reconciliation gate (non-fatal, alerts on drift) ─────────────
+    # Runs after all model writes so both Sheet and BQ are current.
+    # On drift: prints the mismatch report and sends a Slack alert; does NOT
+    # fail the run (the operator needs to investigate without losing tonight's data).
+    if os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery" and not args.dry_run:
+        recon_env = {
+            **os.environ,
+            "BHAGA_DATASTORE": "bigquery",
+            "PYTHONUNBUFFERED": "1",
+        }
+        _, recon_result = run_step(
+            "reconcile_model",
+            lambda: subprocess.run(
+                [sys.executable, "-m", "agents.bhaga.scripts.reconcile_model",
+                 "--store", args.store, "--json"],
+                cwd=str(PROJECT_ROOT), check=True, env=recon_env,
+            ),
+            refresh_date=refresh_date,
+            dry_run=False,  # always run even if other steps dry-ran
+        )
+        if recon_result is not None and not isinstance(recon_result, bool):
+            # reconcile_model exited non-zero — drift detected.
+            print("[reconcile_model] WARNING: Sheet/BQ drift detected — see output above.")
 
     runtime_s = time.monotonic() - t_start
 
@@ -2146,9 +2302,17 @@ def main() -> int:
     # (2026-05-23 incident). Fail loudly BEFORE writing the success
     # heartbeat — the wrapper will retry on the next 15-min wakeup.
     failed_step_names = {name for name, _ in failures}
+    # On the BQ-canonical path the model step is materialize_model_bq (not
+    # update_model_sheet), but the post-condition guard reads data_window_end
+    # from the Sheet config tab which is written by render_model_sheet_from_bq.
+    # The guard fires correctly for both paths as long as the Sheet was updated.
+    _model_step_ok = (
+        "update_model_sheet" not in failed_step_names
+        and "materialize_model_bq" not in failed_step_names
+    )
     update_model_ran = (
         not args.skip_model
-        and "update_model_sheet" not in failed_step_names
+        and _model_step_ok
         and not args.dry_run
         # If --skip-square AND --skip-timecard both set, model is being
         # re-derived from existing raw data; data_window_end may legitimately

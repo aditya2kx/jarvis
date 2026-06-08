@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 17,
+  "version": 18,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -20,6 +20,27 @@
         "options": [{"selected": true, "text": "2026-01-01", "value": "2026-01-01"}],
         "hide": 0,
         "description": "ISO date string e.g. 2026-01-01"
+      },
+      {
+        "name": "max_item_min",
+        "label": "Slow threshold (min/item)",
+        "type": "custom",
+        "query": "5,6,7,8,9,10,12,15",
+        "current": {"selected": true, "text": "8", "value": "8"},
+        "options": [
+          {"selected": false, "text": "5", "value": "5"},
+          {"selected": false, "text": "6", "value": "6"},
+          {"selected": false, "text": "7", "value": "7"},
+          {"selected": true, "text": "8", "value": "8"},
+          {"selected": false, "text": "9", "value": "9"},
+          {"selected": false, "text": "10", "value": "10"},
+          {"selected": false, "text": "12", "value": "12"},
+          {"selected": false, "text": "15", "value": "15"}
+        ],
+        "includeAll": false,
+        "multi": false,
+        "hide": 0,
+        "description": "Per-item minute threshold for the Slow Orders table; an order is 'slow' when its total prep time exceeds (items × this). Pick 5–15."
       },
       {
         "name": "goal_hours_per_net_sales",
@@ -108,29 +129,34 @@
     },
     {
       "id": 21,
-      "type": "timeseries",
+      "type": "barchart",
       "title": "Weekly Order & Item Volume",
-      "description": "One point per week (week starting Monday). Orders as solid bars (left axis); Items Sold as a line (right axis). The x-axis marks each week by its start date; hover to see the week's totals.",
+      "description": "Each bar is one full week (Mon–Sun), labeled by its date range (e.g. '6/1-6/7') so the period a bar covers is explicit. Orders on the left axis, Items Sold on the right. Solid fill.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 24, "x": 0, "y": 11},
       "options": {
+        "xField": "Week",
+        "orientation": "vertical",
+        "showValue": "auto",
+        "stacking": "none",
+        "groupWidth": 0.7,
+        "barWidth": 0.9,
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "short"},
+        "defaults": {"unit": "short", "custom": {"fillOpacity": 100, "gradientMode": "none"}},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Items Sold"}, "properties": [{"id": "custom.axisPlacement", "value": "right"}, {"id": "custom.drawStyle", "value": "line"}, {"id": "custom.fillOpacity", "value": 0}, {"id": "custom.lineWidth", "value": 2}]},
-          {"matcher": {"id": "byName", "options": "Orders"}, "properties": [{"id": "custom.drawStyle", "value": "bars"}, {"id": "custom.fillOpacity", "value": 100}, {"id": "custom.gradientMode", "value": "none"}]}
+          {"matcher": {"id": "byName", "options": "Items Sold"}, "properties": [{"id": "custom.axisPlacement", "value": "right"}]}
         ]
       },
       "targets": [
         {
           "refId": "A",
-          "format": 0,
+          "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, orders AS `Orders`, items_sold AS `Items Sold` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT CONCAT(CAST(EXTRACT(MONTH FROM week_start) AS STRING), '/', CAST(EXTRACT(DAY FROM week_start) AS STRING), '-', CAST(EXTRACT(MONTH FROM DATE_ADD(week_start, INTERVAL 6 DAY)) AS STRING), '/', CAST(EXTRACT(DAY FROM DATE_ADD(week_start, INTERVAL 6 DAY)) AS STRING)) AS `Week`, orders AS `Orders`, items_sold AS `Items Sold` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -236,14 +262,20 @@
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
-      "fieldConfig": {"defaults": {"unit": "suffix: h", "decimals": 1}},
+      "fieldConfig": {
+        "defaults": {"unit": "suffix: h", "decimals": 1},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "time"}, "properties": [{"id": "unit", "value": "time:M/D"}]},
+          {"matcher": {"id": "byName", "options": "Week"}, "properties": [{"id": "custom.hideFrom", "value": {"legend": true, "viz": true, "tooltip": false}}]}
+        ]
+      },
       "targets": [
         {
           "refId": "A",
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, total_hours AS `Total`, hourly_hours AS `Part-time`, fulltime_hours AS `Full-time` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, total_hours AS `Total`, hourly_hours AS `Part-time`, fulltime_hours AS `Full-time`, CONCAT(CAST(EXTRACT(MONTH FROM week_start) AS STRING), '/', CAST(EXTRACT(DAY FROM week_start) AS STRING), '-', CAST(EXTRACT(MONTH FROM DATE_ADD(week_start, INTERVAL 6 DAY)) AS STRING), '/', CAST(EXTRACT(DAY FROM DATE_ADD(week_start, INTERVAL 6 DAY)) AS STRING)) AS `Week` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -261,7 +293,9 @@
       "fieldConfig": {
         "defaults": {"unit": "suffix: h", "decimals": 3},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
+          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "time"}, "properties": [{"id": "unit", "value": "time:M/D"}]},
+          {"matcher": {"id": "byName", "options": "Week"}, "properties": [{"id": "custom.hideFrom", "value": {"legend": true, "viz": true, "tooltip": false}}]}
         ]
       },
       "targets": [
@@ -270,7 +304,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, SAFE_DIVIDE(total_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Total`, SAFE_DIVIDE(hourly_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Part-time`, SAFE_DIVIDE(fulltime_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Full-time`, CAST('$goal_hours_per_net_sales' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, SAFE_DIVIDE(total_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Total`, SAFE_DIVIDE(hourly_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Part-time`, SAFE_DIVIDE(fulltime_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Full-time`, CAST('$goal_hours_per_net_sales' AS FLOAT64) AS `Goal`, CONCAT(CAST(EXTRACT(MONTH FROM week_start) AS STRING), '/', CAST(EXTRACT(DAY FROM week_start) AS STRING), '-', CAST(EXTRACT(MONTH FROM DATE_ADD(week_start, INTERVAL 6 DAY)) AS STRING), '/', CAST(EXTRACT(DAY FROM DATE_ADD(week_start, INTERVAL 6 DAY)) AS STRING)) AS `Week` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -288,7 +322,9 @@
       "fieldConfig": {
         "defaults": {"unit": "suffix: h", "decimals": 3},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
+          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "time"}, "properties": [{"id": "unit", "value": "time:M/D"}]},
+          {"matcher": {"id": "byName", "options": "Week"}, "properties": [{"id": "custom.hideFrom", "value": {"legend": true, "viz": true, "tooltip": false}}]}
         ]
       },
       "targets": [
@@ -297,7 +333,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, hours_per_item AS `Total`, hourly_hours_per_item AS `Part-time`, fulltime_hours_per_item AS `Full-time`, CAST('$goal_hours_per_item' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, hours_per_item AS `Total`, hourly_hours_per_item AS `Part-time`, fulltime_hours_per_item AS `Full-time`, CAST('$goal_hours_per_item' AS FLOAT64) AS `Goal`, CONCAT(CAST(EXTRACT(MONTH FROM week_start) AS STRING), '/', CAST(EXTRACT(DAY FROM week_start) AS STRING), '-', CAST(EXTRACT(MONTH FROM DATE_ADD(week_start, INTERVAL 6 DAY)) AS STRING), '/', CAST(EXTRACT(DAY FROM DATE_ADD(week_start, INTERVAL 6 DAY)) AS STRING)) AS `Week` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -336,8 +372,8 @@
     {
       "id": 52,
       "type": "table",
-      "title": "Slow Orders — order time > items × 8 min",
-      "description": "Flags slow ORDERS: one row per ticket where the whole-order prep time (Order Min) exceeds Items × 8 (Expected Min) — i.e. the order took longer than its size should allow at the 8 min/item threshold. Use the in-table Date filter to focus on a single day. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order, so this surfaces which orders ran long and what they contained.",
+      "title": "Slow Orders — order time > items × ${max_item_min} min",
+      "description": "Flags slow ORDERS: one row per ticket where the whole-order prep time (Order Min) exceeds Items × the selected Slow threshold (Threshold col = ${max_item_min} min/item, Expected Min = Items × Threshold). Pick the threshold from 'Slow threshold (min/item)' at the top to widen/narrow the flag. 'Min / Item' is this order's actual prep time per item. Use the in-table Date filter to focus on a single day. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 12, "w": 14, "x": 0, "y": 68},
       "options": {"sortBy": [{"displayName": "Date", "desc": true}]},
@@ -351,6 +387,8 @@
           {"matcher": {"id": "byName", "options": "end_time"}, "properties": [{"id": "displayName", "value": "End"}]},
           {"matcher": {"id": "byName", "options": "num_items"}, "properties": [{"id": "displayName", "value": "Items"}]},
           {"matcher": {"id": "byName", "options": "order_min"}, "properties": [{"id": "displayName", "value": "Order Min"}, {"id": "unit", "value": "suffix: min"}]},
+          {"matcher": {"id": "byName", "options": "min_per_item"}, "properties": [{"id": "displayName", "value": "Min / Item"}, {"id": "unit", "value": "suffix: min"}, {"id": "decimals", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "threshold_min"}, "properties": [{"id": "displayName", "value": "Threshold (min/item)"}, {"id": "unit", "value": "suffix: min"}]},
           {"matcher": {"id": "byName", "options": "expected_min"}, "properties": [{"id": "displayName", "value": "Expected Min"}, {"id": "unit", "value": "suffix: min"}]},
           {"matcher": {"id": "byName", "options": "items_in_ticket"}, "properties": [{"id": "displayName", "value": "Items in Order"}]}
         ]
@@ -361,7 +399,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT date_local, ticket_name, order_source, start_time, end_time, num_items, order_min, num_items * 8 AS expected_min, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` WHERE order_min > num_items * 8 AND date_local >= '$date_from' ORDER BY date_local DESC, order_min DESC, ticket_name"
+          "rawSql": "SELECT date_local, ticket_name, order_source, start_time, end_time, num_items, order_min, ROUND(order_min / num_items, 1) AS min_per_item, CAST('$max_item_min' AS INT64) AS threshold_min, num_items * CAST('$max_item_min' AS INT64) AS expected_min, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` WHERE order_min > num_items * CAST('$max_item_min' AS INT64) AND date_local >= '$date_from' ORDER BY date_local DESC, order_min DESC, ticket_name"
         }
       ]
     },

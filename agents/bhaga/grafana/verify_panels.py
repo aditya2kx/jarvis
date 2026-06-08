@@ -58,10 +58,15 @@ def _resolve_token(org_slug: str) -> str:
 
 
 def _template_defaults(dashboard: dict) -> dict[str, str]:
-    """Map textbox template-var name -> default value from the dashboard JSON."""
+    """Map template-var name -> default (current) value from the dashboard JSON.
+
+    Covers ``textbox`` and ``custom`` (dropdown) vars — both carry a literal
+    ``current.value`` that Grafana substitutes into ``rawSql``. (``datasource``
+    vars like ``ds_bigquery`` are bound to the real UID separately.)
+    """
     defaults: dict[str, str] = {}
     for var in dashboard.get("templating", {}).get("list", []):
-        if var.get("type") == "textbox":
+        if var.get("type") in ("textbox", "custom"):
             defaults[var["name"]] = str((var.get("current") or {}).get("value", ""))
     return defaults
 

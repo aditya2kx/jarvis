@@ -73,6 +73,19 @@
   bounded by `$date_from`; **Staff on Shift** (was "Who Worked That Shift") likewise gained a Date column and
   `$date_from` bound. (4) All bar series (daily + weekly Orders) set to solid fill (`fillOpacity 100`,
   `gradientMode none`). No BQ view changes, so `status.py` GRAFANA_VIEWS is unchanged.
+- **Operator-feedback round 7 (same PR #38):** weekly x-axis week labels + configurable slow threshold.
+  **Confirmed Grafana limit (instance is v13.1):** a literal date *range* tick label ("6/1-6/7") needs a
+  category x-axis, which only the `barchart` panel has; `timeseries` (lines / bar+line) has a time axis whose
+  ticks are single instants (formattable to e.g. "6/1" but not a range). So per operator choice we went
+  **hybrid**: (a) **Weekly Order & Item Volume** is a `barchart` whose x label is the numeric range
+  `CONCAT(M/D, '-', M/D+6d)` → "6/1-6/7"; (b) the weekly **line** charts (Shift Hours, Hours/Net Sales,
+  Hours/Item) keep their lines, format the x-axis time field as `time:M/D` (→ "6/1"), and carry a
+  tooltip-only `Week` string field (hidden from legend/viz via `custom.hideFrom`) so hovering shows the full
+  "6/1-6/7" range. **Slow threshold reinstated as a `custom` dropdown** `max_item_min` (5–15, default 8): the
+  Slow Orders table now shows `Min / Item` (actual) and `Threshold (min/item)` columns, computes Expected Min
+  = Items × threshold, flags `order_min > items × threshold`, and the title/description interpolate
+  `${max_item_min}`. `verify_panels._template_defaults` extended to substitute `custom` vars (not just
+  `textbox`) so the harness mirrors Grafana. No BQ view changes.
 
 ## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
 

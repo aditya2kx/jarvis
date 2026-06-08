@@ -86,6 +86,17 @@
   = Items × threshold, flags `order_min > items × threshold`, and the title/description interpolate
   `${max_item_min}`. `verify_panels._template_defaults` extended to substitute `custom` vars (not just
   `textbox`) so the harness mirrors Grafana. No BQ view changes.
+- **Operator-feedback round 8 (same PR #38):** fixed a regression + flexibility. (1) **Bug:** the weekly
+  **line** charts rendered as dots, not lines — the tooltip-only `Week` *string* column from round 7, in a
+  BigQuery **time-series-format** query, is treated as a **pivot dimension**, exploding each metric into
+  one-point-per-week series. Removed the `Week` column + its override from panels 35/36/37; they're plain
+  lines again (kept the `time:M/D` x-axis format → "6/1" ticks). **Lesson:** never add a non-time string
+  column to a `format:0` (time series) BigQuery target — it pivots. (2) Weekly Order & Item **bar value
+  labels** enlarged (`options.text.valueSize: 16`, `showValue: always`). (3) **Order KDS Times** (was "Slow
+  Orders"): the query no longer pre-filters to slow/one-date — it returns every order in the From-Date window;
+  added a filterable **Slow?** (Yes/No) column computed from the `max_item_min` dropdown plus **Min / Item**
+  and **Threshold** columns, so the operator filters Date and Slow? **in-table** and changes the threshold via
+  the dropdown without touching the underlying data. Title dropped the hardcoded "8 min". No BQ view changes.
 
 ## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
 

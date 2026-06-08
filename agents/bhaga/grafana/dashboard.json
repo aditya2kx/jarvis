@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 12,
+  "version": 13,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -402,8 +402,8 @@
     {
       "id": 51,
       "type": "timeseries",
-      "title": "KDS Order Time (median / p90 / p95 / p99)",
-      "description": "Percentiles of whole-ORDER (ticket) prep time per day. KDS records completion time per order, not per item, so this is the order-level distribution. Y-axis capped at 40 min so extreme outliers (e.g. tickets left open) don't skew the scale.",
+      "title": "KDS Time per Item (median / p90 / p95 / p99)",
+      "description": "Percentiles of per-ITEM prep time per day (order completion time ÷ items in the order). Y-axis capped at 30 min so outliers don't skew the scale.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 24, "x": 0, "y": 59},
       "options": {
@@ -411,7 +411,7 @@
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "suffix: min", "decimals": 1, "min": 0, "max": 40}
+        "defaults": {"unit": "suffix: min", "decimals": 1, "min": 0, "max": 30}
       },
       "targets": [
         {
@@ -419,7 +419,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, order_p90_min AS `p90`, order_p95_min AS `p95`, order_p99_min AS `p99`, order_median_min AS `median` FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_quality_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, kds_p90_min AS `p90`, kds_p95_min AS `p95`, kds_p99_min AS `p99`, kds_median_min AS `median` FROM `jarvis-bhaga-prod.bhaga.vw_order_quality_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },

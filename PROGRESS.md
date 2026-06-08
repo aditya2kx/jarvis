@@ -41,11 +41,13 @@
   Review Bonus, Total Pay) with a new `Diff Total Pay` column and a description explaining each.
   June-7 "missing data" was a refresh/cache artifact — all source views (labor/order-quality/KDS) have
   June 7 and the `now-90d..now` window includes it.
-- **Operator-feedback round 3 (same PR #38):** since KDS time is fundamentally per-order, the percentile
-  chart moved to order level too — migration `010_kds_order_quality.sql` adds `vw_kds_order_quality_daily`
-  (daily median/p90/p95/p99 of whole-order completion time), panel renamed "KDS Order Time" with the
-  y-axis capped at 40 min (order p99≈31; clips left-open-ticket outliers up to ~1400 min). The old
-  per-item `vw_order_quality_daily` is no longer rendered by the dashboard.
+- **Operator-feedback round 3 (same PR #38):** the labor-vs-sales metric became raw `total_hours ÷
+  net_sales` (no $1,000 scaling); all "$1K" wording removed (incl. the goal variable label); decimals
+  bumped to 3; non-positive-net-sales days blanked so anomaly days don't blow up the axis. Panel titles
+  use explicit `${var}` interpolation so the date/threshold render. Migration `010_kds_order_quality.sql`
+  added `vw_kds_order_quality_daily` (order-level percentiles) — but the operator then chose to keep the
+  KDS percentile chart at **per-item** level (`vw_order_quality_daily`, y-cap 30 min), so that order-level
+  view is currently unused by the dashboard (kept in BQ; harmless). The Slow Orders table stays order-level.
 
 ## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
 

@@ -874,6 +874,47 @@ python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985
 # or CI: push a change to agents/bhaga/grafana/** → GitHub Action auto-deploys
 ```
 
+**Datasource UID is bound at deploy time (don't commit it).** `dashboard.json` keeps
+panels datasource-agnostic by pointing every `datasource` at the `${ds_bigquery}`
+template variable. A `type: datasource` variable's value is the datasource *name*, but
+panels reference it as `"uid": "${ds_bigquery}"` — so Grafana looks up a datasource whose
+UID equals the *name*, fails with "Data source not found", and **every panel shows "No
+data".** `deploy.py` fixes this by calling `bind_datasource_uid()` (see
+`agents/bhaga/grafana/deploy.py`): it resolves the real datasource UID via
+`get_bigquery_datasource_uid()` and rewrites every `${ds_bigquery}` ref + the var's
+`current` value to that literal UID before `push_dashboard`. The repo stays UID-free.
+
+**Panel SQL must use BigQuery-valid column aliases.** BigQuery Standard SQL treats
+`"..."` as a *string literal*, so `AS "Orders"` is a syntax error — use backticks
+(`` AS `Orders` ``). Output field names also may not contain `/` or `$` (spaces and
+hyphens are fine), so use e.g. `` AS `Hrs per 1k Net Sales` `` not `Hrs / $1k …`. Field
+names still drive the `byName` field overrides, so keep them in sync. Prefer
+BigQuery-valid snake_case aliases (e.g. `` AS `hrs_per_net_sales` ``) and set the
+human label with a `displayName` field override — that sidesteps the `/`/`$`
+restriction entirely.
+
+**Hour fields use the `suffix: h` custom unit, not the built-in `h`.** Grafana's
+built-in `h` (and `m`) units are *durations* that auto-scale — `60` renders as
+`2.5 day` and `0.15` as `9 min`, which is wrong for shift-hours and hours-per-X
+panels. Use the custom unit `suffix: h` (and `suffix: min` for the slow-orders
+table) so the raw number is shown with a unit and no rescaling.
+
+**Verify panels return data (read-only, end-to-end):**
+
+```bash
+# Runs every panel's rawSql through Grafana /api/ds/query with the real datasource UID
+# and the dashboard's template-var defaults; prints section | id | status | rows.
+python3 agents/bhaga/grafana/verify_panels.py
+python3 agents/bhaga/grafana/verify_panels.py --var date_from=2026-05-01   # override a var
+python3 agents/bhaga/grafana/verify_panels.py --fail-on-empty             # 0-row = failure
+```
+
+> **Incident (2026-06-07, PR for grafana-datasource-uid).** Every BQ panel showed "No
+> data" from two independent bugs: (1) the `ds_bigquery` variable carried the datasource
+> *name* instead of its UID (panels → "Data source not found"); (2) the 11 timeseries
+> panels used invalid double-quoted aliases (`AS "Orders"`). `verify_panels.py` is the
+> regression guard — it caught the alias bug that earlier ad-hoc testing had masked.
+
 ### Running SQL migrations
 
 ```bash

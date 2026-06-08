@@ -72,6 +72,12 @@ GRAFANA_DASHBOARD_URL = "https://steadyangelfish2985.grafana.net/d/bhaga-analyti
 #
 # (CI runs check_doc_freshness.py --strict which enforces editing this file
 # alongside schema/dashboard changes.)
+#
+# Panel-SQL contract (learned the hard way — see RUNBOOK §14 incident
+# 2026-06-07): dashboard.json column aliases MUST use BigQuery-valid identifiers
+# — backticks, not double quotes (`AS "x"` is a string-literal syntax error) —
+# and output field names may not contain `/` or `$` (spaces/hyphens are fine).
+# Validate any panel SQL change with `python3 agents/bhaga/grafana/verify_panels.py`.
 
 SHEET_TABS: tuple[str, ...] = ("config", "daily", "tip_alloc_daily")
 
@@ -122,9 +128,10 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 004 / dashboard refactor views
     Target("vw_model_labor_weekly", "iso_week", "iso_week"),
     Target("vw_model_payroll_period", "period_start", "period_coverage"),
-    # migration 005 / 5-section dashboard views
+    # per-item KDS time distribution (percentile chart)
     Target("vw_order_quality_daily", "date"),
-    Target("vw_kds_item_investigation", "date_local"),
+    # migration 009: order-level KDS investigation (slow-orders table)
+    Target("vw_kds_order_investigation", "date_local"),
     Target("vw_staff_on_shift", "date"),
 ]
 

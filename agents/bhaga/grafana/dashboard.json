@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 6,
+  "version": 26,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -22,22 +22,22 @@
         "description": "ISO date string e.g. 2026-01-01"
       },
       {
-        "name": "inv_date",
-        "label": "Investigation Date",
+        "name": "goal_hours_per_item",
+        "label": "Goal: Shift Hrs / Item",
         "type": "textbox",
-        "current": {"value": "2026-06-03"},
-        "options": [{"selected": true, "text": "2026-06-03", "value": "2026-06-03"}],
+        "current": {"value": "0.15"},
+        "options": [{"selected": true, "text": "0.15", "value": "0.15"}],
         "hide": 0,
-        "description": "Date to investigate for slow items / staff on shift (YYYY-MM-DD)"
+        "description": "Target shift hours per item as a raw ratio (0.15) — the Hours / Item charts display it percent-style (\u00d7 100), so 0.15 shows as 15%"
       },
       {
-        "name": "max_item_min",
-        "label": "Slow Item Threshold (min)",
+        "name": "goal_labor_pct_of_net_sales",
+        "label": "Goal: Labor Wages / Net Sales",
         "type": "textbox",
-        "current": {"value": "8"},
-        "options": [{"selected": true, "text": "8", "value": "8"}],
+        "current": {"value": "0.20"},
+        "options": [{"selected": true, "text": "0.20", "value": "0.20"}],
         "hide": 0,
-        "description": "Show items with per_item_min >= this value in the investigation table"
+        "description": "Target labor wages as a fraction of net sales (labor_cost ÷ net_sales, e.g. 0.20 = 20%) — rendered as a baseline line on the Weekly Labor Wages / Net Sales chart"
       },
       {
         "name": "ds_bigquery",
@@ -81,7 +81,9 @@
           {
             "matcher": {"id": "byName", "options": "Orders"},
             "properties": [
-              {"id": "custom.drawStyle", "value": "bars"}
+              {"id": "custom.drawStyle", "value": "bars"},
+              {"id": "custom.fillOpacity", "value": 100},
+              {"id": "custom.gradientMode", "value": "none"}
             ]
           }
         ]
@@ -92,7 +94,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, orders AS \"Orders\", items_sold AS \"Items Sold\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, orders AS `Orders`, items_sold AS `Items Sold` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
@@ -106,39 +108,35 @@
     },
     {
       "id": 21,
-      "type": "timeseries",
+      "type": "barchart",
       "title": "Weekly Order & Item Volume",
+      "description": "Each bar is one full week (Mon–Sun), labeled by its date range (e.g. '6/1-6/7') so the period a bar covers is explicit. Orders on the left axis, Items Sold on the right. Solid fill.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 24, "x": 0, "y": 11},
       "options": {
+        "xField": "Week",
+        "orientation": "vertical",
+        "showValue": "always",
+        "stacking": "none",
+        "groupWidth": 0.7,
+        "barWidth": 0.9,
+        "text": {"valueSize": 16},
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "short"},
+        "defaults": {"unit": "short", "custom": {"fillOpacity": 100, "gradientMode": "none"}},
         "overrides": [
-          {
-            "matcher": {"id": "byName", "options": "Items Sold"},
-            "properties": [
-              {"id": "custom.axisPlacement", "value": "right"},
-              {"id": "custom.drawStyle", "value": "line"}
-            ]
-          },
-          {
-            "matcher": {"id": "byName", "options": "Orders"},
-            "properties": [
-              {"id": "custom.drawStyle", "value": "bars"}
-            ]
-          }
+          {"matcher": {"id": "byName", "options": "Items Sold"}, "properties": [{"id": "custom.axisPlacement", "value": "right"}]}
         ]
       },
       "targets": [
         {
           "refId": "A",
-          "format": 0,
+          "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, orders AS \"Orders\", items_sold AS \"Items Sold\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT CONCAT(CAST(EXTRACT(MONTH FROM week_start) AS STRING), '/', CAST(EXTRACT(DAY FROM week_start) AS STRING), '-', CAST(EXTRACT(MONTH FROM DATE_ADD(week_start, INTERVAL 6 DAY)) AS STRING), '/', CAST(EXTRACT(DAY FROM DATE_ADD(week_start, INTERVAL 6 DAY)) AS STRING)) AS `Week`, orders AS `Orders`, items_sold AS `Items Sold` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -146,7 +144,7 @@
     {
       "id": 30,
       "type": "row",
-      "title": "3. Labor",
+      "title": "3. Daily Labor",
       "collapsed": false,
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 20}
     },
@@ -156,55 +154,27 @@
       "type": "timeseries",
       "title": "Daily Shift Hours",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 21},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 21},
       "options": {
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
-      "fieldConfig": {"defaults": {"unit": "h"}},
+      "fieldConfig": {"defaults": {"unit": "suffix: h", "decimals": 1}},
       "targets": [
         {
           "refId": "A",
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, total_hours AS \"Total\", hourly_hours AS \"Part-time\", fulltime_hours AS \"Full-time\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, total_hours AS `Total`, hourly_hours AS `Part-time`, fulltime_hours AS `Full-time` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
     {
       "id": 32,
       "type": "timeseries",
-      "title": "Daily Total Hours: per $1k Net Sales vs per Item",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 21},
-      "options": {
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
-      },
-      "fieldConfig": {
-        "defaults": {"unit": "h"},
-        "overrides": [
-          {
-            "matcher": {"id": "byName", "options": "Hrs / Item"},
-            "properties": [{"id": "custom.axisPlacement", "value": "right"}]
-          }
-        ]
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "format": 0,
-          "project": "jarvis-bhaga-prod",
-          "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, total_hours_per_1k_net_sales AS \"Hrs / $1k Net Sales\", hours_per_item AS \"Hrs / Item\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
-        }
-      ]
-    },
-    {
-      "id": 33,
-      "type": "timeseries",
-      "title": "Daily Part-time Hours: per $1k Net Sales vs per Item",
+      "title": "Daily Labor Wages / Net Sales (total / part-time / full-time)",
+      "description": "Labor wages (shift hours \u00d7 wage rate) as a share of net sales, split by total / part-time / full-time. Total = all labor; Part-time = hourly staff; Full-time = salaried/full-time staff. Lower is leaner. Shown as a percent (e.g. 35% = labor costs 35\u00a2 per $1 of net sales). Non-positive-sales days are blanked. Dashed line = goal ($goal_labor_pct_of_net_sales).",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 12, "x": 0, "y": 30},
       "options": {
@@ -212,12 +182,9 @@
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "h"},
+        "defaults": {"unit": "percentunit", "decimals": 1},
         "overrides": [
-          {
-            "matcher": {"id": "byName", "options": "Hrs / Item"},
-            "properties": [{"id": "custom.axisPlacement", "value": "right"}]
-          }
+          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
         ]
       },
       "targets": [
@@ -226,14 +193,15 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, hourly_hours_per_1k_net_sales AS \"Hrs / $1k Net Sales\", hourly_hours_per_item AS \"Hrs / Item\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, SAFE_DIVIDE(total_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Total`, SAFE_DIVIDE(hourly_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Part-time`, SAFE_DIVIDE(fulltime_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Full-time`, CAST('$goal_labor_pct_of_net_sales' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
     {
-      "id": 34,
+      "id": 33,
       "type": "timeseries",
-      "title": "Daily Full-time Hours: per $1k Net Sales vs per Item",
+      "title": "Daily Hours / Item (total / part-time / full-time)",
+      "description": "Shift hours per item sold, split by total / part-time / full-time, shown percent-style (value \u00d7 100, e.g. 0.15 h/item displays as 15%). Lower is leaner. Dashed line = goal ($goal_hours_per_item).",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 12, "x": 12, "y": 30},
       "options": {
@@ -241,12 +209,9 @@
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "h"},
+        "defaults": {"unit": "percentunit", "decimals": 1, "min": 0, "max": 1},
         "overrides": [
-          {
-            "matcher": {"id": "byName", "options": "Hrs / Item"},
-            "properties": [{"id": "custom.axisPlacement", "value": "right"}]
-          }
+          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
         ]
       },
       "targets": [
@@ -255,50 +220,60 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, fulltime_hours_per_1k_net_sales AS \"Hrs / $1k Net Sales\", fulltime_hours_per_item AS \"Hrs / Item\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, hours_per_item AS `Total`, hourly_hours_per_item AS `Part-time`, fulltime_hours_per_item AS `Full-time`, CAST('$goal_hours_per_item' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
 
     {
+      "id": 40,
+      "type": "row",
+      "title": "4. Weekly Labor",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 39}
+    },
+    {
       "id": 35,
       "type": "timeseries",
       "title": "Weekly Shift Hours",
+      "description": "Total / part-time / full-time shift hours per week. Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 39},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 40},
       "options": {
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
-      "fieldConfig": {"defaults": {"unit": "h"}},
+      "fieldConfig": {
+        "defaults": {"unit": "suffix: h", "decimals": 1},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "time"}, "properties": [{"id": "unit", "value": "time:M/D"}]}        ]
+      },
       "targets": [
         {
           "refId": "A",
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, total_hours AS \"Total\", hourly_hours AS \"Part-time\", fulltime_hours AS \"Full-time\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_end, 'America/Chicago') AS time, total_hours AS `Total`, hourly_hours AS `Part-time`, fulltime_hours AS `Full-time` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
     {
       "id": 36,
       "type": "timeseries",
-      "title": "Weekly Total Hours: per $1k Net Sales vs per Item",
+      "title": "Weekly Labor Wages / Net Sales (total / part-time / full-time)",
+      "description": "Labor wages (shift hours \u00d7 wage rate) as a share of net sales, split by total / part-time / full-time. Total = all labor; Part-time = hourly staff; Full-time = salaried/full-time staff. Lower is leaner. Shown as a percent (e.g. 35% = labor costs 35\u00a2 per $1 of net sales). Non-positive-sales weeks are blanked. Dashed line = goal ($goal_labor_pct_of_net_sales). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 39},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 49},
       "options": {
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "h"},
+        "defaults": {"unit": "percentunit", "decimals": 1},
         "overrides": [
-          {
-            "matcher": {"id": "byName", "options": "Hrs / Item"},
-            "properties": [{"id": "custom.axisPlacement", "value": "right"}]
-          }
-        ]
+          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "time"}, "properties": [{"id": "unit", "value": "time:M/D"}]}        ]
       },
       "targets": [
         {
@@ -306,28 +281,26 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, total_hours_per_1k_net_sales AS \"Hrs / $1k Net Sales\", hours_per_item AS \"Hrs / Item\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_end, 'America/Chicago') AS time, SAFE_DIVIDE(total_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Total`, SAFE_DIVIDE(hourly_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Part-time`, SAFE_DIVIDE(fulltime_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Full-time`, CAST('$goal_labor_pct_of_net_sales' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
     {
       "id": 37,
       "type": "timeseries",
-      "title": "Weekly Part-time Hours: per $1k Net Sales vs per Item",
+      "title": "Weekly Hours / Item (total / part-time / full-time)",
+      "description": "Shift hours per item sold, split by total / part-time / full-time, shown percent-style (value \u00d7 100, e.g. 0.15 h/item displays as 15%). Lower is leaner. Dashed line = goal ($goal_hours_per_item). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 48},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 49},
       "options": {
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "h"},
+        "defaults": {"unit": "percentunit", "decimals": 1},
         "overrides": [
-          {
-            "matcher": {"id": "byName", "options": "Hrs / Item"},
-            "properties": [{"id": "custom.axisPlacement", "value": "right"}]
-          }
-        ]
+          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "time"}, "properties": [{"id": "unit", "value": "time:M/D"}]}        ]
       },
       "targets": [
         {
@@ -335,36 +308,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, hourly_hours_per_1k_net_sales AS \"Hrs / $1k Net Sales\", hourly_hours_per_item AS \"Hrs / Item\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
-        }
-      ]
-    },
-    {
-      "id": 38,
-      "type": "timeseries",
-      "title": "Weekly Full-time Hours: per $1k Net Sales vs per Item",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 48},
-      "options": {
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
-      },
-      "fieldConfig": {
-        "defaults": {"unit": "h"},
-        "overrides": [
-          {
-            "matcher": {"id": "byName", "options": "Hrs / Item"},
-            "properties": [{"id": "custom.axisPlacement", "value": "right"}]
-          }
-        ]
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "format": 0,
-          "project": "jarvis-bhaga-prod",
-          "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, fulltime_hours_per_1k_net_sales AS \"Hrs / $1k Net Sales\", fulltime_hours_per_item AS \"Hrs / Item\" FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_end, 'America/Chicago') AS time, hours_per_item AS `Total`, hourly_hours_per_item AS `Part-time`, fulltime_hours_per_item AS `Full-time`, CAST('$goal_hours_per_item' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -372,22 +316,23 @@
     {
       "id": 50,
       "type": "row",
-      "title": "4. Order Quality",
+      "title": "5. Order Quality",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 57}
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 58}
     },
     {
       "id": 51,
       "type": "timeseries",
       "title": "KDS Time per Item (median / p90 / p95 / p99)",
+      "description": "Percentiles of per-ITEM prep time per day (order completion time ÷ items in the order). Y-axis capped at 30 min so outliers don't skew the scale.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 58},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 59},
       "options": {
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "m", "decimals": 0}
+        "defaults": {"unit": "suffix: min", "decimals": 1, "min": 0, "max": 30}
       },
       "targets": [
         {
@@ -395,26 +340,31 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, kds_p90_min AS \"p90\", kds_p95_min AS \"p95\", kds_p99_min AS \"p99\", kds_median_min AS \"median\" FROM `jarvis-bhaga-prod.bhaga.vw_order_quality_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, kds_p90_min AS `p90`, kds_p95_min AS `p95`, kds_p99_min AS `p99`, kds_median_min AS `median` FROM `jarvis-bhaga-prod.bhaga.vw_order_quality_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
     {
       "id": 52,
       "type": "table",
-      "title": "Slow Items — Investigation (date: $inv_date, threshold: ≥$max_item_min min)",
+      "title": "Order KDS Times — set your slow threshold with the Min / Item filter",
+      "description": "One row per order (ticket) with its whole-order KDS prep time (Start → End), and 'On Shift (punched in)' = everyone whose ADP punch overlapped that order's time window. The query does NOT pre-filter — every order in the From-Date window is shown. Set your own slow threshold in-table: click the 'Min / Item' column filter and use the ≥ operator (e.g. ≥ 10) to see only orders over that per-item time; use the 'Date' filter to focus on a single day. 'Min / Item' = Order Min ÷ Items. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 12, "w": 14, "x": 0, "y": 67},
-      "options": {"sortBy": [{"displayName": "Per-Item Min", "desc": true}]},
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 68},
+      "options": {"sortBy": [{"displayName": "Min / Item", "desc": true}]},
       "fieldConfig": {
+        "defaults": {"custom": {"filterable": true}},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "item_name"}, "properties": [{"id": "displayName", "value": "Item"}]},
-          {"matcher": {"id": "byName", "options": "category"}, "properties": [{"id": "displayName", "value": "Category"}]},
-          {"matcher": {"id": "byName", "options": "qty"}, "properties": [{"id": "displayName", "value": "Qty"}]},
-          {"matcher": {"id": "byName", "options": "per_item_min"}, "properties": [{"id": "displayName", "value": "Per-Item Min"}]},
-          {"matcher": {"id": "byName", "options": "ticket_min"}, "properties": [{"id": "displayName", "value": "Ticket Min"}]},
-          {"matcher": {"id": "byName", "options": "device_name"}, "properties": [{"id": "displayName", "value": "Station"}]},
-          {"matcher": {"id": "byName", "options": "time_created"}, "properties": [{"id": "displayName", "value": "Time"}]}
+          {"matcher": {"id": "byName", "options": "date_local"}, "properties": [{"id": "displayName", "value": "Date"}]},
+          {"matcher": {"id": "byName", "options": "ticket_name"}, "properties": [{"id": "displayName", "value": "Order"}]},
+          {"matcher": {"id": "byName", "options": "order_source"}, "properties": [{"id": "displayName", "value": "Source"}]},
+          {"matcher": {"id": "byName", "options": "start_time"}, "properties": [{"id": "displayName", "value": "Start"}]},
+          {"matcher": {"id": "byName", "options": "end_time"}, "properties": [{"id": "displayName", "value": "End"}]},
+          {"matcher": {"id": "byName", "options": "num_items"}, "properties": [{"id": "displayName", "value": "Items"}]},
+          {"matcher": {"id": "byName", "options": "order_min"}, "properties": [{"id": "displayName", "value": "Order Min"}, {"id": "unit", "value": "suffix: min"}]},
+          {"matcher": {"id": "byName", "options": "min_per_item"}, "properties": [{"id": "displayName", "value": "Min / Item"}, {"id": "unit", "value": "suffix: min"}, {"id": "decimals", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "staff_on_shift"}, "properties": [{"id": "displayName", "value": "On Shift (punched in)"}]},
+          {"matcher": {"id": "byName", "options": "items_in_ticket"}, "properties": [{"id": "displayName", "value": "Items in Order"}]}
         ]
       },
       "targets": [
@@ -423,32 +373,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT item_name, category, qty, per_item_min, ticket_min, device_name, time_created FROM `jarvis-bhaga-prod.bhaga.vw_kds_item_investigation` WHERE date_local = '$inv_date' AND per_item_min >= CAST('$max_item_min' AS INT64) ORDER BY per_item_min DESC"
-        }
-      ]
-    },
-    {
-      "id": 53,
-      "type": "table",
-      "title": "Who Worked That Shift ($inv_date)",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 12, "w": 10, "x": 14, "y": 67},
-      "options": {"sortBy": [{"displayName": "in_time", "desc": false}]},
-      "fieldConfig": {
-        "overrides": [
-          {"matcher": {"id": "byName", "options": "employee"}, "properties": [{"id": "displayName", "value": "Employee"}]},
-          {"matcher": {"id": "byName", "options": "in_time"}, "properties": [{"id": "displayName", "value": "In"}]},
-          {"matcher": {"id": "byName", "options": "out_time"}, "properties": [{"id": "displayName", "value": "Out"}]},
-          {"matcher": {"id": "byName", "options": "total_hours"}, "properties": [{"id": "displayName", "value": "Hours"}, {"id": "unit", "value": "h"}]}
-        ]
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "format": 1,
-          "project": "jarvis-bhaga-prod",
-          "dataset": "bhaga",
-          "rawSql": "SELECT employee, in_time, out_time, total_hours FROM `jarvis-bhaga-prod.bhaga.vw_staff_on_shift` WHERE date = '$inv_date' ORDER BY in_time"
+          "rawSql": "SELECT date_local, ticket_name, order_source, start_time, end_time, num_items, order_min, ROUND(order_min / num_items, 1) AS min_per_item, (SELECT STRING_AGG(DISTINCT s.employee, ' | ' ORDER BY s.employee) FROM `jarvis-bhaga-prod.bhaga.vw_staff_on_shift` s WHERE s.date = o.date_local AND SAFE.PARSE_TIME('%H:%M', s.in_time) <= SAFE.PARSE_TIME('%H:%M:%S', o.end_time) AND SAFE.PARSE_TIME('%H:%M', s.out_time) >= SAFE.PARSE_TIME('%H:%M:%S', o.start_time)) AS staff_on_shift, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` o WHERE date_local >= '$date_from' ORDER BY min_per_item DESC, date_local DESC, ticket_name"
         }
       ]
     },
@@ -456,34 +381,37 @@
     {
       "id": 60,
       "type": "row",
-      "title": "5. Payroll",
+      "title": "6. Payroll",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 79}
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 80}
     },
     {
       "id": 61,
       "type": "table",
       "title": "Payroll — per Employee per Pay Period",
+      "description": "Each pay component is shown as a Calculated / ADP / Diff triad. Calculated = our model; ADP = what ADP actually paid; Diff = Calculated − ADP (positive means we computed more than ADP paid). Hourly Pay = hours × wage rate; Tip Pay = allocated tips; Review Bonus = earned review bonus; Total Pay = Hourly + Tip + Bonus. So 'Diff Review Bonus' is our review bonus minus ADP's bonus line, and 'Calculated Total Pay' is the sum of the three calculated components.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 80},
-      "options": {"sortBy": [{"displayName": "period_start", "desc": true}]},
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 81},
+      "options": {"sortBy": [{"displayName": "Period Start", "desc": true}]},
       "fieldConfig": {
+        "defaults": {"custom": {"filterable": true}},
         "overrides": [
           {"matcher": {"id": "byName", "options": "period_start"}, "properties": [{"id": "displayName", "value": "Period Start"}]},
           {"matcher": {"id": "byName", "options": "period_end"}, "properties": [{"id": "displayName", "value": "Period End"}]},
           {"matcher": {"id": "byName", "options": "employee"}, "properties": [{"id": "displayName", "value": "Employee"}]},
-          {"matcher": {"id": "byName", "options": "hours_worked"}, "properties": [{"id": "displayName", "value": "Hours"}, {"id": "unit", "value": "h"}]},
-          {"matcher": {"id": "byName", "options": "est_gross_pay"}, "properties": [{"id": "displayName", "value": "Gross Pay (est)"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "adp_wages_paid"}, "properties": [{"id": "displayName", "value": "ADP Wages"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "wage_diff"}, "properties": [{"id": "displayName", "value": "Wage Diff"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "tips_allocated"}, "properties": [{"id": "displayName", "value": "Tips (calc)"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "adp_tips_paid"}, "properties": [{"id": "displayName", "value": "ADP Tips"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "tip_diff"}, "properties": [{"id": "displayName", "value": "Tip Diff"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "review_bonus"}, "properties": [{"id": "displayName", "value": "Review Bonus (calc)"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "adp_bonus_paid"}, "properties": [{"id": "displayName", "value": "ADP Bonus"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "bonus_diff"}, "properties": [{"id": "displayName", "value": "Bonus Diff"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "est_total_pay"}, "properties": [{"id": "displayName", "value": "Total (est)"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "adp_total_paid"}, "properties": [{"id": "displayName", "value": "ADP Total"}, {"id": "unit", "value": "currencyUSD"}]}
+          {"matcher": {"id": "byName", "options": "hours_worked"}, "properties": [{"id": "displayName", "value": "Hours"}, {"id": "unit", "value": "suffix: h"}, {"id": "decimals", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "est_gross_pay"}, "properties": [{"id": "displayName", "value": "Calculated Hourly Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "adp_wages_paid"}, "properties": [{"id": "displayName", "value": "ADP Hourly Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "wage_diff"}, "properties": [{"id": "displayName", "value": "Diff Hourly Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "tips_allocated"}, "properties": [{"id": "displayName", "value": "Calculated Tip Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "adp_tips_paid"}, "properties": [{"id": "displayName", "value": "ADP Tip Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "tip_diff"}, "properties": [{"id": "displayName", "value": "Diff Tip Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "review_bonus"}, "properties": [{"id": "displayName", "value": "Calculated Review Bonus"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "adp_bonus_paid"}, "properties": [{"id": "displayName", "value": "ADP Review Bonus"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "bonus_diff"}, "properties": [{"id": "displayName", "value": "Diff Review Bonus"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "est_total_pay"}, "properties": [{"id": "displayName", "value": "Calculated Total Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "adp_total_paid"}, "properties": [{"id": "displayName", "value": "ADP Total Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "total_diff"}, "properties": [{"id": "displayName", "value": "Diff Total Pay"}, {"id": "unit", "value": "currencyUSD"}]}
         ]
       },
       "targets": [
@@ -492,7 +420,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT CAST(period_start AS STRING) period_start, CAST(period_end AS STRING) period_end, employee, hours_worked, est_gross_pay, adp_wages_paid, wage_diff, tips_allocated, adp_tips_paid, tip_diff, review_bonus, adp_bonus_paid, bonus_diff, est_total_pay, adp_total_paid FROM `jarvis-bhaga-prod.bhaga.vw_model_payroll_period` WHERE period_start >= DATE('$date_from') ORDER BY period_start DESC, employee"
+          "rawSql": "SELECT CAST(period_start AS STRING) period_start, CAST(period_end AS STRING) period_end, employee, hours_worked, est_gross_pay, adp_wages_paid, wage_diff, tips_allocated, adp_tips_paid, tip_diff, review_bonus, adp_bonus_paid, bonus_diff, est_total_pay, adp_total_paid, ROUND(est_total_pay - adp_total_paid, 2) AS total_diff FROM `jarvis-bhaga-prod.bhaga.vw_model_payroll_period` WHERE period_start >= DATE('$date_from') ORDER BY period_start DESC, employee"
         }
       ]
     }

@@ -1,5 +1,116 @@
 # Jarvis Build Progress
 
+## 2026-06-07 — Grafana "No data" fix: deploy-time datasource-UID binding + BQ panel aliases (PR #38)
+
+**Goal:** Every panel on the BHAGA Analytics dashboard showed "No data". Root-cause and fix.
+
+**Two independent bugs:**
+- **Datasource wiring (global):** the `ds_bigquery` template variable stored the datasource *name*
+  (`"BHAGA BigQuery"`) while every panel references `"uid": "${ds_bigquery}"` → Grafana resolves a
+  datasource whose UID == the name → "Data source not found" → all panels blank.
+- **Invalid SQL:** the 11 timeseries panels used double-quoted aliases (`AS "Orders"`) — a string
+  literal in BigQuery Standard SQL → syntax error. Output field names also can't contain `/` or `$`.
+
+**What landed:**
+- `skills/grafana_cloud_provisioning/register.py` — `configure_bigquery_datasource` now returns the
+  datasource `uid`; new `get_bigquery_datasource_uid()` helper.
+- `agents/bhaga/grafana/deploy.py` — `bind_datasource_uid()` rewrites every `${ds_bigquery}` ref + the
+  var `current` to the real UID before push; `dashboard.json` stays UID-free. `--dashboard-only` looks
+  up the UID too. Fails loudly if the UID can't be resolved.
+- `agents/bhaga/grafana/dashboard.json` — backtick aliases; `Hrs / $1k Net Sales`/`Hrs / Item` →
+  `Hrs per 1k Net Sales`/`Hrs per Item`; `byName` field overrides kept in sync.
+- `agents/bhaga/grafana/verify_panels.py` — read-only per-panel harness via Grafana `/api/ds/query`;
+  **it caught the alias bug** that earlier ad-hoc testing had masked.
+- Docs: RUNBOOK §14 (deploy-time UID binding + alias contract + incident); `status.py` panel-SQL
+  contract note. Deployed to prod; `verify_panels.py` → **14/14 panels OK**.
+- **Deferred (Phase 3, operator-driven):** `$inv_date` default, pre-window flat-zero forecast rows,
+  `time.from` vs `$date_from` alignment — cosmetic/UX, not blockers.
+- **Operator-feedback refinements (same PR #38):** (1) labor ratio panels renamed off "$1k net sales"
+  with goal **baseline lines** on the total daily/weekly panels, driven by new `$goal_hours_per_net_sales`
+  / `$goal_hours_per_item` template vars; (2) KDS "Time per Item" panel y-axis capped at 30 min;
+  (3) migration `008_kds_order_grouping.sql` adds `ticket_name` (order id) + `order_source` to
+  `vw_kds_item_investigation`, and the slow-items table is restructured to group items by order
+  (honest note: KDS times are per-order, not per-item).
+- **Operator-feedback round 2 (same PR #38):** (1) labor/payroll hour fields now use the Grafana
+  `suffix: h` custom unit so values render in **hours** (the built-in `h` unit auto-scales to days/min —
+  that was the "shows days" bug); (2) dropped "$1K" from the net-sales series labels; (3) split Labor
+  into **3. Daily Labor** + **4. Weekly Labor** sections (Order Quality→5, Payroll→6); (4) **Slow Orders**
+  is now order-level via migration `009_kds_order_level.sql` (`vw_kds_order_investigation`) — one row per
+  ticket with start/end time and the full item list, flagged when `order_min > items × $max_item_min`;
+  (5) payroll table relabeled into consistent **Calculated / ADP / Diff** triads (Hourly Pay, Tip Pay,
+  Review Bonus, Total Pay) with a new `Diff Total Pay` column and a description explaining each.
+  June-7 "missing data" was a refresh/cache artifact — all source views (labor/order-quality/KDS) have
+  June 7 and the `now-90d..now` window includes it.
+- **Operator-feedback round 3 (same PR #38):** the labor-vs-sales metric became raw `total_hours ÷
+  net_sales` (no $1,000 scaling); all "$1K" wording removed (incl. the goal variable label); decimals
+  bumped to 3; non-positive-net-sales days blanked so anomaly days don't blow up the axis. Panel titles
+  use explicit `${var}` interpolation so the date/threshold render. Migration `010_kds_order_quality.sql`
+  added `vw_kds_order_quality_daily` (order-level percentiles) — but the operator then chose to keep the
+  KDS percentile chart at **per-item** level (`vw_order_quality_daily`, y-cap 30 min), so that order-level
+  view is currently unused by the dashboard (kept in BQ; harmless). The Slow Orders table stays order-level.
+- **Operator-feedback round 4 (same PR #38):** labor ratios split into **two charts per period** instead of
+  one dual-axis chart per cohort. Each period (Daily/Weekly) now has: (1) **Hours / Net Sales** with three
+  lines — total / part-time / full-time — and (2) **Hours / Item** with the same three lines; each chart
+  carries a single dashed **Goal** line (`$goal_hours_per_net_sales` / `$goal_hours_per_item`). Because each
+  chart is now a single metric type, the lines share one axis (no dual-axis cramming). The per-cohort panels
+  34/38 were removed and the Shift-Hours charts widened to full width. No view changes (still
+  `vw_model_labor_daily` / `vw_model_labor_weekly`), so the `status.py` registry is unchanged.
+- **Operator-feedback round 5 (same PR #38):** (1) **Weekly Order & Item Volume** is now a `barchart` whose
+  x-axis is an explicit week-range label (`CONCAT(FORMAT_DATE start, ' – ', FORMAT_DATE start+6d)`, e.g.
+  "Jun 1 – Jun 7") so each bar visibly = one full Mon–Sun period; Items Sold on the right axis. (2) **Daily
+  Hours / Item** y-axis capped at `0–1.0`. (3) Grafana template variables are dashboard-scoped (always in the
+  top bar) and can't be moved into a single panel — but the three **table** panels (Payroll, Slow Orders, Who
+  Worked) now have `custom.filterable: true`, giving native in-panel column filters (filter by Employee /
+  Period / Source right in the table) instead of relying solely on top-bar vars. No view changes.
+- **Operator-feedback round 6 (same PR #38):** (1) **Weekly Order & Item Volume** reverted from `barchart`
+  back to a `timeseries` bar+line combo (Orders = solid bars left, Items Sold = line right) to de-clutter.
+  **Grafana constraint learned:** a `barchart` (the only panel with category x-axis labels like "06/01 –
+  06/07") can't draw a line series, and `timeseries` (the only bar+line combo) can't show a start–end range
+  as x-axis tick labels — so with bar+line + the labor goal lines, all weekly charts stay `timeseries` with a
+  weekly time axis (each tick = week start; full week in the tooltip). (2) **Daily Hours / Item** y-axis
+  capped at 0–1.0. (3) Removed the `inv_date` and `max_item_min` top-bar variables now that the tables filter
+  in-panel: **Slow Orders** uses a fixed 8 min/item threshold, gained a filterable **Date** column, and is
+  bounded by `$date_from`; **Staff on Shift** (was "Who Worked That Shift") likewise gained a Date column and
+  `$date_from` bound. (4) All bar series (daily + weekly Orders) set to solid fill (`fillOpacity 100`,
+  `gradientMode none`). No BQ view changes, so `status.py` GRAFANA_VIEWS is unchanged.
+- **Operator-feedback round 7 (same PR #38):** weekly x-axis week labels + configurable slow threshold.
+  **Confirmed Grafana limit (instance is v13.1):** a literal date *range* tick label ("6/1-6/7") needs a
+  category x-axis, which only the `barchart` panel has; `timeseries` (lines / bar+line) has a time axis whose
+  ticks are single instants (formattable to e.g. "6/1" but not a range). So per operator choice we went
+  **hybrid**: (a) **Weekly Order & Item Volume** is a `barchart` whose x label is the numeric range
+  `CONCAT(M/D, '-', M/D+6d)` → "6/1-6/7"; (b) the weekly **line** charts (Shift Hours, Hours/Net Sales,
+  Hours/Item) keep their lines, format the x-axis time field as `time:M/D` (→ "6/1"), and carry a
+  tooltip-only `Week` string field (hidden from legend/viz via `custom.hideFrom`) so hovering shows the full
+  "6/1-6/7" range. **Slow threshold reinstated as a `custom` dropdown** `max_item_min` (5–15, default 8): the
+  Slow Orders table now shows `Min / Item` (actual) and `Threshold (min/item)` columns, computes Expected Min
+  = Items × threshold, flags `order_min > items × threshold`, and the title/description interpolate
+  `${max_item_min}`. `verify_panels._template_defaults` extended to substitute `custom` vars (not just
+  `textbox`) so the harness mirrors Grafana. No BQ view changes.
+- **Operator-feedback round 8 (same PR #38):** fixed a regression + flexibility. (1) **Bug:** the weekly
+  **line** charts rendered as dots, not lines — the tooltip-only `Week` *string* column from round 7, in a
+  BigQuery **time-series-format** query, is treated as a **pivot dimension**, exploding each metric into
+  one-point-per-week series. Removed the `Week` column + its override from panels 35/36/37; they're plain
+  lines again (kept the `time:M/D` x-axis format → "6/1" ticks). **Lesson:** never add a non-time string
+  column to a `format:0` (time series) BigQuery target — it pivots. (2) Weekly Order & Item **bar value
+  labels** enlarged (`options.text.valueSize: 16`, `showValue: always`). (3) **Order KDS Times** (was "Slow
+  Orders"): the query no longer pre-filters to slow/one-date — it returns every order in the From-Date window;
+  added a filterable **Slow?** (Yes/No) column computed from the `max_item_min` dropdown plus **Min / Item**
+  and **Threshold** columns, so the operator filters Date and Slow? **in-table** and changes the threshold via
+  the dropdown without touching the underlying data. Title dropped the hardcoded "8 min". No BQ view changes.
+- **Operator-feedback round 9 (same PR #38):** the threshold control was confusing — the per-row "Threshold"
+  column was a constant (= the dropdown's current value), so its in-table filter only listed "8". Reworked so
+  the **`Slow threshold (min/item)` dropdown** (now 5/6/7/8/9/10/12/15/20) directly drives the **Slow Orders**
+  table: the query filters `order_min > num_items × ${max_item_min}`, so picking 5 vs 15 shows all orders over
+  that per-item time (verified 2071 vs 203 rows). Removed the constant Threshold + Slow? columns; the table is
+  now Date (filterable) / Order / Source / Start / End / Items / Order Min / Min per Item / Items in Order,
+  sorted by Min/Item desc. No BQ view changes.
+- **Operator-feedback round 10 (same PR #38):** dropped the threshold dropdown entirely. Grafana 13's table
+  **column filter supports numeric comparators** (≥ / ≤), so the right UX is: the query pre-filters nothing
+  (every order in the From-Date window), and the operator sets their own slow threshold in-table via the
+  **Min / Item** column filter (e.g. ≥ 10). Removed the `max_item_min` variable; Slow Orders query is now just
+  `WHERE date_local >= '$date_from'` sorted by Min/Item desc (4232 rows, filtered client-side). This also
+  fixed the "No values" trap where the dropdown's `> 8` pre-filter hid everything ≤ 8. No BQ view changes.
+
 ## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
 
 **Goal:** Make the implementation match the PR's stated design — *BQ is the single source of truth;

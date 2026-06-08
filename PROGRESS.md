@@ -104,6 +104,12 @@
   that per-item time (verified 2071 vs 203 rows). Removed the constant Threshold + Slow? columns; the table is
   now Date (filterable) / Order / Source / Start / End / Items / Order Min / Min per Item / Items in Order,
   sorted by Min/Item desc. No BQ view changes.
+- **Operator-feedback round 10 (same PR #38):** dropped the threshold dropdown entirely. Grafana 13's table
+  **column filter supports numeric comparators** (≥ / ≤), so the right UX is: the query pre-filters nothing
+  (every order in the From-Date window), and the operator sets their own slow threshold in-table via the
+  **Min / Item** column filter (e.g. ≥ 10). Removed the `max_item_min` variable; Slow Orders query is now just
+  `WHERE date_local >= '$date_from'` sorted by Min/Item desc (4232 rows, filtered client-side). This also
+  fixed the "No values" trap where the dropdown's `> 8` pre-filter hid everything ≤ 8. No BQ view changes.
 
 ## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
 

@@ -346,22 +346,35 @@
       {
         "ts": "2026-06-08T19:47:32.282000+00:00",
         "model": "claude-opus-4-8-thinking-high",
-        "tokens": 1143499,
-        "cost_usd": 0.9291,
+        "tokens": 1490905,
+        "cost_usd": 1.152,
         "cost_source": "cursor_charged",
         "conversation_id": null,
-        "input_tokens": 28,
-        "output_tokens": 11023,
-        "cache_read_input_tokens": 1117289,
-        "cache_creation_input_tokens": 15159,
+        "input_tokens": 36,
+        "output_tokens": 12393,
+        "cache_read_input_tokens": 1460612,
+        "cache_creation_input_tokens": 17864,
+        "note": null
+      },
+      {
+        "ts": "2026-06-08T19:55:13.541000+00:00",
+        "model": "claude-opus-4-8-thinking-high",
+        "tokens": 1166420,
+        "cost_usd": 0.871,
+        "cost_source": "cursor_charged",
+        "conversation_id": null,
+        "input_tokens": 24,
+        "output_tokens": 8373,
+        "cache_read_input_tokens": 1143666,
+        "cache_creation_input_tokens": 14357,
         "note": null
       }
     ],
-    "tokens_total": 81221328,
-    "cost_usd_total": 61.8724,
+    "tokens_total": 82735154,
+    "cost_usd_total": 62.9663,
     "window": {
       "start": "2026-06-07T21:17:21.150000+00:00",
-      "end": "2026-06-08T19:51:55.910000+00:00"
+      "end": "2026-06-08T19:57:56.347000+00:00"
     }
   },
   "review": {
@@ -646,7 +659,7 @@
     "run_count": 21
   },
   "totals": {
-    "tokens": 81221328,
-    "cost_usd": 61.8724
+    "tokens": 82735154,
+    "cost_usd": 62.9663
   }
 }

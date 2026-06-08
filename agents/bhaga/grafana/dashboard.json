@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 25,
+  "version": 26,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -28,7 +28,7 @@
         "current": {"value": "0.15"},
         "options": [{"selected": true, "text": "0.15", "value": "0.15"}],
         "hide": 0,
-        "description": "Target shift hours per item — rendered as a baseline line on the labor ratio charts"
+        "description": "Target shift hours per item as a raw ratio (0.15) — the Hours / Item charts display it percent-style (\u00d7 100), so 0.15 shows as 15%"
       },
       {
         "name": "goal_labor_pct_of_net_sales",
@@ -201,7 +201,7 @@
       "id": 33,
       "type": "timeseries",
       "title": "Daily Hours / Item (total / part-time / full-time)",
-      "description": "Shift hours per item sold, split by total / part-time / full-time. Lower is leaner. Dashed line = goal ($goal_hours_per_item).",
+      "description": "Shift hours per item sold, split by total / part-time / full-time, shown percent-style (value \u00d7 100, e.g. 0.15 h/item displays as 15%). Lower is leaner. Dashed line = goal ($goal_hours_per_item).",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 12, "x": 12, "y": 30},
       "options": {
@@ -209,7 +209,7 @@
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "suffix: h", "decimals": 3, "min": 0, "max": 1},
+        "defaults": {"unit": "percentunit", "decimals": 1, "min": 0, "max": 1},
         "overrides": [
           {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
         ]
@@ -289,7 +289,7 @@
       "id": 37,
       "type": "timeseries",
       "title": "Weekly Hours / Item (total / part-time / full-time)",
-      "description": "Shift hours per item sold, split by total / part-time / full-time. Lower is leaner. Dashed line = goal ($goal_hours_per_item). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
+      "description": "Shift hours per item sold, split by total / part-time / full-time, shown percent-style (value \u00d7 100, e.g. 0.15 h/item displays as 15%). Lower is leaner. Dashed line = goal ($goal_hours_per_item). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 12, "x": 12, "y": 49},
       "options": {
@@ -297,7 +297,7 @@
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "suffix: h", "decimals": 3},
+        "defaults": {"unit": "percentunit", "decimals": 1},
         "overrides": [
           {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
           {"matcher": {"id": "byName", "options": "time"}, "properties": [{"id": "unit", "value": "time:M/D"}]}        ]

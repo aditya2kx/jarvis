@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 21,
+  "version": 22,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -347,9 +347,9 @@
       "id": 52,
       "type": "table",
       "title": "Order KDS Times — set your slow threshold with the Min / Item filter",
-      "description": "One row per order (ticket) with its whole-order KDS prep time. The query does NOT pre-filter — every order in the From-Date window is shown. Set your own slow threshold in-table: click the 'Min / Item' column filter and use the ≥ operator (e.g. ≥ 10) to see only orders over that per-item time; use the 'Date' filter to focus on a single day. 'Min / Item' = Order Min ÷ Items. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order.",
+      "description": "One row per order (ticket) with its whole-order KDS prep time (Start → End), and 'On Shift (punched in)' = everyone whose ADP punch overlapped that order's time window. The query does NOT pre-filter — every order in the From-Date window is shown. Set your own slow threshold in-table: click the 'Min / Item' column filter and use the ≥ operator (e.g. ≥ 10) to see only orders over that per-item time; use the 'Date' filter to focus on a single day. 'Min / Item' = Order Min ÷ Items. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 12, "w": 14, "x": 0, "y": 68},
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 68},
       "options": {"sortBy": [{"displayName": "Min / Item", "desc": true}]},
       "fieldConfig": {
         "defaults": {"custom": {"filterable": true}},
@@ -362,6 +362,7 @@
           {"matcher": {"id": "byName", "options": "num_items"}, "properties": [{"id": "displayName", "value": "Items"}]},
           {"matcher": {"id": "byName", "options": "order_min"}, "properties": [{"id": "displayName", "value": "Order Min"}, {"id": "unit", "value": "suffix: min"}]},
           {"matcher": {"id": "byName", "options": "min_per_item"}, "properties": [{"id": "displayName", "value": "Min / Item"}, {"id": "unit", "value": "suffix: min"}, {"id": "decimals", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "staff_on_shift"}, "properties": [{"id": "displayName", "value": "On Shift (punched in)"}]},
           {"matcher": {"id": "byName", "options": "items_in_ticket"}, "properties": [{"id": "displayName", "value": "Items in Order"}]}
         ]
       },
@@ -371,35 +372,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT date_local, ticket_name, order_source, start_time, end_time, num_items, order_min, ROUND(order_min / num_items, 1) AS min_per_item, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` WHERE date_local >= '$date_from' ORDER BY min_per_item DESC, date_local DESC, ticket_name"
-        }
-      ]
-    },
-    {
-      "id": 53,
-      "type": "table",
-      "title": "Staff on Shift — filter by Date",
-      "description": "Who clocked in each day, with in/out times and hours. Use the in-table Date filter to focus on a single day.",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 12, "w": 10, "x": 14, "y": 68},
-      "options": {"sortBy": [{"displayName": "Date", "desc": true}]},
-      "fieldConfig": {
-        "defaults": {"custom": {"filterable": true}},
-        "overrides": [
-          {"matcher": {"id": "byName", "options": "date"}, "properties": [{"id": "displayName", "value": "Date"}]},
-          {"matcher": {"id": "byName", "options": "employee"}, "properties": [{"id": "displayName", "value": "Employee"}]},
-          {"matcher": {"id": "byName", "options": "in_time"}, "properties": [{"id": "displayName", "value": "In"}]},
-          {"matcher": {"id": "byName", "options": "out_time"}, "properties": [{"id": "displayName", "value": "Out"}]},
-          {"matcher": {"id": "byName", "options": "total_hours"}, "properties": [{"id": "displayName", "value": "Hours"}, {"id": "unit", "value": "suffix: h"}, {"id": "decimals", "value": 1}]}
-        ]
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "format": 1,
-          "project": "jarvis-bhaga-prod",
-          "dataset": "bhaga",
-          "rawSql": "SELECT date, employee, in_time, out_time, total_hours FROM `jarvis-bhaga-prod.bhaga.vw_staff_on_shift` WHERE date >= '$date_from' ORDER BY date DESC, in_time"
+          "rawSql": "SELECT date_local, ticket_name, order_source, start_time, end_time, num_items, order_min, ROUND(order_min / num_items, 1) AS min_per_item, (SELECT STRING_AGG(DISTINCT s.employee, ' | ' ORDER BY s.employee) FROM `jarvis-bhaga-prod.bhaga.vw_staff_on_shift` s WHERE s.date = o.date_local AND SAFE.PARSE_TIME('%H:%M', s.in_time) <= SAFE.PARSE_TIME('%H:%M:%S', o.end_time) AND SAFE.PARSE_TIME('%H:%M', s.out_time) >= SAFE.PARSE_TIME('%H:%M:%S', o.start_time)) AS staff_on_shift, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` o WHERE date_local >= '$date_from' ORDER BY min_per_item DESC, date_local DESC, ticket_name"
         }
       ]
     },

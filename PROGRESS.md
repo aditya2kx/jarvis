@@ -97,6 +97,13 @@
   added a filterable **Slow?** (Yes/No) column computed from the `max_item_min` dropdown plus **Min / Item**
   and **Threshold** columns, so the operator filters Date and Slow? **in-table** and changes the threshold via
   the dropdown without touching the underlying data. Title dropped the hardcoded "8 min". No BQ view changes.
+- **Operator-feedback round 9 (same PR #38):** the threshold control was confusing — the per-row "Threshold"
+  column was a constant (= the dropdown's current value), so its in-table filter only listed "8". Reworked so
+  the **`Slow threshold (min/item)` dropdown** (now 5/6/7/8/9/10/12/15/20) directly drives the **Slow Orders**
+  table: the query filters `order_min > num_items × ${max_item_min}`, so picking 5 vs 15 shows all orders over
+  that per-item time (verified 2071 vs 203 rows). Removed the constant Threshold + Slow? columns; the table is
+  now Date (filterable) / Order / Source / Start / End / Items / Order Min / Min per Item / Items in Order,
+  sorted by Min/Item desc. No BQ view changes.
 
 ## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
 

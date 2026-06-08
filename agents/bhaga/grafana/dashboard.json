@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 19,
+  "version": 20,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -25,7 +25,7 @@
         "name": "max_item_min",
         "label": "Slow threshold (min/item)",
         "type": "custom",
-        "query": "5,6,7,8,9,10,12,15",
+        "query": "5,6,7,8,9,10,12,15,20",
         "current": {"selected": true, "text": "8", "value": "8"},
         "options": [
           {"selected": false, "text": "5", "value": "5"},
@@ -35,12 +35,13 @@
           {"selected": false, "text": "9", "value": "9"},
           {"selected": false, "text": "10", "value": "10"},
           {"selected": false, "text": "12", "value": "12"},
-          {"selected": false, "text": "15", "value": "15"}
+          {"selected": false, "text": "15", "value": "15"},
+          {"selected": false, "text": "20", "value": "20"}
         ],
         "includeAll": false,
         "multi": false,
         "hide": 0,
-        "description": "Per-item minute threshold for the Slow Orders table; an order is 'slow' when its total prep time exceeds (items × this). Pick 5–15."
+        "description": "Per-item minute threshold for the Slow Orders table. The table shows every order whose KDS time per item exceeds this; change it (5/10/15/20…) and the table updates."
       },
       {
         "name": "goal_hours_per_net_sales",
@@ -367,11 +368,11 @@
     {
       "id": 52,
       "type": "table",
-      "title": "Order KDS Times — filter by Date / Slow?",
-      "description": "One row per order (ticket) with its whole-order KDS prep time. The query does NOT pre-filter — every order in the From-Date window is shown; use the in-table Date and Slow? column filters to focus on a specific day and/or only slow orders. 'Min / Item' = Order Min ÷ Items. 'Slow?' = Yes when Min / Item exceeds the selected per-item threshold (set 'Slow threshold (min/item)' at the top, currently ${max_item_min}); changing the threshold re-flags rows without changing the underlying data. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order.",
+      "title": "Slow Orders — per-item KDS time over the selected threshold",
+      "description": "Every order (ticket) whose whole-order KDS time per item exceeds the threshold you pick from the 'Slow threshold (min/item)' dropdown at the top (5/10/15/20…) — change it and the list updates (currently ${max_item_min} min/item). 'Min / Item' = Order Min ÷ Items. Use the in-table Date filter to focus on a single day. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 12, "w": 14, "x": 0, "y": 68},
-      "options": {"sortBy": [{"displayName": "Date", "desc": true}]},
+      "options": {"sortBy": [{"displayName": "Min / Item", "desc": true}]},
       "fieldConfig": {
         "defaults": {"custom": {"filterable": true}},
         "overrides": [
@@ -383,8 +384,6 @@
           {"matcher": {"id": "byName", "options": "num_items"}, "properties": [{"id": "displayName", "value": "Items"}]},
           {"matcher": {"id": "byName", "options": "order_min"}, "properties": [{"id": "displayName", "value": "Order Min"}, {"id": "unit", "value": "suffix: min"}]},
           {"matcher": {"id": "byName", "options": "min_per_item"}, "properties": [{"id": "displayName", "value": "Min / Item"}, {"id": "unit", "value": "suffix: min"}, {"id": "decimals", "value": 1}]},
-          {"matcher": {"id": "byName", "options": "threshold_min"}, "properties": [{"id": "displayName", "value": "Threshold (min/item)"}, {"id": "unit", "value": "suffix: min"}]},
-          {"matcher": {"id": "byName", "options": "is_slow"}, "properties": [{"id": "displayName", "value": "Slow?"}]},
           {"matcher": {"id": "byName", "options": "items_in_ticket"}, "properties": [{"id": "displayName", "value": "Items in Order"}]}
         ]
       },
@@ -394,7 +393,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT date_local, ticket_name, order_source, start_time, end_time, num_items, order_min, ROUND(order_min / num_items, 1) AS min_per_item, CAST('$max_item_min' AS INT64) AS threshold_min, IF(order_min > num_items * CAST('$max_item_min' AS INT64), 'Yes', 'No') AS is_slow, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` WHERE date_local >= '$date_from' ORDER BY date_local DESC, order_min DESC, ticket_name"
+          "rawSql": "SELECT date_local, ticket_name, order_source, start_time, end_time, num_items, order_min, ROUND(order_min / num_items, 1) AS min_per_item, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` WHERE order_min > num_items * CAST('$max_item_min' AS INT64) AND date_local >= '$date_from' ORDER BY order_min DESC, date_local DESC, ticket_name"
         }
       ]
     },

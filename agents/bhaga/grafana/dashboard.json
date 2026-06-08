@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 22,
+  "version": 23,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -236,6 +236,7 @@
       "id": 35,
       "type": "timeseries",
       "title": "Weekly Shift Hours",
+      "description": "Total / part-time / full-time shift hours per week. Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 24, "x": 0, "y": 40},
       "options": {
@@ -253,7 +254,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, total_hours AS `Total`, hourly_hours AS `Part-time`, fulltime_hours AS `Full-time` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_end, 'America/Chicago') AS time, total_hours AS `Total`, hourly_hours AS `Part-time`, fulltime_hours AS `Full-time` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -261,7 +262,7 @@
       "id": 36,
       "type": "timeseries",
       "title": "Weekly Hours / Net Sales (total / part-time / full-time)",
-      "description": "Shift hours per dollar of net sales (hours ÷ net sales), split by total / part-time / full-time. Lower is leaner. Non-positive-sales weeks are blanked. Dashed line = goal ($goal_hours_per_net_sales).",
+      "description": "Shift hours per dollar of net sales (hours ÷ net sales), split by total / part-time / full-time. Lower is leaner. Non-positive-sales weeks are blanked. Dashed line = goal ($goal_hours_per_net_sales). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 12, "x": 0, "y": 49},
       "options": {
@@ -280,7 +281,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, SAFE_DIVIDE(total_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Total`, SAFE_DIVIDE(hourly_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Part-time`, SAFE_DIVIDE(fulltime_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Full-time`, CAST('$goal_hours_per_net_sales' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_end, 'America/Chicago') AS time, SAFE_DIVIDE(total_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Total`, SAFE_DIVIDE(hourly_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Part-time`, SAFE_DIVIDE(fulltime_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Full-time`, CAST('$goal_hours_per_net_sales' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -288,7 +289,7 @@
       "id": 37,
       "type": "timeseries",
       "title": "Weekly Hours / Item (total / part-time / full-time)",
-      "description": "Shift hours per item sold, split by total / part-time / full-time. Lower is leaner. Dashed line = goal ($goal_hours_per_item).",
+      "description": "Shift hours per item sold, split by total / part-time / full-time. Lower is leaner. Dashed line = goal ($goal_hours_per_item). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 12, "x": 12, "y": 49},
       "options": {
@@ -307,7 +308,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, hours_per_item AS `Total`, hourly_hours_per_item AS `Part-time`, fulltime_hours_per_item AS `Full-time`, CAST('$goal_hours_per_item' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_end, 'America/Chicago') AS time, hours_per_item AS `Total`, hourly_hours_per_item AS `Part-time`, fulltime_hours_per_item AS `Full-time`, CAST('$goal_hours_per_item' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },

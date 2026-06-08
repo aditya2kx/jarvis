@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 13,
+  "version": 14,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -204,9 +204,9 @@
       "fieldConfig": {
         "defaults": {"unit": "suffix: h", "decimals": 3},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}]},
+          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}]},
           {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]},
-          {"matcher": {"id": "byName", "options": "goal_net_sales"}, "properties": [{"id": "displayName", "value": "Goal / Net Sales"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "goal_net_sales"}, "properties": [{"id": "displayName", "value": "Goal / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
           {"matcher": {"id": "byName", "options": "goal_item"}, "properties": [{"id": "displayName", "value": "Goal / Item"}, {"id": "custom.axisPlacement", "value": "right"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
         ]
       },
@@ -234,7 +234,7 @@
       "fieldConfig": {
         "defaults": {"unit": "suffix: h", "decimals": 3},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}]},
+          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}]},
           {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]}
         ]
       },
@@ -262,7 +262,7 @@
       "fieldConfig": {
         "defaults": {"unit": "suffix: h", "decimals": 3},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}]},
+          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}]},
           {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]}
         ]
       },
@@ -319,9 +319,9 @@
       "fieldConfig": {
         "defaults": {"unit": "suffix: h", "decimals": 3},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}]},
+          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}]},
           {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]},
-          {"matcher": {"id": "byName", "options": "goal_net_sales"}, "properties": [{"id": "displayName", "value": "Goal / Net Sales"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "goal_net_sales"}, "properties": [{"id": "displayName", "value": "Goal / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
           {"matcher": {"id": "byName", "options": "goal_item"}, "properties": [{"id": "displayName", "value": "Goal / Item"}, {"id": "custom.axisPlacement", "value": "right"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
         ]
       },
@@ -349,7 +349,7 @@
       "fieldConfig": {
         "defaults": {"unit": "suffix: h", "decimals": 3},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}]},
+          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}]},
           {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]}
         ]
       },
@@ -377,7 +377,7 @@
       "fieldConfig": {
         "defaults": {"unit": "suffix: h", "decimals": 3},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}]},
+          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}]},
           {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]}
         ]
       },

@@ -48,6 +48,13 @@
   added `vw_kds_order_quality_daily` (order-level percentiles) — but the operator then chose to keep the
   KDS percentile chart at **per-item** level (`vw_order_quality_daily`, y-cap 30 min), so that order-level
   view is currently unused by the dashboard (kept in BQ; harmless). The Slow Orders table stays order-level.
+- **Operator-feedback round 4 (same PR #38):** labor ratios split into **two charts per period** instead of
+  one dual-axis chart per cohort. Each period (Daily/Weekly) now has: (1) **Hours / Net Sales** with three
+  lines — total / part-time / full-time — and (2) **Hours / Item** with the same three lines; each chart
+  carries a single dashed **Goal** line (`$goal_hours_per_net_sales` / `$goal_hours_per_item`). Because each
+  chart is now a single metric type, the lines share one axis (no dual-axis cramming). The per-cohort panels
+  34/38 were removed and the Shift-Hours charts widened to full width. No view changes (still
+  `vw_model_labor_daily` / `vw_model_labor_weekly`), so the `status.py` registry is unchanged.
 
 ## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
 

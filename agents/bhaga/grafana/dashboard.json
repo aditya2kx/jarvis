@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 14,
+  "version": 15,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -174,7 +174,7 @@
       "type": "timeseries",
       "title": "Daily Shift Hours",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 21},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 21},
       "options": {
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
@@ -193,38 +193,8 @@
     {
       "id": 32,
       "type": "timeseries",
-      "title": "Daily Total Hours: / Net Sales & / Item (vs goals)",
-      "description": "Labor efficiency: shift hours per dollar of net sales (hours ÷ net sales; non-positive-sales days are blanked) (left axis) and per item sold (right axis). Lower is leaner. Dashed lines are the goal baselines — set via the 'Goal: …' variables at the top.",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 21},
-      "options": {
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
-      },
-      "fieldConfig": {
-        "defaults": {"unit": "suffix: h", "decimals": 3},
-        "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}]},
-          {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]},
-          {"matcher": {"id": "byName", "options": "goal_net_sales"}, "properties": [{"id": "displayName", "value": "Goal / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
-          {"matcher": {"id": "byName", "options": "goal_item"}, "properties": [{"id": "displayName", "value": "Goal / Item"}, {"id": "custom.axisPlacement", "value": "right"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
-        ]
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "format": 0,
-          "project": "jarvis-bhaga-prod",
-          "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, SAFE_DIVIDE(total_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `hrs_per_net_sales`, hours_per_item AS `hrs_per_item`, CAST('$goal_hours_per_net_sales' AS FLOAT64) AS `goal_net_sales`, CAST('$goal_hours_per_item' AS FLOAT64) AS `goal_item` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
-        }
-      ]
-    },
-    {
-      "id": 33,
-      "type": "timeseries",
-      "title": "Daily Part-time Hours: / Net Sales & / Item",
-      "description": "Part-time shift hours per dollar of net sales (hours ÷ net sales; non-positive-sales days are blanked) (left) and per item (right).",
+      "title": "Daily Hours / Net Sales (total / part-time / full-time)",
+      "description": "Shift hours per dollar of net sales (hours ÷ net sales), split by total / part-time / full-time. Lower is leaner. Non-positive-sales days are blanked. Dashed line = goal ($goal_hours_per_net_sales).",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 12, "x": 0, "y": 30},
       "options": {
@@ -234,8 +204,7 @@
       "fieldConfig": {
         "defaults": {"unit": "suffix: h", "decimals": 3},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}]},
-          {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]}
+          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
         ]
       },
       "targets": [
@@ -244,15 +213,15 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, SAFE_DIVIDE(hourly_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `hrs_per_net_sales`, hourly_hours_per_item AS `hrs_per_item` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, SAFE_DIVIDE(total_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Total`, SAFE_DIVIDE(hourly_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Part-time`, SAFE_DIVIDE(fulltime_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Full-time`, CAST('$goal_hours_per_net_sales' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
     {
-      "id": 34,
+      "id": 33,
       "type": "timeseries",
-      "title": "Daily Full-time Hours: / Net Sales & / Item",
-      "description": "Full-time shift hours per dollar of net sales (hours ÷ net sales; non-positive-sales days are blanked) (left) and per item (right).",
+      "title": "Daily Hours / Item (total / part-time / full-time)",
+      "description": "Shift hours per item sold, split by total / part-time / full-time. Lower is leaner. Dashed line = goal ($goal_hours_per_item).",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 12, "x": 12, "y": 30},
       "options": {
@@ -262,8 +231,7 @@
       "fieldConfig": {
         "defaults": {"unit": "suffix: h", "decimals": 3},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}]},
-          {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]}
+          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
         ]
       },
       "targets": [
@@ -272,7 +240,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, SAFE_DIVIDE(fulltime_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `hrs_per_net_sales`, fulltime_hours_per_item AS `hrs_per_item` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, hours_per_item AS `Total`, hourly_hours_per_item AS `Part-time`, fulltime_hours_per_item AS `Full-time`, CAST('$goal_hours_per_item' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
@@ -289,7 +257,7 @@
       "type": "timeseries",
       "title": "Weekly Shift Hours",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 40},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 40},
       "options": {
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
@@ -308,38 +276,8 @@
     {
       "id": 36,
       "type": "timeseries",
-      "title": "Weekly Total Hours: / Net Sales & / Item (vs goals)",
-      "description": "Labor efficiency: shift hours per dollar of net sales (hours ÷ net sales; non-positive-sales days are blanked) (left axis) and per item sold (right axis). Lower is leaner. Dashed lines are the goal baselines — set via the 'Goal: …' variables at the top.",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 40},
-      "options": {
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
-      },
-      "fieldConfig": {
-        "defaults": {"unit": "suffix: h", "decimals": 3},
-        "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}]},
-          {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]},
-          {"matcher": {"id": "byName", "options": "goal_net_sales"}, "properties": [{"id": "displayName", "value": "Goal / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
-          {"matcher": {"id": "byName", "options": "goal_item"}, "properties": [{"id": "displayName", "value": "Goal / Item"}, {"id": "custom.axisPlacement", "value": "right"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
-        ]
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "format": 0,
-          "project": "jarvis-bhaga-prod",
-          "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, SAFE_DIVIDE(total_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `hrs_per_net_sales`, hours_per_item AS `hrs_per_item`, CAST('$goal_hours_per_net_sales' AS FLOAT64) AS `goal_net_sales`, CAST('$goal_hours_per_item' AS FLOAT64) AS `goal_item` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
-        }
-      ]
-    },
-    {
-      "id": 37,
-      "type": "timeseries",
-      "title": "Weekly Part-time Hours: / Net Sales & / Item",
-      "description": "Part-time shift hours per dollar of net sales (hours ÷ net sales; non-positive-sales days are blanked) (left) and per item (right).",
+      "title": "Weekly Hours / Net Sales (total / part-time / full-time)",
+      "description": "Shift hours per dollar of net sales (hours ÷ net sales), split by total / part-time / full-time. Lower is leaner. Non-positive-sales weeks are blanked. Dashed line = goal ($goal_hours_per_net_sales).",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 12, "x": 0, "y": 49},
       "options": {
@@ -349,8 +287,7 @@
       "fieldConfig": {
         "defaults": {"unit": "suffix: h", "decimals": 3},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}]},
-          {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]}
+          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
         ]
       },
       "targets": [
@@ -359,15 +296,15 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, SAFE_DIVIDE(hourly_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `hrs_per_net_sales`, hourly_hours_per_item AS `hrs_per_item` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, SAFE_DIVIDE(total_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Total`, SAFE_DIVIDE(hourly_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Part-time`, SAFE_DIVIDE(fulltime_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `Full-time`, CAST('$goal_hours_per_net_sales' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
     {
-      "id": 38,
+      "id": 37,
       "type": "timeseries",
-      "title": "Weekly Full-time Hours: / Net Sales & / Item",
-      "description": "Full-time shift hours per dollar of net sales (hours ÷ net sales; non-positive-sales days are blanked) (left) and per item (right).",
+      "title": "Weekly Hours / Item (total / part-time / full-time)",
+      "description": "Shift hours per item sold, split by total / part-time / full-time. Lower is leaner. Dashed line = goal ($goal_hours_per_item).",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 12, "x": 12, "y": 49},
       "options": {
@@ -377,8 +314,7 @@
       "fieldConfig": {
         "defaults": {"unit": "suffix: h", "decimals": 3},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}, {"id": "custom.axisPlacement", "value": "left"}]},
-          {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]}
+          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
         ]
       },
       "targets": [
@@ -387,7 +323,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, SAFE_DIVIDE(fulltime_hours, NULLIF(GREATEST(net_sales, 0), 0)) AS `hrs_per_net_sales`, fulltime_hours_per_item AS `hrs_per_item` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, hours_per_item AS `Total`, hourly_hours_per_item AS `Part-time`, fulltime_hours_per_item AS `Full-time`, CAST('$goal_hours_per_item' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },

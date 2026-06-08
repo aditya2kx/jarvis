@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 8,
+  "version": 9,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -164,7 +164,7 @@
     {
       "id": 30,
       "type": "row",
-      "title": "3. Labor",
+      "title": "3. Daily Labor",
       "collapsed": false,
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 20}
     },
@@ -179,7 +179,7 @@
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
-      "fieldConfig": {"defaults": {"unit": "h"}},
+      "fieldConfig": {"defaults": {"unit": "suffix: h", "decimals": 1}},
       "targets": [
         {
           "refId": "A",
@@ -202,11 +202,11 @@
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "h"},
+        "defaults": {"unit": "suffix: h", "decimals": 2},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales ($1K)"}]},
+          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}]},
           {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]},
-          {"matcher": {"id": "byName", "options": "goal_net_sales"}, "properties": [{"id": "displayName", "value": "Goal / Net Sales ($1K)"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "goal_net_sales"}, "properties": [{"id": "displayName", "value": "Goal / Net Sales"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
           {"matcher": {"id": "byName", "options": "goal_item"}, "properties": [{"id": "displayName", "value": "Goal / Item"}, {"id": "custom.axisPlacement", "value": "right"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
         ]
       },
@@ -232,9 +232,9 @@
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "h"},
+        "defaults": {"unit": "suffix: h", "decimals": 2},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales ($1K)"}]},
+          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}]},
           {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]}
         ]
       },
@@ -260,9 +260,9 @@
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "h"},
+        "defaults": {"unit": "suffix: h", "decimals": 2},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales ($1K)"}]},
+          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}]},
           {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]}
         ]
       },
@@ -278,16 +278,23 @@
     },
 
     {
+      "id": 40,
+      "type": "row",
+      "title": "4. Weekly Labor",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 39}
+    },
+    {
       "id": 35,
       "type": "timeseries",
       "title": "Weekly Shift Hours",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 39},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 40},
       "options": {
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
-      "fieldConfig": {"defaults": {"unit": "h"}},
+      "fieldConfig": {"defaults": {"unit": "suffix: h", "decimals": 1}},
       "targets": [
         {
           "refId": "A",
@@ -304,17 +311,17 @@
       "title": "Weekly Total Hours: / Net Sales & / Item (vs goals)",
       "description": "Labor efficiency: shift hours per $1,000 net sales (left axis) and per item sold (right axis). Lower is leaner. Dashed lines are the goal baselines — set via the 'Goal: …' variables at the top.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 39},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 40},
       "options": {
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "h"},
+        "defaults": {"unit": "suffix: h", "decimals": 2},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales ($1K)"}]},
+          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}]},
           {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]},
-          {"matcher": {"id": "byName", "options": "goal_net_sales"}, "properties": [{"id": "displayName", "value": "Goal / Net Sales ($1K)"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "goal_net_sales"}, "properties": [{"id": "displayName", "value": "Goal / Net Sales"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
           {"matcher": {"id": "byName", "options": "goal_item"}, "properties": [{"id": "displayName", "value": "Goal / Item"}, {"id": "custom.axisPlacement", "value": "right"}, {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
         ]
       },
@@ -334,15 +341,15 @@
       "title": "Weekly Part-time Hours: / Net Sales & / Item",
       "description": "Part-time shift hours per $1,000 net sales (left) and per item (right).",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 48},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 49},
       "options": {
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "h"},
+        "defaults": {"unit": "suffix: h", "decimals": 2},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales ($1K)"}]},
+          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}]},
           {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]}
         ]
       },
@@ -362,15 +369,15 @@
       "title": "Weekly Full-time Hours: / Net Sales & / Item",
       "description": "Full-time shift hours per $1,000 net sales (left) and per item (right).",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 48},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 49},
       "options": {
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "h"},
+        "defaults": {"unit": "suffix: h", "decimals": 2},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales ($1K)"}]},
+          {"matcher": {"id": "byName", "options": "hrs_per_net_sales"}, "properties": [{"id": "displayName", "value": "Hrs / Net Sales"}]},
           {"matcher": {"id": "byName", "options": "hrs_per_item"}, "properties": [{"id": "displayName", "value": "Hrs / Item"}, {"id": "custom.axisPlacement", "value": "right"}]}
         ]
       },
@@ -388,16 +395,16 @@
     {
       "id": 50,
       "type": "row",
-      "title": "4. Order Quality",
+      "title": "5. Order Quality",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 57}
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 58}
     },
     {
       "id": 51,
       "type": "timeseries",
       "title": "KDS Time per Item (median / p90 / p95 / p99)",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 58},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 59},
       "options": {
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
@@ -418,23 +425,21 @@
     {
       "id": 52,
       "type": "table",
-      "title": "Slow Orders — Items by Ticket (date: $inv_date, ≥$max_item_min min/item)",
-      "description": "Each slow ORDER (ticket) and all of its items, so you can see what was in a long order. KDS records time per order, not per item — 'Order Min' is the whole ticket's time and 'Avg Min/Item' = Order Min ÷ items in order (same for every row of a ticket). So this shows which orders ran long and what they contained, but not which single item inside a multi-item order was the bottleneck. Rows are grouped by order (slowest first). Filter: orders whose avg min/item ≥ $max_item_min.",
+      "title": "Slow Orders ($inv_date) — order time > items × $max_item_min min",
+      "description": "Flags slow ORDERS: one row per ticket where the whole-order prep time (Order Min) exceeds Items × $max_item_min (Expected Min) — i.e. the order took longer than its size should allow at the slow-item threshold. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). Slowest orders first. KDS times are per-order, so this surfaces which orders ran long and what they contained.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 12, "w": 14, "x": 0, "y": 67},
+      "gridPos": {"h": 12, "w": 14, "x": 0, "y": 68},
       "options": {"sortBy": [{"displayName": "Order Min", "desc": true}]},
       "fieldConfig": {
         "overrides": [
           {"matcher": {"id": "byName", "options": "ticket_name"}, "properties": [{"id": "displayName", "value": "Order"}]},
           {"matcher": {"id": "byName", "options": "order_source"}, "properties": [{"id": "displayName", "value": "Source"}]},
-          {"matcher": {"id": "byName", "options": "time_created"}, "properties": [{"id": "displayName", "value": "Time"}]},
-          {"matcher": {"id": "byName", "options": "device_name"}, "properties": [{"id": "displayName", "value": "Station"}]},
-          {"matcher": {"id": "byName", "options": "num_items"}, "properties": [{"id": "displayName", "value": "Items in Order"}]},
-          {"matcher": {"id": "byName", "options": "ticket_min"}, "properties": [{"id": "displayName", "value": "Order Min"}]},
-          {"matcher": {"id": "byName", "options": "per_item_min"}, "properties": [{"id": "displayName", "value": "Avg Min/Item"}]},
-          {"matcher": {"id": "byName", "options": "item_name"}, "properties": [{"id": "displayName", "value": "Item"}]},
-          {"matcher": {"id": "byName", "options": "qty"}, "properties": [{"id": "displayName", "value": "Qty"}]},
-          {"matcher": {"id": "byName", "options": "category"}, "properties": [{"id": "displayName", "value": "Category"}]}
+          {"matcher": {"id": "byName", "options": "start_time"}, "properties": [{"id": "displayName", "value": "Start"}]},
+          {"matcher": {"id": "byName", "options": "end_time"}, "properties": [{"id": "displayName", "value": "End"}]},
+          {"matcher": {"id": "byName", "options": "num_items"}, "properties": [{"id": "displayName", "value": "Items"}]},
+          {"matcher": {"id": "byName", "options": "order_min"}, "properties": [{"id": "displayName", "value": "Order Min"}, {"id": "unit", "value": "suffix: min"}]},
+          {"matcher": {"id": "byName", "options": "expected_min"}, "properties": [{"id": "displayName", "value": "Expected Min"}, {"id": "unit", "value": "suffix: min"}]},
+          {"matcher": {"id": "byName", "options": "items_in_ticket"}, "properties": [{"id": "displayName", "value": "Items in Order"}]}
         ]
       },
       "targets": [
@@ -443,7 +448,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT ticket_name, order_source, time_created, device_name, num_items, ticket_min, per_item_min, item_name, qty, category FROM `jarvis-bhaga-prod.bhaga.vw_kds_item_investigation` WHERE date_local = '$inv_date' AND per_item_min >= CAST('$max_item_min' AS INT64) ORDER BY ticket_min DESC, ticket_name, item_name"
+          "rawSql": "SELECT ticket_name, order_source, start_time, end_time, num_items, order_min, num_items * CAST('$max_item_min' AS INT64) AS expected_min, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` WHERE date_local = '$inv_date' AND order_min > num_items * CAST('$max_item_min' AS INT64) ORDER BY order_min DESC, ticket_name"
         }
       ]
     },
@@ -452,14 +457,14 @@
       "type": "table",
       "title": "Who Worked That Shift ($inv_date)",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 12, "w": 10, "x": 14, "y": 67},
+      "gridPos": {"h": 12, "w": 10, "x": 14, "y": 68},
       "options": {"sortBy": [{"displayName": "in_time", "desc": false}]},
       "fieldConfig": {
         "overrides": [
           {"matcher": {"id": "byName", "options": "employee"}, "properties": [{"id": "displayName", "value": "Employee"}]},
           {"matcher": {"id": "byName", "options": "in_time"}, "properties": [{"id": "displayName", "value": "In"}]},
           {"matcher": {"id": "byName", "options": "out_time"}, "properties": [{"id": "displayName", "value": "Out"}]},
-          {"matcher": {"id": "byName", "options": "total_hours"}, "properties": [{"id": "displayName", "value": "Hours"}, {"id": "unit", "value": "h"}]}
+          {"matcher": {"id": "byName", "options": "total_hours"}, "properties": [{"id": "displayName", "value": "Hours"}, {"id": "unit", "value": "suffix: h"}, {"id": "decimals", "value": 1}]}
         ]
       },
       "targets": [
@@ -476,34 +481,36 @@
     {
       "id": 60,
       "type": "row",
-      "title": "5. Payroll",
+      "title": "6. Payroll",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 79}
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 80}
     },
     {
       "id": 61,
       "type": "table",
       "title": "Payroll — per Employee per Pay Period",
+      "description": "Each pay component is shown as a Calculated / ADP / Diff triad. Calculated = our model; ADP = what ADP actually paid; Diff = Calculated − ADP (positive means we computed more than ADP paid). Hourly Pay = hours × wage rate; Tip Pay = allocated tips; Review Bonus = earned review bonus; Total Pay = Hourly + Tip + Bonus. So 'Diff Review Bonus' is our review bonus minus ADP's bonus line, and 'Calculated Total Pay' is the sum of the three calculated components.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 80},
-      "options": {"sortBy": [{"displayName": "period_start", "desc": true}]},
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 81},
+      "options": {"sortBy": [{"displayName": "Period Start", "desc": true}]},
       "fieldConfig": {
         "overrides": [
           {"matcher": {"id": "byName", "options": "period_start"}, "properties": [{"id": "displayName", "value": "Period Start"}]},
           {"matcher": {"id": "byName", "options": "period_end"}, "properties": [{"id": "displayName", "value": "Period End"}]},
           {"matcher": {"id": "byName", "options": "employee"}, "properties": [{"id": "displayName", "value": "Employee"}]},
-          {"matcher": {"id": "byName", "options": "hours_worked"}, "properties": [{"id": "displayName", "value": "Hours"}, {"id": "unit", "value": "h"}]},
-          {"matcher": {"id": "byName", "options": "est_gross_pay"}, "properties": [{"id": "displayName", "value": "Gross Pay (est)"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "adp_wages_paid"}, "properties": [{"id": "displayName", "value": "ADP Wages"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "wage_diff"}, "properties": [{"id": "displayName", "value": "Wage Diff"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "tips_allocated"}, "properties": [{"id": "displayName", "value": "Tips (calc)"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "adp_tips_paid"}, "properties": [{"id": "displayName", "value": "ADP Tips"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "tip_diff"}, "properties": [{"id": "displayName", "value": "Tip Diff"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "review_bonus"}, "properties": [{"id": "displayName", "value": "Review Bonus (calc)"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "adp_bonus_paid"}, "properties": [{"id": "displayName", "value": "ADP Bonus"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "bonus_diff"}, "properties": [{"id": "displayName", "value": "Bonus Diff"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "est_total_pay"}, "properties": [{"id": "displayName", "value": "Total (est)"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "adp_total_paid"}, "properties": [{"id": "displayName", "value": "ADP Total"}, {"id": "unit", "value": "currencyUSD"}]}
+          {"matcher": {"id": "byName", "options": "hours_worked"}, "properties": [{"id": "displayName", "value": "Hours"}, {"id": "unit", "value": "suffix: h"}, {"id": "decimals", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "est_gross_pay"}, "properties": [{"id": "displayName", "value": "Calculated Hourly Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "adp_wages_paid"}, "properties": [{"id": "displayName", "value": "ADP Hourly Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "wage_diff"}, "properties": [{"id": "displayName", "value": "Diff Hourly Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "tips_allocated"}, "properties": [{"id": "displayName", "value": "Calculated Tip Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "adp_tips_paid"}, "properties": [{"id": "displayName", "value": "ADP Tip Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "tip_diff"}, "properties": [{"id": "displayName", "value": "Diff Tip Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "review_bonus"}, "properties": [{"id": "displayName", "value": "Calculated Review Bonus"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "adp_bonus_paid"}, "properties": [{"id": "displayName", "value": "ADP Review Bonus"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "bonus_diff"}, "properties": [{"id": "displayName", "value": "Diff Review Bonus"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "est_total_pay"}, "properties": [{"id": "displayName", "value": "Calculated Total Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "adp_total_paid"}, "properties": [{"id": "displayName", "value": "ADP Total Pay"}, {"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "total_diff"}, "properties": [{"id": "displayName", "value": "Diff Total Pay"}, {"id": "unit", "value": "currencyUSD"}]}
         ]
       },
       "targets": [
@@ -512,7 +519,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT CAST(period_start AS STRING) period_start, CAST(period_end AS STRING) period_end, employee, hours_worked, est_gross_pay, adp_wages_paid, wage_diff, tips_allocated, adp_tips_paid, tip_diff, review_bonus, adp_bonus_paid, bonus_diff, est_total_pay, adp_total_paid FROM `jarvis-bhaga-prod.bhaga.vw_model_payroll_period` WHERE period_start >= DATE('$date_from') ORDER BY period_start DESC, employee"
+          "rawSql": "SELECT CAST(period_start AS STRING) period_start, CAST(period_end AS STRING) period_end, employee, hours_worked, est_gross_pay, adp_wages_paid, wage_diff, tips_allocated, adp_tips_paid, tip_diff, review_bonus, adp_bonus_paid, bonus_diff, est_total_pay, adp_total_paid, ROUND(est_total_pay - adp_total_paid, 2) AS total_diff FROM `jarvis-bhaga-prod.bhaga.vw_model_payroll_period` WHERE period_start >= DATE('$date_from') ORDER BY period_start DESC, employee"
         }
       ]
     }

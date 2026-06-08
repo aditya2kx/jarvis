@@ -888,7 +888,16 @@ data".** `deploy.py` fixes this by calling `bind_datasource_uid()` (see
 `"..."` as a *string literal*, so `AS "Orders"` is a syntax error — use backticks
 (`` AS `Orders` ``). Output field names also may not contain `/` or `$` (spaces and
 hyphens are fine), so use e.g. `` AS `Hrs per 1k Net Sales` `` not `Hrs / $1k …`. Field
-names still drive the `byName` field overrides, so keep them in sync.
+names still drive the `byName` field overrides, so keep them in sync. Prefer
+BigQuery-valid snake_case aliases (e.g. `` AS `hrs_per_net_sales` ``) and set the
+human label with a `displayName` field override — that sidesteps the `/`/`$`
+restriction entirely.
+
+**Hour fields use the `suffix: h` custom unit, not the built-in `h`.** Grafana's
+built-in `h` (and `m`) units are *durations* that auto-scale — `60` renders as
+`2.5 day` and `0.15` as `9 min`, which is wrong for shift-hours and hours-per-X
+panels. Use the custom unit `suffix: h` (and `suffix: min` for the slow-orders
+table) so the raw number is shown with a unit and no rescaling.
 
 **Verify panels return data (read-only, end-to-end):**
 

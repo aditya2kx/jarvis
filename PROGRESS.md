@@ -31,6 +31,16 @@
   (3) migration `008_kds_order_grouping.sql` adds `ticket_name` (order id) + `order_source` to
   `vw_kds_item_investigation`, and the slow-items table is restructured to group items by order
   (honest note: KDS times are per-order, not per-item).
+- **Operator-feedback round 2 (same PR #38):** (1) labor/payroll hour fields now use the Grafana
+  `suffix: h` custom unit so values render in **hours** (the built-in `h` unit auto-scales to days/min —
+  that was the "shows days" bug); (2) dropped "$1K" from the net-sales series labels; (3) split Labor
+  into **3. Daily Labor** + **4. Weekly Labor** sections (Order Quality→5, Payroll→6); (4) **Slow Orders**
+  is now order-level via migration `009_kds_order_level.sql` (`vw_kds_order_investigation`) — one row per
+  ticket with start/end time and the full item list, flagged when `order_min > items × $max_item_min`;
+  (5) payroll table relabeled into consistent **Calculated / ADP / Diff** triads (Hourly Pay, Tip Pay,
+  Review Bonus, Total Pay) with a new `Diff Total Pay` column and a description explaining each.
+  June-7 "missing data" was a refresh/cache artifact — all source views (labor/order-quality/KDS) have
+  June 7 and the `now-90d..now` window includes it.
 
 ## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
 

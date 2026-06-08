@@ -9,12 +9,13 @@ so "No data" panels are obvious, and exits non-zero if any panel errors (e.g.
 
 This is the objective check behind the Grafana "No data" fix: after
 ``deploy.py`` binds the real datasource UID (see ``bind_datasource_uid``), every
-BigQuery panel should return rows — except the date-bounded investigation panels
-(52/53), which are empty when ``$inv_date`` falls outside the data range.
+BigQuery panel should return rows. The investigation tables (52 Slow Orders / 53
+Staff on Shift) are bounded by ``$date_from`` and filtered in-panel by Date, so
+they return the full window rather than a single day.
 
 Usage (from repo root):
     python3 agents/bhaga/grafana/verify_panels.py
-    python3 agents/bhaga/grafana/verify_panels.py --var inv_date=2026-05-30
+    python3 agents/bhaga/grafana/verify_panels.py --var date_from=2026-05-01
     python3 agents/bhaga/grafana/verify_panels.py --fail-on-empty
 
 Environment / auth: identical to deploy.py — GRAFANA_API_TOKEN env var (CI) or

@@ -62,6 +62,17 @@
   top bar) and can't be moved into a single panel — but the three **table** panels (Payroll, Slow Orders, Who
   Worked) now have `custom.filterable: true`, giving native in-panel column filters (filter by Employee /
   Period / Source right in the table) instead of relying solely on top-bar vars. No view changes.
+- **Operator-feedback round 6 (same PR #38):** (1) **Weekly Order & Item Volume** reverted from `barchart`
+  back to a `timeseries` bar+line combo (Orders = solid bars left, Items Sold = line right) to de-clutter.
+  **Grafana constraint learned:** a `barchart` (the only panel with category x-axis labels like "06/01 –
+  06/07") can't draw a line series, and `timeseries` (the only bar+line combo) can't show a start–end range
+  as x-axis tick labels — so with bar+line + the labor goal lines, all weekly charts stay `timeseries` with a
+  weekly time axis (each tick = week start; full week in the tooltip). (2) **Daily Hours / Item** y-axis
+  capped at 0–1.0. (3) Removed the `inv_date` and `max_item_min` top-bar variables now that the tables filter
+  in-panel: **Slow Orders** uses a fixed 8 min/item threshold, gained a filterable **Date** column, and is
+  bounded by `$date_from`; **Staff on Shift** (was "Who Worked That Shift") likewise gained a Date column and
+  `$date_from` bound. (4) All bar series (daily + weekly Orders) set to solid fill (`fillOpacity 100`,
+  `gradientMode none`). No BQ view changes, so `status.py` GRAFANA_VIEWS is unchanged.
 
 ## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
 

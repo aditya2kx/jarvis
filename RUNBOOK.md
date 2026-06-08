@@ -905,7 +905,7 @@ table) so the raw number is shown with a unit and no rescaling.
 # Runs every panel's rawSql through Grafana /api/ds/query with the real datasource UID
 # and the dashboard's template-var defaults; prints section | id | status | rows.
 python3 agents/bhaga/grafana/verify_panels.py
-python3 agents/bhaga/grafana/verify_panels.py --var inv_date=2026-05-30   # override a var
+python3 agents/bhaga/grafana/verify_panels.py --var date_from=2026-05-01   # override a var
 python3 agents/bhaga/grafana/verify_panels.py --fail-on-empty             # 0-row = failure
 ```
 

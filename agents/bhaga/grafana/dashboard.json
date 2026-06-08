@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 16,
+  "version": 17,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -20,24 +20,6 @@
         "options": [{"selected": true, "text": "2026-01-01", "value": "2026-01-01"}],
         "hide": 0,
         "description": "ISO date string e.g. 2026-01-01"
-      },
-      {
-        "name": "inv_date",
-        "label": "Investigation Date",
-        "type": "textbox",
-        "current": {"value": "2026-06-03"},
-        "options": [{"selected": true, "text": "2026-06-03", "value": "2026-06-03"}],
-        "hide": 0,
-        "description": "Date to investigate for slow items / staff on shift (YYYY-MM-DD)"
-      },
-      {
-        "name": "max_item_min",
-        "label": "Slow Item Threshold (min)",
-        "type": "textbox",
-        "current": {"value": "8"},
-        "options": [{"selected": true, "text": "8", "value": "8"}],
-        "hide": 0,
-        "description": "Show items with per_item_min >= this value in the investigation table"
       },
       {
         "name": "goal_hours_per_net_sales",
@@ -99,7 +81,9 @@
           {
             "matcher": {"id": "byName", "options": "Orders"},
             "properties": [
-              {"id": "custom.drawStyle", "value": "bars"}
+              {"id": "custom.drawStyle", "value": "bars"},
+              {"id": "custom.fillOpacity", "value": 100},
+              {"id": "custom.gradientMode", "value": "none"}
             ]
           }
         ]
@@ -124,34 +108,29 @@
     },
     {
       "id": 21,
-      "type": "barchart",
+      "type": "timeseries",
       "title": "Weekly Order & Item Volume",
-      "description": "Each bar is one full week (Mon–Sun), labeled by its start–end dates (e.g. 'Jun 1 – Jun 7') so the period a bar covers is explicit. Orders on the left axis, Items Sold on the right.",
+      "description": "One point per week (week starting Monday). Orders as solid bars (left axis); Items Sold as a line (right axis). The x-axis marks each week by its start date; hover to see the week's totals.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 24, "x": 0, "y": 11},
       "options": {
-        "xField": "Week",
-        "orientation": "vertical",
-        "showValue": "auto",
-        "stacking": "none",
-        "groupWidth": 0.7,
-        "barWidth": 0.9,
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
         "defaults": {"unit": "short"},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Items Sold"}, "properties": [{"id": "custom.axisPlacement", "value": "right"}]}
+          {"matcher": {"id": "byName", "options": "Items Sold"}, "properties": [{"id": "custom.axisPlacement", "value": "right"}, {"id": "custom.drawStyle", "value": "line"}, {"id": "custom.fillOpacity", "value": 0}, {"id": "custom.lineWidth", "value": 2}]},
+          {"matcher": {"id": "byName", "options": "Orders"}, "properties": [{"id": "custom.drawStyle", "value": "bars"}, {"id": "custom.fillOpacity", "value": 100}, {"id": "custom.gradientMode", "value": "none"}]}
         ]
       },
       "targets": [
         {
           "refId": "A",
-          "format": 1,
+          "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT CONCAT(FORMAT_DATE('%b %-d', week_start), ' – ', FORMAT_DATE('%b %-d', DATE_ADD(week_start, INTERVAL 6 DAY))) AS `Week`, orders AS `Orders`, items_sold AS `Items Sold` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, orders AS `Orders`, items_sold AS `Items Sold` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -357,14 +336,15 @@
     {
       "id": 52,
       "type": "table",
-      "title": "Slow Orders (${inv_date}) — order time > items × ${max_item_min} min",
-      "description": "Flags slow ORDERS: one row per ticket where the whole-order prep time (Order Min) exceeds Items × $max_item_min (Expected Min) — i.e. the order took longer than its size should allow at the slow-item threshold. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). Slowest orders first. KDS times are per-order, so this surfaces which orders ran long and what they contained.",
+      "title": "Slow Orders — order time > items × 8 min",
+      "description": "Flags slow ORDERS: one row per ticket where the whole-order prep time (Order Min) exceeds Items × 8 (Expected Min) — i.e. the order took longer than its size should allow at the 8 min/item threshold. Use the in-table Date filter to focus on a single day. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order, so this surfaces which orders ran long and what they contained.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 12, "w": 14, "x": 0, "y": 68},
-      "options": {"sortBy": [{"displayName": "Order Min", "desc": true}]},
+      "options": {"sortBy": [{"displayName": "Date", "desc": true}]},
       "fieldConfig": {
         "defaults": {"custom": {"filterable": true}},
         "overrides": [
+          {"matcher": {"id": "byName", "options": "date_local"}, "properties": [{"id": "displayName", "value": "Date"}]},
           {"matcher": {"id": "byName", "options": "ticket_name"}, "properties": [{"id": "displayName", "value": "Order"}]},
           {"matcher": {"id": "byName", "options": "order_source"}, "properties": [{"id": "displayName", "value": "Source"}]},
           {"matcher": {"id": "byName", "options": "start_time"}, "properties": [{"id": "displayName", "value": "Start"}]},
@@ -381,20 +361,22 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT ticket_name, order_source, start_time, end_time, num_items, order_min, num_items * CAST('$max_item_min' AS INT64) AS expected_min, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` WHERE date_local = '$inv_date' AND order_min > num_items * CAST('$max_item_min' AS INT64) ORDER BY order_min DESC, ticket_name"
+          "rawSql": "SELECT date_local, ticket_name, order_source, start_time, end_time, num_items, order_min, num_items * 8 AS expected_min, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` WHERE order_min > num_items * 8 AND date_local >= '$date_from' ORDER BY date_local DESC, order_min DESC, ticket_name"
         }
       ]
     },
     {
       "id": 53,
       "type": "table",
-      "title": "Who Worked That Shift (${inv_date})",
+      "title": "Staff on Shift — filter by Date",
+      "description": "Who clocked in each day, with in/out times and hours. Use the in-table Date filter to focus on a single day.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 12, "w": 10, "x": 14, "y": 68},
-      "options": {"sortBy": [{"displayName": "in_time", "desc": false}]},
+      "options": {"sortBy": [{"displayName": "Date", "desc": true}]},
       "fieldConfig": {
         "defaults": {"custom": {"filterable": true}},
         "overrides": [
+          {"matcher": {"id": "byName", "options": "date"}, "properties": [{"id": "displayName", "value": "Date"}]},
           {"matcher": {"id": "byName", "options": "employee"}, "properties": [{"id": "displayName", "value": "Employee"}]},
           {"matcher": {"id": "byName", "options": "in_time"}, "properties": [{"id": "displayName", "value": "In"}]},
           {"matcher": {"id": "byName", "options": "out_time"}, "properties": [{"id": "displayName", "value": "Out"}]},
@@ -407,7 +389,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT employee, in_time, out_time, total_hours FROM `jarvis-bhaga-prod.bhaga.vw_staff_on_shift` WHERE date = '$inv_date' ORDER BY in_time"
+          "rawSql": "SELECT date, employee, in_time, out_time, total_hours FROM `jarvis-bhaga-prod.bhaga.vw_staff_on_shift` WHERE date >= '$date_from' ORDER BY date DESC, in_time"
         }
       ]
     },

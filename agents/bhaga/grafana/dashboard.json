@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 15,
+  "version": 16,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -124,39 +124,34 @@
     },
     {
       "id": 21,
-      "type": "timeseries",
+      "type": "barchart",
       "title": "Weekly Order & Item Volume",
+      "description": "Each bar is one full week (Mon–Sun), labeled by its start–end dates (e.g. 'Jun 1 – Jun 7') so the period a bar covers is explicit. Orders on the left axis, Items Sold on the right.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 24, "x": 0, "y": 11},
       "options": {
+        "xField": "Week",
+        "orientation": "vertical",
+        "showValue": "auto",
+        "stacking": "none",
+        "groupWidth": 0.7,
+        "barWidth": 0.9,
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
         "defaults": {"unit": "short"},
         "overrides": [
-          {
-            "matcher": {"id": "byName", "options": "Items Sold"},
-            "properties": [
-              {"id": "custom.axisPlacement", "value": "right"},
-              {"id": "custom.drawStyle", "value": "line"}
-            ]
-          },
-          {
-            "matcher": {"id": "byName", "options": "Orders"},
-            "properties": [
-              {"id": "custom.drawStyle", "value": "bars"}
-            ]
-          }
+          {"matcher": {"id": "byName", "options": "Items Sold"}, "properties": [{"id": "custom.axisPlacement", "value": "right"}]}
         ]
       },
       "targets": [
         {
           "refId": "A",
-          "format": 0,
+          "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_start, 'America/Chicago') AS time, orders AS `Orders`, items_sold AS `Items Sold` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT CONCAT(FORMAT_DATE('%b %-d', week_start), ' – ', FORMAT_DATE('%b %-d', DATE_ADD(week_start, INTERVAL 6 DAY))) AS `Week`, orders AS `Orders`, items_sold AS `Items Sold` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },
@@ -229,7 +224,7 @@
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "suffix: h", "decimals": 3},
+        "defaults": {"unit": "suffix: h", "decimals": 3, "min": 0, "max": 1},
         "overrides": [
           {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
         ]
@@ -368,6 +363,7 @@
       "gridPos": {"h": 12, "w": 14, "x": 0, "y": 68},
       "options": {"sortBy": [{"displayName": "Order Min", "desc": true}]},
       "fieldConfig": {
+        "defaults": {"custom": {"filterable": true}},
         "overrides": [
           {"matcher": {"id": "byName", "options": "ticket_name"}, "properties": [{"id": "displayName", "value": "Order"}]},
           {"matcher": {"id": "byName", "options": "order_source"}, "properties": [{"id": "displayName", "value": "Source"}]},
@@ -397,6 +393,7 @@
       "gridPos": {"h": 12, "w": 10, "x": 14, "y": 68},
       "options": {"sortBy": [{"displayName": "in_time", "desc": false}]},
       "fieldConfig": {
+        "defaults": {"custom": {"filterable": true}},
         "overrides": [
           {"matcher": {"id": "byName", "options": "employee"}, "properties": [{"id": "displayName", "value": "Employee"}]},
           {"matcher": {"id": "byName", "options": "in_time"}, "properties": [{"id": "displayName", "value": "In"}]},
@@ -431,6 +428,7 @@
       "gridPos": {"h": 12, "w": 24, "x": 0, "y": 81},
       "options": {"sortBy": [{"displayName": "Period Start", "desc": true}]},
       "fieldConfig": {
+        "defaults": {"custom": {"filterable": true}},
         "overrides": [
           {"matcher": {"id": "byName", "options": "period_start"}, "properties": [{"id": "displayName", "value": "Period Start"}]},
           {"matcher": {"id": "byName", "options": "period_end"}, "properties": [{"id": "displayName", "value": "Period End"}]},

@@ -55,6 +55,13 @@
   chart is now a single metric type, the lines share one axis (no dual-axis cramming). The per-cohort panels
   34/38 were removed and the Shift-Hours charts widened to full width. No view changes (still
   `vw_model_labor_daily` / `vw_model_labor_weekly`), so the `status.py` registry is unchanged.
+- **Operator-feedback round 5 (same PR #38):** (1) **Weekly Order & Item Volume** is now a `barchart` whose
+  x-axis is an explicit week-range label (`CONCAT(FORMAT_DATE start, ' – ', FORMAT_DATE start+6d)`, e.g.
+  "Jun 1 – Jun 7") so each bar visibly = one full Mon–Sun period; Items Sold on the right axis. (2) **Daily
+  Hours / Item** y-axis capped at `0–1.0`. (3) Grafana template variables are dashboard-scoped (always in the
+  top bar) and can't be moved into a single panel — but the three **table** panels (Payroll, Slow Orders, Who
+  Worked) now have `custom.filterable: true`, giving native in-panel column filters (filter by Employee /
+  Period / Source right in the table) instead of relying solely on top-bar vars. No view changes.
 
 ## 2026-06-06 — GCS out of the data pipeline + fresh-scrape TRUNCATE-then-load (PR #33)
 

@@ -128,8 +128,8 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 004 / dashboard refactor views
     Target("vw_model_labor_weekly", "iso_week", "iso_week"),
     Target("vw_model_payroll_period", "period_start", "period_coverage"),
-    # migration 005 / 6-section dashboard views
-    Target("vw_order_quality_daily", "date"),
+    # migration 010: order-level KDS time distribution (percentile chart)
+    Target("vw_kds_order_quality_daily", "date"),
     # migration 009: order-level KDS investigation (slow-orders table)
     Target("vw_kds_order_investigation", "date_local"),
     Target("vw_staff_on_shift", "date"),

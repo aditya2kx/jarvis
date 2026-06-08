@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 10,
+  "version": 11,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -426,7 +426,7 @@
     {
       "id": 52,
       "type": "table",
-      "title": "Slow Orders ($inv_date) — order time > items × $max_item_min min",
+      "title": "Slow Orders (${inv_date}) — order time > items × ${max_item_min} min",
       "description": "Flags slow ORDERS: one row per ticket where the whole-order prep time (Order Min) exceeds Items × $max_item_min (Expected Min) — i.e. the order took longer than its size should allow at the slow-item threshold. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). Slowest orders first. KDS times are per-order, so this surfaces which orders ran long and what they contained.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 12, "w": 14, "x": 0, "y": 68},
@@ -456,7 +456,7 @@
     {
       "id": 53,
       "type": "table",
-      "title": "Who Worked That Shift ($inv_date)",
+      "title": "Who Worked That Shift (${inv_date})",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 12, "w": 10, "x": 14, "y": 68},
       "options": {"sortBy": [{"displayName": "in_time", "desc": false}]},

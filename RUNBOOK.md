@@ -448,11 +448,20 @@ Firestore). Inspect the current state with `state_adapter.get_pipeline_halt()` (
 ### OTP-portal recovery (auto-invalidate stale downstream markers)
 
 When a previously-failed OTP portal (Square/ADP) succeeds on a later run **while** the downstream
-markers (`load_raw_bigquery` / `update_model_sheet` / `process_reviews`) are already `done` from the
-prior partial run, those steps would short-circuit and the fresh data would never reach the Model
-sheet (`data_window_end` stuck — the 2026-05-31 incident). `daily_refresh` now **always** detects this
-and clears those markers (via `state_adapter.clear_step`, the sanctioned path — never a shell `rm`) so
-they recompute on the fresh data; the post-condition guard then verifies `data_window_end` advanced.
+markers are already `done` from the prior partial run, those steps would short-circuit and the fresh
+data would never reach the Model sheet (`data_window_end` stuck — the 2026-05-31 incident).
+`daily_refresh` now **always** detects this and clears those markers (via `state_adapter.clear_step`,
+the sanctioned path — never a shell `rm`) so they recompute on the fresh data; the post-condition guard
+then verifies `data_window_end` advanced.
+
+The invalidated set (`_RECOVERY_DOWNSTREAM_STEPS`) is **every** step that carries portal data to the
+window, in pipeline order: `load_raw_bigquery` → `render_raw_sheets` → `update_model_sheet` →
+`materialize_model_bq` → `render_model_sheet_from_bq` → `process_reviews`. **2026-06-08 lesson:** an
+earlier version listed only `load_raw_bigquery` / `update_model_sheet` / `process_reviews`, so a stale
+`render_raw_sheets` + `materialize_model_bq` marker from the partial run survived recovery — the fresh
+Square rows reached BQ raw but were never re-projected into Sheet raw, `update_model_sheet` computed
+from stale Sheet raw, and the window stayed at the prior day until a manual marker-clear + re-run. If
+you ever clear markers by hand to recover, clear **all** of these, not just the first/last.
 
 This is **not** behind a feature flag — it's safe by construction: the trigger is precisely "a portal
 produced fresh data *and* a downstream marker is already done" (a prior partial run; on a normal first

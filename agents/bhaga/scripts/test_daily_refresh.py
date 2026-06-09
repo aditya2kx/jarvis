@@ -408,7 +408,10 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
     run, invalidate those markers so they recompute. Always on (no feature
     flag) — safe by construction (idempotent upserts + post-condition guard)."""
 
-    DOWNSTREAM = ("load_raw_bigquery", "update_model_sheet", "process_reviews")
+    # Bind to the production constant so the test can never drift from the list
+    # the pipeline actually invalidates (the 2026-06-08 incident was a missing
+    # member here — render_raw_sheets / materialize_model_bq).
+    DOWNSTREAM = daily_refresh._RECOVERY_DOWNSTREAM_STEPS
 
     def _ok(self):
         return types.SimpleNamespace(success=True)
@@ -490,11 +493,32 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
                     cleared = _recover_stale_downstream_markers(
                         rd, {"square": self._ok()}, dry_run=False
                     )
-                self.assertEqual(set(cleared), {"load_raw_bigquery", "process_reviews"})
+                self.assertEqual(set(cleared), set(self.DOWNSTREAM) - {"update_model_sheet"})
                 self.assertNotIn("update_model_sheet", cleared)
                 # The step we couldn't clear is still present (will short-circuit).
                 self.assertTrue(step_already_done(rd, "update_model_sheet"))
                 self.assertFalse(step_already_done(rd, "load_raw_bigquery"))
+
+    def test_includes_model_projection_and_materialize_steps(self):
+        """Regression for 2026-06-08: the recovery list MUST invalidate the
+        Sheet-raw projection (render_raw_sheets) and the model materialize steps,
+        not just load + update_model_sheet + reviews. Otherwise fresh portal data
+        lands in BQ raw but never re-projects, and data_window_end stays stuck."""
+        for step in ("render_raw_sheets", "materialize_model_bq",
+                     "render_model_sheet_from_bq"):
+            self.assertIn(step, daily_refresh._RECOVERY_DOWNSTREAM_STEPS)
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                rd = datetime.date(2026, 6, 8)
+                self._seed_downstream_done(rd)
+                cleared = _recover_stale_downstream_markers(
+                    rd, {"square": self._ok()}, dry_run=False
+                )
+                for step in ("render_raw_sheets", "materialize_model_bq",
+                             "render_model_sheet_from_bq"):
+                    self.assertIn(step, cleared)
+                    self.assertFalse(step_already_done(rd, step))
 
     def test_adp_recovery_also_triggers(self):
         with tempfile.TemporaryDirectory() as tmp:

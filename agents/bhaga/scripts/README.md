@@ -83,10 +83,14 @@ Per-step **idempotency markers** live in Firestore `runs/<YYYY-MM-DD>`
 (`skills/bhaga_config/state_adapter.py`: `mark_step_done` / `step_already_done` / `clear_step`). A
 re-run skips steps already marked done. To force a step, clear its marker — see `RUNBOOK.md` § Common
 tasks. **Recovery:** when an OTP portal (Square/ADP) succeeds on a later run while downstream markers
-(`load_raw_bigquery`/`update_model_sheet`/`process_reviews`) are already done from a prior partial run,
-`daily_refresh._recover_stale_downstream_markers` invalidates them (via `clear_step`, the sanctioned
-path) so they recompute on the fresh data. Always on (no flag) — safe by construction: idempotent
-upserts + the post-condition guard verifies `data_window_end` advanced (RUNBOOK §13).
+are already done from a prior partial run, `daily_refresh._recover_stale_downstream_markers`
+invalidates them (via `clear_step`, the sanctioned path) so they recompute on the fresh data. The set
+(`_RECOVERY_DOWNSTREAM_STEPS`) is every step that carries portal data to the window, in pipeline order:
+`load_raw_bigquery` → `render_raw_sheets` → `update_model_sheet` → `materialize_model_bq` →
+`render_model_sheet_from_bq` → `process_reviews` (the `render_*`/`materialize` members were added after
+2026-06-08, when a stale projection marker left `data_window_end` stuck despite fresh BQ raw). Always
+on (no flag) — safe by construction: idempotent upserts + the post-condition guard verifies
+`data_window_end` advanced (RUNBOOK §13).
 
 **Browser-launch resilience:** all scrapes launch Chromium through
 `skills/_browser_runtime/runtime.py::launch_persistent`, which retries the launch _setup_ (not the

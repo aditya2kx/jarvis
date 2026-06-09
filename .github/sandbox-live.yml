@@ -1,17 +1,10 @@
-# Sandbox live run config for PR #41 — Square login resilience proof.
+# Sandbox live run config — OFF.
 #
-# Runs the "item-sales-live" scenario against the isolated sandbox for the
-# incident date (2026-06-08): a REAL Square login + transactions/item-sales/KDS
-# scrape on the PR branch's image. This exercises the new anti-bot recovery path
-# end-to-end:
-#   • normal/SMS-OTP or deliverable magic link → login succeeds, verify(item_sales)
-#     proves item-sales rows landed in the sandbox (no regression to the happy path);
-#   • blank-recipient soft-block → _magic_link_recipient raises SquareDeviceBlockedError,
-#     the poisoned session is discarded and login retries ONCE fresh, and on a hard
-#     block it fails cleanly via square_device_blocked_alert (no dead-end paste).
-# Full isolation: reads prod, writes ONLY sandbox; any OTP/2FA is labeled [SANDBOX].
+# Add scenarios here + apply the `sandbox-live` label to a PR to run a real
+# (isolated) BHAGA scrape on the PR image; remove them once evidence is captured.
+# An empty/absent scenarios list means nothing runs.
 #
-# Remove this file (or empty the scenarios list) once PR evidence is captured.
-scenarios:
-  - name: item-sales-live
-    date: "2026-06-08"
+# Last used: PR #41 (item-sales-live, 2026-06-08) — proved Square anti-bot
+# blank-magic-link recovery end-to-end (146 item-sales rows landed in
+# bhaga_sandbox.square_item_lines). Turned back off here.
+scenarios: []

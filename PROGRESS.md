@@ -1,5 +1,21 @@
 # Jarvis Build Progress
 
+## 2026-06-09 — Square login resilience: recover from anti-bot blank magic-link block (free, no laptop) (PR #TBD on branch fix/square-login-resilience)
+
+**Incident (2026-06-08 nightly):** Square escalated the headless Cloud Run container as an "unrecognized device" and served the "Magic link sent" screen **with a blank recipient and sent no email** (`.magic-link-sent__email` empty; "we sent a magic link to ."). The old code DM'd the operator to paste a magic-link URL that never arrives; the operator replied "haven't gotten one" and the Square step failed. ADP + reviews ran, but all Square data (sales/tips/items/KDS) was missing for 6/8 (`data_window_end` stuck at 6/7). Root cause = ThreatMetrix + Cloudflare bot fingerprinting on a rotating Cloud Run egress IP — the persisted `TRUSTED_person` cookie was ignored.
+
+**Change (free, laptop-independent):**
+- `skills/square_tips/runner.py`: `_magic_link_recipient()` classifies the magic-link screen; a **blank recipient** raises new `SquareDeviceBlockedError` **before** any Slack paste prompt. `_drive_verification()` (extracted from `_ensure_logged_in`, now `attempt`-aware) catches the block on attempt 1, calls `gcs_cache.delete_session()` to discard the poisoned session, and raises `_RetryFreshLogin`.
+- `agents/bhaga/scripts/gcs_cache.py`: `delete_session()` (idempotent, never raises).
+- `agents/bhaga/scripts/daily_refresh.py`: `_run_square_session_with_retry()` retries the Square session **exactly once** with `storage_state=None` (fresh cookie jar → often re-presents SMS-OTP, answered on the phone via Slack); `_is_square_device_block()` routes the failure to the new actionable alert.
+- `agents/bhaga/notify.py`: `square_device_blocked_alert()` — tells the operator there is **nothing to paste** and the next nightly auto-retries on a fresh egress IP (no dead-end magic-link prompt).
+
+**Safe by construction (no feature flag):** the first attempt fires **no** SMS, so the single fresh retry can never duplicate one; bounded to one retry (a second block propagates); downstream writes stay idempotent and the §13 partial-failure recovery releases the held-back Square data once a later run succeeds.
+
+**Deferred (not free):** pinning a static egress IP (Serverless VPC connector + Cloud NAT + reserved IP, ~$30-45/mo) would stop the escalation at the source. Out of scope per the "free, no laptop" constraint.
+
+**Files changed:** `skills/square_tips/runner.py`, `skills/square_tips/test_runner_magic_link.py`, `agents/bhaga/scripts/gcs_cache.py`, `agents/bhaga/scripts/test_gcs_cache.py`, `agents/bhaga/scripts/daily_refresh.py`, `agents/bhaga/scripts/test_parallel_refresh.py`, `agents/bhaga/notify.py`, `agents/bhaga/test_notify.py`, `RUNBOOK.md`, `.cursor/rules/bhaga.md`, `agents/bhaga/scripts/README.md`, `PROGRESS.md`.
+
 ## 2026-06-08 — Cost framework: multi-model attribution fix + post-merge self-heal (PR #40)
 
 **Change:** Fixed two structural gaps in the per-PR cost ledger surfaced by PR #39.

@@ -93,6 +93,7 @@ from agents.bhaga.notify import (
     info_ping,
     otp_skipped_alert,
     ready_request,
+    square_device_blocked_alert,
     success_heartbeat,
 )
 from agents.bhaga.scripts import model_semantics, otp_gate
@@ -363,6 +364,44 @@ def _record_failure(
     except Exception:  # noqa: BLE001, S110
         pass
     return ev_uri
+
+
+def _is_square_device_block(exc: BaseException | None) -> bool:
+    """True if ``exc`` (or anything in its cause/context chain) is a Square
+    anti-bot device block (``SquareDeviceBlockedError``).
+
+    Duck-typed by class name so this module needn't import the heavy browser
+    runner just to classify a failure. Walks ``__cause__``/``__context__`` so a
+    wrapped block is still recognized (bounded to avoid a pathological cycle).
+    """
+    seen = 0
+    cur = exc
+    while cur is not None and seen < 20:
+        if type(cur).__name__ == "SquareDeviceBlockedError":
+            return True
+        cur = cur.__cause__ or cur.__context__
+        seen += 1
+    return False
+
+
+def _run_square_session_with_retry(run_session) -> None:
+    """Run one Square browser session; on an anti-bot device block, retry once fresh.
+
+    ``run_session(fresh: bool)`` performs a complete Square session (login -> 2FA/
+    magic-link -> downloads). When the FIRST attempt is soft-blocked (an
+    undeliverable, blank-recipient magic link), ``_ensure_logged_in`` discards the
+    poisoned session and raises ``_RetryFreshLogin``; we then retry EXACTLY ONCE
+    with ``fresh=True`` (a clean cookie jar, which often re-presents the SMS path).
+    A second block propagates as a real ``SquareDeviceBlockedError`` — no loop, and
+    the first attempt fired no SMS so the single retry can't duplicate one.
+    """
+    from skills.square_tips.runner import _RetryFreshLogin  # lazy: heavy browser deps
+    try:
+        run_session(fresh=False)
+    except _RetryFreshLogin:
+        print("[square_pipeline] device-blocked on attempt 1; retrying ONCE "
+              "with a fresh session (no restored cookies).")
+        run_session(fresh=True)
 
 
 def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
@@ -1132,48 +1171,58 @@ def _run_square_pipeline(
         else:
             _acquire_scrape_lock(store)
             try:
-                with launch_persistent(
-                    portal="square", headed=headed, slow_mo_ms=50,
-                    storage_state=restore_session_path(store),
-                ) as (ctx, page):
-                    _ensure_logged_in(page, store=store)
-                    # Persist the (now trusted) session so the next run skips 2FA.
-                    persist_session(ctx, store)
+                def _square_session(*, fresh: bool):
+                    """One full Square browser session: login (+2FA/magic-link) then
+                    download transactions/items/KDS. ``fresh=True`` starts from a
+                    clean cookie jar (no restored session) — used for the single
+                    device-block retry so Square re-presents a usable challenge."""
+                    nonlocal csv_path, item_csv_path, kds_csv_path
+                    _attempt = 2 if fresh else 1
+                    _state = None if fresh else restore_session_path(store)
+                    with launch_persistent(
+                        portal="square", headed=headed, slow_mo_ms=50,
+                        storage_state=_state,
+                    ) as (ctx, page):
+                        _ensure_logged_in(page, store=store, attempt=_attempt)
+                        # Persist the (now trusted) session so the next run skips 2FA.
+                        persist_session(ctx, store)
 
-                    # Download transactions
-                    if txn_fresh:
-                        csv_path = expected_txn
-                        print(f"[square_pipeline] transactions already fresh: {csv_path}")
-                    else:
-                        page.goto(TRANSACTIONS_URL, wait_until="domcontentloaded")
-                        page.locator("button").filter(
-                            has_text=_re.compile(r"\d{2}/\d{2}/\d{4}")
-                        ).first.wait_for(state="visible", timeout=30_000)
-                        page.wait_for_timeout(1_500)
-                        _set_date_range(page, start=gap_start, end=end_date)
-                        csv_path = _trigger_export_and_download(
-                            page, start=gap_start, end=end_date,
-                        )
-                        print(f"[square_pipeline] transactions OK → {csv_path}")
+                        # Download transactions
+                        if txn_fresh:
+                            csv_path = expected_txn
+                            print(f"[square_pipeline] transactions already fresh: {csv_path}")
+                        else:
+                            page.goto(TRANSACTIONS_URL, wait_until="domcontentloaded")
+                            page.locator("button").filter(
+                                has_text=_re.compile(r"\d{2}/\d{2}/\d{4}")
+                            ).first.wait_for(state="visible", timeout=30_000)
+                            page.wait_for_timeout(1_500)
+                            _set_date_range(page, start=gap_start, end=end_date)
+                            csv_path = _trigger_export_and_download(
+                                page, start=gap_start, end=end_date,
+                            )
+                            print(f"[square_pipeline] transactions OK → {csv_path}")
 
-                    # Download item sales in the same session
-                    if items_fresh:
-                        item_csv_path = expected_items
-                        print(f"[square_pipeline] item sales already fresh: {item_csv_path}")
-                    else:
-                        item_csv_path = download_item_sales(
-                            page, start_date=gap_start, end_date=end_date, store=store,
-                        )
-                        print(f"[square_pipeline] item sales OK → {item_csv_path}")
+                        # Download item sales in the same session
+                        if items_fresh:
+                            item_csv_path = expected_items
+                            print(f"[square_pipeline] item sales already fresh: {item_csv_path}")
+                        else:
+                            item_csv_path = download_item_sales(
+                                page, start_date=gap_start, end_date=end_date, store=store,
+                            )
+                            print(f"[square_pipeline] item sales OK → {item_csv_path}")
 
-                    # Download KDS report in the same session
-                    if needs_kds:
-                        kds_csv_path = download_kds_report(
-                            page, start_date=gap_start, end_date=end_date, store=store,
-                        )
-                        print(f"[square_pipeline] KDS OK → {kds_csv_path}")
-                    else:
-                        kds_csv_path = expected_kds if expected_kds.exists() else None
+                        # Download KDS report in the same session
+                        if needs_kds:
+                            kds_csv_path = download_kds_report(
+                                page, start_date=gap_start, end_date=end_date, store=store,
+                            )
+                            print(f"[square_pipeline] KDS OK → {kds_csv_path}")
+                        else:
+                            kds_csv_path = expected_kds if expected_kds.exists() else None
+
+                _run_square_session_with_retry(_square_session)
             finally:
                 _release_scrape_lock()
 
@@ -1957,11 +2006,19 @@ def main() -> int:
                     otp_portal_failed = True
                 ev_uri = _record_failure(refresh_date, pipeline_name, pr.error)
                 try:
-                    failure_alert(
-                        step=pipeline_name, exception=pr.error,
-                        date=refresh_date.isoformat(),
-                        evidence_uri=ev_uri,
-                    )
+                    if _is_square_device_block(pr.error):
+                        # Anti-bot device block: a generic failure_alert would tell
+                        # the operator to chase a magic-link email that was never
+                        # sent. Send the actionable, no-paste alert instead.
+                        square_device_blocked_alert(
+                            date=refresh_date.isoformat(), evidence_uri=ev_uri,
+                        )
+                    else:
+                        failure_alert(
+                            step=pipeline_name, exception=pr.error,
+                            date=refresh_date.isoformat(),
+                            evidence_uri=ev_uri,
+                        )
                 except Exception:  # noqa: BLE001, S110
                     pass
             continue

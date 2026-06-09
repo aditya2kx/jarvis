@@ -63,3 +63,31 @@ class TestFailureAlertEvidence:
                             lambda text: captured.setdefault("text", text))
         notify.failure_alert(step="square", exception=RuntimeError("boom"), date="2026-05-31")
         assert "Evidence:" not in captured["text"]
+
+
+class TestSquareDeviceBlockedAlert:
+    def test_actionable_and_no_paste_instruction(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(notify, "_safe_send",
+                            lambda text: captured.setdefault("text", text))
+        notify.square_device_blocked_alert(
+            date="2026-06-08",
+            evidence_uri="gs://bhaga-scrape-cache/2026-06-08/evidence/",
+        )
+        text = captured["text"]
+        # States the truth: undeliverable, nothing to paste, auto-retry.
+        assert "undeliverable magic link" in text
+        assert "nothing to paste" in text.lower()
+        assert "auto-retry" in text
+        assert "2026-06-08" in text
+        assert "gs://bhaga-scrape-cache/2026-06-08/evidence/" in text
+        # Must NOT tell the operator to paste a URL (the dead-end we removed).
+        assert "paste it here" not in text.lower()
+        assert "squareup.com/login?" not in text
+
+    def test_omits_evidence_when_absent(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(notify, "_safe_send",
+                            lambda text: captured.setdefault("text", text))
+        notify.square_device_blocked_alert(date="2026-06-08")
+        assert "Evidence:" not in captured["text"]

@@ -174,6 +174,30 @@ def upload_session(local_path: pathlib.Path, *, portal: str, store: str) -> str:
     return uri
 
 
+def delete_session(*, portal: str, store: str) -> bool:
+    """Delete a persisted portal session from the run's OWN (write) bucket.
+
+    Used when the restored session is *poisoned* — e.g. Square soft-blocked the
+    device and served an undeliverable magic link. Dropping it forces the next
+    login attempt to start from a fresh cookie jar (``storage_state=None``)
+    rather than re-presenting the blocked fingerprint. Idempotent (a missing
+    blob is a no-op) and never raises (observability must not mask the real
+    login failure). Returns True if a blob was actually deleted.
+    """
+    try:
+        client = _get_client()
+        blob = _write_bucket(client).blob(_session_blob_name(portal, store))
+        if not blob.exists():
+            return False
+        blob.delete()
+        print(f"  [gcs_cache] deleted poisoned {portal} session ← "
+              f"gs://{_write_bucket_name()}/{_session_blob_name(portal, store)}")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [gcs_cache] WARN: {portal} session delete failed (non-fatal): {exc}")
+        return False
+
+
 def download_session(dest_path: pathlib.Path, *, portal: str, store: str) -> bool:
     """Restore a persisted portal session into ``dest_path``. True on hit, False on miss.
 

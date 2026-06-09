@@ -81,6 +81,58 @@ class _FakeBucket:
         return [b for b in self._blobs if b.name.startswith(prefix or "")]
 
 
+class _FakeSessionBlob:
+    def __init__(self, name, *, present):
+        self.name = name
+        self._present = present
+        self.deleted = False
+
+    def exists(self):
+        return self._present
+
+    def delete(self):
+        if not self._present:
+            raise AssertionError("delete() called on a missing blob")
+        self.deleted = True
+
+
+class _FakeSessionBucket:
+    def __init__(self, blob):
+        self._blob = blob
+
+    def blob(self, name):
+        assert name == self._blob.name, f"unexpected blob {name!r}"
+        return self._blob
+
+
+class TestDeleteSession:
+    """delete_session drops a poisoned trusted-device session so the next login
+    starts fresh. Idempotent (missing blob = no-op) and never raises."""
+
+    def test_deletes_present_session(self, monkeypatch):
+        blob = _FakeSessionBlob("_session/square-palmetto.json", present=True)
+        monkeypatch.setattr(gcs_cache, "_get_client", lambda: object())
+        monkeypatch.setattr(gcs_cache, "_write_bucket", lambda client: _FakeSessionBucket(blob))
+        assert gcs_cache.delete_session(portal="square", store="palmetto") is True
+        assert blob.deleted is True
+
+    def test_noop_when_absent(self, monkeypatch):
+        blob = _FakeSessionBlob("_session/square-palmetto.json", present=False)
+        monkeypatch.setattr(gcs_cache, "_get_client", lambda: object())
+        monkeypatch.setattr(gcs_cache, "_write_bucket", lambda client: _FakeSessionBucket(blob))
+        assert gcs_cache.delete_session(portal="square", store="palmetto") is False
+        assert blob.deleted is False
+
+    def test_never_raises_on_error(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("GCS down")
+
+        monkeypatch.setattr(gcs_cache, "_get_client", _boom)
+        # Swallows the error and reports "nothing deleted" rather than masking the
+        # real login failure with a GCS exception.
+        assert gcs_cache.delete_session(portal="square", store="palmetto") is False
+
+
 class TestDownloadCachedFilesNameFilter:
     """The name_contains filter must actually restrict WHICH blobs are
     downloaded (the per-call bandwidth bound the earnings loader relies on),

@@ -116,6 +116,15 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
   one safe class to auto-retry, and that retry is bounded + classified in
   `skills/_browser_runtime/runtime.py` (never retries an auth/2FA error). This is the cloud-relevant
   half of Jarvis Hard Lesson #8; it lives here so cloud agents see it without the laptop rules.
+- **Never prompt the operator to paste an undeliverable magic link.** When Square anti-bot soft-blocks
+  the headless container it can render the "Magic link sent" screen with a **blank recipient** and send
+  no email (`.magic-link-sent__email` empty). Asking the operator to paste a URL that will never arrive
+  is a dead end. `runner._magic_link_recipient` classifies this and raises `SquareDeviceBlockedError`
+  **before** any Slack prompt; the pipeline discards the poisoned session, retries login **exactly once**
+  in a fresh context (often re-presenting SMS-OTP), and on a second block fails cleanly via
+  `notify.square_device_blocked_alert` (no paste instruction) — the next nightly auto-retries on a fresh
+  egress IP (free self-heal). The bounded single retry is safe because the first attempt fires **no** SMS,
+  so it can never duplicate one (consistent with the "never re-fire a side effect" rule above).
 - **Leave a breadcrumb on every failure.** Each failure emits a precise, greppable, one-line cause
   distinct from library noise (dbus/crashpad/patchright), plus enough state to diagnose from Cloud Run
   logs + Firestore `runs/<date>` alone on another machine: the refresh_date/window, attempt `N/M`, the

@@ -41,6 +41,30 @@ TRANSACTIONS_URL = "https://app.squareup.com/dashboard/sales/transactions"
 ITEM_SALES_URL = "https://app.squareup.com/dashboard/sales/reports/item-sales"
 KDS_PERFORMANCE_URL = "https://app.squareup.com/dashboard/kitchen/reports/performance"
 
+
+class SquareDeviceBlockedError(RuntimeError):
+    """Square anti-bot soft-blocked this (headless) device.
+
+    Square fingerprints the browser (ThreatMetrix / Cloudflare) and the egress
+    IP; when the cloud container looks like an unrecognized device it sometimes
+    renders the "Magic link sent" screen with a BLANK recipient and dispatches
+    no email. That magic link is undeliverable, so the paste-the-URL relay can
+    never satisfy it. Raising this (instead of prompting the operator for a URL
+    that will never arrive) lets the caller discard the poisoned session and
+    retry once in a fresh context, and lets the orchestrator fail cleanly so the
+    next nightly auto-retries on a fresh egress IP. See _handle_magic_link.
+    """
+
+
+class _RetryFreshLogin(Exception):
+    """Internal signal: the first login attempt was device-blocked; the caller
+    should relaunch ONCE in a fresh browser context (``storage_state=None``).
+
+    Not a public error — it never escapes the Square pipeline; the caller
+    (``daily_refresh._run_square_pipeline``) catches it to drive exactly one
+    fresh retry, after which a persistent block surfaces as a real error.
+    """
+
 _SELECTORS_DIR = pathlib.Path(__file__).resolve().parent / "selectors"
 
 # Built-in fallback so a missing/partial selectors JSON never hard-crashes the
@@ -189,6 +213,26 @@ def _is_magic_link_sent(page) -> bool:
     return "magic link sent" in body or "we sent a magic link" in body
 
 
+def _magic_link_recipient(page) -> str | None:
+    """Return the email Square claims it sent the magic link to, or None/empty.
+
+    A *deliverable* magic-link screen names the recipient ("we sent a magic link
+    to alice@example.com") in the ``.magic-link-sent__email`` element. When Square
+    soft-blocks a suspected bot it renders the same screen with that element
+    EMPTY (observed 2026-06-08: "we sent a magic link to ." with no address) and
+    sends no email — the dead-end the paste relay cannot satisfy. A blank/None
+    return is the signal to treat this as a device block, not a real challenge.
+    """
+    try:
+        el = page.locator(".magic-link-sent__email").first
+        if el.count() == 0:
+            return None
+        text = (el.inner_text(timeout=2_000) or "").strip()
+        return text or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _dismiss_cookie_banner(page) -> None:
     """OneTrust cookie banner sometimes blocks the login form. Accept all + move on.
 
@@ -245,11 +289,49 @@ def _release_scrape_lock() -> None:
         pass
 
 
-def _ensure_logged_in(page, *, store: str) -> None:
+def _drive_verification(page, *, store: str, attempt: int = 1) -> None:
+    """Drive whatever post-password challenge Square shows.
+
+    Square may show the SMS-code 2FA picker OR escalate an unrecognized device to
+    an email magic link; if the SMS flow itself bounces to a magic link, relay
+    that too. An anti-bot soft-block (undeliverable, blank-recipient magic link)
+    surfaces as ``SquareDeviceBlockedError`` from ``_handle_magic_link``. On the
+    FIRST attempt we discard the poisoned session and raise ``_RetryFreshLogin``
+    so the caller retries ONCE in a fresh context (a clean cookie jar often
+    re-presents the SMS path). On a later attempt we propagate the block so we
+    never loop or re-fire a side effect.
+    """
+    try:
+        if _is_magic_link_sent(page):
+            _handle_magic_link(page, store=store)
+        else:
+            _handle_square_two_factor(page, store=store)
+            if not _is_on_dashboard(page.url) and _is_magic_link_sent(page):
+                _handle_magic_link(page, store=store)
+    except SquareDeviceBlockedError:
+        if attempt == 1:
+            try:
+                from agents.bhaga.scripts import gcs_cache
+                gcs_cache.delete_session(portal="square", store=store)
+            except Exception:  # noqa: BLE001
+                pass
+            print("[square login] device-blocked on attempt 1; discarded session, "
+                  "signaling a single fresh-context retry.")
+            raise _RetryFreshLogin() from None
+        raise
+
+
+def _ensure_logged_in(page, *, store: str, attempt: int = 1) -> None:
     """Navigate to Transactions. If bounced to login, run the 2-step credential flow.
 
     Handles Square's two-step flow: email -> Continue -> password -> Sign in.
     Also dismisses the OneTrust cookie banner if it appears.
+
+    ``attempt`` is the login attempt number. On attempt 1, an anti-bot device
+    block (an undeliverable, blank-recipient magic link) discards the poisoned
+    session and raises ``_RetryFreshLogin`` so the caller relaunches ONCE in a
+    fresh context. On a later attempt the block propagates as a real error (no
+    further retry) so we never loop or re-fire a side effect.
     """
     page.goto(TRANSACTIONS_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(1_500)  # let any redirect settle
@@ -310,15 +392,7 @@ def _ensure_logged_in(page, *, store: str) -> None:
         trace_step(page, "dashboard-after-password")
         return
 
-    # Verification. Square may show the SMS-code 2FA OR escalate an unrecognized
-    # device to an email magic link. Handle whichever appeared; if the SMS flow
-    # ends up bouncing to a magic link, relay that too.
-    if _is_magic_link_sent(page):
-        _handle_magic_link(page, store=store)
-    else:
-        _handle_square_two_factor(page, store=store)
-        if not _is_on_dashboard(page.url) and _is_magic_link_sent(page):
-            _handle_magic_link(page, store=store)
+    _drive_verification(page, store=store, attempt=attempt)
     trace_step(page, "post-verification")
 
     if not _is_on_dashboard(page.url):
@@ -409,12 +483,26 @@ def _handle_magic_link(page, *, store: str) -> None:
     """
     import os as _os
     import re as _re
+
+    trace_step(page, "magic-link-sent-page")
+
+    # Anti-bot soft-block: Square rendered the magic-link screen but with a BLANK
+    # recipient and sent no email (observed 2026-06-08). The paste relay can never
+    # succeed here, so DON'T prompt the operator for a URL that will never arrive —
+    # signal a device block and let the caller discard the session + retry fresh.
+    if not _magic_link_recipient(page):
+        print("[square magic-link] BLOCKED — magic-link screen has no recipient "
+              "(undeliverable, anti-bot soft-block); not prompting for a paste.")
+        raise SquareDeviceBlockedError(
+            "Square served an undeliverable (blank-recipient) magic link — "
+            "anti-bot device block; no email was sent."
+        )
+
     try:
         email = get_credentials(store).get("username", "your Square email")
     except Exception:  # noqa: BLE001
         email = "your Square email"
 
-    trace_step(page, "magic-link-sent-page")
     from skills.slack.adapter import request_reply
     wait_s = int(_os.environ.get("BHAGA_OTP_WAIT_S", "1800"))
     prompt = (

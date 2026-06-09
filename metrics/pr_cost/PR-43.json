@@ -1,7 +1,7 @@
 {
   "pr_number": 43,
   "provisional_id": null,
-  "title": null,
+  "title": "feat(grafana+ci): KDS defaults, p99 goal line, Hrs/Item 20%, sandbox policy opt-in",
   "requirement": null,
   "branch": "feat/grafana-kds-defaults-sandbox-policy",
   "created_at": null,
@@ -119,10 +119,24 @@
   },
   "review": {
     "source": "claude-code-action execution_file (exact)",
-    "runs": [],
+    "runs": [
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "tokens": 0,
+        "cost_usd": 0.0,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/27238133933"
+      }
+    ],
     "tokens_total": 0,
-    "cost_usd_total": 0,
-    "run_count": 0
+    "cost_usd_total": 0.0,
+    "run_count": 1
   },
   "totals": {
     "tokens": 17735662,

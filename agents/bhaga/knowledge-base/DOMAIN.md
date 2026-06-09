@@ -329,20 +329,40 @@ sandbox e2e (real-data rebuilds verify at max residual 0¢).
 
 ## 6. Review bonuses — `review_bonus_period`
 
-Google reviews (5★ praise) earn baristas a bonus. Two modes (`allocate_bonus`):
+Google reviews (5★ + non-empty comment) earn baristas a bonus. The allocation logic is
+**date-bracketed** on the review's `post_date_ct`:
 
-- **Shoutout mode** (the review names specific staff): **only the named people** earn
-  `review_named_bonus_dollars` (default $20) each. A shoutout **overrides exclusions** — even the
-  tip-pool-excluded manager earns it if named.
+**Pool mode** (reviews posted **on/after `review_pool_effective_date`**, default `2026-06-08`):
+- A fixed **$20 pool per review** is split **equally** (to the cent) among the
+  **non-excluded in-hours part-time staff** clocked in at the review's post time.
+- `assignment_reason` must be `"in_hours"`; reviews posted outside an active shift
+  generate **$0** (no last-shift fallback).
+- Permanent (`excluded_from_tip_pool`) and training (`training_through`) exclusions apply.
+- Named shoutouts in the comment are **ignored** — the named person gets the same equal
+  share, not a flat $20. Pool shares flow into `base_dollars`; `named_count` = 0.
+- `named_baristas` column is still populated (informational only; has no effect on money).
+
+**Legacy mode** (reviews posted **before `review_pool_effective_date`**, i.e. 2026-05-11
+through 2026-06-07):
+- **Shoutout mode** (review names specific staff): **only the named people** earn
+  `review_named_bonus_dollars` (default $20) each. A shoutout **overrides exclusions** —
+  even the tip-pool-excluded manager earns it if named.
 - **Base mode** (generic 5★, no names): **every non-excluded shift member** earns
-  `review_base_bonus_dollars` (default $10). Permanent + training exclusions apply here.
+  `review_base_bonus_dollars` (default $10). Permanent + training exclusions apply.
 
 Per-review detail (raw review tab) carries `rating`, `reviewer`, `comment`, `named_baristas`,
 `shift_date_credited`, `shift_members`, `total_bonus`, etc. `review_bonus_period` rolls it up per
 (period, employee): `reviews_credited`, `named_count`, `base_dollars`, `named_dollars`,
-`total_bonus`. Tunables (`review_base_bonus_dollars`, `review_named_bonus_dollars`,
-`review_bonus_started_date`) live in the Model `config` tab. The rebuild is idempotent and runs every
-night.
+`total_bonus`. Pool shares land in `base_dollars`; `named_dollars` = 0 for pool-period rows.
+
+Tunables in the Model `config` tab (all operator-editable in-sheet):
+- `review_bonus_started_date` (default `2026-05-11`) — legacy window floor.
+- `review_base_bonus_dollars` (default `10`) — legacy base mode per-person amount.
+- `review_named_bonus_dollars` (default `20`) — legacy shoutout mode per-person amount.
+- `review_pool_effective_date` (default `2026-06-08`) — pool mode cutover date.
+- `review_pool_dollars` (default `20`) — total pool per qualifying review.
+
+The rebuild is idempotent and runs every night.
 
 ---
 

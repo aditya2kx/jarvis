@@ -289,5 +289,396 @@ class TestBqPrimaryReviews(unittest.TestCase):
         self.assertIn("unparseable", created_tabs)
 
 
+# ── New tests for pool bonus (2026-06-08) ────────────────────────────────────
+
+
+class SplitPoolEquallyTests(unittest.TestCase):
+    """split_pool_equally: exact-cent arithmetic, deterministic remainder."""
+
+    def setUp(self):
+        from agents.bhaga.scripts.process_reviews import split_pool_equally
+        self.split = split_pool_equally
+
+    def test_even_split_four(self):
+        result = self.split(20, ["A", "B", "C", "D"])
+        self.assertEqual(result, {"A": 5.0, "B": 5.0, "C": 5.0, "D": 5.0})
+        self.assertAlmostEqual(sum(result.values()), 20.0)
+
+    def test_remainder_three_members(self):
+        # $20 / 3 = 6.67, 6.67, 6.66 (alphabetical: first two get the extra cent)
+        result = self.split(20, ["Alice", "Bob", "Carol"])
+        self.assertEqual(result["Alice"], 6.67)
+        self.assertEqual(result["Bob"], 6.67)
+        self.assertEqual(result["Carol"], 6.66)
+        self.assertAlmostEqual(sum(result.values()), 20.0)
+
+    def test_remainder_seven_members(self):
+        members = [f"emp{i}" for i in range(7)]
+        result = self.split(20, members)
+        # $20 = 2000 cents; 2000 / 7 = 285 rem 5 → first 5 get 2.86, last 2 get 2.85
+        total = sum(result.values())
+        self.assertAlmostEqual(total, 20.0, places=10)
+        self.assertEqual(len(result), 7)
+
+    def test_empty_members_returns_empty(self):
+        self.assertEqual(self.split(20, []), {})
+
+    def test_deduplicates_names(self):
+        result = self.split(20, ["Alice", "Alice", "Bob"])
+        self.assertIn("Alice", result)
+        self.assertIn("Bob", result)
+        self.assertEqual(len(result), 2)
+        self.assertAlmostEqual(sum(result.values()), 20.0)
+
+    def test_deterministic_alphabetical_remainder(self):
+        # "Alice" < "Bob" alphabetically; Alice gets the extra cent
+        r1 = self.split(10, ["Bob", "Alice", "Carol"])  # $10/3 → 3.34, 3.33, 3.33
+        r2 = self.split(10, ["Alice", "Carol", "Bob"])
+        self.assertEqual(r1, r2)  # order of input doesn't change output
+        # Alice comes first alphabetically → gets the higher share
+        self.assertGreaterEqual(r1["Alice"], r1["Bob"])
+        self.assertGreaterEqual(r1["Alice"], r1["Carol"])
+
+
+class AllocateBonusPoolTests(unittest.TestCase):
+    """allocate_bonus pool mode (post_date >= 2026-06-08)."""
+
+    POOL_DATE = datetime.date(2026, 6, 8)
+    POOL_KWARGS = dict(
+        pool_effective_date=datetime.date(2026, 6, 8),
+        pool_dollars=20,
+    )
+
+    def _alloc(self, *, shift_members, named=None, excluded_permanent=None,
+               training_through=None, assignment_reason="in_hours"):
+        from agents.bhaga.scripts.process_reviews import allocate_bonus
+        return allocate_bonus(
+            shift_members=shift_members,
+            named=named or [],
+            excluded_permanent=excluded_permanent or set(),
+            training_through=training_through or {},
+            shift_date="2026-06-08",
+            post_date=self.POOL_DATE,
+            assignment_reason=assignment_reason,
+            **self.POOL_KWARGS,
+        )
+
+    def test_equal_split_among_in_hours(self):
+        result = self._alloc(shift_members=["Alice", "Bob", "Carol"])
+        self.assertAlmostEqual(sum(result.values()), 20.0)
+        # All three get equal share
+        for v in result.values():
+            self.assertAlmostEqual(v, 20 / 3, places=1)
+
+    def test_not_in_hours_returns_empty(self):
+        result = self._alloc(
+            shift_members=["Alice", "Bob"],
+            assignment_reason="last_shift_prior_day",
+        )
+        self.assertEqual(result, {})
+
+    def test_last_shift_same_day_returns_empty(self):
+        result = self._alloc(
+            shift_members=["Alice", "Bob"],
+            assignment_reason="last_shift_same_day",
+        )
+        self.assertEqual(result, {})
+
+    def test_permanent_exclusion_removed_from_split(self):
+        result = self._alloc(
+            shift_members=["Alice", "Bob", "Manager"],
+            excluded_permanent={"Manager"},
+        )
+        self.assertNotIn("Manager", result)
+        self.assertAlmostEqual(sum(result.values()), 20.0)
+        self.assertEqual(set(result.keys()), {"Alice", "Bob"})
+
+    def test_training_exclusion_removed_from_split(self):
+        result = self._alloc(
+            shift_members=["Alice", "Bob", "Trainee"],
+            training_through={"Trainee": datetime.date(2026, 6, 30)},
+        )
+        self.assertNotIn("Trainee", result)
+        self.assertAlmostEqual(sum(result.values()), 20.0)
+
+    def test_named_person_gets_equal_share_not_flat_20(self):
+        # Named in comment but pool mode → same equal share, NOT the legacy $20 flat.
+        result = self._alloc(
+            shift_members=["Alice", "Bob", "Carol"],
+            named=["Alice"],  # named, but pool mode ignores shoutouts
+        )
+        self.assertIn("Alice", result)
+        self.assertIn("Bob", result)
+        # Alice must NOT get $20; she gets the same share as everyone else.
+        self.assertAlmostEqual(result["Alice"], result["Bob"], places=2)
+        self.assertAlmostEqual(sum(result.values()), 20.0)
+
+    def test_named_but_excluded_not_rescued(self):
+        # Opposite of legacy: pool mode DOES NOT rescue a named-but-excluded person.
+        result = self._alloc(
+            shift_members=["Alice", "Bob", "Manager"],
+            named=["Manager"],
+            excluded_permanent={"Manager"},
+        )
+        self.assertNotIn("Manager", result)
+        self.assertAlmostEqual(sum(result.values()), 20.0)
+
+    def test_all_excluded_returns_empty(self):
+        result = self._alloc(
+            shift_members=["Manager"],
+            excluded_permanent={"Manager"},
+        )
+        self.assertEqual(result, {})
+
+
+class AllocateBonusLegacyRegressionTests(unittest.TestCase):
+    """allocate_bonus legacy mode (post_date < 2026-06-08) — byte-identical to old behavior."""
+
+    LEGACY_DATE = datetime.date(2026, 5, 20)
+    LEGACY_KWARGS = dict(
+        pool_effective_date=datetime.date(2026, 6, 8),
+        pool_dollars=20,
+        post_date=datetime.date(2026, 5, 20),
+        assignment_reason="in_hours",
+    )
+
+    def _alloc(self, *, shift_members, named=None, excluded_permanent=None, training_through=None):
+        from agents.bhaga.scripts.process_reviews import allocate_bonus
+        return allocate_bonus(
+            shift_members=shift_members,
+            named=named or [],
+            excluded_permanent=excluded_permanent or set(),
+            training_through=training_through or {},
+            shift_date="2026-05-20",
+            **self.LEGACY_KWARGS,
+        )
+
+    def test_shoutout_only_named_get_20(self):
+        result = self._alloc(
+            shift_members=["Alice", "Bob"],
+            named=["Alice"],
+        )
+        self.assertEqual(result, {"Alice": 20.0})
+
+    def test_shoutout_overrides_permanent_exclusion(self):
+        result = self._alloc(
+            shift_members=["Alice", "Manager"],
+            named=["Manager"],
+            excluded_permanent={"Manager"},
+        )
+        self.assertIn("Manager", result)
+        self.assertEqual(result["Manager"], 20.0)
+
+    def test_shoutout_overrides_training_exclusion(self):
+        result = self._alloc(
+            shift_members=["Alice", "Trainee"],
+            named=["Trainee"],
+            training_through={"Trainee": datetime.date(2026, 5, 30)},
+        )
+        self.assertIn("Trainee", result)
+        self.assertEqual(result["Trainee"], 20.0)
+
+    def test_no_shoutout_base_10_each(self):
+        result = self._alloc(shift_members=["Alice", "Bob", "Carol"])
+        self.assertEqual(result, {"Alice": 10.0, "Bob": 10.0, "Carol": 10.0})
+
+    def test_no_shoutout_excludes_permanent(self):
+        result = self._alloc(
+            shift_members=["Alice", "Bob", "Manager"],
+            excluded_permanent={"Manager"},
+        )
+        self.assertNotIn("Manager", result)
+        self.assertEqual(result["Alice"], 10.0)
+        self.assertEqual(result["Bob"], 10.0)
+
+    def test_no_shoutout_excludes_trainee(self):
+        result = self._alloc(
+            shift_members=["Alice", "Trainee"],
+            training_through={"Trainee": datetime.date(2026, 5, 30)},
+        )
+        self.assertNotIn("Trainee", result)
+        self.assertEqual(result["Alice"], 10.0)
+
+    def test_last_shift_fallback_still_pays_legacy(self):
+        # Legacy mode works even with non-in_hours assignment_reason.
+        from agents.bhaga.scripts.process_reviews import allocate_bonus
+        result = allocate_bonus(
+            shift_members=["Alice", "Bob"],
+            named=[],
+            excluded_permanent=set(),
+            training_through={},
+            shift_date="2026-05-20",
+            post_date=datetime.date(2026, 5, 20),
+            assignment_reason="last_shift_prior_day",
+            pool_effective_date=datetime.date(2026, 6, 8),
+            pool_dollars=20,
+        )
+        self.assertEqual(result, {"Alice": 10.0, "Bob": 10.0})
+
+
+class BuildReviewRowPoolTests(unittest.TestCase):
+    """build_review_row audit columns are pool-aware."""
+
+    def _make_rec(self, post_date: datetime.date, named: list, allocations: dict) -> dict:
+        from zoneinfo import ZoneInfo
+        CT = ZoneInfo("America/Chicago")
+        return {
+            "review_id": "test-001",
+            "post_dt_ct": datetime.datetime(post_date.year, post_date.month, post_date.day,
+                                            12, 0, 0, tzinfo=CT),
+            "post_date_ct": post_date,
+            "rating": 5,
+            "reviewer": "Test Reviewer",
+            "comment": "Great!",
+            "named": named,
+            "named_status": "ok",
+            "shift_date_credited": post_date.isoformat(),
+            "shift_assignment_reason": "in_hours",
+            "shift_members_credited": list(allocations.keys()),
+            "trainees_on_shift": [],
+            "allocations": allocations,
+            "total_bonus_dollars": sum(allocations.values()),
+            "ingested_at_utc": "2026-06-08T19:00:00+00:00",
+            "review_url": "https://example.com",
+            "clickup_message_id": "msg-001",
+        }
+
+    def test_pool_review_named_credit_is_blank(self):
+        from agents.bhaga.scripts.process_reviews import build_review_row, REVIEW_HEADER_ROW
+        pool_date = datetime.date(2026, 6, 8)
+        rec = self._make_rec(pool_date, named=["Alice"],
+                             allocations={"Alice": 6.67, "Bob": 6.67, "Carol": 6.66})
+        row = build_review_row(rec)
+        d = dict(zip(REVIEW_HEADER_ROW, row))
+        self.assertEqual(d["named_credit_each"], "")
+
+    def test_pool_review_base_credit_is_per_head(self):
+        from agents.bhaga.scripts.process_reviews import build_review_row, REVIEW_HEADER_ROW
+        pool_date = datetime.date(2026, 6, 8)
+        rec = self._make_rec(pool_date, named=[],
+                             allocations={"Alice": 10.0, "Bob": 10.0})
+        row = build_review_row(rec)
+        d = dict(zip(REVIEW_HEADER_ROW, row))
+        self.assertEqual(d["base_credit_each"], 10.0)
+
+    def test_pool_review_total_bonus_is_exact(self):
+        from agents.bhaga.scripts.process_reviews import build_review_row, REVIEW_HEADER_ROW
+        pool_date = datetime.date(2026, 6, 8)
+        rec = self._make_rec(pool_date, named=[],
+                             allocations={"Alice": 6.67, "Bob": 6.67, "Carol": 6.66})
+        row = build_review_row(rec)
+        d = dict(zip(REVIEW_HEADER_ROW, row))
+        self.assertAlmostEqual(d["total_bonus"], 20.0)
+
+    def test_legacy_review_named_credit_is_20(self):
+        from agents.bhaga.scripts.process_reviews import build_review_row, REVIEW_HEADER_ROW
+        legacy_date = datetime.date(2026, 5, 20)
+        rec = self._make_rec(legacy_date, named=["Alice"],
+                             allocations={"Alice": 20.0})
+        row = build_review_row(rec)
+        d = dict(zip(REVIEW_HEADER_ROW, row))
+        self.assertEqual(d["named_credit_each"], 20)
+
+    def test_legacy_review_base_credit_is_10(self):
+        from agents.bhaga.scripts.process_reviews import build_review_row, REVIEW_HEADER_ROW
+        legacy_date = datetime.date(2026, 5, 20)
+        rec = self._make_rec(legacy_date, named=[],
+                             allocations={"Alice": 10.0, "Bob": 10.0})
+        row = build_review_row(rec)
+        d = dict(zip(REVIEW_HEADER_ROW, row))
+        self.assertEqual(d["base_credit_each"], 10)
+
+
+class PoolRollupTests(unittest.TestCase):
+    """build_period_rollup handles pool reviews (base_dollars, named_count=0)
+    and mixed periods (legacy + pool) correctly."""
+
+    _PROFILE = {
+        "adp_run": {
+            "pay_periods_anchor_end_date": "2026-05-31",
+            "pay_frequency": "biweekly",
+        },
+        "calibration": {"first_data_window": {"start": "2026-02-17"}},
+    }
+
+    def _run_rollup(self, reviews, data_window_end):
+        from agents.bhaga.scripts.process_reviews import rebuild_review_bonus_period
+        written_rows = []
+
+        with unittest.mock.patch(
+            "agents.bhaga.scripts.process_reviews.add_sheet_if_missing",
+            return_value="sheet123",
+        ), unittest.mock.patch(
+            "agents.bhaga.scripts.process_reviews.clear_and_write_tab",
+            side_effect=lambda *a, **kw: written_rows.extend(kw.get("values", [])),
+        ), unittest.mock.patch(
+            "agents.bhaga.scripts.process_reviews.bold_header_row",
+        ), unittest.mock.patch(
+            "agents.bhaga.scripts.process_reviews.format_currency_columns",
+        ), unittest.mock.patch(
+            "agents.bhaga.scripts.process_reviews._bq_enabled", return_value=False,
+        ):
+            rebuild_review_bonus_period(
+                model_sid="model_sid",
+                token="token",
+                all_reviews=reviews,
+                data_window_end=data_window_end,
+                profile=self._PROFILE,
+            )
+        return written_rows
+
+    def test_pool_review_lands_in_base_dollars(self):
+        reviews = [{
+            "shift_date_credited": "2026-06-08",
+            "rating": 5,
+            "named": [],  # pool reviews have named cleared
+            "allocations": {"Alice": 10.0, "Bob": 10.0},
+        }]
+        rows = self._run_rollup(reviews, datetime.date(2026, 6, 14))
+        data_rows = [r for r in rows if isinstance(r[0], str) and r[0] != "period_start"]
+        self.assertGreater(len(data_rows), 0)
+        # named_count (col 5) must be 0; base_dollars (col 6) must be > 0
+        for r in data_rows:
+            self.assertEqual(r[5], 0, f"named_count should be 0 for pool review, got {r[5]}")
+            self.assertGreater(r[6], 0, "base_dollars should be > 0 for pool review")
+
+    def test_pool_review_total_bonus_correct(self):
+        reviews = [{
+            "shift_date_credited": "2026-06-08",
+            "rating": 5,
+            "named": [],
+            "allocations": {"Alice": 6.67, "Bob": 6.67, "Carol": 6.66},
+        }]
+        rows = self._run_rollup(reviews, datetime.date(2026, 6, 14))
+        data_rows = [r for r in rows if isinstance(r[0], str) and r[0] != "period_start"]
+        total_all = sum(r[8] for r in data_rows)  # col 8 = total_bonus
+        self.assertAlmostEqual(total_all, 20.0, places=1)
+
+    def test_mixed_period_legacy_plus_pool(self):
+        reviews = [
+            # Legacy review (2026-05-25): Alice named shoutout $20
+            {
+                "shift_date_credited": "2026-05-25",
+                "rating": 5,
+                "named": ["Alice"],
+                "allocations": {"Alice": 20.0},
+            },
+            # Pool review (2026-06-08): Alice+Bob equal split $10 each
+            {
+                "shift_date_credited": "2026-06-08",
+                "rating": 5,
+                "named": [],
+                "allocations": {"Alice": 10.0, "Bob": 10.0},
+            },
+        ]
+        rows = self._run_rollup(reviews, datetime.date(2026, 6, 14))
+        data_rows = [r for r in rows if isinstance(r[0], str) and r[0] != "period_start"]
+        # Alice should appear in both periods (may be different period_start dates)
+        alice_rows = [r for r in data_rows if r[3] == "Alice"]
+        total_alice = sum(r[8] for r in alice_rows)
+        # Alice: $20 from legacy + $10 from pool = $30 total across periods
+        self.assertAlmostEqual(total_alice, 30.0, places=1)
+
+
 if __name__ == "__main__":
     unittest.main()

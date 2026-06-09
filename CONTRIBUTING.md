@@ -54,20 +54,17 @@ new ambiguity or scope change appears — e.g. Agent→Plan if the approach turn
    (the operator isn't in the loop for routine correction). If a milestone can't be closed by your
    own verification, it's too big — split it. Include the per-milestone test plan (what you'll run
    to prove it) in the plan.
-4. **Verify with a real end-to-end run — not just unit tests.** Sandbox verification is **mandatory on
-   every PR**, in two tiers:
-   - **Tier 1 — the per-PR `Sandbox e2e` (no-OTP, REQUIRED on every PR, hard CI gate).** It provisions
-     an isolated sandbox slot, reads the **PROD raw** Square+ADP data for the most-recent **closed** pay
-     period (`--source prod-raw --period last-closed`), writes only to the sandbox (read-prod /
+4. **Verify with a real end-to-end run — not just unit tests.** Sandbox verification runs in two
+   tiers; **Tier 1 is now opt-in** (2026-06-09 policy change):
+   - **Tier 1 — `Sandbox e2e` (no-OTP, opt-in via label or dispatch).** It provisions an isolated
+     sandbox slot, reads the **PROD raw** Square+ADP data for the most-recent **closed** pay period
+     (`--source prod-raw --period last-closed`), writes only to the sandbox (read-prod /
      write-sandbox, isolation hard-asserted), rebuilds the model, asserts the full-period tabs populate,
-     **checks tip-pool conservation**, and posts the evidence as a PR comment (see `RUNBOOK.md` §13 and
-     `agents/bhaga/scripts/sandbox_e2e.py`). Because it never scrapes or logs in, it can block merge on
-     every PR — there is no opt-out. The gate is **fail-fast on misconfiguration**: if the prerequisite
-     repo variable `SANDBOX_E2E_ENABLED` is not `true` (or the WIF secrets are missing) the check goes
-     **red**, never silently green — a green status always means the e2e actually ran. Enabling it
-     (`SANDBOX_E2E_ENABLED=true` + WIF secrets) is a one-time org/admin prerequisite, not a per-PR
-     switch; disabling the gate is a deliberate branch-protection change. Unit tests are necessary but
-     are *not* the evidence of doneness.
+     and **checks tip-pool conservation** (see `RUNBOOK.md` §13 and
+     `agents/bhaga/scripts/sandbox_e2e.py`). **Trigger it by adding the `run-sandbox-e2e` label to the
+     PR, or via `workflow_dispatch` from the Actions tab.** Run it when a plan specifically calls for it
+     or when a change touches the core model pipeline. It is **NOT** a required status check and does
+     not run on every PR automatically — only run targeted scenarios discussed in plans.
    - **Tier 2 — the LIVE sandbox run (on-demand, for live-only paths) — never prod, never an ad-hoc
      script.** Tier 1 is zero-OTP and reads already-scraped data, so it cannot reproduce a
      **live-only** failure (selector drift, a login/2FA flow, a real browser crash). For those, the
@@ -563,7 +560,7 @@ the **job name** (not the workflow filename):
 | Status check name (exact) | Workflow | Require? |
 | --- | --- | --- |
 | `Doc Freshness` | `doc-freshness.yml` | **Yes** — always runs, cheap |
-| `Sandbox e2e` | `sandbox-e2e.yml` | **Yes** — prod-like replay (needs `SANDBOX_E2E_ENABLED=true`) |
+| `Sandbox e2e` | `sandbox-e2e.yml` | **No** — opt-in only (label `run-sandbox-e2e` or dispatch); removed from required checks 2026-06-09 |
 | `PR cost gate` | `pr-cost-gate.yml` | **Yes** — blocks merge until `metrics/pr_cost/PR-<n>.json` records build cost |
 | `Claude review` | `claude-review.yml` | Optional — advisory (`continue-on-error`); still useful as signal |
 
@@ -576,12 +573,12 @@ this repo — not an org template with no runs yet.
 ### Recommended required checks (minimal)
 
 1. `Doc Freshness`
-2. `Sandbox e2e`
-3. `PR cost gate`
-4. Enable **Require branches to be up to date before merging**
+2. `PR cost gate`
+3. Enable **Require branches to be up to date before merging**
 
-Skip requiring `Claude review` as a hard gate if you want merges to survive bot turn-cap/API blips
-(it is intentionally advisory).
+`Sandbox e2e` is opt-in; run it by adding the `run-sandbox-e2e` label or via manual dispatch when a
+plan specifically calls for it. Skip requiring `Claude review` as a hard gate if you want merges to
+survive bot turn-cap/API blips (it is intentionally advisory).
 
 Once these are set, the process is enforced server-side, not just by convention: every change needs a
 PR, green CI on the latest `main`, and **your** approval before it can merge.

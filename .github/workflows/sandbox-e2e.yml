@@ -1,18 +1,21 @@
 name: Sandbox e2e
 
-# Prod-like end-to-end on every PR against a PRE-CREATED sandbox sheet pool
-# (never production workbooks). Reads the PROD raw Square+ADP sheets directly for
-# the most-recent CLOSED pay period and writes them into the leased sandbox slot
-# (read-prod / write-sandbox only) — no scrape, no browser, zero OTP. Verifies the
-# full period builds incl. tip-pool conservation.
-# Leases a pool slot via Firestore (collection sandbox_slots only).
+# Prod-like end-to-end against a PRE-CREATED sandbox sheet pool (never production
+# workbooks). Reads the PROD raw Square+ADP sheets directly for the most-recent
+# CLOSED pay period and writes them into the leased sandbox slot (read-prod /
+# write-sandbox only) — no scrape, no browser, zero OTP.
+#
+# OPT-IN only — does NOT run on every PR by default.
+# Trigger via:
+#   1. Manual dispatch (workflow_dispatch) from the Actions tab.
+#   2. Add the 'run-sandbox-e2e' label to a PR (re-trigger by synchronize/reopen).
+# Going forward, run this only when a plan specifically calls for it.
 # See RUNBOOK §13 and agents/bhaga/scripts/sandbox_pool.json.
 
 on:
+  workflow_dispatch: {}
   pull_request:
-    types: [opened, synchronize, reopened]
-  push:
-    branches: [main]
+    types: [labeled, synchronize, reopened]
 
 # One run per PR; a new push cancels the previous (cost + no orphan sheets).
 concurrency:
@@ -32,66 +35,58 @@ jobs:
       BHAGA_SECRETS_BACKEND: gcp      # use ADC (the WIF service account) for Google APIs
       BHAGA_STATE_BACKEND: firestore   # slot leases only (sandbox_slots collection)
     steps:
-      - name: Register check on main push
-        if: github.event_name == 'push'
+      # Require the 'run-sandbox-e2e' label when triggered by a PR event.
+      # (workflow_dispatch bypasses this check — the dispatcher chose to run it.)
+      - name: Check opt-in label (PR trigger)
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'run-sandbox-e2e')
         run: |
-          echo "Full sandbox e2e runs on pull_request (mandatory)."
-          echo "This step registers the job name on main for branch protection."
+          echo "Skipping sandbox e2e — the 'run-sandbox-e2e' label is not present on this PR."
+          echo "Add the label to opt in, or trigger via workflow_dispatch from the Actions tab."
+          exit 0
 
-      # Mandatory gate (no per-PR opt-out): if the prerequisite repo variable is
-      # missing the check FAILS rather than silently skipping, so a green status
-      # always means the e2e actually ran. SANDBOX_E2E_ENABLED + the WIF secrets
-      # are an org/admin prerequisite (see CONTRIBUTING §4 / RUNBOOK §13), not a
-      # PR-author switch — disabling the gate is a deliberate branch-protection
-      # change, never an unset variable.
       - name: Require sandbox e2e enabled (fail-fast)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-sandbox-e2e')
         env:
-          # Map through env (never interpolate ${{ }} directly into the shell) to
-          # avoid a script-injection vector per GitHub's hardening guidance.
           SANDBOX_E2E_ENABLED: ${{ vars.SANDBOX_E2E_ENABLED }}
         run: |
           if [ "$SANDBOX_E2E_ENABLED" != "true" ]; then
-            echo "::error::SANDBOX_E2E_ENABLED is not 'true' — the mandatory sandbox e2e gate cannot run."
+            echo "::error::SANDBOX_E2E_ENABLED is not 'true' — the sandbox e2e cannot run."
             echo "Set repo variable SANDBOX_E2E_ENABLED=true and wire the WIF secrets (see CONTRIBUTING §4 / RUNBOOK §13)."
             exit 1
           fi
           echo "sandbox e2e enabled — proceeding."
 
       - uses: actions/checkout@v4
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-sandbox-e2e')
 
       - name: Set up Python
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-sandbox-e2e')
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install dependencies
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-sandbox-e2e')
         run: pip install -r requirements.txt
 
       - name: Authenticate to GCP
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-sandbox-e2e')
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.SANDBOX_E2E_SERVICE_ACCOUNT || secrets.WIF_SERVICE_ACCOUNT }}
 
       - name: Run sandbox e2e (prod-raw, last closed period, zero-OTP)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-sandbox-e2e')
         run: |
           python3 -m agents.bhaga.scripts.sandbox_e2e \
             --pr-number "${{ github.event.number }}" \
             --source prod-raw --period last-closed \
             --evidence-file sandbox-e2e-evidence.md
 
-      # always() so the evidence comment posts on FAILURE too (GitHub otherwise
-      # skips post-failure steps). run_e2e writes the evidence file in its
-      # finally block, so the file — incl. the `error:` line — exists on both
-      # pass and fail, giving the PR author the diagnostic without digging logs.
+      # always() so the evidence comment posts on FAILURE too.
       - name: Post evidence comment
-        if: github.event_name == 'pull_request' && always()
+        if: (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-sandbox-e2e')) && always()
         uses: actions/github-script@v7
         with:
           script: |

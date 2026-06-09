@@ -264,36 +264,45 @@ class TestScenarioScoping:
 
 
 class TestItemSalesVerification:
-    def test_ok_when_rows_present(self, monkeypatch):
-        def fake_gcloud(args, check=True, capture=False):
-            if args[:2] == ["storage", "ls"]:
-                return _FakeProc(0, "gs://b/2026-05-31/square/items-2026-05-31-2026-06-01.csv\n")
-            if args[:2] == ["storage", "cp"]:
-                with open(args[3], "w") as fh:
-                    fh.write("name,qty\nLatte,3\nMocha,2\n")
-                return _FakeProc(0, "")
-            return _FakeProc(1, "")
-        monkeypatch.setattr(slr, "_gcloud", fake_gcloud)
-        ok, msg = slr.verify_item_sales("2026-05-31")
-        assert ok and "2 data rows" in msg
+    """The gate verifies BigQuery (source of truth); GCS is deprecated for data
+    loads and is NOT consulted."""
 
-    def test_fails_when_no_item_sales_file(self, monkeypatch):
-        monkeypatch.setattr(slr, "_gcloud", lambda *a, **k: _FakeProc(0, ""))
-        ok, msg = slr.verify_item_sales("2026-05-31")
+    def test_ok_when_bq_rows_present(self, monkeypatch):
+        monkeypatch.setattr(slr, "_bq_item_line_count", lambda *a, **k: 146)
+        ok, msg = slr.verify_item_sales("2026-06-08")
+        assert ok and "146 row(s)" in msg and "BQ" in msg
+
+    def test_fails_when_bq_zero_rows(self, monkeypatch):
+        monkeypatch.setattr(slr, "_bq_item_line_count", lambda *a, **k: 0)
+        ok, msg = slr.verify_item_sales("2026-06-08")
         assert not ok and "NOT available" in msg
 
-    def test_fails_when_header_only(self, monkeypatch):
-        def fake_gcloud(args, check=True, capture=False):
-            if args[:2] == ["storage", "ls"]:
-                return _FakeProc(0, "gs://b/2026-05-31/square/items-x.csv\n")
-            if args[:2] == ["storage", "cp"]:
-                with open(args[3], "w") as fh:
-                    fh.write("name,qty\n")  # header only — no data
-                return _FakeProc(0, "")
-            return _FakeProc(1, "")
-        monkeypatch.setattr(slr, "_gcloud", fake_gcloud)
-        ok, msg = slr.verify_item_sales("2026-05-31")
-        assert not ok and "0 data rows" in msg
+    def test_inconclusive_when_bq_unqueryable(self, monkeypatch):
+        monkeypatch.setattr(slr, "_bq_item_line_count", lambda *a, **k: None)
+        ok, msg = slr.verify_item_sales("2026-06-08")
+        assert not ok and "INCONCLUSIVE" in msg
+
+    def test_bq_count_parses_csv(self, monkeypatch):
+        captured = {}
+
+        def fake_run(args, capture_output=True, text=True):
+            captured["args"] = args
+            return _FakeProc(0, "f0_\n146\n")
+
+        monkeypatch.setattr(slr.subprocess, "run", fake_run)
+        assert slr._bq_item_line_count("2026-06-08") == 146
+        assert captured["args"][0] == "bq" and "square_item_lines" in " ".join(captured["args"])
+
+    def test_bq_count_none_on_query_error(self, monkeypatch):
+        monkeypatch.setattr(slr.subprocess, "run", lambda *a, **k: _FakeProc(1, ""))
+        assert slr._bq_item_line_count("2026-06-08") is None
+
+    def test_bq_count_none_when_cli_missing(self, monkeypatch):
+        def _boom(*a, **k):
+            raise FileNotFoundError("bq not installed")
+
+        monkeypatch.setattr(slr.subprocess, "run", _boom)
+        assert slr._bq_item_line_count("2026-06-08") is None
 
 
 class TestParsersHandleEmpty:

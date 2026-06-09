@@ -32,10 +32,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from agents.bhaga.scripts.daily_refresh import (
     PipelineResult,
+    _is_square_device_block,
     _run_square_pipeline,
+    _run_square_session_with_retry,
     _run_adp_pipeline,
     _run_review_fetch,
 )
+from skills.square_tips.runner import _RetryFreshLogin, SquareDeviceBlockedError
 
 
 class PipelineResultTests(unittest.TestCase):
@@ -179,6 +182,63 @@ class SquarePipelineDryRunTests(unittest.TestCase):
         )
         self.assertTrue(result.success)
         self.assertEqual(result.name, "square")
+
+
+class SquareSessionRetryTests(unittest.TestCase):
+    """The bounded single fresh-retry on an anti-bot device block."""
+
+    def test_no_block_runs_once(self):
+        calls = []
+        _run_square_session_with_retry(lambda *, fresh: calls.append(fresh))
+        self.assertEqual(calls, [False])
+
+    def test_block_on_first_retries_once_fresh(self):
+        calls = []
+
+        def _session(*, fresh):
+            calls.append(fresh)
+            if fresh is False:
+                raise _RetryFreshLogin()
+            # fresh=True attempt succeeds
+
+        _run_square_session_with_retry(_session)
+        self.assertEqual(calls, [False, True])
+
+    def test_second_block_propagates_no_third_attempt(self):
+        calls = []
+
+        def _session(*, fresh):
+            calls.append(fresh)
+            if fresh is False:
+                raise _RetryFreshLogin()
+            raise SquareDeviceBlockedError("still blocked on the fresh retry")
+
+        with self.assertRaises(SquareDeviceBlockedError):
+            _run_square_session_with_retry(_session)
+        # Exactly two attempts: original + one fresh retry. No third.
+        self.assertEqual(calls, [False, True])
+
+
+class SquareDeviceBlockClassifierTests(unittest.TestCase):
+    """_is_square_device_block recognizes the block directly and through a chain."""
+
+    def test_direct_block(self):
+        self.assertTrue(_is_square_device_block(SquareDeviceBlockedError("x")))
+
+    def test_chained_cause(self):
+        try:
+            try:
+                raise SquareDeviceBlockedError("inner")
+            except SquareDeviceBlockedError as inner:
+                raise RuntimeError("wrapper") from inner
+        except RuntimeError as e:
+            self.assertTrue(_is_square_device_block(e))
+
+    def test_unrelated_error_is_false(self):
+        self.assertFalse(_is_square_device_block(RuntimeError("date picker not found")))
+
+    def test_none_is_false(self):
+        self.assertFalse(_is_square_device_block(None))
 
 
 class AdpPipelineDryRunTests(unittest.TestCase):

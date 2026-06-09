@@ -716,16 +716,30 @@ before item-sales). The verdict is shown in the auto-posted PR evidence comment.
 
 **Login escalation — magic link & trusted device.** Square may escalate an **unrecognized device** to an
 email **magic link** ("Magic link sent. Use this device to sign in.") instead of an SMS code; the
-code-entry flow cannot satisfy it (the link only works in the **requesting** browser). Two layers handle
-this:
+code-entry flow cannot satisfy it (the link only works in the **requesting** browser). Layers handle this:
 - *Trusted device (1st line):* the 2FA flow ticks "trust this device for 30 days" and, with
   `BHAGA_SESSION_PERSIST=1`, persists the Square `storage_state` to `gs://<bucket>/_session/square-<store>.json`
   and restores it next run — so Square recognizes the device and stops escalating. Sandbox keeps its OWN
   session in the sandbox bucket (isolation preserved).
-- *Magic-link relay (fallback):* when the magic-link page is detected, BHAGA DMs the operator to **paste
-  the magic-link URL** — ⚠️ do **NOT** tap "Sign in" on your phone (that signs in the phone, not the
-  container); copy the `https://squareup.com/login?rml=1&…` URL from the email and paste it in the DM.
-  The container then navigates to it to finish sign-in.
+- *Magic-link relay (fallback, deliverable only):* when the magic-link page is detected **with a named
+  recipient**, BHAGA DMs the operator to **paste the magic-link URL** — ⚠️ do **NOT** tap "Sign in" on your
+  phone (that signs in the phone, not the container); copy the `https://squareup.com/login?rml=1&…` URL from
+  the email and paste it in the DM. The container then navigates to it to finish sign-in.
+- *Anti-bot soft-block recovery (free, no laptop — added 2026-06-09):* when Square fingerprints the headless
+  container as a bot it sometimes serves the magic-link screen with a **blank recipient and sends no email**
+  (the `.magic-link-sent__email` element is empty — observed 2026-06-08; "we sent a magic link to ." with no
+  address). That link is **undeliverable**, so the paste relay is a dead end. `runner._magic_link_recipient`
+  detects the blank recipient and raises `SquareDeviceBlockedError` **instead of prompting for an impossible
+  paste**. The pipeline then: (1) **discards the poisoned session** (`gcs_cache.delete_session`) and **retries
+  login exactly once in a fresh context** (`storage_state=None`) — a clean cookie jar often re-presents the
+  SMS-OTP path (which the operator answers on their phone via Slack, no laptop); (2) if the retry is still
+  blocked, it fails **cleanly** with `notify.square_device_blocked_alert` — an actionable DM that tells the
+  operator there is **nothing to paste** and that the **next nightly auto-retries on a fresh egress IP** (the
+  free self-heal; Cloud Run rotates egress IPs, so a later run usually isn't blocked). ADP/reviews still run;
+  only Square sales/tips/items are missing for the blocked date, and the §13 partial-failure recovery
+  releases them once Square succeeds. The first attempt fires **no** SMS, so the single retry can never
+  duplicate one. (Pinning a static egress IP — VPC connector + Cloud NAT — would stop the escalation at the
+  source but is **not free**; deferred. See `PROGRESS.md`.)
 
 **Step-by-step screenshot trace.** Sandbox runs set `BHAGA_TRACE_SCREENSHOTS=1`, so `runtime.trace_step`
 captures the **full browser after every login + item-sales action** and uploads each frame to

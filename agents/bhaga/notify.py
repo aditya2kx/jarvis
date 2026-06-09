@@ -261,6 +261,36 @@ def otp_skipped_alert(*, date: str, portals: list) -> Optional[dict]:
     return _safe_send(text)
 
 
+def square_device_blocked_alert(
+    *,
+    date: str,
+    evidence_uri: Optional[str] = None,
+) -> Optional[dict]:
+    """Alert that Square anti-bot soft-blocked the headless device.
+
+    Square fingerprinted the cloud container as an unrecognized device and served
+    an undeliverable, blank-recipient "magic link" (no email is sent), and no SMS
+    option was offered — so there is *nothing actionable for the operator to paste*.
+    BHAGA already retried once in a fresh browser context. This DM tells the
+    operator the truth and the recovery: the next nightly auto-retries (a different
+    egress IP often clears the block), or they can re-run now — but NOT to look for
+    a magic-link email (there isn't one).
+    """
+    evidence_str = f"\n*Evidence:* `{evidence_uri}`" if evidence_uri else ""
+    text = (
+        f":no_entry: *BHAGA: Square blocked the login* for refresh *{date}* on {_host_tag()}\n"
+        f"Square's anti-bot flagged the cloud browser as an unrecognized device and "
+        f"served an *undeliverable magic link* (blank recipient — no email is sent), "
+        f"with no SMS option. I already retried once with a fresh session and it was "
+        f"blocked again.{evidence_str}\n"
+        f"*There is nothing to paste — don't look for a magic-link email.* "
+        f"ADP and reviews still ran; only Square sales/tips/items are missing for this date.\n"
+        f"_The next nightly will auto-retry (a fresh egress IP usually clears it). "
+        f"To try sooner, reply `retry` or re-run the job for this date._"
+    )
+    return _safe_send(text)
+
+
 def new_employee_alert(
     new_pairs: list[tuple[str, str]],
     *,

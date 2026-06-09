@@ -1,0 +1,121 @@
+{
+  "pr_number": 41,
+  "provisional_id": null,
+  "title": "Square login resilience (free, no laptop)",
+  "requirement": "Recover Square cloud login when anti-bot serves an undeliverable blank-recipient magic link; free + no laptop dependency.",
+  "branch": "fix/square-login-resilience",
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor dashboard usage API (local session token; request->PR by time window)",
+    "approximate": false,
+    "attribution_mode": "branch_window",
+    "session_started_at": null,
+    "conversation_ids": [
+      "30f09561-cb75-410e-9818-daa7aa31d200"
+    ],
+    "sessions": [
+      {
+        "ts": "2026-06-09T07:01:56.872000+00:00",
+        "model": "claude-opus-4-8-thinking-high",
+        "tokens": 1247898,
+        "cost_usd": 1.9372,
+        "cost_source": "cursor_charged",
+        "conversation_id": null,
+        "input_tokens": 18,
+        "output_tokens": 19812,
+        "cache_read_input_tokens": 1084114,
+        "cache_creation_input_tokens": 143954,
+        "note": null
+      },
+      {
+        "ts": "2026-06-09T07:08:26.105000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 22748349,
+        "cost_usd": 14.9524,
+        "cost_source": "cursor_charged",
+        "conversation_id": null,
+        "input_tokens": 108684,
+        "output_tokens": 64787,
+        "cache_read_input_tokens": 22203492,
+        "cache_creation_input_tokens": 371386,
+        "note": null
+      }
+    ],
+    "tokens_total": 23996247,
+    "cost_usd_total": 16.8896,
+    "window": {
+      "start": "2026-06-09T06:59:12.501000+00:00",
+      "end": "2026-06-09T07:24:45.861000+00:00"
+    }
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "tokens": 0,
+        "cost_usd": 0.0,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/27190635905"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "tokens": 0,
+        "cost_usd": 0.0,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/27190684447"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "tokens": 0,
+        "cost_usd": 0.0,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/27191453953"
+      },
+      {
+        "ts": null,
+        "model": "claude-sonnet-4-6",
+        "turns": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "tokens": 0,
+        "cost_usd": 0.0,
+        "result": "success",
+        "run_url": "https://github.com/aditya2kx/jarvis/actions/runs/27192643822"
+      }
+    ],
+    "tokens_total": 0,
+    "cost_usd_total": 0.0,
+    "run_count": 4
+  },
+  "totals": {
+    "tokens": 23996247,
+    "cost_usd": 16.8896
+  }
+}

@@ -1,13 +1,17 @@
-# Sandbox live run config for PR #33 — unified-window backfill verification.
+# Sandbox live run config for PR #41 — Square login resilience proof.
 #
-# Runs the "unified-window" scenario over a short closed pay period
-# (2026-05-18 to 2026-05-31) to prove all four sources (Square, ADP timecard,
-# ADP earnings custom-range, Google Reviews) honor the --from/--to window
-# and land in BQ → sandbox Sheets correctly.
+# Runs the "item-sales-live" scenario against the isolated sandbox for the
+# incident date (2026-06-08): a REAL Square login + transactions/item-sales/KDS
+# scrape on the PR branch's image. This exercises the new anti-bot recovery path
+# end-to-end:
+#   • normal/SMS-OTP or deliverable magic link → login succeeds, verify(item_sales)
+#     proves item-sales rows landed in the sandbox (no regression to the happy path);
+#   • blank-recipient soft-block → _magic_link_recipient raises SquareDeviceBlockedError,
+#     the poisoned session is discarded and login retries ONCE fresh, and on a hard
+#     block it fails cleanly via square_device_blocked_alert (no dead-end paste).
+# Full isolation: reads prod, writes ONLY sandbox; any OTP/2FA is labeled [SANDBOX].
 #
 # Remove this file (or empty the scenarios list) once PR evidence is captured.
 scenarios:
-  - name: unified-window
-    date: "2026-05-31"
-    window_from: "2026-05-04"
-    window_to: "2026-05-31"
+  - name: item-sales-live
+    date: "2026-06-08"

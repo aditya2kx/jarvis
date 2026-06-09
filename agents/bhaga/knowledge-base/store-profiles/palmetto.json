@@ -55,9 +55,9 @@
         "tip_alloc_period",
         "period_summary",
         "review_bonus_period",
-        "labor_daily_forecast",
         "item_operations"
       ],
+      "_doc_labor_daily_forecast_retired": "The labor_daily_forecast tab was retired 2026-06-09. Forecast data is now BQ-authoritative via model_forecast_daily + forecast_bq.py. Grafana is the review surface.",
       "_doc_training_shifts": "HUMAN-OWNED, read-only to the pipeline (like the employees tab). Columns: employee_name (canonical 'Last, First') | date (YYYY-MM-DD) | note. Each row marks one shift as training -> that (employee, date) gets NO tip share and its hours leave that day's tip denominator (redistributed to other tipped staff); labor% is unaffected. Precise per-shift complement to config's `training_excluded:<name>` bulk through-date. update_model_sheet._read_training_shifts_from_sheet reads it and degrades to a no-op if the tab is absent."
     },
     "bhaga_review_raw": {
@@ -135,6 +135,7 @@
     ],
     "_doc_exclusions": "Lindsay is the store manager. She IS paid hourly ($25/hr) per ADP, but is excluded from labor% (we don't count manager cost against store sales) and from the tip pool (managers don't take from tips per policy). Exclusion is by canonical name, NOT by salaried flag."
   },
+  "forecast_horizon_days": 30,
   "labor_config": {
     "saturation_orders_per_labor_hour": 4,
     "forecast_target_completion_time_per_item_sec": 420,

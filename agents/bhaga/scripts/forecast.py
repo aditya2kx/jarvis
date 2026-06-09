@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """BHAGA labor_daily_forecast — a LIVE, formula-driven planning worksheet.
 
+DEPRECATED (sheet-writing path): the order+item forecast is now BQ-authoritative
+via `agents/bhaga/scripts/forecast_bq.py` + the `load_forecast_bq` pipeline step.
+The Google Sheets `labor_daily_forecast` tab has been retired. The pure forecast
+functions in this module (`forecast_orders_dow_trend`, `compute_forecast_constants`,
+`_get_parsed_rows`) are still used by forecast_bq.py and should not be deleted.
+The sheet-grid functions (`build_labor_daily_forecast_rows`, `backfill_forecast_errors`,
+`_derived_formulas`, etc.) remain for test-suite continuity; clean-up is optional.
+
+
 Unlike the old static build (Python computed every cell), this writes the
 forecast tab as a spreadsheet the operator can actually plan in: a few INPUT
 cells per row (orders, fulltime_hours, target_labor_pct, forecast_exclude,

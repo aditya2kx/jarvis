@@ -36,8 +36,8 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    outside the `--since` window. Reviews tab rendered separately after `process_reviews`.
    **Contract: raw Sheets are projections of BQ — BQ is authoritative.**
 6. **Recompute the Model tabs** (`update_model_sheet.py`): `config, daily, labor_daily,
-   labor_weekly, labor_period, tip_alloc_period, tip_alloc_daily, period_summary`
-   (+ `labor_daily_forecast` via `forecast.py`), then **upsert `item_operations`** for the gap
+   labor_weekly, labor_period, tip_alloc_period, tip_alloc_daily, period_summary`,
+   then **upsert `item_operations`** for the gap
    window (`item_operations.py` — incremental, not full-tab rewrite).
    - Config/tunables are read from `bhaga.store_config` via `core.store_config.get_config` (BQ-first,
      Sheet fallback while being seeded). Edit tunables via `/bhaga-cloud config set`.
@@ -122,7 +122,8 @@ nightly). Both honor sandbox write-bucket isolation via `gcs_cache`.
 | `update_model_sheet.py` | Recompute the **Model** workbook tabs from the raw sheets. Houses the `build_*_rows` functions (one per tab). Loads ADP "Credit Card Tips Owed" **actuals from BQ** via `load_cc_tips_earnings_from_bq` (reads `bhaga.adp_earnings`, returns ISO-string date keys) to populate `adp_paid`/`diff`/`diff_pct` + `period_summary.check_dates`. Reads operator tunables via `_read_config_value` (BQ-first via `core.store_config.get_config`, Sheet fallback). |
 | `model_semantics.py` | **Pure, shared semantic post-conditions** (no I/O): `assert_tip_pool_conserved`, the cadence-safe `assert_period_reconciled`, `assert_review_bonus_present`, and the cadence-gating `assert_model_semantics`. One source of truth used by BOTH `sandbox_e2e` (per-PR gate) and `daily_refresh` (nightly), so a regression can't pass one and fail the other. The reconciliation cadence gate itself (`period_has_cc_tip_actuals`) lives in `update_model_sheet` next to the earnings loader it depends on. |
 | `process_reviews.py` | Reviews → date-bracketed bonus allocation ($20 pool for on/after 2026-06-08; legacy $10/$20 per-person before) → rebuild `review_bonus_period`. |
-| `forecast.py` | Builds `labor_daily_forecast` (staffing solver, guardrails, anomaly detection). |
+| `forecast.py` | Pure forecast functions (DOW trend, anomaly detection, `_get_parsed_rows`). **The Sheet-writing path (`build_labor_daily_forecast_rows`) is retired** — `labor_daily_forecast` Sheet tab is no longer written. Pure functions are reused by `forecast_bq.py`. |
+| `forecast_bq.py` | **BQ-authoritative daily forecast.** `build_forecast_rows()` returns 30-day (horizon configurable via `forecast_horizon_days` store profile key) forward rows `{date, forecast_orders, forecast_items, forecast_generated_at}`. Called by `materialize_model_bq.py` after the `model_labor_daily` write; rows are loaded via `load_rows("model_forecast_daily", …, merge_keys=["date"])`. Skip with `BHAGA_SKIP_FORECAST=1`. |
 | `notify.py` | Slack DMs under the BHAGA identity. Always DM through here, never `send_message` directly. |
 | `gcs_cache.py` | **Sessions + failure evidence ONLY — not a data pipeline.** `upload_session()`/`download_session()`/`delete_session()` persist / restore / **discard** a portal browser session (`storage_state`) under `<bucket>/_session/` for **trusted-device** reuse (skips 2FA next run); `delete_session()` drops a *poisoned* session (e.g. after a Square anti-bot block) so the next login starts fresh. `evidence_prefix()` / `upload_evidence()` persist failure screenshots+DOM under `gs://<bucket>/<date>/evidence/` so a postmortem needs no rerun. Writes honor `BHAGA_GCS_CACHE_WRITE_BUCKET` (sandbox isolation: write sandbox bucket). The data-file helpers (`upload_file`/`upload_scrape_artifacts`/`download_cached_files`) are **LEGACY** (offline backfill + `sandbox_e2e` replay only) — the nightly pipeline never reads/writes scrape data here; BQ is the single source of truth. |
 

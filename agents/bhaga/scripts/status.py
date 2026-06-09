@@ -113,6 +113,10 @@ BQ_TARGETS: list[Target] = [
     Target("google_reviews", "post_date_ct"),
     # store_config (migration 007) intentionally NOT a freshness target — it is a
     # config/tunables store (no date partition) edited via /bhaga-cloud config set.
+    # ── Forecast table (migration 011) ───────────────────────────────────────
+    # model_forecast_daily has future-only rows until the first nightly load runs;
+    # status check will show EMPTY until then (expected pre-load).
+    Target("model_forecast_daily", "date"),
 ]
 
 GRAFANA_VIEWS: list[Target] = [
@@ -136,6 +140,11 @@ GRAFANA_VIEWS: list[Target] = [
     # $kds_date query-var shape + unquoted threshold — same view, no new entry.
     Target("vw_kds_order_investigation", "date_local"),
     Target("vw_staff_on_shift", "date"),
+    # migration 011: Labor Forecast section (section 7) panels
+    # vw_model_forecast and vw_forecast_accuracy will be EMPTY pre-load (expected).
+    Target("vw_model_forecast", "date"),
+    Target("vw_forecast_accuracy", "date"),
+    Target("vw_forecast_exclusions", "date"),
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

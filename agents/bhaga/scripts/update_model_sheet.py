@@ -3115,49 +3115,10 @@ def main() -> int:
     # KDS columns (41-45 in weekly) are counts/ratios/seconds, NOT currency.
     labor_weekly_currency = [5, 6, 7, 8, 9, 12, 14, 15, 24, 25, 26, 31, 32, 36]
 
-    # ── Forecast tab ──────────────────────────────────────────────────
-    from agents.bhaga.scripts.forecast import (
-        FORECAST_CURRENCY_COLS,
-        FORECAST_HIDDEN_COLS,
-        build_labor_daily_forecast_rows,
-        backfill_forecast_errors,
-    )
-
-    # Read the existing forecast tab ONCE: it drives freeze-in-place (formula
-    # cells come back as evaluated VALUES) AND preserves operator-edited per-row
-    # inputs (target_time_per_item_sec, target_hourly_labor_pct) — same idiom as
-    # the labor_daily forecast_exclude preservation.
-    existing_forecast_grid = _read_existing_forecast_grid(
-        spreadsheet_id=model_sid, store=args.store,
-    )
-    existing_target_by_date = _forecast_grid_col_numeric_map(
-        existing_forecast_grid, "target_time_per_item_sec",
-    )
-    existing_hourly_target_by_date = _forecast_grid_col_numeric_map(
-        existing_forecast_grid, "target_hourly_labor_pct",
-    )
-    if existing_target_by_date:
-        print(f"#   → preserved target_time_per_item_sec for "
-              f"{len(existing_target_by_date)} existing forecast rows")
-    if existing_hourly_target_by_date:
-        print(f"#   → preserved target_hourly_labor_pct for "
-              f"{len(existing_hourly_target_by_date)} existing forecast rows")
-    forecast_rows = build_labor_daily_forecast_rows(
-        labor_daily_rows=labor_daily_rows,
-        wage_rates=wage_rates,
-        config=forecast_config,
-        kds_by_date=kds_by_date,
-        existing_target_by_date=existing_target_by_date,
-        existing_hourly_target_by_date=existing_hourly_target_by_date,
-        existing_forecast_rows=existing_forecast_grid,
-    )
-    # Backfill error columns for past forecast rows where actuals now exist.
-    # On the first run there are no past forecasts; on subsequent runs the
-    # forecast tab accumulates history.
-    forecast_rows = backfill_forecast_errors(
-        forecast_rows=forecast_rows,
-        labor_daily_rows=labor_daily_rows,
-    )
+    # ── Forecast tab (RETIRED) ─────────────────────────────────────────
+    # The labor_daily_forecast Sheet tab has been retired (2026-06-09).
+    # Forecast data is now BQ-authoritative via forecast_bq.py + the
+    # load_forecast_bq step in daily_refresh.py. Grafana is the review surface.
 
     tab_payloads = [
         {"tab": "config",            "rows": config_rows,      "currency_cols": []},
@@ -3165,8 +3126,6 @@ def main() -> int:
         {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": labor_daily_currency},
         {"tab": "labor_weekly",      "rows": labor_weekly_rows, "currency_cols": labor_weekly_currency},
         {"tab": "labor_period",      "rows": labor_period_rows, "currency_cols": labor_period_currency},
-        {"tab": "labor_daily_forecast", "rows": forecast_rows,
-         "currency_cols": FORECAST_CURRENCY_COLS, "hidden_cols": FORECAST_HIDDEN_COLS},
         {"tab": "tip_alloc_period",  "rows": period_rows,      "currency_cols": [6, 7, 8, 10, 11]},
         {"tab": "tip_alloc_daily",   "rows": day_alloc_rows,   "currency_cols": [6, 9]},
         {"tab": "period_summary",    "rows": summary_rows,     "currency_cols": [7, 8, 9, 10]},

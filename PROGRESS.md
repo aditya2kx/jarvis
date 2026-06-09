@@ -14,6 +14,25 @@
 
 **Process:** documented the "deploy the dashboard from the branch, the live link is the evidence" workflow in `CONTRIBUTING.md` (Additive prod data-source exception → Grafana dashboard changes), so every future Grafana PR provides a live-link + confirmed-version as §4 evidence rather than only a `verify_panels.py` SQL check.
 
+## 2026-06-09 — PR B: BQ-authoritative Labor Forecast + Grafana Section 7
+
+**Scope:** PR B (branches off `main`; separate from PR A "KDS Dashboard tweaks + CI policy").
+
+**Changes landed (pending merge):**
+- **`forecast_bq.py`** — new BQ-authoritative 30-day forecast: reuses pure `forecast.py` functions, outputs `{date, forecast_orders, forecast_items, forecast_generated_at}` rows. Horizon configurable via `forecast_horizon_days` store profile key (default 30).
+- **`materialize_model_bq.py`** — integrated forecast load after `model_labor_daily` write. Merge key: `date`. Future window only; past rows freeze for implicit accuracy tracking. Skip via `BHAGA_SKIP_FORECAST=1`. Non-fatal.
+- **`update_model_sheet.py`** — removed `labor_daily_forecast` Sheet tab write (retired).
+- **`core/migrations/011_labor_forecast.sql`** — new idempotent migration: `model_forecast_daily` table + `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` views.
+- **`agents/bhaga/knowledge-base/store-profiles/palmetto.json`** — removed `labor_daily_forecast` tab; added `forecast_horizon_days: 30`.
+- **`agents/bhaga/grafana/dashboard.json`** v29 — new Section 7 "Labor Forecast" (panels 71-73): forecast table, forecast-vs-actual timeseries, exclusions table; built on top of v28 hotfix changes.
+- **`agents/bhaga/scripts/backfill_bigquery.py`** — added `map_forecast_daily` mapper.
+- **`test_forecast_bq.py`** — 9 new unit tests (all pass).
+- **Docs:** RUNBOOK §15, agents/bhaga/scripts/README.md, DOMAIN.md §7 updated.
+
+**ADP scheduled hours (Part 4):** dropped — Keychain credential `adp_palmetto_login` not found in this environment. Deferred to a follow-up PR on a machine with Keychain configured.
+
+**Migration required after merge:** `python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"` then trigger a manual refresh (RUNBOOK §6) to populate `model_forecast_daily`.
+
 ## 2026-06-09 — Grafana dashboard: KDS defaults, p99 goal line, goal-var grouping (PR A)
 
 **Changes:** PR A (dashboard tweaks + CI sandbox policy).

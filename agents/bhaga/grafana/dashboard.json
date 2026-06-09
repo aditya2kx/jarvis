@@ -470,6 +470,102 @@
           "rawSql": "SELECT CAST(period_start AS STRING) period_start, CAST(period_end AS STRING) period_end, employee, hours_worked, est_gross_pay, adp_wages_paid, wage_diff, tips_allocated, adp_tips_paid, tip_diff, review_bonus, adp_bonus_paid, bonus_diff, est_total_pay, adp_total_paid, ROUND(est_total_pay - adp_total_paid, 2) AS total_diff FROM `jarvis-bhaga-prod.bhaga.vw_model_payroll_period` WHERE period_start >= DATE('$date_from') ORDER BY period_start DESC, employee"
         }
       ]
+    },
+
+    {
+      "id": 70,
+      "type": "row",
+      "title": "7. Labor Forecast",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 93}
+    },
+    {
+      "id": 71,
+      "type": "table",
+      "title": "Labor Forecast — next 30 days",
+      "description": "30-day daily forecast: Forecast Orders/Items, Prior-Week comparison (COALESCE actual@-7d, forecast@-7d), % change vs prior week, and Goal Shift Hours (Forecast Items × $goal_hours_per_item). Empty until the first nightly pipeline run after the migration is applied. Override forecast_exclude on the labor_daily BQ tab to flag anomaly days.",
+      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 94},
+      "options": {"sortBy": [{"displayName": "Date", "desc": false}]},
+      "fieldConfig": {
+        "defaults": {"custom": {"filterable": true}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "date"}, "properties": [{"id": "displayName", "value": "Date"}]},
+          {"matcher": {"id": "byName", "options": "forecast_orders"}, "properties": [{"id": "displayName", "value": "Forecast Orders"}, {"id": "decimals", "value": 0}]},
+          {"matcher": {"id": "byName", "options": "forecast_items"}, "properties": [{"id": "displayName", "value": "Forecast Items"}, {"id": "decimals", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "prior_wk_orders"}, "properties": [{"id": "displayName", "value": "Prior-Wk Orders"}, {"id": "decimals", "value": 0}]},
+          {"matcher": {"id": "byName", "options": "prior_wk_items"}, "properties": [{"id": "displayName", "value": "Prior-Wk Items"}, {"id": "decimals", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "orders_vs_prior_wk"}, "properties": [{"id": "displayName", "value": "Orders vs Prior Wk %"}, {"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "items_vs_prior_wk"}, "properties": [{"id": "displayName", "value": "Items vs Prior Wk %"}, {"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "goal_shift_hours"}, "properties": [{"id": "displayName", "value": "Goal Shift Hours"}, {"id": "unit", "value": "suffix: h"}, {"id": "decimals", "value": 1}]}
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "rawSql": "SELECT date, forecast_orders, forecast_items, prior_wk_orders, prior_wk_items, orders_vs_prior_wk, items_vs_prior_wk, ROUND(forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS goal_shift_hours FROM `jarvis-bhaga-prod.bhaga.vw_model_forecast` ORDER BY date"
+        }
+      ]
+    },
+    {
+      "id": 72,
+      "type": "timeseries",
+      "title": "Forecast vs Actual — Orders & Items",
+      "description": "Historical forecast accuracy: how close the 1-day-ahead order and item forecasts were to actuals. Only days that have both a forecast (from model_forecast_daily) and an actual (from model_labor_daily) appear. Empty until the nightly pipeline has run at least once after the migration.",
+      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 106},
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "list", "placement": "bottom"}
+      },
+      "fieldConfig": {
+        "defaults": {"decimals": 0, "min": 0},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "Forecast Orders"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}]},
+          {"matcher": {"id": "byName", "options": "Forecast Items"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}]}
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 0,
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, forecast_orders AS `Forecast Orders`, actual_orders AS `Actual Orders`, forecast_items AS `Forecast Items`, actual_items AS `Actual Items` FROM `jarvis-bhaga-prod.bhaga.vw_forecast_accuracy` WHERE date >= DATE('$date_from') ORDER BY date"
+        }
+      ]
+    },
+    {
+      "id": 73,
+      "type": "table",
+      "title": "Forecast Inputs / Exclusions",
+      "description": "Recent input days the forecaster saw (last 60 days). Rows with forecast_exclude=TRUE were dropped from the forecast seed averages — either auto-detected outliers or operator-overridden. To override: set forecast_exclude=TRUE on the model_labor_daily BQ row for the anomaly day.",
+      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 115},
+      "options": {"sortBy": [{"displayName": "Date", "desc": true}]},
+      "fieldConfig": {
+        "defaults": {"custom": {"filterable": true}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "date"}, "properties": [{"id": "displayName", "value": "Date"}]},
+          {"matcher": {"id": "byName", "options": "dow"}, "properties": [{"id": "displayName", "value": "DOW"}]},
+          {"matcher": {"id": "byName", "options": "orders"}, "properties": [{"id": "displayName", "value": "Orders"}]},
+          {"matcher": {"id": "byName", "options": "forecast_exclude"}, "properties": [{"id": "displayName", "value": "Excluded"}]},
+          {"matcher": {"id": "byName", "options": "outlier_reason"}, "properties": [{"id": "displayName", "value": "Outlier Reason"}]},
+          {"matcher": {"id": "byName", "options": "forecast_exclude_reason"}, "properties": [{"id": "displayName", "value": "Exclusion Reason"}]}
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "rawSql": "SELECT date, dow, orders, forecast_exclude, outlier_reason, forecast_exclude_reason FROM `jarvis-bhaga-prod.bhaga.vw_forecast_exclusions` ORDER BY date DESC"
+        }
+      ]
     }
 
   ]

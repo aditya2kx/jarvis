@@ -455,6 +455,29 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     load_model_rows("model_tip_alloc_period", period_rows, dry_run=dry_run, materialized_at=materialized_at)
     load_model_rows("model_tip_alloc_daily", day_alloc_rows, dry_run=dry_run, materialized_at=materialized_at)
     load_model_rows("model_period_summary", summary_rows, dry_run=dry_run, materialized_at=materialized_at)
+
+    # ── Load forecast (future window only; non-fatal) ─────────────────────────
+    # Writes today+1..today+N rows to model_forecast_daily (merge_keys=["date"]).
+    # Past dates are never in the row set → they freeze at their last 1-day-ahead
+    # value, giving an implicit forecast-vs-actual accuracy series.
+    # Skip: BHAGA_SKIP_FORECAST=1 env var.
+    if not os.environ.get("BHAGA_SKIP_FORECAST") and not dry_run:
+        try:
+            from agents.bhaga.scripts.forecast_bq import build_forecast_rows
+            from agents.bhaga.scripts.backfill_bigquery import map_forecast_daily
+            horizon = int(profile.get("forecast_horizon_days", 30))
+            f_rows = build_forecast_rows(
+                labor_daily_rows=labor_daily_rows,
+                wage_rates=wage_rates,
+                horizon_days=horizon,
+            )
+            bq_f_rows = [map_forecast_daily(r) for r in f_rows]
+            load_rows("model_forecast_daily", bq_f_rows, merge_keys=["date"])
+            print(f"# [load_forecast_bq] {len(bq_f_rows)} rows → model_forecast_daily "
+                  f"(today+1..today+{horizon}).")
+        except Exception as _exc:  # noqa: BLE001
+            print(f"# [load_forecast_bq] WARNING: non-fatal failure: {_exc}")
+
     print("# Done.")
 
 

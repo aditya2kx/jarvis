@@ -359,6 +359,23 @@ def map_adp_earnings_row(rec: dict) -> dict:
     }
 
 
+def map_forecast_daily(rec: dict) -> dict:
+    """Map a forecast_bq build_forecast_rows output row to the BQ schema.
+
+    Input keys: date (ISO), forecast_orders (int), forecast_items (float),
+                forecast_generated_at (ISO string).
+    """
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    return {
+        "date": _parse_date(rec.get("date")),
+        "forecast_orders": _parse_int(rec.get("forecast_orders")),
+        "forecast_items": _parse_float(rec.get("forecast_items")),
+        "forecast_generated_at": str(rec.get("forecast_generated_at", "")),
+        "materialized_at_utc": _dt.datetime.now(_dt.timezone.utc),
+    }
+
+
 def map_google_review(rec: dict) -> dict:
     """Map a Sheet reviews row to the BQ google_reviews schema.
 

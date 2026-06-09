@@ -200,7 +200,7 @@ Detailed field semantics for the model tabs are in §4 (labor), §5 (tips), §6 
 | `period_summary` | pay period | Period headline + diff count | §5 |
 | `dow_hour` | (weekday, hour) | Trailing-28-day heatmap (`transaction_count_28d`, `sales_dollars_28d`, `tips_dollars_28d`, `avg_sales_per_day`, `avg_tips_per_day`) | — |
 | `review_bonus_period` | (period, employee) | Review bonuses earned | §6 |
-| `labor_daily_forecast` | future day | Live staffing planner | §7 |
+| ~~`labor_daily_forecast`~~ | — | **Retired 2026-06-09.** Replaced by `model_forecast_daily` in BQ. | §7 |
 | `item_operations` | item line | Item-level throughput + staff punched in at sale time | §4.1 |
 
 **`item_operations`** — one row per item line (mirrors `item_lines` grain). Key matches
@@ -404,17 +404,40 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 | `vw_order_quality_daily` | date | `kds_median_min`, `kds_p90_min`, `kds_p95_min`, `kds_p99_min`, `kds_pct_items_over_goal`, `kds_pct_tickets_late` | Converts `model_labor_daily` seconds → minutes for Grafana. |
 | `vw_kds_item_investigation` | (date_local, item) | `item_name`, `category`, `qty`, `per_item_min`, `ticket_min`, `device_name`, `time_created` | Explodes `items_in_ticket` from `square_kds_tickets`; `per_item_min = ROUND(completion_time_sec / num_items / 60)` (integer). category is best-effort from `square_item_lines` dimension. Delimiter: `"; "` (semicolon + space). Item format: `"<qty>x <name>"`. |
 | `vw_staff_on_shift` | date | `employee`, `in_time`, `out_time`, `total_hours` | From `adp_shifts`. |
+| `model_forecast_daily` | date | `date`, `forecast_orders`, `forecast_items`, `forecast_generated_at`, `materialized_at_utc` | BQ-authoritative daily forecast. Nightly write: today+1…today+30. Past dates freeze. Merge key: `date`. Added migration 011. |
+| `vw_model_forecast` | date | `date`, `forecast_orders`, `forecast_items`, `prior_wk_orders`, `prior_wk_items`, `orders_vs_prior_wk`, `items_vs_prior_wk` | Forward-looking Grafana view: next 30 days with COALESCE(actual@-7d, forecast@-7d) prior-week comparison. |
+| `vw_forecast_accuracy` | date | `date`, `forecast_orders`, `actual_orders`, `forecast_items`, `actual_items` | Accuracy series: past forecast days joined to actuals. |
+| `vw_forecast_exclusions` | date | `date`, `dow`, `orders`, `forecast_exclude`, `outlier_reason`, `forecast_exclude_reason` | Recent 60-day input days with exclusion flags and reasons. |
 
 **Grafana dashboard** (`agents/bhaga/grafana/dashboard.json`) reads from these views in 5 sections: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll.
 
 ---
 
-## 7. Forecast & staffing — `labor_daily_forecast`
+## 7. Forecast — `model_forecast_daily` (BQ-authoritative, 2026-06-09)
 
-A **live, in-sheet planning tool**: a trailing window of frozen past days + future rows where
-**derived columns are Google Sheets formulas**, so editing an input recalculates the staffing
-recommendation in the sheet. Inputs (editable per row): `orders`, `fulltime_hours`,
-`target_labor_pct`, `target_hourly_labor_pct`, `target_time_per_item_sec`, `forecast_exclude`.
+> **Retired:** the `labor_daily_forecast` Google Sheet tab has been replaced by a BigQuery table.
+> The staffing-solver columns (`recommended_hourly_hours`, `staffing_flag`, etc.) are no longer
+> produced. The BQ table stores slim forecast rows only: `date`, `forecast_orders`,
+> `forecast_items`, `forecast_generated_at`. See `RUNBOOK.md §15` for operations.
+
+The nightly pipeline (`materialize_model_bq.py`) calls `forecast_bq.build_forecast_rows()` after
+writing `model_labor_daily`, then loads the result into `model_forecast_daily` with
+`merge_keys=["date"]`. Only the future window (today+1 … today+30) is ever written; past rows
+freeze at their last 1-day-ahead value for implicit accuracy tracking.
+
+Three Grafana views expose the data: `vw_model_forecast` (forward-looking with prior-week comparison),
+`vw_forecast_accuracy` (past forecast vs actual), `vw_forecast_exclusions` (recent input days with
+`forecast_exclude` flag).
+
+**`forecast_exclude` override** — set `forecast_exclude = TRUE` on a `model_labor_daily` row to drop
+that day from the forecast seed (e.g. anomalous-volume day). The forecaster calls
+`_get_parsed_rows(exclude_flagged=True)`.
+
+### Legacy doc (pre-2026-06-09)
+
+Previously a **live, in-sheet planning tool**: future rows where derived columns are Google Sheets
+formulas. Inputs (editable per row): `orders`, `fulltime_hours`, `target_labor_pct`,
+`target_hourly_labor_pct`, `target_time_per_item_sec`, `forecast_exclude`.
 
 - **`recommended_hourly_hours`** — staffing solver output: hours needed for coverage/efficiency at the
   target item-completion time. Budget is a **check, not a cap** (never understaffs below coverage).

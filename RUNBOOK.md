@@ -84,8 +84,10 @@ The Cloud Run service account is shared on every active sheet (see
 **Primary Model URL:** https://docs.google.com/spreadsheets/d/18NH71JwMOAX6euFugSsSQlJhHPgBghWk09YWnsSuvDk/edit
 
 Model tabs: `config`, `daily`, `labor_daily`, `labor_weekly`, `labor_period`, `tip_alloc_daily`,
-`tip_alloc_period`, `period_summary`, `review_bonus_period`, `labor_daily_forecast`,
-`item_operations`.
+`tip_alloc_period`, `period_summary`, `review_bonus_period`, `item_operations`.
+
+> **Note (2026-06-09):** The `labor_daily_forecast` Sheet tab was retired. Daily order/item forecasts
+> are now BQ-authoritative (`model_forecast_daily`); see §14 — Labor Forecast.
 
 Square raw tabs include `item_lines` (per-item lines; upserted nightly with Item Sales CSV).
 
@@ -832,8 +834,8 @@ and alerts.  Don't hand-investigate; run this first.
 - **BQ dataset:** `jarvis-bhaga-prod.bhaga`
 - **Raw tables:** `square_transactions`, `adp_shifts`, `adp_punches`, `adp_wage_rates`, `square_daily_rollup`
 - **Curated views:** `vw_daily_sales`, `vw_tips_by_hour`, `vw_labor_daily`, `vw_labor_weekly`, `vw_sales_labor_daily`, `vw_employee_hours_summary`
-- **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`
-- **Model views (Grafana BI contract):** `vw_model_labor_daily`, `vw_model_period_summary`
+- **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`, `model_forecast_daily`
+- **Model views (Grafana BI contract):** `vw_model_labor_daily`, `vw_model_period_summary`, `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions`
 - **Grafana org:** `steadyangelfish2985`
 - **Dashboard URL:** `https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics`
 - **Read-only SA:** `grafana-bq-reader@jarvis-bhaga-prod.iam.gserviceaccount.com` (DataViewer + JobUser)
@@ -949,7 +951,7 @@ python3 agents/bhaga/grafana/verify_panels.py --fail-on-empty             # 0-ro
 python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
 ```
 
-Migrations live in `core/migrations/001_initial_schema.sql` … `005_raw_parity.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`). Migration 005 adds: `square_item_lines`, `square_kds_daily`, `square_kds_tickets`, `adp_earnings`, `google_reviews` raw tables; and `vw_order_quality_daily`, `vw_kds_item_investigation`, `vw_staff_on_shift`, extended `vw_model_labor_daily/weekly`, extended `vw_model_payroll_period` (with ADP actuals + diffs).
+Migrations live in `core/migrations/001_initial_schema.sql` … `011_labor_forecast.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`). Migration 005 adds: `square_item_lines`, `square_kds_daily`, `square_kds_tickets`, `adp_earnings`, `google_reviews` raw tables; and `vw_order_quality_daily`, `vw_kds_item_investigation`, `vw_staff_on_shift`, extended `vw_model_labor_daily/weekly`, extended `vw_model_payroll_period` (with ADP actuals + diffs). Migration 011 adds: `model_forecast_daily` table and `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` views (see Labor Forecast section below).
 
 ### BQ backfill (one-shot)
 
@@ -985,7 +987,56 @@ BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-pr
 
 ---
 
-## 15. BQ as single source of truth (added PR #33, 2026-06-05)
+## 15. Labor Forecast (added 2026-06-09)
+
+### Overview
+
+Daily order/item forecasts are now BQ-authoritative, replacing the retired `labor_daily_forecast`
+Sheet tab. The nightly pipeline (`materialize_model_bq.py`) generates a 30-day forward window and
+loads it into `model_forecast_daily` (merge key: `date`). Past dates freeze at their last 1-day-ahead
+value, enabling implicit forecast-vs-actual accuracy tracking by joining actuals on the same date.
+
+### Tables and views
+
+| Object | Type | Description |
+|---|---|---|
+| `model_forecast_daily` | Table | One row per future date: `date`, `forecast_orders`, `forecast_items`, `forecast_generated_at`, `materialized_at_utc` |
+| `vw_model_forecast` | View | Next 30 days with COALESCE(actual@-7d, forecast@-7d) prior-week comparison and % change |
+| `vw_forecast_accuracy` | View | Past forecast days joined to actuals (forecast vs actual orders/items) |
+| `vw_forecast_exclusions` | View | Recent 60 days of input rows with `forecast_exclude` flag and reasons |
+
+### Grafana dashboard section
+
+Section 7 "Labor Forecast" on the BHAGA Analytics dashboard shows:
+- **Labor Forecast — next 30 days table** (panels from `vw_model_forecast`): date, forecast orders/items, prior-week actuals/forecasts, % change, goal shift hours
+- **Forecast vs Actual chart** (from `vw_forecast_accuracy`): accuracy history
+- **Forecast Inputs / Exclusions table** (from `vw_forecast_exclusions`): recent input days with exclusion flags
+
+### Applying the migration (one-time)
+
+```bash
+BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
+  python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
+```
+
+Migration `011_labor_forecast.sql` is idempotent. After applying, the nightly job will populate
+`model_forecast_daily` on its next run (or trigger a manual refresh — see §6).
+
+### Forecast exclusion override
+
+To flag an anomaly day so it's excluded from the forecast seed: set `forecast_exclude = TRUE` on the
+`model_labor_daily` BQ row for that date. The forecaster reads `model_labor_daily` via
+`_get_parsed_rows(exclude_flagged=True)` and will skip it on the next run.
+
+### Disabling the forecast step
+
+Set `BHAGA_SKIP_FORECAST=1` in the Cloud Run job environment to skip the forecast load entirely
+(e.g. during debugging). The step is non-fatal by default — a failure emits a `WARNING` log and
+continues.
+
+---
+
+## 16. BQ as single source of truth (added PR #33, 2026-06-05)
 
 ### Principle
 

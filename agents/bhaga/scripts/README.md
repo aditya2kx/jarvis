@@ -57,7 +57,9 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
     compares each Sheet model tab against its BQ model table cell-by-cell using the same helpers as
     `verify_bq_parity.py` (`_cells_match`, `_compare_tabs`). Fails CI on drift; Slacks on nightly
     drift. See also `.github/workflows/model-reconciliation.yml`.
-8. **Reviews** (`process_reviews.py`): pull Google reviews from ClickUp, allocate bonuses, rebuild
+8. **Reviews** (`process_reviews.py`): pull Google reviews from ClickUp, allocate bonuses via the
+   date-bracketed pool model ($20 pool split equally among in-hours part-time staff, effective
+   2026-06-08; legacy $10-base / $20-named-shoutout for reviews before that date), rebuild
    `review_bonus_period`. Idempotent on rerun.
 7. **Verify the rebuilt Model** — first **mechanically** (`assert_model_tabs_populated`: tabs non-empty,
    KDS joined), then **semantically** (`model_semantics.assert_model_semantics`: tip-pool conservation,
@@ -115,7 +117,7 @@ nightly). Both honor sandbox write-bucket isolation via `gcs_cache`.
 | `item_operations.py` | Build + upsert Model `item_operations` from `item_lines` + punches. |
 | `update_model_sheet.py` | Recompute the **Model** workbook tabs from the raw sheets. Houses the `build_*_rows` functions (one per tab). Loads ADP "Credit Card Tips Owed" **actuals from BQ** via `load_cc_tips_earnings_from_bq` (reads `bhaga.adp_earnings`, returns ISO-string date keys) to populate `adp_paid`/`diff`/`diff_pct` + `period_summary.check_dates`. Reads operator tunables via `_read_config_value` (BQ-first via `core.store_config.get_config`, Sheet fallback). |
 | `model_semantics.py` | **Pure, shared semantic post-conditions** (no I/O): `assert_tip_pool_conserved`, the cadence-safe `assert_period_reconciled`, `assert_review_bonus_present`, and the cadence-gating `assert_model_semantics`. One source of truth used by BOTH `sandbox_e2e` (per-PR gate) and `daily_refresh` (nightly), so a regression can't pass one and fail the other. The reconciliation cadence gate itself (`period_has_cc_tip_actuals`) lives in `update_model_sheet` next to the earnings loader it depends on. |
-| `process_reviews.py` | Reviews → bonus allocation → rebuild `review_bonus_period`. |
+| `process_reviews.py` | Reviews → date-bracketed bonus allocation ($20 pool for on/after 2026-06-08; legacy $10/$20 per-person before) → rebuild `review_bonus_period`. |
 | `forecast.py` | Builds `labor_daily_forecast` (staffing solver, guardrails, anomaly detection). |
 | `notify.py` | Slack DMs under the BHAGA identity. Always DM through here, never `send_message` directly. |
 | `gcs_cache.py` | **Sessions + failure evidence ONLY — not a data pipeline.** `upload_session()`/`download_session()` persist a portal browser session (`storage_state`) under `<bucket>/_session/` for **trusted-device** reuse (skips 2FA next run); `evidence_prefix()` / `upload_evidence()` persist failure screenshots+DOM under `gs://<bucket>/<date>/evidence/` so a postmortem needs no rerun. Writes honor `BHAGA_GCS_CACHE_WRITE_BUCKET` (sandbox isolation: write sandbox bucket). The data-file helpers (`upload_file`/`upload_scrape_artifacts`/`download_cached_files`) are **LEGACY** (offline backfill + `sandbox_e2e` replay only) — the nightly pipeline never reads/writes scrape data here; BQ is the single source of truth. |

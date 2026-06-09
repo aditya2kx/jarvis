@@ -1,5 +1,20 @@
 # Jarvis Build Progress
 
+## 2026-06-08 — Google review bonus: $20 pool split (effective 2026-06-08, PR #TBD on branch feat/review-bonus-jun8)
+
+**Change:** Replaced the per-person review bonus structure with a fixed **$20-per-review pool**
+split equally among in-hours part-time staff, effective for reviews posted on/after 2026-06-08.
+
+**Key decisions:**
+- Date-bracketed on `post_date_ct`: reviews before 2026-06-08 keep the legacy $10-base / $20-named-shoutout per-person rules (proven byte-identical by `AllocateBonusLegacyRegressionTests`).
+- Pool requires `assignment_reason == "in_hours"`; no last-shift fallback.
+- Permanent + training exclusions apply to pool; shoutouts ignored (named person gets the same share).
+- Pool split to the cent (integer cents via `divmod`); remainder to alphabetically-first members.
+- No BQ schema migration — pool shares roll into existing `base_dollars`/`total_bonus` columns.
+- No feature flag — output is human-read payroll prep; BHAGA never auto-writes ADP.
+
+**Files changed:** `agents/bhaga/scripts/process_reviews.py`, `agents/bhaga/scripts/update_model_sheet.py`, `agents/bhaga/scripts/test_process_reviews.py`, `agents/bhaga/knowledge-base/DOMAIN.md`, `.cursor/rules/bhaga.md`, `agents/bhaga/scripts/README.md`.
+
 ## 2026-06-07 — Grafana "No data" fix: deploy-time datasource-UID binding + BQ panel aliases (PR #38)
 
 **Goal:** Every panel on the BHAGA Analytics dashboard showed "No data". Root-cause and fix.

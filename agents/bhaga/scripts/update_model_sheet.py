@@ -77,6 +77,7 @@ _DATE_CONFIG_KEYS = (
     "data_window_start",
     "data_window_end",
     "review_bonus_started_date",
+    "review_pool_effective_date",
 )
 
 
@@ -1166,6 +1167,8 @@ REVIEW_TUNABLE_KEYS = (
     "review_bonus_started_date",
     "review_base_bonus_dollars",
     "review_named_bonus_dollars",
+    "review_pool_effective_date",
+    "review_pool_dollars",
 )
 
 # Labor-saturation tunables. Same round-trip-preserve pattern as the review
@@ -1238,13 +1241,22 @@ def build_config_rows(
          _iso_date_for_sheet_cell(
              review_tunables.get("review_bonus_started_date", "2026-05-11")
          ),
-         "Reviews on or after this date are eligible for shoutout/base bonuses."],
+         "Legacy window floor: reviews on or after this date (and before review_pool_effective_date) "
+         "earn per-person bonuses ($10 base / $20 named shoutout)."],
         ["review_base_bonus_dollars",
          review_tunables.get("review_base_bonus_dollars", "10"),
-         "Per-person bonus on a no-shoutout 5★ review (every non-excluded shift member)."],
+         "Per-person bonus on a no-shoutout 5★ review (legacy window only: before review_pool_effective_date)."],
         ["review_named_bonus_dollars",
          review_tunables.get("review_named_bonus_dollars", "20"),
-         "Per-person bonus on a shoutout review (only the named people; overrides exclusions)."],
+         "Per-person bonus on a shoutout review (legacy window only: before review_pool_effective_date; overrides exclusions)."],
+        ["review_pool_effective_date",
+         _iso_date_for_sheet_cell(
+             review_tunables.get("review_pool_effective_date", "2026-06-08")
+         ),
+         "Reviews on/after this date use the $20 pool split equally among part-time in-hours staff (supersedes base/named)."],
+        ["review_pool_dollars",
+         review_tunables.get("review_pool_dollars", "20"),
+         "Fixed dollar pool per qualifying review (on/after review_pool_effective_date), split equally among non-excluded in-hours shift members."],
         # ── Labor saturation tuning ──
         # labor_daily / labor_period / labor_weekly emit an `over_saturation`
         # flag — "OVER" when orders_per_labor_hour (hourly bucket only)

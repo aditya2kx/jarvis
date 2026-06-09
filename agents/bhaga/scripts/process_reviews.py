@@ -105,6 +105,10 @@ BASE_BONUS_DOLLARS = 10
 NAMED_BONUS_DOLLARS = 20
 # Reviews must be on or after this date to qualify (announcement effective date).
 BONUS_START_DATE = datetime.date(2026, 5, 11)
+# Pool model: fixed $20 per qualifying review, split equally among in-hours
+# non-excluded part-time staff. Active for reviews posted on/after POOL_EFFECTIVE_DATE.
+POOL_EFFECTIVE_DATE = datetime.date(2026, 6, 8)
+POOL_DOLLARS = 20
 
 # Sheet-config keys (config tab of BHAGA Review Raw).
 # bhaga_model > config keys for review-bonus tuning. These three are the
@@ -114,6 +118,9 @@ BONUS_START_DATE = datetime.date(2026, 5, 11)
 MODEL_CFG_BONUS_START = "review_bonus_started_date"
 MODEL_CFG_BASE_BONUS = "review_base_bonus_dollars"
 MODEL_CFG_NAMED_BONUS = "review_named_bonus_dollars"
+# Pool-model config keys (effective 2026-06-08).
+MODEL_CFG_POOL_EFFECTIVE = "review_pool_effective_date"
+MODEL_CFG_POOL_DOLLARS = "review_pool_dollars"
 
 # Marker that identifies an automated review post in the channel.
 REVIEW_HEADER = "### Google Review"
@@ -141,6 +148,7 @@ _DATE_CONFIG_KEYS = (
     "data_window_start",
     "data_window_end",
     "review_bonus_started_date",
+    "review_pool_effective_date",
 )
 
 
@@ -628,6 +636,19 @@ def match_named_baristas(
 # ── Bonus allocation ─────────────────────────────────────────────────
 
 
+def split_pool_equally(pool_dollars: int, members: list[str]) -> dict[str, float]:
+    """Split a fixed pool equally to the cent; remainder cents go to the
+    alphabetically-first members so the result is deterministic and the
+    shares sum to exactly pool_dollars."""
+    uniq = sorted(set(members))
+    n = len(uniq)
+    if n == 0:
+        return {}
+    total_cents = int(round(pool_dollars * 100))
+    base, rem = divmod(total_cents, n)
+    return {emp: (base + (1 if i < rem else 0)) / 100.0 for i, emp in enumerate(uniq)}
+
+
 def allocate_bonus(
     *,
     shift_members: list[str],
@@ -635,31 +656,35 @@ def allocate_bonus(
     excluded_permanent: set[str],
     training_through: dict[str, datetime.date],
     shift_date: str,
-) -> dict[str, int]:
+    post_date: datetime.date,
+    assignment_reason: str,
+    pool_effective_date: datetime.date,
+    pool_dollars: int,
+) -> dict[str, float]:
     """Per-employee bonus in dollars.
 
-    Policy (updated 2026-05-17):
+    Two date-bracketed modes:
 
-    Shoutout mode (named non-empty):
-        - ONLY the named people earn the bonus ($20 each).
-        - Non-named shift members earn $0 on a shoutout review.
-        - A shoutout OVERRIDES both permanent and training exclusions:
-          a customer calling you out by name credits you regardless of
-          your normal exclusion status. (Example: manager Lindsay is
-          excluded from the tip pool, but if a reviewer thanks her by
-          name she earns the $20 shoutout bonus.) This is symmetric
-          across the two exclusion lists.
+    Pool mode (post_date >= pool_effective_date, i.e. on/after 2026-06-08):
+        - A fixed pool of pool_dollars ($20) is split EQUALLY among all
+          non-excluded in-hours shift members.
+        - Requires assignment_reason == "in_hours"; if the review was posted
+          outside an active shift, the pool is $0 (no fallback).
+        - Permanent and training exclusions apply; named shoutouts are IGNORED
+          (the named person gets the same equal share, not the old $20 flat).
+        - Returns {canonical_name: dollars_as_float} where shares sum to
+          exactly pool_dollars. Excluded employees are not in the output.
 
-    No-shoutout mode (generic 5★ praise, no names):
-        - Every non-excluded shift member earns $10 base.
-        - Permanent and training exclusions DO apply here, since there's
-          no customer-specific signal directing the credit.
+    Legacy mode (post_date < pool_effective_date):
+        - Shoutout mode (named non-empty): ONLY the named people earn
+          NAMED_BONUS_DOLLARS ($20 each). A shoutout OVERRIDES both
+          permanent and training exclusions.
+        - No-shoutout mode (generic 5★, no names): every non-excluded shift
+          member earns BASE_BONUS_DOLLARS ($10). Exclusions apply.
 
-    Returns {canonical_name: dollars}. Excluded employees who aren't
-    rescued by a shoutout are NOT included in the output dict.
+    Returns {canonical_name: dollars}. Excluded employees who aren't rescued
+    by a legacy shoutout are NOT included in the output dict.
     """
-    out: dict[str, int] = {}
-    named_set = set(named)
 
     def _is_excluded(emp: str) -> bool:
         if emp in excluded_permanent:
@@ -669,15 +694,28 @@ def allocate_bonus(
             return True
         return False
 
+    # ── Pool mode (2026-06-08 and later) ─────────────────────────────
+    if post_date >= pool_effective_date:
+        if assignment_reason != "in_hours":
+            return {}
+        eligible = [e for e in shift_members if not _is_excluded(e)]
+        return split_pool_equally(pool_dollars, eligible)
+
+    # ── Legacy mode (before 2026-06-08) ──────────────────────────────
+    # Build the unified roster so callers can pass the raw shift roster;
+    # named shoutout pays named directly regardless of shift membership.
+    out: dict[str, float] = {}
+    named_set = set(named)
+    members = sorted(set(shift_members) | named_set)
+
     if named_set:
-        # Shoutout mode: pay every named person $20, ignoring exclusions.
         for emp in named_set:
-            out[emp] = NAMED_BONUS_DOLLARS
+            out[emp] = float(NAMED_BONUS_DOLLARS)
     else:
-        for emp in shift_members:
+        for emp in members:
             if _is_excluded(emp):
                 continue
-            out[emp] = BASE_BONUS_DOLLARS
+            out[emp] = float(BASE_BONUS_DOLLARS)
 
     return out
 
@@ -735,8 +773,21 @@ def build_review_row(rec: dict) -> list:
         return ("'" + s) if s else ""
 
     shift_credited = rec.get("shift_date_credited") or ""
-    has_shoutout = bool(rec.get("named"))
+    # Pool mode: post_date_ct >= POOL_EFFECTIVE_DATE (a datetime.date at this point).
+    pool_mode = rec["post_date_ct"] >= POOL_EFFECTIVE_DATE
+    has_shoutout = (not pool_mode) and bool(rec.get("named"))
     has_payout = bool(rec.get("shift_members_credited"))
+    # named_credit_each: $20 for legacy shoutout; "" for pool or no-shoutout.
+    # base_credit_each: per-head pool share (display) for pool; $10 for legacy no-shoutout; "" for legacy shoutout.
+    if pool_mode:
+        named_credit_display = ""
+        if has_payout and rec.get("allocations"):
+            base_credit_display = round(POOL_DOLLARS / len(rec["allocations"]), 2)
+        else:
+            base_credit_display = ""
+    else:
+        named_credit_display = NAMED_BONUS_DOLLARS if (has_shoutout and has_payout) else ""
+        base_credit_display = BASE_BONUS_DOLLARS if (has_payout and not has_shoutout) else ""
     return [
         rec["review_id"],
         "'" + rec["post_dt_ct"].isoformat(),
@@ -750,10 +801,8 @@ def build_review_row(rec: dict) -> list:
         rec.get("shift_assignment_reason", ""),
         _LIST_SEP.join(rec.get("shift_members_credited", [])),
         _LIST_SEP.join(rec.get("trainees_on_shift", [])),
-        # Under the new shoutout-only rule, base credit is only paid when
-        # there are NO shoutouts. The audit columns reflect that.
-        NAMED_BONUS_DOLLARS if (has_shoutout and has_payout) else "",
-        BASE_BONUS_DOLLARS if (has_payout and not has_shoutout) else "",
+        named_credit_display,
+        base_credit_display,
         rec.get("total_bonus_dollars", 0),
         rec.get("review_url", ""),
         rec.get("clickup_message_id", ""),
@@ -801,6 +850,8 @@ def build_period_rollup(
                 reason = "Open period — finalize at pay close"
             elif s["named_count"] / max(s["reviews_credited"], 1) > 0.5:
                 reason = "High named-shoutout rate"
+            elif s["named_count"] == 0 and pstart >= POOL_EFFECTIVE_DATE.isoformat():
+                reason = "Review pool ($20 split)"
             elif s["named_count"] == 0:
                 reason = "Standard bonuses"
             else:
@@ -948,7 +999,7 @@ def main() -> int:
 
     # ── Read tunable constants from the MODEL config (single source of
     # truth — no config tab on raw sheets per architecture rule). ──
-    global BASE_BONUS_DOLLARS, NAMED_BONUS_DOLLARS, BONUS_START_DATE
+    global BASE_BONUS_DOLLARS, NAMED_BONUS_DOLLARS, BONUS_START_DATE, POOL_EFFECTIVE_DATE, POOL_DOLLARS
     model_cfg = _read_config_tab(model_sid, token)
 
     bonus_start_raw = (model_cfg.get(MODEL_CFG_BONUS_START) or "").strip()
@@ -958,6 +1009,14 @@ def main() -> int:
         except ValueError:
             print(f"WARN: bhaga_model > config.{MODEL_CFG_BONUS_START} is not ISO "
                   f"({bonus_start_raw!r}); falling back to module default.")
+
+    pool_effective_raw = (model_cfg.get(MODEL_CFG_POOL_EFFECTIVE) or "").strip()
+    if pool_effective_raw:
+        try:
+            POOL_EFFECTIVE_DATE = datetime.date.fromisoformat(pool_effective_raw)
+        except ValueError:
+            print(f"WARN: bhaga_model > config.{MODEL_CFG_POOL_EFFECTIVE} is not ISO "
+                  f"({pool_effective_raw!r}); falling back to module default.")
 
     def _read_dollar(key: str, default: int) -> int:
         s = (model_cfg.get(key) or "").strip()
@@ -972,6 +1031,7 @@ def main() -> int:
 
     BASE_BONUS_DOLLARS = _read_dollar(MODEL_CFG_BASE_BONUS, BASE_BONUS_DOLLARS)
     NAMED_BONUS_DOLLARS = _read_dollar(MODEL_CFG_NAMED_BONUS, NAMED_BONUS_DOLLARS)
+    POOL_DOLLARS = _read_dollar(MODEL_CFG_POOL_DOLLARS, POOL_DOLLARS)
 
     # ── Resolve incremental anchor: derive from the reviews tab itself. ──
     # The data IS the state. No separate config row needed: the latest
@@ -1135,16 +1195,16 @@ def main() -> int:
             named_on_day_not_shift = [
                 n for n in named if n not in shift_info["shift_members"]
             ]
-            # Unified roster covers everyone the review COULD credit. The
-            # allocator decides who actually gets paid based on shoutout vs
-            # no-shoutout mode (see allocate_bonus docstring).
-            unified_shift = sorted(set(shift_info["shift_members"]) | set(named))
             allocations = allocate_bonus(
-                shift_members=unified_shift,
+                shift_members=shift_info["shift_members"],
                 named=named,
                 excluded_permanent=excluded_permanent,
                 training_through=training_through,
                 shift_date=shift_info["shift_date"],
+                post_date=parsed["post_date_ct"],
+                assignment_reason=shift_info["assignment_reason"],
+                pool_effective_date=POOL_EFFECTIVE_DATE,
+                pool_dollars=POOL_DOLLARS,
             )
             shift_members_credited = sorted(allocations.keys())
         else:
@@ -1481,13 +1541,24 @@ def _read_all_reviews(
         d["named"] = _split_names(d.get("named_baristas") or "")
         members = _split_names(d.get("shift_members") or "")
         if d["shift_date_credited"]:
+            pd_str = str(d.get("post_date_ct") or "").strip()
+            try:
+                post_date = datetime.date.fromisoformat(pd_str)
+            except ValueError:
+                post_date = BONUS_START_DATE  # unparseable → treat as legacy (safe default)
             d["allocations"] = allocate_bonus(
                 shift_members=members,
                 named=d["named"],
                 excluded_permanent=excluded_permanent,
                 training_through=training_through,
                 shift_date=d["shift_date_credited"],
+                post_date=post_date,
+                assignment_reason=str(d.get("shift_assignment_reason") or ""),
+                pool_effective_date=POOL_EFFECTIVE_DATE,
+                pool_dollars=POOL_DOLLARS,
             )
+            if post_date >= POOL_EFFECTIVE_DATE:
+                d["named"] = []  # pool shares roll into base_dollars; named_count stays 0
         else:
             d["allocations"] = {}
         out.append(d)

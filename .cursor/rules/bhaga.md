@@ -45,8 +45,9 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
    `config, daily, labor_daily, labor_weekly, labor_period, tip_alloc_period, tip_alloc_daily,
    period_summary` (+ `labor_daily_forecast`). Reads tunables from `bhaga.store_config`
    (`core.store_config.get_config`) and ADP earnings from `bhaga.adp_earnings`.
-6. **`process_reviews.py`** pulls Google reviews from ClickUp, allocates bonuses, rebuilds
-   `review_bonus_period` on the Model sheet (idempotent on rerun).
+6. **`process_reviews.py`** pulls Google reviews from ClickUp, allocates bonuses using the
+   date-bracketed pool model (see below), rebuilds `review_bonus_period` on the Model sheet
+   (idempotent on rerun).
 
 ## Sheet source of truth
 
@@ -84,6 +85,16 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
    affected sheet columns before/after** and add a semantic guard — never let a column silently go dead.
 
 ## Edge cases
+
+## Review bonus allocation invariant (date-bracketed, effective 2026-06-08)
+- **Pool mode** (`post_date_ct >= review_pool_effective_date`, default `2026-06-08`): a fixed
+  `review_pool_dollars` ($20) pool is split **equally** among non-excluded in-hours part-time staff.
+  Requires `assignment_reason == "in_hours"`; a post-shift review generates $0 (no fallback).
+  Permanent + training exclusions apply; shoutouts are ignored. Pool shares → `base_dollars`.
+- **Legacy mode** (before `review_pool_effective_date`): shoutout overrides exclusions + pays named
+  $20 each; base mode pays every non-excluded shift member $10. Locked by legacy-regression tests.
+- Never modify `_DATE_CONFIG_KEYS` in `process_reviews.py` without updating the same in
+  `update_model_sheet.py` (they must stay in sync so the round-trip sentinel covers all date keys).
 
 - Zero-hour day **with** tips → flag for operator review on Slack; do not silently zero-allocate.
 - Zero-tip day **with** hours → write a row with `share = 0`, no error.

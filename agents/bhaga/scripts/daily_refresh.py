@@ -690,14 +690,15 @@ def _assert_data_advanced_post_condition(
 # Tabs that MUST have >= this many data rows after a full model rebuild.
 # labor_period / period_summary expect >= 1 because the data window always
 # spans multiple biweekly pay periods (so at least one period + one open
-# period exist). daily / labor_daily / labor_weekly / labor_daily_forecast
-# expect >= 1 because the window always covers >= 1 complete day.
+# period exist). daily / labor_daily / labor_weekly expect >= 1 because the
+# window always covers >= 1 complete day.
+# labor_daily_forecast was removed 2026-06-09 — forecast is now BQ-authoritative
+# (model_forecast_daily); the Sheet tab is no longer written.
 MODEL_VERIFY_MIN_ROWS: dict[str, int] = {
     "daily": 1,
     "labor_daily": 1,
     "labor_weekly": 1,
     "labor_period": 1,
-    "labor_daily_forecast": 1,
     "period_summary": 1,
 }
 

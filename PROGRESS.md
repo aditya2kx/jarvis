@@ -31,6 +31,8 @@
 
 **ADP scheduled hours (Part 4):** dropped — Keychain credential `adp_palmetto_login` not found in this environment. Deferred to a follow-up PR on a machine with Keychain configured.
 
+**Additional fix:** `MODEL_VERIFY_MIN_ROWS` in `daily_refresh.py` and `PROD_RAW_VERIFY_MIN_ROWS` / `SANDBOX_E2E_VERIFY_MIN_ROWS` in `sandbox_e2e.py` updated to remove `labor_daily_forecast` (sandbox e2e was failing with "labor_daily_forecast: 0 row(s) expected >= 1").
+
 **Migration required after merge:** `python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"` then trigger a manual refresh (RUNBOOK §6) to populate `model_forecast_daily`.
 
 ## 2026-06-09 — Grafana dashboard: KDS defaults, p99 goal line, goal-var grouping (PR A)

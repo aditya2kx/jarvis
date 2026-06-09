@@ -87,7 +87,9 @@ Model tabs: `config`, `daily`, `labor_daily`, `labor_weekly`, `labor_period`, `t
 `tip_alloc_period`, `period_summary`, `review_bonus_period`, `item_operations`.
 
 > **Note (2026-06-09):** The `labor_daily_forecast` Sheet tab was retired. Daily order/item forecasts
-> are now BQ-authoritative (`model_forecast_daily`); see §14 — Labor Forecast.
+> are now BQ-authoritative (`model_forecast_daily`); see §15 — Labor Forecast. The sheet
+> verification dicts (`MODEL_VERIFY_MIN_ROWS` in `daily_refresh.py` and `PROD_RAW_VERIFY_MIN_ROWS` /
+> `SANDBOX_E2E_VERIFY_MIN_ROWS` in `sandbox_e2e.py`) no longer include `labor_daily_forecast`.
 
 Square raw tabs include `item_lines` (per-item lines; upserted nightly with Item Sales CSV).
 

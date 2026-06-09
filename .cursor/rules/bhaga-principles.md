@@ -87,7 +87,10 @@ derive proposals from them rather than from memory.
 - A headless browser launch that crashes (`TargetClosedError`) is transient infra — the runtime retries
   the **launch setup** (never the yielded body) with container-stability flags. Auth/2FA errors are
   **never** retried.
-- When a previously-failed OTP portal recovers with fresh data while downstream markers
-  (`write_raw_sheets`/`update_model_sheet`/`process_reviews`) are already done from a partial run,
-  those markers are invalidated so they recompute. Always on (no flag) — safe by construction
-  (idempotent upserts; the post-condition guard still verifies `data_window_end` advanced).
+- When a previously-failed OTP portal recovers with fresh data while downstream markers are already
+  done from a partial run, those markers are invalidated so they recompute. The set must be **every**
+  step that carries portal data to the window (`load_raw_bigquery`, `render_raw_sheets`,
+  `update_model_sheet`, `materialize_model_bq`, `render_model_sheet_from_bq`, `process_reviews`) — a
+  missing member (the 2026-06-08 stale-projection bug) leaves `data_window_end` stuck. Always on (no
+  flag) — safe by construction (idempotent upserts; the post-condition guard still verifies
+  `data_window_end` advanced).

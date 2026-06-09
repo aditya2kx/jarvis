@@ -416,7 +416,25 @@ def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
 # Downstream steps whose markers must be invalidated when a previously-failed
 # OTP portal recovers with fresh data on a later run (otherwise run_step would
 # short-circuit them and the fresh data would never reach the Model sheet).
-_RECOVERY_DOWNSTREAM_STEPS = ("load_raw_bigquery", "update_model_sheet", "process_reviews")
+#
+# This MUST list EVERY step that consumes the portal data on its way to the
+# Model sheet's data_window_end — not just the first and last. The 2026-06-08
+# incident: a partial run had already marked render_raw_sheets + materialize_model_bq
+# done; on recovery we re-ran load_raw_bigquery/update_model_sheet/process_reviews
+# but those two stayed skipped, so the fresh Square rows landed in BQ raw yet were
+# never re-projected into Sheet raw nor re-materialized — update_model_sheet then
+# computed from stale Sheet raw and data_window_end stuck at the prior day (the
+# post-condition guard caught it, but only after a wasted run). Listed in pipeline
+# order: raw load → Sheet-raw projection → model compute (legacy + BQ-canonical) →
+# BQ-canonical Sheet render → reviews.
+_RECOVERY_DOWNSTREAM_STEPS = (
+    "load_raw_bigquery",
+    "render_raw_sheets",
+    "update_model_sheet",
+    "materialize_model_bq",
+    "render_model_sheet_from_bq",
+    "process_reviews",
+)
 
 
 def _recover_stale_downstream_markers(
@@ -428,11 +446,13 @@ def _recover_stale_downstream_markers(
     """Invalidate stale downstream markers when an OTP portal recovers.
 
     Trigger: an OTP portal (``square``/``adp``) produced FRESH data on THIS run
-    (``results[name].success``) while a downstream marker
-    (write_raw_sheets / update_model_sheet / process_reviews) is ALREADY done
-    from a prior partial run. Left alone, ``run_step`` would short-circuit those
-    steps and the fresh portal data would never reach the Model sheet
-    (``data_window_end`` stuck — the 2026-05-31 incident).
+    (``results[name].success``) while a downstream marker (any of
+    ``_RECOVERY_DOWNSTREAM_STEPS``: raw load → Sheet-raw projection → model
+    compute → BQ-canonical render → reviews) is ALREADY done from a prior partial
+    run. Left alone, ``run_step`` would short-circuit those steps and the fresh
+    portal data would never reach the Model sheet (``data_window_end`` stuck —
+    the 2026-05-31 incident, widened after 2026-06-08 when a stale
+    render_raw_sheets/materialize_model_bq marker left the window stuck).
 
     Always on (no feature flag): the operation is safe by construction — clearing
     goes through the sanctioned ``state_adapter.clear_step`` (never an ad-hoc

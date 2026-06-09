@@ -251,6 +251,21 @@ def _models_compatible(event_model: str | None, conv_model: str | None) -> bool:
     return _model_tier(event_model) == _model_tier(conv_model)
 
 
+def _model_in_conversation(event_model: str | None, conv_models: list[str]) -> bool:
+    """Return True when the event's model tier was actually used in this conversation.
+
+    Unlike _models_compatible (which compares against the single 'dominant' model),
+    this checks membership in the full model SET so that a planning-in-Opus +
+    execution-in-Sonnet conversation keeps events from both tiers instead of
+    silently dropping the minority tier based on an arbitrary string-length ranking.
+    Empty set (no models recorded) passes through — preserves the no-profile fallback.
+    """
+    if not conv_models:
+        return True
+    conv_tiers = {_model_tier(m) for m in conv_models}
+    return _model_tier(event_model) in conv_tiers
+
+
 def auto_bind_conversations(
     start_ms: int, end_ms: int, *, db: Path = AI_TRACKING_DB,
     min_edits: int = 1, min_share: float = 0.55,
@@ -285,7 +300,10 @@ def filter_events_for_conversations(
 
     The usage API is account-global and has no conversationId. We match each
     event to a bound conversation when its timestamp falls in that chat's edit
-    window and its model tier matches the chat's dominant model.
+    window and its model tier appears anywhere in the conversation's model SET.
+    A conversation that used both Opus (planning) and Sonnet (execution) keeps
+    events from both tiers; the old dominant-model filter silently dropped the
+    minority tier based on an arbitrary string-length comparison.
     """
     if not conversation_ids:
         return events
@@ -325,7 +343,7 @@ def filter_events_for_conversations(
             hi = min(end_ms, prof["max_ts"] + _CONVERSATION_EVENT_PAD_MS)
             if ts < lo or ts > hi:
                 continue
-            if not _models_compatible(e.get("model"), prof.get("dominant_model")):
+            if not _model_in_conversation(e.get("model"), prof.get("models") or []):
                 continue
             # Prefer the conversation whose edit window is closest to this event.
             dist = min(abs(ts - prof["min_ts"]), abs(ts - prof["max_ts"]))

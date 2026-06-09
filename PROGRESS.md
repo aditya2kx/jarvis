@@ -1,5 +1,15 @@
 # Jarvis Build Progress
 
+## 2026-06-08 — Cost framework: multi-model attribution fix + post-merge self-heal (PR #40)
+
+**Change:** Fixed two structural gaps in the per-PR cost ledger surfaced by PR #39.
+
+**Gap 1 — multi-model attribution (PR #39 recorded $6.94 / 100% Sonnet; correct is $12.08 with Opus):**
+`filter_events_for_conversations` in `scripts/cursor_usage.py` gated event inclusion on the conversation's "dominant model" — `max(models, key=len)`, an arbitrary string-length comparison. In a plan-in-Opus / execute-in-Sonnet session, Sonnet (17 chars) beats Opus (15 chars), so all Opus events were silently dropped. Fixed by checking the event's tier against the conversation's full model SET (`_model_in_conversation`). PR #39 recomputed: Opus-4.8-medium $2.46 + Opus-4.8-high $2.68 + Sonnet $6.94 = **$12.08** total.
+
+**Gap 2 — post-merge `merged_at`/report self-heal:**
+`pr-cost-finalize.yml` computes the correct post-merge values but the repo ruleset blocks its push to `main`. Added `scripts/git-hooks/post-merge`: fires after `git pull` on `main`, runs `pr_cost_ledger.py report`, backfills `merged_at` for all merged PRs locally, and regenerates `report.html` — so the local report is correct immediately after pulling (no more stale report). Added `scripts/finalize_cost.sh <pr>` for on-demand immediate finalization via a metrics-only PR. Updated `pr-workflow.mdc` step 7 and `CONTRIBUTING.md` to document the eventual-consistency model and these tools.
+
 ## 2026-06-08 — Google review bonus: $20 pool split (effective 2026-06-08, PR #TBD on branch feat/review-bonus-jun8)
 
 **Change:** Replaced the per-person review bonus structure with a fixed **$20-per-review pool**

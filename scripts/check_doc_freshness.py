@@ -85,6 +85,17 @@ COUPLINGS: list[dict] = [
     },
     {
         "code": [
+            "scripts/cursor_usage.py",
+            "scripts/pr_cost_ledger.py",
+            "scripts/git-hooks/*",
+            "scripts/install-git-hooks.sh",
+            "scripts/finalize_cost.sh",
+        ],
+        "docs": ["CONTRIBUTING.md"],
+        "why": "cost ledger / attribution / hook behavior changed → update CONTRIBUTING.md § Per-PR cost ledger.",
+    },
+    {
+        "code": [
             ".github/workflows/sandbox-e2e.yml",
             ".github/workflows/sandbox-teardown.yml",
             "agents/bhaga/scripts/sandbox_e2e.py",

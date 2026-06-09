@@ -12,6 +12,10 @@
 
 **Safe by construction (no feature flag):** the first attempt fires **no** SMS, so the single fresh retry can never duplicate one; bounded to one retry (a second block propagates); downstream writes stay idempotent and the §13 partial-failure recovery releases the held-back Square data once a later run succeeds.
 
+**Live sandbox proof (PR #41, item-sales-live, 2026-06-08):** A Tier-2 live run against the PR image reproduced the block AND proved recovery end-to-end. Cloud Run trace frames + logs: attempt 1 hit the blank-recipient magic link → `_magic_link_recipient` raised `SquareDeviceBlockedError`, `delete_session` discarded the poisoned session, `_RetryFreshLogin` fired; attempt 2 (fresh cookie jar) → SMS-OTP (answered in Slack) → a *deliverable* magic link → `/dashboard`; transactions + item-sales + KDS then downloaded, landing **146 item-sales rows for 2026-06-08 in `bhaga_sandbox.square_item_lines`**. This exercised both new branches (blank → recover; deliverable → existing relay) in one run.
+
+**Also fixed (verify harness):** `sandbox_live_run.verify_item_sales` was checking a deprecated GCS path (`<date>/square/items-*.csv`) the nightly no longer writes (BQ is the source of truth), so it failed every item-sales-live run regardless of the scrape. Rewritten to assert the BQ row count in `<dataset>.square_item_lines` and never consult GCS.
+
 **Deferred (not free):** pinning a static egress IP (Serverless VPC connector + Cloud NAT + reserved IP, ~$30-45/mo) would stop the escalation at the source. Out of scope per the "free, no laptop" constraint.
 
 **Files changed:** `skills/square_tips/runner.py`, `skills/square_tips/test_runner_magic_link.py`, `agents/bhaga/scripts/gcs_cache.py`, `agents/bhaga/scripts/test_gcs_cache.py`, `agents/bhaga/scripts/daily_refresh.py`, `agents/bhaga/scripts/test_parallel_refresh.py`, `agents/bhaga/notify.py`, `agents/bhaga/test_notify.py`, `RUNBOOK.md`, `.cursor/rules/bhaga.md`, `agents/bhaga/scripts/README.md`, `PROGRESS.md`.

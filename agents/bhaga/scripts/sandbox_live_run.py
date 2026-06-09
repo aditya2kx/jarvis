@@ -434,40 +434,56 @@ def execute_job(*, wait: bool = True) -> int:
     return r.returncode
 
 
-def verify_item_sales(refresh_date: str, *, bucket: str = SANDBOX_CACHE_WRITE_BUCKET) -> tuple[bool, str]:
-    """Post-run gate: assert item-sales data was actually downloaded to the sandbox cache.
+def _bq_item_line_count(
+    refresh_date: str, *, dataset: str = SANDBOX_BQ_DATASET, project: str = PROJECT_ID,
+) -> int | None:
+    """Row count in ``<dataset>.square_item_lines`` for ``refresh_date`` (date_local).
+
+    Returns the count, or None when BQ can't be queried (no ``bq`` CLI, auth/query
+    error). Never raises.
+    """
+    query = (
+        f"SELECT COUNT(*) FROM `{project}.{dataset}.square_item_lines` "
+        f"WHERE date_local = '{refresh_date}'"
+    )
+    try:
+        proc = subprocess.run(
+            ["bq", "query", "--project_id", project, "--use_legacy_sql=false",
+             "--format=csv", "--quiet", query],
+            capture_output=True, text=True,
+        )
+    except (FileNotFoundError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    rows = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+    if len(rows) < 2:  # header + value
+        return None
+    try:
+        return int(rows[-1])
+    except ValueError:
+        return None
+
+
+def verify_item_sales(refresh_date: str) -> tuple[bool, str]:
+    """Post-run gate: assert item-sales data actually landed for the date under test.
 
     The job can exit 0 while the specific deliverable we're testing never landed
-    (e.g. login failed before item-sales, or another step failed). This reads the
-    sandbox cache for ``<date>/square/items-*.csv`` and requires >0 DATA rows, so a
-    'green' scenario run truly means item-sales downloaded. Returns (ok, message).
+    (e.g. login failed before item-sales). BigQuery is the single source of truth —
+    the nightly loads item lines into ``<dataset>.square_item_lines``; GCS is
+    deprecated for data loads and is NOT consulted. A 'green' run thus truly means
+    item-sales rows are present in BQ for the date. Returns (ok, message).
     """
-    prefix = f"gs://{bucket}/{refresh_date}/square/"
-    ls = _gcloud(["storage", "ls", prefix], check=False, capture=True)
-    items = [ln.strip() for ln in (ls.stdout or "").splitlines()
-             if "/items-" in ln and ln.strip().endswith(".csv")]
-    if not items:
-        return False, (f"item-sales data NOT available — no items-*.csv under {prefix} "
-                       f"(the run did not produce the item-sales download we're testing).")
-    blob = items[0]
-    import tempfile
-    fd, tmp = tempfile.mkstemp(suffix=".csv")
-    os.close(fd)
-    try:
-        cp = _gcloud(["storage", "cp", blob, tmp], check=False, capture=True)
-        if cp.returncode != 0:
-            return False, f"item-sales file {blob} present but could not be read for row-count."
-        with open(tmp, encoding="utf-8", errors="ignore") as fh:
-            rows = [ln for ln in fh.read().splitlines() if ln.strip()]
-    finally:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-    data_rows = max(0, len(rows) - 1)  # minus header
-    if data_rows <= 0:
-        return False, f"item-sales file {blob} present but has 0 data rows (no data available)."
-    return True, f"item-sales OK — {blob} ({data_rows} data rows)."
+    bq_rows = _bq_item_line_count(refresh_date)
+    if bq_rows is None:
+        return False, (f"item-sales verification INCONCLUSIVE — could not query "
+                       f"{SANDBOX_BQ_DATASET}.square_item_lines (no bq CLI / auth / query error).")
+    if bq_rows <= 0:
+        return False, (f"item-sales data NOT available — 0 rows in "
+                       f"{SANDBOX_BQ_DATASET}.square_item_lines for {refresh_date} "
+                       f"(the run did not produce the item-sales data we're testing).")
+    return True, (f"item-sales OK — {bq_rows} row(s) in "
+                  f"{SANDBOX_BQ_DATASET}.square_item_lines for {refresh_date} (BQ source of truth).")
 
 
 def _write_evidence(path: str, *, run_label: str, refresh_date: str, rc: int,

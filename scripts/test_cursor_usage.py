@@ -300,6 +300,7 @@ class TestConversationAttribution(unittest.TestCase):
         self.assertEqual(len(ids), 1)
 
     def test_filter_by_model_tier(self):
+        # conv-a used only composer — sonnet event at same timestamp should still drop.
         events = [
             {"ts_ms": 1800, "model": "composer-2.5", "tokens": 100, "cost_usd": 0.1},
             {"ts_ms": 1800, "model": "claude-sonnet-4-6", "tokens": 200, "cost_usd": 0.2},
@@ -308,6 +309,56 @@ class TestConversationAttribution(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["model"], "composer-2.5")
         self.assertEqual(out[0]["conversation_id"], "conv-a")
+
+    def test_filter_keeps_all_tiers_for_mixed_conversation(self):
+        """A conversation that used Opus (planning) AND Sonnet (execution) must keep
+        events from both tiers.  The old dominant-model filter dropped the minority
+        tier via an arbitrary string-length comparison (sonnet > opus in chars)."""
+        tmpdir2 = tempfile.mkdtemp()
+        try:
+            db2 = Path(tmpdir2) / "ai.db"
+            con = sqlite3.connect(db2)
+            con.execute(
+                "create table ai_code_hashes (hash text, conversationId text, model text, timestamp integer)"
+            )
+            con.executemany(
+                "insert into ai_code_hashes values (?,?,?,?)",
+                [
+                    # conv-mixed: Opus planning early, Sonnet execution later
+                    ("h1", "conv-mixed", "claude-opus-4-8", 1000),
+                    ("h2", "conv-mixed", "claude-opus-4-8", 1200),
+                    ("h3", "conv-mixed", "claude-sonnet-4-6", 1600),
+                    ("h4", "conv-mixed", "claude-sonnet-4-6", 1900),
+                ],
+            )
+            con.commit()
+            con.close()
+
+            events = [
+                {"ts_ms": 1100, "model": "claude-opus-4-8",   "tokens": 50000, "cost_usd": 1.25},
+                {"ts_ms": 1700, "model": "claude-sonnet-4-6", "tokens": 30000, "cost_usd": 0.45},
+                # out-of-tier event (haiku) — should still be dropped
+                {"ts_ms": 1500, "model": "claude-haiku-3",    "tokens": 5000,  "cost_usd": 0.01},
+            ]
+            out = U.filter_events_for_conversations(events, ["conv-mixed"], 900, 2100, db=db2)
+
+            models_kept = {e["model"] for e in out}
+            self.assertIn("claude-opus-4-8",   models_kept, "Opus planning event was dropped")
+            self.assertIn("claude-sonnet-4-6", models_kept, "Sonnet execution event was dropped")
+            self.assertNotIn("claude-haiku-3", models_kept, "Out-of-tier haiku event should be dropped")
+            self.assertEqual(len(out), 2)
+            self.assertTrue(all(e["conversation_id"] == "conv-mixed" for e in out))
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir2, ignore_errors=True)
+
+    def test_model_in_conversation_helper(self):
+        """Unit test _model_in_conversation directly."""
+        self.assertTrue(U._model_in_conversation("claude-opus-4-8",   ["claude-opus-4-8", "claude-sonnet-4-6"]))
+        self.assertTrue(U._model_in_conversation("claude-sonnet-4-6", ["claude-opus-4-8", "claude-sonnet-4-6"]))
+        self.assertFalse(U._model_in_conversation("claude-haiku-3",   ["claude-opus-4-8", "claude-sonnet-4-6"]))
+        # Empty conv_models passes through (no-profile fallback)
+        self.assertTrue(U._model_in_conversation("claude-opus-4-8", []))
 
 
 if __name__ == "__main__":

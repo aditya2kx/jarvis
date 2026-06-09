@@ -24,8 +24,10 @@ Do NOT ask whether to babysit — just do it.
 5. **Arm auto-merge** → `gh pr merge N --auto --squash` once the PR is approved and green
 6. **Confirm merged** → verify `state == MERGED` before ending the session
 7. **Post-merge pull + verify** — after confirmed merged:
-   - `git -C /Users/adiniekkajj/Documents/build-workspace/jarvis pull` to bring the squash commit into the main working copy
-   - Spot-check that expected artifacts landed: `metrics/pr_cost/report.html` shows the new PR, doc changes appear, nothing was omitted from the squash
+   - `git -C /Users/adiniekkajj/Documents/build-workspace/jarvis pull` to bring the squash commit into the main working copy.
+   - The `post-merge` git hook fires automatically and regenerates `report.html` + backfills `merged_at` for the just-merged PR locally. Open `file:///Users/adiniekkajj/Documents/build-workspace/jarvis/metrics/pr_cost/report.html` and confirm the PR row is present.
+   - **Note on eventual consistency:** the committed `PR-<n>.json` on `main` has `merged_at=null` until the hook or the next PR's pre-commit run fixes it locally. The local report is correct after `pull`; the remote ledger catches up with the next PR. This is by design — the repo ruleset blocks all direct pushes to `main`. If you need the finalized record on `main` right now, run `bash scripts/finalize_cost.sh <pr>` (opens a metrics-only PR, arms auto-merge, operator approves).
+   - Spot-check that expected artifacts landed: doc changes appear, nothing was omitted from the squash.
    - Report what SHA landed. Do NOT skip — the main working copy is what Adi reads; leaving it stale is a miss.
 
 ## What "babysitting" is NOT

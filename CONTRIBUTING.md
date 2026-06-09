@@ -348,6 +348,15 @@ Commands:
   merges — it `capture-review`s any last review cost comments and posts the post-merge analysis as
   a PR comment. It does not commit to `main` (the ledger is already there via your commits).
 
+- **Post-merge local self-heal (`scripts/git-hooks/post-merge`):** installed by `install-git-hooks.sh`,
+  this hook fires after every `git pull` on `main`. It runs `pr_cost_ledger.py report`, which
+  backfills `merged_at` for any newly-merged PRs and regenerates `report.html` — so your local
+  `file://…/report.html` is correct immediately after pulling. The corrected JSON + HTML are local
+  only; they ride into the *next* PR's commit via the pre-commit hook. The ledger is therefore
+  *eventually* consistent (one PR behind on the remote), but locally correct after every pull.
+  To force the finalized record onto `main` right now, run:
+  `bash scripts/finalize_cost.sh <pr>` — it opens a metrics-only PR and arms auto-merge.
+
 **How build cost is captured (individual account, no team plan):** Cursor's *documented* per-request
 feed (`/teams/filtered-usage-events`) needs a team/Enterprise Admin key. But the dashboard's own
 endpoint `https://cursor.com/api/dashboard/get-filtered-usage-events` returns the same per-request
@@ -373,7 +382,9 @@ when only ~$0.68 of Composer work belonged to that PR). The scalable fix:
 2. **Open a new chat** for that requirement (Hard Lesson #19).
 3. **`pr_cost_ledger.py sync --pr <n>`** (after `bind-pr`) auto-binds `conversationId`(s) from
    `~/.cursor/ai-tracking/ai-code-tracking.db` (AI edits after `session_started_at`) and keeps
-   only usage events whose **model tier matches** that chat's dominant model.
+   only usage events whose **model tier appears anywhere in that chat's model set**. A conversation
+   that used both Opus (planning) and Sonnet (execution) keeps events from both tiers — the old
+   dominant-model filter silently dropped the minority tier via an arbitrary string-length ranking.
 4. **Explicit bind** when auto-bind is ambiguous:
    `pr_cost_ledger.py bind-conversation --pr <n> --conversation-id <uuid>`
    (UUID = folder name under `~/.cursor/projects/.../agent-transcripts/<uuid>/`).

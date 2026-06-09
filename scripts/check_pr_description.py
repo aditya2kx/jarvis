@@ -213,13 +213,14 @@ def _check_body(body: str) -> list[str]:
 
 
 def _fetch_pr_body(pr_number: int) -> str:
+    import json as _json
     result = subprocess.run(
-        ["gh", "pr", "view", str(pr_number), "--json", "body", "--jq", ".body"],
+        ["gh", "pr", "view", str(pr_number), "--json", "body"],
         capture_output=True,
         text=True,
         check=True,
     )
-    return result.stdout.strip()
+    return _json.loads(result.stdout).get("body", "").strip()
 
 
 def main() -> int:

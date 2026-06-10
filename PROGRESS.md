@@ -10,7 +10,9 @@
 
 **Also:** `bind_datasource_uid` now rewrites query-type template variables' own `datasource.uid` (was only panels/targets), so `kds_date` resolves to the real UID at deploy. New regression test in `test_deploy_bind_uid.py`.
 
-**Verification:** `verify_panels.py` → OK=11 EMPTY=0 ERROR=0; `test_deploy_bind_uid.py` (6) + `TestGrafanaContractInSync` (2) pass.
+**Verification:** `verify_panels.py` → OK=11 EMPTY=0 ERROR=0; `test_deploy_bind_uid.py` (6) + `TestGrafanaContractInSync` (2) pass. **Live evidence:** deployed the branch dashboard to Grafana Cloud via `deploy.py --dashboard-only` (a dashboard is a review surface; the repo stays source of truth and the next merge re-syncs). Confirmed live `version: 28`, `kds_date.query` is the structured object with `refresh: 1` + bound datasource UID, panel 32 `max: 1`, panel 52 threshold `>= $kds_min_per_item` (unquoted). Link: https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics
+
+**Process:** documented the "deploy the dashboard from the branch, the live link is the evidence" workflow in `CONTRIBUTING.md` (Additive prod data-source exception → Grafana dashboard changes), so every future Grafana PR provides a live-link + confirmed-version as §4 evidence rather than only a `verify_panels.py` SQL check.
 
 ## 2026-06-09 — Grafana dashboard: KDS defaults, p99 goal line, goal-var grouping (PR A)
 

@@ -953,7 +953,7 @@ python3 agents/bhaga/grafana/verify_panels.py --fail-on-empty             # 0-ro
 python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
 ```
 
-Migrations live in `core/migrations/001_initial_schema.sql` … `014_forecast_table_and_exclusions.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`). Migration 005 adds: `square_item_lines`, `square_kds_daily`, `square_kds_tickets`, `adp_earnings`, `google_reviews` raw tables; and `vw_order_quality_daily`, `vw_kds_item_investigation`, `vw_staff_on_shift`, extended `vw_model_labor_daily/weekly`, extended `vw_model_payroll_period` (with ADP actuals + diffs). Migration 011 adds: `model_forecast_daily` table and `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` views (see Labor Forecast section below). Migration 013 adds: `adp_scheduled_daily` table (per-day ADP scheduled hours) and `vw_scheduled_vs_goal` view (scheduled vs goal vs actual hours; dashboard panel 74). Migration 014 adds: `forecast_model_version` column to `model_forecast_daily` (version tag for each forecast row); refreshes `vw_model_forecast` to include `scheduled_hours` from `adp_scheduled_daily`; refreshes `vw_forecast_exclusions` to include `net_sales`, `prev_wk_net_sales`, `net_sales_vs_prev_wk`, `aov`, `prev_wk_aov` columns for promo/comped-day visibility.
+Migrations live in `core/migrations/001_initial_schema.sql` … `015_forecast_view_dow_fallback.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`). Migration 005 adds: `square_item_lines`, `square_kds_daily`, `square_kds_tickets`, `adp_earnings`, `google_reviews` raw tables; and `vw_order_quality_daily`, `vw_kds_item_investigation`, `vw_staff_on_shift`, extended `vw_model_labor_daily/weekly`, extended `vw_model_payroll_period` (with ADP actuals + diffs). Migration 011 adds: `model_forecast_daily` table and `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` views (see Labor Forecast section below). Migration 013 adds: `adp_scheduled_daily` table (per-day ADP scheduled hours) and `vw_scheduled_vs_goal` view (scheduled vs goal vs actual hours; dashboard panel 74). Migration 014 adds: `forecast_model_version` column to `model_forecast_daily` (version tag for each forecast row); refreshes `vw_model_forecast` to include `scheduled_hours` from `adp_scheduled_daily`; refreshes `vw_forecast_exclusions` to include `net_sales`, `prev_wk_net_sales`, `net_sales_vs_prev_wk`, `aov`, `prev_wk_aov` columns for promo/comped-day visibility.
 
 ### BQ backfill (one-shot)
 
@@ -1013,11 +1013,10 @@ loads it into `model_forecast_daily` (merge key: `date`). **Future rows** are me
 ### Grafana dashboard section
 
 Section 7 "Labor Forecast" on the BHAGA Analytics dashboard shows:
-- **Labor Forecast — next 30 days table** (panel 71, `vw_model_forecast`): date, forecast orders/items, prior-week actuals/forecasts, % change, goal shift hours, **scheduled hours** (ADP, current+next week), sched vs goal gap (abs hrs + %) — dashboard v33
+- **Labor Forecast — next 30 days table** (panel 71, `vw_model_forecast`): Day-of-week (`dow`), date, forecast orders/items, prior-week actuals (falling back to that day's forecast when orders=0 / failed), % change vs prior week, **Goal Total Hours** (forecast_items × goal_hours_per_item; covers part-time + full-time), **Scheduled Part Time** (ADP-scheduled hours, excludes the one full-time employee; current+next week only), Sched PT − Goal Total gap (abs hrs + %) — dashboard v34 (v33 introduced scheduled hours; v34 adds Day column, relabels, removes panel 74)
 - **Forecast vs Actual — Orders** (panel 72, `vw_forecast_accuracy`): order forecast vs actual history — split to half-width in v33
 - **Forecast vs Actual — Items** (panel 75, `vw_forecast_accuracy`): item forecast vs actual history — new panel in v33, side-by-side with panel 72
 - **Forecast Inputs / Exclusions table** (panel 73, `vw_forecast_exclusions`): recent input days with exclusion flags, `net_sales`, `aov`, prior-week comparisons — v33 adds AOV/net-sales columns
-- **Scheduled Hours vs Goal Hours chart** (panel 74, `vw_scheduled_vs_goal`): ADP Team Schedule scheduled hours/day vs goal hours
 - **KDS goal** uses `$goal_kds_p95_min` (default 8 min) as of v33; previously p99.
   with an actual-hours overlay for past days. Data comes from the nightly **best-effort** ADP schedule scrape
   (`adp_scheduled_daily`, migration 013); a scrape failure does not fail the nightly run.
@@ -1029,7 +1028,19 @@ BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-pr
   python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
 ```
 
-Migrations `011`, `012`, `013`, and `014` are all idempotent. Apply them via `ensure_schema()` (the nightly job does this automatically). After applying, the nightly job will populate `model_forecast_daily` on its next run (or trigger a manual refresh — see §6).
+Migrations `011`, `012`, `013`, `014`, and `015` are all idempotent. Apply them via `ensure_schema()` (the nightly job does this automatically). After applying, the nightly job will populate `model_forecast_daily` on its next run (or trigger a manual refresh — see §6).
+
+Migration `015` adds `dow` (Mon/Tue/…) to `vw_model_forecast` and zero-gates the prior-week actual (`IF(orders > 0, orders, NULL)`) so failed/closed prior days (orders=0) fall back to that day's stored forecast row instead of showing NULL.
+
+### Forecast nightly cadence
+
+Each successful `daily_refresh` (nightly Cloud Run job at 21:30 CT):
+
+1. **Rebuilds `model_labor_daily`** — re-evaluates outlier flags, `forecast_exclude`, and AOV-based auto-exclusion for all historical operating days. The 5/24 AOV exclusion (`aov_z ≈ -7.0`) becomes `forecast_exclude=TRUE` after the first successful full materialize (requires Sheets/ADP creds that are only available in the Cloud Run environment).
+2. **Gap-fills `model_forecast_daily`** — writes forecast rows only for dates not already present (historical rows are frozen, model version preserved). **Today is now included in the forward window**, so the current day always has a forecast row — this acts as the prior-week fallback for next Tuesday's panel-71 `prior_wk_orders`.
+3. **Re-scrapes ADP scheduled hours** (current + next week) into `adp_scheduled_daily`; `Scheduled Part Time` in panel 71 updates automatically.
+4. **`prior_wk_orders` / `prior_wk_items`** in `vw_model_forecast` reflect the actual from 7 days ago (when orders > 0), falling back to the forecast row for that day (covers today-as-prior-week). So these values evolve each night as more actuals land.
+5. **Goal Total Hours** follow directly from `forecast_items × $goal_hours_per_item`, so they update whenever the forecast rows are rebuilt.
 
 ### Forecast exclusion override
 

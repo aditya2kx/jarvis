@@ -163,7 +163,7 @@ def build_forecast_rows(
     horizon_days: int = 30,
 ) -> list[dict]:
     """Return [{date, forecast_orders, forecast_items, forecast_generated_at,
-    forecast_model_version}] for today+1 … today+horizon_days (Chicago time).
+    forecast_model_version}] for today … today+horizon_days (Chicago time).
 
     Each day = the most recent same-weekday actual × the growth multiplier,
     compounded by the number of weeks between anchor and forecast day. Excluded /
@@ -179,7 +179,7 @@ def build_forecast_rows(
     growth = _growth_multiplier(by_date, cutoff=today)
 
     rows: list[dict] = []
-    for i in range(1, horizon_days + 1):
+    for i in range(0, horizon_days + 1):
         d = today + datetime.timedelta(days=i)
         fc = _forecast_one(d, by_date, cutoff=today, growth=growth)
         if fc is None:

@@ -92,16 +92,16 @@ def _grid(
 
 class BuildForecastRowsTests(unittest.TestCase):
     def test_returns_30_rows(self):
-        self.assertEqual(len(build_forecast_rows(labor_daily_rows=_grid())), 30)
+        self.assertEqual(len(build_forecast_rows(labor_daily_rows=_grid())), 31)
 
     def test_horizon_configurable(self):
-        self.assertEqual(len(build_forecast_rows(labor_daily_rows=_grid(), horizon_days=7)), 7)
+        self.assertEqual(len(build_forecast_rows(labor_daily_rows=_grid(), horizon_days=7)), 8)
 
     def test_dates_are_strictly_future_and_consecutive(self):
         today = datetime.date.today()
         rows = build_forecast_rows(labor_daily_rows=_grid())
         dates = [datetime.date.fromisoformat(r["date"]) for r in rows]
-        self.assertGreater(dates[0], today)
+        self.assertGreaterEqual(dates[0], today)
         for i in range(1, len(dates)):
             self.assertEqual(dates[i], dates[i - 1] + datetime.timedelta(days=1))
 
@@ -167,9 +167,10 @@ class BuildForecastRowsTests(unittest.TestCase):
         grid = _grid(weekly_growth=1.0, exclude={last_wk.isoformat(): 999})
         rows = build_forecast_rows(labor_daily_rows=grid)
         normal = _orders_for_dow(first_future.weekday())
-        self.assertLess(rows[0]["forecast_orders"], normal * 1.5,
+        row = next(r for r in rows if r["date"] == first_future.isoformat())
+        self.assertLess(row["forecast_orders"], normal * 1.5,
                         msg="Excluded wild anchor value must not be used")
-        self.assertGreater(rows[0]["forecast_orders"], normal * 0.5,
+        self.assertGreater(row["forecast_orders"], normal * 0.5,
                         msg="Forecast should fall back to a normal same-weekday level")
 
 

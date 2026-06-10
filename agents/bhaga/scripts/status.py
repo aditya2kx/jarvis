@@ -153,15 +153,15 @@ GRAFANA_VIEWS: list[Target] = [
     Target("vw_model_forecast", "date"),
     Target("vw_forecast_accuracy", "date"),
     Target("vw_forecast_exclusions", "date"),
-    # migration 013: Scheduled Hours vs Goal Hours panel (section 7, panel 74) —
-    # dashboard v32. vw_scheduled_vs_goal joins adp_scheduled_daily with the
-    # forecast (goal = forecast_items x $goal_hours_per_item, computed in Grafana)
-    # and actual labor hours. Forward-looking; empty until the first schedule scrape.
+    # migration 013: adp_scheduled_daily; vw_scheduled_vs_goal is orphaned (dashboard
+    # panel 74 removed in v34) but harmless to leave in this registry.
     Target("vw_scheduled_vs_goal", "date"),
     # migration 014: vw_model_forecast + vw_forecast_exclusions refreshed with
-    # scheduled_hours / net_sales / aov columns (dashboard v33). The existing
-    # Targets above for vw_model_forecast and vw_forecast_exclusions still cover
-    # data-layer freshness; migration 014 only adds columns — no new view entries.
+    # scheduled_hours / net_sales / aov columns (dashboard v33). Existing Targets
+    # above cover freshness; migration 014 only adds columns — no new view entries.
+    # migration 015: vw_model_forecast refreshed with dow column + zero-gated
+    # prior-week fallback (dashboard v34). No new BQ_TARGETS entries needed; the
+    # existing vw_model_forecast Target above still covers freshness.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

@@ -1,5 +1,17 @@
 # Jarvis Build Progress
 
+## 2026-06-10 — Forecast table refinements: Day column, label renames, remove panel 74, today-forecast, migration 015, dashboard v34 (PR #44)
+
+**On `feat/forecast-bq-labor-forecast` (PR #44).** Six follow-up refinements from operator review.
+
+1. **`build_forecast_rows` includes today** — forward window is now today…today+horizon (was today+1…); today's row acts as prior-week fallback for next week's panel-71 `prior_wk_orders` (e.g. 6/17 now shows prior_wk_orders=104 from 6/10 forecast). 4 tests updated.
+2. **Migration 015 (`015_forecast_view_dow_fallback.sql`)** — refreshes `vw_model_forecast` to add `dow` (FORMAT_DATE `%a`) and zero-gates prior-week actuals (`IF(orders > 0, orders, NULL)` COALESCE forecast@-7d). Failed/closed days (orders=0) fall back to forecast instead of NULL.
+3. **Dashboard v34** — Panel 71 (Labor Forecast table): `dow` column added as "Day"; "Goal Shift Hours" → "Goal Total Hours"; "Scheduled Hours" → "Scheduled Part Time"; gap columns relabeled "Sched PT − Goal Total (hrs/%)"; description updated with caveats. Panel 74 ("Scheduled Hours vs Goal Hours" chart) removed.
+4. **5/24 AOV exclusion** confirmed correct in code (`aov_z ≈ -7.0`) but awaits `model_labor_daily` rebuild in cloud (needs Sheets creds, runs nightly).
+5. **Docs updated** — RUNBOOK § Forecast nightly cadence added; README/DOMAIN/PROGRESS updated.
+
+Live dashboard: https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics
+
 ## 2026-06-10 — Forecast model v2 (wow_median_4wk), AOV auto-exclusion, versioning, dashboard v33 (PR #44 finale)
 
 **On `feat/forecast-bq-labor-forecast` (PR #44).** Completes the full forecast + dashboard refinement plan.

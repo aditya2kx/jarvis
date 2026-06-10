@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 33,
+  "version": 34,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {
@@ -1282,7 +1282,7 @@
       "id": 71,
       "type": "table",
       "title": "Labor Forecast \u2014 next 30 days",
-      "description": "30-day daily forecast: Forecast Orders/Items, Prior-Week comparison (COALESCE actual@-7d, forecast@-7d), % change vs prior week, Goal Shift Hours (Forecast Items \u00d7 $goal_hours_per_item), Scheduled Hours (from ADP \u2014 current + next week only; blank beyond), and Scheduled vs Goal gap (absolute hrs and %). Override forecast_exclude on the labor_daily BQ tab to flag anomaly days.",
+      "description": "Daily forecast (today + next 30 days): Day-of-week, Forecast Orders/Items, Prior-Week comparison (actual@-7d, falling back to forecast@-7d when last week failed/was an ongoing day), % change vs prior week, Goal Total Hours (Forecast Items \u00d7 $goal_hours_per_item; covers part-time + the one full-time employee), Scheduled Part Time (ADP scheduled hours, current + next week only, excludes the full-time employee; blank beyond), and the Scheduled-PT minus Goal-Total gap (absolute hrs and %; note this compares part-time scheduled against the total goal). Override forecast_exclude on the labor_daily BQ tab to flag anomaly days.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -1317,6 +1317,18 @@
               {
                 "id": "displayName",
                 "value": "Date"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "dow"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Day"
               }
             ]
           },
@@ -1432,7 +1444,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Goal Shift Hours"
+                "value": "Goal Total Hours"
               },
               {
                 "id": "unit",
@@ -1452,7 +1464,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Scheduled Hours"
+                "value": "Scheduled Part Time"
               },
               {
                 "id": "unit",
@@ -1472,7 +1484,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Sched vs Goal (hrs)"
+                "value": "Sched PT \u2212 Goal Total (hrs)"
               },
               {
                 "id": "unit",
@@ -1492,7 +1504,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Sched vs Goal %"
+                "value": "Sched PT \u2212 Goal Total (%)"
               },
               {
                 "id": "unit",
@@ -1512,7 +1524,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT date, forecast_orders, forecast_items, prior_wk_orders, prior_wk_items, orders_vs_prior_wk, items_vs_prior_wk, ROUND(forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS goal_shift_hours, scheduled_hours, ROUND(scheduled_hours - forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS sched_vs_goal_hours, SAFE_DIVIDE(scheduled_hours - forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), NULLIF(forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 0)) AS sched_vs_goal_pct FROM `jarvis-bhaga-prod.bhaga.vw_model_forecast` ORDER BY date"
+          "rawSql": "SELECT date, dow, forecast_orders, forecast_items, prior_wk_orders, prior_wk_items, orders_vs_prior_wk, items_vs_prior_wk, ROUND(forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS goal_shift_hours, scheduled_hours, ROUND(scheduled_hours - forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS sched_vs_goal_hours, SAFE_DIVIDE(scheduled_hours - forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), NULLIF(forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 0)) AS sched_vs_goal_pct FROM `jarvis-bhaga-prod.bhaga.vw_model_forecast` ORDER BY date"
         }
       ]
     },
@@ -1941,70 +1953,6 @@
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
           "rawSql": "SELECT date, dow, orders, prev_wk_orders, orders_vs_prev_wk, items_sold, prev_wk_items, items_vs_prev_wk, net_sales, prev_wk_net_sales, net_sales_vs_prev_wk, aov, prev_wk_aov, forecast_exclude, outlier_reason, forecast_exclude_reason FROM `jarvis-bhaga-prod.bhaga.vw_forecast_exclusions` ORDER BY date DESC"
-        }
-      ]
-    },
-    {
-      "id": 74,
-      "type": "timeseries",
-      "title": "Scheduled Hours vs Goal Hours",
-      "description": "ADP Team Schedule scheduled labor hours per day (current + next week, scraped nightly) vs goal hours (forecast_items \u00d7 $goal_hours_per_item, same as the forecast table). Actual worked hours overlay once a day is in the past. Positive gap (Scheduled > Goal) = over-scheduled vs the labor target.",
-      "datasource": {
-        "type": "grafana-bigquery-datasource",
-        "uid": "${ds_bigquery}"
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 24,
-        "x": 0,
-        "y": 125
-      },
-      "options": {
-        "tooltip": {
-          "mode": "multi"
-        },
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "decimals": 1,
-          "min": 0,
-          "custom": {
-            "axisLabel": "Hours"
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Goal Hours"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    10,
-                    10
-                  ]
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "format": 0,
-          "project": "jarvis-bhaga-prod",
-          "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, scheduled_hours AS `Scheduled Hours`, ROUND(forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS `Goal Hours`, actual_hours AS `Actual Hours` FROM `jarvis-bhaga-prod.bhaga.vw_scheduled_vs_goal` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     }

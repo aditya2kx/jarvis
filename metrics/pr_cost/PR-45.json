@@ -1,0 +1,43 @@
+{
+  "pr_number": 45,
+  "provisional_id": null,
+  "title": "fix(grafana): repair KDS order-date query var, Min/Item threshold, labor y-axis cap",
+  "requirement": null,
+  "branch": "fix/grafana-kds-vars-labor-yaxis",
+  "created_at": null,
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor_dashboard",
+    "approximate": true,
+    "attribution_mode": null,
+    "session_started_at": null,
+    "conversation_ids": [],
+    "sessions": [
+      {
+        "ts": "2026-06-10T04:34:02Z",
+        "model": "claude-opus-4.8",
+        "tokens": 0,
+        "cost_usd": 0.0,
+        "note": "agent session - no Cursor build sessions captured"
+      }
+    ],
+    "tokens_total": 0,
+    "cost_usd_total": 0.0
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 0,
+    "cost_usd": 0.0
+  }
+}

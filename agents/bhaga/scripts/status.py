@@ -140,7 +140,7 @@ GRAFANA_VIEWS: list[Target] = [
     # $kds_date query-var shape + unquoted threshold — same view, no new entry.
     Target("vw_kds_order_investigation", "date_local"),
     Target("vw_staff_on_shift", "date"),
-    # migration 011: Labor Forecast section (section 7) panels
+    # migration 011: Labor Forecast section (section 7) panels — dashboard v29
     # vw_model_forecast and vw_forecast_accuracy will be EMPTY pre-load (expected).
     Target("vw_model_forecast", "date"),
     Target("vw_forecast_accuracy", "date"),

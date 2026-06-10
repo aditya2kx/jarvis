@@ -4,20 +4,35 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 28,
+  "version": 29,
   "refresh": "1h",
   "timezone": "America/Chicago",
-  "time": {"from": "now-90d", "to": "now"},
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
   "timepicker": {},
-  "tags": ["bhaga", "palmetto", "analytics"],
+  "tags": [
+    "bhaga",
+    "palmetto",
+    "analytics"
+  ],
   "templating": {
     "list": [
       {
         "name": "date_from",
         "label": "From Date",
         "type": "textbox",
-        "current": {"value": "2026-01-01"},
-        "options": [{"selected": true, "text": "2026-01-01", "value": "2026-01-01"}],
+        "current": {
+          "value": "2026-01-01"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "2026-01-01",
+            "value": "2026-01-01"
+          }
+        ],
         "hide": 0,
         "description": "ISO date string e.g. 2026-01-01"
       },
@@ -25,7 +40,10 @@
         "name": "kds_date",
         "label": "KDS: Order Date",
         "type": "query",
-        "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
+        "datasource": {
+          "type": "grafana-bigquery-datasource",
+          "uid": "${ds_bigquery}"
+        },
         "definition": "SELECT CAST(date_local AS STRING) AS value FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` GROUP BY date_local ORDER BY date_local DESC",
         "query": {
           "editorMode": "code",
@@ -38,7 +56,10 @@
         "sort": 0,
         "refresh": 1,
         "includeAll": false,
-        "current": {"text": "2026-06-09", "value": "2026-06-09"},
+        "current": {
+          "text": "2026-06-09",
+          "value": "2026-06-09"
+        },
         "options": [],
         "hide": 0,
         "description": "Order date shown in the Order KDS Times table; defaults to the most recent date. Pick another date from the dropdown to investigate that day."
@@ -47,8 +68,16 @@
         "name": "kds_min_per_item",
         "label": "KDS: Min / Item \u2265",
         "type": "textbox",
-        "current": {"value": "8"},
-        "options": [{"selected": true, "text": "8", "value": "8"}],
+        "current": {
+          "value": "8"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "8",
+            "value": "8"
+          }
+        ],
         "hide": 0,
         "description": "Default slow-order threshold for the Order KDS Times table; rows below this Min/Item are hidden. Lower it (e.g. 0) to see all orders."
       },
@@ -56,26 +85,50 @@
         "name": "goal_hours_per_item",
         "label": "Goal: Shift Hrs / Item",
         "type": "textbox",
-        "current": {"value": "0.20"},
-        "options": [{"selected": true, "text": "0.20", "value": "0.20"}],
+        "current": {
+          "value": "0.20"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "0.20",
+            "value": "0.20"
+          }
+        ],
         "hide": 0,
-        "description": "Target shift hours per item as a raw ratio (0.20) — the Hours / Item charts display it percent-style (\u00d7 100), so 0.20 shows as 20%"
+        "description": "Target shift hours per item as a raw ratio (0.20) \u2014 the Hours / Item charts display it percent-style (\u00d7 100), so 0.20 shows as 20%"
       },
       {
         "name": "goal_labor_pct_of_net_sales",
         "label": "Goal: Labor Wages / Net Sales",
         "type": "textbox",
-        "current": {"value": "0.20"},
-        "options": [{"selected": true, "text": "0.20", "value": "0.20"}],
+        "current": {
+          "value": "0.20"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "0.20",
+            "value": "0.20"
+          }
+        ],
         "hide": 0,
-        "description": "Target labor wages as a fraction of net sales (labor_cost \u00f7 net_sales, e.g. 0.20 = 20%) — rendered as a baseline line on the Weekly Labor Wages / Net Sales chart"
+        "description": "Target labor wages as a fraction of net sales (labor_cost \u00f7 net_sales, e.g. 0.20 = 20%) \u2014 rendered as a baseline line on the Weekly Labor Wages / Net Sales chart"
       },
       {
         "name": "goal_kds_p99_min",
         "label": "Goal: KDS p99 (min)",
         "type": "textbox",
-        "current": {"value": "8"},
-        "options": [{"selected": true, "text": "8", "value": "8"}],
+        "current": {
+          "value": "8"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "8",
+            "value": "8"
+          }
+        ],
         "hide": 0,
         "description": "Target p99 per-order KDS prep time in minutes; drawn as a dashed baseline on the KDS Time per Item chart."
       },
@@ -84,46 +137,88 @@
         "label": "BigQuery Datasource",
         "type": "datasource",
         "pluginId": "grafana-bigquery-datasource",
-        "current": {"value": "BHAGA BigQuery"},
+        "current": {
+          "value": "BHAGA BigQuery"
+        },
         "hide": 2
       }
     ]
   },
   "panels": [
-
     {
       "id": 10,
       "type": "row",
       "title": "1. Daily Sales Overview",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
     },
     {
       "id": 11,
       "type": "timeseries",
       "title": "Daily Order & Item Volume",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 1},
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
       "options": {
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
-        "defaults": {"unit": "short"},
+        "defaults": {
+          "unit": "short"
+        },
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Items Sold"},
+            "matcher": {
+              "id": "byName",
+              "options": "Items Sold"
+            },
             "properties": [
-              {"id": "custom.axisPlacement", "value": "right"},
-              {"id": "custom.drawStyle", "value": "line"}
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.drawStyle",
+                "value": "line"
+              }
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Orders"},
+            "matcher": {
+              "id": "byName",
+              "options": "Orders"
+            },
             "properties": [
-              {"id": "custom.drawStyle", "value": "bars"},
-              {"id": "custom.fillOpacity", "value": 100},
-              {"id": "custom.gradientMode", "value": "none"}
+              {
+                "id": "custom.drawStyle",
+                "value": "bars"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 100
+              },
+              {
+                "id": "custom.gradientMode",
+                "value": "none"
+              }
             ]
           }
         ]
@@ -138,21 +233,33 @@
         }
       ]
     },
-
     {
       "id": 20,
       "type": "row",
       "title": "2. Weekly Sales Overview",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 10}
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      }
     },
     {
       "id": 21,
       "type": "barchart",
       "title": "Weekly Order & Item Volume",
-      "description": "Each bar is one full week (Mon–Sun), labeled by its date range (e.g. '6/1-6/7') so the period a bar covers is explicit. Orders on the left axis, Items Sold on the right. Solid fill.",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 11},
+      "description": "Each bar is one full week (Mon\u2013Sun), labeled by its date range (e.g. '6/1-6/7') so the period a bar covers is explicit. Orders on the left axis, Items Sold on the right. Solid fill.",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
       "options": {
         "xField": "Week",
         "orientation": "vertical",
@@ -160,14 +267,38 @@
         "stacking": "none",
         "groupWidth": 0.7,
         "barWidth": 0.9,
-        "text": {"valueSize": 16},
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
+        "text": {
+          "valueSize": 16
+        },
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
-        "defaults": {"unit": "short", "custom": {"fillOpacity": 100, "gradientMode": "none"}},
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 100,
+            "gradientMode": "none"
+          }
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Items Sold"}, "properties": [{"id": "custom.axisPlacement", "value": "right"}]}
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Items Sold"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
         ]
       },
       "targets": [
@@ -180,26 +311,47 @@
         }
       ]
     },
-
     {
       "id": 30,
       "type": "row",
       "title": "3. Daily Labor",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 20}
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      }
     },
-
     {
       "id": 31,
       "type": "timeseries",
       "title": "Daily Shift Hours",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 21},
-      "options": {
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
       },
-      "fieldConfig": {"defaults": {"unit": "suffix: h", "decimals": 1}},
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: h",
+          "decimals": 1
+        }
+      },
       "targets": [
         {
           "refId": "A",
@@ -215,16 +367,55 @@
       "type": "timeseries",
       "title": "Daily Labor Wages / Net Sales (total / part-time / full-time)",
       "description": "Labor wages (shift hours \u00d7 wage rate) as a share of net sales, split by total / part-time / full-time. Total = all labor; Part-time = hourly staff; Full-time = salaried/full-time staff. Lower is leaner. Shown as a percent (e.g. 35% = labor costs 35\u00a2 per $1 of net sales). Non-positive-sales days are blanked. Dashed line = goal ($goal_labor_pct_of_net_sales).",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 30},
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
       "options": {
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
-        "defaults": {"unit": "percentunit", "decimals": 1, "min": 0, "max": 1},
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "min": 0,
+          "max": 1
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Goal"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          }
         ]
       },
       "targets": [
@@ -242,16 +433,55 @@
       "type": "timeseries",
       "title": "Daily Hours / Item (total / part-time / full-time)",
       "description": "Shift hours per item sold, split by total / part-time / full-time, shown percent-style (value \u00d7 100, e.g. 0.15 h/item displays as 15%). Lower is leaner. Dashed line = goal ($goal_hours_per_item).",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 30},
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
       "options": {
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
-        "defaults": {"unit": "percentunit", "decimals": 1, "min": 0, "max": 1},
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "min": 0,
+          "max": 1
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]}
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Goal"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          }
         ]
       },
       "targets": [
@@ -264,29 +494,61 @@
         }
       ]
     },
-
     {
       "id": 40,
       "type": "row",
       "title": "4. Weekly Labor",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 39}
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      }
     },
     {
       "id": 35,
       "type": "timeseries",
       "title": "Weekly Shift Hours",
       "description": "Total / part-time / full-time shift hours per week. Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 40},
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
       "options": {
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
-        "defaults": {"unit": "suffix: h", "decimals": 1},
+        "defaults": {
+          "unit": "suffix: h",
+          "decimals": 1
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "time"}, "properties": [{"id": "unit", "value": "time:M/D"}]}        ]
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "time"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:M/D"
+              }
+            ]
+          }
+        ]
       },
       "targets": [
         {
@@ -303,17 +565,66 @@
       "type": "timeseries",
       "title": "Weekly Labor Wages / Net Sales (total / part-time / full-time)",
       "description": "Labor wages (shift hours \u00d7 wage rate) as a share of net sales, split by total / part-time / full-time. Total = all labor; Part-time = hourly staff; Full-time = salaried/full-time staff. Lower is leaner. Shown as a percent (e.g. 35% = labor costs 35\u00a2 per $1 of net sales). Non-positive-sales weeks are blanked. Dashed line = goal ($goal_labor_pct_of_net_sales). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 49},
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 49
+      },
       "options": {
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
-        "defaults": {"unit": "percentunit", "decimals": 1},
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
-          {"matcher": {"id": "byName", "options": "time"}, "properties": [{"id": "unit", "value": "time:M/D"}]}        ]
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Goal"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "time"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:M/D"
+              }
+            ]
+          }
+        ]
       },
       "targets": [
         {
@@ -330,17 +641,66 @@
       "type": "timeseries",
       "title": "Weekly Hours / Item (total / part-time / full-time)",
       "description": "Shift hours per item sold, split by total / part-time / full-time, shown percent-style (value \u00d7 100, e.g. 0.15 h/item displays as 15%). Lower is leaner. Dashed line = goal ($goal_hours_per_item). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 49},
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 49
+      },
       "options": {
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
-        "defaults": {"unit": "percentunit", "decimals": 1},
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Goal"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}, {"id": "custom.lineWidth", "value": 1}]},
-          {"matcher": {"id": "byName", "options": "time"}, "properties": [{"id": "unit", "value": "time:M/D"}]}        ]
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Goal"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "time"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:M/D"
+              }
+            ]
+          }
+        ]
       },
       "targets": [
         {
@@ -352,33 +712,72 @@
         }
       ]
     },
-
     {
       "id": 50,
       "type": "row",
       "title": "5. Order Quality",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 58}
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 58
+      }
     },
     {
       "id": 51,
       "type": "timeseries",
       "title": "KDS Time per Item (median / p90 / p95 / p99)",
-      "description": "Percentiles of per-ITEM prep time per day (order completion time ÷ items in the order). Y-axis capped at 30 min so outliers don't skew the scale. Dashed line = p99 goal ($goal_kds_p99_min min).",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 59},
+      "description": "Percentiles of per-ITEM prep time per day (order completion time \u00f7 items in the order). Y-axis capped at 30 min so outliers don't skew the scale. Dashed line = p99 goal ($goal_kds_p99_min min).",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 59
+      },
       "options": {
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
-        "defaults": {"unit": "suffix: min", "decimals": 1, "min": 0, "max": 30},
+        "defaults": {
+          "unit": "suffix: min",
+          "decimals": 1,
+          "min": 0,
+          "max": 30
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "p99 Goal"},
-           "properties": [
-             {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}},
-             {"id": "custom.lineWidth", "value": 1}
-           ]}
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p99 Goal"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          }
         ]
       },
       "targets": [
@@ -394,24 +793,165 @@
     {
       "id": 52,
       "type": "table",
-      "title": "Order KDS Times — set your slow threshold with the Min / Item filter",
-      "description": "One row per order (ticket) with its whole-order KDS prep time (Start → End). Defaults to the most-recent order date and Min/Item ≥ 8 — adjust both with the 'KDS: Order Date' and 'KDS: Min / Item ≥' inputs at the top of the dashboard. After typing a new Min/Item threshold, press Enter (or click away) to apply it. If results still look wrong, clear any column filter you may have set on the 'Min / Item' column header (the top input and the in-table column filter are independent). 'Min / Item' = Order Min ÷ Items. 'On Shift (punched in)' = everyone whose ADP punch overlapped that order's time window. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order.",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 68},
-      "options": {"sortBy": [{"displayName": "Min / Item", "desc": true}]},
+      "title": "Order KDS Times \u2014 set your slow threshold with the Min / Item filter",
+      "description": "One row per order (ticket) with its whole-order KDS prep time (Start \u2192 End). Defaults to the most-recent order date and Min/Item \u2265 8 \u2014 adjust both with the 'KDS: Order Date' and 'KDS: Min / Item \u2265' inputs at the top of the dashboard. After typing a new Min/Item threshold, press Enter (or click away) to apply it. If results still look wrong, clear any column filter you may have set on the 'Min / Item' column header (the top input and the in-table column filter are independent). 'Min / Item' = Order Min \u00f7 Items. 'On Shift (punched in)' = everyone whose ADP punch overlapped that order's time window. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x \u2026'). KDS times are per-order.",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 68
+      },
+      "options": {
+        "sortBy": [
+          {
+            "displayName": "Min / Item",
+            "desc": true
+          }
+        ]
+      },
       "fieldConfig": {
-        "defaults": {"custom": {"filterable": true}},
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "date_local"}, "properties": [{"id": "displayName", "value": "Date"}]},
-          {"matcher": {"id": "byName", "options": "ticket_name"}, "properties": [{"id": "displayName", "value": "Order"}]},
-          {"matcher": {"id": "byName", "options": "order_source"}, "properties": [{"id": "displayName", "value": "Source"}]},
-          {"matcher": {"id": "byName", "options": "start_time"}, "properties": [{"id": "displayName", "value": "Start"}]},
-          {"matcher": {"id": "byName", "options": "end_time"}, "properties": [{"id": "displayName", "value": "End"}]},
-          {"matcher": {"id": "byName", "options": "num_items"}, "properties": [{"id": "displayName", "value": "Items"}]},
-          {"matcher": {"id": "byName", "options": "order_min"}, "properties": [{"id": "displayName", "value": "Order Min"}, {"id": "unit", "value": "suffix: min"}]},
-          {"matcher": {"id": "byName", "options": "min_per_item"}, "properties": [{"id": "displayName", "value": "Min / Item"}, {"id": "unit", "value": "suffix: min"}, {"id": "decimals", "value": 1}]},
-          {"matcher": {"id": "byName", "options": "staff_on_shift"}, "properties": [{"id": "displayName", "value": "On Shift (punched in)"}]},
-          {"matcher": {"id": "byName", "options": "items_in_ticket"}, "properties": [{"id": "displayName", "value": "Items in Order"}]}
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "date_local"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Date"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ticket_name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Order"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "order_source"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Source"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "start_time"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Start"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "end_time"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "End"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "num_items"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Items"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "order_min"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Order Min"
+              },
+              {
+                "id": "unit",
+                "value": "suffix: min"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "min_per_item"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Min / Item"
+              },
+              {
+                "id": "unit",
+                "value": "suffix: min"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "staff_on_shift"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "On Shift (punched in)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "items_in_ticket"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Items in Order"
+              }
+            ]
+          }
         ]
       },
       "targets": [
@@ -424,41 +964,296 @@
         }
       ]
     },
-
     {
       "id": 60,
       "type": "row",
       "title": "6. Payroll",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 80}
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 80
+      }
     },
     {
       "id": 61,
       "type": "table",
-      "title": "Payroll — per Employee per Pay Period",
-      "description": "Each pay component is shown as a Calculated / ADP / Diff triad. Calculated = our model; ADP = what ADP actually paid; Diff = Calculated − ADP (positive means we computed more than ADP paid). Hourly Pay = hours × wage rate; Tip Pay = allocated tips; Review Bonus = earned review bonus; Total Pay = Hourly + Tip + Bonus. So 'Diff Review Bonus' is our review bonus minus ADP's bonus line, and 'Calculated Total Pay' is the sum of the three calculated components.",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 81},
-      "options": {"sortBy": [{"displayName": "Period Start", "desc": true}]},
+      "title": "Payroll \u2014 per Employee per Pay Period",
+      "description": "Each pay component is shown as a Calculated / ADP / Diff triad. Calculated = our model; ADP = what ADP actually paid; Diff = Calculated \u2212 ADP (positive means we computed more than ADP paid). Hourly Pay = hours \u00d7 wage rate; Tip Pay = allocated tips; Review Bonus = earned review bonus; Total Pay = Hourly + Tip + Bonus. So 'Diff Review Bonus' is our review bonus minus ADP's bonus line, and 'Calculated Total Pay' is the sum of the three calculated components.",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 81
+      },
+      "options": {
+        "sortBy": [
+          {
+            "displayName": "Period Start",
+            "desc": true
+          }
+        ]
+      },
       "fieldConfig": {
-        "defaults": {"custom": {"filterable": true}},
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "period_start"}, "properties": [{"id": "displayName", "value": "Period Start"}]},
-          {"matcher": {"id": "byName", "options": "period_end"}, "properties": [{"id": "displayName", "value": "Period End"}]},
-          {"matcher": {"id": "byName", "options": "employee"}, "properties": [{"id": "displayName", "value": "Employee"}]},
-          {"matcher": {"id": "byName", "options": "hours_worked"}, "properties": [{"id": "displayName", "value": "Hours"}, {"id": "unit", "value": "suffix: h"}, {"id": "decimals", "value": 1}]},
-          {"matcher": {"id": "byName", "options": "est_gross_pay"}, "properties": [{"id": "displayName", "value": "Calculated Hourly Pay"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "adp_wages_paid"}, "properties": [{"id": "displayName", "value": "ADP Hourly Pay"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "wage_diff"}, "properties": [{"id": "displayName", "value": "Diff Hourly Pay"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "tips_allocated"}, "properties": [{"id": "displayName", "value": "Calculated Tip Pay"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "adp_tips_paid"}, "properties": [{"id": "displayName", "value": "ADP Tip Pay"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "tip_diff"}, "properties": [{"id": "displayName", "value": "Diff Tip Pay"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "review_bonus"}, "properties": [{"id": "displayName", "value": "Calculated Review Bonus"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "adp_bonus_paid"}, "properties": [{"id": "displayName", "value": "ADP Review Bonus"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "bonus_diff"}, "properties": [{"id": "displayName", "value": "Diff Review Bonus"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "est_total_pay"}, "properties": [{"id": "displayName", "value": "Calculated Total Pay"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "adp_total_paid"}, "properties": [{"id": "displayName", "value": "ADP Total Pay"}, {"id": "unit", "value": "currencyUSD"}]},
-          {"matcher": {"id": "byName", "options": "total_diff"}, "properties": [{"id": "displayName", "value": "Diff Total Pay"}, {"id": "unit", "value": "currencyUSD"}]}
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "period_start"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Period Start"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "period_end"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Period End"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "employee"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Employee"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "hours_worked"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Hours"
+              },
+              {
+                "id": "unit",
+                "value": "suffix: h"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "est_gross_pay"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Calculated Hourly Pay"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "adp_wages_paid"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ADP Hourly Pay"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "wage_diff"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Diff Hourly Pay"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "tips_allocated"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Calculated Tip Pay"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "adp_tips_paid"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ADP Tip Pay"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "tip_diff"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Diff Tip Pay"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "review_bonus"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Calculated Review Bonus"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "adp_bonus_paid"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ADP Review Bonus"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "bonus_diff"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Diff Review Bonus"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "est_total_pay"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Calculated Total Pay"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "adp_total_paid"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ADP Total Pay"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_diff"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Diff Total Pay"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          }
         ]
       },
       "targets": [
@@ -471,33 +1266,184 @@
         }
       ]
     },
-
     {
       "id": 70,
       "type": "row",
       "title": "7. Labor Forecast",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 93}
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 93
+      }
     },
     {
       "id": 71,
       "type": "table",
-      "title": "Labor Forecast — next 30 days",
-      "description": "30-day daily forecast: Forecast Orders/Items, Prior-Week comparison (COALESCE actual@-7d, forecast@-7d), % change vs prior week, and Goal Shift Hours (Forecast Items × $goal_hours_per_item). Empty until the first nightly pipeline run after the migration is applied. Override forecast_exclude on the labor_daily BQ tab to flag anomaly days.",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 94},
-      "options": {"sortBy": [{"displayName": "Date", "desc": false}]},
+      "title": "Labor Forecast \u2014 next 30 days",
+      "description": "30-day daily forecast: Forecast Orders/Items, Prior-Week comparison (COALESCE actual@-7d, forecast@-7d), % change vs prior week, and Goal Shift Hours (Forecast Items \u00d7 $goal_hours_per_item). Empty until the first nightly pipeline run after the migration is applied. Override forecast_exclude on the labor_daily BQ tab to flag anomaly days.",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 94
+      },
+      "options": {
+        "sortBy": [
+          {
+            "displayName": "Date",
+            "desc": false
+          }
+        ]
+      },
       "fieldConfig": {
-        "defaults": {"custom": {"filterable": true}},
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "date"}, "properties": [{"id": "displayName", "value": "Date"}]},
-          {"matcher": {"id": "byName", "options": "forecast_orders"}, "properties": [{"id": "displayName", "value": "Forecast Orders"}, {"id": "decimals", "value": 0}]},
-          {"matcher": {"id": "byName", "options": "forecast_items"}, "properties": [{"id": "displayName", "value": "Forecast Items"}, {"id": "decimals", "value": 1}]},
-          {"matcher": {"id": "byName", "options": "prior_wk_orders"}, "properties": [{"id": "displayName", "value": "Prior-Wk Orders"}, {"id": "decimals", "value": 0}]},
-          {"matcher": {"id": "byName", "options": "prior_wk_items"}, "properties": [{"id": "displayName", "value": "Prior-Wk Items"}, {"id": "decimals", "value": 1}]},
-          {"matcher": {"id": "byName", "options": "orders_vs_prior_wk"}, "properties": [{"id": "displayName", "value": "Orders vs Prior Wk %"}, {"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 1}]},
-          {"matcher": {"id": "byName", "options": "items_vs_prior_wk"}, "properties": [{"id": "displayName", "value": "Items vs Prior Wk %"}, {"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 1}]},
-          {"matcher": {"id": "byName", "options": "goal_shift_hours"}, "properties": [{"id": "displayName", "value": "Goal Shift Hours"}, {"id": "unit", "value": "suffix: h"}, {"id": "decimals", "value": 1}]}
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "date"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Date"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "forecast_orders"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Forecast Orders"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "forecast_items"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Forecast Items"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "prior_wk_orders"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Prior-Wk Orders"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "prior_wk_items"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Prior-Wk Items"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "orders_vs_prior_wk"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Orders vs Prior Wk %"
+              },
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "items_vs_prior_wk"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Items vs Prior Wk %"
+              },
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "goal_shift_hours"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Goal Shift Hours"
+              },
+              {
+                "id": "unit",
+                "value": "suffix: h"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          }
         ]
       },
       "targets": [
@@ -513,19 +1459,69 @@
     {
       "id": 72,
       "type": "timeseries",
-      "title": "Forecast vs Actual — Orders & Items",
+      "title": "Forecast vs Actual \u2014 Orders & Items",
       "description": "Historical forecast accuracy: how close the 1-day-ahead order and item forecasts were to actuals. Only days that have both a forecast (from model_forecast_daily) and an actual (from model_labor_daily) appear. Empty until the nightly pipeline has run at least once after the migration.",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 106},
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 106
+      },
       "options": {
-        "tooltip": {"mode": "multi"},
-        "legend": {"displayMode": "list", "placement": "bottom"}
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
-        "defaults": {"decimals": 0, "min": 0},
+        "defaults": {
+          "decimals": 0,
+          "min": 0
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Forecast Orders"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}]},
-          {"matcher": {"id": "byName", "options": "Forecast Items"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}]}
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Forecast Orders"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Forecast Items"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              }
+            ]
+          }
         ]
       },
       "targets": [
@@ -542,19 +1538,104 @@
       "id": 73,
       "type": "table",
       "title": "Forecast Inputs / Exclusions",
-      "description": "Recent input days the forecaster saw (last 60 days). Rows with forecast_exclude=TRUE were dropped from the forecast seed averages — either auto-detected outliers or operator-overridden. To override: set forecast_exclude=TRUE on the model_labor_daily BQ row for the anomaly day.",
-      "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 115},
-      "options": {"sortBy": [{"displayName": "Date", "desc": true}]},
+      "description": "Recent input days the forecaster saw (last 60 days). Rows with forecast_exclude=TRUE were dropped from the forecast seed averages \u2014 either auto-detected outliers or operator-overridden. To override: set forecast_exclude=TRUE on the model_labor_daily BQ row for the anomaly day.",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 115
+      },
+      "options": {
+        "sortBy": [
+          {
+            "displayName": "Date",
+            "desc": true
+          }
+        ]
+      },
       "fieldConfig": {
-        "defaults": {"custom": {"filterable": true}},
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "date"}, "properties": [{"id": "displayName", "value": "Date"}]},
-          {"matcher": {"id": "byName", "options": "dow"}, "properties": [{"id": "displayName", "value": "DOW"}]},
-          {"matcher": {"id": "byName", "options": "orders"}, "properties": [{"id": "displayName", "value": "Orders"}]},
-          {"matcher": {"id": "byName", "options": "forecast_exclude"}, "properties": [{"id": "displayName", "value": "Excluded"}]},
-          {"matcher": {"id": "byName", "options": "outlier_reason"}, "properties": [{"id": "displayName", "value": "Outlier Reason"}]},
-          {"matcher": {"id": "byName", "options": "forecast_exclude_reason"}, "properties": [{"id": "displayName", "value": "Exclusion Reason"}]}
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "date"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Date"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "dow"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "DOW"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "orders"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Orders"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "forecast_exclude"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Excluded"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "outlier_reason"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Outlier Reason"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "forecast_exclude_reason"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Exclusion Reason"
+              }
+            ]
+          }
         ]
       },
       "targets": [
@@ -567,6 +1648,5 @@
         }
       ]
     }
-
   ]
 }

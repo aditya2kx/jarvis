@@ -1,5 +1,16 @@
 # Jarvis Build Progress
 
+## 2026-06-10 — ADP scheduled hours → BQ + "Scheduled vs Goal Hours" Grafana panel (PR #44 follow-up; unblocks the deferred item)
+
+**On `feat/forecast-bq-labor-forecast` (PR #44).** The prior entry's item 4 ("ADP scheduled shift hours: still blocked") is now **resolved**. Operator confirmed ADP RUN (not Homebase) is the scheduling system and walked the flow; explored it live with Playwright over CDP and codified it.
+
+1. **Discovery.** ADP's **Team Schedule → "Manage Schedules"** grid is the source. There is **no structured export** — Actions → "Print schedule" only opens Chrome's native print preview of the same DOM. So we scrape the grid: it renders in `iframe[name="timePartnerFrame"]`; per-day footer totals are light-DOM `<team-schedule-total>` elements (`"N Employees\n HH:MM Hrs"`); the week selector + ‹ › chevrons live in **Shadow DOM** (Playwright text/role locators pierce it; raw `querySelectorAll` does not). Verified live: this week (Jun 8-14) 291:30 across 13 employees, next week (Jun 15-21) 286:00 — both weeks are planned, which is the forward horizon we diff against goal.
+2. **Scraper + parser.** New `skills/adp_run_automation/schedule_backend.py` (pure, unit-tested: HH:MM→decimal, week-label→date, per-day record assembly) + `runner.py` `download_schedule()` / `_schedule_within_session()` (open via `#TEMPUS_WEEKLY_SCHEDULE`, scrape current + next week, two-phase wait to dodge the label-updates-before-totals render race). Wired into `download_adp_bundle` (one session / one OTP); **best-effort** — a schedule failure is non-fatal to the nightly run (`_adp_bundle_then_raise` pops `adp_schedule` from the fatal set).
+3. **BQ.** `migration 013` adds `adp_scheduled_daily` (date, scheduled_hours, employee_count, week_start) + `vw_scheduled_vs_goal` (joins forecast for goal inputs + actual labor hours). `backfill_from_downloads.py` parses `Schedule-*.json` → `load_rows(merge_keys=["date"])`.
+4. **Grafana.** New panel 74 "Scheduled Hours vs Goal Hours" in Section 7: scheduled (solid) vs goal = `forecast_items × $goal_hours_per_item` (dashed, same var as panel 71) vs actual (overlay for past days), plain-hours axis. Dashboard bumped to **v32**.
+
+**Verification:** scraped the live current+next week, loaded 14 days to prod BQ, applied migration 013 to prod, confirmed `vw_scheduled_vs_goal` returns joined rows, deployed dashboard v32 — panel renders with data (live link is the evidence). Tests: `test_schedule_backend.py` (28) + full ADP/daily_refresh suites (100) + `test_status.py` (16) green. Throwaway exploration harness deleted.
+
 ## 2026-06-10 — Forecast model simplified (anchor × growth) + accuracy backfill + exclusions %-change (PR #44 follow-up)
 
 **On `feat/forecast-bq-labor-forecast` (PR #44, pre-merge iteration).** Operator feedback on the live v29 dashboard drove four changes; three landed, one stays blocked.

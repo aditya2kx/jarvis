@@ -1109,7 +1109,14 @@ def _adp_bundle_then_raise(
         earnings_end=earnings_end,
         earnings_custom_range=earnings_custom_range,
     )
-    errs = result.get("errors") or {}
+    errs = dict(result.get("errors") or {})
+    # adp_schedule is a best-effort, non-critical auxiliary scrape (forward
+    # scheduled hours for the Grafana scheduled-vs-goal panel). The forecast /
+    # labor / tip pipeline does not depend on it, so a schedule hiccup must NOT
+    # fail the nightly ADP step. Warn but don't raise on it.
+    sched_err = errs.pop("adp_schedule", None)
+    if sched_err:
+        print(f"[adp_bundle] WARN: schedule scrape failed (non-fatal): {sched_err}")
     if errs:
         summary = "; ".join(f"{name}: {msg}" for name, msg in errs.items())
         raise RuntimeError(f"adp_bundle partial failure ({len(errs)} component(s)): {summary}")

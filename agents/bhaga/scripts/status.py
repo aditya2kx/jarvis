@@ -117,6 +117,11 @@ BQ_TARGETS: list[Target] = [
     # model_forecast_daily has future-only rows until the first nightly load runs;
     # status check will show EMPTY until then (expected pre-load).
     Target("model_forecast_daily", "date"),
+    # ── ADP scheduled hours (migration 013) ──────────────────────────────────
+    # adp_scheduled_daily is forward-looking (current + next week from the ADP
+    # Team Schedule scrape); max_date is in the future, so the freshness check
+    # reads as fresh. Empty until the first nightly schedule scrape runs.
+    Target("adp_scheduled_daily", "date"),
 ]
 
 GRAFANA_VIEWS: list[Target] = [
@@ -148,6 +153,11 @@ GRAFANA_VIEWS: list[Target] = [
     Target("vw_model_forecast", "date"),
     Target("vw_forecast_accuracy", "date"),
     Target("vw_forecast_exclusions", "date"),
+    # migration 013: Scheduled Hours vs Goal Hours panel (section 7, panel 74) —
+    # dashboard v32. vw_scheduled_vs_goal joins adp_scheduled_daily with the
+    # forecast (goal = forecast_items x $goal_hours_per_item, computed in Grafana)
+    # and actual labor hours. Forward-looking; empty until the first schedule scrape.
+    Target("vw_scheduled_vs_goal", "date"),
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

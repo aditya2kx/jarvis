@@ -22,13 +22,16 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    unavailable, falls back to reading `data_window_end` from the Model sheet config tab. This replaces
    the old sheet-based `_read_data_window_end_from_sheet` / `compute_gap_window` as the primary path.
 2. **Scrape Square** transactions for the gap (`skills/square_tips/`), dedupe-append.
-3. **Scrape ADP** timecards / earnings for overlapping pay periods (`skills/adp_run_automation/`).
-   2FA, if challenged, goes through the **OTP gate** (see below).
+3. **Scrape ADP** timecards / earnings / **team schedule** for overlapping pay periods
+   (`skills/adp_run_automation/`). 2FA, if challenged, goes through the **OTP gate** (see below).
+   The schedule scrape (forward scheduled hours, current + next week) is **best-effort** — a
+   failure is non-fatal to the nightly run (see `daily_refresh._adp_bundle_then_raise`).
 4. **Load scrapes → BigQuery (primary)** (`backfill_from_downloads.py`, requires `BHAGA_DATASTORE=bigquery`):
-   maps parse-output dicts through `map_*` functions and calls `load_rows` (MERGE upsert) for all 11 raw
+   maps parse-output dicts through `map_*` functions and calls `load_rows` (MERGE upsert) for all 12 raw
    BQ tables. BQ is the **single source of truth**. Handles: `square_transactions`, `square_daily_rollup`,
    `square_item_lines`, `square_item_daily`, `square_kds_daily`, `square_kds_tickets`,
-   `adp_shifts`, `adp_punches`, `adp_wage_rates`, `adp_earnings`.
+   `adp_shifts`, `adp_punches`, `adp_wage_rates`, `adp_earnings`, `adp_scheduled_daily`
+   (per-day scheduled hours, parsed from `Schedule-*.json` via `schedule_backend.build_schedule_records`).
    If `load_raw_bigquery` fails, `square.done` and `adp.done` markers are **cleared** so the next
    retry re-scrapes fresh data (retry-skips-rescrape guarantee).
 4b. **Render raw Sheets from BQ** (`render_raw_sheet_from_bq.py`, non-fatal): inverse-maps each BQ raw
@@ -111,7 +114,7 @@ nightly). Both honor sandbox write-bucket isolation via `gcs_cache`.
 
 | Script | Role |
 |---|---|
-| `status.py` | **Run this first for any operational question about whether a run landed.** Read-only freshness checker across all three layers — Sheets (`data_window_end`, `daily`, `tip_alloc_daily`), BigQuery (model_* + raw tables), and Grafana BI contract views (vw_*). Prints a compact table and exits nonzero if any layer is missing the date (alert/CI usable). Anti-drift: its declarative registry is kept in sync with `core/migrations/*.sql` and `agents/bhaga/grafana/dashboard.json` (through dashboard v30) by CI-enforced coupling in `scripts/check_doc_freshness.py` and by sync tests in `test_status.py`. CLI: `python3 -m agents.bhaga.scripts.status --store palmetto [--date YYYY-MM-DD] [--json] [--check-schema]`. |
+| `status.py` | **Run this first for any operational question about whether a run landed.** Read-only freshness checker across all three layers — Sheets (`data_window_end`, `daily`, `tip_alloc_daily`), BigQuery (model_* + raw tables), and Grafana BI contract views (vw_*). Prints a compact table and exits nonzero if any layer is missing the date (alert/CI usable). Anti-drift: its declarative registry is kept in sync with `core/migrations/*.sql` and `agents/bhaga/grafana/dashboard.json` (through dashboard v32) by CI-enforced coupling in `scripts/check_doc_freshness.py` and by sync tests in `test_status.py`. CLI: `python3 -m agents.bhaga.scripts.status --store palmetto [--date YYYY-MM-DD] [--json] [--check-schema]`. |
 | `daily_refresh.py` | **Nightly orchestrator.** Gap compute → scrape → raw → model → reviews → **mechanical + semantic verify** → notify. After `assert_model_tabs_populated` it runs `model_semantics.assert_model_semantics` (conservation + adp reconciliation + review-bonus survival) and trips the **pipeline halt circuit breaker** on a semantic failure (refuses fresh runs with `EXIT_HALTED` until a healthy run / `--ignore-halt` clears it). CLI: `python3 -m agents.bhaga.scripts.daily_refresh --store palmetto [--date YYYY-MM-DD] [--skip-reviews] [--ignore-halt] [--dry-run]`. |
 | `daily_refresh_wrapper.py` | Thin wrapper / Cloud Run entrypoint around `daily_refresh`. |
 | `otp_gate.py` | OTP **checkpoint-and-resume**: writes a pending request to Firestore + Slack, blocks until the webhook records the operator's reply. |

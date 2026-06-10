@@ -1,8 +1,35 @@
 # skills/adp_run_automation
 
-Playwright-driven extraction of per-employee daily clock-in/clock-out hours from **ADP RUN's Time Tracker** (a.k.a. Timekeeping Plus), specifically the left-sidebar **Time > Timecards** page.
+Playwright-driven extraction from **ADP RUN** for BHAGA's labor model.
 
-**Status:** scaffold only. To be implemented in BHAGA milestone M2.
+## Implemented scrapes (`runner.py` — drive these via `download_adp_bundle`)
+
+All three run in **one browser session / one login / one OTP** via
+`download_adp_bundle(...)`; standalone entry points exist for ad-hoc runs.
+
+| Function | Source | Output | Parser |
+|---|---|---|---|
+| `download_timecard` | Reports → Time → Timecard | `Timecard-<date>.xlsx` (per-punch) | `shift_backend.py` |
+| `download_earnings` | Reports → saved "Earnings and Hours V1" | `Earnings-…-<date>.xlsx` (wage rates + CC-tips) | `compensation_backend.py` |
+| `download_schedule` | Home → **Team Schedule** ("Manage Schedules") | `Schedule-<date>.json` (per-day scheduled hours, current + next week) | `schedule_backend.py` |
+
+**Team Schedule scrape** (added 2026-06-10): ADP exposes NO structured export
+for the schedule (Actions → "Print schedule" only opens the browser's native
+print preview), so we scrape the grid DOM. The grid renders in
+`iframe[name="timePartnerFrame"]`; per-day footer totals are light-DOM
+`<team-schedule-total>` elements (`"N Employees\n HH:MM Hrs"`). The week
+selector + ‹ › chevrons live in **Shadow DOM** (use Playwright text/role
+locators, which pierce open shadow roots; raw `querySelectorAll` misses them).
+The scrape is forward-looking (current + next week), best-effort (a failure is
+non-fatal to the nightly run), and lands in BQ `adp_scheduled_daily` via
+`backfill_from_downloads.py` → Grafana panel "Scheduled Hours vs Goal Hours".
+Selector/flow knowledge is codified in `schedule_backend.py` (constants +
+`SCHEDULE_EXTRACT_JS`); parser is unit-tested in `test_schedule_backend.py`.
+
+> The sections below are the original M2 scaffold notes; kept for the timecard
+> calibration history. The implemented behavior is the table above.
+
+**Status (original):** scaffold only. To be implemented in BHAGA milestone M2.
 
 ## Why this exists (and why it's not an API call)
 

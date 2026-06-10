@@ -953,7 +953,7 @@ python3 agents/bhaga/grafana/verify_panels.py --fail-on-empty             # 0-ro
 python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
 ```
 
-Migrations live in `core/migrations/001_initial_schema.sql` … `011_labor_forecast.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`). Migration 005 adds: `square_item_lines`, `square_kds_daily`, `square_kds_tickets`, `adp_earnings`, `google_reviews` raw tables; and `vw_order_quality_daily`, `vw_kds_item_investigation`, `vw_staff_on_shift`, extended `vw_model_labor_daily/weekly`, extended `vw_model_payroll_period` (with ADP actuals + diffs). Migration 011 adds: `model_forecast_daily` table and `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` views (see Labor Forecast section below).
+Migrations live in `core/migrations/001_initial_schema.sql` … `013_adp_scheduled_hours.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`). Migration 005 adds: `square_item_lines`, `square_kds_daily`, `square_kds_tickets`, `adp_earnings`, `google_reviews` raw tables; and `vw_order_quality_daily`, `vw_kds_item_investigation`, `vw_staff_on_shift`, extended `vw_model_labor_daily/weekly`, extended `vw_model_payroll_period` (with ADP actuals + diffs). Migration 011 adds: `model_forecast_daily` table and `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` views (see Labor Forecast section below). Migration 013 adds: `adp_scheduled_daily` table (per-day ADP scheduled hours) and `vw_scheduled_vs_goal` view (scheduled vs goal vs actual hours; dashboard panel 74).
 
 ### BQ backfill (one-shot)
 
@@ -1013,6 +1013,10 @@ Section 7 "Labor Forecast" on the BHAGA Analytics dashboard shows:
 - **Labor Forecast — next 30 days table** (panels from `vw_model_forecast`): date, forecast orders/items, prior-week actuals/forecasts, % change, goal shift hours
 - **Forecast vs Actual chart** (from `vw_forecast_accuracy`): accuracy history
 - **Forecast Inputs / Exclusions table** (from `vw_forecast_exclusions`): recent input days with exclusion flags
+- **Scheduled Hours vs Goal Hours chart** (panel 74, from `vw_scheduled_vs_goal`, dashboard v32): ADP Team
+  Schedule scheduled hours/day (current + next week) vs goal hours (`forecast_items × $goal_hours_per_item`)
+  with an actual-hours overlay for past days. Data comes from the nightly **best-effort** ADP schedule scrape
+  (`adp_scheduled_daily`, migration 013); a scrape failure does not fail the nightly run.
 
 ### Applying the migration (one-time)
 

@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 30,
+  "version": 32,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {
@@ -1739,6 +1739,70 @@
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
           "rawSql": "SELECT date, dow, orders, prev_wk_orders, orders_vs_prev_wk, items_sold, prev_wk_items, items_vs_prev_wk, forecast_exclude, outlier_reason, forecast_exclude_reason FROM `jarvis-bhaga-prod.bhaga.vw_forecast_exclusions` ORDER BY date DESC"
+        }
+      ]
+    },
+    {
+      "id": 74,
+      "type": "timeseries",
+      "title": "Scheduled Hours vs Goal Hours",
+      "description": "ADP Team Schedule scheduled labor hours per day (current + next week, scraped nightly) vs goal hours (forecast_items \u00d7 $goal_hours_per_item, same as the forecast table). Actual worked hours overlay once a day is in the past. Positive gap (Scheduled > Goal) = over-scheduled vs the labor target.",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 125
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "min": 0,
+          "custom": {
+            "axisLabel": "Hours"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Goal Hours"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 0,
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, scheduled_hours AS `Scheduled Hours`, ROUND(forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS `Goal Hours`, actual_hours AS `Actual Hours` FROM `jarvis-bhaga-prod.bhaga.vw_scheduled_vs_goal` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     }

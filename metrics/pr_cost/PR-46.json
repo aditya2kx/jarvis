@@ -5,7 +5,7 @@
   "requirement": "Correct PR #45 $0 placeholder (usage-API lag); record this fix-up's tail usage",
   "branch": "chore/cost-finalize-pr45",
   "created_at": null,
-  "merged_at": null,
+  "merged_at": "2026-06-10T04:57:11Z",
   "diff": {
     "files": null,
     "additions": null,

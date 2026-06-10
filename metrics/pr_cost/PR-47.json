@@ -1,0 +1,121 @@
+{
+  "pr_number": 47,
+  "provisional_id": null,
+  "title": "fix(bhaga): serialize Square scrapes across Cloud Run executions (6/9 concurrent-scrape regression)",
+  "requirement": "Fix 6/9 incremental run: Square scrap regression \u2014 concurrent scrapes caused no results; email report downloaded but login issue reported in Slack. Investigate Slack thread + Cloud Run logs; ensure OTP portals serialize and session/login state is consistent.",
+  "branch": "fix/square-scrape-concurrent-regression",
+  "created_at": "2026-06-10T21:49:36Z",
+  "merged_at": null,
+  "diff": {
+    "files": null,
+    "additions": null,
+    "deletions": null
+  },
+  "build": {
+    "source": "cursor dashboard usage API (conversation-scoped via ai_code_hashes)",
+    "approximate": false,
+    "attribution_mode": "conversation",
+    "session_started_at": null,
+    "conversation_ids": [
+      "985acff3-915d-4fa4-a0cf-fc327c316dc6"
+    ],
+    "sessions": [
+      {
+        "ts": "2026-06-10T21:31:22.411000+00:00",
+        "model": "claude-opus-4-8-thinking-medium",
+        "tokens": 1319746,
+        "cost_usd": 1.1787,
+        "cost_source": "cursor_charged",
+        "conversation_id": "985acff3-915d-4fa4-a0cf-fc327c316dc6",
+        "input_tokens": 24,
+        "output_tokens": 12994,
+        "cache_read_input_tokens": 1271888,
+        "cache_creation_input_tokens": 34840,
+        "note": "chat:985acff3"
+      },
+      {
+        "ts": "2026-06-10T21:32:06.983000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 8713228,
+        "cost_usd": 3.9203,
+        "cost_source": "cursor_charged",
+        "conversation_id": "985acff3-915d-4fa4-a0cf-fc327c316dc6",
+        "input_tokens": 159731,
+        "output_tokens": 34894,
+        "cache_read_input_tokens": 8246298,
+        "cache_creation_input_tokens": 272305,
+        "note": "chat:985acff3"
+      },
+      {
+        "ts": "2026-06-10T21:38:48.349000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 8973049,
+        "cost_usd": 3.7961,
+        "cost_source": "cursor_charged",
+        "conversation_id": "985acff3-915d-4fa4-a0cf-fc327c316dc6",
+        "input_tokens": 72,
+        "output_tokens": 37289,
+        "cache_read_input_tokens": 8774566,
+        "cache_creation_input_tokens": 161122,
+        "note": "chat:985acff3"
+      },
+      {
+        "ts": "2026-06-10T21:42:18.301000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 2308973,
+        "cost_usd": 0.8772,
+        "cost_source": "cursor_charged",
+        "conversation_id": "985acff3-915d-4fa4-a0cf-fc327c316dc6",
+        "input_tokens": 23,
+        "output_tokens": 8050,
+        "cache_read_input_tokens": 2281736,
+        "cache_creation_input_tokens": 19164,
+        "note": "chat:985acff3"
+      },
+      {
+        "ts": "2026-06-10T21:45:56.130000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 345419,
+        "cost_usd": 0.1148,
+        "cost_source": "cursor_charged",
+        "conversation_id": "985acff3-915d-4fa4-a0cf-fc327c316dc6",
+        "input_tokens": 5,
+        "output_tokens": 421,
+        "cache_read_input_tokens": 343544,
+        "cache_creation_input_tokens": 1449,
+        "note": "chat:985acff3"
+      },
+      {
+        "ts": "2026-06-10T21:47:24.142000+00:00",
+        "model": "claude-4.6-sonnet-medium-thinking",
+        "tokens": 366835,
+        "cost_usd": 0.2467,
+        "cost_source": "cursor_charged",
+        "conversation_id": "985acff3-915d-4fa4-a0cf-fc327c316dc6",
+        "input_tokens": 5,
+        "output_tokens": 7453,
+        "cache_read_input_tokens": 351522,
+        "cache_creation_input_tokens": 7855,
+        "note": "chat:985acff3"
+      }
+    ],
+    "tokens_total": 22027250,
+    "cost_usd_total": 10.1338,
+    "window": {
+      "start": "2026-06-10T21:23:07+00:00",
+      "end": "2026-06-10T21:49:44.515000+00:00"
+    }
+  },
+  "review": {
+    "source": "claude-code-action execution_file (exact)",
+    "runs": [],
+    "tokens_total": 0,
+    "cost_usd_total": 0,
+    "run_count": 0
+  },
+  "totals": {
+    "tokens": 22027250,
+    "cost_usd": 10.1338
+  },
+  "session_started_at": "2026-06-10T21:23:07+00:00"
+}

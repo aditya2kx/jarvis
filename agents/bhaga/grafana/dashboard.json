@@ -4,12 +4,12 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 35,
+  "version": 36,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {
     "from": "now-90d",
-    "to": "now"
+    "to": "now+31d"
   },
   "timepicker": {},
   "tags": [

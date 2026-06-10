@@ -34,8 +34,28 @@ code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12p
 </style></head>
 <body><div class="wrap">
 <h1>PR cost monitoring</h1>
-<p class="muted">28 PR(s) · $383.50 total · generated 2026-06-10 04:48 UTC · source: <code>metrics/pr_cost/PR-*.json</code> · rates verified 2026-06-03 (<a href="https://cursor.com/docs/models-and-pricing" style="color:#539bf5">cursor.com/docs/models-and-pricing</a>)</p>
+<p class="muted">29 PR(s) · $396.56 total · generated 2026-06-10 04:53 UTC · source: <code>metrics/pr_cost/PR-*.json</code> · rates verified 2026-06-03 (<a href="https://cursor.com/docs/models-and-pricing" style="color:#539bf5">cursor.com/docs/models-and-pricing</a>)</p>
 
+    <section class="pr">
+      <p class="pr-title">#45 — fix(grafana): repair KDS order-date query var, Min/Item threshold, labor y-axis cap</p>
+      <p class="muted">merged 2026-06-10 · build = Cursor usage API · review = Claude Sonnet bot</p>
+      <div class="stats">
+        <div class="stat"><div class="v">$13.07</div><div class="l">Total cost</div></div>
+        <div class="stat"><div class="v build">$13.07</div><div class="l">Build (100%)</div></div>
+        <div class="stat"><div class="v review">$0.00</div><div class="l">Review · 3 runs</div></div>
+        <div class="stat"><div class="v">15.5M</div><div class="l">Tokens</div></div>
+      </div>
+      <div class="bar"><div class="b" style="width:100.0%"></div><div class="r" style="width:0.0%"></div></div>
+      <p class="muted">Build 100% · Review 0%</p>
+      <h2>Where the effort went — top 5 cost areas</h2>
+      <table><thead><tr><th>Area</th><th>Model</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">% of PR</th></tr></thead>
+      <tbody><tr class="build"><td>build session 2026-06-10T04:27:44.899000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">10.6M</td><td class="n">$7.36</td><td class="n">56.4%</td></tr><tr class="build"><td>build session 2026-06-10T04:36:31.360000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">782k</td><td class="n">$1.96</td><td class="n">15.0%</td></tr><tr class="build"><td>build session 2026-06-10T04:35:42.266000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">772k</td><td class="n">$1.76</td><td class="n">13.5%</td></tr><tr class="build"><td>build session 2026-06-10T04:47:18.422000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">2.9M</td><td class="n">$1.67</td><td class="n">12.7%</td></tr><tr class="build"><td>build session 2026-06-10T04:46:10.572000+00:00</td><td>claude-opus-4-8-thinking-medium</td><td class="n">526k</td><td class="n">$0.31</td><td class="n">2.4%</td></tr></tbody></table>
+      <h2>Diagnosis</h2>
+      <div class="obs"><b>•</b>Build is 100% of total cost ($13.07) vs review 0% ($0.00). Optimization leverage is in the build loop.</div><div class="obs"><b>•</b>Cache reads are 94% of build tokens (14,565,814 tok) — context re-reads, not new work. Each agent turn re-reads the entire conversation history as cache-read tokens. Start a fresh chat per PR to reset this counter.</div><div class="obs"><b>•</b>Model mix: opus $13.07 (100%).</div><div class="obs"><b>•</b>One session (2026-06-10T04:27:44, $7.36, 10,586,252 tok) is 56% of build cost — a marathon thread with an ever-growing context.</div><div class="obs"><b>•</b>Review: 3 runs × ~$0.00/run = $0.00. Convergence policy (inline = blocking only, delta re-review) is active since PR #13.</div>
+      <h2>Tactical recommendations</h2>
+      <div class="rec"><b>#1</b>Start a new Cursor chat for each PR/requirement (run `scripts/start_pr_session.py --pr 45` to get a seeded brief + cursor:// link). Each turn re-reads the entire history as cache-read tokens; a fresh chat resets the counter. Est. saving: ~$3.92 (30% of build).</div><div class="rec"><b>#2</b>Route standard feature work to Sonnet 4.6 (default) — reserve Opus 4.8 only for hard multi-file reasoning or subtle bugs. 4 Opus session(s) (2026-06-10T04:27:44 ($7.36), 2026-06-10T04:36:31 ($1.96), 2026-06-10T04:35:42 ($1.76)) cost $12.75; same work on Sonnet ≈ $8.25. Est. saving: ~$4.50. Rates (verified 2026-06-03): Opus cache-read $0.50/M vs Sonnet $0.30/M; output $25/M vs $15/M.</div>
+    </section>
+    
     <section class="pr">
       <p class="pr-title">#43 — feat(grafana+ci): KDS defaults, p99 goal line, Hrs/Item 20%, sandbox policy opt-in</p>
       <p class="muted">merged 2026-06-10 · build = Cursor usage API · review = Claude Sonnet bot</p>

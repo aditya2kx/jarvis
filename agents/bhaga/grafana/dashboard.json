@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 29,
+  "version": 30,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {
@@ -1635,6 +1635,100 @@
                 "value": "Exclusion Reason"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "prev_wk_orders"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Prev Wk Orders"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "orders_vs_prev_wk"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Orders \u0394 vs Prev Wk"
+              },
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "text",
+                      "value": -0.25
+                    },
+                    {
+                      "color": "green",
+                      "value": 0.25
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "items_sold"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Items"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "prev_wk_items"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Prev Wk Items"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "items_vs_prev_wk"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Items \u0394 vs Prev Wk"
+              },
+              {
+                "id": "unit",
+                "value": "percentunit"
+              }
+            ]
           }
         ]
       },
@@ -1644,7 +1738,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT date, dow, orders, forecast_exclude, outlier_reason, forecast_exclude_reason FROM `jarvis-bhaga-prod.bhaga.vw_forecast_exclusions` ORDER BY date DESC"
+          "rawSql": "SELECT date, dow, orders, prev_wk_orders, orders_vs_prev_wk, items_sold, prev_wk_items, items_vs_prev_wk, forecast_exclude, outlier_reason, forecast_exclude_reason FROM `jarvis-bhaga-prod.bhaga.vw_forecast_exclusions` ORDER BY date DESC"
         }
       ]
     }

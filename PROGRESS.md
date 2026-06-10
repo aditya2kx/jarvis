@@ -1,5 +1,16 @@
 # Jarvis Build Progress
 
+## 2026-06-10 — Forecast model simplified (anchor × growth) + accuracy backfill + exclusions %-change (PR #44 follow-up)
+
+**On `feat/forecast-bq-labor-forecast` (PR #44, pre-merge iteration).** Operator feedback on the live v29 dashboard drove four changes; three landed, one stays blocked.
+
+1. **Forecast logic rewritten to a simple, explainable model** (`forecast_bq.py`). `forecast(day) = most-recent same-weekday actual × growth ** weeks_apart`, where `growth = mean(orders, last 7 actual days) / mean(prior 7)` clamped to [0.80, 1.20]. Excluded/closed anchor days are skipped a **whole week at a time** (day-of-week always preserved — the "smarter fallback"); items use the anchor day's actual items × growth (not a global ratio). Replaces the prior weighted-DOW + capped-trend model. Only `_get_parsed_rows` is still reused from `forecast.py`; `wage_rates` is no longer an input (kept as an ignored param for caller compat).
+2. **Forecast-vs-Actual was empty by construction** (all forecast dates are future, so the same-date accuracy join had nothing). Added `build_backfill_rows()` — leakage-free forecasts for the last 8 weeks of PAST dates, each computed using only actuals strictly before it (recompute is deterministic → idempotent). `materialize_model_bq.py` now writes future + backfill rows every run; backfilled past rows have `date < today` so they feed `vw_forecast_accuracy` without appearing in the forward `vw_model_forecast`.
+3. **Exclusions table prev-week comparison** (`migration 012`): `vw_forecast_exclusions` now also exposes `prev_wk_orders`, `prev_wk_items`, and signed `orders_vs_prev_wk` / `items_vs_prev_wk` (% change vs the SAME weekday one week earlier). Panel 73 surfaces these with percent formatting + color so a large swing flags an exclusion candidate. Dashboard bumped to **v30**.
+4. **ADP scheduled shift hours (vs goal hours): still blocked.** The ADP automation only scrapes worked time (Timecard punches) + earnings; there is no future-schedule export, the Timecard "Schedule" rows are undated and skipped, and `adp_palmetto_login` is not in this environment's Keychain. Deferred again — needs the credential AND discovery of whether ADP RUN exposes a forward-schedule report (or a different scheduling source).
+
+**Verification:** `test_forecast_bq.py` rewritten for the new model (14 tests, today-relative grids); applied migration 012 + wrote forecast & 8-week backfill to prod BQ; deployed dashboard v30 from the branch (live link is the evidence).
+
 ## 2026-06-09 — Grafana hotfix: KDS query-var, Min/Item threshold, labor y-axis cap
 
 **Context:** After PR #43 merged, the operator found three dashboard gaps. This hotfix (branch `fix/grafana-kds-vars-labor-yaxis`, off `main`) fixes them; the dashboard bumps to v28.

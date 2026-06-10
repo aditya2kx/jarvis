@@ -463,7 +463,10 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     # Skip: BHAGA_SKIP_FORECAST=1 env var.
     if not os.environ.get("BHAGA_SKIP_FORECAST") and not dry_run:
         try:
-            from agents.bhaga.scripts.forecast_bq import build_forecast_rows
+            from agents.bhaga.scripts.forecast_bq import (
+                build_backfill_rows,
+                build_forecast_rows,
+            )
             from agents.bhaga.scripts.backfill_bigquery import map_forecast_daily
             horizon = int(profile.get("forecast_horizon_days", 30))
             f_rows = build_forecast_rows(
@@ -471,10 +474,15 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
                 wage_rates=wage_rates,
                 horizon_days=horizon,
             )
-            bq_f_rows = [map_forecast_daily(r) for r in f_rows]
+            # Leakage-free historical forecasts so vw_forecast_accuracy has
+            # forecast-vs-actual history immediately (and stays self-healing).
+            b_rows = build_backfill_rows(labor_daily_rows=labor_daily_rows, weeks=8)
+            all_rows = f_rows + b_rows
+            bq_f_rows = [map_forecast_daily(r) for r in all_rows]
             load_rows("model_forecast_daily", bq_f_rows, merge_keys=["date"])
-            print(f"# [load_forecast_bq] {len(bq_f_rows)} rows → model_forecast_daily "
-                  f"(today+1..today+{horizon}).")
+            print(f"# [load_forecast_bq] {len(f_rows)} future + {len(b_rows)} backfill "
+                  f"rows → model_forecast_daily (today+1..today+{horizon}, "
+                  f"plus last 8 weeks for accuracy).")
         except Exception as _exc:  # noqa: BLE001
             print(f"# [load_forecast_bq] WARNING: non-fatal failure: {_exc}")
 

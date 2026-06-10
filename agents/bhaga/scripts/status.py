@@ -140,8 +140,11 @@ GRAFANA_VIEWS: list[Target] = [
     # $kds_date query-var shape + unquoted threshold — same view, no new entry.
     Target("vw_kds_order_investigation", "date_local"),
     Target("vw_staff_on_shift", "date"),
-    # migration 011: Labor Forecast section (section 7) panels — dashboard v29
-    # vw_model_forecast and vw_forecast_accuracy will be EMPTY pre-load (expected).
+    # migration 011: Labor Forecast section (section 7) panels — dashboard v30.
+    # migration 012 added prev-week %-change columns to vw_forecast_exclusions;
+    # the view set is unchanged so these Targets still cover section 7.
+    # vw_model_forecast is empty pre-load; vw_forecast_accuracy fills from the
+    # leakage-free backfill (build_backfill_rows) on the first materialize.
     Target("vw_model_forecast", "date"),
     Target("vw_forecast_accuracy", "date"),
     Target("vw_forecast_exclusions", "date"),

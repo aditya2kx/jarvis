@@ -405,9 +405,9 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 | `vw_kds_item_investigation` | (date_local, item) | `item_name`, `category`, `qty`, `per_item_min`, `ticket_min`, `device_name`, `time_created` | Explodes `items_in_ticket` from `square_kds_tickets`; `per_item_min = ROUND(completion_time_sec / num_items / 60)` (integer). category is best-effort from `square_item_lines` dimension. Delimiter: `"; "` (semicolon + space). Item format: `"<qty>x <name>"`. |
 | `vw_staff_on_shift` | date | `employee`, `in_time`, `out_time`, `total_hours` | From `adp_shifts`. |
 | `model_forecast_daily` | date | `date`, `forecast_orders`, `forecast_items`, `forecast_generated_at`, `materialized_at_utc` | BQ-authoritative daily forecast. Nightly write: today+1…today+30. Past dates freeze. Merge key: `date`. Added migration 011. |
-| `vw_model_forecast` | date | `date`, `forecast_orders`, `forecast_items`, `prior_wk_orders`, `prior_wk_items`, `orders_vs_prior_wk`, `items_vs_prior_wk` | Forward-looking Grafana view: next 30 days with COALESCE(actual@-7d, forecast@-7d) prior-week comparison. |
+| `vw_model_forecast` | date | `date`, `forecast_orders`, `forecast_items`, `prior_wk_orders`, `prior_wk_items`, `orders_vs_prior_wk`, `items_vs_prior_wk`, `scheduled_hours` | Forward-looking Grafana view: next 30 days with COALESCE(actual@-7d, forecast@-7d) prior-week comparison + ADP scheduled hours (migration 014). |
 | `vw_forecast_accuracy` | date | `date`, `forecast_orders`, `actual_orders`, `forecast_items`, `actual_items` | Accuracy series: past forecast days joined to actuals. |
-| `vw_forecast_exclusions` | date | `date`, `dow`, `orders`, `forecast_exclude`, `outlier_reason`, `forecast_exclude_reason` | Recent 60-day input days with exclusion flags and reasons. |
+| `vw_forecast_exclusions` | date | `date`, `dow`, `orders`, `prev_wk_orders`, `orders_vs_prev_wk`, `items_sold`, `prev_wk_items`, `items_vs_prev_wk`, `net_sales`, `prev_wk_net_sales`, `net_sales_vs_prev_wk`, `aov`, `prev_wk_aov`, `forecast_exclude`, `outlier_reason`, `forecast_exclude_reason` | Recent 60-day input days with exclusion flags, reasons, net-sales/AOV vs prior week (migration 014). |
 
 **Grafana dashboard** (`agents/bhaga/grafana/dashboard.json`) reads from these views in 5 sections: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll.
 
@@ -422,16 +422,13 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 
 The nightly pipeline (`materialize_model_bq.py`) calls `forecast_bq.build_forecast_rows()` after
 writing `model_labor_daily`, then loads the result into `model_forecast_daily` with
-`merge_keys=["date"]`. Only the future window (today+1 … today+30) is ever written; past rows
-freeze at their last 1-day-ahead value for implicit accuracy tracking.
+`merge_keys=["date"]`. **Future rows** (today+1…today+30) are merged each nightly run, updating until the day passes. **Past rows** are gap-fill-only: the nightly pipeline reads existing past dates first and skips them, freezing history across model updates. Each row is stamped with `forecast_model_version` (e.g. `"wow_median_4wk_v2"`) for accuracy attribution.
 
-Three Grafana views expose the data: `vw_model_forecast` (forward-looking with prior-week comparison),
-`vw_forecast_accuracy` (past forecast vs actual), `vw_forecast_exclusions` (recent input days with
-`forecast_exclude` flag).
+**Growth model (wow_median_4wk_v2, 2026-06-10):** `growth = median` of consecutive same-weekday WoW order ratios over the trailing 28 days, clamped [0.80, 1.20]. Each ratio = orders[d] / orders[d-7] for matching weekdays. Robust to one anomalous week (median ignores a 2.3× holiday spike when 18 other pairs are normal). Returns 1.0 when <2 valid pairs. Prod value: ~+2.7%/wk.
 
-**`forecast_exclude` override** — set `forecast_exclude = TRUE` on a `model_labor_daily` row to drop
-that day from the forecast seed (e.g. anomalous-volume day). The forecaster calls
-`_get_parsed_rows(exclude_flagged=True)`.
+Three Grafana views expose the data: `vw_model_forecast` (forward-looking with prior-week comparison + ADP scheduled hours), `vw_forecast_accuracy` (past forecast vs actual), `vw_forecast_exclusions` (recent input days with `forecast_exclude` flag + net-sales/AOV vs prior week).
+
+**`forecast_exclude` override** — set `forecast_exclude = TRUE` on a `model_labor_daily` row to drop that day from the forecast seed. The outlier detector auto-sets this for two signal types: (1) order-volume DOWN outliers (robust-z < −2.5 with negative residual vs trend expectation); (2) **AOV down outliers** (Average Order Value = net_sales/orders robust-z < −2.5, detecting comped/discounted days). Both are computed in `compute_outlier_stats` (forecast.py). The forecaster calls `_get_parsed_rows(exclude_flagged=True)`.
 
 ### Legacy doc (pre-2026-06-09)
 

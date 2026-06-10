@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Unit tests for agents.bhaga.scripts.forecast_bq (2026-06-10 algorithm).
+"""Unit tests for agents.bhaga.scripts.forecast_bq (wow_median_4wk_v2 algorithm).
 
 Model under test:
     forecast(day) = most-recent same-weekday actual × growth ** weeks_apart
-    growth        = mean(orders, last 7 actual days) / mean(prior 7), clamped
+    growth = median of consecutive same-weekday WoW order ratios over 4 weeks
     excluded/closed anchor days are skipped a WHOLE WEEK at a time (DOW kept)
 
 Grids are anchored to *today* (last row = yesterday) so the same-weekday anchor
@@ -21,7 +21,13 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
-from agents.bhaga.scripts.forecast_bq import build_backfill_rows, build_forecast_rows
+from agents.bhaga.scripts.forecast_bq import (
+    CURRENT_FORECAST_VERSION,
+    _growth_multiplier,
+    _index_operating_days,
+    build_backfill_rows,
+    build_forecast_rows,
+)
 
 _HEADER = (
     ["date", "dow", "gross_sales", "discounts", "net_sales", "tip_pool",
@@ -100,9 +106,15 @@ class BuildForecastRowsTests(unittest.TestCase):
             self.assertEqual(dates[i], dates[i - 1] + datetime.timedelta(days=1))
 
     def test_all_fields_present(self):
-        required = {"date", "forecast_orders", "forecast_items", "forecast_generated_at"}
+        required = {"date", "forecast_orders", "forecast_items",
+                    "forecast_generated_at", "forecast_model_version"}
         for r in build_forecast_rows(labor_daily_rows=_grid()):
             self.assertEqual(set(r.keys()), required)
+
+    def test_model_version_stamped(self):
+        rows = build_forecast_rows(labor_daily_rows=_grid())
+        for r in rows:
+            self.assertEqual(r["forecast_model_version"], CURRENT_FORECAST_VERSION)
 
     def test_orders_non_negative(self):
         for r in build_forecast_rows(labor_daily_rows=_grid()):
@@ -173,9 +185,97 @@ class BuildBackfillRowsTests(unittest.TestCase):
         self.assertEqual(build_backfill_rows(labor_daily_rows=[_HEADER]), [])
 
     def test_backfill_has_required_fields(self):
-        required = {"date", "forecast_orders", "forecast_items", "forecast_generated_at"}
+        required = {"date", "forecast_orders", "forecast_items",
+                    "forecast_generated_at", "forecast_model_version"}
         for r in build_backfill_rows(labor_daily_rows=_grid(), weeks=4):
             self.assertEqual(set(r.keys()), required)
+
+    def test_backfill_model_version_stamped(self):
+        rows = build_backfill_rows(labor_daily_rows=_grid(), weeks=4)
+        for r in rows:
+            self.assertEqual(r["forecast_model_version"], CURRENT_FORECAST_VERSION)
+
+
+class GrowthMultiplierTests(unittest.TestCase):
+    """Tests for _growth_multiplier (median consecutive same-weekday WoW)."""
+
+    def _by_date(self, grid):
+        return _index_operating_days(grid)
+
+    def test_flat_history_returns_one(self):
+        """No growth across 4 weeks → every ratio = 1.0 → median = 1.0."""
+        by_date = self._by_date(_grid(weekly_growth=1.0, days=56))
+        cutoff = datetime.date.today()
+        g = _growth_multiplier(by_date, cutoff)
+        self.assertAlmostEqual(g, 1.0, places=2)
+
+    def test_steady_growth_reflects_ratio(self):
+        """10% weekly growth → consecutive WoW ratios ≈ 1.10 → median ≈ 1.10."""
+        by_date = self._by_date(_grid(weekly_growth=1.10, days=56))
+        cutoff = datetime.date.today()
+        g = _growth_multiplier(by_date, cutoff)
+        self.assertGreater(g, 1.05)
+        self.assertLessEqual(g, 1.20)
+
+    def test_anomalous_single_week_shrugged_off(self):
+        """One spiked prior-week day produces one 2.4x ratio; median ignores it."""
+        today = datetime.date.today()
+        # Make last Sunday (7 days ago) comped: only 30 orders vs normal ~160.
+        last_sun = today - datetime.timedelta(days=today.weekday() + 1 + 7)
+        grid = _grid(weekly_growth=1.0, days=56, spike={last_sun.isoformat(): 30})
+        by_date = self._by_date(grid)
+        g = _growth_multiplier(by_date, cutoff=today)
+        # With flat history and one 2.4x spike, median should remain close to 1.0.
+        self.assertLess(g, 1.20, "one spike should not push growth to clamp")
+
+    def test_insufficient_pairs_returns_one(self):
+        """Fewer than 2 valid consecutive pairs → return 1.0."""
+        # Use only 3 days of history — not enough for any WoW pair.
+        by_date = self._by_date(_grid(days=3))
+        cutoff = datetime.date.today()
+        self.assertEqual(_growth_multiplier(by_date, cutoff), 1.0)
+
+    def test_excluded_days_skipped_both_sides(self):
+        """An excluded day must not appear on either side of a ratio pair."""
+        today = datetime.date.today()
+        # Exclude the last Monday and Tuesday — they would produce wild ratios.
+        last_mon = today - datetime.timedelta(days=today.weekday() + 7)
+        last_tue = last_mon + datetime.timedelta(days=1)
+        grid = _grid(weekly_growth=1.0, days=56,
+                     exclude={last_mon.isoformat(): 999, last_tue.isoformat(): 999})
+        by_date = self._by_date(grid)
+        g = _growth_multiplier(by_date, cutoff=today)
+        # Wild value (999) excluded, so growth must remain sane.
+        self.assertLess(g, 1.20)
+        self.assertGreater(g, 0.80)
+
+    def test_clamp_upper(self):
+        """3× weekly growth exceeds the 1.20 clamp."""
+        by_date = self._by_date(_grid(weekly_growth=3.0, days=56))
+        cutoff = datetime.date.today()
+        self.assertLessEqual(_growth_multiplier(by_date, cutoff), 1.20)
+
+    def test_clamp_lower(self):
+        """0.1× weekly growth (rapid decline) hits the 0.80 floor."""
+        by_date = self._by_date(_grid(weekly_growth=0.1, days=56))
+        cutoff = datetime.date.today()
+        self.assertGreaterEqual(_growth_multiplier(by_date, cutoff), 0.80)
+
+    def test_window_respected(self):
+        """Ratios outside the 28-day window must not influence the result."""
+        # With flat recent history (last 4 weeks = 1.0) + a wildly different
+        # distant past (outside 28 days), growth should stay ≈ 1.0.
+        today = datetime.date.today()
+        # Inject a very old week with 1/10 the normal orders — if the window is
+        # respected, the old week's ratios won't affect the median.
+        grid = _grid(weekly_growth=1.0, days=56)
+        by_date = self._by_date(grid)
+        # Manually add an ancient day 60 days ago with 500 orders to check it's ignored.
+        old_date = (today - datetime.timedelta(days=60)).isoformat()
+        by_date[old_date] = {"orders": 500, "items": 700.0, "dow": "Mon", "excluded": False}
+        g = _growth_multiplier(by_date, cutoff=today)
+        # The ancient day is outside the 28-day window — growth stays near 1.0.
+        self.assertAlmostEqual(g, 1.0, places=1)
 
 
 if __name__ == "__main__":

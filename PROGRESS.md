@@ -1,5 +1,23 @@
 # Jarvis Build Progress
 
+## 2026-06-10 — Forecast model v2 (wow_median_4wk), AOV auto-exclusion, versioning, dashboard v33 (PR #44 finale)
+
+**On `feat/forecast-bq-labor-forecast` (PR #44).** Completes the full forecast + dashboard refinement plan.
+
+1. **Growth model rewritten (wow_median_4wk_v2).** `_growth_multiplier` is now the **median of consecutive same-weekday WoW ratios** over the last 28 days. Each ratio is orders[d] / orders[d-7] for matching weekdays; pooling ~19 pairs + taking the median is robust to one anomalous week (e.g. Memorial Day 2.3× spike moves the median little). Clamped [0.80, 1.20]. Prod result: **+2.7%/wk (ratio 1.027)** — compared to the prior mean-of-7-vs-7 method which produced a spurious −6% decrement from day-mix artifacts. 24 unit tests (including dedicated `GrowthMultiplierTests`).
+
+2. **AOV auto-exclusion.** `compute_outlier_stats` now accepts `net_sales` per day and computes a parallel **robust z-score on AOV** (= net_sales / orders). `aov_z < −2.5` triggers `aov_down_outlier`, ORed into `exclude_default`. Catches comped / heavily-discounted days the order-volume signal misses (5/24: AOV=$2.29; 5/04: AOV=$7.63 vs median ~$16). `update_model_sheet.py` caller updated to pass `net_sales`. `forecast_exclude_reason` text extended with AOV context. 5 new tests.
+
+3. **Forecast versioning + gap-fill-only backfill.** Every forecast row is now stamped with `CURRENT_FORECAST_VERSION = "wow_median_4wk_v2"`. Strategy registry `_GROWTH_STRATEGIES` maps version → function for future model comparison. `materialize_model_bq.py` backfill is now **gap-fill-only**: existing past dates are read from BQ and skipped, freezing history. Future rows continue to MERGE each nightly run. `map_forecast_daily` passes through `forecast_model_version`.
+
+4. **Migration 014.** `014_forecast_table_and_exclusions.sql`: (a) `ADD COLUMN IF NOT EXISTS forecast_model_version STRING` on `model_forecast_daily`; (b) `CREATE OR REPLACE VIEW vw_model_forecast` + `LEFT JOIN adp_scheduled_daily` for `scheduled_hours`; (c) `CREATE OR REPLACE VIEW vw_forecast_exclusions` + `net_sales`, `prev_wk_net_sales`, `net_sales_vs_prev_wk`, `aov`, `prev_wk_aov` columns. Applied to prod; verified column + both views return expected data.
+
+5. **Dashboard v33.** KDS goal: `$goal_kds_p99_min` → `$goal_kds_p95_min` (label/description/rawSql updated; value stays 8). Panel 71: added `scheduled_hours`, `sched_vs_goal_hours`, `sched_vs_goal_pct` columns. Panel 72 → split to half-width "Forecast vs Actual — Orders"; new Panel 75 "Forecast vs Actual — Items" at half-width beside it. Panel 73: added `net_sales`, `prev_wk_net_sales`, `net_sales_vs_prev_wk`, `aov`, `prev_wk_aov` columns + updated description. Deployed to [live dashboard](https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics).
+
+**Verification:** 58 unit tests green (24 forecast_bq + 34 forecast). Migration applied; `forecast_model_version` column present; `vw_model_forecast` returns `scheduled_hours`; `vw_forecast_exclusions` returns `aov` / `net_sales`. Prod load: 30 future rows tagged `wow_median_4wk_v2`; 54 backfill rows already existed (gap-fill-only proven). Dashboard v33 deployed — all panels render with data (link above).
+
+---
+
 ## 2026-06-10 — ADP scheduled hours → BQ + "Scheduled vs Goal Hours" Grafana panel (PR #44 follow-up; unblocks the deferred item)
 
 **On `feat/forecast-bq-labor-forecast` (PR #44).** The prior entry's item 4 ("ADP scheduled shift hours: still blocked") is now **resolved**. Operator confirmed ADP RUN (not Homebase) is the scheduling system and walked the flow; explored it live with Playwright over CDP and codified it.

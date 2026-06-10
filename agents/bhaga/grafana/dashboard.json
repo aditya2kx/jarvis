@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 32,
+  "version": 33,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {
@@ -116,8 +116,8 @@
         "description": "Target labor wages as a fraction of net sales (labor_cost \u00f7 net_sales, e.g. 0.20 = 20%) \u2014 rendered as a baseline line on the Weekly Labor Wages / Net Sales chart"
       },
       {
-        "name": "goal_kds_p99_min",
-        "label": "Goal: KDS p99 (min)",
+        "name": "goal_kds_p95_min",
+        "label": "Goal: KDS p95 (min)",
         "type": "textbox",
         "current": {
           "value": "8"
@@ -130,7 +130,7 @@
           }
         ],
         "hide": 0,
-        "description": "Target p99 per-order KDS prep time in minutes; drawn as a dashed baseline on the KDS Time per Item chart."
+        "description": "Target p95 per-order KDS prep time in minutes; drawn as a dashed baseline on the KDS Time per Item chart."
       },
       {
         "name": "ds_bigquery",
@@ -728,7 +728,7 @@
       "id": 51,
       "type": "timeseries",
       "title": "KDS Time per Item (median / p90 / p95 / p99)",
-      "description": "Percentiles of per-ITEM prep time per day (order completion time \u00f7 items in the order). Y-axis capped at 30 min so outliers don't skew the scale. Dashed line = p99 goal ($goal_kds_p99_min min).",
+      "description": "Percentiles of per-ITEM prep time per day (order completion time \u00f7 items in the order). Y-axis capped at 30 min so outliers don't skew the scale. Dashed line = p95 goal ($goal_kds_p95_min min).",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -759,7 +759,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "p99 Goal"
+              "options": "p95 Goal"
             },
             "properties": [
               {
@@ -786,7 +786,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, kds_p90_min AS `p90`, kds_p95_min AS `p95`, kds_p99_min AS `p99`, kds_median_min AS `median`, CAST('$goal_kds_p99_min' AS FLOAT64) AS `p99 Goal` FROM `jarvis-bhaga-prod.bhaga.vw_order_quality_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, kds_p90_min AS `p90`, kds_p95_min AS `p95`, kds_p99_min AS `p99`, kds_median_min AS `median`, CAST('$goal_kds_p95_min' AS FLOAT64) AS `p95 Goal` FROM `jarvis-bhaga-prod.bhaga.vw_order_quality_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
@@ -1282,7 +1282,7 @@
       "id": 71,
       "type": "table",
       "title": "Labor Forecast \u2014 next 30 days",
-      "description": "30-day daily forecast: Forecast Orders/Items, Prior-Week comparison (COALESCE actual@-7d, forecast@-7d), % change vs prior week, and Goal Shift Hours (Forecast Items \u00d7 $goal_hours_per_item). Empty until the first nightly pipeline run after the migration is applied. Override forecast_exclude on the labor_daily BQ tab to flag anomaly days.",
+      "description": "30-day daily forecast: Forecast Orders/Items, Prior-Week comparison (COALESCE actual@-7d, forecast@-7d), % change vs prior week, Goal Shift Hours (Forecast Items \u00d7 $goal_hours_per_item), Scheduled Hours (from ADP \u2014 current + next week only; blank beyond), and Scheduled vs Goal gap (absolute hrs and %). Override forecast_exclude on the labor_daily BQ tab to flag anomaly days.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -1443,6 +1443,66 @@
                 "value": 1
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "scheduled_hours"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Scheduled Hours"
+              },
+              {
+                "id": "unit",
+                "value": "suffix: h"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sched_vs_goal_hours"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Sched vs Goal (hrs)"
+              },
+              {
+                "id": "unit",
+                "value": "suffix: h"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sched_vs_goal_pct"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Sched vs Goal %"
+              },
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
           }
         ]
       },
@@ -1452,22 +1512,22 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT date, forecast_orders, forecast_items, prior_wk_orders, prior_wk_items, orders_vs_prior_wk, items_vs_prior_wk, ROUND(forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS goal_shift_hours FROM `jarvis-bhaga-prod.bhaga.vw_model_forecast` ORDER BY date"
+          "rawSql": "SELECT date, forecast_orders, forecast_items, prior_wk_orders, prior_wk_items, orders_vs_prior_wk, items_vs_prior_wk, ROUND(forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS goal_shift_hours, scheduled_hours, ROUND(scheduled_hours - forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS sched_vs_goal_hours, SAFE_DIVIDE(scheduled_hours - forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), NULLIF(forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 0)) AS sched_vs_goal_pct FROM `jarvis-bhaga-prod.bhaga.vw_model_forecast` ORDER BY date"
         }
       ]
     },
     {
       "id": 72,
       "type": "timeseries",
-      "title": "Forecast vs Actual \u2014 Orders & Items",
-      "description": "Historical forecast accuracy: how close the 1-day-ahead order and item forecasts were to actuals. Only days that have both a forecast (from model_forecast_daily) and an actual (from model_labor_daily) appear. Empty until the nightly pipeline has run at least once after the migration.",
+      "title": "Forecast vs Actual \u2014 Orders",
+      "description": "Historical forecast accuracy for orders: how close the 1-day-ahead order forecast was to actuals. Dashed line = forecast; solid = actual.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
       },
       "gridPos": {
         "h": 9,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 106
       },
@@ -1503,7 +1563,49 @@
                 }
               }
             ]
-          },
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 0,
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, forecast_orders AS `Forecast Orders`, actual_orders AS `Actual Orders` FROM `jarvis-bhaga-prod.bhaga.vw_forecast_accuracy` WHERE date >= DATE('$date_from') ORDER BY date"
+        }
+      ]
+    },
+    {
+      "id": 75,
+      "type": "timeseries",
+      "title": "Forecast vs Actual \u2014 Items",
+      "description": "Historical forecast accuracy for items: how close the 1-day-ahead item forecast was to actuals. Dashed line = forecast; solid = actual.",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 106
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "min": 0
+        },
+        "overrides": [
           {
             "matcher": {
               "id": "byName",
@@ -1530,7 +1632,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, forecast_orders AS `Forecast Orders`, actual_orders AS `Actual Orders`, forecast_items AS `Forecast Items`, actual_items AS `Actual Items` FROM `jarvis-bhaga-prod.bhaga.vw_forecast_accuracy` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, forecast_items AS `Forecast Items`, actual_items AS `Actual Items` FROM `jarvis-bhaga-prod.bhaga.vw_forecast_accuracy` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
@@ -1538,7 +1640,7 @@
       "id": 73,
       "type": "table",
       "title": "Forecast Inputs / Exclusions",
-      "description": "Recent input days the forecaster saw (last 60 days). Rows with forecast_exclude=TRUE were dropped from the forecast seed averages \u2014 either auto-detected outliers or operator-overridden. To override: set forecast_exclude=TRUE on the model_labor_daily BQ row for the anomaly day.",
+      "description": "Recent input days the forecaster saw (last 60 days). Rows with forecast_exclude=TRUE were dropped from the forecast seed averages \u2014 either auto-detected outliers (including low-AOV / comped days) or operator-overridden. Net Sales and AOV columns help spot promo / comped days where order count was normal but revenue was anomalously low. To override: set forecast_exclude=TRUE on the model_labor_daily BQ row for the anomaly day.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -1729,6 +1831,106 @@
                 "value": "percentunit"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "net_sales"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Net Sales"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "prev_wk_net_sales"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Prev Wk Net Sales"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "net_sales_vs_prev_wk"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Net Sales \u0394 vs Prev Wk"
+              },
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "aov"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "AOV"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "prev_wk_aov"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Prev Wk AOV"
+              },
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
           }
         ]
       },
@@ -1738,7 +1940,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT date, dow, orders, prev_wk_orders, orders_vs_prev_wk, items_sold, prev_wk_items, items_vs_prev_wk, forecast_exclude, outlier_reason, forecast_exclude_reason FROM `jarvis-bhaga-prod.bhaga.vw_forecast_exclusions` ORDER BY date DESC"
+          "rawSql": "SELECT date, dow, orders, prev_wk_orders, orders_vs_prev_wk, items_sold, prev_wk_items, items_vs_prev_wk, net_sales, prev_wk_net_sales, net_sales_vs_prev_wk, aov, prev_wk_aov, forecast_exclude, outlier_reason, forecast_exclude_reason FROM `jarvis-bhaga-prod.bhaga.vw_forecast_exclusions` ORDER BY date DESC"
         }
       ]
     },

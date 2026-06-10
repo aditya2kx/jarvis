@@ -1726,7 +1726,13 @@ def build_labor_daily_rows(
         d: int(sales.get(d, {}).get("order_count", 0) or 0) for d in all_dates
     }
     operating_days = [
-        {"date": d, "orders": o} for d, o in orders_by_date.items() if o > 0
+        {
+            "date": d,
+            "orders": o,
+            "net_sales": sales.get(d, {}).get("net_sales_cents", 0) / 100
+            if sales.get(d, {}).get("net_sales_cents") is not None else None,
+        }
+        for d, o in orders_by_date.items() if o > 0
     ]
     outlier_stats = compute_outlier_stats(
         operating_days,
@@ -1827,8 +1833,8 @@ def build_labor_daily_rows(
         _forecast_exclude = "TRUE" if fe_val else "FALSE"
 
         # ── Human-readable reasons (plain text; blank when flag is FALSE) ──
-        # outlier_reason: direction + magnitude straight from the robust-z
-        # stats compute_outlier_stats already produced for this date.
+        # outlier_reason: order-volume direction + magnitude from robust-z stats.
+        # Also notes AOV anomaly when that signal fired.
         if not is_outlier:
             _outlier_reason = ""
         elif stat:
@@ -1842,23 +1848,32 @@ def build_labor_daily_rows(
             # zero/no-order complete day — no residual stats to cite.
             _outlier_reason = f"low volume: {orders} orders (closed/pre-open)"
 
-        # forecast_exclude_reason: SOURCE of the FINAL fe_val, matching the
-        # value-resolution precedence above — zero-order first, then the auto
-        # DOWN-anomaly default, else an operator override kept it TRUE. (The
-        # row builder can't perfectly distinguish an operator-set TRUE from a
-        # previously-persisted auto value: if exclude_default is also TRUE the
-        # auto signal is present, so we label it "auto"; only a TRUE with no
-        # zero-day and no auto signal can be an operator override.)
+        # forecast_exclude_reason: SOURCE of the FINAL fe_val. Priority:
+        # 1. zero-order day, 2. AOV anomaly, 3. order-volume anomaly, 4. operator.
+        _aov = stat.get("aov") if stat else None
+        _aov_z = stat.get("aov_z") if stat else None
+        _aov_down = (_aov_z is not None) and (_aov_z < -float(outlier_z_threshold))
+        _order_down = (
+            stat is not None
+            and stat.get("robust_z", 0) < -float(outlier_z_threshold)
+            and stat.get("residual", 0) < 0
+        )
         if not fe_val:
             _forecast_exclude_reason = ""
         elif orders <= 0:
             _forecast_exclude_reason = "auto: no orders (closed/pre-open)"
-        elif exclude_default:
+        elif exclude_default and _aov_down and _aov is not None:
+            _forecast_exclude_reason = (
+                f"auto: low AOV ${_aov:.2f} (z={_aov_z:+.1f})"
+            )
+        elif exclude_default and _order_down:
             _exp = stat["expected"] if stat else 0
             _z = stat["robust_z"] if stat else 0.0
             _forecast_exclude_reason = (
                 f"auto: low-volume anomaly ({orders} orders vs ~{_exp:.0f}, z={_z:+.1f})"
             )
+        elif exclude_default:
+            _forecast_exclude_reason = "auto: anomaly (low)"
         else:
             _forecast_exclude_reason = "operator override"
 

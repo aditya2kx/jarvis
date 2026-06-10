@@ -158,6 +158,10 @@ GRAFANA_VIEWS: list[Target] = [
     # forecast (goal = forecast_items x $goal_hours_per_item, computed in Grafana)
     # and actual labor hours. Forward-looking; empty until the first schedule scrape.
     Target("vw_scheduled_vs_goal", "date"),
+    # migration 014: vw_model_forecast + vw_forecast_exclusions refreshed with
+    # scheduled_hours / net_sales / aov columns (dashboard v33). The existing
+    # Targets above for vw_model_forecast and vw_forecast_exclusions still cover
+    # data-layer freshness; migration 014 only adds columns — no new view entries.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

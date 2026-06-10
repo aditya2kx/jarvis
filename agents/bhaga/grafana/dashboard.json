@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 34,
+  "version": 35,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {
@@ -1532,7 +1532,7 @@
       "id": 72,
       "type": "timeseries",
       "title": "Forecast vs Actual \u2014 Orders",
-      "description": "Historical forecast accuracy for orders: how close the 1-day-ahead order forecast was to actuals. Dashed line = forecast; solid = actual.",
+      "description": "Order forecast (today + next 30 days) with actuals overlaid through the most recent completed day. Dashed line = forecast; solid = actual (ends where data stops).",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -1584,7 +1584,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, forecast_orders AS `Forecast Orders`, actual_orders AS `Actual Orders` FROM `jarvis-bhaga-prod.bhaga.vw_forecast_accuracy` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(f.date, 'America/Chicago') AS time, f.forecast_orders AS `Forecast Orders`, IF(a.orders > 0, a.orders, NULL) AS `Actual Orders` FROM `jarvis-bhaga-prod.bhaga.model_forecast_daily` f LEFT JOIN `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` a ON a.date = f.date WHERE f.date >= DATE('$date_from') ORDER BY f.date"
         }
       ]
     },
@@ -1592,7 +1592,7 @@
       "id": 75,
       "type": "timeseries",
       "title": "Forecast vs Actual \u2014 Items",
-      "description": "Historical forecast accuracy for items: how close the 1-day-ahead item forecast was to actuals. Dashed line = forecast; solid = actual.",
+      "description": "Item forecast (today + next 30 days) with actuals overlaid through the most recent completed day. Dashed line = forecast; solid = actual (ends where data stops).",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -1644,7 +1644,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, forecast_items AS `Forecast Items`, actual_items AS `Actual Items` FROM `jarvis-bhaga-prod.bhaga.vw_forecast_accuracy` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(f.date, 'America/Chicago') AS time, f.forecast_items AS `Forecast Items`, IF(a.orders > 0, a.items_sold, NULL) AS `Actual Items` FROM `jarvis-bhaga-prod.bhaga.model_forecast_daily` f LEFT JOIN `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` a ON a.date = f.date WHERE f.date >= DATE('$date_from') ORDER BY f.date"
         }
       ]
     },

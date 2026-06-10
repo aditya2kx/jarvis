@@ -1,5 +1,14 @@
 # Jarvis Build Progress
 
+## 2026-06-10 — Forecast vs Actual charts extended to future window, dashboard v35 (PR #44)
+
+**On `feat/forecast-bq-labor-forecast` (PR #44).** Two follow-ups:
+
+1. Panels 72 & 75 (Forecast vs Actual — Orders/Items) now query `model_forecast_daily LEFT JOIN vw_model_labor_daily` instead of `vw_forecast_accuracy`, so the forecast line extends to today+30 days; the actual line stops when data ends. `model_forecast_daily` added to `KNOWN_UNCHECKED_GRAFANA_REFS` in `status.py`.
+2. Labor forecast table first row is today (6/10) — already done in prior commit (range 0..horizon); today's forecast row written to prod.
+
+Live dashboard: https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics
+
 ## 2026-06-10 — Forecast table refinements: Day column, label renames, remove panel 74, today-forecast, migration 015, dashboard v34 (PR #44)
 
 **On `feat/forecast-bq-labor-forecast` (PR #44).** Six follow-up refinements from operator review.

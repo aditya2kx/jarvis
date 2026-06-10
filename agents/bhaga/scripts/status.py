@@ -170,6 +170,9 @@ GRAFANA_VIEWS: list[Target] = [
 KNOWN_UNCHECKED_GRAFANA_REFS: frozenset[str] = frozenset({
     "model_tip_alloc_daily",   # panel 21 — Grafana reads this table directly
     "model_tip_alloc_period",  # panel 31 — Grafana reads this table directly
+    "model_forecast_daily",    # panels 72/75 — Forecast vs Actual charts query the
+                               # table directly (LEFT JOIN vw_model_labor_daily) so
+                               # future forecast rows appear alongside historical actuals.
 })
 
 # ── Internal helpers ──────────────────────────────────────────────────────────

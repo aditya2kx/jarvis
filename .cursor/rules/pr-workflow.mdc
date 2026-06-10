@@ -13,9 +13,9 @@ Do NOT ask whether to babysit — just do it.
 ## The full lifecycle every time
 
 0. **Check for open PRs first** → `gh pr list --state open`. If a PR from this session is still open, push the new changes to **that** branch instead of opening a second PR. Never have two in-flight PRs from the same session.
-1. **Install the cost hook (once per clone/worktree)** → `bash scripts/install-git-hooks.sh`. The `pre-commit` hook syncs and auto-stages the cost ledger into your own commits, so it lands on `main` in the squash merge. There is no CI cost commit.
+1. **Install the cost hook (once per clone/worktree)** → `bash scripts/install-git-hooks.sh`. The `pre-commit` hook captures review cost into BigQuery on each commit. No `git add`, no staged files.
 2. **Create PR** → `gh pr create …`
-3. **Seed cost ledger** → `pr_cost_ledger.py set-meta --pr N --branch <branch>`, record build cost (`record-build` / `capture-build`), then commit `metrics/pr_cost/` so `validate --require-build` passes.
+3. **Seed cost ledger (BQ)** → `pr_cost_ledger.py set-meta --pr N --branch <branch>`, then record build cost (`record-build` or `capture-build`) into BQ so `validate --require-build` passes. **Do NOT commit `metrics/pr_cost/`** — the ledger is now in BQ, not git. Zero build cost is a hard failure.
 4. **Babysit immediately** — read `/Users/adiniekkajj/.cursor/skills-cursor/babysit/SKILL.md` and follow it:
    - Resolve merge conflicts (take ours/theirs intelligently; never blindly prefer one side)
    - Wait for CI; fix any failures within this PR's scope
@@ -25,8 +25,8 @@ Do NOT ask whether to babysit — just do it.
 6. **Confirm merged** → verify `state == MERGED` before ending the session
 7. **Post-merge pull + verify** — after confirmed merged:
    - `git -C /Users/adiniekkajj/Documents/build-workspace/jarvis pull` to bring the squash commit into the main working copy.
-   - The `post-merge` git hook fires automatically and regenerates `report.html` + backfills `merged_at` for the just-merged PR locally. Open `file:///Users/adiniekkajj/Documents/build-workspace/jarvis/metrics/pr_cost/report.html` and confirm the PR row is present.
-   - **Note on eventual consistency:** the committed `PR-<n>.json` on `main` has `merged_at=null` until the hook or the next PR's pre-commit run fixes it locally. The local report is correct after `pull`; the remote ledger catches up with the next PR. This is by design — the repo ruleset blocks all direct pushes to `main`. If you need the finalized record on `main` right now, run `bash scripts/finalize_cost.sh <pr>` (opens a metrics-only PR, arms auto-merge, operator approves).
+   - CI's `pr-cost-finalize.yml` writes `merged_at` + final review cost to BQ automatically.
+   - View cost data in Grafana: https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jarvis-development
    - Spot-check that expected artifacts landed: doc changes appear, nothing was omitted from the squash.
    - Report what SHA landed. Do NOT skip — the main working copy is what Adi reads; leaving it stale is a miss.
 
@@ -38,7 +38,7 @@ Do NOT ask whether to babysit — just do it.
 
 ## Reminders
 
-- `pr_cost_ledger.py validate --pr N --require-build` must pass before merge
-- The cost ledger lands via **your own commits** (pre-commit hook), never a CI bot commit — `pr-cost-gate.yml` only validates
+- `pr_cost_ledger.py validate --pr N --require-build` must pass before merge (reads BQ; zero cost = hard fail)
+- The cost ledger lives in BQ (`jarvis_dev`), not in git — `pr-cost-gate.yml` reads BQ via WIF
 - Always resolve `CHANGES_REQUESTED` reviews — reply if the concern is already addressed on the branch
 - The `auto-merge-on-approval` workflow (`.github/workflows/auto-merge-on-approval.yml`) arms `--auto` when Adi approves, but babysitting still needs to fix CI first

@@ -641,10 +641,19 @@ It runs automatically on every PR via `.github/workflows/sandbox-e2e.yml` (and
 (full e2e still runs only on `pull_request` when `SANDBOX_E2E_ENABLED=true`). See
 `CONTRIBUTING.md` § Enabling enforcement.
 
-**Cost ledger rides in your own commits:** the per-PR cost ledger (`metrics/pr_cost/`) is kept current
-by the `pre-commit` hook (`bash scripts/install-git-hooks.sh` once per clone), which `sync`s and
-auto-stages it into your commits. CI does **not** push a cost commit — `pr-cost-gate.yml` is a pure
-validator. So every CI run is on real code and there are no automatic `chore(cost):` commits to skip.
+**Cost ledger lives in BigQuery (jarvis_dev), not in git:** the per-PR cost ledger is stored in
+`jarvis-bhaga-prod.jarvis_dev` (tables `pr_cost_pr`, `pr_cost_build_session`, `pr_cost_review_run`,
+view `vw_pr_cost`). There are no committed `PR-*.json` files or `report.html` in the repo.
+
+- **Pre-merge:** record build cost locally (`pr_cost_ledger.py capture-build` or `record-build`),
+  then `validate --pr <n> --require-build`. The pre-commit hook (`bash scripts/install-git-hooks.sh`
+  once per clone) captures review cost into BQ on each commit (no `git add`, no staged files).
+- **Post-merge:** `pr-cost-finalize.yml` writes `merged_at` + final review cost to BQ via WIF.
+- **Dashboard:** https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jarvis-development
+  ("Jarvis Development" folder). Deploy/update: `python3 grafana/jarvis_dev/deploy.py`.
+- **WIF SA:** `bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com` — has
+  `roles/bigquery.dataEditor` + `roles/bigquery.jobUser` on `jarvis-bhaga-prod`.
+- **Backfill/migration:** `pr_cost_ledger.py migrate-json-to-bq` (one-shot, already run for PRs 12-47).
 
 Run it manually with ADC + palmetto OAuth:
 

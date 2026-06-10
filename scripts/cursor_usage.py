@@ -165,6 +165,53 @@ def derive_window_for_branch(
     return start_ms, end_ms
 
 
+def window_from_transcript(
+    conversation_id: str | None = None, *, transcript_path: str | None = None,
+    lead_pad_min: int = 10, tail_pad_min: int = 5,
+) -> tuple[int, int]:
+    """Build a (start_ms, end_ms) window from an agent transcript JSONL.
+
+    The transcript filename is the conversationId; each line is a JSON event with
+    a timestamp. Works on a cloud/handoff machine where ai-code-tracking.db has no
+    edits. Numbers still come from fetch_usage_events (account-global).
+    """
+    import glob as _glob
+    if transcript_path is None:
+        if not conversation_id:
+            raise CursorUsageError("window_from_transcript needs conversation_id or transcript_path")
+        base = Path.home() / ".cursor" / "projects"
+        hits = _glob.glob(str(base / "**" / "agent-transcripts" / conversation_id /
+                              f"{conversation_id}.jsonl"), recursive=True)
+        if not hits:
+            hits = _glob.glob(str(base / "**" / "agent-transcripts" /
+                                  f"{conversation_id}.jsonl"), recursive=True)
+        if not hits:
+            raise CursorUsageError(f"no transcript for conversation {conversation_id}")
+        transcript_path = hits[0]
+    ts_list: list[int] = []
+    with open(transcript_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                evt = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            for k in ("timestamp", "ts", "createdAt", "created_at", "time"):
+                v = evt.get(k) if isinstance(evt, dict) else None
+                if v is not None:
+                    try:
+                        ts_list.append(to_ms(v))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    break
+    if not ts_list:
+        raise CursorUsageError(f"no timestamps in transcript {transcript_path}")
+    return (min(ts_list) - lead_pad_min * 60_000,
+            max(ts_list) + tail_pad_min * 60_000)
+
+
 def git_branch_commit_range_ms(
     branch: str, *, base: str = "main", repo_root: Path | None = None,
 ) -> tuple[int, int]:

@@ -1,17 +1,9 @@
 name: PR cost finalize (post-merge)
 
-# Post-merge: capture any final review costs and post the cost analysis comment.
+# Post-merge: write merged_at + review cost into BigQuery (jarvis_dev), then
+# post the cost analysis comment to the PR thread.
 #
-# NOTE: This workflow no longer commits to main. The cost ledger is committed to
-# the PR branch before merge by pr-cost-gate.yml (on every push), so it lands
-# in the squash merge automatically. The direct push-to-main was removed because
-# the repo ruleset (enforcement: active, bypass_actors: []) blocks all direct
-# pushes, including from ADMIN_PAT.
-#
-# What this still does:
-#  - Finalises the review cost record from any late-posted cost comments.
-#  - Regenerates the HTML report on the runner (ephemeral, not committed).
-#  - Posts a post-merge cost analysis comment to the PR thread.
+# No git write needed — the source of truth is now BQ. CI authenticates via WIF.
 
 on:
   pull_request:
@@ -20,6 +12,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  id-token: write
 
 concurrency:
   group: pr-cost-finalize-${{ github.event.pull_request.number }}
@@ -36,24 +29,32 @@ jobs:
       PR: ${{ github.event.pull_request.number }}
       REPO: ${{ github.repository }}
     steps:
-      - name: Checkout main
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
 
-      - name: Finalize review cost from posted comments
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install BigQuery client
+        run: pip install google-cloud-bigquery google-auth
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Finalize meta + review cost into BQ
         run: |
           python3 scripts/pr_cost_ledger.py set-meta --pr "$PR" \
             --title "${{ github.event.pull_request.title }}" \
             --branch "${{ github.event.pull_request.head.ref }}" \
             --created "${{ github.event.pull_request.created_at }}" \
-            --merged "${{ github.event.pull_request.merged_at }}" || true
+            --merged "${{ github.event.pull_request.merged_at }}"
           python3 scripts/pr_cost_ledger.py capture-review --pr "$PR" --repo "$REPO" || \
-            echo "::notice::capture-review found no cost comments to reconcile."
-
-      - name: Regenerate HTML cost report
-        run: python3 scripts/pr_cost_ledger.py report
+            echo "::notice::no cost comments to reconcile."
 
       - name: Post post-merge cost analysis comment
         run: |
@@ -64,7 +65,6 @@ jobs:
             python3 scripts/pr_cost_ledger.py analyze --pr "$PR"
             echo '```'
             echo ""
-            echo "_Full breakdown: \`metrics/pr_cost/PR-$PR.json\` · team report: \`metrics/pr_cost/report.html\`._"
-          } > /tmp/cost_analysis.md
-          gh pr comment "$PR" --body-file /tmp/cost_analysis.md || \
-            echo "::warning::Could not post analysis comment."
+            echo "_Full breakdown in BigQuery \`jarvis_dev.vw_pr_cost\` · dashboard: Jarvis Development (Grafana)._"
+          } > /tmp/c.md
+          gh pr comment "$PR" --body-file /tmp/c.md || echo "::warning::comment failed."

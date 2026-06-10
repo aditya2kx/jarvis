@@ -1,21 +1,11 @@
 name: PR cost gate
 
-# Hard pre-merge gate (requirement #7): a PR may not merge until its cost is
-# accounted for in the in-repo ledger (metrics/pr_cost/PR-<n>.json) — including
-# the Cursor BUILD cost, which has no per-PR API for individual accounts and so
-# must be recorded from the dashboard and committed.
+# Hard pre-merge gate: a PR may not merge until its cost is recorded in
+# BigQuery (jarvis_dev dataset). The build cost must be non-zero. Review cost
+# is optional at gate time (finalized post-merge by pr-cost-finalize.yml).
 #
-# This is a PURE VALIDATOR — it never writes to the repo. The cost ledger is
-# kept current and committed by the author's own commits via the pre-commit hook
-# (scripts/git-hooks/pre-commit → pr_cost_ledger.py sync, auto-staged). That is
-# the design the ledger script itself documents: "the operator commits the
-# complete record once." An earlier version committed the ledger back to the PR
-# branch from CI; that forced a second commit per push, which either suppressed
-# CI (GITHUB_TOKEN) or duplicated every check + churned via cancel-in-progress
-# (ADMIN_PAT). Validating only — no bot commit — removes that entire class of bug.
-#
-# Make this a REQUIRED status check in branch protection to actually block merge
-# (see CONTRIBUTING.md § Enabling enforcement).
+# This is a PURE VALIDATOR — it never writes. CI reads from BQ via WIF.
+# Make this a REQUIRED status check in branch protection to enforce the gate.
 
 on:
   pull_request:
@@ -26,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   cost-gate:
@@ -43,9 +34,23 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        if: github.event_name == 'pull_request'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install BigQuery client
+        if: github.event_name == 'pull_request'
+        run: pip install google-cloud-bigquery google-auth
+
+      - name: Authenticate to GCP
+        if: github.event_name == 'pull_request'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
       - name: Validate cost ledger (hard gate — requires build cost)
         if: github.event_name == 'pull_request'
-        run: |
-          python3 scripts/pr_cost_ledger.py validate \
-            --pr "$PR" \
-            --require-build
+        run: python3 scripts/pr_cost_ledger.py validate --pr "$PR" --require-build

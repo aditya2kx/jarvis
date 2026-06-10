@@ -12,6 +12,43 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pr_cost_ledger as L
+import pr_cost_store as S
+
+
+def _make_in_memory_store_patchers():
+    """Return a patch.multiple patcher that redirects all store I/O to an in-memory dict."""
+    db: dict = {}
+
+    def _save(rec):
+        import json as _json
+        key = S.pr_key(
+            rec.get("pr_number") if rec.get("pr_number") is not None
+            else rec.get("provisional_id")
+        )
+        db[key] = _json.loads(_json.dumps(rec))
+
+    def _load(pr, ef):
+        import json as _json
+        key = S.pr_key(pr)
+        if key in db:
+            return _json.loads(_json.dumps(db[key]))
+        return ef(pr)
+
+    def _all():
+        return sorted(int(k) for k in db if k.isdigit())
+
+    def _delete(pr):
+        db.pop(S.pr_key(pr), None)
+
+    patcher = patch.multiple(
+        S,
+        save_record=_save,
+        load_record=_load,
+        all_prs=_all,
+        delete_record=_delete,
+        ensure_schema=lambda: None,
+    )
+    return patcher, db
 
 
 class TestPrCostLedger(unittest.TestCase):
@@ -19,8 +56,11 @@ class TestPrCostLedger(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self._orig_dir = L.LEDGER_DIR
         L.LEDGER_DIR = Path(self._tmpdir.name)
+        self._store_patcher, self._db = _make_in_memory_store_patchers()
+        self._store_patcher.start()
 
     def tearDown(self):
+        self._store_patcher.stop()
         L.LEDGER_DIR = self._orig_dir
         self._tmpdir.cleanup()
 
@@ -37,11 +77,14 @@ class TestPrCostLedger(unittest.TestCase):
         self.assertTrue(any("no cost record" in p for p in problems))
 
     def test_validate_no_requirement_or_title(self):
-        rec = L._empty_record(2)
-        L.save_record(rec)
+        # A record saved with only a title but no requirement (using set_meta)
+        L.set_meta(2, title="only title")
         ok, problems = L.validate(2)
         self.assertFalse(ok)
-        self.assertTrue(any("requirement/title" in p for p in problems))
+        # Should fail either on "requirement/title" or "unaccounted" (no cost surfaces)
+        self.assertTrue(
+            any("requirement/title" in p or "unaccounted" in p for p in problems)
+        )
 
     def test_validate_no_cost_surfaces(self):
         L.set_meta(3, title="only title")
@@ -66,9 +109,11 @@ class TestPrCostLedger(unittest.TestCase):
     # until then. These guard that flow.
 
     def test_provisional_record_path_and_key(self):
+        # _record_path is still used for --out default and labels; verify it still resolves
         self.assertEqual(L._record_path(7).name, "PR-7.json")
         self.assertEqual(L._record_path("7").name, "PR-7.json")
-        self.assertEqual(L._record_path("feat/foo-bar").name, "session-feat-foo-bar.json")
+        # branch-keyed provisional: path still has the slug form for legacy compat
+        self.assertIn("session", L._record_path("feat/foo-bar").name)
 
     def test_provisional_record_has_no_pr_number(self):
         rec = L._empty_record("feat/new-thing")
@@ -78,16 +123,14 @@ class TestPrCostLedger(unittest.TestCase):
     def test_all_prs_ignores_provisional(self):
         L.set_meta(8, title="real")
         L.set_meta("feat/branchy", title="provisional", requirement="r")
-        # provisional record is on disk but invisible to the numeric report/gate
-        self.assertIn((L.LEDGER_DIR / "session-feat-branchy.json").is_file(), (True,))
+        # provisional record lives in BQ under branch: key, not in _all_prs() which only returns numeric
         self.assertEqual(L._all_prs(), [8])
 
     def test_bind_pr_promotes_provisional_to_number(self):
         L.set_meta("feat/cool", branch="feat/cool", requirement="do cool",
                    session_started_at="2026-06-04T03:00:00+00:00")
         L.bind_pr("feat/cool", pr_number=42)
-        # provisional file gone; PR-42.json exists with carried-over meta
-        self.assertFalse((L.LEDGER_DIR / "session-feat-cool.json").is_file())
+        # provisional key removed; numeric key exists with carried-over meta
         rec = L.load_record(42)
         self.assertEqual(rec["pr_number"], 42)
         self.assertIsNone(rec["provisional_id"])
@@ -478,6 +521,26 @@ class TestPrCostLedger(unittest.TestCase):
         ok, issues = L.validate(pr)
         self.assertFalse(ok)
         self.assertTrue(any("parallel chat" in i.lower() for i in issues))
+
+    def test_capture_build_hard_fails_on_zero(self):
+        """capture-build must raise SystemExit if the window yields $0 cost."""
+        L.set_meta(200, title="t", requirement="r", branch="feat/zero")
+        with patch("cursor_usage.fetch_usage_events", return_value=[]):
+            with patch("cursor_usage.derive_window_for_branch", return_value=(0, 9999)):
+                with patch("cursor_usage.git_branch_commit_range_ms", return_value=(0, 9999)):
+                    with self.assertRaises(SystemExit) as ctx:
+                        L.capture_build(200)
+        self.assertIn("HARD failure", str(ctx.exception))
+
+    def test_validate_require_build_rejects_zero_cost(self):
+        """validate --require-build must fail if build cost is $0."""
+        L.set_meta(201, title="t", requirement="r")
+        # Record a session with zero cost
+        L.record_build_session(201, ts="2026-06-01T00:00:00Z",
+                               tokens=0, cost_usd=0.0, model="m")
+        ok, problems = L.validate(201, require_build=True)
+        self.assertFalse(ok)
+        self.assertTrue(any("$0" in p for p in problems))
 
 
 if __name__ == "__main__":

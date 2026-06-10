@@ -135,6 +135,23 @@ raises `_RetryFreshLogin`. `daily_refresh._run_square_session_with_retry` then r
 **exactly once** with a fresh cookie jar (`storage_state=None`), which often re-presents the SMS-OTP path;
 a second block fails cleanly via `notify.square_device_blocked_alert` (no paste prompt) and the next
 nightly auto-retries on a fresh egress IP. See `RUNBOOK.md` §13 "Login escalation".
+
+**Concurrent-execution guard (distributed scrape lock, 2026-06-10).** Multiple Cloud Run executions for
+the same date can overlap (nightly scheduler + webhook READY-resume + manual `/bhaga refresh` + Slack retry
+delivery). A second concurrent Square scrape would fire a duplicate SMS and corrupt the shared GCS session
+blob. The guard is layered:
+- `cloud/webhook/handler.py`: discards Slack-retry deliveries (`X-Slack-Retry-Num > 0`), stores seen
+  `event_id`s in Firestore `webhook_events/<event_id>` (5 min TTL), and checks `_is_already_running`
+  before calling `_trigger_cloud_run_job` (fail-open: listing errors allow the trigger).
+- `skills/square_tips/runner.py::_acquire_scrape_lock`: acquires a TTL-based lock in
+  `skills/bhaga_config/state_adapter.try_acquire_lock` (Firestore `runs/_lock_scrape-square-<store>` in
+  cloud, local JSON file on laptop, TTL via `BHAGA_SCRAPE_LOCK_TTL_S`, default 3600 s). A refused
+  execution raises `ScrapeLockHeldError` (carries `lock_name`, `held_by`, `acquired_at`, `expires_at`).
+- `daily_refresh.py` classifies `ScrapeLockHeldError` via `_is_scrape_lock_held` and calls
+  `notify.scrape_concurrency_alert` (distinct from device-blocked and generic failure alerts).
+  Records `concurrent_execution` + holder details into `Firestore runs/<date>.failures.square` for
+  postmortem-from-state. Every lock transition emits a greppable Cloud Run log:
+  `[square lock] ACQUIRED/RELEASED/REFUSED name=… holder=… …`
 | `bootstrap_sheets.py` / `share_sheets_with_sa.py` | One-time: create sheets / share with the service account. |
 | `sandbox_provision.py` | **Pool-based** sandbox for per-PR e2e: `create-pool` (operator, user creds) pre-creates N slots × 4 sheets shared with the SA; `provision` leases + clears + re-seeds; `teardown` releases. Registry: `sandbox_pool.json`. |
 | `sandbox_e2e.py` | **Prod-like, zero-OTP e2e.** provision → seed sandbox raw → **mirror the prod `training_shifts` overlay** → model build → `assert_model_tabs_populated` → evidence → teardown. **`--source prod-raw --period last-closed`** (the CI default when opted in) reads the **PROD raw** Square+ADP sheets directly for the most-recent **closed** pay period (`most_recent_closed_period`) and writes only to the sandbox (read-prod/write-sandbox, hard-asserted), then runs the **strict full-period verify** incl. `assert_tip_pool_conserved` (per-day allocations == pool, cent-exact), **cadence-safe `adp_paid` reconciliation** (`assert_period_reconciled` when `period_has_cc_tip_actuals` confirms a covering Earnings export with CC-tip lines exists — no longer the blessed-`N/A` of commit 6f87f9c; an unpaid just-closed period is skipped, not failed), **and `assert_exemptions_applied`** (proves each worked training shift is dropped from tips, the day's pool redistributes to the rest, whole-period-exempt staff get $0 while partial-exempt staff keep their non-exempt earnings with exempt hours removed, and the period conserves). The overlay mirror (`seed_sandbox_training_shifts_from_prod`) copies the human-owned prod `training_shifts` rows for the window into the sandbox model so the build applies the SAME exemptions as prod. **`--source gcs-replay --auto-window --max-days N`** replays the GCS scrape cache for a small window (local smoke). Imports **no** scrape/login code (enforced by `test_sandbox_e2e.py`). **Opt-in only** (2026-06-09): add the `run-sandbox-e2e` label to a PR or trigger via `workflow_dispatch` — no longer runs on every PR automatically. See `RUNBOOK.md` §13. |

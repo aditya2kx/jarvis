@@ -291,6 +291,35 @@ def square_device_blocked_alert(
     return _safe_send(text)
 
 
+def scrape_concurrency_alert(
+    *,
+    date: str,
+    portal: str,
+    held_by: str,
+    lock_name: str,
+    expires_at: str,
+) -> Optional[dict]:
+    """Alert that a scrape was refused because another execution holds the distributed lock.
+
+    This is the correct alert for concurrent-execution failures — NOT the generic
+    failure_alert (which implies the operator should chase a magic-link email) and
+    NOT the device-blocked alert. This tells the operator: a second run tried to
+    scrape while the first was still in flight; it was correctly refused; no duplicate
+    SMS was fired; the data will land on the next run or when the first completes.
+    """
+    text = (
+        f":no_entry_sign: *BHAGA: {portal} scrape skipped — concurrent execution* "
+        f"for refresh *{date}* on {_host_tag()}\n"
+        f"Another execution already holds the scrape lock (`{lock_name}`, "
+        f"held by `{held_by}`, expires {expires_at}).\n"
+        f"*No duplicate SMS was sent.* The scrape will run when the first execution "
+        f"finishes (or the lock expires). If the first execution is stuck, clear the "
+        f"lock: `python3 -c \"from skills.bhaga_config.state_adapter import release_lock; "
+        f"release_lock('{lock_name}', holder='{held_by}')\"` and re-trigger."
+    )
+    return _safe_send(text)
+
+
 def new_employee_alert(
     new_pairs: list[tuple[str, str]],
     *,

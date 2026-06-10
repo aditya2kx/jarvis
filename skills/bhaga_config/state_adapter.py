@@ -39,6 +39,8 @@ __all__ = [
     "get_pipeline_halt",
     "set_pipeline_halt",
     "clear_pipeline_halt",
+    "try_acquire_lock",
+    "release_lock",
 ]
 
 CT = ZoneInfo("America/Chicago")
@@ -474,3 +476,187 @@ def record_step_failure(
         path.write_text(json.dumps(payload, indent=2))
     except Exception as exc:  # noqa: BLE001
         print(f"[state_adapter] WARN: could not record step failure {step}: {exc}")
+
+
+# ── Distributed scrape lock ────────────────────────────────────────────────────
+#
+# Cross-execution mutex that serializes the Square (and future portal) browser
+# login + download + session-persist window across Cloud Run executions. Each
+# Cloud Run task has its own /tmp, so the old PID-file lock was invisible across
+# concurrent executions (the 6/9 regression root cause).
+#
+# Lock document shape:
+#   {
+#     "holder":       "<hostname>:<pid>",   # unique per Cloud Run execution
+#     "acquired_at":  "<UTC ISO>",          # when this holder acquired the lock
+#     "expires_at":   "<UTC ISO>",          # wall-clock TTL (stale-reclaim after crash)
+#   }
+#
+# Backend mapping:
+#   - firestore: <collection>/_lock_<name>  (singleton doc; sandbox-isolated)
+#   - local:     ~/.bhaga/state/locks/<name>.lock  (JSON file; PID alive-check reclaim)
+#
+# Serialisation guarantee: `try_acquire_lock` uses a Firestore *transactional*
+# read-then-write (mirrors the sandbox slot lease in sandbox_provision.py) so
+# two concurrent executions cannot both see "no lock" and both succeed.
+
+
+def _locks_dir() -> pathlib.Path:
+    return pathlib.Path.home() / ".bhaga" / "state" / "locks"
+
+
+def _local_lock_path(name: str) -> pathlib.Path:
+    return _locks_dir() / f"{name}.lock"
+
+
+def _lock_doc_id(name: str) -> str:
+    return f"_lock_{name}"
+
+
+def _lock_doc_ref(client, name: str):
+    """Firestore document reference for a named lock (sandbox-isolated)."""
+    collection = _collection_name()
+    _assert_sandbox_state_isolation(collection)
+    return client.collection(collection).document(_lock_doc_id(name))
+
+
+def try_acquire_lock(
+    name: str,
+    *,
+    holder: str,
+    ttl_s: int = 3600,
+) -> bool:
+    """Attempt to acquire a distributed lock. Returns True on success, False if held.
+
+    The lock is TTL-based: a crashed holder's lock is auto-reclaimed after
+    ``ttl_s`` seconds (default 1 h, which is > the 30-min OTP wait). Callers
+    must release the lock explicitly via ``release_lock`` in a finally block.
+
+    For the Firestore backend the acquire is transactional — two concurrent
+    Cloud Run executions cannot both succeed. For the local backend, the lock
+    file is reclaimed if the holder's PID is no longer alive OR the TTL has
+    elapsed (preserving laptop single-process semantics).
+
+    Args:
+        name:   logical lock name, e.g. ``"scrape-square-palmetto"``.
+        holder: unique identifier for this execution, e.g. ``"<hostname>:<pid>"``.
+        ttl_s:  lock time-to-live in seconds (used for stale-reclaim).
+
+    Returns:
+        True  — lock acquired; caller holds it.
+        False — lock is held by another holder; caller must NOT proceed.
+    """
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    expires_at = (now_utc + datetime.timedelta(seconds=ttl_s)).isoformat()
+    acquired_at = now_utc.isoformat()
+
+    if _state_backend() == "firestore":
+        if _firestore is None:
+            raise ImportError(
+                "google-cloud-firestore is not installed but BHAGA_STATE_BACKEND=firestore"
+            )
+        client = _get_firestore_client()
+        ref = _lock_doc_ref(client, name)
+        transaction = client.transaction()
+
+        @_firestore.transactional
+        def _txn(txn):
+            snap = ref.get(transaction=txn)
+            if snap.exists:
+                data = snap.to_dict() or {}
+                existing_expires = data.get("expires_at", "")
+                # Reclaim if expired
+                if existing_expires and existing_expires > now_utc.isoformat():
+                    # Still valid — someone else holds it
+                    return False
+            # Free slot (absent or expired): take it
+            txn.set(ref, {
+                "holder": holder,
+                "acquired_at": acquired_at,
+                "expires_at": expires_at,
+            })
+            return True
+
+        return _txn(transaction)
+
+    # ── Local filesystem backend ────────────────────────────────────────
+    import socket as _socket
+
+    lock_path = _local_lock_path(name)
+    _locks_dir().mkdir(parents=True, exist_ok=True)
+
+    if lock_path.exists():
+        try:
+            data = json.loads(lock_path.read_text())
+            existing_expires = data.get("expires_at", "")
+            existing_holder = str(data.get("holder", ""))
+            # Reclaim if TTL elapsed (primary expiry mechanism).
+            if existing_expires and existing_expires <= now_utc.isoformat():
+                pass  # expired — fall through to acquire
+            else:
+                # Secondary: if the holder is on THIS host, also check PID liveness
+                # so a crashed execution releases the lock before the TTL.
+                # For a holder on a different hostname we cannot check liveness —
+                # rely on TTL only.
+                parts = existing_holder.rsplit(":", 1)
+                existing_hostname = parts[0] if len(parts) == 2 else ""
+                if existing_hostname == _socket.gethostname():
+                    try:
+                        pid = int(parts[1])
+                        os.kill(pid, 0)
+                        # PID alive on this host — lock is genuinely held
+                        return False
+                    except (ValueError, OSError, ProcessLookupError):
+                        pass  # dead PID — stale lock, reclaim
+                else:
+                    # Remote hostname: can't check PID; within TTL → held
+                    return False
+        except (json.JSONDecodeError, OSError):
+            pass  # unreadable lock — reclaim
+
+    lock_path.write_text(json.dumps({
+        "holder": holder,
+        "acquired_at": acquired_at,
+        "expires_at": expires_at,
+    }))
+    return True
+
+
+def release_lock(name: str, *, holder: str) -> bool:
+    """Release a distributed lock. Only releases if the caller is the current holder.
+
+    Idempotent and safe to call from finally blocks. Returns True if the lock
+    was owned by this holder and removed; False otherwise (already released or
+    held by someone else — no-op).
+    """
+    if _state_backend() == "firestore":
+        if _firestore is None:
+            return False
+        try:
+            client = _get_firestore_client()
+            ref = _lock_doc_ref(client, name)
+            doc = ref.get()
+            if not doc.exists:
+                return False
+            data = doc.to_dict() or {}
+            if data.get("holder") != holder:
+                return False
+            ref.delete()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            print(f"[state_adapter] WARN: release_lock({name}) failed: {exc}")
+            return False
+
+    # ── Local filesystem backend ────────────────────────────────────────
+    lock_path = _local_lock_path(name)
+    try:
+        if not lock_path.exists():
+            return False
+        data = json.loads(lock_path.read_text())
+        if data.get("holder") != holder:
+            return False
+        lock_path.unlink(missing_ok=True)
+        return True
+    except (json.JSONDecodeError, OSError, Exception) as exc:  # noqa: BLE001
+        print(f"[state_adapter] WARN: release_lock({name}) local failed: {exc}")
+        return False

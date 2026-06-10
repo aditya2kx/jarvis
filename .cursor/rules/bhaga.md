@@ -107,6 +107,15 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 - **OTP via Slack, never the IDE.** ADP/Square 2FA codes are requested via the Firestore+webhook
   round-trip. The operator is not at a laptop. Announce any action that fires an SMS/email before
   triggering it.
+- **Square scrape/OTP login is serialized across Cloud Run executions, not just within a container.**
+  `_acquire_scrape_lock` uses a TTL-based Firestore distributed lock (`runs/_lock_scrape-square-<store>`,
+  default 1 h TTL). A second execution that tries to scrape while a first is in flight receives
+  `ScrapeLockHeldError`, records a `concurrent_execution` failure in Firestore, and sends a concise
+  concurrency alert — **not** a generic failure alert and not a device-blocked alert. The webhook also
+  dedups Slack retries and checks for a non-terminal execution before spawning a new one (source-level
+  guard). If the distributed lock gets stuck (crashed run didn't release), clear it via
+  `state_adapter.release_lock('scrape-square-<store>', holder='<host:pid>')` and do NOT delete the
+  Firestore doc manually. See `RUNBOOK.md` §13 for details.
 - **Never reflexively retry a transient error when a retry can fire a side effect.** A "browser
   context died" / "Execution backend unavailable" / timeout looks retryable, but if the next attempt
   could re-fire an OTP SMS, a password-reset email, or a Slack DM, **stop and inspect first**: check

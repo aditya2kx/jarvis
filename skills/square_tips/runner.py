@@ -246,47 +246,122 @@ def _dismiss_cookie_banner(page) -> None:
         pass
 
 
-_SCRAPE_LOCK = "/tmp/bhaga-square-scrape.lock"
+class ScrapeLockHeldError(RuntimeError):
+    """Raised when a Square scrape is refused because another execution holds the lock.
+
+    Carries structured details (lock name, holder, acquired_at, expires_at) so the
+    pipeline can record a distinct ``concurrent_execution`` failure reason in Firestore
+    and send a concise concurrency Slack alert — not the generic "chase a magic-link"
+    alert — enabling postmortem-from-state without a rerun.
+    """
+
+    def __init__(
+        self,
+        msg: str,
+        *,
+        lock_name: str,
+        held_by: str,
+        acquired_at: str,
+        expires_at: str,
+    ) -> None:
+        super().__init__(msg)
+        self.lock_name = lock_name
+        self.held_by = held_by
+        self.acquired_at = acquired_at
+        self.expires_at = expires_at
+
+
+# Module-level mutable; stores the active (lock_name, holder) so the no-arg
+# _release_scrape_lock() can release the right distributed lock.
+_active_lock: tuple[str, str] | None = None
+
+# Default TTL: > 1800 s OTP wait + download time.  Overrideable via env.
+_SCRAPE_LOCK_TTL_S = int(
+    __import__("os").environ.get("BHAGA_SCRAPE_LOCK_TTL_S", "3600")
+)
 
 
 def _acquire_scrape_lock(store: str) -> None:
-    """Refuse to start a Square scrape if another one is already in flight.
+    """Refuse to start a Square scrape if another execution holds the distributed lock.
 
-    Prevents the "duplicate SMS" failure mode: previously, accidentally
-    launching a second scrape process while a first was mid-2FA would fire
-    a SECOND SMS to the operator and burn a second OTP reply. Now any
-    second invocation hard-fails before opening a browser.
+    Uses a TTL-based distributed lock (Firestore in cloud, local file on laptop) so
+    concurrent Cloud Run executions — each with their own /tmp — are serialized.
+    Two concurrent scrapes would each fire a 2FA SMS and clobber the shared GCS
+    session blob; the second execution fails fast here instead.
 
-    Lock format: `<pid> <store> <started_iso>` in a file at /tmp/. If the
-    lock file exists but the PID is no longer alive (e.g. the previous
-    scrape was killed with SIGKILL), reclaim it.
+    Emits greppable breadcrumbs (ACQUIRED / REFUSED) for Cloud Run log analysis.
+    Raises ScrapeLockHeldError (not a plain RuntimeError) so the pipeline can
+    record a distinct ``concurrent_execution`` failure and send a concurrency alert.
     """
     import os
-    if os.path.exists(_SCRAPE_LOCK):
+    import socket
+
+    from skills.bhaga_config import state_adapter
+
+    global _active_lock
+
+    lock_name = f"scrape-square-{store}"
+    holder = f"{socket.gethostname()}:{os.getpid()}"
+    ttl_s = _SCRAPE_LOCK_TTL_S
+
+    acquired = state_adapter.try_acquire_lock(lock_name, holder=holder, ttl_s=ttl_s)
+    if not acquired:
+        # Read current holder details for the error (best-effort; non-transactional).
+        held_by = held_acquired = held_expires = "unknown"
         try:
-            with open(_SCRAPE_LOCK) as f:
-                pid_str, *_ = f.read().split()
-            pid = int(pid_str)
-            os.kill(pid, 0)  # raises if pid not alive
-            raise RuntimeError(
-                f"Square scrape already in progress (pid={pid}). "
-                f"Two scrapes would each fire a 2FA SMS. "
-                f"Wait for the first to finish, or kill it explicitly: kill {pid} && rm {_SCRAPE_LOCK}"
-            )
-        except (ProcessLookupError, ValueError, OSError, FileNotFoundError):
-            # Stale lock — previous process died, reclaim.
+            backend = state_adapter._state_backend()
+            if backend == "firestore":
+                client = state_adapter._get_firestore_client()
+                doc = state_adapter._lock_doc_ref(client, lock_name).get()
+                if doc.exists:
+                    d = doc.to_dict() or {}
+                    held_by = d.get("holder", "unknown")
+                    held_acquired = d.get("acquired_at", "unknown")
+                    held_expires = d.get("expires_at", "unknown")
+            else:
+                import json
+                lp = state_adapter._local_lock_path(lock_name)
+                if lp.exists():
+                    d = json.loads(lp.read_text())
+                    held_by = d.get("holder", "unknown")
+                    held_acquired = d.get("acquired_at", "unknown")
+                    held_expires = d.get("expires_at", "unknown")
+        except Exception:  # noqa: BLE001
             pass
-    with open(_SCRAPE_LOCK, "w") as f:
-        f.write(f"{os.getpid()} {store} {datetime.datetime.utcnow().isoformat()}Z\n")
+
+        print(
+            f"[square lock] REFUSED name={lock_name} held_by={held_by} "
+            f"acquired_at={held_acquired} expires_at={held_expires}"
+        )
+        raise ScrapeLockHeldError(
+            f"Square scrape already in progress — another execution holds the lock "
+            f"({held_by}). Two scrapes would each fire a 2FA SMS and corrupt the "
+            f"shared session. Wait for the first to finish (lock expires at "
+            f"{held_expires}) or clear it manually.",
+            lock_name=lock_name,
+            held_by=held_by,
+            acquired_at=held_acquired,
+            expires_at=held_expires,
+        )
+
+    _active_lock = (lock_name, holder)
+    print(
+        f"[square lock] ACQUIRED name={lock_name} holder={holder} ttl_s={ttl_s}"
+    )
 
 
 def _release_scrape_lock() -> None:
-    """Remove the scrape lock. Idempotent; safe to call from finally blocks."""
-    try:
-        import os
-        os.remove(_SCRAPE_LOCK)
-    except (FileNotFoundError, OSError):
-        pass
+    """Release the distributed scrape lock. Idempotent; safe to call from finally blocks."""
+    global _active_lock
+    if _active_lock is None:
+        return
+    lock_name, holder = _active_lock
+
+    from skills.bhaga_config import state_adapter
+
+    state_adapter.release_lock(lock_name, holder=holder)
+    print(f"[square lock] RELEASED name={lock_name} holder={holder}")
+    _active_lock = None
 
 
 def _drive_verification(page, *, store: str, attempt: int = 1) -> None:

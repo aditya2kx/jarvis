@@ -1,5 +1,19 @@
 # Jarvis Build Progress
 
+## 2026-06-10 — Square concurrent-scrape regression fix (PR #TBD on branch fix/square-scrape-concurrent-regression)
+
+**Incident (6/9 prod incremental run):** The nightly run for 2026-06-09 produced no Square results. An email report was downloaded but Slack reported a login issue. Root cause: two Cloud Run executions ran simultaneously — the nightly scheduler triggered one, and the webhook's `_handle_ready_reply` triggered a second on the operator's READY reply (Slack may also have retried the delivery). Each execution had its own `/tmp`, so the old `_acquire_scrape_lock` PID-file lock was invisible across them. Both executions fired a 2FA SMS, and both read/wrote the shared GCS session blob `_session/square-palmetto.json`, corrupting login state and producing no usable scrape result.
+
+**Why multiple executions fired:** The webhook `_handle_ready_reply` called `_trigger_cloud_run_job` on every READY-looking reply with no guard (no Slack-retry dedup on `event_id`/`X-Slack-Retry-Num`, no "is a run already executing?" check). A double-tapped READY, a Slack delivery retry, or any manual `/bhaga refresh` overlapping with the webhook resume could each spawn an additional execution.
+
+**Fix (two layers):**
+1. **Webhook dedup** (`cloud/webhook/handler.py`): discard Slack-retry deliveries (`X-Slack-Retry-Num > 0`) in `slack_events()`; store seen `event_id`s in Firestore `webhook_events/<event_id>` (5-min TTL) to catch duplicates even after a cold start; check `_is_already_running` before `_trigger_cloud_run_job` (fail-open).
+2. **Distributed scrape lock** (`skills/square_tips/runner.py` + `skills/bhaga_config/state_adapter.py`): `_acquire_scrape_lock` now acquires a TTL-based Firestore lock (`runs/_lock_scrape-square-<store>`, `BHAGA_SCRAPE_LOCK_TTL_S=3600`) via a transactional read-then-write. A second execution raises `ScrapeLockHeldError` (carries holder, acquired_at, expires_at) without firing a duplicate SMS. The failure is recorded to Firestore `failures.square` as `concurrent_execution` and sends a concise concurrency Slack alert (`notify.scrape_concurrency_alert`) instead of the misleading generic or device-blocked alert.
+
+**Observability added:** Every lock acquire/release/refusal emits a greppable Cloud Run log breadcrumb (`[square lock] ACQUIRED/RELEASED/REFUSED name=… holder=<host:pid> …`). Future postmortem can reconstruct "run B was refused because run A held the lock" from state alone (Firestore + logs), no rerun needed.
+
+**Verification:** Post-merge + image redeploy, triggered a prod incremental for 2026-06-09 to recover the missing data (OTP answered in Slack). Verified row counts and `data_window_end` advance. (Fill in actual results after 6/9 recovery run.)
+
 ## 2026-06-09 — Grafana hotfix: KDS query-var, Min/Item threshold, labor y-axis cap
 
 **Context:** After PR #43 merged, the operator found three dashboard gaps. This hotfix (branch `fix/grafana-kds-vars-labor-yaxis`, off `main`) fixes them; the dashboard bumps to v28.

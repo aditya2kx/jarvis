@@ -759,3 +759,166 @@ class TestConfigCommands:
         body = json.loads(resp.data)
         assert "config get" in body["text"]
         assert "config set" in body["text"]
+
+
+# ===========================================================================
+# Slack-retry dedup and already-running guard
+# ===========================================================================
+
+class TestSlackRetryDedup:
+    """Slack re-delivers events with X-Slack-Retry-Num > 0.
+    A retried READY reply must NOT trigger a second Cloud Run execution.
+    """
+
+    def _post_event_with_retry_header(self, client, payload, retry_num: str):
+        body = json.dumps(payload).encode("utf-8")
+        timestamp = str(int(time.time()))
+        signature = _make_signature(body, timestamp)
+        return client.post(
+            "/slack/events",
+            data=body,
+            content_type="application/json",
+            headers={
+                "X-Slack-Request-Timestamp": timestamp,
+                "X-Slack-Signature": signature,
+                "X-Slack-Retry-Num": retry_num,
+                "X-Slack-Retry-Reason": "http_error",
+            },
+        )
+
+    def test_retry_num_1_is_discarded(self):
+        """A delivery with X-Slack-Retry-Num=1 is short-circuited with 200."""
+        payload = {
+            "type": "event_callback",
+            "event_id": "Ev_retry_test",
+            "event": {
+                "type": "message",
+                "channel": "D_BHAGA",
+                "user": "U_OP",
+                "text": "ready",
+            },
+        }
+        with app.test_client() as c:
+            with patch.object(handler, "_handle_event") as mock_handle:
+                resp = self._post_event_with_retry_header(c, payload, retry_num="1")
+        assert resp.status_code == 200
+        mock_handle.assert_not_called()
+
+    def test_retry_num_0_is_processed(self):
+        """A delivery with X-Slack-Retry-Num=0 (first attempt) is processed normally."""
+        payload = {
+            "type": "event_callback",
+            "event_id": "Ev_first_delivery",
+            "event": {
+                "type": "message",
+                "channel": "D_BHAGA",
+                "user": "U_OP",
+                "text": "ready",
+            },
+        }
+        with app.test_client() as c:
+            with patch.object(handler, "_handle_event") as mock_handle, \
+                 patch.object(handler, "_check_and_store_event_id", return_value=False):
+                resp = self._post_event_with_retry_header(c, payload, retry_num="0")
+        assert resp.status_code == 200
+        mock_handle.assert_called_once()
+
+    def test_no_retry_header_is_processed(self):
+        """Events without a retry header (normal case) are processed normally."""
+        payload = {
+            "type": "event_callback",
+            "event_id": "Ev_no_retry",
+            "event": {
+                "type": "message",
+                "channel": "D_BHAGA",
+                "user": "U_OP",
+                "text": "ready",
+            },
+        }
+        with app.test_client() as c:
+            with patch.object(handler, "_handle_event") as mock_handle, \
+                 patch.object(handler, "_check_and_store_event_id", return_value=False):
+                resp = _post_event(c, payload)
+        assert resp.status_code == 200
+        mock_handle.assert_called_once()
+
+    def test_duplicate_event_id_is_discarded(self):
+        """If _check_and_store_event_id returns True (seen before), _handle_event is skipped."""
+        payload = {
+            "type": "event_callback",
+            "event_id": "Ev_dup",
+            "event": {
+                "type": "message",
+                "channel": "D_BHAGA",
+                "user": "U_OP",
+                "text": "ready",
+            },
+        }
+        with app.test_client() as c:
+            with patch.object(handler, "_handle_event") as mock_handle, \
+                 patch.object(handler, "_check_and_store_event_id", return_value=True):
+                resp = _post_event(c, payload)
+        assert resp.status_code == 200
+        mock_handle.assert_not_called()
+
+    def test_is_slack_retry_helper(self):
+        assert handler._is_slack_retry({"X-Slack-Retry-Num": "1"}) is True
+        assert handler._is_slack_retry({"X-Slack-Retry-Num": "2"}) is True
+        assert handler._is_slack_retry({"X-Slack-Retry-Num": "0"}) is False
+        assert handler._is_slack_retry({}) is False
+        assert handler._is_slack_retry({"X-Slack-Retry-Num": "bad"}) is False
+
+
+class TestAlreadyRunningGuard:
+    """_trigger_cloud_run_job must skip if a non-terminal execution already exists."""
+
+    def _mock_run_v2(self):
+        """Return a mock run_v2 module that can be injected into sys.modules."""
+        import sys
+        mock_rv2 = MagicMock()
+        mock_rv2.JobsClient.return_value = MagicMock()
+        mock_rv2.ExecutionsClient.return_value = MagicMock()
+        return mock_rv2
+
+    def test_trigger_skips_when_already_running(self):
+        """When _is_already_running returns True, run_job is not called."""
+        import sys
+        mock_rv2 = self._mock_run_v2()
+        with patch.object(handler, "_is_already_running", return_value=True) as mock_check, \
+             patch.dict(sys.modules, {"google.cloud.run_v2": mock_rv2}):
+            handler._trigger_cloud_run_job("2026-06-09", job_name="projects/p/jobs/bhaga")
+        mock_rv2.JobsClient.return_value.run_job.assert_not_called()
+        mock_check.assert_called_once_with("projects/p/jobs/bhaga", "2026-06-09")
+
+    def test_trigger_fires_when_not_running(self):
+        """When _is_already_running returns False, run_job is called."""
+        import sys
+        mock_rv2 = self._mock_run_v2()
+        with patch.object(handler, "_is_already_running", return_value=False), \
+             patch.dict(sys.modules, {"google.cloud.run_v2": mock_rv2}):
+            handler._trigger_cloud_run_job("2026-06-09", job_name="projects/p/jobs/bhaga")
+        mock_rv2.JobsClient.return_value.run_job.assert_called_once()
+
+    def test_trigger_fires_when_already_running_check_errors(self):
+        """Fail-open: _is_already_running returns False on any API error."""
+        import sys
+        mock_rv2 = self._mock_run_v2()
+        mock_rv2.ExecutionsClient.return_value.list_executions.side_effect = Exception("api error")
+        with patch.dict(sys.modules, {"google.cloud.run_v2": mock_rv2}):
+            result = handler._is_already_running("projects/p/jobs/bhaga", "2026-06-09")
+        assert result is False  # fail-open: allow trigger
+
+    def test_no_job_name_skips_trigger(self):
+        """Without CLOUD_RUN_JOB_NAME env var set, no trigger fires."""
+        import sys
+        mock_rv2 = self._mock_run_v2()
+        old = os.environ.pop("CLOUD_RUN_JOB_NAME", None)
+        try:
+            with patch.object(handler, "_is_already_running") as mock_check, \
+                 patch.dict(sys.modules, {"google.cloud.run_v2": mock_rv2}):
+                handler._trigger_cloud_run_job("2026-06-09")
+            mock_check.assert_not_called()
+            mock_rv2.JobsClient.return_value.run_job.assert_not_called()
+        finally:
+            if old is not None:
+                os.environ["CLOUD_RUN_JOB_NAME"] = old

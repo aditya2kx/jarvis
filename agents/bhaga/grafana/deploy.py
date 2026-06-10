@@ -51,8 +51,10 @@ def bind_datasource_uid(
     with "Data source not found", and every panel shows "No data".
 
     Binding the literal UID at deploy time fixes this without committing an
-    environment-specific UID to the repo. We rewrite both the panel/target
-    ``datasource.uid`` refs and the template var's ``current`` value.
+    environment-specific UID to the repo. We rewrite the panel/target
+    ``datasource.uid`` refs, any query-type template variable's own
+    ``datasource.uid`` ref (e.g. ``kds_date``), and the ``ds_bigquery`` var's
+    ``current`` value.
 
     Returns the number of datasource refs rewritten.
     """
@@ -82,6 +84,10 @@ def bind_datasource_uid(
                 "value": uid,
                 "selected": False,
             }
+        else:
+            # query-type vars (e.g. kds_date) carry their own datasource ref;
+            # leaving it as ${ds_bigquery} can break the variable's options query.
+            _rewrite_ref(var.get("datasource"))
 
     return count
 

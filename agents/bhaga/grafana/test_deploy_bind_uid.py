@@ -45,6 +45,9 @@ class TestBindDatasourceUid(unittest.TestCase):
                  "current": {"value": "BHAGA BigQuery"}},
                 {"name": "date_from", "type": "textbox",
                  "current": {"value": "2026-01-01"}},
+                {"name": "kds_date", "type": "query",
+                 "datasource": {"type": "grafana-bigquery-datasource", "uid": _PLACEHOLDER},
+                 "query": {"rawSql": "SELECT 1"}},
             ]},
             "panels": [
                 {"id": 1, "title": "A",
@@ -65,9 +68,15 @@ class TestBindDatasourceUid(unittest.TestCase):
     def test_rewrites_all_refs_and_counts(self):
         dash = self._sample()
         n = bind_datasource_uid(dash, _REAL_UID)
-        self.assertEqual(n, 4)  # 2 panel + 2 target refs (incl. nested)
+        self.assertEqual(n, 5)  # 2 panel + 2 target refs (incl. nested) + 1 query var
         self.assertNotIn(_PLACEHOLDER, _all_datasource_uids(dash))
         self.assertTrue(all(u == _REAL_UID for u in _all_datasource_uids(dash)))
+
+    def test_query_variable_datasource_bound(self):
+        dash = self._sample()
+        bind_datasource_uid(dash, _REAL_UID)
+        kds = next(v for v in dash["templating"]["list"] if v["name"] == "kds_date")
+        self.assertEqual(kds["datasource"]["uid"], _REAL_UID)
 
     def test_template_var_current_pinned_to_uid(self):
         dash = self._sample()

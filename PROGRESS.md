@@ -1,5 +1,19 @@
 # Jarvis Build Progress
 
+## 2026-06-09 — Grafana dashboard: KDS defaults, p99 goal line, goal-var grouping (PR A)
+
+**Changes:** PR A (dashboard tweaks + CI sandbox policy).
+
+Dashboard changes (`agents/bhaga/grafana/dashboard.json`, version 26→27):
+- **Order KDS Times (panel 52):** defaults to the most-recent order date (`kds_date` query var) and Min/Item ≥ 8 (`kds_min_per_item` textbox), both adjustable via top-of-dashboard dropdowns. SQL now filters `date_local = '$kds_date'` and `ROUND(order_min/num_items,1) >= CAST('$kds_min_per_item' AS FLOAT64)`.
+- **KDS Time per Item (panel 51):** added a dashed `p99 Goal` baseline series using new `goal_kds_p99_min` textbox var (default 8 min).
+- **Template variables:** reordered so filters (`date_from`, `kds_date`, `kds_min_per_item`) come first, then goals (`goal_hours_per_item`, `goal_labor_pct_of_net_sales`, `goal_kds_p99_min`) grouped left-to-right. Each variable has a `description`. `goal_hours_per_item` changed from 0.15 → 0.20 (20%).
+- `verify_panels.py._template_defaults` extended to also resolve `query`-type vars so `$kds_date` substitutes during local verification.
+
+CI sandbox policy changes: the default per-PR `Sandbox e2e` gate is made opt-in (label/dispatch); targeted scenarios run per-plan via Tier-2. Required-check removed from ruleset "Protect Master".
+
+**Verification:** `verify_panels.py` shows all 11 panels OK, including panel 52 returning 5 rows for 2026-06-08 with Min/Item ≥ 8 filter, and panel 51 with the new `p99 Goal` series. `TestGrafanaContractInSync` passes (no new views added).
+
 ## 2026-06-09 — OTP-recovery invalidation widened to model-render steps (PR #TBD on branch fix/recovery-invalidate-model-steps)
 
 **Incident (2026-06-08 prod recovery, post PR #41 deploy):** After the login fix merged + deployed, I re-ran prod for 6/8. Login **recovered** (blank magic link → discarded session → fresh retry → operator OTP + a deliverable magic link → dashboard) and 108 Square transactions / 146 item lines landed in BQ — but the run then **failed the post-condition guard**: `data_window_end` stayed at 2026-06-07. Root cause: the OTP-recovery marker-invalidation list `_RECOVERY_DOWNSTREAM_STEPS` only cleared `load_raw_bigquery` / `update_model_sheet` / `process_reviews`. The earlier partial run had already marked `render_raw_sheets` + `materialize_model_bq` done, so they stayed skipped — the fresh Square rows reached BQ raw but were never re-projected into Sheet raw, `update_model_sheet` (legacy path) computed from stale Sheet raw, and the window stuck. (The guard did its job — it caught the silent partial success — but only after a wasted run.)

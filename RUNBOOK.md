@@ -580,7 +580,12 @@ After editing, rebuild: `python3 -m agents.bhaga.scripts.update_model_sheet --st
 the nightly do it), then confirm `tip_alloc_period` shows $0 for the exempted shift and the pool total
 is conserved.
 
-### Run the per-PR sandbox e2e (prod-like, zero-OTP)
+### Run the sandbox e2e (prod-like, zero-OTP) — opt-in
+
+> **Policy change (2026-06-09):** `Sandbox e2e` is **no longer a required CI gate on every PR**.
+> It runs only when the `run-sandbox-e2e` label is added to a PR or via manual `workflow_dispatch`.
+> Use it when a plan specifically calls for it, or for changes touching the core model pipeline.
+> `Sandbox e2e` has been removed from the "Protect Master" ruleset required checks.
 
 `agents/bhaga/scripts/sandbox_e2e.py` is the prod-like end-to-end that proves a change without
 touching the production workbooks and **without ever calling Square / ADP / Google Reviews or
@@ -590,7 +595,7 @@ populated, prints evidence, then releases the slot.
 
 **Two seeding sources (`--source`):**
 
-- `prod-raw` (**the per-PR default in CI**): reads the **PROD** raw Square+ADP sheets directly
+- `prod-raw` (**the per-PR default when opted in**): reads the **PROD** raw Square+ADP sheets directly
   (read-prod is sanctioned; reads use the prod sid, never the staging override) and writes the
   windowed rows into the **sandbox** raw sheets (writes are staging-resolved, so the production-sheet
   guard makes a prod write impossible). Pair with `--period last-closed` to cover the most-recent

@@ -34,8 +34,28 @@ code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12p
 </style></head>
 <body><div class="wrap">
 <h1>PR cost monitoring</h1>
-<p class="muted">26 PR(s) · $365.55 total · generated 2026-06-09 08:47 UTC · source: <code>metrics/pr_cost/PR-*.json</code> · rates verified 2026-06-03 (<a href="https://cursor.com/docs/models-and-pricing" style="color:#539bf5">cursor.com/docs/models-and-pricing</a>)</p>
+<p class="muted">27 PR(s) · $368.05 total · generated 2026-06-09 21:57 UTC · source: <code>metrics/pr_cost/PR-*.json</code> · rates verified 2026-06-03 (<a href="https://cursor.com/docs/models-and-pricing" style="color:#539bf5">cursor.com/docs/models-and-pricing</a>)</p>
 
+    <section class="pr">
+      <p class="pr-title">#42 — fix(bhaga): OTP recovery invalidates ALL model-render steps (window-advance)</p>
+      <p class="muted">merged 2026-06-09 · build = Cursor usage API · review = Claude Sonnet bot</p>
+      <div class="stats">
+        <div class="stat"><div class="v">$2.50</div><div class="l">Total cost</div></div>
+        <div class="stat"><div class="v build">$2.50</div><div class="l">Build (100%)</div></div>
+        <div class="stat"><div class="v review">$0.00</div><div class="l">Review · 1 runs</div></div>
+        <div class="stat"><div class="v">1.5M</div><div class="l">Tokens</div></div>
+      </div>
+      <div class="bar"><div class="b" style="width:100.0%"></div><div class="r" style="width:0.0%"></div></div>
+      <p class="muted">Build 100% · Review 0%</p>
+      <h2>Where the effort went — top 2 cost areas</h2>
+      <table><thead><tr><th>Area</th><th>Model</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">% of PR</th></tr></thead>
+      <tbody><tr class="build"><td>build session 2026-06-09T08:47:25Z</td><td>claude-opus-4-8-thinking-high</td><td class="n">1.5M</td><td class="n">$2.50</td><td class="n">100.0%</td></tr><tr class="review"><td>claude review (×1 runs)</td><td>claude-sonnet-4-6</td><td class="n">0</td><td class="n">$0.00</td><td class="n">0.0%</td></tr></tbody></table>
+      <h2>Diagnosis</h2>
+      <div class="obs"><b>•</b>Build is 100% of total cost ($2.50) vs review 0% ($0.00). Optimization leverage is in the build loop.</div><div class="obs"><b>•</b>Model mix: opus $2.50 (100%).</div><div class="obs"><b>•</b>One session (2026-06-09T08:47:25, $2.50, 1,500,000 tok) is 100% of build cost — a marathon thread with an ever-growing context.</div><div class="obs"><b>•</b>Review ran once ($0.00) — ideal.</div>
+      <h2>Tactical recommendations</h2>
+      <div class="rec"><b>#1</b>Route standard feature work to Sonnet 4.6 (default) — reserve Opus 4.8 only for hard multi-file reasoning or subtle bugs. 1 Opus session(s) (2026-06-09T08:47:25 ($2.50)) cost $2.50; same work on Sonnet ≈ $0.45. Est. saving: ~$2.05. Rates (verified 2026-06-03): Opus cache-read $0.50/M vs Sonnet $0.30/M; output $25/M vs $15/M.</div><div class="rec"><b>#2</b>Use thinking=medium instead of thinking=high for non-hard sessions. 1 session(s) used thinking-high ($2.50 total). Medium is indistinguishable for routine feature work; high adds ~20–30% output tokens. Est. saving: ~$0.50.</div>
+    </section>
+    
     <section class="pr">
       <p class="pr-title">#41 — Square login resilience (free, no laptop)</p>
       <p class="muted">merged 2026-06-09 · build = Cursor usage API · review = Claude Sonnet bot</p>

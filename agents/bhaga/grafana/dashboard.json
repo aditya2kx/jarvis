@@ -4,7 +4,7 @@
   "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 26,
+  "version": 27,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {"from": "now-90d", "to": "now"},
@@ -22,13 +22,37 @@
         "description": "ISO date string e.g. 2026-01-01"
       },
       {
+        "name": "kds_date",
+        "label": "KDS: Order Date",
+        "type": "query",
+        "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
+        "definition": "SELECT CAST(date_local AS STRING) FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` GROUP BY date_local ORDER BY date_local DESC",
+        "query": "SELECT CAST(date_local AS STRING) FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` GROUP BY date_local ORDER BY date_local DESC",
+        "sort": 0,
+        "refresh": 2,
+        "includeAll": false,
+        "current": {"text": "2026-06-08", "value": "2026-06-08"},
+        "options": [],
+        "hide": 0,
+        "description": "Order date shown in the Order KDS Times table; defaults to the most recent date. Pick another date from the dropdown to investigate that day."
+      },
+      {
+        "name": "kds_min_per_item",
+        "label": "KDS: Min / Item \u2265",
+        "type": "textbox",
+        "current": {"value": "8"},
+        "options": [{"selected": true, "text": "8", "value": "8"}],
+        "hide": 0,
+        "description": "Default slow-order threshold for the Order KDS Times table; rows below this Min/Item are hidden. Lower it (e.g. 0) to see all orders."
+      },
+      {
         "name": "goal_hours_per_item",
         "label": "Goal: Shift Hrs / Item",
         "type": "textbox",
-        "current": {"value": "0.15"},
-        "options": [{"selected": true, "text": "0.15", "value": "0.15"}],
+        "current": {"value": "0.20"},
+        "options": [{"selected": true, "text": "0.20", "value": "0.20"}],
         "hide": 0,
-        "description": "Target shift hours per item as a raw ratio (0.15) — the Hours / Item charts display it percent-style (\u00d7 100), so 0.15 shows as 15%"
+        "description": "Target shift hours per item as a raw ratio (0.20) — the Hours / Item charts display it percent-style (\u00d7 100), so 0.20 shows as 20%"
       },
       {
         "name": "goal_labor_pct_of_net_sales",
@@ -37,7 +61,16 @@
         "current": {"value": "0.20"},
         "options": [{"selected": true, "text": "0.20", "value": "0.20"}],
         "hide": 0,
-        "description": "Target labor wages as a fraction of net sales (labor_cost ÷ net_sales, e.g. 0.20 = 20%) — rendered as a baseline line on the Weekly Labor Wages / Net Sales chart"
+        "description": "Target labor wages as a fraction of net sales (labor_cost \u00f7 net_sales, e.g. 0.20 = 20%) — rendered as a baseline line on the Weekly Labor Wages / Net Sales chart"
+      },
+      {
+        "name": "goal_kds_p99_min",
+        "label": "Goal: KDS p99 (min)",
+        "type": "textbox",
+        "current": {"value": "8"},
+        "options": [{"selected": true, "text": "8", "value": "8"}],
+        "hide": 0,
+        "description": "Target p99 per-order KDS prep time in minutes; drawn as a dashed baseline on the KDS Time per Item chart."
       },
       {
         "name": "ds_bigquery",
@@ -324,7 +357,7 @@
       "id": 51,
       "type": "timeseries",
       "title": "KDS Time per Item (median / p90 / p95 / p99)",
-      "description": "Percentiles of per-ITEM prep time per day (order completion time ÷ items in the order). Y-axis capped at 30 min so outliers don't skew the scale.",
+      "description": "Percentiles of per-ITEM prep time per day (order completion time ÷ items in the order). Y-axis capped at 30 min so outliers don't skew the scale. Dashed line = p99 goal ($goal_kds_p99_min min).",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 9, "w": 24, "x": 0, "y": 59},
       "options": {
@@ -332,7 +365,14 @@
         "legend": {"displayMode": "list", "placement": "bottom"}
       },
       "fieldConfig": {
-        "defaults": {"unit": "suffix: min", "decimals": 1, "min": 0, "max": 30}
+        "defaults": {"unit": "suffix: min", "decimals": 1, "min": 0, "max": 30},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "p99 Goal"},
+           "properties": [
+             {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}},
+             {"id": "custom.lineWidth", "value": 1}
+           ]}
+        ]
       },
       "targets": [
         {
@@ -340,7 +380,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, kds_p90_min AS `p90`, kds_p95_min AS `p95`, kds_p99_min AS `p99`, kds_median_min AS `median` FROM `jarvis-bhaga-prod.bhaga.vw_order_quality_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, kds_p90_min AS `p90`, kds_p95_min AS `p95`, kds_p99_min AS `p99`, kds_median_min AS `median`, CAST('$goal_kds_p99_min' AS FLOAT64) AS `p99 Goal` FROM `jarvis-bhaga-prod.bhaga.vw_order_quality_daily` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
@@ -348,7 +388,7 @@
       "id": 52,
       "type": "table",
       "title": "Order KDS Times — set your slow threshold with the Min / Item filter",
-      "description": "One row per order (ticket) with its whole-order KDS prep time (Start → End), and 'On Shift (punched in)' = everyone whose ADP punch overlapped that order's time window. The query does NOT pre-filter — every order in the From-Date window is shown. Set your own slow threshold in-table: click the 'Min / Item' column filter and use the ≥ operator (e.g. ≥ 10) to see only orders over that per-item time; use the 'Date' filter to focus on a single day. 'Min / Item' = Order Min ÷ Items. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order.",
+      "description": "One row per order (ticket) with its whole-order KDS prep time (Start → End). Defaults to the most-recent order date and Min/Item ≥ 8 — adjust both with the 'KDS: Order Date' and 'KDS: Min / Item ≥' dropdowns at the top of the dashboard. 'Min / Item' = Order Min ÷ Items. 'On Shift (punched in)' = everyone whose ADP punch overlapped that order's time window. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order.",
       "datasource": {"type": "grafana-bigquery-datasource", "uid": "${ds_bigquery}"},
       "gridPos": {"h": 12, "w": 24, "x": 0, "y": 68},
       "options": {"sortBy": [{"displayName": "Min / Item", "desc": true}]},
@@ -373,7 +413,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT date_local, ticket_name, order_source, start_time, end_time, num_items, order_min, ROUND(order_min / num_items, 1) AS min_per_item, (SELECT STRING_AGG(DISTINCT s.employee, ' | ' ORDER BY s.employee) FROM `jarvis-bhaga-prod.bhaga.vw_staff_on_shift` s WHERE s.date = o.date_local AND SAFE.PARSE_TIME('%H:%M', s.in_time) <= SAFE.PARSE_TIME('%H:%M:%S', o.end_time) AND SAFE.PARSE_TIME('%H:%M', s.out_time) >= SAFE.PARSE_TIME('%H:%M:%S', o.start_time)) AS staff_on_shift, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` o WHERE date_local >= '$date_from' ORDER BY min_per_item DESC, date_local DESC, ticket_name"
+          "rawSql": "SELECT date_local, ticket_name, order_source, start_time, end_time, num_items, order_min, ROUND(order_min / num_items, 1) AS min_per_item, (SELECT STRING_AGG(DISTINCT s.employee, ' | ' ORDER BY s.employee) FROM `jarvis-bhaga-prod.bhaga.vw_staff_on_shift` s WHERE s.date = o.date_local AND SAFE.PARSE_TIME('%H:%M', s.in_time) <= SAFE.PARSE_TIME('%H:%M:%S', o.end_time) AND SAFE.PARSE_TIME('%H:%M', s.out_time) >= SAFE.PARSE_TIME('%H:%M:%S', o.start_time)) AS staff_on_shift, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` o WHERE date_local = '$kds_date' AND ROUND(order_min / num_items, 1) >= CAST('$kds_min_per_item' AS FLOAT64) ORDER BY min_per_item DESC, ticket_name"
         }
       ]
     },

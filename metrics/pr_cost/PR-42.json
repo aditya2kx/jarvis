@@ -5,7 +5,7 @@
   "requirement": "Recovering the 6/8 prod incident exposed that _RECOVERY_DOWNSTREAM_STEPS omitted render_raw_sheets/materialize_model_bq, so OTP recovery left data_window_end stuck; widen the list so recovery advances the window in one run.",
   "branch": "fix/recovery-invalidate-model-steps",
   "created_at": null,
-  "merged_at": null,
+  "merged_at": "2026-06-09T08:48:53Z",
   "diff": {
     "files": null,
     "additions": null,

@@ -66,7 +66,7 @@ def _template_defaults(dashboard: dict) -> dict[str, str]:
     """
     defaults: dict[str, str] = {}
     for var in dashboard.get("templating", {}).get("list", []):
-        if var.get("type") in ("textbox", "custom"):
+        if var.get("type") in ("textbox", "custom", "query"):
             defaults[var["name"]] = str((var.get("current") or {}).get("value", ""))
     return defaults
 

@@ -140,6 +140,36 @@ to prod without a sandbox round-trip for the data-source step (but sandbox e2e m
 For these exceptions, record the prod-apply step as PR evidence (evidence §4 of the PR template).
 Non-additive schema changes (column removal, rename, reorder) are never exempt.
 
+#### Grafana dashboard changes — the live link is the evidence
+A Grafana dashboard is a **review surface, not a data pipeline**: the repo's
+`agents/bhaga/grafana/dashboard.json` is the source of truth, and `grafana-dashboard-sync.yml`
+re-syncs it from `main` on every merge. So you may — and **should** — push the dashboard from your
+**branch** to Grafana Cloud *before* merge, because the only meaningful proof a dashboard change
+works is the **rendered, live dashboard**, not a `verify_panels.py` SQL check (that only proves the
+panel SQL resolves against BigQuery — it does **not** prove the rendered dropdowns, axis caps, or
+template-variable wiring).
+
+Deploy the branch dashboard and capture the live link as PR evidence (§4):
+```bash
+GRAFANA_API_TOKEN=$(security find-generic-password -s grafana-cloud-api-token -a steadyangelfish2985 -w) \
+GRAFANA_ORG_SLUG=steadyangelfish2985 \
+  python3 agents/bhaga/grafana/deploy.py --dashboard-only
+# then confirm the live version bumped (and any changed vars/panels):
+TOKEN=$(security find-generic-password -s grafana-cloud-api-token -a steadyangelfish2985 -w)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://steadyangelfish2985.grafana.net/api/dashboards/uid/bhaga-analytics-v1" \
+  | python3 -c "import json,sys; print('live version:', json.load(sys.stdin)['dashboard']['version'])"
+```
+Rules for this path:
+- **Always bump `dashboard.json` `version`** so the live `version` is a verifiable fingerprint of your
+  change. The §4 evidence is the dashboard link **plus** the confirmed live `version` matching your PR.
+- A branch deploy is safe and reversible: the next merge to `main` re-syncs from the repo, so the
+  source of truth is never the live instance. If your PR is abandoned, re-run the sync workflow (or
+  merge the current `main`) to restore.
+- This is **dashboard-only**. Do **not** hand-edit panels in the Grafana UI as the source of truth, and
+  do **not** use this path to side-load any BigQuery/Sheets *data* — those still follow the normal
+  merge-to-deploy flow (`RUNBOOK.md` §9, BQ-as-source-of-truth rule).
+
 - **Backward compatible by default.** Schema changes are additive (no column reorder/removal), existing
   consumers and the nightly `daily_refresh` keep working, and you *prove* it (legacy suite green, or a
   legacy-regression run).

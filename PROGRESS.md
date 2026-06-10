@@ -1,5 +1,19 @@
 # Jarvis Build Progress
 
+## 2026-06-09 — Grafana hotfix: KDS query-var, Min/Item threshold, labor y-axis cap
+
+**Context:** After PR #43 merged, the operator found three dashboard gaps. This hotfix (branch `fix/grafana-kds-vars-labor-yaxis`, off `main`) fixes them; the dashboard bumps to v28.
+
+1. **`KDS: Order Date` showed a query error** (`Error 400: Required parameter is missing: query`). PR #43 stored the `kds_date` query variable as a bare SQL string; the BigQuery datasource plugin needs the structured query object (`rawSql` inside a `query` object with `project`/`dataset`). Restructured it and set `refresh: 1` (on dashboard load — the date-list query has no `$__timeFilter`). Verified via `/api/ds/query`: the structured `rawSql` returns 46 date rows.
+2. **Min/Item threshold appeared stuck at 8.** Root cause was the broken `kds_date` variable leaving panel 52 in a stale state (dependent panel never re-queried). Also switched panel 52's threshold from `CAST('$kds_min_per_item' AS FLOAT64)` to the idiomatic unquoted numeric `>= $kds_min_per_item` per the BQ plugin docs. Verified threshold `5` returns rows with Min/Item 5–7. Updated the panel description to tell operators to press Enter after editing the threshold and to clear any in-table column filter.
+3. **Daily Labor Wages / Net Sales y-axis** now capped at 100% (`min: 0, max: 1` on panel 32, matching the Hours/Item panel).
+
+**Also:** `bind_datasource_uid` now rewrites query-type template variables' own `datasource.uid` (was only panels/targets), so `kds_date` resolves to the real UID at deploy. New regression test in `test_deploy_bind_uid.py`.
+
+**Verification:** `verify_panels.py` → OK=11 EMPTY=0 ERROR=0; `test_deploy_bind_uid.py` (6) + `TestGrafanaContractInSync` (2) pass. **Live evidence:** deployed the branch dashboard to Grafana Cloud via `deploy.py --dashboard-only` (a dashboard is a review surface; the repo stays source of truth and the next merge re-syncs). Confirmed live `version: 28`, `kds_date.query` is the structured object with `refresh: 1` + bound datasource UID, panel 32 `max: 1`, panel 52 threshold `>= $kds_min_per_item` (unquoted). Link: https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics
+
+**Process:** documented the "deploy the dashboard from the branch, the live link is the evidence" workflow in `CONTRIBUTING.md` (Additive prod data-source exception → Grafana dashboard changes), so every future Grafana PR provides a live-link + confirmed-version as §4 evidence rather than only a `verify_panels.py` SQL check.
+
 ## 2026-06-09 — Grafana dashboard: KDS defaults, p99 goal line, goal-var grouping (PR A)
 
 **Changes:** PR A (dashboard tweaks + CI sandbox policy).

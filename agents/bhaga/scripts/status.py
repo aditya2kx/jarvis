@@ -132,7 +132,8 @@ GRAFANA_VIEWS: list[Target] = [
     # a dashed p99 Goal series — same view, no new entry needed.
     Target("vw_order_quality_daily", "date"),
     # migration 009: order-level KDS investigation (slow-orders table);
-    # dashboard v27 wired $kds_date / $kds_min_per_item vars — same view.
+    # dashboard v27 wired $kds_date / $kds_min_per_item vars; v28 fixed the
+    # $kds_date query-var shape + unquoted threshold — same view, no new entry.
     Target("vw_kds_order_investigation", "date_local"),
     Target("vw_staff_on_shift", "date"),
 ]

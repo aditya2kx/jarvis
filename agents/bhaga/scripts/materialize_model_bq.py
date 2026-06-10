@@ -455,6 +455,55 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     load_model_rows("model_tip_alloc_period", period_rows, dry_run=dry_run, materialized_at=materialized_at)
     load_model_rows("model_tip_alloc_daily", day_alloc_rows, dry_run=dry_run, materialized_at=materialized_at)
     load_model_rows("model_period_summary", summary_rows, dry_run=dry_run, materialized_at=materialized_at)
+
+    # ── Load forecast (future window + gap-fill backfill; non-fatal) ─────────
+    # Future rows (today+1..today+N): MERGE on date — always reflects the current
+    # model + latest actuals; freezes naturally once the day passes into the past.
+    # Backfill rows (past dates): gap-fill-only — we read existing past dates first
+    # and drop any b_rows that already exist, so history is stable across model
+    # updates. Only genuine gaps (e.g. first run after migration) get written.
+    # Skip: BHAGA_SKIP_FORECAST=1 env var.
+    if not os.environ.get("BHAGA_SKIP_FORECAST") and not dry_run:
+        try:
+            from agents.bhaga.scripts.forecast_bq import (
+                build_backfill_rows,
+                build_forecast_rows,
+            )
+            from agents.bhaga.scripts.backfill_bigquery import map_forecast_daily
+            from core.datastore import get_client as _get_bq_client
+            horizon = int(profile.get("forecast_horizon_days", 30))
+            f_rows = build_forecast_rows(
+                labor_daily_rows=labor_daily_rows,
+                wage_rates=wage_rates,
+                horizon_days=horizon,
+            )
+            # Leakage-free historical forecasts for vw_forecast_accuracy history.
+            b_rows = build_backfill_rows(labor_daily_rows=labor_daily_rows, weeks=8)
+            # Gap-fill-only: drop b_rows whose date already exists in BQ.
+            if b_rows:
+                _bq = _get_bq_client()
+                _existing = {
+                    str(r["date"])
+                    for r in _bq.query(
+                        "SELECT date FROM `jarvis-bhaga-prod.bhaga.model_forecast_daily`"
+                        " WHERE date < CURRENT_DATE('America/Chicago')"
+                    ).result()
+                }
+                b_rows_new = [r for r in b_rows if r["date"] not in _existing]
+                skipped = len(b_rows) - len(b_rows_new)
+                if skipped:
+                    print(f"# [load_forecast_bq] gap-fill: skipping {skipped} "
+                          f"backfill rows already in BQ (history preserved).")
+                b_rows = b_rows_new
+            all_rows = f_rows + b_rows
+            bq_f_rows = [map_forecast_daily(r) for r in all_rows]
+            load_rows("model_forecast_daily", bq_f_rows, merge_keys=["date"])
+            print(f"# [load_forecast_bq] {len(f_rows)} future + {len(b_rows)} backfill "
+                  f"rows → model_forecast_daily (today+1..today+{horizon}, "
+                  f"plus gap-fill backfill last 8 weeks).")
+        except Exception as _exc:  # noqa: BLE001
+            print(f"# [load_forecast_bq] WARNING: non-fatal failure: {_exc}")
+
     print("# Done.")
 
 

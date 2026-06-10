@@ -88,7 +88,7 @@ SANDBOX_E2E_VERIFY_MIN_ROWS: dict[str, int] = {
     "daily": 1,
     "labor_daily": 1,
     "labor_weekly": 1,
-    "labor_daily_forecast": 1,
+    # labor_daily_forecast retired 2026-06-09 — forecast now BQ-authoritative (model_forecast_daily)
 }
 
 # The prod-raw path covers a FULL closed pay period, so the period-grain tabs
@@ -98,7 +98,7 @@ PROD_RAW_VERIFY_MIN_ROWS: dict[str, int] = {
     "daily": 1,
     "labor_daily": 1,
     "labor_weekly": 1,
-    "labor_daily_forecast": 1,
+    # labor_daily_forecast retired 2026-06-09 — forecast now BQ-authoritative (model_forecast_daily)
     "labor_period": 1,
     "period_summary": 1,
     "tip_alloc_daily": 1,

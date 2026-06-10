@@ -709,14 +709,15 @@ def _assert_data_advanced_post_condition(
 # Tabs that MUST have >= this many data rows after a full model rebuild.
 # labor_period / period_summary expect >= 1 because the data window always
 # spans multiple biweekly pay periods (so at least one period + one open
-# period exist). daily / labor_daily / labor_weekly / labor_daily_forecast
-# expect >= 1 because the window always covers >= 1 complete day.
+# period exist). daily / labor_daily / labor_weekly expect >= 1 because the
+# window always covers >= 1 complete day.
+# labor_daily_forecast was removed 2026-06-09 — forecast is now BQ-authoritative
+# (model_forecast_daily); the Sheet tab is no longer written.
 MODEL_VERIFY_MIN_ROWS: dict[str, int] = {
     "daily": 1,
     "labor_daily": 1,
     "labor_weekly": 1,
     "labor_period": 1,
-    "labor_daily_forecast": 1,
     "period_summary": 1,
 }
 
@@ -1127,7 +1128,14 @@ def _adp_bundle_then_raise(
         earnings_end=earnings_end,
         earnings_custom_range=earnings_custom_range,
     )
-    errs = result.get("errors") or {}
+    errs = dict(result.get("errors") or {})
+    # adp_schedule is a best-effort, non-critical auxiliary scrape (forward
+    # scheduled hours for the Grafana scheduled-vs-goal panel). The forecast /
+    # labor / tip pipeline does not depend on it, so a schedule hiccup must NOT
+    # fail the nightly ADP step. Warn but don't raise on it.
+    sched_err = errs.pop("adp_schedule", None)
+    if sched_err:
+        print(f"[adp_bundle] WARN: schedule scrape failed (non-fatal): {sched_err}")
     if errs:
         summary = "; ".join(f"{name}: {msg}" for name, msg in errs.items())
         raise RuntimeError(f"adp_bundle partial failure ({len(errs)} component(s)): {summary}")

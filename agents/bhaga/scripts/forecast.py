@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """BHAGA labor_daily_forecast — a LIVE, formula-driven planning worksheet.
 
+DEPRECATED (sheet-writing path): the order+item forecast is now BQ-authoritative
+via `agents/bhaga/scripts/forecast_bq.py` + the `load_forecast_bq` pipeline step.
+The Google Sheets `labor_daily_forecast` tab has been retired. The pure forecast
+functions in this module (`forecast_orders_dow_trend`, `compute_forecast_constants`,
+`_get_parsed_rows`) are still used by forecast_bq.py and should not be deleted.
+The sheet-grid functions (`build_labor_daily_forecast_rows`, `backfill_forecast_errors`,
+`_derived_formulas`, etc.) remain for test-suite continuity; clean-up is optional.
+
+
 Unlike the old static build (Python computed every cell), this writes the
 forecast tab as a spreadsheet the operator can actually plan in: a few INPUT
 cells per row (orders, fulltime_hours, target_labor_pct, forecast_exclude,
@@ -371,12 +380,11 @@ def compute_outlier_stats(
     lookback_weeks: int = 6,
     decay: float = 0.8,
 ) -> dict[str, dict]:
-    """Trend-aware, robust outlier detection for daily order counts.
+    """Trend-aware, robust outlier detection for daily order counts and AOV.
 
-    ``operating_days``: list of ``{"date": ISO, "orders": int}`` for days with
-    orders > 0 (closed / zero-order days carry no demand signal and would
-    pollute the residual dispersion, so the caller filters them out before
-    calling — see build_labor_daily_rows).
+    ``operating_days``: list of ``{"date": ISO, "orders": int}`` (required) with
+    an optional ``"net_sales": float`` key for AOV-based exclusion. Closed /
+    zero-order days carry no demand signal and must be filtered by the caller.
 
     For each day the EXPECTED order count comes from the SAME weighted-DOW +
     trend model the live seed uses (_expected_orders_from_records), evaluated at
@@ -392,14 +400,21 @@ def compute_outlier_stats(
     population stdev, then to a sane floor (10% of the median expected, min 1
     order) so a near-constant series can't divide by zero.
 
+    AOV signal (when net_sales provided): for days with both orders > 0 and
+    net_sales, AOV = net_sales / orders. A robust-z on raw AOV values (same
+    MAD->stdev->floor scheme) detects comped / heavy-discount days where the
+    ticket count was normal but revenue was anomalously low (e.g. 87 orders at
+    $2.29 AOV vs ~$16 typical). aov_z < -z_threshold triggers aov_down_outlier,
+    which ORs into exclude_default (DOWN-only, never UP). This catches promo days
+    that the order-volume signal misses entirely.
+
     Returns ``{date_iso: {expected, residual, robust_z, outlier_flag,
-    exclude_default}}``:
-      * outlier_flag    — BOTH directions (|z| > threshold); informational, for
-                          operator visibility.
-      * exclude_default — DOWN only (z < -threshold AND actual < expected);
-                          the auto-exclusion default for anomalous lows
-                          (stock-out / early-close). Upward / growth days are
-                          NEVER auto-excluded.
+    exclude_default, aov, aov_z}}``:
+      * outlier_flag    — BOTH directions (|z| > threshold); informational.
+      * exclude_default — DOWN only (order-volume z < -threshold AND residual < 0,
+                          OR aov_z < -threshold); auto-exclusion for anomalous
+                          lows. Upward / growth days are NEVER auto-excluded.
+      * aov, aov_z      — per-day AOV and its robust-z (None when net_sales absent).
     """
     records = [
         {
@@ -413,6 +428,19 @@ def compute_outlier_stats(
     if not records:
         return {}
 
+    # Build net_sales / AOV index (optional — only when net_sales key provided).
+    net_by_date: dict[str, float] = {}
+    for r in operating_days:
+        ns = r.get("net_sales")
+        orders = int(r.get("orders", 0) or 0)
+        if ns is not None and orders > 0:
+            net_by_date[r["date"]] = float(ns)
+    aov_by_date: dict[str, float] = {
+        d: net_by_date[d] / int(next(r["orders"] for r in records if r["date"] == d))
+        for d in net_by_date
+    }
+
+    # ── Order-volume residual stats ───────────────────────────────────────────
     expected_by_date: dict[str, float] = {}
     resid_by_date: dict[str, float] = {}
     for r in records:
@@ -445,17 +473,40 @@ def compute_outlier_stats(
             med_expected = statistics.median(list(expected_by_date.values()))
             scale = max(1.0, 0.10 * med_expected)
 
+    # ── AOV robust-z stats (DOWN only) ────────────────────────────────────────
+    aov_z_by_date: dict[str, float] = {}
+    if aov_by_date:
+        aov_values = list(aov_by_date.values())
+        aov_med = statistics.median(aov_values)
+        aov_mad = statistics.median([abs(v - aov_med) for v in aov_values])
+        aov_scale = 1.4826 * aov_mad
+        if aov_scale <= 0:
+            try:
+                aov_scale = statistics.pstdev(aov_values)
+            except statistics.StatisticsError:
+                aov_scale = 0.0
+            if aov_scale <= 0:
+                aov_scale = max(0.01, 0.10 * aov_med)
+        for d, aov in aov_by_date.items():
+            aov_z_by_date[d] = (aov - aov_med) / aov_scale if aov_scale > 0 else 0.0
+
+    # ── Combine ───────────────────────────────────────────────────────────────
     out: dict[str, dict] = {}
     for d, residual in resid_by_date.items():
         robust_z = (residual - median_resid) / scale if scale > 0 else 0.0
         is_outlier = abs(robust_z) > z_threshold
-        exclude_default = (robust_z < -z_threshold) and (residual < 0)
+        order_down = (robust_z < -z_threshold) and (residual < 0)
+        aov_z = aov_z_by_date.get(d)
+        aov_down = (aov_z is not None) and (aov_z < -z_threshold)
+        exclude_default = order_down or aov_down
         out[d] = {
             "expected": round(expected_by_date[d], 1),
             "residual": round(residual, 1),
             "robust_z": round(robust_z, 2),
             "outlier_flag": is_outlier,
             "exclude_default": exclude_default,
+            "aov": round(aov_by_date[d], 2) if d in aov_by_date else None,
+            "aov_z": round(aov_z, 2) if aov_z is not None else None,
         }
     return out
 

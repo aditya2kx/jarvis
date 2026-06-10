@@ -51,7 +51,7 @@ def load_rows(*args, **kwargs):
     if _REPLACE_TABLES:
         kwargs.setdefault("replace", True)
     return _ds_load_rows(*args, **kwargs)
-from skills.adp_run_automation import compensation_backend, shift_backend
+from skills.adp_run_automation import compensation_backend, schedule_backend, shift_backend
 from skills.adp_run_automation.employee_aliases import (
     detect_new_employees,
     update_sheet_with_new_aliases,
@@ -126,7 +126,7 @@ def main() -> int:
     cli.add_argument("--end", default=None)
     cli.add_argument(
         "--skip", default=[], action="append",
-        choices=["square", "adp_shifts", "adp_punches", "adp_rates", "square_rollup"],
+        choices=["square", "adp_shifts", "adp_punches", "adp_rates", "adp_schedule", "square_rollup"],
         help="Skip a specific write. Can pass multiple times.",
     )
     cli.add_argument("--dry-run", action="store_true",
@@ -232,6 +232,41 @@ def main() -> int:
                                   column_bq_types=_TS_TYPES)
                     print(f"  adp_punches (BQ): {n} rows upserted")
                     summaries.append({"table": "adp_punches", "rows": n})
+
+    # ── ADP scheduled hours (Team Schedule, forward-looking) ─────
+    if "adp_schedule" not in args.skip:
+        schedule_json = _newest("Schedule-*.json")
+        if not schedule_json:
+            print("WARN: no Schedule-*.json found — skipping ADP scheduled hours")
+        else:
+            print(f"# parsing ADP schedule: {schedule_json.name}")
+            payload = json.loads(schedule_json.read_text())
+            scraped_at = payload.get("scraped_at_utc")
+            records = schedule_backend.build_schedule_records(payload.get("weeks", []))
+            now_utc = datetime.datetime.utcnow().isoformat() + "Z"
+            bq_rows = [
+                {
+                    "date": r["date"],
+                    "scheduled_hours": r["scheduled_hours"],
+                    "employee_count": r["employee_count"],
+                    "week_start": r["week_start"],
+                    "scraped_at_utc": scraped_at,
+                    "materialized_at_utc": now_utc,
+                }
+                for r in records
+            ]
+            print(f"  parsed: {len(bq_rows)} scheduled days")
+            if args.dry_run:
+                print(f"  DRY: would load {len(bq_rows)} scheduled-day rows into BQ")
+            elif bq_rows:
+                n = load_rows(
+                    "adp_scheduled_daily", bq_rows, merge_keys=["date"],
+                    column_bq_types={"date": "DATE", "week_start": "DATE",
+                                     "scraped_at_utc": "TIMESTAMP",
+                                     "materialized_at_utc": "TIMESTAMP"},
+                )
+                print(f"  adp_scheduled_daily (BQ): {n} rows upserted")
+                summaries.append({"table": "adp_scheduled_daily", "rows": n})
 
     # ── ADP wage rates + per-line earnings ───────────────────────
     if "adp_rates" not in args.skip:

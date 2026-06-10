@@ -265,6 +265,72 @@ class OutlierStatsTests(unittest.TestCase):
     def test_empty_input(self):
         self.assertEqual(compute_outlier_stats([]), {})
 
+    def test_aov_keys_present_when_net_sales_provided(self):
+        """aov / aov_z keys must appear in each stat when net_sales is given."""
+        days = [{"date": d["date"], "orders": d["orders"],
+                 "net_sales": d["orders"] * 16.0}
+                for d in _growth_days()]
+        stats = compute_outlier_stats(days)
+        for d, s in stats.items():
+            self.assertIn("aov", s, f"aov missing for {d}")
+            self.assertIn("aov_z", s, f"aov_z missing for {d}")
+
+    def test_aov_keys_none_when_no_net_sales(self):
+        """aov / aov_z must be None when net_sales is absent."""
+        days = _growth_days()  # no net_sales key
+        stats = compute_outlier_stats(days)
+        for d, s in stats.items():
+            self.assertIsNone(s["aov"], f"aov should be None for {d}")
+            self.assertIsNone(s["aov_z"], f"aov_z should be None for {d}")
+
+    def test_comped_day_auto_excluded_by_aov(self):
+        """A day with normal order count but very low AOV triggers exclude_default."""
+        days = [{"date": d["date"], "orders": d["orders"],
+                 "net_sales": d["orders"] * 16.0}
+                for d in _growth_days()]
+        # Inject a comped day: same orders (~normal), but only $2/order revenue.
+        victim = days[-3]["date"]
+        days[-3] = {"date": victim, "orders": days[-3]["orders"],
+                    "net_sales": days[-3]["orders"] * 2.0}
+        stats = compute_outlier_stats(days)
+        self.assertIn(victim, stats)
+        self.assertTrue(stats[victim]["exclude_default"],
+                        "comped day (low AOV) must be auto-excluded")
+        self.assertIsNotNone(stats[victim]["aov_z"])
+        self.assertLess(stats[victim]["aov_z"], 0)
+
+    def test_normal_aov_day_not_excluded_by_aov(self):
+        """A day with normal AOV must not be excluded due to the AOV signal."""
+        days = [{"date": d["date"], "orders": d["orders"],
+                 "net_sales": d["orders"] * 16.0}
+                for d in _growth_days()]
+        stats = compute_outlier_stats(days)
+        normal = days[len(days) // 2]["date"]
+        if normal in stats:
+            self.assertFalse(stats[normal]["exclude_default"],
+                             "normal-AOV day must not be excluded")
+
+    def test_aov_signal_independent_of_volume_signal(self):
+        """AOV anomaly excludes even when order count looks completely normal."""
+        days = [{"date": d["date"], "orders": d["orders"],
+                 "net_sales": d["orders"] * 16.0}
+                for d in _growth_days()]
+        victim = days[-4]["date"]
+        normal_orders = days[-4]["orders"]
+        # Keep orders in the normal range; gut net_sales (comped day).
+        days[-4] = {"date": victim, "orders": normal_orders,
+                    "net_sales": normal_orders * 1.5}
+        stats = compute_outlier_stats(days)
+        if victim in stats:
+            # Order count looks fine; only AOV signal fires.
+            order_down = (
+                stats[victim]["robust_z"] < -2.5 and stats[victim]["residual"] < 0
+            )
+            self.assertFalse(order_down, "order-volume signal should NOT fire here")
+            if stats[victim]["aov_z"] is not None and stats[victim]["aov_z"] < -2.5:
+                self.assertTrue(stats[victim]["exclude_default"],
+                                "low-AOV should drive exclude_default alone")
+
 
 class BuildForecastGridTests(unittest.TestCase):
     def test_layout_and_formulas(self):

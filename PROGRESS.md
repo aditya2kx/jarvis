@@ -1,6 +1,19 @@
 # Jarvis Build Progress
 
-## 2026-06-10 — Square concurrent-scrape regression fix (PR #TBD on branch fix/square-scrape-concurrent-regression)
+## 2026-06-10 — BQ-backed PR cost ledger (Jarvis-level) + Jarvis Development Grafana dashboard (PR #47)
+
+Moved the per-PR cost ledger out of git into BigQuery (`jarvis-bhaga-prod.jarvis_dev`). All 32 historical PR records (PRs 12–47) migrated via streaming inserts.
+
+**Key changes:**
+- `scripts/pr_cost_store.py`: self-contained BQ store, independent of BHAGA's `core.datastore`; 3 tables + `vw_pr_cost` view, auto-bootstrapped on first use via ADC/WIF auth
+- `scripts/pr_cost_ledger.py`: surgical rewire of 4 I/O functions; renderers/analyzers unchanged; `migrate-json-to-bq` subcommand for one-shot backfill
+- `scripts/cursor_usage.py`: `window_from_transcript()` for transcript-anchored attribution (highest priority; works on cloud/handoff machines); hard-fail on $0 build cost
+- `pr-cost-gate.yml` + `pr-cost-finalize.yml`: WIF auth, read/write BQ; no git commits; WIF SA `bhaga-orchestrator` already had `bigquery.dataEditor` + `jobUser`
+- `grafana/jarvis_dev/dashboard.json` + `deploy.py` + `grafana-jarvis-dev-sync.yml`: separate "Jarvis Development" dashboard (not BHAGA) at https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jarvis-development
+- Retired: `metrics/pr_cost/report.html`, `PR-*.json`, `post-merge` git hook, `finalize_cost.sh`; pre-commit hook now just calls `capture-review → BQ` (no `git add`)
+- Tests: `test_pr_cost_store.py` (offline in-memory BQ fake), updated `test_pr_cost_ledger.py`, `test_cursor_usage.py` with `test_window_from_transcript`; 91 tests pass
+
+## 2026-06-10 — Square concurrent-scrape regression fix (PR #47 on branch fix/square-scrape-concurrent-regression)
 
 **Incident (6/9 prod incremental run):** The nightly run for 2026-06-09 produced no Square results. An email report was downloaded but Slack reported a login issue. Root cause: two Cloud Run executions ran simultaneously — the nightly scheduler triggered one, and the webhook's `_handle_ready_reply` triggered a second on the operator's READY reply (Slack may also have retried the delivery). Each execution had its own `/tmp`, so the old `_acquire_scrape_lock` PID-file lock was invisible across them. Both executions fired a 2FA SMS, and both read/wrote the shared GCS session blob `_session/square-palmetto.json`, corrupting login state and producing no usable scrape result.
 

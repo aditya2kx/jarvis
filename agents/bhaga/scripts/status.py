@@ -113,6 +113,15 @@ BQ_TARGETS: list[Target] = [
     Target("google_reviews", "post_date_ct"),
     # store_config (migration 007) intentionally NOT a freshness target — it is a
     # config/tunables store (no date partition) edited via /bhaga-cloud config set.
+    # ── Forecast table (migration 011) ───────────────────────────────────────
+    # model_forecast_daily has future-only rows until the first nightly load runs;
+    # status check will show EMPTY until then (expected pre-load).
+    Target("model_forecast_daily", "date"),
+    # ── ADP scheduled hours (migration 013) ──────────────────────────────────
+    # adp_scheduled_daily is forward-looking (current + next week from the ADP
+    # Team Schedule scrape); max_date is in the future, so the freshness check
+    # reads as fresh. Empty until the first nightly schedule scrape runs.
+    Target("adp_scheduled_daily", "date"),
 ]
 
 GRAFANA_VIEWS: list[Target] = [
@@ -136,6 +145,23 @@ GRAFANA_VIEWS: list[Target] = [
     # $kds_date query-var shape + unquoted threshold — same view, no new entry.
     Target("vw_kds_order_investigation", "date_local"),
     Target("vw_staff_on_shift", "date"),
+    # migration 011: Labor Forecast section (section 7) panels — dashboard v30.
+    # migration 012 added prev-week %-change columns to vw_forecast_exclusions;
+    # the view set is unchanged so these Targets still cover section 7.
+    # vw_model_forecast is empty pre-load; vw_forecast_accuracy fills from the
+    # leakage-free backfill (build_backfill_rows) on the first materialize.
+    Target("vw_model_forecast", "date"),
+    Target("vw_forecast_accuracy", "date"),
+    Target("vw_forecast_exclusions", "date"),
+    # migration 013: adp_scheduled_daily; vw_scheduled_vs_goal is orphaned (dashboard
+    # panel 74 removed in v34) but harmless to leave in this registry.
+    Target("vw_scheduled_vs_goal", "date"),
+    # migration 014: vw_model_forecast + vw_forecast_exclusions refreshed with
+    # scheduled_hours / net_sales / aov columns (dashboard v33). Existing Targets
+    # above cover freshness; migration 014 only adds columns — no new view entries.
+    # migration 015: vw_model_forecast refreshed with dow column + zero-gated
+    # prior-week fallback (dashboard v34). No new BQ_TARGETS entries needed; the
+    # existing vw_model_forecast Target above still covers freshness.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are
@@ -144,6 +170,9 @@ GRAFANA_VIEWS: list[Target] = [
 KNOWN_UNCHECKED_GRAFANA_REFS: frozenset[str] = frozenset({
     "model_tip_alloc_daily",   # panel 21 — Grafana reads this table directly
     "model_tip_alloc_period",  # panel 31 — Grafana reads this table directly
+    "model_forecast_daily",    # panels 72/75 — Forecast vs Actual charts query the
+                               # table directly (LEFT JOIN vw_model_labor_daily) so
+                               # future forecast rows appear alongside historical actuals.
 })
 
 # ── Internal helpers ──────────────────────────────────────────────────────────

@@ -84,8 +84,12 @@ The Cloud Run service account is shared on every active sheet (see
 **Primary Model URL:** https://docs.google.com/spreadsheets/d/18NH71JwMOAX6euFugSsSQlJhHPgBghWk09YWnsSuvDk/edit
 
 Model tabs: `config`, `daily`, `labor_daily`, `labor_weekly`, `labor_period`, `tip_alloc_daily`,
-`tip_alloc_period`, `period_summary`, `review_bonus_period`, `labor_daily_forecast`,
-`item_operations`.
+`tip_alloc_period`, `period_summary`, `review_bonus_period`, `item_operations`.
+
+> **Note (2026-06-09):** The `labor_daily_forecast` Sheet tab was retired. Daily order/item forecasts
+> are now BQ-authoritative (`model_forecast_daily`); see §15 — Labor Forecast. The sheet
+> verification dicts (`MODEL_VERIFY_MIN_ROWS` in `daily_refresh.py` and `PROD_RAW_VERIFY_MIN_ROWS` /
+> `SANDBOX_E2E_VERIFY_MIN_ROWS` in `sandbox_e2e.py`) no longer include `labor_daily_forecast`.
 
 Square raw tabs include `item_lines` (per-item lines; upserted nightly with Item Sales CSV).
 
@@ -832,8 +836,8 @@ and alerts.  Don't hand-investigate; run this first.
 - **BQ dataset:** `jarvis-bhaga-prod.bhaga`
 - **Raw tables:** `square_transactions`, `adp_shifts`, `adp_punches`, `adp_wage_rates`, `square_daily_rollup`
 - **Curated views:** `vw_daily_sales`, `vw_tips_by_hour`, `vw_labor_daily`, `vw_labor_weekly`, `vw_sales_labor_daily`, `vw_employee_hours_summary`
-- **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`
-- **Model views (Grafana BI contract):** `vw_model_labor_daily`, `vw_model_period_summary`
+- **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`, `model_forecast_daily`
+- **Model views (Grafana BI contract):** `vw_model_labor_daily`, `vw_model_period_summary`, `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions`
 - **Grafana org:** `steadyangelfish2985`
 - **Dashboard URL:** `https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics`
 - **Read-only SA:** `grafana-bq-reader@jarvis-bhaga-prod.iam.gserviceaccount.com` (DataViewer + JobUser)
@@ -949,7 +953,7 @@ python3 agents/bhaga/grafana/verify_panels.py --fail-on-empty             # 0-ro
 python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
 ```
 
-Migrations live in `core/migrations/001_initial_schema.sql` … `005_raw_parity.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`). Migration 005 adds: `square_item_lines`, `square_kds_daily`, `square_kds_tickets`, `adp_earnings`, `google_reviews` raw tables; and `vw_order_quality_daily`, `vw_kds_item_investigation`, `vw_staff_on_shift`, extended `vw_model_labor_daily/weekly`, extended `vw_model_payroll_period` (with ADP actuals + diffs).
+Migrations live in `core/migrations/001_initial_schema.sql` … `015_forecast_view_dow_fallback.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`). Migration 005 adds: `square_item_lines`, `square_kds_daily`, `square_kds_tickets`, `adp_earnings`, `google_reviews` raw tables; and `vw_order_quality_daily`, `vw_kds_item_investigation`, `vw_staff_on_shift`, extended `vw_model_labor_daily/weekly`, extended `vw_model_payroll_period` (with ADP actuals + diffs). Migration 011 adds: `model_forecast_daily` table and `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` views (see Labor Forecast section below). Migration 013 adds: `adp_scheduled_daily` table (per-day ADP scheduled hours) and `vw_scheduled_vs_goal` view (scheduled vs goal vs actual hours; dashboard panel 74). Migration 014 adds: `forecast_model_version` column to `model_forecast_daily` (version tag for each forecast row); refreshes `vw_model_forecast` to include `scheduled_hours` from `adp_scheduled_daily`; refreshes `vw_forecast_exclusions` to include `net_sales`, `prev_wk_net_sales`, `net_sales_vs_prev_wk`, `aov`, `prev_wk_aov` columns for promo/comped-day visibility.
 
 ### BQ backfill (one-shot)
 
@@ -985,7 +989,74 @@ BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-pr
 
 ---
 
-## 15. BQ as single source of truth (added PR #33, 2026-06-05)
+## 15. Labor Forecast (added 2026-06-09)
+
+### Overview
+
+Daily order/item forecasts are BQ-authoritative (since 2026-06-10), replacing the retired `labor_daily_forecast`
+Sheet tab. The nightly pipeline (`materialize_model_bq.py`) generates a 30-day forward window and
+loads it into `model_forecast_daily` (merge key: `date`). **Future rows** are merged each night — they update until the day passes. **Past rows** are gap-fill-only: backfill rows are only inserted for dates not already present, so historical forecasts are immutable. Each row is tagged with `forecast_model_version` so accuracy tracking knows which model predicted a given day.
+
+**Growth model (wow_median_4wk_v2):** `growth = median` of consecutive same-weekday week-over-week order ratios over the trailing 28 days, clamped to [0.80, 1.20]. Each ratio is a true 1-week step (orders[d] / orders[d-7] for matching weekdays). Pooling ~19 ratios + taking the median is robust to one anomalous week (e.g. holiday). Returns 1.0 when fewer than 2 valid pairs exist.
+
+**AOV auto-exclusion:** `compute_outlier_stats` now also detects anomalously-low Average Order Value days (AOV = net_sales / orders). A robust z-score on daily AOV values (same MAD scheme as order volume) flags comped / heavy-discount days that the order-volume signal would miss (`aov_z < -2.5`). These days are set `exclude_default=True` so the nightly pipeline marks them `forecast_exclude=TRUE`.
+
+### Tables and views
+
+| Object | Type | Description |
+|---|---|---|
+| `model_forecast_daily` | Table | One row per date: `date`, `forecast_orders`, `forecast_items`, `forecast_generated_at`, `forecast_model_version`, `materialized_at_utc` |
+| `vw_model_forecast` | View | Next 30 days with COALESCE(actual@-7d, forecast@-7d) prior-week comparison, % change, `goal_shift_hours`, and `scheduled_hours` (from ADP) |
+| `vw_forecast_accuracy` | View | Past forecast days joined to actuals (forecast vs actual orders/items) |
+| `vw_forecast_exclusions` | View | Recent 60 days of input rows with `forecast_exclude` flag, reasons, `net_sales`, `aov`, and prior-week comparisons |
+
+### Grafana dashboard section
+
+Section 7 "Labor Forecast" on the BHAGA Analytics dashboard shows:
+- **Labor Forecast — next 30 days table** (panel 71, `vw_model_forecast`): Day-of-week (`dow`), date, forecast orders/items, prior-week actuals (falling back to that day's forecast when orders=0 / failed), % change vs prior week, **Goal Total Hours** (forecast_items × goal_hours_per_item; covers part-time + full-time), **Scheduled Part Time** (ADP-scheduled hours, excludes the one full-time employee; current+next week only), Sched PT − Goal Total gap (abs hrs + %) — dashboard v34 (v33 introduced scheduled hours; v34 adds Day column, relabels, removes panel 74)
+- **Forecast vs Actual — Orders** (panel 72, `vw_forecast_accuracy`): order forecast vs actual history — split to half-width in v33
+- **Forecast vs Actual — Items** (panel 75, `vw_forecast_accuracy`): item forecast vs actual history — new panel in v33, side-by-side with panel 72
+- **Forecast Inputs / Exclusions table** (panel 73, `vw_forecast_exclusions`): recent input days with exclusion flags, `net_sales`, `aov`, prior-week comparisons — v33 adds AOV/net-sales columns
+- **KDS goal** uses `$goal_kds_p95_min` (default 8 min) as of v33; previously p99.
+  with an actual-hours overlay for past days. Data comes from the nightly **best-effort** ADP schedule scrape
+  (`adp_scheduled_daily`, migration 013); a scrape failure does not fail the nightly run.
+
+### Applying the migration (one-time)
+
+```bash
+BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
+  python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
+```
+
+Migrations `011`, `012`, `013`, `014`, and `015` are all idempotent. Apply them via `ensure_schema()` (the nightly job does this automatically). After applying, the nightly job will populate `model_forecast_daily` on its next run (or trigger a manual refresh — see §6).
+
+Migration `015` adds `dow` (Mon/Tue/…) to `vw_model_forecast` and zero-gates the prior-week actual (`IF(orders > 0, orders, NULL)`) so failed/closed prior days (orders=0) fall back to that day's stored forecast row instead of showing NULL.
+
+### Forecast nightly cadence
+
+Each successful `daily_refresh` (nightly Cloud Run job at 21:30 CT):
+
+1. **Rebuilds `model_labor_daily`** — re-evaluates outlier flags, `forecast_exclude`, and AOV-based auto-exclusion for all historical operating days. The 5/24 AOV exclusion (`aov_z ≈ -7.0`) becomes `forecast_exclude=TRUE` after the first successful full materialize (requires Sheets/ADP creds that are only available in the Cloud Run environment).
+2. **Gap-fills `model_forecast_daily`** — writes forecast rows only for dates not already present (historical rows are frozen, model version preserved). **Today is now included in the forward window**, so the current day always has a forecast row — this acts as the prior-week fallback for next Tuesday's panel-71 `prior_wk_orders`.
+3. **Re-scrapes ADP scheduled hours** (current + next week) into `adp_scheduled_daily`; `Scheduled Part Time` in panel 71 updates automatically.
+4. **`prior_wk_orders` / `prior_wk_items`** in `vw_model_forecast` reflect the actual from 7 days ago (when orders > 0), falling back to the forecast row for that day (covers today-as-prior-week). So these values evolve each night as more actuals land.
+5. **Goal Total Hours** follow directly from `forecast_items × $goal_hours_per_item`, so they update whenever the forecast rows are rebuilt.
+
+### Forecast exclusion override
+
+To flag an anomaly day so it's excluded from the forecast seed: set `forecast_exclude = TRUE` on the
+`model_labor_daily` BQ row for that date. The forecaster reads `model_labor_daily` via
+`_get_parsed_rows(exclude_flagged=True)` and will skip it on the next run.
+
+### Disabling the forecast step
+
+Set `BHAGA_SKIP_FORECAST=1` in the Cloud Run job environment to skip the forecast load entirely
+(e.g. during debugging). The step is non-fatal by default — a failure emits a `WARNING` log and
+continues.
+
+---
+
+## 16. BQ as single source of truth (added PR #33, 2026-06-05)
 
 ### Principle
 

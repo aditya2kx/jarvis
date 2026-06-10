@@ -1,5 +1,66 @@
 # Jarvis Build Progress
 
+## 2026-06-10 — Forecast vs Actual charts extended to future window, dashboard v35 (PR #44)
+
+**On `feat/forecast-bq-labor-forecast` (PR #44).** Two follow-ups:
+
+1. Panels 72 & 75 (Forecast vs Actual — Orders/Items) now query `model_forecast_daily LEFT JOIN vw_model_labor_daily` instead of `vw_forecast_accuracy`, so the forecast line extends to today+30 days; the actual line stops when data ends. `model_forecast_daily` added to `KNOWN_UNCHECKED_GRAFANA_REFS` in `status.py`.
+2. Labor forecast table first row is today (6/10) — already done in prior commit (range 0..horizon); today's forecast row written to prod.
+
+Live dashboard: https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics
+
+## 2026-06-10 — Forecast table refinements: Day column, label renames, remove panel 74, today-forecast, migration 015, dashboard v34 (PR #44)
+
+**On `feat/forecast-bq-labor-forecast` (PR #44).** Six follow-up refinements from operator review.
+
+1. **`build_forecast_rows` includes today** — forward window is now today…today+horizon (was today+1…); today's row acts as prior-week fallback for next week's panel-71 `prior_wk_orders` (e.g. 6/17 now shows prior_wk_orders=104 from 6/10 forecast). 4 tests updated.
+2. **Migration 015 (`015_forecast_view_dow_fallback.sql`)** — refreshes `vw_model_forecast` to add `dow` (FORMAT_DATE `%a`) and zero-gates prior-week actuals (`IF(orders > 0, orders, NULL)` COALESCE forecast@-7d). Failed/closed days (orders=0) fall back to forecast instead of NULL.
+3. **Dashboard v34** — Panel 71 (Labor Forecast table): `dow` column added as "Day"; "Goal Shift Hours" → "Goal Total Hours"; "Scheduled Hours" → "Scheduled Part Time"; gap columns relabeled "Sched PT − Goal Total (hrs/%)"; description updated with caveats. Panel 74 ("Scheduled Hours vs Goal Hours" chart) removed.
+4. **5/24 AOV exclusion** confirmed correct in code (`aov_z ≈ -7.0`) but awaits `model_labor_daily` rebuild in cloud (needs Sheets creds, runs nightly).
+5. **Docs updated** — RUNBOOK § Forecast nightly cadence added; README/DOMAIN/PROGRESS updated.
+
+Live dashboard: https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics
+
+## 2026-06-10 — Forecast model v2 (wow_median_4wk), AOV auto-exclusion, versioning, dashboard v33 (PR #44 finale)
+
+**On `feat/forecast-bq-labor-forecast` (PR #44).** Completes the full forecast + dashboard refinement plan.
+
+1. **Growth model rewritten (wow_median_4wk_v2).** `_growth_multiplier` is now the **median of consecutive same-weekday WoW ratios** over the last 28 days. Each ratio is orders[d] / orders[d-7] for matching weekdays; pooling ~19 pairs + taking the median is robust to one anomalous week (e.g. Memorial Day 2.3× spike moves the median little). Clamped [0.80, 1.20]. Prod result: **+2.7%/wk (ratio 1.027)** — compared to the prior mean-of-7-vs-7 method which produced a spurious −6% decrement from day-mix artifacts. 24 unit tests (including dedicated `GrowthMultiplierTests`).
+
+2. **AOV auto-exclusion.** `compute_outlier_stats` now accepts `net_sales` per day and computes a parallel **robust z-score on AOV** (= net_sales / orders). `aov_z < −2.5` triggers `aov_down_outlier`, ORed into `exclude_default`. Catches comped / heavily-discounted days the order-volume signal misses (5/24: AOV=$2.29; 5/04: AOV=$7.63 vs median ~$16). `update_model_sheet.py` caller updated to pass `net_sales`. `forecast_exclude_reason` text extended with AOV context. 5 new tests.
+
+3. **Forecast versioning + gap-fill-only backfill.** Every forecast row is now stamped with `CURRENT_FORECAST_VERSION = "wow_median_4wk_v2"`. Strategy registry `_GROWTH_STRATEGIES` maps version → function for future model comparison. `materialize_model_bq.py` backfill is now **gap-fill-only**: existing past dates are read from BQ and skipped, freezing history. Future rows continue to MERGE each nightly run. `map_forecast_daily` passes through `forecast_model_version`.
+
+4. **Migration 014.** `014_forecast_table_and_exclusions.sql`: (a) `ADD COLUMN IF NOT EXISTS forecast_model_version STRING` on `model_forecast_daily`; (b) `CREATE OR REPLACE VIEW vw_model_forecast` + `LEFT JOIN adp_scheduled_daily` for `scheduled_hours`; (c) `CREATE OR REPLACE VIEW vw_forecast_exclusions` + `net_sales`, `prev_wk_net_sales`, `net_sales_vs_prev_wk`, `aov`, `prev_wk_aov` columns. Applied to prod; verified column + both views return expected data.
+
+5. **Dashboard v33.** KDS goal: `$goal_kds_p99_min` → `$goal_kds_p95_min` (label/description/rawSql updated; value stays 8). Panel 71: added `scheduled_hours`, `sched_vs_goal_hours`, `sched_vs_goal_pct` columns. Panel 72 → split to half-width "Forecast vs Actual — Orders"; new Panel 75 "Forecast vs Actual — Items" at half-width beside it. Panel 73: added `net_sales`, `prev_wk_net_sales`, `net_sales_vs_prev_wk`, `aov`, `prev_wk_aov` columns + updated description. Deployed to [live dashboard](https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics).
+
+**Verification:** 58 unit tests green (24 forecast_bq + 34 forecast). Migration applied; `forecast_model_version` column present; `vw_model_forecast` returns `scheduled_hours`; `vw_forecast_exclusions` returns `aov` / `net_sales`. Prod load: 30 future rows tagged `wow_median_4wk_v2`; 54 backfill rows already existed (gap-fill-only proven). Dashboard v33 deployed — all panels render with data (link above).
+
+---
+
+## 2026-06-10 — ADP scheduled hours → BQ + "Scheduled vs Goal Hours" Grafana panel (PR #44 follow-up; unblocks the deferred item)
+
+**On `feat/forecast-bq-labor-forecast` (PR #44).** The prior entry's item 4 ("ADP scheduled shift hours: still blocked") is now **resolved**. Operator confirmed ADP RUN (not Homebase) is the scheduling system and walked the flow; explored it live with Playwright over CDP and codified it.
+
+1. **Discovery.** ADP's **Team Schedule → "Manage Schedules"** grid is the source. There is **no structured export** — Actions → "Print schedule" only opens Chrome's native print preview of the same DOM. So we scrape the grid: it renders in `iframe[name="timePartnerFrame"]`; per-day footer totals are light-DOM `<team-schedule-total>` elements (`"N Employees\n HH:MM Hrs"`); the week selector + ‹ › chevrons live in **Shadow DOM** (Playwright text/role locators pierce it; raw `querySelectorAll` does not). Verified live: this week (Jun 8-14) 291:30 across 13 employees, next week (Jun 15-21) 286:00 — both weeks are planned, which is the forward horizon we diff against goal.
+2. **Scraper + parser.** New `skills/adp_run_automation/schedule_backend.py` (pure, unit-tested: HH:MM→decimal, week-label→date, per-day record assembly) + `runner.py` `download_schedule()` / `_schedule_within_session()` (open via `#TEMPUS_WEEKLY_SCHEDULE`, scrape current + next week, two-phase wait to dodge the label-updates-before-totals render race). Wired into `download_adp_bundle` (one session / one OTP); **best-effort** — a schedule failure is non-fatal to the nightly run (`_adp_bundle_then_raise` pops `adp_schedule` from the fatal set).
+3. **BQ.** `migration 013` adds `adp_scheduled_daily` (date, scheduled_hours, employee_count, week_start) + `vw_scheduled_vs_goal` (joins forecast for goal inputs + actual labor hours). `backfill_from_downloads.py` parses `Schedule-*.json` → `load_rows(merge_keys=["date"])`.
+4. **Grafana.** New panel 74 "Scheduled Hours vs Goal Hours" in Section 7: scheduled (solid) vs goal = `forecast_items × $goal_hours_per_item` (dashed, same var as panel 71) vs actual (overlay for past days), plain-hours axis. Dashboard bumped to **v32**.
+
+**Verification:** scraped the live current+next week, loaded 14 days to prod BQ, applied migration 013 to prod, confirmed `vw_scheduled_vs_goal` returns joined rows, deployed dashboard v32 — panel renders with data (live link is the evidence). Tests: `test_schedule_backend.py` (28) + full ADP/daily_refresh suites (100) + `test_status.py` (16) green. Throwaway exploration harness deleted.
+
+## 2026-06-10 — Forecast model simplified (anchor × growth) + accuracy backfill + exclusions %-change (PR #44 follow-up)
+
+**On `feat/forecast-bq-labor-forecast` (PR #44, pre-merge iteration).** Operator feedback on the live v29 dashboard drove four changes; three landed, one stays blocked.
+
+1. **Forecast logic rewritten to a simple, explainable model** (`forecast_bq.py`). `forecast(day) = most-recent same-weekday actual × growth ** weeks_apart`, where `growth = mean(orders, last 7 actual days) / mean(prior 7)` clamped to [0.80, 1.20]. Excluded/closed anchor days are skipped a **whole week at a time** (day-of-week always preserved — the "smarter fallback"); items use the anchor day's actual items × growth (not a global ratio). Replaces the prior weighted-DOW + capped-trend model. Only `_get_parsed_rows` is still reused from `forecast.py`; `wage_rates` is no longer an input (kept as an ignored param for caller compat).
+2. **Forecast-vs-Actual was empty by construction** (all forecast dates are future, so the same-date accuracy join had nothing). Added `build_backfill_rows()` — leakage-free forecasts for the last 8 weeks of PAST dates, each computed using only actuals strictly before it (recompute is deterministic → idempotent). `materialize_model_bq.py` now writes future + backfill rows every run; backfilled past rows have `date < today` so they feed `vw_forecast_accuracy` without appearing in the forward `vw_model_forecast`.
+3. **Exclusions table prev-week comparison** (`migration 012`): `vw_forecast_exclusions` now also exposes `prev_wk_orders`, `prev_wk_items`, and signed `orders_vs_prev_wk` / `items_vs_prev_wk` (% change vs the SAME weekday one week earlier). Panel 73 surfaces these with percent formatting + color so a large swing flags an exclusion candidate. Dashboard bumped to **v30**.
+4. **ADP scheduled shift hours (vs goal hours): still blocked.** The ADP automation only scrapes worked time (Timecard punches) + earnings; there is no future-schedule export, the Timecard "Schedule" rows are undated and skipped, and `adp_palmetto_login` is not in this environment's Keychain. Deferred again — needs the credential AND discovery of whether ADP RUN exposes a forward-schedule report (or a different scheduling source).
+
+**Verification:** `test_forecast_bq.py` rewritten for the new model (14 tests, today-relative grids); applied migration 012 + wrote forecast & 8-week backfill to prod BQ; deployed dashboard v30 from the branch (live link is the evidence).
+
 ## 2026-06-09 — Grafana hotfix: KDS query-var, Min/Item threshold, labor y-axis cap
 
 **Context:** After PR #43 merged, the operator found three dashboard gaps. This hotfix (branch `fix/grafana-kds-vars-labor-yaxis`, off `main`) fixes them; the dashboard bumps to v28.
@@ -13,6 +74,27 @@
 **Verification:** `verify_panels.py` → OK=11 EMPTY=0 ERROR=0; `test_deploy_bind_uid.py` (6) + `TestGrafanaContractInSync` (2) pass. **Live evidence:** deployed the branch dashboard to Grafana Cloud via `deploy.py --dashboard-only` (a dashboard is a review surface; the repo stays source of truth and the next merge re-syncs). Confirmed live `version: 28`, `kds_date.query` is the structured object with `refresh: 1` + bound datasource UID, panel 32 `max: 1`, panel 52 threshold `>= $kds_min_per_item` (unquoted). Link: https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics
 
 **Process:** documented the "deploy the dashboard from the branch, the live link is the evidence" workflow in `CONTRIBUTING.md` (Additive prod data-source exception → Grafana dashboard changes), so every future Grafana PR provides a live-link + confirmed-version as §4 evidence rather than only a `verify_panels.py` SQL check.
+
+## 2026-06-09 — PR B: BQ-authoritative Labor Forecast + Grafana Section 7
+
+**Scope:** PR B (branches off `main`; separate from PR A "KDS Dashboard tweaks + CI policy").
+
+**Changes landed (pending merge):**
+- **`forecast_bq.py`** — new BQ-authoritative 30-day forecast: reuses pure `forecast.py` functions, outputs `{date, forecast_orders, forecast_items, forecast_generated_at}` rows. Horizon configurable via `forecast_horizon_days` store profile key (default 30).
+- **`materialize_model_bq.py`** — integrated forecast load after `model_labor_daily` write. Merge key: `date`. Future window only; past rows freeze for implicit accuracy tracking. Skip via `BHAGA_SKIP_FORECAST=1`. Non-fatal.
+- **`update_model_sheet.py`** — removed `labor_daily_forecast` Sheet tab write (retired).
+- **`core/migrations/011_labor_forecast.sql`** — new idempotent migration: `model_forecast_daily` table + `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` views.
+- **`agents/bhaga/knowledge-base/store-profiles/palmetto.json`** — removed `labor_daily_forecast` tab; added `forecast_horizon_days: 30`.
+- **`agents/bhaga/grafana/dashboard.json`** v29 — new Section 7 "Labor Forecast" (panels 71-73): forecast table, forecast-vs-actual timeseries, exclusions table; built on top of v28 hotfix changes.
+- **`agents/bhaga/scripts/backfill_bigquery.py`** — added `map_forecast_daily` mapper.
+- **`test_forecast_bq.py`** — 9 new unit tests (all pass).
+- **Docs:** RUNBOOK §15, agents/bhaga/scripts/README.md, DOMAIN.md §7 updated.
+
+**ADP scheduled hours (Part 4):** dropped — Keychain credential `adp_palmetto_login` not found in this environment. Deferred to a follow-up PR on a machine with Keychain configured.
+
+**Additional fix:** `MODEL_VERIFY_MIN_ROWS` in `daily_refresh.py` and `PROD_RAW_VERIFY_MIN_ROWS` / `SANDBOX_E2E_VERIFY_MIN_ROWS` in `sandbox_e2e.py` updated to remove `labor_daily_forecast` (sandbox e2e was failing with "labor_daily_forecast: 0 row(s) expected >= 1").
+
+**Migration required after merge:** `python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"` then trigger a manual refresh (RUNBOOK §6) to populate `model_forecast_daily`. `status.py` GRAFANA_VIEWS registry updated to include the three forecast views (dashboard v29); anti-drift coupling through v29.
 
 ## 2026-06-09 — Grafana dashboard: KDS defaults, p99 goal line, goal-var grouping (PR A)
 

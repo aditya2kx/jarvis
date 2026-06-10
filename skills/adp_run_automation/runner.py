@@ -9,6 +9,11 @@ Two scrapes:
                               Credit-Card-Tips-Owed lines per paycheck.
                               Only needed every 14 days (after each pay-period
                               close), but cheap to run nightly.
+    download_schedule(...)  — Home > Team Schedule ("Manage Schedules" grid).
+                              Scrapes per-day SCHEDULED labor hours for the
+                              current + next week directly from the grid DOM
+                              (no file export exists). See schedule_backend.py.
+                              Run nightly; forward-looking, no target_date.
 
 ADP quirks accounted for:
     - Timecard report runs INSIDE iframe[name="mdfTimeFrame"] -- all selectors
@@ -1175,6 +1180,207 @@ def _earnings_within_session(
     return path
 
 
+# ── Team Schedule scrape (DOM, no file export) ─────────────────────
+
+
+def _open_team_schedule(page, *, timeout_ms: int = 30_000):
+    """From the v2 dashboard, open "Manage Schedules" and return the grid frame.
+
+    The home-page "Team Schedule" quick-action is a hidden template anchor
+    ``<a id="TEMPUS_WEEKLY_SCHEDULE" href="#xfm-...">``; a normal click times
+    out (not actionable), so we fire its handler via JS. The grid renders in
+    ``iframe[name="timePartnerFrame"]``. Idempotent: if the grid frame is
+    already present (schedule already open), we just return it.
+    """
+    from skills.adp_run_automation import schedule_backend as sb
+
+    def _grid_frame():
+        for fr in page.frames:
+            if fr.name == sb.SCHEDULE_GRID_FRAME_NAME:
+                return fr
+        return None
+
+    if _grid_frame() is None:
+        print(f"[adp_schedule] step=open-team-schedule (#{sb.TEAM_SCHEDULE_ANCHOR_ID})")
+        clicked = page.evaluate(
+            "(id) => { const a=document.getElementById(id); if(a){a.click(); return true;} return false; }",
+            sb.TEAM_SCHEDULE_ANCHOR_ID,
+        )
+        if not clicked:
+            _raise_with_evidence(
+                page, store="palmetto",
+                reason=f"Team Schedule anchor #{sb.TEAM_SCHEDULE_ANCHOR_ID} not found on dashboard.",
+            )
+
+    # Wait for the grid frame to attach and a footer total to render.
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    frame = None
+    while time.monotonic() < deadline:
+        frame = _grid_frame()
+        if frame is not None:
+            try:
+                if frame.evaluate(
+                    "() => document.querySelectorAll('team-schedule-total').length > 0"
+                ):
+                    break
+            except Exception:  # noqa: BLE001 — frame still navigating
+                pass
+        page.wait_for_timeout(500)
+    if frame is None:
+        _raise_with_evidence(
+            page, store="palmetto",
+            reason="Manage Schedules grid frame (timePartnerFrame) never appeared.",
+        )
+    print(f"[adp_schedule] step=grid-frame-ready name={frame.name}")
+    return frame
+
+
+def _scrape_one_week(page, frame) -> dict:
+    """Read the current week's label + per-day footer totals from the grid frame."""
+    import re as _re
+
+    from skills.adp_run_automation import schedule_backend as sb
+
+    week_label = (
+        frame.get_by_text(_re.compile(_re.escape(sb.WEEK_LABEL_TEXT)))
+        .first.inner_text(timeout=10_000)
+    )
+    ext = frame.evaluate(sb.SCHEDULE_EXTRACT_JS)
+    return {"week_label": week_label.strip(), "days": ext.get("days") or [], "grand": ext.get("grand")}
+
+
+def _goto_next_week(page, frame) -> None:
+    """Advance the schedule grid to the next week.
+
+    The ‹ › chevrons live in Shadow DOM next to the week-label link. We locate
+    the (shadow-piercing) week label and click just to the right of it, where
+    the "next week" chevron sits.
+
+    Two-phase wait to avoid a render race: the shadow-DOM week label updates
+    almost immediately on click, but the <team-schedule-total> footer cells
+    (light DOM) re-render a beat later. If we extract as soon as the label
+    flips we capture the PREVIOUS week's totals. So we wait for (a) the label
+    to change AND (b) the footer totals to change (or a settle timeout, which
+    covers the rare case of two weeks with identical totals).
+    """
+    import re as _re
+
+    from skills.adp_run_automation import schedule_backend as sb
+
+    label = frame.get_by_text(_re.compile(_re.escape(sb.WEEK_LABEL_TEXT))).first
+    before_label = label.inner_text(timeout=5_000).strip()
+    before_totals = frame.evaluate(sb.SCHEDULE_EXTRACT_JS)
+    box = label.bounding_box()
+    if not box:
+        raise RuntimeError("Could not locate the week-selector label to navigate weeks.")
+    page.mouse.click(box["x"] + box["width"] + 16, box["y"] + box["height"] / 2)
+
+    # Phase 1: label must change (confirms the nav fired).
+    deadline = time.monotonic() + 12.0
+    label_changed = False
+    while time.monotonic() < deadline:
+        page.wait_for_timeout(300)
+        try:
+            now = label.inner_text(timeout=2_000).strip()
+        except Exception:  # noqa: BLE001
+            now = before_label
+        if now != before_label:
+            label_changed = True
+            print(f"[adp_schedule] step=advanced-week {before_label!r} -> {now!r}")
+            break
+    if not label_changed:
+        raise RuntimeError(
+            f"Next-week navigation did not change the week label (still {before_label!r}). "
+            "Chevron position may have drifted."
+        )
+
+    # Phase 2: footer totals must re-render. Poll until they differ from the
+    # pre-nav snapshot; if they never differ within the settle window the two
+    # weeks genuinely have identical totals — fine, proceed.
+    settle_deadline = time.monotonic() + 6.0
+    while time.monotonic() < settle_deadline:
+        page.wait_for_timeout(300)
+        try:
+            now_totals = frame.evaluate(sb.SCHEDULE_EXTRACT_JS)
+        except Exception:  # noqa: BLE001
+            continue
+        if now_totals != before_totals:
+            return
+    print("[adp_schedule] step=totals-settle-timeout (assuming identical-week totals)")
+
+
+def _schedule_within_session(page, *, weeks: int = None) -> list[dict]:
+    """Scrape `weeks` consecutive weeks of Team Schedule totals.
+
+    Pre-condition: `page` is on the v2 ADP RUN dashboard (POST_LOGIN_URL_RE).
+    Returns a list of per-week raw payloads (see schedule_backend.build_schedule_records).
+    """
+    from skills.adp_run_automation import schedule_backend as sb
+
+    weeks = weeks or sb.DEFAULT_WEEKS
+    frame = _open_team_schedule(page)
+    payloads: list[dict] = []
+    for i in range(weeks):
+        payloads.append(_scrape_one_week(page, frame))
+        if i < weeks - 1:
+            _goto_next_week(page, frame)
+    return payloads
+
+
+def _write_schedule_json(payloads: list[dict], *, store: str) -> pathlib.Path:
+    """Persist the scraped week payloads as Schedule-<today>.json in DOWNLOADS_DIR.
+
+    Mirrors the timecard/earnings "drop a file in downloads/, parse it later in
+    backfill_from_downloads" contract — keeps the scrape and the BQ load
+    decoupled and the load step unit-testable off a fixture file.
+    """
+    from skills.adp_run_automation import schedule_backend as sb
+
+    sb.DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    path = sb.DOWNLOADS_DIR / f"Schedule-{datetime.date.today().isoformat()}.json"
+    path.write_text(json.dumps(
+        {
+            "scraped_at_utc": datetime.datetime.utcnow().isoformat() + "Z",
+            "store": store,
+            "weeks": payloads,
+        },
+        indent=2,
+    ))
+    return path
+
+
+def download_schedule(
+    *,
+    store: str = "palmetto",
+    weeks: int = None,
+    headed: bool = True,
+    slow_mo_ms: int = 50,
+    keep_open_on_error: bool = False,
+) -> pathlib.Path:
+    """Log in, open Team Schedule, scrape `weeks` of per-day totals, write JSON.
+
+    Idempotency: if today's Schedule JSON is already on disk, skip the browser
+    and return the cached path (avoids a duplicate ADP 2FA SMS on cron retries).
+    """
+    from skills.adp_run_automation import schedule_backend as sb
+
+    weeks = weeks or sb.DEFAULT_WEEKS
+    expected = sb.DOWNLOADS_DIR / f"Schedule-{datetime.date.today().isoformat()}.json"
+    if is_fresh_download(expected, min_bytes=50):
+        print(f"[adp_schedule] SKIP browser — fresh Schedule JSON already on disk: {expected}")
+        return expected
+
+    with launch_persistent(
+        portal="adp",
+        headed=headed,
+        slow_mo_ms=slow_mo_ms,
+        keep_open_on_error=keep_open_on_error,
+    ) as (ctx, page):
+        _ensure_logged_in(page, store=store)
+        payloads = _schedule_within_session(page, weeks=weeks)
+        return _write_schedule_json(payloads, store=store)
+
+
 # ── Bundle: one browser session, one login, both scrapes ───────────
 
 
@@ -1183,6 +1389,8 @@ def download_adp_bundle(
     store: str = "palmetto",
     target_date: Optional[datetime.date] = None,
     include_earnings: bool = True,
+    include_schedule: bool = True,
+    schedule_weeks: int = None,
     earnings_window_days: int = 90,
     earnings_start: Optional[datetime.date] = None,
     earnings_end: Optional[datetime.date] = None,
@@ -1246,6 +1454,7 @@ def download_adp_bundle(
     today = datetime.date.today()
     tc_expected = DOWNLOADS_DIR / f"Timecard-{today.isoformat()}.xlsx"
     er_expected = DOWNLOADS_DIR / f"Earnings-and-Hours-V1-{today.isoformat()}.xlsx"
+    sched_expected = DOWNLOADS_DIR / f"Schedule-{today.isoformat()}.json"
 
     # Layer A is target_date-aware (2026-05-23 fix): a file downloaded earlier
     # today for a DIFFERENT target_date does NOT count as fresh, because it
@@ -1257,18 +1466,25 @@ def download_adp_bundle(
         _xlsx_fresh_for_target(er_expected, target_date=target_date, min_bytes=5_000)
         if include_earnings else False
     )
+    # Schedule is forward-looking (this week + next), not tied to target_date,
+    # so a plain CT-today freshness check is sufficient.
+    sched_fresh = (
+        is_fresh_download(sched_expected, min_bytes=50) if include_schedule else False
+    )
 
     result: dict = {
         "timecard_xlsx": tc_expected if tc_fresh else None,
         "earnings_xlsx": er_expected if (include_earnings and er_fresh) else None,
+        "schedule_json": sched_expected if (include_schedule and sched_fresh) else None,
         "errors": {},
     }
 
     needs_timecard = not tc_fresh
     needs_earnings = include_earnings and not er_fresh
+    needs_schedule = include_schedule and not sched_fresh
 
-    if not needs_timecard and not needs_earnings:
-        print("[adp_bundle] SKIP browser — Layer A: required XLSX files already fresh on disk.")
+    if not needs_timecard and not needs_earnings and not needs_schedule:
+        print("[adp_bundle] SKIP browser — Layer A: required ADP files already fresh on disk.")
         if tc_fresh:
             _mark_run_step_done(
                 "adp_timecard", refresh_date=target_date,
@@ -1279,10 +1495,15 @@ def download_adp_bundle(
                 "adp_earnings", refresh_date=target_date,
                 note="layer_a_skip (file fresh on disk)",
             )
+        if include_schedule and sched_fresh:
+            _mark_run_step_done(
+                "adp_schedule", refresh_date=target_date,
+                note="layer_a_skip (file fresh on disk)",
+            )
         return result
 
-    print(f"[adp_bundle] needs_timecard={needs_timecard} needs_earnings={needs_earnings}; "
-          f"opening single browser session (one login, one OTP cost).")
+    print(f"[adp_bundle] needs_timecard={needs_timecard} needs_earnings={needs_earnings} "
+          f"needs_schedule={needs_schedule}; opening single browser session (one login, one OTP cost).")
 
     with launch_persistent(
         portal="adp",
@@ -1383,6 +1604,44 @@ def download_adp_bundle(
                 except Exception:  # noqa: BLE001
                     pass
 
+        if needs_schedule:
+            try:
+                # Reuse the live session. Reset to the dashboard first (same
+                # domain → no re-auth), then open Team Schedule and scrape.
+                print(f"[adp_bundle] step=reset-page-before-schedule url={page.url}")
+                page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=30_000)
+                except Exception:  # noqa: BLE001
+                    pass
+                if not POST_LOGIN_URL_RE.search(page.url):
+                    try:
+                        page.wait_for_url(POST_LOGIN_URL_RE, timeout=10_000)
+                    except Exception:  # noqa: BLE001
+                        print(f"[adp_bundle] schedule: UNEXPECTED session lapse "
+                              f"(url={page.url}); re-running login")
+                        _ensure_logged_in(page, store=store)
+                payloads = _schedule_within_session(page, weeks=schedule_weeks)
+                path = _write_schedule_json(payloads, store=store)
+                result["schedule_json"] = path
+                _mark_run_step_done(
+                    "adp_schedule", refresh_date=target_date,
+                    note=f"weeks={len(payloads)}",
+                )
+                print(f"[adp_bundle] schedule OK → {path}")
+            except Exception as exc:  # noqa: BLE001
+                result["errors"]["adp_schedule"] = f"{type(exc).__name__}: {exc}"
+                print(f"[adp_bundle] schedule FAILED: {type(exc).__name__}: {exc}")
+                try:
+                    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                    page.screenshot(
+                        path=str(pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
+                                 / f"adp-bundle-schedule-fail-{ts}.png"),
+                        full_page=True,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
         return result
 
 
@@ -1391,7 +1650,7 @@ def download_adp_bundle(
 
 def main() -> int:
     cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument("scrape", choices=["timecard", "earnings"],
+    cli.add_argument("scrape", choices=["timecard", "earnings", "schedule"],
                      help="Which scrape to run.")
     cli.add_argument("--store", default="palmetto")
     cli.add_argument("--headless", action="store_true",
@@ -1406,6 +1665,12 @@ def main() -> int:
 
     if args.scrape == "timecard":
         path = download_timecard(
+            store=args.store,
+            headed=not args.headless,
+            keep_open_on_error=args.keep_open,
+        )
+    elif args.scrape == "schedule":
+        path = download_schedule(
             store=args.store,
             headed=not args.headless,
             keep_open_on_error=args.keep_open,

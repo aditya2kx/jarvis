@@ -1726,7 +1726,13 @@ def build_labor_daily_rows(
         d: int(sales.get(d, {}).get("order_count", 0) or 0) for d in all_dates
     }
     operating_days = [
-        {"date": d, "orders": o} for d, o in orders_by_date.items() if o > 0
+        {
+            "date": d,
+            "orders": o,
+            "net_sales": sales.get(d, {}).get("net_sales_cents", 0) / 100
+            if sales.get(d, {}).get("net_sales_cents") is not None else None,
+        }
+        for d, o in orders_by_date.items() if o > 0
     ]
     outlier_stats = compute_outlier_stats(
         operating_days,
@@ -1827,8 +1833,8 @@ def build_labor_daily_rows(
         _forecast_exclude = "TRUE" if fe_val else "FALSE"
 
         # ── Human-readable reasons (plain text; blank when flag is FALSE) ──
-        # outlier_reason: direction + magnitude straight from the robust-z
-        # stats compute_outlier_stats already produced for this date.
+        # outlier_reason: order-volume direction + magnitude from robust-z stats.
+        # Also notes AOV anomaly when that signal fired.
         if not is_outlier:
             _outlier_reason = ""
         elif stat:
@@ -1842,23 +1848,32 @@ def build_labor_daily_rows(
             # zero/no-order complete day — no residual stats to cite.
             _outlier_reason = f"low volume: {orders} orders (closed/pre-open)"
 
-        # forecast_exclude_reason: SOURCE of the FINAL fe_val, matching the
-        # value-resolution precedence above — zero-order first, then the auto
-        # DOWN-anomaly default, else an operator override kept it TRUE. (The
-        # row builder can't perfectly distinguish an operator-set TRUE from a
-        # previously-persisted auto value: if exclude_default is also TRUE the
-        # auto signal is present, so we label it "auto"; only a TRUE with no
-        # zero-day and no auto signal can be an operator override.)
+        # forecast_exclude_reason: SOURCE of the FINAL fe_val. Priority:
+        # 1. zero-order day, 2. AOV anomaly, 3. order-volume anomaly, 4. operator.
+        _aov = stat.get("aov") if stat else None
+        _aov_z = stat.get("aov_z") if stat else None
+        _aov_down = (_aov_z is not None) and (_aov_z < -float(outlier_z_threshold))
+        _order_down = (
+            stat is not None
+            and stat.get("robust_z", 0) < -float(outlier_z_threshold)
+            and stat.get("residual", 0) < 0
+        )
         if not fe_val:
             _forecast_exclude_reason = ""
         elif orders <= 0:
             _forecast_exclude_reason = "auto: no orders (closed/pre-open)"
-        elif exclude_default:
+        elif exclude_default and _aov_down and _aov is not None:
+            _forecast_exclude_reason = (
+                f"auto: low AOV ${_aov:.2f} (z={_aov_z:+.1f})"
+            )
+        elif exclude_default and _order_down:
             _exp = stat["expected"] if stat else 0
             _z = stat["robust_z"] if stat else 0.0
             _forecast_exclude_reason = (
                 f"auto: low-volume anomaly ({orders} orders vs ~{_exp:.0f}, z={_z:+.1f})"
             )
+        elif exclude_default:
+            _forecast_exclude_reason = "auto: anomaly (low)"
         else:
             _forecast_exclude_reason = "operator override"
 
@@ -3115,49 +3130,10 @@ def main() -> int:
     # KDS columns (41-45 in weekly) are counts/ratios/seconds, NOT currency.
     labor_weekly_currency = [5, 6, 7, 8, 9, 12, 14, 15, 24, 25, 26, 31, 32, 36]
 
-    # ── Forecast tab ──────────────────────────────────────────────────
-    from agents.bhaga.scripts.forecast import (
-        FORECAST_CURRENCY_COLS,
-        FORECAST_HIDDEN_COLS,
-        build_labor_daily_forecast_rows,
-        backfill_forecast_errors,
-    )
-
-    # Read the existing forecast tab ONCE: it drives freeze-in-place (formula
-    # cells come back as evaluated VALUES) AND preserves operator-edited per-row
-    # inputs (target_time_per_item_sec, target_hourly_labor_pct) — same idiom as
-    # the labor_daily forecast_exclude preservation.
-    existing_forecast_grid = _read_existing_forecast_grid(
-        spreadsheet_id=model_sid, store=args.store,
-    )
-    existing_target_by_date = _forecast_grid_col_numeric_map(
-        existing_forecast_grid, "target_time_per_item_sec",
-    )
-    existing_hourly_target_by_date = _forecast_grid_col_numeric_map(
-        existing_forecast_grid, "target_hourly_labor_pct",
-    )
-    if existing_target_by_date:
-        print(f"#   → preserved target_time_per_item_sec for "
-              f"{len(existing_target_by_date)} existing forecast rows")
-    if existing_hourly_target_by_date:
-        print(f"#   → preserved target_hourly_labor_pct for "
-              f"{len(existing_hourly_target_by_date)} existing forecast rows")
-    forecast_rows = build_labor_daily_forecast_rows(
-        labor_daily_rows=labor_daily_rows,
-        wage_rates=wage_rates,
-        config=forecast_config,
-        kds_by_date=kds_by_date,
-        existing_target_by_date=existing_target_by_date,
-        existing_hourly_target_by_date=existing_hourly_target_by_date,
-        existing_forecast_rows=existing_forecast_grid,
-    )
-    # Backfill error columns for past forecast rows where actuals now exist.
-    # On the first run there are no past forecasts; on subsequent runs the
-    # forecast tab accumulates history.
-    forecast_rows = backfill_forecast_errors(
-        forecast_rows=forecast_rows,
-        labor_daily_rows=labor_daily_rows,
-    )
+    # ── Forecast tab (RETIRED) ─────────────────────────────────────────
+    # The labor_daily_forecast Sheet tab has been retired (2026-06-09).
+    # Forecast data is now BQ-authoritative via forecast_bq.py + the
+    # load_forecast_bq step in daily_refresh.py. Grafana is the review surface.
 
     tab_payloads = [
         {"tab": "config",            "rows": config_rows,      "currency_cols": []},
@@ -3165,8 +3141,6 @@ def main() -> int:
         {"tab": "labor_daily",       "rows": labor_daily_rows, "currency_cols": labor_daily_currency},
         {"tab": "labor_weekly",      "rows": labor_weekly_rows, "currency_cols": labor_weekly_currency},
         {"tab": "labor_period",      "rows": labor_period_rows, "currency_cols": labor_period_currency},
-        {"tab": "labor_daily_forecast", "rows": forecast_rows,
-         "currency_cols": FORECAST_CURRENCY_COLS, "hidden_cols": FORECAST_HIDDEN_COLS},
         {"tab": "tip_alloc_period",  "rows": period_rows,      "currency_cols": [6, 7, 8, 10, 11]},
         {"tab": "tip_alloc_daily",   "rows": day_alloc_rows,   "currency_cols": [6, 9]},
         {"tab": "period_summary",    "rows": summary_rows,     "currency_cols": [7, 8, 9, 10]},

@@ -116,6 +116,13 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
   guard). If the distributed lock gets stuck (crashed run didn't release), clear it via
   `state_adapter.release_lock('scrape-square-<store>', holder='<host:pid>')` and do NOT delete the
   Firestore doc manually. See `RUNBOOK.md` §13 for details.
+- **model_daily must reconcile with square_daily_rollup per-day on every run.** Before Phase 2 begins,
+  `_detect_and_clear_stale_model` queries BQ and auto-clears the model-recompute markers if any date has
+  rollup gross_sales > $1 but model_daily = $0 (the 2026-06-09 concurrent-execution race pattern). This
+  runs even when the scrape is skipped, so a stale marker from a prior partial run can never survive a
+  retrigger. After the model step, `_assert_model_matches_raw_rollup` re-queries and raises if drift
+  persists — turning a silent $0-inside-window into a loud failure + pipeline halt. Never manually patch
+  model_daily in BQ; instead, clear the stale markers and retrigger so the pipeline heals itself.
 - **Never reflexively retry a transient error when a retry can fire a side effect.** A "browser
   context died" / "Execution backend unavailable" / timeout looks retryable, but if the next attempt
   could re-fire an OTP SMS, a password-reset email, or a Slack DM, **stop and inspect first**: check

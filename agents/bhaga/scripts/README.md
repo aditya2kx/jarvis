@@ -95,6 +95,24 @@ invalidates them (via `clear_step`, the sanctioned path) so they recompute on th
 on (no flag) — safe by construction: idempotent upserts + the post-condition guard verifies
 `data_window_end` advanced (RUNBOOK §13).
 
+**Raw-vs-model reconciliation (2026-06-09 fix).** `_recover_stale_downstream_markers` only fires when a
+portal scrape *succeeds this run*, so a pure retrigger (scrape skipped as "already covered") never
+triggered recovery. The 6/9 concurrent-execution race wrote `model_daily` Jun 9 = $0 while
+`square_daily_rollup` had $1,964.51 — every subsequent retrigger SKIPped the stale model marker and Grafana
+showed empty panels. Two new layers catch this:
+
+1. **State-driven detector (`_detect_and_clear_stale_model`)** — runs on *every* execution before Phase 2.
+   Single BQ query joins `square_daily_rollup` (raw) and `model_daily` (materialized) over a 14-day
+   lookback. If any date has rollup gross_sales > $1 but model = $0, it clears `_MODEL_RECOMPUTE_STEPS`
+   (`render_raw_sheets`, `update_model_sheet`, `materialize_model_bq`, `render_model_sheet_from_bq`) so the
+   model recomputes on the next phase. Best-effort: a BQ error logs a breadcrumb and returns
+   `[]` — the run is never blocked.
+
+2. **Value-level post-condition guard (`_assert_model_matches_raw_rollup`)** — runs after the model step,
+   alongside the existing boundary-check (`_assert_data_advanced_post_condition`). If residual drift remains
+   after recompute, it raises `RuntimeError` → `failure_alert` Slack DM → non-zero exit. Converts silent
+   "$0-inside-window" into a loud failure on the same night.
+
 **Browser-launch resilience:** all scrapes launch Chromium through
 `skills/_browser_runtime/runtime.py::launch_persistent`, which retries the launch _setup_ (not the
 scrape body, never an auth error) on transient `TargetClosedError` crashes, adds headless-only

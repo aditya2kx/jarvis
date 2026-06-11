@@ -1,5 +1,18 @@
 # Jarvis Build Progress
 
+## 2026-06-11 — Smarter stale-model detection: raw-vs-model reconciliation (PR #48)
+
+**RCA (2026-06-09 Grafana empty).** The 6/9 concurrent-execution race wrote `model_daily` Jun 9 = $0/$0 txns while `square_daily_rollup` had $1,964.51 / 113 rows. The existing safeguards missed it:
+- `_recover_stale_downstream_markers` only fires when a portal scrape *succeeds this run* — a pure retrigger (scrape SKIPped as "already covered") never triggered recovery.
+- `_assert_data_advanced_post_condition` checks the `data_window_end` *boundary*, not per-day values inside the window.
+
+**Fix (PR #48 — `fix/stale-model-detection`).** Three new layers added to `agents/bhaga/scripts/daily_refresh.py`:
+1. `_model_vs_rollup_drift(refresh_date, lookback_days=14)` — BQ query joining `square_daily_rollup` (raw) and `model_daily` over a 14-day window; flags dates where rollup > $1 but model = $0. Best-effort (BQ errors return `[]`).
+2. `_detect_and_clear_stale_model(refresh_date, dry_run)` — runs on EVERY execution before Phase 2 (including pure retriggers); clears `_MODEL_RECOMPUTE_STEPS` markers via `clear_step_done` when drift is detected, so `materialize_model_bq` re-runs on correct raw.
+3. `_assert_model_matches_raw_rollup(refresh_date)` — value-level post-condition guard (alongside the existing boundary guard); raises `RuntimeError` if model still shows $0 after recompute, triggering `failure_alert` DM + non-zero exit.
+
+Post-merge Jun 9 incremental to validate self-heal: expect `model_daily` Jun 9 ~$1,964.51 and Grafana BHAGA panels to render.
+
 ## 2026-06-10 — BQ-backed PR cost ledger (Jarvis-level) + Jarvis Development Grafana dashboard (PR #47)
 
 Moved the per-PR cost ledger out of git into BigQuery (`jarvis-bhaga-prod.jarvis_dev`). All 32 historical PR records (PRs 12–47) migrated via streaming inserts.

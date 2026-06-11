@@ -491,6 +491,12 @@ After the model step, `_assert_model_matches_raw_rollup` re-queries; if drift pe
 into a loud same-night failure. Best-effort: BQ errors in either function log a breadcrumb and return
 `[]` — the run is never blocked.
 
+**Implementation note (2026-06-11 bugfix):** `_model_vs_rollup_drift` instantiates
+`google.cloud.bigquery.Client()` directly using Application Default Credentials (ADC) rather than
+`core.datastore.get_client()`. The latter is gated by the `BHAGA_DATASTORE=bigquery` env var, which
+is only set for child subprocesses in the daily refresh, not the orchestrator process itself — so using
+`get_client()` would silently return `None` and the reconciliation query would no-op every run.
+
 **Manual recovery** (if BQ is unavailable and auto-detect cannot fire): clear the model-recompute markers
 by hand and retrigger:
 ```bash

@@ -1,5 +1,18 @@
 # Jarvis Build Progress
 
+## 2026-06-11 — Claude reviewer upgraded to Opus 4.8 + evidence confidence rating
+
+Updated `.github/workflows/claude-review.yml` and `.github/claude-review-guidelines.md`:
+- **Model:** `claude-sonnet-4-6` → `claude-opus-4-8` (medium thinking). Timeout 12→20 min, max-turns 12→14.
+- **Evidence confidence rating:** reviewer now required to score 0–100% confidence that the PR will work in prod, list what evidence proves vs. doesn't prove, and suggest specific commands to close gaps. Score < 80% is BLOCKING (REQUEST CHANGES). See D2a rubric in guidelines.
+- CONTRIBUTING.md updated to describe the new Opus reviewer and evidence confidence requirement.
+
+## 2026-06-11 — Bugfix: `_model_vs_rollup_drift` uses ADC-direct BQ client (PR #49)
+
+`_model_vs_rollup_drift` was instantiating the BQ client via `core.datastore.get_client()`, which gates on the `BHAGA_DATASTORE=bigquery` env var. That var is only set for *child subprocesses* inside daily refresh — the orchestrator (parent) process never sets it, so `get_client()` returned `None` and the reconciliation query silently no-oped on every run.
+
+Fix: switched to direct `google.cloud.bigquery.Client()` (ADC) instantiation in `_model_vs_rollup_drift`. Tests updated to mock `_bq.Client` rather than `sys.modules`. RUNBOOK updated with implementation note.
+
 ## 2026-06-11 — Smarter stale-model detection: raw-vs-model reconciliation (PR #48)
 
 **RCA (2026-06-09 Grafana empty).** The 6/9 concurrent-execution race wrote `model_daily` Jun 9 = $0/$0 txns while `square_daily_rollup` had $1,964.51 / 113 rows. The existing safeguards missed it:

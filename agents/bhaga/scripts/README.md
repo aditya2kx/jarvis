@@ -108,6 +108,9 @@ showed empty panels. Two new layers catch this:
    model recomputes on the next phase. Best-effort: a BQ error logs a breadcrumb and returns
    `[]` — the run is never blocked.
 
+   Auth note: uses `google.cloud.bigquery.Client()` with ADC directly (not `core.datastore.get_client`,
+   which is gated on `BHAGA_DATASTORE=bigquery` — not set in the parent `daily_refresh` process).
+
 2. **Value-level post-condition guard (`_assert_model_matches_raw_rollup`)** — runs after the model step,
    alongside the existing boundary-check (`_assert_data_advanced_post_condition`). If residual drift remains
    after recompute, it raises `RuntimeError` → `failure_alert` Slack DM → non-zero exit. Converts silent

@@ -745,11 +745,35 @@ def _model_vs_rollup_drift(
     only the most recent day.  14 days is enough to catch the longest OTP-retry
     cycle while keeping the query cheap (small date scan on indexed date columns).
     """
+    # Use ADC directly (not core.datastore.get_client which requires BHAGA_DATASTORE=bigquery).
+    # The parent daily_refresh process does not set that env var — only child subprocesses do.
+    # ADC works in Cloud Run via the metadata server and locally via gcloud CLI credentials.
     try:
-        from core.datastore import get_client as _bq_get_client  # noqa: PLC0415
-        client = _bq_get_client()
-        if client is None:
-            return []
+        from google.cloud import bigquery as _bigquery  # noqa: PLC0415
+        try:
+            client = _bigquery.Client(project="jarvis-bhaga-prod")
+        except Exception:  # noqa: BLE001
+            # Fall back to gcloud CLI token (laptop / CI without ADC file)
+            import subprocess as _subprocess  # noqa: PLC0415
+            try:
+                token = _subprocess.check_output(
+                    ["gcloud", "auth", "print-access-token",
+                     "--project=jarvis-bhaga-prod"],
+                    text=True, stderr=_subprocess.DEVNULL, timeout=15,
+                ).strip()
+            except Exception:  # noqa: BLE001
+                token = None
+            if not token:
+                print("[reconcile] WARN: no BQ credentials for drift check — skipping (non-fatal)",
+                      file=sys.stderr)
+                return []
+            from google.oauth2.credentials import Credentials as _Creds  # noqa: PLC0415
+            client = _bigquery.Client(project="jarvis-bhaga-prod",
+                                      credentials=_Creds(token=token))
+    except ImportError:
+        print("[reconcile] WARN: google-cloud-bigquery not installed — skipping (non-fatal)",
+              file=sys.stderr)
+        return []
     except Exception as exc:  # noqa: BLE001
         print(f"[reconcile] WARN: could not get BQ client for drift check: {exc}",
               file=sys.stderr)

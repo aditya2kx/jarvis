@@ -1,6 +1,6 @@
 # Claude PR review guidelines (Jarvis / BHAGA)
 
-This is the rubric the automated **Claude Sonnet** reviewer follows on every PR
+This is the rubric the automated **Claude Opus (medium thinking)** reviewer follows on every PR
 (`.github/workflows/claude-review.yml`). It is also the human-readable contract for
 what a good PR here looks like. Keep it current as invariants evolve.
 
@@ -52,7 +52,40 @@ say which section.
   the path. Unit tests are necessary but are not the proof of doneness. Flag PRs whose only evidence is
   "unit tests pass".
 
-## D2. Cost & cleanup discipline (from CONTRIBUTING.md § Design & execution principles)
+## D2a. Evidence confidence rating (required in every review)
+
+For every PR, after reading §4 End-to-end test, the reviewer MUST produce a confidence rating and
+include it in the summary comment. This is the primary mechanism for ensuring evidence quality is
+actually evaluated, not just checked for existence.
+
+**Rating scale:**
+| Score | Meaning |
+|---|---|
+| 100% | Real prod/sandbox execution output covering **all** changed code paths with actual values shown |
+| 80–99% | Unit tests + strong structural argument; only minor uncovered paths (e.g. error branches with no side effects) |
+| 50–79% | Unit tests only; OR evidence covers only the happy path; OR evidence is for adjacent code not the exact changed path |
+| < 50% | No meaningful evidence, evidence describes expected behavior without showing actual output, or evidence contradicts other findings |
+
+**What the reviewer must output in the summary:**
+```
+### Evidence confidence: XX%
+**Proves:** [list what real output / real execution demonstrates]
+**Does NOT prove:** [list changed code paths with no real execution evidence]
+**Evidence gaps (run these to close the gap):**
+- `<specific command with expected output shape>`
+- `<specific command with expected output shape>`
+```
+
+**Blocking threshold:** confidence < 80% → BLOCKING → REQUEST CHANGES. The evidence gaps section
+becomes the exact requirement the author must satisfy before re-review.
+
+**Why unit tests alone are < 100%:** unit tests mock the environment; they prove the logic compiles and
+the mocked paths return expected values. They do NOT prove: (a) the real BQ/Sheets/Cloud Run/gcloud
+auth chain works, (b) the change integrates correctly with upstream data, (c) the feature is actually
+observable by the end user (Grafana panel, Slack message, sheet update). For infrastructure changes
+where real execution is cheap (a BQ query, a Cloud Run job, a sheet read), always require it.
+
+## D2b. Cost & cleanup discipline (from CONTRIBUTING.md § Design & execution principles)
 - **Token / cost:** flag obvious cost regressions — per-row network calls, unbounded LLM turns,
   full-tab rewrites where an incremental upsert fits, missing batching/caching.
 - **Cleanup:** if this PR adds a feature flag or a parallel path, there should be a plan to remove the
@@ -78,6 +111,8 @@ say which section.
 - Post **one top-level summary** via `gh pr comment` with:
   - A one-line **verdict**: `APPROVE`, `COMMENT`, or `REQUEST CHANGES`.
   - A short checklist of sections A–F with ✅ / ⚠️ / ❌.
+  - **Evidence confidence rating** (always required — see D2a): score, what it proves, what it doesn't, suggested additional commands if < 100%.
   - Critical issues first; suggestions last.
+  - "Optional (non-blocking)" section if any optional findings.
 - Be specific and actionable. Do **not** comment on pure style/formatting/naming unless it causes a
   genuine readability or correctness problem. Skip issues already raised in existing PR comments.

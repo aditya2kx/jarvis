@@ -831,17 +831,19 @@ class ModelVsRollupDriftTests(unittest.TestCase):
     # ── _model_vs_rollup_drift ─────────────────────────────────────────────────
 
     def _patch_drift(self, rows):
-        """Patch core.datastore.get_client so the drift query returns `rows`."""
+        """Patch google.cloud.bigquery.Client so the drift query returns `rows`."""
         # BQ rows support dict-style access; use plain dicts to replicate that.
+        from google.cloud import bigquery as _bq  # noqa: PLC0415
         fake_result = [
             {"date": date, "rollup_gross_cents": rollup_cents, "model_gross_sales": model}
             for date, rollup_cents, model in rows
         ]
         fake_job = mock.MagicMock()
         fake_job.result.return_value = fake_result
-        fake_client = mock.MagicMock()
-        fake_client.query.return_value = fake_job
-        return mock.patch("core.datastore.get_client", return_value=fake_client)
+        fake_client_instance = mock.MagicMock()
+        fake_client_instance.query.return_value = fake_job
+        # Patch the already-imported module's Client constructor directly.
+        return mock.patch.object(_bq, "Client", return_value=fake_client_instance)
 
     def test_drift_detected_returns_tuples(self):
         with self._patch_drift([(self.RD, 196451, 0.0)]):
@@ -858,20 +860,29 @@ class ModelVsRollupDriftTests(unittest.TestCase):
         self.assertEqual(result, [])
 
     def test_bq_client_unavailable_returns_empty(self):
-        with mock.patch("core.datastore.get_client", return_value=None):
-            result = _model_vs_rollup_drift(self.RD)
+        """When BQ Client construction fails and gcloud token also fails → []."""
+        from google.cloud import bigquery as _bq  # noqa: PLC0415
+        with mock.patch.object(_bq, "Client", side_effect=Exception("no credentials")):
+            with mock.patch("subprocess.check_output",
+                            side_effect=Exception("gcloud unavailable")):
+                result = _model_vs_rollup_drift(self.RD)
         self.assertEqual(result, [])
 
     def test_bq_query_error_returns_empty(self):
+        from google.cloud import bigquery as _bq  # noqa: PLC0415
         fake_client = mock.MagicMock()
         fake_client.query.side_effect = RuntimeError("BQ quota exceeded")
-        with mock.patch("core.datastore.get_client", return_value=fake_client):
+        with mock.patch.object(_bq, "Client", return_value=fake_client):
             result = _model_vs_rollup_drift(self.RD)
         self.assertEqual(result, [])
 
     def test_bq_import_error_returns_empty(self):
-        with mock.patch("core.datastore.get_client", side_effect=ImportError("no module")):
-            result = _model_vs_rollup_drift(self.RD)
+        """If google-cloud-bigquery is somehow not importable → []."""
+        from google.cloud import bigquery as _bq  # noqa: PLC0415
+        with mock.patch.object(_bq, "Client", side_effect=ImportError("no module")):
+            with mock.patch("subprocess.check_output",
+                            side_effect=Exception("gcloud unavailable")):
+                result = _model_vs_rollup_drift(self.RD)
         self.assertEqual(result, [])
 
     # ── _detect_and_clear_stale_model ─────────────────────────────────────────
@@ -914,13 +925,14 @@ class ModelVsRollupDriftTests(unittest.TestCase):
                     self.assertTrue(step_already_done(self.RD, step))
 
     def test_bq_error_is_noop(self):
+        from google.cloud import bigquery as _bq  # noqa: PLC0415
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(daily_refresh.pathlib.Path, "home",
                                    return_value=daily_refresh.pathlib.Path(tmp)):
                 self._seed_model_markers(self.RD)
                 fake_client = mock.MagicMock()
                 fake_client.query.side_effect = RuntimeError("BQ down")
-                with mock.patch("core.datastore.get_client", return_value=fake_client):
+                with mock.patch.object(_bq, "Client", return_value=fake_client):
                     cleared = _detect_and_clear_stale_model(self.RD, dry_run=False)
                 self.assertEqual(cleared, [])
                 for step in _MODEL_RECOMPUTE_STEPS:
@@ -950,9 +962,10 @@ class ModelVsRollupDriftTests(unittest.TestCase):
 
     def test_postcondition_bq_error_does_not_raise(self):
         """A BQ error inside the post-condition must not mask the run result."""
+        from google.cloud import bigquery as _bq  # noqa: PLC0415
         fake_client = mock.MagicMock()
         fake_client.query.side_effect = RuntimeError("timeout")
-        with mock.patch("core.datastore.get_client", return_value=fake_client):
+        with mock.patch.object(_bq, "Client", return_value=fake_client):
             _assert_model_matches_raw_rollup(self.RD)  # must not raise
 
 

@@ -285,21 +285,26 @@ gh-adi pr list          # or any other gh subcommand
 gh-adi pr merge <n>     # only you (aditya2kx) can approve + merge
 ```
 
-## The review bot (Claude Sonnet)
+## The review bot (Claude Opus, medium thinking)
 
 - Workflow: `.github/workflows/claude-review.yml`. Triggers on PR `opened` / `synchronize` / `reopened`.
 - **Converges — no nitpick loop.** The bot classifies findings as **BLOCKING** (confirmed correctness
   bug, security/PII leak, data-loss, missing/broken test for new behavior, invariant or unproven
-  backward-incompat break) or **OPTIONAL** (style, naming, "consider", extra robustness, more-tests on
-  already-tested code). Only **BLOCKING** findings are posted as **inline comments**; OPTIONAL ones go in
-  the summary under "Optional (non-blocking)" and never create an inline thread. With zero blocking
-  issues the verdict is **APPROVE**. On a re-push the bounded context is built with `--prev-head`
-  (`github.event.before`), so the MANIFEST flags it a **re-review** and the bot focuses on what changed
-  since the last round and must not re-raise prior feedback. This is what stops each push from spawning a
-  fresh batch of nits that re-trigger the cycle.
-- Model: **Claude Sonnet 4.6** (`--model claude-sonnet-4-6`), cost-budgeted for **~$0.50–1 per PR**:
-  `--max-turns 12`, a 12-minute job timeout, and per-PR `concurrency` cancellation. Opus at 40 turns
-  with repo-wide exploration was ~$4–5/PR (~4.7M input tokens); we do not do that.
+  backward-incompat break, or evidence confidence < 80%) or **OPTIONAL** (style, naming, "consider",
+  extra robustness, more-tests on already-tested code). Only **BLOCKING** findings are posted as
+  **inline comments**; OPTIONAL ones go in the summary under "Optional (non-blocking)" and never create
+  an inline thread. With zero blocking issues the verdict is **APPROVE**. On a re-push the bounded
+  context is built with `--prev-head` (`github.event.before`), so the MANIFEST flags it a **re-review**
+  and the bot focuses on what changed since the last round and must not re-raise prior feedback. This is
+  what stops each push from spawning a fresh batch of nits that re-trigger the cycle.
+- Model: **Claude Opus 4.8** (`--model claude-opus-4-8`), cost-budgeted for **~$2–4 per PR**:
+  `--max-turns 14`, a 20-minute job timeout, and per-PR `concurrency` cancellation. The upgrade from
+  Sonnet brings stronger reasoning over the evidence section — see below.
+- **Evidence confidence rating (required in every review):** the bot must rate 0–100% confidence that
+  the PR will work correctly in prod, based on the §4 End-to-end test section. It lists what the
+  evidence proves, what it doesn't prove, and suggests specific commands to close any gap. A score
+  < 80% is **BLOCKING** (REQUEST CHANGES). See `.github/claude-review-guidelines.md § D2a` for the
+  full scale and the required summary block format.
 - **Bounded context (not diff-only, not repo-wide):** before review,
   `scripts/build_claude_review_context.py` materializes into `review-context/` only (a) files changed
   in the PR, (b) paired `test_*.py` modules for changed `.py` files, and (c) the review rubric. The
@@ -319,7 +324,7 @@ gh-adi pr merge <n>     # only you (aditya2kx) can approve + merge
   reply — so a silently-skipped comment fails the readiness gate instead of slipping through.
 - **Cost comment:** after each run, `scripts/post_claude_review_cost.py` posts a PR comment with
   model, turns, input/output tokens, and reported USD cost (from the action's `execution_file`).
-  Budget target remains **~$0.50–1/PR** on Sonnet. The same script ALSO appends the run to the
+  Budget target is **~$2–4/PR** on Opus. The same script ALSO appends the run to the
   in-repo cost ledger (see below) so review cost is captured automatically.
 
 ## Per-PR cost ledger (build + review)
@@ -567,7 +572,7 @@ the **job name** (not the workflow filename):
 | `Doc Freshness` | `doc-freshness.yml` | **Yes** — always runs, cheap |
 | `Sandbox e2e` | `sandbox-e2e.yml` | **No** — opt-in only (label `run-sandbox-e2e` or dispatch); removed from required checks 2026-06-09 |
 | `PR cost gate` | `pr-cost-gate.yml` | **Yes** — blocks merge until `metrics/pr_cost/PR-<n>.json` records build cost |
-| `Claude review` | `claude-review.yml` | Optional — advisory (`continue-on-error`); still useful as signal |
+| `Claude review` | `claude-review.yml` | Optional — advisory (`continue-on-error`); Opus 4.8 medium thinking; rates evidence confidence 0–100% |
 
 Do **not** expect `Sandbox teardown` here — it runs on PR **close**, not on the PR commit.
 

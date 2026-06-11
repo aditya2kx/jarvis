@@ -529,16 +529,141 @@ def _bq_param_config(params: list[tuple]) -> object:
     ])
 
 
+def _is_already_running(job_name: str, date_str: str) -> bool:
+    """Return True if a non-terminal execution for ``date_str`` already exists.
+
+    Queries the Cloud Run v2 executions list for the job and checks whether any
+    execution that has ``REFRESH_DATE=date_str`` is still running (no completion
+    time and not in a terminal state). This is the already-running guard that
+    prevents the webhook from spawning a duplicate execution when the operator
+    double-taps READY or Slack retries the delivery.
+
+    Fail-open: returns False (allow the trigger) on any error so a listing
+    failure never blocks a legitimately-needed resume.
+    """
+    try:
+        from google.cloud import run_v2
+
+        exec_client = run_v2.ExecutionsClient()
+        parent = job_name  # job resource name is the parent for executions
+        request = run_v2.ListExecutionsRequest(parent=parent, page_size=20)
+        pager = exec_client.list_executions(request=request)
+
+        # Terminal Cloud Run execution conditions
+        _TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED"}
+
+        for execution in pager:
+            # Check if execution has completed
+            completion_time = getattr(execution, "completion_time", None)
+            if completion_time is not None:
+                continue  # already finished — not a running duplicate
+
+            # Check condition (state)
+            conditions = getattr(execution, "conditions", []) or []
+            for cond in conditions:
+                state = getattr(cond, "state", None)
+                if state is not None and str(state).split(".")[-1] in _TERMINAL:
+                    # Terminal — skip
+                    break
+            else:
+                # No terminal condition found — execution may be running.
+                # Check if its REFRESH_DATE override matches.
+                overrides = getattr(execution, "overrides", None)
+                if overrides is None:
+                    continue
+                container_overrides = getattr(overrides, "container_overrides", []) or []
+                for co in container_overrides:
+                    env_vars = getattr(co, "env", []) or []
+                    for ev in env_vars:
+                        if getattr(ev, "name", "") == "REFRESH_DATE" and getattr(ev, "value", "") == date_str:
+                            log.info(
+                                "already-running guard: skipping trigger for date=%s "
+                                "(execution %s is non-terminal)", date_str, execution.name,
+                            )
+                            return True
+    except Exception as exc:
+        log.warning("already-running check failed (fail-open): %s", exc)
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Slack-retry deduplication
+# ---------------------------------------------------------------------------
+#
+# Slack re-delivers an event if the webhook does not respond with 200 within
+# 3 seconds. Retries carry X-Slack-Retry-Num > 0 and X-Slack-Retry-Reason.
+# A retried READY reply must NOT spawn a second Cloud Run execution — the
+# first delivery already queued one. We dedup on two axes:
+#   1. X-Slack-Retry-Num header: any value > "0" is a retry → skip processing.
+#   2. event_id: record seen event IDs in Firestore for a short TTL so a retry
+#      that arrives on a fresh webhook instance (after a cold start) is still
+#      caught. Only READY replies (the ones that trigger jobs) are stored.
+#
+# The Firestore dedup collection is intentionally separate from "runs" so it
+# doesn't trigger sandbox isolation checks.
+
+_DEDUP_COLLECTION = "webhook_events"
+_DEDUP_TTL_S = 300  # 5 minutes — longer than Slack's 3-retry window
+
+
+def _is_slack_retry(request_headers: dict) -> bool:
+    """Return True if this is a Slack delivery retry (not the first delivery)."""
+    retry_num = request_headers.get("X-Slack-Retry-Num", "0")
+    try:
+        return int(retry_num) > 0
+    except (ValueError, TypeError):
+        return False
+
+
+def _check_and_store_event_id(event_id: str) -> bool:
+    """Store event_id in Firestore; return True if it was already seen (duplicate).
+
+    Best-effort: returns False (not a duplicate) on any Firestore error, so a
+    dedup failure never blocks a legitimate event.
+    """
+    if not event_id or db is None:
+        return False
+    try:
+        ref = db.collection(_DEDUP_COLLECTION).document(event_id)
+        doc = ref.get()
+        if doc.exists:
+            data = doc.to_dict() or {}
+            # Check TTL
+            seen_at = data.get("seen_at", 0)
+            if time.time() - seen_at < _DEDUP_TTL_S:
+                return True  # duplicate within TTL window
+        ref.set({"seen_at": time.time()})
+        return False
+    except Exception as exc:
+        log.warning("event_id dedup check failed (fail-open): %s", exc)
+        return False
+
+
 def _trigger_cloud_run_job(date_str: str, job_name: Optional[str] = None) -> None:
     """Enqueue a Cloud Run Job execution for the given date.
 
     Uses the Cloud Run v2 API to create a job execution. ``job_name`` defaults to
     the prod CLOUD_RUN_JOB_NAME env var; a sandbox OTP resume passes the sandbox
     job's resource name so the reply runs the sandbox job, not prod.
+
+    Guards (both fail-open so a guard error never blocks a legitimate resume):
+    1. Already-running check: if a non-terminal execution for ``date_str`` already
+       exists on this job, skip the trigger and log — prevents the webhook from
+       spawning a second execution when the operator double-taps READY or Slack
+       retries the delivery.
+    2. The Slack-retry dedup (``_is_slack_retry`` / ``_check_and_store_event_id``)
+       is applied upstream (in ``slack_events``), before this function is called.
     """
     job_name = job_name or os.environ.get("CLOUD_RUN_JOB_NAME")
     if not job_name:
         log.warning("CLOUD_RUN_JOB_NAME not set — cannot trigger job")
+        return
+
+    if _is_already_running(job_name, date_str):
+        log.info(
+            "trigger skipped — a non-terminal execution for date=%s already exists "
+            "on job=%s (duplicate-launch guard)", date_str, job_name,
+        )
         return
 
     try:
@@ -609,6 +734,17 @@ def slack_events():
         log.warning("Invalid Slack signature — rejecting request")
         return Response("invalid signature", status=403)
 
+    # Slack-retry dedup: discard re-delivered events immediately.
+    # Slack retries if the endpoint doesn't respond 200 within 3s; a retried
+    # READY reply must NOT spawn a second Cloud Run execution.
+    # Always ACK 200 so Slack stops retrying — never return a non-2xx here.
+    if _is_slack_retry(dict(request.headers)):
+        log.info(
+            "Slack retry delivery detected (X-Slack-Retry-Num=%s) — discarding",
+            request.headers.get("X-Slack-Retry-Num"),
+        )
+        return Response("ok", status=200)
+
     payload = request.get_json(force=True, silent=True)
     if payload is None:
         return Response("bad json", status=400)
@@ -619,6 +755,12 @@ def slack_events():
 
     # Event callback
     if payload.get("type") == "event_callback":
+        event_id = payload.get("event_id", "")
+        # Dedup via Firestore-persisted event_id (catches duplicate deliveries
+        # that slip through the retry-header check, e.g. after a cold start).
+        if event_id and _check_and_store_event_id(event_id):
+            log.info("Duplicate event_id=%s — discarding", event_id)
+            return Response("ok", status=200)
         event = payload.get("event", {})
         _handle_event(event)
 

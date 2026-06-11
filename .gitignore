@@ -69,3 +69,8 @@ __pycache__/
 # lives in config.yaml (already gitignored).
 !agents/*/knowledge-base/portal-playbooks/
 !agents/*/scripts/portals/
+
+# PR cost ledger now lives in BigQuery (jarvis_dev); these are local-only
+metrics/pr_cost/report.html
+metrics/pr_cost/PR-*.json
+metrics/pr_cost/session-*.json

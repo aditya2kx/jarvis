@@ -1,5 +1,31 @@
 # Jarvis Build Progress
 
+## 2026-06-10 — BQ-backed PR cost ledger (Jarvis-level) + Jarvis Development Grafana dashboard (PR #47)
+
+Moved the per-PR cost ledger out of git into BigQuery (`jarvis-bhaga-prod.jarvis_dev`). All 32 historical PR records (PRs 12–47) migrated via streaming inserts.
+
+**Key changes:**
+- `scripts/pr_cost_store.py`: self-contained BQ store, independent of BHAGA's `core.datastore`; 3 tables + `vw_pr_cost` view, auto-bootstrapped on first use via ADC/WIF auth
+- `scripts/pr_cost_ledger.py`: surgical rewire of 4 I/O functions; renderers/analyzers unchanged; `migrate-json-to-bq` subcommand for one-shot backfill
+- `scripts/cursor_usage.py`: `window_from_transcript()` for transcript-anchored attribution (highest priority; works on cloud/handoff machines); hard-fail on $0 build cost
+- `pr-cost-gate.yml` + `pr-cost-finalize.yml`: WIF auth, read/write BQ; no git commits; WIF SA `bhaga-orchestrator` already had `bigquery.dataEditor` + `jobUser`
+- `grafana/jarvis_dev/dashboard.json` + `deploy.py` + `grafana-jarvis-dev-sync.yml`: separate "Jarvis Development" dashboard (not BHAGA) at https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jarvis-development
+- Retired: `metrics/pr_cost/report.html`, `PR-*.json`, `post-merge` git hook, `finalize_cost.sh`; pre-commit hook now just calls `capture-review → BQ` (no `git add`)
+- Tests: `test_pr_cost_store.py` (offline in-memory BQ fake), updated `test_pr_cost_ledger.py`, `test_cursor_usage.py` with `test_window_from_transcript`; 91 tests pass
+
+## 2026-06-10 — Square concurrent-scrape regression fix (PR #47 on branch fix/square-scrape-concurrent-regression)
+
+**Incident (6/9 prod incremental run):** The nightly run for 2026-06-09 produced no Square results. An email report was downloaded but Slack reported a login issue. Root cause: two Cloud Run executions ran simultaneously — the nightly scheduler triggered one, and the webhook's `_handle_ready_reply` triggered a second on the operator's READY reply (Slack may also have retried the delivery). Each execution had its own `/tmp`, so the old `_acquire_scrape_lock` PID-file lock was invisible across them. Both executions fired a 2FA SMS, and both read/wrote the shared GCS session blob `_session/square-palmetto.json`, corrupting login state and producing no usable scrape result.
+
+**Why multiple executions fired:** The webhook `_handle_ready_reply` called `_trigger_cloud_run_job` on every READY-looking reply with no guard (no Slack-retry dedup on `event_id`/`X-Slack-Retry-Num`, no "is a run already executing?" check). A double-tapped READY, a Slack delivery retry, or any manual `/bhaga refresh` overlapping with the webhook resume could each spawn an additional execution.
+
+**Fix (two layers):**
+1. **Webhook dedup** (`cloud/webhook/handler.py`): discard Slack-retry deliveries (`X-Slack-Retry-Num > 0`) in `slack_events()`; store seen `event_id`s in Firestore `webhook_events/<event_id>` (5-min TTL) to catch duplicates even after a cold start; check `_is_already_running` before `_trigger_cloud_run_job` (fail-open).
+2. **Distributed scrape lock** (`skills/square_tips/runner.py` + `skills/bhaga_config/state_adapter.py`): `_acquire_scrape_lock` now acquires a TTL-based Firestore lock (`runs/_lock_scrape-square-<store>`, `BHAGA_SCRAPE_LOCK_TTL_S=3600`) via a transactional read-then-write. A second execution raises `ScrapeLockHeldError` (carries holder, acquired_at, expires_at) without firing a duplicate SMS. The failure is recorded to Firestore `failures.square` as `concurrent_execution` and sends a concise concurrency Slack alert (`notify.scrape_concurrency_alert`) instead of the misleading generic or device-blocked alert.
+
+**Observability added:** Every lock acquire/release/refusal emits a greppable Cloud Run log breadcrumb (`[square lock] ACQUIRED/RELEASED/REFUSED name=… holder=<host:pid> …`). Future postmortem can reconstruct "run B was refused because run A held the lock" from state alone (Firestore + logs), no rerun needed.
+
+**Verification:** Post-merge + image redeploy, triggered a prod incremental for 2026-06-09 to recover the missing data (OTP answered in Slack). Verified row counts and `data_window_end` advance. (Fill in actual results after 6/9 recovery run.)
 ## 2026-06-10 — Forecast vs Actual charts extended to future window, dashboard v35 (PR #44)
 
 **On `feat/forecast-bq-labor-forecast` (PR #44).** Two follow-ups:

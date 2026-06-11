@@ -93,6 +93,7 @@ from agents.bhaga.notify import (
     info_ping,
     otp_skipped_alert,
     ready_request,
+    scrape_concurrency_alert,
     square_device_blocked_alert,
     success_heartbeat,
 )
@@ -378,6 +379,24 @@ def _is_square_device_block(exc: BaseException | None) -> bool:
     cur = exc
     while cur is not None and seen < 20:
         if type(cur).__name__ == "SquareDeviceBlockedError":
+            return True
+        cur = cur.__cause__ or cur.__context__
+        seen += 1
+    return False
+
+
+def _is_scrape_lock_held(exc: BaseException | None) -> bool:
+    """True if ``exc`` is a ScrapeLockHeldError (concurrent execution refused).
+
+    Duck-typed by class name — no heavy runner import needed here. A concurrent
+    execution being refused is NOT a transient error (the first run is already
+    doing the work), so it should be reported as ``concurrent_execution``, not
+    retried and not confused with device blocks or generic failures.
+    """
+    seen = 0
+    cur = exc
+    while cur is not None and seen < 20:
+        if type(cur).__name__ == "ScrapeLockHeldError":
             return True
         cur = cur.__cause__ or cur.__context__
         seen += 1
@@ -2034,7 +2053,35 @@ def main() -> int:
                     otp_portal_failed = True
                 ev_uri = _record_failure(refresh_date, pipeline_name, pr.error)
                 try:
-                    if _is_square_device_block(pr.error):
+                    if _is_scrape_lock_held(pr.error):
+                        # Concurrent execution refused — another Cloud Run task
+                        # holds the distributed scrape lock. The second execution
+                        # correctly bailed out without firing a duplicate SMS.
+                        # Extract structured details from ScrapeLockHeldError.
+                        exc = pr.error
+                        while exc is not None:
+                            if type(exc).__name__ == "ScrapeLockHeldError":
+                                break
+                            exc = exc.__cause__ or exc.__context__
+                        _adapter_record_step_failure(
+                            refresh_date,
+                            pipeline_name,
+                            error=(
+                                f"concurrent_execution: lock={getattr(exc, 'lock_name', '?')} "
+                                f"held_by={getattr(exc, 'held_by', '?')} "
+                                f"acquired_at={getattr(exc, 'acquired_at', '?')} "
+                                f"expires_at={getattr(exc, 'expires_at', '?')}"
+                            ),
+                            evidence_uri=ev_uri,
+                        )
+                        scrape_concurrency_alert(
+                            date=refresh_date.isoformat(),
+                            portal=pipeline_name.capitalize(),
+                            held_by=getattr(exc, "held_by", "unknown"),
+                            lock_name=getattr(exc, "lock_name", "unknown"),
+                            expires_at=getattr(exc, "expires_at", "unknown"),
+                        )
+                    elif _is_square_device_block(pr.error):
                         # Anti-bot device block: a generic failure_alert would tell
                         # the operator to chase a magic-link email that was never
                         # sent. Send the actionable, no-paste alert instead.

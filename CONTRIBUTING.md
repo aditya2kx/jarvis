@@ -324,65 +324,40 @@ gh-adi pr merge <n>     # only you (aditya2kx) can approve + merge
 
 ## Per-PR cost ledger (build + review)
 
-Every change carries two cost surfaces; both are tracked per-PR in `metrics/pr_cost/PR-<n>.json`
-via `scripts/pr_cost_ledger.py`:
+Every change carries two cost surfaces; both are tracked per-PR in **BigQuery**
+(`jarvis-bhaga-prod.jarvis_dev`) via `scripts/pr_cost_ledger.py`. There are no committed
+`PR-*.json` files or `report.html` in the repo — the source of truth is BQ.
+View all data in the **Jarvis Development** Grafana dashboard:
+https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jarvis-development
 
-- **Review** (exact) — each Claude-review run posts a cost comment (model = Sonnet). The CI-side
-  ledger append is **ephemeral** (the runner filesystem is discarded, and committing back inside the
-  review workflow would re-trigger it in a loop), so reconcile the committed ledger pre-merge with
-  `pr_cost_ledger.py capture-review --pr <n>` — it rebuilds the review rows from the posted cost
-  comments (idempotent by workflow-run URL).
-- **Build** (exact, automatic) — the Cursor agent sessions that wrote the code (model = Opus-class).
+- **Review** (exact) — each Claude-review run posts a cost comment. CI's `pr-cost-finalize.yml`
+  captures it into BQ on merge. Pre-merge, reconcile with
+  `pr_cost_ledger.py capture-review --pr <n>` (idempotent by workflow-run URL).
+- **Build** (exact, hard-required before merge) — the Cursor agent sessions that wrote the code.
   Pulled from the Cursor usage API by `scripts/cursor_usage.py` and recorded with:
-  `pr_cost_ledger.py capture-build --pr <n> [--model-filter opus]`. With no `--start/--end`, the
-  window is **auto-derived from the PR's branch** via Cursor's local `ai-code-tracking.db` (anchored
-  to AI code edits, capped at merge) — so attribution is automatic and edit-accurate. Pass explicit
-  `--start/--end` to override. Cost is exact (billed `chargedCents`). `record-build` (manual) remains
-  a fallback if the API path breaks.
+  `pr_cost_ledger.py capture-build --pr <n> [--model-filter opus]`. Attribution priority:
+  transcript → conversation (from `ai-code-tracking.db`) → branch window. `record-build` (manual,
+  from the dashboard) is always available as an explicit override. A **zero build cost is a hard
+  failure** — `capture-build` raises immediately if the window yields $0, and the gate rejects $0.
 
 Commands:
-- **Pre-merge gate (HARD):** `pr_cost_ledger.py validate --pr <n> --require-build` — fails unless the
-  committed record exists AND build cost is recorded. Enforced in CI by `.github/workflows/pr-cost-gate.yml`;
-  make **PR cost gate** a required status check (see § Enabling enforcement) to actually block merge.
+- **Pre-merge gate (HARD):** `pr_cost_ledger.py validate --pr <n> --require-build` — fails unless
+  the record exists in BQ AND build cost is non-zero. Enforced by `.github/workflows/pr-cost-gate.yml`
+  (authenticates via WIF; reads from BQ). Make **PR cost gate** a required status check to block merge.
   Run it locally alongside `check_doc_freshness.py` before declaring merge-ready.
-- **Post-merge analysis:** `pr_cost_ledger.py analyze --pr <n>` — prints the top cost areas and
-  efficiency recommendations (drop to a smaller model for mechanical work, checkpoint marathon
-  sessions, batch pushes to cut review re-runs, etc.). Omit `--pr` to analyze across all PRs.
-- **HTML report (team-visible, opens any/all ledgers):** `pr_cost_ledger.py report` renders a
-  standalone, dependency-free `metrics/pr_cost/report.html` (summary, build/review split, top cost
-  areas, top recommendations) from whatever `PR-*.json` records exist — open it in any browser, no
-  build step. `--pr <n>` for a single PR; `--out <path>` to override the destination.
-- **Required pre-commit hook (keeps the ledger in your own commits):** run
-  `bash scripts/install-git-hooks.sh` once per clone / worktree (including cloud agents). It points
-  `core.hooksPath` at `scripts/git-hooks`; the `pre-commit` hook runs the **non-destructive** ledger
-  surfaces — `capture-review` (pull review cost from posted PR comments; additive + idempotent) and
-  `report` (regenerate `report.html`) — and **auto-stages** `metrics/pr_cost/` into the commit you're
-  making. So the ledger rides in your own commits and lands on `main` in the squash merge — no bot
-  commit, no CI push-back. This is the design the cost script itself documents ("the operator commits
-  the complete record once"). The hook **does not** run `capture-build`/`sync`: build cost is recorded
-  explicitly by you (`record-build` from the dashboard, or `capture-build` with session attribution),
-  and the hook must not re-derive it (the branch-window fallback would overwrite your manual entry on
-  every commit). The hook never blocks and is a no-op until the PR exists. Skip a throwaway WIP commit
-  with `PR_COST_HOOK=0 git commit …`. Undo with `git config --unset core.hooksPath`.
-  The **only** cost that can't be captured this way is the review run *this* push triggers (a commit
-  can't contain its own review cost). That tail is picked up by your next commit, or finalized at
-  merge by `pr-cost-finalize.yml`.
-- **`PR cost gate` is a pure validator:** `pr-cost-gate.yml` only runs
-  `validate --pr <n> --require-build` — it never writes to the repo. (An earlier version committed the
-  ledger back to the PR branch from CI; that forced a second commit per push which either suppressed
-  CI or duplicated every required check via `cancel-in-progress`. The pre-commit hook replaces it.)
-- **Automatic post-merge analysis:** `.github/workflows/pr-cost-finalize.yml` runs when a PR
-  merges — it `capture-review`s any last review cost comments and posts the post-merge analysis as
-  a PR comment. It does not commit to `main` (the ledger is already there via your commits).
-
-- **Post-merge local self-heal (`scripts/git-hooks/post-merge`):** installed by `install-git-hooks.sh`,
-  this hook fires after every `git pull` on `main`. It runs `pr_cost_ledger.py report`, which
-  backfills `merged_at` for any newly-merged PRs and regenerates `report.html` — so your local
-  `file://…/report.html` is correct immediately after pulling. The corrected JSON + HTML are local
-  only; they ride into the *next* PR's commit via the pre-commit hook. The ledger is therefore
-  *eventually* consistent (one PR behind on the remote), but locally correct after every pull.
-  To force the finalized record onto `main` right now, run:
-  `bash scripts/finalize_cost.sh <pr>` — it opens a metrics-only PR and arms auto-merge.
+- **Post-merge analysis:** `pr_cost_ledger.py analyze --pr <n>` — prints top cost areas and
+  efficiency recommendations. Omit `--pr` to analyze across all PRs.
+- **HTML report (local, optional):** `pr_cost_ledger.py report` renders a standalone HTML summary
+  to `/tmp/pr_cost_report.html` (or `$PR_COST_REPORT_OUT`). Not committed. Prefer Grafana.
+- **Pre-commit hook (captures review cost into BQ on each commit):** run
+  `bash scripts/install-git-hooks.sh` once per clone / worktree. The hook runs
+  `capture-review` (additive, idempotent) → BQ. No `git add`, no file staging, no repo write.
+  Skip with `PR_COST_HOOK=0 git commit …`. Undo with `git config --unset core.hooksPath`.
+- **`PR cost gate` is a pure BQ reader:** `pr-cost-gate.yml` only runs
+  `validate --pr <n> --require-build` — it never writes to the repo or BQ. WIF auth.
+- **Automatic post-merge finalize:** `.github/workflows/pr-cost-finalize.yml` runs on merge —
+  writes `merged_at` + final review cost into BQ, then posts the cost analysis as a PR comment.
+  No git commit to `main`.
 
 **How build cost is captured (individual account, no team plan):** Cursor's *documented* per-request
 feed (`/teams/filtered-usage-events`) needs a team/Enterprise Admin key. But the dashboard's own

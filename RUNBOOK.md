@@ -641,10 +641,19 @@ It runs automatically on every PR via `.github/workflows/sandbox-e2e.yml` (and
 (full e2e still runs only on `pull_request` when `SANDBOX_E2E_ENABLED=true`). See
 `CONTRIBUTING.md` § Enabling enforcement.
 
-**Cost ledger rides in your own commits:** the per-PR cost ledger (`metrics/pr_cost/`) is kept current
-by the `pre-commit` hook (`bash scripts/install-git-hooks.sh` once per clone), which `sync`s and
-auto-stages it into your commits. CI does **not** push a cost commit — `pr-cost-gate.yml` is a pure
-validator. So every CI run is on real code and there are no automatic `chore(cost):` commits to skip.
+**Cost ledger lives in BigQuery (jarvis_dev), not in git:** the per-PR cost ledger is stored in
+`jarvis-bhaga-prod.jarvis_dev` (tables `pr_cost_pr`, `pr_cost_build_session`, `pr_cost_review_run`,
+view `vw_pr_cost`). There are no committed `PR-*.json` files or `report.html` in the repo.
+
+- **Pre-merge:** record build cost locally (`pr_cost_ledger.py capture-build` or `record-build`),
+  then `validate --pr <n> --require-build`. The pre-commit hook (`bash scripts/install-git-hooks.sh`
+  once per clone) captures review cost into BQ on each commit (no `git add`, no staged files).
+- **Post-merge:** `pr-cost-finalize.yml` writes `merged_at` + final review cost to BQ via WIF.
+- **Dashboard:** https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jarvis-development
+  ("Jarvis Development" folder). Deploy/update: `python3 grafana/jarvis_dev/deploy.py`.
+- **WIF SA:** `bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com` — has
+  `roles/bigquery.dataEditor` + `roles/bigquery.jobUser` on `jarvis-bhaga-prod`.
+- **Backfill/migration:** `pr_cost_ledger.py migrate-json-to-bq` (one-shot, already run for PRs 12-47).
 
 Run it manually with ADC + palmetto OAuth:
 
@@ -758,6 +767,38 @@ code-entry flow cannot satisfy it (the link only works in the **requesting** bro
   releases them once Square succeeds. The first attempt fires **no** SMS, so the single retry can never
   duplicate one. (Pinning a static egress IP — VPC connector + Cloud NAT — would stop the escalation at the
   source but is **not free**; deferred. See `PROGRESS.md`.)
+
+**Concurrent-execution guard (distributed scrape lock — added 2026-06-10).** The Square browser login fires
+a live 2FA SMS and writes a shared GCS session blob (`_session/square-<store>.json`). If two Cloud Run
+executions run simultaneously (e.g. the nightly scheduler overlaps with the webhook READY-resume, or the
+operator double-taps READY), each would fire a duplicate SMS and corrupt the shared session. The guard has
+two layers:
+
+1. **Webhook dedup** — the Slack webhook (`cloud/webhook/handler.py`) now discards Slack-retry deliveries
+   (`X-Slack-Retry-Num > 0`) before processing and stores event IDs in Firestore (`webhook_events/<event_id>`)
+   with a 5-minute TTL so a repeated delivery is caught even after a cold start. Before triggering a Cloud
+   Run job it checks for a non-terminal execution of the same date (`_is_already_running`; fail-open).
+2. **Distributed scrape lock (backstop)** — `_acquire_scrape_lock` in `skills/square_tips/runner.py` now
+   acquires a TTL-based Firestore lock (`runs/_lock_scrape-square-<store>` in cloud; a local JSON file on
+   laptop), unique per execution (`<hostname>:<pid>`). A second execution that slips through the webhook
+   guard fails fast with `ScrapeLockHeldError` — no duplicate SMS, no session corruption.
+
+   - Default TTL: `BHAGA_SCRAPE_LOCK_TTL_S=3600` (1 h > the 30-min OTP wait). A crashed run's lock is
+     auto-reclaimed after TTL expiry.
+   - Logs: every acquire/release/refusal emits a greppable breadcrumb in Cloud Run logs:
+     `[square lock] ACQUIRED/RELEASED/REFUSED name=scrape-square-palmetto holder=<host:pid> …`
+   - Failed second execution records `concurrent_execution` in Firestore `failures.square` and sends a
+     concise Slack alert ("Square skipped — another run already in progress") instead of the generic
+     failure alert or device-block alert.
+
+**Clearing a stale scrape lock (if a run crashed without releasing):**
+```bash
+python3 -c "
+from skills.bhaga_config.state_adapter import release_lock
+release_lock('scrape-square-palmetto', holder='<host:pid from REFUSED breadcrumb>')
+"
+```
+Or wait for the TTL to expire (default 1 h). Never delete the Firestore doc directly — use `release_lock`.
 
 **Step-by-step screenshot trace.** Sandbox runs set `BHAGA_TRACE_SCREENSHOTS=1`, so `runtime.trace_step`
 captures the **full browser after every login + item-sales action** and uploads each frame to

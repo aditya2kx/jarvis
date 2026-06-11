@@ -52,6 +52,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pr_cost_store as _store
+
 LEDGER_DIR = Path(__file__).resolve().parent.parent / "metrics" / "pr_cost"
 
 # A build session is considered the "dominant" cost hotspot when it alone is at
@@ -162,10 +164,7 @@ def _empty_record(pr: int | str) -> dict[str, Any]:
 
 
 def load_record(pr: int | str) -> dict[str, Any]:
-    path = _record_path(pr)
-    if path.is_file():
-        return json.loads(path.read_text())
-    return _empty_record(pr)
+    return _store.load_record(pr, _empty_record)
 
 
 def _record_key(rec: dict[str, Any]) -> int | str:
@@ -179,12 +178,10 @@ def _record_key(rec: dict[str, Any]) -> int | str:
     return str(pid)
 
 
-def save_record(rec: dict[str, Any]) -> Path:
+def save_record(rec: dict[str, Any]):
     _recompute_totals(rec)
-    LEDGER_DIR.mkdir(parents=True, exist_ok=True)
-    path = _record_path(_record_key(rec))
-    path.write_text(json.dumps(rec, indent=2, sort_keys=False) + "\n")
-    return path
+    _store.save_record(rec)
+    return rec
 
 
 def _recompute_totals(rec: dict[str, Any]) -> None:
@@ -476,24 +473,21 @@ def bind_pr(
     provisional: str, *, pr_number: int | None = None,
     branch: str | None = None, repo: str | None = None,
 ) -> dict[str, Any]:
-    """Promote a provisional (branch-keyed) session record to `PR-<n>.json`.
+    """Promote a provisional (branch-keyed) session record to a real PR number.
 
     The PR number only exists after `gh pr create` runs, so a session started
-    before that lives in `session-<slug>.json`. This renames it to the real
-    `PR-<n>.json`, preserving the captured build cost. If a `PR-<n>.json`
-    already exists (e.g. review cost was recorded by CI first), the provisional
-    build sessions + metadata are merged in and the existing review runs kept.
+    before that lives in BQ under key `branch:<name>`. This rewrites the key
+    to the real PR number, preserving the captured build cost. If a PR-<n>
+    record already exists in BQ (e.g. review cost was recorded by CI first),
+    the provisional build sessions + metadata are merged in.
     """
-    prov_path = _record_path(provisional)
-    if not prov_path.is_file():
-        prov_path = _record_path(_slug(provisional))
-    if not prov_path.is_file():
+    prov = load_record(provisional)
+    if (prov.get("pr_number") is None and not prov.get("branch")
+            and not prov["build"].get("sessions")):
         raise SystemExit(
-            f"bind-pr: no provisional session record for '{provisional}' "
-            f"(looked for {prov_path.name}). Did you start the session with "
-            f"start_pr_session.py --branch {provisional!r}?"
+            f"bind-pr: no provisional session record for '{provisional}'. "
+            f"Start it with start_pr_session.py --branch {provisional!r}."
         )
-    prov = json.loads(prov_path.read_text())
     br = branch or prov.get("branch") or provisional
     if pr_number is None:
         pr_number = _resolve_pr_number_from_branch(br, repo=repo)
@@ -503,7 +497,7 @@ def bind_pr(
             f"Open the PR first (`gh pr create`), then pass --pr <n> explicitly."
         )
 
-    merged = load_record(int(pr_number))  # existing PR-<n>.json or a fresh record
+    merged = load_record(int(pr_number))
     for k in ("title", "requirement", "branch", "created_at", "session_started_at"):
         if prov.get(k):
             merged[k] = prov[k]
@@ -512,16 +506,10 @@ def bind_pr(
         merged["build"] = prov["build"]
     merged["pr_number"] = int(pr_number)
     merged["provisional_id"] = None
-    out_path = save_record(merged)
-
-    # Remove the provisional record + its brief/launcher so the namespace is clean.
-    prov_path.unlink(missing_ok=True)
-    slug = _slug(prov.get("provisional_id") or br)
-    for sidecar in (LEDGER_DIR / f"session-{slug}-brief.md",
-                    LEDGER_DIR / f"session-{slug}-launch.html"):
-        sidecar.unlink(missing_ok=True)
-    print(f"bind-pr: {prov_path.name} → {out_path.name} (PR #{pr_number}, "
-          f"build ${merged['build']['cost_usd_total']:.2f})")
+    save_record(merged)
+    _store.delete_record(provisional)  # remove the provisional key from BQ
+    print(f"bind-pr: {provisional} → PR #{pr_number} "
+          f"(build ${merged['build']['cost_usd_total']:.2f})")
     return merged
 
 
@@ -565,13 +553,25 @@ def capture_build(
     start_ms: int | None = None
     end_ms: int | None = None
 
+    # Transcript attribution — highest priority; works on cloud/handoff machines
+    # where ai-code-tracking.db has no edits.
+    conv_ids0 = list(rec0["build"].get("conversation_ids") or [])
+    if conv_ids0 and not (start and end) and not rec0.get("session_started_at"):
+        try:
+            start_ms, end_ms = cursor_usage.window_from_transcript(conv_ids0[0])
+            attribution_mode = "transcript"
+        except cursor_usage.CursorUsageError:
+            pass
+
     conv_ids = list(rec0["build"].get("conversation_ids") or [])
     if conversation_auto or (not conv_ids and rec0.get("session_started_at")):
         bind_conversations(pr, auto=True)
         rec0 = load_record(pr)
         conv_ids = list(rec0["build"].get("conversation_ids") or [])
 
-    if conv_ids:
+    if start_ms is not None and attribution_mode == "transcript":
+        pass  # transcript window already resolved; skip the conversation/manual/branch chain
+    elif conv_ids:
         attribution_mode = "conversation"
         end_ms = (
             cursor_usage.to_ms(rec0["merged_at"]) if rec0.get("merged_at")
@@ -634,14 +634,25 @@ def capture_build(
     if model_filter:
         events = [e for e in events if model_filter.lower() in (e.get("model") or "").lower()]
 
+    captured_cost = round(sum(float(e.get("cost_usd") or 0) for e in events), 4)
+    if captured_cost <= 0 and attribution_mode != "manual_window":
+        raise SystemExit(
+            f"capture-build: window yielded $0 of usable build cost for PR #{pr} "
+            f"[{attribution_mode}]. This is a HARD failure (no silent $0). Either: "
+            f"(a) bind the right conversation/transcript and re-run capture-build, or "
+            f"(b) record it manually with:\n"
+            f"  record-build --pr {pr} --ts <ISO> --tokens <n> --cost <usd> --model <m>"
+        )
+
     rec = load_record(pr)
     rec["build"]["attribution_mode"] = attribution_mode
     rec["build"]["approximate"] = attribution_mode == "manual_window"
-    rec["build"]["source"] = (
-        "cursor dashboard usage API (conversation-scoped via ai_code_hashes)"
-        if attribution_mode == "conversation"
-        else "cursor dashboard usage API (local session token; request->PR by time window)"
-    )
+    if attribution_mode == "transcript":
+        rec["build"]["source"] = "cursor dashboard usage API (transcript-window attribution)"
+    elif attribution_mode == "conversation":
+        rec["build"]["source"] = "cursor dashboard usage API (conversation-scoped via ai_code_hashes)"
+    else:
+        rec["build"]["source"] = "cursor dashboard usage API (local session token; request->PR by time window)"
     rec["build"]["window"] = {
         "start": datetime.datetime.fromtimestamp(start_ms / 1000, datetime.timezone.utc).isoformat(),
         "end": datetime.datetime.fromtimestamp(end_ms / 1000, datetime.timezone.utc).isoformat(),
@@ -800,18 +811,27 @@ def capture_review(pr: int, *, repo: str | None = None) -> dict[str, Any]:
 def validate(pr: int, *, require_build: bool = False) -> tuple[bool, list[str]]:
     """Pre-merge gate: a PR may not merge without an accounted cost record.
 
-    Requires: the committed record exists, has a requirement/title, and has at
+    Requires: the BQ record exists, has a requirement/title, and has at
     least one cost surface recorded. With ``require_build`` (the hard CI gate),
-    build sessions MUST be present — the author has to record the Cursor build
-    cost (manually from the dashboard, or via the capture tooling) and commit
-    ``metrics/pr_cost/PR-<n>.json`` before the PR can merge.
+    build sessions MUST be present and have non-zero cost — the author has to
+    record the Cursor build cost (manually from the dashboard, or via the
+    capture tooling) before the PR can merge.
     """
-    path = _record_path(pr)
-    if not path.is_file():
-        return False, [f"no cost record at metrics/pr_cost/PR-{pr}.json — "
-                       f"run `pr_cost_ledger.py set-meta --pr {pr} …` + record build cost, "
-                       f"then commit the file"]
-    rec = json.loads(path.read_text())
+    rec = load_record(pr)
+    _recompute_totals(rec)
+    # A record that was never saved at all (factory default) has no sessions,
+    # no review runs, no title, no requirement, AND the pr_number is whatever
+    # _empty_record set (equals the requested pr). Distinguish "never saved"
+    # from "saved but empty" by checking the store key — if the in-memory or
+    # BQ store returned the factory default (no store row), the record has only
+    # the pr_number populated by _empty_record with no other user-written fields.
+    never_saved = (not rec["build"]["sessions"] and not rec["review"]["runs"]
+                   and not rec.get("title") and not rec.get("requirement")
+                   and not rec.get("branch") and not rec.get("created_at")
+                   and not rec.get("provisional_id"))
+    if never_saved:
+        return False, [f"no cost record in BQ for PR #{pr} — "
+                       f"run `pr_cost_ledger.py set-meta --pr {pr} …` + record build cost"]
     problems: list[str] = []
     if not rec.get("requirement") and not rec.get("title"):
         problems.append("record has no requirement/title")
@@ -819,12 +839,16 @@ def validate(pr: int, *, require_build: bool = False) -> tuple[bool, list[str]]:
     has_build = bool(rec["build"]["sessions"])
     if not has_review and not has_build:
         problems.append("no build sessions and no review runs recorded — cost is unaccounted")
-    if require_build and not has_build:
-        problems.append(
-            "no build sessions recorded — the hard gate requires the Cursor build cost. "
-            f"Run `start_pr_session.py --pr {pr}` then `pr_cost_ledger.py sync --pr {pr}` "
-            f"before merge."
-        )
+    if require_build:
+        if not has_build:
+            problems.append(
+                "no build sessions recorded — the hard gate requires build cost. "
+                f"Run capture-build or record-build --pr {pr} before merge."
+            )
+        elif (rec["build"].get("cost_usd_total") or 0) <= 0:
+            problems.append(
+                "build cost is $0 — record real build cost (record-build) before merge."
+            )
     b = rec.get("build") or {}
     window = b.get("window") or {}
     if window.get("start") and window.get("end"):
@@ -844,16 +868,14 @@ def validate(pr: int, *, require_build: bool = False) -> tuple[bool, list[str]]:
             "session_started_at is set but build was not conversation-scoped — "
             f"run `pr_cost_ledger.py sync --pr {pr}` after binding the chat"
         )
-    my_keys = {_session_key(s) for s in b.get("sessions") or []}
-    for other in _all_prs():
-        if other == pr:
-            continue
-        for s in load_record(other)["build"].get("sessions") or []:
-            if _session_key(s) in my_keys:
-                problems.append(
-                    f"build session {s.get('ts')} (${s.get('cost_usd')}) is also billed to PR #{other} "
-                    "— run `pr_cost_ledger.py dedup-sessions`"
-                )
+    my_session_uids = {_store._session_uid(s) for s in b.get("sessions") or []}
+    if my_session_uids:
+        dupes = _store.find_duplicate_sessions(pr, my_session_uids)
+        for other_key, session_uid in dupes:
+            problems.append(
+                f"build session uid {session_uid} is also billed to PR {other_key} "
+                "— run `pr_cost_ledger.py dedup-sessions`"
+            )
     return (not problems), problems
 
 
@@ -1232,7 +1254,7 @@ def sync(pr: int, *, repo: str | None = None, report_out: str | None = None) -> 
         capture_review(pr, repo=repo)
     except (SystemExit, Exception) as exc:  # noqa: BLE001 — best-effort surface
         print(f"  [review] skipped: {exc}")
-    out = Path(report_out) if report_out else (LEDGER_DIR / "report.html")
+    out = Path(report_out) if report_out else Path(os.environ.get("PR_COST_REPORT_OUT", "/tmp/pr_cost_report.html"))
     out.parent.mkdir(parents=True, exist_ok=True)
     prs = _all_prs() or [pr]
     out.write_text(build_html_report(sorted(prs, reverse=True), repo=repo), encoding="utf-8")
@@ -1246,13 +1268,7 @@ def sync(pr: int, *, repo: str | None = None, report_out: str | None = None) -> 
 # ── CLI ─────────────────────────────────────────────────────────────
 
 def _all_prs() -> list[int]:
-    prs = []
-    for p in glob.glob(str(LEDGER_DIR / "PR-*.json")):
-        try:
-            prs.append(int(Path(p).stem.split("-", 1)[1]))
-        except (ValueError, IndexError):
-            continue
-    return sorted(prs)
+    return _store.all_prs()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1308,13 +1324,17 @@ def main(argv: list[str] | None = None) -> int:
 
     rp = sub.add_parser("report", help="Render a standalone HTML cost report (any/all PRs)")
     rp.add_argument("--pr", type=int, help="single PR; omit for all recorded PRs")
-    rp.add_argument("--out", default=str(LEDGER_DIR / "report.html"),
-                    help="output HTML path (default: metrics/pr_cost/report.html)")
+    rp.add_argument("--out", default=os.environ.get("PR_COST_REPORT_OUT", "/tmp/pr_cost_report.html"),
+                    help="output HTML path (default: /tmp/pr_cost_report.html or $PR_COST_REPORT_OUT)")
+
+    mj = sub.add_parser("migrate-json-to-bq",
+                        help="One-shot: load metrics/pr_cost/PR-*.json into BQ (jarvis_dev)")
+    mj.add_argument("--dir", default=str(LEDGER_DIR))
 
     sy = sub.add_parser("sync", help="Pre-push: capture build + review cost and regenerate the report")
     sy.add_argument("--pr", type=int, required=True)
     sy.add_argument("--repo", help="owner/name (defaults to the current gh repo)")
-    sy.add_argument("--out", help="report output path (default: metrics/pr_cost/report.html)")
+    sy.add_argument("--out", help="report output path (default: /tmp/pr_cost_report.html)")
 
     bp = sub.add_parser(
         "bind-pr",
@@ -1372,7 +1392,7 @@ def main(argv: list[str] | None = None) -> int:
                        files=args.files, additions=args.additions, deletions=args.deletions,
                        session_started_at=getattr(args, "session_started", None),
                        conversation_ids=getattr(args, "conversation_ids", None))
-        print(f"updated {_record_path(args.pr)}")
+        print(f"updated PR #{args.pr}")
         return 0
     if args.cmd == "bind-conversation":
         rec = bind_conversations(
@@ -1382,12 +1402,12 @@ def main(argv: list[str] | None = None) -> int:
             session_started_at=args.session_started,
         )
         ids = rec["build"].get("conversation_ids") or []
-        print(f"bound {len(ids)} conversation(s) on {_record_path(args.pr)}: {ids}")
+        print(f"bound {len(ids)} conversation(s) on PR #{args.pr}: {ids}")
         return 0
     if args.cmd == "record-build":
         record_build_session(args.pr, ts=args.ts, tokens=args.tokens, cost_usd=args.cost,
                              model=args.model, source=args.source, note=args.note)
-        print(f"recorded build session {args.ts} on {_record_path(args.pr)}")
+        print(f"recorded build session {args.ts} on PR #{args.pr}")
         return 0
     if args.cmd == "capture-build":
         rec = capture_build(
@@ -1400,13 +1420,13 @@ def main(argv: list[str] | None = None) -> int:
         mode = rec["build"].get("attribution_mode") or "unknown"
         print(f"captured {n} build session(s) from Cursor usage API [{mode}]")
         print(f"  window: {w.get('start')} → {w.get('end')}")
-        print(f"  build total ${rec['build']['cost_usd_total']:.2f} → {_record_path(args.pr)}")
+        print(f"  build total ${rec['build']['cost_usd_total']:.2f} → PR #{args.pr}")
         return 0
     if args.cmd == "capture-review":
         rec = capture_review(args.pr, repo=args.repo)
         r = rec["review"]
         print(f"captured {r['run_count']} review run(s) from PR cost comments "
-              f"(review total ${r['cost_usd_total']:.2f}) → {_record_path(args.pr)}")
+              f"(review total ${r['cost_usd_total']:.2f}) → PR #{args.pr}")
         return 0
     if args.cmd == "validate":
         ok, problems = validate(args.pr, require_build=args.require_build)
@@ -1444,6 +1464,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "sync":
         print(f"syncing cost for PR #{args.pr} …")
         sync(args.pr, repo=args.repo, report_out=args.out)
+        return 0
+    if args.cmd == "migrate-json-to-bq":
+        import glob as _g
+        paths = sorted(_g.glob(str(Path(args.dir) / "PR-*.json")))
+        if not paths:
+            print("migrate-json-to-bq: no PR-*.json files found")
+            return 0
+        records = []
+        for p in paths:
+            rec = json.loads(Path(p).read_text())
+            rec.setdefault("provisional_id", None)
+            records.append(rec)
+            print(f"  queued {Path(p).name}")
+        print(f"  uploading {len(records)} records via streaming inserts …")
+        _store.bulk_load_records(records)
+        print(f"migrate-json-to-bq: loaded {len(records)} records into BQ")
         return 0
     return 0
 

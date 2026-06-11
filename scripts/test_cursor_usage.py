@@ -361,5 +361,47 @@ class TestConversationAttribution(unittest.TestCase):
         self.assertTrue(U._model_in_conversation("claude-opus-4-8", []))
 
 
+class TestWindowFromTranscript(unittest.TestCase):
+    def test_brackets_timestamps_with_pads(self):
+        import tempfile
+        import os
+        # Two events 10 minutes apart (600_000 ms)
+        ts1 = "2026-06-10T10:00:00Z"
+        ts2 = "2026-06-10T10:10:00Z"
+        lines = [
+            json.dumps({"timestamp": ts1}),
+            json.dumps({"timestamp": ts2}),
+        ]
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write("\n".join(lines) + "\n")
+            path = f.name
+        try:
+            start_ms, end_ms = U.window_from_transcript(
+                transcript_path=path, lead_pad_min=10, tail_pad_min=5
+            )
+            t1_ms = U.to_ms(ts1)
+            t2_ms = U.to_ms(ts2)
+            self.assertEqual(start_ms, t1_ms - 10 * 60_000)
+            self.assertEqual(end_ms, t2_ms + 5 * 60_000)
+        finally:
+            os.unlink(path)
+
+    def test_raises_when_no_timestamps(self):
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write(json.dumps({"no_ts": "here"}) + "\n")
+            path = f.name
+        try:
+            with self.assertRaises(U.CursorUsageError):
+                U.window_from_transcript(transcript_path=path)
+        finally:
+            os.unlink(path)
+
+    def test_raises_when_no_conversation_id_and_no_path(self):
+        with self.assertRaises(U.CursorUsageError):
+            U.window_from_transcript()
+
+
 if __name__ == "__main__":
     unittest.main()

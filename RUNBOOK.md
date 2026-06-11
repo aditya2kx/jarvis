@@ -473,6 +473,36 @@ run the markers don't exist yet, so nothing is cleared), and the downstream re-r
 natural key, so it can never duplicate or corrupt rows. The worst case — a forced full re-scrape of an
 already-complete date — merely recomputes idempotently.
 
+### Raw-vs-model reconciliation (2026-06-09 fix)
+
+`_recover_stale_downstream_markers` only fires when a portal scrape **succeeds this run**. A pure
+retrigger (scrape SKIPped as "already covered") never triggered it, so a concurrent-execution race that
+wrote `model_daily = $0` while the rollup had real sales would survive every retrigger, leaving Grafana
+panels empty indefinitely.
+
+`daily_refresh` now runs `_detect_and_clear_stale_model` on **every** execution (including pure
+retriggers) **before Phase 2**. It queries `square_daily_rollup` vs `model_daily` over a 14-day
+window; if any date has rollup gross_sales > $1 but model_daily = $0, it clears the model-recompute
+markers (`render_raw_sheets`, `update_model_sheet`, `materialize_model_bq`, `render_model_sheet_from_bq`)
+so Phase 2 re-runs `materialize_model_bq` (a full DELETE+reload that heals all dates in one pass).
+
+After the model step, `_assert_model_matches_raw_rollup` re-queries; if drift persists it raises
+`RuntimeError` → `failure_alert` Slack DM → non-zero exit. This converts silent "$0-inside-window" drift
+into a loud same-night failure. Best-effort: BQ errors in either function log a breadcrumb and return
+`[]` — the run is never blocked.
+
+**Manual recovery** (if BQ is unavailable and auto-detect cannot fire): clear the model-recompute markers
+by hand and retrigger:
+```bash
+BHAGA_STATE_BACKEND=firestore BHAGA_SECRETS_BACKEND=gcp python3 -c "
+import sys, datetime; sys.path.insert(0,'.')
+from skills.bhaga_config import state_adapter as sa
+rd = datetime.date(2026, 6, 9)  # replace with affected date
+for step in ('render_raw_sheets','update_model_sheet','materialize_model_bq','render_model_sheet_from_bq'):
+    sa.clear_step(rd, step); print('cleared', step)"
+```
+Then retrigger the job for that date.
+
 ### Recover a partial-failure date (e.g. the 2026-05-31 Square-launch crash)
 
 Concrete runbook for "an OTP portal crashed on launch, downstream ran on stale data, `data_window_end`

@@ -455,6 +455,18 @@ _RECOVERY_DOWNSTREAM_STEPS = (
     "process_reviews",
 )
 
+# Steps that must be re-run whenever raw square_daily_rollup diverges from the
+# materialized model_daily (the 2026-06-09 incident: concurrent-execution race
+# wrote $0 to model_daily while rollup had $1,964.51; stale markers caused every
+# retrigger to short-circuit). materialize_model_bq is a full DELETE+reload, so
+# clearing it heals ALL dates in one recompute.
+_MODEL_RECOMPUTE_STEPS = (
+    "render_raw_sheets",
+    "update_model_sheet",
+    "materialize_model_bq",
+    "render_model_sheet_from_bq",
+)
+
 
 def _recover_stale_downstream_markers(
     refresh_date: datetime.date,
@@ -695,6 +707,159 @@ def _assert_data_advanced_post_condition(
             f"new rows. Inspect the square_transactions BQ table vs the "
             f"master CSV before retrying."
         )
+
+
+# ── Raw-vs-model reconciliation (2026-06-09 fix) ──────────────────────────────
+#
+# Grafana reads model_daily/model_labor_daily (materialized by materialize_model_bq).
+# In the 6/9 concurrent-execution race, materialize_model_bq ran against incomplete
+# raw and wrote model_daily Jun 9 = $0 while square_daily_rollup had $1,964.51.
+# The existing guards missed it because:
+#   - _recover_stale_downstream_markers only fires when a portal scrape SUCCEEDS
+#     this run (a pure retrigger skips scraping, so it never triggers recovery).
+#   - _assert_data_advanced_post_condition only checks the data_window_end BOUNDARY
+#     — it cannot see a $0 inside an already-advanced window.
+# These three functions add a state-driven, value-level reconciliation that runs on
+# EVERY execution (including pure retriggers) and catches the $0-inside-window class.
+
+# Minimum gross_sales (cents) that must be present in square_daily_rollup for a
+# date to count as "has real data". Configurable here; conservative $1 avoids false
+# positives from tiny refund-only or void-only days.
+_ROLLUP_MIN_SALES_FOR_DRIFT = 100  # cents (~$1)
+
+
+def _model_vs_rollup_drift(
+    refresh_date: datetime.date,
+    *,
+    lookback_days: int = 14,
+) -> list[tuple[datetime.date, float, float]]:
+    """Compare square_daily_rollup (raw) vs model_daily (materialized) for drift.
+
+    Returns [(date, rollup_gross_sales, model_gross_sales)] for every date where
+    the rollup has real sales (>= _ROLLUP_MIN_SALES_FOR_DRIFT cents) but model
+    shows $0.  Empty list = healthy.  Best-effort: any BQ error logs a breadcrumb
+    and returns [] so the caller is never blocked.
+
+    The query covers [refresh_date - lookback_days .. refresh_date] to catch cases
+    where a concurrent-execution race corrupted any day in the recent window, not
+    only the most recent day.  14 days is enough to catch the longest OTP-retry
+    cycle while keeping the query cheap (small date scan on indexed date columns).
+    """
+    try:
+        from core.datastore import get_client as _bq_get_client  # noqa: PLC0415
+        client = _bq_get_client()
+        if client is None:
+            return []
+    except Exception as exc:  # noqa: BLE001
+        print(f"[reconcile] WARN: could not get BQ client for drift check: {exc}",
+              file=sys.stderr)
+        return []
+
+    window_start = (refresh_date - datetime.timedelta(days=lookback_days)).isoformat()
+    window_end = refresh_date.isoformat()
+    query = f"""
+        SELECT
+            r.date_local AS date,
+            SUM(r.gross_sales_cents) AS rollup_gross_cents,
+            COALESCE(SUM(m.gross_sales), 0.0)  AS model_gross_sales
+        FROM `jarvis-bhaga-prod.bhaga.square_daily_rollup` r
+        LEFT JOIN `jarvis-bhaga-prod.bhaga.model_daily` m
+          ON m.date = r.date_local
+        WHERE r.date_local BETWEEN '{window_start}' AND '{window_end}'
+        GROUP BY r.date_local
+        HAVING SUM(r.gross_sales_cents) >= {_ROLLUP_MIN_SALES_FOR_DRIFT}
+           AND COALESCE(SUM(m.gross_sales), 0.0) = 0
+        ORDER BY r.date_local
+    """
+    try:
+        rows = list(client.query(query).result())
+        return [
+            (
+                row["date"],
+                float(row["rollup_gross_cents"]) / 100.0,
+                float(row["model_gross_sales"]),
+            )
+            for row in rows
+        ]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[reconcile] WARN: drift query failed (non-fatal): {exc}",
+              file=sys.stderr)
+        return []
+
+
+def _detect_and_clear_stale_model(
+    refresh_date: datetime.date,
+    *,
+    dry_run: bool,
+) -> list[str]:
+    """Auto-clear model-recompute markers when raw rollup diverges from model_daily.
+
+    Trigger: square_daily_rollup has sales for a date but model_daily shows $0
+    — indicating the model was materialized against incomplete raw (the 6/9
+    concurrent-execution race pattern).  On detection, clears _MODEL_RECOMPUTE_STEPS
+    via the sanctioned clear_step_done so the next phase re-runs materialize_model_bq
+    (which is a full DELETE+reload, healing ALL dates in one pass).
+
+    Runs EVERY execution (including pure retriggers where the scrape was skipped),
+    unlike _recover_stale_downstream_markers which only fires on a fresh scrape
+    success.  Returns cleared step names ([] on dry_run, healthy, or BQ error).
+    """
+    if dry_run:
+        return []
+    drifted = _model_vs_rollup_drift(refresh_date)
+    if not drifted:
+        return []
+    dates_str = ", ".join(str(d) for d, _, _ in drifted)
+    sales_str = ", ".join(
+        f"{d}: rollup=${rs:.2f} model=${ms:.2f}"
+        for d, rs, ms in drifted
+    )
+    print(
+        f"[reconcile] RAW-VS-MODEL DRIFT detected for refresh_date="
+        f"{refresh_date.isoformat()} — {len(drifted)} date(s) with rollup sales "
+        f"but model=$0: {dates_str}. Clearing model-recompute markers so "
+        f"materialize_model_bq re-runs on correct raw data. Details: {sales_str}",
+        file=sys.stderr,
+    )
+    cleared: list[str] = []
+    for step in _MODEL_RECOMPUTE_STEPS:
+        if step_already_done(refresh_date, step):
+            try:
+                clear_step_done(refresh_date, step)
+                cleared.append(step)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[reconcile] WARN: could not clear marker {step}: {exc}",
+                      file=sys.stderr)
+    if cleared:
+        print(f"[reconcile] cleared markers {cleared} — model will recompute.")
+    return cleared
+
+
+def _assert_model_matches_raw_rollup(refresh_date: datetime.date) -> None:
+    """Post-condition guard: raise RuntimeError if model_daily still has $0 days
+    where square_daily_rollup has real sales, after the model step ran.
+
+    Called after materialize_model_bq / update_model_sheet completes.  A residual
+    drift at this point means the model step completed but still wrote zeroes —
+    a harder failure requiring operator inspection.  Raises RuntimeError (which the
+    caller converts into a failure_alert + pipeline halt).  Best-effort BQ errors
+    are non-fatal (log and return) to avoid masking the main run result.
+    """
+    drifted = _model_vs_rollup_drift(refresh_date)
+    if not drifted:
+        return
+    dates_str = ", ".join(str(d) for d, _, _ in drifted)
+    sales_str = ", ".join(
+        f"{d}: rollup=${rs:.2f} model=${ms:.2f}"
+        for d, rs, ms in drifted
+    )
+    raise RuntimeError(
+        f"raw-vs-model drift post-condition: {len(drifted)} date(s) still show "
+        f"model_daily gross_sales=$0 despite square_daily_rollup having real sales "
+        f"after model recompute: {sales_str}. Dates: {dates_str}. "
+        f"Inspect materialize_model_bq output and square_transactions BQ for "
+        f"refresh_date={refresh_date.isoformat()}."
+    )
 
 
 # ── Model-sheet verification (built into the pipeline) ─────────────
@@ -2143,6 +2308,12 @@ def main() -> int:
     # post-condition guard below verifies data_window_end actually advanced).
     _recover_stale_downstream_markers(refresh_date, results, dry_run=args.dry_run)
 
+    # State-driven raw-vs-model reconciliation: runs on EVERY execution (including
+    # pure retriggers where the scrape was skipped). Catches the $0-inside-window
+    # class that _recover_stale_downstream_markers misses because that function only
+    # fires on a fresh scrape success (2026-06-09 incident).
+    _detect_and_clear_stale_model(refresh_date, dry_run=args.dry_run)
+
     # ════════════════════════════════════════════════════════════════════
     # Phase 2: SEQUENTIAL downstream — write raw sheets, update model,
     # then attribution-phase of process_reviews.
@@ -2491,6 +2662,37 @@ def main() -> int:
         except Exception:  # noqa: BLE001, S110
             pass
         return 1
+
+    # ── Value-level raw-vs-model post-condition guard ───────────────────────────
+    # Complements _assert_data_advanced_post_condition (boundary check) by checking
+    # per-day values: if any date has rollup gross_sales > 0 but model_daily = $0
+    # AFTER the model step ran, something wrote zeroes and completed — a harder
+    # failure than the window not advancing. Best-effort: BQ errors are non-fatal
+    # inside _assert_model_matches_raw_rollup; a RuntimeError from drift is treated
+    # identically to the boundary-post-condition failure above.
+    if update_model_ran and not args.dry_run:
+        try:
+            _assert_model_matches_raw_rollup(refresh_date)
+        except RuntimeError as exc:
+            print(f"\n!!! RAW-VS-MODEL POST-CONDITION FAILED: {exc}", file=sys.stderr)
+            ev_uri = _record_failure(refresh_date, "raw_vs_model_guard", exc)
+            try:
+                failure_alert(
+                    step="raw_vs_model_guard",
+                    exception=exc,
+                    date=refresh_date.isoformat(),
+                    evidence_uri=ev_uri,
+                    extra=(
+                        "materialize_model_bq completed but model_daily still shows "
+                        "$0 for date(s) where square_daily_rollup has real sales. "
+                        "This is the 2026-06-09 concurrent-execution class: the model "
+                        "was computed from incomplete raw. Inspect square_transactions "
+                        "BQ raw vs model_daily and re-run after verifying raw is complete."
+                    ),
+                )
+            except Exception:  # noqa: BLE001, S110
+                pass
+            return 1
 
     # ── Model-sheet verification (built into the pipeline) ─────────
     # Runs on EVERY execution that actually rebuilt the model. Reads the

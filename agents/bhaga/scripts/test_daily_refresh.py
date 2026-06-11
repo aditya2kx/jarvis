@@ -45,6 +45,10 @@ from agents.bhaga.scripts import daily_refresh
 from agents.bhaga.scripts.daily_refresh import (
     CT,
     _SHOP_CLOSE_BUFFER_HOUR_CT,
+    _MODEL_RECOMPUTE_STEPS,
+    _assert_model_matches_raw_rollup,
+    _detect_and_clear_stale_model,
+    _model_vs_rollup_drift,
     _recover_stale_downstream_markers,
     _run_state_dir,
     clear_step_done,
@@ -812,6 +816,144 @@ class ProcessReviewsUntilArgTests(unittest.TestCase):
         self.assertIn("--until", review_cmd)
         idx = review_cmd.index("--until")
         self.assertEqual(review_cmd[idx + 1], "2026-06-04")
+
+
+class ModelVsRollupDriftTests(unittest.TestCase):
+    """Tests for _model_vs_rollup_drift, _detect_and_clear_stale_model, and
+    _assert_model_matches_raw_rollup.
+
+    The 2026-06-09 incident: concurrent-execution race wrote model_daily Jun 9 = $0
+    while square_daily_rollup had $1,964.51.  All three helpers are mocked at the
+    BQ level so tests run offline."""
+
+    RD = datetime.date(2026, 6, 9)
+
+    # ── _model_vs_rollup_drift ─────────────────────────────────────────────────
+
+    def _patch_drift(self, rows):
+        """Patch core.datastore.get_client so the drift query returns `rows`."""
+        # BQ rows support dict-style access; use plain dicts to replicate that.
+        fake_result = [
+            {"date": date, "rollup_gross_cents": rollup_cents, "model_gross_sales": model}
+            for date, rollup_cents, model in rows
+        ]
+        fake_job = mock.MagicMock()
+        fake_job.result.return_value = fake_result
+        fake_client = mock.MagicMock()
+        fake_client.query.return_value = fake_job
+        return mock.patch("core.datastore.get_client", return_value=fake_client)
+
+    def test_drift_detected_returns_tuples(self):
+        with self._patch_drift([(self.RD, 196451, 0.0)]):
+            result = _model_vs_rollup_drift(self.RD, lookback_days=1)
+        self.assertEqual(len(result), 1)
+        date, rollup, model = result[0]
+        self.assertEqual(date, self.RD)
+        self.assertAlmostEqual(rollup, 1964.51)
+        self.assertEqual(model, 0.0)
+
+    def test_healthy_returns_empty(self):
+        with self._patch_drift([]):
+            result = _model_vs_rollup_drift(self.RD)
+        self.assertEqual(result, [])
+
+    def test_bq_client_unavailable_returns_empty(self):
+        with mock.patch("core.datastore.get_client", return_value=None):
+            result = _model_vs_rollup_drift(self.RD)
+        self.assertEqual(result, [])
+
+    def test_bq_query_error_returns_empty(self):
+        fake_client = mock.MagicMock()
+        fake_client.query.side_effect = RuntimeError("BQ quota exceeded")
+        with mock.patch("core.datastore.get_client", return_value=fake_client):
+            result = _model_vs_rollup_drift(self.RD)
+        self.assertEqual(result, [])
+
+    def test_bq_import_error_returns_empty(self):
+        with mock.patch("core.datastore.get_client", side_effect=ImportError("no module")):
+            result = _model_vs_rollup_drift(self.RD)
+        self.assertEqual(result, [])
+
+    # ── _detect_and_clear_stale_model ─────────────────────────────────────────
+
+    def _seed_model_markers(self, rd):
+        for step in _MODEL_RECOMPUTE_STEPS:
+            mark_step_done(rd, step)
+
+    def test_drift_clears_model_markers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                self._seed_model_markers(self.RD)
+                with self._patch_drift([(self.RD, 196451, 0.0)]):
+                    cleared = _detect_and_clear_stale_model(self.RD, dry_run=False)
+                self.assertEqual(set(cleared), set(_MODEL_RECOMPUTE_STEPS))
+                for step in _MODEL_RECOMPUTE_STEPS:
+                    self.assertFalse(step_already_done(self.RD, step))
+
+    def test_healthy_is_noop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                self._seed_model_markers(self.RD)
+                with self._patch_drift([]):
+                    cleared = _detect_and_clear_stale_model(self.RD, dry_run=False)
+                self.assertEqual(cleared, [])
+                for step in _MODEL_RECOMPUTE_STEPS:
+                    self.assertTrue(step_already_done(self.RD, step))
+
+    def test_dry_run_is_noop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                self._seed_model_markers(self.RD)
+                with self._patch_drift([(self.RD, 196451, 0.0)]):
+                    cleared = _detect_and_clear_stale_model(self.RD, dry_run=True)
+                self.assertEqual(cleared, [])
+                for step in _MODEL_RECOMPUTE_STEPS:
+                    self.assertTrue(step_already_done(self.RD, step))
+
+    def test_bq_error_is_noop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                self._seed_model_markers(self.RD)
+                fake_client = mock.MagicMock()
+                fake_client.query.side_effect = RuntimeError("BQ down")
+                with mock.patch("core.datastore.get_client", return_value=fake_client):
+                    cleared = _detect_and_clear_stale_model(self.RD, dry_run=False)
+                self.assertEqual(cleared, [])
+                for step in _MODEL_RECOMPUTE_STEPS:
+                    self.assertTrue(step_already_done(self.RD, step))
+
+    def test_materialize_model_bq_in_recompute_steps(self):
+        """Regression guard: the constant must include materialize_model_bq
+        (the 2026-06-09 incident root cause) so the list never silently drifts."""
+        self.assertIn("materialize_model_bq", _MODEL_RECOMPUTE_STEPS)
+
+    def test_render_model_sheet_from_bq_in_recompute_steps(self):
+        """render_model_sheet_from_bq must also be included so Grafana/Sheet refresh."""
+        self.assertIn("render_model_sheet_from_bq", _MODEL_RECOMPUTE_STEPS)
+
+    # ── _assert_model_matches_raw_rollup ──────────────────────────────────────
+
+    def test_postcondition_passes_when_healthy(self):
+        with self._patch_drift([]):
+            _assert_model_matches_raw_rollup(self.RD)  # must not raise
+
+    def test_postcondition_raises_on_residual_drift(self):
+        with self._patch_drift([(self.RD, 196451, 0.0)]):
+            with self.assertRaises(RuntimeError) as cm:
+                _assert_model_matches_raw_rollup(self.RD)
+        self.assertIn("raw-vs-model drift post-condition", str(cm.exception))
+        self.assertIn("$0", str(cm.exception))
+
+    def test_postcondition_bq_error_does_not_raise(self):
+        """A BQ error inside the post-condition must not mask the run result."""
+        fake_client = mock.MagicMock()
+        fake_client.query.side_effect = RuntimeError("timeout")
+        with mock.patch("core.datastore.get_client", return_value=fake_client):
+            _assert_model_matches_raw_rollup(self.RD)  # must not raise
 
 
 if __name__ == "__main__":

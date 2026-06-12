@@ -1,5 +1,36 @@
 # Jarvis Build Progress
 
+## 2026-06-12 — BHAGA Analytics: Pipeline Health v2 fix — run_id idempotency + test-leak patch (migration 018)
+
+**What changed:** Closed two correctness gaps discovered after the two-table design landed.
+
+- **Bug: test pollution of prod `pipeline_runs`.** Root cause: `test_status.py` runs `os.environ.setdefault("BHAGA_DATASTORE", "bigquery")` at import (process-wide); subsequent tests calling `daily_refresh.main()` triggered the recorder's env gate, writing 8 junk rows (sentinel errors like `_StopAfterGate`, fixture date `2026-05-20`) to prod. Fix: `agents/bhaga/scripts/conftest.py` — `autouse` fixture `_stub_pipeline_recorder` monkeypatches `_record_pipeline_run` to a no-op for all tests *except* `test_pipeline_runs_recorder` (which mocks `load_rows` itself). All 8 junk rows deleted from prod.
+- **Feature: `run_id` idempotency (migration 018).** `daily_refresh.main()` now generates a UUID4 hex `run_id` at startup and passes it to `_record_pipeline_run()`. The recorder uses `load_rows(..., merge_keys=["run_id"])` for `pipeline_runs` and `merge_keys=["run_id", "source"]` for `source_pulls` — MERGE semantics so recorder retries converge rather than duplicate. Distinct nightly retry invocations keep distinct `run_id`s and remain separate rows by design. Migration 018 adds `run_id STRING` to both tables and recreates the views to expose the column.
+- **Enforcement: `plan-execution-readiness` rule now `alwaysApply: true`.** Previously the rule was description-only and had to be manually invoked. Frontmatter updated so the checklist is always present in session context.
+- **Tests:** 1 new test class (`TestMainRunId`) with `test_main_generates_unique_run_id`; merge_keys assertions added to `test_source_pulls_rows_written`. Full suite: 753 passed, 0 failed.
+- **Leak regression:** Ran the exact test combo that was leaking (`test_status + test_daily_refresh + test_daily_refresh_otp_gate + test_pipeline_runs_recorder`); `pipeline_runs` count stays 0 after a green run.
+
+## 2026-06-12 — BHAGA Analytics: Pipeline Health v2 — two-table design (dashboard v38, migration 017)
+
+**What changed:** Replaced the six stat panels in the "0. Pipeline Health" row with two side-by-side history tables (dashboard v37→v38).
+
+- **BQ schema (migration 017):** New `source_pulls` table (one appended row per per-source pull attempt — `square`/`adp`/`google_reviews` — with start/end timestamps, status, and error). New `vw_pipeline_runs` view (last 30 run outcomes from `pipeline_runs`, ordered by `recorded_at_utc DESC`). New `vw_source_pulls` view (last 50 pull attempts from `source_pulls`, ordered by `started_at_utc DESC`). Dropped `vw_pipeline_health` (replaced by the two new views).
+- **`daily_refresh.py`:** `PipelineResult` dataclass gets `started_at_utc`/`finished_at_utc` fields. `_capture()` in `_execute_pipelines` stamps both timestamps on every pipeline run (success and exception paths). The phase-1 results collection loop appends a pull record per source to `_RUN_SUMMARY["source_pulls"]` (mapping `review_fetch` → `google_reviews`). `_record_pipeline_run()` now also inserts the source_pulls rows alongside the pipeline_runs row, still inside the same best-effort try/except.
+- **Dashboard v38:** Stat panels 2–7 removed; two `table` panels inserted at y=1 (Pipeline Runs w=12 left, Data Source Pulls w=12 right); all panels at y≥5 shifted y+=5; both tables have exact-fit column widths and status colour mappings.
+- **`status.py`:** Replaced `Target("vw_pipeline_health", "run_date")` with `Target("vw_pipeline_runs", "run_date")` and `Target("vw_source_pulls", "run_date")`.
+- **Tests:** 7 new scenarios in `test_pipeline_runs_recorder.py` (TestSourcePulls class). Full suite: 752 passed.
+- **Docs:** RUNBOOK §14 "Pipeline Health row" updated to two-table design; `agents/bhaga/scripts/README.md` updated; PROGRESS.md entry added.
+
+## 2026-06-12 — BHAGA Analytics: Pipeline Health row + exact-fit tables + KDS date default (branch feat/bhaga-dashboard-pipeline-health)
+
+**What changed:** Added a "0. Pipeline Health" top row to the BHAGA Analytics Grafana dashboard (v36→v37).
+
+- **BQ schema (migration 016):** New `pipeline_runs` table (one appended row per `daily_refresh` terminal outcome: `success`/`failed`/`halted`/`otp_pending`) and `vw_pipeline_health` single-row view joining the latest run outcome with per-source scrape timestamps from raw tables.
+- **`daily_refresh.py`:** Public `main()` is now a thin wrapper around `_run_refresh()`; the `finally` block calls `_record_pipeline_run()` (best-effort, BQ-gated) to append the outcome row. `_RUN_SUMMARY` is populated at four sites: after arg parsing, in `_record_failure()` (captures all step/guard failures), before the OTP-pending return, and before the phase-failure return.
+- **Dashboard v37:** Six stat panels at y=1 (Last Run CT, Run Status with colour mapping, Failed Step, Square/ADP/Google Reviews last pull dates); all existing panels shifted y+=5. Column widths set to exact-fit px on all four table panels (52/61/71/73); one free-text column per table left unset to absorb remaining width. KDS: Order Date picker now defaults to the most recent successfully-completed run date (falls back to latest KDS date if no recorded run).
+- **`status.py`:** `vw_pipeline_health` added to `GRAFANA_VIEWS` registry.
+- **Docs:** RUNBOOK §14 "Pipeline Health row" subsection added; `agents/bhaga/scripts/README.md` updated; `CONTRIBUTING.md` step 2 codified to require plan-execution-readiness for every plan.
+
 ## 2026-06-12 — WA: Square API migration ABANDONED (account blocker) + WC: Grafana dashboard refactor (PR #51)
 
 **WA (Square API migration) — abandoned, reverted from the PR. Scrape remains the Square path.**

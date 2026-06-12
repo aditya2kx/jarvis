@@ -1,10 +1,10 @@
 {
   "uid": "bhaga-analytics-v1",
   "title": "BHAGA Analytics",
-  "description": "5-section dashboard: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll. Powered by BQ views from migrations 004 + 005.",
+  "description": "8-section dashboard: Pipeline Health (top), Daily Sales, Weekly Sales, Labor (daily+weekly), Order Quality, Payroll, Labor Forecast. Powered by BQ views from migrations 004+005+016.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 36,
+  "version": 39,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {
@@ -44,11 +44,11 @@
           "type": "grafana-bigquery-datasource",
           "uid": "${ds_bigquery}"
         },
-        "definition": "SELECT CAST(date_local AS STRING) AS value FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` GROUP BY date_local ORDER BY date_local DESC",
+        "definition": "SELECT CAST(date_local AS STRING) AS value\nFROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation`\nGROUP BY date_local\nORDER BY (date_local = (\n  SELECT COALESCE(\n    (SELECT MAX(run_date) FROM `jarvis-bhaga-prod.bhaga.pipeline_runs` WHERE status = 'success'),\n    (SELECT MAX(date_local) FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation`)\n  )\n)) DESC, date_local DESC",
         "query": {
           "editorMode": "code",
           "format": "table",
-          "rawSql": "SELECT CAST(date_local AS STRING) AS value FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` GROUP BY date_local ORDER BY date_local DESC",
+          "rawSql": "SELECT CAST(date_local AS STRING) AS value\nFROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation`\nGROUP BY date_local\nORDER BY (date_local = (\n  SELECT COALESCE(\n    (SELECT MAX(run_date) FROM `jarvis-bhaga-prod.bhaga.pipeline_runs` WHERE status = 'success'),\n    (SELECT MAX(date_local) FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation`)\n  )\n)) DESC, date_local DESC",
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
           "location": "US"
@@ -57,12 +57,12 @@
         "refresh": 1,
         "includeAll": false,
         "current": {
-          "text": "2026-06-09",
-          "value": "2026-06-09"
+          "text": "",
+          "value": ""
         },
         "options": [],
         "hide": 0,
-        "description": "Order date shown in the Order KDS Times table; defaults to the most recent date. Pick another date from the dropdown to investigate that day."
+        "description": "Order date shown in the Order KDS Times table. Defaults to the most recent completed incremental run date. Pick another date from the dropdown to inspect a specific day."
       },
       {
         "name": "kds_min_per_item",
@@ -146,6 +146,310 @@
   },
   "panels": [
     {
+      "id": 1,
+      "type": "row",
+      "title": "0. Pipeline Health",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Pipeline Runs",
+      "description": "Last 30 nightly daily_refresh outcomes, newest first. Status: success | failed | halted | otp_pending. Failed Step / Error populated only on failure. Times are America/Chicago.",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "options": {
+        "sortBy": [
+          {
+            "displayName": "Run Time (CT)",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "run_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Run ID"
+              },
+              {
+                "id": "custom.width",
+                "value": 270
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "run_time_ct"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Run Time (CT)"
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Status"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "success": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "failed": {
+                        "color": "red",
+                        "index": 1
+                      },
+                      "halted": {
+                        "color": "red",
+                        "index": 2
+                      },
+                      "otp_pending": {
+                        "color": "yellow",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failed_step"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Failed Step"
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Error"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "rawSql": "SELECT run_id, FORMAT_TIMESTAMP('%Y-%m-%d %H:%M', started_at_utc, 'America/Chicago') AS run_time_ct, status, COALESCE(failed_step, '') AS failed_step, COALESCE(error, '') AS error FROM `jarvis-bhaga-prod.bhaga.vw_pipeline_runs` ORDER BY started_at_utc DESC"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Data Source Pulls",
+      "description": "Last 50 per-source pull attempts (square / adp / google_reviews), newest first. Only attempted pulls are recorded \u2014 sources skipped via step markers or --skip flags do not appear. Times are America/Chicago.",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "options": {
+        "sortBy": [
+          {
+            "displayName": "Pull Time (CT)",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "run_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Run ID"
+              },
+              {
+                "id": "custom.width",
+                "value": 270
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "source"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Source"
+              },
+              {
+                "id": "custom.width",
+                "value": 130
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pull_time_ct"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Pull Time (CT)"
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Status"
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "success": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "failed": {
+                        "color": "red",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Error"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "rawSql": "SELECT run_id, source, FORMAT_TIMESTAMP('%Y-%m-%d %H:%M', started_at_utc, 'America/Chicago') AS pull_time_ct, status, COALESCE(error, '') AS error FROM `jarvis-bhaga-prod.bhaga.vw_source_pulls` ORDER BY started_at_utc DESC"
+        }
+      ]
+    },
+    {
       "id": 10,
       "type": "row",
       "title": "1. Daily Sales Overview",
@@ -154,7 +458,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 10
       }
     },
     {
@@ -169,7 +473,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 1
+        "y": 11
       },
       "options": {
         "tooltip": {
@@ -242,7 +546,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 10
+        "y": 20
       }
     },
     {
@@ -258,7 +562,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 11
+        "y": 21
       },
       "options": {
         "xField": "Week",
@@ -320,7 +624,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 20
+        "y": 30
       }
     },
     {
@@ -335,7 +639,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 21
+        "y": 31
       },
       "options": {
         "tooltip": {
@@ -375,7 +679,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 30
+        "y": 40
       },
       "options": {
         "tooltip": {
@@ -441,7 +745,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 30
+        "y": 40
       },
       "options": {
         "tooltip": {
@@ -503,7 +807,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 39
+        "y": 49
       }
     },
     {
@@ -519,7 +823,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 40
+        "y": 50
       },
       "options": {
         "tooltip": {
@@ -573,7 +877,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 49
+        "y": 59
       },
       "options": {
         "tooltip": {
@@ -649,7 +953,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 49
+        "y": 59
       },
       "options": {
         "tooltip": {
@@ -721,7 +1025,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 58
+        "y": 68
       }
     },
     {
@@ -737,7 +1041,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 59
+        "y": 69
       },
       "options": {
         "tooltip": {
@@ -803,7 +1107,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 68
+        "y": 78
       },
       "options": {
         "sortBy": [
@@ -829,6 +1133,10 @@
               {
                 "id": "displayName",
                 "value": "Date"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
               }
             ]
           },
@@ -841,6 +1149,10 @@
               {
                 "id": "displayName",
                 "value": "Order"
+              },
+              {
+                "id": "custom.width",
+                "value": 150
               }
             ]
           },
@@ -853,6 +1165,10 @@
               {
                 "id": "displayName",
                 "value": "Source"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
               }
             ]
           },
@@ -865,6 +1181,10 @@
               {
                 "id": "displayName",
                 "value": "Start"
+              },
+              {
+                "id": "custom.width",
+                "value": 90
               }
             ]
           },
@@ -877,6 +1197,10 @@
               {
                 "id": "displayName",
                 "value": "End"
+              },
+              {
+                "id": "custom.width",
+                "value": 90
               }
             ]
           },
@@ -889,6 +1213,10 @@
               {
                 "id": "displayName",
                 "value": "Items"
+              },
+              {
+                "id": "custom.width",
+                "value": 80
               }
             ]
           },
@@ -905,6 +1233,10 @@
               {
                 "id": "unit",
                 "value": "suffix: min"
+              },
+              {
+                "id": "custom.width",
+                "value": 95
               }
             ]
           },
@@ -925,6 +1257,10 @@
               {
                 "id": "decimals",
                 "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 95
               }
             ]
           },
@@ -973,7 +1309,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 80
+        "y": 90
       }
     },
     {
@@ -989,7 +1325,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 81
+        "y": 91
       },
       "options": {
         "sortBy": [
@@ -1015,6 +1351,10 @@
               {
                 "id": "displayName",
                 "value": "Period Start"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
               }
             ]
           },
@@ -1027,6 +1367,10 @@
               {
                 "id": "displayName",
                 "value": "Period End"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
               }
             ]
           },
@@ -1039,6 +1383,10 @@
               {
                 "id": "displayName",
                 "value": "Employee"
+              },
+              {
+                "id": "custom.width",
+                "value": 160
               }
             ]
           },
@@ -1059,6 +1407,10 @@
               {
                 "id": "decimals",
                 "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 95
               }
             ]
           },
@@ -1075,6 +1427,10 @@
               {
                 "id": "unit",
                 "value": "currencyUSD"
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1091,6 +1447,10 @@
               {
                 "id": "unit",
                 "value": "currencyUSD"
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1107,6 +1467,10 @@
               {
                 "id": "unit",
                 "value": "currencyUSD"
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1123,6 +1487,10 @@
               {
                 "id": "unit",
                 "value": "currencyUSD"
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1139,6 +1507,10 @@
               {
                 "id": "unit",
                 "value": "currencyUSD"
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1155,6 +1527,10 @@
               {
                 "id": "unit",
                 "value": "currencyUSD"
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1171,6 +1547,10 @@
               {
                 "id": "unit",
                 "value": "currencyUSD"
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1187,6 +1567,10 @@
               {
                 "id": "unit",
                 "value": "currencyUSD"
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1203,6 +1587,10 @@
               {
                 "id": "unit",
                 "value": "currencyUSD"
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1219,6 +1607,10 @@
               {
                 "id": "unit",
                 "value": "currencyUSD"
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1235,6 +1627,10 @@
               {
                 "id": "unit",
                 "value": "currencyUSD"
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1275,7 +1671,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 93
+        "y": 103
       }
     },
     {
@@ -1291,7 +1687,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 94
+        "y": 104
       },
       "options": {
         "sortBy": [
@@ -1317,6 +1713,10 @@
               {
                 "id": "displayName",
                 "value": "Date"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
               }
             ]
           },
@@ -1329,6 +1729,10 @@
               {
                 "id": "displayName",
                 "value": "Day"
+              },
+              {
+                "id": "custom.width",
+                "value": 70
               }
             ]
           },
@@ -1345,6 +1749,10 @@
               {
                 "id": "decimals",
                 "value": 0
+              },
+              {
+                "id": "custom.width",
+                "value": 80
               }
             ]
           },
@@ -1361,6 +1769,10 @@
               {
                 "id": "decimals",
                 "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 95
               }
             ]
           },
@@ -1377,6 +1789,10 @@
               {
                 "id": "decimals",
                 "value": 0
+              },
+              {
+                "id": "custom.width",
+                "value": 80
               }
             ]
           },
@@ -1393,6 +1809,10 @@
               {
                 "id": "decimals",
                 "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 95
               }
             ]
           },
@@ -1413,6 +1833,10 @@
               {
                 "id": "decimals",
                 "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 100
               }
             ]
           },
@@ -1433,6 +1857,10 @@
               {
                 "id": "decimals",
                 "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 100
               }
             ]
           },
@@ -1453,6 +1881,10 @@
               {
                 "id": "decimals",
                 "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 95
               }
             ]
           },
@@ -1473,6 +1905,10 @@
               {
                 "id": "decimals",
                 "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 95
               }
             ]
           },
@@ -1541,7 +1977,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 106
+        "y": 116
       },
       "options": {
         "tooltip": {
@@ -1601,7 +2037,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 106
+        "y": 116
       },
       "options": {
         "tooltip": {
@@ -1661,7 +2097,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 115
+        "y": 125
       },
       "options": {
         "sortBy": [
@@ -1687,6 +2123,10 @@
               {
                 "id": "displayName",
                 "value": "Date"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
               }
             ]
           },
@@ -1699,6 +2139,10 @@
               {
                 "id": "displayName",
                 "value": "DOW"
+              },
+              {
+                "id": "custom.width",
+                "value": 70
               }
             ]
           },
@@ -1711,6 +2155,10 @@
               {
                 "id": "displayName",
                 "value": "Orders"
+              },
+              {
+                "id": "custom.width",
+                "value": 80
               }
             ]
           },
@@ -1723,6 +2171,10 @@
               {
                 "id": "displayName",
                 "value": "Excluded"
+              },
+              {
+                "id": "custom.width",
+                "value": 85
               }
             ]
           },
@@ -1759,6 +2211,10 @@
               {
                 "id": "displayName",
                 "value": "Prev Wk Orders"
+              },
+              {
+                "id": "custom.width",
+                "value": 80
               }
             ]
           },
@@ -1801,6 +2257,10 @@
                     }
                   ]
                 }
+              },
+              {
+                "id": "custom.width",
+                "value": 100
               }
             ]
           },
@@ -1813,6 +2273,10 @@
               {
                 "id": "displayName",
                 "value": "Items"
+              },
+              {
+                "id": "custom.width",
+                "value": 80
               }
             ]
           },
@@ -1825,6 +2289,10 @@
               {
                 "id": "displayName",
                 "value": "Prev Wk Items"
+              },
+              {
+                "id": "custom.width",
+                "value": 80
               }
             ]
           },
@@ -1841,6 +2309,10 @@
               {
                 "id": "unit",
                 "value": "percentunit"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
               }
             ]
           },
@@ -1861,6 +2333,10 @@
               {
                 "id": "decimals",
                 "value": 0
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1881,6 +2357,10 @@
               {
                 "id": "decimals",
                 "value": 0
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1901,6 +2381,10 @@
               {
                 "id": "decimals",
                 "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 100
               }
             ]
           },
@@ -1921,6 +2405,10 @@
               {
                 "id": "decimals",
                 "value": 2
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           },
@@ -1941,6 +2429,10 @@
               {
                 "id": "decimals",
                 "value": 2
+              },
+              {
+                "id": "custom.width",
+                "value": 105
               }
             ]
           }

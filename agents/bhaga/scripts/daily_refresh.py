@@ -81,6 +81,7 @@ import time
 import traceback
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
@@ -350,6 +351,7 @@ def _record_failure(
     it into the Slack failure DM. Never raises — observability must not mask the
     real exception.
     """
+    _RUN_SUMMARY.setdefault("failed_step", step_name)
     ev_uri: str | None = None
     try:
         ev_uri = evidence_prefix(refresh_date)
@@ -1339,6 +1341,8 @@ class PipelineResult:
     error: Exception | None = None
     artifacts: dict[str, pathlib.Path | None] = field(default_factory=dict)
     master_stats: dict[str, int] = field(default_factory=dict)
+    started_at_utc: datetime.datetime | None = None
+    finished_at_utc: datetime.datetime | None = None
 
 
 def _run_square_pipeline(
@@ -1695,13 +1699,16 @@ def _execute_pipelines(
     results: dict = {}
 
     def _capture(name: str, fn):
+        started = datetime.datetime.now(datetime.timezone.utc)
         try:
-            return fn()
+            pr = fn()
         except Exception as exc:  # noqa: BLE001
             pr = PipelineResult(name=name)
             pr.success = False
             pr.error = exc
-            return pr
+        pr.started_at_utc = started
+        pr.finished_at_utc = datetime.datetime.now(datetime.timezone.utc)
+        return pr
 
     otp_names = [n for n in ("square", "adp") if n in specs]
     if serialize_otp and len(otp_names) > 1:
@@ -1787,7 +1794,79 @@ def run_step(
         return False, exc
 
 
+_RUN_SUMMARY: dict = {}  # populated by _run_refresh(); read by main()'s recorder
+
+
+def _record_pipeline_run(*, started_at_utc, exit_code, run_id, error=None) -> None:
+    """Upsert tonight's terminal outcome to BQ pipeline_runs + source_pulls.
+    Best-effort: gated on BHAGA_DATASTORE=bigquery, skipped on --dry-run, never raises.
+    Uses MERGE (merge_keys) so re-records from a retry converge rather than duplicate."""
+    if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":
+        return
+    if _RUN_SUMMARY.get("dry_run"):
+        return
+    refresh_date = _RUN_SUMMARY.get("refresh_date")
+    if refresh_date is None:  # died before arg parsing finished
+        return
+    try:
+        from core.datastore import load_rows  # noqa: PLC0415
+        finished = datetime.datetime.now(datetime.timezone.utc)
+        status = _RUN_SUMMARY.get("status_override") or {
+            0: "success", EXIT_HALTED: "halted"}.get(exit_code, "failed")
+        load_rows("pipeline_runs", [{
+            "run_id": run_id,
+            "run_date": refresh_date.isoformat(),
+            "store": _RUN_SUMMARY.get("store"),
+            "started_at_utc": started_at_utc.isoformat(),
+            "finished_at_utc": finished.isoformat(),
+            "runtime_s": (finished - started_at_utc).total_seconds(),
+            "status": status,
+            "failed_step": _RUN_SUMMARY.get("failed_step"),
+            "error": error or _RUN_SUMMARY.get("error"),
+            "exit_code": exit_code,
+            "recorded_at_utc": finished.isoformat(),
+        }], merge_keys=["run_id"], column_bq_types={
+            "started_at_utc": "TIMESTAMP", "finished_at_utc": "TIMESTAMP",
+            "recorded_at_utc": "TIMESTAMP", "run_date": "DATE",
+        })
+        pulls = _RUN_SUMMARY.get("source_pulls") or []
+        if pulls:
+            load_rows("source_pulls", [{
+                "run_id": run_id,
+                "run_date": refresh_date.isoformat(),
+                "store": _RUN_SUMMARY.get("store"),
+                "source": p["source"],
+                "started_at_utc": p["started_at_utc"].isoformat() if p["started_at_utc"] else None,
+                "finished_at_utc": p["finished_at_utc"].isoformat() if p["finished_at_utc"] else None,
+                "status": p["status"],
+                "error": p["error"],
+                "recorded_at_utc": finished.isoformat(),
+            } for p in pulls], merge_keys=["run_id", "source"], column_bq_types={
+                "started_at_utc": "TIMESTAMP", "finished_at_utc": "TIMESTAMP",
+                "recorded_at_utc": "TIMESTAMP", "run_date": "DATE",
+            })
+    except Exception as exc:  # noqa: BLE001
+        print(f"[pipeline_runs] WARN: could not record run outcome: {exc}",
+              file=sys.stderr)
+
+
 def main() -> int:
+    started = datetime.datetime.now(datetime.timezone.utc)
+    run_id = uuid.uuid4().hex
+    rc = 1
+    err: str | None = None
+    try:
+        rc = _run_refresh()
+        return rc
+    except BaseException as exc:
+        err = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        _record_pipeline_run(started_at_utc=started, exit_code=rc,
+                             run_id=run_id, error=err)
+
+
+def _run_refresh() -> int:
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--store", default="palmetto")
     cli.add_argument("--date", default=None,
@@ -1884,6 +1963,7 @@ def main() -> int:
     refresh_date = (
         datetime.date.fromisoformat(date_arg) if date_arg else _today_ct()
     )
+    _RUN_SUMMARY.update(refresh_date=refresh_date, store=args.store, dry_run=args.dry_run)
 
     # ── Completeness gate ────────────────────────────────────────────
     # Refuse to run for a refresh_date whose data sources are still in
@@ -2162,6 +2242,7 @@ def main() -> int:
             else:
                 print("[otp_gate] READY request already outstanding; exiting "
                       "cleanly without re-pinging the operator.")
+            _RUN_SUMMARY["status_override"] = "otp_pending"
             return 0
         if decision == otp_gate.SKIP_OTP:
             otp_skipped_alert(date=refresh_date.isoformat(), portals=otp_portals)
@@ -2235,6 +2316,13 @@ def main() -> int:
     # failed PipelineResults, so the contract is uniform here).
     otp_portal_failed = False
     for pipeline_name, pr in results.items():
+        _RUN_SUMMARY.setdefault("source_pulls", []).append({
+            "source": {"review_fetch": "google_reviews"}.get(pipeline_name, pipeline_name),
+            "started_at_utc": pr.started_at_utc,
+            "finished_at_utc": pr.finished_at_utc,
+            "status": "success" if pr.success else "failed",
+            "error": (f"{type(pr.error).__name__}: {pr.error}" if pr.error else None),
+        })
         if not pr.success:
             if pr.error:
                 failures.append((pipeline_name, pr.error))
@@ -2620,6 +2708,7 @@ def main() -> int:
         names = ", ".join(name for name, _ in failures)
         print(f"\n=== {len(failures)} step(s) failed: {names} ===")
         # failure_alert was already called per-step. Don't double-DM.
+        _RUN_SUMMARY.setdefault("failed_step", failures[0][0])
         return 1
 
     # ── Post-condition guard: did the new data actually land? ──────

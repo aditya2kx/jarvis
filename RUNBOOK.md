@@ -919,13 +919,50 @@ and alerts.  Don't hand-investigate; run this first.
 - `scripts/check_doc_freshness.py --strict` coupling (CI hard-fails a migration or
   dashboard PR that doesn't also update `status.py`).
 
+### Pipeline Health row (updated to two-table design, PR feat/bhaga-dashboard-pipeline-health, 2026-06-12)
+
+The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side-by-side tables:
+
+**Table 1 — Pipeline Runs** (left half, `vw_pipeline_runs`): last 30 nightly `daily_refresh` outcomes, newest first.
+
+| Column | Source | Notes |
+|---|---|---|
+| Run Time (CT) | `pipeline_runs.started_at_utc` | Formatted `America/Chicago`; empty until first nightly run |
+| Status | `pipeline_runs.status` | `success` (green) / `failed` / `halted` (red) / `otp_pending` (yellow) |
+| Failed Step | `pipeline_runs.failed_step` | Step name from `run_step()` or OTP/phase guard; blank when healthy |
+| Error | `pipeline_runs.error` | Exception message; blank when healthy |
+
+**Table 2 — Data Source Pulls** (right half, `vw_source_pulls`): last 50 per-source pull attempts, newest first.
+
+| Column | Source | Notes |
+|---|---|---|
+| Source | `source_pulls.source` | `square` / `adp` / `google_reviews` |
+| Pull Time (CT) | `source_pulls.started_at_utc` | Formatted `America/Chicago` |
+| Status | `source_pulls.status` | `success` (green) / `failed` (red) |
+| Error | `source_pulls.error` | Exception type + message; blank on success |
+
+**Attempt-only semantics:** only sources that actually ran a scrape appear in `source_pulls`. Sources skipped because their step marker was already present (`step_already_done`) or suppressed via `--skip-*` flags never enter the phase-1 results dict and are not recorded. Both tables are empty until the first nightly run after migration 017 is applied.
+
+**How run outcomes are recorded:** `daily_refresh.main()` generates a `run_id` (UUID4 hex, 32 chars) at startup, then calls `_run_refresh()`. In its `finally` block it calls `_record_pipeline_run(run_id=…)`, which (best-effort, gated on `BHAGA_DATASTORE=bigquery`, skipped on `--dry-run`) MERGEs one row into `pipeline_runs` (merge key: `run_id`) and one row per attempted source into `source_pulls` (merge keys: `run_id` + `source`). Using MERGE means a re-run of the recorder (e.g. a transient BQ timeout followed by a retry) converges to the same row rather than appending a duplicate. Distinct nightly retry invocations each get their own `run_id` and remain distinct rows — that is the attempt history the tables exist to show. Possible run statuses:
+
+- `success` — `_run_refresh()` returned 0 and model was verified OK
+- `failed` — returned 1 (any step/guard failure; `failed_step` records the first one)
+- `halted` — returned `EXIT_HALTED` (3) because the circuit breaker is tripped
+- `otp_pending` — returned 0 early because the OTP handshake is awaited
+
+`vw_pipeline_runs` = last 30 rows from `pipeline_runs` ordered by `recorded_at_utc DESC`. `vw_source_pulls` = last 50 rows from `source_pulls` ordered by `started_at_utc DESC`.
+
+**KDS: Order Date picker** defaults to the most recent successfully-completed run date (falls back to the latest KDS date if no successful run recorded yet, or if KDS was skipped that night).
+
 ### Architecture
 
 - **BQ dataset:** `jarvis-bhaga-prod.bhaga`
 - **Raw tables:** `square_transactions`, `adp_shifts`, `adp_punches`, `adp_wage_rates`, `square_daily_rollup`
 - **Curated views:** `vw_daily_sales`, `vw_tips_by_hour`, `vw_labor_daily`, `vw_labor_weekly`, `vw_sales_labor_daily`, `vw_employee_hours_summary`
 - **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`, `model_forecast_daily`
-- **Model views (Grafana BI contract):** `vw_model_labor_daily`, `vw_model_period_summary`, `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions`
+- **Pipeline run log:** `pipeline_runs` (migration 016) — one appended row per terminal outcome; queried via `vw_pipeline_runs`
+- **Source pull log:** `source_pulls` (migration 017) — one appended row per per-source pull attempt; queried via `vw_source_pulls`
+- **Model views (Grafana BI contract):** `vw_model_labor_daily`, `vw_model_period_summary`, `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions`, `vw_pipeline_runs`, `vw_source_pulls`
 - **Grafana org:** `steadyangelfish2985`
 - **Dashboard URL:** `https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics`
 - **Read-only SA:** `grafana-bq-reader@jarvis-bhaga-prod.iam.gserviceaccount.com` (DataViewer + JobUser)

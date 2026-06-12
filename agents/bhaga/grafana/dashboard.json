@@ -4,7 +4,7 @@
   "description": "8-section dashboard: Pipeline Health (top), Daily Sales, Weekly Sales, Labor (daily+weekly), Order Quality, Payroll, Labor Forecast. Powered by BQ views from migrations 004+005+016.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 39,
+  "version": 40,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {
@@ -1965,6 +1965,70 @@
       ]
     },
     {
+      "id": 74,
+      "type": "timeseries",
+      "title": "Goal Total Hours vs Scheduled Part Time",
+      "description": "Daily labor target vs ADP Team Schedule part-time hours (current + next week only; excludes the one full-time employee). Goal Total Hours = forecast_items \u00d7 $goal_hours_per_item (same as the forecast table; covers part-time + full-time). Goal updates on each nightly forecast rebuild for upcoming days; past dates freeze at the last stored forecast row. Scheduled Part Time is blank beyond the ADP scrape horizon.",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 116
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "min": 0,
+          "custom": {
+            "axisLabel": "Hours"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Goal Total Hours"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 0,
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, ROUND(forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS `Goal Total Hours`, scheduled_hours AS `Scheduled Part Time` FROM `jarvis-bhaga-prod.bhaga.vw_model_forecast` ORDER BY date"
+        }
+      ]
+    },
+    {
       "id": 72,
       "type": "timeseries",
       "title": "Forecast vs Actual \u2014 Orders",
@@ -1977,7 +2041,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 116
+        "y": 125
       },
       "options": {
         "tooltip": {
@@ -2037,7 +2101,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 116
+        "y": 125
       },
       "options": {
         "tooltip": {
@@ -2097,7 +2161,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 125
+        "y": 134
       },
       "options": {
         "sortBy": [

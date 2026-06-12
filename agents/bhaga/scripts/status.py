@@ -153,8 +153,8 @@ GRAFANA_VIEWS: list[Target] = [
     Target("vw_model_forecast", "date"),
     Target("vw_forecast_accuracy", "date"),
     Target("vw_forecast_exclusions", "date"),
-    # migration 013: adp_scheduled_daily; vw_scheduled_vs_goal is orphaned (dashboard
-    # panel 74 removed in v34) but harmless to leave in this registry.
+    # migration 013: adp_scheduled_daily; vw_scheduled_vs_goal kept for ad-hoc queries
+    # (panel 74 now reads vw_model_forecast directly, dashboard v40).
     Target("vw_scheduled_vs_goal", "date"),
     # migration 014: vw_model_forecast + vw_forecast_exclusions refreshed with
     # scheduled_hours / net_sales / aov columns (dashboard v33). Existing Targets

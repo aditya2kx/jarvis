@@ -1351,78 +1351,13 @@ def _run_square_pipeline(
     dry_run: bool,
     skip_kds: bool = False,
 ) -> PipelineResult:
-    """Thread 1: Square transactions + item sales + KDS → consolidate CSV → GCS upload.
-
-    Backend selection via BHAGA_SQUARE_BACKEND env var (default: scrape):
-      scrape — Playwright browser automation (legacy; requires OTP/magic-link)
-      api    — Square REST APIs via OAuth token (no Chromium, no human in loop)
-    """
+    """Thread 1: Square transactions + item sales + KDS scrape → consolidate CSV → GCS upload."""
     result = PipelineResult(name="square")
     try:
         if dry_run:
             print("[square_pipeline] DRY RUN — skipped.")
             result.success = True
             return result
-
-        square_backend = os.environ.get("BHAGA_SQUARE_BACKEND", "scrape").lower()
-
-        if square_backend == "api":
-            # ── API path: OAuth token, no Playwright, no OTP ──────────────
-            from skills.square_api.export import export_window as _sq_export
-            from skills.square_api import kds_reporting as _sq_kds
-
-            # Take the scrape lock to prevent concurrent master-CSV clobbering.
-            _lock_acquired = False
-            try:
-                from skills.square_tips.runner import (
-                    _acquire_scrape_lock,
-                    _release_scrape_lock,
-                )
-                _acquire_scrape_lock(store)
-                _lock_acquired = True
-            except Exception as _lock_exc:  # noqa: BLE001
-                print(
-                    f"[square_pipeline/api] WARN: could not acquire scrape lock "
-                    f"({type(_lock_exc).__name__}): {_lock_exc}. Proceeding without lock."
-                )
-
-            try:
-                api_result = _sq_export(
-                    start_date=gap_start, end_date=end_date, store=store
-                )
-                csv_path = api_result["transactions_csv"]
-                item_csv_path = api_result["items_csv"]
-                kds_csv_path = None
-                if not skip_kds and not step_already_done(refresh_date, "square_kds"):
-                    try:
-                        kds_csv_path = _sq_kds.export_window_kds(
-                            start_date=gap_start, end_date=end_date, store=store
-                        )
-                    except Exception as kds_exc:  # noqa: BLE001
-                        print(
-                            f"[square_pipeline/api] WARN: KDS Reporting API failed "
-                            f"({type(kds_exc).__name__}): {kds_exc}. "
-                            f"square_kds_daily/tickets will be skipped this run."
-                        )
-            finally:
-                if _lock_acquired:
-                    _release_scrape_lock()
-
-            result.artifacts["square_csv"] = csv_path
-            result.artifacts["item_sales_csv"] = item_csv_path
-            result.artifacts["kds_csv"] = kds_csv_path
-
-            if csv_path is not None:
-                total, added = _consolidate_into_master(gap_csv=csv_path)
-                result.master_stats = {"master_rows": total, "rows_added": added}
-                print(
-                    f"[square_pipeline/api] consolidate OK — "
-                    f"master={total}, added={added}"
-                )
-
-            result.success = True
-            return result
-        # ── End of API path ────────────────────────────────────────────────
 
         from skills.square_tips.runner import (
             _ensure_logged_in,

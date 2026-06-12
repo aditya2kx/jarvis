@@ -25,7 +25,6 @@ Jarvis (this workspace)
 │   ├── gmail/                  Read, search, send Gmail messages
 │   ├── pdf/                    Download and extract text from PDFs
 │   ├── square_tips/            Daily tip totals from Square Payments API (BHAGA)
-│   ├── square_api/             Square REST API client (OAuth auth, export, KDS reporting, parity)
 │   ├── adp_run_automation/     Per-employee daily hours from ADP RUN Time Tracker (BHAGA)
 │   ├── tip_pool_allocation/    Pure-function pool-by-day fair share computation (BHAGA)
 │   └── tip_ledger_writer/      Tip ledger + ADP paste-block writer for Google Sheets (BHAGA)

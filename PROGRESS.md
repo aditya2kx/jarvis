@@ -1,22 +1,26 @@
 # Jarvis Build Progress
 
-## 2026-06-12 — WA: Square API migration scaffolding + WC: Grafana dashboard refactor (PR #51)
+## 2026-06-12 — WA: Square API migration ABANDONED (account blocker) + WC: Grafana dashboard refactor (PR #51)
 
-**WA (Square API migration) — code complete, parity gate pending A0 OAuth grant:**
-- New skill `skills/square_api/` now has full 6-file implementation: `auth.py` (OAuth token
-  storage + auto-refresh via Secret Manager), `grant.py` (one-time interactive OAuth grant helper),
-  `client.py` (thin REST client with pagination + retry), `export.py` (Payments+Orders → synthesized
-  transactions/items CSVs matching Playwright-scraped format), `kds_reporting.py` (KDS via Reporting
-  API `/v1/load`; decision gate: ticket-grain → full CSV; aggregate-only → daily aggregate path),
-  `verify_api_parity.py` (record-level diff sandbox vs prod BQ).
-- `BHAGA_SQUARE_BACKEND=api` env flag wired into `daily_refresh._run_square_pipeline()`. Default
-  remains `scrape`; no behavior change until the flag is set.
-- `square_palmetto_oauth` registered in credentials registry and `palmetto.json` `square` block.
-- Parity gate (A5) is **pending A0**: operator must run `python3 -m skills.square_api.grant --store
-  palmetto` (interactive OAuth, ~10 min) to capture the production access/refresh token pair, then
-  run `python3 -m skills.square_api.export --store palmetto --start <d> --end <d> --load-bq` for
-  2-3 historical dates and `python3 -m skills.square_api.verify_api_parity --dates <d1> <d2>` to
-  confirm parity before flipping `BHAGA_SQUARE_BACKEND=api` in prod.
+**WA (Square API migration) — abandoned, reverted from the PR. Scrape remains the Square path.**
+- **Blocker (hard, account-level):** the only available login (`adi@mypalmetto.co`) is a *team
+  member* on the Palmetto Superfoods Square account, not the business owner. Square gates both
+  viable auth paths on owner status:
+  1. OAuth authorize (`/oauth2/authorize`) → "Only the business owner can authorize applications
+     for this Square account" — a team member can never click Allow, regardless of scopes.
+  2. Personal access token → the Developer Console **Credentials** page shows "You do not have the
+     permissions required to access this content" for team members.
+  No business-owner access is available, so the API migration cannot be completed. **Lesson:** this
+  permission constraint was visible before implementation (the gated Credentials page) and should
+  have been validated as step 0 of the plan, before any code was written.
+- All WA code was reverted out of PR #51 (`skills/square_api/`, the `BHAGA_SQUARE_BACKEND` flag in
+  `daily_refresh.py`, credentials-registry + `palmetto.json` entries, tests, doc mentions). The
+  `square_palmetto_oauth` secret was deleted from Secret Manager. The full implementation exists in
+  branch history (`feat/wa-wc-combined` pre-revert, commits `4b69f38`/`e0ccb2d`) if owner access
+  ever materializes — the missing prerequisite is one OAuth click by the business owner (or a
+  developer-team invite for adi@mypalmetto.co).
+- Side effects left in place (harmless): the "Jarvis BHAGA Austin" app still exists in the Square
+  Developer Console with production redirect URL `http://localhost:8731/callback`.
 
 **WC (Grafana dashboard refactor) — fully deployed and verified:**
 - `grafana/jarvis_dev/dashboard.json` restructured into 3 rows: **Development cost** (11 panels —

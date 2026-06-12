@@ -83,10 +83,7 @@
   },
   "square": {
     "credential_handle": "jarvis-square-palmetto",
-    "oauth_secret": "square_palmetto_oauth",
-    "location_id": "",
-    "_doc_location_id": "Square location ID for the Austin Mueller Lake store. Populated at runtime by export.py via GET /v2/locations if empty. Set permanently after first successful API run.",
-    "_doc": "Keychain handle resolved via skills/credentials. Browser-automation login (scrape path). OAuth token for API path stored in square_palmetto_oauth secret. Account email: adi@mypalmetto.co. Application ID: sq0idp-Hcto2eTRUUFBAyhRtxCSGg."
+    "_doc": "Keychain handle resolved via skills/credentials. Browser-automation login (no API access today). Account email: adi@mypalmetto.co."
   },
   "adp_run": {
     "credential_handle": "adp_palmetto_login",

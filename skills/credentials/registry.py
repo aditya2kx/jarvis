@@ -35,7 +35,6 @@ _GCP_PROJECT = "jarvis-bhaga-prod"
 BHAGA_SECRETS = frozenset([
     "adp_palmetto_login",
     "square_palmetto_login",
-    "square_palmetto_oauth",   # Square API OAuth token pair (see skills/square_api/auth.py)
     "slack_bhaga_app",
     "slack_bhaga_bot",
     "slack_bhaga_cloud_bot",

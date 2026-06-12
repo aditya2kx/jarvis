@@ -146,14 +146,8 @@ def configure_bigquery_datasource(
     return {**resp, "uid": uid}
 
 
-def get_bigquery_datasource_uid(
-    *, org_slug: str, name: str = "BHAGA BigQuery"
-) -> str | None:
-    """Return the UID of the BigQuery datasource by name, or None if absent.
-
-    Used by the deploy step when only the dashboard is pushed (so it can still
-    bind panels to the real UID without reconfiguring the datasource).
-    """
+def get_datasource_uid(*, org_slug: str, name: str) -> str | None:
+    """Return the UID of any Grafana datasource by name, or None if absent."""
     import urllib.parse
 
     token = _get_token(org_slug)
@@ -166,6 +160,87 @@ def get_bigquery_datasource_uid(
         if "404" in str(e):
             return None
         raise
+
+
+def get_bigquery_datasource_uid(
+    *, org_slug: str, name: str = "BHAGA BigQuery"
+) -> str | None:
+    """Return the UID of the BigQuery datasource by name, or None if absent.
+
+    Used by the deploy step when only the dashboard is pushed (so it can still
+    bind panels to the real UID without reconfiguring the datasource).
+    """
+    return get_datasource_uid(org_slug=org_slug, name=name)
+
+
+def configure_gcm_datasource(
+    *,
+    org_slug: str,
+    gcp_project: str = "jarvis-bhaga-prod",
+    sa_key_secret: str = "grafana-bq-reader-key",
+    gcp_secret_project: str = "jarvis-bhaga-prod",
+    datasource_name: str = "Jarvis GCP Monitoring",
+) -> dict:
+    """Create or update the Google Cloud Monitoring (Stackdriver) datasource.
+
+    Reuses the same SA key that powers the BigQuery datasource
+    (grafana-bq-reader-key) — the SA must also have roles/monitoring.viewer.
+
+    Gcloud command to grant monitoring.viewer (run once, not automated here):
+        gcloud projects add-iam-policy-binding jarvis-bhaga-prod \\
+          --member serviceAccount:grafana-bq-reader@jarvis-bhaga-prod.iam.gserviceaccount.com \\
+          --role roles/monitoring.viewer
+    """
+    token = _get_token(org_slug)
+
+    result = subprocess.run(
+        ["gcloud", "secrets", "versions", "access", "latest",
+         f"--secret={sa_key_secret}",
+         f"--project={gcp_secret_project}"],
+        capture_output=True, text=True, check=True,
+    )
+    sa_key = json.loads(result.stdout.strip())
+
+    datasource_payload = {
+        "name": datasource_name,
+        "type": "stackdriver",
+        "access": "proxy",
+        "jsonData": {
+            "authenticationType": "jwt",
+            "clientEmail": sa_key["client_email"],
+            "defaultProject": gcp_project,
+            "tokenUri": sa_key["token_uri"],
+            "universeDomain": "googleapis.com",
+        },
+        "secureJsonData": {
+            "privateKey": sa_key["private_key"],
+        },
+    }
+
+    grafana_url = f"https://{org_slug}.grafana.net"
+    import urllib.parse
+    quoted = urllib.parse.quote(datasource_name)
+    try:
+        existing = _api("GET", f"{grafana_url}/api/datasources/name/{quoted}", token=token)
+        ds_id = existing["id"]
+        print(f"[grafana] Updating existing GCM datasource id={ds_id}")
+        resp = _api("PUT", f"{grafana_url}/api/datasources/{ds_id}",
+                    token=token, body=datasource_payload)
+    except RuntimeError as e:
+        if "404" in str(e):
+            print("[grafana] Creating new GCM datasource")
+            resp = _api("POST", f"{grafana_url}/api/datasources",
+                        token=token, body=datasource_payload)
+        else:
+            raise
+
+    uid = (resp.get("datasource") or {}).get("uid") or resp.get("uid")
+    if not uid:
+        ds = _api("GET", f"{grafana_url}/api/datasources/name/{quoted}", token=token)
+        uid = ds.get("uid")
+    if uid:
+        print(f"[grafana] GCM datasource uid={uid}")
+    return {**resp, "uid": uid}
 
 
 def push_dashboard(

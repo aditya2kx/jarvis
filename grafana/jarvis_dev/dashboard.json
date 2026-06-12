@@ -1,51 +1,299 @@
 {
   "uid": "jarvis-dev-cost-v1",
   "title": "Jarvis Development",
-  "description": "Per-PR build/review/total cost for Jarvis development. Source: jarvis_dev.vw_pr_cost.",
+  "description": "Development cost, deploy history, and Cloud Run runtime/free-tier usage for the Jarvis project. Sources: jarvis_dev BigQuery (cost + deploys) and Google Cloud Monitoring (runtime).",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 2,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": { "from": "now-90d", "to": "now" },
-  "tags": ["jarvis", "dev", "cost"],
-  "templating": { "list": [
-    { "name": "ds_bigquery", "type": "datasource", "query": "grafana-bigquery-datasource",
-      "current": { "text": "BHAGA BigQuery", "value": "BHAGA BigQuery" }, "hide": 0 }
-  ] },
+  "tags": ["jarvis", "dev", "cost", "deploys", "runtime"],
+  "annotations": {
+    "list": [
+      {
+        "name": "Deploys",
+        "type": "tags",
+        "enable": true,
+        "iconColor": "blue",
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "tags": ["deploy"]
+      }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "ds_bigquery",
+        "type": "datasource",
+        "query": "grafana-bigquery-datasource",
+        "current": { "text": "BHAGA BigQuery", "value": "${ds_bigquery}" },
+        "hide": 0
+      },
+      {
+        "name": "ds_gcm",
+        "type": "datasource",
+        "query": "stackdriver",
+        "current": { "text": "Jarvis GCP Monitoring", "value": "${ds_gcm}" },
+        "hide": 0
+      }
+    ]
+  },
   "panels": [
+
+    { "id": 100, "type": "row", "title": "Development cost",
+      "collapsed": false, "gridPos": {"h":1,"w":24,"x":0,"y":0} },
+
     { "id": 1, "type": "stat", "title": "Total dev spend",
-      "gridPos": {"h":4,"w":6,"x":0,"y":0},
+      "gridPos": {"h":4,"w":5,"x":0,"y":1},
       "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
       "fieldConfig": {"defaults": {"unit":"currencyUSD"}},
       "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
-        "rawSql":"SELECT SUM(total_cost_usd) AS `total` FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost`",
+        "rawSql":"SELECT ROUND(SUM(total_cost_usd),2) AS `total` FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost`",
         "format":"table","location":"US"}] },
+
     { "id": 4, "type": "stat", "title": "PRs shipped",
-      "gridPos": {"h":4,"w":4,"x":6,"y":0},
+      "gridPos": {"h":4,"w":4,"x":5,"y":1},
       "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
       "fieldConfig": {"defaults": {"unit":"none"}},
       "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
         "rawSql":"SELECT COUNT(*) AS `count` FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost`",
         "format":"table","location":"US"}] },
+
     { "id": 5, "type": "stat", "title": "Avg cost per PR",
-      "gridPos": {"h":4,"w":6,"x":10,"y":0},
+      "gridPos": {"h":4,"w":5,"x":9,"y":1},
       "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
       "fieldConfig": {"defaults": {"unit":"currencyUSD"}},
       "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
-        "rawSql":"SELECT AVG(total_cost_usd) AS `avg` FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost`",
+        "rawSql":"SELECT ROUND(AVG(total_cost_usd),2) AS `avg` FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost`",
         "format":"table","location":"US"}] },
+
+    { "id": 20, "type": "stat", "title": "Projected monthly run-rate",
+      "description": "Extrapolates this month's merged-PR cost to month-end.",
+      "gridPos": {"h":4,"w":5,"x":14,"y":1},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"currencyUSD"}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT ROUND(SUM(total_cost_usd) / EXTRACT(DAY FROM CURRENT_DATE()) * EXTRACT(DAY FROM LAST_DAY(CURRENT_DATE())), 2) AS projected FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost` WHERE PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*SZ', merged_at) >= TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), MONTH)",
+        "format":"table","location":"US"}] },
+
     { "id": 2, "type": "timeseries", "title": "Cost per PR (build vs review)",
-      "gridPos": {"h":9,"w":24,"x":0,"y":4},
+      "gridPos": {"h":9,"w":24,"x":0,"y":5},
       "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
       "fieldConfig": {"defaults": {"unit":"currencyUSD"}},
       "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
         "rawSql":"SELECT PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*SZ', merged_at) AS time, CAST(pr_number AS STRING) AS pr_number, build_cost_usd AS `build`, review_cost_usd AS `review` FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost` ORDER BY merged_at",
         "format":"table","location":"US"}] },
-    { "id": 3, "type": "table", "title": "Per-PR cost ledger",
-      "gridPos": {"h":12,"w":24,"x":0,"y":13},
+
+    { "id": 21, "type": "piechart", "title": "Spend by model",
+      "description": "Total cost (build + review) broken down by LLM model.",
+      "gridPos": {"h":8,"w":8,"x":0,"y":14},
       "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
       "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
-        "rawSql":"SELECT pr_number, title, build_cost_usd, review_cost_usd, review_runs, total_cost_usd, merged_at FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost` ORDER BY pr_number DESC",
-        "format":"table","location":"US"}] }
+        "rawSql":"SELECT model, ROUND(SUM(cost_usd),2) AS cost FROM (SELECT model, cost_usd FROM `jarvis-bhaga-prod.jarvis_dev.pr_cost_build_session` UNION ALL SELECT model, cost_usd FROM `jarvis-bhaga-prod.jarvis_dev.pr_cost_review_run`) GROUP BY model ORDER BY cost DESC",
+        "format":"table","location":"US"}] },
+
+    { "id": 22, "type": "barchart", "title": "Spend by workstream",
+      "description": "Total cost grouped by branch prefix (first segment before / or -).",
+      "gridPos": {"h":8,"w":8,"x":8,"y":14},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT COALESCE(REGEXP_EXTRACT(p.branch, r'^([A-Za-z0-9]+)[/_-]'), 'other') AS workstream, ROUND(SUM(v.total_cost_usd),2) AS cost FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost` v JOIN `jarvis-bhaga-prod.jarvis_dev.pr_cost_pr` p USING (pr_key) GROUP BY workstream ORDER BY cost DESC",
+        "format":"table","location":"US"}] },
+
+    { "id": 23, "type": "timeseries", "title": "Cache hit rate (weekly)",
+      "description": "Fraction of input tokens served from prompt cache.",
+      "gridPos": {"h":8,"w":8,"x":16,"y":14},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"percentunit","min":0,"max":1}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT TIMESTAMP_TRUNC(TIMESTAMP(ts), WEEK) AS time, SAFE_DIVIDE(SUM(cache_read_input_tokens), SUM(input_tokens) + SUM(cache_read_input_tokens)) AS cache_hit_rate FROM `jarvis-bhaga-prod.jarvis_dev.pr_cost_build_session` GROUP BY time ORDER BY time",
+        "format":"table","location":"US"}] },
+
+    { "id": 24, "type": "table", "title": "Review churn — rework cost per PR",
+      "description": "Cost of review runs beyond the first (rework indicator).",
+      "gridPos": {"h":8,"w":12,"x":0,"y":22},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT p.pr_number, COUNT(*) AS review_runs, ROUND(SUM(r.cost_usd),2) AS review_cost, ROUND(SUM(IF(rn > 1, r.cost_usd, 0)),2) AS rework_cost FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY pr_key ORDER BY ts) AS rn FROM `jarvis-bhaga-prod.jarvis_dev.pr_cost_review_run`) r JOIN `jarvis-bhaga-prod.jarvis_dev.pr_cost_pr` p USING (pr_key) GROUP BY p.pr_number ORDER BY rework_cost DESC LIMIT 15",
+        "format":"table","location":"US"}] },
+
+    { "id": 25, "type": "table", "title": "Cost per diff line (top 15)",
+      "description": "PRs ordered by cost per added/deleted line — efficiency signal.",
+      "gridPos": {"h":8,"w":12,"x":12,"y":22},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT v.pr_number, v.title, p.diff_additions + p.diff_deletions AS lines, ROUND(SAFE_DIVIDE(v.total_cost_usd, p.diff_additions + p.diff_deletions), 4) AS usd_per_line, ROUND(v.total_cost_usd,2) AS total_cost FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost` v JOIN `jarvis-bhaga-prod.jarvis_dev.pr_cost_pr` p USING (pr_key) WHERE p.diff_additions + p.diff_deletions > 0 ORDER BY usd_per_line DESC LIMIT 15",
+        "format":"table","location":"US"}] },
+
+    { "id": 3, "type": "table", "title": "Per-PR cost ledger",
+      "gridPos": {"h":10,"w":24,"x":0,"y":30},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT pr_number, title, ROUND(build_cost_usd,2) AS build_cost, ROUND(review_cost_usd,2) AS review_cost, review_runs, ROUND(total_cost_usd,2) AS total_cost, merged_at FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost` ORDER BY pr_number DESC",
+        "format":"table","location":"US"}] },
+
+    { "id": 200, "type": "row", "title": "Deploys & releases",
+      "collapsed": false, "gridPos": {"h":1,"w":24,"x":0,"y":40} },
+
+    { "id": 30, "type": "stat", "title": "Latest orchestrator SHA",
+      "gridPos": {"h":4,"w":6,"x":0,"y":41},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"none"}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT git_sha FROM `jarvis-bhaga-prod.jarvis_dev.deploys` WHERE unit = 'orchestrator' QUALIFY ROW_NUMBER() OVER (PARTITION BY unit ORDER BY ts DESC) = 1",
+        "format":"table","location":"US"}] },
+
+    { "id": 31, "type": "stat", "title": "Latest webhook SHA",
+      "gridPos": {"h":4,"w":6,"x":6,"y":41},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"none"}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT git_sha FROM `jarvis-bhaga-prod.jarvis_dev.deploys` WHERE unit = 'webhook' QUALIFY ROW_NUMBER() OVER (PARTITION BY unit ORDER BY ts DESC) = 1",
+        "format":"table","location":"US"}] },
+
+    { "id": 32, "type": "stat", "title": "Deploys this month",
+      "gridPos": {"h":4,"w":6,"x":12,"y":41},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"none"}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT COUNT(*) AS deploys FROM `jarvis-bhaga-prod.jarvis_dev.deploys` WHERE ts >= TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), MONTH) AND kind = 'deploy'",
+        "format":"table","location":"US"}] },
+
+    { "id": 33, "type": "timeseries", "title": "Deploys per week",
+      "gridPos": {"h":8,"w":24,"x":0,"y":45},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"none"}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT TIMESTAMP_TRUNC(ts, WEEK) AS time, unit, COUNT(*) AS deploys FROM `jarvis-bhaga-prod.jarvis_dev.deploys` WHERE kind = 'deploy' GROUP BY time, unit ORDER BY time",
+        "format":"table","location":"US"}] },
+
+    { "id": 34, "type": "table", "title": "Deploy history (last 30)",
+      "gridPos": {"h":10,"w":24,"x":0,"y":53},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT FORMAT_TIMESTAMP('%Y-%m-%d %H:%M', ts, 'America/Chicago') AS deployed_ct, agent, unit, LEFT(git_sha,12) AS sha, kind, actor, workflow_run_url FROM `jarvis-bhaga-prod.jarvis_dev.deploys` ORDER BY ts DESC LIMIT 30",
+        "format":"table","location":"US"}] },
+
+    { "id": 300, "type": "row", "title": "Runtime & free tier",
+      "collapsed": false, "gridPos": {"h":1,"w":24,"x":0,"y":63} },
+
+    { "id": 40, "type": "gauge", "title": "MTD job vCPU-seconds (job free tier: 240k)",
+      "description": "Cloud Run Jobs billable_instance_time × 2 vCPU, month-to-date. Free tier: 240,000 vCPU-s/mo.",
+      "gridPos": {"h":6,"w":6,"x":0,"y":64},
+      "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+      "fieldConfig": {"defaults": {"unit":"none","min":0,"max":240000,
+        "thresholds": {"mode":"absolute","steps":[
+          {"color":"green","value":0},
+          {"color":"yellow","value":150000},
+          {"color":"red","value":210000}]}}},
+      "options": {"reduceOptions": {"calcs": ["sum"]}},
+      "timeFrom": "now/M",
+      "targets": [{
+        "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+        "queryType": "timeSeriesList",
+        "timeSeriesList": {
+          "projectName": "jarvis-bhaga-prod",
+          "filters": ["metric.type","=","run.googleapis.com/container/billable_instance_time",
+                      "AND","resource.type","=","cloud_run_job"],
+          "perSeriesAligner": "ALIGN_SUM",
+          "alignmentPeriod": "+86400s",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupBys": []
+        }
+      }] },
+
+    { "id": 41, "type": "gauge", "title": "MTD job GiB-seconds (job free tier: 450k)",
+      "description": "Cloud Run Jobs billable_instance_time × 4 GiB (post-W0 bump), month-to-date. Free tier: 450,000 GiB-s/mo.",
+      "gridPos": {"h":6,"w":6,"x":6,"y":64},
+      "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+      "fieldConfig": {"defaults": {"unit":"none","min":0,"max":450000,
+        "thresholds": {"mode":"absolute","steps":[
+          {"color":"green","value":0},
+          {"color":"yellow","value":280000},
+          {"color":"red","value":400000}]}}},
+      "options": {"reduceOptions": {"calcs": ["sum"]}},
+      "timeFrom": "now/M",
+      "targets": [{
+        "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+        "queryType": "timeSeriesList",
+        "timeSeriesList": {
+          "projectName": "jarvis-bhaga-prod",
+          "filters": ["metric.type","=","run.googleapis.com/container/billable_instance_time",
+                      "AND","resource.type","=","cloud_run_job"],
+          "perSeriesAligner": "ALIGN_SUM",
+          "alignmentPeriod": "+86400s",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupBys": []
+        }
+      }] },
+
+    { "id": 42, "type": "gauge", "title": "MTD webhook requests (free tier: 2M)",
+      "description": "Cloud Run Service request count month-to-date. Free tier: 2,000,000 requests/mo.",
+      "gridPos": {"h":6,"w":6,"x":12,"y":64},
+      "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+      "fieldConfig": {"defaults": {"unit":"none","min":0,"max":2000000,
+        "thresholds": {"mode":"absolute","steps":[
+          {"color":"green","value":0},
+          {"color":"yellow","value":1200000},
+          {"color":"red","value":1800000}]}}},
+      "options": {"reduceOptions": {"calcs": ["sum"]}},
+      "timeFrom": "now/M",
+      "targets": [{
+        "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+        "queryType": "timeSeriesList",
+        "timeSeriesList": {
+          "projectName": "jarvis-bhaga-prod",
+          "filters": ["metric.type","=","run.googleapis.com/request_count",
+                      "AND","resource.type","=","cloud_run_revision",
+                      "AND","resource.label.service_name","=","bhaga-webhook"],
+          "perSeriesAligner": "ALIGN_SUM",
+          "alignmentPeriod": "+86400s",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupBys": []
+        }
+      }] },
+
+    { "id": 43, "type": "timeseries", "title": "Nightly job runtime (seconds/day)",
+      "description": "billable_instance_time per day — daily runtime proxy. Spikes indicate double-Chromium nights or slow ADP.",
+      "gridPos": {"h":8,"w":24,"x":0,"y":70},
+      "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+      "fieldConfig": {"defaults": {"unit":"s"}},
+      "targets": [{
+        "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+        "queryType": "timeSeriesList",
+        "timeSeriesList": {
+          "projectName": "jarvis-bhaga-prod",
+          "filters": ["metric.type","=","run.googleapis.com/container/billable_instance_time",
+                      "AND","resource.type","=","cloud_run_job"],
+          "perSeriesAligner": "ALIGN_SUM",
+          "alignmentPeriod": "+86400s",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupBys": []
+        }
+      }] },
+
+    { "id": 44, "type": "timeseries", "title": "Memory utilization p99 (bhaga-daily-refresh)",
+      "description": "Container memory/utilizations p99 — this chart would have shown the OOM creep on 2026-06-11.",
+      "gridPos": {"h":8,"w":24,"x":0,"y":78},
+      "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+      "fieldConfig": {"defaults": {"unit":"percentunit","min":0,"max":1,
+        "thresholds": {"mode":"absolute","steps":[
+          {"color":"green","value":0},
+          {"color":"yellow","value":0.7},
+          {"color":"red","value":0.9}]}}},
+      "targets": [{
+        "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+        "queryType": "timeSeriesList",
+        "timeSeriesList": {
+          "projectName": "jarvis-bhaga-prod",
+          "filters": ["metric.type","=","run.googleapis.com/container/memory/utilizations",
+                      "AND","resource.type","=","cloud_run_job"],
+          "perSeriesAligner": "ALIGN_PERCENTILE_99",
+          "alignmentPeriod": "+86400s",
+          "crossSeriesReducer": "REDUCE_MAX",
+          "groupBys": []
+        }
+      }] }
+
   ]
 }

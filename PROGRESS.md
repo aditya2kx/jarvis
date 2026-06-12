@@ -1,5 +1,16 @@
 # Jarvis Build Progress
 
+## 2026-06-12 — BHAGA Analytics: Pipeline Health v2 — two-table design (dashboard v38, migration 017)
+
+**What changed:** Replaced the six stat panels in the "0. Pipeline Health" row with two side-by-side history tables (dashboard v37→v38).
+
+- **BQ schema (migration 017):** New `source_pulls` table (one appended row per per-source pull attempt — `square`/`adp`/`google_reviews` — with start/end timestamps, status, and error). New `vw_pipeline_runs` view (last 30 run outcomes from `pipeline_runs`, ordered by `recorded_at_utc DESC`). New `vw_source_pulls` view (last 50 pull attempts from `source_pulls`, ordered by `started_at_utc DESC`). Dropped `vw_pipeline_health` (replaced by the two new views).
+- **`daily_refresh.py`:** `PipelineResult` dataclass gets `started_at_utc`/`finished_at_utc` fields. `_capture()` in `_execute_pipelines` stamps both timestamps on every pipeline run (success and exception paths). The phase-1 results collection loop appends a pull record per source to `_RUN_SUMMARY["source_pulls"]` (mapping `review_fetch` → `google_reviews`). `_record_pipeline_run()` now also inserts the source_pulls rows alongside the pipeline_runs row, still inside the same best-effort try/except.
+- **Dashboard v38:** Stat panels 2–7 removed; two `table` panels inserted at y=1 (Pipeline Runs w=12 left, Data Source Pulls w=12 right); all panels at y≥5 shifted y+=5; both tables have exact-fit column widths and status colour mappings.
+- **`status.py`:** Replaced `Target("vw_pipeline_health", "run_date")` with `Target("vw_pipeline_runs", "run_date")` and `Target("vw_source_pulls", "run_date")`.
+- **Tests:** 7 new scenarios in `test_pipeline_runs_recorder.py` (TestSourcePulls class). Full suite: 752 passed.
+- **Docs:** RUNBOOK §14 "Pipeline Health row" updated to two-table design; `agents/bhaga/scripts/README.md` updated; PROGRESS.md entry added.
+
 ## 2026-06-12 — BHAGA Analytics: Pipeline Health row + exact-fit tables + KDS date default (branch feat/bhaga-dashboard-pipeline-health)
 
 **What changed:** Added a "0. Pipeline Health" top row to the BHAGA Analytics Grafana dashboard (v36→v37).

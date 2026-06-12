@@ -234,3 +234,131 @@ class TestNeverRaises:
                 rc = dr.main()
 
         assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# Scenario 7: source_pulls rows written alongside pipeline_runs row.
+# ---------------------------------------------------------------------------
+
+
+class TestSourcePulls:
+    def _fake_load_rows_per_table(self):
+        captured: dict[str, list] = {}
+
+        def fake_load_rows(table, rows, **kw):
+            captured.setdefault(table, []).extend(rows)
+            return len(rows)
+
+        return captured, fake_load_rows
+
+    def test_source_pulls_rows_written(self, monkeypatch):
+        _reset_summary(
+            refresh_date=_REF_DATE, store="palmetto", dry_run=False,
+            source_pulls=[{
+                "source": "square", "started_at_utc": _STARTED,
+                "finished_at_utc": _STARTED, "status": "success", "error": None,
+            }],
+        )
+        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+        captured, fake_load_rows = self._fake_load_rows_per_table()
+
+        with patch("core.datastore.load_rows", fake_load_rows):
+            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0)
+
+        assert len(captured.get("pipeline_runs", [])) == 1
+        assert len(captured.get("source_pulls", [])) == 1
+        pull = captured["source_pulls"][0]
+        assert pull["source"] == "square"
+        assert pull["status"] == "success"
+        assert pull["error"] is None
+        assert pull["run_date"] == _REF_DATE.isoformat()
+
+    def test_failed_pull_error_string(self, monkeypatch):
+        _reset_summary(
+            refresh_date=_REF_DATE, store="palmetto", dry_run=False,
+            source_pulls=[{
+                "source": "adp", "started_at_utc": _STARTED,
+                "finished_at_utc": _STARTED, "status": "failed",
+                "error": "RuntimeError: scrape blew up",
+            }],
+        )
+        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+        captured, fake_load_rows = self._fake_load_rows_per_table()
+
+        with patch("core.datastore.load_rows", fake_load_rows):
+            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=1)
+
+        pull = captured["source_pulls"][0]
+        assert pull["status"] == "failed"
+        assert pull["error"] == "RuntimeError: scrape blew up"
+
+    def test_no_pulls_no_second_insert(self, monkeypatch):
+        """When source_pulls absent, only pipeline_runs is inserted."""
+        _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
+        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+        captured, fake_load_rows = self._fake_load_rows_per_table()
+
+        with patch("core.datastore.load_rows", fake_load_rows):
+            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0)
+
+        assert "pipeline_runs" in captured
+        assert "source_pulls" not in captured
+
+    def test_review_fetch_source_google_reviews_round_trips(self, monkeypatch):
+        """A pull with source='google_reviews' round-trips through the recorder."""
+        _reset_summary(
+            refresh_date=_REF_DATE, store="palmetto", dry_run=False,
+            source_pulls=[{
+                "source": "google_reviews", "started_at_utc": _STARTED,
+                "finished_at_utc": _STARTED, "status": "success", "error": None,
+            }],
+        )
+        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+        captured, fake_load_rows = self._fake_load_rows_per_table()
+
+        with patch("core.datastore.load_rows", fake_load_rows):
+            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0)
+
+        assert captured["source_pulls"][0]["source"] == "google_reviews"
+
+    def test_capture_timestamps_success(self):
+        """_execute_pipelines stamps started/finished on a successful pipeline."""
+        result = dr._execute_pipelines(
+            {"square": lambda: dr.PipelineResult(name="square", success=True)},
+            serialize_otp=False,
+        )
+        pr = result["square"]
+        assert pr.started_at_utc is not None
+        assert pr.finished_at_utc is not None
+        assert pr.started_at_utc <= pr.finished_at_utc
+        assert pr.success is True
+
+    def test_capture_timestamps_exception(self):
+        """_execute_pipelines stamps timestamps even when the pipeline raises."""
+        def _raises():
+            raise RuntimeError("boom")
+
+        result = dr._execute_pipelines({"adp": _raises}, serialize_otp=False)
+        pr = result["adp"]
+        assert pr.started_at_utc is not None
+        assert pr.finished_at_utc is not None
+        assert pr.success is False
+        assert isinstance(pr.error, RuntimeError)
+
+    def test_recorder_never_raises_with_pulls(self, monkeypatch):
+        """Recorder swallows exceptions even when source_pulls are present."""
+        _reset_summary(
+            refresh_date=_REF_DATE, store="palmetto", dry_run=False,
+            source_pulls=[{
+                "source": "square", "started_at_utc": _STARTED,
+                "finished_at_utc": _STARTED, "status": "success", "error": None,
+            }],
+        )
+        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+
+        def exploding_load_rows(table, rows, **kw):
+            raise RuntimeError("BQ connection failed")
+
+        # Must not raise
+        with patch("core.datastore.load_rows", exploding_load_rows):
+            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0)

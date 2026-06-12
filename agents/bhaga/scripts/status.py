@@ -162,9 +162,10 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 015: vw_model_forecast refreshed with dow column + zero-gated
     # prior-week fallback (dashboard v34). No new BQ_TARGETS entries needed; the
     # existing vw_model_forecast Target above still covers freshness.
-    # migration 016: Pipeline Health row (dashboard v37); exact-match = a run was
-    # recorded for check_date. NULL run_date until the first nightly after merge.
-    Target("vw_pipeline_health", "run_date"),
+    # migration 017: Pipeline Health two-table design (dashboard v38). Both
+    # views are empty / NULL run_date until the first nightly after merge.
+    Target("vw_pipeline_runs", "run_date"),
+    Target("vw_source_pulls", "run_date"),
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

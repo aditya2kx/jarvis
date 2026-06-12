@@ -1340,6 +1340,8 @@ class PipelineResult:
     error: Exception | None = None
     artifacts: dict[str, pathlib.Path | None] = field(default_factory=dict)
     master_stats: dict[str, int] = field(default_factory=dict)
+    started_at_utc: datetime.datetime | None = None
+    finished_at_utc: datetime.datetime | None = None
 
 
 def _run_square_pipeline(
@@ -1696,13 +1698,16 @@ def _execute_pipelines(
     results: dict = {}
 
     def _capture(name: str, fn):
+        started = datetime.datetime.now(datetime.timezone.utc)
         try:
-            return fn()
+            pr = fn()
         except Exception as exc:  # noqa: BLE001
             pr = PipelineResult(name=name)
             pr.success = False
             pr.error = exc
-            return pr
+        pr.started_at_utc = started
+        pr.finished_at_utc = datetime.datetime.now(datetime.timezone.utc)
+        return pr
 
     otp_names = [n for n in ("square", "adp") if n in specs]
     if serialize_otp and len(otp_names) > 1:
@@ -1821,6 +1826,21 @@ def _record_pipeline_run(*, started_at_utc, exit_code, error=None) -> None:
             "started_at_utc": "TIMESTAMP", "finished_at_utc": "TIMESTAMP",
             "recorded_at_utc": "TIMESTAMP", "run_date": "DATE",
         })  # no merge_keys → plain INSERT append (core/datastore.py:168)
+        pulls = _RUN_SUMMARY.get("source_pulls") or []
+        if pulls:
+            load_rows("source_pulls", [{
+                "run_date": refresh_date.isoformat(),
+                "store": _RUN_SUMMARY.get("store"),
+                "source": p["source"],
+                "started_at_utc": p["started_at_utc"].isoformat() if p["started_at_utc"] else None,
+                "finished_at_utc": p["finished_at_utc"].isoformat() if p["finished_at_utc"] else None,
+                "status": p["status"],
+                "error": p["error"],
+                "recorded_at_utc": finished.isoformat(),
+            } for p in pulls], column_bq_types={
+                "started_at_utc": "TIMESTAMP", "finished_at_utc": "TIMESTAMP",
+                "recorded_at_utc": "TIMESTAMP", "run_date": "DATE",
+            })  # no merge_keys → plain INSERT append, same as pipeline_runs
     except Exception as exc:  # noqa: BLE001
         print(f"[pipeline_runs] WARN: could not record run outcome: {exc}",
               file=sys.stderr)
@@ -2290,6 +2310,13 @@ def _run_refresh() -> int:
     # failed PipelineResults, so the contract is uniform here).
     otp_portal_failed = False
     for pipeline_name, pr in results.items():
+        _RUN_SUMMARY.setdefault("source_pulls", []).append({
+            "source": {"review_fetch": "google_reviews"}.get(pipeline_name, pipeline_name),
+            "started_at_utc": pr.started_at_utc,
+            "finished_at_utc": pr.finished_at_utc,
+            "status": "success" if pr.success else "failed",
+            "error": (f"{type(pr.error).__name__}: {pr.error}" if pr.error else None),
+        })
         if not pr.success:
             if pr.error:
                 failures.append((pipeline_name, pr.error))

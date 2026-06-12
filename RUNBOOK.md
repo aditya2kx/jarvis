@@ -1138,12 +1138,13 @@ loads it into `model_forecast_daily` (merge key: `date`). **Future rows** are me
 ### Grafana dashboard section
 
 Section 7 "Labor Forecast" on the BHAGA Analytics dashboard shows:
-- **Labor Forecast — next 30 days table** (panel 71, `vw_model_forecast`): Day-of-week (`dow`), date, forecast orders/items, prior-week actuals (falling back to that day's forecast when orders=0 / failed), % change vs prior week, **Goal Total Hours** (forecast_items × goal_hours_per_item; covers part-time + full-time), **Scheduled Part Time** (ADP-scheduled hours, excludes the one full-time employee; current+next week only), Sched PT − Goal Total gap (abs hrs + %) — dashboard v34 (v33 introduced scheduled hours; v34 adds Day column, relabels, removes panel 74)
+- **Labor Forecast — next 30 days table** (panel 71, `vw_model_forecast`): Day-of-week (`dow`), date, forecast orders/items, prior-week actuals (falling back to that day's forecast when orders=0 / failed), % change vs prior week, **Goal Total Hours** (forecast_items × goal_hours_per_item; covers part-time + full-time), **Scheduled Part Time** (ADP-scheduled hours, excludes the one full-time employee; current+next week only), Sched PT − Goal Total gap (abs hrs + %)
+- **Goal Total Hours vs Scheduled Part Time** (panel 74, `vw_model_forecast`): two-line chart — dashed Goal Total Hours vs solid Scheduled Part Time (same inputs as panel 71; goal updates on nightly forecast rebuild for upcoming days, frozen for past dates in `model_forecast_daily`)
 - **Forecast vs Actual — Orders** (panel 72, `vw_forecast_accuracy`): order forecast vs actual history — split to half-width in v33
 - **Forecast vs Actual — Items** (panel 75, `vw_forecast_accuracy`): item forecast vs actual history — new panel in v33, side-by-side with panel 72
 - **Forecast Inputs / Exclusions table** (panel 73, `vw_forecast_exclusions`): recent input days with exclusion flags, `net_sales`, `aov`, prior-week comparisons — v33 adds AOV/net-sales columns
 - **KDS goal** uses `$goal_kds_p95_min` (default 8 min) as of v33; previously p99.
-  with an actual-hours overlay for past days. Data comes from the nightly **best-effort** ADP schedule scrape
+  Data for scheduled hours comes from the nightly **best-effort** ADP schedule scrape
   (`adp_scheduled_daily`, migration 013); a scrape failure does not fail the nightly run.
 
 ### Applying the migration (one-time)

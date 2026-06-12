@@ -1,5 +1,9 @@
 # Jarvis Build Progress
 
+## 2026-06-12 — BHAGA Analytics: Goal Total Hours vs Scheduled Part Time chart (dashboard v40)
+
+**What changed:** Restored panel 74 in Section 7 "Labor Forecast" — two-line timeseries (dashed Goal Total Hours, solid Scheduled Part Time) directly below the Labor Forecast table, using `vw_model_forecast` (same inputs as panel 71). Goal updates on nightly forecast rebuild for upcoming days; past dates freeze in `model_forecast_daily`. Dashboard bumped v39→v40; RUNBOOK § Labor Forecast section updated.
+
 ## 2026-06-12 — BHAGA Analytics: Pipeline Health v2 fix — run_id idempotency + test-leak patch (migration 018)
 
 **What changed:** Closed two correctness gaps discovered after the two-table design landed.

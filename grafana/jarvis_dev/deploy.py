@@ -26,16 +26,22 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from skills.grafana_cloud_provisioning.register import (
-    get_bigquery_datasource_uid,
+    get_datasource_uid,
     push_dashboard,
 )
 from skills.grafana_cloud_provisioning.provision import _KEYCHAIN_ACCOUNT_DEFAULT
 
 _DASHBOARD_JSON = pathlib.Path(__file__).parent / "dashboard.json"
 _DEFAULT_ORG = _KEYCHAIN_ACCOUNT_DEFAULT
-_DS_VAR_NAME = "ds_bigquery"
-_DS_DISPLAY_NAME = "BHAGA BigQuery"
+_DS_BQ_VAR = "ds_bigquery"
+_DS_GCM_VAR = "ds_gcm"
+_DS_BQ_NAME = "BHAGA BigQuery"
+_DS_GCM_NAME = "Jarvis GCP Monitoring"
 _FOLDER_TITLE = "Jarvis Development"
+
+# Keep the old name for callers that use it directly
+_DS_VAR_NAME = _DS_BQ_VAR
+_DS_DISPLAY_NAME = _DS_BQ_NAME
 
 
 def bind_datasource_uid(dashboard: dict, uid: str, *, var_name: str = _DS_VAR_NAME) -> int:
@@ -83,18 +89,29 @@ def main() -> int:
     if os.environ.get("GRAFANA_API_TOKEN", "").strip():
         print("[jarvis-dev-grafana-deploy] Using GRAFANA_API_TOKEN from env.")
 
-    ds_uid = get_bigquery_datasource_uid(org_slug=org_slug)
-    if not ds_uid:
+    bq_uid = get_datasource_uid(org_slug=org_slug, name=_DS_BQ_NAME)
+    if not bq_uid:
         print(
             "[jarvis-dev-grafana-deploy] ERROR: could not resolve BigQuery datasource UID. "
-            "Ensure the 'BHAGA BigQuery' datasource is configured (run BHAGA's deploy.py first).",
+            f"Ensure the '{_DS_BQ_NAME}' datasource is configured (run BHAGA's deploy.py first).",
             file=sys.stderr,
         )
         return 1
 
+    gcm_uid = get_datasource_uid(org_slug=org_slug, name=_DS_GCM_NAME)
+    if not gcm_uid:
+        print(
+            f"[jarvis-dev-grafana-deploy] WARN: '{_DS_GCM_NAME}' datasource not found. "
+            "Runtime/free-tier panels will be unbound. Run configure_gcm_datasource() to fix."
+        )
+
     dashboard = json.loads(_DASHBOARD_JSON.read_text())
-    bound = bind_datasource_uid(dashboard, ds_uid)
-    print(f"[jarvis-dev-grafana-deploy] Bound {bound} datasource ref(s) to uid={ds_uid}")
+    bound_bq = bind_datasource_uid(dashboard, bq_uid, var_name=_DS_BQ_VAR)
+    print(f"[jarvis-dev-grafana-deploy] Bound {bound_bq} BigQuery ref(s) to uid={bq_uid}")
+
+    if gcm_uid:
+        bound_gcm = bind_datasource_uid(dashboard, gcm_uid, var_name=_DS_GCM_VAR)
+        print(f"[jarvis-dev-grafana-deploy] Bound {bound_gcm} GCM ref(s) to uid={gcm_uid}")
 
     result = push_dashboard(dashboard, org_slug=org_slug, folder_title=_FOLDER_TITLE)
     url = result.get("full_url", "unknown")

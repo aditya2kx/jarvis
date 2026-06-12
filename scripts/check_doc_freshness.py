@@ -88,15 +88,17 @@ COUPLINGS: list[dict] = [
             "scripts/cursor_usage.py",
             "scripts/pr_cost_ledger.py",
             "scripts/pr_cost_store.py",
+            "scripts/deploy_events.py",
             "scripts/git-hooks/*",
             "scripts/install-git-hooks.sh",
             "grafana/jarvis_dev/**",
             ".github/workflows/pr-cost-gate.yml",
             ".github/workflows/pr-cost-finalize.yml",
             ".github/workflows/grafana-jarvis-dev-sync.yml",
+            ".github/workflows/deploy.yml",
         ],
         "docs": ["CONTRIBUTING.md", "RUNBOOK.md"],
-        "why": "cost ledger / attribution / BQ store / Grafana changed → update CONTRIBUTING.md + RUNBOOK.md.",
+        "why": "cost ledger / attribution / BQ store / Grafana / deploy events changed → update CONTRIBUTING.md + RUNBOOK.md.",
     },
     {
         "code": [

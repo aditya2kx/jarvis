@@ -1,51 +1,384 @@
 {
   "uid": "jarvis-dev-cost-v1",
   "title": "Jarvis Development",
-  "description": "Per-PR build/review/total cost for Jarvis development. Source: jarvis_dev.vw_pr_cost.",
+  "description": "Development cost, deploy history, Cloud Run runtime, and BHAGA pipeline execution health. Sources: jarvis_dev BigQuery (cost + deploys), bhaga BigQuery (pipeline coverage), and Google Cloud Monitoring (runtime).",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 4,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": { "from": "now-90d", "to": "now" },
-  "tags": ["jarvis", "dev", "cost"],
-  "templating": { "list": [
-    { "name": "ds_bigquery", "type": "datasource", "query": "grafana-bigquery-datasource",
-      "current": { "text": "BHAGA BigQuery", "value": "BHAGA BigQuery" }, "hide": 0 }
-  ] },
+  "tags": ["jarvis", "dev", "cost", "deploys", "runtime", "bhaga"],
+  "annotations": {
+    "list": [
+      {
+        "name": "Deploys",
+        "type": "tags",
+        "enable": true,
+        "iconColor": "blue",
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "tags": ["deploy"]
+      }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "ds_bigquery",
+        "type": "datasource",
+        "query": "grafana-bigquery-datasource",
+        "current": { "text": "BHAGA BigQuery", "value": "efo24wc0zpm9sb" },
+        "hide": 0
+      },
+      {
+        "name": "ds_gcm",
+        "type": "datasource",
+        "query": "stackdriver",
+        "current": { "text": "Jarvis GCP Monitoring", "value": "cfovr14odnpxca" },
+        "hide": 0
+      }
+    ]
+  },
   "panels": [
+
+    { "id": 100, "type": "row", "title": "Development cost",
+      "collapsed": false, "gridPos": {"h":1,"w":24,"x":0,"y":0} },
+
     { "id": 1, "type": "stat", "title": "Total dev spend",
-      "gridPos": {"h":4,"w":6,"x":0,"y":0},
+      "gridPos": {"h":4,"w":5,"x":0,"y":1},
       "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
       "fieldConfig": {"defaults": {"unit":"currencyUSD"}},
       "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
-        "rawSql":"SELECT SUM(total_cost_usd) AS `total` FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost`",
+        "rawSql":"SELECT ROUND(SUM(total_cost_usd),2) AS `total` FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost`",
         "format":"table","location":"US"}] },
+
     { "id": 4, "type": "stat", "title": "PRs shipped",
-      "gridPos": {"h":4,"w":4,"x":6,"y":0},
+      "gridPos": {"h":4,"w":4,"x":5,"y":1},
       "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
       "fieldConfig": {"defaults": {"unit":"none"}},
       "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
         "rawSql":"SELECT COUNT(*) AS `count` FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost`",
         "format":"table","location":"US"}] },
+
     { "id": 5, "type": "stat", "title": "Avg cost per PR",
-      "gridPos": {"h":4,"w":6,"x":10,"y":0},
+      "gridPos": {"h":4,"w":5,"x":9,"y":1},
       "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
       "fieldConfig": {"defaults": {"unit":"currencyUSD"}},
       "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
-        "rawSql":"SELECT AVG(total_cost_usd) AS `avg` FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost`",
+        "rawSql":"SELECT ROUND(AVG(total_cost_usd),2) AS `avg` FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost`",
         "format":"table","location":"US"}] },
-    { "id": 2, "type": "timeseries", "title": "Cost per PR (build vs review)",
-      "gridPos": {"h":9,"w":24,"x":0,"y":4},
+
+    { "id": 20, "type": "stat", "title": "Projected monthly run-rate",
+      "description": "Extrapolates this month's merged-PR cost to month-end.",
+      "gridPos": {"h":4,"w":5,"x":14,"y":1},
       "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
       "fieldConfig": {"defaults": {"unit":"currencyUSD"}},
       "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
-        "rawSql":"SELECT PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*SZ', merged_at) AS time, CAST(pr_number AS STRING) AS pr_number, build_cost_usd AS `build`, review_cost_usd AS `review` FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost` ORDER BY merged_at",
+        "rawSql":"SELECT ROUND(SUM(total_cost_usd) / EXTRACT(DAY FROM CURRENT_DATE()) * EXTRACT(DAY FROM LAST_DAY(CURRENT_DATE())), 2) AS projected FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost` WHERE PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*SZ', merged_at) >= TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), MONTH)",
         "format":"table","location":"US"}] },
+
+    { "id": 2, "type": "timeseries", "title": "Cost per PR — build vs review",
+      "description": "Per-merged-PR build cost (Cursor agent session) vs review cost (Claude Opus reviewer).",
+      "gridPos": {"h":9,"w":24,"x":0,"y":5},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"currencyUSD"}},
+      "options": {"tooltip": {"mode": "multi"}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*SZ', merged_at) AS time, build_cost_usd AS `build`, review_cost_usd AS `review` FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost` ORDER BY merged_at",
+        "format":"table","location":"US"}] },
+
+    { "id": 26, "type": "timeseries", "title": "Cost per PR — by model (stacked)",
+      "description": "Build cost per PR broken down by LLM model. Each model is a separate stacked area.",
+      "gridPos": {"h":9,"w":24,"x":0,"y":14},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"currencyUSD",
+        "custom": {"fillOpacity":70,"stacking":{"mode":"normal"}}}},
+      "options": {"tooltip": {"mode": "multi"}},
+      "transformations": [
+        {"id": "partitionByValues", "options": {"fields": ["model"], "keepFields": false}}
+      ],
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*SZ', p.merged_at) AS time, m.model, ROUND(SUM(m.cost_usd),4) AS cost FROM `jarvis-bhaga-prod.jarvis_dev.pr_cost_build_session` m JOIN `jarvis-bhaga-prod.jarvis_dev.pr_cost_pr` p USING (pr_key) WHERE p.merged_at IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
+        "format":"table","location":"US"}] },
+
+    { "id": 21, "type": "barchart", "title": "Spend by model (all time)",
+      "description": "Total cost (build + review) broken down by LLM model. Sorted by spend.",
+      "gridPos": {"h":8,"w":10,"x":0,"y":23},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "options": {
+        "orientation": "horizontal",
+        "xField": "model",
+        "barWidth": 0.8,
+        "groupWidth": 0.7,
+        "stacking": "none",
+        "legend": {"displayMode":"list","placement":"bottom"}
+      },
+      "fieldConfig": {"defaults": {"unit":"currencyUSD","color":{"mode":"palette-classic"}}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT model, ROUND(SUM(cost_usd),2) AS cost FROM `jarvis-bhaga-prod.jarvis_dev.vw_model_cost` GROUP BY model ORDER BY cost DESC",
+        "format":"table","location":"US"}] },
+
+    { "id": 24, "type": "table", "title": "Review churn — rework cost per PR",
+      "description": "Cost of review runs beyond the first (rework indicator).",
+      "gridPos": {"h":8,"w":14,"x":10,"y":23},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT p.pr_number, COUNT(*) AS review_runs, ROUND(SUM(r.cost_usd),2) AS review_cost, ROUND(SUM(IF(rn > 1, r.cost_usd, 0)),2) AS rework_cost FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY pr_key ORDER BY ts) AS rn FROM `jarvis-bhaga-prod.jarvis_dev.pr_cost_review_run`) r JOIN `jarvis-bhaga-prod.jarvis_dev.pr_cost_pr` p USING (pr_key) GROUP BY p.pr_number ORDER BY rework_cost DESC LIMIT 15",
+        "format":"table","location":"US"}] },
+
     { "id": 3, "type": "table", "title": "Per-PR cost ledger",
-      "gridPos": {"h":12,"w":24,"x":0,"y":13},
+      "gridPos": {"h":10,"w":24,"x":0,"y":31},
       "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
       "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
-        "rawSql":"SELECT pr_number, title, build_cost_usd, review_cost_usd, review_runs, total_cost_usd, merged_at FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost` ORDER BY pr_number DESC",
+        "rawSql":"SELECT pr_number, title, ROUND(build_cost_usd,2) AS build_cost, ROUND(review_cost_usd,2) AS review_cost, review_runs, ROUND(total_cost_usd,2) AS total_cost, merged_at FROM `jarvis-bhaga-prod.jarvis_dev.vw_pr_cost` ORDER BY pr_number DESC",
+        "format":"table","location":"US"}] },
+
+    { "id": 200, "type": "row", "title": "Deploys & releases",
+      "collapsed": false, "gridPos": {"h":1,"w":24,"x":0,"y":41} },
+
+    { "id": 30, "type": "stat", "title": "Latest orchestrator SHA",
+      "gridPos": {"h":4,"w":6,"x":0,"y":42},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"none"}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT git_sha FROM `jarvis-bhaga-prod.jarvis_dev.deploys` WHERE unit = 'orchestrator' QUALIFY ROW_NUMBER() OVER (PARTITION BY unit ORDER BY ts DESC) = 1",
+        "format":"table","location":"US"}] },
+
+    { "id": 31, "type": "stat", "title": "Latest webhook SHA",
+      "gridPos": {"h":4,"w":6,"x":6,"y":42},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"none"}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT git_sha FROM `jarvis-bhaga-prod.jarvis_dev.deploys` WHERE unit = 'webhook' QUALIFY ROW_NUMBER() OVER (PARTITION BY unit ORDER BY ts DESC) = 1",
+        "format":"table","location":"US"}] },
+
+    { "id": 32, "type": "stat", "title": "Deploys this month",
+      "gridPos": {"h":4,"w":6,"x":12,"y":42},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"none"}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT COUNT(*) AS deploys FROM `jarvis-bhaga-prod.jarvis_dev.deploys` WHERE ts >= TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), MONTH) AND kind = 'deploy'",
+        "format":"table","location":"US"}] },
+
+    { "id": 33, "type": "timeseries", "title": "Deploys per week",
+      "gridPos": {"h":8,"w":24,"x":0,"y":46},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"none"}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT TIMESTAMP_TRUNC(ts, WEEK) AS time, unit, COUNT(*) AS deploys FROM `jarvis-bhaga-prod.jarvis_dev.deploys` WHERE kind = 'deploy' GROUP BY time, unit ORDER BY time",
+        "format":"table","location":"US"}] },
+
+    { "id": 34, "type": "table", "title": "Deploy history (last 30)",
+      "gridPos": {"h":10,"w":24,"x":0,"y":54},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT FORMAT_TIMESTAMP('%Y-%m-%d %H:%M', ts, 'America/Chicago') AS deployed_ct, agent, unit, LEFT(git_sha,12) AS sha, kind, actor, workflow_run_url FROM `jarvis-bhaga-prod.jarvis_dev.deploys` ORDER BY ts DESC LIMIT 30",
+        "format":"table","location":"US"}] },
+
+    { "id": 300, "type": "row", "title": "Runtime & free tier",
+      "collapsed": false, "gridPos": {"h":1,"w":24,"x":0,"y":64} },
+
+    { "id": 40, "type": "gauge", "title": "MTD job vCPU-seconds (job free tier: 240k)",
+      "description": "Cloud Run Jobs billable_instance_time × 2 vCPU, month-to-date. Free tier: 240,000 vCPU-s/mo.",
+      "gridPos": {"h":6,"w":6,"x":0,"y":65},
+      "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+      "fieldConfig": {"defaults": {"unit":"none","min":0,"max":240000,
+        "thresholds": {"mode":"absolute","steps":[
+          {"color":"green","value":0},
+          {"color":"yellow","value":150000},
+          {"color":"red","value":210000}]}}},
+      "options": {"reduceOptions": {"calcs": ["sum"]}},
+      "timeFrom": "now/M",
+      "targets": [{
+        "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+        "queryType": "timeSeriesList",
+        "timeSeriesList": {
+          "projectName": "jarvis-bhaga-prod",
+          "filters": ["metric.type","=","run.googleapis.com/container/billable_instance_time",
+                      "AND","resource.type","=","cloud_run_job"],
+          "perSeriesAligner": "ALIGN_SUM",
+          "alignmentPeriod": "+86400s",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupBys": []
+        }
+      }] },
+
+    { "id": 41, "type": "gauge", "title": "MTD job GiB-seconds (job free tier: 450k)",
+      "description": "Cloud Run Jobs billable_instance_time × 4 GiB (post-W0 bump), month-to-date. Free tier: 450,000 GiB-s/mo.",
+      "gridPos": {"h":6,"w":6,"x":6,"y":65},
+      "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+      "fieldConfig": {"defaults": {"unit":"none","min":0,"max":450000,
+        "thresholds": {"mode":"absolute","steps":[
+          {"color":"green","value":0},
+          {"color":"yellow","value":280000},
+          {"color":"red","value":400000}]}}},
+      "options": {"reduceOptions": {"calcs": ["sum"]}},
+      "timeFrom": "now/M",
+      "targets": [{
+        "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+        "queryType": "timeSeriesList",
+        "timeSeriesList": {
+          "projectName": "jarvis-bhaga-prod",
+          "filters": ["metric.type","=","run.googleapis.com/container/billable_instance_time",
+                      "AND","resource.type","=","cloud_run_job"],
+          "perSeriesAligner": "ALIGN_SUM",
+          "alignmentPeriod": "+86400s",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupBys": []
+        }
+      }] },
+
+    { "id": 42, "type": "gauge", "title": "MTD webhook requests (free tier: 2M)",
+      "description": "Cloud Run Service request count month-to-date. Free tier: 2,000,000 requests/mo.",
+      "gridPos": {"h":6,"w":6,"x":12,"y":65},
+      "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+      "fieldConfig": {"defaults": {"unit":"none","min":0,"max":2000000,
+        "thresholds": {"mode":"absolute","steps":[
+          {"color":"green","value":0},
+          {"color":"yellow","value":1200000},
+          {"color":"red","value":1800000}]}}},
+      "options": {"reduceOptions": {"calcs": ["sum"]}},
+      "timeFrom": "now/M",
+      "targets": [{
+        "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+        "queryType": "timeSeriesList",
+        "timeSeriesList": {
+          "projectName": "jarvis-bhaga-prod",
+          "filters": ["metric.type","=","run.googleapis.com/request_count",
+                      "AND","resource.type","=","cloud_run_revision",
+                      "AND","resource.label.service_name","=","bhaga-webhook"],
+          "perSeriesAligner": "ALIGN_SUM",
+          "alignmentPeriod": "+86400s",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupBys": []
+        }
+      }] },
+
+    { "id": 43, "type": "timeseries", "title": "Nightly job runtime (seconds/day)",
+      "description": "billable_instance_time per day — daily runtime proxy. Spikes indicate double-Chromium nights or slow ADP.",
+      "gridPos": {"h":8,"w":24,"x":0,"y":71},
+      "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+      "fieldConfig": {"defaults": {"unit":"s"}},
+      "targets": [{
+        "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+        "queryType": "timeSeriesList",
+        "timeSeriesList": {
+          "projectName": "jarvis-bhaga-prod",
+          "filters": ["metric.type","=","run.googleapis.com/container/billable_instance_time",
+                      "AND","resource.type","=","cloud_run_job"],
+          "perSeriesAligner": "ALIGN_SUM",
+          "alignmentPeriod": "+86400s",
+          "crossSeriesReducer": "REDUCE_SUM",
+          "groupBys": []
+        }
+      }] },
+
+    { "id": 44, "type": "timeseries", "title": "Memory utilization p99 (bhaga-daily-refresh)",
+      "description": "Container memory/utilizations p99 — this chart would have shown the OOM creep on 2026-06-11.",
+      "gridPos": {"h":8,"w":24,"x":0,"y":79},
+      "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+      "fieldConfig": {"defaults": {"unit":"percentunit","min":0,"max":1,
+        "thresholds": {"mode":"absolute","steps":[
+          {"color":"green","value":0},
+          {"color":"yellow","value":0.7},
+          {"color":"red","value":0.9}]}}},
+      "targets": [{
+        "datasource": {"type":"stackdriver","uid":"${ds_gcm}"},
+        "queryType": "timeSeriesList",
+        "timeSeriesList": {
+          "projectName": "jarvis-bhaga-prod",
+          "filters": ["metric.type","=","run.googleapis.com/container/memory/utilizations",
+                      "AND","resource.type","=","cloud_run_job"],
+          "perSeriesAligner": "ALIGN_PERCENTILE_99",
+          "alignmentPeriod": "+86400s",
+          "crossSeriesReducer": "REDUCE_MAX",
+          "groupBys": []
+        }
+      }] },
+
+    { "id": 400, "type": "row", "title": "BHAGA pipeline execution",
+      "collapsed": false, "gridPos": {"h":1,"w":24,"x":0,"y":87} },
+
+    { "id": 50, "type": "stat", "title": "Pipeline last run date",
+      "description": "Most recent date with data in model_daily — confirms last successful nightly job.",
+      "gridPos": {"h":4,"w":5,"x":0,"y":88},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"dateTimeAsLocal"}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT UNIX_MILLIS(TIMESTAMP(MAX(date))) AS time FROM `jarvis-bhaga-prod.bhaga.model_daily`",
+        "format":"table","location":"US"}] },
+
+    { "id": 51, "type": "stat", "title": "Days behind today",
+      "description": "Calendar days between last model_daily row and today. Green=0–1, yellow=2, red=3+.",
+      "gridPos": {"h":4,"w":4,"x":5,"y":88},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"none","thresholds":{"mode":"absolute","steps":[
+        {"color":"green","value":0},{"color":"yellow","value":2},{"color":"red","value":3}]},
+        "mappings":[]}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT DATE_DIFF(CURRENT_DATE(), MAX(date), DAY) AS days_behind FROM `jarvis-bhaga-prod.bhaga.model_daily`",
+        "format":"table","location":"US"}] },
+
+    { "id": 57, "type": "stat", "title": "Successful runs (last 30 days)",
+      "description": "Number of days with model_daily data in the past 30 calendar days.",
+      "gridPos": {"h":4,"w":4,"x":9,"y":88},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"none"}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT COUNT(DISTINCT date) AS successful_runs FROM `jarvis-bhaga-prod.bhaga.model_daily` WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)",
+        "format":"table","location":"US"}] },
+
+    { "id": 58, "type": "stat", "title": "Missed runs (last 30 days)",
+      "description": "Days with no model_daily entry in the past 30 calendar days. Green=0, yellow=1–2, red=3+.",
+      "gridPos": {"h":4,"w":4,"x":13,"y":88},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"none","thresholds":{"mode":"absolute","steps":[
+        {"color":"green","value":0},{"color":"yellow","value":1},{"color":"red","value":3}]}}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"SELECT 30 - COUNT(DISTINCT date) AS missed_runs FROM `jarvis-bhaga-prod.bhaga.model_daily` WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)",
+        "format":"table","location":"US"}] },
+
+    { "id": 54, "type": "timeseries", "title": "Daily run coverage (last 30 days)",
+      "description": "1 = nightly job produced model_daily data for that date. 0 = gap (job failed, skipped, or date not yet processed). Jun 12 = today, expected 0 until tonight's run.",
+      "gridPos": {"h":8,"w":14,"x":0,"y":92},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {"unit":"none","min":0,"max":1,
+        "custom":{"fillOpacity":50,"lineWidth":0,"pointSize":8},
+        "thresholds":{"mode":"absolute","steps":[{"color":"red","value":0},{"color":"green","value":1}]},
+        "color":{"mode":"thresholds"}}},
+      "options": {"tooltip":{"mode":"single"}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"WITH calendar AS (SELECT DATE_ADD(DATE_SUB(CURRENT_DATE(), INTERVAL 29 DAY), INTERVAL n DAY) AS d FROM UNNEST(GENERATE_ARRAY(0,29)) AS n) SELECT TIMESTAMP(c.d) AS time, IF(m.date IS NOT NULL, 1, 0) AS ran FROM calendar c LEFT JOIN `jarvis-bhaga-prod.bhaga.model_daily` m ON m.date = c.d ORDER BY c.d",
+        "format":"table","location":"US"}] },
+
+    { "id": 55, "type": "table", "title": "Recent coverage gaps",
+      "description": "Dates in the last 30 days where model_daily has no row (nightly job did not complete).",
+      "gridPos": {"h":8,"w":10,"x":14,"y":92},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {}},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"WITH calendar AS (SELECT DATE_ADD(DATE_SUB(CURRENT_DATE(), INTERVAL 29 DAY), INTERVAL n DAY) AS d FROM UNNEST(GENERATE_ARRAY(0,29)) AS n) SELECT c.d AS missing_date FROM calendar c LEFT JOIN `jarvis-bhaga-prod.bhaga.model_daily` m ON m.date = c.d WHERE m.date IS NULL ORDER BY c.d DESC",
+        "format":"table","location":"US"}] },
+
+    { "id": 56, "type": "table", "title": "Last 30 days — run status",
+      "description": "Per-day pipeline execution status. MISSING = no model_daily row for that date.",
+      "gridPos": {"h":8,"w":24,"x":0,"y":100},
+      "datasource": {"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+      "fieldConfig": {"defaults": {},
+        "overrides": [
+          {"matcher":{"id":"byName","options":"status"},"properties":[
+            {"id":"thresholds","value":{"mode":"absolute","steps":[{"color":"red","value":0},{"color":"green","value":1}]}},
+            {"id":"mappings","value":[
+              {"type":"value","options":{"MISSING":{"color":"red","text":"MISSING","index":0},"OK":{"color":"green","text":"OK","index":1}}}
+            ]},
+            {"id":"custom.displayMode","value":"color-background"}
+          ]},
+          {"matcher":{"id":"byName","options":"gross_sales"},"properties":[{"id":"unit","value":"currencyUSD"}]},
+          {"matcher":{"id":"byName","options":"pool_per_hour"},"properties":[{"id":"unit","value":"currencyUSD"}]}
+        ]},
+      "targets": [{"datasource":{"type":"grafana-bigquery-datasource","uid":"${ds_bigquery}"},
+        "rawSql":"WITH calendar AS (SELECT DATE_ADD(DATE_SUB(CURRENT_DATE(), INTERVAL 29 DAY), INTERVAL n DAY) AS date FROM UNNEST(GENERATE_ARRAY(0,29)) AS n) SELECT c.date, IF(m.date IS NOT NULL, 'OK', 'MISSING') AS status, m.gross_sales, m.txn_count, ROUND(m.pool_per_hour,2) AS pool_per_hour FROM calendar c LEFT JOIN `jarvis-bhaga-prod.bhaga.model_daily` m ON m.date = c.date ORDER BY c.date DESC",
         "format":"table","location":"US"}] }
+
   ]
 }

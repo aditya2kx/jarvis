@@ -1,5 +1,43 @@
 # Jarvis Build Progress
 
+## 2026-06-12 — WA: Square API migration ABANDONED (account blocker) + WC: Grafana dashboard refactor (PR #51)
+
+**WA (Square API migration) — abandoned, reverted from the PR. Scrape remains the Square path.**
+- **Blocker (hard, account-level):** the only available login (`adi@mypalmetto.co`) is a *team
+  member* on the Palmetto Superfoods Square account, not the business owner. Square gates both
+  viable auth paths on owner status:
+  1. OAuth authorize (`/oauth2/authorize`) → "Only the business owner can authorize applications
+     for this Square account" — a team member can never click Allow, regardless of scopes.
+  2. Personal access token → the Developer Console **Credentials** page shows "You do not have the
+     permissions required to access this content" for team members.
+  No business-owner access is available, so the API migration cannot be completed. **Lesson:** this
+  permission constraint was visible before implementation (the gated Credentials page) and should
+  have been validated as step 0 of the plan, before any code was written.
+- All WA code was reverted out of PR #51 (`skills/square_api/`, the `BHAGA_SQUARE_BACKEND` flag in
+  `daily_refresh.py`, credentials-registry + `palmetto.json` entries, tests, doc mentions). The
+  `square_palmetto_oauth` secret was deleted from Secret Manager. The full implementation exists in
+  branch history (`feat/wa-wc-combined` pre-revert, commits `4b69f38`/`e0ccb2d`) if owner access
+  ever materializes — the missing prerequisite is one OAuth click by the business owner (or a
+  developer-team invite for adi@mypalmetto.co).
+- Side effects left in place (harmless): the "Jarvis BHAGA Austin" app still exists in the Square
+  Developer Console with production redirect URL `http://localhost:8731/callback`.
+
+**WC (Grafana dashboard refactor) — fully deployed and verified:**
+- `grafana/jarvis_dev/dashboard.json` restructured into 3 rows: **Development cost** (11 panels —
+  existing + new: spend-by-model, spend-by-workstream, cache-hit-rate, review-churn,
+  cost-per-diff-line, monthly-run-rate), **Deploys & releases** (5 panels backed by new
+  `jarvis_dev.deploys` BQ table), **Runtime & free tier** (5 GCM/Stackdriver panels: vCPU-s gauge,
+  GiB-s gauge, webhook request count, nightly runtime timeseries, memory p99 timeseries).
+- New `scripts/deploy_events.py` records deploy rows to `jarvis_dev.deploys` and posts Grafana
+  annotations. Wired into `deploy.yml` as "Record deploy events" step (runs on every push to main).
+- New GCM (Stackdriver) datasource "Jarvis GCP Monitoring" provisioned (uid `cfovr14odnpxca`);
+  `grafana-bq-reader` SA granted `roles/monitoring.viewer`.
+- `grafana/jarvis_dev/deploy.py` now double-binds both `ds_bigquery` and `ds_gcm` UIDs at deploy time.
+- `grafana/jarvis_dev/verify_panels.py` ported from `agents/bhaga/grafana/verify_panels.py`.
+- Dashboard deployed to prod Grafana; `verify_panels.py` confirms 12/12 BQ panels OK, 0 errors,
+  4 empty (deploy panels — expected before first CI deploy after merge).
+- https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jarvis-development
+
 ## 2026-06-11 — BHAGA nightly OOM-killed at 2Gi; bumped to 4Gi + recovery rerun
 
 The 2026-06-11 nightly (`bhaga-daily-refresh-g6z5l`, resumed after READY) finished the Square scrape at 02:40:25 UTC, then hit `Out-of-memory event detected in container` 9s later at the 2Gi memory limit. Root cause: Square's restored trusted-device session was device-blocked (Cloud Run's egress IP rotates), triggering the single fresh-context retry — so Chromium launched **twice** in one process, and the next step's browser launch pushed the container past 2Gi. With `maxRetries: 0` there was no auto-retry; ADP, BQ load, model sheet, reviews, and the completion Slack message never ran.

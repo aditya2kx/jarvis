@@ -691,7 +691,13 @@ view `vw_pr_cost`). There are no committed `PR-*.json` files or `report.html` in
   once per clone) captures review cost into BQ on each commit (no `git add`, no staged files).
 - **Post-merge:** `pr-cost-finalize.yml` writes `merged_at` + final review cost to BQ via WIF.
 - **Dashboard:** https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jarvis-development
-  ("Jarvis Development" folder). Deploy/update: `python3 grafana/jarvis_dev/deploy.py`.
+  ("Jarvis Development" folder, uid `jarvis-dev-cost-v1`). Deploy/update:
+  `python3 grafana/jarvis_dev/deploy.py`. Verify BQ panels: `python3 grafana/jarvis_dev/verify_panels.py`.
+  Dashboard has three rows: **Development cost**, **Deploys & releases**, **Runtime & free tier**.
+- **Datasources:** "BHAGA BigQuery" (uid bound at deploy time); "Jarvis GCP Monitoring" (Stackdriver,
+  uid `cfovr14odnpxca`) — `grafana-bq-reader` SA needs `roles/monitoring.viewer` (granted 2026-06-12).
+- **Deploy events:** every `deploy.yml` run records a row to `jarvis_dev.deploys` and posts a Grafana
+  annotation. Script: `python3 scripts/deploy_events.py record --agent bhaga --unit orchestrator ...`.
 - **WIF SA:** `bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com` — has
   `roles/bigquery.dataEditor` + `roles/bigquery.jobUser` on `jarvis-bhaga-prod`.
 - **Backfill/migration:** `pr_cost_ledger.py migrate-json-to-bq` (one-shot, already run for PRs 12-47).

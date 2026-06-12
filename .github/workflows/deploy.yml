@@ -65,10 +65,15 @@ jobs:
           # every night (it was previously set for sandbox runs only). Codified
           # here so it survives a job recreate-from-scratch, not just a manual
           # `gcloud run jobs update`.
+          # --memory 4Gi: a device-blocked Square retry launches Chromium twice
+          # in one run; at 2Gi this OOM-killed the container mid-pipeline
+          # (2026-06-11). 4Gi (with 2 vCPU) stays well under the Cloud Run jobs
+          # free tier. Codified here so it survives a recreate-from-scratch.
           gcloud run jobs update bhaga-daily-refresh \
             --image ${{ env.REGISTRY }}/bhaga-orchestrator:${{ github.sha }} \
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT_ID }} \
+            --memory 4Gi \
             --update-env-vars BHAGA_SESSION_PERSIST=1
 
       - name: Deploy webhook (Cloud Run Service)

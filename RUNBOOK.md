@@ -138,6 +138,11 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
 | `bhaga-webhook` | Cloud Run **Service** | `…/jarvis-images/bhaga-webhook:<git-sha>` (+ `:latest`) | `cloud/webhook/Dockerfile` |
 
 - Registry base: `us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images`
+- **Job resources:** `bhaga-daily-refresh` runs at **2 vCPU / 4Gi** memory, `maxRetries: 0`,
+  1h timeout. The 4Gi (bumped from 2Gi on 2026-06-11) headroom covers a device-blocked Square
+  retry that launches Chromium twice in one run — a 2Gi container OOM-killed mid-pipeline. 4Gi at
+  2 vCPU stays under half the Cloud Run jobs free tier. `--memory 4Gi` is codified in
+  `deploy.yml`'s `gcloud run jobs update` step so it survives a recreate-from-scratch.
 - **Webhook URL:** https://bhaga-webhook-4yl5izovxq-uc.a.run.app
   - Routes: `POST /slack/events` (Events API), `POST /slack/commands` (`/bhaga refresh <date>`,
     `/bhaga status`), `GET /health`.

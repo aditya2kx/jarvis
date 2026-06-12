@@ -1,5 +1,11 @@
 # Jarvis Build Progress
 
+## 2026-06-11 — BHAGA nightly OOM-killed at 2Gi; bumped to 4Gi + recovery rerun
+
+The 2026-06-11 nightly (`bhaga-daily-refresh-g6z5l`, resumed after READY) finished the Square scrape at 02:40:25 UTC, then hit `Out-of-memory event detected in container` 9s later at the 2Gi memory limit. Root cause: Square's restored trusted-device session was device-blocked (Cloud Run's egress IP rotates), triggering the single fresh-context retry — so Chromium launched **twice** in one process, and the next step's browser launch pushed the container past 2Gi. With `maxRetries: 0` there was no auto-retry; ADP, BQ load, model sheet, reviews, and the completion Slack message never ran.
+
+**Fix:** bumped the job to `--memory 4Gi` (kept 2 vCPU). At a worst-case 30 min/night this is ~108k vCPU-s + ~216k GiB-s/mo — under half the Cloud Run jobs free tier (240k vCPU-s / 450k GiB-s in us-central1). Codified `--memory 4Gi` in `deploy.yml`'s `gcloud run jobs update` step so it survives a recreate-from-scratch. Re-ran for `REFRESH_DATE=2026-06-11` to backfill the missed day (one more OTP/magic-link round-trip, since scrape CSVs are never persisted to GCS — BQ is the system of record).
+
 ## 2026-06-11 — Claude reviewer upgraded to Opus 4.8 + evidence confidence rating
 
 Updated `.github/workflows/claude-review.yml` and `.github/claude-review-guidelines.md`:

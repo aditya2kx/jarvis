@@ -53,7 +53,7 @@ class TestHappyPath:
             return len(rows)
 
         with patch("core.datastore.load_rows", fake_load_rows):
-            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0)
+            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0, run_id="testrun123")
 
         assert len(captured) == 1
         row = captured[0]
@@ -99,7 +99,7 @@ class TestFailurePath:
             return len(rows)
 
         with patch("core.datastore.load_rows", fake_load_rows):
-            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=1)
+            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=1, run_id="testrun123")
 
         assert captured[0]["status"] == "failed"
         assert captured[0]["failed_step"] == "load_raw_bigquery"
@@ -125,7 +125,7 @@ class TestOtpPending:
             return len(rows)
 
         with patch("core.datastore.load_rows", fake_load_rows):
-            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0)
+            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0, run_id="testrun123")
 
         assert captured[0]["status"] == "otp_pending"
         assert captured[0]["exit_code"] == 0
@@ -149,7 +149,8 @@ class TestHalted:
 
         with patch("core.datastore.load_rows", fake_load_rows):
             dr._record_pipeline_run(
-                started_at_utc=_make_started(), exit_code=dr.EXIT_HALTED
+                started_at_utc=_make_started(), exit_code=dr.EXIT_HALTED,
+                run_id="testrun123"
             )
 
         assert captured[0]["status"] == "halted"
@@ -171,7 +172,7 @@ class TestGating:
 
         mock_load = MagicMock()
         with patch("core.datastore.load_rows", mock_load):
-            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0)
+            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0, run_id="testrun123")
 
         mock_load.assert_not_called()
 
@@ -181,7 +182,7 @@ class TestGating:
 
         mock_load = MagicMock()
         with patch("core.datastore.load_rows", mock_load):
-            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0)
+            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0, run_id="testrun123")
 
         mock_load.assert_not_called()
 
@@ -191,7 +192,7 @@ class TestGating:
 
         mock_load = MagicMock()
         with patch("core.datastore.load_rows", mock_load):
-            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0)
+            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0, run_id="testrun123")
 
         mock_load.assert_not_called()
 
@@ -212,7 +213,7 @@ class TestNeverRaises:
 
         # Must not raise
         with patch("core.datastore.load_rows", exploding_load_rows):
-            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0)
+            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0, run_id="testrun123")
 
     def test_main_returns_run_refresh_rc(self, monkeypatch):
         """main() must propagate _run_refresh()'s return code."""
@@ -245,11 +246,14 @@ class TestSourcePulls:
     def _fake_load_rows_per_table(self):
         captured: dict[str, list] = {}
 
+        kwargs_captured: dict = {}
+
         def fake_load_rows(table, rows, **kw):
             captured.setdefault(table, []).extend(rows)
+            kwargs_captured[table] = kw
             return len(rows)
 
-        return captured, fake_load_rows
+        return captured, fake_load_rows, kwargs_captured
 
     def test_source_pulls_rows_written(self, monkeypatch):
         _reset_summary(
@@ -260,18 +264,23 @@ class TestSourcePulls:
             }],
         )
         monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
-        captured, fake_load_rows = self._fake_load_rows_per_table()
+        captured, fake_load_rows, kwargs_captured = self._fake_load_rows_per_table()
 
         with patch("core.datastore.load_rows", fake_load_rows):
-            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0)
+            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0, run_id="testrun123")
 
         assert len(captured.get("pipeline_runs", [])) == 1
         assert len(captured.get("source_pulls", [])) == 1
+        run_row = captured["pipeline_runs"][0]
+        assert run_row["run_id"] == "testrun123"
         pull = captured["source_pulls"][0]
+        assert pull["run_id"] == "testrun123"
         assert pull["source"] == "square"
         assert pull["status"] == "success"
         assert pull["error"] is None
         assert pull["run_date"] == _REF_DATE.isoformat()
+        assert kwargs_captured["pipeline_runs"]["merge_keys"] == ["run_id"]
+        assert kwargs_captured["source_pulls"]["merge_keys"] == ["run_id", "source"]
 
     def test_failed_pull_error_string(self, monkeypatch):
         _reset_summary(
@@ -283,10 +292,10 @@ class TestSourcePulls:
             }],
         )
         monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
-        captured, fake_load_rows = self._fake_load_rows_per_table()
+        captured, fake_load_rows, kwargs_captured = self._fake_load_rows_per_table()
 
         with patch("core.datastore.load_rows", fake_load_rows):
-            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=1)
+            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=1, run_id="testrun123")
 
         pull = captured["source_pulls"][0]
         assert pull["status"] == "failed"
@@ -296,10 +305,10 @@ class TestSourcePulls:
         """When source_pulls absent, only pipeline_runs is inserted."""
         _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
         monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
-        captured, fake_load_rows = self._fake_load_rows_per_table()
+        captured, fake_load_rows, kwargs_captured = self._fake_load_rows_per_table()
 
         with patch("core.datastore.load_rows", fake_load_rows):
-            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0)
+            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0, run_id="testrun123")
 
         assert "pipeline_runs" in captured
         assert "source_pulls" not in captured
@@ -314,10 +323,10 @@ class TestSourcePulls:
             }],
         )
         monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
-        captured, fake_load_rows = self._fake_load_rows_per_table()
+        captured, fake_load_rows, kwargs_captured = self._fake_load_rows_per_table()
 
         with patch("core.datastore.load_rows", fake_load_rows):
-            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0)
+            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0, run_id="testrun123")
 
         assert captured["source_pulls"][0]["source"] == "google_reviews"
 
@@ -361,4 +370,32 @@ class TestSourcePulls:
 
         # Must not raise
         with patch("core.datastore.load_rows", exploding_load_rows):
-            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0)
+            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0, run_id="testrun123")
+
+
+# ---------------------------------------------------------------------------
+# Verify main() generates a unique 32-char hex run_id per invocation
+# ---------------------------------------------------------------------------
+
+class TestMainRunId:
+    def test_main_generates_unique_run_id(self, monkeypatch):
+        """main() must generate a distinct 32-char hex run_id on each call."""
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+
+        received_ids: list[str] = []
+        mock_recorder = MagicMock(side_effect=lambda **kw: received_ids.append(kw["run_id"]))
+
+        with (
+            patch.object(dr, "_run_refresh", return_value=0),
+            patch.object(dr, "_record_pipeline_run", mock_recorder),
+        ):
+            dr.main()
+            dr.main()
+
+        assert len(received_ids) == 2
+        for rid in received_ids:
+            assert len(rid) == 32
+            assert rid.isalnum()
+        assert received_ids[0] != received_ids[1]

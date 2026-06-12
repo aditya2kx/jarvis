@@ -943,7 +943,7 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 
 **Attempt-only semantics:** only sources that actually ran a scrape appear in `source_pulls`. Sources skipped because their step marker was already present (`step_already_done`) or suppressed via `--skip-*` flags never enter the phase-1 results dict and are not recorded. Both tables are empty until the first nightly run after migration 017 is applied.
 
-**How run outcomes are recorded:** `daily_refresh.main()` is a thin wrapper around `_run_refresh()`. In its `finally` block it calls `_record_pipeline_run()`, which (best-effort, gated on `BHAGA_DATASTORE=bigquery`, skipped on `--dry-run`) appends one row to `pipeline_runs` plus one row per attempted source to `source_pulls`. Possible run statuses:
+**How run outcomes are recorded:** `daily_refresh.main()` generates a `run_id` (UUID4 hex, 32 chars) at startup, then calls `_run_refresh()`. In its `finally` block it calls `_record_pipeline_run(run_id=…)`, which (best-effort, gated on `BHAGA_DATASTORE=bigquery`, skipped on `--dry-run`) MERGEs one row into `pipeline_runs` (merge key: `run_id`) and one row per attempted source into `source_pulls` (merge keys: `run_id` + `source`). Using MERGE means a re-run of the recorder (e.g. a transient BQ timeout followed by a retry) converges to the same row rather than appending a duplicate. Distinct nightly retry invocations each get their own `run_id` and remain distinct rows — that is the attempt history the tables exist to show. Possible run statuses:
 
 - `success` — `_run_refresh()` returned 0 and model was verified OK
 - `failed` — returned 1 (any step/guard failure; `failed_step` records the first one)

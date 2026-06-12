@@ -1,5 +1,15 @@
 # Jarvis Build Progress
 
+## 2026-06-12 — BHAGA Analytics: Pipeline Health v2 fix — run_id idempotency + test-leak patch (migration 018)
+
+**What changed:** Closed two correctness gaps discovered after the two-table design landed.
+
+- **Bug: test pollution of prod `pipeline_runs`.** Root cause: `test_status.py` runs `os.environ.setdefault("BHAGA_DATASTORE", "bigquery")` at import (process-wide); subsequent tests calling `daily_refresh.main()` triggered the recorder's env gate, writing 8 junk rows (sentinel errors like `_StopAfterGate`, fixture date `2026-05-20`) to prod. Fix: `agents/bhaga/scripts/conftest.py` — `autouse` fixture `_stub_pipeline_recorder` monkeypatches `_record_pipeline_run` to a no-op for all tests *except* `test_pipeline_runs_recorder` (which mocks `load_rows` itself). All 8 junk rows deleted from prod.
+- **Feature: `run_id` idempotency (migration 018).** `daily_refresh.main()` now generates a UUID4 hex `run_id` at startup and passes it to `_record_pipeline_run()`. The recorder uses `load_rows(..., merge_keys=["run_id"])` for `pipeline_runs` and `merge_keys=["run_id", "source"]` for `source_pulls` — MERGE semantics so recorder retries converge rather than duplicate. Distinct nightly retry invocations keep distinct `run_id`s and remain separate rows by design. Migration 018 adds `run_id STRING` to both tables and recreates the views to expose the column.
+- **Enforcement: `plan-execution-readiness` rule now `alwaysApply: true`.** Previously the rule was description-only and had to be manually invoked. Frontmatter updated so the checklist is always present in session context.
+- **Tests:** 1 new test class (`TestMainRunId`) with `test_main_generates_unique_run_id`; merge_keys assertions added to `test_source_pulls_rows_written`. Full suite: 753 passed, 0 failed.
+- **Leak regression:** Ran the exact test combo that was leaking (`test_status + test_daily_refresh + test_daily_refresh_otp_gate + test_pipeline_runs_recorder`); `pipeline_runs` count stays 0 after a green run.
+
 ## 2026-06-12 — BHAGA Analytics: Pipeline Health v2 — two-table design (dashboard v38, migration 017)
 
 **What changed:** Replaced the six stat panels in the "0. Pipeline Health" row with two side-by-side history tables (dashboard v37→v38).

@@ -81,6 +81,7 @@ import time
 import traceback
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
@@ -1796,9 +1797,10 @@ def run_step(
 _RUN_SUMMARY: dict = {}  # populated by _run_refresh(); read by main()'s recorder
 
 
-def _record_pipeline_run(*, started_at_utc, exit_code, error=None) -> None:
-    """Append tonight's terminal outcome to BQ pipeline_runs. Best-effort:
-    gated on BHAGA_DATASTORE=bigquery, skipped on --dry-run, never raises."""
+def _record_pipeline_run(*, started_at_utc, exit_code, run_id, error=None) -> None:
+    """Upsert tonight's terminal outcome to BQ pipeline_runs + source_pulls.
+    Best-effort: gated on BHAGA_DATASTORE=bigquery, skipped on --dry-run, never raises.
+    Uses MERGE (merge_keys) so re-records from a retry converge rather than duplicate."""
     if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":
         return
     if _RUN_SUMMARY.get("dry_run"):
@@ -1812,6 +1814,7 @@ def _record_pipeline_run(*, started_at_utc, exit_code, error=None) -> None:
         status = _RUN_SUMMARY.get("status_override") or {
             0: "success", EXIT_HALTED: "halted"}.get(exit_code, "failed")
         load_rows("pipeline_runs", [{
+            "run_id": run_id,
             "run_date": refresh_date.isoformat(),
             "store": _RUN_SUMMARY.get("store"),
             "started_at_utc": started_at_utc.isoformat(),
@@ -1822,13 +1825,14 @@ def _record_pipeline_run(*, started_at_utc, exit_code, error=None) -> None:
             "error": error or _RUN_SUMMARY.get("error"),
             "exit_code": exit_code,
             "recorded_at_utc": finished.isoformat(),
-        }], column_bq_types={
+        }], merge_keys=["run_id"], column_bq_types={
             "started_at_utc": "TIMESTAMP", "finished_at_utc": "TIMESTAMP",
             "recorded_at_utc": "TIMESTAMP", "run_date": "DATE",
-        })  # no merge_keys → plain INSERT append (core/datastore.py:168)
+        })
         pulls = _RUN_SUMMARY.get("source_pulls") or []
         if pulls:
             load_rows("source_pulls", [{
+                "run_id": run_id,
                 "run_date": refresh_date.isoformat(),
                 "store": _RUN_SUMMARY.get("store"),
                 "source": p["source"],
@@ -1837,10 +1841,10 @@ def _record_pipeline_run(*, started_at_utc, exit_code, error=None) -> None:
                 "status": p["status"],
                 "error": p["error"],
                 "recorded_at_utc": finished.isoformat(),
-            } for p in pulls], column_bq_types={
+            } for p in pulls], merge_keys=["run_id", "source"], column_bq_types={
                 "started_at_utc": "TIMESTAMP", "finished_at_utc": "TIMESTAMP",
                 "recorded_at_utc": "TIMESTAMP", "run_date": "DATE",
-            })  # no merge_keys → plain INSERT append, same as pipeline_runs
+            })
     except Exception as exc:  # noqa: BLE001
         print(f"[pipeline_runs] WARN: could not record run outcome: {exc}",
               file=sys.stderr)
@@ -1848,6 +1852,7 @@ def _record_pipeline_run(*, started_at_utc, exit_code, error=None) -> None:
 
 def main() -> int:
     started = datetime.datetime.now(datetime.timezone.utc)
+    run_id = uuid.uuid4().hex
     rc = 1
     err: str | None = None
     try:
@@ -1857,7 +1862,8 @@ def main() -> int:
         err = f"{type(exc).__name__}: {exc}"
         raise
     finally:
-        _record_pipeline_run(started_at_utc=started, exit_code=rc, error=err)
+        _record_pipeline_run(started_at_utc=started, exit_code=rc,
+                             run_id=run_id, error=err)
 
 
 def _run_refresh() -> int:

@@ -1,5 +1,6 @@
 ---
-description: Review/refine a plan so a lower-tier LLM (Sonnet/Composer) can execute it with zero additional research. Invoke when the operator says "make this plan execution-ready" or "review this plan for a lower-tier/dumb LLM".
+description: Execution-readiness checklist that EVERY plan must pass before Plan→Agent. Auto-applied; do not wait for the operator to ask.
+alwaysApply: true
 ---
 # Plan execution-readiness review
 

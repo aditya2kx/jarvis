@@ -919,13 +919,38 @@ and alerts.  Don't hand-investigate; run this first.
 - `scripts/check_doc_freshness.py --strict` coupling (CI hard-fails a migration or
   dashboard PR that doesn't also update `status.py`).
 
+### Pipeline Health row (added PR feat/bhaga-dashboard-pipeline-health, 2026-06-12)
+
+The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows six stat panels:
+
+| Panel | Source | Notes |
+|---|---|---|
+| Last Run (CT) | `vw_pipeline_health.finished_at_utc` | Formatted in America/Chicago; shows "no runs yet" until the first nightly |
+| Run Status | `vw_pipeline_health.status` | `success` (green) / `failed` / `halted` (red) / `otp_pending` (yellow) |
+| Failed Step | `vw_pipeline_health.failed_step` | Step name from `run_step()` or guard; `—` (green) when healthy |
+| Square — Last Pull | `vw_pipeline_health.square_last_pull_utc` | MAX(scraped_at_utc) from `square_transactions` |
+| ADP — Last Pull | `vw_pipeline_health.adp_last_pull_utc` | MAX(scraped_at_utc) from `adp_shifts` |
+| Google Reviews — Last Pull | `vw_pipeline_health.reviews_last_pull_utc` | MAX(ingested_at_utc) from `google_reviews` |
+
+**How run outcomes are recorded:** `daily_refresh.main()` is a thin wrapper around `_run_refresh()`. In its `finally` block it calls `_record_pipeline_run()`, which (best-effort, gated on `BHAGA_DATASTORE=bigquery`, skipped on `--dry-run`) appends one row to `pipeline_runs` with the terminal `status`, `failed_step`, and wall-clock timestamps. Possible statuses:
+
+- `success` — `_run_refresh()` returned 0 and model was verified OK
+- `failed` — returned 1 (any step/guard failure; `failed_step` records the first one)
+- `halted` — returned `EXIT_HALTED` (3) because the circuit breaker is tripped
+- `otp_pending` — returned 0 early because the OTP handshake is awaited
+
+`vw_pipeline_health` is a single-row view: `LEFT JOIN latest_run ON TRUE` means the freshness columns (from raw tables) populate immediately after the migration is applied; the run columns are NULL and panels show "no runs yet" until the first nightly populates `pipeline_runs`.
+
+**KDS: Order Date picker** defaults to the most recent successfully-completed run date (falls back to the latest KDS date if no successful run recorded yet, or if KDS was skipped that night).
+
 ### Architecture
 
 - **BQ dataset:** `jarvis-bhaga-prod.bhaga`
 - **Raw tables:** `square_transactions`, `adp_shifts`, `adp_punches`, `adp_wage_rates`, `square_daily_rollup`
 - **Curated views:** `vw_daily_sales`, `vw_tips_by_hour`, `vw_labor_daily`, `vw_labor_weekly`, `vw_sales_labor_daily`, `vw_employee_hours_summary`
 - **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`, `model_forecast_daily`
-- **Model views (Grafana BI contract):** `vw_model_labor_daily`, `vw_model_period_summary`, `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions`
+- **Pipeline run log:** `pipeline_runs` (migration 016) — one appended row per terminal outcome; queried via `vw_pipeline_health`
+- **Model views (Grafana BI contract):** `vw_model_labor_daily`, `vw_model_period_summary`, `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions`, `vw_pipeline_health`
 - **Grafana org:** `steadyangelfish2985`
 - **Dashboard URL:** `https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics`
 - **Read-only SA:** `grafana-bq-reader@jarvis-bhaga-prod.iam.gserviceaccount.com` (DataViewer + JobUser)

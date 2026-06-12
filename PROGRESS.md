@@ -1,5 +1,15 @@
 # Jarvis Build Progress
 
+## 2026-06-12 — BHAGA Analytics: Pipeline Health row + exact-fit tables + KDS date default (branch feat/bhaga-dashboard-pipeline-health)
+
+**What changed:** Added a "0. Pipeline Health" top row to the BHAGA Analytics Grafana dashboard (v36→v37).
+
+- **BQ schema (migration 016):** New `pipeline_runs` table (one appended row per `daily_refresh` terminal outcome: `success`/`failed`/`halted`/`otp_pending`) and `vw_pipeline_health` single-row view joining the latest run outcome with per-source scrape timestamps from raw tables.
+- **`daily_refresh.py`:** Public `main()` is now a thin wrapper around `_run_refresh()`; the `finally` block calls `_record_pipeline_run()` (best-effort, BQ-gated) to append the outcome row. `_RUN_SUMMARY` is populated at four sites: after arg parsing, in `_record_failure()` (captures all step/guard failures), before the OTP-pending return, and before the phase-failure return.
+- **Dashboard v37:** Six stat panels at y=1 (Last Run CT, Run Status with colour mapping, Failed Step, Square/ADP/Google Reviews last pull dates); all existing panels shifted y+=5. Column widths set to exact-fit px on all four table panels (52/61/71/73); one free-text column per table left unset to absorb remaining width. KDS: Order Date picker now defaults to the most recent successfully-completed run date (falls back to latest KDS date if no recorded run).
+- **`status.py`:** `vw_pipeline_health` added to `GRAFANA_VIEWS` registry.
+- **Docs:** RUNBOOK §14 "Pipeline Health row" subsection added; `agents/bhaga/scripts/README.md` updated; `CONTRIBUTING.md` step 2 codified to require plan-execution-readiness for every plan.
+
 ## 2026-06-12 — WA: Square API migration ABANDONED (account blocker) + WC: Grafana dashboard refactor (PR #51)
 
 **WA (Square API migration) — abandoned, reverted from the PR. Scrape remains the Square path.**

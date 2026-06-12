@@ -63,12 +63,47 @@ def _template_defaults(dashboard: dict) -> dict[str, str]:
     Covers ``textbox`` and ``custom`` (dropdown) vars — both carry a literal
     ``current.value`` that Grafana substitutes into ``rawSql``. (``datasource``
     vars like ``ds_bigquery`` are bound to the real UID separately.)
+
+    ``query``-type variables with an empty ``current.value`` (e.g. kds_date after
+    clearing the pinned default so Grafana auto-selects on load) are left as an
+    empty string here; callers should resolve them via ``_resolve_empty_query_vars``.
     """
     defaults: dict[str, str] = {}
     for var in dashboard.get("templating", {}).get("list", []):
         if var.get("type") in ("textbox", "custom", "query"):
             defaults[var["name"]] = str((var.get("current") or {}).get("value", ""))
     return defaults
+
+
+def _resolve_empty_query_vars(
+    dashboard: dict,
+    variables: dict[str, str],
+    grafana_url: str,
+    token: str,
+    ds_uid: str,
+) -> None:
+    """For each query-type variable whose resolved value is empty, run its SQL
+    against the Grafana datasource and use the first returned value.  This
+    mirrors what Grafana does on a fresh dashboard load when ``current`` is
+    intentionally cleared to force re-evaluation.  Mutates ``variables`` in place.
+    """
+    for var in dashboard.get("templating", {}).get("list", []):
+        if var.get("type") != "query":
+            continue
+        name = var.get("name", "")
+        if variables.get(name):
+            continue  # already has a value
+        raw_sql = (var.get("query") or {}).get("rawSql", "")
+        if not raw_sql:
+            continue
+        result = _run_query(grafana_url, token, ds_uid, raw_sql)
+        if "error" in result or result.get("rows", 0) == 0:
+            continue
+        # The variable query returns a list of option values; take the first
+        # (which is the one the ORDER BY in our SQL puts at the top).
+        frames_values = result.get("first")
+        if frames_values is not None:
+            variables[name] = str(frames_values)
 
 
 def _substitute(sql: str, variables: dict[str, str]) -> str:
@@ -163,6 +198,9 @@ def main() -> int:
             raise SystemExit(f"--var must be name=value, got {override!r}")
         k, v = override.split("=", 1)
         variables[k] = v
+    # Resolve query-type vars whose current is intentionally empty (cleared so
+    # Grafana auto-selects on load).  Runs each var's SQL to pick the first value.
+    _resolve_empty_query_vars(dashboard, variables, grafana_url, token, ds_uid)
     print(f"[verify] template vars: {variables}\n")
 
     rows_fmt = "{:<22} {:>4} {:<7} {:>7}  {}"

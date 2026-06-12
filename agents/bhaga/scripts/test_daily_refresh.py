@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import pathlib
 import sys
 import tempfile
 import unittest
@@ -967,6 +968,129 @@ class ModelVsRollupDriftTests(unittest.TestCase):
         fake_client.query.side_effect = RuntimeError("timeout")
         with mock.patch.object(_bq, "Client", return_value=fake_client):
             _assert_model_matches_raw_rollup(self.RD)  # must not raise
+
+
+class TestSquareBackendFlagRouting(unittest.TestCase):
+    """BHAGA_SQUARE_BACKEND=api routes _run_square_pipeline through
+    skills.square_api.export instead of the Playwright scrape, with the same
+    artifacts/markers contract. Default (unset/scrape) must NOT touch the API
+    modules."""
+
+    RD = datetime.date(2026, 6, 9)
+
+    def _fake_modules(self, export_calls: list, kds_calls: list):
+        """Stub module tree for skills.square_api + the scrape-lock helpers."""
+        fake_export = types.ModuleType("skills.square_api.export")
+
+        def export_window(*, start_date, end_date, store):
+            export_calls.append((start_date, end_date, store))
+            return {
+                "transactions_csv": pathlib.Path("/tmp/fake-txn.csv"),
+                "items_csv": pathlib.Path("/tmp/fake-items.csv"),
+            }
+
+        fake_export.export_window = export_window
+
+        fake_kds = types.ModuleType("skills.square_api.kds_reporting")
+
+        def export_window_kds(*, start_date, end_date, store):
+            kds_calls.append((start_date, end_date, store))
+            return pathlib.Path("/tmp/fake-kds.csv")
+
+        fake_kds.export_window_kds = export_window_kds
+
+        fake_pkg = types.ModuleType("skills.square_api")
+        fake_pkg.export = fake_export
+        fake_pkg.kds_reporting = fake_kds
+
+        fake_runner = types.ModuleType("skills.square_tips.runner")
+        fake_runner._acquire_scrape_lock = lambda store: None
+        fake_runner._release_scrape_lock = lambda: None
+
+        return {
+            "skills.square_api": fake_pkg,
+            "skills.square_api.export": fake_export,
+            "skills.square_api.kds_reporting": fake_kds,
+            "skills.square_tips.runner": fake_runner,
+        }
+
+    def test_api_backend_routes_to_export_window(self):
+        export_calls: list = []
+        kds_calls: list = []
+        with mock.patch.dict(os.environ, {"BHAGA_SQUARE_BACKEND": "api"}), \
+             mock.patch.dict(sys.modules, self._fake_modules(export_calls, kds_calls)), \
+             mock.patch.object(daily_refresh, "_consolidate_into_master",
+                               return_value=(100, 5)) as consolidate, \
+             mock.patch.object(daily_refresh, "step_already_done", return_value=False):
+            result = daily_refresh._run_square_pipeline(
+                gap_start=self.RD, end_date=self.RD, store="palmetto",
+                headed=False, refresh_date=self.RD, dry_run=False,
+            )
+        self.assertTrue(result.success, f"pipeline failed: {result.error}")
+        self.assertEqual(export_calls, [(self.RD, self.RD, "palmetto")])
+        self.assertEqual(kds_calls, [(self.RD, self.RD, "palmetto")])
+        self.assertEqual(result.artifacts["square_csv"],
+                         pathlib.Path("/tmp/fake-txn.csv"))
+        self.assertEqual(result.artifacts["item_sales_csv"],
+                         pathlib.Path("/tmp/fake-items.csv"))
+        self.assertEqual(result.artifacts["kds_csv"],
+                         pathlib.Path("/tmp/fake-kds.csv"))
+        consolidate.assert_called_once()
+        self.assertEqual(result.master_stats, {"master_rows": 100, "rows_added": 5})
+
+    def test_api_backend_skip_kds_skips_reporting_call(self):
+        export_calls: list = []
+        kds_calls: list = []
+        with mock.patch.dict(os.environ, {"BHAGA_SQUARE_BACKEND": "api"}), \
+             mock.patch.dict(sys.modules, self._fake_modules(export_calls, kds_calls)), \
+             mock.patch.object(daily_refresh, "_consolidate_into_master",
+                               return_value=(100, 5)), \
+             mock.patch.object(daily_refresh, "step_already_done", return_value=False):
+            result = daily_refresh._run_square_pipeline(
+                gap_start=self.RD, end_date=self.RD, store="palmetto",
+                headed=False, refresh_date=self.RD, dry_run=False, skip_kds=True,
+            )
+        self.assertTrue(result.success)
+        self.assertEqual(len(export_calls), 1)
+        self.assertEqual(kds_calls, [])
+        self.assertIsNone(result.artifacts["kds_csv"])
+
+    def test_api_backend_kds_failure_is_nonfatal(self):
+        """A Reporting-API error must not fail the transactions/items load."""
+        export_calls: list = []
+        mods = self._fake_modules(export_calls, [])
+
+        def _boom(**kwargs):
+            raise RuntimeError("reporting api down")
+
+        mods["skills.square_api.kds_reporting"].export_window_kds = _boom
+        with mock.patch.dict(os.environ, {"BHAGA_SQUARE_BACKEND": "api"}), \
+             mock.patch.dict(sys.modules, mods), \
+             mock.patch.object(daily_refresh, "_consolidate_into_master",
+                               return_value=(100, 5)), \
+             mock.patch.object(daily_refresh, "step_already_done", return_value=False):
+            result = daily_refresh._run_square_pipeline(
+                gap_start=self.RD, end_date=self.RD, store="palmetto",
+                headed=False, refresh_date=self.RD, dry_run=False,
+            )
+        self.assertTrue(result.success)
+        self.assertIsNone(result.artifacts["kds_csv"])
+
+    def test_default_backend_does_not_import_square_api(self):
+        """With the flag unset, dry_run short-circuits before either path —
+        and the API stub must never be touched."""
+        export_calls: list = []
+        kds_calls: list = []
+        env = {k: v for k, v in os.environ.items() if k != "BHAGA_SQUARE_BACKEND"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch.dict(sys.modules, self._fake_modules(export_calls, kds_calls)):
+            result = daily_refresh._run_square_pipeline(
+                gap_start=self.RD, end_date=self.RD, store="palmetto",
+                headed=False, refresh_date=self.RD, dry_run=True,
+            )
+        self.assertTrue(result.success)
+        self.assertEqual(export_calls, [])
+        self.assertEqual(kds_calls, [])
 
 
 if __name__ == "__main__":

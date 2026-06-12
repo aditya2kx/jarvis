@@ -37,23 +37,29 @@ PROJECT = "jarvis-bhaga-prod"
 PROD_DS = "bhaga"
 SANDBOX_DS = "bhaga_sandbox"
 
-# Columns compared per table (all mapped columns, excluding load-time metadata).
+# Columns compared per table — every column the BQ mappers write
+# (map_square_transaction / map_square_item_line / map_square_kds_daily in
+# agents/bhaga/scripts/backfill_bigquery.py), excluding load-time metadata
+# (scraped_at_utc) and per_item_times_json (list ordering is load-dependent;
+# the percentile columns derived from it ARE compared).
 TXN_COLS = [
-    "transaction_id", "payment_id", "date_local", "time_local", "tz_label",
-    "gross_sales_cents", "discounts_cents", "tip_cents", "total_collected_cents",
-    "fees_cents", "net_total_cents", "source", "staff_name", "event_type",
-    "location", "transaction_status",
+    "transaction_id", "date_local", "event_type",
+    "gross_sales_cents", "discount_cents", "net_sales_cents",
+    "tip_cents", "total_collected_cents", "net_total_cents",
+    "source", "staff_name", "location",
+    "created_at_src_iso", "created_at_local_iso",
 ]
 ITEM_COLS = [
-    "transaction_id", "payment_id", "date_local", "item_name", "quantity",
-    "gross_sales_cents", "discounts_cents", "net_sales_cents", "category",
-    "employee", "channel", "event_type", "location",
+    "date_local", "item_sold_at_local", "item_name", "category",
+    "qty_sold", "gross_sales_cents", "discount_cents", "net_sales_cents",
+    "event_type", "transaction_id", "payment_id", "location",
+    "channel", "employee", "line_seq",
 ]
 KDS_COLS = [
     "date_local", "completed_tickets", "completed_items",
     "median_time_per_item_sec", "p90_time_per_item_sec",
     "p95_time_per_item_sec", "p99_time_per_item_sec",
-    "pct_tickets_late",
+    "pct_tickets_late", "late_tickets", "due_tickets",
 ]
 
 _TABLES = [

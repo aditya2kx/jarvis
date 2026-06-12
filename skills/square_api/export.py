@@ -53,15 +53,16 @@ TXN_HEADER = [
 ]
 
 # 31-column Item Sales Detail header. Names at the indexes the parser reads
-# (_ITEM_COL) are real; the rest are placeholders the parser ignores. The
-# parser only validates that "Transaction ID" is present and reads by index.
+# (_ITEM_COL in transactions_backend: 0-5, 9-14, 15, 18-20, 24, 25, 28, 30)
+# are real; the rest are placeholders the parser ignores by position.
 ITEM_HEADER = [
     "Date", "Time", "Time Zone", "Category", "Item", "Qty",
     "Price Point Name", "SKU", "Modifiers Applied", "Gross Sales",
     "Discounts", "Net Sales", "Tax", "Transaction ID", "Payment ID",
-    "Device Name", "Col16", "Col17", "Event Type", "Location",
-    "Dining Option", "Col21", "Col22", "Col23", "Unit", "Count",
-    "Col26", "Employee", "Col28", "Channel", "Col30",
+    "Device Name", "Notes", "Details", "Event Type", "Location",
+    "Dining Option", "Customer ID", "Customer Name",
+    "Customer Reference ID", "Unit", "Count", "Itemization Type",
+    "Commission", "Employee", "Token", "Channel",
 ]
 
 DEFAULT_DISPLAY_TZ = "America/New_York"
@@ -211,7 +212,17 @@ def export_window(*, start_date: datetime.date, end_date: datetime.date,
         "location_id": location_id, "limit": 100, "sort_order": "ASC",
     }, items_key="payments")
 
-    order_ids = sorted({p.get("order_id") for p in payments if p.get("order_id")})
+    # Refunds in the same window: the dashboard export includes them as
+    # event_type=Refund rows with negative amounts (they reduce the tip pool).
+    refunds = client.get_paginated("/v2/refunds", params={
+        "begin_time": begin_time, "end_time": end_time,
+        "location_id": location_id, "limit": 100, "sort_order": "ASC",
+    }, items_key="refunds")
+
+    order_ids = sorted(
+        {p.get("order_id") for p in payments if p.get("order_id")}
+        | {r.get("order_id") for r in refunds if r.get("order_id")}
+    )
     orders_by_id: dict[str, dict] = {}
     for i in range(0, len(order_ids), 100):
         chunk = order_ids[i:i + 100]
@@ -232,6 +243,8 @@ def export_window(*, start_date: datetime.date, end_date: datetime.date,
     tz_label = _tz_label(display_tz)
     txn_rows = _build_transaction_rows(payments, orders_by_id, team, location_name,
                                        display_tz, tz_label)
+    txn_rows += _build_refund_rows(refunds, orders_by_id, team, location_name,
+                                   display_tz, tz_label)
     item_rows = _build_item_rows(payments, orders_by_id, team, categories, location_name,
                                  display_tz, tz_label)
 
@@ -284,24 +297,60 @@ def _build_transaction_rows(payments, orders_by_id, team, location_name,
     return rows
 
 
+def _build_refund_rows(refunds, orders_by_id, team, location_name,
+                       display_tz, tz_label) -> list[list[str]]:
+    """One Refund row per PaymentRefund, with negative amounts (mirrors the
+    dashboard export, where refunds appear as event_type=Refund rows that
+    subtract from gross/tip/collected). The exact column-level shape is
+    arbitrated by the A5 parity gate against real scraped refund rows."""
+    rows: list[list[str]] = []
+    for r in refunds:
+        date_s, time_s = _created_at_to_display(r.get("created_at", ""), display_tz)
+        amount = _money_to_cents(r.get("amount_money"))
+        fees = sum(_money_to_cents(f.get("amount_money"))
+                   for f in (r.get("processing_fee") or []))
+        staff = team.get(r.get("team_member_id", ""), "")
+
+        row = [""] * 55
+        row[0] = date_s
+        row[1] = time_s
+        row[2] = tz_label
+        row[3] = _money(-abs(amount))
+        row[4] = _money(0)
+        row[6] = _money(-abs(amount))
+        row[9] = _money(0)
+        row[11] = _money(-abs(amount))
+        row[20] = _money(abs(fees))          # fee reversal is positive
+        row[21] = _money(-abs(amount) + abs(fees))
+        row[22] = r.get("order_id", "")
+        row[23] = r.get("payment_id", "")
+        row[27] = staff
+        row[31] = "Refund"
+        row[32] = location_name
+        row[46] = "Complete"
+        rows.append(row)
+    return rows
+
+
 def _build_item_rows(payments, orders_by_id, team, categories, location_name,
                      display_tz, tz_label) -> list[list[str]]:
-    # payment id per order (first payment) for the Payment ID column.
-    pay_by_order: dict[str, str] = {}
+    # First payment per order: the dashboard Item Detail rows carry the
+    # PAYMENT timestamp (not order created_at) — and item_sold_at_local is
+    # part of the BQ natural key, so this must match the scrape exactly.
+    pay_by_order: dict[str, dict] = {}
     for p in payments:
         oid = p.get("order_id")
         if oid and oid not in pay_by_order:
-            pay_by_order[oid] = p.get("id", "")
-    staff_by_order: dict[str, str] = {}
-    for p in payments:
-        oid = p.get("order_id")
-        if oid and oid not in staff_by_order:
-            staff_by_order[oid] = team.get(p.get("team_member_id", ""), "")
+            pay_by_order[oid] = p
 
     rows: list[list[str]] = []
     for oid, order in orders_by_id.items():
-        date_s, time_s = _created_at_to_display(order.get("created_at", ""), display_tz)
-        source = (order.get("source") or {}).get("name", "")
+        payment = pay_by_order.get(oid)
+        if payment is None:
+            continue  # refund-only order; item refund rows are out of scope here
+        created_at = payment.get("created_at") or order.get("created_at", "")
+        date_s, time_s = _created_at_to_display(created_at, display_tz)
+        staff = team.get(payment.get("team_member_id", ""), "")
         for li in (order.get("line_items") or []):
             gross = _money_to_cents(li.get("gross_sales_money"))
             discount = _money_to_cents(li.get("total_discount_money"))
@@ -320,11 +369,11 @@ def _build_item_rows(payments, orders_by_id, team, categories, location_name,
             row[10] = _money(-abs(discount))
             row[11] = _money(net)
             row[13] = oid
-            row[14] = pay_by_order.get(oid, "")
+            row[14] = payment.get("id", "")
             row[18] = "Payment"
             row[19] = location_name
-            row[27] = staff_by_order.get(oid, "")
-            row[29] = location_name
+            row[28] = staff           # _ITEM_COL["employee"] = 28
+            row[30] = location_name   # _ITEM_COL["channel"] = 30 (real CSVs show location here)
             rows.append(row)
     return rows
 

@@ -96,8 +96,9 @@ jobs:
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT_ID }}
 
+      # Runs only when the preceding deploy/rollback steps succeeded — a
+      # failed build must NOT record a deploy row.
       - name: Record deploy events (BQ + Grafana annotation)
-        if: always()
         env:
           GRAFANA_API_TOKEN: ${{ secrets.GRAFANA_API_TOKEN }}
           GRAFANA_ORG_SLUG: ${{ secrets.GRAFANA_ORG_SLUG }}

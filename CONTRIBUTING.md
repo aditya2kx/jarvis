@@ -304,8 +304,10 @@ gh-adi pr merge <n>     # only you (aditya2kx) can approve + merge
 - **Evidence confidence rating (required in every review):** the bot must rate 0–100% confidence that
   the PR will work correctly in prod, based on the §4 End-to-end test section. It lists what the
   evidence proves, what it doesn't prove, and suggests specific commands to close any gap. A score
-  < 80% is **BLOCKING** (REQUEST CHANGES). See `.github/claude-review-guidelines.md § D2a` for the
-  full scale and the required summary block format.
+  < 95% is **BLOCKING** (REQUEST CHANGES), and a separate CI step ("Evidence confidence gate") also
+  parses the numeric score from the Claude review comment and fails the check if the extracted
+  percentage is below 95 — the score is machine-read and must be accurate. See
+  `.github/claude-review-guidelines.md § D2a` for the full scale and the required summary block format.
 - **Bounded context (not diff-only, not repo-wide):** before review,
   `scripts/build_claude_review_context.py` materializes into `review-context/` only (a) files changed
   in the PR, (b) paired `test_*.py` modules for changed `.py` files, and (c) the review rubric. The
@@ -573,7 +575,7 @@ the **job name** (not the workflow filename):
 | `Doc Freshness` | `doc-freshness.yml` | **Yes** — always runs, cheap |
 | `Sandbox e2e` | `sandbox-e2e.yml` | **No** — opt-in only (label `run-sandbox-e2e` or dispatch); removed from required checks 2026-06-09 |
 | `PR cost gate` | `pr-cost-gate.yml` | **Yes** — blocks merge until `metrics/pr_cost/PR-<n>.json` records build cost |
-| `Claude review` | `claude-review.yml` | Optional — advisory (`continue-on-error`); Opus 4.8 medium thinking; rates evidence confidence 0–100% |
+| `Claude review` | `claude-review.yml` | Opus 4.8 medium thinking; rates evidence confidence 0–100%; verdict blocks merge on REQUEST CHANGES; "Evidence confidence gate" step fails CI if score < 95% |
 
 Do **not** expect `Sandbox teardown` here — it runs on PR **close**, not on the PR commit.
 

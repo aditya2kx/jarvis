@@ -62,7 +62,8 @@ actually evaluated, not just checked for existence.
 | Score | Meaning |
 |---|---|
 | 100% | Real prod/sandbox execution output covering **all** changed code paths with actual values shown |
-| 80–99% | Unit tests + strong structural argument; only minor uncovered paths (e.g. error branches with no side effects) |
+| 95–99% | Real execution covering the main paths; only trivially unreachable or purely defensive branches uncovered |
+| 80–94% | Unit tests + strong structural argument; only minor uncovered paths (e.g. error branches with no side effects) |
 | 50–79% | Unit tests only; OR evidence covers only the happy path; OR evidence is for adjacent code not the exact changed path |
 | < 50% | No meaningful evidence, evidence describes expected behavior without showing actual output, or evidence contradicts other findings |
 
@@ -76,8 +77,12 @@ actually evaluated, not just checked for existence.
 - `<specific command with expected output shape>`
 ```
 
-**Blocking threshold:** confidence < 80% → BLOCKING → REQUEST CHANGES. The evidence gaps section
+**Blocking threshold:** confidence < 95% → BLOCKING → REQUEST CHANGES. The evidence gaps section
 becomes the exact requirement the author must satisfy before re-review.
+
+A separate CI step ("Evidence confidence gate") also parses this score from your summary comment
+and fails the check if the extracted percentage is below 95. This means the numeric score you
+write is machine-read — write it accurately.
 
 **Why unit tests alone are < 100%:** unit tests mock the environment; they prove the logic compiles and
 the mocked paths return expected values. They do NOT prove: (a) the real BQ/Sheets/Cloud Run/gcloud

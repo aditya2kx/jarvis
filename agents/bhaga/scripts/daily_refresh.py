@@ -1797,17 +1797,32 @@ def run_step(
 _RUN_SUMMARY: dict = {}  # populated by _run_refresh(); read by main()'s recorder
 
 
+def _should_record_pipeline_run() -> bool:
+    """True when this process should write pipeline_runs/source_pulls to BQ."""
+    if _RUN_SUMMARY.get("dry_run"):
+        return False
+    if _RUN_SUMMARY.get("refresh_date") is None:
+        return False
+    if os.environ.get("BHAGA_SECRETS_BACKEND", "").lower() == "gcp":
+        return True  # Cloud Run prod + sandbox (dataset isolation via BHAGA_BQ_DATASET)
+    return os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery"
+
+
 def _record_pipeline_run(*, started_at_utc, exit_code, run_id, error=None) -> None:
     """Upsert tonight's terminal outcome to BQ pipeline_runs + source_pulls.
-    Best-effort: gated on BHAGA_DATASTORE=bigquery, skipped on --dry-run, never raises.
+    Best-effort: skipped on --dry-run, never raises.
     Uses MERGE (merge_keys) so re-records from a retry converge rather than duplicate."""
-    if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":
-        return
-    if _RUN_SUMMARY.get("dry_run"):
+    if not _should_record_pipeline_run():
+        reason = (
+            "dry_run" if _RUN_SUMMARY.get("dry_run")
+            else "no_refresh_date" if _RUN_SUMMARY.get("refresh_date") is None
+            else "laptop_without_BHAGA_DATASTORE"
+        )
+        print(f"[pipeline_runs] skip: {reason}", file=sys.stderr)
         return
     refresh_date = _RUN_SUMMARY.get("refresh_date")
-    if refresh_date is None:  # died before arg parsing finished
-        return
+    _prev_ds = os.environ.get("BHAGA_DATASTORE")
+    os.environ["BHAGA_DATASTORE"] = "bigquery"
     try:
         from core.datastore import load_rows  # noqa: PLC0415
         finished = datetime.datetime.now(datetime.timezone.utc)
@@ -1845,9 +1860,16 @@ def _record_pipeline_run(*, started_at_utc, exit_code, run_id, error=None) -> No
                 "started_at_utc": "TIMESTAMP", "finished_at_utc": "TIMESTAMP",
                 "recorded_at_utc": "TIMESTAMP", "run_date": "DATE",
             })
+        print(f"[pipeline_runs] recorded run_id={run_id} status={status} pulls={len(pulls)}",
+              file=sys.stderr)
     except Exception as exc:  # noqa: BLE001
         print(f"[pipeline_runs] WARN: could not record run outcome: {exc}",
               file=sys.stderr)
+    finally:
+        if _prev_ds is None:
+            os.environ.pop("BHAGA_DATASTORE", None)
+        else:
+            os.environ["BHAGA_DATASTORE"] = _prev_ds
 
 
 def main() -> int:

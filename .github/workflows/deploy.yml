@@ -74,7 +74,7 @@ jobs:
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT_ID }} \
             --memory 4Gi \
-            --update-env-vars BHAGA_SESSION_PERSIST=1
+            --update-env-vars BHAGA_SESSION_PERSIST=1,BHAGA_DATASTORE=bigquery
 
       - name: Deploy webhook (Cloud Run Service)
         if: ${{ !inputs.rollback_sha }}

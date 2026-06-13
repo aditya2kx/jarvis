@@ -1,5 +1,14 @@
 # Jarvis Build Progress
 
+## 2026-06-13 — BHAGA Pipeline Health: fix silent recorder skip in Cloud Run parent
+
+**What changed:** Pipeline Health tables stayed empty after successful nightly runs (e.g. 2026-06-12) because `_record_pipeline_run()` gated on `BHAGA_DATASTORE=bigquery` in the parent orchestrator, but the Cloud Run job never set that env var (only child subprocesses did). Same class of bug as 2026-06-11 `_model_vs_rollup_drift`.
+
+- **`daily_refresh.py`:** Added `_should_record_pipeline_run()` — records when `BHAGA_SECRETS_BACKEND=gcp` or `BHAGA_DATASTORE=bigquery`. Parent temporarily sets `BHAGA_DATASTORE` before `load_rows`. Greppable `[pipeline_runs] skip:` / `recorded run_id=` log lines.
+- **`deploy.yml`:** `BHAGA_DATASTORE=bigquery` added to `bhaga-daily-refresh` env (defense-in-depth; also enables parent `reconcile_model` gate).
+- **Tests:** 5 new scenarios in `TestCloudRecorderGate`. Full suite: 758 passed.
+- **Backfill:** One-time `load_rows` MERGE for 2026-06-12 audit row from Cloud Run execution metadata (no pipeline re-run).
+
 ## 2026-06-12 — BHAGA Analytics: Goal Total Hours vs Scheduled Part Time chart (dashboard v40)
 
 **What changed:** Restored panel 74 in Section 7 "Labor Forecast" — two-line timeseries (dashed Goal Total Hours, solid Scheduled Part Time) directly below the Labor Forecast table, using `vw_model_forecast` (same inputs as panel 71). Goal updates on nightly forecast rebuild for upcoming days; past dates freeze in `model_forecast_daily`. Dashboard bumped v39→v40; RUNBOOK § Labor Forecast section updated.

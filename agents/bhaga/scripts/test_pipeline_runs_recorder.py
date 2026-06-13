@@ -169,6 +169,7 @@ class TestGating:
     def test_no_bq_datastore(self, monkeypatch):
         _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
         monkeypatch.delenv("BHAGA_DATASTORE", raising=False)
+        monkeypatch.delenv("BHAGA_SECRETS_BACKEND", raising=False)
 
         mock_load = MagicMock()
         with patch("core.datastore.load_rows", mock_load):
@@ -195,6 +196,93 @@ class TestGating:
             dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0, run_id="testrun123")
 
         mock_load.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Cloud parent-process gate (BHAGA_SECRETS_BACKEND=gcp without BHAGA_DATASTORE)
+# ---------------------------------------------------------------------------
+
+
+class TestCloudRecorderGate:
+    def test_cloud_gcp_backend_records_without_bhaga_datastore(self, monkeypatch):
+        _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
+        monkeypatch.setenv("BHAGA_SECRETS_BACKEND", "gcp")
+        monkeypatch.delenv("BHAGA_DATASTORE", raising=False)
+
+        mock_load = MagicMock(return_value=1)
+        with patch("core.datastore.load_rows", mock_load):
+            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0, run_id="testrun123")
+
+        mock_load.assert_called()
+        assert mock_load.call_args[0][0] == "pipeline_runs"
+
+    def test_laptop_no_env_still_skips(self, monkeypatch, capsys):
+        _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
+        monkeypatch.delenv("BHAGA_DATASTORE", raising=False)
+        monkeypatch.delenv("BHAGA_SECRETS_BACKEND", raising=False)
+
+        mock_load = MagicMock()
+        with patch("core.datastore.load_rows", mock_load):
+            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0, run_id="testrun123")
+
+        mock_load.assert_not_called()
+        assert "skip: laptop_without_BHAGA_DATASTORE" in capsys.readouterr().err
+
+    def test_cloud_with_source_pulls(self, monkeypatch):
+        _reset_summary(
+            refresh_date=_REF_DATE, store="palmetto", dry_run=False,
+            source_pulls=[{
+                "source": "square", "started_at_utc": _STARTED,
+                "finished_at_utc": _STARTED, "status": "success", "error": None,
+            }],
+        )
+        monkeypatch.setenv("BHAGA_SECRETS_BACKEND", "gcp")
+        monkeypatch.delenv("BHAGA_DATASTORE", raising=False)
+        captured: dict = {}
+        kwargs_captured: dict = {}
+
+        def fake_load_rows(table, rows, **kw):
+            captured.setdefault(table, []).extend(rows)
+            kwargs_captured[table] = kw
+            return len(rows)
+
+        with patch("core.datastore.load_rows", fake_load_rows):
+            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0, run_id="testrun123")
+
+        assert "pipeline_runs" in captured
+        assert "source_pulls" in captured
+        assert kwargs_captured["pipeline_runs"]["merge_keys"] == ["run_id"]
+        assert kwargs_captured["source_pulls"]["merge_keys"] == ["run_id", "source"]
+
+    def test_staging_sandbox_blocked_from_prod_dataset(self, monkeypatch, capsys):
+        _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
+        monkeypatch.setenv("BHAGA_SECRETS_BACKEND", "gcp")
+        monkeypatch.setenv("BHAGA_SHEET_MODE", "staging")
+        monkeypatch.delenv("BHAGA_BQ_DATASET", raising=False)
+        monkeypatch.delenv("BHAGA_DATASTORE", raising=False)
+
+        def blocked_load_rows(table, rows, **kw):
+            raise RuntimeError(
+                "BLOCKED: a sandbox/staging run attempted to WRITE to the production "
+                "BigQuery dataset 'bhaga'."
+            )
+
+        with patch("core.datastore.load_rows", blocked_load_rows):
+            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=0, run_id="testrun123")
+
+        err = capsys.readouterr().err
+        assert "WARN: could not record run outcome" in err
+
+    def test_skip_logs_dry_run(self, monkeypatch, capsys):
+        _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=True)
+        monkeypatch.setenv("BHAGA_SECRETS_BACKEND", "gcp")
+
+        mock_load = MagicMock()
+        with patch("core.datastore.load_rows", mock_load):
+            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0, run_id="testrun123")
+
+        mock_load.assert_not_called()
+        assert "skip: dry_run" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

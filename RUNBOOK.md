@@ -160,6 +160,7 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
 | `SLACK_BOT_TOKEN` | secret → `slack-bot-token` |
 | `CLICKUP_PAT` | secret → `jarvis-clickup-palmetto-pat` |
 | `BHAGA_SESSION_PERSIST` | `1` — persist/restore the Square `storage_state` (trusted device) to/from `gs://bhaga-scrape-cache/_session/square-palmetto.json` so prod stops re-prompting magic link / 2FA every night. Codified in `deploy.yml` so it survives a job recreate. See §13 "Login escalation". |
+| `BHAGA_DATASTORE` | `bigquery` — enables BQ reads/writes in the **parent** orchestrator process (pipeline run recorder, `reconcile_model` gate, `update_model_sheet --data-source bigquery`). Child subprocesses also set this per-step; codified in `deploy.yml` since 2026-06-13. |
 | `BHAGA_BROWSER_LAUNCH_RETRIES` | _(optional, default `3`)_ headless browser launch attempts on transient crash — see §13 Browser-launch resilience |
 | `BHAGA_BROWSER_LAUNCH_BACKOFF_MS` | _(optional, default `1000`)_ base backoff between launch retries (exponential) |
 
@@ -501,6 +502,7 @@ into a loud same-night failure. Best-effort: BQ errors in either function log a 
 `core.datastore.get_client()`. The latter is gated by the `BHAGA_DATASTORE=bigquery` env var, which
 is only set for child subprocesses in the daily refresh, not the orchestrator process itself — so using
 `get_client()` would silently return `None` and the reconciliation query would no-op every run.
+The same parent-env pattern affected `_record_pipeline_run` until 2026-06-13 (see §14 Pipeline Health).
 
 **Manual recovery** (if BQ is unavailable and auto-detect cannot fire): clear the model-recompute markers
 by hand and retrigger:
@@ -943,7 +945,7 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 
 **Attempt-only semantics:** only sources that actually ran a scrape appear in `source_pulls`. Sources skipped because their step marker was already present (`step_already_done`) or suppressed via `--skip-*` flags never enter the phase-1 results dict and are not recorded. Both tables are empty until the first nightly run after migration 017 is applied.
 
-**How run outcomes are recorded:** `daily_refresh.main()` generates a `run_id` (UUID4 hex, 32 chars) at startup, then calls `_run_refresh()`. In its `finally` block it calls `_record_pipeline_run(run_id=…)`, which (best-effort, gated on `BHAGA_DATASTORE=bigquery`, skipped on `--dry-run`) MERGEs one row into `pipeline_runs` (merge key: `run_id`) and one row per attempted source into `source_pulls` (merge keys: `run_id` + `source`). Using MERGE means a re-run of the recorder (e.g. a transient BQ timeout followed by a retry) converges to the same row rather than appending a duplicate. Distinct nightly retry invocations each get their own `run_id` and remain distinct rows — that is the attempt history the tables exist to show. Possible run statuses:
+**How run outcomes are recorded:** `daily_refresh.main()` generates a `run_id` (UUID4 hex, 32 chars) at startup, then calls `_run_refresh()`. In its `finally` block it calls `_record_pipeline_run(run_id=…)`, which (best-effort, skipped on `--dry-run`, never raises) MERGEs one row into `pipeline_runs` (merge key: `run_id`) and one row per attempted source into `source_pulls` (merge keys: `run_id` + `source`). **Cloud gate:** records when `BHAGA_SECRETS_BACKEND=gcp` (Cloud Run) or `BHAGA_DATASTORE=bigquery` (laptop). The parent process temporarily sets `BHAGA_DATASTORE=bigquery` before `load_rows` so `core.datastore` is not gated off. Greppable log lines: `[pipeline_runs] skip: <reason>` or `[pipeline_runs] recorded run_id=…`. Sandbox staging runs write only to `BHAGA_BQ_DATASET` (default prod `bhaga` blocked by `datastore._assert_sandbox_write_isolation`). Using MERGE means a re-run of the recorder converges to the same row rather than duplicating. Possible run statuses:
 
 - `success` — `_run_refresh()` returned 0 and model was verified OK
 - `failed` — returned 1 (any step/guard failure; `failed_step` records the first one)

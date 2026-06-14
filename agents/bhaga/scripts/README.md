@@ -38,28 +38,14 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    table row → Sheet-header dict and calls `write_raw_*` upsert functions. Preserves historical rows
    outside the `--since` window. Reviews tab rendered separately after `process_reviews`.
    **Contract: raw Sheets are projections of BQ — BQ is authoritative.**
-6. **Recompute the Model tabs** (`update_model_sheet.py`): `config, daily, labor_daily,
-   labor_weekly, labor_period, tip_alloc_period, tip_alloc_daily, period_summary`,
-   then **upsert `item_operations`** for the gap
-   window (`item_operations.py` — incremental, not full-tab rewrite).
-   - Config/tunables are read from `bhaga.store_config` via `core.store_config.get_config` (BQ-first,
-     Sheet fallback while being seeded). Edit tunables via `/bhaga-cloud config set`.
-   - ADP earnings actuals (`adp_paid`, `diff`, `diff_pct`) read from `bhaga.adp_earnings` via
-     `load_cc_tips_earnings_from_bq` (hard cutover; GCS XLSX no longer consulted).
-7. **Materialize Model → BigQuery** (`materialize_model_bq.py` called via `materialize_model_bq` step,
-   non-fatal on legacy path; **canonical model producer** on BQ-canonical path): rebuilds all 7+
-   model tabs from BQ raw data (using the same `build_*` functions) and writes to `model_*` BQ
-   tables via MERGE. Includes a post-build tip-pool **conservation check** (raises on drift > $0.01).
-   Exposes `load_model_rows()` as a shared BQ-write helper used by `process_reviews.py` (M3) and
-   `render_model_sheet_from_bq.py` (M2). See `docs/FEATURE_FLAGS.md` for `BHAGA_SHEET_FROM_BQ` cutover.
-7b. **Render Sheet from BQ** (`render_model_sheet_from_bq.py`, `render_model_sheet_from_bq` step,
-    flag-gated `BHAGA_SHEET_FROM_BQ=1`): reads each BQ `model_*` table and writes the corresponding
-    Sheet model tab as a projection. Only runs when `BHAGA_SHEET_FROM_BQ=1`; otherwise the legacy
-    `update_model_sheet` Sheet-write path runs unchanged.
-7c. **Reconcile Sheet ⇆ BQ** (`reconcile_model.py`, `reconcile_model` step, non-fatal nightly):
-    compares each Sheet model tab against its BQ model table cell-by-cell using the same helpers as
-    `verify_bq_parity.py` (`_cells_match`, `_compare_tabs`). Fails CI on drift; Slacks on nightly
-    drift. See also `.github/workflows/model-reconciliation.yml`.
+6. **Materialize Model → BigQuery** (`materialize_model_bq` step): computes all model tabs from BQ
+   raw data (shared `build_*` functions in `update_model_sheet.py`) and writes to `model_*` BQ tables.
+   Includes post-build tip-pool conservation check.
+7. **Render Sheet from BQ** (`render_model_sheet_from_bq` step): reads each BQ `model_*` table and
+   incrementally upserts the corresponding Sheet model tab (BQ canonical, Sheet projection).
+7b. **Reconcile Sheet ⇆ BQ** (`reconcile_model.py`, non-fatal nightly): cell-by-cell compare.
+   **Recovery retrigger:** `_prepare_projection_recovery` clears projection markers when BQ raw is
+   present and a prior run failed — `/bhaga-cloud refresh <date>` skips OTP and re-runs projection only.
 8. **Reviews** (`process_reviews.py`): pull Google reviews from ClickUp, allocate bonuses via the
    date-bracketed pool model ($20 pool split equally among in-hours part-time staff, effective
    2026-06-08; legacy $10-base / $20-named-shoutout for reviews before that date), rebuild
@@ -89,11 +75,8 @@ tasks. **Recovery:** when an OTP portal (Square/ADP) succeeds on a later run whi
 are already done from a prior partial run, `daily_refresh._recover_stale_downstream_markers`
 invalidates them (via `clear_step`, the sanctioned path) so they recompute on the fresh data. The set
 (`_RECOVERY_DOWNSTREAM_STEPS`) is every step that carries portal data to the window, in pipeline order:
-`load_raw_bigquery` → `render_raw_sheets` → `update_model_sheet` → `materialize_model_bq` →
-`render_model_sheet_from_bq` → `process_reviews` (the `render_*`/`materialize` members were added after
-2026-06-08, when a stale projection marker left `data_window_end` stuck despite fresh BQ raw). Always
-on (no flag) — safe by construction: idempotent upserts + the post-condition guard verifies
-`data_window_end` advanced (RUNBOOK §13).
+`load_raw_bigquery` → `render_raw_sheets` → `materialize_model_bq` →
+`render_model_sheet_from_bq` → `process_reviews`
 
 **Raw-vs-model reconciliation (2026-06-09 fix).** `_recover_stale_downstream_markers` only fires when a
 portal scrape *succeeds this run*, so a pure retrigger (scrape skipped as "already covered") never
@@ -104,7 +87,7 @@ showed empty panels. Two new layers catch this:
 1. **State-driven detector (`_detect_and_clear_stale_model`)** — runs on *every* execution before Phase 2.
    Single BQ query joins `square_daily_rollup` (raw) and `model_daily` (materialized) over a 14-day
    lookback. If any date has rollup gross_sales > $1 but model = $0, it clears `_MODEL_RECOMPUTE_STEPS`
-   (`render_raw_sheets`, `update_model_sheet`, `materialize_model_bq`, `render_model_sheet_from_bq`) so the
+   (`render_raw_sheets`, `materialize_model_bq`, `render_model_sheet_from_bq`) so the
    model recomputes on the next phase. Best-effort: a BQ error logs a breadcrumb and returns
    `[]` — the run is never blocked.
 
@@ -187,7 +170,7 @@ blob. The guard is layered:
 | `backfill_bigquery.py` | **One-shot historical backfill only.** Reads existing raw Sheets → writes BQ. NOT the nightly path. Use to bootstrap BQ raw tables from Sheet history or repair BQ after a migration/truncation. The nightly path is `backfill_from_downloads.py` (scrape files → BQ directly). |
 | `materialize_model_bq.py` | Rebuild the computed model from BQ raw data and write to `model_*` BigQuery tables via MERGE. Called by `materialize_model_bq` step in `daily_refresh`. Reuses the same `build_*_rows` functions as `update_model_sheet.py`. Used by the Grafana Cloud dashboard. **Requires the orchestrator SA to hold `roles/bigquery.jobUser` + `roles/bigquery.dataEditor`** (RUNBOOK §14) — without them every BQ job 403s. Guards an **empty BQ raw `square_transactions`** read with a precise `RuntimeError` breadcrumb instead of the old cryptic `max() iterable argument is empty` (run `backfill_bigquery` first). Access errors in `core.datastore.read_query` are re-raised (no longer swallowed into `[]`). Also exposes `load_model_rows()` as the canonical BQ-write helper (used by `process_reviews.py` and `render_model_sheet_from_bq.py`). |
 | `render_raw_sheet_from_bq.py` | **Raw Sheet projector.** Reads each BQ raw table (windowed by `--since`; `wage_rates` always all), inverse-maps rows to Sheet-header dicts, and incrementally upserts via `write_raw_*` functions. Non-fatal nightly step. Reviews tab rendered after `process_reviews`. |
-| `render_model_sheet_from_bq.py` | **BQ-canonical path only** (`BHAGA_SHEET_FROM_BQ=1`): reads each BQ `model_*` table and **incrementally upserts** (by natural key, `--since` windowing) the corresponding Sheet model tab. Historical rows outside the window are preserved. Called by `render_model_sheet_from_bq` step. See `docs/FEATURE_FLAGS.md` for flip criteria and cleanup plan. |
+| `render_model_sheet_from_bq.py` | Reads each BQ `model_*` table and **incrementally upserts** (by natural key, `--since` windowing) the corresponding Sheet model tab. Nightly step after `materialize_model_bq`. |
 | `reconcile_model.py` | Compares Sheet model tabs against BQ model tables cell-by-cell (reusing `verify_bq_parity._compare_tabs`). Non-fatal nightly step; CI-blocking when run in the `model-reconciliation` workflow. Reports tip-pool conservation violations. |
 | `test_*.py` | Unit tests. Run: `python3 -m pytest agents/bhaga/scripts/`. |
 

@@ -4,9 +4,8 @@ name: Model reconciliation
 # Runs against the sandbox sheet + BQ (read-prod/write-sandbox isolation like sandbox-e2e).
 # Exit non-zero if any grain diverges or tip-pool conservation fails.
 #
-# When BHAGA_SHEET_FROM_BQ is off (default), Sheet and BQ are separately computed so
-# minor floating-point differences are expected — the check is informational on this PR.
-# After the flag is flipped in prod (M7), failures become blocking.
+# Nightly pipeline uses a single BQ-canonical path (materialize_model_bq → render_model_sheet_from_bq).
+# Sheet and BQ should match; reconciliation failures are blocking in CI.
 
 on:
   pull_request:
@@ -107,8 +106,7 @@ jobs:
             } catch (e) {
               body += `_Reconciliation output unavailable: ${e.message}_\n`;
             }
-            body += '\n> Note: `BHAGA_SHEET_FROM_BQ` is **off** by default. ';
-            body += 'Minor differences between Sheet (legacy compute) and BQ are expected until M7 flip.';
+            body += '\n> Sheet model tabs are projected from BQ; reconciliation drift is blocking.';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,

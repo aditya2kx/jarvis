@@ -185,5 +185,24 @@ class TestIncrementalUpsertPreservesHistoricalRows(unittest.TestCase):
         self.assertEqual(result["updated"], 0)
 
 
+class TestKdsColumnProjection(unittest.TestCase):
+    """June 13: KDS fields from BQ model_labor_daily must render non-empty."""
+
+    def test_labor_daily_projects_kds_columns_from_bq(self):
+        m = _load()
+        labor_spec = next(s for s in m._TAB_SPECS if s["tab"] == "labor_daily")
+        self.assertIn("kds_median_time_per_item_sec", labor_spec["header"])
+        row = {
+            "date": datetime.date(2026, 6, 13),
+            "kds_completed_tickets": 50,
+            "kds_completed_items": 120,
+            "kds_median_time_per_item_sec": 420,
+            "kds_p90_time_per_item_sec": 500,
+        }
+        record = {col: m._render_cell(col, row.get(col)) for col in labor_spec["header"]}
+        idx = labor_spec["header"].index("kds_median_time_per_item_sec")
+        self.assertEqual(record[labor_spec["header"][idx]], 420)
+
+
 if __name__ == "__main__":
     unittest.main()

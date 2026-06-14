@@ -1,5 +1,17 @@
 # Jarvis Build Progress
 
+## 2026-06-14 — BHAGA: fix June 13 KDS Sheet/BQ drift (single BQ path)
+
+**Incident (2026-06-13):** `reconcile_model` failed on `labor_daily` (KDS blank on Sheet, populated in BQ) and `earnings` (header drift WARN-and-continue). Legacy dual-path (`update_model_sheet --data-source bigquery` skipped KDS) plus stale projection markers blocked `/bhaga-cloud refresh` retriggers.
+
+**Fix:**
+- **Single path:** removed `BHAGA_SHEET_FROM_BQ` flag and legacy `update_model_sheet` nightly step; always `materialize_model_bq` → `render_model_sheet_from_bq`.
+- **Smart recovery:** `_prepare_projection_recovery()` clears projection markers when BQ raw is present + prior run failed (or drift probe); scrape/OTP skipped on retrigger.
+- **Earnings repair:** `replace_raw_adp_earnings` full-tab rewrite on header drift in `render_raw_sheet_from_bq`.
+- **Reconcile:** BQ `employee` → Sheet `employee_name` alias in `_read_bq_as_rows`.
+- **Grafana:** Pipeline Health panels document single-path steps + `recovery_retrigger` column (migration 019).
+- **Recovery:** `/bhaga-cloud refresh 2026-06-13` after deploy.
+
 ## 2026-06-13 — BHAGA Pipeline Health: fix silent recorder skip in Cloud Run parent
 
 **What changed:** Pipeline Health tables stayed empty after successful nightly runs (e.g. 2026-06-12) because `_record_pipeline_run()` gated on `BHAGA_DATASTORE=bigquery` in the parent orchestrator, but the Cloud Run job never set that env var (only child subprocesses did). Same class of bug as 2026-06-11 `_model_vs_rollup_drift`.

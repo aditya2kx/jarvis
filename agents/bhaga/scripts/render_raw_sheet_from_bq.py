@@ -36,6 +36,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 from core.config_loader import resolve_sheet_id
 from core.datastore import dataset, read_query
 from skills.tip_ledger_writer.writer import (
+    replace_raw_adp_earnings,
     write_raw_adp_earnings,
     write_raw_adp_punches,
     write_raw_adp_rates,
@@ -401,6 +402,31 @@ def _build_query(bq_table: str, date_col: str | None, since: datetime.date | Non
     return f"SELECT * FROM {table}"
 
 
+def _upsert_raw_tab(
+    spec: dict,
+    *,
+    spreadsheet_id: str,
+    sheet_recs: list[dict],
+    google_account: str,
+    since: datetime.date | None,
+) -> dict:
+    """Upsert a raw tab; repair adp_earnings header drift via full BQ replace."""
+    label = spec["label"]
+    try:
+        return spec["write_fn"](spreadsheet_id, sheet_recs, account=google_account)
+    except ValueError as exc:
+        if label != "adp_earnings" or "Header drift" not in str(exc):
+            raise
+        print(f"  {label}: header drift detected — full-tab replace from BQ")
+        full_sql = f"SELECT * FROM `{_PROJECT}.{_DATASET}.{spec['bq_table']}`"
+        bq_rows = read_query(full_sql)
+        full_recs = [spec["inv_map_fn"](r) for r in bq_rows]
+        print(f"    reloading {len(full_recs)} rows (full table, ignoring since={since})")
+        return replace_raw_adp_earnings(
+            spreadsheet_id, full_recs, account=google_account,
+        )
+
+
 def render(
     store: str,
     *,
@@ -448,8 +474,12 @@ def render(
                 continue
 
             spreadsheet_id = resolve_sheet_id(spec["workbook_key"], profile)
-            upsert_result = spec["write_fn"](
-                spreadsheet_id, sheet_recs, account=google_account,
+            upsert_result = _upsert_raw_tab(
+                spec,
+                spreadsheet_id=spreadsheet_id,
+                sheet_recs=sheet_recs,
+                google_account=google_account,
+                since=since,
             )
             inserted = upsert_result.get("inserted", 0)
             updated = upsert_result.get("updated", 0)

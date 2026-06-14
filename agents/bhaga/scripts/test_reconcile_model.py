@@ -84,6 +84,17 @@ class TestReadBqAsRows(unittest.TestCase):
             result = self.m._read_bq_as_rows("model_tip_alloc_period", ["period_start"], sheet_header=sheet_header)
         self.assertEqual(result, [["period_start", "employee"]])
 
+    def test_read_bq_as_rows_maps_employee_to_employee_name(self):
+        sheet_header = ["period_start", "employee_name", "amount"]
+        bq_dicts = [
+            {"period_start": datetime.date(2026, 6, 1), "employee": "Alice", "amount": 100.0},
+        ]
+        with unittest.mock.patch.object(self.m, "read_query", return_value=bq_dicts):
+            result = self.m._read_bq_as_rows(
+                "adp_earnings", ["period_start"], sheet_header=sheet_header,
+            )
+        self.assertEqual(result[1][1], "Alice")
+
 
 class TestAssertConservation(unittest.TestCase):
 

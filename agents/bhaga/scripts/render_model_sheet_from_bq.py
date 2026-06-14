@@ -1,29 +1,20 @@
 #!/usr/bin/env python3
 """Render BQ model tables → Google Sheet model tabs (incremental upsert).
 
-This is the Sheet-side sink for the BQ-canonical pipeline path
-(BHAGA_SHEET_FROM_BQ=1). It reads each BQ model table, projects columns
-into the exact build_* header order, converts values to Sheet-compatible
-representations, then incrementally upserts by natural key via upsert_tab().
+The nightly pipeline computes the model in BQ (materialize_model_bq) then
+projects Sheet model tabs from BQ via this script.
 
-Incremental behavior: existing rows outside the query window are preserved
-(historical rows are never wiped). Only new/changed rows in the window are
-written. This replaces the earlier clear_and_write_tab full-rewrite.
-
-Operator INPUT tabs (config, training_excluded, training_shifts) are never
-written by this projector — only read by the compute step (materialize_model_bq).
-
-Usage (flag on):
-    BHAGA_SHEET_FROM_BQ=1 BHAGA_DATASTORE=bigquery \\
+Usage:
+    BHAGA_DATASTORE=bigquery \\
         python3 -m agents.bhaga.scripts.render_model_sheet_from_bq --store palmetto
 
 Usage (with since window):
-    BHAGA_SHEET_FROM_BQ=1 BHAGA_DATASTORE=bigquery \\
+    BHAGA_DATASTORE=bigquery \\
         python3 -m agents.bhaga.scripts.render_model_sheet_from_bq --store palmetto \\
             --since 2026-05-01
 
 Usage (dry-run):
-    BHAGA_SHEET_FROM_BQ=1 BHAGA_DATASTORE=bigquery \\
+    BHAGA_DATASTORE=bigquery \\
         python3 -m agents.bhaga.scripts.render_model_sheet_from_bq --store palmetto --dry-run
 """
 from __future__ import annotations
@@ -330,7 +321,6 @@ def render(store: str, *, since: datetime.date | None = None, dry_run: bool = Fa
 
     Operator input tabs (config, training_excluded, training_shifts,
     labor_daily_forecast) are never written — only read by the compute step.
-    Skips the write if BHAGA_SHEET_FROM_BQ is not set (called only when enabled).
     """
     profile = json.loads((_STORE_PROFILES / f"{store}.json").read_text())
     model_sid = resolve_sheet_id("bhaga_model", profile)

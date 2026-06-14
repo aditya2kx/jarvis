@@ -161,7 +161,7 @@
       "id": 2,
       "type": "table",
       "title": "Pipeline Runs",
-      "description": "Last 30 nightly daily_refresh outcomes, newest first. Status: success | failed | halted | otp_pending. Failed Step / Error populated only on failure. Times are America/Chicago.",
+      "description": "Last 30 nightly daily_refresh outcomes, newest first. Model path: materialize_model_bq then render_model_sheet_from_bq (BQ canonical, Sheet projection). recovery_retrigger=TRUE means scrape was skipped and projection markers were cleared for a /bhaga-cloud refresh re-run. Status: success | failed | halted | otp_pending.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -303,7 +303,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT run_id, FORMAT_TIMESTAMP('%Y-%m-%d %H:%M', started_at_utc, 'America/Chicago') AS run_time_ct, status, COALESCE(failed_step, '') AS failed_step, COALESCE(error, '') AS error FROM `jarvis-bhaga-prod.bhaga.vw_pipeline_runs` ORDER BY started_at_utc DESC"
+          "rawSql": "SELECT run_id, FORMAT_TIMESTAMP('%Y-%m-%d %H:%M', started_at_utc, 'America/Chicago') AS run_time_ct, status, COALESCE(failed_step, '') AS failed_step, COALESCE(error, '') AS error, COALESCE(recovery_retrigger, FALSE) AS recovery_retrigger FROM `jarvis-bhaga-prod.bhaga.vw_pipeline_runs` ORDER BY started_at_utc DESC"
         }
       ]
     },
@@ -311,7 +311,7 @@
       "id": 3,
       "type": "table",
       "title": "Data Source Pulls",
-      "description": "Last 50 per-source pull attempts (square / adp / google_reviews), newest first. Only attempted pulls are recorded \u2014 sources skipped via step markers or --skip flags do not appear. Times are America/Chicago.",
+      "description": "Last 50 per-source pull attempts (square / adp / google_reviews), newest first. Only attempted pulls are recorded — sources skipped via step markers or recovery retriggers (BQ data already present) do not appear. That empty pull list on a recovery_retrigger run is expected, not a gap.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"

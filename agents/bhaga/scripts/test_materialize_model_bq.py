@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import importlib
+import os
 import sys
 import types
 import unittest
@@ -169,6 +170,51 @@ class TestLoadModelRows(unittest.TestCase):
         row = {"over_saturation": "FALSE"}
         coerced = m._coerce("model_labor_daily", row, materialized_at)
         self.assertFalse(coerced["over_saturation"])
+
+
+class TestKdsFlowsIntoLaborDaily(unittest.TestCase):
+    """June 13 regression: KDS from kds_by_date must populate labor_daily rows."""
+
+    def test_kds_daily_flows_into_labor_daily_rows(self):
+        os.environ.setdefault("BHAGA_DATASTORE", "disabled")
+        from agents.bhaga.scripts.update_model_sheet import build_labor_daily_rows
+
+        txns = [{
+            "date_local": "2026-06-13", "hour_local": 10, "event_type": "Payment",
+            "gross_sales_cents": 100000, "tip_cents": 5000,
+            "discount_cents": 0, "total_collected_cents": 100000,
+        }]
+        shifts = [{
+            "date": "2026-06-13", "employee_id": "barista-1", "employee_name": "Test",
+            "regular_hours": 8.0, "ot_hours": 0.0, "doubletime_hours": 0.0, "total_hours": 8.0,
+        }]
+        wage_rates = [{
+            "employee_name": "Test", "wage_rate_dollars": "15.00", "ot_rate_dollars": "22.50",
+            "is_salaried": False, "excluded_from_labor_pct": False,
+        }]
+        kds_by_date = {
+            "2026-06-13": {
+                "date_local": "2026-06-13",
+                "completed_tickets": 40,
+                "completed_items": 100,
+                "median_time_per_item_sec": 420,
+                "p90_time_per_item_sec": 500,
+                "p95_time_per_item_sec": 550,
+                "p99_time_per_item_sec": 600,
+                "pct_items_over_goal": 0.1,
+                "pct_tickets_late": 0.05,
+            },
+        }
+        rows = build_labor_daily_rows(
+            txns=txns, shifts=shifts, wage_rates=wage_rates,
+            excluded_from_tip_pool=set(),
+            now_ct=datetime.datetime(2026, 6, 14, 12, 0, tzinfo=datetime.timezone.utc),
+            kds_by_date=kds_by_date,
+        )
+        header = rows[0]
+        by_date = {str(r[0]).lstrip("'"): r for r in rows[1:]}
+        med_idx = header.index("kds_median_time_per_item_sec")
+        self.assertEqual(by_date["2026-06-13"][med_idx], 420)
 
 
 class TestReplaceMode(unittest.TestCase):

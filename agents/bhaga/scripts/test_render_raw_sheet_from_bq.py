@@ -292,5 +292,54 @@ class TestDryRunSmoke(unittest.TestCase):
             self.assertIsNone(info.get("upsert_result"))
 
 
+class TestAdpEarningsHeaderDriftRepair(unittest.TestCase):
+    def test_adp_earnings_header_drift_triggers_full_replace(self):
+        from unittest.mock import patch
+        import agents.bhaga.scripts.render_raw_sheet_from_bq as m
+
+        bq_row = {
+            "period_start": datetime.date(2026, 6, 1),
+            "period_end": datetime.date(2026, 6, 14),
+            "check_date": datetime.date(2026, 6, 15),
+            "employee": "Alice",
+            "raw_employee_name": "ALICE",
+            "description": "Regular",
+            "hours": 80.0,
+            "hourly_rate": 15.0,
+            "amount": 1200.0,
+            "scraped_at_utc": datetime.datetime(2026, 6, 13, tzinfo=datetime.timezone.utc),
+        }
+
+        def drift_write(sid, recs, account="palmetto", scraped_at_utc=None):
+            raise ValueError("Header drift on tab 'earnings' (workbook 'BHAGA ADP Raw'")
+
+        replace_calls: list = []
+
+        def fake_replace(sid, recs, account="palmetto", scraped_at_utc=None):
+            replace_calls.append(recs)
+            return {"replaced": True, "total_after": len(recs)}
+
+        profile_json = (
+            '{"google_account_key":"palmetto",'
+            '"google_sheets":{"bhaga_adp_raw":{"spreadsheet_id":"adp-sid"}}}'
+        )
+        earnings_spec = next(s for s in m._TAB_SPECS if s["label"] == "adp_earnings")
+        old_write = earnings_spec["write_fn"]
+
+        try:
+            earnings_spec["write_fn"] = drift_write
+            with patch.object(m.pathlib.Path, "read_text", return_value=profile_json), \
+                 patch.object(m, "read_query", return_value=[bq_row]), \
+                 patch.object(m, "resolve_sheet_id", return_value="fake-sid"), \
+                 patch("agents.bhaga.scripts.render_raw_sheet_from_bq.replace_raw_adp_earnings", side_effect=fake_replace):
+                results = m.render("palmetto", tabs=["adp_earnings"], since=datetime.date(2026, 6, 1))
+        finally:
+            earnings_spec["write_fn"] = old_write
+
+        self.assertEqual(len(replace_calls), 1)
+        self.assertEqual(replace_calls[0][0]["employee_name"], "Alice")
+        self.assertNotIn("error", results.get("adp_earnings", {}))
+
+
 if __name__ == "__main__":
     unittest.main()

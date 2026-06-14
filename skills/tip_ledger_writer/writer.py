@@ -496,6 +496,83 @@ def _upsert_tab(
     }
 
 
+def replace_tab_from_records(
+    spreadsheet_id: str,
+    workbook_title: str,
+    tab_name: str,
+    records: Iterable[dict],
+    *,
+    account: str,
+    scraped_at_utc: Optional[str] = None,
+    spec_override: dict | None = None,
+) -> dict:
+    """Rewrite a tab from BQ records — canonical header + full data replace.
+
+    Used when incremental upsert cannot repair destructive header drift.
+    Skips ``_reconcile_header``; BQ is the system of record.
+    """
+    if spec_override is not None:
+        header_expected = spec_override["header"]
+        key_cols = spec_override["natural_key_columns"]
+    else:
+        spec = get_tab_spec(workbook_title, tab_name)
+        header_expected = spec["header"]
+        key_cols = spec["natural_key_columns"]
+    if scraped_at_utc is None:
+        scraped_at_utc = (
+            datetime.datetime.now(datetime.timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
+    token = refresh_access_token(account=account)
+    _add_sheet_if_missing(spreadsheet_id, token, tab_name)
+
+    existing = _read_tab(spreadsheet_id, tab_name, token)
+    if existing:
+        phys_rows = len(existing)
+        max_cols = max((len(r) for r in existing), default=len(header_expected))
+        last_col = _col_letter(max(max_cols, len(header_expected)))
+        _clear_range(
+            spreadsheet_id,
+            f"{tab_name}!A1:{last_col}{phys_rows}",
+            token,
+        )
+
+    incoming = list(records)
+    by_key: dict[tuple, list[Any]] = {}
+    for rec in incoming:
+        k = _record_natural_key(rec, key_cols)
+        if not any(k):
+            raise ValueError(
+                f"Record missing natural-key values {key_cols} for tab '{tab_name}': {rec!r}"
+            )
+        by_key[k] = _record_to_row(rec, header_expected, scraped_at_utc)
+
+    sorted_keys = sorted(by_key.keys())
+    sorted_rows = [by_key[k] for k in sorted_keys]
+
+    _write_range(spreadsheet_id, f"{tab_name}!A1", [list(header_expected)], token)
+    if sorted_rows:
+        last_col = _col_letter(len(header_expected))
+        data_range = f"{tab_name}!A2:{last_col}{1 + len(sorted_rows)}"
+        _write_range(spreadsheet_id, data_range, sorted_rows, token)
+
+    return {
+        "workbook": workbook_title,
+        "tab": tab_name,
+        "spreadsheet_id": spreadsheet_id,
+        "existing_rows": 0,
+        "incoming_records": len(incoming),
+        "inserted": len(sorted_rows),
+        "updated": 0,
+        "total_after": len(sorted_rows),
+        "scraped_at_utc": scraped_at_utc,
+        "replaced": True,
+    }
+
+
 # ── Public upsert with explicit spec (for non-schema tabs) ───────
 
 
@@ -723,6 +800,20 @@ def write_raw_adp_earnings(
     carries one earning-line per employee per pay period.
     """
     return _upsert_tab(
+        spreadsheet_id, "BHAGA ADP Raw", "earnings", earnings,
+        account=account, scraped_at_utc=scraped_at_utc,
+    )
+
+
+def replace_raw_adp_earnings(
+    spreadsheet_id: str,
+    earnings: list[dict],
+    *,
+    account: str = "palmetto",
+    scraped_at_utc: Optional[str] = None,
+) -> dict:
+    """Full-tab rewrite of BHAGA ADP Raw > earnings from BQ (header-drift repair)."""
+    return replace_tab_from_records(
         spreadsheet_id, "BHAGA ADP Raw", "earnings", earnings,
         account=account, scraped_at_utc=scraped_at_utc,
     )

@@ -489,7 +489,7 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
                 real_clear = daily_refresh.clear_step_done
 
                 def flaky(refresh_date, step):
-                    if step == "update_model_sheet":
+                    if step == "materialize_model_bq":
                         raise RuntimeError("firestore unavailable")
                     return real_clear(refresh_date, step)
 
@@ -497,11 +497,14 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
                     cleared = _recover_stale_downstream_markers(
                         rd, {"square": self._ok()}, dry_run=False
                     )
-                self.assertEqual(set(cleared), set(self.DOWNSTREAM) - {"update_model_sheet"})
-                self.assertNotIn("update_model_sheet", cleared)
-                # The step we couldn't clear is still present (will short-circuit).
-                self.assertTrue(step_already_done(rd, "update_model_sheet"))
+                self.assertEqual(set(cleared), set(self.DOWNSTREAM) - {"materialize_model_bq"})
+                self.assertNotIn("materialize_model_bq", cleared)
+                self.assertTrue(step_already_done(rd, "materialize_model_bq"))
                 self.assertFalse(step_already_done(rd, "load_raw_bigquery"))
+
+    def test_recovery_constants_exclude_update_model_sheet(self):
+        self.assertNotIn("update_model_sheet", daily_refresh._RECOVERY_DOWNSTREAM_STEPS)
+        self.assertNotIn("update_model_sheet", _MODEL_RECOMPUTE_STEPS)
 
     def test_includes_model_projection_and_materialize_steps(self):
         """Regression for 2026-06-08: the recovery list MUST invalidate the
@@ -967,6 +970,97 @@ class ModelVsRollupDriftTests(unittest.TestCase):
         fake_client.query.side_effect = RuntimeError("timeout")
         with mock.patch.object(_bq, "Client", return_value=fake_client):
             _assert_model_matches_raw_rollup(self.RD)  # must not raise
+
+
+class SinglePathRegressionTests(unittest.TestCase):
+    """June 13: orchestrator must not invoke update_model_sheet on nightly path."""
+
+    def test_orchestrator_never_invokes_update_model_sheet(self):
+        src = (daily_refresh.pathlib.Path(daily_refresh.__file__).parent / "daily_refresh.py").read_text()
+        self.assertNotIn("agents.bhaga.scripts.update_model_sheet", src)
+        self.assertNotIn("BHAGA_SHEET_FROM_BQ", src)
+        self.assertIn("materialize_model_bq", src)
+        self.assertIn("render_model_sheet_from_bq", src)
+
+    def test_materialize_failure_does_not_fallback_to_legacy(self):
+        src = (daily_refresh.pathlib.Path(daily_refresh.__file__).parent / "daily_refresh.py").read_text()
+        self.assertNotIn("falling back to legacy", src)
+        self.assertNotIn("_bq_canonical = False", src)
+
+
+class PrepareProjectionRecoveryTests(unittest.TestCase):
+    RD = datetime.date(2026, 6, 13)
+
+    def _seed_scrape_done(self, rd):
+        mark_step_done(rd, "square_transactions")
+        mark_step_done(rd, "adp_reports")
+
+    def _seed_projection_done(self, rd):
+        for step in _MODEL_RECOMPUTE_STEPS:
+            mark_step_done(rd, step)
+
+    def test_prepare_projection_recovery_clears_stale_projection_markers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                daily_refresh._RUN_SUMMARY.clear()
+                self._seed_scrape_done(self.RD)
+                self._seed_projection_done(self.RD)
+                with mock.patch.object(daily_refresh, "_bq_raw_coverage_complete", return_value=True), \
+                     mock.patch.object(daily_refresh, "_last_pipeline_run_failed", return_value=True), \
+                     mock.patch.object(daily_refresh, "_projection_drift_probe", return_value=False):
+                    cleared = daily_refresh._prepare_projection_recovery(
+                        self.RD, "palmetto", dry_run=False,
+                    )
+                self.assertEqual(set(cleared), set(_MODEL_RECOMPUTE_STEPS))
+                self.assertTrue(step_already_done(self.RD, "square_transactions"))
+                self.assertTrue(step_already_done(self.RD, "adp_reports"))
+                for step in _MODEL_RECOMPUTE_STEPS:
+                    self.assertFalse(step_already_done(self.RD, step))
+                self.assertTrue(daily_refresh._RUN_SUMMARY.get("recovery_retrigger"))
+
+    def test_prepare_projection_recovery_noop_when_last_run_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                daily_refresh._RUN_SUMMARY.clear()
+                self._seed_scrape_done(self.RD)
+                self._seed_projection_done(self.RD)
+                with mock.patch.object(daily_refresh, "_bq_raw_coverage_complete", return_value=True), \
+                     mock.patch.object(daily_refresh, "_last_pipeline_run_failed", return_value=False), \
+                     mock.patch.object(daily_refresh, "_projection_drift_probe", return_value=False):
+                    cleared = daily_refresh._prepare_projection_recovery(
+                        self.RD, "palmetto", dry_run=False,
+                    )
+                self.assertEqual(cleared, [])
+                for step in _MODEL_RECOMPUTE_STEPS:
+                    self.assertTrue(step_already_done(self.RD, step))
+
+    def test_retrigger_with_bq_coverage_skips_browser_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(daily_refresh.pathlib.Path, "home",
+                                   return_value=daily_refresh.pathlib.Path(tmp)):
+                self._seed_scrape_done(self.RD)
+                with mock.patch(
+                    "skills._browser_runtime.runtime.is_fresh_download",
+                    return_value=True,
+                ):
+                    self.assertFalse(daily_refresh._square_will_launch_browser(
+                        needs_square=True,
+                        gap_start=self.RD,
+                        end_date=self.RD,
+                        refresh_date=self.RD,
+                        skip_kds=False,
+                    ))
+                with mock.patch(
+                    "skills.adp_run_automation.runner._xlsx_fresh_for_target",
+                    return_value=True,
+                ):
+                    self.assertFalse(daily_refresh._adp_will_launch_browser(
+                        needs_adp=True,
+                        target_date=self.RD,
+                        include_earnings=True,
+                    ))
 
 
 if __name__ == "__main__":

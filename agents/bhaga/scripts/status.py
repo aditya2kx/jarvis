@@ -164,6 +164,8 @@ GRAFANA_VIEWS: list[Target] = [
     # existing vw_model_forecast Target above still covers freshness.
     # migration 017: Pipeline Health two-table design (dashboard v38). Both
     # views are empty / NULL run_date until the first nightly after merge.
+    # migration 019: vw_pipeline_runs exposes recovery_retrigger (dashboard v41
+    # Pipeline Runs panel); same Target covers freshness — column add only.
     Target("vw_pipeline_runs", "run_date"),
     Target("vw_source_pulls", "run_date"),
 ]

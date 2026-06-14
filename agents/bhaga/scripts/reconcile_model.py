@@ -27,6 +27,7 @@ import json
 import os
 import pathlib
 import sys
+from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
@@ -44,6 +45,18 @@ _STORE_PROFILES = pathlib.Path(__file__).resolve().parents[3] / "agents" / "bhag
 
 # Columns that exist in BQ but not in the Sheet (metadata/internal) — skip in diff.
 _SKIP_COLS: set[str] = {"materialized_at_utc", "last_refreshed_ct", "scraped_at_utc"}
+
+# Sheet column → BQ column when names differ (raw-mirror grains).
+_BQ_COL_ALIASES: dict[str, str] = {"employee_name": "employee"}
+
+
+def _bq_cell(bq_row: dict, col: str) -> Any:
+    if col in bq_row and bq_row[col] is not None:
+        return bq_row[col]
+    alias = _BQ_COL_ALIASES.get(col)
+    if alias:
+        return bq_row.get(alias)
+    return bq_row.get(col)
 
 # Tab name → BQ table name + sort columns + workbook key (default: "bhaga_model").
 # raw_mirror=True grains compare the raw Sheet tabs against their 1:1 BQ raw tables.
@@ -86,7 +99,7 @@ def _read_bq_as_rows(bq_table: str, sort_by: list[str], *, sheet_header: list[st
     projected_header = [c for c in sheet_header if c not in _SKIP_COLS]
     out: list[list] = [projected_header]
     for bq_row in bq_rows:
-        out.append([bq_row.get(col) for col in projected_header])
+        out.append([_bq_cell(bq_row, col) for col in projected_header])
     return out
 
 

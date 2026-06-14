@@ -441,30 +441,26 @@ def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
 # This MUST list EVERY step that consumes the portal data on its way to the
 # Model sheet's data_window_end — not just the first and last. The 2026-06-08
 # incident: a partial run had already marked render_raw_sheets + materialize_model_bq
-# done; on recovery we re-ran load_raw_bigquery/update_model_sheet/process_reviews
-# but those two stayed skipped, so the fresh Square rows landed in BQ raw yet were
-# never re-projected into Sheet raw nor re-materialized — update_model_sheet then
-# computed from stale Sheet raw and data_window_end stuck at the prior day (the
-# post-condition guard caught it, but only after a wasted run). Listed in pipeline
-# order: raw load → Sheet-raw projection → model compute (legacy + BQ-canonical) →
-# BQ-canonical Sheet render → reviews.
+# done; on recovery we re-ran load_raw_bigquery/process_reviews but projection
+# steps stayed skipped, so fresh Square rows landed in BQ raw yet were never
+# re-projected into Sheet raw nor re-materialized — data_window_end stuck at
+# the prior day (the post-condition guard caught it, but only after a wasted
+# run). Listed in pipeline order: raw load → Sheet-raw projection → BQ model
+# compute → Sheet model render → reviews.
 _RECOVERY_DOWNSTREAM_STEPS = (
     "load_raw_bigquery",
     "render_raw_sheets",
-    "update_model_sheet",
     "materialize_model_bq",
     "render_model_sheet_from_bq",
     "process_reviews",
 )
 
-# Steps that must be re-run whenever raw square_daily_rollup diverges from the
-# materialized model_daily (the 2026-06-09 incident: concurrent-execution race
-# wrote $0 to model_daily while rollup had $1,964.51; stale markers caused every
-# retrigger to short-circuit). materialize_model_bq is a full DELETE+reload, so
-# clearing it heals ALL dates in one recompute.
+# Steps that must be re-run whenever projection is stale (rollup-vs-model $0
+# drift, or a /bhaga-cloud refresh retrigger after a failed run with BQ data
+# already present). materialize_model_bq is a full DELETE+reload, so clearing
+# it heals ALL dates in one recompute.
 _MODEL_RECOMPUTE_STEPS = (
     "render_raw_sheets",
-    "update_model_sheet",
     "materialize_model_bq",
     "render_model_sheet_from_bq",
 )
@@ -858,6 +854,115 @@ def _detect_and_clear_stale_model(
                       file=sys.stderr)
     if cleared:
         print(f"[reconcile] cleared markers {cleared} — model will recompute.")
+    return cleared
+
+
+def _bq_raw_coverage_complete(refresh_date: datetime.date) -> bool:
+    """True when square_transactions has rows for refresh_date in BQ."""
+    if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":
+        return False
+    try:
+        from agents.bhaga.scripts.bq_coverage import SOURCE_COVERAGE, present_days
+
+        table, col = SOURCE_COVERAGE["square_transactions"]
+        have = present_days(table, col, refresh_date, refresh_date)
+        return refresh_date in have
+    except Exception as exc:  # noqa: BLE001
+        print(f"[recovery] WARN: BQ coverage check failed: {exc}", file=sys.stderr)
+        return False
+
+
+def _scrape_markers_done(refresh_date: datetime.date) -> bool:
+    """True when upstream scrape steps completed for this refresh_date."""
+    return (
+        step_already_done(refresh_date, "square_transactions")
+        and step_already_done(refresh_date, "adp_reports")
+    )
+
+
+def _last_pipeline_run_failed(refresh_date: datetime.date) -> bool:
+    """True when the most recent pipeline_runs row for run_date is failed."""
+    if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":
+        return False
+    try:
+        from core.datastore import dataset, read_query
+
+        ds = dataset()
+        rows = read_query(
+            f"SELECT status FROM `jarvis-bhaga-prod.{ds}.pipeline_runs` "
+            f"WHERE run_date = DATE('{refresh_date.isoformat()}') "
+            f"ORDER BY recorded_at_utc DESC LIMIT 1"
+        )
+        return bool(rows) and rows[0].get("status") == "failed"
+    except Exception as exc:  # noqa: BLE001
+        print(f"[recovery] WARN: pipeline_runs lookup failed: {exc}", file=sys.stderr)
+        return False
+
+
+def _projection_drift_probe(store: str) -> bool:
+    """Return True when labor_daily or earnings Sheet/BQ grains diverge."""
+    try:
+        from agents.bhaga.scripts.reconcile_model import reconcile
+
+        result = reconcile(
+            store,
+            allow_prod_read=True,
+            grains=[
+                {"tab": "labor_daily", "bq_table": "model_labor_daily", "sort_by": ["date"]},
+                {
+                    "tab": "earnings",
+                    "bq_table": "adp_earnings",
+                    "sort_by": ["period_start", "employee", "description"],
+                    "workbook": "bhaga_adp_raw",
+                    "raw_mirror": True,
+                },
+            ],
+        )
+        return not result.get("passed", True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[recovery] WARN: projection drift probe failed: {exc}", file=sys.stderr)
+        return False
+
+
+def _prepare_projection_recovery(
+    refresh_date: datetime.date,
+    store: str,
+    *,
+    dry_run: bool,
+) -> list[str]:
+    """Clear stale projection markers when BQ raw is present but projections failed.
+
+    Enables ``/bhaga-cloud refresh <date>`` to skip OTP/login and re-run only
+    render_raw_sheets → materialize_model_bq → render_model_sheet_from_bq
+    (the 2026-06-13 KDS/earnings drift class).
+    """
+    if dry_run:
+        return []
+    if not _bq_raw_coverage_complete(refresh_date):
+        return []
+    if not _scrape_markers_done(refresh_date):
+        return []
+    stale_projection = [s for s in _MODEL_RECOMPUTE_STEPS if step_already_done(refresh_date, s)]
+    if not stale_projection:
+        return []
+    prior_failed = _last_pipeline_run_failed(refresh_date)
+    drift = _projection_drift_probe(store) if not prior_failed else False
+    if not prior_failed and not drift:
+        return []
+    cleared: list[str] = []
+    for step in stale_projection:
+        try:
+            clear_step_done(refresh_date, step)
+            cleared.append(step)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[recovery] WARN: could not clear marker {step}: {exc}", file=sys.stderr)
+    if cleared:
+        reason = "prior run failed" if prior_failed else "Sheet/BQ drift probe"
+        print(
+            f"[recovery] BQ data present for {refresh_date.isoformat()} — "
+            f"clearing projection markers {cleared} for retrigger ({reason}; no OTP).",
+        )
+        _RUN_SUMMARY["recovery_retrigger"] = True
     return cleared
 
 
@@ -1839,6 +1944,7 @@ def _record_pipeline_run(*, started_at_utc, exit_code, run_id, error=None) -> No
             "failed_step": _RUN_SUMMARY.get("failed_step"),
             "error": error or _RUN_SUMMARY.get("error"),
             "exit_code": exit_code,
+            "recovery_retrigger": bool(_RUN_SUMMARY.get("recovery_retrigger")),
             "recorded_at_utc": finished.isoformat(),
         }], merge_keys=["run_id"], column_bq_types={
             "started_at_utc": "TIMESTAMP", "finished_at_utc": "TIMESTAMP",
@@ -2448,6 +2554,8 @@ def _run_refresh() -> int:
     # fires on a fresh scrape success (2026-06-09 incident).
     _detect_and_clear_stale_model(refresh_date, dry_run=args.dry_run)
 
+    _prepare_projection_recovery(refresh_date, args.store, dry_run=args.dry_run)
+
     # ════════════════════════════════════════════════════════════════════
     # Phase 2: SEQUENTIAL downstream — write raw sheets, update model,
     # then attribution-phase of process_reviews.
@@ -2530,100 +2638,42 @@ def _run_refresh() -> int:
             print("[render_raw_sheets] WARNING: Sheet projection failed — BQ is unaffected, continuing.")
 
     failed_steps = {name for name, _ in failures}
-    # ── BHAGA_SHEET_FROM_BQ=1: BQ-canonical path ─────────────────────────────
-    # When enabled, BQ is the system of record: materialize_model_bq runs FIRST
-    # (computing the model from BQ raw), then render_model_sheet_from_bq renders
-    # the Sheet as a projection of BQ. This eliminates the dual-compute drift
-    # where update_model_sheet and materialize_model_bq could produce different
-    # numbers from their respective raw inputs. Feature flag: default off until
-    # reconciliation gate (reconcile_model.py) proves Sheet == BQ in prod.
-    # See docs/FEATURE_FLAGS.md for removal criteria.
-    _bq_canonical = os.environ.get("BHAGA_SHEET_FROM_BQ", "").strip() in ("1", "true", "yes")
+    # ── BQ-canonical model path (single path; BQ → Sheets projection) ────────
+    # materialize_model_bq computes the model from BQ raw; render_model_sheet_from_bq
+    # projects the Sheet from BQ model tables. No legacy update_model_sheet step.
 
     if not args.skip_model and (raw_sheets_ok or (args.skip_square and args.skip_timecard)):
-        if _bq_canonical:
-            # ── BQ-canonical path (BHAGA_SHEET_FROM_BQ=1) ────────────────────
-            # Step 1: compute model from BQ raw into BQ model tables.
-            bq_model_env = {
-                **os.environ,
-                "BHAGA_DATASTORE": "bigquery",
-                "PYTHONUNBUFFERED": "1",
-            }
-            ok, val = run_step(
-                "materialize_model_bq",
+        bq_model_env = {
+            **os.environ,
+            "BHAGA_DATASTORE": "bigquery",
+            "PYTHONUNBUFFERED": "1",
+        }
+        ok, val = run_step(
+            "materialize_model_bq",
+            lambda: subprocess.run(
+                [sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
+                 "--store", args.store],
+                cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
+            ),
+            refresh_date=refresh_date,
+            dry_run=args.dry_run,
+        )
+        if not ok:
+            failures.append(("materialize_model_bq", val))
+        else:
+            ok2, _ = run_step(
+                "render_model_sheet_from_bq",
                 lambda: subprocess.run(
-                    [sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
-                     "--store", args.store],
+                    [sys.executable, "-m", "agents.bhaga.scripts.render_model_sheet_from_bq",
+                     "--store", args.store,
+                     "--since", gap_start.isoformat()],
                     cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
                 ),
                 refresh_date=refresh_date,
                 dry_run=args.dry_run,
             )
-            if not ok:
-                failures.append(("materialize_model_bq", val))
-                print("[materialize_model_bq] FAILED — Sheet render skipped; falling back to legacy path.")
-                # Fall back to legacy update_model_sheet so the Sheet is never left stale.
-                _bq_canonical = False
-            else:
-                # Step 2: render Sheet from BQ model tables.
-                ok2, _ = run_step(
-                    "render_model_sheet_from_bq",
-                    lambda: subprocess.run(
-                        [sys.executable, "-m", "agents.bhaga.scripts.render_model_sheet_from_bq",
-                         "--store", args.store,
-                         "--since", gap_start.isoformat()],
-                        cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
-                    ),
-                    refresh_date=refresh_date,
-                    dry_run=args.dry_run,
-                )
-                if not ok2:
-                    print("[render_model_sheet_from_bq] WARNING: Sheet render failed — "
-                          "BQ model is canonical but Sheet may be stale.")
-
-        if not _bq_canonical:
-            # ── Legacy path (BHAGA_SHEET_FROM_BQ not set or fallback) ────────
-            # update_model_sheet computes the model from Sheet raw and writes the Sheet.
-            # materialize_model_bq then mirrors the result to BQ (non-fatal).
-            model_cmd = [
-                sys.executable, "-m", "agents.bhaga.scripts.update_model_sheet",
-                "--store", args.store,
-                "--item-ops-date-from", gap_start.isoformat(),
-                "--item-ops-date-to", refresh_date.isoformat(),
-            ]
-            if os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery":
-                model_cmd += ["--data-source", "bigquery"]
-            ok, val = run_step(
-                "update_model_sheet",
-                lambda: subprocess.run(
-                    model_cmd,
-                    cwd=str(PROJECT_ROOT), check=True,
-                ),
-                refresh_date=refresh_date,
-                dry_run=args.dry_run,
-            )
-            if not ok:
-                failures.append(("update_model_sheet", val))
-            else:
-                # ── Mirror computed model into BigQuery (after Sheet rebuild) ──
-                # Non-fatal: Sheets model is the source of truth on this path.
-                bq_model_env = {
-                    **os.environ,
-                    "BHAGA_DATASTORE": "bigquery",
-                    "PYTHONUNBUFFERED": "1",
-                }
-                ok2, _ = run_step(
-                    "materialize_model_bq",
-                    lambda: subprocess.run(
-                        [sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
-                         "--store", args.store],
-                        cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
-                    ),
-                    refresh_date=refresh_date,
-                    dry_run=args.dry_run,
-                )
-                if not ok2:
-                    print("[materialize_model_bq] WARNING: BQ model sync failed — Sheets is unaffected.")
+            if not ok2:
+                failures.append(("render_model_sheet_from_bq", RuntimeError("see step log")))
 
     # Step: Google Review attribution (sequential, uses pre-fetched messages).
     # Architecture rule: ALL data fetching happens in the parallel phase.
@@ -2740,14 +2790,7 @@ def _run_refresh() -> int:
     # (2026-05-23 incident). Fail loudly BEFORE writing the success
     # heartbeat — the wrapper will retry on the next 15-min wakeup.
     failed_step_names = {name for name, _ in failures}
-    # On the BQ-canonical path the model step is materialize_model_bq (not
-    # update_model_sheet), but the post-condition guard reads data_window_end
-    # from the Sheet config tab which is written by render_model_sheet_from_bq.
-    # The guard fires correctly for both paths as long as the Sheet was updated.
-    _model_step_ok = (
-        "update_model_sheet" not in failed_step_names
-        and "materialize_model_bq" not in failed_step_names
-    )
+    _model_step_ok = "materialize_model_bq" not in failed_step_names
     update_model_ran = (
         not args.skip_model
         and _model_step_ok

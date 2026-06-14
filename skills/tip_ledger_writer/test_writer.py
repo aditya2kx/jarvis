@@ -274,6 +274,42 @@ class AdditiveMigrationTest(unittest.TestCase):
         self.assertEqual(len(self._migrate_lines()), 1)
 
 
+class TestReplaceTabFromRecords(unittest.TestCase):
+    """Full-tab replace repairs destructive header drift (June 13 earnings class)."""
+
+    WORKBOOK = "BHAGA Square Raw"
+
+    def setUp(self):
+        self.fake = FakeSheets()
+        self.sid = "staging-fake-sheet-id"
+        patchers = [
+            mock.patch.object(writer, "_read_tab", self.fake.read_tab),
+            mock.patch.object(writer, "_write_range", self.fake.write_range),
+            mock.patch.object(writer, "_clear_range", self.fake.clear_range),
+            mock.patch.object(writer, "_add_sheet_if_missing", self.fake.add_sheet),
+            mock.patch.object(writer, "refresh_access_token", lambda *a, **k: "tok"),
+        ]
+        for p in patchers:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_replace_tab_from_records_rewrites_drifted_header(self):
+        tab = "daily_rollup"
+        full = get_tab_spec(self.WORKBOOK, tab)["header"]
+        reordered = list(full)
+        reordered[1], reordered[2] = reordered[2], reordered[1]
+        self.fake.tabs[tab] = [reordered]
+        result = writer.replace_tab_from_records(
+            self.sid, self.WORKBOOK, tab,
+            [{"date_local": "2026-06-13", "txn_count": 10, "gross_sales_cents": 1000,
+              "tip_cents": 100, "net_sales_cents": 900, "refund_cents": 0}],
+            account="palmetto",
+            scraped_at_utc="2026-06-13T00:00:00Z",
+        )
+        self.assertTrue(result.get("replaced"))
+        self.assertEqual(self.fake.tabs[tab][0], full)
+
+
 class _FakeResp:
     def __init__(self, body: str):
         self._b = body.encode()

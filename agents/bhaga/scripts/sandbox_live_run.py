@@ -149,12 +149,9 @@ def build_sandbox_env(
         # error when a scrape batch has duplicate natural keys (e.g. ADP
         # earnings line-items). Safe only because the window covers all history.
         env["BHAGA_RAW_REPLACE"] = "1"
-    # BQ-canonical model path: materialize_model_bq (BQ raw → BQ model) →
-    # render_model_sheet_from_bq (BQ model → Sheet), instead of the legacy
-    # update_model_sheet (which reads raw SHEETS). Required when proving BQ as
-    # the source of truth — the model must be computed FROM BQ, not from Sheets.
-    if sheet_from_bq:
-        env["BHAGA_SHEET_FROM_BQ"] = "1"
+    # BQ-canonical model path is unconditional in daily_refresh (materialize_model_bq
+    # → render_model_sheet_from_bq). sheet_from_bq is retained for CLI compat only.
+    _ = sheet_from_bq
     # Unified backfill window: injected so daily_refresh fans out to all sources.
     if window_from:
         env["BHAGA_WINDOW_FROM"] = window_from

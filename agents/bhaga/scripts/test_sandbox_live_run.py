@@ -91,8 +91,8 @@ class TestBuildSandboxEnv:
         """Without fresh_scrape, reads still hit prod (normal sandbox behavior)."""
         assert "BHAGA_GCS_CACHE_BUCKET" not in _good_env()
 
-    def test_sheet_from_bq_sets_canonical_flag(self):
-        """sheet_from_bq enables the BQ-canonical model path."""
+    def test_sheet_from_bq_is_noop_legacy_param(self):
+        """sheet_from_bq no longer sets BHAGA_SHEET_FROM_BQ — path is unconditional."""
         env = slr.build_sandbox_env(
             staging_ids=_good_ids(),
             refresh_date="2026-05-31",
@@ -100,10 +100,9 @@ class TestBuildSandboxEnv:
             run_label="test",
             sheet_from_bq=True,
         )
-        assert env["BHAGA_SHEET_FROM_BQ"] == "1"
+        assert "BHAGA_SHEET_FROM_BQ" not in env
 
     def test_no_sheet_from_bq_leaves_flag_unset(self):
-        """Without sheet_from_bq, the legacy Sheet-computed model path is used."""
         assert "BHAGA_SHEET_FROM_BQ" not in _good_env()
 
 

@@ -1012,17 +1012,13 @@ The nightly pipeline is now **BQ-primary for raw data** (hard cutover, no featur
 3. **Reviews:** `process_reviews` writes `google_reviews` to BQ; then `render_raw_sheet_from_bq --tabs reviews`
    renders the reviews Sheet tab from BQ (non-fatal).
 
-The model compute follows one of two paths:
-- **Legacy path (default, `BHAGA_SHEET_FROM_BQ` unset):** `update_model_sheet` computes the model from Sheet raw and writes the Sheet; `materialize_model_bq` then mirrors to BQ (non-fatal).
-- **BQ-canonical path (`BHAGA_SHEET_FROM_BQ=1`):** `materialize_model_bq` runs first (BQ is canonical); `render_model_sheet_from_bq` **incrementally upserts** (by natural key, `--since` window) the Sheet tabs from BQ. This eliminates dual-compute drift. See `docs/FEATURE_FLAGS.md` for flip criteria.
+The model compute is a single BQ-canonical path:
+- **`materialize_model_bq`** computes the model from BQ raw into `model_*` tables.
+- **`render_model_sheet_from_bq`** incrementally upserts Sheet model tabs from BQ (by natural key, `--since` window).
 
 After model writes, `reconcile_model.py` (non-fatal) compares each Sheet model tab against its BQ table and alerts on drift. See `agents/bhaga/scripts/reconcile_model.py`.
 
-**Flip procedure (`BHAGA_SHEET_FROM_BQ`):**
-1. Confirm `reconcile_model` has been green in prod for ≥ 2 consecutive nights.
-2. Set `BHAGA_SHEET_FROM_BQ=1` in the Cloud Run job env (Cloud Console → Jobs → `bhaga-daily-refresh` → Edit → Environment variables).
-3. Run a manual job and confirm the Sheet renders from BQ correctly.
-4. Record the flip in `docs/FEATURE_FLAGS.md`.
+**Recovery retrigger (`/bhaga-cloud refresh <date>`):** When BQ raw data is already present and scrape markers are done, `_prepare_projection_recovery` auto-clears projection step markers if the prior run for that date failed (or a drift probe fails). The retrigger skips OTP/login and re-runs `render_raw_sheets` → `materialize_model_bq` → `render_model_sheet_from_bq` only. Grafana Pipeline Health shows `recovery_retrigger=TRUE` on such runs; an empty Data Source Pulls list is expected (no new scrapes).
 
 ### Re-deploying the dashboard
 

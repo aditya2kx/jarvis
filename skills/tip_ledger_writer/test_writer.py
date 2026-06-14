@@ -309,6 +309,24 @@ class TestReplaceTabFromRecords(unittest.TestCase):
         self.assertTrue(result.get("replaced"))
         self.assertEqual(self.fake.tabs[tab][0], full)
 
+    def test_replace_tab_from_records_clears_trailing_ghost_rows(self):
+        tab = "daily_rollup"
+        full = get_tab_spec(self.WORKBOOK, tab)["header"]
+        stale_row = ["2026-06-01", 1, 100, 10, 90, 0]
+        ghost_row = ["2026-06-02", 2, 200, 20, 180, 0]
+        self.fake.tabs[tab] = [list(full), stale_row, ghost_row]
+        writer.replace_tab_from_records(
+            self.sid, self.WORKBOOK, tab,
+            [{"date_local": "2026-06-13", "txn_count": 10, "gross_sales_cents": 1000,
+              "tip_cents": 100, "net_sales_cents": 900, "refund_cents": 0}],
+            account="palmetto",
+            scraped_at_utc="2026-06-13T00:00:00Z",
+        )
+        self.assertEqual(self.fake.tabs[tab][0], full)
+        self.assertEqual(self.fake.tabs[tab][1][0], "2026-06-13")
+        for row in self.fake.tabs[tab][2:]:
+            self.assertFalse(any(str(c).strip() for c in row), f"ghost row survived: {row!r}")
+
 
 class _FakeResp:
     def __init__(self, body: str):

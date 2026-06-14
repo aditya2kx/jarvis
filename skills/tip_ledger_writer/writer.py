@@ -529,6 +529,17 @@ def replace_tab_from_records(
     token = refresh_access_token(account=account)
     _add_sheet_if_missing(spreadsheet_id, token, tab_name)
 
+    existing = _read_tab(spreadsheet_id, tab_name, token)
+    if existing:
+        phys_rows = len(existing)
+        max_cols = max((len(r) for r in existing), default=len(header_expected))
+        last_col = _col_letter(max(max_cols, len(header_expected)))
+        _clear_range(
+            spreadsheet_id,
+            f"{tab_name}!A1:{last_col}{phys_rows}",
+            token,
+        )
+
     incoming = list(records)
     by_key: dict[tuple, list[Any]] = {}
     for rec in incoming:

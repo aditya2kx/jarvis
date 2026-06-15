@@ -761,6 +761,140 @@ class TestConfigCommands:
         assert "config set" in body["text"]
 
 
+# ---------------------------------------------------------------------------
+# Slash commands: training set/rm, alias set, exclude set
+# ---------------------------------------------------------------------------
+
+
+class TestTrainingCommands:
+    """Verify /bhaga-cloud training set|rm parse and call BQ correctly."""
+
+    def test_training_set_merges_bq(self, monkeypatch):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, 'training set "Flores, Juan" 2026-06-01 first shift',
+                                 user_name="adi")
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "Flores, Juan" in body["text"]
+        assert "2026-06-01" in body["text"]
+        assert fake_bq.query.called
+        call_sql = fake_bq.query.call_args[0][0]
+        assert "MERGE" in call_sql
+        assert "training_shifts" in call_sql
+
+    def test_training_set_with_note(self, monkeypatch):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, 'training set "Smith, Alice" 2026-06-02 orientation',
+                                 user_name="adi")
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "Smith, Alice" in body["text"]
+        assert "orientation" in body["text"]
+
+    def test_training_set_without_note(self, monkeypatch):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, 'training set "Smith, Alice" 2026-06-02',
+                                 user_name="adi")
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "Smith, Alice" in body["text"]
+
+    def test_training_rm_deletes_from_bq(self, monkeypatch):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, 'training rm "Flores, Juan" 2026-06-01',
+                                 user_name="adi")
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "Flores, Juan" in body["text"]
+        call_sql = fake_bq.query.call_args[0][0]
+        assert "DELETE" in call_sql
+        assert "training_shifts" in call_sql
+
+    def test_training_unavailable_without_bq(self, monkeypatch):
+        monkeypatch.setattr(handler, "_bq", None)
+        with app.test_client() as client:
+            resp = _post_command(client, 'training set "A, B" 2026-06-01')
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "not available" in body["text"].lower() or "unavailable" in body["text"].lower()
+
+
+class TestAliasCommands:
+    """Verify /bhaga-cloud alias set parse and BQ call."""
+
+    def test_alias_set_merges_bq(self, monkeypatch):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, 'alias set "Juan Flores" "Flores, Juan"',
+                                 user_name="adi")
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "Juan Flores" in body["text"]
+        assert "Flores, Juan" in body["text"]
+        call_sql = fake_bq.query.call_args[0][0]
+        assert "MERGE" in call_sql
+        assert "employee_aliases" in call_sql
+
+    def test_alias_set_unavailable_without_bq(self, monkeypatch):
+        monkeypatch.setattr(handler, "_bq", None)
+        with app.test_client() as client:
+            resp = _post_command(client, 'alias set rawname "Canonical, Name"')
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "not available" in body["text"].lower() or "unavailable" in body["text"].lower()
+
+
+class TestExcludeCommands:
+    """Verify /bhaga-cloud exclude set parse and store_config call."""
+
+    def test_exclude_set_with_through_date_delegates_to_config_set(self, monkeypatch):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, 'exclude set "Flores, Juan" 2026-05-31',
+                                 user_name="adi")
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "training_excluded:Flores, Juan" in body["text"] or "2026-05-31" in body["text"]
+
+    def test_exclude_set_without_date_appends_permanent(self, monkeypatch):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.side_effect = [
+            [{"value": "Krause, Lindsay"}],  # first query reads existing permanent list
+            [],  # second query MERGE
+        ]
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, 'exclude set "New, Person"',
+                                 user_name="adi")
+        assert resp.status_code == 200
+
+    def test_help_text_lists_new_commands(self):
+        with app.test_client() as client:
+            resp = _post_command(client, "unknown-command-xyz")
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert "training set" in body["text"]
+        assert "training rm" in body["text"]
+        assert "alias set" in body["text"]
+        assert "exclude set" in body["text"]
+
+
 # ===========================================================================
 # Slack-retry dedup and already-running guard
 # ===========================================================================

@@ -506,14 +506,16 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
         self.assertNotIn("update_model_sheet", daily_refresh._RECOVERY_DOWNSTREAM_STEPS)
         self.assertNotIn("update_model_sheet", _MODEL_RECOMPUTE_STEPS)
 
-    def test_includes_model_projection_and_materialize_steps(self):
-        """Regression for 2026-06-08: the recovery list MUST invalidate the
-        Sheet-raw projection (render_raw_sheets) and the model materialize steps,
-        not just load + update_model_sheet + reviews. Otherwise fresh portal data
-        lands in BQ raw but never re-projects, and data_window_end stays stuck."""
-        for step in ("render_raw_sheets", "materialize_model_bq",
-                     "render_model_sheet_from_bq"):
+    def test_includes_materialize_and_reviews_steps(self):
+        """Regression for 2026-06-08 (updated post-Sheets-exit): the recovery
+        list MUST include materialize_model_bq (and NOT render_* which are
+        deleted). Without it, fresh portal data lands in BQ raw but the model
+        is never recomputed."""
+        for step in ("load_raw_bigquery", "materialize_model_bq", "process_reviews"):
             self.assertIn(step, daily_refresh._RECOVERY_DOWNSTREAM_STEPS)
+        for step in ("render_raw_sheets", "render_model_sheet_from_bq",
+                     "reconcile_model"):
+            self.assertNotIn(step, daily_refresh._RECOVERY_DOWNSTREAM_STEPS)
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(daily_refresh.pathlib.Path, "home",
                                    return_value=daily_refresh.pathlib.Path(tmp)):
@@ -522,10 +524,8 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
                 cleared = _recover_stale_downstream_markers(
                     rd, {"square": self._ok()}, dry_run=False
                 )
-                for step in ("render_raw_sheets", "materialize_model_bq",
-                             "render_model_sheet_from_bq"):
-                    self.assertIn(step, cleared)
-                    self.assertFalse(step_already_done(rd, step))
+                self.assertIn("materialize_model_bq", cleared)
+                self.assertFalse(step_already_done(rd, "materialize_model_bq"))
 
     def test_adp_recovery_also_triggers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -946,9 +946,12 @@ class ModelVsRollupDriftTests(unittest.TestCase):
         (the 2026-06-09 incident root cause) so the list never silently drifts."""
         self.assertIn("materialize_model_bq", _MODEL_RECOMPUTE_STEPS)
 
-    def test_render_model_sheet_from_bq_in_recompute_steps(self):
-        """render_model_sheet_from_bq must also be included so Grafana/Sheet refresh."""
-        self.assertIn("render_model_sheet_from_bq", _MODEL_RECOMPUTE_STEPS)
+    def test_render_steps_not_in_recompute_steps(self):
+        """Post-Sheets-exit: render_* and reconcile steps are deleted — not in
+        _MODEL_RECOMPUTE_STEPS. Only materialize_model_bq remains."""
+        for step in ("render_raw_sheets", "render_model_sheet_from_bq",
+                     "reconcile_model"):
+            self.assertNotIn(step, _MODEL_RECOMPUTE_STEPS)
 
     # ── _assert_model_matches_raw_rollup ──────────────────────────────────────
 
@@ -973,14 +976,21 @@ class ModelVsRollupDriftTests(unittest.TestCase):
 
 
 class SinglePathRegressionTests(unittest.TestCase):
-    """June 13: orchestrator must not invoke update_model_sheet on nightly path."""
+    """Post-Sheets-exit: orchestrator must not invoke Sheet projection scripts."""
 
     def test_orchestrator_never_invokes_update_model_sheet(self):
         src = (daily_refresh.pathlib.Path(daily_refresh.__file__).parent / "daily_refresh.py").read_text()
         self.assertNotIn("agents.bhaga.scripts.update_model_sheet", src)
         self.assertNotIn("BHAGA_SHEET_FROM_BQ", src)
         self.assertIn("materialize_model_bq", src)
-        self.assertIn("render_model_sheet_from_bq", src)
+
+    def test_orchestrator_never_invokes_render_or_reconcile(self):
+        """Post-Sheets-exit: Sheet projection steps are deleted from nightly path."""
+        src = (daily_refresh.pathlib.Path(daily_refresh.__file__).parent / "daily_refresh.py").read_text()
+        # No subprocess calls to deleted scripts
+        self.assertNotIn("render_raw_sheet_from_bq\",", src)
+        self.assertNotIn("render_model_sheet_from_bq\",", src)
+        self.assertNotIn("reconcile_model\",", src)
 
     def test_materialize_failure_does_not_fallback_to_legacy(self):
         src = (daily_refresh.pathlib.Path(daily_refresh.__file__).parent / "daily_refresh.py").read_text()
@@ -1007,8 +1017,7 @@ class PrepareProjectionRecoveryTests(unittest.TestCase):
                 self._seed_scrape_done(self.RD)
                 self._seed_projection_done(self.RD)
                 with mock.patch.object(daily_refresh, "_bq_raw_coverage_complete", return_value=True), \
-                     mock.patch.object(daily_refresh, "_last_pipeline_run_failed", return_value=True), \
-                     mock.patch.object(daily_refresh, "_projection_drift_probe", return_value=False):
+                     mock.patch.object(daily_refresh, "_last_pipeline_run_failed", return_value=True):
                     cleared = daily_refresh._prepare_projection_recovery(
                         self.RD, "palmetto", dry_run=False,
                     )
@@ -1027,8 +1036,7 @@ class PrepareProjectionRecoveryTests(unittest.TestCase):
                 self._seed_scrape_done(self.RD)
                 self._seed_projection_done(self.RD)
                 with mock.patch.object(daily_refresh, "_bq_raw_coverage_complete", return_value=True), \
-                     mock.patch.object(daily_refresh, "_last_pipeline_run_failed", return_value=False), \
-                     mock.patch.object(daily_refresh, "_projection_drift_probe", return_value=False):
+                     mock.patch.object(daily_refresh, "_last_pipeline_run_failed", return_value=False):
                     cleared = daily_refresh._prepare_projection_recovery(
                         self.RD, "palmetto", dry_run=False,
                     )
@@ -1061,6 +1069,124 @@ class PrepareProjectionRecoveryTests(unittest.TestCase):
                         target_date=self.RD,
                         include_earnings=True,
                     ))
+
+
+class TestVerifyModelBq(unittest.TestCase):
+    """verify_model_bq raises RuntimeError on empty tables; passes when populated."""
+
+    _POPULATED_COUNT = [{"c": 5}]
+    _KDS_RANGE = [{"lo": "2026-06-01", "hi": "2026-06-13", "c": 13}]
+    _KDS_LABOR_DAILY = [{"c": 3}]   # populated KDS columns
+    _KDS_OVERLAP_OK = [{"c": 0}]    # no bad rows
+
+    def _make_read_query(self, overrides: dict | None = None):
+        """Return a mock read_query that returns populated counts by default."""
+        defaults = {
+            "model_daily": self._POPULATED_COUNT,
+            "model_labor_daily": self._POPULATED_COUNT,
+            "model_labor_weekly": self._POPULATED_COUNT,
+            "model_labor_period": self._POPULATED_COUNT,
+            "model_period_summary": self._POPULATED_COUNT,
+            "square_kds_daily": self._KDS_RANGE,
+            "kds_ld": self._KDS_LABOR_DAILY,
+            "kds_overlap": self._KDS_OVERLAP_OK,
+        }
+        if overrides:
+            defaults.update(overrides)
+
+        def _rq(sql: str) -> list:
+            sql_l = sql.lower()
+            # KDS-specific checks must be routed BEFORE generic count checks
+            if "square_kds_daily" in sql_l:
+                return defaults["square_kds_daily"]
+            if "kds_completed_tickets" in sql_l:
+                return defaults["kds_ld"]
+            if "kds_completed_items" in sql_l:
+                return defaults["kds_overlap"]
+            # Generic row count checks
+            if "model_daily" in sql_l:
+                return defaults["model_daily"]
+            if "model_labor_daily" in sql_l:
+                return defaults["model_labor_daily"]
+            if "model_labor_weekly" in sql_l:
+                return defaults["model_labor_weekly"]
+            if "model_labor_period" in sql_l:
+                return defaults["model_labor_period"]
+            if "model_period_summary" in sql_l:
+                return defaults["model_period_summary"]
+            return [{"c": 1}]
+
+        return _rq
+
+    def test_passes_when_all_tables_populated_no_kds(self):
+        rq = self._make_read_query()
+        with mock.patch("core.datastore.read_query", side_effect=rq):
+            daily_refresh.verify_model_bq("palmetto", expect_kds=False)
+
+    def test_raises_when_model_daily_empty(self):
+        rq = self._make_read_query({"model_daily": [{"c": 0}]})
+        with mock.patch("core.datastore.read_query", side_effect=rq):
+            with self.assertRaises(RuntimeError) as ctx:
+                daily_refresh.verify_model_bq("palmetto", expect_kds=False)
+        self.assertIn("model_daily", str(ctx.exception))
+
+    def test_raises_when_kds_table_empty(self):
+        rq = self._make_read_query({"square_kds_daily": [{"lo": None, "hi": None, "c": 0}]})
+        with mock.patch("core.datastore.read_query", side_effect=rq):
+            with self.assertRaises(RuntimeError) as ctx:
+                daily_refresh.verify_model_bq("palmetto", expect_kds=True)
+        self.assertIn("square_kds_daily", str(ctx.exception))
+
+    def test_passes_kds_branch_when_populated(self):
+        rq = self._make_read_query()
+        with mock.patch("core.datastore.read_query", side_effect=rq):
+            daily_refresh.verify_model_bq("palmetto", expect_kds=True)
+
+    def test_raises_when_kds_labor_daily_columns_empty(self):
+        rq = self._make_read_query({"kds_ld": [{"c": 0}]})
+        with mock.patch("core.datastore.read_query", side_effect=rq):
+            with self.assertRaises(RuntimeError) as ctx:
+                daily_refresh.verify_model_bq("palmetto", expect_kds=True)
+        self.assertIn("model_labor_daily", str(ctx.exception))
+
+
+class TestShouldRecordPipelineRun(unittest.TestCase):
+    """_should_record_pipeline_run gates on CLOUD_RUN_JOB (prod) + explicit opt-in."""
+
+    def setUp(self):
+        self._saved = dict(daily_refresh._RUN_SUMMARY)
+        daily_refresh._RUN_SUMMARY.update(
+            dry_run=False, refresh_date=datetime.date(2026, 6, 13)
+        )
+
+    def tearDown(self):
+        daily_refresh._RUN_SUMMARY.clear()
+        daily_refresh._RUN_SUMMARY.update(self._saved)
+
+    def test_records_inside_cloud_run(self):
+        with mock.patch.dict(os.environ, {"CLOUD_RUN_JOB": "bhaga-daily-refresh"}, clear=False):
+            os.environ.pop("BHAGA_RECORD_PIPELINE_RUN", None)
+            self.assertTrue(daily_refresh._should_record_pipeline_run())
+
+    def test_skips_on_laptop_even_with_gcp_backend(self):
+        with mock.patch.dict(
+            os.environ,
+            {"BHAGA_SECRETS_BACKEND": "gcp", "BHAGA_DATASTORE": "bigquery"},
+            clear=False,
+        ):
+            os.environ.pop("CLOUD_RUN_JOB", None)
+            os.environ.pop("BHAGA_RECORD_PIPELINE_RUN", None)
+            self.assertFalse(daily_refresh._should_record_pipeline_run())
+
+    def test_explicit_optin_records(self):
+        with mock.patch.dict(os.environ, {"BHAGA_RECORD_PIPELINE_RUN": "1"}, clear=False):
+            os.environ.pop("CLOUD_RUN_JOB", None)
+            self.assertTrue(daily_refresh._should_record_pipeline_run())
+
+    def test_dry_run_never_records(self):
+        daily_refresh._RUN_SUMMARY["dry_run"] = True
+        with mock.patch.dict(os.environ, {"CLOUD_RUN_JOB": "x"}, clear=False):
+            self.assertFalse(daily_refresh._should_record_pipeline_run())
 
 
 if __name__ == "__main__":

@@ -84,6 +84,48 @@ jobs:
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT_ID }}
 
+      # Apply pending BQ migrations from core/migrations/ before recording the
+      # deploy. Idempotent — no-op when already applied. Keeps schema in sync
+      # with the merged code + Grafana panels that reference new columns/views.
+      - name: Apply BQ schema migrations
+        if: ${{ !inputs.rollback_sha }}
+        run: |
+          pip install --quiet google-cloud-bigquery google-auth
+          BHAGA_DATASTORE=bigquery python3 -c \
+            "from core.datastore import ensure_schema; applied = ensure_schema(); print('applied:', applied or 'none')"
+
+      # Auto-rerun the nightly for any dates the merged PR declares it fixes, via
+      # a "Retry-Dates: YYYY-MM-DD[, ...]" trailer in the PR body. Each date runs
+      # SMART (scripts/trigger_dated_refresh.py): already-covered dates are
+      # recompute-only (no portal login/OTP); uncovered dates do a full scrape.
+      # Per-execution env overrides only — the job definition is never mutated.
+      # Best-effort: a failure here never fails the deploy (operator can retrigger).
+      # IAM: the WIF SA needs run.jobs.run (roles/run.developer covers this).
+      - name: Auto-rerun fixed dates (Retry-Dates trailer)
+        if: ${{ !inputs.rollback_sha }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GCP_PROJECT: ${{ env.PROJECT_ID }}
+          BHAGA_REGION: ${{ env.REGION }}
+        run: |
+          pip install --quiet google-cloud-bigquery google-cloud-run google-auth
+          BODY="$(gh api repos/${{ github.repository }}/commits/${{ github.sha }}/pulls \
+                   --jq '.[0].body' 2>/dev/null || echo '')"
+          DATES="$(printf '%s\n' "$BODY" \
+                   | sed -n 's/^[[:space:]]*[Rr]etry-[Dd]ates:[[:space:]]*//p' \
+                   | tr ',' '\n' | tr -d ' ' \
+                   | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || true)"
+          if [ -z "$DATES" ]; then
+            echo "No Retry-Dates trailer found — nothing to rerun."
+            exit 0
+          fi
+          for d in $DATES; do
+            echo "::group::Rerun $d"
+            python3 scripts/trigger_dated_refresh.py --date "$d" \
+              || echo "::warning::trigger_dated_refresh failed for $d (non-fatal)"
+            echo "::endgroup::"
+          done
+
       - name: Rollback (if SHA provided)
         if: ${{ inputs.rollback_sha }}
         run: |

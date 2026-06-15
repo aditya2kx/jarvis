@@ -1,5 +1,72 @@
 # Jarvis Build Progress
 
+## 2026-06-15 — BHAGA: PR #56 post-merge fixes (prod-only recording, smart deploy rerun, evidence gate)
+
+**What changed:** Addressed all PR #56 review comments. Three independent fixes + deploy wiring.
+
+- **Prod-only pipeline_runs recording** (`daily_refresh._should_record_pipeline_run`): gated on
+  `CLOUD_RUN_JOB` env var (present in real Cloud Run executions only). Laptop + CI never write to
+  `pipeline_runs` / `source_pulls`. `BHAGA_RECORD_PIPELINE_RUN=1` is the explicit cloud-shell opt-in.
+  Deleted skip-reason `laptop_without_BHAGA_DATASTORE`; replaced with `not_cloud_run`.
+- **Data cleanup**: deleted 3 leaked non-prod `pipeline_runs` rows for `run_date=2026-06-14`
+  (`62e061…`, `ffa63f…`, `4266d2…`) that a local laptop e2e wrote into prod BQ. `source_pulls`
+  had no matching rows. The only remaining 6/14 row is the legitimate prod `otp_pending`.
+- **Smart deploy auto-rerun** (`scripts/trigger_dated_refresh.py` + `deploy.yml`): merged PRs can
+  declare `Retry-Dates: YYYY-MM-DD[, ...]` in their body. On deploy, each date is re-run smartly:
+  dates already covered by raw Square data in BQ → recompute-only (no browser/OTP, skips
+  Square/ADP/KDS); uncovered dates → full scrape. Uses Cloud Run v2 per-execution env overrides
+  (job definition never mutated). Best-effort: failure logs a `::warning::`, never fails deploy.
+  `Retry-Dates: 2026-06-13` added to PR #56 so June 13 reruns (recompute-only) on merge.
+- **Bug fix: `verify_model_bq` KDS query** (`square_kds_daily` has `date_local` not `date`):
+  `CAST(MIN(date_local) AS STRING)` corrected; tests added for `verify_model_bq` covering
+  row-count failures, KDS-empty failure, and KDS-overlap populated-pass.
+- **Evidence confidence gate** (`scripts/check_evidence_confidence.py` + `claude-review.yml`):
+  old inline Python regex missed `"Evidence confidence rating: **85%**"` (the word "rating" caused
+  a mismatch → gate silently passed at 85%). New script tolerates both phrasings; extracted for
+  testability. Gate now correctly fails CI when score < 95%.
+
+## 2026-06-15 — BHAGA: Full Google Sheets exit — strip projection/reconcile steps (PR2)
+
+**What changed:** Sheet projection and reconciliation scripts deleted; BQ-internal model verify
+added; Pipeline Health updated to reflect BQ-only pipeline.
+
+- **`verify_model_bq()`**: new BQ-internal model verify in `daily_refresh.py` — queries
+  `model_daily`, `model_labor_daily/weekly/period`, `square_kds_daily` directly. Replaces Sheet-
+  reading `_read_model_verification_data` + `assert_model_tabs_populated` + `check_weekly_period_kds`.
+  Semantic checks (tip conservation, ADP, reviews) built from BQ grids.
+- **Deleted scripts**: `render_raw_sheet_from_bq.py`, `render_model_sheet_from_bq.py`,
+  `reconcile_model.py`, `verify_bq_parity.py`, `verify_prod_parity.py` + their test files.
+- **`daily_refresh.py`**: removed `render_raw_sheets`, `render_model_sheet_from_bq`,
+  inline reviews-Sheet render, `reconcile_model` steps. `_RECOVERY_DOWNSTREAM_STEPS` → `("load_raw_bigquery","materialize_model_bq","process_reviews")`. `_MODEL_RECOMPUTE_STEPS` → `("materialize_model_bq",)`. `_projection_drift_probe` removed (no Sheet to diff against).
+- **`model-reconciliation.yml`** workflow deleted.
+- **`EXPECTED_STEPS`** in `command_handler.py` updated to cloud BQ-only set.
+- **Grafana**: Pipeline Runs panel description updated (BQ-only model path, no Sheet projection).
+- **Tests**: 1035 passing.
+- **Next (post-merge)**: RE-RUN 2026-06-13 refresh; confirm pipeline_runs=success.
+
+## 2026-06-15 — BHAGA: Full Google Sheets exit — BQ-canonical human inputs (PR1)
+
+**What changed:** All human-input data (training shifts, employee aliases, tunables/exclusions) fully
+migrated from Google Sheets to BigQuery. Google Sheets deprecated as a data source for BHAGA.
+
+- **Migration 020** (`core/migrations/020_sheet_inputs.sql`): new `bhaga.training_shifts` +
+  `bhaga.employee_aliases` BQ tables; `vw_training_shifts` view for Grafana.
+- **`model_inputs.py`**: new module centralizing BQ readers for all human inputs (replaces Sheet reads
+  in `update_model_sheet.py`, `store_profile/reader.py`, `process_reviews.py`, `daily_refresh.py`).
+- **Data migration** (`migrate_inputs_to_bq.py`): 11 training shifts, 37 aliases, 15 config keys
+  snapshotted from production Sheet into BQ (one-time; run 2026-06-15).
+- **`/bhaga-cloud` commands**: `training set|rm`, `alias set`, `exclude set` — operators edit BQ
+  directly from Slack without touching Sheets.
+- **`employee_aliases.py`**: auto-alias append (`update_sheet_with_new_aliases` → `update_aliases_bq`)
+  now MERGEs into `bhaga.employee_aliases` BQ table.
+- **Grafana**: new "Training Shifts (current)" panel in Section 6 Payroll.
+- **June 13 fix**: Sheets-based verification (`_read_model_verification_data`) removed from
+  `status.py`; `data_window_end` now read from BQ `store_config` / `MAX(square_transactions.date_local)`.
+- **Tests**: 30+ new/updated tests; full suite green.
+- **Docs**: RUNBOOK, DOMAIN, README, bhaga.md, AGENTS.md updated; Sheets guidance removed.
+- **Next (PR2)**: strip Sheet projection/reconcile steps from `daily_refresh.py`; delete
+  `render_raw_sheet_from_bq.py`, `render_model_sheet_from_bq.py`, `reconcile_model.py` + tests.
+
 ## 2026-06-14 — BHAGA: fix June 13 KDS Sheet/BQ drift (single BQ path)
 
 **Incident (2026-06-13):** `reconcile_model` failed on `labor_daily` (KDS blank on Sheet, populated in BQ) and `earnings` (header drift WARN-and-continue). Legacy dual-path (`update_model_sheet --data-source bigquery` skipped KDS) plus stale projection markers blocked `/bhaga-cloud refresh` retriggers.
@@ -11,6 +78,7 @@
 - **Reconcile:** BQ `employee` → Sheet `employee_name` alias in `_read_bq_as_rows`.
 - **Grafana:** Pipeline Health panels document single-path steps + `recovery_retrigger` column (migration 019).
 - **Recovery:** `/bhaga-cloud refresh 2026-06-13` after deploy.
+- **Gap found post-merge:** migration 019 was applied manually during recovery (deploy did not run `ensure_schema()`). Fixed: deploy + Grafana sync workflows + nightly startup now call `ensure_schema()` automatically.
 
 ## 2026-06-13 — BHAGA Pipeline Health: fix silent recorder skip in Cloud Run parent
 

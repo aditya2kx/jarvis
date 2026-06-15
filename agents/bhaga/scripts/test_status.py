@@ -10,6 +10,9 @@ Two groups:
    status.py stays in sync with schema and Grafana panels.  These are the
    tests that fail CI when a migration or dashboard change lands without
    updating the doctor.
+
+Note: status.py now calls core.store_config.get_config for the data_window_end
+BQ check. Behavior tests mock this to avoid hitting the live prod BQ store_config.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 # import time.  That is fine for tests — we mock read_query so no actual BQ
 # calls happen.
 import agents.bhaga.scripts.status as status
+import core.store_config as _store_config_mod
 
 # ── Fixtures / helpers ────────────────────────────────────────────────────────
 
@@ -124,6 +128,7 @@ class TestMainGreenPath:
         monkeypatch.setattr(status, "resolve_sheet_id", lambda k, p: "FAKE_MODEL_SID")
         monkeypatch.setattr(status, "_read_tab", _mock_read_tab(tab_data))
         monkeypatch.setattr(status, "read_query", _mock_read_query(bq_responses))
+        monkeypatch.setattr(_store_config_mod, "get_config", lambda store, key: _FIXED_ISO)
         monkeypatch.setattr(
             pathlib.Path, "read_text",
             lambda self, **kw: json.dumps(_FAKE_PROFILE),
@@ -144,6 +149,7 @@ class TestMainGreenPath:
         monkeypatch.setattr(status, "resolve_sheet_id", lambda k, p: "FAKE_MODEL_SID")
         monkeypatch.setattr(status, "_read_tab", _mock_read_tab(tab_data))
         monkeypatch.setattr(status, "read_query", _mock_read_query(bq_responses))
+        monkeypatch.setattr(_store_config_mod, "get_config", lambda store, key: _FIXED_ISO)
         monkeypatch.setattr(
             pathlib.Path, "read_text",
             lambda self, **kw: json.dumps(_FAKE_PROFILE),
@@ -194,17 +200,15 @@ class TestMissingLayerReturnsOne:
         bq["vw_daily_sales:exact"] = _bq_row_empty()
         assert self._run(monkeypatch, bq) == 1
 
-    def test_sheets_date_mismatch(self, monkeypatch):
-        tab_data = {
-            "config": _make_sheet_config_rows(dwe="2026-06-02"),  # one day behind
-            "daily": _make_sheet_data_rows(),
-            "tip_alloc_daily": _make_sheet_data_rows(),
-        }
+    def test_bq_data_window_end_mismatch(self, monkeypatch):
+        """BQ data_window_end one day behind → rc=1 (replaces Sheet config tab check)."""
         bq = _make_full_bq_responses()
         monkeypatch.setattr(status, "refresh_access_token", lambda account=None: "tok")
         monkeypatch.setattr(status, "resolve_sheet_id", lambda k, p: "FAKE_MODEL_SID")
-        monkeypatch.setattr(status, "_read_tab", _mock_read_tab(tab_data))
+        monkeypatch.setattr(status, "_read_tab", _mock_read_tab(self._base_tab_data()))
         monkeypatch.setattr(status, "read_query", _mock_read_query(bq))
+        # store_config returns yesterday's date — one day behind check_date
+        monkeypatch.setattr(_store_config_mod, "get_config", lambda store, key: "2026-06-02")
         monkeypatch.setattr(
             pathlib.Path, "read_text",
             lambda self, **kw: json.dumps(_FAKE_PROFILE),

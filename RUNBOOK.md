@@ -410,6 +410,38 @@ gcloud run jobs execute bhaga-daily-refresh \
 > Deleting the entire `runs/YYYY-MM-DD` doc forces a full re-run for that date. Writes stay idempotent
 > (upsert by natural key), so re-running is safe — it overwrites, never duplicates.
 
+### Auto-rerun fixed dates on deploy (Retry-Dates trailer)
+
+When a PR fixes a broken date (e.g. the nightly for June 13 failed due to stale input data), add a
+`Retry-Dates:` trailer to the PR body so deploy automatically re-runs that date when the PR merges:
+
+```
+Retry-Dates: 2026-06-13
+```
+
+Multiple dates are comma-separated: `Retry-Dates: 2026-06-12, 2026-06-13`.
+
+**Smart mode selection per date** (via `scripts/trigger_dated_refresh.py`):
+- If the date is already covered by raw Square data in `square_daily_rollup` (BQ) → **recompute-only**:
+  sets `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1` so no browser/OTP; only the
+  model is rebuilt from updated human inputs (`training_shifts`, `store_config`).
+- If the date is NOT covered → **full refresh**: normal scrape + OTP flow.
+
+The rerun uses Cloud Run v2 per-execution env overrides (`RunJobRequest.Overrides`) so the job
+definition is **never mutated** (a persisted `REFRESH_DATE` would corrupt future nightlies). The
+step is best-effort: a failure never fails the deploy and logs a `::warning::`.
+
+Manual one-off rerun (using the same smart logic):
+```bash
+python3 scripts/trigger_dated_refresh.py --date 2026-06-13 --dry-run   # check mode
+python3 scripts/trigger_dated_refresh.py --date 2026-06-13              # trigger
+python3 scripts/trigger_dated_refresh.py --date 2026-06-14 --force-scrape  # force full scrape
+```
+
+IAM: the WIF SA needs `run.jobs.run`. `roles/run.admin` on `bhaga-orchestrator` covers this.
+
+> **Note:** `verify_model_bq` KDS date range query uses `date_local` column from `square_kds_daily` (the table's date column is `date_local`, not `date`).
+
 ### Browser-launch resilience (all portals)
 
 Every portal scrape launches Chromium through `skills/_browser_runtime/runtime.py::launch_persistent`.
@@ -465,13 +497,9 @@ the sanctioned path — never a shell `rm`) so they recompute on the fresh data;
 then verifies `data_window_end` advanced.
 
 The invalidated set (`_RECOVERY_DOWNSTREAM_STEPS`) is **every** step that carries portal data to the
-window, in pipeline order: `load_raw_bigquery` → `render_raw_sheets` → `update_model_sheet` →
-`materialize_model_bq` → `render_model_sheet_from_bq` → `process_reviews`. **2026-06-08 lesson:** an
-earlier version listed only `load_raw_bigquery` / `update_model_sheet` / `process_reviews`, so a stale
-`render_raw_sheets` + `materialize_model_bq` marker from the partial run survived recovery — the fresh
-Square rows reached BQ raw but were never re-projected into Sheet raw, `update_model_sheet` computed
-from stale Sheet raw, and the window stayed at the prior day until a manual marker-clear + re-run. If
-you ever clear markers by hand to recover, clear **all** of these, not just the first/last.
+model, in pipeline order: `load_raw_bigquery` → `materialize_model_bq` → `process_reviews`
+(post-Sheets-exit; Sheet projection steps deleted 2026-06-15). If you ever clear markers by hand
+to recover, clear **all** of these, not just the first/last.
 
 This is **not** behind a feature flag — it's safe by construction: the trigger is precisely "a portal
 produced fresh data *and* a downstream marker is already done" (a prior partial run; on a normal first
@@ -489,8 +517,7 @@ panels empty indefinitely.
 `daily_refresh` now runs `_detect_and_clear_stale_model` on **every** execution (including pure
 retriggers) **before Phase 2**. It queries `square_daily_rollup` vs `model_daily` over a 14-day
 window; if any date has rollup gross_sales > $1 but model_daily = $0, it clears the model-recompute
-markers (`render_raw_sheets`, `update_model_sheet`, `materialize_model_bq`, `render_model_sheet_from_bq`)
-so Phase 2 re-runs `materialize_model_bq` (a full DELETE+reload that heals all dates in one pass).
+markers (post-Sheets-exit: `materialize_model_bq` only) so Phase 2 re-runs `materialize_model_bq` (a full DELETE+reload that heals all dates in one pass).
 
 After the model step, `_assert_model_matches_raw_rollup` re-queries; if drift persists it raises
 `RuntimeError` → `failure_alert` Slack DM → non-zero exit. This converts silent "$0-inside-window" drift
@@ -511,7 +538,7 @@ BHAGA_STATE_BACKEND=firestore BHAGA_SECRETS_BACKEND=gcp python3 -c "
 import sys, datetime; sys.path.insert(0,'.')
 from skills.bhaga_config import state_adapter as sa
 rd = datetime.date(2026, 6, 9)  # replace with affected date
-for step in ('render_raw_sheets','update_model_sheet','materialize_model_bq','render_model_sheet_from_bq'):
+for step in ('materialize_model_bq',):  # post-Sheets-exit: only materialize needs clearing
     sa.clear_step(rd, step); print('cleared', step)"
 ```
 Then retrigger the job for that date.
@@ -612,20 +639,22 @@ auto-migrate **additive** header changes; reordering/removing does not.
 Tip-pool exclusions drop a `(employee, date)`'s hours from that day's **tip** denominator only
 (labor% unaffected), so the pool redistributes to everyone else. All three sources funnel through the
 single `_is_excluded` chokepoint in `update_model_sheet.py` — **no code change is needed to add an
-exemption**, only a sheet edit, then a model rebuild. See `README.md` § Extending the model **Recipe
-E** for the full table. Quick reference:
+exemption**, only a BQ command, then a model rebuild.
 
-- **Permanent** (manager/owner): `excluded_from_tip_pool_and_labor_pct` in `palmetto.json`.
-- **Through a date** (bulk "all shifts were training up to X"): add a `config`-tab row
-  `training_excluded:Last, First = YYYY-MM-DD` (inclusive).
-- **One specific shift**: add a row to the **`training_shifts`** tab (`employee_name | date | note`).
-  This tab is **human-owned** (Lindsay/operator keep it current); the pipeline only reads it. Seed/edit
-  it programmatically via `tip_ledger_writer.write_training_shifts` (idempotent `(employee,date)`
-  upsert; preserves other operator rows) or by hand.
+**BQ-canonical (post-2026-06-15 Sheets exit):** all human inputs live in BQ, edited via `/bhaga-cloud` Slack commands — no Sheet editing. Quick reference:
 
-After editing, rebuild: `python3 -m agents.bhaga.scripts.update_model_sheet --store palmetto` (or let
-the nightly do it), then confirm `tip_alloc_period` shows $0 for the exempted shift and the pool total
-is conserved.
+- **Permanent** (manager/owner): `/bhaga-cloud exclude set "Last, First"` — appends to
+  `store_config.excluded_from_tip_pool` in BQ. Alternatively set via
+  `/bhaga-cloud config set excluded_from_tip_pool "Name1;Name2"`.
+- **Through a date** (bulk "all shifts were training up to X"):
+  `/bhaga-cloud exclude set "Last, First" YYYY-MM-DD` — sets `store_config.training_excluded:Last, First`.
+- **One specific shift**: `/bhaga-cloud training set "Last, First" YYYY-MM-DD [note]` — MERGEs into
+  `bhaga.training_shifts` BQ table. The Grafana `6. Payroll → Training Shifts (current)` panel shows
+  all active marks immediately. Remove with `/bhaga-cloud training rm "Last, First" YYYY-MM-DD`.
+
+After editing, the nightly job picks up the change automatically. For an immediate rebuild trigger:
+`/bhaga-cloud refresh YYYY-MM-DD`. Verify in Grafana: confirm `tip_alloc_period` shows $0 for the
+exempted shift and the pool total is conserved.
 
 ### Run the sandbox e2e (prod-like, zero-OTP) — opt-in
 
@@ -945,7 +974,7 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 
 **Attempt-only semantics:** only sources that actually ran a scrape appear in `source_pulls`. Sources skipped because their step marker was already present (`step_already_done`) or suppressed via `--skip-*` flags never enter the phase-1 results dict and are not recorded. Both tables are empty until the first nightly run after migration 017 is applied.
 
-**How run outcomes are recorded:** `daily_refresh.main()` generates a `run_id` (UUID4 hex, 32 chars) at startup, then calls `_run_refresh()`. In its `finally` block it calls `_record_pipeline_run(run_id=…)`, which (best-effort, skipped on `--dry-run`, never raises) MERGEs one row into `pipeline_runs` (merge key: `run_id`) and one row per attempted source into `source_pulls` (merge keys: `run_id` + `source`). **Cloud gate:** records when `BHAGA_SECRETS_BACKEND=gcp` (Cloud Run) or `BHAGA_DATASTORE=bigquery` (laptop). The parent process temporarily sets `BHAGA_DATASTORE=bigquery` before `load_rows` so `core.datastore` is not gated off. Greppable log lines: `[pipeline_runs] skip: <reason>` or `[pipeline_runs] recorded run_id=…`. Sandbox staging runs write only to `BHAGA_BQ_DATASET` (default prod `bhaga` blocked by `datastore._assert_sandbox_write_isolation`). Using MERGE means a re-run of the recorder converges to the same row rather than duplicating. Possible run statuses:
+**How run outcomes are recorded:** `daily_refresh.main()` generates a `run_id` (UUID4 hex, 32 chars) at startup, then calls `_run_refresh()`. In its `finally` block it calls `_record_pipeline_run(run_id=…)`, which (best-effort, skipped on `--dry-run`, never raises) MERGEs one row into `pipeline_runs` (merge key: `run_id`) and one row per attempted source into `source_pulls` (merge keys: `run_id` + `source`). **Prod-only gate (CLOUD_RUN_JOB):** records ONLY when the `CLOUD_RUN_JOB` env var is set (present in all real Cloud Run job/execution environments) OR when `BHAGA_RECORD_PIPELINE_RUN=1` is explicitly set (opt-in for intentional cloud-shell backfills). Laptop and GitHub CI runs never set `CLOUD_RUN_JOB` and therefore never write to `pipeline_runs` — this prevents Pipeline Health from showing non-prod rows. Greppable log lines: `[pipeline_runs] skip: <reason>` or `[pipeline_runs] recorded run_id=…`. Sandbox staging runs write only to `BHAGA_BQ_DATASET` (default prod `bhaga` blocked by `datastore._assert_sandbox_write_isolation`). Using MERGE means a re-run of the recorder converges to the same row rather than duplicating. Possible run statuses:
 
 - `success` — `_run_refresh()` returned 0 and model was verified OK
 - `failed` — returned 1 (any step/guard failure; `failed_step` records the first one)
@@ -1072,11 +1101,18 @@ python3 agents/bhaga/grafana/verify_panels.py --fail-on-empty             # 0-ro
 
 ### Running SQL migrations
 
+Migrations in `core/migrations/*.sql` are applied automatically:
+
+1. **On merge to `main`** — `.github/workflows/deploy.yml` runs `ensure_schema()` after the Cloud Run image deploy; `.github/workflows/grafana-dashboard-sync.yml` runs it before pushing dashboard JSON (so new panel SQL never references columns that do not exist yet).
+2. **On every Cloud Run nightly / manual job** — `daily_refresh` calls `ensure_schema()` at startup when `BHAGA_SECRETS_BACKEND=gcp`.
+
+Manual apply (one-off / laptop sandbox only):
+
 ```bash
 python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
 ```
 
-Migrations live in `core/migrations/001_initial_schema.sql` … `015_forecast_view_dow_fallback.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`). Migration 005 adds: `square_item_lines`, `square_kds_daily`, `square_kds_tickets`, `adp_earnings`, `google_reviews` raw tables; and `vw_order_quality_daily`, `vw_kds_item_investigation`, `vw_staff_on_shift`, extended `vw_model_labor_daily/weekly`, extended `vw_model_payroll_period` (with ADP actuals + diffs). Migration 011 adds: `model_forecast_daily` table and `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` views (see Labor Forecast section below). Migration 013 adds: `adp_scheduled_daily` table (per-day ADP scheduled hours) and `vw_scheduled_vs_goal` view (scheduled vs goal vs actual hours; dashboard panel 74). Migration 014 adds: `forecast_model_version` column to `model_forecast_daily` (version tag for each forecast row); refreshes `vw_model_forecast` to include `scheduled_hours` from `adp_scheduled_daily`; refreshes `vw_forecast_exclusions` to include `net_sales`, `prev_wk_net_sales`, `net_sales_vs_prev_wk`, `aov`, `prev_wk_aov` columns for promo/comped-day visibility.
+Migrations are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`, `ADD COLUMN IF NOT EXISTS`). Latest: `019_pipeline_recovery.sql` (`recovery_retrigger` on `pipeline_runs`).
 
 ### BQ backfill (one-shot)
 
@@ -1152,7 +1188,7 @@ BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-pr
   python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
 ```
 
-Migrations `011`, `012`, `013`, `014`, and `015` are all idempotent. Apply them via `ensure_schema()` (the nightly job does this automatically). After applying, the nightly job will populate `model_forecast_daily` on its next run (or trigger a manual refresh — see §6).
+Migrations `011`, `012`, `013`, `014`, and `015` are all idempotent. They are applied automatically on deploy and at nightly job startup via `ensure_schema()` (see § Running SQL migrations). After applying, the nightly job will populate `model_forecast_daily` on its next run (or trigger a manual refresh — see §6).
 
 Migration `015` adds `dow` (Mon/Tue/…) to `vw_model_forecast` and zero-gates the prior-week actual (`IF(orders > 0, orders, NULL)`) so failed/closed prior days (orders=0) fall back to that day's stored forecast row instead of showing NULL.
 

@@ -41,11 +41,10 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
 6. **Materialize Model → BigQuery** (`materialize_model_bq` step): computes all model tabs from BQ
    raw data (shared `build_*` functions in `update_model_sheet.py`) and writes to `model_*` BQ tables.
    Includes post-build tip-pool conservation check.
-7. **Render Sheet from BQ** (`render_model_sheet_from_bq` step): reads each BQ `model_*` table and
-   incrementally upserts the corresponding Sheet model tab (BQ canonical, Sheet projection).
-7b. **Reconcile Sheet ⇆ BQ** (`reconcile_model.py`, non-fatal nightly): cell-by-cell compare.
-   **Recovery retrigger:** `_prepare_projection_recovery` clears projection markers when BQ raw is
-   present and a prior run failed — `/bhaga-cloud refresh <date>` skips OTP and re-runs projection only.
+7. **BQ-internal verify** (`verify_model_bq()`): queries model BQ tables directly (row counts +
+   KDS column check + semantic tip/ADP/review checks). Replaces Sheet-reading verify. No Sheet
+   projection steps (deleted 2026-06-15 Sheets exit). **Recovery retrigger:** `_prepare_projection_recovery`
+   clears `materialize_model_bq` marker when BQ raw is present and a prior run failed.
 8. **Reviews** (`process_reviews.py`): pull Google reviews from ClickUp, allocate bonuses via the
    date-bracketed pool model ($20 pool split equally among in-hours part-time staff, effective
    2026-06-08; legacy $10-base / $20-named-shoutout for reviews before that date), rebuild
@@ -75,8 +74,7 @@ tasks. **Recovery:** when an OTP portal (Square/ADP) succeeds on a later run whi
 are already done from a prior partial run, `daily_refresh._recover_stale_downstream_markers`
 invalidates them (via `clear_step`, the sanctioned path) so they recompute on the fresh data. The set
 (`_RECOVERY_DOWNSTREAM_STEPS`) is every step that carries portal data to the window, in pipeline order:
-`load_raw_bigquery` → `render_raw_sheets` → `materialize_model_bq` →
-`render_model_sheet_from_bq` → `process_reviews`
+`load_raw_bigquery` → `materialize_model_bq` → `process_reviews` (post-Sheets-exit)
 
 **Raw-vs-model reconciliation (2026-06-09 fix).** `_recover_stale_downstream_markers` only fires when a
 portal scrape *succeeds this run*, so a pure retrigger (scrape skipped as "already covered") never
@@ -87,8 +85,7 @@ showed empty panels. Two new layers catch this:
 1. **State-driven detector (`_detect_and_clear_stale_model`)** — runs on *every* execution before Phase 2.
    Single BQ query joins `square_daily_rollup` (raw) and `model_daily` (materialized) over a 14-day
    lookback. If any date has rollup gross_sales > $1 but model = $0, it clears `_MODEL_RECOMPUTE_STEPS`
-   (`render_raw_sheets`, `materialize_model_bq`, `render_model_sheet_from_bq`) so the
-   model recomputes on the next phase. Best-effort: a BQ error logs a breadcrumb and returns
+   (`materialize_model_bq`, post-Sheets-exit) so the model recomputes on the next phase. Best-effort: a BQ error logs a breadcrumb and returns
    `[]` — the run is never blocked.
 
    Auth note: uses `google.cloud.bigquery.Client()` with ADC directly (not `core.datastore.get_client`,
@@ -119,7 +116,7 @@ nightly). Both honor sandbox write-bucket isolation via `gcs_cache`.
 | Script | Role |
 |---|---|
 | `status.py` | **Run this first for any operational question about whether a run landed.** Read-only freshness checker across all three layers — Sheets (`data_window_end`, `daily`, `tip_alloc_daily`), BigQuery (model_* + raw tables), and Grafana BI contract views (vw_*). Prints a compact table and exits nonzero if any layer is missing the date (alert/CI usable). Anti-drift: its declarative registry is kept in sync with `core/migrations/*.sql` and `agents/bhaga/grafana/dashboard.json` (through dashboard v40) by CI-enforced coupling in `scripts/check_doc_freshness.py` and by sync tests in `test_status.py`. CLI: `python3 -m agents.bhaga.scripts.status --store palmetto [--date YYYY-MM-DD] [--json] [--check-schema]`. |
-| `daily_refresh.py` | **Nightly orchestrator.** Gap compute → scrape → raw → model → reviews → **mechanical + semantic verify** → notify → **record outcome**. After `assert_model_tabs_populated` it runs `model_semantics.assert_model_semantics` (conservation + adp reconciliation + review-bonus survival) and trips the **pipeline halt circuit breaker** on a semantic failure (refuses fresh runs with `EXIT_HALTED` until a healthy run / `--ignore-halt` clears it). The public `main()` is a wrapper around the internal `_run_refresh()`; its `finally` block calls `_record_pipeline_run(run_id=…)` (best-effort, skipped on `--dry-run`) which MERGEs one row into `pipeline_runs` and one row per attempted source into `source_pulls`. **Recorder gate:** `BHAGA_SECRETS_BACKEND=gcp` (Cloud Run parent) or `BHAGA_DATASTORE=bigquery` (laptop); parent temporarily sets `BHAGA_DATASTORE` before `load_rows`. Child subprocesses also set `BHAGA_DATASTORE` per-step. Powers the "0. Pipeline Health" Grafana section (RUNBOOK §14). **Tests:** `conftest.py` stubs `_record_pipeline_run` for all tests except `test_pipeline_runs_recorder`. CLI: `python3 -m agents.bhaga.scripts.daily_refresh --store palmetto [--date YYYY-MM-DD] [--skip-reviews] [--ignore-halt] [--dry-run]`. |
+| `daily_refresh.py` | **Nightly orchestrator.** Gap compute → scrape → raw → model → reviews → **mechanical + semantic verify** → notify → **record outcome**. After `assert_model_tabs_populated` it runs `model_semantics.assert_model_semantics` (conservation + adp reconciliation + review-bonus survival) and trips the **pipeline halt circuit breaker** on a semantic failure (refuses fresh runs with `EXIT_HALTED` until a healthy run / `--ignore-halt` clears it). The public `main()` is a wrapper around the internal `_run_refresh()`; its `finally` block calls `_record_pipeline_run(run_id=…)` (best-effort, skipped on `--dry-run`) which MERGEs one row into `pipeline_runs` and one row per attempted source into `source_pulls`. **Recorder gate (prod-only):** `_should_record_pipeline_run()` returns True only when `CLOUD_RUN_JOB` env var is set (present in real Cloud Run jobs) or `BHAGA_RECORD_PIPELINE_RUN=1` is explicitly set (cloud-shell backfill opt-in). Laptop and GitHub CI never set `CLOUD_RUN_JOB` and therefore never write to `pipeline_runs` — this keeps Pipeline Health showing prod-only data. **`verify_model_bq` KDS query:** uses `date_local` column (not `date`) when querying `square_kds_daily` for the date range. Powers the "0. Pipeline Health" Grafana section (RUNBOOK §14). **Tests:** `conftest.py` stubs `_record_pipeline_run` for all tests except `test_pipeline_runs_recorder`. CLI: `python3 -m agents.bhaga.scripts.daily_refresh --store palmetto [--date YYYY-MM-DD] [--skip-reviews] [--ignore-halt] [--dry-run]`. |
 | `daily_refresh_wrapper.py` | Thin wrapper / Cloud Run entrypoint around `daily_refresh`. |
 | `otp_gate.py` | OTP **checkpoint-and-resume**: writes a pending request to Firestore + Slack, blocks until the webhook records the operator's reply. |
 | `backfill_from_downloads.py` | **BQ-primary scrape sink.** Parse the just-downloaded scrape exports (local `extracted/downloads/`) directly into BigQuery raw tables via `map_*` + `load_rows` (MERGE upsert). **Does not read from GCS.** Requires `BHAGA_DATASTORE=bigquery`. Raw Sheets are rendered afterward by `render_raw_sheet_from_bq.py`. **`--replace`** (or `BHAGA_RAW_REPLACE=1`) = fresh full-history mode: TRUNCATE each target table before load, so the scrape fully owns the table and duplicate natural keys in one batch don't trip MERGE. Use ONLY for a full-history backfill (a windowed `--replace` drops out-of-window rows). |
@@ -170,8 +167,8 @@ blob. The guard is layered:
 | `backfill_bigquery.py` | **One-shot historical backfill only.** Reads existing raw Sheets → writes BQ. NOT the nightly path. Use to bootstrap BQ raw tables from Sheet history or repair BQ after a migration/truncation. The nightly path is `backfill_from_downloads.py` (scrape files → BQ directly). |
 | `materialize_model_bq.py` | Rebuild the computed model from BQ raw data and write to `model_*` BigQuery tables via MERGE. Called by `materialize_model_bq` step in `daily_refresh`. Reuses the same `build_*_rows` functions as `update_model_sheet.py`. Used by the Grafana Cloud dashboard. **Requires the orchestrator SA to hold `roles/bigquery.jobUser` + `roles/bigquery.dataEditor`** (RUNBOOK §14) — without them every BQ job 403s. Guards an **empty BQ raw `square_transactions`** read with a precise `RuntimeError` breadcrumb instead of the old cryptic `max() iterable argument is empty` (run `backfill_bigquery` first). Access errors in `core.datastore.read_query` are re-raised (no longer swallowed into `[]`). Also exposes `load_model_rows()` as the canonical BQ-write helper (used by `process_reviews.py` and `render_model_sheet_from_bq.py`). |
 | `render_raw_sheet_from_bq.py` | **Raw Sheet projector.** Reads each BQ raw table (windowed by `--since`; `wage_rates` always all), inverse-maps rows to Sheet-header dicts, and incrementally upserts via `write_raw_*` functions. Non-fatal nightly step. Reviews tab rendered after `process_reviews`. |
-| `render_model_sheet_from_bq.py` | Reads each BQ `model_*` table and **incrementally upserts** (by natural key, `--since` windowing) the corresponding Sheet model tab. Nightly step after `materialize_model_bq`. |
-| `reconcile_model.py` | Compares Sheet model tabs against BQ model tables cell-by-cell (reusing `verify_bq_parity._compare_tabs`). Non-fatal nightly step; CI-blocking when run in the `model-reconciliation` workflow. Reports tip-pool conservation violations. |
+| ~~`render_model_sheet_from_bq.py`~~ | **Deleted 2026-06-15 (Sheets exit).** Sheet projection no longer needed — model lives in BQ. |
+| ~~`reconcile_model.py`~~ | **Deleted 2026-06-15 (Sheets exit).** No Sheet to compare against. |
 | `test_*.py` | Unit tests. Run: `python3 -m pytest agents/bhaga/scripts/`. |
 
 ---
@@ -325,17 +322,13 @@ There are three sources, all sheet-driven (no code change to add an exemption):
 
 | Source | Where | Granularity | Use for |
 |---|---|---|---|
-| `excluded_from_tip_pool_and_labor_pct` | store profile (`palmetto.json`) | permanent | managers/owners who never tip-pool |
-| `training_excluded:<name> = <through-date>` | `config` tab | through a date (inclusive) | bulk "all shifts up to date X were training" |
-| `training_shifts` tab (`employee_name \| date \| note`) | own tab | a single `(employee, date)` | precise per-shift training marks |
+| `excluded_from_tip_pool` | `bhaga.store_config` (BQ) | permanent | managers/owners who never tip-pool |
+| `training_excluded:<name>` | `bhaga.store_config` (BQ) | through a date (inclusive) | bulk "all shifts up to date X were training" |
+| `training_shifts` BQ table | `bhaga.training_shifts` | one `(store, employee, date)` | precise per-shift training marks |
 
-The per-shift overlay is read by `_read_training_shifts_from_sheet` (mirrors
-`_read_training_excluded_from_sheet`), returns `set[(canonical_name, date_iso)]`, and degrades to a
-no-op if the tab is absent. It's threaded through `build_daily_rows`, `build_period_results`,
-`main()`, **and the verifiers** (`verify_bq_parity.py`) so recomputed parity stays honest. Seed/maintain
-rows via `tip_ledger_writer.write_training_shifts` (create-if-missing + idempotent `(employee,date)`
-upsert; it preserves rows a human added for other pairs). The tab is **human-owned** — Lindsay/operator
-keep it current; the pipeline only reads it.
+**BQ-canonical (post-2026-06-15 Sheets exit):** read by `model_inputs.read_training_shifts()` (returns
+`set[(canonical_name, date_iso)]`). All human inputs live in BigQuery; operators edit via
+`/bhaga-cloud` Slack commands. No Sheet editing needed.
 
 ### After any recipe
 

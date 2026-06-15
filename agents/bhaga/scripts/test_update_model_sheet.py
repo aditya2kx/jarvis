@@ -1396,51 +1396,28 @@ class TestTrainingShiftsOverlay(unittest.TestCase):
 
 
 class TestReadTrainingShiftsFromSheet(unittest.TestCase):
-    """Parsing + graceful-degradation for the `training_shifts` tab reader."""
+    """_read_training_shifts_from_sheet now delegates to model_inputs.read_training_shifts (BQ)."""
 
-    def _fake_resp(self, payload):
-        import io
-        import json as _json
-        from unittest import mock
-
-        class _Ctx:
-            def __enter__(self_):
-                return io.BytesIO(_json.dumps(payload).encode())
-
-            def __exit__(self_, *a):
-                return False
-
-        return mock.MagicMock(side_effect=lambda *a, **k: _Ctx())
-
-    def test_parses_rows_skips_header_and_blanks(self):
+    def test_delegates_to_model_inputs(self):
         from unittest import mock
         from agents.bhaga.scripts import update_model_sheet as ums
 
-        payload = {"values": [
-            ["employee_name", "date", "note"],            # header skipped
-            ["Padron, Lisette", "2026-05-20", "training"],
-            ["Ortiz, Ximena", "2026-06-02", ""],
-            ["", "2026-06-03", "blank name -> skip"],     # blank name skipped
-            ["No, Date"],                                  # missing date skipped
-            ["Bad, Date", "not-a-date", "x"],              # unparseable skipped
-        ]}
-        with mock.patch.object(ums, "refresh_access_token", lambda *a, **k: "tok"), \
-             mock.patch.object(ums.urllib.request, "urlopen", self._fake_resp(payload)):
+        expected = {("Padron, Lisette", "2026-05-20"), ("Ortiz, Ximena", "2026-06-02")}
+        with mock.patch(
+            "agents.bhaga.scripts.model_inputs.read_training_shifts",
+            return_value=expected,
+        ):
             out = ums._read_training_shifts_from_sheet(spreadsheet_id="sid", store="palmetto")
-        self.assertEqual(out, {
-            ("Padron, Lisette", "2026-05-20"),
-            ("Ortiz, Ximena", "2026-06-02"),
-        })
+        self.assertEqual(out, expected)
 
-    def test_missing_tab_degrades_to_empty(self):
+    def test_degrades_to_empty_when_bq_unavailable(self):
         from unittest import mock
         from agents.bhaga.scripts import update_model_sheet as ums
 
-        def _boom(*_a, **_k):
-            raise Exception("400: Unable to parse range: training_shifts!A1:C500")
-
-        with mock.patch.object(ums, "refresh_access_token", lambda *a, **k: "tok"), \
-             mock.patch.object(ums.urllib.request, "urlopen", _boom):
+        with mock.patch(
+            "agents.bhaga.scripts.model_inputs.read_training_shifts",
+            return_value=set(),
+        ):
             out = ums._read_training_shifts_from_sheet(spreadsheet_id="sid", store="palmetto")
         self.assertEqual(out, set())
 

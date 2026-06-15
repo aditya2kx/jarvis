@@ -1943,14 +1943,22 @@ _RUN_SUMMARY: dict = {}  # populated by _run_refresh(); read by main()'s recorde
 
 
 def _should_record_pipeline_run() -> bool:
-    """True when this process should write pipeline_runs/source_pulls to BQ."""
+    """True when this process should write pipeline_runs/source_pulls to BQ.
+
+    Pipeline Health must reflect PROD runs only. A real Cloud Run job/execution
+    always sets CLOUD_RUN_JOB (laptops and GitHub CI never do), so we gate on it.
+    BHAGA_RECORD_PIPELINE_RUN=1 is an explicit opt-in so an intentional
+    cloud-shell backfill can still be recorded. A bare BHAGA_SECRETS_BACKEND=gcp
+    laptop run (e.g. a local e2e against prod BQ) must NOT record — that was the
+    bug that polluted Pipeline Health with non-prod rows.
+    """
     if _RUN_SUMMARY.get("dry_run"):
         return False
     if _RUN_SUMMARY.get("refresh_date") is None:
         return False
-    if os.environ.get("BHAGA_SECRETS_BACKEND", "").lower() == "gcp":
-        return True  # Cloud Run prod + sandbox (dataset isolation via BHAGA_BQ_DATASET)
-    return os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery"
+    if os.environ.get("BHAGA_RECORD_PIPELINE_RUN", "").strip() == "1":
+        return True
+    return bool(os.environ.get("CLOUD_RUN_JOB"))
 
 
 def _record_pipeline_run(*, started_at_utc, exit_code, run_id, error=None) -> None:
@@ -1961,7 +1969,7 @@ def _record_pipeline_run(*, started_at_utc, exit_code, run_id, error=None) -> No
         reason = (
             "dry_run" if _RUN_SUMMARY.get("dry_run")
             else "no_refresh_date" if _RUN_SUMMARY.get("refresh_date") is None
-            else "laptop_without_BHAGA_DATASTORE"
+            else "not_cloud_run"
         )
         print(f"[pipeline_runs] skip: {reason}", file=sys.stderr)
         return

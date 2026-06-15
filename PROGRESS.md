@@ -1,5 +1,27 @@
 # Jarvis Build Progress
 
+## 2026-06-15 — BHAGA: PR #56 post-merge fixes (prod-only recording, smart deploy rerun, evidence gate)
+
+**What changed:** Addressed all PR #56 review comments. Three independent fixes + deploy wiring.
+
+- **Prod-only pipeline_runs recording** (`daily_refresh._should_record_pipeline_run`): gated on
+  `CLOUD_RUN_JOB` env var (present in real Cloud Run executions only). Laptop + CI never write to
+  `pipeline_runs` / `source_pulls`. `BHAGA_RECORD_PIPELINE_RUN=1` is the explicit cloud-shell opt-in.
+  Deleted skip-reason `laptop_without_BHAGA_DATASTORE`; replaced with `not_cloud_run`.
+- **Data cleanup**: deleted 3 leaked non-prod `pipeline_runs` rows for `run_date=2026-06-14`
+  (`62e061…`, `ffa63f…`, `4266d2…`) that a local laptop e2e wrote into prod BQ. `source_pulls`
+  had no matching rows. The only remaining 6/14 row is the legitimate prod `otp_pending`.
+- **Smart deploy auto-rerun** (`scripts/trigger_dated_refresh.py` + `deploy.yml`): merged PRs can
+  declare `Retry-Dates: YYYY-MM-DD[, ...]` in their body. On deploy, each date is re-run smartly:
+  dates already covered by raw Square data in BQ → recompute-only (no browser/OTP, skips
+  Square/ADP/KDS); uncovered dates → full scrape. Uses Cloud Run v2 per-execution env overrides
+  (job definition never mutated). Best-effort: failure logs a `::warning::`, never fails deploy.
+  `Retry-Dates: 2026-06-13` added to PR #56 so June 13 reruns (recompute-only) on merge.
+- **Evidence confidence gate** (`scripts/check_evidence_confidence.py` + `claude-review.yml`):
+  old inline Python regex missed `"Evidence confidence rating: **85%**"` (the word "rating" caused
+  a mismatch → gate silently passed at 85%). New script tolerates both phrasings; extracted for
+  testability. Gate now correctly fails CI when score < 95%.
+
 ## 2026-06-15 — BHAGA: Full Google Sheets exit — strip projection/reconcile steps (PR2)
 
 **What changed:** Sheet projection and reconciliation scripts deleted; BQ-internal model verify

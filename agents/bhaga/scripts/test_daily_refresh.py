@@ -1071,5 +1071,44 @@ class PrepareProjectionRecoveryTests(unittest.TestCase):
                     ))
 
 
+class TestShouldRecordPipelineRun(unittest.TestCase):
+    """_should_record_pipeline_run gates on CLOUD_RUN_JOB (prod) + explicit opt-in."""
+
+    def setUp(self):
+        self._saved = dict(daily_refresh._RUN_SUMMARY)
+        daily_refresh._RUN_SUMMARY.update(
+            dry_run=False, refresh_date=datetime.date(2026, 6, 13)
+        )
+
+    def tearDown(self):
+        daily_refresh._RUN_SUMMARY.clear()
+        daily_refresh._RUN_SUMMARY.update(self._saved)
+
+    def test_records_inside_cloud_run(self):
+        with mock.patch.dict(os.environ, {"CLOUD_RUN_JOB": "bhaga-daily-refresh"}, clear=False):
+            os.environ.pop("BHAGA_RECORD_PIPELINE_RUN", None)
+            self.assertTrue(daily_refresh._should_record_pipeline_run())
+
+    def test_skips_on_laptop_even_with_gcp_backend(self):
+        with mock.patch.dict(
+            os.environ,
+            {"BHAGA_SECRETS_BACKEND": "gcp", "BHAGA_DATASTORE": "bigquery"},
+            clear=False,
+        ):
+            os.environ.pop("CLOUD_RUN_JOB", None)
+            os.environ.pop("BHAGA_RECORD_PIPELINE_RUN", None)
+            self.assertFalse(daily_refresh._should_record_pipeline_run())
+
+    def test_explicit_optin_records(self):
+        with mock.patch.dict(os.environ, {"BHAGA_RECORD_PIPELINE_RUN": "1"}, clear=False):
+            os.environ.pop("CLOUD_RUN_JOB", None)
+            self.assertTrue(daily_refresh._should_record_pipeline_run())
+
+    def test_dry_run_never_records(self):
+        daily_refresh._RUN_SUMMARY["dry_run"] = True
+        with mock.patch.dict(os.environ, {"CLOUD_RUN_JOB": "x"}, clear=False):
+            self.assertFalse(daily_refresh._should_record_pipeline_run())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -239,43 +239,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          # Parse "Evidence confidence: XX%" from the most recent Claude summary comment.
-          # Fails CI if the score is below 95. Passes silently when no score is found
-          # (infra hiccup; verdict check above already caught real failures).
-          python3 - <<'PYEOF'
-          import json, re, subprocess, sys
-
-          result = subprocess.run(
-              ["gh", "api", f"repos/${{ github.repository }}/issues/$PR_NUMBER/comments",
-               "--jq", '[.[] | select(.user.login == "claude[bot]" or (.user.login | startswith("claude")))]'],
-              capture_output=True, text=True,
-          )
-          if result.returncode != 0 or not result.stdout.strip():
-              print("No Claude comments found — skipping evidence confidence check.")
-              sys.exit(0)
-
-          comments = json.loads(result.stdout)
-          if not comments:
-              print("No Claude summary comment found — skipping evidence confidence check.")
-              sys.exit(0)
-
-          latest = comments[-1]["body"]
-          # Match patterns like: "Evidence confidence: **80%**" or "Evidence confidence: 80%"
-          m = re.search(r"Evidence confidence[:\s*]+\*{0,2}(\d+)%", latest, re.IGNORECASE)
-          if not m:
-              print("Evidence confidence score not found in Claude comment — skipping check.")
-              sys.exit(0)
-
-          score = int(m.group(1))
-          print(f"Evidence confidence score: {score}%")
-          if score < 95:
-              print(f"::error::Evidence confidence {score}% is below the required 95%. "
-                    "Improve the §4 evidence (add real execution output covering all changed "
-                    "paths) and push to trigger a new review.")
-              sys.exit(1)
-
-          print(f"Evidence confidence {score}% >= 95% — gate passed.")
-          PYEOF
+          BODY="$(gh api repos/${{ github.repository }}/issues/$PR_NUMBER/comments \
+            --jq '[.[] | select(.user.login == "claude[bot]" or (.user.login | startswith("claude")))] | last | .body' \
+            2>/dev/null || echo '')"
+          if [ -z "$BODY" ] || [ "$BODY" = "null" ]; then
+            echo "No Claude comment found — skipping evidence confidence check."
+            exit 0
+          fi
+          printf '%s' "$BODY" | python3 scripts/check_evidence_confidence.py --min 95
 
       - name: Check all inline review threads are replied to
         if: >

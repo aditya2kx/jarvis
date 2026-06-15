@@ -410,6 +410,36 @@ gcloud run jobs execute bhaga-daily-refresh \
 > Deleting the entire `runs/YYYY-MM-DD` doc forces a full re-run for that date. Writes stay idempotent
 > (upsert by natural key), so re-running is safe — it overwrites, never duplicates.
 
+### Auto-rerun fixed dates on deploy (Retry-Dates trailer)
+
+When a PR fixes a broken date (e.g. the nightly for June 13 failed due to stale input data), add a
+`Retry-Dates:` trailer to the PR body so deploy automatically re-runs that date when the PR merges:
+
+```
+Retry-Dates: 2026-06-13
+```
+
+Multiple dates are comma-separated: `Retry-Dates: 2026-06-12, 2026-06-13`.
+
+**Smart mode selection per date** (via `scripts/trigger_dated_refresh.py`):
+- If the date is already covered by raw Square data in `square_daily_rollup` (BQ) → **recompute-only**:
+  sets `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1` so no browser/OTP; only the
+  model is rebuilt from updated human inputs (`training_shifts`, `store_config`).
+- If the date is NOT covered → **full refresh**: normal scrape + OTP flow.
+
+The rerun uses Cloud Run v2 per-execution env overrides (`RunJobRequest.Overrides`) so the job
+definition is **never mutated** (a persisted `REFRESH_DATE` would corrupt future nightlies). The
+step is best-effort: a failure never fails the deploy and logs a `::warning::`.
+
+Manual one-off rerun (using the same smart logic):
+```bash
+python3 scripts/trigger_dated_refresh.py --date 2026-06-13 --dry-run   # check mode
+python3 scripts/trigger_dated_refresh.py --date 2026-06-13              # trigger
+python3 scripts/trigger_dated_refresh.py --date 2026-06-14 --force-scrape  # force full scrape
+```
+
+IAM: the WIF SA needs `run.jobs.run`. `roles/run.admin` on `bhaga-orchestrator` covers this.
+
 ### Browser-launch resilience (all portals)
 
 Every portal scrape launches Chromium through `skills/_browser_runtime/runtime.py::launch_persistent`.
@@ -942,7 +972,7 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 
 **Attempt-only semantics:** only sources that actually ran a scrape appear in `source_pulls`. Sources skipped because their step marker was already present (`step_already_done`) or suppressed via `--skip-*` flags never enter the phase-1 results dict and are not recorded. Both tables are empty until the first nightly run after migration 017 is applied.
 
-**How run outcomes are recorded:** `daily_refresh.main()` generates a `run_id` (UUID4 hex, 32 chars) at startup, then calls `_run_refresh()`. In its `finally` block it calls `_record_pipeline_run(run_id=…)`, which (best-effort, skipped on `--dry-run`, never raises) MERGEs one row into `pipeline_runs` (merge key: `run_id`) and one row per attempted source into `source_pulls` (merge keys: `run_id` + `source`). **Cloud gate:** records when `BHAGA_SECRETS_BACKEND=gcp` (Cloud Run) or `BHAGA_DATASTORE=bigquery` (laptop). The parent process temporarily sets `BHAGA_DATASTORE=bigquery` before `load_rows` so `core.datastore` is not gated off. Greppable log lines: `[pipeline_runs] skip: <reason>` or `[pipeline_runs] recorded run_id=…`. Sandbox staging runs write only to `BHAGA_BQ_DATASET` (default prod `bhaga` blocked by `datastore._assert_sandbox_write_isolation`). Using MERGE means a re-run of the recorder converges to the same row rather than duplicating. Possible run statuses:
+**How run outcomes are recorded:** `daily_refresh.main()` generates a `run_id` (UUID4 hex, 32 chars) at startup, then calls `_run_refresh()`. In its `finally` block it calls `_record_pipeline_run(run_id=…)`, which (best-effort, skipped on `--dry-run`, never raises) MERGEs one row into `pipeline_runs` (merge key: `run_id`) and one row per attempted source into `source_pulls` (merge keys: `run_id` + `source`). **Prod-only gate (CLOUD_RUN_JOB):** records ONLY when the `CLOUD_RUN_JOB` env var is set (present in all real Cloud Run job/execution environments) OR when `BHAGA_RECORD_PIPELINE_RUN=1` is explicitly set (opt-in for intentional cloud-shell backfills). Laptop and GitHub CI runs never set `CLOUD_RUN_JOB` and therefore never write to `pipeline_runs` — this prevents Pipeline Health from showing non-prod rows. Greppable log lines: `[pipeline_runs] skip: <reason>` or `[pipeline_runs] recorded run_id=…`. Sandbox staging runs write only to `BHAGA_BQ_DATASET` (default prod `bhaga` blocked by `datastore._assert_sandbox_write_isolation`). Using MERGE means a re-run of the recorder converges to the same row rather than duplicating. Possible run statuses:
 
 - `success` — `_run_refresh()` returned 0 and model was verified OK
 - `failed` — returned 1 (any step/guard failure; `failed_step` records the first one)

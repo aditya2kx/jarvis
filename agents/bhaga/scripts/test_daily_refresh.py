@@ -1190,22 +1190,22 @@ class TestShouldRecordPipelineRun(unittest.TestCase):
 
 
 class TestOtpForceRequestIntegration(unittest.TestCase):
-    """Integration: daily_refresh.main() correctly dispatches EXIT_PENDING first_request=True.
+    """End-to-end: BHAGA_OTP_FORCE_REQUEST=1 + stale checkpoint -> daily_refresh re-prompts.
 
-    Calls the real daily_refresh.main() dispatch code path (no copy of the
-    dispatch logic). Patches only the OTP gate decision and the things needed to
-    reach it (profile load, sheet-id resolve, BQ-unavailable path, launch-browser
-    helpers). Verifies that daily_refresh itself calls _adapter_save_pending_otp
-    and ready_request — proving the consuming code is wired correctly.
+    Exercises the FULL chain without mocking otp_gate.evaluate:
 
-    If the dispatch block in daily_refresh.py is changed or removed, these tests
-    will fail, whereas a copy-of-dispatch test would silently stay green.
+      BHAGA_OTP_FORCE_REQUEST=1 (env)
+        -> otp_gate.evaluate reads stale local checkpoint (real code)
+        -> returns EXIT_PENDING first_request=True (real state machine)
+        -> daily_refresh dispatch calls _adapter_save_pending_otp + ready_request
+
+    If otp_gate.py's force_request branch is removed, the gate returns
+    EXIT_PENDING first_request=False and neither side-effect fires -> test fails.
+    If daily_refresh.py's dispatch branch is changed, save/post assertions fail.
+    A standalone copy of the dispatch would not catch either regression.
     """
 
-    # Use a past date so the completeness gate passes (a future/today date is
-    # rejected before _load_profile is reached).
-    REFRESH_DATE_ISO = "2026-06-01"
-    NOW = datetime.datetime(2026, 6, 2, 13, 0, 0, tzinfo=CT)
+    REFRESH_DATE_ISO = "2026-06-01"  # past date passes completeness gate
 
     class _FixedNowDateTime(datetime.datetime):
         @classmethod
@@ -1218,51 +1218,62 @@ class TestOtpForceRequestIntegration(unittest.TestCase):
         "google_sheets": {"bhaga_model": {"spreadsheet_id": "fake-sheet"}},
     }
 
-    def _run_main_with_force(self, first_request: bool):
-        """Call daily_refresh.main() patched to reach the OTP gate.
+    def _run_main(self, tmp: str, *, force: bool, stale_checkpoint: bool):
+        """Call daily_refresh.main() with real otp_gate.evaluate.
 
-        Patches (in order of the execution path):
-        - datetime.datetime → fixed 13:00 CT so the completeness gate passes
-        - _load_profile → minimal profile (avoids file I/O)
+        otp_gate.evaluate is NOT mocked — it reads the local state from HOME=tmp.
+        Stale pending_otp is pre-seeded in the local state backend when requested.
+
+        Other patches needed to reach the OTP gate without GCP/browser:
+        - datetime.datetime → fixed 13:00 CT (completeness gate passes)
+        - _load_profile → minimal profile  
         - resolve_sheet_id → no-op
-        - _read_review_bonus_row_count → 0 (avoids Sheets/BQ call)
-        - get_client (BQ) → None (so the sheet-fallback path runs)
-        - _read_data_window_end_from_sheet → yesterday (gap_start = refresh_date)
-        - info_ping → no-op (Slack)
+        - _read_review_bonus_row_count → 0
+        - BQ get_client → None (falls back to sheet-based window path)
+        - _read_data_window_end_from_sheet → yesterday
+        - info_ping → no-op
         - _square_will_launch_browser → True (Square enters otp_portals)
-        - otp_gate.evaluate → EXIT_PENDING + first_request=<param>
-          (the force_request state machine result, injected here)
-        - _adapter_save_pending_otp → spy
+        - _adapter_save_pending_otp → spy (captures call without writing to disk again)
         - ready_request → spy
         """
-        from agents.bhaga.scripts import otp_gate
         from core import datastore as _datastore
+
+        refresh_date = datetime.date.fromisoformat(self.REFRESH_DATE_ISO)
+        yesterday = refresh_date - datetime.timedelta(days=1)
+
+        if stale_checkpoint:
+            # Plant a stale pending_otp so otp_gate.evaluate finds an unanswered request.
+            # requested_at is 3 hours ago (within 48h cap -> would normally be silent).
+            stale_time = (
+                datetime.datetime(2026, 6, 2, 10, 0, 0, tzinfo=CT)
+                - datetime.timedelta(hours=3)
+            ).isoformat()
+            with mock.patch.dict(os.environ, {"HOME": tmp}):
+                daily_refresh._adapter_save_pending_otp(
+                    refresh_date, ["Square"],
+                    requested_at=stale_time, agent="bhaga",
+                )
 
         save_calls = []
         post_calls = []
-        yesterday = datetime.date.fromisoformat(self.REFRESH_DATE_ISO) - datetime.timedelta(days=1)
-
-        exit_info = {
-            "reason": (
-                "force re-request (explicit trigger) — re-posting READY"
-                if first_request else "awaiting READY (request already outstanding)"
-            ),
-            "first_request": first_request,
-            "portals": ["Square"],
-        }
+        env_patch = {"HOME": tmp}
+        if force:
+            env_patch["BHAGA_OTP_FORCE_REQUEST"] = "1"
+        else:
+            env_patch.pop("BHAGA_OTP_FORCE_REQUEST", None)
 
         argv = [
             "daily_refresh",
             "--store", "palmetto",
             "--date", self.REFRESH_DATE_ISO,
             "--no-slack",
-            "--skip-timecard",      # needs_adp=False → ADP never enters otp_portals
+            "--skip-timecard",
             "--skip-reviews",
             "--skip-model",
         ]
-        # NOT passing --skip-square so that _square_will_launch_browser is called.
 
-        with mock.patch.object(daily_refresh.datetime, "datetime", self._FixedNowDateTime), \
+        with mock.patch.dict(os.environ, env_patch, clear=False), \
+             mock.patch.object(daily_refresh.datetime, "datetime", self._FixedNowDateTime), \
              mock.patch.object(daily_refresh, "_load_profile",
                                return_value=self._MINIMAL_PROFILE), \
              mock.patch.object(daily_refresh, "resolve_sheet_id",
@@ -1275,8 +1286,6 @@ class TestOtpForceRequestIntegration(unittest.TestCase):
              mock.patch.object(daily_refresh, "info_ping", lambda *a, **k: None), \
              mock.patch.object(daily_refresh, "_square_will_launch_browser",
                                return_value=True), \
-             mock.patch.object(otp_gate, "evaluate",
-                               return_value=(otp_gate.EXIT_PENDING, exit_info)), \
              mock.patch.object(daily_refresh, "_adapter_save_pending_otp",
                                side_effect=lambda rd, p, **kw: save_calls.append(
                                    {"refresh_date": rd, "portals": p, **kw}
@@ -1288,29 +1297,59 @@ class TestOtpForceRequestIntegration(unittest.TestCase):
 
         return rc, save_calls, post_calls
 
-    def test_force_path_saves_and_posts(self):
-        """EXIT_PENDING first_request=True: daily_refresh re-saves checkpoint + re-posts READY."""
-        rc, save_calls, post_calls = self._run_main_with_force(first_request=True)
+    def test_force_with_stale_checkpoint_saves_and_posts(self):
+        """Full chain: BHAGA_OTP_FORCE_REQUEST=1 + stale checkpoint -> re-save + re-post.
+
+        otp_gate.evaluate is real: it reads the stale checkpoint, sees force_request=True
+        (from env), and returns EXIT_PENDING first_request=True. daily_refresh then
+        re-saves and re-posts.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, save_calls, post_calls = self._run_main(
+                tmp, force=True, stale_checkpoint=True
+            )
         self.assertEqual(rc, 0)
         self.assertEqual(len(save_calls), 1,
-                         "daily_refresh must call _adapter_save_pending_otp once")
+                         "force+stale: must re-save fresh checkpoint")
         self.assertEqual(save_calls[0]["refresh_date"],
                          datetime.date.fromisoformat(self.REFRESH_DATE_ISO))
         self.assertIn("Square", save_calls[0]["portals"])
         self.assertIsNotNone(save_calls[0].get("requested_at"))
         self.assertEqual(len(post_calls), 1,
-                         "daily_refresh must call ready_request once (Slack re-post)")
+                         "force+stale: must re-post READY to Slack")
         self.assertEqual(post_calls[0]["date"], self.REFRESH_DATE_ISO)
         self.assertIn("Square", post_calls[0]["portals"])
 
-    def test_silent_path_does_not_save_or_post(self):
-        """EXIT_PENDING first_request=False (nightly): neither save nor post is called."""
-        rc, save_calls, post_calls = self._run_main_with_force(first_request=False)
+    def test_no_force_stale_checkpoint_is_silent(self):
+        """Nightly path: stale checkpoint without BHAGA_OTP_FORCE_REQUEST -> silent exit.
+
+        otp_gate.evaluate is real: reads stale checkpoint, force_request is False (env
+        unset), returns EXIT_PENDING first_request=False. daily_refresh exits without
+        re-saving or re-posting — the nightly duplicate-ping suppression is unchanged.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, save_calls, post_calls = self._run_main(
+                tmp, force=False, stale_checkpoint=True
+            )
         self.assertEqual(rc, 0)
         self.assertEqual(save_calls, [],
-                         "must NOT re-save checkpoint on nightly duplicate silent path")
+                         "nightly: must NOT re-save on stale outstanding checkpoint")
         self.assertEqual(post_calls, [],
-                         "must NOT re-post READY on nightly duplicate silent path")
+                         "nightly: must NOT re-post on stale outstanding checkpoint")
+
+    def test_force_no_checkpoint_posts_first_request(self):
+        """Force with no prior checkpoint: new run, first request posts normally.
+
+        otp_gate.evaluate is real: pending=None, returns EXIT_PENDING first_request=True
+        (the standard no-checkpoint path). Force flag doesn't change this path.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, save_calls, post_calls = self._run_main(
+                tmp, force=True, stale_checkpoint=False
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(save_calls), 1, "no checkpoint: first request saves")
+        self.assertEqual(len(post_calls), 1, "no checkpoint: first request posts")
 
 
 if __name__ == "__main__":

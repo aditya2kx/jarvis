@@ -18,9 +18,16 @@ def test_recompute_env_has_skip_flags():
     assert env["BHAGA_SKIP_KDS"] == "1"
 
 
-def test_scrape_env_is_date_only():
+def test_scrape_env_forces_otp_request():
     env = dict(t._build_env_overrides("2026-06-14", recompute_only=False))
-    assert env == {"REFRESH_DATE": "2026-06-14"}
+    assert env["REFRESH_DATE"] == "2026-06-14"
+    assert env["BHAGA_OTP_FORCE_REQUEST"] == "1"
+    assert "BHAGA_SKIP_SQUARE" not in env
+
+
+def test_recompute_env_has_no_force_flag():
+    env = dict(t._build_env_overrides("2026-06-13", recompute_only=True))
+    assert "BHAGA_OTP_FORCE_REQUEST" not in env
 
 
 def test_decide_force_flags_win():

@@ -409,7 +409,7 @@ def _handle_slash_command(form: dict) -> Response:
     refresh_match = re.match(r"^refresh\s+(\d{4}-\d{2}-\d{2})$", command_text, re.IGNORECASE)
     if refresh_match:
         date_str = refresh_match.group(1)
-        _trigger_cloud_run_job(date_str)
+        _trigger_cloud_run_job(date_str, force_otp_request=True)
         return jsonify({
             "response_type": "ephemeral",
             "text": f":hourglass_flowing_sand: Refresh triggered for *{date_str}*. Check #bhaga-runs for progress.",
@@ -806,7 +806,12 @@ def _check_and_store_event_id(event_id: str) -> bool:
         return False
 
 
-def _trigger_cloud_run_job(date_str: str, job_name: Optional[str] = None) -> None:
+def _trigger_cloud_run_job(
+    date_str: str,
+    job_name: Optional[str] = None,
+    *,
+    force_otp_request: bool = False,
+) -> None:
     """Enqueue a Cloud Run Job execution for the given date.
 
     Uses the Cloud Run v2 API to create a job execution. ``job_name`` defaults to
@@ -836,13 +841,20 @@ def _trigger_cloud_run_job(date_str: str, job_name: Optional[str] = None) -> Non
     try:
         from google.cloud import run_v2
         client = run_v2.JobsClient()
+        env_overrides = [run_v2.EnvVar(name="REFRESH_DATE", value=date_str)]
+        if force_otp_request:
+            # Explicit operator-driven trigger: re-post a fresh OTP READY request
+            # even if a stale, unanswered pending_otp checkpoint already exists.
+            env_overrides.append(
+                run_v2.EnvVar(name="BHAGA_OTP_FORCE_REQUEST", value="1")
+            )
         client.run_job(
             request=run_v2.RunJobRequest(
                 name=job_name,
                 overrides=run_v2.RunJobRequest.Overrides(
                     container_overrides=[
                         run_v2.RunJobRequest.Overrides.ContainerOverride(
-                            env=[run_v2.EnvVar(name="REFRESH_DATE", value=date_str)],
+                            env=env_overrides,
                         ),
                     ],
                 ),

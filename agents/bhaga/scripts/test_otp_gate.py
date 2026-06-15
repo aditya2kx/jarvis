@@ -175,3 +175,72 @@ class TestPendingOtpAvailability:
         exc = PendingOtpAvailability(["Square", "ADP"])
         assert exc.portals == ["Square", "ADP"]
         assert "Square" in str(exc) and "ADP" in str(exc)
+
+
+class TestForceRequest:
+    def test_force_re_posts_on_stale_outstanding(self):
+        pending = {
+            "portals": ["Square"],
+            "requested_at": (NOW - datetime.timedelta(hours=3)).isoformat(),
+            "ready_received": False,
+        }
+        decision, info = evaluate(
+            REFRESH_DATE, ["Square"], now=NOW,
+            get_pending=lambda _d: pending, force_request=True,
+        )
+        assert decision == EXIT_PENDING
+        assert info["first_request"] is True
+
+    def test_force_beats_48h_cap(self):
+        # Past the cap, force still re-posts (operator wants the data now).
+        pending = {
+            "portals": ["Square", "ADP"],
+            "requested_at": (NOW - datetime.timedelta(days=3)).isoformat(),
+            "ready_received": False,
+        }
+        decision, info = evaluate(
+            REFRESH_DATE, ["Square", "ADP"], now=NOW,
+            get_pending=lambda _d: pending, force_request=True,
+        )
+        assert decision == EXIT_PENDING
+        assert info["first_request"] is True
+
+    def test_force_still_proceeds_when_ready_received(self):
+        pending = {
+            "portals": ["Square"],
+            "requested_at": (NOW - datetime.timedelta(hours=2)).isoformat(),
+            "ready_received": True,
+            "ready_at": NOW.isoformat(),
+        }
+        decision, _ = evaluate(
+            REFRESH_DATE, ["Square"], now=NOW,
+            get_pending=lambda _d: pending, force_request=True,
+        )
+        assert decision == PROCEED
+
+    def test_force_from_env(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_OTP_FORCE_REQUEST", "1")
+        pending = {
+            "portals": ["Square"],
+            "requested_at": (NOW - datetime.timedelta(hours=3)).isoformat(),
+            "ready_received": False,
+        }
+        # force_request omitted → resolved from env.
+        decision, info = evaluate(
+            REFRESH_DATE, ["Square"], now=NOW, get_pending=lambda _d: pending,
+        )
+        assert decision == EXIT_PENDING
+        assert info["first_request"] is True
+
+    def test_no_force_keeps_silent_outstanding(self, monkeypatch):
+        monkeypatch.delenv("BHAGA_OTP_FORCE_REQUEST", raising=False)
+        pending = {
+            "portals": ["Square"],
+            "requested_at": (NOW - datetime.timedelta(hours=3)).isoformat(),
+            "ready_received": False,
+        }
+        decision, info = evaluate(
+            REFRESH_DATE, ["Square"], now=NOW, get_pending=lambda _d: pending,
+        )
+        assert decision == EXIT_PENDING
+        assert info["first_request"] is False

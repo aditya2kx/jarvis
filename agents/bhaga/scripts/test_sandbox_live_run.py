@@ -358,3 +358,100 @@ class TestPlainEnvInheritance:
         # ...and the isolation overlay still applies and passes the guard.
         assert env["BHAGA_SHEET_MODE"] == "staging"
         slr.assert_sandbox_isolation(env)
+
+
+class TestOtpForceRequestEnvKnob:
+    """build_sandbox_env correctly switches between assume-ready and force-reprompt."""
+
+    def test_default_sets_assume_ready(self):
+        env = _good_env()
+        assert env["BHAGA_OTP_ASSUME_READY"] == "1"
+        assert "BHAGA_OTP_FORCE_REQUEST" not in env
+
+    def test_otp_force_request_drops_assume_ready_and_sets_force(self):
+        env = slr.build_sandbox_env(
+            staging_ids=_good_ids(),
+            refresh_date="2026-06-14",
+            store="palmetto",
+            run_label="PR#58 otp-reprompt",
+            otp_force_request=True,
+        )
+        assert env["BHAGA_OTP_FORCE_REQUEST"] == "1"
+        assert "BHAGA_OTP_ASSUME_READY" not in env
+
+    def test_otp_force_request_still_passes_isolation(self):
+        env = slr.build_sandbox_env(
+            staging_ids=_good_ids(),
+            refresh_date="2026-06-14",
+            store="palmetto",
+            run_label="PR#58 otp-reprompt",
+            otp_force_request=True,
+        )
+        slr.assert_sandbox_isolation(env)
+
+
+class TestVerifyOtpReprompt:
+    """verify_otp_reprompt correctly gates on a refreshed checkpoint."""
+
+    _DATE = "2026-06-14"
+    _SEEDED_AT = "2026-06-11T10:00:00-05:00"  # 72h before the run
+
+    def _fresh_checkpoint(self, offset_minutes: int = 5) -> dict:
+        """Return a checkpoint whose requested_at is seeded_at + offset_minutes."""
+        import datetime
+        from zoneinfo import ZoneInfo
+        CT = ZoneInfo("America/Chicago")
+        seeded = datetime.datetime.fromisoformat(self._SEEDED_AT)
+        new_ts = seeded + datetime.timedelta(minutes=offset_minutes)
+        return {"requested_at": new_ts.isoformat(), "ready_received": False}
+
+    def test_pass_when_requested_at_advanced(self):
+        ok, msg = slr.verify_otp_reprompt(
+            self._DATE, self._SEEDED_AT,
+            get_pending=lambda _d: self._fresh_checkpoint(offset_minutes=5),
+        )
+        assert ok, msg
+        assert "PASS" in msg
+        assert "BHAGA_OTP_FORCE_REQUEST" in msg
+
+    def test_fail_when_no_checkpoint(self):
+        ok, msg = slr.verify_otp_reprompt(
+            self._DATE, self._SEEDED_AT,
+            get_pending=lambda _d: None,
+        )
+        assert not ok
+        assert "FAIL" in msg and "no pending_otp" in msg
+
+    def test_fail_when_ready_received(self):
+        checkpoint = self._fresh_checkpoint()
+        checkpoint["ready_received"] = True
+        ok, msg = slr.verify_otp_reprompt(
+            self._DATE, self._SEEDED_AT,
+            get_pending=lambda _d: checkpoint,
+        )
+        assert not ok
+        assert "ready_received=True" in msg
+
+    def test_fail_when_requested_at_unchanged(self):
+        # Same as seeded_at — daily_refresh deferred to the stale marker.
+        checkpoint = {"requested_at": self._SEEDED_AT, "ready_received": False}
+        ok, msg = slr.verify_otp_reprompt(
+            self._DATE, self._SEEDED_AT,
+            get_pending=lambda _d: checkpoint,
+        )
+        assert not ok
+        assert "did NOT advance" in msg
+
+    def test_fail_when_requested_at_before_seeded(self):
+        import datetime
+        from zoneinfo import ZoneInfo
+        CT = ZoneInfo("America/Chicago")
+        older = (datetime.datetime.fromisoformat(self._SEEDED_AT)
+                 - datetime.timedelta(hours=1)).isoformat()
+        checkpoint = {"requested_at": older, "ready_received": False}
+        ok, msg = slr.verify_otp_reprompt(
+            self._DATE, self._SEEDED_AT,
+            get_pending=lambda _d: checkpoint,
+        )
+        assert not ok
+        assert "did NOT advance" in msg

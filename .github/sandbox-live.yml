@@ -4,7 +4,8 @@
 # (isolated) BHAGA scrape on the PR image; remove them once evidence is captured.
 # An empty/absent scenarios list means nothing runs.
 #
-# Last used: PR #41 (item-sales-live, 2026-06-08) — proved Square anti-bot
-# blank-magic-link recovery end-to-end (146 item-sales rows landed in
-# bhaga_sandbox.square_item_lines). Turned back off here.
+# Last used: PR #58 (otp-reprompt, 2026-06-14) — proved BHAGA_OTP_FORCE_REQUEST
+# force re-prompt on real bhaga-sandbox-refresh Cloud Run + Firestore (sandbox_runs):
+# seeded stale checkpoint, ran gate-only (no scrape/OTP reply), verified
+# requested_at advanced + ready_received=False. Evidence in PR #58 §4.
 scenarios: []

@@ -67,6 +67,28 @@ SCENARIOS: dict[str, dict] = {
         # (materialize_model_bq → render_model_sheet_from_bq), not from raw Sheets.
         "sheet_from_bq": True,
     },
+    "otp-reprompt": {
+        "description": (
+            "Prove the explicit-trigger OTP re-prompt fix on REAL Cloud Run + Firestore: "
+            "seed a stale unanswered pending_otp checkpoint in sandbox_runs, run "
+            "daily_refresh with BHAGA_OTP_FORCE_REQUEST=1 (BHAGA_OTP_ASSUME_READY OFF), "
+            "then verify the checkpoint was re-saved with a fresh requested_at. "
+            "Gate EXIT_PENDINGs before any browser launch — cheap, no scrape, no OTP "
+            "reply needed. Use this pattern for any change whose key logic fires at "
+            "the OTP/Firestore/Cloud Run layer that unit tests can only mock."
+        ),
+        # Keep Square in scope so otp_portals=['Square'] — triggers the OTP gate.
+        # Skip ADP, reviews, and model so the run stops at the gate, not mid-scrape.
+        "skip": ["adp", "reviews", "model"],
+        # Drop BHAGA_OTP_ASSUME_READY; set BHAGA_OTP_FORCE_REQUEST=1 instead so
+        # otp_gate.evaluate exercises the real force re-prompt path (not the
+        # supervisor inline path that bypasses the gate entirely).
+        "otp_force_request": True,
+        # Seed a stale checkpoint 72h old (past the 48h cap) so the run definitely
+        # finds an unanswered marker and exercises the force branch.
+        "seed_stale_otp_hours": 72,
+        "verify": "otp_reprompt",
+    },
 }
 
 _COMMENT_RE = re.compile(
@@ -161,6 +183,10 @@ def run_scenario(
         argv.append("--fresh-scrape")
     if meta.get("sheet_from_bq"):
         argv.append("--sheet-from-bq")
+    if meta.get("otp_force_request"):
+        argv.append("--otp-force-request")
+    if meta.get("seed_stale_otp_hours"):
+        argv += ["--seed-stale-otp-hours", str(meta["seed_stale_otp_hours"])]
     if evidence_file:
         argv += ["--evidence-file", evidence_file]
     if no_execute:

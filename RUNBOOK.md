@@ -284,6 +284,24 @@ gcloud secrets versions add <name> --data-file=- --project jarvis-bhaga-prod
 There is **no laptop listener** anymore. If OTPs are not being delivered, debug the **webhook**
 (logs below) and the Slack app's Events API subscription, not any local process.
 
+### Re-prompting for OTP on explicit triggers
+
+The **nightly** job suppresses duplicate Slack pings: if a `pending_otp` checkpoint already exists
+in Firestore for a date (an unanswered READY request), the nightly exits quietly without re-posting.
+
+Explicit operator-driven triggers behave differently:
+
+- **`/bhaga-cloud refresh <date>`** (slash command) — always sets `BHAGA_OTP_FORCE_REQUEST=1` in
+  the Cloud Run execution's env. The job re-saves the checkpoint with a fresh `requested_at` and
+  re-posts the READY prompt to Slack, resetting the 48h window. Stale or cap-expired markers are
+  cleared and re-prompted.
+- **`Retry-Dates` full-scrape reruns** (deploy.yml) — `scripts/trigger_dated_refresh.py` sets the
+  same flag when the date is not yet covered in BigQuery (full-scrape mode). Recompute-only reruns
+  skip portal login entirely and never touch the OTP checkpoint.
+
+This means if you issue `/bhaga-cloud refresh 2026-06-14` and a stale checkpoint from the previous
+night's run exists, you will get a fresh Slack prompt — not silence.
+
 ---
 
 ## 9. Deploy (GitHub Actions + WIF)
@@ -818,6 +836,22 @@ broke; threaded as `--skip` → `BHAGA_SKIP_<STEP>` env, read by `daily_refresh.
 post-run gate; `item_sales` asserts `<date>/square/items-*.csv` exists with >0 data rows, so a "green"
 run truly means the deliverable landed — it fails the run even if the job exited 0 because login broke
 before item-sales). The verdict is shown in the auto-posted PR evidence comment.
+
+**Gate-only infra scenario: `otp-reprompt`.** Proves infra-layer changes (OTP gate, Firestore
+checkpoint, Cloud Run env injection) on the **real stack** without a live scrape — cheap, no operator
+OTP reply needed, the job exits `EXIT_PENDING`. Pattern and knobs:
+
+| Knob | What it does |
+|---|---|
+| `otp_force_request: True` | Sets `BHAGA_OTP_FORCE_REQUEST=1` in the Cloud Run job env; drops `BHAGA_OTP_ASSUME_READY` so `otp_gate.evaluate` exercises the real checkpoint path |
+| `seed_stale_otp_hours: 72` | Before the job runs, seeds a stale `pending_otp` checkpoint (72h old) in `sandbox_runs` so the job finds an unanswered marker |
+| `verify: otp_reprompt` | After the job exits, reads `sandbox_runs` and asserts `requested_at` advanced past the seeded value (proves re-prompt fired) and `ready_received=False` |
+
+The run posts **one** `[SANDBOX]` Slack READY ping — part of the proof; ignore it (no reply needed).
+Use this pattern as the prototype for any PR whose key logic fires at the Firestore / OTP gate / Cloud
+Run env layer (unit tests can only mock those). Adapt: change `skip` to keep only the steps that
+reach your gate, add a seed function for your precondition, add a `verify` gate that reads Firestore
+or BQ state after the run.
 
 **Login escalation — magic link & trusted device.** Square may escalate an **unrecognized device** to an
 email **magic link** ("Magic link sent. Use this device to sign in.") instead of an SMS code; the

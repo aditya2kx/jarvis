@@ -57,6 +57,10 @@ def _build_env_overrides(date_str: str, recompute_only: bool) -> list[tuple[str,
             ("BHAGA_SKIP_ADP", "1"),
             ("BHAGA_SKIP_KDS", "1"),
         ]
+    else:
+        # Full scrape => OTP-gated. This is an explicit, operator-initiated rerun,
+        # so re-post a fresh READY request rather than defer to any stale marker.
+        env.append(("BHAGA_OTP_FORCE_REQUEST", "1"))
     return env
 
 

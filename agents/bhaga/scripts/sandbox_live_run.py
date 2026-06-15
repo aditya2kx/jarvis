@@ -97,6 +97,7 @@ def build_sandbox_env(
     window_to: str | None = None,
     fresh_scrape: bool = False,
     sheet_from_bq: bool = False,
+    otp_force_request: bool = False,
 ) -> dict[str, str]:
     """Construct the sandbox job's env overlay.
 
@@ -121,10 +122,11 @@ def build_sandbox_env(
         "BHAGA_RUN_ENV": "sandbox",
         "BHAGA_RUN_LABEL": run_label,
         "BHAGA_OTP_TARGET_JOB": target_job or sandbox_job_resource(),
-        # Operator-supervised: wait for the OTP code INLINE rather than the
-        # checkpoint-and-resume handshake, so the existing prod webhook delivers
-        # the code (works even before this PR's webhook routing is deployed).
-        "BHAGA_OTP_ASSUME_READY": "1",
+        # Trusted device: persist/restore the Square session to the SANDBOX bucket
+        # OTP gate mode: supervised runs wait for the code inline (assume-ready);
+        # otp_force_request runs drop assume-ready so otp_gate.evaluate exercises
+        # the real checkpoint-and-resume + force re-prompt path (EXIT_PENDING
+        # first_request=True) rather than bypassing the gate entirely.
         # Trusted device: persist/restore the Square session to the SANDBOX bucket
         # so after one magic-link/2FA login, later sandbox runs skip the challenge.
         "BHAGA_SESSION_PERSIST": "1",
@@ -149,6 +151,13 @@ def build_sandbox_env(
         # error when a scrape batch has duplicate natural keys (e.g. ADP
         # earnings line-items). Safe only because the window covers all history.
         env["BHAGA_RAW_REPLACE"] = "1"
+    # OTP gate mode: set assume-ready (default) or force re-prompt (otp_force_request).
+    if otp_force_request:
+        env["BHAGA_OTP_FORCE_REQUEST"] = "1"
+        # Deliberately omit BHAGA_OTP_ASSUME_READY so otp_gate.evaluate hits the
+        # real checkpoint-and-resume path (force re-prompt branch).
+    else:
+        env["BHAGA_OTP_ASSUME_READY"] = "1"
     # BQ-canonical model path is unconditional in daily_refresh (materialize_model_bq
     # → render_model_sheet_from_bq). sheet_from_bq is retained for CLI compat only.
     _ = sheet_from_bq
@@ -483,6 +492,127 @@ def verify_item_sales(refresh_date: str) -> tuple[bool, str]:
                   f"{SANDBOX_BQ_DATASET}.square_item_lines for {refresh_date} (BQ source of truth).")
 
 
+def _seed_stale_pending_otp(
+    refresh_date: str,
+    portals: list[str],
+    *,
+    hours: int,
+    collection: str = SANDBOX_RUNS_COLLECTION,
+) -> str:
+    """Plant a stale pending-OTP checkpoint in the sandbox Firestore collection.
+
+    Sets ``requested_at`` to ``<now - hours>`` so the checkpoint is clearly stale
+    (past the 48h cap). Returns the seeded ``requested_at`` ISO string so the
+    caller can compare against it in ``verify_otp_reprompt``.
+
+    Requires ``BHAGA_STATE_BACKEND=firestore`` (set by the CI workflow job env)
+    and GCP auth (WIF). Temporarily overrides ``BHAGA_FIRESTORE_COLLECTION`` to
+    ``collection`` so ``state_adapter`` writes to the sandbox collection, not prod.
+    """
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from skills.bhaga_config import state_adapter  # lazy: GCP deps
+
+    CT = ZoneInfo("America/Chicago")
+    seeded_at = (_dt.datetime.now(CT) - _dt.timedelta(hours=hours)).isoformat()
+    refresh_date_obj = _dt.date.fromisoformat(refresh_date)
+
+    old_collection = os.environ.get("BHAGA_FIRESTORE_COLLECTION")
+    old_run_env = os.environ.get("BHAGA_RUN_ENV")
+    try:
+        os.environ["BHAGA_FIRESTORE_COLLECTION"] = collection
+        os.environ["BHAGA_RUN_ENV"] = "sandbox"
+        state_adapter.save_pending_otp(
+            refresh_date_obj, portals, requested_at=seeded_at, agent="bhaga",
+        )
+    finally:
+        if old_collection is None:
+            os.environ.pop("BHAGA_FIRESTORE_COLLECTION", None)
+        else:
+            os.environ["BHAGA_FIRESTORE_COLLECTION"] = old_collection
+        if old_run_env is None:
+            os.environ.pop("BHAGA_RUN_ENV", None)
+        else:
+            os.environ["BHAGA_RUN_ENV"] = old_run_env
+
+    print(f"[sandbox_live_run] seeded stale pending_otp: date={refresh_date} "
+          f"portals={portals} requested_at={seeded_at} collection={collection}")
+    return seeded_at
+
+
+def verify_otp_reprompt(
+    refresh_date: str,
+    seeded_at: str,
+    *,
+    collection: str = SANDBOX_RUNS_COLLECTION,
+    get_pending=None,
+) -> tuple[bool, str]:
+    """Verify that daily_refresh re-saved a fresh pending_otp checkpoint.
+
+    PASS iff the checkpoint in ``collection`` for ``refresh_date`` has a
+    ``requested_at`` that advanced past ``seeded_at`` AND ``ready_received`` is
+    False. This proves that ``otp_gate.evaluate`` returned ``EXIT_PENDING
+    first_request=True`` and ``daily_refresh`` re-saved a fresh checkpoint — not
+    silently deferred to the stale one.
+
+    ``get_pending`` can be injected for unit tests; defaults to the real
+    ``state_adapter.get_pending_otp`` reading the sandbox Firestore collection.
+    """
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    refresh_date_obj = _dt.date.fromisoformat(refresh_date)
+
+    if get_pending is None:
+        from skills.bhaga_config import state_adapter  # lazy: GCP deps
+        old_collection = os.environ.get("BHAGA_FIRESTORE_COLLECTION")
+        try:
+            os.environ["BHAGA_FIRESTORE_COLLECTION"] = collection
+            pending = state_adapter.get_pending_otp(refresh_date_obj)
+        finally:
+            if old_collection is None:
+                os.environ.pop("BHAGA_FIRESTORE_COLLECTION", None)
+            else:
+                os.environ["BHAGA_FIRESTORE_COLLECTION"] = old_collection
+    else:
+        pending = get_pending(refresh_date_obj)
+
+    if pending is None:
+        return False, (
+            f"otp_reprompt FAIL — no pending_otp checkpoint found in "
+            f"'{collection}' for {refresh_date} after the run. "
+            "Expected daily_refresh to re-save a fresh checkpoint."
+        )
+    if pending.get("ready_received"):
+        return False, (
+            "otp_reprompt FAIL — ready_received=True in checkpoint; "
+            "expected False (no READY was sent in this test run)."
+        )
+    requested_at_str = pending.get("requested_at", "")
+    CT = ZoneInfo("America/Chicago")
+    try:
+        seeded_dt = _dt.datetime.fromisoformat(seeded_at)
+        new_dt = _dt.datetime.fromisoformat(requested_at_str)
+        if seeded_dt.tzinfo is None:
+            seeded_dt = seeded_dt.replace(tzinfo=CT)
+        if new_dt.tzinfo is None:
+            new_dt = new_dt.replace(tzinfo=CT)
+        if new_dt <= seeded_dt:
+            return False, (
+                f"otp_reprompt FAIL — checkpoint requested_at ({requested_at_str!r}) "
+                f"did NOT advance past seeded_at ({seeded_at!r}). "
+                "daily_refresh deferred to the stale checkpoint instead of re-saving."
+            )
+    except (ValueError, TypeError) as exc:
+        return False, f"otp_reprompt FAIL — could not parse timestamps: {exc}"
+
+    return True, (
+        f"otp_reprompt PASS — fresh checkpoint saved: requested_at={requested_at_str!r} "
+        f"(advanced past seeded_at={seeded_at!r}), ready_received=False. "
+        "BHAGA_OTP_FORCE_REQUEST triggered re-prompt correctly on real Cloud Run + Firestore."
+    )
+
+
 def _write_evidence(path: str, *, run_label: str, refresh_date: str, rc: int,
                     verify_msg: str = "") -> None:
     """Emit a markdown summary the workflow posts back as a PR comment."""
@@ -526,8 +656,18 @@ def main(argv: list[str] | None = None) -> int:
     cli.add_argument("--skip", default="",
                      help="Comma-separated pipeline steps to skip so the run is focused "
                           "(e.g. 'adp,reviews,model' for a Square-only scenario).")
-    cli.add_argument("--verify", choices=["item_sales"], default=None,
+    cli.add_argument("--verify", choices=["item_sales", "otp_reprompt"], default=None,
                      help="Post-run verification gate; fails the run if the deliverable is absent.")
+    cli.add_argument("--otp-force-request", action="store_true",
+                     help="Drop BHAGA_OTP_ASSUME_READY; set BHAGA_OTP_FORCE_REQUEST=1 so "
+                          "otp_gate.evaluate exercises the real force re-prompt path "
+                          "(checkpoint-and-resume) instead of the inline supervised path.")
+    cli.add_argument("--seed-stale-otp-hours", type=int, default=0, metavar="N",
+                     help="Before executing the job, seed a stale pending_otp checkpoint "
+                          "in sandbox_runs with requested_at=<now-N h>. Use with "
+                          "--otp-force-request to prove the re-prompt fires on a stale "
+                          "unanswered marker (e.g. --seed-stale-otp-hours 72). "
+                          "Requires BHAGA_STATE_BACKEND=firestore.")
     cli.add_argument("--from", dest="window_from", default=None, metavar="DATE",
                      help="Unified backfill window START (YYYY-MM-DD). Injected as "
                           "BHAGA_WINDOW_FROM into the sandbox job env so daily_refresh "
@@ -575,14 +715,30 @@ def main(argv: list[str] | None = None) -> int:
         window_to=args.window_to,
         fresh_scrape=args.fresh_scrape,
         sheet_from_bq=args.sheet_from_bq,
+        otp_force_request=args.otp_force_request,
     )
     if skip_steps:
         print(f"[sandbox_live_run] scenario scoped — skipping steps: {', '.join(skip_steps)}")
+    if args.otp_force_request:
+        print("[sandbox_live_run] otp_force_request ON — assume-ready dropped, "
+              "BHAGA_OTP_FORCE_REQUEST=1 set; real otp_gate force-reprompt path active")
     assert_sandbox_isolation(env)  # fail loud BEFORE any deploy/execute
     print("[sandbox_live_run] isolation pre-flight OK (sheets/cache/firestore all sandbox)")
 
     try:
         assert_sandbox_bucket(SANDBOX_CACHE_WRITE_BUCKET)
+
+        # Seed a stale pending_otp checkpoint BEFORE the job runs so the job
+        # finds an unanswered marker and exercises the force re-prompt branch.
+        seeded_at: str | None = None
+        if args.seed_stale_otp_hours > 0:
+            print(f"[sandbox_live_run] seeding stale pending_otp ({args.seed_stale_otp_hours}h old) "
+                  f"in '{SANDBOX_RUNS_COLLECTION}' for {args.refresh_date} ...")
+            seeded_at = _seed_stale_pending_otp(
+                args.refresh_date, ["Square"],
+                hours=args.seed_stale_otp_hours,
+            )
+
         deploy_sandbox_job(image=args.image, env=env, prod_json=prod_json)
         print(f"[sandbox_live_run] deployed {SANDBOX_JOB_NAME} @ {args.image}")
 
@@ -604,6 +760,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[sandbox_live_run] verify(item_sales): {verify_msg}")
             if not ok and rc == 0:
                 rc = 2  # deliverable missing → fail loud despite a 0 job exit
+        elif args.verify == "otp_reprompt":
+            ok, verify_msg = verify_otp_reprompt(args.refresh_date, seeded_at or "")
+            print(f"[sandbox_live_run] verify(otp_reprompt): {verify_msg}")
+            if not ok and rc == 0:
+                rc = 2  # re-prompt did not fire → fail loud despite a 0 job exit
 
         if args.evidence_file:
             _write_evidence(args.evidence_file, run_label=run_label,

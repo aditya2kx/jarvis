@@ -612,20 +612,22 @@ auto-migrate **additive** header changes; reordering/removing does not.
 Tip-pool exclusions drop a `(employee, date)`'s hours from that day's **tip** denominator only
 (labor% unaffected), so the pool redistributes to everyone else. All three sources funnel through the
 single `_is_excluded` chokepoint in `update_model_sheet.py` — **no code change is needed to add an
-exemption**, only a sheet edit, then a model rebuild. See `README.md` § Extending the model **Recipe
-E** for the full table. Quick reference:
+exemption**, only a BQ command, then a model rebuild.
 
-- **Permanent** (manager/owner): `excluded_from_tip_pool_and_labor_pct` in `palmetto.json`.
-- **Through a date** (bulk "all shifts were training up to X"): add a `config`-tab row
-  `training_excluded:Last, First = YYYY-MM-DD` (inclusive).
-- **One specific shift**: add a row to the **`training_shifts`** tab (`employee_name | date | note`).
-  This tab is **human-owned** (Lindsay/operator keep it current); the pipeline only reads it. Seed/edit
-  it programmatically via `tip_ledger_writer.write_training_shifts` (idempotent `(employee,date)`
-  upsert; preserves other operator rows) or by hand.
+**BQ-canonical (post-2026-06-15 Sheets exit):** all human inputs live in BQ, edited via `/bhaga-cloud` Slack commands — no Sheet editing. Quick reference:
 
-After editing, rebuild: `python3 -m agents.bhaga.scripts.update_model_sheet --store palmetto` (or let
-the nightly do it), then confirm `tip_alloc_period` shows $0 for the exempted shift and the pool total
-is conserved.
+- **Permanent** (manager/owner): `/bhaga-cloud exclude set "Last, First"` — appends to
+  `store_config.excluded_from_tip_pool` in BQ. Alternatively set via
+  `/bhaga-cloud config set excluded_from_tip_pool "Name1;Name2"`.
+- **Through a date** (bulk "all shifts were training up to X"):
+  `/bhaga-cloud exclude set "Last, First" YYYY-MM-DD` — sets `store_config.training_excluded:Last, First`.
+- **One specific shift**: `/bhaga-cloud training set "Last, First" YYYY-MM-DD [note]` — MERGEs into
+  `bhaga.training_shifts` BQ table. The Grafana `6. Payroll → Training Shifts (current)` panel shows
+  all active marks immediately. Remove with `/bhaga-cloud training rm "Last, First" YYYY-MM-DD`.
+
+After editing, the nightly job picks up the change automatically. For an immediate rebuild trigger:
+`/bhaga-cloud refresh YYYY-MM-DD`. Verify in Grafana: confirm `tip_alloc_period` shows $0 for the
+exempted shift and the pool total is conserved.
 
 ### Run the sandbox e2e (prod-like, zero-OTP) — opt-in
 
@@ -1072,11 +1074,18 @@ python3 agents/bhaga/grafana/verify_panels.py --fail-on-empty             # 0-ro
 
 ### Running SQL migrations
 
+Migrations in `core/migrations/*.sql` are applied automatically:
+
+1. **On merge to `main`** — `.github/workflows/deploy.yml` runs `ensure_schema()` after the Cloud Run image deploy; `.github/workflows/grafana-dashboard-sync.yml` runs it before pushing dashboard JSON (so new panel SQL never references columns that do not exist yet).
+2. **On every Cloud Run nightly / manual job** — `daily_refresh` calls `ensure_schema()` at startup when `BHAGA_SECRETS_BACKEND=gcp`.
+
+Manual apply (one-off / laptop sandbox only):
+
 ```bash
 python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
 ```
 
-Migrations live in `core/migrations/001_initial_schema.sql` … `015_forecast_view_dow_fallback.sql`. They are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`). Migration 005 adds: `square_item_lines`, `square_kds_daily`, `square_kds_tickets`, `adp_earnings`, `google_reviews` raw tables; and `vw_order_quality_daily`, `vw_kds_item_investigation`, `vw_staff_on_shift`, extended `vw_model_labor_daily/weekly`, extended `vw_model_payroll_period` (with ADP actuals + diffs). Migration 011 adds: `model_forecast_daily` table and `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` views (see Labor Forecast section below). Migration 013 adds: `adp_scheduled_daily` table (per-day ADP scheduled hours) and `vw_scheduled_vs_goal` view (scheduled vs goal vs actual hours; dashboard panel 74). Migration 014 adds: `forecast_model_version` column to `model_forecast_daily` (version tag for each forecast row); refreshes `vw_model_forecast` to include `scheduled_hours` from `adp_scheduled_daily`; refreshes `vw_forecast_exclusions` to include `net_sales`, `prev_wk_net_sales`, `net_sales_vs_prev_wk`, `aov`, `prev_wk_aov` columns for promo/comped-day visibility.
+Migrations are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`, `ADD COLUMN IF NOT EXISTS`). Latest: `019_pipeline_recovery.sql` (`recovery_retrigger` on `pipeline_runs`).
 
 ### BQ backfill (one-shot)
 
@@ -1152,7 +1161,7 @@ BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-pr
   python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
 ```
 
-Migrations `011`, `012`, `013`, `014`, and `015` are all idempotent. Apply them via `ensure_schema()` (the nightly job does this automatically). After applying, the nightly job will populate `model_forecast_daily` on its next run (or trigger a manual refresh — see §6).
+Migrations `011`, `012`, `013`, `014`, and `015` are all idempotent. They are applied automatically on deploy and at nightly job startup via `ensure_schema()` (see § Running SQL migrations). After applying, the nightly job will populate `model_forecast_daily` on its next run (or trigger a manual refresh — see §6).
 
 Migration `015` adds `dow` (Mon/Tue/…) to `vw_model_forecast` and zero-gates the prior-week actual (`IF(orders > 0, orders, NULL)`) so failed/closed prior days (orders=0) fall back to that day's stored forecast row instead of showing NULL.
 

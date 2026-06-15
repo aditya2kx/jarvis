@@ -140,36 +140,19 @@ def _get_run_status(refresh_date: datetime.date) -> dict:
 
 
 def _read_data_window_end() -> Optional[str]:
-    """Read data_window_end from the Model sheet's config tab.
+    """Read data_window_end from BQ (store_config, then MAX square_transactions).
 
     Returns the ISO date string, or None on failure.
     """
     try:
-        profile_path = (
-            pathlib.Path(_PROJECT_ROOT) / "agents" / "bhaga"
-            / "knowledge-base" / "store-profiles" / "palmetto.json"
-        )
-        profile = json.loads(profile_path.read_text())
-        from core.config_loader import refresh_access_token, resolve_sheet_id
-        spreadsheet_id = resolve_sheet_id("bhaga_model", profile)
-
-        from skills.bhaga_config.dates import coerce_iso_date
-        import urllib.request
-
-        token = refresh_access_token("palmetto")
-        rng = urllib.parse.quote("config!A1:C200", safe="!:")
-        url = (
-            f"https://sheets.googleapis.com/v4/spreadsheets/"
-            f"{spreadsheet_id}/values/{rng}"
-        )
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-        for row in data.get("values", []):
-            if row and row[0] == "data_window_end":
-                raw = row[1] if len(row) >= 2 else ""
-                iso = coerce_iso_date(raw)
-                return iso
+        from core.store_config import get_config
+        val = (get_config("palmetto", "data_window_end") or "").strip()
+        if val:
+            return val
+        # Fall back to MAX(square_transactions.date_local).
+        from core.datastore import read_query, fq
+        rows = read_query(f"SELECT CAST(MAX(date_local) AS STRING) AS m FROM {fq('square_transactions')}")
+        return (rows[0]["m"] if rows else None) or None
     except Exception as exc:
         print(f"[command_handler] _read_data_window_end failed: {exc}")
     return None

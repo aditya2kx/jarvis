@@ -117,6 +117,8 @@ _bq: Optional[object] = None  # google.cloud.bigquery.Client | None
 _BQ_PROJECT = "jarvis-bhaga-prod"
 _BQ_DATASET = os.environ.get("BHAGA_BQ_DATASET", "bhaga")
 _BQ_STORE_CONFIG_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.store_config"
+_BQ_TRAINING_SHIFTS_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.training_shifts"
+_BQ_EMPLOYEE_ALIASES_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.employee_aliases"
 
 
 def _init_bigquery() -> None:
@@ -433,6 +435,47 @@ def _handle_slash_command(form: dict) -> Response:
         value = config_set_match.group(2).strip()
         return _handle_config_set(key, value, form)
 
+    # training set "Last, First" YYYY-MM-DD [note]
+    training_set_match = re.match(
+        r'^training\s+set\s+"([^"]+)"\s+(\d{4}-\d{2}-\d{2})(?:\s+(.*))?$',
+        command_text, re.IGNORECASE,
+    )
+    if training_set_match:
+        name = training_set_match.group(1).strip()
+        date_str = training_set_match.group(2)
+        note = (training_set_match.group(3) or "").strip()
+        return _handle_training_set(name, date_str, note, form)
+
+    # training rm "Last, First" YYYY-MM-DD
+    training_rm_match = re.match(
+        r'^training\s+rm\s+"([^"]+)"\s+(\d{4}-\d{2}-\d{2})$',
+        command_text, re.IGNORECASE,
+    )
+    if training_rm_match:
+        name = training_rm_match.group(1).strip()
+        date_str = training_rm_match.group(2)
+        return _handle_training_rm(name, date_str, form)
+
+    # alias set <raw_or_"raw name"> "Last, First"
+    alias_set_match = re.match(
+        r'^alias\s+set\s+(?:"([^"]+)"|(\S+))\s+"([^"]+)"$',
+        command_text, re.IGNORECASE,
+    )
+    if alias_set_match:
+        raw_name = (alias_set_match.group(1) or alias_set_match.group(2)).strip()
+        canonical = alias_set_match.group(3).strip()
+        return _handle_alias_set(raw_name, canonical, form)
+
+    # exclude set "Last, First" [YYYY-MM-DD]
+    exclude_set_match = re.match(
+        r'^exclude\s+set\s+"([^"]+)"(?:\s+(\d{4}-\d{2}-\d{2}))?$',
+        command_text, re.IGNORECASE,
+    )
+    if exclude_set_match:
+        name = exclude_set_match.group(1).strip()
+        through_date = (exclude_set_match.group(2) or "").strip()
+        return _handle_exclude_set(name, through_date, form)
+
     return jsonify({
         "response_type": "ephemeral",
         "text": (
@@ -440,7 +483,11 @@ def _handle_slash_command(form: dict) -> Response:
             "  `/bhaga-cloud refresh 2025-05-26` — trigger daily refresh for a date\n"
             "  `/bhaga-cloud status` — latest run summary\n"
             "  `/bhaga-cloud config get <key>` — read a store config tunable\n"
-            "  `/bhaga-cloud config set <key> <value>` — update a store config tunable"
+            "  `/bhaga-cloud config set <key> <value>` — update a store config tunable\n"
+            "  `/bhaga-cloud training set \"Last, First\" YYYY-MM-DD [note]` — mark a shift as training\n"
+            "  `/bhaga-cloud training rm \"Last, First\" YYYY-MM-DD` — remove a training shift mark\n"
+            "  `/bhaga-cloud alias set <raw_name> \"Last, First\"` — add employee alias\n"
+            "  `/bhaga-cloud exclude set \"Last, First\" [YYYY-MM-DD]` — mark training exclusion through date"
         ),
     })
 
@@ -527,6 +574,126 @@ def _bq_param_config(params: list[tuple]) -> object:
         _bq_mod.ScalarQueryParameter(name, typ, val)
         for name, typ, val in params
     ])
+
+
+def _handle_training_set(name: str, date_str: str, note: str, form: dict) -> Response:
+    """MERGE a per-shift training mark into BQ training_shifts."""
+    if _bq is None:
+        return jsonify({"response_type": "ephemeral",
+                        "text": ":warning: BigQuery not available."})
+    store = os.environ.get("BHAGA_STORE", "palmetto")
+    user_name = form.get("user_name") or form.get("user_id") or "slack"
+    try:
+        fq = f"`{_BQ_TRAINING_SHIFTS_TABLE}`"
+        _bq.query(  # type: ignore[union-attr]
+            f"MERGE {fq} T"
+            f" USING (SELECT @store AS store, @name AS employee_name, @date AS date) S"
+            f" ON T.store=S.store AND T.employee_name=S.employee_name AND T.date=S.date"
+            f" WHEN MATCHED THEN UPDATE SET note=@note, updated_at=CURRENT_TIMESTAMP(), updated_by=@by"
+            f" WHEN NOT MATCHED THEN INSERT (store,employee_name,date,note,updated_at,updated_by)"
+            f"   VALUES (@store,@name,@date,@note,CURRENT_TIMESTAMP(),@by)",
+            job_config=_bq_param_config([
+                ("store", "STRING", store),
+                ("name", "STRING", name),
+                ("date", "DATE", date_str),
+                ("note", "STRING", note),
+                ("by", "STRING", user_name),
+            ]),
+        ).result()
+        return jsonify({"response_type": "ephemeral",
+                        "text": f":white_check_mark: Training shift set: *{name}* on {date_str}" +
+                                (f" ({note})" if note else "") + f" (by {user_name})"})
+    except Exception as exc:
+        log.error("training set failed: %s", exc)
+        return jsonify({"response_type": "ephemeral", "text": f":x: training set failed: {exc}"})
+
+
+def _handle_training_rm(name: str, date_str: str, form: dict) -> Response:
+    """Delete a per-shift training mark from BQ training_shifts."""
+    if _bq is None:
+        return jsonify({"response_type": "ephemeral",
+                        "text": ":warning: BigQuery not available."})
+    store = os.environ.get("BHAGA_STORE", "palmetto")
+    user_name = form.get("user_name") or form.get("user_id") or "slack"
+    try:
+        fq = f"`{_BQ_TRAINING_SHIFTS_TABLE}`"
+        _bq.query(  # type: ignore[union-attr]
+            f"DELETE FROM {fq} WHERE store=@store AND employee_name=@name AND date=@date",
+            job_config=_bq_param_config([
+                ("store", "STRING", store),
+                ("name", "STRING", name),
+                ("date", "DATE", date_str),
+            ]),
+        ).result()
+        return jsonify({"response_type": "ephemeral",
+                        "text": f":white_check_mark: Training shift removed: *{name}* on {date_str} (by {user_name})"})
+    except Exception as exc:
+        log.error("training rm failed: %s", exc)
+        return jsonify({"response_type": "ephemeral", "text": f":x: training rm failed: {exc}"})
+
+
+def _handle_alias_set(raw_name: str, canonical: str, form: dict) -> Response:
+    """MERGE a new employee alias into BQ employee_aliases."""
+    if _bq is None:
+        return jsonify({"response_type": "ephemeral",
+                        "text": ":warning: BigQuery not available."})
+    store = os.environ.get("BHAGA_STORE", "palmetto")
+    user_name = form.get("user_name") or form.get("user_id") or "slack"
+    try:
+        fq = f"`{_BQ_EMPLOYEE_ALIASES_TABLE}`"
+        _bq.query(  # type: ignore[union-attr]
+            f"MERGE {fq} T"
+            f" USING (SELECT @store AS store, @raw AS raw_name) S"
+            f" ON T.store=S.store AND T.raw_name=S.raw_name"
+            f" WHEN MATCHED THEN UPDATE SET canonical_name=@canonical, updated_at=CURRENT_TIMESTAMP(), updated_by=@by"
+            f" WHEN NOT MATCHED THEN INSERT (store,raw_name,canonical_name,notes,updated_at,updated_by)"
+            f"   VALUES (@store,@raw,@canonical,'',CURRENT_TIMESTAMP(),@by)",
+            job_config=_bq_param_config([
+                ("store", "STRING", store),
+                ("raw", "STRING", raw_name),
+                ("canonical", "STRING", canonical),
+                ("by", "STRING", user_name),
+            ]),
+        ).result()
+        return jsonify({"response_type": "ephemeral",
+                        "text": f":white_check_mark: Alias set: `{raw_name}` → *{canonical}* (by {user_name})"})
+    except Exception as exc:
+        log.error("alias set failed: %s", exc)
+        return jsonify({"response_type": "ephemeral", "text": f":x: alias set failed: {exc}"})
+
+
+def _handle_exclude_set(name: str, through_date: str, form: dict) -> Response:
+    """Set a training_excluded:<name> entry in store_config BQ.
+
+    If through_date is provided, sets training_excluded:<name>=<date>.
+    If empty, appends name to excluded_from_tip_pool (permanent exclusion).
+    """
+    if _bq is None:
+        return jsonify({"response_type": "ephemeral",
+                        "text": ":warning: BigQuery not available."})
+    store = os.environ.get("BHAGA_STORE", "palmetto")
+    user_name = form.get("user_name") or form.get("user_id") or "slack"
+
+    if through_date:
+        key = f"training_excluded:{name}"
+        return _handle_config_set(key, through_date, form)
+
+    # Permanent exclusion: append to excluded_from_tip_pool
+    try:
+        fq_cfg = f"`{_BQ_STORE_CONFIG_TABLE}`"
+        rows = list(_bq.query(  # type: ignore[union-attr]
+            f"SELECT value FROM {fq_cfg} WHERE store=@store AND key='excluded_from_tip_pool' LIMIT 1",
+            job_config=_bq_param_config([("store", "STRING", store)]),
+        ).result())
+        existing = rows[0]["value"] if rows else ""
+        names = [n.strip() for n in existing.split(";") if n.strip()] if existing else []
+        if name not in names:
+            names.append(name)
+        new_value = ";".join(names)
+        return _handle_config_set("excluded_from_tip_pool", new_value, form)
+    except Exception as exc:
+        log.error("exclude set failed: %s", exc)
+        return jsonify({"response_type": "ephemeral", "text": f":x: exclude set failed: {exc}"})
 
 
 def _is_already_running(job_name: str, date_str: str) -> bool:

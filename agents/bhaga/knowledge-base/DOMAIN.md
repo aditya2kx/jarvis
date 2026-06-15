@@ -304,18 +304,23 @@ the denominator.
 
 **Tip-pool exclusions (who is dropped from the denominator).** A `(employee, date)` ruled excluded has
 its hours removed from that day's tip denominator only — **labor% is unaffected** — so the pool
-redistributes to everyone else. Three sheet-driven sources, all funnelling through the single
+redistributes to everyone else. Three BQ-canonical sources, all funnelling through the single
 `_is_excluded` chokepoint:
 
 | Source | Lives in | Granularity | Meaning |
 |---|---|---|---|
-| `excluded_from_tip_pool_and_labor_pct` | store profile (`palmetto.json`) | permanent | manager/owner — never in the pool |
-| `training_excluded:<name> = <date>` | Model `config` tab | through that date (inclusive) | bulk "all shifts up to date X were training" |
-| **`training_shifts`** tab | Model `bhaga_model` workbook | one `(employee, date)` row | precise per-shift training mark |
+| `excluded_from_tip_pool` | `bhaga.store_config` (BQ) | permanent | manager/owner — never in the pool |
+| `training_excluded:<name>` | `bhaga.store_config` (BQ) | through that date (inclusive) | bulk "all shifts up to date X were training" |
+| **`training_shifts`** | `bhaga.training_shifts` BQ table | one `(store, employee, date)` row | precise per-shift training mark |
 
-`training_shifts` columns: `employee_name` (canonical `Last, First`), `date` (`YYYY-MM-DD`), `note`
-(free text, e.g. "training"). It is **human-owned** (Lindsay/operator maintain it); the pipeline only
-reads it. The through-date shorthand and the per-shift tab **coexist** — use whichever is clearer.
+**BQ-canonical (post-2026-06-15 Sheets exit):** all sources live in BigQuery; no Sheet editing.
+Operators use `/bhaga-cloud` Slack commands (see RUNBOOK § Exempt an employee/shift).
+`training_shifts` BQ columns: `store`, `employee_name` (canonical `Last, First`), `date` (DATE),
+`note`, `updated_at`, `updated_by`. View: `vw_training_shifts` (Grafana `6. Payroll` panel).
+Read by the pipeline via `agents/bhaga/scripts/model_inputs.read_training_shifts()`.
+
+`employee_aliases` BQ table (`store, raw_name, canonical_name`) replaces the Sheet `employees` tab.
+The through-date shorthand and the per-shift table **coexist** — use whichever is clearer.
 
 **Conservation invariant (machine-checked).** Pool-by-day allocation is **cent-exact (zero
 tolerance)**: for every date, the per-employee allocations sum to that day's tip pool *exactly*

@@ -604,89 +604,29 @@ def _read_config_value(
 def _read_training_excluded_from_sheet(
     *, spreadsheet_id: str, store: str
 ) -> dict[str, datetime.date]:
-    """Read any `training_excluded:<canonical_name>` rows from the config tab.
+    """Read training_excluded entries from BQ store_config (BQ-canonical).
 
-    Each value is the LAST date (inclusive) of the employee's training period.
-    Shifts on or before that date receive no tip-pool share AND don't count
-    toward the per-hour rate denominator (redistribute model). Shifts after
-    that date are treated as normal tipped shifts.
+    The ``spreadsheet_id`` parameter is kept for call-site compatibility but
+    is no longer used — reads come from BQ via model_inputs.read_training_excluded.
 
-    Returns {canonical_name: last_training_date}. Empty dict if sheet/tab/key
-    missing or the sheet is unreachable (so we degrade gracefully).
+    Returns {canonical_name: last_training_date}.
     """
-    token = refresh_access_token(store)
-    rng = urllib.parse.quote("config!A1:C200", safe="!:")
-    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{rng}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    out: dict[str, datetime.date] = {}
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-    except Exception as exc:  # noqa: BLE001
-        print(f"  [training-read] could not read config tab: {exc}")
-        return out
-    for row in data.get("values", []):
-        if not row or not row[0].startswith(TRAINING_EXCLUDED_PREFIX):
-            continue
-        name = row[0][len(TRAINING_EXCLUDED_PREFIX):].strip()
-        if len(row) < 2 or not row[1].strip():
-            continue
-        try:
-            out[name] = datetime.date.fromisoformat(row[1].strip())
-        except ValueError:
-            print(f"  [training-read] unparseable date for {name!r}: {row[1]!r}")
-    return out
+    from agents.bhaga.scripts import model_inputs
+    return model_inputs.read_training_excluded(store)
 
 
 def _read_training_shifts_from_sheet(
     *, spreadsheet_id: str, store: str
 ) -> set[tuple[str, str]]:
-    """Read the `training_shifts` overlay tab → set of (canonical_name, date_iso).
+    """Read training shifts from BQ training_shifts table (BQ-canonical).
 
-    Each row marks ONE specific shift as a training shift: that ``(employee, date)``
-    receives no tip-pool share AND its hours are dropped from that day's per-hour
-    denominator (redistribute model — same as ``training_excluded``), but it does
-    NOT affect labor% (tips-only). This is the precise per-shift complement to the
-    bulk ``training_excluded:<name>`` through-date: use the tab for "their first 1-2
-    shifts" cases (e.g. a new hire's first worked days) that a single cutoff can't
-    express.
+    The ``spreadsheet_id`` parameter is kept for call-site compatibility but
+    is no longer used — reads come from BQ via model_inputs.read_training_shifts.
 
-    Human-owned and read-only to the pipeline (operators edit it directly in the
-    sheet), so it survives every refresh by construction. Columns:
-    ``employee_name | date | note`` with a header row. ``employee_name`` must be the
-    CANONICAL "Last, First" form (post-alias), or the (employee, date) won't match a
-    shift and the mark is silently inert — same caveat as ``training_excluded``.
-
-    Returns an empty set if the tab/key is missing or the sheet is unreachable, so a
-    store without the tab (or a transient API hiccup) degrades gracefully.
+    Returns set of (canonical_name, 'YYYY-MM-DD').
     """
-    token = refresh_access_token(store)
-    rng = urllib.parse.quote("training_shifts!A1:C500", safe="!:")
-    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{rng}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    out: set[tuple[str, str]] = set()
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-    except Exception as exc:  # noqa: BLE001
-        # Missing tab → 400; unreachable → URLError. Either way, degrade to "no
-        # per-shift marks" rather than failing the whole model build.
-        print(f"  [training-shifts-read] could not read training_shifts tab: {exc}")
-        return out
-    for row in data.get("values", [])[1:]:  # skip header
-        if not row or not row[0].strip():
-            continue
-        name = row[0].strip()
-        if len(row) < 2 or not row[1].strip():
-            continue
-        raw_date = row[1].strip()
-        try:
-            date_iso = datetime.date.fromisoformat(raw_date).isoformat()
-        except ValueError:
-            print(f"  [training-shifts-read] unparseable date for {name!r}: {raw_date!r}")
-            continue
-        out.add((name, date_iso))
-    return out
+    from agents.bhaga.scripts import model_inputs
+    return model_inputs.read_training_shifts(store)
 
 
 def _parse_sheet_bool(v) -> bool:

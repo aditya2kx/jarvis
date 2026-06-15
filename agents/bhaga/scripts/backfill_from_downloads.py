@@ -54,7 +54,7 @@ def load_rows(*args, **kwargs):
 from skills.adp_run_automation import compensation_backend, schedule_backend, shift_backend
 from skills.adp_run_automation.employee_aliases import (
     detect_new_employees,
-    update_sheet_with_new_aliases,
+    update_aliases_bq,
 )
 from skills.square_tips import transactions_backend
 from skills.tip_ledger_writer import read_raw_adp_rates
@@ -195,13 +195,13 @@ def main() -> int:
             if new_pairs:
                 print(f"  detected {len(new_pairs)} new employee(s): "
                       + ", ".join(f"{r!r}→{c!r}" for r, c in new_pairs))
-                added = update_sheet_with_new_aliases(args.store, new_pairs)
-                print(f"  wrote {added} new alias entries to bhaga_model > employees")
+                added = update_aliases_bq(args.store, new_pairs)
+                print(f"  wrote {added} new alias entries to employee_aliases BQ table")
                 from skills.store_profile import load_aliases as _reload_aliases
                 aliases = _reload_aliases(args.store)
                 new_employee_alert(
                     new_pairs,
-                    profile_path="bhaga_model > employees (sheet)",
+                    profile_path="employee_aliases BQ table",
                 )
                 punches = shift_backend.parse_xlsx(timecard_xlsx, employee_aliases=aliases)
                 print(f"  re-parsed with updated aliases: {len(punches)} punches")

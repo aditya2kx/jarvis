@@ -79,7 +79,7 @@ GRAFANA_DASHBOARD_URL = "https://steadyangelfish2985.grafana.net/d/bhaga-analyti
 # and output field names may not contain `/` or `$` (spaces/hyphens are fine).
 # Validate any panel SQL change with `python3 agents/bhaga/grafana/verify_panels.py`.
 
-SHEET_TABS: tuple[str, ...] = ("config", "daily", "tip_alloc_daily")
+SHEET_TABS: tuple[str, ...] = ("daily", "tip_alloc_daily")
 
 CheckMode = Literal["exact", "iso_week", "period_coverage"]
 
@@ -168,6 +168,8 @@ GRAFANA_VIEWS: list[Target] = [
     # Pipeline Runs panel); same Target covers freshness — column add only.
     Target("vw_pipeline_runs", "run_date"),
     Target("vw_source_pulls", "run_date"),
+    # migration 020: vw_training_shifts (panel 62, 6. Payroll — Training Shifts table).
+    Target("vw_training_shifts", "date"),
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are
@@ -453,6 +455,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     results: list[CheckResult] = []
+
+    # ── Layer 0: BQ data_window_end (replaces Sheet config tab check) ─────────
+    try:
+        from core.datastore import fq as _fq
+        from core.store_config import get_config as _get_cfg
+        dwe_raw = (_get_cfg(args.store, "data_window_end") or "").strip()
+        if not dwe_raw:
+            _dwe_rows = read_query(
+                f"SELECT CAST(MAX(date_local) AS STRING) AS m FROM {_fq('square_transactions')}"
+            )
+            dwe_raw = (_dwe_rows[0]["m"] if _dwe_rows else None) or ""
+        present = dwe_raw == check_date.isoformat()
+        results.append(CheckResult(
+            "bq", "data_window_end", present,
+            rows=None, max_date=dwe_raw or None, note="store_config/square_transactions",
+        ))
+    except Exception as _exc:
+        results.append(CheckResult("bq", "data_window_end", False, None, None, note=f"ERROR: {_exc}"))
 
     # ── Layer 1: Google Sheets ────────────────────────────────────────────────
     for tab in SHEET_TABS:

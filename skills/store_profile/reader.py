@@ -198,61 +198,29 @@ def load_employee_roster(store: str = "palmetto") -> list[dict]:
 
 
 def load_aliases(store: str = "palmetto") -> dict[str, str]:
-    """Return the {raw_name_or_alias: canonical_name} mapping.
+    """Return the {raw_name_or_alias: canonical_name} mapping (BQ-canonical).
 
-    This is the shape callers used to get from palmetto.json's
-    employees.aliases dict, so it's a drop-in replacement.
-
-    Includes:
-      - The canonical name itself (so canonical -> canonical is in the map)
-      - Every alias listed in the `aliases` column on the employees tab
+    Reads from BQ employee_aliases table via model_inputs.read_aliases.
+    Includes the canonical name itself (canonical → canonical always present).
     """
-    roster = load_employee_roster(store)
-    out: dict[str, str] = {}
-    for rec in roster:
-        canonical = rec["canonical_name"]
-        out[canonical] = canonical
-        for alias in rec["aliases_list"]:
-            out[alias] = canonical
-    return out
+    # Late import to avoid circular imports at module load time.
+    from agents.bhaga.scripts import model_inputs  # noqa: PLC0415
+    return model_inputs.read_aliases(store)
 
 
 def load_exclusions(store: str = "palmetto") -> dict:
-    """Return the active exclusion state from bhaga_model > config.
+    """Return the active exclusion state from BQ / store_config (BQ-canonical).
 
     {
       "permanent": ["Krause, Lindsay", ...],
       "training":  {"Flores, Juan": "2026-05-16", ...},
     }
 
-    Falls back to the bootstrap JSON's ``excluded_from_tip_pool_and_labor_pct``
-    when the config tab is empty or missing the key (first-run bootstrap, e.g.
-    fresh staging sheets).
+    Reads from BQ via model_inputs.read_exclusions (store_config keys).
+    Falls back to the bootstrap JSON when no BQ permanent exclusions are set.
     """
-    cfg = _read_config_tab(store)
-    permanent_raw = cfg.get("excluded_from_tip_pool", {}).get("value", "")
-    if permanent_raw.strip():
-        # Multiple names are SEMICOLON-separated (canonical names contain commas:
-        # "Krause, Lindsay" must stay as one entry, not split into ["Krause", "Lindsay"]).
-        if ";" in permanent_raw:
-            permanent = [n.strip() for n in permanent_raw.split(";") if n.strip()]
-        else:
-            permanent = [permanent_raw.strip()]
-    else:
-        # Config tab empty or missing → fall back to the bootstrap JSON so the
-        # very first pipeline run still applies exclusions correctly.
-        pointer = _bootstrap_pointer(store)
-        permanent = list(
-            pointer.get("employees", {}).get(
-                "excluded_from_tip_pool_and_labor_pct", []
-            )
-        )
-    training: dict[str, str] = {}
-    for key, rec in cfg.items():
-        if key.startswith("training_excluded:"):
-            name = key.split(":", 1)[1].strip()
-            training[name] = rec["value"]
-    return {"permanent": permanent, "training": training}
+    from agents.bhaga.scripts import model_inputs  # noqa: PLC0415
+    return model_inputs.read_exclusions(store)
 
 
 def load_config_kv(store: str = "palmetto") -> dict[str, str]:

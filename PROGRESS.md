@@ -1,5 +1,28 @@
 # Jarvis Build Progress
 
+## 2026-06-15 — BHAGA: Full Google Sheets exit — BQ-canonical human inputs (PR1)
+
+**What changed:** All human-input data (training shifts, employee aliases, tunables/exclusions) fully
+migrated from Google Sheets to BigQuery. Google Sheets deprecated as a data source for BHAGA.
+
+- **Migration 020** (`core/migrations/020_sheet_inputs.sql`): new `bhaga.training_shifts` +
+  `bhaga.employee_aliases` BQ tables; `vw_training_shifts` view for Grafana.
+- **`model_inputs.py`**: new module centralizing BQ readers for all human inputs (replaces Sheet reads
+  in `update_model_sheet.py`, `store_profile/reader.py`, `process_reviews.py`, `daily_refresh.py`).
+- **Data migration** (`migrate_inputs_to_bq.py`): 11 training shifts, 37 aliases, 15 config keys
+  snapshotted from production Sheet into BQ (one-time; run 2026-06-15).
+- **`/bhaga-cloud` commands**: `training set|rm`, `alias set`, `exclude set` — operators edit BQ
+  directly from Slack without touching Sheets.
+- **`employee_aliases.py`**: auto-alias append (`update_sheet_with_new_aliases` → `update_aliases_bq`)
+  now MERGEs into `bhaga.employee_aliases` BQ table.
+- **Grafana**: new "Training Shifts (current)" panel in Section 6 Payroll.
+- **June 13 fix**: Sheets-based verification (`_read_model_verification_data`) removed from
+  `status.py`; `data_window_end` now read from BQ `store_config` / `MAX(square_transactions.date_local)`.
+- **Tests**: 30+ new/updated tests; full suite green.
+- **Docs**: RUNBOOK, DOMAIN, README, bhaga.md, AGENTS.md updated; Sheets guidance removed.
+- **Next (PR2)**: strip Sheet projection/reconcile steps from `daily_refresh.py`; delete
+  `render_raw_sheet_from_bq.py`, `render_model_sheet_from_bq.py`, `reconcile_model.py` + tests.
+
 ## 2026-06-14 — BHAGA: fix June 13 KDS Sheet/BQ drift (single BQ path)
 
 **Incident (2026-06-13):** `reconcile_model` failed on `labor_daily` (KDS blank on Sheet, populated in BQ) and `earnings` (header drift WARN-and-continue). Legacy dual-path (`update_model_sheet --data-source bigquery` skipped KDS) plus stale projection markers blocked `/bhaga-cloud refresh` retriggers.
@@ -11,6 +34,7 @@
 - **Reconcile:** BQ `employee` → Sheet `employee_name` alias in `_read_bq_as_rows`.
 - **Grafana:** Pipeline Health panels document single-path steps + `recovery_retrigger` column (migration 019).
 - **Recovery:** `/bhaga-cloud refresh 2026-06-13` after deploy.
+- **Gap found post-merge:** migration 019 was applied manually during recovery (deploy did not run `ensure_schema()`). Fixed: deploy + Grafana sync workflows + nightly startup now call `ensure_schema()` automatically.
 
 ## 2026-06-13 — BHAGA Pipeline Health: fix silent recorder skip in Cloud Run parent
 

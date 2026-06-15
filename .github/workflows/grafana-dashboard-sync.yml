@@ -42,6 +42,11 @@ jobs:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
 
+      - name: Apply BQ schema migrations
+        run: |
+          BHAGA_DATASTORE=bigquery python3 -c \
+            "from core.datastore import ensure_schema; applied = ensure_schema(); print('applied:', applied or 'none')"
+
       - name: Create/update read-only BQ SA (first-time only)
         if: ${{ inputs.create_sa == true }}
         env:

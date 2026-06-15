@@ -325,17 +325,13 @@ There are three sources, all sheet-driven (no code change to add an exemption):
 
 | Source | Where | Granularity | Use for |
 |---|---|---|---|
-| `excluded_from_tip_pool_and_labor_pct` | store profile (`palmetto.json`) | permanent | managers/owners who never tip-pool |
-| `training_excluded:<name> = <through-date>` | `config` tab | through a date (inclusive) | bulk "all shifts up to date X were training" |
-| `training_shifts` tab (`employee_name \| date \| note`) | own tab | a single `(employee, date)` | precise per-shift training marks |
+| `excluded_from_tip_pool` | `bhaga.store_config` (BQ) | permanent | managers/owners who never tip-pool |
+| `training_excluded:<name>` | `bhaga.store_config` (BQ) | through a date (inclusive) | bulk "all shifts up to date X were training" |
+| `training_shifts` BQ table | `bhaga.training_shifts` | one `(store, employee, date)` | precise per-shift training marks |
 
-The per-shift overlay is read by `_read_training_shifts_from_sheet` (mirrors
-`_read_training_excluded_from_sheet`), returns `set[(canonical_name, date_iso)]`, and degrades to a
-no-op if the tab is absent. It's threaded through `build_daily_rows`, `build_period_results`,
-`main()`, **and the verifiers** (`verify_bq_parity.py`) so recomputed parity stays honest. Seed/maintain
-rows via `tip_ledger_writer.write_training_shifts` (create-if-missing + idempotent `(employee,date)`
-upsert; it preserves rows a human added for other pairs). The tab is **human-owned** — Lindsay/operator
-keep it current; the pipeline only reads it.
+**BQ-canonical (post-2026-06-15 Sheets exit):** read by `model_inputs.read_training_shifts()` (returns
+`set[(canonical_name, date_iso)]`). All human inputs live in BigQuery; operators edit via
+`/bhaga-cloud` Slack commands. No Sheet editing needed.
 
 ### After any recipe
 

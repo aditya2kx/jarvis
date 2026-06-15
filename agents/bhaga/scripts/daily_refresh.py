@@ -2093,6 +2093,15 @@ def _run_refresh() -> int:
     )
     _RUN_SUMMARY.update(refresh_date=refresh_date, store=args.store, dry_run=args.dry_run)
 
+    if not args.dry_run and _should_record_pipeline_run():
+        try:
+            from core.datastore import ensure_schema  # noqa: PLC0415
+            applied = ensure_schema()
+            if applied:
+                print(f"[schema] applied migrations: {applied}", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[schema] WARN: ensure_schema failed: {exc}", file=sys.stderr)
+
     # ── Completeness gate ────────────────────────────────────────────
     # Refuse to run for a refresh_date whose data sources are still in
     # flight (today before 21:00 CT, or any future date). Without this
@@ -2802,11 +2811,13 @@ def _run_refresh() -> int:
     post_end: datetime.date | None = None
     if update_model_ran and not args.skip_square:
         try:
-            post_end, _ = _read_data_window_end_from_sheet(
-                spreadsheet_id=spreadsheet_id, store=args.store
-            )
+            from core.datastore import read_query as _post_rq, fq as _post_fq
+            _rows = _post_rq(f"SELECT CAST(MAX(date_local) AS STRING) AS m FROM {_post_fq('square_transactions')}")
+            _m = (_rows[0]["m"] if _rows else None) or ""
+            if _m:
+                post_end = datetime.date.fromisoformat(_m)
         except Exception as exc:  # noqa: BLE001
-            print(f"  [post-condition] could not re-read data_window_end: {exc}")
+            print(f"  [post-condition] could not re-read data_window_end from BQ: {exc}")
             post_end = None
     try:
         _assert_data_advanced_post_condition(

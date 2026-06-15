@@ -126,34 +126,45 @@ def update_profile_with_new_aliases(
     return profile
 
 
-def update_sheet_with_new_aliases(
+def update_aliases_bq(
     store: str,
     new_pairs: list[tuple[str, str]],
 ) -> int:
-    """Write new aliases into `bhaga_model > employees` (canonical SOT).
+    """Write new aliases into BQ employee_aliases table (BQ-canonical).
 
-    For each (raw_name, canonical) pair, this either:
-      - Adds `raw_name` to the existing row's aliases cell if canonical is
-        already on the roster, OR
-      - Appends a new row `[canonical, raw_name, ""]` if canonical is new.
+    For each (raw_name, canonical) pair, MERGEs into employee_aliases on
+    (store, raw_name). Idempotent: re-running the same pair is a no-op.
 
-    Returns the count of new alias additions (NOT new rows — both updates
-    and new-row inserts count toward this).
-
-    Idempotent: skipping a (raw, canonical) pair where the raw_name already
-    appears in that row's aliases is a no-op.
+    Returns the count of successfully written alias pairs.
     """
     if not new_pairs:
         return 0
-    # Local import — keep this module dependency-light for unit tests.
-    from skills.store_profile import write_alias
+    import datetime  # noqa: PLC0415
+    from core.datastore import load_rows  # noqa: PLC0415
 
-    added = 0
-    for raw, canonical in new_pairs:
-        try:
-            write_alias(store, raw, canonical)
-            added += 1
-        except Exception as exc:
-            print(f"[employee_aliases] WARN: failed to write alias {raw!r} -> "
-                  f"{canonical!r} to sheet: {exc!r}")
-    return added
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    rows = [
+        {
+            "store": store,
+            "raw_name": raw,
+            "canonical_name": canonical,
+            "notes": "",
+            "updated_at": now_iso,
+            "updated_by": "auto-detect",
+        }
+        for raw, canonical in new_pairs
+    ]
+    try:
+        load_rows(
+            "employee_aliases", rows,
+            merge_keys=["store", "raw_name"],
+            column_bq_types={"updated_at": "TIMESTAMP"},
+        )
+        return len(rows)
+    except Exception as exc:
+        print(f"[employee_aliases] WARN: failed to write {len(rows)} alias(es) to BQ: {exc!r}")
+        return 0
+
+
+# Keep old name as an alias so any call sites not yet updated still work.
+update_sheet_with_new_aliases = update_aliases_bq

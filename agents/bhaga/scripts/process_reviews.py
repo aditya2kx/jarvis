@@ -997,41 +997,42 @@ def main() -> int:
 
     token = refresh_access_token(args.store)
 
-    # ── Read tunable constants from the MODEL config (single source of
-    # truth — no config tab on raw sheets per architecture rule). ──
+    # ── Read tunable constants from store_config BQ (BQ-canonical). ──
     global BASE_BONUS_DOLLARS, NAMED_BONUS_DOLLARS, BONUS_START_DATE, POOL_EFFECTIVE_DATE, POOL_DOLLARS
-    model_cfg = _read_config_tab(model_sid, token)
+    from core.store_config import get_config as _get_cfg
 
-    bonus_start_raw = (model_cfg.get(MODEL_CFG_BONUS_START) or "").strip()
-    if bonus_start_raw:
-        try:
-            BONUS_START_DATE = datetime.date.fromisoformat(bonus_start_raw)
-        except ValueError:
-            print(f"WARN: bhaga_model > config.{MODEL_CFG_BONUS_START} is not ISO "
-                  f"({bonus_start_raw!r}); falling back to module default.")
+    def _get_date_cfg(key: str) -> str | None:
+        return (_get_cfg(args.store, key) or "").strip() or None
 
-    pool_effective_raw = (model_cfg.get(MODEL_CFG_POOL_EFFECTIVE) or "").strip()
-    if pool_effective_raw:
-        try:
-            POOL_EFFECTIVE_DATE = datetime.date.fromisoformat(pool_effective_raw)
-        except ValueError:
-            print(f"WARN: bhaga_model > config.{MODEL_CFG_POOL_EFFECTIVE} is not ISO "
-                  f"({pool_effective_raw!r}); falling back to module default.")
-
-    def _read_dollar(key: str, default: int) -> int:
-        s = (model_cfg.get(key) or "").strip()
+    def _get_dollar_cfg(key: str, default: int) -> int:
+        s = (_get_cfg(args.store, key) or "").strip()
         if not s:
             return default
         try:
             return int(float(s))
         except ValueError:
-            print(f"WARN: bhaga_model > config.{key} is not numeric ({s!r}); "
-                  f"using default {default}.")
+            print(f"WARN: store_config.{key} is not numeric ({s!r}); using default {default}.")
             return default
 
-    BASE_BONUS_DOLLARS = _read_dollar(MODEL_CFG_BASE_BONUS, BASE_BONUS_DOLLARS)
-    NAMED_BONUS_DOLLARS = _read_dollar(MODEL_CFG_NAMED_BONUS, NAMED_BONUS_DOLLARS)
-    POOL_DOLLARS = _read_dollar(MODEL_CFG_POOL_DOLLARS, POOL_DOLLARS)
+    bonus_start_raw = _get_date_cfg(MODEL_CFG_BONUS_START)
+    if bonus_start_raw:
+        try:
+            BONUS_START_DATE = datetime.date.fromisoformat(bonus_start_raw)
+        except ValueError:
+            print(f"WARN: store_config.{MODEL_CFG_BONUS_START} is not ISO "
+                  f"({bonus_start_raw!r}); falling back to module default.")
+
+    pool_effective_raw = _get_date_cfg(MODEL_CFG_POOL_EFFECTIVE)
+    if pool_effective_raw:
+        try:
+            POOL_EFFECTIVE_DATE = datetime.date.fromisoformat(pool_effective_raw)
+        except ValueError:
+            print(f"WARN: store_config.{MODEL_CFG_POOL_EFFECTIVE} is not ISO "
+                  f"({pool_effective_raw!r}); falling back to module default.")
+
+    BASE_BONUS_DOLLARS = _get_dollar_cfg(MODEL_CFG_BASE_BONUS, BASE_BONUS_DOLLARS)
+    NAMED_BONUS_DOLLARS = _get_dollar_cfg(MODEL_CFG_NAMED_BONUS, NAMED_BONUS_DOLLARS)
+    POOL_DOLLARS = _get_dollar_cfg(MODEL_CFG_POOL_DOLLARS, POOL_DOLLARS)
 
     # ── Resolve incremental anchor: derive from the reviews tab itself. ──
     # The data IS the state. No separate config row needed: the latest
@@ -1052,7 +1053,8 @@ def main() -> int:
             since_ts_ms = int(bonus_start_dt.timestamp() * 1000) - 1
             source = f"empty google_reviews BQ -> bonus_start_date ({BONUS_START_DATE})"
 
-    training_through = _read_training_excluded(model_sid, token)
+    from agents.bhaga.scripts.model_inputs import read_training_excluded as _read_training_excluded_bq
+    training_through = _read_training_excluded_bq(args.store)
 
     # Sync to the model's data_window_end so reviews stay aligned with the
     # rest of the workbook. Any review posted AFTER end-of-day CT on
@@ -1063,16 +1065,31 @@ def main() -> int:
     #   - high-water mark never advances past the window end, so tomorrow's
     #     run will re-fetch the held-back messages.
     # --until overrides data_window_end for historical backfills.
-    model_cfg = _read_config_tab(model_sid, token)
     if args.until:
         data_window_end = datetime.date.fromisoformat(args.until)
         print(f"# --until override: data_window_end={data_window_end}")
     else:
-        try:
-            data_window_end = _resolve_data_window_end(model_cfg)
-        except RuntimeError as exc:
-            print(f"ERROR: {exc}")
-            return 2
+        # BQ-canonical: read from store_config; fall back to MAX(square_transactions.date_local).
+        dwe_raw = _get_date_cfg("data_window_end")
+        if dwe_raw:
+            try:
+                data_window_end = datetime.date.fromisoformat(dwe_raw)
+            except ValueError:
+                print(f"ERROR: store_config.data_window_end is not ISO-date: {dwe_raw!r}")
+                return 2
+        else:
+            # Fall back to MAX(square_transactions.date_local) from BQ.
+            try:
+                rows = read_query(f"SELECT CAST(MAX(date_local) AS STRING) AS m FROM {fq('square_transactions')}")
+                max_date = (rows[0]["m"] if rows else None) or ""
+                if not max_date:
+                    print("ERROR: store_config.data_window_end is not set and square_transactions is empty.")
+                    return 2
+                data_window_end = datetime.date.fromisoformat(max_date)
+                print(f"# data_window_end not in store_config; using MAX(square_transactions)={data_window_end}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"ERROR: could not resolve data_window_end from BQ: {exc}")
+                return 2
     end_of_window_dt = datetime.datetime.combine(
         data_window_end, datetime.time.max, tzinfo=CT,
     )
@@ -1080,15 +1097,12 @@ def main() -> int:
     print(f"# model data_window_end: {data_window_end} "
           f"(reviews after {end_of_window_dt.isoformat()} held back)")
 
-    # Punches come from the raw sheet (BHAGA's architecture contract: model +
-    # downstream code read only from raw sheets, never from local files). The
-    # orchestrator's write_raw_sheets step is responsible for keeping it fresh.
-    adp_raw_sid = resolve_sheet_id("bhaga_adp_raw", profile)
-    print(f"# loading punches from raw sheet {adp_raw_sid} (BHAGA ADP Raw > punches)")
-    punches = read_raw_adp_punches(adp_raw_sid, account=args.store)
+    # Punches come from BQ adp_punches (BQ-canonical path).
+    from agents.bhaga.scripts.model_inputs import read_punches_bq
+    print(f"# loading punches from BQ adp_punches")
+    punches = read_punches_bq(args.store)
     if not punches:
-        print("ERROR: BHAGA ADP Raw > punches is empty. Run the orchestrator's "
-              "write_raw_sheets step (or backfill_from_downloads.py) first.")
+        print("ERROR: BQ adp_punches is empty. Run backfill_from_downloads.py first.")
         return 2
 
     # Re-resolve employee names through the alias map so raw-sheet names

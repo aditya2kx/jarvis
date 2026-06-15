@@ -84,6 +84,16 @@ jobs:
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT_ID }}
 
+      # Apply pending BQ migrations from core/migrations/ before recording the
+      # deploy. Idempotent — no-op when already applied. Keeps schema in sync
+      # with the merged code + Grafana panels that reference new columns/views.
+      - name: Apply BQ schema migrations
+        if: ${{ !inputs.rollback_sha }}
+        run: |
+          pip install --quiet google-cloud-bigquery google-auth
+          BHAGA_DATASTORE=bigquery python3 -c \
+            "from core.datastore import ensure_schema; applied = ensure_schema(); print('applied:', applied or 'none')"
+
       - name: Rollback (if SHA provided)
         if: ${{ inputs.rollback_sha }}
         run: |

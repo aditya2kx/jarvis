@@ -166,8 +166,10 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
   No pipeline code reads data files from GCS. Sheets are read-only projections.
 - **Cloud reads from BQ, never laptop files.** `extracted/downloads/` is laptop-only and is NOT a source
   of truth. The laptop is retired for BHAGA; all prod data flows through BQ.
-- **Operator tunables live in `bhaga.store_config`.** Edit via `/bhaga-cloud config set <key> <value>`.
-  Never manually edit the Sheet config tab — it is a read-only projection of BQ.
+- **All human inputs live in BQ (post-2026-06-15 Sheets exit).** `bhaga.store_config` (tunables +
+  exclusions), `bhaga.training_shifts` (per-shift marks), `bhaga.employee_aliases` (name mappings).
+  Edit via `/bhaga-cloud` Slack commands. Google Sheets are fully deprecated for BHAGA — do not read
+  or write Sheet tabs for any human-input data; BQ is the sole source of truth.
 - **Coverage-aware scraping.** `bq_coverage.missing_ranges` determines what to scrape; a fully-covered
   window scrapes nothing new. The BQ coverage check is the primary gap-resolver; sheet-based fallback
   applies only when BQ is unavailable.

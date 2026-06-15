@@ -1,9 +1,11 @@
-# Sandbox live run config — PR #58 otp-reprompt evidence capture.
+# Sandbox live run config — OFF.
 #
-# Proving the BHAGA_OTP_FORCE_REQUEST=1 re-prompt fix on the real
-# bhaga-sandbox-refresh Cloud Run job + Firestore (sandbox_runs). Gate-only:
-# no scrape, no OTP reply needed. Will be reverted to scenarios: [] once
-# evidence lands in the PR comment and is pasted into PR #58 §4.
-scenarios:
-  - name: otp-reprompt
-    date: 2026-06-14
+# Add scenarios here + apply the `sandbox-live` label to a PR to run a real
+# (isolated) BHAGA scrape on the PR image; remove them once evidence is captured.
+# An empty/absent scenarios list means nothing runs.
+#
+# Last used: PR #58 (otp-reprompt, 2026-06-14) — proved BHAGA_OTP_FORCE_REQUEST
+# force re-prompt on real bhaga-sandbox-refresh Cloud Run + Firestore (sandbox_runs):
+# seeded stale checkpoint, ran gate-only (no scrape/OTP reply), verified
+# requested_at advanced + ready_received=False. Evidence in PR #58 §4.
+scenarios: []

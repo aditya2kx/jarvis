@@ -575,7 +575,7 @@ the **job name** (not the workflow filename):
 | `Doc Freshness` | `doc-freshness.yml` | **Yes** — always runs, cheap |
 | `Sandbox e2e` | `sandbox-e2e.yml` | **No** — opt-in only (label `run-sandbox-e2e` or dispatch); removed from required checks 2026-06-09 |
 | `PR cost gate` | `pr-cost-gate.yml` | **Yes** — blocks merge until `metrics/pr_cost/PR-<n>.json` records build cost |
-| `Claude review` | `claude-review.yml` | Opus 4.8 medium thinking; rates evidence confidence 0–100%; verdict blocks merge on REQUEST CHANGES; "Evidence confidence gate" step fails CI if score < 95% (gate uses `scripts/check_evidence_confidence.py`; tolerates both `Evidence confidence:` and `Evidence confidence rating:` phrasings; skipped in bootstrap mode when `claude-review.yml` itself changed on the PR) |
+| `Claude review` | `claude-review.yml` | Opus 4.8 medium thinking; rates evidence confidence 0–100%; verdict blocks merge on REQUEST CHANGES; "Evidence confidence gate" step fails CI if score < 95% (gate uses `scripts/check_evidence_confidence.py`; tolerates both `Evidence confidence:` and `Evidence confidence rating:` phrasings). **Bootstrap:** when a PR modifies `claude-review.yml` itself, a `Detect workflow bootstrap` step sets `is_bootstrap=true` and the Opus review, verdict gate, evidence gate, and reply-thread check are all skipped — the job still reports green so the PR can merge, and the *next* PR (which doesn't touch the workflow) gets a real review. |
 
 Do **not** expect `Sandbox teardown` here — it runs on PR **close**, not on the PR commit.
 

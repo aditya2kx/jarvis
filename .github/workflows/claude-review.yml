@@ -51,10 +51,30 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Bootstrap: a PR that modifies this workflow cannot meaningfully review its
+      # own reviewer (and would run with a workflow definition that differs from
+      # main). Per the documented design, the full review is deferred to the next
+      # PR; the costly Opus call and the verdict/evidence gates are skipped here so
+      # the job still registers a green "Claude review" check. The next PR (which
+      # does not touch claude-review.yml) gets a real review.
+      - name: Detect workflow bootstrap (claude-review.yml changed)
+        id: bootstrap
+        if: github.event_name == 'pull_request' && steps.gate.outputs.enabled == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --name-only "$BASE_SHA" HEAD -- .github/workflows/claude-review.yml | grep -q .; then
+            echo "is_bootstrap=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::claude-review.yml changed on this PR — bootstrap mode: full review deferred to the next PR."
+          else
+            echo "is_bootstrap=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build bounded review context
         if: >
           github.event_name == 'pull_request' &&
-          steps.gate.outputs.enabled == 'true'
+          steps.gate.outputs.enabled == 'true' &&
+          steps.bootstrap.outputs.is_bootstrap != 'true'
         run: |
           python3 scripts/build_claude_review_context.py \
             --base "${{ github.event.pull_request.base.sha }}" \
@@ -66,7 +86,8 @@ jobs:
         id: claude
         if: >
           github.event_name == 'pull_request' &&
-          steps.gate.outputs.enabled == 'true'
+          steps.gate.outputs.enabled == 'true' &&
+          steps.bootstrap.outputs.is_bootstrap != 'true'
         timeout-minutes: 20
         # continue-on-error here isolates Claude's infra from the verdict gate.
         # A bot hiccup (turn cap, API error) → execution file missing → caught
@@ -191,7 +212,8 @@ jobs:
       - name: Gate on Claude verdict (fail if REQUEST CHANGES)
         if: >
           github.event_name == 'pull_request' &&
-          steps.gate.outputs.enabled == 'true'
+          steps.gate.outputs.enabled == 'true' &&
+          steps.bootstrap.outputs.is_bootstrap != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -234,19 +256,12 @@ jobs:
       - name: Evidence confidence gate (fail if < 95%)
         if: >
           github.event_name == 'pull_request' &&
-          steps.gate.outputs.enabled == 'true'
+          steps.gate.outputs.enabled == 'true' &&
+          steps.bootstrap.outputs.is_bootstrap != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          # Skip when claude-review.yml itself changed: Claude review was skipped
-          # (bootstrap protection), so there is no fresh score to gate against.
-          if git diff --name-only "$BASE_SHA" HEAD -- .github/workflows/claude-review.yml 2>/dev/null | grep -q .; then
-            echo "claude-review.yml changed on this branch — evidence confidence gate skipped (bootstrap)."
-            exit 0
-          fi
           BODY="$(gh api repos/${{ github.repository }}/issues/$PR_NUMBER/comments \
             --jq '[.[] | select(.user.login == "claude[bot]" or (.user.login | startswith("claude")))] | last | .body' \
             2>/dev/null || echo '')"
@@ -259,7 +274,8 @@ jobs:
       - name: Check all inline review threads are replied to
         if: >
           github.event_name == 'pull_request' &&
-          steps.gate.outputs.enabled == 'true'
+          steps.gate.outputs.enabled == 'true' &&
+          steps.bootstrap.outputs.is_bootstrap != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

@@ -449,20 +449,16 @@ def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
 # compute → Sheet model render → reviews.
 _RECOVERY_DOWNSTREAM_STEPS = (
     "load_raw_bigquery",
-    "render_raw_sheets",
     "materialize_model_bq",
-    "render_model_sheet_from_bq",
     "process_reviews",
 )
 
-# Steps that must be re-run whenever projection is stale (rollup-vs-model $0
+# Steps that must be re-run whenever the model is stale (rollup-vs-model $0
 # drift, or a /bhaga-cloud refresh retrigger after a failed run with BQ data
 # already present). materialize_model_bq is a full DELETE+reload, so clearing
 # it heals ALL dates in one recompute.
 _MODEL_RECOMPUTE_STEPS = (
-    "render_raw_sheets",
     "materialize_model_bq",
-    "render_model_sheet_from_bq",
 )
 
 
@@ -899,42 +895,16 @@ def _last_pipeline_run_failed(refresh_date: datetime.date) -> bool:
         return False
 
 
-def _projection_drift_probe(store: str) -> bool:
-    """Return True when labor_daily or earnings Sheet/BQ grains diverge."""
-    try:
-        from agents.bhaga.scripts.reconcile_model import reconcile
-
-        result = reconcile(
-            store,
-            allow_prod_read=True,
-            grains=[
-                {"tab": "labor_daily", "bq_table": "model_labor_daily", "sort_by": ["date"]},
-                {
-                    "tab": "earnings",
-                    "bq_table": "adp_earnings",
-                    "sort_by": ["period_start", "employee", "description"],
-                    "workbook": "bhaga_adp_raw",
-                    "raw_mirror": True,
-                },
-            ],
-        )
-        return not result.get("passed", True)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[recovery] WARN: projection drift probe failed: {exc}", file=sys.stderr)
-        return False
-
-
 def _prepare_projection_recovery(
     refresh_date: datetime.date,
     store: str,
     *,
     dry_run: bool,
 ) -> list[str]:
-    """Clear stale projection markers when BQ raw is present but projections failed.
+    """Clear stale model markers when BQ raw is present but a prior run failed.
 
     Enables ``/bhaga-cloud refresh <date>`` to skip OTP/login and re-run only
-    render_raw_sheets → materialize_model_bq → render_model_sheet_from_bq
-    (the 2026-06-13 KDS/earnings drift class).
+    materialize_model_bq (post-Sheets-exit: no render/reconcile steps).
     """
     if dry_run:
         return []
@@ -942,25 +912,22 @@ def _prepare_projection_recovery(
         return []
     if not _scrape_markers_done(refresh_date):
         return []
-    stale_projection = [s for s in _MODEL_RECOMPUTE_STEPS if step_already_done(refresh_date, s)]
-    if not stale_projection:
+    stale = [s for s in _MODEL_RECOMPUTE_STEPS if step_already_done(refresh_date, s)]
+    if not stale:
         return []
-    prior_failed = _last_pipeline_run_failed(refresh_date)
-    drift = _projection_drift_probe(store) if not prior_failed else False
-    if not prior_failed and not drift:
+    if not _last_pipeline_run_failed(refresh_date):
         return []
     cleared: list[str] = []
-    for step in stale_projection:
+    for step in stale:
         try:
             clear_step_done(refresh_date, step)
             cleared.append(step)
         except Exception as exc:  # noqa: BLE001
             print(f"[recovery] WARN: could not clear marker {step}: {exc}", file=sys.stderr)
     if cleared:
-        reason = "prior run failed" if prior_failed else "Sheet/BQ drift probe"
         print(
             f"[recovery] BQ data present for {refresh_date.isoformat()} — "
-            f"clearing projection markers {cleared} for retrigger ({reason}; no OTP).",
+            f"clearing model markers {cleared} for retrigger (prior run failed; no OTP).",
         )
         _RUN_SUMMARY["recovery_retrigger"] = True
     return cleared
@@ -1056,6 +1023,123 @@ def _parse_sheet_iso_date(cell: object) -> str | None:
     except (ValueError, TypeError):
         return None
     return candidate
+
+
+def verify_model_bq(store: str, *, expect_kds: bool) -> None:
+    """BQ-internal model verification — replaces Sheet-read verify (post-Sheets-exit).
+
+    Checks:
+    1. Minimum row counts on 5 model BQ tables.
+    2. KDS columns populated in model_labor_daily/weekly/period (when expect_kds).
+    3. Semantic post-conditions via model_semantics.assert_model_semantics
+       (tip conservation, adp reconciliation, review bonuses) — grids built from BQ.
+
+    Raises RuntimeError on any failure (same contract as the legacy Sheet verify).
+    This replaces the entire _read_model_verification_data + assert_model_tabs_populated
+    + check_weekly_period_kds pipeline that read the Sheet workbook.
+    """
+    from core.datastore import read_query, fq  # noqa: PLC0415
+
+    problems: list[str] = []
+
+    # ── 1. Row count checks ─────────────────────────────────────────────────
+    _MIN: dict[str, int] = {
+        "model_daily": 1,
+        "model_labor_daily": 1,
+        "model_labor_weekly": 1,
+        "model_labor_period": 1,
+        "model_period_summary": 1,
+    }
+    for tbl, minimum in sorted(_MIN.items()):
+        rows = read_query(f"SELECT COUNT(*) AS c FROM {fq(tbl)}")
+        n = rows[0]["c"] if rows else 0
+        if n < minimum:
+            problems.append(f"{tbl}: {n} rows (expected >= {minimum})")
+
+    # ── 2. KDS checks ───────────────────────────────────────────────────────
+    kds_lo: str | None = None
+    kds_hi: str | None = None
+    if expect_kds:
+        kds_rows = read_query(
+            f"SELECT CAST(MIN(date) AS STRING) lo, CAST(MAX(date) AS STRING) hi,"
+            f" COUNT(*) c FROM {fq('square_kds_daily')}"
+        )
+        kds_rec = kds_rows[0] if kds_rows else {}
+        if not kds_rec.get("c"):
+            problems.append("square_kds_daily: 0 rows but KDS expected")
+        else:
+            kds_lo = kds_rec["lo"]
+            kds_hi = kds_rec["hi"]
+            # labor_daily: KDS columns must be populated for KDS-covered rows
+            ld_rows = read_query(
+                f"SELECT COUNT(*) c FROM {fq('model_labor_daily')}"
+                f" WHERE kds_completed_tickets IS NOT NULL AND kds_completed_tickets > 0"
+            )
+            if not (ld_rows and ld_rows[0]["c"]):
+                problems.append("model_labor_daily: KDS columns empty but KDS expected")
+            # weekly/period: KDS-overlapping rows must have non-null metrics
+            for tbl, s_col, e_col in (
+                ("model_labor_weekly", "week_start", "week_end"),
+                ("model_labor_period", "pay_period_start", "pay_period_end"),
+            ):
+                bad_rows = read_query(
+                    f"SELECT COUNT(*) c FROM {fq(tbl)}"
+                    f" WHERE {e_col} >= DATE('{kds_lo}') AND {s_col} <= DATE('{kds_hi}')"
+                    f" AND kds_completed_items > 0"
+                    f" AND (kds_median_time_per_item_sec IS NULL"
+                    f"      OR kds_pct_tickets_late IS NULL)"
+                )
+                bad = bad_rows[0]["c"] if bad_rows else 0
+                if bad:
+                    problems.append(
+                        f"{tbl}: {bad} KDS-overlapping rows missing metrics"
+                        f" (kds_lo={kds_lo}, kds_hi={kds_hi})"
+                    )
+
+    if problems:
+        raise RuntimeError("model BQ verification failed: " + "; ".join(problems))
+
+    # ── 3. Semantic checks (tip conservation, ADP, reviews) ─────────────────
+    # Build list[list] grids from BQ (matching the header+rows contract of
+    # assert_model_semantics, which was written against Sheet grids but only
+    # cares about column names, not the data source).
+    def _bq_to_grid(tbl: str, cols: str) -> list[list]:
+        """SELECT cols FROM tbl -> [[header...], [row1...], ...]"""
+        col_list = [c.strip() for c in cols.split(",")]
+        sql_cols = ", ".join(
+            f"CAST({c} AS STRING) AS {c}" if c not in ("date", "period_start",
+                                                         "period_end", "week_start",
+                                                         "week_end") else
+            f"CAST({c} AS STRING) AS {c}"
+            for c in col_list
+        )
+        rows_bq = read_query(f"SELECT {sql_cols} FROM {fq(tbl)}")
+        if not rows_bq:
+            return [col_list]
+        return [col_list] + [[str(r.get(c, "")) for c in col_list] for r in rows_bq]
+
+    tip_daily_grid = _bq_to_grid(
+        "model_tip_alloc_daily",
+        "date,day_pool,our_share",
+    )
+    tip_period_grid = _bq_to_grid(
+        "model_tip_alloc_period",
+        "period_start,period_end,is_open,adp_paid",
+    )
+    review_grid = _bq_to_grid(
+        "model_review_bonus_period",
+        "period_start,period_end,is_open,employee,review_bonus_dollars",
+    )
+
+    sem = model_semantics.assert_model_semantics(
+        tip_alloc_daily_values=tip_daily_grid,
+        tip_alloc_period_values=tip_period_grid,
+        review_bonus_values=review_grid,
+        # require_adp_period and reviews_credited are passed in by the caller
+        # via the outer verify block; here we pass None/False as defaults
+        # (the caller can call with the right values if it needs stricter checks).
+    )
+    print(f"[verify_model_bq] semantics OK — {sem}")
 
 
 def check_weekly_period_kds(
@@ -2619,37 +2703,11 @@ def _run_refresh() -> int:
     else:
         print("[load_raw_bigquery] SKIPPED — no fresh inputs to load.")
 
-    # ── Render raw Sheets from BQ (BQ is primary; Sheet is projection) ──────────
-    # Runs after load_raw_bigquery so BQ raw tables are current.
-    # Non-fatal: BQ already has the data; a Sheet projection failure must not
-    # fail the nightly run. Square/ADP tabs only; reviews rendered after process_reviews.
-    if raw_sheets_ok:
-        bq_raw_env_local = {
-            **os.environ,
-            "BHAGA_DATASTORE": "bigquery",
-            "PYTHONUNBUFFERED": "1",
-        }
-        ok, _ = run_step(
-            "render_raw_sheets",
-            lambda: subprocess.run(
-                [sys.executable, "-m", "agents.bhaga.scripts.render_raw_sheet_from_bq",
-                 "--store", args.store,
-                 "--since", gap_start.isoformat(),
-                 "--tabs", "adp_shifts,adp_punches,adp_wage_rates,adp_earnings,"
-                            "square_transactions,square_daily_rollup,square_item_lines,"
-                            "square_item_daily,square_kds_daily,square_kds_tickets"],
-                cwd=str(PROJECT_ROOT), check=True, env=bq_raw_env_local,
-            ),
-            refresh_date=refresh_date,
-            dry_run=args.dry_run,
-        )
-        if not ok:
-            print("[render_raw_sheets] WARNING: Sheet projection failed — BQ is unaffected, continuing.")
-
     failed_steps = {name for name, _ in failures}
-    # ── BQ-canonical model path (single path; BQ → Sheets projection) ────────
-    # materialize_model_bq computes the model from BQ raw; render_model_sheet_from_bq
-    # projects the Sheet from BQ model tables. No legacy update_model_sheet step.
+    # ── BQ-canonical model path ────────────────────────────────────────────
+    # materialize_model_bq computes the model entirely from BQ raw tables.
+    # No Sheet projection steps (render_raw_sheets / render_model_sheet_from_bq
+    # deleted — BQ is the sole source of truth post-Sheets-exit).
 
     if not args.skip_model and (raw_sheets_ok or (args.skip_square and args.skip_timecard)):
         bq_model_env = {
@@ -2669,20 +2727,6 @@ def _run_refresh() -> int:
         )
         if not ok:
             failures.append(("materialize_model_bq", val))
-        else:
-            ok2, _ = run_step(
-                "render_model_sheet_from_bq",
-                lambda: subprocess.run(
-                    [sys.executable, "-m", "agents.bhaga.scripts.render_model_sheet_from_bq",
-                     "--store", args.store,
-                     "--since", gap_start.isoformat()],
-                    cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
-                ),
-                refresh_date=refresh_date,
-                dry_run=args.dry_run,
-            )
-            if not ok2:
-                failures.append(("render_model_sheet_from_bq", RuntimeError("see step log")))
 
     # Step: Google Review attribution (sequential, uses pre-fetched messages).
     # Architecture rule: ALL data fetching happens in the parallel phase.
@@ -2730,58 +2774,12 @@ def _run_refresh() -> int:
                 failures.append(("process_reviews", val))
             else:
                 process_reviews_ran = True
-                # ── Render reviews Sheet tab from BQ (non-fatal) ───────────────────
-                # process_reviews wrote google_reviews to BQ; now render the Sheet
-                # tab as a projection. Runs inline (not a separate step marker) so
-                # it re-runs if process_reviews re-runs.
-                if not args.dry_run:
-                    bq_raw_env_r = {
-                        **os.environ,
-                        "BHAGA_DATASTORE": "bigquery",
-                        "PYTHONUNBUFFERED": "1",
-                    }
-                    try:
-                        subprocess.run(
-                            [sys.executable, "-m",
-                             "agents.bhaga.scripts.render_raw_sheet_from_bq",
-                             "--store", args.store,
-                             "--tabs", "reviews"],
-                            cwd=str(PROJECT_ROOT), check=True, env=bq_raw_env_r,
-                        )
-                        print("[render_reviews_sheet] reviews Sheet tab rendered from BQ.")
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"[render_reviews_sheet] WARNING: reviews Sheet render failed "
-                              f"(non-fatal — BQ is canonical): {exc}")
     elif args.skip_reviews:
         print("[process_reviews] SKIPPED — --skip-reviews flag set.")
     elif not review_fetch_ok:
         print("[process_reviews] SKIPPED — review_fetch failed in parallel phase.")
     else:
         print("[process_reviews] SKIPPED — raw_sheets_ok=False (need fresh ADP punches).")
-
-    # ── Nightly reconciliation gate (non-fatal, alerts on drift) ─────────────
-    # Runs after all model writes so both Sheet and BQ are current.
-    # On drift: prints the mismatch report and sends a Slack alert; does NOT
-    # fail the run (the operator needs to investigate without losing tonight's data).
-    if os.environ.get("BHAGA_DATASTORE", "").lower() == "bigquery" and not args.dry_run:
-        recon_env = {
-            **os.environ,
-            "BHAGA_DATASTORE": "bigquery",
-            "PYTHONUNBUFFERED": "1",
-        }
-        _, recon_result = run_step(
-            "reconcile_model",
-            lambda: subprocess.run(
-                [sys.executable, "-m", "agents.bhaga.scripts.reconcile_model",
-                 "--store", args.store, "--json"],
-                cwd=str(PROJECT_ROOT), check=True, env=recon_env,
-            ),
-            refresh_date=refresh_date,
-            dry_run=False,  # always run even if other steps dry-ran
-        )
-        if recon_result is not None and not isinstance(recon_result, bool):
-            # reconcile_model exited non-zero — drift detected.
-            print("[reconcile_model] WARNING: Sheet/BQ drift detected — see output above.")
 
     runtime_s = time.monotonic() - t_start
 
@@ -2883,71 +2881,54 @@ def _run_refresh() -> int:
                 pass
             return 1
 
-    # ── Model-sheet verification (built into the pipeline) ─────────
-    # Runs on EVERY execution that actually rebuilt the model. Reads the
-    # Model workbook back and asserts the expected tabs are non-empty (the
-    # period tabs in particular — empty period tabs were the 2026-05-27
-    # bug). On failure: loud RuntimeError + failure_alert DM + non-zero
-    # exit, so the operator is notified the same night. Skipped when the
-    # model wasn't refreshed this run (--skip-model / dry-run / update
-    # failed) so we never false-positive on legitimately-empty cases.
+    # ── BQ-internal model verification (replaces Sheet-read verify) ────────
+    # Runs on EVERY execution that actually rebuilt the model. Queries the
+    # BQ model tables directly — no Sheet reads. On failure: loud RuntimeError
+    # + failure_alert DM + non-zero exit, so the operator is notified the same
+    # night. Skipped when the model wasn't refreshed this run (--skip-model /
+    # dry-run / update failed) so we never false-positive on legitimately-empty
+    # cases. Fixes the June 13 failure (Sheet-based verify read stale Sheet
+    # config tab data; BQ tables are always current).
     model_verified_ok = False
     if update_model_ran:
         expect_kds = not args.skip_kds
+        require_adp_period = _latest_closed_period_with_earnings(
+            profile=profile, store=args.store, refresh_date=refresh_date,
+        )
+        reviews_credited = process_reviews_ran and prev_review_bonus_rows > 0
         try:
-            raw_square_sid = resolve_sheet_id("bhaga_square_raw", profile)
-            vdata = _read_model_verification_data(
-                spreadsheet_id=spreadsheet_id,
-                store=args.store,
-                raw_square_sid=raw_square_sid,
-                expect_kds=expect_kds,
-            )
-            counts = vdata["tab_row_counts"]
-            print(f"\n[verify_model] model tab row counts: {counts}")
-            if expect_kds:
-                print(f"[verify_model] raw kds_daily rows={vdata['raw_kds_row_count']}; "
-                      f"model labor_daily KDS columns non-empty="
-                      f"{vdata['model_kds_columns_nonempty']}; "
-                      f"KDS coverage={vdata['kds_min_date']}..{vdata['kds_max_date']}")
-            assert_model_tabs_populated(
-                tab_row_counts=counts,
-                expect_kds=expect_kds,
-                raw_kds_row_count=vdata["raw_kds_row_count"],
-                model_kds_columns_nonempty=vdata["model_kds_columns_nonempty"],
-                weekly_values=vdata["weekly_values"],
-                period_values=vdata["period_values"],
-                kds_min_date=vdata["kds_min_date"],
-                kds_max_date=vdata["kds_max_date"],
-            )
-            print("[verify_model] OK — all expected model tabs are populated "
-                  "(incl. weekly/period KDS metrics).")
+            from core.datastore import read_query, fq as _fq  # noqa: PLC0415
 
-            # ── Semantic post-condition guard (model_semantics) ────────
-            # Mechanical population is necessary but NOT sufficient: a green run
-            # could still carry dead columns (the 6f87f9c adp_paid="N/A" and the
-            # 4059604 review_bonus regressions both passed every count check).
-            # These assert the numbers MEAN something — tips conserve, the latest
-            # closed period reconciles when its Earnings export exists, and
-            # credited review bonuses survived the rebuild. Cadence-safe: each
-            # check is gated on the precondition that makes it knowable.
-            require_adp_period = _latest_closed_period_with_earnings(
-                profile=profile, store=args.store, refresh_date=refresh_date,
+            # Row count + KDS checks
+            verify_model_bq(args.store, expect_kds=expect_kds)
+            print("[verify_model_bq] OK — all model BQ tables populated"
+                  + (" (incl. KDS metrics)." if expect_kds else "."))
+
+            # Semantic checks with cadence-aware grids from BQ
+            def _bq_grid(tbl: str, cols: str) -> list[list]:
+                col_list = [c.strip() for c in cols.split(",")]
+                rows_bq = read_query(f"SELECT {cols} FROM {_fq(tbl)}")
+                if not rows_bq:
+                    return [col_list]
+                return [col_list] + [[str(r.get(c, "")) for c in col_list] for r in rows_bq]
+
+            tip_daily_grid = _bq_grid("model_tip_alloc_daily", "date,day_pool,our_share")
+            tip_period_grid = _bq_grid(
+                "model_tip_alloc_period", "period_start,period_end,is_open,adp_paid"
             )
-            reviews_credited = process_reviews_ran and prev_review_bonus_rows > 0
+            review_grid = _bq_grid(
+                "model_review_bonus_period",
+                "period_start,period_end,is_open,employee,review_bonus_dollars",
+            )
             try:
                 sem = model_semantics.assert_model_semantics(
-                    tip_alloc_daily_values=vdata["tip_alloc_daily_values"],
-                    tip_alloc_period_values=vdata["tip_alloc_period_values"],
-                    review_bonus_values=vdata["review_bonus_values"],
+                    tip_alloc_daily_values=tip_daily_grid,
+                    tip_alloc_period_values=tip_period_grid,
+                    review_bonus_values=review_grid,
                     require_adp_period=require_adp_period,
                     reviews_credited=reviews_credited,
                 )
             except RuntimeError as sem_exc:
-                # A SEMANTIC failure is a known-bad regression that WILL repeat
-                # every night (unlike a mechanical under-population, which is
-                # transient and meant to be retried) — so trip the circuit
-                # breaker. The shared except below still records/alerts/clears
-                # the marker; we just add the breaker before re-raising.
                 try:
                     _adapter_set_pipeline_halt(
                         reason=f"semantic guard failed: {sem_exc}",
@@ -2959,47 +2940,37 @@ def _run_refresh() -> int:
                 except Exception:  # noqa: BLE001, S110
                     pass
                 raise
-            print(f"[verify_model] semantics OK — {sem}")
+            print(f"[verify_model_bq] semantics OK — {sem}")
             model_verified_ok = True
         except RuntimeError as exc:
             print(f"\n!!! MODEL VERIFICATION FAILED: {exc}", file=sys.stderr)
-            ev_uri = _record_failure(refresh_date, "verify_model_sheet", exc)
-            # Clear the update_model_sheet marker so a rerun REBUILDS rather than
-            # short-circuiting on the stale .done — a verification failure (either
-            # mechanical OR semantic) means the model output is suspect, so the
-            # next run must regenerate it after the fix, not just re-verify.
+            ev_uri = _record_failure(refresh_date, "verify_model_bq", exc)
             try:
-                clear_step_done(refresh_date, "update_model_sheet")
+                clear_step_done(refresh_date, "materialize_model_bq")
             except Exception:  # noqa: BLE001, S110
                 pass
             try:
                 failure_alert(
-                    step="verify_model_sheet",
+                    step="verify_model_bq",
                     exception=exc,
                     date=refresh_date.isoformat(),
                     evidence_uri=ev_uri,
                     extra=(
-                        "update_model_sheet ran but the rebuilt Model sheet failed "
-                        "verification — either MECHANICAL (a tab like labor_period / "
-                        "period_summary at 0 rows, or KDS columns empty) or SEMANTIC "
-                        "(tip pool not conserved, the latest closed period's adp_paid "
-                        "still N/A despite a covering Earnings export in GCS, or "
-                        "credited review bonuses dropped from the rebuild). The model "
-                        "is NOT correct — investigate update_model_sheet (period "
-                        "derivation, raw-sheet reads, GCS earnings load) before relying "
-                        "on tonight's numbers. The update_model_sheet marker was "
-                        "cleared, so re-running will REBUILD and re-verify after a fix."
+                        "materialize_model_bq ran but BQ model verification failed — "
+                        "either MECHANICAL (a model_* table is under-populated or KDS "
+                        "columns are empty) or SEMANTIC (tip pool not conserved, ADP "
+                        "reconciliation failed, or credited review bonuses dropped). "
+                        "The model is NOT correct — investigate materialize_model_bq. "
+                        "The materialize_model_bq marker was cleared, so re-running "
+                        "will REBUILD and re-verify after a fix."
                     ),
                 )
             except Exception:  # noqa: BLE001, S110
                 pass
             return 1
         except Exception as exc:  # noqa: BLE001
-            # A transport/read error while verifying shouldn't mask the run
-            # as failed (the post-condition guard already covers the
-            # data-advancement contract), but it must be loud.
-            print(f"[verify_model] WARN: could not read back the model sheet "
-                  f"for verification (non-fatal): {type(exc).__name__}: {exc}",
+            print(f"[verify_model_bq] WARN: BQ verify raised unexpected error "
+                  f"(non-fatal): {type(exc).__name__}: {exc}",
                   file=sys.stderr)
 
     print(f"\n=== DONE in {runtime_s:.1f}s ===")

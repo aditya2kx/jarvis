@@ -169,6 +169,7 @@ GRAFANA_VIEWS: list[Target] = [
     Target("vw_pipeline_runs", "run_date"),
     Target("vw_source_pulls", "run_date"),
     # migration 020: vw_training_shifts (panel 62, 6. Payroll — Training Shifts table).
+    # PR2 (Sheets exit): Sheet projection panels removed; vw_training_shifts remains.
     Target("vw_training_shifts", "date"),
 ]
 

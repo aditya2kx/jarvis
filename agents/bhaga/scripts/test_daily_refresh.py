@@ -506,14 +506,16 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
         self.assertNotIn("update_model_sheet", daily_refresh._RECOVERY_DOWNSTREAM_STEPS)
         self.assertNotIn("update_model_sheet", _MODEL_RECOMPUTE_STEPS)
 
-    def test_includes_model_projection_and_materialize_steps(self):
-        """Regression for 2026-06-08: the recovery list MUST invalidate the
-        Sheet-raw projection (render_raw_sheets) and the model materialize steps,
-        not just load + update_model_sheet + reviews. Otherwise fresh portal data
-        lands in BQ raw but never re-projects, and data_window_end stays stuck."""
-        for step in ("render_raw_sheets", "materialize_model_bq",
-                     "render_model_sheet_from_bq"):
+    def test_includes_materialize_and_reviews_steps(self):
+        """Regression for 2026-06-08 (updated post-Sheets-exit): the recovery
+        list MUST include materialize_model_bq (and NOT render_* which are
+        deleted). Without it, fresh portal data lands in BQ raw but the model
+        is never recomputed."""
+        for step in ("load_raw_bigquery", "materialize_model_bq", "process_reviews"):
             self.assertIn(step, daily_refresh._RECOVERY_DOWNSTREAM_STEPS)
+        for step in ("render_raw_sheets", "render_model_sheet_from_bq",
+                     "reconcile_model"):
+            self.assertNotIn(step, daily_refresh._RECOVERY_DOWNSTREAM_STEPS)
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(daily_refresh.pathlib.Path, "home",
                                    return_value=daily_refresh.pathlib.Path(tmp)):
@@ -522,10 +524,8 @@ class RecoverStaleDownstreamMarkersTests(unittest.TestCase):
                 cleared = _recover_stale_downstream_markers(
                     rd, {"square": self._ok()}, dry_run=False
                 )
-                for step in ("render_raw_sheets", "materialize_model_bq",
-                             "render_model_sheet_from_bq"):
-                    self.assertIn(step, cleared)
-                    self.assertFalse(step_already_done(rd, step))
+                self.assertIn("materialize_model_bq", cleared)
+                self.assertFalse(step_already_done(rd, "materialize_model_bq"))
 
     def test_adp_recovery_also_triggers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -946,9 +946,12 @@ class ModelVsRollupDriftTests(unittest.TestCase):
         (the 2026-06-09 incident root cause) so the list never silently drifts."""
         self.assertIn("materialize_model_bq", _MODEL_RECOMPUTE_STEPS)
 
-    def test_render_model_sheet_from_bq_in_recompute_steps(self):
-        """render_model_sheet_from_bq must also be included so Grafana/Sheet refresh."""
-        self.assertIn("render_model_sheet_from_bq", _MODEL_RECOMPUTE_STEPS)
+    def test_render_steps_not_in_recompute_steps(self):
+        """Post-Sheets-exit: render_* and reconcile steps are deleted — not in
+        _MODEL_RECOMPUTE_STEPS. Only materialize_model_bq remains."""
+        for step in ("render_raw_sheets", "render_model_sheet_from_bq",
+                     "reconcile_model"):
+            self.assertNotIn(step, _MODEL_RECOMPUTE_STEPS)
 
     # ── _assert_model_matches_raw_rollup ──────────────────────────────────────
 
@@ -973,14 +976,21 @@ class ModelVsRollupDriftTests(unittest.TestCase):
 
 
 class SinglePathRegressionTests(unittest.TestCase):
-    """June 13: orchestrator must not invoke update_model_sheet on nightly path."""
+    """Post-Sheets-exit: orchestrator must not invoke Sheet projection scripts."""
 
     def test_orchestrator_never_invokes_update_model_sheet(self):
         src = (daily_refresh.pathlib.Path(daily_refresh.__file__).parent / "daily_refresh.py").read_text()
         self.assertNotIn("agents.bhaga.scripts.update_model_sheet", src)
         self.assertNotIn("BHAGA_SHEET_FROM_BQ", src)
         self.assertIn("materialize_model_bq", src)
-        self.assertIn("render_model_sheet_from_bq", src)
+
+    def test_orchestrator_never_invokes_render_or_reconcile(self):
+        """Post-Sheets-exit: Sheet projection steps are deleted from nightly path."""
+        src = (daily_refresh.pathlib.Path(daily_refresh.__file__).parent / "daily_refresh.py").read_text()
+        # No subprocess calls to deleted scripts
+        self.assertNotIn("render_raw_sheet_from_bq\",", src)
+        self.assertNotIn("render_model_sheet_from_bq\",", src)
+        self.assertNotIn("reconcile_model\",", src)
 
     def test_materialize_failure_does_not_fallback_to_legacy(self):
         src = (daily_refresh.pathlib.Path(daily_refresh.__file__).parent / "daily_refresh.py").read_text()
@@ -1007,8 +1017,7 @@ class PrepareProjectionRecoveryTests(unittest.TestCase):
                 self._seed_scrape_done(self.RD)
                 self._seed_projection_done(self.RD)
                 with mock.patch.object(daily_refresh, "_bq_raw_coverage_complete", return_value=True), \
-                     mock.patch.object(daily_refresh, "_last_pipeline_run_failed", return_value=True), \
-                     mock.patch.object(daily_refresh, "_projection_drift_probe", return_value=False):
+                     mock.patch.object(daily_refresh, "_last_pipeline_run_failed", return_value=True):
                     cleared = daily_refresh._prepare_projection_recovery(
                         self.RD, "palmetto", dry_run=False,
                     )
@@ -1027,8 +1036,7 @@ class PrepareProjectionRecoveryTests(unittest.TestCase):
                 self._seed_scrape_done(self.RD)
                 self._seed_projection_done(self.RD)
                 with mock.patch.object(daily_refresh, "_bq_raw_coverage_complete", return_value=True), \
-                     mock.patch.object(daily_refresh, "_last_pipeline_run_failed", return_value=False), \
-                     mock.patch.object(daily_refresh, "_projection_drift_probe", return_value=False):
+                     mock.patch.object(daily_refresh, "_last_pipeline_run_failed", return_value=False):
                     cleared = daily_refresh._prepare_projection_recovery(
                         self.RD, "palmetto", dry_run=False,
                     )

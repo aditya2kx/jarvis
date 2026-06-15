@@ -161,7 +161,7 @@
       "id": 2,
       "type": "table",
       "title": "Pipeline Runs",
-      "description": "Last 30 nightly daily_refresh outcomes, newest first. Model path: materialize_model_bq then render_model_sheet_from_bq (BQ canonical, Sheet projection). recovery_retrigger=TRUE means scrape was skipped and projection markers were cleared for a /bhaga-cloud refresh re-run. Status: success | failed | halted | otp_pending.",
+      "description": "Last 30 nightly daily_refresh outcomes, newest first. Model path: materialize_model_bq (BQ canonical) \u2192 BQ-internal verify. No Sheet projection steps (render_raw_sheets / render_model_sheet_from_bq deleted post-Sheets-exit). recovery_retrigger=TRUE means scrape/OTP was skipped and the model was recomputed because BQ data was already present from a prior partial run. Status: success | failed | halted | otp_pending.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"

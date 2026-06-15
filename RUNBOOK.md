@@ -465,13 +465,9 @@ the sanctioned path — never a shell `rm`) so they recompute on the fresh data;
 then verifies `data_window_end` advanced.
 
 The invalidated set (`_RECOVERY_DOWNSTREAM_STEPS`) is **every** step that carries portal data to the
-window, in pipeline order: `load_raw_bigquery` → `render_raw_sheets` → `update_model_sheet` →
-`materialize_model_bq` → `render_model_sheet_from_bq` → `process_reviews`. **2026-06-08 lesson:** an
-earlier version listed only `load_raw_bigquery` / `update_model_sheet` / `process_reviews`, so a stale
-`render_raw_sheets` + `materialize_model_bq` marker from the partial run survived recovery — the fresh
-Square rows reached BQ raw but were never re-projected into Sheet raw, `update_model_sheet` computed
-from stale Sheet raw, and the window stayed at the prior day until a manual marker-clear + re-run. If
-you ever clear markers by hand to recover, clear **all** of these, not just the first/last.
+model, in pipeline order: `load_raw_bigquery` → `materialize_model_bq` → `process_reviews`
+(post-Sheets-exit; Sheet projection steps deleted 2026-06-15). If you ever clear markers by hand
+to recover, clear **all** of these, not just the first/last.
 
 This is **not** behind a feature flag — it's safe by construction: the trigger is precisely "a portal
 produced fresh data *and* a downstream marker is already done" (a prior partial run; on a normal first
@@ -489,8 +485,7 @@ panels empty indefinitely.
 `daily_refresh` now runs `_detect_and_clear_stale_model` on **every** execution (including pure
 retriggers) **before Phase 2**. It queries `square_daily_rollup` vs `model_daily` over a 14-day
 window; if any date has rollup gross_sales > $1 but model_daily = $0, it clears the model-recompute
-markers (`render_raw_sheets`, `update_model_sheet`, `materialize_model_bq`, `render_model_sheet_from_bq`)
-so Phase 2 re-runs `materialize_model_bq` (a full DELETE+reload that heals all dates in one pass).
+markers (post-Sheets-exit: `materialize_model_bq` only) so Phase 2 re-runs `materialize_model_bq` (a full DELETE+reload that heals all dates in one pass).
 
 After the model step, `_assert_model_matches_raw_rollup` re-queries; if drift persists it raises
 `RuntimeError` → `failure_alert` Slack DM → non-zero exit. This converts silent "$0-inside-window" drift
@@ -511,7 +506,7 @@ BHAGA_STATE_BACKEND=firestore BHAGA_SECRETS_BACKEND=gcp python3 -c "
 import sys, datetime; sys.path.insert(0,'.')
 from skills.bhaga_config import state_adapter as sa
 rd = datetime.date(2026, 6, 9)  # replace with affected date
-for step in ('render_raw_sheets','update_model_sheet','materialize_model_bq','render_model_sheet_from_bq'):
+for step in ('materialize_model_bq',):  # post-Sheets-exit: only materialize needs clearing
     sa.clear_step(rd, step); print('cleared', step)"
 ```
 Then retrigger the job for that date.

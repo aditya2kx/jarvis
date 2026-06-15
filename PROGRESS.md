@@ -1,5 +1,24 @@
 # Jarvis Build Progress
 
+## 2026-06-15 — BHAGA: Full Google Sheets exit — strip projection/reconcile steps (PR2)
+
+**What changed:** Sheet projection and reconciliation scripts deleted; BQ-internal model verify
+added; Pipeline Health updated to reflect BQ-only pipeline.
+
+- **`verify_model_bq()`**: new BQ-internal model verify in `daily_refresh.py` — queries
+  `model_daily`, `model_labor_daily/weekly/period`, `square_kds_daily` directly. Replaces Sheet-
+  reading `_read_model_verification_data` + `assert_model_tabs_populated` + `check_weekly_period_kds`.
+  Semantic checks (tip conservation, ADP, reviews) built from BQ grids.
+- **Deleted scripts**: `render_raw_sheet_from_bq.py`, `render_model_sheet_from_bq.py`,
+  `reconcile_model.py`, `verify_bq_parity.py`, `verify_prod_parity.py` + their test files.
+- **`daily_refresh.py`**: removed `render_raw_sheets`, `render_model_sheet_from_bq`,
+  inline reviews-Sheet render, `reconcile_model` steps. `_RECOVERY_DOWNSTREAM_STEPS` → `("load_raw_bigquery","materialize_model_bq","process_reviews")`. `_MODEL_RECOMPUTE_STEPS` → `("materialize_model_bq",)`. `_projection_drift_probe` removed (no Sheet to diff against).
+- **`model-reconciliation.yml`** workflow deleted.
+- **`EXPECTED_STEPS`** in `command_handler.py` updated to cloud BQ-only set.
+- **Grafana**: Pipeline Runs panel description updated (BQ-only model path, no Sheet projection).
+- **Tests**: 1035 passing.
+- **Next (post-merge)**: RE-RUN 2026-06-13 refresh; confirm pipeline_runs=success.
+
 ## 2026-06-15 — BHAGA: Full Google Sheets exit — BQ-canonical human inputs (PR1)
 
 **What changed:** All human-input data (training shifts, employee aliases, tunables/exclusions) fully

@@ -35,11 +35,8 @@ MARKER_FILE = STATE_DIR / "last_run_ct_date.txt"
 OTP_DIR = pathlib.Path("/tmp/jarvis-otp")
 
 EXPECTED_STEPS = {
-    "square_transactions",
-    "consolidate_csv",
-    "adp_reports",
-    "write_raw_sheets",
-    "update_model_sheet",
+    "load_raw_bigquery",
+    "materialize_model_bq",
     "process_reviews",
 }
 

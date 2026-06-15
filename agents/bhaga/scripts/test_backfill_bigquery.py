@@ -31,12 +31,8 @@ from agents.bhaga.scripts.backfill_bigquery import (
     _parse_float,
     _parse_date,
 )
-from agents.bhaga.scripts.render_raw_sheet_from_bq import (
-    _inv_adp_shift,
-    _inv_adp_punch,
-    _inv_adp_wage_rate,
-    _inv_adp_earnings,
-)
+# render_raw_sheet_from_bq deleted post-Sheets-exit (2026-06-15). The
+# TestMapAdp*RoundTrip classes that imported _inv_* from it are also removed.
 
 _FAKE_PROFILE = {
     "employees": {
@@ -46,7 +42,7 @@ _FAKE_PROFILE = {
 
 
 class TestMapAdpShiftRoundTrip(unittest.TestCase):
-    """map_adp_shift → BQ row → _inv_adp_shift → Sheet dict preserves key columns."""
+    """map_adp_shift → BQ row preserves key columns."""
 
     def setUp(self):
         self.sheet_dict = {
@@ -64,47 +60,17 @@ class TestMapAdpShiftRoundTrip(unittest.TestCase):
             "scraped_at_utc": None,
         }
 
-    def test_canonical_name_round_trips(self):
+    def test_canonical_name_in_bq_row(self):
         bq_row = map_adp_shift(self.sheet_dict)
         self.assertEqual(bq_row["canonical_name"], "Alvarez, Sebastian")
-        back = _inv_adp_shift(bq_row)
-        self.assertEqual(back["employee_name"], "Alvarez, Sebastian")
 
-    def test_punch_count_round_trips_as_shift_count(self):
+    def test_punch_count_becomes_shift_count_in_bq(self):
         bq_row = map_adp_shift(self.sheet_dict)
         self.assertEqual(bq_row["shift_count"], 1)
-        back = _inv_adp_shift(bq_row)
-        self.assertEqual(back["punch_count"], 1)
-
-    def test_date_round_trips(self):
-        bq_row = map_adp_shift(self.sheet_dict)
-        back = _inv_adp_shift(bq_row)
-        self.assertEqual(back["date"], "2026-05-01")
-
-
-class TestMapAdpPunchRoundTrip(unittest.TestCase):
-    def test_punch_index_round_trips_as_punch_idx_in_day(self):
-        sheet_dict = {
-            "date": "2026-05-01",
-            "employee_id": "alvarez_s",
-            "employee_name": "Alvarez, Sebastian",
-            "raw_employee_name": "ALVAREZ SEBASTIAN",
-            "punch_idx_in_day": "0",
-            "in_time": "08:00",
-            "out_time": "12:00",
-            "regular_hours": "4.0",
-            "ot_hours": "0.0",
-            "doubletime_hours": "0.0",
-            "scraped_at_utc": None,
-        }
-        bq_row = map_adp_punch(sheet_dict)
-        self.assertEqual(bq_row["punch_index"], 0)
-        back = _inv_adp_punch(bq_row)
-        self.assertEqual(back["punch_idx_in_day"], 0)
 
 
 class TestMapAdpWageRateMultiRate(unittest.TestCase):
-    """multi_rate must survive the Sheet → BQ → Sheet round-trip."""
+    """multi_rate must be a bool in BQ."""
 
     def _make_sheet_dict(self, multi_rate_val):
         return {
@@ -135,16 +101,9 @@ class TestMapAdpWageRateMultiRate(unittest.TestCase):
         self.assertIn("earnings_json", bq_row)
         self.assertEqual(bq_row["earnings_json"], '[{"rate": 15.0}]')
 
-    def test_multi_rate_round_trips_via_inv_mapper(self):
-        bq_row = map_adp_wage_rate(self._make_sheet_dict("TRUE"), _FAKE_PROFILE)
-        back = _inv_adp_wage_rate(bq_row)
-        self.assertTrue(back["multi_rate"])
-        self.assertEqual(back["employee_name"], "Alvarez, Sebastian")
-        self.assertEqual(back["rate_history_json"], '[{"rate": 15.0}]')
-
 
 class TestMapAdpEarningsRoundTrip(unittest.TestCase):
-    def test_employee_name_becomes_employee_in_bq_then_back(self):
+    def test_employee_name_becomes_employee_in_bq(self):
         sheet_dict = {
             "period_start": "2026-05-01",
             "period_end": "2026-05-14",
@@ -159,8 +118,6 @@ class TestMapAdpEarningsRoundTrip(unittest.TestCase):
         }
         bq_row = map_adp_earnings_row(sheet_dict)
         self.assertEqual(bq_row["employee"], "Alvarez, Sebastian")
-        back = _inv_adp_earnings(bq_row)
-        self.assertEqual(back["employee_name"], "Alvarez, Sebastian")
 
 
 class TestMapGoogleReview(unittest.TestCase):

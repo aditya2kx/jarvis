@@ -238,7 +238,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          # Skip when claude-review.yml itself changed: Claude review was skipped
+          # (bootstrap protection), so there is no fresh score to gate against.
+          if git diff --name-only "$BASE_SHA" HEAD -- .github/workflows/claude-review.yml 2>/dev/null | grep -q .; then
+            echo "claude-review.yml changed on this branch — evidence confidence gate skipped (bootstrap)."
+            exit 0
+          fi
           BODY="$(gh api repos/${{ github.repository }}/issues/$PR_NUMBER/comments \
             --jq '[.[] | select(.user.login == "claude[bot]" or (.user.login | startswith("claude")))] | last | .body' \
             2>/dev/null || echo '')"

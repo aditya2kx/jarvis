@@ -1031,12 +1031,10 @@ def verify_model_bq(store: str, *, expect_kds: bool) -> None:
     Checks:
     1. Minimum row counts on 5 model BQ tables.
     2. KDS columns populated in model_labor_daily/weekly/period (when expect_kds).
-    3. Semantic post-conditions via model_semantics.assert_model_semantics
-       (tip conservation, adp reconciliation, review bonuses) — grids built from BQ.
 
     Raises RuntimeError on any failure (same contract as the legacy Sheet verify).
-    This replaces the entire _read_model_verification_data + assert_model_tabs_populated
-    + check_weekly_period_kds pipeline that read the Sheet workbook.
+    Semantic checks (tip conservation, ADP, reviews) are intentionally left to the
+    caller (main) so they can pass cadence-aware require_adp_period / reviews_credited.
     """
     from core.datastore import read_query, fq  # noqa: PLC0415
 
@@ -1098,48 +1096,6 @@ def verify_model_bq(store: str, *, expect_kds: bool) -> None:
 
     if problems:
         raise RuntimeError("model BQ verification failed: " + "; ".join(problems))
-
-    # ── 3. Semantic checks (tip conservation, ADP, reviews) ─────────────────
-    # Build list[list] grids from BQ (matching the header+rows contract of
-    # assert_model_semantics, which was written against Sheet grids but only
-    # cares about column names, not the data source).
-    def _bq_to_grid(tbl: str, cols: str) -> list[list]:
-        """SELECT cols FROM tbl -> [[header...], [row1...], ...]"""
-        col_list = [c.strip() for c in cols.split(",")]
-        sql_cols = ", ".join(
-            f"CAST({c} AS STRING) AS {c}" if c not in ("date", "period_start",
-                                                         "period_end", "week_start",
-                                                         "week_end") else
-            f"CAST({c} AS STRING) AS {c}"
-            for c in col_list
-        )
-        rows_bq = read_query(f"SELECT {sql_cols} FROM {fq(tbl)}")
-        if not rows_bq:
-            return [col_list]
-        return [col_list] + [[str(r.get(c, "")) for c in col_list] for r in rows_bq]
-
-    tip_daily_grid = _bq_to_grid(
-        "model_tip_alloc_daily",
-        "date,day_pool,our_share",
-    )
-    tip_period_grid = _bq_to_grid(
-        "model_tip_alloc_period",
-        "period_start,period_end,is_open,adp_paid",
-    )
-    review_grid = _bq_to_grid(
-        "model_review_bonus_period",
-        "period_start,period_end,is_open,employee,review_bonus_dollars",
-    )
-
-    sem = model_semantics.assert_model_semantics(
-        tip_alloc_daily_values=tip_daily_grid,
-        tip_alloc_period_values=tip_period_grid,
-        review_bonus_values=review_grid,
-        # require_adp_period and reviews_credited are passed in by the caller
-        # via the outer verify block; here we pass None/False as defaults
-        # (the caller can call with the right values if it needs stricter checks).
-    )
-    print(f"[verify_model_bq] semantics OK — {sem}")
 
 
 def check_weekly_period_kds(

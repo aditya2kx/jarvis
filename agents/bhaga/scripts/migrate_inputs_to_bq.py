@@ -148,8 +148,10 @@ def migrate_config_keys(profile: dict, store: str, *, dry_run: bool) -> int:
     )
 
     cfg = _sheet_cfg(store)  # {key: {"value": v, "notes": n}}
+    # data_window_end is DERIVED (MAX(square_transactions.date_local)), not a human tunable.
+    # Do NOT migrate it — readers use the MAX() fallback when the key is absent in store_config,
+    # which stays live every nightly run. Migrating it would freeze the value and cause drift.
     interesting_keys = set(REVIEW_TUNABLE_KEYS) | set(LABOR_TUNABLE_KEYS) | {
-        "data_window_end",
         "excluded_from_tip_pool",
     }
     # Also pick up any training_excluded:* keys.

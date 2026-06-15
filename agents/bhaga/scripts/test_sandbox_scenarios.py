@@ -115,6 +115,39 @@ class TestLoadConfig:
             sc.load_config(str(p))
 
 
+class TestOtpRepromptScenario:
+    """otp-reprompt scenario is registered and threads all knobs through argv."""
+
+    def test_scenario_is_registered(self):
+        assert "otp-reprompt" in sc.SCENARIOS
+
+    def test_parse_comment_otp_reprompt(self):
+        got = sc.parse_comment("/sandbox run otp-reprompt date=2026-06-14")
+        assert got == {"name": "otp-reprompt", "date": "2026-06-14"}
+
+    def test_run_scenario_threads_otp_flags(self, monkeypatch):
+        captured = {}
+        from agents.bhaga.scripts import sandbox_live_run as slr
+        monkeypatch.setattr(slr, "main", lambda argv: captured.update(argv=argv) or 0)
+        rc = sc.run_scenario(
+            "otp-reprompt", date="2026-06-14", pr_number=58,
+            pr_label="fix/otp-force-re-prompt", image="img:sha",
+        )
+        assert rc == 0
+        argv = captured["argv"]
+        # Scenario-scoped: ADP/reviews/model skipped; Square kept.
+        assert "--skip" in argv and argv[argv.index("--skip") + 1] == "adp,reviews,model"
+        # OTP force request threaded.
+        assert "--otp-force-request" in argv
+        # Stale seed hours threaded.
+        assert "--seed-stale-otp-hours" in argv
+        assert argv[argv.index("--seed-stale-otp-hours") + 1] == "72"
+        # Verify gate threaded.
+        assert "--verify" in argv and argv[argv.index("--verify") + 1] == "otp_reprompt"
+        # No assume-ready flags (--otp-force-request replaces them at env build time).
+        assert "--fresh-scrape" not in argv
+
+
 class TestRepoConfigIsValid:
     """The committed .github/sandbox-live.yml must reference real scenarios."""
 

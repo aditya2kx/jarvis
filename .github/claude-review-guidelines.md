@@ -46,11 +46,22 @@ say which section.
 
 ## D. Testing & verification
 - Tests added/updated; new code should be ~**100% covered**.
-- The "end-to-end test" evidence is a **prod-like e2e run against isolated sandbox sheets** (for BHAGA,
-  the per-PR `Sandbox e2e` workflow / `agents/bhaga/scripts/sandbox_e2e.py`) with recorded output — not
-  just unit tests. A direct-against-prod run is acceptable only when sandbox isolation can't exercise
-  the path. Unit tests are necessary but are not the proof of doneness. Flag PRs whose only evidence is
-  "unit tests pass".
+- The "end-to-end test" evidence is a **prod-like e2e run against isolated sandbox** with recorded
+  output — not just unit tests. Unit tests are necessary but are not the proof of doneness. Flag PRs
+  whose only evidence is "unit tests pass".
+- **Standard route to >=95% for infra changes: a targeted live-sandbox scenario.** When the changed
+  code path touches BQ writes, Firestore state, Cloud Run env injection, the OTP gate, or any other
+  infra layer that unit tests can only mock, the correct evidence is a **targeted `sandbox_scenarios`
+  scenario** run on the real `bhaga-sandbox-refresh` Cloud Run job + real Firestore. This reads prod /
+  writes only sandbox (`bhaga_sandbox` + `sandbox_runs`). The scenario is scoped to the changed path
+  via `skip` (drop all steps beyond the gate), a precondition seed (e.g. `_seed_stale_pending_otp`),
+  and a `verify` gate that reads Firestore/BQ state after the run. See `CONTRIBUTING.md` §4 Tier 2 and
+  `RUNBOOK.md` §13 for the 3-step recipe.
+- For a **gate-only infra change** (e.g. OTP checkpoint, force re-prompt, Cloud Run env injection):
+  the gate fires before any browser launch, so the proof is cheap (no scrape, no operator OTP reply,
+  the job exits `EXIT_PENDING`). The verify reads the Firestore checkpoint state and asserts the infra
+  behavior fired. This counts as **real execution** against the live stack.
+- A direct-against-prod run is acceptable only when sandbox isolation can't exercise the path.
 
 ## D2a. Evidence confidence rating (required in every review)
 
@@ -89,6 +100,20 @@ the mocked paths return expected values. They do NOT prove: (a) the real BQ/Shee
 auth chain works, (b) the change integrates correctly with upstream data, (c) the feature is actually
 observable by the end user (Grafana panel, Slack message, sheet update). For infrastructure changes
 where real execution is cheap (a BQ query, a Cloud Run job, a sheet read), always require it.
+
+**Evidence gaps must name a specific command, not a vague ask.** When evidence is insufficient, the
+**Evidence gaps** section must name the concrete targeted action the author should take, not a generic
+"run a Cloud Run job." Use one of these forms:
+- "Add a `sandbox_scenarios` scenario scoped to `<changed path>` (with `skip=<steps>` and
+  `verify=<gate>`), run it via `.github/sandbox-live.yml` + the `sandbox-live` label, and paste the
+  auto-posted PR evidence comment into §4." — use this for OTP gate, Firestore state, Cloud Run env,
+  or any infra path unit tests can only mock.
+- "Add the `run-sandbox-e2e` label and confirm the `Sandbox e2e` CI check posts a green summary with
+  tip-pool conservation passing." — use this for core model/allocation changes.
+- "`bq query --project_id jarvis-bhaga-prod 'SELECT …'` + paste the output." — use this for BQ writes
+  where a point-in-time query is sufficient.
+A targeted sandbox run that exercises the **exact** changed path with a seeded precondition and a
+post-run verify gate (Firestore/BQ state) counts as 95-100% real-execution evidence.
 
 ## D2b. Cost & cleanup discipline (from CONTRIBUTING.md § Design & execution principles)
 - **Token / cost:** flag obvious cost regressions — per-row network calls, unbounded LLM turns,

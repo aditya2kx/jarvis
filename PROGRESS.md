@@ -1,5 +1,18 @@
 # Jarvis Build Progress
 
+## 2026-06-15 — BHAGA: targeted live-sandbox scenario for infra/gate changes + discoverable guidance
+
+**What changed:** Added the `otp-reprompt` targeted sandbox scenario (`sandbox_scenarios.SCENARIOS`) as the canonical pattern for proving infra/gate-layer changes (OTP checkpoint, Firestore state, Cloud Run env injection) on the real stack — cheap, no scrape, no operator OTP reply needed. The scenario seeds a stale `pending_otp` in `sandbox_runs`, runs on `bhaga-sandbox-refresh` with `BHAGA_OTP_FORCE_REQUEST=1` (assume-ready OFF), and verifies via `verify_otp_reprompt` that the checkpoint's `requested_at` advanced (re-prompt fired).
+
+**New plumbing in `sandbox_live_run.py`:**
+- `build_sandbox_env(otp_force_request=True)` conditionally sets `BHAGA_OTP_FORCE_REQUEST=1` and drops `BHAGA_OTP_ASSUME_READY`, so `otp_gate.evaluate` exercises the real checkpoint path instead of the inline supervised path.
+- `_seed_stale_pending_otp(refresh_date, portals, hours)` seeds a stale checkpoint in `sandbox_runs` from the CI runner before the Cloud Run job executes.
+- `verify_otp_reprompt(refresh_date, seeded_at)` reads `sandbox_runs` after the job and asserts `requested_at` advanced past the seeded value.
+
+**Discoverable guidance added:** `CONTRIBUTING.md` § dev loop explains the gate-only infra scenario pattern (3-step recipe). `.github/claude-review-guidelines.md` §D/§D2a tells the reviewer to name a concrete scenario/command in Evidence gaps (not a vague "run a Cloud Run job") and accepts a targeted sandbox run with seeded precondition + post-run verify as 95-100% real-execution evidence. `RUNBOOK.md` §13 documents the `otp-reprompt` scenario and its knobs.
+
+**Files:** `agents/bhaga/scripts/sandbox_scenarios.py`, `sandbox_live_run.py`, `test_sandbox_live_run.py`, `test_sandbox_scenarios.py`, `CONTRIBUTING.md`, `.github/claude-review-guidelines.md`, `RUNBOOK.md`.
+
 ## 2026-06-15 — BHAGA: fix stale OTP marker — explicit triggers re-prompt instead of silently deferring
 
 **What changed:** Manual `/bhaga-cloud refresh <date>` and deploy `Retry-Dates` full-scrape reruns now re-post a fresh OTP READY request to Slack when an unanswered `pending_otp` checkpoint already exists in Firestore, instead of silently deferring to the stale marker. The nightly path is unchanged.

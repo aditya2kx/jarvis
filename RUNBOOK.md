@@ -837,6 +837,22 @@ post-run gate; `item_sales` asserts `<date>/square/items-*.csv` exists with >0 d
 run truly means the deliverable landed — it fails the run even if the job exited 0 because login broke
 before item-sales). The verdict is shown in the auto-posted PR evidence comment.
 
+**Gate-only infra scenario: `otp-reprompt`.** Proves infra-layer changes (OTP gate, Firestore
+checkpoint, Cloud Run env injection) on the **real stack** without a live scrape — cheap, no operator
+OTP reply needed, the job exits `EXIT_PENDING`. Pattern and knobs:
+
+| Knob | What it does |
+|---|---|
+| `otp_force_request: True` | Sets `BHAGA_OTP_FORCE_REQUEST=1` in the Cloud Run job env; drops `BHAGA_OTP_ASSUME_READY` so `otp_gate.evaluate` exercises the real checkpoint path |
+| `seed_stale_otp_hours: 72` | Before the job runs, seeds a stale `pending_otp` checkpoint (72h old) in `sandbox_runs` so the job finds an unanswered marker |
+| `verify: otp_reprompt` | After the job exits, reads `sandbox_runs` and asserts `requested_at` advanced past the seeded value (proves re-prompt fired) and `ready_received=False` |
+
+The run posts **one** `[SANDBOX]` Slack READY ping — part of the proof; ignore it (no reply needed).
+Use this pattern as the prototype for any PR whose key logic fires at the Firestore / OTP gate / Cloud
+Run env layer (unit tests can only mock those). Adapt: change `skip` to keep only the steps that
+reach your gate, add a seed function for your precondition, add a `verify` gate that reads Firestore
+or BQ state after the run.
+
 **Login escalation — magic link & trusted device.** Square may escalate an **unrecognized device** to an
 email **magic link** ("Magic link sent. Use this device to sign in.") instead of an SMS code; the
 code-entry flow cannot satisfy it (the link only works in the **requesting** browser). Layers handle this:

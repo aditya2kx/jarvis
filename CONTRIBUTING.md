@@ -99,6 +99,23 @@ new ambiguity or scope change appears — e.g. Agent→Plan if the approach turn
         count, proving the real deliverable exists in the isolated sandbox target (never prod).
      Light evidence (only `pytest` + doc-freshness) for a live-only fix is a **rejectable** PR: it proves
      the code parses, not that the live behavior is fixed.
+   - **Gate-only / infra-change scenarios (OTP, Firestore, Cloud Run env) — cheap, no scrape needed.**
+     Some infra changes fire *before* any browser launches — at the OTP gate, the Firestore checkpoint,
+     or the Cloud Run env-injection layer. Unit tests can only mock these paths; the live sandbox can
+     prove them on the **real stack** at low cost (no scrape, no OTP reply, job exits after
+     `EXIT_PENDING`). The pattern:
+     1. Add a named scenario to `sandbox_scenarios.SCENARIOS` scoped to the infra path under test
+        (use `skip` to drop all steps beyond the gate, add a meta key for any env knob, add a `verify`
+        to gate on the Firestore/BQ state after the run).
+     2. Seed the precondition from the CI runner before the Cloud Run job executes (e.g. a stale
+        checkpoint in `sandbox_runs` via `_seed_stale_pending_otp`).
+     3. Run pre-merge via `.github/sandbox-live.yml` + the `sandbox-live` label, capture the
+        auto-posted evidence comment, paste into PR §4 (§3 e2e evidence), then revert the file to
+        `scenarios: []` and remove the label before merge.
+     The `otp-reprompt` scenario (`agents/bhaga/scripts/sandbox_scenarios.py`) is the canonical example
+     of this pattern: seeds a stale `pending_otp` in Firestore, runs on `bhaga-sandbox-refresh` with
+     `BHAGA_OTP_FORCE_REQUEST=1`, and verifies the checkpoint's `requested_at` advanced (gate fired).
+     See `RUNBOOK.md` §13 for operator notes on each scenario.
 5. **100% code coverage.** New code is fully covered by tests; the e2e is on top of that, not instead.
 6. **Record and present evidence in the PR — per scenario, with real output.** Every claim ("it works",
    "it's backward compatible") is backed by commands + **actual output / sheet diffs / log excerpts** in

@@ -17,6 +17,9 @@
   Square/ADP/KDS); uncovered dates → full scrape. Uses Cloud Run v2 per-execution env overrides
   (job definition never mutated). Best-effort: failure logs a `::warning::`, never fails deploy.
   `Retry-Dates: 2026-06-13` added to PR #56 so June 13 reruns (recompute-only) on merge.
+- **Bug fix: `verify_model_bq` KDS query** (`square_kds_daily` has `date_local` not `date`):
+  `CAST(MIN(date_local) AS STRING)` corrected; tests added for `verify_model_bq` covering
+  row-count failures, KDS-empty failure, and KDS-overlap populated-pass.
 - **Evidence confidence gate** (`scripts/check_evidence_confidence.py` + `claude-review.yml`):
   old inline Python regex missed `"Evidence confidence rating: **85%**"` (the word "rating" caused
   a mismatch → gate silently passed at 85%). New script tolerates both phrasings; extracted for

@@ -440,6 +440,8 @@ python3 scripts/trigger_dated_refresh.py --date 2026-06-14 --force-scrape  # for
 
 IAM: the WIF SA needs `run.jobs.run`. `roles/run.admin` on `bhaga-orchestrator` covers this.
 
+> **Note:** `verify_model_bq` KDS date range query uses `date_local` column from `square_kds_daily` (the table's date column is `date_local`, not `date`).
+
 ### Browser-launch resilience (all portals)
 
 Every portal scrape launches Chromium through `skills/_browser_runtime/runtime.py::launch_persistent`.

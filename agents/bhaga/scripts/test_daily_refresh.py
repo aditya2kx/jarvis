@@ -1071,6 +1071,85 @@ class PrepareProjectionRecoveryTests(unittest.TestCase):
                     ))
 
 
+class TestVerifyModelBq(unittest.TestCase):
+    """verify_model_bq raises RuntimeError on empty tables; passes when populated."""
+
+    _POPULATED_COUNT = [{"c": 5}]
+    _KDS_RANGE = [{"lo": "2026-06-01", "hi": "2026-06-13", "c": 13}]
+    _KDS_LABOR_DAILY = [{"c": 3}]   # populated KDS columns
+    _KDS_OVERLAP_OK = [{"c": 0}]    # no bad rows
+
+    def _make_read_query(self, overrides: dict | None = None):
+        """Return a mock read_query that returns populated counts by default."""
+        defaults = {
+            "model_daily": self._POPULATED_COUNT,
+            "model_labor_daily": self._POPULATED_COUNT,
+            "model_labor_weekly": self._POPULATED_COUNT,
+            "model_labor_period": self._POPULATED_COUNT,
+            "model_period_summary": self._POPULATED_COUNT,
+            "square_kds_daily": self._KDS_RANGE,
+            "kds_ld": self._KDS_LABOR_DAILY,
+            "kds_overlap": self._KDS_OVERLAP_OK,
+        }
+        if overrides:
+            defaults.update(overrides)
+
+        def _rq(sql: str) -> list:
+            sql_l = sql.lower()
+            # KDS-specific checks must be routed BEFORE generic count checks
+            if "square_kds_daily" in sql_l:
+                return defaults["square_kds_daily"]
+            if "kds_completed_tickets" in sql_l:
+                return defaults["kds_ld"]
+            if "kds_completed_items" in sql_l:
+                return defaults["kds_overlap"]
+            # Generic row count checks
+            if "model_daily" in sql_l:
+                return defaults["model_daily"]
+            if "model_labor_daily" in sql_l:
+                return defaults["model_labor_daily"]
+            if "model_labor_weekly" in sql_l:
+                return defaults["model_labor_weekly"]
+            if "model_labor_period" in sql_l:
+                return defaults["model_labor_period"]
+            if "model_period_summary" in sql_l:
+                return defaults["model_period_summary"]
+            return [{"c": 1}]
+
+        return _rq
+
+    def test_passes_when_all_tables_populated_no_kds(self):
+        rq = self._make_read_query()
+        with mock.patch("core.datastore.read_query", side_effect=rq):
+            daily_refresh.verify_model_bq("palmetto", expect_kds=False)
+
+    def test_raises_when_model_daily_empty(self):
+        rq = self._make_read_query({"model_daily": [{"c": 0}]})
+        with mock.patch("core.datastore.read_query", side_effect=rq):
+            with self.assertRaises(RuntimeError) as ctx:
+                daily_refresh.verify_model_bq("palmetto", expect_kds=False)
+        self.assertIn("model_daily", str(ctx.exception))
+
+    def test_raises_when_kds_table_empty(self):
+        rq = self._make_read_query({"square_kds_daily": [{"lo": None, "hi": None, "c": 0}]})
+        with mock.patch("core.datastore.read_query", side_effect=rq):
+            with self.assertRaises(RuntimeError) as ctx:
+                daily_refresh.verify_model_bq("palmetto", expect_kds=True)
+        self.assertIn("square_kds_daily", str(ctx.exception))
+
+    def test_passes_kds_branch_when_populated(self):
+        rq = self._make_read_query()
+        with mock.patch("core.datastore.read_query", side_effect=rq):
+            daily_refresh.verify_model_bq("palmetto", expect_kds=True)
+
+    def test_raises_when_kds_labor_daily_columns_empty(self):
+        rq = self._make_read_query({"kds_ld": [{"c": 0}]})
+        with mock.patch("core.datastore.read_query", side_effect=rq):
+            with self.assertRaises(RuntimeError) as ctx:
+                daily_refresh.verify_model_bq("palmetto", expect_kds=True)
+        self.assertIn("model_labor_daily", str(ctx.exception))
+
+
 class TestShouldRecordPipelineRun(unittest.TestCase):
     """_should_record_pipeline_run gates on CLOUD_RUN_JOB (prod) + explicit opt-in."""
 

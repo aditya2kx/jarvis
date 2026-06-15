@@ -1059,7 +1059,7 @@ def verify_model_bq(store: str, *, expect_kds: bool) -> None:
     kds_hi: str | None = None
     if expect_kds:
         kds_rows = read_query(
-            f"SELECT CAST(MIN(date) AS STRING) lo, CAST(MAX(date) AS STRING) hi,"
+            f"SELECT CAST(MIN(date_local) AS STRING) lo, CAST(MAX(date_local) AS STRING) hi,"
             f" COUNT(*) c FROM {fq('square_kds_daily')}"
         )
         kds_rec = kds_rows[0] if kds_rows else {}

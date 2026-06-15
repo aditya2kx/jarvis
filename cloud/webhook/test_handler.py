@@ -504,7 +504,7 @@ class TestSlashCommands:
             assert resp.status_code == 200
             data = resp.get_json()
             assert "2025-05-26" in data["text"]
-            mock_trigger.assert_called_once_with("2025-05-26")
+            mock_trigger.assert_called_once_with("2025-05-26", force_otp_request=True)
 
     @patch.object(handler, "_get_latest_run_summary", return_value=":white_check_mark: All good")
     def test_status_command(self, mock_summary):
@@ -1056,3 +1056,30 @@ class TestAlreadyRunningGuard:
         finally:
             if old is not None:
                 os.environ["CLOUD_RUN_JOB_NAME"] = old
+
+    def test_force_otp_request_adds_env_flag(self):
+        import sys
+        mock_rv2 = self._mock_run_v2()
+        with patch.object(handler, "_is_already_running", return_value=False), \
+             patch.dict(sys.modules, {"google.cloud.run_v2": mock_rv2}):
+            handler._trigger_cloud_run_job(
+                "2026-06-14", job_name="projects/p/jobs/bhaga", force_otp_request=True,
+            )
+        names = {
+            c.kwargs.get("name"): c.kwargs.get("value")
+            for c in mock_rv2.EnvVar.call_args_list
+        }
+        assert names.get("REFRESH_DATE") == "2026-06-14"
+        assert names.get("BHAGA_OTP_FORCE_REQUEST") == "1"
+
+    def test_no_force_omits_env_flag(self):
+        import sys
+        mock_rv2 = self._mock_run_v2()
+        with patch.object(handler, "_is_already_running", return_value=False), \
+             patch.dict(sys.modules, {"google.cloud.run_v2": mock_rv2}):
+            handler._trigger_cloud_run_job("2026-06-14", job_name="projects/p/jobs/bhaga")
+        names = {
+            c.kwargs.get("name"): c.kwargs.get("value")
+            for c in mock_rv2.EnvVar.call_args_list
+        }
+        assert "BHAGA_OTP_FORCE_REQUEST" not in names

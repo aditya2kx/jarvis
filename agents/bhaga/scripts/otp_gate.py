@@ -115,6 +115,7 @@ def evaluate(
     now: datetime.datetime | None = None,
     cap_hours: int = DEFAULT_CAP_HOURS,
     get_pending=None,
+    force_request: bool | None = None,
 ) -> tuple[str, dict]:
     """Decide what the orchestrator should do at the OTP availability gate.
 
@@ -127,6 +128,12 @@ def evaluate(
     EXIT_PENDING, a ``first_request`` flag telling the caller whether it needs
     to post a NEW READY request (True) or a request is already outstanding
     (False — just re-exit without re-pinging the operator).
+
+    ``force_request`` (defaults to env ``BHAGA_OTP_FORCE_REQUEST == "1"``) makes
+    an explicit operator-driven trigger re-post a fresh READY request when a
+    stale, unanswered checkpoint exists — so a manual ``/bhaga-cloud refresh`` or
+    a deploy ``Retry-Dates`` rerun re-prompts the operator instead of silently
+    deferring to the old request. The nightly leaves it unset (unchanged).
     """
     if not otp_portals:
         # Zero-OTP happy path — nothing will launch a browser this run.
@@ -145,6 +152,8 @@ def evaluate(
 
     if now is None:
         now = datetime.datetime.now(CT)
+    if force_request is None:
+        force_request = os.environ.get("BHAGA_OTP_FORCE_REQUEST") == "1"
     if get_pending is None:
         from skills.bhaga_config.state_adapter import get_pending_otp as get_pending
 
@@ -162,6 +171,18 @@ def evaluate(
             "reason": "READY received — driving OTP portals",
             "portals": pending.get("portals") or list(otp_portals),
             "ready_at": pending.get("ready_at"),
+        }
+
+    if force_request:
+        # An explicit operator-driven trigger (manual /bhaga-cloud refresh, or a
+        # deploy Retry-Dates rerun) found a stale, unanswered checkpoint. The
+        # nightly suppresses duplicate pings, but here the operator just asked for
+        # this run NOW, so re-post a FRESH READY request (resets the 48h window)
+        # instead of silently deferring — even if the old request is past the cap.
+        return EXIT_PENDING, {
+            "reason": "force re-request (explicit trigger) — re-posting READY",
+            "first_request": True,
+            "portals": pending.get("portals") or list(otp_portals),
         }
 
     requested_at = _parse_ts(pending.get("requested_at"))

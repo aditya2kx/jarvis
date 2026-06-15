@@ -1,5 +1,15 @@
 # Jarvis Build Progress
 
+## 2026-06-15 — BHAGA: fix stale OTP marker — explicit triggers re-prompt instead of silently deferring
+
+**What changed:** Manual `/bhaga-cloud refresh <date>` and deploy `Retry-Dates` full-scrape reruns now re-post a fresh OTP READY request to Slack when an unanswered `pending_otp` checkpoint already exists in Firestore, instead of silently deferring to the stale marker. The nightly path is unchanged.
+
+**Root cause:** `otp_gate.evaluate` returned `first_request=False` for any outstanding-but-unanswered checkpoint, causing `daily_refresh` to exit 0 without re-pinging the operator. An explicit trigger (which the operator clearly intends to produce data *now*) was indistinguishable from a nightly re-run.
+
+**Fix:** New env flag `BHAGA_OTP_FORCE_REQUEST=1` — set by the `/bhaga-cloud refresh` webhook handler and by `scripts/trigger_dated_refresh.py` in full-scrape mode. When present and `ready_received` is False, `evaluate` returns `EXIT_PENDING` with `first_request=True` (triggers re-save + re-post), bypassing both the silent-outstanding branch and the 48h-cap SKIP_OTP branch.
+
+**Files:** `agents/bhaga/scripts/otp_gate.py`, `cloud/webhook/handler.py`, `scripts/trigger_dated_refresh.py` + corresponding tests. RUNBOOK § 8 updated.
+
 ## 2026-06-15 — BHAGA: PR #56 post-merge fixes (prod-only recording, smart deploy rerun, evidence gate)
 
 **What changed:** Addressed all PR #56 review comments. Three independent fixes + deploy wiring.

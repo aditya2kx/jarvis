@@ -284,6 +284,24 @@ gcloud secrets versions add <name> --data-file=- --project jarvis-bhaga-prod
 There is **no laptop listener** anymore. If OTPs are not being delivered, debug the **webhook**
 (logs below) and the Slack app's Events API subscription, not any local process.
 
+### Re-prompting for OTP on explicit triggers
+
+The **nightly** job suppresses duplicate Slack pings: if a `pending_otp` checkpoint already exists
+in Firestore for a date (an unanswered READY request), the nightly exits quietly without re-posting.
+
+Explicit operator-driven triggers behave differently:
+
+- **`/bhaga-cloud refresh <date>`** (slash command) — always sets `BHAGA_OTP_FORCE_REQUEST=1` in
+  the Cloud Run execution's env. The job re-saves the checkpoint with a fresh `requested_at` and
+  re-posts the READY prompt to Slack, resetting the 48h window. Stale or cap-expired markers are
+  cleared and re-prompted.
+- **`Retry-Dates` full-scrape reruns** (deploy.yml) — `scripts/trigger_dated_refresh.py` sets the
+  same flag when the date is not yet covered in BigQuery (full-scrape mode). Recompute-only reruns
+  skip portal login entirely and never touch the OTP checkpoint.
+
+This means if you issue `/bhaga-cloud refresh 2026-06-14` and a stale checkpoint from the previous
+night's run exists, you will get a fresh Slack prompt — not silence.
+
 ---
 
 ## 9. Deploy (GitHub Actions + WIF)

@@ -115,7 +115,27 @@ where real execution is cheap (a BQ query, a Cloud Run job, a sheet read), alway
 A targeted sandbox run that exercises the **exact** changed path with a seeded precondition and a
 post-run verify gate (Firestore/BQ state) counts as 95-100% real-execution evidence.
 
-## D2b. Cost & cleanup discipline (from CONTRIBUTING.md § Design & execution principles)
+## D2b. Grafana dashboard changes — push to prod as part of the PR, post evidence
+
+If this PR modifies `agents/bhaga/grafana/dashboard.json`:
+
+1. **Push to prod Grafana before requesting review.** Run from repo root:
+   ```
+   python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985
+   ```
+   This binds the real datasource UID and pushes the dashboard to the live Grafana Cloud org.
+   Output should end with:
+   ```
+   [bhaga-grafana-deploy] Dashboard deployed: https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics
+   ```
+
+2. **Required evidence in §4:** paste the deploy output (the `[bhaga-grafana-deploy] Dashboard deployed: <url>` line) and a direct link to the affected panel(s) in prod Grafana so the reviewer can open them. For visual changes (axis caps, colors, panel layout) also attach a screenshot — the reviewer cannot see Grafana directly.
+
+3. **Flag as REQUEST CHANGES** if `dashboard.json` changed but §4 has no deploy output and no Grafana URL evidence. "Will sync on merge" is not acceptable — the push is cheap (one command, <5s) and must happen before review so the reviewer can verify prod reflects the change.
+
+4. **`grafana-dashboard-sync.yml` on merge is a safety net**, not the primary deploy path for reviewed changes. If the PR was pushed before this workflow existed, or the workflow failed, re-run `deploy.py` manually.
+
+## D2c. Cost & cleanup discipline (from CONTRIBUTING.md § Design & execution principles)
 - **Token / cost:** flag obvious cost regressions — per-row network calls, unbounded LLM turns,
   full-tab rewrites where an incremental upsert fits, missing batching/caching.
 - **Cleanup:** if this PR adds a feature flag or a parallel path, there should be a plan to remove the

@@ -158,35 +158,51 @@ to prod without a sandbox round-trip for the data-source step (but sandbox e2e m
 For these exceptions, record the prod-apply step as PR evidence (evidence §4 of the PR template).
 Non-additive schema changes (column removal, rename, reorder) are never exempt.
 
-#### Grafana dashboard changes — the live link is the evidence
-A Grafana dashboard is a **review surface, not a data pipeline**: the repo's
-`agents/bhaga/grafana/dashboard.json` is the source of truth, and `grafana-dashboard-sync.yml`
-re-syncs it from `main` on every merge. So you may — and **should** — push the dashboard from your
-**branch** to Grafana Cloud *before* merge, because the only meaningful proof a dashboard change
-works is the **rendered, live dashboard**, not a `verify_panels.py` SQL check (that only proves the
-panel SQL resolves against BigQuery — it does **not** prove the rendered dropdowns, axis caps, or
-template-variable wiring).
+#### Grafana dashboard changes — push to prod before review, post evidence in §4
 
-Deploy the branch dashboard and capture the live link as PR evidence (§4):
+`agents/bhaga/grafana/dashboard.json` is the source of truth. The `grafana-dashboard-sync.yml`
+workflow re-syncs it from `main` on every merge, but **do not rely on it as the review-time deploy
+path** — push the dashboard from your branch *before* opening the PR for review so the reviewer sees
+the live result.
+
+**Step 1 — deploy the branch dashboard:**
 ```bash
-GRAFANA_API_TOKEN=$(security find-generic-password -s grafana-cloud-api-token -a steadyangelfish2985 -w) \
-GRAFANA_ORG_SLUG=steadyangelfish2985 \
-  python3 agents/bhaga/grafana/deploy.py --dashboard-only
-# then confirm the live version bumped (and any changed vars/panels):
-TOKEN=$(security find-generic-password -s grafana-cloud-api-token -a steadyangelfish2985 -w)
-curl -s -H "Authorization: Bearer $TOKEN" \
-  "https://steadyangelfish2985.grafana.net/api/dashboards/uid/bhaga-analytics-v1" \
-  | python3 -c "import json,sys; print('live version:', json.load(sys.stdin)['dashboard']['version'])"
+python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985
 ```
-Rules for this path:
-- **Always bump `dashboard.json` `version`** so the live `version` is a verifiable fingerprint of your
-  change. The §4 evidence is the dashboard link **plus** the confirmed live `version` matching your PR.
-- A branch deploy is safe and reversible: the next merge to `main` re-syncs from the repo, so the
-  source of truth is never the live instance. If your PR is abandoned, re-run the sync workflow (or
-  merge the current `main`) to restore.
-- This is **dashboard-only**. Do **not** hand-edit panels in the Grafana UI as the source of truth, and
-  do **not** use this path to side-load any BigQuery/Sheets *data* — those still follow the normal
-  merge-to-deploy flow (`RUNBOOK.md` §9, BQ-as-source-of-truth rule).
+Output should end with:
+```
+[bhaga-grafana-deploy] Dashboard deployed: https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics
+```
+
+**Step 2 — capture screenshots for visual changes (axis caps, colors, panel layout):**
+
+Reviewers cannot open Grafana directly, so screenshots are required for any visual property change.
+Use the Grafana Render API:
+```bash
+GRAFANA_API_TOKEN=$(security find-generic-password -s grafana-cloud-api-token -w)
+curl -o docs/pr-evidence/<PR#>/panel_<id>.png \
+  "https://steadyangelfish2985.grafana.net/render/d-solo/bhaga-analytics-v1?panelId=<id>&width=800&height=400&from=now-30d&to=now" \
+  -H "Authorization: Bearer $GRAFANA_API_TOKEN"
+```
+Commit the PNG(s) to `docs/pr-evidence/<PR#>/` on the branch, then reference in the PR body via:
+```markdown
+![panel](https://raw.githubusercontent.com/aditya2kx/jarvis/<branch>/docs/pr-evidence/<PR#>/panel_<id>.png)
+```
+
+**Step 3 — paste evidence into PR §4:**
+- The `[bhaga-grafana-deploy] Dashboard deployed: <url>` line
+- The live dashboard URL
+- Screenshots (inline in the PR description via raw.githubusercontent.com)
+
+**Rules:**
+- A branch deploy is safe and reversible — `grafana-dashboard-sync.yml` re-syncs from `main` on
+  merge, so the source of truth is always the repo. If the PR is abandoned, re-run the sync workflow.
+- Do **not** hand-edit panels in the Grafana UI as a source of truth.
+- Do **not** use `deploy.py` to push anything other than `dashboard.json` changes — BigQuery/Sheets
+  data follows the normal merge-to-deploy flow (`RUNBOOK.md` §9).
+
+The Claude reviewer checks for deploy output + URL + screenshot in §4 for any `dashboard.json` PR
+(see `.github/claude-review-guidelines.md §D2b`). Missing evidence → REQUEST CHANGES.
 
 - **Backward compatible by default.** Schema changes are additive (no column reorder/removal), existing
   consumers and the nightly `daily_refresh` keep working, and you *prove* it (legacy suite green, or a

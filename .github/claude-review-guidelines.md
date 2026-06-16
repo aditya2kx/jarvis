@@ -115,25 +115,21 @@ where real execution is cheap (a BQ query, a Cloud Run job, a sheet read), alway
 A targeted sandbox run that exercises the **exact** changed path with a seeded precondition and a
 post-run verify gate (Firestore/BQ state) counts as 95-100% real-execution evidence.
 
-## D2b. Grafana dashboard changes — push to prod as part of the PR, post evidence
+## D2b. Grafana dashboard changes — required evidence checklist
 
-If this PR modifies `agents/bhaga/grafana/dashboard.json`:
+If this PR modifies `agents/bhaga/grafana/dashboard.json`, §4 **must** contain all three:
 
-1. **Push to prod Grafana before requesting review.** Run from repo root:
-   ```
-   python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985
-   ```
-   This binds the real datasource UID and pushes the dashboard to the live Grafana Cloud org.
-   Output should end with:
-   ```
-   [bhaga-grafana-deploy] Dashboard deployed: https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics
-   ```
+1. **Deploy output** — the `[bhaga-grafana-deploy] Dashboard deployed: <url>` line from running
+   `python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985` before review.
+2. **Live URL** — the Grafana dashboard link so the reviewer can navigate to the affected panel(s).
+3. **Screenshot(s)** for any visual property change (axis scale, color, layout, panel title) — the
+   reviewer cannot open Grafana directly. PNGs rendered via the Grafana Render API, committed to
+   `docs/pr-evidence/<PR#>/` on the branch, and inlined via raw.githubusercontent.com URLs.
 
-2. **Required evidence in §4:** paste the deploy output (the `[bhaga-grafana-deploy] Dashboard deployed: <url>` line) and a direct link to the affected panel(s) in prod Grafana. For visual changes (axis caps, colors, panel layout) also include a screenshot — the reviewer cannot open Grafana directly. Standard way to host screenshots in a PR: save the PNG(s) under `docs/pr-evidence/<PR#>/`, commit to the branch, then reference via `![alt](https://raw.githubusercontent.com/aditya2kx/jarvis/<branch>/docs/pr-evidence/<PR#>/file.png)` in the PR body. Screenshots can be rendered from the Grafana Render API: `curl -o panel.png "https://steadyangelfish2985.grafana.net/render/d-solo/bhaga-analytics-v1?panelId=<id>&width=800&height=400&from=now-30d&to=now" -H "Authorization: Bearer $GRAFANA_API_TOKEN"` (token from Keychain `grafana-cloud-api-token`).
+Full deploy + screenshot recipe: **`CONTRIBUTING.md` § "Grafana dashboard changes"**.
 
-3. **Flag as REQUEST CHANGES** if `dashboard.json` changed but §4 has no deploy output and no Grafana URL evidence. "Will sync on merge" is not acceptable — the push is cheap (one command, <5s) and must happen before review so the reviewer can verify prod reflects the change.
-
-4. **`grafana-dashboard-sync.yml` on merge is a safety net**, not the primary deploy path for reviewed changes. If the PR was pushed before this workflow existed, or the workflow failed, re-run `deploy.py` manually.
+**Flag as REQUEST CHANGES** if `dashboard.json` changed but §4 is missing the deploy output, the
+live URL, or screenshots for visual changes. "Will sync on merge" is not acceptable.
 
 ## D2c. Cost & cleanup discipline (from CONTRIBUTING.md § Design & execution principles)
 - **Token / cost:** flag obvious cost regressions — per-row network calls, unbounded LLM turns,

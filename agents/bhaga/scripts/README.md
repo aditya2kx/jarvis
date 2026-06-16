@@ -57,7 +57,8 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    just-closed/unpaid period legitimately shows `N/A` and is skipped, not failed. A semantic failure
    clears the `update_model_sheet`
    marker (so a rerun REBUILDS) **and trips the circuit breaker** (next §). A green run **auto-clears**
-   the breaker.
+   the breaker. The `review_bonus` semantic grid queries `model_review_bonus_period` on column
+   `total_bonus` (not the phantom `review_bonus_dollars`).
 8. **Heartbeat** success/failure DM to the BHAGA Slack channel (`notify.py`).
 
 **Pipeline halt circuit breaker** (`state_adapter.{get,set,clear}_pipeline_halt`): a semantic-verify

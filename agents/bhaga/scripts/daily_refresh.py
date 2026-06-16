@@ -2882,7 +2882,7 @@ def _run_refresh() -> int:
             )
             review_grid = _bq_grid(
                 "model_review_bonus_period",
-                "period_start,period_end,is_open,employee,review_bonus_dollars",
+                "period_start,period_end,is_open,employee,total_bonus",
             )
             try:
                 sem = model_semantics.assert_model_semantics(

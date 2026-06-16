@@ -29,8 +29,10 @@ These tests target the pure extracted functions plus an argv-mocked
 
 from __future__ import annotations
 
+import ast
 import datetime
 import os
+import pathlib
 import sys
 import tempfile
 import unittest
@@ -1388,6 +1390,43 @@ class TestOtpForceRequestIntegration(unittest.TestCase):
                           "state_adapter must return None when no checkpoint exists")
         self.assertEqual(len(save_calls), 1, "no checkpoint: first request saves")
         self.assertEqual(len(post_calls), 1, "no checkpoint: first request posts")
+
+
+class TestReviewBonusGridColumn(unittest.TestCase):
+    """Regression test: _bq_grid for model_review_bonus_period uses 'total_bonus'.
+
+    Before the fix, the column was 'review_bonus_dollars' (phantom — never in the
+    BQ schema). BQ raised BadRequest, which propagated as 0 rows and tripped the
+    semantic guard. This test locks the correct column name so the same typo cannot
+    silently re-appear.
+    """
+
+    def test_review_bonus_grid_column_is_total_bonus(self):
+        """The SQL column queried for model_review_bonus_period must be 'total_bonus'."""
+        src = pathlib.Path(__file__).parent / "daily_refresh.py"
+        tree = ast.parse(src.read_text())
+        # Find _bq_grid("model_review_bonus_period", "...") call and check the cols arg
+        found = False
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_bq_grid"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "model_review_bonus_period"
+            ):
+                cols_arg = node.args[1].value if isinstance(node.args[1], ast.Constant) else ""
+                self.assertIn(
+                    "total_bonus", cols_arg,
+                    "model_review_bonus_period grid must query 'total_bonus' (not 'review_bonus_dollars')"
+                )
+                self.assertNotIn(
+                    "review_bonus_dollars", cols_arg,
+                    "phantom column 'review_bonus_dollars' must not appear in grid query"
+                )
+                found = True
+        self.assertTrue(found, "_bq_grid('model_review_bonus_period', …) call not found in daily_refresh.py")
 
 
 if __name__ == "__main__":

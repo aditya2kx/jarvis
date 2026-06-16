@@ -78,6 +78,9 @@ GRAFANA_DASHBOARD_URL = "https://steadyangelfish2985.grafana.net/d/bhaga-analyti
 # — backticks, not double quotes (`AS "x"` is a string-literal syntax error) —
 # and output field names may not contain `/` or `$` (spaces/hyphens are fine).
 # Validate any panel SQL change with `python3 agents/bhaga/grafana/verify_panels.py`.
+#
+# 2026-06-15: weekly Labor % panels (ids 36, 37) got max=1/min=0 cap — display
+# only, no new views or columns, no registry change needed.
 
 SHEET_TABS: tuple[str, ...] = ("daily", "tip_alloc_daily")
 

@@ -505,6 +505,10 @@ without a run, use the sanctioned path `state_adapter.clear_pipeline_halt()` (ne
 Firestore). Inspect the current state with `state_adapter.get_pipeline_halt()` (returns the `reason` /
 `since` / `refresh_date` that tripped it, or `None` when healthy).
 
+`trigger_dated_refresh.py` (used by `Retry-Dates:` deploy trailers) always injects `BHAGA_IGNORE_HALT=1`
+so deploy-triggered retries automatically bypass the breaker — the fix is baked into the image by
+definition and a healthy run will auto-clear it.
+
 ### OTP-portal recovery (auto-invalidate stale downstream markers)
 
 When a previously-failed OTP portal (Square/ADP) succeeds on a later run **while** the downstream

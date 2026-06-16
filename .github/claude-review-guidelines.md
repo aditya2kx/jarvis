@@ -129,7 +129,7 @@ If this PR modifies `agents/bhaga/grafana/dashboard.json`:
    [bhaga-grafana-deploy] Dashboard deployed: https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics
    ```
 
-2. **Required evidence in §4:** paste the deploy output (the `[bhaga-grafana-deploy] Dashboard deployed: <url>` line) and a direct link to the affected panel(s) in prod Grafana so the reviewer can open them. For visual changes (axis caps, colors, panel layout) also attach a screenshot — the reviewer cannot see Grafana directly.
+2. **Required evidence in §4:** paste the deploy output (the `[bhaga-grafana-deploy] Dashboard deployed: <url>` line) and a direct link to the affected panel(s) in prod Grafana. For visual changes (axis caps, colors, panel layout) also include a screenshot — the reviewer cannot open Grafana directly. Standard way to host screenshots in a PR: save the PNG(s) under `docs/pr-evidence/<PR#>/`, commit to the branch, then reference via `![alt](https://raw.githubusercontent.com/aditya2kx/jarvis/<branch>/docs/pr-evidence/<PR#>/file.png)` in the PR body. Screenshots can be rendered from the Grafana Render API: `curl -o panel.png "https://steadyangelfish2985.grafana.net/render/d-solo/bhaga-analytics-v1?panelId=<id>&width=800&height=400&from=now-30d&to=now" -H "Authorization: Bearer $GRAFANA_API_TOKEN"` (token from Keychain `grafana-cloud-api-token`).
 
 3. **Flag as REQUEST CHANGES** if `dashboard.json` changed but §4 has no deploy output and no Grafana URL evidence. "Will sync on merge" is not acceptable — the push is cheap (one command, <5s) and must happen before review so the reviewer can verify prod reflects the change.
 

@@ -61,6 +61,9 @@ def _build_env_overrides(date_str: str, recompute_only: bool) -> list[tuple[str,
         # Full scrape => OTP-gated. This is an explicit, operator-initiated rerun,
         # so re-post a fresh READY request rather than defer to any stale marker.
         env.append(("BHAGA_OTP_FORCE_REQUEST", "1"))
+    # Deploy-triggered reruns include the fix that caused the original failure, so
+    # bypass the halt breaker unconditionally — a healthy run will auto-clear it.
+    env.append(("BHAGA_IGNORE_HALT", "1"))
     return env
 
 

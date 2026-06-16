@@ -16,6 +16,7 @@ def test_recompute_env_has_skip_flags():
     assert env["BHAGA_SKIP_SQUARE"] == "1"
     assert env["BHAGA_SKIP_ADP"] == "1"
     assert env["BHAGA_SKIP_KDS"] == "1"
+    assert env["BHAGA_IGNORE_HALT"] == "1"
 
 
 def test_scrape_env_forces_otp_request():
@@ -23,6 +24,7 @@ def test_scrape_env_forces_otp_request():
     assert env["REFRESH_DATE"] == "2026-06-14"
     assert env["BHAGA_OTP_FORCE_REQUEST"] == "1"
     assert "BHAGA_SKIP_SQUARE" not in env
+    assert env["BHAGA_IGNORE_HALT"] == "1"
 
 
 def test_recompute_env_has_no_force_flag():

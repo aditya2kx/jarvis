@@ -179,7 +179,7 @@ Output should end with:
 Reviewers cannot open Grafana directly, so screenshots are required for any visual property change.
 Use the Grafana Render API:
 ```bash
-GRAFANA_API_TOKEN=$(security find-generic-password -s grafana-cloud-api-token -w)
+GRAFANA_API_TOKEN=$(security find-generic-password -s grafana-cloud-api-token -a steadyangelfish2985 -w)
 curl -o docs/pr-evidence/<PR#>/panel_<id>.png \
   "https://steadyangelfish2985.grafana.net/render/d-solo/bhaga-analytics-v1?panelId=<id>&width=800&height=400&from=now-30d&to=now" \
   -H "Authorization: Bearer $GRAFANA_API_TOKEN"

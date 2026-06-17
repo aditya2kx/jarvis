@@ -365,6 +365,13 @@ Tunables in the Model `config` tab (all operator-editable in-sheet):
 - `review_base_bonus_dollars` (default `10`) — legacy base mode per-person amount.
 - `review_named_bonus_dollars` (default `20`) — legacy shoutout mode per-person amount.
 - `review_pool_effective_date` (default `2026-06-08`) — pool mode cutover date.
+
+**`data_window_end` — derived, never stored.** The upper bound for crediting reviews is derived
+live as `MAX(square_transactions.date_local)` via `core.store_config.resolve_data_window_end()`.
+It is NOT a `store_config` tunable; `set_config()` raises `ValueError` if you try to write it.
+Reviews with `post_date_ct` after `data_window_end` are held back until the next run that has
+Square data through that date. If reviews are unexpectedly held back, check `bhaga.store_config`
+for a stale `data_window_end` row (see RUNBOOK.md §16 troubleshooting).
 - `review_pool_dollars` (default `20`) — total pool per qualifying review.
 
 The rebuild is idempotent and runs every night.

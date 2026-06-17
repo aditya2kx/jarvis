@@ -10,7 +10,7 @@
 - `core/store_config.py`: added `resolve_data_window_end()` (derives from BQ), `delete_config()`, and `_DERIVED_KEYS` guard (`set_config` raises `ValueError` for `data_window_end`).
 - `process_reviews.py`, `status.py`, `command_handler.py`: all now call `resolve_data_window_end()` and never read `store_config` for this key.
 - `RUNBOOK.md` §16: added troubleshooting note for "reviews held back / window frozen".
-- Post-deploy: stale `store_config` row deleted via `delete_config`; manual `/bhaga-cloud refresh` released the 30 held-back reviews.
+- Pre-merge: stale `store_config` row deleted via `delete_config` (confirmed 0 rows in prod BQ). `resolve_data_window_end` returns `2026-06-16` in prod. The 30 held-back reviews will be credited on the next Cloud Run nightly (21:30 CT), which now correctly derives the live window since the stale row is gone.
 
 **Files:** `core/store_config.py`, `core/test_store_config.py`, `agents/bhaga/scripts/process_reviews.py`, `agents/bhaga/scripts/status.py`, `agents/bhaga/scripts/test_process_reviews.py`, `agents/bhaga/scripts/test_status.py`, `skills/slack/command_handler.py`, `RUNBOOK.md`.
 

@@ -680,73 +680,115 @@ class PoolRollupTests(unittest.TestCase):
         self.assertAlmostEqual(total_alice, 30.0, places=1)
 
 
-class ResolveDataWindowEndFromBqTests(unittest.TestCase):
-    """process_reviews.main must derive data_window_end from BQ, never store_config.
+_FAKE_PROFILE_DATA = {
+    "store": "palmetto",
+    "google_sheets": {
+        "bhaga_model": {"spreadsheet_id": "FAKE_SID"},
+        "bhaga_review_raw": {"spreadsheet_id": "FAKE_RAW_SID"},
+    },
+    "calibration": {},
+}
+
+
+def _patch_main_dependencies(test_case, *, resolve_returns="2026-06-16", until=None):
+    """Build the minimal patch set needed to call process_reviews.main() up
+    through the data_window_end resolution.  Returns a context manager stack
+    and a dict of call trackers so callers can assert on what was called."""
+    import agents.bhaga.scripts.process_reviews as pr
+    import core.store_config as sc_mod
+
+    resolve_calls = []
+    get_config_calls = []
+    read_punches_calls = []
+
+    def track_resolve(store):
+        resolve_calls.append(store)
+        return resolve_returns
+
+    def track_get_config(store, key):
+        get_config_calls.append(key)
+        return None  # never return a value for data_window_end
+
+    patches = [
+        unittest.mock.patch.object(sc_mod, "resolve_data_window_end", track_resolve),
+        unittest.mock.patch.object(sc_mod, "get_config", track_get_config),
+        unittest.mock.patch.object(pr, "_load_profile", return_value=_FAKE_PROFILE_DATA),
+        unittest.mock.patch("skills.store_profile.load_aliases", return_value={}),
+        unittest.mock.patch("skills.store_profile.load_exclusions",
+                            return_value={"permanent": [], "training": {}}),
+        unittest.mock.patch.object(pr, "resolve_sheet_id", return_value="FAKE_SID"),
+        unittest.mock.patch.object(pr, "refresh_access_token", return_value="tok"),
+        # make read_punches_bq return empty so main() exits with rc=2 right
+        # after the data_window_end block — enough to prove derivation fired
+        unittest.mock.patch(
+            "agents.bhaga.scripts.model_inputs.read_punches_bq",
+            side_effect=lambda store: read_punches_calls.append(store) or [],
+        ),
+        unittest.mock.patch(
+            "agents.bhaga.scripts.model_inputs.read_training_excluded",
+            return_value=[],
+        ),
+        unittest.mock.patch.object(pr, "_latest_review_ts_ms", return_value=0),
+    ]
+    return patches, {
+        "resolve_calls": resolve_calls,
+        "get_config_calls": get_config_calls,
+        "read_punches_calls": read_punches_calls,
+    }
+
+
+class ProcessReviewsMainDerivedWindowTests(unittest.TestCase):
+    """process_reviews.main() must derive data_window_end from BQ, never store_config.
 
     This is the regression guard for the 2026-06-15 incident: a stale
     store_config row froze data_window_end at 2026-06-13 while BQ had data
     through 2026-06-16, causing 30 reviews to be held back every nightly run.
     """
 
-    def _make_args(self, *, store="palmetto", until=None):
-        import argparse
-        ns = argparse.Namespace(
-            store=store,
-            until=until,
-            max_pages=1,
-            dry_run=False,
-            item_operations_only=False,
-            all_item_operations=False,
-            data_source="bigquery",
+    def _run_main(self, argv, patches_list):
+        import contextlib
+        import sys
+        import agents.bhaga.scripts.process_reviews as pr
+
+        orig_argv = sys.argv
+        sys.argv = argv
+        try:
+            with contextlib.ExitStack() as stack:
+                for p in patches_list:
+                    stack.enter_context(p)
+                return pr.main()
+        finally:
+            sys.argv = orig_argv
+
+    def test_main_derives_data_window_end_not_store_config(self):
+        """main() must call resolve_data_window_end (not get_config) for window.
+
+        After the fix, `main()` resolves data_window_end via the new
+        `_resolve_dwe` import of `core.store_config.resolve_data_window_end`.
+        This test proves that path fires — and that `get_config('data_window_end')`
+        is never called — even when store_config would return a stale value.
+        """
+        patches, trackers = _patch_main_dependencies(self, resolve_returns="2026-06-16")
+        rc = self._run_main(
+            ["process_reviews", "--store", "palmetto", "--dry-run"],
+            patches,
         )
-        return ns
+        # main() exits 2 (empty punches) AFTER deriving the window — that's fine;
+        # we only care that resolve was called and get_config('data_window_end') was not.
+        self.assertIn("palmetto", trackers["resolve_calls"],
+                      "resolve_data_window_end must be called for data_window_end derivation")
+        self.assertNotIn("data_window_end", trackers["get_config_calls"],
+                         "get_config must NOT be called for data_window_end (stale-row regression)")
 
-    def test_stale_store_config_row_does_not_freeze_window(self):
-        """Even when store_config has a stale data_window_end, process_reviews
-        must derive the live date from BQ square_transactions."""
-        import core.store_config as sc_mod
-
-        # Simulate stale store_config row (the 2026-06-15 bug)
-        stale_get_config_calls = []
-        def stale_get_config(store, key):
-            stale_get_config_calls.append(key)
-            if key == "data_window_end":
-                return "2026-06-13"  # stale value
-            return None
-
-        live_date = "2026-06-16"
-        resolve_calls = []
-        def live_resolve(store):
-            resolve_calls.append(store)
-            return live_date
-
-        with unittest.mock.patch.object(sc_mod, "resolve_data_window_end", live_resolve), \
-             unittest.mock.patch.object(sc_mod, "get_config", stale_get_config):
-            from core.store_config import resolve_data_window_end
-            result = resolve_data_window_end("palmetto")
-
-        self.assertEqual(result, live_date, "Must return BQ-derived date, not stale store_config value")
-        # resolve_data_window_end must have been called (not get_config for this key)
-        self.assertIn("palmetto", resolve_calls)
-        self.assertNotIn("data_window_end", stale_get_config_calls,
-                         "process_reviews must not call get_config('data_window_end')")
-
-    def test_until_override_takes_precedence_over_derived(self):
-        """--until flag overrides derived data_window_end regardless of BQ value."""
-        import argparse
-        import core.store_config as sc_mod
-
-        # Override should short-circuit before resolve_data_window_end is called
-        resolve_calls = []
-        def track_resolve(store):
-            resolve_calls.append(store)
-            return "2026-06-16"
-
-        # Verify the date parsing works correctly with --until
-        with unittest.mock.patch.object(sc_mod, "resolve_data_window_end", track_resolve):
-            import datetime as _dt
-            override = _dt.date.fromisoformat("2026-05-01")
-            self.assertEqual(override, _dt.date(2026, 5, 1))
+    def test_until_override_skips_resolve(self):
+        """--until short-circuits before resolve_data_window_end is called."""
+        patches, trackers = _patch_main_dependencies(self, resolve_returns="2026-06-16")
+        rc = self._run_main(
+            ["process_reviews", "--store", "palmetto", "--until", "2026-05-01", "--dry-run"],
+            patches,
+        )
+        self.assertEqual(trackers["resolve_calls"], [],
+                         "resolve_data_window_end must NOT be called when --until is provided")
 
 
 if __name__ == "__main__":

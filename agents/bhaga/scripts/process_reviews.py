@@ -1069,27 +1069,21 @@ def main() -> int:
         data_window_end = datetime.date.fromisoformat(args.until)
         print(f"# --until override: data_window_end={data_window_end}")
     else:
-        # BQ-canonical: read from store_config; fall back to MAX(square_transactions.date_local).
-        dwe_raw = _get_date_cfg("data_window_end")
-        if dwe_raw:
-            try:
-                data_window_end = datetime.date.fromisoformat(dwe_raw)
-            except ValueError:
-                print(f"ERROR: store_config.data_window_end is not ISO-date: {dwe_raw!r}")
-                return 2
-        else:
-            # Fall back to MAX(square_transactions.date_local) from BQ.
-            try:
-                rows = read_query(f"SELECT CAST(MAX(date_local) AS STRING) AS m FROM {fq('square_transactions')}")
-                max_date = (rows[0]["m"] if rows else None) or ""
-                if not max_date:
-                    print("ERROR: store_config.data_window_end is not set and square_transactions is empty.")
-                    return 2
-                data_window_end = datetime.date.fromisoformat(max_date)
-                print(f"# data_window_end not in store_config; using MAX(square_transactions)={data_window_end}")
-            except Exception as exc:  # noqa: BLE001
-                print(f"ERROR: could not resolve data_window_end from BQ: {exc}")
-                return 2
+        # BQ-canonical: derive from MAX(square_transactions.date_local).
+        # data_window_end is a DERIVED value — never read from store_config
+        # (a stale stored value would freeze the review crediting window;
+        # see 2026-06-15 incident and core.store_config._DERIVED_KEYS).
+        from core.store_config import resolve_data_window_end as _resolve_dwe
+        max_date = _resolve_dwe(args.store) or ""
+        if not max_date:
+            print("ERROR: could not resolve data_window_end from BQ (square_transactions is empty or unavailable).")
+            return 2
+        try:
+            data_window_end = datetime.date.fromisoformat(max_date)
+        except ValueError:
+            print(f"ERROR: data_window_end from BQ is not ISO-date: {max_date!r}")
+            return 2
+        print(f"# data_window_end (derived from MAX square_transactions): {data_window_end}")
     end_of_window_dt = datetime.datetime.combine(
         data_window_end, datetime.time.max, tzinfo=CT,
     )

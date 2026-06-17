@@ -460,20 +460,17 @@ def main(argv: list[str] | None = None) -> int:
 
     results: list[CheckResult] = []
 
-    # ── Layer 0: BQ data_window_end (replaces Sheet config tab check) ─────────
+    # ── Layer 0: BQ data_window_end (derived from square_transactions) ────────
+    # Always derived from MAX(square_transactions.date_local); store_config is
+    # never consulted for this key (see core.store_config._DERIVED_KEYS and the
+    # 2026-06-15 stale-row incident).
     try:
-        from core.datastore import fq as _fq
-        from core.store_config import get_config as _get_cfg
-        dwe_raw = (_get_cfg(args.store, "data_window_end") or "").strip()
-        if not dwe_raw:
-            _dwe_rows = read_query(
-                f"SELECT CAST(MAX(date_local) AS STRING) AS m FROM {_fq('square_transactions')}"
-            )
-            dwe_raw = (_dwe_rows[0]["m"] if _dwe_rows else None) or ""
+        from core.store_config import resolve_data_window_end as _resolve_dwe
+        dwe_raw = (_resolve_dwe(args.store) or "").strip()
         present = dwe_raw == check_date.isoformat()
         results.append(CheckResult(
             "bq", "data_window_end", present,
-            rows=None, max_date=dwe_raw or None, note="store_config/square_transactions",
+            rows=None, max_date=dwe_raw or None, note="MAX(square_transactions.date_local)",
         ))
     except Exception as _exc:
         results.append(CheckResult("bq", "data_window_end", False, None, None, note=f"ERROR: {_exc}"))

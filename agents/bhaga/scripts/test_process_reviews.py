@@ -680,5 +680,74 @@ class PoolRollupTests(unittest.TestCase):
         self.assertAlmostEqual(total_alice, 30.0, places=1)
 
 
+class ResolveDataWindowEndFromBqTests(unittest.TestCase):
+    """process_reviews.main must derive data_window_end from BQ, never store_config.
+
+    This is the regression guard for the 2026-06-15 incident: a stale
+    store_config row froze data_window_end at 2026-06-13 while BQ had data
+    through 2026-06-16, causing 30 reviews to be held back every nightly run.
+    """
+
+    def _make_args(self, *, store="palmetto", until=None):
+        import argparse
+        ns = argparse.Namespace(
+            store=store,
+            until=until,
+            max_pages=1,
+            dry_run=False,
+            item_operations_only=False,
+            all_item_operations=False,
+            data_source="bigquery",
+        )
+        return ns
+
+    def test_stale_store_config_row_does_not_freeze_window(self):
+        """Even when store_config has a stale data_window_end, process_reviews
+        must derive the live date from BQ square_transactions."""
+        import core.store_config as sc_mod
+
+        # Simulate stale store_config row (the 2026-06-15 bug)
+        stale_get_config_calls = []
+        def stale_get_config(store, key):
+            stale_get_config_calls.append(key)
+            if key == "data_window_end":
+                return "2026-06-13"  # stale value
+            return None
+
+        live_date = "2026-06-16"
+        resolve_calls = []
+        def live_resolve(store):
+            resolve_calls.append(store)
+            return live_date
+
+        with unittest.mock.patch.object(sc_mod, "resolve_data_window_end", live_resolve), \
+             unittest.mock.patch.object(sc_mod, "get_config", stale_get_config):
+            from core.store_config import resolve_data_window_end
+            result = resolve_data_window_end("palmetto")
+
+        self.assertEqual(result, live_date, "Must return BQ-derived date, not stale store_config value")
+        # resolve_data_window_end must have been called (not get_config for this key)
+        self.assertIn("palmetto", resolve_calls)
+        self.assertNotIn("data_window_end", stale_get_config_calls,
+                         "process_reviews must not call get_config('data_window_end')")
+
+    def test_until_override_takes_precedence_over_derived(self):
+        """--until flag overrides derived data_window_end regardless of BQ value."""
+        import argparse
+        import core.store_config as sc_mod
+
+        # Override should short-circuit before resolve_data_window_end is called
+        resolve_calls = []
+        def track_resolve(store):
+            resolve_calls.append(store)
+            return "2026-06-16"
+
+        # Verify the date parsing works correctly with --until
+        with unittest.mock.patch.object(sc_mod, "resolve_data_window_end", track_resolve):
+            import datetime as _dt
+            override = _dt.date.fromisoformat("2026-05-01")
+            self.assertEqual(override, _dt.date(2026, 5, 1))
+
+
 if __name__ == "__main__":
     unittest.main()

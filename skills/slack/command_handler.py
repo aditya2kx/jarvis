@@ -137,19 +137,16 @@ def _get_run_status(refresh_date: datetime.date) -> dict:
 
 
 def _read_data_window_end() -> Optional[str]:
-    """Read data_window_end from BQ (store_config, then MAX square_transactions).
+    """Return data_window_end derived from MAX(square_transactions.date_local).
 
+    data_window_end is a DERIVED value — never read from store_config
+    (a stale stored value would freeze the review crediting window;
+    see 2026-06-15 incident and core.store_config._DERIVED_KEYS).
     Returns the ISO date string, or None on failure.
     """
     try:
-        from core.store_config import get_config
-        val = (get_config("palmetto", "data_window_end") or "").strip()
-        if val:
-            return val
-        # Fall back to MAX(square_transactions.date_local).
-        from core.datastore import read_query, fq
-        rows = read_query(f"SELECT CAST(MAX(date_local) AS STRING) AS m FROM {fq('square_transactions')}")
-        return (rows[0]["m"] if rows else None) or None
+        from core.store_config import resolve_data_window_end
+        return resolve_data_window_end("palmetto")
     except Exception as exc:
         print(f"[command_handler] _read_data_window_end failed: {exc}")
     return None

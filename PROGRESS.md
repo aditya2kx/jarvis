@@ -1,5 +1,19 @@
 # Jarvis Build Progress
 
+## 2026-06-17 — BHAGA: fix data_window_end drift freezing review crediting
+
+**What changed:** `data_window_end` is now purely derived from `MAX(square_transactions.date_local)` everywhere, eliminating the 2026-06-15 incident where a stale `store_config` row froze review crediting at 2026-06-13 (30 reviews held back for 2+ days).
+
+**Root cause:** A prior `migrate_inputs_to_bq.py` run wrote `data_window_end=2026-06-13` to `store_config`. All three readers (`process_reviews`, `status`, `command_handler`) preferred the stored value, so the live MAX() fallback never fired. The pipeline docs (`migrate_inputs_to_bq.py` lines 151-156) always stated this key must not be stored — the fix makes all readers enforce that intent.
+
+**Changes:**
+- `core/store_config.py`: added `resolve_data_window_end()` (derives from BQ), `delete_config()`, and `_DERIVED_KEYS` guard (`set_config` raises `ValueError` for `data_window_end`).
+- `process_reviews.py`, `status.py`, `command_handler.py`: all now call `resolve_data_window_end()` and never read `store_config` for this key.
+- `RUNBOOK.md` §16: added troubleshooting note for "reviews held back / window frozen".
+- Pre-merge: stale `store_config` row deleted via `delete_config` (confirmed 0 rows in prod BQ). `resolve_data_window_end` returns `2026-06-16` in prod. The 30 held-back reviews will be credited on the next Cloud Run nightly (21:30 CT), which now correctly derives the live window since the stale row is gone.
+
+**Files:** `core/store_config.py`, `core/test_store_config.py`, `agents/bhaga/scripts/process_reviews.py`, `agents/bhaga/scripts/status.py`, `agents/bhaga/scripts/test_process_reviews.py`, `agents/bhaga/scripts/test_status.py`, `skills/slack/command_handler.py`, `RUNBOOK.md`.
+
 ## 2026-06-15 — BHAGA: targeted live-sandbox scenario for infra/gate changes + discoverable guidance
 
 **What changed:** Added the `otp-reprompt` targeted sandbox scenario (`sandbox_scenarios.SCENARIOS`) as the canonical pattern for proving infra/gate-layer changes (OTP checkpoint, Firestore state, Cloud Run env injection) on the real stack — cheap, no scrape, no operator OTP reply needed. The scenario seeds a stale `pending_otp` in `sandbox_runs`, runs on `bhaga-sandbox-refresh` with `BHAGA_OTP_FORCE_REQUEST=1` (assume-ready OFF), and verifies via `verify_otp_reprompt` that the checkpoint's `requested_at` advanced (re-prompt fired).

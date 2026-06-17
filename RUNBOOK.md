@@ -1299,6 +1299,22 @@ than failing with no local files in the ephemeral Cloud Run container).
 Pipeline reads `store_config` via `core.store_config.get_config(store, key)` — BQ first, Sheet as
 fallback while the BQ table is being seeded. After seeding, Sheet config becomes display-only.
 
+> **`data_window_end` is DERIVED — never stored in `store_config`.** It is computed
+> live as `MAX(square_transactions.date_local)` via `core.store_config.resolve_data_window_end()`.
+> `set_config()` raises `ValueError` if you attempt to write this key. The review crediting
+> pipeline (`process_reviews`), status doctor, and Slack `/bhaga status` all use the derived
+> value so the review window always tracks the latest Square data.
+>
+> **Troubleshooting: reviews held back / window frozen at a stale date.**
+> Run: `bq query --project_id=jarvis-bhaga-prod 'SELECT * FROM bhaga.store_config WHERE key="data_window_end"'`
+> If any rows appear, a past migration wrote a stale value. Remove it with:
+> ```python
+> from core.store_config import delete_config
+> delete_config("palmetto", "data_window_end")
+> ```
+> Then retrigger: `/bhaga-cloud refresh <date>` (or `gcloud run jobs execute …`). The next run
+> will derive the correct window and release any held-back reviews.
+
 **Seed the BQ config from the current Sheet values (one-time, idempotent):**
 ```bash
 BHAGA_DATASTORE=bigquery python3 - <<'EOF'

@@ -538,8 +538,10 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     # ── Ramp-aware forecast (parallel, non-fatal) ─────────────────────────────
     # Writes to model_forecast_ramp_daily.  Uses in-memory labor_daily_rows +
     # the weather_daily rows already fetched above.
-    # Skip: BHAGA_SKIP_FORECAST_RAMP=1 env var.
-    if not os.environ.get("BHAGA_SKIP_FORECAST_RAMP") and not dry_run:
+    # Skip: BHAGA_SKIP_FORECAST_RAMP=1 (ramp only) or BHAGA_SKIP_FORECAST=1 (all).
+    if (not os.environ.get("BHAGA_SKIP_FORECAST_RAMP")
+            and not os.environ.get("BHAGA_SKIP_FORECAST")
+            and not dry_run):
         try:
             from agents.bhaga.scripts.forecast_ramp_bq import (
                 build_ramp_backfill_rows,

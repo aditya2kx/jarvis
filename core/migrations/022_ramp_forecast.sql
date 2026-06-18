@@ -50,6 +50,7 @@ WHERE f.date >= CURRENT_DATE('America/Chicago');
 -- Mirrors vw_forecast_accuracy (migration 011) pointing at ramp table.
 -- Excludes forecast_exclude days so the accuracy chart isn't distorted by
 -- anomaly days — matching the same guardrail used in the backtest.
+-- Uses LEFT JOIN instead of a correlated subquery (BigQuery limitation).
 CREATE OR REPLACE VIEW `jarvis-bhaga-prod.bhaga.vw_forecast_ramp_accuracy` AS
 SELECT
   f.date,
@@ -62,11 +63,7 @@ SELECT
 FROM `jarvis-bhaga-prod.bhaga.model_forecast_ramp_daily` f
 JOIN `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` a
   ON a.date = f.date
+LEFT JOIN `jarvis-bhaga-prod.bhaga.model_labor_daily` excl
+  ON excl.date = f.date
 WHERE a.orders > 0
-  AND NOT COALESCE(
-    (SELECT lbd.forecast_exclude
-     FROM `jarvis-bhaga-prod.bhaga.model_labor_daily` lbd
-     WHERE lbd.date = f.date
-     LIMIT 1),
-    FALSE
-  );
+  AND NOT COALESCE(excl.forecast_exclude, FALSE);

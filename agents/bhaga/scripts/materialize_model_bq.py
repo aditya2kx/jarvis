@@ -501,7 +501,7 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
                 build_forecast_rows,
             )
             from agents.bhaga.scripts.backfill_bigquery import map_forecast_daily
-            from core.datastore import get_client as _get_bq_client
+            from core.datastore import get_client as _get_bq_client, _PROJECT_ID as _HEUR_PROJ, _DATASET as _HEUR_DS
             horizon = int(profile.get("forecast_horizon_days", 30))
             f_rows = build_forecast_rows(
                 labor_daily_rows=labor_daily_rows,
@@ -516,7 +516,7 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
                 _existing = {
                     str(r["date"])
                     for r in _bq.query(
-                        "SELECT date FROM `jarvis-bhaga-prod.bhaga.model_forecast_daily`"
+                        f"SELECT date FROM `{_HEUR_PROJ}.{_HEUR_DS}.model_forecast_daily`"
                         " WHERE date < CURRENT_DATE('America/Chicago')"
                     ).result()
                 }
@@ -546,7 +546,7 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
                 build_ramp_forecast_rows,
             )
             from agents.bhaga.scripts.backfill_bigquery import map_forecast_ramp_daily
-            from core.datastore import get_client as _get_bq_client_ramp
+            from core.datastore import get_client as _get_bq_client_ramp, _PROJECT_ID as _RAMP_PROJ, _DATASET as _RAMP_DS
             horizon = int(profile.get("forecast_horizon_days", 30))
             rf_rows = build_ramp_forecast_rows(
                 labor_daily_rows=labor_daily_rows,
@@ -564,7 +564,7 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
                 _existing_r = {
                     str(r["date"])
                     for r in _bq_r.query(
-                        "SELECT date FROM `jarvis-bhaga-prod.bhaga.model_forecast_ramp_daily`"
+                        f"SELECT date FROM `{_RAMP_PROJ}.{_RAMP_DS}.model_forecast_ramp_daily`"
                         " WHERE date < CURRENT_DATE('America/Chicago')"
                     ).result()
                 }

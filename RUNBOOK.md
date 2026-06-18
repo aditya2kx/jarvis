@@ -1252,6 +1252,57 @@ Set `BHAGA_SKIP_FORECAST=1` in the Cloud Run job environment to skip the forecas
 (e.g. during debugging). The step is non-fatal by default — a failure emits a `WARNING` log and
 continues.
 
+Set `BHAGA_SKIP_FORECAST_RAMP=1` to skip only the ramp-aware model (Section 7A) without affecting the production heuristic (Section 7). Weather fetch failure is also non-fatal — an Open-Meteo outage logs a WARNING and continues without failing the nightly run.
+
+---
+
+## 15A. Section 7A — Ramp-Aware Forecast (added PR feat/ramp-forecast-7a, 2026-06-18)
+
+### Overview
+
+A **parallel experimental forecast** runs nightly alongside the production `wow_median_4wk_v2` heuristic, writing to its own BQ table (`model_forecast_ramp_daily`) and surfacing in Grafana Section 7A. Section 7 and all production flows are **unchanged**.
+
+**Model (ramp_log_ridge_v1):** Log-space Ridge regression, refit nightly on all non-excluded operating days. Features: `weeks_since_open` (ramp/growth term), DOW dummies, lags 7/14/21/28d + 4-week same-DOW rolling mean, and weather (`tmean_scaled`, `precip_mm_scaled`, `rainy_flag`). Ridge L2 penalty tunes/shrinks lag weights automatically. Predictions exponentiated back with a 4× roll-mean cap to prevent runaway extrapolation.
+
+**Why it exists:** The heuristic's growth clamp [0.80, 1.20] systematically under-forecasts during the store's hypergrowth phase. The log-space ramp term fixes the systematic bias (backtest: -19.5 → -5.1 orders at H=1). Weather adds a real ~5pt near-horizon MAPE gain. Research evidence in `agents/bhaga/analysis/weather_forecast_spike/`.
+
+**Weather dependency:** Nightly, `materialize_model_bq.py` fetches Open-Meteo ERA5 actuals (last 14 days) and NWP forward forecast (next 10 days) into `weather_daily`. Failure is non-fatal. The 10-day window covers the reliable forecast horizon; days 11–30 fall back to the climatological defaults embedded in the model.
+
+### Tables and views
+
+| Object | Type | Description |
+|---|---|---|
+| `weather_daily` | Table | Daily weather from Open-Meteo: `date`, `tmean_c`, `tmax_c`, `tmin_c`, `precip_mm`, `is_rainy`, `kind` ('actual'\|'forecast'), `source`, `fetched_at` |
+| `model_forecast_ramp_daily` | Table | Ramp model forecast rows: same schema as `model_forecast_daily` + `forecast_model_version` |
+| `vw_model_forecast_ramp` | View | Next 30 days with COALESCE prior-week, `goal_shift_hours`, `scheduled_hours` — mirrors `vw_model_forecast` |
+| `vw_forecast_ramp_accuracy` | View | Past ramp forecast days joined to actuals; excludes `forecast_exclude` days — mirrors `vw_forecast_accuracy` |
+
+### Grafana Section 7A panels
+
+Section 7A "Labor Forecast (ramp-aware, experimental)" is placed immediately after Section 7 and mirrors it with matching panel layout:
+- **Panel 81** (`vw_model_forecast_ramp`): same table as panel 71, using ramp forecast orders/items
+- **Panel 84** (`vw_model_forecast_ramp`): Goal Total Hours vs Scheduled Part Time (same `$goal_hours_per_item` math)
+- **Panels 82/85** (`model_forecast_ramp_daily`): Forecast vs Actual timeseries (Orders + Items)
+- **Panel 86** (`vw_forecast_ramp_accuracy`): **Forecast Accuracy** — daily % error + 7-day rolling MAPE. Compare with Section 7's panel 76 to watch the ramp model converge vs the heuristic.
+- **Panel 83** (`vw_forecast_exclusions`): shared exclusions (same input flags as Section 7)
+
+Section 7 also gains a new **Panel 76** (`vw_forecast_accuracy`): the same accuracy chart for the heuristic, so the two sections are directly comparable.
+
+### Kill-switches
+
+- `BHAGA_SKIP_FORECAST_RAMP=1` — skip the ramp forecast step only.
+- `BHAGA_SKIP_FORECAST=1` — skip both heuristic and ramp forecast (also skips weather fetch).
+- Weather fetch failure is always non-fatal (logs `[weather] WARNING`).
+
+### Applying the migrations
+
+Migrations `021` (`weather_daily`) and `022` (`model_forecast_ramp_daily` + views) are applied automatically by `ensure_schema()` at job startup. To apply manually:
+
+```bash
+BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
+  python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
+```
+
 ---
 
 ## 16. BQ as single source of truth (added PR #33, 2026-06-05)

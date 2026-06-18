@@ -1,6 +1,31 @@
 # Jarvis Build Progress
 
-## 2026-06-17 — BHAGA: fix data_window_end drift freezing review crediting
+## 2026-06-18 — BHAGA: Section 7A — Ramp-Aware Forecast (PR feat/ramp-forecast-7a)
+
+**What changed:** Added a parallel ramp-aware order forecast (model `ramp_log_ridge_v1`) that runs
+nightly alongside the production `wow_median_4wk_v2` heuristic. The new model surfaces in a new
+Grafana "Section 7A" mirroring Section 7. Section 7 and all production flows are untouched.
+
+**Motivation (from the analysis spike in `agents/bhaga/analysis/weather_forecast_spike/`):**
+- Heuristic growth clamp [0.80, 1.20] causes -19.5 orders systematic under-forecast bias at H=1
+  during the store's hypergrowth ramp.
+- Log-space Ridge with `weeks_since_open` ramp term reduces bias to -5.1 orders (75% improvement).
+- Weather adds ~5pt near-horizon MAPE gain even under the conservative persistence proxy.
+- Realistic target: ~10-15% MAPE (Poisson noise floor at >100 orders/day is ~10%).
+
+**New files:**
+- `skills/weather/open_meteo.py` — Open-Meteo weather skill (actuals + forward forecast, no API key).
+- `core/migrations/021_weather_daily.sql` — `weather_daily` BQ table (metric units: °C, mm).
+- `core/migrations/022_ramp_forecast.sql` — `model_forecast_ramp_daily` table + `vw_model_forecast_ramp` + `vw_forecast_ramp_accuracy` views.
+- `agents/bhaga/scripts/forecast_ramp_bq.py` — Ramp model: pure-Python Ridge on log(orders), features: `weeks_since_open`, DOW dummies, lags 7/14/21/28d + 4-week same-DOW rolling mean, weather.
+- `skills/weather/test_open_meteo.py` (18 tests) + `agents/bhaga/scripts/test_forecast_ramp_bq.py` (31 tests).
+
+**Modified files:**
+- `agents/bhaga/knowledge-base/store-profiles/palmetto.json` — added `location.lat/lon`.
+- `agents/bhaga/scripts/materialize_model_bq.py` — weather fetch block + ramp forecast block (both non-fatal, `BHAGA_SKIP_FORECAST_RAMP` kill-switch).
+- `agents/bhaga/scripts/backfill_bigquery.py` — `map_forecast_ramp_daily`.
+- `agents/bhaga/grafana/dashboard.json` — Section 7A panels (81, 84, 82, 85, 86, 83) + accuracy chart panel 76 for Section 7 (v42).
+
 
 **What changed:** `data_window_end` is now purely derived from `MAX(square_transactions.date_local)` everywhere, eliminating the 2026-06-15 incident where a stale `store_config` row froze review crediting at 2026-06-13 (30 reviews held back for 2+ days).
 

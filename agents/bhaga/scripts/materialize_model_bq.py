@@ -20,6 +20,7 @@ import datetime
 import os
 import pathlib
 import sys
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
@@ -463,6 +464,36 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     # and drop any b_rows that already exist, so history is stable across model
     # updates. Only genuine gaps (e.g. first run after migration) get written.
     # Skip: BHAGA_SKIP_FORECAST=1 env var.
+
+    # ── Fetch and persist weather (non-fatal; weather outage must never fail prod) ─
+    # Actuals for the last 14 days + NWP forecast for the next 10 days.
+    # Rows merged on date so actuals overwrite forecast rows once the day passes.
+    _weather_rows_for_ramp: list[dict] = []
+    if not os.environ.get("BHAGA_SKIP_FORECAST") and not dry_run:
+        try:
+            from skills.weather.open_meteo import (
+                WeatherFetchError,
+                fetch_actuals,
+                fetch_forecast,
+                map_weather_row,
+            )
+            _loc = profile.get("location", {})
+            _lat = float(_loc.get("lat", 30.2978))
+            _lon = float(_loc.get("lon", -97.7036))
+            import datetime as _dt2
+            _today = _dt2.datetime.now(ZoneInfo("America/Chicago")).date()
+            _act_start = (_today - _dt2.timedelta(days=14)).isoformat()
+            _act_end = (_today - _dt2.timedelta(days=1)).isoformat()
+            _wx_actual = fetch_actuals(_lat, _lon, _act_start, _act_end)
+            _wx_forecast = fetch_forecast(_lat, _lon, days=10)
+            _wx_all = _wx_actual + _wx_forecast
+            _bq_wx = [map_weather_row(r) for r in _wx_all]
+            load_rows("weather_daily", _bq_wx, merge_keys=["date"])
+            print(f"# [weather] {len(_wx_actual)} actual + {len(_wx_forecast)} forecast rows → weather_daily.")
+            _weather_rows_for_ramp = _wx_all
+        except Exception as _wx_exc:  # noqa: BLE001
+            print(f"# [weather] WARNING: non-fatal failure, skipping weather: {_wx_exc}")
+
     if not os.environ.get("BHAGA_SKIP_FORECAST") and not dry_run:
         try:
             from agents.bhaga.scripts.forecast_bq import (
@@ -503,6 +534,53 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
                   f"plus gap-fill backfill last 8 weeks).")
         except Exception as _exc:  # noqa: BLE001
             print(f"# [load_forecast_bq] WARNING: non-fatal failure: {_exc}")
+
+    # ── Ramp-aware forecast (parallel, non-fatal) ─────────────────────────────
+    # Writes to model_forecast_ramp_daily.  Uses in-memory labor_daily_rows +
+    # the weather_daily rows already fetched above.
+    # Skip: BHAGA_SKIP_FORECAST_RAMP=1 env var.
+    if not os.environ.get("BHAGA_SKIP_FORECAST_RAMP") and not dry_run:
+        try:
+            from agents.bhaga.scripts.forecast_ramp_bq import (
+                build_ramp_backfill_rows,
+                build_ramp_forecast_rows,
+            )
+            from agents.bhaga.scripts.backfill_bigquery import map_forecast_ramp_daily
+            from core.datastore import get_client as _get_bq_client_ramp
+            horizon = int(profile.get("forecast_horizon_days", 30))
+            rf_rows = build_ramp_forecast_rows(
+                labor_daily_rows=labor_daily_rows,
+                weather_rows=_weather_rows_for_ramp,
+                horizon_days=horizon,
+            )
+            rb_rows = build_ramp_backfill_rows(
+                labor_daily_rows=labor_daily_rows,
+                weather_rows=_weather_rows_for_ramp,
+                weeks=8,
+            )
+            # Gap-fill-only for backfill rows.
+            if rb_rows:
+                _bq_r = _get_bq_client_ramp()
+                _existing_r = {
+                    str(r["date"])
+                    for r in _bq_r.query(
+                        "SELECT date FROM `jarvis-bhaga-prod.bhaga.model_forecast_ramp_daily`"
+                        " WHERE date < CURRENT_DATE('America/Chicago')"
+                    ).result()
+                }
+                rb_rows_new = [r for r in rb_rows if r["date"] not in _existing_r]
+                skipped_r = len(rb_rows) - len(rb_rows_new)
+                if skipped_r:
+                    print(f"# [load_forecast_ramp] gap-fill: skipping {skipped_r} "
+                          f"backfill rows already in BQ.")
+                rb_rows = rb_rows_new
+            all_ramp = rf_rows + rb_rows
+            bq_ramp_rows = [map_forecast_ramp_daily(r) for r in all_ramp]
+            load_rows("model_forecast_ramp_daily", bq_ramp_rows, merge_keys=["date"])
+            print(f"# [load_forecast_ramp] {len(rf_rows)} future + {len(rb_rows)} backfill "
+                  f"rows → model_forecast_ramp_daily.")
+        except Exception as _ramp_exc:  # noqa: BLE001
+            print(f"# [load_forecast_ramp] WARNING: non-fatal failure: {_ramp_exc}")
 
     print("# Done.")
 

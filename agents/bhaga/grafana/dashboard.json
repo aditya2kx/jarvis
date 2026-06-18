@@ -4,7 +4,7 @@
   "description": "8-section dashboard: Pipeline Health (top), Daily Sales, Weekly Sales, Labor (daily+weekly), Order Quality, Payroll, Labor Forecast. Powered by BQ views from migrations 004+005+016.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 43,
+  "version": 44,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {
@@ -2925,6 +2925,86 @@
                 "value": 1
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "fcst_temp_f"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Fcst Temp \u00b0F"
+              },
+              {
+                "id": "unit",
+                "value": "fahrenheit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "fcst_precip_in"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Precip (in)"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.width",
+                "value": 75
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "fcst_weather"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Weather"
+              },
+              {
+                "id": "custom.width",
+                "value": 65
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "Rain": {
+                        "text": "\ud83c\udf27 Rain",
+                        "color": "blue",
+                        "index": 0
+                      },
+                      "Clear": {
+                        "text": "\u2600 Clear",
+                        "color": "yellow",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
           }
         ]
       },
@@ -2934,7 +3014,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT date, dow, forecast_orders, forecast_items, prior_wk_orders, prior_wk_items, orders_vs_prior_wk, items_vs_prior_wk, ROUND(forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS goal_shift_hours, scheduled_hours, ROUND(scheduled_hours - forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS sched_vs_goal_hours, SAFE_DIVIDE(scheduled_hours - forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), NULLIF(forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 0)) AS sched_vs_goal_pct FROM `jarvis-bhaga-prod.bhaga.vw_model_forecast_ramp` ORDER BY date"
+          "rawSql": "SELECT f.date, f.dow, f.forecast_orders, f.forecast_items, f.prior_wk_orders, f.prior_wk_items, f.orders_vs_prior_wk, f.items_vs_prior_wk, ROUND(f.forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS goal_shift_hours, f.scheduled_hours, ROUND(f.scheduled_hours - f.forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 1) AS sched_vs_goal_hours, SAFE_DIVIDE(f.scheduled_hours - f.forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), NULLIF(f.forecast_items * CAST('$goal_hours_per_item' AS FLOAT64), 0)) AS sched_vs_goal_pct, ROUND(w.tmean_c * 9.0/5.0 + 32.0, 1) AS fcst_temp_f, ROUND(w.precip_mm / 25.4, 2) AS fcst_precip_in, IF(w.is_rainy, 'Rain', 'Clear') AS fcst_weather FROM `jarvis-bhaga-prod.bhaga.vw_model_forecast_ramp` f LEFT JOIN `jarvis-bhaga-prod.bhaga.weather_daily` w ON w.date = f.date AND w.kind = 'forecast' ORDER BY f.date"
         }
       ]
     },
@@ -3561,6 +3641,51 @@
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
           "rawSql": "SELECT date, dow, orders, prev_wk_orders, orders_vs_prev_wk, items_sold, prev_wk_items, items_vs_prev_wk, net_sales, prev_wk_net_sales, net_sales_vs_prev_wk, aov, prev_wk_aov, forecast_exclude, outlier_reason, forecast_exclude_reason FROM `jarvis-bhaga-prod.bhaga.vw_forecast_exclusions` ORDER BY date DESC"
+        }
+      ]
+    },
+    {
+      "id": 87,
+      "type": "timeseries",
+      "title": "Feature Importance \u2014 Ridge Coefficients Over Time",
+      "description": "Ridge regression \u03b2 coefficients for the top features, one line per feature, plotted by make_date (nightly model refit). Shows how the model re-weights features as the training window grows (ramp plateau, seasonal patterns, lag reliability). Larger absolute value = stronger influence on log(orders). Source: model_ramp_coeff_daily \u2014 populated nightly by materialize_model_bq.",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 210
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 4,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 0,
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "rawSql": "SELECT TIMESTAMP(make_date, 'America/Chicago') AS time, MAX(IF(feature_name='weeks_since_open', coefficient, NULL)) AS `weeks_since_open`, MAX(IF(feature_name='log_roll_4w_dow', coefficient, NULL)) AS `log_roll_4w_dow`, MAX(IF(feature_name='log_lag_7d', coefficient, NULL)) AS `log_lag_7d`, MAX(IF(feature_name='log_lag_14d', coefficient, NULL)) AS `log_lag_14d`, MAX(IF(feature_name='tmean_scaled', coefficient, NULL)) AS `tmean_scaled`, MAX(IF(feature_name='rainy_flag', coefficient, NULL)) AS `rainy_flag`, MAX(IF(feature_name='precip_mm_scaled', coefficient, NULL)) AS `precip_mm_scaled` FROM `jarvis-bhaga-prod.bhaga.model_ramp_coeff_daily` GROUP BY make_date ORDER BY make_date"
         }
       ]
     }

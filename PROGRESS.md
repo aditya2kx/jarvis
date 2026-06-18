@@ -17,14 +17,22 @@ Grafana "Section 7A" mirroring Section 7. Section 7 and all production flows are
 - `skills/weather/open_meteo.py` — Open-Meteo weather skill (actuals + forward forecast, no API key).
 - `core/migrations/021_weather_daily.sql` — `weather_daily` BQ table (metric units: °C, mm).
 - `core/migrations/022_ramp_forecast.sql` — `model_forecast_ramp_daily` table + `vw_model_forecast_ramp` + `vw_forecast_ramp_accuracy` views.
-- `agents/bhaga/scripts/forecast_ramp_bq.py` — Ramp model: pure-Python Ridge on log(orders), features: `weeks_since_open`, DOW dummies, lags 7/14/21/28d + 4-week same-DOW rolling mean, weather.
+- `core/migrations/023_ramp_coeff.sql` — `model_ramp_coeff_daily` table (Ridge β per `make_date` × feature).
+- `agents/bhaga/scripts/forecast_ramp_bq.py` — Ramp model: pure-Python Ridge on log(orders), features: `weeks_since_open`, DOW dummies, lags 7/14/21/28d + 4-week same-DOW rolling mean, weather. Exposes `build_ramp_coeff_rows()` for the feature-importance panel.
 - `skills/weather/test_open_meteo.py` (18 tests) + `agents/bhaga/scripts/test_forecast_ramp_bq.py` (31 tests).
 
 **Modified files:**
 - `agents/bhaga/knowledge-base/store-profiles/palmetto.json` — added `location.lat/lon`.
-- `agents/bhaga/scripts/materialize_model_bq.py` — weather fetch block + ramp forecast block (both non-fatal, `BHAGA_SKIP_FORECAST_RAMP` kill-switch).
-- `agents/bhaga/scripts/backfill_bigquery.py` — `map_forecast_ramp_daily`.
-- `agents/bhaga/grafana/dashboard.json` — Section 7A panels (81, 84, 82, 85, 86, 83) + accuracy chart panel 76 for Section 7 (v42).
+- `agents/bhaga/scripts/materialize_model_bq.py` — weather fetch block + ramp forecast block + coefficient block (all non-fatal, `BHAGA_SKIP_FORECAST_RAMP` kill-switch).
+- `agents/bhaga/scripts/backfill_bigquery.py` — `map_forecast_ramp_daily` + `map_forecast_ramp_coeff`.
+- `agents/bhaga/grafana/dashboard.json` — Section 7A panels (81, 84, 82, 85, 86, 83, **87**) + accuracy chart panel 76 for Section 7 (v44). Panel 81 now JOINs `weather_daily` for Temp/Precip/Weather forecast columns. Panel 87 is a new "Feature Importance Over Time" timeseries (Ridge β coefficients for 7 key features, one line each).
+
+**Today's initial coefficient values** (2026-06-18, make_date, n_train=TBD):
+- `tmean_scaled`: -1.22 (dominant — summer heat suppresses orders)
+- DOW effects: Tue/Wed/Thu/Mon all negative vs Sun baseline (-0.29 to -0.22)
+- `weeks_since_open`: +0.16 (still in ramp growth phase)
+- Weather: `precip_mm_scaled` -0.18, `rainy_flag` -0.03
+- Lags: `log_lag_7d` +0.07, all shrunk toward 0 by Ridge
 
 
 **What changed:** `data_window_end` is now purely derived from `MAX(square_transactions.date_local)` everywhere, eliminating the 2026-06-15 incident where a stale `store_config` row froze review crediting at 2026-06-13 (30 reviews held back for 2+ days).

@@ -584,6 +584,28 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
         except Exception as _ramp_exc:  # noqa: BLE001
             print(f"# [load_forecast_ramp] WARNING: non-fatal failure: {_ramp_exc}")
 
+    # ── Ramp model coefficient history (non-fatal) ────────────────────────────
+    # Stores today's Ridge β values in model_ramp_coeff_daily for the
+    # Section 7A feature-importance-over-time Grafana panel (panel 87).
+    if (not os.environ.get("BHAGA_SKIP_FORECAST_RAMP")
+            and not os.environ.get("BHAGA_SKIP_FORECAST")
+            and not dry_run):
+        try:
+            from agents.bhaga.scripts.forecast_ramp_bq import build_ramp_coeff_rows
+            from agents.bhaga.scripts.backfill_bigquery import map_forecast_ramp_coeff
+            coeff_rows = build_ramp_coeff_rows(
+                labor_daily_rows=labor_daily_rows,
+                weather_rows=_weather_rows_for_ramp,
+            )
+            if coeff_rows:
+                bq_coeff = [map_forecast_ramp_coeff(r) for r in coeff_rows]
+                load_rows("model_ramp_coeff_daily", bq_coeff,
+                          merge_keys=["make_date", "feature_name"])
+                print(f"# [load_ramp_coeff] {len(bq_coeff)} feature coefficients "
+                      f"(make_date={coeff_rows[0]['make_date']}) → model_ramp_coeff_daily.")
+        except Exception as _coeff_exc:  # noqa: BLE001
+            print(f"# [load_ramp_coeff] WARNING: non-fatal failure: {_coeff_exc}")
+
     print("# Done.")
 
 

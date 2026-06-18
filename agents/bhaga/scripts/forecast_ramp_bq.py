@@ -419,3 +419,36 @@ def build_ramp_backfill_rows(
             "forecast_model_version": CURRENT_RAMP_FORECAST_VERSION,
         })
     return rows
+
+
+def build_ramp_coeff_rows(
+    *,
+    labor_daily_rows: list[list],
+    weather_rows: list[dict],
+) -> list[dict]:
+    """Return one row per feature for today's fitted model coefficients.
+
+    Each row: {make_date, feature_name, coefficient, n_train}.
+    Returns [] when there is insufficient history to fit the model.
+    Used to populate model_ramp_coeff_daily and power the 'feature importance
+    over time' Grafana panel (Section 7A panel 87).
+    """
+    weather_by_date = _build_weather_index(weather_rows)
+    today = datetime.datetime.now(CT).date()
+    model = _build_ramp_model(labor_daily_rows, weather_by_date, today)
+    if not model:
+        return []
+
+    beta: list[float] = model["beta"]
+    feat_names: list[str] = model["feat_names"]
+    n_train: int = model["n_train"]
+
+    return [
+        {
+            "make_date": today.isoformat(),
+            "feature_name": name,
+            "coefficient": round(coef, 6),
+            "n_train": n_train,
+        }
+        for name, coef in zip(feat_names, beta)
+    ]

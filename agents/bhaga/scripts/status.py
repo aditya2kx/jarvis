@@ -198,6 +198,8 @@ KNOWN_UNCHECKED_GRAFANA_REFS: frozenset[str] = frozenset({
                                    # future forecast rows appear alongside historical actuals.
     "model_forecast_ramp_daily",   # panels 82/85 — same pattern as model_forecast_daily
                                    # for the Section 7A ramp forecast vs actual charts.
+    "model_ramp_coeff_daily",      # panel 87 — feature importance over time; Grafana queries
+                                   # this table directly (no view) for the Ridge β timeseries.
     "vw_forecast_exclusions",      # panel 83 (Section 7A) reuses the same shared exclusions
                                    # view; already in GRAFANA_VIEWS so this allowlist entry
                                    # prevents double-counting in sync tests.

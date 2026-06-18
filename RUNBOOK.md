@@ -1274,16 +1274,18 @@ A **parallel experimental forecast** runs nightly alongside the production `wow_
 |---|---|---|
 | `weather_daily` | Table | Daily weather from Open-Meteo: `date`, `tmean_c`, `tmax_c`, `tmin_c`, `precip_mm`, `is_rainy`, `kind` ('actual'\|'forecast'), `source`, `fetched_at` |
 | `model_forecast_ramp_daily` | Table | Ramp model forecast rows: same schema as `model_forecast_daily` + `forecast_model_version` |
-| `vw_model_forecast_ramp` | View | Next 30 days with COALESCE prior-week, `goal_shift_hours`, `scheduled_hours` — mirrors `vw_model_forecast` |
+| `model_ramp_coeff_daily` | Table | Ridge β coefficients per `make_date` × `feature_name`; one row per feature per nightly run — powers panel 87 (feature importance over time) |
+| `vw_model_forecast_ramp` | View | Next 30 days with COALESCE prior-week, `goal_shift_hours`, `scheduled_hours` — mirrors `vw_model_forecast`; LEFT JOINs `weather_daily` (kind='forecast') for Temp/Precip/Weather columns |
 | `vw_forecast_ramp_accuracy` | View | Past ramp forecast days joined to actuals; excludes `forecast_exclude` days — mirrors `vw_forecast_accuracy` |
 
 ### Grafana Section 7A panels
 
 Section 7A "Labor Forecast (ramp-aware, experimental)" is placed immediately after Section 7 and mirrors it with matching panel layout:
-- **Panel 81** (`vw_model_forecast_ramp`): same table as panel 71, using ramp forecast orders/items
+- **Panel 81** (`vw_model_forecast_ramp` + `weather_daily`): same table as panel 71, using ramp forecast orders/items, with **Fcst Temp °F**, **Precip (in)**, **Weather** columns from the NWP forecast
 - **Panel 84** (`vw_model_forecast_ramp`): Goal Total Hours vs Scheduled Part Time (same `$goal_hours_per_item` math)
 - **Panels 82/85** (`model_forecast_ramp_daily`): Forecast vs Actual timeseries (Orders + Items)
 - **Panel 86** (`vw_forecast_ramp_accuracy`): **Forecast Accuracy** — daily % error + 7-day rolling MAPE. Compare with Section 7's panel 76 to watch the ramp model converge vs the heuristic.
+- **Panel 87** (`model_ramp_coeff_daily`): **Feature Importance Over Time** — Ridge β coefficients for 7 key features (one line each): `weeks_since_open`, `log_roll_4w_dow`, `log_lag_7d`, `log_lag_14d`, `tmean_scaled`, `rainy_flag`, `precip_mm_scaled`. Shows how model weights evolve as training window grows.
 - **Panel 83** (`vw_forecast_exclusions`): shared exclusions (same input flags as Section 7)
 
 Section 7 also gains a new **Panel 76** (`vw_forecast_accuracy`): the same accuracy chart for the heuristic, so the two sections are directly comparable.
@@ -1296,7 +1298,7 @@ Section 7 also gains a new **Panel 76** (`vw_forecast_accuracy`): the same accur
 
 ### Applying the migrations
 
-Migrations `021` (`weather_daily`) and `022` (`model_forecast_ramp_daily` + views) are applied automatically by `ensure_schema()` at job startup. To apply manually:
+Migrations `021` (`weather_daily`), `022` (`model_forecast_ramp_daily` + views), and `023` (`model_ramp_coeff_daily`) are applied automatically by `ensure_schema()` at job startup. To apply manually:
 
 ```bash
 BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \

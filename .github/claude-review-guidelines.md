@@ -117,19 +117,42 @@ post-run verify gate (Firestore/BQ state) counts as 95-100% real-execution evide
 
 ## D2b. Grafana dashboard changes — required evidence checklist
 
-If this PR modifies `agents/bhaga/grafana/dashboard.json`, §4 **must** contain all three:
+If this PR modifies `agents/bhaga/grafana/dashboard.json`, §4 **must** contain all four:
 
 1. **Deploy output** — the `[bhaga-grafana-deploy] Dashboard deployed: <url>` line from running
    `python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985` before review.
 2. **Live URL** — the Grafana dashboard link so the reviewer can navigate to the affected panel(s).
-3. **Screenshot(s)** for any visual property change (axis scale, color, layout, panel title) — the
-   reviewer cannot open Grafana directly. PNGs rendered via the Grafana Render API, committed to
-   `docs/pr-evidence/<PR#>/` on the branch, and inlined via raw.githubusercontent.com URLs.
+3. **Screenshot(s) with real prod data** — PNGs showing the changed panels with visible data (not
+   "No data"). Screenshots with "No data" do not satisfy this requirement. Rendered via the Grafana
+   Render API (see recipe below), committed to `docs/pr-evidence/<PR#>/`, and inlined in the PR body.
+4. **Prod BQ populated** — if the PR adds new BQ tables/views that Grafana reads, those tables must
+   be populated in prod before taking screenshots (apply migrations + run materialize against prod).
+   Sandbox data never appears in Grafana — sandbox is for integration test evidence only.
 
-Full deploy + screenshot recipe: **`CONTRIBUTING.md` § "Grafana dashboard changes"**.
+**Screenshot method — Grafana Render API (NOT Playwright/browser):**
+```bash
+GRAFANA_TOKEN=$(security find-generic-password -s "grafana-cloud-api-token" -w)
+curl -s "https://steadyangelfish2985.grafana.net/render/d-solo/bhaga-analytics-v1/bhaga-analytics\
+?orgId=1&panelId=<N>&width=1400&height=500&from=now-90d&to=now%2B30d&theme=dark" \
+  -H "Authorization: Bearer $GRAFANA_TOKEN" \
+  -o "docs/pr-evidence/<PR#>/panel-<N>.png"
+```
+The keychain service name is exactly `"grafana-cloud-api-token"` (no account qualifier needed).
+Do NOT use Playwright or browser automation — Grafana Cloud uses SSO which fails in automated sessions.
+The Render API is the only reliable method.
+
+**Axis conventions — flag as REQUEST CHANGES if violated:**
+- **Forecast accuracy panels** (any panel showing % error or MAPE over time): Y-axis **must** have
+  `"min": 0, "max": 100` in `fieldConfig.defaults`. Values above 100% are outlier anomaly days that
+  belong in the `forecast_exclude` column — leaving the Y-axis unbounded makes recent performance
+  look falsely perfect by compressing the scale after an early spike.
+- **Order/item count panels:** Y-axis starts at 0, no forced max.
+
+Full deploy + prod-data + screenshot recipe: **`CONTRIBUTING.md` § "Grafana dashboard changes"**.
 
 **Flag as REQUEST CHANGES** if `dashboard.json` changed but §4 is missing the deploy output, the
-live URL, or screenshots for visual changes. "Will sync on merge" is not acceptable.
+live URL, screenshots with visible data, or if Y-axis max is missing on an accuracy/MAPE panel.
+"Will sync on merge" or "No data — prod data populates after merge" are not acceptable.
 
 ## D2c. Cost & cleanup discipline (from CONTRIBUTING.md § Design & execution principles)
 - **Token / cost:** flag obvious cost regressions — per-row network calls, unbounded LLM turns,

@@ -139,6 +139,12 @@
     ],
     "_doc_exclusions": "Lindsay is the store manager. She IS paid hourly ($25/hr) per ADP, but is excluded from labor% (we don't count manager cost against store sales) and from the tip pool (managers don't take from tips per policy). Exclusion is by canonical name, NOT by salaried flag."
   },
+  "location": {
+    "lat": 30.2978,
+    "lon": -97.7036,
+    "address": "1900 Aldrich St, Austin, TX 78723",
+    "_doc": "Palmetto Superfoods Mueller. Used by the weather skill (skills/weather/open_meteo.py) to fetch daily weather from Open-Meteo. Coordinates verified against the spike fetch_weather.py."
+  },
   "forecast_horizon_days": 30,
   "labor_config": {
     "saturation_orders_per_labor_hour": 4,

@@ -1211,6 +1211,79 @@ Set `BHAGA_SKIP_FORECAST=1` in the Cloud Run job environment to skip the forecas
 (e.g. during debugging). The step is non-fatal by default — a failure emits a `WARNING` log and
 continues.
 
+Set `BHAGA_SKIP_FORECAST_RAMP=1` to skip only the adaptive model (Section 7A) without affecting the production heuristic (Section 7). Weather fetch failure is also non-fatal — an Open-Meteo outage logs a WARNING and continues without failing the nightly run.
+
+---
+
+## 15A. Section 7A — Adaptive ETS Forecast (initial model `ramp_log_ridge_v1` added PR feat/ramp-forecast-7a 2026-06-18; replaced by `adaptive_dow_ets_v1` 2026-06-23)
+
+### Overview
+
+A **parallel experimental forecast** runs nightly alongside the production `wow_median_4wk_v2` heuristic, writing to its own BQ table (`model_forecast_ramp_daily`) and surfacing in Grafana Section 7A. Section 7 and all production flows are **unchanged**.
+
+**Current model (`adaptive_dow_ets_v1`):** Holt damped-trend exponential smoothing on deseasonalised daily orders × multiplicative DOW factors × multiplicative weather/event correction. Agile to regime changes (plateaus, surges, dips) — the static `weeks_since_open` ramp term from the prior model is gone.
+
+**Why `ramp_log_ridge_v1` was replaced (2026-06-23):** The static `weeks_since_open` feature encoded hypergrowth as an unbounded extrapolation; after the store's demand plateaued in May–Jun 2026, forecasts continued to project ~278 orders/day (actual ~110–165), a +120 bias. The heuristic outperformed it on the last 14 days (9.6% vs 46.8% MAPE) purely because the heuristic adapts via its recency-weighted anchor. Diagnosis: `agents/bhaga/analysis/weather_forecast_spike/backtest_adaptive.py`.
+
+**Key adaptive properties:**
+- Level (α=0.20) tracks regime changes within days of a shift.
+- Damped trend (β=0.05, φ=0.95): trend decays geometrically; damp_sum(30) is bounded, never diverges.
+- DOW factors: rolling 42-day window, clamped [0.5, 1.8], normalised to mean=1.
+- Weather/event correction: Ridge on in-sample log-residuals vs [tmean_s, precip_s, rainy, event_flag]; multiplier clamped [0.7, 1.4].
+- Guard: cap at 4× 28-day trailing mean.
+
+**Backtest result (walk-forward, 2026-06-23):**
+- Full series (58 days): adaptive 18.6% MAPE vs heuristic 22.9% — adaptive wins by 4.3pp.
+- Last 21d: adaptive 12.2% vs heuristic 13.7% — adaptive wins by 1.5pp.
+- Last 14d: adaptive 14.2% vs heuristic 9.6% — heuristic wins by 4.6pp (two anomalous low-volume Mondays, Jun 15 + Jun 22, drive the gap; both days have forecast_exclude=FALSE).
+
+**Weather dependency:** Nightly, `materialize_model_bq.py` fetches Open-Meteo ERA5 actuals (last 14 days) and NWP forward forecast (next 10 days) into `weather_daily`. Failure is non-fatal. Days 11–30 fall back to climatological defaults embedded in the model.
+
+### Tables and views
+
+| Object | Type | Description |
+|---|---|---|
+| `weather_daily` | Table | Daily weather from Open-Meteo: `date`, `tmean_c`, `tmax_c`, `tmin_c`, `precip_mm`, `is_rainy`, `kind` ('actual'\|'forecast'), `source`, `fetched_at` |
+| `model_forecast_ramp_daily` | Table | Adaptive model forecast rows: same schema as `model_forecast_daily` + `forecast_model_version` (value = `adaptive_dow_ets_v1`) |
+| `model_ramp_coeff_daily` | Table | Adaptive model diagnostics per `make_date` × `feature_name`; one row per diagnostic per nightly run — powers panel 87 |
+| `vw_model_forecast_ramp` | View | Next 30 days with COALESCE prior-week, `goal_shift_hours`, `scheduled_hours` — mirrors `vw_model_forecast`; LEFT JOINs `weather_daily` (kind='forecast') for Temp/Precip/Weather columns |
+| `vw_forecast_ramp_accuracy` | View | Past adaptive forecast days joined to actuals; excludes `forecast_exclude` days — mirrors `vw_forecast_accuracy` |
+| `model_labor_daily.event_flag` | Column | BOOL, additive (migration 024), default NULL/FALSE. Set manually for known demand-driver events; consumed as exogenous feature by the adaptive model. |
+
+### Grafana Section 7A panels
+
+Section 7A "7A. Labor Forecast (Adaptive ETS, experimental)" mirrors Section 7:
+- **Panel 81** (`vw_model_forecast_ramp` + `weather_daily`): Labor Forecast (Adaptive) — next 30 days table with **Fcst Temp °F**, **Precip (in)**, **Weather** NWP columns
+- **Panel 84** (`vw_model_forecast_ramp`): Goal Total Hours vs Scheduled Part Time (Adaptive)
+- **Panels 82/85** (`model_forecast_ramp_daily`): Forecast vs Actual timeseries (Orders + Items)
+- **Panel 86** (`vw_forecast_ramp_accuracy`): **Forecast Accuracy — Adaptive ETS** — daily % error + 7-day rolling MAPE. Y-axis capped at 100%. Compare with Section 7's panel 76.
+- **Panel 87** (`model_ramp_coeff_daily`): **Adaptive Model Diagnostics Over Time** — level, trend, damp_sum_30, DOW factors (fri/sat/sun/mon), weather betas (tmean, precip, rainy). Populates as nightly runs accumulate.
+- **Panel 83** (`vw_forecast_exclusions`): shared exclusions (same input flags as Section 7)
+
+Section 7 also has **Panel 76** (`vw_forecast_accuracy`): accuracy chart for the heuristic, for direct comparison.
+
+### Kill-switches
+
+- `BHAGA_SKIP_FORECAST_RAMP=1` — skip the adaptive forecast step only.
+- `BHAGA_SKIP_FORECAST=1` — skip both heuristic and adaptive forecast (also skips weather fetch).
+- Weather fetch failure is always non-fatal (logs `[weather] WARNING`).
+
+### Applying the migrations
+
+Migrations `021` (`weather_daily`), `022` (`model_forecast_ramp_daily` + views), `023` (`model_ramp_coeff_daily`), and `024` (`event_flag` on `model_labor_daily`) are applied automatically by `ensure_schema()` at job startup. To apply manually:
+
+```bash
+BHAGA_DATASTORE=bigquery BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
+  python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
+```
+
+To set `event_flag` for a known demand event:
+```sql
+UPDATE `jarvis-bhaga-prod.bhaga.model_labor_daily`
+SET event_flag = TRUE
+WHERE date = '2026-07-04'  -- Independence Day
+```
+
 ---
 
 ## 16. BQ as single source of truth (added PR #33, 2026-06-05)

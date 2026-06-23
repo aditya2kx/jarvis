@@ -160,12 +160,30 @@ Non-additive schema changes (column removal, rename, reorder) are never exempt.
 
 #### Grafana dashboard changes — push to prod before review, post evidence in §4
 
-`agents/bhaga/grafana/dashboard.json` is the source of truth. The `grafana-dashboard-sync.yml`
-workflow re-syncs it from `main` on every merge, but **do not rely on it as the review-time deploy
-path** — push the dashboard from your branch *before* opening the PR for review so the reviewer sees
-the live result.
+`agents/bhaga/grafana/dashboard.json` is the source of truth. **Push the dashboard and populate
+prod data before creating the PR** so the reviewer sees live charts — not empty "No data" panels.
 
-**Step 1 — deploy the branch dashboard:**
+##### Why prod data, not sandbox?
+
+BQ new tables/views created on this branch only exist in the sandbox dataset during integration
+tests. Grafana reads from the **prod `bhaga` dataset** (the datasource is hardwired to
+`jarvis-bhaga-prod`). Sandbox data never appears in Grafana. For PRs adding new BQ tables or
+views, apply the migrations and run `materialize_model_bq` against prod before taking screenshots:
+
+```bash
+# 1. Apply migrations to prod BQ (idempotent — safe to run on any branch)
+BHAGA_DATASTORE=bigquery python3 -c "from core.datastore import ensure_schema; print(ensure_schema())"
+
+# 2. Populate prod tables (new tables only; existing tables are gap-fill-safe)
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.materialize_model_bq --store palmetto
+```
+
+This is safe: new tables use `CREATE TABLE IF NOT EXISTS` / `CREATE OR REPLACE VIEW` and the
+`materialize_model_bq` writes are idempotent (MERGE by date key). It does NOT change any existing
+prod tables.
+
+##### Step 1 — deploy the branch dashboard to prod Grafana
+
 ```bash
 python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985
 ```
@@ -173,36 +191,54 @@ Output should end with:
 ```
 [bhaga-grafana-deploy] Dashboard deployed: https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics
 ```
+A branch deploy is safe and reversible — `grafana-dashboard-sync.yml` re-syncs from `main` on
+merge (the repo JSON is always the source of truth).
 
-**Step 2 — capture screenshots for visual changes (axis caps, colors, panel layout):**
+##### Step 2 — capture screenshots using the Grafana Render API
 
-Reviewers cannot open Grafana directly, so screenshots are required for any visual property change.
-Use the Grafana Render API:
+**Do not use Playwright or the browser UI** — Grafana Cloud login requires SSO which is unreliable
+in automated sessions. Use the service-account token from Keychain with the Render API directly:
+
 ```bash
-GRAFANA_API_TOKEN=$(security find-generic-password -s grafana-cloud-api-token -a steadyangelfish2985 -w)
-curl -o docs/pr-evidence/<PR#>/panel_<id>.png \
-  "https://steadyangelfish2985.grafana.net/render/d-solo/bhaga-analytics-v1?panelId=<id>&width=800&height=400&from=now-30d&to=now" \
-  -H "Authorization: Bearer $GRAFANA_API_TOKEN"
-```
-Commit the PNG(s) to `docs/pr-evidence/<PR#>/` on the branch, then reference in the PR body via:
-```markdown
-![panel](https://raw.githubusercontent.com/aditya2kx/jarvis/<branch>/docs/pr-evidence/<PR#>/panel_<id>.png)
+GRAFANA_TOKEN=$(security find-generic-password -s "grafana-cloud-api-token" -w)
+DIR="docs/pr-evidence/<PR#>"
+mkdir -p "$DIR"
+BASE="https://steadyangelfish2985.grafana.net/render/d-solo/bhaga-analytics-v1/bhaga-analytics"
+
+# Replace panelId=<N> with the IDs of changed/new panels
+# Time range: use from=now-90d&to=now%2B30d to show both history and forecast
+curl -s "$BASE?orgId=1&panelId=<N>&width=1400&height=500&from=now-90d&to=now%2B30d&theme=dark" \
+  -H "Authorization: Bearer $GRAFANA_TOKEN" \
+  -o "$DIR/panel-<N>.png"
 ```
 
-**Step 3 — paste evidence into PR §4:**
+Commit the PNGs and inline them in the PR description:
+```markdown
+![Panel description](docs/pr-evidence/<PR#>/panel-<N>.png)
+```
+
+##### Step 3 — paste evidence into PR §4
+
 - The `[bhaga-grafana-deploy] Dashboard deployed: <url>` line
-- The live dashboard URL
-- Screenshots (inline in the PR description via raw.githubusercontent.com)
+- The live dashboard URL: https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics
+- Screenshots showing the changed panels with real data (not "No data")
+
+##### Axis conventions
+
+- **Forecast accuracy panels (% error, MAPE):** Y-axis must be `"min": 0, "max": 100`. Values above
+  100% are outliers from anomaly days — capping at 100 keeps the chart readable and comparable
+  across panels. Anomaly days should appear as `forecast_exclude=true` in the exclusions table, not
+  distort the accuracy scale.
+- **Order/item count panels:** Y-axis should start at 0, no forced max.
 
 **Rules:**
-- A branch deploy is safe and reversible — `grafana-dashboard-sync.yml` re-syncs from `main` on
-  merge, so the source of truth is always the repo. If the PR is abandoned, re-run the sync workflow.
-- Do **not** hand-edit panels in the Grafana UI as a source of truth.
-- Do **not** use `deploy.py` to push anything other than `dashboard.json` changes — BigQuery/Sheets
-  data follows the normal merge-to-deploy flow (`RUNBOOK.md` §9).
+- Do **not** hand-edit panels in the Grafana UI — always edit `dashboard.json` and re-deploy.
+- Do **not** use `deploy.py` to push anything other than `dashboard.json` changes.
+- Do **not** rely on Playwright browser automation for screenshots — use the Render API as above.
 
-The Claude reviewer checks for deploy output + URL + screenshot in §4 for any `dashboard.json` PR
-(see `.github/claude-review-guidelines.md §D2b`). Missing evidence → REQUEST CHANGES.
+The Claude reviewer checks for deploy output + URL + screenshots with visible data in §4 for any
+`dashboard.json` PR (see `.github/claude-review-guidelines.md §D2b`). Missing or "No data"
+screenshots → REQUEST CHANGES.
 
 - **Backward compatible by default.** Schema changes are additive (no column reorder/removal), existing
   consumers and the nightly `daily_refresh` keep working, and you *prove* it (legacy suite green, or a

@@ -377,6 +377,24 @@ def map_forecast_daily(rec: dict) -> dict:
     }
 
 
+def map_forecast_ramp_daily(rec: dict) -> dict:
+    """Map a forecast_ramp_bq build_ramp_forecast_rows output row to the BQ schema.
+
+    Input keys: date (ISO), forecast_orders (int), forecast_items (float),
+                forecast_generated_at (ISO string),
+                forecast_model_version (str).
+    """
+    import datetime as _dt
+    return {
+        "date": _parse_date(rec.get("date")),
+        "forecast_orders": _parse_int(rec.get("forecast_orders")),
+        "forecast_items": _parse_float(rec.get("forecast_items")),
+        "forecast_generated_at": str(rec.get("forecast_generated_at", "")),
+        "forecast_model_version": rec.get("forecast_model_version") or None,
+        "materialized_at_utc": _dt.datetime.now(_dt.timezone.utc),
+    }
+
+
 def map_google_review(rec: dict) -> dict:
     """Map a Sheet reviews row to the BQ google_reviews schema.
 
@@ -407,6 +425,22 @@ def map_google_review(rec: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Backfill orchestrator
 # ---------------------------------------------------------------------------
+
+
+def map_forecast_ramp_coeff(rec: dict) -> dict:
+    """Map a build_ramp_coeff_rows output row to the model_ramp_coeff_daily BQ schema.
+
+    Input keys: make_date (ISO), feature_name (str), coefficient (float), n_train (int).
+    """
+    import datetime as _dt
+    return {
+        "make_date": _parse_date(rec.get("make_date")),
+        "feature_name": rec.get("feature_name") or None,
+        "coefficient": _parse_float(rec.get("coefficient")),
+        "n_train": _parse_int(rec.get("n_train")),
+        "materialized_at_utc": _dt.datetime.now(_dt.timezone.utc),
+    }
+
 
 def backfill(store: str, *, tables: set[str] | None = None, dry_run: bool = False) -> dict[str, dict]:
     """Run the full backfill. Returns {table: {rows_in_sheet, rows_loaded}}."""

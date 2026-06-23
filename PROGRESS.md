@@ -24,6 +24,25 @@
 - **Autonomy level:** L1 — agent self-sequences phases; pauses only at specify/jam/define-evidence/merge.
 - **PR:** `fix/redesign-repo-guidance-contributing-principles-r`
 
+## 2026-06-23 — BHAGA: Square OAuth REST API migration — browser scrape retired
+
+**What changed:** Square transactions, item sales, and KDS data now flow directly from the Square REST API (OAuth 2.0) into BigQuery, replacing the Playwright browser-scrape path entirely. No CSV files are written; no `extracted/downloads/` is used for Square data.
+
+**Milestones:**
+- **M1:** OAuth bootstrap — `skills/square_api/auth.py` handles token get/refresh from `square_palmetto_oauth` GCP secret; `skills/square_api/client.py` provides the REST client with pagination.
+- **M2:** Transactions + item sales — `skills/square_api/ingest.py` fetches payments, refunds, orders, and catalog categories for a date window; `skills/square_api/export.py` builds the in-memory row dicts matching the parser schema. Complex correctness work: split-tender aggregation (one row per order), canceled-order filtering, COMPLETED-payment filtering, timestamp convention (Register=`closed_at`, Kiosk/3rd-party=`created_at`), gift-card exclusion, refund gross/tip splitting, `_SOURCE_LABEL` / `_CHANNEL_LABEL` mappings, two-step category lookup, refund item lines with negated quantities.
+- **M3:** KDS — `skills/square_api/kds_reporting.py` queries the Square Reporting API (Cube.js) KDS cube at ticket grain; key correctness fixes: naive UTC timestamps treated as UTC (not local), `display_on_kds_at` (not `chit_created_at`) as the "Time Created" start for completion-time math, `time_due` added for late-ticket stats.
+- **M4:** Evidence + removal + docs — parity verified for 3 historical dates (2026-05-15, 2026-04-15, 2026-03-25); 100% row and value parity confirmed for `square_transactions`, `square_item_lines`, `square_kds_daily`. Browser runner (`skills/square_tips/runner.py`) gutted to stubs; `square_palmetto_login` secret removed from credential registry; browser-specific test files deleted; dead code removed from `daily_refresh.py`; docs updated.
+
+**Parity evidence:**
+- `2026-05-15`: square_transactions PASS 126/126, square_item_lines PASS 159/159, square_kds_daily PASS 1/1
+- `2026-04-15`: square_transactions PASS 47/47, square_item_lines PASS 54/54, square_kds_daily SKIP (no prod data)
+- `2026-03-25`: square_transactions PASS 23/23, square_item_lines PASS 26/26, square_kds_daily SKIP (no prod data)
+
+**Decision:** KDS percentile columns (p90/p95/p99) tolerate ±2 seconds — inherent from the Reporting API's millisecond timestamp precision vs. the dashboard CSV's whole-second rounding. All other columns are exact.
+
+**Files:** `skills/square_api/` (all files), `agents/bhaga/scripts/daily_refresh.py`, `agents/bhaga/knowledge-base/store-profiles/palmetto.json`, `skills/credentials/registry.py`, `skills/square_tips/runner.py`, `RUNBOOK.md`, `agents/bhaga/scripts/README.md`.
+
 ## 2026-06-17 — BHAGA: fix data_window_end drift freezing review crediting
 
 **What changed:** `data_window_end` is now purely derived from `MAX(square_transactions.date_local)` everywhere, eliminating the 2026-06-15 incident where a stale `store_config` row froze review crediting at 2026-06-13 (30 reviews held back for 2+ days).

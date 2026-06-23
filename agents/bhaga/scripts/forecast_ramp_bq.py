@@ -1,43 +1,46 @@
-"""Ramp-aware log-space Ridge forecast for BHAGA orders.
+"""Adaptive damped-trend + day-of-week + weather forecast for BHAGA orders.
 
 Parallel model to ``forecast_bq.wow_median_4wk_v2``.  Writes to the separate
 table ``model_forecast_ramp_daily`` so the production model is never touched.
 
-Model (ramp_log_ridge_v1):
-    Fits Ridge regression on log(orders) with the following features:
+Model (adaptive_dow_ets_v1):
+    Holt damped-trend exponential smoothing on *deseasonalised* daily orders,
+    multiplied by rolling multiplicative day-of-week factors, with an optional
+    multiplicative weather correction.
 
-    * weeks_since_open     — captures exponential ramp growth; in log-space a
-                             constant weekly growth rate is a straight line.
-    * DOW dummies [Mon–Sat] — Sunday is the reference (all zeros).
-    * log_lag_7d, log_lag_14d, log_lag_21d, log_lag_28d
-                            — log(actual_lag / rolling_mean) for each lag offset,
-                              each zero-filled when the lag date is unknown at
-                              forecast time (future → log(1) = 0).
-    * log_roll_4w_dow      — log of the 4-week same-DOW rolling average.
-    * tmean_scaled         — temperature (°F) / 100.
-    * precip_mm_scaled     — precipitation (mm) / 25.4  (≈ inches).
-    * rainy_flag           — 1 if precip > 6.35 mm (0.25 in), else 0.
+    Steps:
+    1.  **DOW factors** — rolling 42-day window, normalised to mean=1.
+        dow_factor[d] = mean_orders_for_DOW_d / overall_mean, clamped [0.5, 1.8].
+    2.  **Deseasonalise** — z[t] = y[t] / dow_factor[dow(t)].
+    3.  **Damped-trend smoother** (Holt, iterate in date order):
+            l_new = ALPHA*z[t] + (1-ALPHA)*(l + PHI*b)
+            b     = BETA*(l_new - l) + (1-BETA)*PHI*b
+            l     = l_new
+    4.  **Base forecast** h calendar-days ahead:
+            damp_sum(h) = PHI + PHI^2 + ... + PHI^h  ≤ PHI/(1-PHI)
+            base = (l + damp_sum(h)*b) * dow_factor[dow(target)]
+        The bounded damp_sum means the trend contribution *cannot* diverge
+        when growth plateaus — the fix for ramp_log_ridge_v1's failure mode.
+    5.  **Multiplicative weather correction** (Ridge on in-sample log-residuals):
+            correction = clamp(exp(beta·[tmean_s, precip_s, rainy, event]), 0.7, 1.4)
+            forecast  = base * correction
+    6.  **Guard** — cap at 4× 28-day trailing mean; floor at 0.
 
-    L2 regularisation (alpha=1.0) automatically shrinks weak features.
-    Predictions are exponentiated back; a runaway-extrapolation guard caps
-    the log-prediction at log(rolling_mean × 4).
+    Default params (tuned via grid search 2026-06-23 on 58 walk-forward points):
+        ALPHA=0.2  BETA=0.05  PHI=0.95  SEASON_WINDOW_DAYS=42
+
+    Full series MAPE: 18.6% (vs 22.9% heuristic).
+    Last 21d MAPE:    12.2% (vs 13.7% heuristic).
+    Ramp model replaced: ramp_log_ridge_v1 (last-7d MAPE 46.8%, bias +43 orders —
+    static weeks_since_open extrapolated beyond Apr-May hypergrowth plateau).
 
 ``forecast_exclude`` handling:
-    Identical to forecast_bq.py — excluded days are dropped from training
-    (never influence weights), never used as lag look-ups.  The forward rows
-    do NOT cover excluded/closed dates explicitly (the caller uses the same
-    approach as the heuristic model).
+    Identical to forecast_bq.py — excluded days are skipped in all ETS updates
+    and DOW factor windows.
 
-Units and conversion:
-    BQ weather_daily stores metric (°C, mm).  This module converts to °F/inch
-    for the feature thresholds that were calibrated in the spike:
-        tmean_f  = tmean_c × 9/5 + 32
-        precip_in = precip_mm / 25.4
-    These conversions are applied only internally; BQ schema is unchanged.
-
-``build_ramp_forecast_rows`` and ``build_ramp_backfill_rows`` mirror the
-public API of forecast_bq so materialize_model_bq.py can call them
-symmetrically.
+``build_ramp_forecast_rows``, ``build_ramp_backfill_rows``, and
+``build_ramp_coeff_rows`` preserve the exact public API of the ramp model so
+materialize_model_bq.py and backfill_bigquery.py need no changes.
 """
 from __future__ import annotations
 
@@ -51,24 +54,34 @@ from agents.bhaga.scripts.forecast import _get_parsed_rows
 
 CT = ZoneInfo("America/Chicago")
 
-CURRENT_RAMP_FORECAST_VERSION = "ramp_log_ridge_v1"
+CURRENT_RAMP_FORECAST_VERSION = "adaptive_dow_ets_v1"
 
 # Minimum non-excluded operating days before make_date to fit the model.
 _MIN_WARMUP_DAYS = 28
 
-# Ridge L2 regularisation strength.
+# Smoothing parameters (grid-tuned 2026-06-23).
+_ALPHA = 0.2    # level smoothing
+_BETA = 0.05    # trend smoothing
+_PHI = 0.95     # damping factor  (PHI < 1 prevents runaway trend)
+
+# Rolling window for DOW seasonality factors.
+_SEASON_WINDOW_DAYS = 42
+
+# Clamp on multiplicative DOW factor.
+_DOW_FACTOR_CLAMP = (0.5, 1.8)
+
+# Clamp on multiplicative weather/event correction.
+_CORRECTION_CLAMP = (0.7, 1.4)
+
+# Ridge L2 strength for weather correction.
 _RIDGE_ALPHA = 1.0
 
-# Lag offsets (days back from target_date).
-_LAG_OFFSETS = [7, 14, 21, 28]
-
-# Feature names in declaration order.  Used for sanity checks.
-_FEAT_NAMES = (
-    ["weeks_since_open"]
-    + ["dow_mon", "dow_tue", "dow_wed", "dow_thu", "dow_fri", "dow_sat"]
-    + [f"log_lag_{d}d" for d in _LAG_OFFSETS]
-    + ["log_roll_4w_dow"]
-    + ["tmean_scaled", "precip_mm_scaled", "rainy_flag"]
+# Diagnostic names emitted by build_ramp_coeff_rows (panel 87).
+_DIAG_NAMES = (
+    ["level", "trend", "damp_sum_30"]
+    + [f"dow_factor_{d}" for d in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]]
+    + ["tmean_beta", "precip_beta", "rainy_beta", "event_beta"]
+    + ["alpha", "beta_param", "phi"]
 )
 
 
@@ -82,8 +95,7 @@ def _ridge_solve(
 ) -> list[float]:
     """Ridge regression via normal equations: β = (XᵀX + αI)⁻¹ Xᵀy.
 
-    Ported from the weather_forecast_spike run_backtest.py.
-    X is n×p, y is mean-centred.  No intercept column.
+    X is n×p (no intercept column — caller centres y).
     """
     n = len(X)
     p = len(X[0]) if n > 0 else 0
@@ -124,7 +136,7 @@ def _invert_matrix(A: list[list[float]]) -> list[list[float]] | None:
     return [row[n:] for row in aug]
 
 
-# ── Weather feature helpers ──────────────────────────────────────────────────
+# ── Weather feature helper ───────────────────────────────────────────────────
 
 
 def _weather_feats(
@@ -133,21 +145,15 @@ def _weather_feats(
 ) -> tuple[float, float, float]:
     """Return (tmean_scaled, precip_mm_scaled, rainy_flag) for a date.
 
-    BQ weather_daily stores metric (°C, mm).  Converts to °F/inch for the
-    thresholds derived from the spike.
+    BQ weather_daily stores metric (°C, mm).
     Returns defaults (65°F, 0 precip) when the date is absent.
     """
     w = weather_by_date.get(date.isoformat(), {})
-    tmean_c = float(w.get("tmean_c") or 18.3)   # default ~65°F
+    tmean_c = float(w.get("tmean_c") or 18.3)    # default ~65°F
     precip_mm = float(w.get("precip_mm") or 0.0)
-
     tmean_f = tmean_c * 9.0 / 5.0 + 32.0
     precip_in = precip_mm / 25.4
-
-    tmean_scaled = tmean_f / 100.0
-    precip_mm_scaled = precip_mm / 25.4          # ~inches
-    rainy_flag = 1.0 if precip_in > 0.25 else 0.0
-    return tmean_scaled, precip_mm_scaled, rainy_flag
+    return tmean_f / 100.0, precip_mm / 25.4, (1.0 if precip_in > 0.25 else 0.0)
 
 
 def _build_weather_index(
@@ -157,79 +163,126 @@ def _build_weather_index(
     return {str(r["date"])[:10]: r for r in weather_rows if r.get("date")}
 
 
-# ── Lag feature helpers ──────────────────────────────────────────────────────
+# ── Adaptive model core ──────────────────────────────────────────────────────
 
 
-def _log_lag_feats_training(
-    date: datetime.date,
-    by_date: dict[str, int],
-    roll_mean: float,
-) -> list[float]:
-    """log-lag features for a training row.  All lags are in the past."""
-    feats: list[float] = []
-    for lag in _LAG_OFFSETS:
-        iso = (date - datetime.timedelta(days=lag)).isoformat()
-        v = by_date.get(iso)
-        feats.append(math.log(v / roll_mean) if v and v > 0 else 0.0)
+def _compute_dow_factors(
+    train: list[dict],
+    season_window: int = _SEASON_WINDOW_DAYS,
+) -> dict[int, float]:
+    """Multiplicative DOW seasonality factors, normalised to mean=1.
 
-    # 4-week same-DOW rolling average
-    same_dow = [
-        by_date[(date - datetime.timedelta(days=7 * w)).isoformat()]
-        for w in range(1, 5)
-        if (date - datetime.timedelta(days=7 * w)).isoformat() in by_date
-    ]
-    roll = math.log(statistics.mean(same_dow) / roll_mean) if same_dow else 0.0
-    feats.append(roll)
-    return feats
-
-
-def _log_lag_feats_prediction(
-    target_date: datetime.date,
-    make_date: datetime.date,
-    by_date: dict[str, int],
-    roll_mean: float,
-) -> list[float]:
-    """log-lag features for predicting target_date, leakage-free.
-
-    Lag dates on or after make_date are unknown → 0.0 (= log(1)).
+    Uses the last ``season_window`` non-excluded operating days.
+    Days with no observations in the window get factor 1.0.
     """
-    iso_make = make_date.isoformat()
-    feats: list[float] = []
-    for lag in _LAG_OFFSETS:
-        iso = (target_date - datetime.timedelta(days=lag)).isoformat()
-        if iso >= iso_make:
-            feats.append(0.0)
+    tail = train[-season_window:]
+    if not tail:
+        return {d: 1.0 for d in range(7)}
+    mean_orders = statistics.mean(int(r["orders"]) for r in tail)
+    if mean_orders <= 0:
+        return {d: 1.0 for d in range(7)}
+    dow_vals: dict[int, list[float]] = {d: [] for d in range(7)}
+    for r in tail:
+        dow_vals[datetime.date.fromisoformat(r["date"]).weekday()].append(float(r["orders"]))
+    factors: dict[int, float] = {}
+    for d in range(7):
+        if dow_vals[d]:
+            raw = statistics.mean(dow_vals[d]) / mean_orders
+            factors[d] = max(_DOW_FACTOR_CLAMP[0], min(_DOW_FACTOR_CLAMP[1], raw))
         else:
-            v = by_date.get(iso)
-            feats.append(math.log(v / roll_mean) if v and v > 0 else 0.0)
-
-    same_dow = [
-        by_date[(target_date - datetime.timedelta(days=7 * w)).isoformat()]
-        for w in range(1, 5)
-        if (target_date - datetime.timedelta(days=7 * w)).isoformat() in by_date
-        and (target_date - datetime.timedelta(days=7 * w)).isoformat() < iso_make
-    ]
-    roll = math.log(statistics.mean(same_dow) / roll_mean) if same_dow else 0.0
-    feats.append(roll)
-    return feats
+            factors[d] = 1.0
+    return factors
 
 
-# ── Core model fit / predict ─────────────────────────────────────────────────
+def _damp_sum(phi: float, h: int) -> float:
+    """Sum phi^1 + phi^2 + ... + phi^h.  Bounded by phi/(1-phi) as h→∞."""
+    if phi >= 1.0:
+        return float(h)
+    return phi * (1.0 - phi ** h) / (1.0 - phi)
 
 
-def _build_ramp_model(
+def _fit_ets(
+    train: list[dict],
+    alpha: float = _ALPHA,
+    beta: float = _BETA,
+    phi: float = _PHI,
+) -> tuple[float, float, dict[int, float], list[float], list[float]]:
+    """Fit Holt damped-trend on deseasonalised orders.
+
+    Returns (l, b, dow_factors, in_sample_fitted, in_sample_log_resid).
+    The in-sample fitted values are the one-step-ahead predictions (leakage-free)
+    used to estimate weather correction betas.
+    """
+    dow_factors = _compute_dow_factors(train)
+    if not train:
+        return 0.0, 0.0, dow_factors, [], []
+
+    first = train[0]
+    df0 = dow_factors[datetime.date.fromisoformat(first["date"]).weekday()]
+    l = float(first["orders"]) / max(df0, 0.01)
+    b = 0.0
+
+    fitted: list[float] = []
+    log_resid: list[float] = []
+
+    for r in train:
+        d = datetime.date.fromisoformat(r["date"])
+        dow_f = dow_factors[d.weekday()]
+        y = float(r["orders"])
+        z = y / max(dow_f, 0.01)
+
+        # One-step-ahead prediction (using l, b from *before* this observation)
+        f_deseason = l + phi * b
+        f_season = f_deseason * dow_f
+        fitted.append(max(1.0, f_season))
+        log_resid.append(math.log(max(y, 1.0)) - math.log(max(f_season, 1.0)))
+
+        # Update state
+        l_new = alpha * z + (1 - alpha) * (l + phi * b)
+        b = beta * (l_new - l) + (1 - beta) * phi * b
+        l = l_new
+
+    return l, b, dow_factors, fitted, log_resid
+
+
+def _fit_weather_betas(
+    train: list[dict],
+    log_resid: list[float],
+    weather_by_date: dict[str, dict],
+) -> list[float]:
+    """Ridge on in-sample log-residuals vs [tmean_s, precip_s, rainy, event_flag].
+
+    Returns 4-element beta list or [0,0,0,0] when insufficient data.
+    """
+    tail = train[-42:]
+    resid_tail = log_resid[max(0, len(log_resid) - 42):]
+    X, y = [], []
+    for r, lr in zip(tail, resid_tail):
+        d = datetime.date.fromisoformat(r["date"])
+        tm_s, pr_s, rainy = _weather_feats(d, weather_by_date)
+        event = 1.0 if r.get("event_flag") else 0.0
+        X.append([tm_s, pr_s, rainy, event])
+        y.append(lr)
+    if len(X) < 10:
+        return [0.0, 0.0, 0.0, 0.0]
+    # Centre y (Ridge has no intercept)
+    y_mean = statistics.mean(y)
+    y_c = [v - y_mean for v in y]
+    return _ridge_solve(X, y_c, alpha=_RIDGE_ALPHA)
+
+
+def _build_adaptive_model(
     labor_daily_rows: list[list],
     weather_by_date: dict[str, dict],
     make_date: datetime.date,
 ) -> dict[str, Any]:
-    """Fit log-space Ridge on all non-excluded operating days before make_date.
+    """Fit adaptive_dow_ets_v1 on all non-excluded operating days before make_date.
 
     Returns a model dict; {} if insufficient training data.
     """
     parsed = _get_parsed_rows(labor_daily_rows, exclude_flagged=False)
     iso_make = make_date.isoformat()
 
-    # Training: non-excluded days strictly before make_date with orders > 0.
     train = sorted(
         (r for r in parsed
          if r["date"] < iso_make
@@ -240,71 +293,64 @@ def _build_ramp_model(
     if len(train) < _MIN_WARMUP_DAYS:
         return {}
 
-    first_date = datetime.date.fromisoformat(train[0]["date"])
-    by_date: dict[str, int] = {r["date"]: int(r["orders"]) for r in train}
-    tail = train[-28:]
-    roll_mean = max(statistics.mean(int(r["orders"]) for r in tail), 1.0)
+    tail28 = train[-28:]
+    roll_mean = max(statistics.mean(float(r["orders"]) for r in tail28), 1.0)
 
-    X: list[list[float]] = []
-    y: list[float] = []
-    for r in train:
-        d = datetime.date.fromisoformat(r["date"])
-        weeks_since = (d - first_date).days / 7.0
-        dow = d.weekday()
-        dummies = [1.0 if dow == i else 0.0 for i in range(6)]
-        log_lags = _log_lag_feats_training(d, by_date, roll_mean)
-        tm_s, pr_s, rainy = _weather_feats(d, weather_by_date)
-        feats = [weeks_since] + dummies + log_lags + [tm_s, pr_s, rainy]
-        X.append(feats)
-        y.append(math.log(int(r["orders"])))
+    l, b, dow_factors, _, log_resid = _fit_ets(train)
+    weather_betas = _fit_weather_betas(train, log_resid, weather_by_date)
+    last_train_date = datetime.date.fromisoformat(train[-1]["date"])
 
-    y_mean = statistics.mean(y)
-    y_c = [v - y_mean for v in y]
-    beta = _ridge_solve(X, y_c, alpha=_RIDGE_ALPHA)
     return {
-        "beta": beta,
-        "intercept": y_mean,
-        "first_date": first_date,
+        "l": l,
+        "b": b,
+        "phi": _PHI,
+        "alpha": _ALPHA,
+        "beta": _BETA,
+        "dow_factors": dow_factors,
         "roll_mean": roll_mean,
-        "by_date": by_date,
+        "weather_betas": weather_betas,
+        "last_train_date": last_train_date,
         "n_train": len(train),
-        "feat_names": _FEAT_NAMES,
     }
 
 
-def _ramp_predict(
+def _adaptive_predict(
     model: dict[str, Any],
     target_date: datetime.date,
-    make_date: datetime.date,
     weather_by_date: dict[str, dict],
+    event_flag: bool = False,
 ) -> float:
-    """Predict orders for target_date from a fitted ramp model.
+    """Predict orders for target_date from a fitted adaptive model.
 
     Returns 0.0 if the model is empty.
     """
     if not model:
         return 0.0
 
-    first_date: datetime.date = model["first_date"]
-    beta: list[float] = model["beta"]
-    y_mean: float = model["intercept"]
+    l: float = model["l"]
+    b: float = model["b"]
+    phi: float = model["phi"]
+    dow_factors: dict[int, float] = model["dow_factors"]
     roll_mean: float = model["roll_mean"]
-    by_date: dict[str, int] = model["by_date"]
+    weather_betas: list[float] = model["weather_betas"]
+    last_train_date: datetime.date = model["last_train_date"]
 
-    weeks_since = (target_date - first_date).days / 7.0
-    dow = target_date.weekday()
-    dummies = [1.0 if dow == i else 0.0 for i in range(6)]
-    log_lags = _log_lag_feats_prediction(target_date, make_date, by_date, roll_mean)
+    # h = calendar days from last training day to target (min 1)
+    h = max(1, (target_date - last_train_date).days)
+    ds = _damp_sum(phi, h)
+    dow_f = dow_factors[target_date.weekday()]
+    base = max(1.0, (l + ds * b) * dow_f)
+
+    # Multiplicative weather/event correction
     tm_s, pr_s, rainy = _weather_feats(target_date, weather_by_date)
-    feats = [weeks_since] + dummies + log_lags + [tm_s, pr_s, rainy]
+    ef = 1.0 if event_flag else 0.0
+    feats = [tm_s, pr_s, rainy, ef]
+    log_corr = sum(wb * f for wb, f in zip(weather_betas, feats))
+    corr = max(_CORRECTION_CLAMP[0], min(_CORRECTION_CLAMP[1], math.exp(log_corr)))
+    forecast = base * corr
 
-    if len(feats) != len(beta):
-        return 0.0
-
-    log_pred = y_mean + sum(b * x for b, x in zip(beta, feats))
-    # Guard: cap at 4× the trailing mean to prevent runaway extrapolation.
-    log_pred = min(log_pred, math.log(roll_mean * 4))
-    return max(0.0, math.exp(log_pred))
+    # Guard: cap at 4× trailing mean
+    return max(0.0, min(forecast, 4.0 * roll_mean))
 
 
 def _items_from_orders(
@@ -335,7 +381,7 @@ def _items_from_orders(
     return round(orders_pred * ratio, 1)
 
 
-# ── Public build API ─────────────────────────────────────────────────────────
+# ── Public build API (signatures and row shapes unchanged from ramp model) ────
 
 
 def build_ramp_forecast_rows(
@@ -352,17 +398,17 @@ def build_ramp_forecast_rows(
     """
     weather_by_date = _build_weather_index(weather_rows)
     today = datetime.datetime.now(CT).date()
-    make_date = today  # weights fit on data strictly before today
+    make_date = today
     gen = datetime.datetime.now(CT).isoformat(timespec="seconds")
 
-    model = _build_ramp_model(labor_daily_rows, weather_by_date, make_date)
+    model = _build_adaptive_model(labor_daily_rows, weather_by_date, make_date)
     if not model:
         return []
 
     rows: list[dict] = []
     for i in range(0, horizon_days + 1):
         d = today + datetime.timedelta(days=i)
-        orders_f = _ramp_predict(model, d, make_date, weather_by_date)
+        orders_f = _adaptive_predict(model, d, weather_by_date)
         if orders_f <= 0:
             continue
         rows.append({
@@ -405,10 +451,10 @@ def build_ramp_backfill_rows(
         d = datetime.date.fromisoformat(d_iso)
         if d < horizon_start or d >= today:
             continue
-        model = _build_ramp_model(labor_daily_rows, weather_by_date, d)
+        model = _build_adaptive_model(labor_daily_rows, weather_by_date, d)
         if not model:
             continue
-        orders_f = _ramp_predict(model, d, d, weather_by_date)
+        orders_f = _adaptive_predict(model, d, weather_by_date)
         if orders_f <= 0:
             continue
         rows.append({
@@ -426,29 +472,45 @@ def build_ramp_coeff_rows(
     labor_daily_rows: list[list],
     weather_rows: list[dict],
 ) -> list[dict]:
-    """Return one row per feature for today's fitted model coefficients.
+    """Return one row per diagnostic for today's fitted model.
 
     Each row: {make_date, feature_name, coefficient, n_train}.
     Returns [] when there is insufficient history to fit the model.
-    Used to populate model_ramp_coeff_daily and power the 'feature importance
-    over time' Grafana panel (Section 7A panel 87).
+    Powers the 'Adaptive Model Diagnostics Over Time' Grafana panel (panel 87).
+
+    Emitted diagnostics:
+        level, trend, damp_sum_30,
+        dow_factor_mon..sun,
+        tmean_beta, precip_beta, rainy_beta, event_beta,
+        alpha, beta_param, phi
     """
     weather_by_date = _build_weather_index(weather_rows)
     today = datetime.datetime.now(CT).date()
-    model = _build_ramp_model(labor_daily_rows, weather_by_date, today)
+    model = _build_adaptive_model(labor_daily_rows, weather_by_date, today)
     if not model:
         return []
 
-    beta: list[float] = model["beta"]
-    feat_names: list[str] = model["feat_names"]
-    n_train: int = model["n_train"]
+    l = model["l"]
+    b = model["b"]
+    phi = model["phi"]
+    alpha = model["alpha"]
+    beta = model["beta"]
+    dow_factors = model["dow_factors"]
+    weather_betas = model["weather_betas"]
+    n_train = model["n_train"]
 
+    diag_values = (
+        [l, b, _damp_sum(phi, 30)]
+        + [dow_factors[d] for d in range(7)]
+        + weather_betas
+        + [alpha, beta, phi]
+    )
     return [
         {
             "make_date": today.isoformat(),
             "feature_name": name,
-            "coefficient": round(coef, 6),
+            "coefficient": round(val, 6),
             "n_train": n_train,
         }
-        for name, coef in zip(feat_names, beta)
+        for name, val in zip(_DIAG_NAMES, diag_values)
     ]

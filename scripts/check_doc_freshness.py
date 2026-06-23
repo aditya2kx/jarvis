@@ -142,6 +142,7 @@ COUPLINGS: list[dict] = [
             "core/migrations/021_weather_daily.sql",
             "core/migrations/022_ramp_forecast.sql",
             "core/migrations/023_ramp_coeff.sql",
+            "core/migrations/024_event_flag.sql",
         ],
         "docs": ["RUNBOOK.md", "agents/bhaga/scripts/README.md"],
         "why": "ramp-aware forecast model or weather skill changed → update RUNBOOK §15A + the scripts code map.",

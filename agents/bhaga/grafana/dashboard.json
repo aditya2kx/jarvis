@@ -4,7 +4,7 @@
   "description": "8-section dashboard: Pipeline Health (top), Daily Sales, Weekly Sales, Labor (daily+weekly), Order Quality, Payroll, Labor Forecast. Powered by BQ views from migrations 004+005+016.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 44,
+  "version": 45,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {
@@ -2638,7 +2638,7 @@
     {
       "id": 80,
       "type": "row",
-      "title": "7A. Labor Forecast (ramp-aware, experimental)",
+      "title": "7A. Labor Forecast (Adaptive ETS, experimental)",
       "collapsed": false,
       "description": "Parallel ramp-aware forecast (ramp_log_ridge_v1). Model: log-space Ridge with weeks-since-open, DOW dummies, lags 7/14/21/28d, weather. Runs nightly alongside the heuristic; Section 7 (production) is unchanged.",
       "gridPos": {
@@ -2651,7 +2651,7 @@
     {
       "id": 81,
       "type": "table",
-      "title": "Labor Forecast (Ramp-Aware) \u2014 next 30 days",
+      "title": "Labor Forecast (Adaptive) \u2014 next 30 days",
       "description": "Ramp-aware Ridge forecast (ramp_log_ridge_v1). Same columns as Section 7 \u2014 compare side-by-side to evaluate accuracy and labor-hours impact. Model fits nightly on log(orders) with weeks-since-open, DOW dummies, lags 7/14/21/28, weather. forecast_exclude days are excluded from training and anchoring identically to the heuristic.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -3021,7 +3021,7 @@
     {
       "id": 84,
       "type": "timeseries",
-      "title": "Goal Total Hours vs Scheduled Part Time (Ramp-Aware)",
+      "title": "Goal Total Hours vs Scheduled Part Time (Adaptive)",
       "description": "Daily labor target vs ADP Team Schedule part-time hours (current + next week only; excludes the one full-time employee). Goal Total Hours = forecast_items \u00d7 $goal_hours_per_item (same as the forecast table; covers part-time + full-time). Goal updates on each nightly forecast rebuild for upcoming days; past dates freeze at the last stored forecast row. Scheduled Part Time is blank beyond the ADP scrape horizon.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -3085,7 +3085,7 @@
     {
       "id": 82,
       "type": "timeseries",
-      "title": "Forecast vs Actual \u2014 Orders (Ramp-Aware)",
+      "title": "Forecast vs Actual \u2014 Orders (Adaptive)",
       "description": "Ramp-aware Ridge order forecast (today + next 30 days) with actuals overlaid. Dashed = forecast; solid = actual.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -3145,7 +3145,7 @@
     {
       "id": 85,
       "type": "timeseries",
-      "title": "Forecast vs Actual \u2014 Items (Ramp-Aware)",
+      "title": "Forecast vs Actual \u2014 Items (Adaptive)",
       "description": "Ramp-aware Ridge item forecast (today + next 30 days) with actuals overlaid. Dashed = forecast; solid = actual.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -3205,7 +3205,7 @@
     {
       "id": 86,
       "type": "timeseries",
-      "title": "Forecast Accuracy \u2014 Ramp-Aware Ridge",
+      "title": "Forecast Accuracy \u2014 Adaptive ETS",
       "description": "Daily absolute % error vs actuals (bars) and trailing 7-day rolling MAPE (line) for the ramp_log_ridge_v1 model. forecast_exclude days and zero-order days are excluded \u2014 same guardrail as the backtest. Compare with the mirror panel in Section 7 (heuristic) to track improvement. Target: ~10-15% rolling MAPE as volumes exceed 100 orders/day (Poisson noise floor ~10%).",
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -3647,7 +3647,7 @@
     {
       "id": 87,
       "type": "timeseries",
-      "title": "Feature Importance \u2014 Ridge Coefficients Over Time",
+      "title": "Adaptive Model Diagnostics Over Time",
       "description": "Ridge regression \u03b2 coefficients for the top features, one line per feature, plotted by make_date (nightly model refit). Shows how the model re-weights features as the training window grows (ramp plateau, seasonal patterns, lag reliability). Larger absolute value = stronger influence on log(orders). Source: model_ramp_coeff_daily \u2014 populated nightly by materialize_model_bq.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -3685,7 +3685,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(make_date, 'America/Chicago') AS time, MAX(IF(feature_name='weeks_since_open', coefficient, NULL)) AS `weeks_since_open`, MAX(IF(feature_name='log_roll_4w_dow', coefficient, NULL)) AS `log_roll_4w_dow`, MAX(IF(feature_name='log_lag_7d', coefficient, NULL)) AS `log_lag_7d`, MAX(IF(feature_name='log_lag_14d', coefficient, NULL)) AS `log_lag_14d`, MAX(IF(feature_name='tmean_scaled', coefficient, NULL)) AS `tmean_scaled`, MAX(IF(feature_name='rainy_flag', coefficient, NULL)) AS `rainy_flag`, MAX(IF(feature_name='precip_mm_scaled', coefficient, NULL)) AS `precip_mm_scaled` FROM `jarvis-bhaga-prod.bhaga.model_ramp_coeff_daily` GROUP BY make_date ORDER BY make_date"
+          "rawSql": "SELECT TIMESTAMP(make_date, 'America/Chicago') AS time, MAX(IF(feature_name='level', coefficient, NULL)) AS `level`, MAX(IF(feature_name='trend', coefficient, NULL)) AS `trend`, MAX(IF(feature_name='damp_sum_30', coefficient, NULL)) AS `damp_sum_30`, MAX(IF(feature_name='dow_factor_fri', coefficient, NULL)) AS `dow_fri`, MAX(IF(feature_name='dow_factor_sat', coefficient, NULL)) AS `dow_sat`, MAX(IF(feature_name='dow_factor_sun', coefficient, NULL)) AS `dow_sun`, MAX(IF(feature_name='dow_factor_mon', coefficient, NULL)) AS `dow_mon`, MAX(IF(feature_name='tmean_beta', coefficient, NULL)) AS `tmean_beta`, MAX(IF(feature_name='precip_beta', coefficient, NULL)) AS `precip_beta`, MAX(IF(feature_name='rainy_beta', coefficient, NULL)) AS `rainy_beta` FROM `jarvis-bhaga-prod.bhaga.model_ramp_coeff_daily` GROUP BY make_date ORDER BY make_date"
         }
       ]
     }

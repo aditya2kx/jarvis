@@ -1,5 +1,15 @@
 # Jarvis Build Progress
 
+## 2026-06-23 — BHAGA: Section 7A — Adaptive ETS Forecast (replaces ramp_log_ridge_v1)
+
+**Root cause — why ramp_log_ridge_v1 failed:** The static `weeks_since_open` feature encoded demand as an unbounded exponential ramp. Once the store's growth plateaued in May–Jun 2026, the model continued extrapolating: its 7-day forward forecast reached ~278 orders/day (+120 bias) while actual demand stabilised at 110–165. Live backtest (last 14d): ramp MAPE 46.8% vs heuristic 9.6%. The heuristic won because its recency-weighted WoW anchor naturally tracked the plateau; the ramp model was blind to the regime change.
+
+**What changed:** Replaced `ramp_log_ridge_v1` with `adaptive_dow_ets_v1` in `forecast_ramp_bq.py`. Identical public API (all three `build_ramp_*_rows` functions, same row keys, same BQ tables/views). Key properties: Holt damped-trend (α=0.20, β=0.05, φ=0.95) on deseasonalised orders; damped trend prevents divergence on plateaus; rolling 42-day DOW factors; multiplicative weather/event correction; `event_flag` extensibility hook (migration 024). Walk-forward backtest: 18.6% MAPE (full), 12.2% (last 21d) vs heuristic 22.9% / 13.7% — adaptive wins on both windows. Last-14d gap: 14.2% vs 9.6% (two anomalous Mondays, Jun 15 + Jun 22 drive it). Forward forecast: 91–165 orders/day, stable. Grafana Section 7A panels renamed "Adaptive"; panel 87 repurposed to "Adaptive Model Diagnostics Over Time" (level, trend, DOW factors, weather betas). Dashboard v45.
+
+**Migrations:** `024_event_flag.sql` — additive BOOL column on `model_labor_daily` for future exogenous event hooks. Applied 2026-06-23.
+
+**Evidence:** Full offline backtest script: `agents/bhaga/analysis/weather_forecast_spike/backtest_adaptive.py`. Research motivation: `agents/bhaga/analysis/weather_forecast_spike/README.md`.
+
 ## 2026-06-18 — BHAGA: Section 7A — Ramp-Aware Forecast (PR feat/ramp-forecast-7a)
 
 **What changed:** Added a parallel ramp-aware order forecast (model `ramp_log_ridge_v1`) that runs

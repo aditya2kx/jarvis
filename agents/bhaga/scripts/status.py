@@ -181,7 +181,7 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 020: vw_training_shifts (panel 62, 6. Payroll — Training Shifts table).
     # PR2 (Sheets exit): Sheet projection panels removed; vw_training_shifts remains.
     Target("vw_training_shifts", "date"),
-    # migration 022: Section 7A ramp-aware forecast views (dashboard v42).
+    # migration 022: Section 7A adaptive forecast views (dashboard v42âv45).
     # Both views are empty until the first nightly after migration applies.
     Target("vw_model_forecast_ramp", "date"),
     Target("vw_forecast_ramp_accuracy", "date"),
@@ -197,7 +197,7 @@ KNOWN_UNCHECKED_GRAFANA_REFS: frozenset[str] = frozenset({
                                    # table directly (LEFT JOIN vw_model_labor_daily) so
                                    # future forecast rows appear alongside historical actuals.
     "model_forecast_ramp_daily",   # panels 82/85 — same pattern as model_forecast_daily
-                                   # for the Section 7A ramp forecast vs actual charts.
+                                   # for the Section 7A adaptive forecast vs actual charts.
     "model_ramp_coeff_daily",      # panel 87 — feature importance over time; Grafana queries
                                    # this table directly (no view) for the Ridge β timeseries.
     "vw_forecast_exclusions",      # panel 83 (Section 7A) reuses the same shared exclusions

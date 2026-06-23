@@ -1,5 +1,29 @@
 # Jarvis Build Progress
 
+## 2026-06-23 — Harness-engineering redesign of repo guidance (L1 autonomy)
+
+**What changed:** Three-tier guidance framework (Gates / Spine / References), local verify harness,
+5-stage work tracker backed by GitHub Issues, and L1 self-driving session kickoff.
+
+- **Tier 0 — Gates added:** `scripts/verify.py` (local CI mirror: secret-scan, pytest, doc-freshness,
+  PR-desc, review-replies, plan-readiness), `scripts/git-hooks/pre-push`, `scripts/check_plan_readiness.py`
+  (hard gate for Plan→Agent transition), `scripts/verify_lifecycle.py` (conformance: 7 assertions).
+- **Tier 1 — Spine slimmed:** `jarvis.md` split into ~60-line routing card + on-demand
+  `jarvis-hard-lessons.md`; `bhaga-principles.md` and `chitra.md` glob-scoped to their agent paths;
+  `behavioral-anchor.md` and `self-drive.md` added (both `alwaysApply: true`); common principles
+  hoisted out of agent cards — `verify_lifecycle.py` assertion #6 enforces no re-duplication.
+- **Tier 2 — References decomposed:** `CONTRIBUTING.md` rewritten to ~61-line stub with
+  loop-as-success-criteria + explicit evidence-definition step; `docs/contributing/` (7 files);
+  `docs/WORKFLOW.md` (canonical lifecycle map: 10 phases, 5 stages, agent hierarchy, L0-L3 ladder,
+  verification matrix, automation maturity table); `AGENTS.md` trimmed to ~85-line TOC.
+- **Phase tracking:** `scripts/lifecycle.py` (5 stages × 12 substeps, helpers), `scripts/phase_state.py`
+  (GitHub Issues backend: `ensure-labels`, `init`, `advance`, `fail`, `status`, `report`; operator-gate
+  enforcement; local cache + Jira/Linear seam); `start_pr_session.py` extended to render phase ladder.
+- **verify_lifecycle.py full PASS:** 7/7 assertions (dry-run, 5-stage ladder, self-drive rule always-on,
+  GATES present, scripts --help, agent-card dedup, operator-gate refused without approval).
+- **Autonomy level:** L1 — agent self-sequences phases; pauses only at specify/jam/define-evidence/merge.
+- **PR:** `fix/redesign-repo-guidance-contributing-principles-r`
+
 ## 2026-06-17 — BHAGA: fix data_window_end drift freezing review crediting
 
 **What changed:** `data_window_end` is now purely derived from `MAX(square_transactions.date_local)` everywhere, eliminating the 2026-06-15 incident where a stale `store_config` row froze review crediting at 2026-06-13 (30 reviews held back for 2+ days).

@@ -271,10 +271,31 @@ attributed to chat space(s) with AI edits after this timestamp (see
 
 ## {_ROUTING_REMINDER}
 {gate}
+
+{_phase_ladder_section(br)}
 """
     brief_path = _brief_path(key)
     brief_path.write_text(brief, encoding="utf-8")
     return brief
+
+
+def _phase_ladder_section(branch: str) -> str:
+    """Return the phase ladder section for the brief, sourced from lifecycle.py."""
+    try:
+        from lifecycle import brief_ladder_text  # type: ignore
+        ladder = brief_ladder_text()
+        init_note = (
+            f"\n> Track progress: `python3 scripts/phase_state.py init --branch {branch!r}`\n"
+            f"> Check status:   `python3 scripts/phase_state.py status`\n"
+            f"> All in-flight:  `python3 scripts/phase_state.py report`"
+        )
+        return ladder + init_note
+    except ImportError:
+        return (
+            "## Phase ladder\n"
+            "align → plan → build → ship → verify-learn\n"
+            "See docs/WORKFLOW.md for the full lifecycle map."
+        )
 
 
 # macOS / browser URL handlers often fail silently above ~2 KB.

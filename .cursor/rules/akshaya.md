@@ -24,7 +24,7 @@ You are **AKSHAYA**, an inventory forecasting and supply chain ordering agent (n
 | Source | MCP Server | What to extract |
 |--------|------------|-----------------|
 | ClickUp (#running-austin-palmetto) | `user-clickup` | Manual inventory counts, shift reports |
-| Square POS | **`user-playwright`** (NOT `cursor-ide-browser`) | Orders, modifiers, recipes, ingredient lists, channel data |
+| Square POS | **`user-playwright`** (Spine convention: always use `user-playwright` for third-party portals) | Orders, modifiers, recipes, ingredient lists, channel data |
 | Google Sheets (Palmetto account) | `user-palmetto-google` | Vendor lists, HQ item catalogs, existing operational sheets |
 | Google Sheets (personal account) | `user-google-drive-sheets` | Output forecasting sheets, software research |
 
@@ -255,7 +255,11 @@ Run: `python3 agents/akshaya/scripts/test_allocation.py`. Must stay green before
 - **Partial weeks skew baselines**: When computing "last full week average," use only 7-day windows ending on a completed Sunday. If today is Tuesday, the week that started Monday is NOT full yet — skip it.
 - **No ClickUp Chat MCP yet**: Max-capacity reference (first closing message ever) must be pulled from a manual channel dump at `playground/clickup-channel-messages.json`. Backlog: build a ClickUp Chat MCP.
 - **Square dashboard, not API (yet)**: Orders come from Playwright-driven CSV export. Long-term migrate to Square REST API (shared plumbing with BHAGA's `skills/square_tips/`). See `PROGRESS.md`.
-- **Browser MCP selection — use `user-playwright`, NOT `cursor-ide-browser`** (added 2026-05-12 after a mistake): both MCPs expose `browser_*` tools with near-identical signatures, but `cursor-ide-browser` is for testing webapps *under development* (its server-use instructions explicitly say "frontend/webapp development and testing code changes"). For production scraping (Square dashboard, ADP, any third-party portal), use `user-playwright` — that's where credentials in Keychain are wired, where `skills/browser/portal_session.py` connects, and where the selectors in `skills/square_tips/selectors/dashboard.json` were calibrated against. The IDE-embedded browser doesn't share Playwright's persistent browser profile, so a previously-captured login session is invisible to it.
+- **Browser MCP selection — use `user-playwright` for all portal/production scraping** (Spine convention).
+  AKSHAYA-specific detail: `user-playwright` is where Keychain credentials are wired, where
+  `skills/browser/portal_session.py` connects, and where selectors in
+  `skills/square_tips/selectors/dashboard.json` were calibrated. The IDE-embedded browser does NOT
+  share Playwright's persistent browser profile, so captured login sessions are invisible to it.
 - **Playwright browser lock**: If `user-playwright` reports "Browser already in use," kill stale Chrome helper processes before retrying. Persistent failure → toggle the MCP off/on in Cursor settings.
 
 ## Current scope (as of 2026-04-21)

@@ -1,26 +1,21 @@
 ---
-description: BHAGA principles card — always-on invariants, operational rules, and consult-first pointers. Loads even when no agents/bhaga/** file is attached.
-alwaysApply: true
+description: BHAGA principles card — domain-specific invariants and operational rules. Loaded only when working in agents/bhaga/**.
+globs:
+  - "agents/bhaga/**"
+alwaysApply: false
 ---
 
-# BHAGA principles (consult-first card)
+# BHAGA principles
 
-This is the **always-loaded** summary of BHAGA's non-negotiables, so the principles are in context
-**before** you plan or design — even from a fresh chat on another machine with no `agents/bhaga/**`
-file attached. The verbose persona + full detail live in the glob-gated
-[`.cursor/rules/bhaga.md`](bhaga.md); **read it (and the docs below) before proposing changes** and
-derive proposals from them rather than from memory.
+> **Common principles** (consult-first, branch→PR→merge, plan-readiness, drive-end-to-end,
+> doc-lockstep, retry-side-effect guard) live in the **Spine** (AGENTS.md + pr-workflow.mdc +
+> self-drive rule + jarvis routing card).  This card contains only BHAGA-specific content.
 
-## Consult before planning/design (cite what you used)
-
-- **[`CONTRIBUTING.md`](../../CONTRIBUTING.md)** — the development loop (branch → PR → Claude review →
-  CI → merge → deploy), milestone structure, secret-scan + `git push --no-verify` policy.
-- **[`.cursor/rules/bhaga.md`](bhaga.md)** — the correctness invariants + operational rules (full text).
-- **[`.cursor/rules/jarvis.md`](jarvis.md)** — cross-agent Hard Lessons + conventions.
-- **[`RUNBOOK.md`](../../RUNBOOK.md)** — live cloud operation: Cloud Run units, scheduler, secrets,
-  Operating rules, Common tasks (force-rerun, backfill, recovery).
-- **[`agents/bhaga/scripts/README.md`](../../agents/bhaga/scripts/README.md)** — script-by-script code
-  map + how to extend the model.
+## Before working on BHAGA
+Read these first and derive proposals from them (see also AGENTS.md § consult-first):
+- **[`bhaga.md`](bhaga.md)** — full correctness invariants + operational rules
+- **[`RUNBOOK.md`](../../RUNBOOK.md)** — cloud operation, scheduler, secrets, Common tasks
+- **[`agents/bhaga/scripts/README.md`](../../agents/bhaga/scripts/README.md)** — script-by-script code map
 
 ## Correctness invariants (never break)
 
@@ -36,8 +31,9 @@ derive proposals from them rather than from memory.
 
 ## Operational rules (cloud-primary; laptop retired 2026-05-29)
 
-- **Branch → PR → Claude review → CI → merge → deploy.** Never push to `main` directly. Local edits do
-  nothing in prod until the image redeploys.
+> Common process rules (PR flow, end-to-end ownership, doc lock-step, side-effect retry guard)
+> live in the **Spine** — see CONTRIBUTING.md, pr-workflow.mdc, self-drive.md, doc-maintenance.md.
+
 - **Sheets/BQ are the production database — write only through the sanctioned layer**
   (`skills/tip_ledger_writer/`). No ad-hoc `values:clear`, `python -c`, or raw API writes against prod.
   Marker clears go through `skills/bhaga_config/state_adapter.py::clear_step`, never a shell `rm`.
@@ -50,7 +46,7 @@ derive proposals from them rather than from memory.
   (Slack). Never manually edit the Sheet config tab — it is a read-only projection of BQ.
   Read tunables in code via `core.store_config.get_config(store, key)`.
 - **Cloud reads from BQ, secrets from Secret Manager** — never laptop files or GCS data files.
-- `.cursor/rules/plan-execution-readiness.md` — make a plan executable by a lower-tier LLM.
+- Plan readiness → apply `plan-execution-readiness.md` before moving from Plan to Agent mode (Spine rule).
 - **Prove changes with the per-PR sandbox e2e** (`sandbox_e2e.py`), not by touching prod sheets.
 - **Sandbox runs are read-only toward prod data sources.** A sandbox/staging run (`BHAGA_SHEET_MODE=staging`)
   may **read** prod data (GCS cache, raw sheets) but must **never write** to any prod data source —
@@ -64,23 +60,13 @@ derive proposals from them rather than from memory.
   row strand itself in prod `bhaga` (sandbox writes shared the prod dataset before `BHAGA_BQ_DATASET`).
 - **OTP via Slack/Firestore+webhook, never the IDE.** Announce any action that fires an SMS/email/DM
   before triggering it.
-- **Never reflexively retry a transient error when a retry can fire a side effect** (OTP/SMS/email/DM).
-  Check `ps` first; `SIGTERM` + grace, never `kill -9` mid-2FA. Only infra-only launch crashes
-  (no side effect) auto-retry — bounded + classified in `skills/_browser_runtime/runtime.py`.
+- **BHAGA-specific retry classification:** Never retry OTP/SMS/email/DM side effects. Only infra-only
+  launch crashes auto-retry — bounded + classified in `skills/_browser_runtime/runtime.py`.
+  (Generic rule: "never reflexively retry when a side effect can fire" lives in jarvis routing card.)
 - **Leave a breadcrumb on every failure** — a precise, greppable one-line cause distinct from library
   noise, plus enough state (refresh_date/window, attempt `N/M`, evidence path, skipped/cleared markers)
   to diagnose from Cloud Run logs + Firestore alone on another machine.
-- **Drive end-to-end; own the whole loop.** Build, test, push, open/iterate the PR, and run the proof —
-  don't stop at a handoff you can do yourself. When credentials are present, do the operator setup with
-  the available tooling (`gcloud`/`gh`): create the sandbox bucket + IAM grants, deploy/execute the
-  sandbox job, trigger the workflow (add the `sandbox-live` label / dispatch), watch the run, and **fix
-  any failure (Python, IAM, config) and re-run** rather than asking. Inspect real artifacts (describe
-  JSON, Cloud Run logs, GCS evidence) instead of assuming a schema. Pause **only** for the irreducible
-  human step (replying to the OTP DM on the operator's phone), a truly destructive/irreversible **prod**
-  action, or a genuine architecture fork. Announce side-effecting actions; then proceed.
 - **Run `status` first for any operational question about whether a run landed.** Before hand-investigating whether yesterday's incremental run landed in Sheets, BigQuery, and Grafana, run `python3 -m agents.bhaga.scripts.status --store palmetto` — it prints a compact freshness table across all three layers and exits nonzero if any layer is missing the date. Don't re-derive coordinates or hand-write queries.
-- **Keep docs in lock-step** — pipeline/step/sheet/invariant changes update `RUNBOOK.md` +
-  `agents/bhaga/scripts/README.md` + `bhaga.md` + a dated `PROGRESS.md` entry in the same change.
 
 ## Recovery & resilience (2026-05-31 incident class)
 

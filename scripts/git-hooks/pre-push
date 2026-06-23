@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Pre-push hook: run the local verify harness before pushing.
+#
+# Install once per clone with: bash scripts/install-git-hooks.sh
+#
+# Runs scripts/verify.py --full to catch failures before they hit CI.
+# Set VERIFY=0 to skip (e.g. emergency bypass after confirming diff is clean).
+# The pre-push hook complements pre-commit (which captures review cost into BQ)
+# — pre-commit runs fast; pre-push runs the full gate set.
+set -euo pipefail
+
+[ "${VERIFY:-1}" = "0" ] && exit 0
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+echo "pre-push: running verify --full …" >&2
+exec python3 scripts/verify.py --full

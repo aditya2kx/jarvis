@@ -235,15 +235,39 @@ def _build_kds_csv_rows(api_rows: list[dict], shop_tz: str) -> list[list[str]]:
                 return str(v)
         return ""
 
-    rows: list[list[str]] = []
+    # Deduplicate: including time_due as a Cube.js dimension can produce multiple
+    # rows for the same ticket when items within a ticket have different time_due
+    # values (some null, some set). Group by ticket natural key and keep the row
+    # that has a non-null time_due; fall back to any row if none has time_due.
+    deduped: dict[tuple, dict] = {}
     for r in api_rows:
+        s = {k.split(".", 1)[-1]: v for k, v in r.items()}
+        key = (
+            s.get("ticket_name") or "",
+            s.get("display_on_kds_at") or s.get("chit_created_at") or "",
+            s.get("device_code_name") or s.get("device_name") or "",
+        )
+        existing = deduped.get(key)
+        if existing is None or (not (existing.get("time_due") or existing.get("KDS.time_due"))
+                                and (s.get("time_due") or s.get("KDS.time_due"))):
+            deduped[key] = r
+
+    rows: list[list[str]] = []
+    for r in deduped.values():
         stripped = {k.split(".", 1)[-1]: v for k, v in r.items()}
         # "Time Created" in the dashboard CSV = display_on_kds_at (when the ticket
         # appeared on the KDS screen), NOT chit_created_at (order creation time).
         # Use chit_created_at only as a fallback when display_on_kds_at is absent.
         display_ts = stripped.get("display_on_kds_at") or stripped.get("chit_created_at") or ""
         completed_ts = stripped.get("actual_completed_at") or ""
-        time_due_ts = stripped.get("time_due") or ""
+        order_src = str(stripped.get("order_source") or "").lower()
+        # The Square dashboard CSV does not include time_due for Kiosk orders even
+        # though the Reporting API populates it (Kiosk auto-assigns an internal due
+        # time; it is not a customer-scheduled pickup). Clear it to match the CSV.
+        if "kiosk" in order_src:
+            time_due_ts = ""
+        else:
+            time_due_ts = stripped.get("time_due") or ""
 
         # Completion time = seconds from KDS display to actual completion.
         # Both timestamps are UTC without a Z suffix.

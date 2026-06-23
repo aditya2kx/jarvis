@@ -280,6 +280,7 @@ def export_window(*, start_date: datetime.date, end_date: datetime.date,
 # All other API source.name values (e.g. "DoorDash - Storefront") appear verbatim in the CSV.
 _SOURCE_LABEL: dict[str, str] = {
     "": "Register",
+    "Point of Sale": "Register",  # Square POS app; treated identically to empty source
     "Kiosk": "Square Kiosk",
 }
 
@@ -512,8 +513,8 @@ def _build_item_rows(payments, orders_by_id, team, categories, location_name,
         staff = team.get(payment.get("team_member_id", ""), "")
         raw_src = (order.get("source") or {}).get("name", "")
         # Item CSV "channel": 3rd-party/Kiosk/Per Diem uses the mapped platform
-        # label; Register (empty source) uses location_name.
-        if raw_src == "":
+        # label; Register (empty source or "Point of Sale") uses location_name.
+        if _SOURCE_LABEL.get(raw_src, raw_src) == "Register":
             channel = location_name
         else:
             channel = _CHANNEL_LABEL.get(raw_src, raw_src)
@@ -582,7 +583,7 @@ def _build_refund_item_rows(refunds, orders_by_id, team, categories, location_na
         if not orig_order:
             continue
         raw_src = (orig_order.get("source") or {}).get("name", "")
-        if raw_src == "":
+        if _SOURCE_LABEL.get(raw_src, raw_src) == "Register":
             channel = location_name
         else:
             channel = _CHANNEL_LABEL.get(raw_src, raw_src)

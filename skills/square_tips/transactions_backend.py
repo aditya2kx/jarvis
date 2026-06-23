@@ -187,58 +187,28 @@ def _to_iana(tz_display: str) -> str:
         ) from exc
 
 
-def parse_csv(
-    csv_path: pathlib.Path,
+def parse_transaction_rows(
+    rows: list[list[str]],
     *,
     shop_tz: str = DEFAULT_SHOP_TZ,
 ) -> list[dict]:
-    """Parse a downloaded Transactions CSV into canonical per-transaction records.
+    """Parse an in-memory list of Transactions CSV rows (header + data).
 
-    Each output dict represents one transaction (one CSV row) with both the
-    original ET-bucketed timestamps preserved (for audit) AND derived
-    shop-local fields used by the model sheet:
+    Identical logic to ``parse_csv`` but accepts rows already read into memory
+    rather than a file path. Used by the Square API ingest path so no CSV file
+    is written to disk.
 
-        {
-            "transaction_id": str,
-            "event_type": "Payment" | "Refund",
-            "created_at_src_iso": "2026-05-15T21:38:24-04:00",  # Square's source TZ
-            "created_at_local_iso": "2026-05-15T20:38:24-05:00", # shop TZ (CT)
-            "date_local": "2026-05-15",       # KEY for daily aggregation
-            "hour_local": 20,                  # KEY for dow_hour heatmap
-            "dow_local": 4,                    # 0=Monday
-            "gross_sales_cents": int,
-            "discount_cents": int,             # typically negative
-            "tip_cents": int,                  # negative on refunds
-            "net_total_cents": int,            # after Square fees
-            "total_collected_cents": int,      # before Square fees
-            "source": str,                     # Register | Square Kiosk | Uber Eats | ...
-            "staff_name": str,                 # often empty (kiosk, third-party)
-            "location": str,
-            "raw_date_csv": str,               # original ET-bucketed date from CSV (audit)
-            "raw_time_csv": str,
-            "raw_tz_csv": str,
-        }
-
-    Records are returned sorted by created_at_local_iso ascending.
+    ``rows[0]`` must be the header row (e.g. TXN_HEADER from export.py).
+    Returns the same record dicts as ``parse_csv``.
     """
-    if not csv_path.exists():
-        raise FileNotFoundError(f"CSV not found: {csv_path}")
-
-    target_tz = ZoneInfo(shop_tz)
-
-    # Some descriptions contain embedded newlines inside quoted cells. csv.reader
-    # with newline='' handles this correctly. utf-8-sig strips a BOM if present.
-    with csv_path.open(encoding="utf-8-sig", newline="") as f:
-        rows = list(csv.reader(f))
-
     if not rows or len(rows) < 2:
         return []
 
     header = rows[0]
     if "Transaction ID" not in header:
-        # Probably wrong CSV (e.g. Sales Summary). Caller fed the wrong path.
         return []
 
+    target_tz = ZoneInfo(shop_tz)
     records: list[dict] = []
     for row in rows[1:]:
         if len(row) < len(_COL) or not row[_COL["transaction_id"]]:
@@ -250,7 +220,6 @@ def parse_csv(
         try:
             src_tz = ZoneInfo(_to_iana(tz_display))
         except ValueError:
-            # Skip rather than crash; log via Slack in production via the orchestrator.
             continue
 
         try:
@@ -284,6 +253,52 @@ def parse_csv(
 
     records.sort(key=lambda r: r["created_at_local_iso"])
     return records
+
+
+def parse_csv(
+    csv_path: pathlib.Path,
+    *,
+    shop_tz: str = DEFAULT_SHOP_TZ,
+) -> list[dict]:
+    """Parse a downloaded Transactions CSV into canonical per-transaction records.
+
+    Each output dict represents one transaction (one CSV row) with both the
+    original ET-bucketed timestamps preserved (for audit) AND derived
+    shop-local fields used by the model sheet:
+
+        {
+            "transaction_id": str,
+            "event_type": "Payment" | "Refund",
+            "created_at_src_iso": "2026-05-15T21:38:24-04:00",  # Square's source TZ
+            "created_at_local_iso": "2026-05-15T20:38:24-05:00", # shop TZ (CT)
+            "date_local": "2026-05-15",       # KEY for daily aggregation
+            "hour_local": 20,                  # KEY for dow_hour heatmap
+            "dow_local": 4,                    # 0=Monday
+            "gross_sales_cents": int,
+            "discount_cents": int,             # typically negative
+            "tip_cents": int,                  # negative on refunds
+            "net_total_cents": int,            # after Square fees
+            "total_collected_cents": int,      # before Square fees
+            "source": str,                     # Register | Square Kiosk | Uber Eats | ...
+            "staff_name": str,                 # often empty (kiosk, third-party)
+            "location": str,
+            "raw_date_csv": str,               # original ET-bucketed date from CSV (audit)
+            "raw_time_csv": str,
+            "raw_tz_csv": str,
+        }
+
+    Records are returned sorted by created_at_local_iso ascending.
+    Delegates to ``parse_transaction_rows`` after reading the file.
+    """
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV not found: {csv_path}")
+
+    # Some descriptions contain embedded newlines inside quoted cells. csv.reader
+    # with newline='' handles this correctly. utf-8-sig strips a BOM if present.
+    with csv_path.open(encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f))
+
+    return parse_transaction_rows(rows, shop_tz=shop_tz)
 
 
 # ── Aggregations (used by tip_pool_allocation + the model sheet) ───
@@ -385,53 +400,17 @@ _ITEM_COL = {
 }
 
 
-def parse_item_sales_csv(
-    csv_path: pathlib.Path,
+def parse_item_rows(
+    rows: list[list[str]],
     *,
     shop_tz: str = DEFAULT_SHOP_TZ,
 ) -> list[dict]:
-    """Parse a downloaded Item Sales Detail CSV into canonical per-item-line records.
+    """Parse an in-memory list of Item Sales CSV rows (header + data).
 
-    Each output dict represents one item line in a transaction (one CSV row):
-
-        {
-            "date_local": "2026-05-26",       # shop-TZ date
-            "time_local": "19:41:18",          # shop-TZ time (HH:MM:SS)
-            "item_sold_at_local": "2026-05-26T19:41:18",  # shop-TZ ISO datetime
-            "item_name": "Blue Bondives Smoothie (16oz.)",
-            "category": "Health Boost Smoothies",
-            "qty_sold": 1.0,
-            "gross_sales_cents": 1195,
-            "discount_cents": 0,
-            "net_sales_cents": 1195,
-            "transaction_id": "4ECSV5...",
-            "payment_id": "zZq3pU...",
-            "event_type": "Payment",
-            "location": "Austin Mueller Lake",
-            "employee": "Lindsay Krause",
-            "channel": "Austin Mueller Lake",
-            "line_seq": 0,                     # 0-based within natural-key group
-        }
-
-    ``line_seq`` is a per-group counter over lines that share
-    (transaction_id, item_name, item_sold_at_local), so the natural key stays
-    stable across differently-windowed re-exports of the same data.
-
-    Timezone conversion mirrors parse_csv(): the CSV's Date/Time/Time Zone
-    columns are in the account's display timezone (varies by operator locale),
-    and we convert to shop_tz (America/Chicago) for date_local bucketing.
-
-    Records are returned sorted by
-    (date_local, time_local, transaction_id, item_name, line_seq) ascending.
+    Identical logic to ``parse_item_sales_csv`` but accepts rows already read
+    into memory. Used by the Square API ingest path (no CSV file on disk).
+    ``rows[0]`` must be the header row (e.g. ITEM_HEADER from export.py).
     """
-    if not csv_path.exists():
-        raise FileNotFoundError(f"Item Sales CSV not found: {csv_path}")
-
-    target_tz = ZoneInfo(shop_tz)
-
-    with csv_path.open(encoding="utf-8-sig", newline="") as f:
-        rows = list(csv.reader(f))
-
     if not rows or len(rows) < 2:
         return []
 
@@ -439,13 +418,8 @@ def parse_item_sales_csv(
     if "Transaction ID" not in header:
         return []
 
+    target_tz = ZoneInfo(shop_tz)
     records: list[dict] = []
-    # line_seq disambiguates lines that share the natural-key prefix
-    # (transaction_id, item_name, item_sold_at_local) — e.g. two identical
-    # items on one ticket. It is a per-group 0-based counter, NOT a file-global
-    # index, so the same physical line gets the same line_seq regardless of how
-    # the source CSV was windowed. That keeps the natural key stable across
-    # re-exports and prevents duplicate item_lines rows on replay.
     seq_by_group: dict[tuple[str, str, str], int] = {}
     for row in rows[1:]:
         if len(row) <= _ITEM_COL["transaction_id"] or not row[_ITEM_COL["transaction_id"]]:
@@ -500,7 +474,6 @@ def parse_item_sales_csv(
             "line_seq": line_seq,
         })
 
-    # Fully deterministic order (independent of source row order for ties).
     records.sort(
         key=lambda r: (
             r["date_local"], r["time_local"],
@@ -508,6 +481,55 @@ def parse_item_sales_csv(
         )
     )
     return records
+
+
+def parse_item_sales_csv(
+    csv_path: pathlib.Path,
+    *,
+    shop_tz: str = DEFAULT_SHOP_TZ,
+) -> list[dict]:
+    """Parse a downloaded Item Sales Detail CSV into canonical per-item-line records.
+
+    Each output dict represents one item line in a transaction (one CSV row):
+
+        {
+            "date_local": "2026-05-26",       # shop-TZ date
+            "time_local": "19:41:18",          # shop-TZ time (HH:MM:SS)
+            "item_sold_at_local": "2026-05-26T19:41:18",  # shop-TZ ISO datetime
+            "item_name": "Blue Bondives Smoothie (16oz.)",
+            "category": "Health Boost Smoothies",
+            "qty_sold": 1.0,
+            "gross_sales_cents": 1195,
+            "discount_cents": 0,
+            "net_sales_cents": 1195,
+            "transaction_id": "4ECSV5...",
+            "payment_id": "zZq3pU...",
+            "event_type": "Payment",
+            "location": "Austin Mueller Lake",
+            "employee": "Lindsay Krause",
+            "channel": "Austin Mueller Lake",
+            "line_seq": 0,                     # 0-based within natural-key group
+        }
+
+    ``line_seq`` is a per-group counter over lines that share
+    (transaction_id, item_name, item_sold_at_local), so the natural key stays
+    stable across differently-windowed re-exports of the same data.
+
+    Timezone conversion mirrors parse_csv(): the CSV's Date/Time/Time Zone
+    columns are in the account's display timezone (varies by operator locale),
+    and we convert to shop_tz (America/Chicago) for date_local bucketing.
+
+    Records are returned sorted by
+    (date_local, time_local, transaction_id, item_name, line_seq) ascending.
+    Delegates to ``parse_item_rows`` after reading the file.
+    """
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Item Sales CSV not found: {csv_path}")
+
+    with csv_path.open(encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f))
+
+    return parse_item_rows(rows, shop_tz=shop_tz)
 
 
 def aggregate_daily_item_stats(records: list[dict]) -> list[dict]:
@@ -558,6 +580,85 @@ def aggregate_daily_item_stats(records: list[dict]) -> list[dict]:
 # ── KDS CSV parsing ───────────────────────────────────────────────
 
 
+def parse_kds_dictrows(
+    dict_rows: list[dict],
+    *,
+    shop_tz: str = DEFAULT_SHOP_TZ,
+) -> list[dict]:
+    """Parse an in-memory list of KDS dict rows into canonical ticket records.
+
+    Accepts a list of dicts with the same keys as the KDS CSV columns
+    (Device Name, Ticket Name, Order Source, Number of Items, Items in Ticket,
+    Completion Time (seconds), Time Created, Time Completed, Time Due,
+    Time Recalled). Used by the Square Reporting API ingest path so no CSV
+    file is written to disk.
+
+    Returns the same record dicts as ``parse_kds_csv``.
+    """
+    target_tz = ZoneInfo(shop_tz)
+
+    def _parse_ts(s: str):
+        if not s:
+            return None
+        try:
+            dt = datetime.datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=target_tz)
+            else:
+                dt = dt.astimezone(target_tz)
+            return dt
+        except ValueError:
+            for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    return datetime.datetime.strptime(s, fmt).replace(tzinfo=target_tz)
+                except ValueError:
+                    continue
+            return None
+
+    records: list[dict] = []
+    for row in dict_rows:
+        device = (row.get("Device Name") or "").strip()
+        ticket = (row.get("Ticket Name") or "").strip()
+        order_source = (row.get("Order Source") or "").strip()
+
+        num_items_raw = str(row.get("Number of Items") or "").strip()
+        try:
+            num_items = int(num_items_raw) if num_items_raw else 0
+        except ValueError:
+            num_items = 0
+
+        comp_time_raw = str(row.get("Completion Time (seconds)") or "").strip()
+        try:
+            completion_time_sec = float(comp_time_raw) if comp_time_raw else 0.0
+        except ValueError:
+            completion_time_sec = 0.0
+
+        created = _parse_ts(str(row.get("Time Created") or "").strip())
+        completed = _parse_ts(str(row.get("Time Completed") or "").strip())
+        due = _parse_ts(str(row.get("Time Due") or "").strip())
+        recalled = _parse_ts(str(row.get("Time Recalled") or "").strip())
+
+        if created is None:
+            continue
+
+        records.append({
+            "device_name": device,
+            "ticket_name": ticket,
+            "order_source": order_source,
+            "num_items": num_items,
+            "items_in_ticket": str(row.get("Items in Ticket") or "").strip(),
+            "completion_time_sec": completion_time_sec,
+            "time_created": created,
+            "time_completed": completed,
+            "time_due": due,
+            "time_recalled": recalled,
+            "date_local": created.date().isoformat(),
+        })
+
+    records.sort(key=lambda r: r["time_created"])
+    return records
+
+
 def parse_kds_csv(
     csv_path: pathlib.Path,
     *,
@@ -587,82 +688,13 @@ def parse_kds_csv(
     if not csv_path.exists():
         raise FileNotFoundError(f"KDS CSV not found: {csv_path}")
 
-    target_tz = ZoneInfo(shop_tz)
-
     with csv_path.open(encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
             return []
+        dict_rows = list(reader)
 
-        records: list[dict] = []
-        for row in reader:
-            device = (row.get("Device Name") or "").strip()
-            ticket = (row.get("Ticket Name") or "").strip()
-            order_source = (row.get("Order Source") or "").strip()
-
-            num_items_raw = (row.get("Number of Items") or "").strip()
-            try:
-                num_items = int(num_items_raw) if num_items_raw else 0
-            except ValueError:
-                num_items = 0
-
-            comp_time_raw = (row.get("Completion Time (seconds)") or "").strip()
-            try:
-                completion_time_sec = float(comp_time_raw) if comp_time_raw else 0.0
-            except ValueError:
-                completion_time_sec = 0.0
-
-            time_created_raw = (row.get("Time Created") or "").strip()
-            time_completed_raw = (row.get("Time Completed") or "").strip()
-            time_due_raw = (row.get("Time Due") or "").strip()
-            time_recalled_raw = (row.get("Time Recalled") or "").strip()
-
-            def _parse_ts(s: str):
-                if not s:
-                    return None
-                try:
-                    dt = datetime.datetime.fromisoformat(s)
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=target_tz)
-                    else:
-                        dt = dt.astimezone(target_tz)
-                    return dt
-                except ValueError:
-                    # Try common formats
-                    for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
-                        try:
-                            dt = datetime.datetime.strptime(s, fmt).replace(tzinfo=target_tz)
-                            return dt
-                        except ValueError:
-                            continue
-                    return None
-
-            created = _parse_ts(time_created_raw)
-            completed = _parse_ts(time_completed_raw)
-            due = _parse_ts(time_due_raw)
-            recalled = _parse_ts(time_recalled_raw)
-
-            if created is None:
-                continue
-
-            date_local = created.date().isoformat()
-
-            records.append({
-                "device_name": device,
-                "ticket_name": ticket,
-                "order_source": order_source,
-                "num_items": num_items,
-                "items_in_ticket": (row.get("Items in Ticket") or "").strip(),
-                "completion_time_sec": completion_time_sec,
-                "time_created": created,
-                "time_completed": completed,
-                "time_due": due,
-                "time_recalled": recalled,
-                "date_local": date_local,
-            })
-
-    records.sort(key=lambda r: r["time_created"])
-    return records
+    return parse_kds_dictrows(dict_rows, shop_tz=shop_tz)
 
 
 # Lower bound: tickets cleared in under 15s never had real prep (KDS bumped

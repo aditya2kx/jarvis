@@ -1,5 +1,5 @@
-"""Regression test: a recovery run after a multi-day outage must scrape
-a single CONTIGUOUS Square range, not a per-day loop.
+"""Regression test: a recovery run after a multi-day outage must cover
+a single CONTIGUOUS date range, not a per-day loop.
 
 Scenario (2026-05-22 IST-truncation incident recovery): the model sheet's
 ``data_window_end`` was reset to 2026-05-20 because 5/21 + 5/22 data had
@@ -8,18 +8,10 @@ been polluted by an IST-clipped scrape. The orchestrator then ran with
 
 1. Resolve gap_start = 2026-05-21 (data_window_end + 1 day).
 2. Pass (start_date=2026-05-21, end_date=2026-05-22) as a SINGLE range to
-   download_transactions — i.e. one Square date-picker selection, one
-   CSV export, ONE 2FA round-trip.
+   ingest_window (Square API) — i.e. one API call for the window.
 3. Pass target_date=2026-05-22 to download_adp_bundle exactly once —
    ADP downloads the whole pay period containing 5/22 (which also
    contains 5/21), so one ADP login covers both days.
-
-If a future refactor accidentally introduces a per-day loop (e.g. for
-date in range(gap_start, refresh_date+1): download_transactions(...)),
-this test will fail because compute_gap_window will still return a
-single (gap_start, label) tuple but the orchestrator's contract that
-``download_transactions(start_date=gap_start, end_date=refresh_date)``
-is the one-shot caller will be broken — see assertions below.
 """
 
 from __future__ import annotations
@@ -74,26 +66,23 @@ class GapWindowMultiDayTest(unittest.TestCase):
             "expected a 2-day single-range window for the 5/20→5/22 recovery",
         )
 
-    def test_download_transactions_accepts_a_range_not_a_single_day(self) -> None:
-        """Guard against a refactor that splits Square into per-day calls.
+    def test_ingest_window_accepts_a_range_not_a_single_day(self) -> None:
+        """Guard against a refactor that splits Square API ingest into per-day calls.
 
-        If download_transactions ever loses its start_date / end_date kwargs
-        in favour of a single 'day' kwarg, this test fails loudly. We don't
-        actually invoke the browser; we just inspect the signature.
+        ingest_window(start_date, end_date) must accept a range — per-day looping
+        would multiply API calls and break the multi-day recovery contract.
         """
-        from skills.square_tips.runner import download_transactions
+        from skills.square_api.ingest import ingest_window
 
-        sig = inspect.signature(download_transactions)
+        sig = inspect.signature(ingest_window)
         params = sig.parameters
         self.assertIn(
             "start_date", params,
-            "download_transactions must accept start_date — per-day looping in "
-            "the orchestrator is a regression (multi-day single-call is the contract)",
+            "ingest_window must accept start_date — per-day looping is a regression",
         )
         self.assertIn(
             "end_date", params,
-            "download_transactions must accept end_date — single-range scrape is "
-            "the contract; per-day loops would multiply Square 2FA OTP costs",
+            "ingest_window must accept end_date — single-range call is the contract",
         )
 
     def test_download_adp_bundle_takes_one_target_date_for_the_pay_period(self) -> None:

@@ -1,5 +1,17 @@
 # Jarvis Build Progress
 
+## 2026-06-23 — Dogfood: documented the evidence directory (issue #66)
+
+Added `docs/dogfood/README.md` documenting the dogfood evidence directory: its
+purpose, the four step-marker types (SEEDED / HARNESS-DRIVEN / OPERATOR-SIMULATED /
+OPERATOR-REAL), the four `dogfood_lifecycle.py` subcommands (run/resume/check/cleanup),
+the gitignored state file at `metrics/pr_cost/dogfood-state.json`, and a cross-reference
+to `docs/WORKFLOW.md §7`. Doc-only, additive, no code/test changes; the
+`DOGFOOD_DOC` harness stub (`scripts/dogfood_lifecycle.py:573–588`) was intentionally
+left untouched. Genuine-flow run: real front door (`new_requirement.py --no-open`),
+Ask-mode jam subagent, Opus 4.8 plan (10/10 readiness score), single-surface operator
+gates, and this clean single-file PR.
+
 ## 2026-06-23 — BHAGA: Square OAuth REST API migration — browser scrape retired
 
 **What changed:** Square transactions, item sales, and KDS data now flow directly from the Square REST API (OAuth 2.0) into BigQuery, replacing the Playwright browser-scrape path entirely. No CSV files are written; no `extracted/downloads/` is used for Square data.

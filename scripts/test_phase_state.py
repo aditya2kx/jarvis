@@ -73,6 +73,8 @@ class TestInit(PhaseStateTestBase):
         with patch.object(ps, "_gh", side_effect=mock_gh):
             args = MagicMock()
             args.branch = "feat/test"
+            args.requirement = None
+            args.kickoff = False
             args.requirement_id = None
             args.issue = None
             args.source = "github"
@@ -96,6 +98,8 @@ class TestInit(PhaseStateTestBase):
              patch.object(ps, "_gh", side_effect=mock_gh):
             args = MagicMock()
             args.branch = "feat/idempotent"
+            args.requirement = None
+            args.kickoff = False
             args.requirement_id = None
             args.issue = None
             args.source = "github"
@@ -115,6 +119,8 @@ class TestInit(PhaseStateTestBase):
     def test_init_links_to_existing_issue(self):
         args = MagicMock()
         args.branch = "feat/link"
+        args.requirement = None
+        args.kickoff = False
         args.requirement_id = 7
         args.issue = 99
         args.source = "github"
@@ -123,6 +129,57 @@ class TestInit(PhaseStateTestBase):
         self.assertEqual(rc, 0)
         data = ps._load_cache("feat/link")
         self.assertEqual(data["issue"], 99)
+
+    def test_init_with_requirement_sets_title(self):
+        captured = []
+
+        def mock_gh(*args, **kwargs):
+            captured.append(args)
+            if "issue" in args and "create" in args:
+                return 0, "https://github.com/owner/repo/issues/55\n"
+            return 0, ""
+
+        with patch.object(ps, "_gh_available", return_value=True), \
+             patch.object(ps, "_gh", side_effect=mock_gh):
+            args = MagicMock()
+            args.branch = "feat/req"
+            args.requirement = "Add a shiny new widget"
+            args.kickoff = False
+            args.requirement_id = None
+            args.issue = None
+            args.source = "github"
+            args.dry_run = False
+            rc = ps.cmd_init(args)
+
+        self.assertEqual(rc, 0)
+        create_calls = [c for c in captured if "create" in c]
+        self.assertTrue(create_calls, "expected a gh issue create call")
+        create = create_calls[0]
+        title_idx = create.index("--title") + 1
+        self.assertIn("Add a shiny new widget", create[title_idx])
+
+    def test_init_kickoff_seeds_specify_and_setup(self):
+        def mock_gh(*args, **kwargs):
+            if "issue" in args and "create" in args:
+                return 0, "https://github.com/owner/repo/issues/56\n"
+            return 0, ""
+
+        with patch.object(ps, "_gh_available", return_value=True), \
+             patch.object(ps, "_gh", side_effect=mock_gh):
+            args = MagicMock()
+            args.branch = "feat/kick"
+            args.requirement = "Kickoff test"
+            args.kickoff = True
+            args.requirement_id = None
+            args.issue = None
+            args.source = "github"
+            args.dry_run = False
+            rc = ps.cmd_init(args)
+
+        self.assertEqual(rc, 0)
+        data = ps._load_cache("feat/kick")
+        self.assertEqual(data["done"], ["specify", "setup"])
+        self.assertEqual(lc.overall_pct(set(data["done"])), 16)  # 2/12
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +452,8 @@ class TestDegrades(PhaseStateTestBase):
         # gh_available already returns False in setUp
         args = MagicMock()
         args.branch = "feat/no-gh"
+        args.requirement = None
+        args.kickoff = False
         args.requirement_id = None
         args.issue = None
         args.source = "github"

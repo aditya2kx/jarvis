@@ -361,7 +361,8 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_4_verify_gates_present", return_value=(True, "ok")), \
              patch.object(vl, "assert_5_scripts_exist_and_help", return_value=(True, "ok")), \
              patch.object(vl, "assert_6_agent_card_dedup", return_value=(True, "ok")), \
-             patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")):
+             patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")), \
+             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 0)
 
@@ -373,7 +374,8 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_4_verify_gates_present", return_value=(False, "missing gates")), \
              patch.object(vl, "assert_5_scripts_exist_and_help", return_value=(True, "ok")), \
              patch.object(vl, "assert_6_agent_card_dedup", return_value=(True, "ok")), \
-             patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")):
+             patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")), \
+             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 1)
 
@@ -385,9 +387,22 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_4_verify_gates_present", return_value=(True, "ok")), \
              patch.object(vl, "assert_5_scripts_exist_and_help", return_value=(False, "needs M3")), \
              patch.object(vl, "assert_6_agent_card_dedup", return_value=(False, "needs M5")), \
-             patch.object(vl, "assert_7_operator_gate_refused", return_value=(False, "needs M3")):
+             patch.object(vl, "assert_7_operator_gate_refused", return_value=(False, "needs M3")), \
+             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 0, "Pre-milestone WARNs should not cause exit 1")
+
+
+class TestAssertion8(unittest.TestCase):
+    def test_passes_against_real_repo(self):
+        # new_requirement.py now wires init_phase_tracking → should pass on disk.
+        passed, detail = vl.assert_8_new_requirement_wires_phase_state()
+        self.assertTrue(passed, msg=detail)
+
+    def test_detects_wiring_via_source(self):
+        # The assertion keys off source content; confirm the marker token is present.
+        src = (vl.REPO_ROOT / "scripts" / "new_requirement.py").read_text(encoding="utf-8")
+        self.assertIn("init_phase_tracking", src)
 
 
 if __name__ == "__main__":

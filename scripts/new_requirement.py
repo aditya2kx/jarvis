@@ -182,6 +182,30 @@ def json_load(worktree: Path, branch: str) -> dict:
     return {}
 
 
+def init_phase_tracking(*, branch: str, requirement: str, dry_run: bool) -> str | None:
+    """Create the GitHub work-tracking issue for this branch via OUR phase_state.py.
+
+    phase_state is GitHub-global (one issue per branch), so we call THIS repo's
+    copy, not the worktree copy. Non-fatal: a tracking failure must not abort the
+    handoff. Returns the issue URL when known.
+    """
+    script = Path(__file__).parent / "phase_state.py"
+    args = [
+        sys.executable, str(script), "init",
+        "--branch", branch, "--requirement", requirement, "--kickoff",
+    ]
+    if dry_run:
+        args.append("--dry-run")
+    print("Creating work-tracking issue …")
+    proc = subprocess.run(args, capture_output=True, text=True)
+    sys.stdout.write(proc.stdout)
+    if proc.returncode != 0:
+        print(f"⚠️  phase_state init failed (non-fatal): {proc.stderr[:200]}", file=sys.stderr)
+        return None
+    m = re.search(r"https://github\.com/\S+/issues/\d+", proc.stdout)
+    return m.group(0) if m else None
+
+
 def _consolidated_requirement(requirements: list[str]) -> str:
     """Join multiple requirements into a single numbered-list string."""
     if len(requirements) == 1:
@@ -230,8 +254,12 @@ def _run_one(
     print(f"\nBrief   → {brief}")
     print(f"Launcher → {launch}\n")
 
+    issue_url = init_phase_tracking(branch=branch, requirement=requirement, dry_run=dry_run)
+
     if dry_run:
         print("(dry-run — no Cursor opened)")
+        if issue_url:
+            print(f"Tracking issue → {issue_url}")
         return 0
 
     S.open_cursor_handoff(
@@ -244,6 +272,8 @@ def _run_one(
     print("\n─── HANDOFF ───")
     print("Do NOT implement this requirement in the current chat.")
     print(f"Switch to the new Cursor window on: {wt}")
+    if issue_url:
+        print(f"  Tracking issue: {issue_url}")
     print("After `gh pr create` in that worktree:")
     print(f"  python3 scripts/pr_cost_ledger.py bind-pr --branch {branch}")
     print("  python3 scripts/pr_cost_ledger.py sync --pr <n>")

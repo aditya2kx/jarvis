@@ -70,16 +70,44 @@ jobs:
             echo "is_bootstrap=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # A "RE-REVIEW" must mean Claude actually posted a prior review on this PR —
+      # not merely that a previous head SHA exists (true on every synchronize push,
+      # including the FIRST completed review when the `opened` run was cancelled by
+      # the concurrency rule). Detect a real prior claude[bot] comment here.
+      - name: Detect prior Claude review
+        id: prior
+        if: >
+          github.event_name == 'pull_request' &&
+          steps.gate.outputs.enabled == 'true' &&
+          steps.bootstrap.outputs.is_bootstrap != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          COUNT="$(gh api repos/${{ github.repository }}/issues/$PR_NUMBER/comments \
+            --jq '[.[] | select(.user.login=="claude[bot]" or (.user.login|startswith("claude")))] | length' \
+            2>/dev/null || echo 0)"
+          if [ "${COUNT:-0}" -gt 0 ]; then
+            echo "has_prior=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "has_prior=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build bounded review context
         if: >
           github.event_name == 'pull_request' &&
           steps.gate.outputs.enabled == 'true' &&
           steps.bootstrap.outputs.is_bootstrap != 'true'
         run: |
+          PREV=""
+          if [ "${{ steps.prior.outputs.has_prior }}" = "true" ]; then
+            PREV="${{ github.event.before }}"
+          fi
           python3 scripts/build_claude_review_context.py \
             --base "${{ github.event.pull_request.base.sha }}" \
             --head "${{ github.event.pull_request.head.sha }}" \
-            --prev-head "${{ github.event.before }}" \
+            --prev-head "$PREV" \
+            --has-prior-review "${{ steps.prior.outputs.has_prior }}" \
             --out-dir review-context
 
       - name: Claude Opus review (medium thinking)

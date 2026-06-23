@@ -272,8 +272,13 @@ def cmd_init(args) -> int:
 
     issue_num = args.issue or data.get("issue")
 
+    requirement = getattr(args, "requirement", None)
+    kickoff = getattr(args, "kickoff", False)
+
     if args.requirement_id:
         data["requirement_id"] = args.requirement_id
+    if requirement:
+        data["requirement"] = requirement
 
     if issue_num:
         data["issue"] = issue_num
@@ -282,12 +287,14 @@ def cmd_init(args) -> int:
         return 0
 
     # Create the issue
-    title = f"[work] {branch}"
-    body = _build_issue_body(branch)
+    title = f"[work] {requirement[:60]}" if requirement else f"[work] {branch}"
+    body = _build_issue_body(branch, requirement=requirement)
     labels = "jarvis-work,stage:align"
 
     if dry_run:
         print(f"[dry-run] would run: gh issue create --title {title!r} --label {labels}")
+        if kickoff:
+            print("[dry-run] would seed done=[specify, setup] (--kickoff)")
         print(f"[dry-run] body (excerpt):\n{body[:300]}…")
         return 0
 
@@ -304,12 +311,20 @@ def cmd_init(args) -> int:
         print(f"ERROR: gh issue create failed: {out}", file=sys.stderr)
         return 1
 
-    # Extract issue number from URL in output
-    match = re.search(r"/issues/(\d+)", out)
+    # Extract issue number + URL from output
+    match = re.search(r"(https://github\.com/\S+/issues/(\d+))", out)
     if match:
-        data["issue"] = int(match.group(1))
+        data["issue_url"] = match.group(1)
+        data["issue"] = int(match.group(2))
+        # --kickoff: specify (operator typed the requirement) + setup (worktree/issue
+        # created) are factually complete the moment new_requirement runs.
+        if kickoff:
+            data["done"] = ["specify", "setup"]
         _save_cache(branch, data)
+        if kickoff and _gh_available():
+            _update_issue_body(data["issue"], data)
         print(f"Created issue #{data['issue']} for branch {branch!r}.")
+        print(f"Tracking issue → {data['issue_url']}")
     else:
         print(f"Created issue (could not parse number): {out.strip()}")
 
@@ -554,6 +569,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p_init = sub.add_parser("init", help="Create/link a GitHub issue for this branch")
     p_init.add_argument("--branch", required=True)
+    p_init.add_argument("--requirement", help="Requirement text for the issue title + body")
+    p_init.add_argument("--kickoff", action="store_true",
+                        help="Seed done=[specify,setup] (both complete the moment new_requirement runs)")
     p_init.add_argument("--requirement-id", type=int)
     p_init.add_argument("--issue", type=int, help="Link to an existing issue instead of creating")
     p_init.add_argument("--source", default="github", choices=["github", "linear", "jira"])

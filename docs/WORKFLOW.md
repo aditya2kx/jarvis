@@ -62,6 +62,15 @@ Remaining: verify, pr-evidence, babysit, merge, post-merge-verify, retrospective
 Open failures: none        Summary: verify in progress
 ```
 
+### The single front door creates the issue
+`new_requirement.py` is the only entry point for new work, and it **auto-creates the
+tracking issue** at kickoff: after spinning up the worktree + brief + cost session it
+calls its own `init_phase_tracking()` → `phase_state.py init --kickoff`, which seeds
+`done = [specify, setup]` (both are factually complete the moment the front door runs)
+and prints the issue URL in the handoff banner.  So a fresh requirement shows **Align
+50%** with `jam` as the current operator gate — never a misleading "0%, nothing done".
+`--dry-run` prints the `gh issue create` it *would* run without touching GitHub.
+
 ### Jira/Linear migration seam
 `phase_state.py` defaults to `source="github"`.  When the backend switches, update
 `--source linear`/`--source jira` in `new_requirement.py`; all other callers are unchanged.
@@ -213,6 +222,22 @@ L3 (roadmap):
 | Local loop mirrors CI | test_verify.py::test_ci_parity | Test PASS |
 | Babysit unprompted | pr-workflow.mdc + babysit skill | Always-on rule |
 | Review replies done | check_pr_review_replies.py | Gate exit 0 |
+| Whole lifecycle works end-to-end | dogfood_lifecycle.py run/resume/check | Annotated transcript in docs/dogfood/ |
+
+### Dogfooding the lifecycle
+`scripts/dogfood_lifecycle.py` drives a trivial dummy requirement through all 12
+substeps against **real** infrastructure (a real tracking issue + a throwaway PR off
+`origin/main` + a real operator merge), proving the gates have teeth and the harness
+advances correctly.  It pauses at the operator-reserved `merge` gate:
+
+```bash
+python3 scripts/dogfood_lifecycle.py run        # walks 8 agent substeps + 2 gate demos, opens the dummy PR, pauses at merge
+# operator approves + squash-merges the dummy PR, then:
+python3 scripts/dogfood_lifecycle.py resume     # merge + post-merge-verify + retrospective; writes the transcript
+python3 scripts/dogfood_lifecycle.py check      # offline conformance assertions on the recorded run
+```
+
+The latest run's annotated transcript lives in `docs/dogfood/lifecycle-run-<date>.md`.
 
 ---
 

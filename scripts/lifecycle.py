@@ -4,7 +4,7 @@
 All other scripts (phase_state.py, start_pr_session.py, verify_lifecycle.py)
 import STAGES from here so the ladder cannot drift.
 
-5 tracking stages, 11 substeps total.  Each substep has a driver
+5 tracking stages, 12 substeps total.  Each substep has a driver
 ("operator" or "agent") and an exit criterion.  Operator substeps are the
 4 reserved gates where the agent must pause for human input.
 """

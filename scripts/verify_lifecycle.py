@@ -261,6 +261,19 @@ def assert_7_operator_gate_refused() -> tuple[bool, str]:
     return False, "advance --to jam exited 0 — operator gate NOT enforced"
 
 
+def assert_8_new_requirement_wires_phase_state() -> tuple[bool, str]:
+    """new_requirement.py must invoke phase_state init at kickoff (the front door)."""
+    nr = REPO_ROOT / "scripts" / "new_requirement.py"
+    if not nr.exists():
+        return False, "scripts/new_requirement.py not found"
+    src = nr.read_text(encoding="utf-8")
+    if "init_phase_tracking" in src or re.search(
+        r"phase_state(\.py)?\b[\s\S]{0,120}\binit\b", src
+    ):
+        return True, "new_requirement.py wires phase_state init at kickoff"
+    return False, "new_requirement.py does not invoke phase_state init (front door not wired)"
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -273,6 +286,7 @@ ASSERTIONS: list[tuple[int, str, str]] = [
     (5, "check_plan_readiness.py + phase_state.py --help + dry-run clean", "assert_5_scripts_exist_and_help"),
     (6, "agent cards free of hoisted common-principle phrases", "assert_6_agent_card_dedup"),
     (7, "phase_state advance --to operator-substep refused without approval", "assert_7_operator_gate_refused"),
+    (8, "new_requirement wires phase_state init at kickoff", "assert_8_new_requirement_wires_phase_state"),
 ]
 
 # Assertions that are expected to fail before their milestone lands.

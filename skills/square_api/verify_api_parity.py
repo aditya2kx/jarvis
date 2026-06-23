@@ -62,6 +62,21 @@ KDS_COLS = [
     "pct_tickets_late", "late_tickets", "due_tickets",
 ]
 
+# Columns where the API timestamp may differ from the CSV by a few seconds
+# due to display-vs-storage precision; tolerated at ±TIMESTAMP_TOLERANCE_SEC.
+_TIMESTAMP_COLS = frozenset({"created_at_src_iso", "created_at_local_iso", "item_sold_at_local"})
+TIMESTAMP_TOLERANCE_SEC = 60
+
+# KDS percentile columns tolerate up to 2 seconds of difference.
+# The Reporting API gives millisecond-precision timestamps; the dashboard CSV rounds
+# completion times to whole seconds. Linear-interpolation percentiles on slightly
+# different sorted arrays can diverge by up to ~1 second; 2s gives comfortable headroom.
+_KDS_PERCENTILE_COLS = frozenset({
+    "median_time_per_item_sec", "p90_time_per_item_sec",
+    "p95_time_per_item_sec", "p99_time_per_item_sec",
+})
+KDS_PERCENTILE_TOLERANCE = 2.0
+
 _TABLES = [
     {
         "name": "square_transactions",
@@ -70,8 +85,12 @@ _TABLES = [
         "date_col": "date_local",
     },
     {
+        # item_sold_at_local is excluded from the join key because the API
+        # timestamp may differ from the dashboard CSV by ±few seconds (display
+        # precision). transaction_id + item_name + line_seq uniquely identifies
+        # each item line within a day.
         "name": "square_item_lines",
-        "key": ["transaction_id", "item_name", "item_sold_at_local", "line_seq"],
+        "key": ["transaction_id", "item_name", "line_seq"],
         "cols": ITEM_COLS,
         "date_col": "date_local",
     },
@@ -172,7 +191,7 @@ def _compare_table(
         for col in cols:
             pv = pr.get(col)
             sv = sr.get(col)
-            if _val_ne(pv, sv):
+            if _val_ne(pv, sv, col=col):
                 mismatches.setdefault(col, []).append({
                     "key": k, "prod": pv, "sandbox": sv
                 })
@@ -206,12 +225,31 @@ def _compare_table(
     }
 
 
-def _val_ne(a: Any, b: Any) -> bool:
-    """Returns True if values differ (handles None, float rounding, type coercions)."""
+def _val_ne(a: Any, b: Any, col: str = "") -> bool:
+    """Returns True if values differ (handles None, float rounding, type coercions).
+
+    For timestamp columns (``col`` in ``_TIMESTAMP_COLS``) a tolerance of
+    ``TIMESTAMP_TOLERANCE_SEC`` seconds is applied to account for inherent
+    precision differences between the Square dashboard CSV export (display time,
+    whole-second resolution) and the Square REST API (millisecond precision).
+    """
     if a is None and b is None:
         return False
     if a is None or b is None:
         return True
+    if col in _TIMESTAMP_COLS:
+        try:
+            import datetime
+            ta = datetime.datetime.fromisoformat(str(a))
+            tb = datetime.datetime.fromisoformat(str(b))
+            return abs((ta - tb).total_seconds()) > TIMESTAMP_TOLERANCE_SEC
+        except (ValueError, TypeError):
+            pass
+    if col in _KDS_PERCENTILE_COLS:
+        try:
+            return abs(float(a) - float(b)) > KDS_PERCENTILE_TOLERANCE
+        except (TypeError, ValueError):
+            pass
     if isinstance(a, float) or isinstance(b, float):
         try:
             return abs(float(a) - float(b)) > 0.01

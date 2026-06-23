@@ -162,7 +162,8 @@ def _query_kds_view(
         f"{cube}.ticket_name",
         f"{cube}.order_source",
         f"{cube}.line_item_count",
-        f"{cube}.chit_created_at",
+        f"{cube}.display_on_kds_at",   # "Time Created" in the dashboard CSV
+        f"{cube}.chit_created_at",     # order creation time (used as fallback only)
         f"{cube}.actual_completed_at",
         f"{cube}.time_due",
         f"{cube}.device_code_name",
@@ -178,12 +179,19 @@ def _query_kds_view(
     dims = [d for d in dims if d in available_dims]
     measures = [m for m in measures if m in available_meas]
 
+    # Filter by display_on_kds_at (the dashboard's "Time Created" = when ticket appeared
+    # on the KDS screen). Fall back to chit_created_at if display_on_kds_at is not available.
+    time_dim = (
+        f"{cube}.display_on_kds_at"
+        if f"{cube}.display_on_kds_at" in available_dims
+        else f"{cube}.chit_created_at"
+    )
     payload: dict = {
         "query": {
             "dimensions": dims,
             "measures": measures,
             "timeDimensions": [{
-                "dimension": f"{cube}.chit_created_at",
+                "dimension": time_dim,
                 "dateRange": [begin_time, end_time],
             }],
             "limit": 50000,
@@ -199,7 +207,11 @@ def _query_kds_view(
 
 
 def _build_kds_csv_rows(api_rows: list[dict], shop_tz: str) -> list[list[str]]:
-    """Convert Reporting API row dicts to KDS CSV rows (one row = one ticket)."""
+    """Convert Reporting API row dicts to KDS CSV rows (one row = one ticket).
+
+    The Reporting API returns keys prefixed with the cube name (e.g. "KDS.ticket_name").
+    We strip that prefix and map to the KDS CSV column layout.
+    """
     tz = ZoneInfo(shop_tz)
 
     def _fmt_ts(val: str | None) -> str:
@@ -207,30 +219,144 @@ def _build_kds_csv_rows(api_rows: list[dict], shop_tz: str) -> list[list[str]]:
             return ""
         try:
             dt = datetime.datetime.fromisoformat(val.replace("Z", "+00:00"))
+            # Reporting API returns UTC timestamps without a Z suffix; treat as UTC.
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
             return dt.astimezone(tz).strftime("%m/%d/%Y %I:%M:%S %p")
         except (ValueError, AttributeError):
             return str(val)
 
+    def _get(r: dict, *keys: str) -> str:
+        """Fetch first matching key, stripping 'CUBE.' prefix from API keys."""
+        stripped = {k.split(".", 1)[-1]: v for k, v in r.items()}
+        for key in keys:
+            v = r.get(key) or stripped.get(key)
+            if v is not None:
+                return str(v)
+        return ""
+
     rows: list[list[str]] = []
     for r in api_rows:
-        completion_sec = r.get("completion_time_seconds") or r.get("completion_time") or ""
-        try:
-            completion_sec = str(float(str(completion_sec).replace(",", "")))
-        except (ValueError, TypeError):
+        stripped = {k.split(".", 1)[-1]: v for k, v in r.items()}
+        # "Time Created" in the dashboard CSV = display_on_kds_at (when the ticket
+        # appeared on the KDS screen), NOT chit_created_at (order creation time).
+        # Use chit_created_at only as a fallback when display_on_kds_at is absent.
+        display_ts = stripped.get("display_on_kds_at") or stripped.get("chit_created_at") or ""
+        completed_ts = stripped.get("actual_completed_at") or ""
+        time_due_ts = stripped.get("time_due") or ""
+
+        # Completion time = seconds from KDS display to actual completion.
+        # Both timestamps are UTC without a Z suffix.
+        if display_ts and completed_ts:
+            try:
+                t0 = datetime.datetime.fromisoformat(display_ts.replace("Z", "+00:00"))
+                t1 = datetime.datetime.fromisoformat(completed_ts.replace("Z", "+00:00"))
+                # Both naive (UTC) — delta is correct.
+                completion_sec = str(round(max(0.0, (t1 - t0).total_seconds())))
+            except (ValueError, AttributeError):
+                completion_sec = ""
+        else:
             completion_sec = ""
+
+        num_items = stripped.get("line_item_count") or ""
+        try:
+            num_items = str(int(float(str(num_items))))
+        except (ValueError, TypeError):
+            num_items = str(num_items)
+
         rows.append([
-            str(r.get("device_name") or r.get("device") or ""),
-            str(r.get("ticket_name") or r.get("ticket") or ""),
-            str(r.get("order_source") or ""),
-            str(r.get("number_of_items") or r.get("num_items") or ""),
-            str(r.get("items_in_ticket") or r.get("items") or ""),
+            str(stripped.get("device_code_name") or stripped.get("device_name") or ""),
+            str(stripped.get("ticket_name") or ""),
+            str(stripped.get("order_source") or ""),
+            num_items,
+            "",  # "Items in Ticket" — not available at ticket grain; left blank
             completion_sec,
-            _fmt_ts(r.get("time_created") or r.get("created_at")),
-            _fmt_ts(r.get("time_completed") or r.get("completed_at")),
-            _fmt_ts(r.get("time_due") or r.get("due_at")),
-            _fmt_ts(r.get("time_recalled") or r.get("recalled_at")),
+            _fmt_ts(display_ts),
+            _fmt_ts(completed_ts),
+            _fmt_ts(time_due_ts),
+            _fmt_ts(stripped.get("time_recalled") or ""),
         ])
     return rows
+
+
+def ingest_window_kds(
+    *,
+    start_date: datetime.date,
+    end_date: datetime.date,
+    store: str = "palmetto",
+    shop_tz: str = "America/Chicago",
+) -> dict[str, int]:
+    """Fetch KDS data for [start_date, end_date] and load BigQuery directly.
+
+    Queries the Reporting API KDS cube at ticket grain, passes the result
+    through ``parse_kds_dictrows`` (same calibrated parser as the scrape path),
+    then aggregates via ``aggregate_daily_kds_stats`` and maps to BQ via
+    ``map_square_kds_daily`` / ``map_kds_ticket``. No CSV is written.
+
+    Returns row counts: {"square_kds_daily": N, "square_kds_tickets": N}.
+    Returns {} if KDS cube is absent or ticket grain is unavailable.
+    """
+    from agents.bhaga.scripts.backfill_bigquery import map_square_kds_daily, map_kds_ticket
+    from agents.bhaga.scripts.backfill_from_downloads import _TS_TYPES
+    from skills.square_tips import transactions_backend as tb
+    from core.datastore import load_rows
+
+    token = get_access_token(store)
+
+    if _META_CACHE.exists():
+        try:
+            meta = json.loads(_META_CACHE.read_text())
+        except Exception:
+            meta = fetch_meta(store)
+            save_meta_cache(meta)
+    else:
+        meta = fetch_meta(store)
+        save_meta_cache(meta)
+
+    kds_view = _find_kds_view(meta)
+    if kds_view is None:
+        print("[kds_reporting] KDS cube not found — skipping KDS API load")
+        return {}
+    if not _ticket_grain_available(kds_view):
+        print("[kds_reporting] ticket grain unavailable — skipping KDS API load")
+        return {}
+
+    all_csv_rows: list[list[str]] = []
+    cur = start_date
+    while cur <= end_date:
+        b, e = _rfc3339_bounds(cur, shop_tz)
+        api_rows = _query_kds_view(token=token, kds_view=kds_view, begin_time=b, end_time=e)
+        all_csv_rows += _build_kds_csv_rows(api_rows, shop_tz)
+        print(f"[kds_reporting] {cur}: {len(api_rows)} KDS tickets fetched")
+        cur += datetime.timedelta(days=1)
+
+    dict_rows = [dict(zip(KDS_CSV_HEADER, r)) for r in all_csv_rows]
+    tickets = tb.parse_kds_dictrows(dict_rows, shop_tz=shop_tz)
+    tickets = [t for t in tickets
+               if start_date.isoformat() <= t["date_local"] <= end_date.isoformat()]
+
+    daily_stats = tb.aggregate_daily_kds_stats(tickets)
+    daily = [{"date_local": d, **s} for d, s in sorted(daily_stats.items())]
+
+    counts: dict[str, int] = {}
+
+    bq_daily = [map_square_kds_daily(r) for r in daily if r.get("date_local")]
+    counts["square_kds_daily"] = load_rows(
+        "square_kds_daily", bq_daily,
+        merge_keys=["date_local"],
+        column_bq_types=_TS_TYPES,
+    )
+
+    bq_tix = [map_kds_ticket(r) for r in tickets]
+    bq_tix = [r for r in bq_tix if r.get("date_local")]
+    counts["square_kds_tickets"] = load_rows(
+        "square_kds_tickets", bq_tix,
+        merge_keys=["date_local", "time_created", "ticket_name"],
+        column_bq_types=_TS_TYPES,
+    )
+
+    print(f"[kds_reporting] BQ row counts: {counts}")
+    return counts
 
 
 def export_window_kds(

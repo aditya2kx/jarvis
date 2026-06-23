@@ -139,8 +139,8 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
 
 - Registry base: `us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images`
 - **Job resources:** `bhaga-daily-refresh` runs at **2 vCPU / 4Gi** memory, `maxRetries: 0`,
-  1h timeout. The 4Gi (bumped from 2Gi on 2026-06-11) headroom covers a device-blocked Square
-  retry that launches Chromium twice in one run — a 2Gi container OOM-killed mid-pipeline. 4Gi at
+  1h timeout. The 4Gi was added 2026-06-11 when Square used a browser (Chromium). Square now
+  uses the REST API (no browser), but 4Gi stays in place for ADP's Chromium instance. 4Gi at
   2 vCPU stays under half the Cloud Run jobs free tier. `--memory 4Gi` is codified in
   `deploy.yml`'s `gcloud run jobs update` step so it survives a recreate-from-scratch.
 - **Webhook URL:** https://bhaga-webhook-4yl5izovxq-uc.a.run.app
@@ -159,7 +159,7 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
 | `BHAGA_HEADLESS` | `1` |
 | `SLACK_BOT_TOKEN` | secret → `slack-bot-token` |
 | `CLICKUP_PAT` | secret → `jarvis-clickup-palmetto-pat` |
-| `BHAGA_SESSION_PERSIST` | `1` — persist/restore the Square `storage_state` (trusted device) to/from `gs://bhaga-scrape-cache/_session/square-palmetto.json` so prod stops re-prompting magic link / 2FA every night. Codified in `deploy.yml` so it survives a job recreate. See §13 "Login escalation". |
+| `BHAGA_SESSION_PERSIST` | `1` — persist/restore the ADP browser `storage_state` to/from `gs://bhaga-scrape-cache/_session/`. (Square no longer uses a browser — it uses the REST API via `square_palmetto_oauth`. ADP still scrapes via Chromium.) |
 | `BHAGA_DATASTORE` | `bigquery` — enables BQ reads/writes in the **parent** orchestrator process (pipeline run recorder, `reconcile_model` gate, `update_model_sheet --data-source bigquery`). Child subprocesses also set this per-step; codified in `deploy.yml` since 2026-06-13. |
 | `BHAGA_BROWSER_LAUNCH_RETRIES` | _(optional, default `3`)_ headless browser launch attempts on transient crash — see §13 Browser-launch resilience |
 | `BHAGA_BROWSER_LAUNCH_BACKOFF_MS` | _(optional, default `1000`)_ base backoff between launch retries (exponential) |
@@ -251,7 +251,7 @@ gcloud run services update bhaga-webhook \
 | `slack_bhaga_app` | (bhaga app) | BHAGA Slack app-level token (Socket Mode era; kept for reference) |
 | `slack_bhaga_cloud_bot` | cloud bhaga | Slack bot token for the cloud bhaga identity |
 | `adp_palmetto_login` | refresh job (ADP scrape) | ADP RUN username + password (timecards / earnings) |
-| `square_palmetto_login` | refresh job (Square scrape) | Square dashboard login (transactions report) |
+| `square_palmetto_oauth` | refresh job (Square API) | Square OAuth 2.0 access + refresh tokens for production Square API |
 | `google_palmetto` | refresh job (Sheets/Drive) | Google OAuth creds for the `palmetto` account |
 | `jarvis-clickup-palmetto-pat` | refresh job (`CLICKUP_PAT`) | ClickUp PAT — read review channel |
 | `clickup_palmetto_pat` | (legacy ClickUp PAT) | ClickUp PAT (older handle) |
@@ -573,10 +573,10 @@ is stuck and bonuses are held back":
 1. **Confirm the state.** Read Firestore `runs/2026-05-31`: `square_transactions` will be **absent**
    (it failed) while `load_raw_bigquery` / `update_model_sheet` / `process_reviews` are **present** (they
    ran on stale data). Read the Model `config` tab — `data_window_end` will be stuck at `2026-05-30`.
-2. **Announce the OTP.** Square will re-scrape and fire **one SMS** to the operator. Post in the BHAGA
-   DM that the rerun is about to fire an OTP **before** triggering it (Operating rule / HL#8).
+2. **Announce the OTP (ADP only).** Square uses the REST API — no OTP needed. ADP will fire **one SMS**
+   to the operator. Post in the BHAGA DM before triggering it (Operating rule / HL#8).
 3. **Re-run the date as a Cloud Run job** (never a laptop). ADP skips its browser/OTP via the GCS
-   cache; Square re-scrapes (the one OTP). The recovery is automatic — when Square succeeds, the stale
+   cache if already done. The recovery is automatic — when the Square API and ADP succeed, the stale
    `load_raw_bigquery`/`update_model_sheet`/`process_reviews` markers are invalidated so they recompute:
    ```bash
    gcloud run jobs execute bhaga-daily-refresh \
@@ -857,72 +857,31 @@ Run env layer (unit tests can only mock those). Adapt: change `skip` to keep onl
 reach your gate, add a seed function for your precondition, add a `verify` gate that reads Firestore
 or BQ state after the run.
 
-**Login escalation — magic link & trusted device.** Square may escalate an **unrecognized device** to an
-email **magic link** ("Magic link sent. Use this device to sign in.") instead of an SMS code; the
-code-entry flow cannot satisfy it (the link only works in the **requesting** browser). Layers handle this:
-- *Trusted device (1st line):* the 2FA flow ticks "trust this device for 30 days" and, with
-  `BHAGA_SESSION_PERSIST=1`, persists the Square `storage_state` to `gs://<bucket>/_session/square-<store>.json`
-  and restores it next run — so Square recognizes the device and stops escalating. Sandbox keeps its OWN
-  session in the sandbox bucket (isolation preserved).
-- *Magic-link relay (fallback, deliverable only):* when the magic-link page is detected **with a named
-  recipient**, BHAGA DMs the operator to **paste the magic-link URL** — ⚠️ do **NOT** tap "Sign in" on your
-  phone (that signs in the phone, not the container); copy the `https://squareup.com/login?rml=1&…` URL from
-  the email and paste it in the DM. The container then navigates to it to finish sign-in.
-- *Anti-bot soft-block recovery (free, no laptop — added 2026-06-09):* when Square fingerprints the headless
-  container as a bot it sometimes serves the magic-link screen with a **blank recipient and sends no email**
-  (the `.magic-link-sent__email` element is empty — observed 2026-06-08; "we sent a magic link to ." with no
-  address). That link is **undeliverable**, so the paste relay is a dead end. `runner._magic_link_recipient`
-  detects the blank recipient and raises `SquareDeviceBlockedError` **instead of prompting for an impossible
-  paste**. The pipeline then: (1) **discards the poisoned session** (`gcs_cache.delete_session`) and **retries
-  login exactly once in a fresh context** (`storage_state=None`) — a clean cookie jar often re-presents the
-  SMS-OTP path (which the operator answers on their phone via Slack, no laptop); (2) if the retry is still
-  blocked, it fails **cleanly** with `notify.square_device_blocked_alert` — an actionable DM that tells the
-  operator there is **nothing to paste** and that the **next nightly auto-retries on a fresh egress IP** (the
-  free self-heal; Cloud Run rotates egress IPs, so a later run usually isn't blocked). ADP/reviews still run;
-  only Square sales/tips/items are missing for the blocked date, and the §13 partial-failure recovery
-  releases them once Square succeeds. The first attempt fires **no** SMS, so the single retry can never
-  duplicate one. (Pinning a static egress IP — VPC connector + Cloud NAT — would stop the escalation at the
-  source but is **not free**; deferred. See `PROGRESS.md`.)
+**Square uses OAuth REST API — no browser, no OTP.** As of 2026-06-23, Square transactions, item
+sales, and KDS data are ingested directly via the Square REST API (OAuth 2.0) through
+`skills/square_api/ingest.py` and `skills/square_api/kds_reporting.py`. The browser-based
+Playwright scraper, magic-link 2FA flow, trusted-device session management, and Square OTP path
+are fully removed. The only OTP portal that still fires a live SMS is **ADP**.
 
-**Concurrent-execution guard (distributed scrape lock — added 2026-06-10).** The Square browser login fires
-a live 2FA SMS and writes a shared GCS session blob (`_session/square-<store>.json`). If two Cloud Run
-executions run simultaneously (e.g. the nightly scheduler overlaps with the webhook READY-resume, or the
-operator double-taps READY), each would fire a duplicate SMS and corrupt the shared session. The guard has
-two layers:
-
-1. **Webhook dedup** — the Slack webhook (`cloud/webhook/handler.py`) now discards Slack-retry deliveries
-   (`X-Slack-Retry-Num > 0`) before processing and stores event IDs in Firestore (`webhook_events/<event_id>`)
-   with a 5-minute TTL so a repeated delivery is caught even after a cold start. Before triggering a Cloud
-   Run job it checks for a non-terminal execution of the same date (`_is_already_running`; fail-open).
-2. **Distributed scrape lock (backstop)** — `_acquire_scrape_lock` in `skills/square_tips/runner.py` now
-   acquires a TTL-based Firestore lock (`runs/_lock_scrape-square-<store>` in cloud; a local JSON file on
-   laptop), unique per execution (`<hostname>:<pid>`). A second execution that slips through the webhook
-   guard fails fast with `ScrapeLockHeldError` — no duplicate SMS, no session corruption.
-
-   - Default TTL: `BHAGA_SCRAPE_LOCK_TTL_S=3600` (1 h > the 30-min OTP wait). A crashed run's lock is
-     auto-reclaimed after TTL expiry.
-   - Logs: every acquire/release/refusal emits a greppable breadcrumb in Cloud Run logs:
-     `[square lock] ACQUIRED/RELEASED/REFUSED name=scrape-square-palmetto holder=<host:pid> …`
-   - Failed second execution records `concurrent_execution` in Firestore `failures.square` and sends a
-     concise Slack alert ("Square skipped — another run already in progress") instead of the generic
-     failure alert or device-block alert.
-
-**Clearing a stale scrape lock (if a run crashed without releasing):**
+**Square OAuth token refresh.** The `square_palmetto_oauth` secret in GCP Secret Manager holds
+`{"access_token": "…", "refresh_token": "…", "expires_at": "…"}`. The `skills/square_api/auth.py`
+module auto-refreshes the access token when it approaches expiry and writes the updated token back
+to the secret. If the refresh token ever expires (Square tokens are long-lived; expiry means the
+OAuth app was disconnected), re-authorize via the Square Developer Console and update the secret:
 ```bash
-python3 -c "
-from skills.bhaga_config.state_adapter import release_lock
-release_lock('scrape-square-palmetto', holder='<host:pid from REFUSED breadcrumb>')
-"
+gcloud secrets versions add square_palmetto_oauth --data-file=- --project jarvis-bhaga-prod
+# Paste the new JSON token blob on stdin, then Ctrl-D
 ```
-Or wait for the TTL to expire (default 1 h). Never delete the Firestore doc directly — use `release_lock`.
 
-**Step-by-step screenshot trace.** Sandbox runs set `BHAGA_TRACE_SCREENSHOTS=1`, so `runtime.trace_step`
-captures the **full browser after every login + item-sales action** and uploads each frame to
-`gs://<sandbox-bucket>/<date>/trace/NN-<label>.png` (`landing`, `email-filled`, `password-screen`,
-`otp-code-screen`/`otp-code-filled`/`after-otp-submit`, `magic-link-sent-page`/`magic-link-navigated`/
-`magic-link-result`, `item-sales-page`/`item-sales-date-range-set`/`item-sales-exported`). Pull the whole
-sequence with `gcloud storage cp -r gs://<sandbox-bucket>/<date>/trace .` to scrub the flow frame-by-frame
-without a rerun. Off by default for the prod nightly (cost/overhead); best-effort and never breaks a scrape.
+**Concurrent-execution guard (ADP — distributed scrape lock).** ADP still uses a browser. If two
+Cloud Run executions run simultaneously, the ADP scrape lock (`ScrapeLockHeldError`) prevents
+duplicate SMS OTPs. This guard remains active for ADP. For Square there is no lock needed
+(the REST API is stateless and idempotent).
+
+1. **Webhook dedup** — the Slack webhook (`cloud/webhook/handler.py`) discards Slack-retry deliveries
+   (`X-Slack-Retry-Num > 0`) and stores event IDs in Firestore (`webhook_events/<event_id>`) with a
+   5-minute TTL. Before triggering a Cloud Run job it checks for a non-terminal execution of the same
+   date (`_is_already_running`; fail-open).
 
 **One-time setup (operator).** By least privilege the run SA has GCS read + object write but not
 project bucket-create, so create the sandbox cache bucket once and grant the SA object access:

@@ -57,7 +57,7 @@ _PAYMENT = {
 _ORDER = {
     "id": "ORD1",
     "created_at": "2026-06-09T18:30:01Z",
-    "source": {"name": "Register"},
+    "source": {"name": ""},   # Raw API: Register orders have empty source name
     "total_discount_money": {"amount": 100, "currency": "USD"},
     "total_tax_money": {"amount": 0, "currency": "USD"},
     "net_amounts": {"total_money": {"amount": 1450, "currency": "USD"}},

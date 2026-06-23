@@ -44,8 +44,8 @@ buckets**, not ADP employment classes — there are no salaried employees in the
 
 | Source | Pulled via | Quirk you must respect |
 |---|---|---|
-| **Square** transactions | `skills/square_tips/` (CSV export) | **Timestamps are in the Square account's display TZ (Eastern), not the shop's (Central).** An 11:30 PM CT sale shows as 12:30 AM ET next day. `transactions_backend.parse_csv()` converts to `America/Chicago`. |
-| **Square** KDS / items | same export | KDS = Kitchen Display System; per-item prep timing. |
+| **Square** transactions | `skills/square_api/` (REST API, OAuth 2.0) | Square returns UTC timestamps; `export.py` converts to `America/Chicago`. Register orders use `closed_at`; Kiosk/3rd-party use `created_at`. Gift-card purchases excluded from gross sales. Split-tender orders are aggregated to one row per `order_id`. |
+| **Square** KDS / items | `skills/square_api/kds_reporting.py` (Reporting API / Cube.js KDS cube) | `display_on_kds_at` is used as "Time Created" for completion-time math. Naive UTC timestamps from the Reporting API are explicitly treated as UTC before shop-local conversion. `time_due` enables late-ticket stats. |
 | **ADP RUN** timecards + earnings | `skills/adp_run_automation/` (Playwright) | **Times are already shop-local — no conversion.** **Open shifts (no clock-out) are silently omitted** from the export → always scrape after close. **Name formats differ between reports** ("LastName FirstName" in timecards vs "LastName, FirstName" in earnings) → `employee_aliases` normalizes to one canonical name or employees double-count. |
 | **Google reviews** | ClickUp (`CLICKUP_PAT`) → `process_reviews.py` | Reviews are markdown messages prefixed `### Google Review`; parsed for post time, rating, reviewer, comment, and any named staff. |
 
@@ -107,7 +107,7 @@ functions of `update_model_sheet.py` / `forecast.py` for the labor / tip-alloc /
 ### B. `bhaga_square_raw` — sales & operations source of truth (from Square)
 
 **`transactions`** — one row per **Square transaction**. Key: `(transaction_id,)`. Source:
-`skills/square_tips/transactions_backend.parse_csv`.
+`skills/square_api/ingest.py` → `export._build_transaction_rows` → `transactions_backend.parse_transaction_rows` (in-memory rows; no CSV file).
 
 | Field | Meaning |
 |---|---|
@@ -405,7 +405,7 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 | `adp_earnings` | `period_start` | BHAGA ADP Raw > earnings (NEW) | `(period_start, period_end, employee, description, check_date)` |
 | `google_reviews` | `post_date_ct` | BHAGA Review Raw > reviews | `(review_id,)` |
 
-`square_kds_tickets` and `adp_earnings` are written at scrape time to BQ by `backfill_from_downloads.py` (M3); their raw Sheet tabs are rendered from BQ by `render_raw_sheet_from_bq.py`.
+`square_kds_tickets` and `adp_earnings` are written to BQ by the nightly pipeline: Square data via `skills/square_api/ingest.py` (REST API); ADP data via `backfill_from_downloads.py --skip square`. Their raw Sheet tabs are rendered from BQ by `render_raw_sheet_from_bq.py`.
 
 **Raw layer is BQ-primary (PR #33, 2026-06):** scrapes land in BQ via `load_rows` (MERGE upsert); Google Sheets raw tabs are non-fatal projections rendered by `render_raw_sheet_from_bq.py`. `backfill_bigquery.py` is a one-shot historical repair tool, not the nightly path. Google Reviews follow the same path: `process_reviews.py` writes `google_reviews` to BQ; the `reviews` Sheet tab is rendered from BQ.
 
@@ -487,7 +487,7 @@ Data grows in exactly two directions. Know which one you're doing, because they 
 Use when the data you want **isn't scraped yet** (e.g. a new Square column, an ADP field, a review
 attribute). You must teach the scrape backend to emit it, then widen the raw tab:
 
-1. **Emit the field in the scrape backend** — Square: `skills/square_tips/transactions_backend.py`;
+1. **Emit the field in the scrape/API backend** — Square: `skills/square_api/export.py` (transactions/items) or `skills/square_api/kds_reporting.py` (KDS), with in-memory row dicts passed to `skills/square_tips/transactions_backend.parse_transaction_rows` / `parse_kds_dictrows`;
    ADP: `skills/adp_run_automation/shift_backend.py` or `compensation_backend.py`; reviews:
    the parser in `agents/bhaga/scripts/process_reviews.py`.
 2. **Append the column to the raw tab's header** — ADP/Square in `skills/tip_ledger_writer/schema.py`

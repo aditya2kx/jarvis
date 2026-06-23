@@ -1,5 +1,7 @@
 # Jarvis Build Progress
 
+# Jarvis Build Progress
+
 ## 2026-06-23 — BHAGA: Section 7A — Adaptive ETS Forecast (replaces ramp_log_ridge_v1)
 
 **Root cause — why ramp_log_ridge_v1 failed:** The static `weeks_since_open` feature encoded demand as an unbounded exponential ramp. Once the store's growth plateaued in May–Jun 2026, the model continued extrapolating: its 7-day forward forecast reached ~278 orders/day (+120 bias) while actual demand stabilised at 110–165. Live backtest (last 14d): ramp MAPE 46.8% vs heuristic 9.6%. The heuristic won because its recency-weighted WoW anchor naturally tracked the plateau; the ramp model was blind to the regime change.
@@ -10,40 +12,26 @@
 
 **Evidence:** Full offline backtest script: `agents/bhaga/analysis/weather_forecast_spike/backtest_adaptive.py`. Research motivation: `agents/bhaga/analysis/weather_forecast_spike/README.md`.
 
-## 2026-06-18 — BHAGA: Section 7A — Ramp-Aware Forecast (PR feat/ramp-forecast-7a)
+## 2026-06-23 — BHAGA: Square OAuth REST API migration — browser scrape retired
 
-**What changed:** Added a parallel ramp-aware order forecast (model `ramp_log_ridge_v1`) that runs
-nightly alongside the production `wow_median_4wk_v2` heuristic. The new model surfaces in a new
-Grafana "Section 7A" mirroring Section 7. Section 7 and all production flows are untouched.
+**What changed:** Square transactions, item sales, and KDS data now flow directly from the Square REST API (OAuth 2.0) into BigQuery, replacing the Playwright browser-scrape path entirely. No CSV files are written; no `extracted/downloads/` is used for Square data.
 
-**Motivation (from the analysis spike in `agents/bhaga/analysis/weather_forecast_spike/`):**
-- Heuristic growth clamp [0.80, 1.20] causes -19.5 orders systematic under-forecast bias at H=1
-  during the store's hypergrowth ramp.
-- Log-space Ridge with `weeks_since_open` ramp term reduces bias to -5.1 orders (75% improvement).
-- Weather adds ~5pt near-horizon MAPE gain even under the conservative persistence proxy.
-- Realistic target: ~10-15% MAPE (Poisson noise floor at >100 orders/day is ~10%).
+**Milestones:**
+- **M1:** OAuth bootstrap — `skills/square_api/auth.py` handles token get/refresh from `square_palmetto_oauth` GCP secret; `skills/square_api/client.py` provides the REST client with pagination.
+- **M2:** Transactions + item sales — `skills/square_api/ingest.py` fetches payments, refunds, orders, and catalog categories for a date window; `skills/square_api/export.py` builds the in-memory row dicts matching the parser schema. Complex correctness work: split-tender aggregation (one row per order), canceled-order filtering, COMPLETED-payment filtering, timestamp convention (Register=`closed_at`, Kiosk/3rd-party=`created_at`), gift-card exclusion, refund gross/tip splitting, `_SOURCE_LABEL` / `_CHANNEL_LABEL` mappings, two-step category lookup, refund item lines with negated quantities.
+- **M3:** KDS — `skills/square_api/kds_reporting.py` queries the Square Reporting API (Cube.js) KDS cube at ticket grain; key correctness fixes: naive UTC timestamps treated as UTC (not local), `display_on_kds_at` (not `chit_created_at`) as the "Time Created" start for completion-time math, `time_due` added for late-ticket stats.
+- **M4:** Evidence + removal + docs — parity verified for 3 historical dates (2026-05-15, 2026-04-15, 2026-03-25); 100% row and value parity confirmed for `square_transactions`, `square_item_lines`, `square_kds_daily`. Browser runner (`skills/square_tips/runner.py`) gutted to stubs; `square_palmetto_login` secret removed from credential registry; browser-specific test files deleted; dead code removed from `daily_refresh.py`; docs updated.
 
-**New files:**
-- `skills/weather/open_meteo.py` — Open-Meteo weather skill (actuals + forward forecast, no API key).
-- `core/migrations/021_weather_daily.sql` — `weather_daily` BQ table (metric units: °C, mm).
-- `core/migrations/022_ramp_forecast.sql` — `model_forecast_ramp_daily` table + `vw_model_forecast_ramp` + `vw_forecast_ramp_accuracy` views.
-- `core/migrations/023_ramp_coeff.sql` — `model_ramp_coeff_daily` table (Ridge β per `make_date` × feature).
-- `agents/bhaga/scripts/forecast_ramp_bq.py` — Ramp model: pure-Python Ridge on log(orders), features: `weeks_since_open`, DOW dummies, lags 7/14/21/28d + 4-week same-DOW rolling mean, weather. Exposes `build_ramp_coeff_rows()` for the feature-importance panel.
-- `skills/weather/test_open_meteo.py` (18 tests) + `agents/bhaga/scripts/test_forecast_ramp_bq.py` (31 tests).
+**Parity evidence:**
+- `2026-05-15`: square_transactions PASS 126/126, square_item_lines PASS 159/159, square_kds_daily PASS 1/1
+- `2026-04-15`: square_transactions PASS 47/47, square_item_lines PASS 54/54, square_kds_daily SKIP (no prod data)
+- `2026-03-25`: square_transactions PASS 23/23, square_item_lines PASS 26/26, square_kds_daily SKIP (no prod data)
 
-**Modified files:**
-- `agents/bhaga/knowledge-base/store-profiles/palmetto.json` — added `location.lat/lon`.
-- `agents/bhaga/scripts/materialize_model_bq.py` — weather fetch block + ramp forecast block + coefficient block (all non-fatal, `BHAGA_SKIP_FORECAST_RAMP` kill-switch).
-- `agents/bhaga/scripts/backfill_bigquery.py` — `map_forecast_ramp_daily` + `map_forecast_ramp_coeff`.
-- `agents/bhaga/grafana/dashboard.json` — Section 7A panels (81, 84, 82, 85, 86, 83, **87**) + accuracy chart panel 76 for Section 7 (v44). Panel 81 now JOINs `weather_daily` for Temp/Precip/Weather forecast columns. Panel 87 is a new "Feature Importance Over Time" timeseries (Ridge β coefficients for 7 key features, one line each).
+**Decision:** KDS percentile columns (p90/p95/p99) tolerate ±2 seconds — inherent from the Reporting API's millisecond timestamp precision vs. the dashboard CSV's whole-second rounding. All other columns are exact.
 
-**Today's initial coefficient values** (2026-06-18, make_date, n_train=TBD):
-- `tmean_scaled`: -1.22 (dominant — summer heat suppresses orders)
-- DOW effects: Tue/Wed/Thu/Mon all negative vs Sun baseline (-0.29 to -0.22)
-- `weeks_since_open`: +0.16 (still in ramp growth phase)
-- Weather: `precip_mm_scaled` -0.18, `rainy_flag` -0.03
-- Lags: `log_lag_7d` +0.07, all shrunk toward 0 by Ridge
+**Files:** `skills/square_api/` (all files), `agents/bhaga/scripts/daily_refresh.py`, `agents/bhaga/knowledge-base/store-profiles/palmetto.json`, `skills/credentials/registry.py`, `skills/square_tips/runner.py`, `RUNBOOK.md`, `agents/bhaga/scripts/README.md`.
 
+## 2026-06-17 — BHAGA: fix data_window_end drift freezing review crediting
 
 **What changed:** `data_window_end` is now purely derived from `MAX(square_transactions.date_local)` everywhere, eliminating the 2026-06-15 incident where a stale `store_config` row froze review crediting at 2026-06-13 (30 reviews held back for 2+ days).
 

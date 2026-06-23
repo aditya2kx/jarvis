@@ -95,7 +95,6 @@ from agents.bhaga.notify import (
     otp_skipped_alert,
     ready_request,
     scrape_concurrency_alert,
-    square_device_blocked_alert,
     success_heartbeat,
 )
 from agents.bhaga.scripts import model_semantics, otp_gate
@@ -369,24 +368,6 @@ def _record_failure(
     return ev_uri
 
 
-def _is_square_device_block(exc: BaseException | None) -> bool:
-    """True if ``exc`` (or anything in its cause/context chain) is a Square
-    anti-bot device block (``SquareDeviceBlockedError``).
-
-    Duck-typed by class name so this module needn't import the heavy browser
-    runner just to classify a failure. Walks ``__cause__``/``__context__`` so a
-    wrapped block is still recognized (bounded to avoid a pathological cycle).
-    """
-    seen = 0
-    cur = exc
-    while cur is not None and seen < 20:
-        if type(cur).__name__ == "SquareDeviceBlockedError":
-            return True
-        cur = cur.__cause__ or cur.__context__
-        seen += 1
-    return False
-
-
 def _is_scrape_lock_held(exc: BaseException | None) -> bool:
     """True if ``exc`` is a ScrapeLockHeldError (concurrent execution refused).
 
@@ -403,26 +384,6 @@ def _is_scrape_lock_held(exc: BaseException | None) -> bool:
         cur = cur.__cause__ or cur.__context__
         seen += 1
     return False
-
-
-def _run_square_session_with_retry(run_session) -> None:
-    """Run one Square browser session; on an anti-bot device block, retry once fresh.
-
-    ``run_session(fresh: bool)`` performs a complete Square session (login -> 2FA/
-    magic-link -> downloads). When the FIRST attempt is soft-blocked (an
-    undeliverable, blank-recipient magic link), ``_ensure_logged_in`` discards the
-    poisoned session and raises ``_RetryFreshLogin``; we then retry EXACTLY ONCE
-    with ``fresh=True`` (a clean cookie jar, which often re-presents the SMS path).
-    A second block propagates as a real ``SquareDeviceBlockedError`` — no loop, and
-    the first attempt fired no SMS so the single retry can't duplicate one.
-    """
-    from skills.square_tips.runner import _RetryFreshLogin  # lazy: heavy browser deps
-    try:
-        run_session(fresh=False)
-    except _RetryFreshLogin:
-        print("[square_pipeline] device-blocked on attempt 1; retrying ONCE "
-              "with a fresh session (no restored cookies).")
-        run_session(fresh=True)
 
 
 def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
@@ -1500,7 +1461,13 @@ def _run_square_pipeline(
     dry_run: bool,
     skip_kds: bool = False,
 ) -> PipelineResult:
-    """Thread 1: Square transactions + item sales + KDS scrape → consolidate CSV → GCS upload."""
+    """Square transactions + item sales + KDS via OAuth REST API -> BigQuery directly.
+
+    Replaces the browser-scrape path. No CSV files are written; no
+    extracted/downloads/ directory is used for Square data. Data flows:
+      Square API -> in-memory rows -> parse_transaction_rows / parse_item_rows
+      -> map_square_* -> core.datastore.load_rows -> bhaga.square_* BQ tables.
+    """
     result = PipelineResult(name="square")
     try:
         if dry_run:
@@ -1508,122 +1475,19 @@ def _run_square_pipeline(
             result.success = True
             return result
 
-        from skills.square_tips.runner import (
-            _ensure_logged_in,
-            _set_date_range,
-            _trigger_export_and_download,
-            TRANSACTIONS_URL,
-            _acquire_scrape_lock,
-            _release_scrape_lock,
-            download_item_sales,
-            download_kds_report,
-            restore_session_path,
-            persist_session,
-        )
-        from skills._browser_runtime.runtime import (
-            DOWNLOADS_DIR as _DL_DIR,
-            is_fresh_download,
-            launch_persistent,
-        )
-        import re as _re
+        from skills.square_api.ingest import ingest_window
+        counts = ingest_window(start_date=gap_start, end_date=end_date, store=store)
+        result.artifacts["square_counts"] = counts
 
-        # Check if transactions CSV already exists (idempotency).
-        expected_txn = _DL_DIR / (
-            f"transactions-{gap_start.isoformat()}-"
-            f"{(end_date + datetime.timedelta(days=1)).isoformat()}.csv"
-        )
-        expected_items = _DL_DIR / (
-            f"items-{gap_start.isoformat()}-"
-            f"{(end_date + datetime.timedelta(days=1)).isoformat()}.csv"
-        )
-        txn_fresh = is_fresh_download(expected_txn)
-        items_fresh = is_fresh_download(expected_items)
-
-        # Check KDS freshness
-        from skills._browser_runtime.runtime import DOWNLOADS_DIR as _DL_DIR2
-        expected_kds = _DL_DIR2 / (
-            f"kds-{gap_start.isoformat()}-"
-            f"{(end_date + datetime.timedelta(days=1)).isoformat()}.csv"
-        )
-        kds_fresh = is_fresh_download(expected_kds) if not skip_kds else True
-        needs_kds = not skip_kds and not kds_fresh and not step_already_done(refresh_date, "square_kds")
-
-        if txn_fresh and items_fresh and (not needs_kds or kds_fresh):
-            csv_path = expected_txn
-            item_csv_path = expected_items
-            kds_csv_path = expected_kds if not skip_kds and expected_kds.exists() else None
-            print(f"[square_pipeline] SKIP browser — all CSVs fresh on disk")
-        else:
-            _acquire_scrape_lock(store)
+        if not skip_kds and not step_already_done(refresh_date, "square_kds"):
             try:
-                def _square_session(*, fresh: bool):
-                    """One full Square browser session: login (+2FA/magic-link) then
-                    download transactions/items/KDS. ``fresh=True`` starts from a
-                    clean cookie jar (no restored session) — used for the single
-                    device-block retry so Square re-presents a usable challenge."""
-                    nonlocal csv_path, item_csv_path, kds_csv_path
-                    _attempt = 2 if fresh else 1
-                    _state = None if fresh else restore_session_path(store)
-                    with launch_persistent(
-                        portal="square", headed=headed, slow_mo_ms=50,
-                        storage_state=_state,
-                    ) as (ctx, page):
-                        _ensure_logged_in(page, store=store, attempt=_attempt)
-                        # Persist the (now trusted) session so the next run skips 2FA.
-                        persist_session(ctx, store)
-
-                        # Download transactions
-                        if txn_fresh:
-                            csv_path = expected_txn
-                            print(f"[square_pipeline] transactions already fresh: {csv_path}")
-                        else:
-                            page.goto(TRANSACTIONS_URL, wait_until="domcontentloaded")
-                            page.locator("button").filter(
-                                has_text=_re.compile(r"\d{2}/\d{2}/\d{4}")
-                            ).first.wait_for(state="visible", timeout=30_000)
-                            page.wait_for_timeout(1_500)
-                            _set_date_range(page, start=gap_start, end=end_date)
-                            csv_path = _trigger_export_and_download(
-                                page, start=gap_start, end=end_date,
-                            )
-                            print(f"[square_pipeline] transactions OK → {csv_path}")
-
-                        # Download item sales in the same session
-                        if items_fresh:
-                            item_csv_path = expected_items
-                            print(f"[square_pipeline] item sales already fresh: {item_csv_path}")
-                        else:
-                            item_csv_path = download_item_sales(
-                                page, start_date=gap_start, end_date=end_date, store=store,
-                            )
-                            print(f"[square_pipeline] item sales OK → {item_csv_path}")
-
-                        # Download KDS report in the same session
-                        if needs_kds:
-                            kds_csv_path = download_kds_report(
-                                page, start_date=gap_start, end_date=end_date, store=store,
-                            )
-                            print(f"[square_pipeline] KDS OK → {kds_csv_path}")
-                        else:
-                            kds_csv_path = expected_kds if expected_kds.exists() else None
-
-                _run_square_session_with_retry(_square_session)
-            finally:
-                _release_scrape_lock()
-
-        result.artifacts["square_csv"] = csv_path
-        result.artifacts["item_sales_csv"] = item_csv_path
-        result.artifacts["kds_csv"] = kds_csv_path
-
-        if csv_path is not None:
-            total, added = _consolidate_into_master(gap_csv=csv_path)
-            result.master_stats = {"master_rows": total, "rows_added": added}
-            print(f"[square_pipeline] consolidate OK — master={total}, added={added}")
-
-        # NOTE: scrape CSVs are NOT uploaded to GCS. BigQuery is the single
-        # system of record — the just-downloaded files are parsed straight into
-        # BQ raw tables by the load_raw_bigquery step (backfill_from_downloads).
-        # GCS holds only browser sessions + failure evidence, never data files.
+                from skills.square_api import kds_reporting
+                kds_counts = kds_reporting.ingest_window_kds(
+                    start_date=gap_start, end_date=end_date, store=store,
+                )
+                result.artifacts["square_kds_counts"] = kds_counts
+            except Exception as kds_exc:  # noqa: BLE001
+                print(f"[square_pipeline] KDS WARN (non-fatal): {kds_exc}", file=sys.stderr)
 
         result.success = True
     except Exception as exc:  # noqa: BLE001
@@ -1776,26 +1640,8 @@ def _square_will_launch_browser(
     refresh_date: datetime.date,
     skip_kds: bool,
 ) -> bool:
-    """Mirror _run_square_pipeline's freshness gate to predict a browser launch."""
-    if not needs_square:
-        return False
-    from skills._browser_runtime.runtime import DOWNLOADS_DIR as _DL, is_fresh_download
-
-    plus1 = (end_date + datetime.timedelta(days=1)).isoformat()
-    exp_txn = _DL / f"transactions-{gap_start.isoformat()}-{plus1}.csv"
-    exp_items = _DL / f"items-{gap_start.isoformat()}-{plus1}.csv"
-    exp_kds = _DL / f"kds-{gap_start.isoformat()}-{plus1}.csv"
-    txn_fresh = is_fresh_download(exp_txn)
-    items_fresh = is_fresh_download(exp_items)
-    kds_fresh = is_fresh_download(exp_kds) if not skip_kds else True
-    needs_kds = (
-        (not skip_kds)
-        and not kds_fresh
-        and not step_already_done(refresh_date, "square_kds")
-    )
-    # Pipeline SKIPS the browser only when txn AND items are fresh AND KDS is
-    # either not needed or already fresh.
-    return not (txn_fresh and items_fresh and (not needs_kds or kds_fresh))
+    """Square pipeline now uses OAuth REST API — never launches a browser."""
+    return False
 
 
 def _adp_will_launch_browser(
@@ -2543,13 +2389,6 @@ def _run_refresh() -> int:
                             lock_name=getattr(exc, "lock_name", "unknown"),
                             expires_at=getattr(exc, "expires_at", "unknown"),
                         )
-                    elif _is_square_device_block(pr.error):
-                        # Anti-bot device block: a generic failure_alert would tell
-                        # the operator to chase a magic-link email that was never
-                        # sent. Send the actionable, no-paste alert instead.
-                        square_device_blocked_alert(
-                            date=refresh_date.isoformat(), evidence_uri=ev_uri,
-                        )
                     else:
                         failure_alert(
                             step=pipeline_name, exception=pr.error,
@@ -2561,15 +2400,13 @@ def _run_refresh() -> int:
             continue
 
         if pipeline_name == "square":
-            artifacts["square_csv"] = pr.artifacts.get("square_csv")
-            artifacts["item_sales_csv"] = pr.artifacts.get("item_sales_csv")
-            artifacts["kds_csv"] = pr.artifacts.get("kds_csv")
+            artifacts["square_counts"] = pr.artifacts.get("square_counts")
+            artifacts["square_kds_counts"] = pr.artifacts.get("square_kds_counts")
             master_stats = pr.master_stats
             try:
-                mark_step_done(refresh_date, "square_transactions",
-                               note=f"rows_added={pr.master_stats.get('rows_added', 0)}")
+                mark_step_done(refresh_date, "square_transactions")
                 mark_step_done(refresh_date, "consolidate_csv")
-                if pr.artifacts.get("kds_csv"):
+                if pr.artifacts.get("square_kds_counts"):
                     mark_step_done(refresh_date, "square_kds")
             except Exception as mark_exc:  # noqa: BLE001
                 print(f"  [square] WARN: marker write failed: {mark_exc}")
@@ -2641,7 +2478,7 @@ def _run_refresh() -> int:
             )
             return subprocess.run(
                 [sys.executable, "-m", "agents.bhaga.scripts.backfill_from_downloads",
-                 "--store", args.store],
+                 "--store", args.store, "--skip", "square"],
                 cwd=str(PROJECT_ROOT), check=True,
                 env=bq_raw_env,
             )

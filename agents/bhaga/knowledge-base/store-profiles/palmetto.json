@@ -7,8 +7,8 @@
   "_doc_google_account_key": "Matches the key in core/config.yaml accounts.{key}. Determines which Google credentials refresh_access_token() uses.",
   "timezone": {
     "shop_tz": "America/Chicago",
-    "square_account_display_tz": "America/New_York",
-    "_doc": "Square account display TZ is Eastern; Austin shop is Central. transactions_backend.parse_csv() does the conversion via zoneinfo. ADP times are already shop-local (no conversion needed)."
+    "square_account_display_tz": "America/Chicago",
+      "_doc": "Square account display TZ is Central (same as shop). Verified 2026-06-23: prod BQ timestamps are in CDT (-05:00), confirming the dashboard exports in Central time. ADP times are already shop-local (no conversion needed)."
   },
   "shop_hours": {
     "open_local_time": "10:00",
@@ -83,7 +83,11 @@
   },
   "square": {
     "credential_handle": "jarvis-square-palmetto",
-    "_doc": "Keychain handle resolved via skills/credentials. Browser-automation login (no API access today). Account email: adi@mypalmetto.co."
+    "oauth_secret": "square_palmetto_oauth",
+    "application_id": "sq0idp-Hcto2eTRUUFBAyhRtxCSGg",
+    "location_id": "L9DDZF3CQS8AK",
+    "_doc_location_id": "Square location ID for the Austin Mueller Lake store (confirmed 2026-06-23 via GET /v2/locations).",
+    "_doc": "OAuth access via Square REST API. Tokens stored in Secret Manager secret square_palmetto_oauth (JSON: application_id, application_secret, access_token, refresh_token, expires_at, merchant_id). Account: adi@mypalmetto.co. Migrated from browser-automation login (square_palmetto_login) 2026-06-23."
   },
   "adp_run": {
     "credential_handle": "adp_palmetto_login",
@@ -146,7 +150,7 @@
     "saturation_orders_per_labor_hour": 4,
     "forecast_target_completion_time_per_item_sec": 420,
     "_doc": "Store-specific seed default. Palmetto's throughput wall is ~4 orders/hourly-labor-hour (one order every 15 labor-minutes per barista). The code default of 10 is for a generic fast-paced shop; Palmetto's specialty drinks take longer. Operator can still override in-sheet; subsequent refreshes preserve the in-sheet value.",
-    "_doc_forecast_target_completion_time_per_item_sec": "Flat, configurable staffing-solver target (seconds per item) — 420 = 7 min/item. Drives forecast efficiency_hours and the operational kds_pct_items_over_goal threshold. Editable in-sheet (config tab) AND per forecast row (labor_daily_forecast.target_time_per_item_sec). NOT derived from observed KDS — observed KDS time is purely operational/observational and never feeds the solver."
+    "_doc_forecast_target_completion_time_per_item_sec": "Flat, configurable staffing-solver target (seconds per item) \u2014 420 = 7 min/item. Drives forecast efficiency_hours and the operational kds_pct_items_over_goal threshold. Editable in-sheet (config tab) AND per forecast row (labor_daily_forecast.target_time_per_item_sec). NOT derived from observed KDS \u2014 observed KDS time is purely operational/observational and never feeds the solver."
   },
   "calibration": {
     "last_verified_utc": "2026-05-16T17:10:00Z",

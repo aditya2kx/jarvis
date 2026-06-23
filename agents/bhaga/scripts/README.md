@@ -21,19 +21,23 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    to find which business days are absent → set `gap_start = earliest_missing_day`. If BQ is
    unavailable, falls back to reading `data_window_end` from the Model sheet config tab. This replaces
    the old sheet-based `_read_data_window_end_from_sheet` / `compute_gap_window` as the primary path.
-2. **Scrape Square** transactions for the gap (`skills/square_tips/`), dedupe-append.
+2. **Ingest Square** transactions, item sales, and KDS via Square OAuth REST API
+   (`skills/square_api/ingest.py` + `skills/square_api/kds_reporting.py`) — no browser, no
+   CSV files, no OTP. Data flows: Square API → in-memory rows → `map_square_*` → BQ.
 3. **Scrape ADP** timecards / earnings / **team schedule** for overlapping pay periods
    (`skills/adp_run_automation/`). 2FA, if challenged, goes through the **OTP gate** (see below).
    The schedule scrape (forward scheduled hours, current + next week) is **best-effort** — a
    failure is non-fatal to the nightly run (see `daily_refresh._adp_bundle_then_raise`).
-4. **Load scrapes → BigQuery (primary)** (`backfill_from_downloads.py`, requires `BHAGA_DATASTORE=bigquery`):
-   maps parse-output dicts through `map_*` functions and calls `load_rows` (MERGE upsert) for all 12 raw
-   BQ tables. BQ is the **single source of truth**. Handles: `square_transactions`, `square_daily_rollup`,
-   `square_item_lines`, `square_item_daily`, `square_kds_daily`, `square_kds_tickets`,
-   `adp_shifts`, `adp_punches`, `adp_wage_rates`, `adp_earnings`, `adp_scheduled_daily`
-   (per-day scheduled hours, parsed from `Schedule-*.json` via `schedule_backend.build_schedule_records`).
+4. **Load ADP → BigQuery (primary)** (`backfill_from_downloads.py --skip square`, requires
+   `BHAGA_DATASTORE=bigquery`): maps ADP parse-output dicts through `map_*` functions and calls
+   `load_rows` (MERGE upsert). Square data is written directly by step 2 (no download file). BQ is
+   the **single source of truth**. Handles: `adp_shifts`, `adp_punches`, `adp_wage_rates`,
+   `adp_earnings`, `adp_scheduled_daily` (per-day scheduled hours, parsed from `Schedule-*.json`
+   via `schedule_backend.build_schedule_records`). Square tables (`square_transactions`,
+   `square_daily_rollup`, `square_item_lines`, `square_item_daily`, `square_kds_daily`,
+   `square_kds_tickets`) are populated in step 2.
    If `load_raw_bigquery` fails, `square.done` and `adp.done` markers are **cleared** so the next
-   retry re-scrapes fresh data (retry-skips-rescrape guarantee).
+   retry re-runs fresh data (retry-skips-rescrape guarantee).
 4b. **Render raw Sheets from BQ** (`render_raw_sheet_from_bq.py`, non-fatal): inverse-maps each BQ raw
    table row → Sheet-header dict and calls `write_raw_*` upsert functions. Preserves historical rows
    outside the `--since` window. Reviews tab rendered separately after `process_reviews`.
@@ -133,32 +137,21 @@ nightly). Both honor sandbox write-bucket isolation via `gcs_cache`.
 | `notify.py` | Slack DMs under the BHAGA identity. Always DM through here, never `send_message` directly. |
 | `gcs_cache.py` | **Sessions + failure evidence ONLY — not a data pipeline.** `upload_session()`/`download_session()`/`delete_session()` persist / restore / **discard** a portal browser session (`storage_state`) under `<bucket>/_session/` for **trusted-device** reuse (skips 2FA next run); `delete_session()` drops a *poisoned* session (e.g. after a Square anti-bot block) so the next login starts fresh. `evidence_prefix()` / `upload_evidence()` persist failure screenshots+DOM under `gs://<bucket>/<date>/evidence/` so a postmortem needs no rerun. Writes honor `BHAGA_GCS_CACHE_WRITE_BUCKET` (sandbox isolation: write sandbox bucket). The data-file helpers (`upload_file`/`upload_scrape_artifacts`/`download_cached_files`) are **LEGACY** (offline backfill + `sandbox_e2e` replay only) — the nightly pipeline never reads/writes scrape data here; BQ is the single source of truth. |
 
-**Square login anti-bot recovery (2026-06-09).** When Square soft-blocks the headless container it can
-render the "Magic link sent" screen with a **blank recipient** and send no email — an undeliverable link.
-`skills/square_tips/runner.py::_magic_link_recipient` detects the blank recipient and raises
-`SquareDeviceBlockedError` instead of prompting for an impossible paste; `_drive_verification` (the
-`attempt`-aware post-password router) discards the poisoned session via `gcs_cache.delete_session` and
-raises `_RetryFreshLogin`. `daily_refresh._run_square_session_with_retry` then retries the Square session
-**exactly once** with a fresh cookie jar (`storage_state=None`), which often re-presents the SMS-OTP path;
-a second block fails cleanly via `notify.square_device_blocked_alert` (no paste prompt) and the next
-nightly auto-retries on a fresh egress IP. See `RUNBOOK.md` §13 "Login escalation".
+**Square uses OAuth REST API — no browser, no OTP (2026-06-23).** Square transactions, item
+sales, and KDS are ingested via `skills/square_api/ingest.py` (payments/refunds/orders) and
+`skills/square_api/kds_reporting.py` (Reporting API KDS cube). No Chromium, no magic-link 2FA,
+no session management, no OTP for Square. Token auto-refresh via `skills/square_api/auth.py`; the
+`square_palmetto_oauth` GCP secret holds the OAuth token JSON.
 
-**Concurrent-execution guard (distributed scrape lock, 2026-06-10).** Multiple Cloud Run executions for
-the same date can overlap (nightly scheduler + webhook READY-resume + manual `/bhaga refresh` + Slack retry
-delivery). A second concurrent Square scrape would fire a duplicate SMS and corrupt the shared GCS session
-blob. The guard is layered:
+**Concurrent-execution guard (ADP — distributed scrape lock).** ADP still uses a browser. Multiple Cloud
+Run executions for the same date can overlap (nightly scheduler + webhook READY-resume + manual
+`/bhaga refresh` + Slack retry delivery). The guard is layered:
 - `cloud/webhook/handler.py`: discards Slack-retry deliveries (`X-Slack-Retry-Num > 0`), stores seen
   `event_id`s in Firestore `webhook_events/<event_id>` (5 min TTL), and checks `_is_already_running`
   before calling `_trigger_cloud_run_job` (fail-open: listing errors allow the trigger).
-- `skills/square_tips/runner.py::_acquire_scrape_lock`: acquires a TTL-based lock in
-  `skills/bhaga_config/state_adapter.try_acquire_lock` (Firestore `runs/_lock_scrape-square-<store>` in
-  cloud, local JSON file on laptop, TTL via `BHAGA_SCRAPE_LOCK_TTL_S`, default 3600 s). A refused
-  execution raises `ScrapeLockHeldError` (carries `lock_name`, `held_by`, `acquired_at`, `expires_at`).
+- ADP's own runner acquires a TTL-based lock so a second execution fails fast with `ScrapeLockHeldError`.
 - `daily_refresh.py` classifies `ScrapeLockHeldError` via `_is_scrape_lock_held` and calls
-  `notify.scrape_concurrency_alert` (distinct from device-blocked and generic failure alerts).
-  Records `concurrent_execution` + holder details into `Firestore runs/<date>.failures.square` for
-  postmortem-from-state. Every lock transition emits a greppable Cloud Run log:
-  `[square lock] ACQUIRED/RELEASED/REFUSED name=… holder=… …`
+  `notify.scrape_concurrency_alert`.
 | `bootstrap_sheets.py` / `share_sheets_with_sa.py` | One-time: create sheets / share with the service account. |
 | `sandbox_provision.py` | **Pool-based** sandbox for per-PR e2e: `create-pool` (operator, user creds) pre-creates N slots × 4 sheets shared with the SA; `provision` leases + clears + re-seeds; `teardown` releases. Registry: `sandbox_pool.json`. |
 | `sandbox_e2e.py` | **Prod-like, zero-OTP e2e.** provision → seed sandbox raw → **mirror the prod `training_shifts` overlay** → model build → `assert_model_tabs_populated` (note: `labor_daily_forecast` removed from verification dict 2026-06-09 — tab is retired) → evidence → teardown. **`--source prod-raw --period last-closed`** (the CI default when opted in) reads the **PROD raw** Square+ADP sheets directly for the most-recent **closed** pay period (`most_recent_closed_period`) and writes only to the sandbox (read-prod/write-sandbox, hard-asserted), then runs the **strict full-period verify** incl. `assert_tip_pool_conserved` (per-day allocations == pool, cent-exact), **cadence-safe `adp_paid` reconciliation** (`assert_period_reconciled` when `period_has_cc_tip_actuals` confirms a covering Earnings export with CC-tip lines exists — no longer the blessed-`N/A` of commit 6f87f9c; an unpaid just-closed period is skipped, not failed), **and `assert_exemptions_applied`** (proves each worked training shift is dropped from tips, the day's pool redistributes to the rest, whole-period-exempt staff get $0 while partial-exempt staff keep their non-exempt earnings with exempt hours removed, and the period conserves). The overlay mirror (`seed_sandbox_training_shifts_from_prod`) copies the human-owned prod `training_shifts` rows for the window into the sandbox model so the build applies the SAME exemptions as prod. **`--source gcs-replay --auto-window --max-days N`** replays the GCS scrape cache for a small window (local smoke). Imports **no** scrape/login code (enforced by `test_sandbox_e2e.py`). **Opt-in only** (2026-06-09): add the `run-sandbox-e2e` label to a PR or trigger via `workflow_dispatch` — no longer runs on every PR automatically. See `RUNBOOK.md` §13. |

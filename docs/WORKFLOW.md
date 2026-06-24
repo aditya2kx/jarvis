@@ -36,9 +36,23 @@ LEARN      10  retrospective agent→op  doc-maintenance.md    PROGRESS.md + req
 ```
 
 ### Operator-reserved gates
-Phases 1, 3, 4, and 9 require the operator.  `phase_state.py advance` **refuses**
-to advance to these substeps without an `approved:<substep>` label on the GitHub
-issue, and posts a prompt + `awaiting:operator` label so the request always surfaces.
+Phases 1, 3, 4, and 9 require the operator.  The operator gives approval **in the
+Cursor chat** — there is no need to add a label or type anything on the GitHub issue.
+When the chat approval has been given, the agent re-runs:
+
+```bash
+python3 scripts/phase_state.py advance --branch <b> --to <gate> --operator-approved \
+  [--note "<one-line summary of what was agreed>"]
+```
+
+`--operator-approved` causes `phase_state.py` to **auto-stamp the issue** on the
+operator's behalf: it adds `approved:<gate>`, posts a provenance comment (including
+`--note` text if supplied), and clears `awaiting:operator`.  The GitHub issue is a
+read-only mirror — the operator never has to type anything there.
+
+If the agent attempts to advance an operator gate *without* `--operator-approved`, it
+posts `awaiting:operator` on the issue as an audit trail, but the refusal message
+is agent-directed ("re-run with --operator-approved") — not "go to GitHub".
 
 ---
 
@@ -215,6 +229,7 @@ L3 (roadmap):
 | Guarantee | Mechanism | Evidence type |
 |---|---|---|
 | New requirement → worktree + chat + phase ladder | new_requirement.py --dry-run | Script output |
+| Front door is interrogation-free (no jam in parent chat) | verify_lifecycle.py assertion #9 | Conformance PASS |
 | Thorough plan without probing | check_plan_readiness.py | Passing score (10/10) |
 | L1 mechanisms wired | verify_lifecycle.py | Conformance PASS |
 | Phase tracking queryable | phase_state.py status/report | Status output |

@@ -366,19 +366,18 @@ def cmd_advance(args) -> int:
         issue_num = data.get("issue")
         print(
             f"ERROR: substep {to_substep!r} is operator-reserved. "
-            f"Operator approval required.\n"
-            f"Please add label 'approved:{to_substep}' to issue #{issue_num} "
-            f"or reply with approval, then re-run with --operator-approved.",
+            f"Operator approval is given in the working chat; once approved, "
+            f"re-run with --operator-approved [--note '<summary>'].",
             file=sys.stderr,
         )
-        # Post prompt to issue and add awaiting:operator label
+        # Mirror the pause to the issue as a read-only audit trail (no action required from
+        # the operator on GitHub — approval happens exclusively in the Cursor chat).
         if issue_num and _gh_available():
             _gh("issue", "comment", str(issue_num),
                 "--body",
-                f"@operator: approval needed to advance to **{to_substep}**. "
-                f"Please add the `approved:{to_substep}` label when ready.")
-            _gh("issue", "edit", str(issue_num),
-                "--add-label", "awaiting:operator")
+                f"Paused at operator gate **{to_substep}** — "
+                f"approval is handled in the working Cursor chat.")
+            _gh("issue", "edit", str(issue_num), "--add-label", "awaiting:operator")
         return 1
 
     # Mark done, determine stage transition
@@ -387,10 +386,17 @@ def cmd_advance(args) -> int:
     done_set.add(to_substep)
     _save_cache(branch, data)
 
-    # Update issue
+    # Update issue — mirror the approval + clear awaiting:operator
     issue_num = data.get("issue")
+    note = getattr(args, "note", None)
     if issue_num and _gh_available():
         new_stage = lc.stage_of(to_substep)
+        # Stamp approval: add approved:<substep> label and post a provenance comment.
+        _gh("issue", "edit", str(issue_num), "--add-label", f"approved:{to_substep}")
+        approval_body = f"Operator approved **{to_substep}** in the working Cursor chat."
+        if note:
+            approval_body += f"\n\n{note}"
+        _gh("issue", "comment", str(issue_num), "--body", approval_body)
         # Swap stage label if we crossed a stage boundary
         if new_stage.name != prev_stage.name:
             old_label = STAGE_LABEL_MAP.get(prev_stage.name)
@@ -399,7 +405,7 @@ def cmd_advance(args) -> int:
                 _gh("issue", "edit", str(issue_num), "--remove-label", old_label)
             if new_label:
                 _gh("issue", "edit", str(issue_num), "--add-label", new_label)
-        # Remove awaiting:operator if present
+        # Clear awaiting:operator
         _gh("issue", "edit", str(issue_num), "--remove-label", "awaiting:operator")
         _update_issue_body(issue_num, data)
 
@@ -581,7 +587,9 @@ def main(argv: list[str] | None = None) -> int:
     p_adv.add_argument("--branch", required=True)
     p_adv.add_argument("--to", required=True, metavar="SUBSTEP")
     p_adv.add_argument("--operator-approved", action="store_true",
-                       help="Bypass the operator-gate check (use only after actual approval)")
+                       help="Bypass the operator-gate check (use only after actual approval in chat)")
+    p_adv.add_argument("--note", default=None,
+                       help="Free-text summary of the in-chat approval/jam; mirrored to the issue.")
 
     p_fail = sub.add_parser("fail", help="Record a failure/blocker")
     p_fail.add_argument("--branch", required=True)

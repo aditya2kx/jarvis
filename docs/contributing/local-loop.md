@@ -54,7 +54,16 @@ gate.  The issue URL is printed in the handoff banner.
 ```bash
 python3 scripts/phase_state.py status              # current stage / % / remaining
 python3 scripts/phase_state.py report              # all open work items
+
+# Agent-driver substeps:
 python3 scripts/phase_state.py advance --branch <b> --to <substep>
+
+# Operator-reserved gates (jam / define-evidence / merge):
+# Give approval in the Cursor chat, then:
+python3 scripts/phase_state.py advance --branch <b> --to <gate> --operator-approved \
+  --note "We agreed: <summary>"
+# phase_state auto-stamps approved:<gate>, posts a provenance comment, clears awaiting:operator.
+# You never have to type anything on the GitHub issue.
 ```
 See `scripts/phase_state.py --help` for all sub-commands.
 

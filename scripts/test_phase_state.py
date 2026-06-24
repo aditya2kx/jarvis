@@ -262,10 +262,69 @@ class TestAdvance(PhaseStateTestBase):
         args.branch = "feat/opa"
         args.to = "jam"
         args.operator_approved = True
+        args.note = None
         rc = ps.cmd_advance(args)
         self.assertEqual(rc, 0)
         loaded = ps._load_cache("feat/opa")
         self.assertIn("jam", loaded["done"])
+
+    def test_advance_operator_approved_stamps_label_and_note(self):
+        """--operator-approved adds approved:<gate> label and posts a provenance comment."""
+        gh_calls = []
+
+        def mock_gh(*args, **kwargs):
+            gh_calls.append(args)
+            return 0, ""
+
+        data = ps._load_cache("feat/stamp")
+        data["done"] = ["specify", "setup"]
+        data["issue"] = 77
+        ps._save_cache("feat/stamp", data)
+
+        with patch.object(ps, "_gh_available", return_value=True), \
+             patch.object(ps, "_gh", side_effect=mock_gh):
+            args = MagicMock()
+            args.branch = "feat/stamp"
+            args.to = "jam"
+            args.operator_approved = True
+            args.note = "We agreed: scope is just the README, no code."
+            rc = ps.cmd_advance(args)
+
+        self.assertEqual(rc, 0)
+        # A label-add call for approved:jam must be present
+        label_adds = [c for c in gh_calls if "--add-label" in c and "approved:jam" in c]
+        self.assertTrue(label_adds, "approved:jam label must be stamped on the issue")
+        # A comment with the note must be posted
+        comment_calls = [c for c in gh_calls if "comment" in c]
+        comment_bodies = " ".join(str(c) for c in comment_calls)
+        self.assertIn("We agreed", comment_bodies)
+
+    def test_refusal_does_not_instruct_github(self):
+        """Gate refusal should NOT tell the operator to go to GitHub."""
+        import io, sys
+        data = ps._load_cache("feat/refusal")
+        data["done"] = ["specify", "setup"]
+        data["issue"] = 88
+        ps._save_cache("feat/refusal", data)
+
+        args = MagicMock()
+        args.branch = "feat/refusal"
+        args.to = "jam"
+        args.operator_approved = False
+
+        buf = io.StringIO()
+        old_stderr = sys.stderr
+        sys.stderr = buf
+        try:
+            with patch.object(ps, "_gh_available", return_value=False):
+                rc = ps.cmd_advance(args)
+        finally:
+            sys.stderr = old_stderr
+
+        self.assertNotEqual(rc, 0)
+        # Must NOT instruct the operator to go add a GitHub label
+        stderr_text = buf.getvalue()
+        self.assertNotIn("Please add label", stderr_text, "Refusal must not tell operator to go to GitHub")
 
     def test_overall_and_stage_pct(self):
         """After advancing, overall % increases."""

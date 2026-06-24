@@ -50,8 +50,9 @@ def _complete_state() -> dict:
 
 class TestOperatorGateDemo(unittest.TestCase):
     def test_demo_gate_records_refusal_then_approval(self):
-        # advance(no approval)->rc1 ; gh add-label->rc0 ; advance(--operator-approved)->rc0
-        run = _fake_run([(1, "operator-reserved; awaiting", ""), (0, "", ""), (0, "advanced", "")])
+        # advance(no approval)->rc1 ; advance(--operator-approved --note)->rc0
+        # (no separate gh add-label call — phase_state does that internally)
+        run = _fake_run([(1, "operator-reserved; awaiting", ""), (0, "advanced", "")])
         rec = dl.demo_operator_gate("feat/x", 7, "jam", run=run)
         self.assertTrue(rec.gate_refused)
         self.assertTrue(rec.gate_approved)
@@ -60,7 +61,7 @@ class TestOperatorGateDemo(unittest.TestCase):
 
     def test_demo_gate_fails_if_not_refused(self):
         # If advance-without-approval SUCCEEDS, the gate has no teeth → not ok.
-        run = _fake_run([(0, "advanced (BUG)", ""), (0, "", ""), (0, "", "")])
+        run = _fake_run([(0, "advanced (BUG)", ""), (0, "", "")])
         rec = dl.demo_operator_gate("feat/x", 7, "jam", run=run)
         self.assertFalse(rec.gate_refused)
         self.assertFalse(rec.ok)

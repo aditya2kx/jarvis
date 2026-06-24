@@ -362,7 +362,8 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_5_scripts_exist_and_help", return_value=(True, "ok")), \
              patch.object(vl, "assert_6_agent_card_dedup", return_value=(True, "ok")), \
              patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")), \
-             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")):
+             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
+             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 0)
 
@@ -375,7 +376,8 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_5_scripts_exist_and_help", return_value=(True, "ok")), \
              patch.object(vl, "assert_6_agent_card_dedup", return_value=(True, "ok")), \
              patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")), \
-             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")):
+             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
+             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 1)
 
@@ -388,7 +390,8 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_5_scripts_exist_and_help", return_value=(False, "needs M3")), \
              patch.object(vl, "assert_6_agent_card_dedup", return_value=(False, "needs M5")), \
              patch.object(vl, "assert_7_operator_gate_refused", return_value=(False, "needs M3")), \
-             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")):
+             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
+             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 0, "Pre-milestone WARNs should not cause exit 1")
 
@@ -403,6 +406,48 @@ class TestAssertion8(unittest.TestCase):
         # The assertion keys off source content; confirm the marker token is present.
         src = (vl.REPO_ROOT / "scripts" / "new_requirement.py").read_text(encoding="utf-8")
         self.assertIn("init_phase_tracking", src)
+
+
+# ---------------------------------------------------------------------------
+# Assertion 9 — front door is interrogation-free
+# ---------------------------------------------------------------------------
+
+class TestAssertion9(unittest.TestCase):
+    def test_passes_against_real_front_door(self):
+        # The real new_requirement.py has no input() and accepts vague text → PASS.
+        passed, detail = vl.assert_9_front_door_interrogation_free()
+        self.assertTrue(passed, msg=detail)
+
+    def test_fails_when_front_door_is_interactive(self):
+        # A front door that prompts interactively must be rejected.
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts_dir = Path(tmp) / "scripts"
+            scripts_dir.mkdir()
+            (scripts_dir / "new_requirement.py").write_text(
+                "import sys\n"
+                "answer = input('Tell me more about the requirement: ')\n"
+                "print('branch fix/x')\n"
+            )
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_9_front_door_interrogation_free()
+        self.assertFalse(passed, f"Should fail on interactive front door: {detail}")
+        self.assertIn("input()", detail)
+
+    def test_fails_when_front_door_rejects_vague_text(self):
+        # A front door whose --dry-run exits nonzero for vague text must be rejected.
+        def fake_run(cmd, **kwargs):
+            return 1, "", "error: requirement too vague, please clarify"
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts_dir = Path(tmp) / "scripts"
+            scripts_dir.mkdir()
+            # Source is clean (no input()), but runtime rejects vague text.
+            (scripts_dir / "new_requirement.py").write_text(
+                "import sys\nprint('would reject')\n"
+            )
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)), \
+                 patch.object(vl, "_run", side_effect=fake_run):
+                passed, detail = vl.assert_9_front_door_interrogation_free()
+        self.assertFalse(passed, f"Should fail when vague text is rejected: {detail}")
 
 
 if __name__ == "__main__":

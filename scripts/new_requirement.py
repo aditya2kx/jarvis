@@ -182,18 +182,23 @@ def json_load(worktree: Path, branch: str) -> dict:
     return {}
 
 
-def init_phase_tracking(*, branch: str, requirement: str, dry_run: bool) -> str | None:
-    """Create the GitHub work-tracking issue for this branch via OUR phase_state.py.
+def init_phase_tracking(
+    *, branch: str, requirement: str, dry_run: bool, existing_issue: int | None = None
+) -> str | None:
+    """Create (or link) the GitHub work-tracking issue for this branch.
 
     phase_state is GitHub-global (one issue per branch), so we call THIS repo's
     copy, not the worktree copy. Non-fatal: a tracking failure must not abort the
     handoff. Returns the issue URL when known.
+
+    Pass existing_issue to link a pre-filed issue instead of creating a new one.
     """
     script = Path(__file__).parent / "phase_state.py"
-    args = [
-        sys.executable, str(script), "init",
-        "--branch", branch, "--requirement", requirement, "--kickoff",
-    ]
+    args = [sys.executable, str(script), "init", "--branch", branch]
+    if existing_issue:
+        args += ["--issue", str(existing_issue)]
+    else:
+        args += ["--requirement", requirement, "--kickoff"]
     if dry_run:
         args.append("--dry-run")
     print("Creating work-tracking issue …")
@@ -225,6 +230,8 @@ def _run_one(
     model: str,
     cursor_delay: float,
     dry_run: bool,
+    no_open: bool = False,
+    existing_issue: int | None = None,
 ) -> int:
     """Create one worktree for a single (possibly consolidated) requirement."""
     wt = worktree or default_worktree_path(repo_root, branch)
@@ -254,12 +261,24 @@ def _run_one(
     print(f"\nBrief   → {brief}")
     print(f"Launcher → {launch}\n")
 
-    issue_url = init_phase_tracking(branch=branch, requirement=requirement, dry_run=dry_run)
+    issue_url = init_phase_tracking(
+        branch=branch, requirement=requirement, dry_run=dry_run,
+        existing_issue=existing_issue,
+    )
 
     if dry_run:
         print("(dry-run — no Cursor opened)")
         if issue_url:
             print(f"Tracking issue → {issue_url}")
+        return 0
+
+    if no_open:
+        # Agent-driven run (cloud/CI/dogfood): skip the Cursor window.
+        print("\n─── WORKTREE READY (--no-open) ───")
+        print(f"Worktree: {wt}")
+        if issue_url:
+            print(f"Tracking issue: {issue_url}")
+        print("Pick up the work in this chat; commit and push from within the worktree.")
         return 0
 
     S.open_cursor_handoff(
@@ -332,6 +351,11 @@ def main(argv: list[str] | None = None) -> int:
         "--model", default=S.DEFAULT_HANDOFF_MODEL,
         help=f"Agent model for handoff deeplink (default: {S.DEFAULT_HANDOFF_MODEL})",
     )
+    cli.add_argument("--no-open", action="store_true",
+                     help="Create worktree + brief + issue without opening a Cursor window "
+                          "(agent-driven / cloud / dogfood runs).")
+    cli.add_argument("--issue", type=int, default=None,
+                     help="Link an already-filed GitHub issue instead of creating a new one.")
     cli.add_argument("--dry-run", action="store_true", help="Print plan without creating anything")
     args = cli.parse_args(argv)
 
@@ -357,6 +381,8 @@ def main(argv: list[str] | None = None) -> int:
                 model=args.model,
                 cursor_delay=args.cursor_delay,
                 dry_run=args.dry_run,
+                no_open=args.no_open,
+                existing_issue=args.issue,
             )
         return rc
 
@@ -378,6 +404,8 @@ def main(argv: list[str] | None = None) -> int:
         model=args.model,
         cursor_delay=args.cursor_delay,
         dry_run=args.dry_run,
+        no_open=args.no_open,
+        existing_issue=args.issue,
     )
 
 

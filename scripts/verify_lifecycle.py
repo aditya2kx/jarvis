@@ -18,6 +18,11 @@ Assertions:
      restate hoisted common-principle phrases (enforces the M5 hoist).
   7. Operator-gate enforcement: phase_state.py advance --to jam (an operator substep)
      without approval exits nonzero.
+  8. new_requirement.py wires phase_state init at kickoff (the front door).
+  9. The front door is interrogation-free: no interactive input() in the intake path,
+     and a deliberately vague requirement is accepted end-to-end (--dry-run). Encodes
+     the intake contract — requirement refinement belongs in the jam phase, not the
+     parent chat — as a mechanical check rather than a prose reminder.
 
 Note: assertions 2, 5 (phase_state), and 7 require M3 to be complete;
       assertion 3 requires M5 to be complete;
@@ -274,6 +279,40 @@ def assert_8_new_requirement_wires_phase_state() -> tuple[bool, str]:
     return False, "new_requirement.py does not invoke phase_state init (front door not wired)"
 
 
+def assert_9_front_door_interrogation_free() -> tuple[bool, str]:
+    """The front door accepts any rough requirement with zero interactive refinement.
+
+    This is the mechanical encoding of the intake contract: requirement refinement
+    belongs in the jam phase (new chatspace, Ask mode), NOT in the parent chat.  If
+    the front door provably needs nothing more than rough text, there is no functional
+    justification for an agent to 'clarify first' before firing new_requirement.py.
+
+    Two checks:
+      (a) new_requirement.py has no interactive input() in the intake path — the
+          operator's words go straight to --requirement; nothing blocks on quality.
+      (b) A deliberately vague requirement + --dry-run exits 0 and yields a branch,
+          proving the front door swallows any text without demanding clarification.
+    """
+    nr = REPO_ROOT / "scripts" / "new_requirement.py"
+    if not nr.exists():
+        return False, "scripts/new_requirement.py not found"
+    src = nr.read_text(encoding="utf-8")
+    # (a) intake must be non-interactive
+    if re.search(r"\binput\s*\(", src):
+        return False, "new_requirement.py contains input() — intake must be non-interactive"
+    # (b) vague text is accepted end-to-end (dry-run, no side effects)
+    rc, out, err = _run([
+        "python3", "scripts/new_requirement.py",
+        "--requirement", "do the thing", "--dry-run",
+    ])
+    combined = out + err
+    if rc != 0:
+        return False, f"front door rejected a vague requirement (rc={rc}): {combined[:200]}"
+    if not re.search(r"branch", combined, re.IGNORECASE):
+        return False, "dry-run did not produce a branch for vague text"
+    return True, "front door is interrogation-free (no input(); vague requirement accepted)"
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -287,6 +326,7 @@ ASSERTIONS: list[tuple[int, str, str]] = [
     (6, "agent cards free of hoisted common-principle phrases", "assert_6_agent_card_dedup"),
     (7, "phase_state advance --to operator-substep refused without approval", "assert_7_operator_gate_refused"),
     (8, "new_requirement wires phase_state init at kickoff", "assert_8_new_requirement_wires_phase_state"),
+    (9, "front door is interrogation-free (no jam in parent chat)", "assert_9_front_door_interrogation_free"),
 ]
 
 # Assertions that are expected to fail before their milestone lands.

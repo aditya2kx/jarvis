@@ -119,17 +119,16 @@ def demo_operator_gate(branch: str, issue: int | None, gate: str, *, run=_run) -
     rec.gate_refused = (rc != 0)
     rec.actions.append(f"Gate refused without approval (rc={rc}); awaiting:operator posted.")
 
-    # 2) OPERATOR (simulated here): add the approval label, then advance --operator-approved.
-    if issue is not None:
-        rc_l, out_l, err_l = run(["gh", "issue", "edit", str(issue),
-                                  "--add-label", f"approved:{gate}"], cwd=str(REPO_ROOT))
-        _rec_cmd(rec, f"gh issue edit --add-label approved:{gate}", rc_l, out_l, err_l)
-
+    # 2) OPERATOR (simulated here): pass --operator-approved; phase_state auto-stamps the
+    # approved:<gate> label and posts the provenance comment on the issue. No manual label
+    # manipulation needed — the issue is a read-only mirror of what the chat decided.
     rc2, out2, err2 = run(["python3", str(PS), "advance", "--branch", branch, "--to", gate,
-                           "--operator-approved"], cwd=str(REPO_ROOT))
-    _rec_cmd(rec, f"advance --to {gate} --operator-approved", rc2, out2, err2)
+                           "--operator-approved",
+                           "--note", f"Gate '{gate}' simulated-approved by dogfood harness."],
+                          cwd=str(REPO_ROOT))
+    _rec_cmd(rec, f"advance --to {gate} --operator-approved --note", rc2, out2, err2)
     rec.gate_approved = (rc2 == 0)
-    rec.actions.append(f"Operator approval simulated → advanced (rc={rc2}).")
+    rec.actions.append(f"Operator approval (chat-only surface) → agent stamped issue (rc={rc2}).")
 
     rec.ok = rec.gate_refused and rec.gate_approved
     return rec

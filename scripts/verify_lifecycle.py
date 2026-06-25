@@ -23,6 +23,8 @@ Assertions:
      and a deliberately vague requirement is accepted end-to-end (--dry-run). Encodes
      the intake contract — requirement refinement belongs in the jam phase, not the
      parent chat — as a mechanical check rather than a prose reminder.
+  10. Jam handoff pre-selects Ask mode + Opus 4.8 high via deeplink (new_requirement.py),
+      so the new chatspace does not inherit Agent/Auto from the parent window.
 
 Note: assertions 2, 5 (phase_state), and 7 require M3 to be complete;
       assertion 3 requires M5 to be complete;
@@ -313,6 +315,29 @@ def assert_9_front_door_interrogation_free() -> tuple[bool, str]:
     return True, "front door is interrogation-free (no input(); vague requirement accepted)"
 
 
+def assert_10_jam_handoff_ask_mode_opus() -> tuple[bool, str]:
+    """new_requirement front door opens jam in Ask mode + Opus 4.8 high (not parent-chat settings).
+
+    The deeplink must pre-select mode=ask and the jam model so the new chatspace does not
+    inherit Agent/Auto from the parent window.
+    """
+    nr = REPO_ROOT / "scripts" / "new_requirement.py"
+    ss = REPO_ROOT / "scripts" / "start_pr_session.py"
+    if not nr.exists() or not ss.exists():
+        return False, "new_requirement.py or start_pr_session.py not found"
+    nr_src = nr.read_text(encoding="utf-8")
+    ss_src = ss.read_text(encoding="utf-8")
+    if "seed_prompt_jam" not in nr_src:
+        return False, "new_requirement.py does not use seed_prompt_jam for jam handoff"
+    if "make_deeplink(seed, mode=mode" not in nr_src:
+        return False, "new_requirement.py does not pass mode= to make_deeplink"
+    if 'DEFAULT_JAM_HANDOFF_MODE = "ask"' not in ss_src:
+        return False, 'start_pr_session.py missing DEFAULT_JAM_HANDOFF_MODE = "ask"'
+    if "claude-opus-4-8-thinking-high" not in ss_src:
+        return False, "start_pr_session.py missing DEFAULT_JAM_HANDOFF_MODEL (Opus 4.8 high)"
+    return True, "jam handoff pre-selects Ask mode + Opus 4.8 high"
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -327,6 +352,7 @@ ASSERTIONS: list[tuple[int, str, str]] = [
     (7, "phase_state advance --to operator-substep refused without approval", "assert_7_operator_gate_refused"),
     (8, "new_requirement wires phase_state init at kickoff", "assert_8_new_requirement_wires_phase_state"),
     (9, "front door is interrogation-free (no jam in parent chat)", "assert_9_front_door_interrogation_free"),
+    (10, "jam handoff pre-selects Ask mode + Opus 4.8 high", "assert_10_jam_handoff_ask_mode_opus"),
 ]
 
 # Assertions that are expected to fail before their milestone lands.

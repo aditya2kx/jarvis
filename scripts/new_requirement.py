@@ -156,7 +156,8 @@ def start_session_in_worktree(
     branch: str,
     requirement: str,
     requirement_id: str | None = None,
-    model: str = S.DEFAULT_HANDOFF_MODEL,
+    model: str = S.DEFAULT_JAM_HANDOFF_MODEL,
+    mode: str = S.DEFAULT_JAM_HANDOFF_MODE,
     dry_run: bool = False,
 ) -> tuple[Path, Path, str]:
     """Run start_pr_session in the worktree; return (brief, launch, deeplink)."""
@@ -185,8 +186,8 @@ def start_session_in_worktree(
     rec = json_load(worktree, branch)
     req = requirement or rec.get("requirement") or ""
     brief_rel = f"metrics/pr_cost/{brief.name}"
-    seed = S.seed_prompt(branch, brief_rel=brief_rel, requirement=req or None)
-    deeplink = S.make_deeplink(seed, model=model)
+    seed = S.seed_prompt_jam(branch, brief_rel=brief_rel, requirement=req or None)
+    deeplink = S.make_deeplink(seed, mode=mode, model=model)
     return brief, launch, deeplink
 
 
@@ -245,6 +246,7 @@ def _run_one(
     requirement: str,
     requirement_id: str | None,
     model: str,
+    handoff_mode: str,
     cursor_delay: float,
     dry_run: bool,
     no_open: bool = False,
@@ -272,6 +274,7 @@ def _run_one(
         requirement=requirement,
         requirement_id=requirement_id,
         model=model,
+        mode=handoff_mode,
         dry_run=dry_run,
     )
 
@@ -303,6 +306,7 @@ def _run_one(
         deeplink=deeplink,
         launch_html=launch,
         delay_sec=cursor_delay,
+        mode=handoff_mode,
     )
 
     print("\n─── HANDOFF ───")
@@ -370,8 +374,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Seconds to wait after opening Cursor before the deeplink (default: 3.5)",
     )
     cli.add_argument(
-        "--model", default=S.DEFAULT_HANDOFF_MODEL,
-        help=f"Agent model for handoff deeplink (default: {S.DEFAULT_HANDOFF_MODEL})",
+        "--mode", default=S.DEFAULT_JAM_HANDOFF_MODE,
+        choices=("ask", "agent", "plan"),
+        help=f"Cursor chat mode for the jam handoff deeplink (default: {S.DEFAULT_JAM_HANDOFF_MODE})",
+    )
+    cli.add_argument(
+        "--model", default=S.DEFAULT_JAM_HANDOFF_MODEL,
+        help=f"Model slug for the jam handoff deeplink (default: {S.DEFAULT_JAM_HANDOFF_MODEL})",
     )
     cli.add_argument("--no-open", action="store_true",
                      help="Create worktree + brief + issue without opening a Cursor window "
@@ -404,6 +413,7 @@ def main(argv: list[str] | None = None) -> int:
                 requirement=req,
                 requirement_id=args.requirement_id if i == 1 else None,
                 model=args.model,
+                handoff_mode=args.mode,
                 cursor_delay=args.cursor_delay,
                 dry_run=args.dry_run,
                 no_open=args.no_open,
@@ -427,6 +437,7 @@ def main(argv: list[str] | None = None) -> int:
         requirement=combined,
         requirement_id=args.requirement_id,
         model=args.model,
+        handoff_mode=args.mode,
         cursor_delay=args.cursor_delay,
         dry_run=args.dry_run,
         no_open=args.no_open,

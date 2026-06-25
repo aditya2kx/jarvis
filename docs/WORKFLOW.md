@@ -88,6 +88,10 @@ branch). Pass `--base origin/main` explicitly to branch from clean main instead.
 The Cursor launcher HTML is written as a fallback only; it is not opened automatically
 when the Cursor CLI succeeds. If the deeplink fails, open the `session-*-launch.html`
 file in the worktree's `metrics/pr_cost/` directory manually.
+
+The handoff deeplink pre-selects **Ask mode** + **Opus 4.8 thinking high** for the jam
+phase (configurable via `new_requirement.py --mode` / `--model`). The new chat must not
+inherit Agent/Auto settings from the parent window.
 `done = [specify, setup]` (both are factually complete the moment the front door runs)
 and prints the issue URL in the handoff banner.  So a fresh requirement shows **Align
 50%** with `jam` as the current operator gate — never a misleading "0%, nothing done".
@@ -238,6 +242,7 @@ L3 (roadmap):
 |---|---|---|
 | New requirement → worktree + chat + phase ladder | new_requirement.py --dry-run | Script output |
 | Front door is interrogation-free (no jam in parent chat) | verify_lifecycle.py assertion #9 | Conformance PASS |
+| Jam handoff opens Ask mode + Opus 4.8 high | verify_lifecycle.py assertion #10 | Conformance PASS |
 | Thorough plan without probing | check_plan_readiness.py | Passing score (10/10) |
 | L1 mechanisms wired | verify_lifecycle.py | Conformance PASS |
 | Phase tracking queryable | phase_state.py status/report | Status output |

@@ -363,7 +363,8 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_6_agent_card_dedup", return_value=(True, "ok")), \
              patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")), \
              patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
-             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")):
+             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
+             patch.object(vl, "assert_10_jam_handoff_ask_mode_opus", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 0)
 
@@ -377,7 +378,8 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_6_agent_card_dedup", return_value=(True, "ok")), \
              patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")), \
              patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
-             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")):
+             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
+             patch.object(vl, "assert_10_jam_handoff_ask_mode_opus", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 1)
 
@@ -391,7 +393,8 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_6_agent_card_dedup", return_value=(False, "needs M5")), \
              patch.object(vl, "assert_7_operator_gate_refused", return_value=(False, "needs M3")), \
              patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
-             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")):
+             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
+             patch.object(vl, "assert_10_jam_handoff_ask_mode_opus", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 0, "Pre-milestone WARNs should not cause exit 1")
 
@@ -448,6 +451,12 @@ class TestAssertion9(unittest.TestCase):
                  patch.object(vl, "_run", side_effect=fake_run):
                 passed, detail = vl.assert_9_front_door_interrogation_free()
         self.assertFalse(passed, f"Should fail when vague text is rejected: {detail}")
+
+
+class TestAssertion10(unittest.TestCase):
+    def test_passes_against_real_front_door(self):
+        passed, detail = vl.assert_10_jam_handoff_ask_mode_opus()
+        self.assertTrue(passed, msg=detail)
 
 
 if __name__ == "__main__":

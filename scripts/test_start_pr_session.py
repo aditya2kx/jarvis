@@ -33,6 +33,26 @@ class TestStartPrSession(unittest.TestCase):
         self.assertIn("mode=agent", link)
         self.assertIn("model=claude-4.6-sonnet-medium-thinking", link)
 
+    def test_make_deeplink_jam_handoff(self):
+        link = S.make_deeplink(
+            "jam seed",
+            mode=S.DEFAULT_JAM_HANDOFF_MODE,
+            model=S.DEFAULT_JAM_HANDOFF_MODEL,
+        )
+        self.assertIn("mode=ask", link)
+        self.assertIn("claude-opus-4-8-thinking-high", link)
+
+    def test_seed_prompt_jam_no_implement(self):
+        p = S.seed_prompt_jam(
+            "fix/foo",
+            brief_rel="metrics/pr_cost/session-fix-foo-brief.md",
+            requirement="Debug ADP issues",
+        )
+        self.assertIn("Ask mode", p)
+        self.assertIn("Do NOT implement", p)
+        self.assertIn("jam", p.lower())
+        self.assertNotIn("implement the requirement", p)
+
     def test_make_deeplink_no_model_when_disabled(self):
         link = S.make_deeplink("hello", model=None)
         self.assertNotIn("model=", link)
@@ -51,7 +71,16 @@ class TestStartPrSession(unittest.TestCase):
         self.assertLess(len(link), S._MAX_DEEPLINK_CHARS)
         self.assertIn("PR-16-brief.md", p)
         self.assertIn("Dashboard", p)
-        self.assertIn("do not ask what to build", p)
+        self.assertIn("implement", p)  # PR continuation handoff
+
+    def test_seed_prompt_provisional_delegates_to_jam(self):
+        p = S.seed_prompt(
+            "fix/new-req",
+            brief_rel="metrics/pr_cost/session-fix-new-req-brief.md",
+            requirement="Add widget",
+        )
+        self.assertIn("Ask mode", p)
+        self.assertIn("Do NOT implement", p)
 
     def test_truncate_requirement(self):
         long = "x" * 200

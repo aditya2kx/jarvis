@@ -56,5 +56,46 @@ class TestNewRequirement(unittest.TestCase):
         self.assertEqual(kwargs.get("model"), N.S.DEFAULT_JAM_HANDOFF_MODEL)
 
 
+import shutil
+import tempfile
+
+
+class TestSeedCacheToWorktree(unittest.TestCase):
+    """Behavioral proof that _seed_cache_to_worktree copies the cache file."""
+
+    def test_copies_cache_to_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = Path(tmp) / "jarvis-wt-test"
+            # Create source cache in the REAL repo's metrics/pr_cost/
+            real_root = Path(N.__file__).parent.parent
+            src_dir = real_root / "metrics" / "pr_cost"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            branch = "fix/test-seed-cache-unit"
+            cache_name = "session-fix-test-seed-cache-unit-phase.json"
+            cache_file = src_dir / cache_name
+            cache_file.write_text('{"issue": "#42"}')
+            try:
+                dst_dir = wt / "metrics" / "pr_cost"
+                dst_dir.mkdir(parents=True)
+                N._seed_cache_to_worktree(branch=branch, worktree=wt, dry_run=False)
+                dst_file = dst_dir / cache_name
+                self.assertTrue(dst_file.exists(), "cache file must be copied to worktree")
+                self.assertEqual(dst_file.read_text(), '{"issue": "#42"}')
+            finally:
+                cache_file.unlink(missing_ok=True)
+
+    def test_no_op_if_source_missing(self):
+        """Should not raise if the source cache doesn't exist yet."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = Path(tmp) / "jarvis-wt-test"
+            (wt / "metrics" / "pr_cost").mkdir(parents=True)
+            # Branch that has no corresponding cache file
+            N._seed_cache_to_worktree(
+                branch="fix/xyzzy-nonexistent-99999",
+                worktree=wt,
+                dry_run=False,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -96,11 +96,53 @@ $ python3 scripts/verify_lifecycle.py
 Passed: 18  Warn (pre-milestone): 0  Failed: 0
 Conformance PASSED.
 
-$ python3 -m pytest scripts/test_verify_lifecycle.py
-51 passed
+$ python3 -m pytest scripts/test_verify_lifecycle.py scripts/test_prompt_gate.py scripts/test_new_requirement.py
+51 + 33 + 7 = 91 passed
 ```
 
-**Result: 18/18 assertions pass. 51/51 unit tests pass.**
+**Result: 18/18 assertions pass. 91 unit tests pass.**
+
+## Behavioral unit test suite for prompt_gate
+
+```
+$ python3 -m pytest scripts/test_prompt_gate.py -v
+scripts/test_prompt_gate.py::TestIntakePhraseDetection::test_add_a_requirement PASSED
+scripts/test_prompt_gate.py::TestIntakePhraseDetection::test_new_requirement PASSED
+... (15 phrase tests)
+scripts/test_prompt_gate.py::TestNearMissNegatives::test_not_renewal PASSED
+scripts/test_prompt_gate.py::TestNearMissNegatives::test_word_boundary_no_new PASSED
+... (7 near-miss negatives)
+scripts/test_prompt_gate.py::TestInlineOverride::test_inline_bypasses_intake PASSED
+scripts/test_prompt_gate.py::TestMainFunction::test_block_on_intake_phrase PASSED
+scripts/test_prompt_gate.py::TestMainFunction::test_corpus_append_called PASSED
+scripts/test_prompt_gate.py::TestMainFunction::test_inline_bypass_blocks_detection PASSED
+scripts/test_prompt_gate.py::TestMainFunction::test_malformed_json_failopen PASSED
+scripts/test_prompt_gate.py::TestMainFunction::test_missing_enforce_sh_passthrough PASSED
+scripts/test_prompt_gate.py::TestMainFunction::test_no_workspace_passthrough PASSED
+scripts/test_prompt_gate.py::TestMainFunction::test_passthrough_normal_prompt PASSED
+33 passed
+```
+
+## Seed-cache behavioral test (A17 proof)
+
+```
+$ python3 -m pytest scripts/test_new_requirement.py::TestSeedCacheToWorktree -v
+scripts/test_new_requirement.py::TestSeedCacheToWorktree::test_copies_cache_to_worktree PASSED
+scripts/test_new_requirement.py::TestSeedCacheToWorktree::test_no_op_if_source_missing PASSED
+2 passed
+```
+
+The `test_copies_cache_to_worktree` test creates a real phase cache in `metrics/pr_cost/`, calls `_seed_cache_to_worktree()`, and asserts the file is present in the worktree — proving the `Issue: #none` bug is fixed.
+
+## Dispatcher idempotency
+
+```
+$ bash scripts/install-git-hooks.sh | grep "cursor hook"
+cursor hook dispatcher: already present — skipped
+  cursor hook : beforeSubmitPrompt dispatcher -> ~/.cursor/hooks.json
+```
+
+Second run shows "already present — skipped" — idempotent confirmed.
 
 ## Portability
 

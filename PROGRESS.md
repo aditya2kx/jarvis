@@ -1,5 +1,18 @@
 # Jarvis Build Progress
 
+## 2026-06-25 — Mechanical preference loop + phase-ladder forcing function (PR #63)
+
+**What changed:** Two mechanical hardenings in PR #63.
+
+- **Preference guardrail:** `skills/user_model/guardrail.py` — `score_candidate()` scores any candidate preference across 6 criteria (generalizable, not-prescriptive, scoped, non-duplicate, actionable, durable); criterion 1 (generalizable) is a hard gate. `store.add_preference()` now rejects any `style`/`principle` row below the threshold (4/6). `verify_lifecycle.py` assertion #12 enforces this mechanically.
+- **Preference backfill:** `skills/user_model/backfill.py` — one-shot idempotent extraction of 9 standing preferences from `bhaga-principles.md`, `CONTRIBUTING.md`, `jarvis.md`, and the 5 Issue #70 jam answers. All pass the guardrail (5–6/6).
+- **Pre-ask consult rule:** `.cursor/rules/preference-consult.md` (always-on) — agent checks `user-preferences.md` before calling `AskQuestion`; proposes capture after user answers a signal-bearing question.
+- **`scripts/prefs.py`** — friendly front door: `list`, `search`, `score` commands.
+- **Hook empirical finding:** `preToolUse`/`postToolUse` do NOT fire for `AskQuestion`; `beforeSubmitPrompt` also does NOT fire. Corpus append remains AI-side protocol. Guardrail is the mechanical quality gate regardless of capture path.
+- **Plan-gate forcing function:** `check_plan_readiness.py` now has `--branch` + a phase precheck — if `jam` or `define-evidence` are not recorded done, exits 1 with exact `phase_state.py advance` commands. On pass, stamps `plan_ready` into the phase cache. `phase_state.py OBSERVABLE_FLOOR` gains a `plan` entry backed by `_plan_ready_recorded()`. `verify_lifecycle.py` assertion #13 enforces.
+- **Jam handoff honesty:** `seed_prompt_jam` in `start_pr_session.py` now scopes "Do NOT implement" to writes only (read-only diagnosis always OK) and instructs manual model selection. `verify_lifecycle.py` assertion #10 renamed to `assert_10_jam_handoff_ask_mode_honest`.
+- **9 new preferences live** in `.cursor/rules/user-preferences.md` (BHAGA bhaga-specific + global style principle).
+
 ## 2026-06-23 — Harness-engineering redesign of repo guidance (L1 autonomy)
 
 **What changed:** Three-tier guidance framework (Gates / Spine / References), local verify harness,

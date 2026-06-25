@@ -539,22 +539,55 @@ class TestAssertion11(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Updated overall runner — must include assertion 11
+# Assertions 12 + 13 smoke tests
+# ---------------------------------------------------------------------------
+
+class TestAssertion12(unittest.TestCase):
+    def test_assertion_12_passes_with_real_guardrail(self):
+        """Assertion 12 passes when guardrail.py and store.py are present and wired."""
+        passed, detail = vl.assert_12_guardrail_enforced_at_store()
+        self.assertTrue(passed, detail)
+
+    def test_assertion_12_fails_if_guardrail_missing(self):
+        """Assertion 12 fails when guardrail.py does not exist."""
+        with patch.object(Path, "exists", return_value=False):
+            passed, detail = vl.assert_12_guardrail_enforced_at_store()
+        self.assertFalse(passed)
+
+
+class TestAssertion13(unittest.TestCase):
+    def test_assertion_13_passes_with_real_files(self):
+        """Assertion 13 passes when all plan-gate artifacts are in place."""
+        passed, detail = vl.assert_13_observable_floor_has_plan_entry()
+        self.assertTrue(passed, detail)
+
+
+# ---------------------------------------------------------------------------
+# Updated overall runner — must include assertions 11, 12, 13
 # ---------------------------------------------------------------------------
 
 class TestRunFunction(unittest.TestCase):
+    def _all_mocks(self):
+        return {
+            "assert_1_new_requirement_dry_run": (True, "ok"),
+            "assert_2_brief_contains_stage_ladder": (True, "ok"),
+            "assert_3_self_drive_rule_always_on": (True, "ok"),
+            "assert_4_verify_gates_present": (True, "ok"),
+            "assert_5_scripts_exist_and_help": (True, "ok"),
+            "assert_6_agent_card_dedup": (True, "ok"),
+            "assert_7_operator_gate_refused": (True, "ok"),
+            "assert_8_new_requirement_wires_phase_state": (True, "ok"),
+            "assert_9_front_door_interrogation_free": (True, "ok"),
+            "assert_10_jam_handoff_ask_mode_honest": (True, "ok"),
+            "assert_11_phase_gate_enforces_ladder": (True, "ok"),
+            "assert_12_guardrail_enforced_at_store": (True, "ok"),
+            "assert_13_observable_floor_has_plan_entry": (True, "ok"),
+        }
+
     def test_run_returns_0_on_full_pass(self):
-        with patch.object(vl, "assert_1_new_requirement_dry_run", return_value=(True, "ok")), \
-             patch.object(vl, "assert_2_brief_contains_stage_ladder", return_value=(True, "ok")), \
-             patch.object(vl, "assert_3_self_drive_rule_always_on", return_value=(True, "ok")), \
-             patch.object(vl, "assert_4_verify_gates_present", return_value=(True, "ok")), \
-             patch.object(vl, "assert_5_scripts_exist_and_help", return_value=(True, "ok")), \
-             patch.object(vl, "assert_6_agent_card_dedup", return_value=(True, "ok")), \
-             patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")), \
-             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
-             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
-             patch.object(vl, "assert_10_jam_handoff_ask_mode_honest", return_value=(True, "ok")), \
-             patch.object(vl, "assert_11_phase_gate_enforces_ladder", return_value=(True, "ok")):
+        mocks = self._all_mocks()
+        with patch.multiple(vl, **{k: staticmethod(lambda rv=v: rv)
+                                   for k, v in mocks.items()}):
             rc = vl.run()
         self.assertEqual(rc, 0)
 
@@ -569,7 +602,9 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
              patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
              patch.object(vl, "assert_10_jam_handoff_ask_mode_honest", return_value=(True, "ok")), \
-             patch.object(vl, "assert_11_phase_gate_enforces_ladder", return_value=(True, "ok")):
+             patch.object(vl, "assert_11_phase_gate_enforces_ladder", return_value=(True, "ok")), \
+             patch.object(vl, "assert_12_guardrail_enforced_at_store", return_value=(True, "ok")), \
+             patch.object(vl, "assert_13_observable_floor_has_plan_entry", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 1)
 
@@ -584,7 +619,9 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
              patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
              patch.object(vl, "assert_10_jam_handoff_ask_mode_honest", return_value=(True, "ok")), \
-             patch.object(vl, "assert_11_phase_gate_enforces_ladder", return_value=(True, "ok")):
+             patch.object(vl, "assert_11_phase_gate_enforces_ladder", return_value=(True, "ok")), \
+             patch.object(vl, "assert_12_guardrail_enforced_at_store", return_value=(True, "ok")), \
+             patch.object(vl, "assert_13_observable_floor_has_plan_entry", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 0, "Pre-milestone WARNs should not cause exit 1")
 

@@ -411,6 +411,68 @@ def assert_11_phase_gate_enforces_ladder() -> tuple[bool, str]:
                   "registry present with implement + pr-evidence signals")
 
 
+def assert_12_guardrail_enforced_at_store() -> tuple[bool, str]:
+    """Guardrail is wired into add_preference() and rejects task-specific text.
+
+    Checks:
+      (a) skills/user_model/guardrail.py exists and exports score_candidate + passes.
+      (b) store.py imports the guardrail inside add_preference.
+      (c) A known-bad candidate (contains ISO date) is rejected with status 'rejected'.
+    """
+    guardrail_path = REPO_ROOT / "skills" / "user_model" / "guardrail.py"
+    store_path = REPO_ROOT / "skills" / "user_model" / "store.py"
+
+    # (a) guardrail.py exists
+    if not guardrail_path.exists():
+        return False, "skills/user_model/guardrail.py not found"
+    guardrail_src = guardrail_path.read_text(encoding="utf-8")
+    for sym in ("score_candidate", "passes", "DEFAULT_THRESHOLD"):
+        if sym not in guardrail_src:
+            return False, f"guardrail.py missing symbol: {sym}"
+
+    # (b) store.py imports guardrail in add_preference
+    if not store_path.exists():
+        return False, "skills/user_model/store.py not found"
+    store_src = store_path.read_text(encoding="utf-8")
+    if "from skills.user_model.guardrail import" not in store_src:
+        return False, "store.py does not import the guardrail inside add_preference"
+
+    # (c) a task-specific candidate is rejected
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(REPO_ROOT))
+        from skills.user_model.guardrail import score_candidate  # type: ignore
+        result = score_candidate("Re-run the 2026-06-23 nightly after the merge.")
+        if result.score != 0:
+            return False, f"Expected score=0 for task-specific text, got {result.score}/6"
+    except Exception as e:
+        return False, f"guardrail runtime error: {e}"
+
+    return True, "guardrail.py present; store.py wired; task-specific candidate scores 0/6"
+
+
+def assert_13_observable_floor_has_plan_entry() -> tuple[bool, str]:
+    """OBSERVABLE_FLOOR includes a 'plan' entry backed by _plan_ready_recorded."""
+    phase_state = REPO_ROOT / "scripts" / "phase_state.py"
+    if not phase_state.exists():
+        return False, "phase_state.py not found"
+    src = phase_state.read_text(encoding="utf-8")
+    if '"plan"' not in src:
+        return False, "OBSERVABLE_FLOOR missing 'plan' entry"
+    if "_plan_ready_recorded" not in src:
+        return False, "phase_state.py missing _plan_ready_recorded detector"
+    # Verify check_plan_readiness.py has phase precheck functions
+    cpr = REPO_ROOT / "scripts" / "check_plan_readiness.py"
+    if not cpr.exists():
+        return False, "check_plan_readiness.py not found"
+    cpr_src = cpr.read_text(encoding="utf-8")
+    for sym in ("_check_phase_gates", "_stamp_plan_ready"):
+        if sym not in cpr_src:
+            return False, f"check_plan_readiness.py missing: {sym}"
+    return True, ("OBSERVABLE_FLOOR has 'plan' entry; _plan_ready_recorded detector present; "
+                  "check_plan_readiness.py has phase precheck + stamp")
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -427,6 +489,8 @@ ASSERTIONS: list[tuple[int, str, str]] = [
     (9, "front door is interrogation-free (no jam in parent chat)", "assert_9_front_door_interrogation_free"),
     (10, "jam handoff: Ask mode + honest model guidance + diagnosis allowed", "assert_10_jam_handoff_ask_mode_honest"),
     (11, "phase-gate registered hard; OBSERVABLE_FLOOR enforces ladder", "assert_11_phase_gate_enforces_ladder"),
+    (12, "guardrail wired in store; task-specific text scores 0/6", "assert_12_guardrail_enforced_at_store"),
+    (13, "OBSERVABLE_FLOOR has plan entry + _plan_ready_recorded + CPR precheck", "assert_13_observable_floor_has_plan_entry"),
 ]
 
 # Assertions that are expected to fail before their milestone lands.

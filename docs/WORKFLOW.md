@@ -262,10 +262,13 @@ L3 (roadmap):
 | Front door is interrogation-free (no jam in parent chat) | verify_lifecycle.py assertion #9 | Conformance PASS |
 | Jam handoff opens Ask mode; operator sets model (deeplink can't) | verify_lifecycle.py assertion #10 | Conformance PASS |
 | Thorough plan without probing | check_plan_readiness.py | Passing score (10/10) |
+| Plan gate requires jam + define-evidence recorded first | check_plan_readiness.py phase precheck; assertion #13 | Exit 1 if missing; OBSERVABLE_FLOOR plan detector |
 | L1 mechanisms wired | verify_lifecycle.py | Conformance PASS |
 | Phase tracking queryable | phase_state.py status/report | Status output |
 | Operator gates unskippable | phase_state.py advance → nonzero | Exit code |
 | Lifecycle ladder non-bypassable (whole ladder, not just jam) | verify_lifecycle.py assertion #11; phase_state.py gate (hard gate in verify --full) | Conformance PASS + Gate exit code |
+| Operator preference stored only if generalizable (guardrail) | skills/user_model/guardrail.py + store.add_preference; assertion #12 | score_candidate exits 0/6 for task-specific text |
+| Pre-ask consult: apply stored preference before asking | .cursor/rules/preference-consult.md (always-on rule) | Rule file present |
 | Local loop mirrors CI | test_verify.py::test_ci_parity | Test PASS |
 | Babysit unprompted | pr-workflow.mdc + babysit skill | Always-on rule |
 | Review replies done | check_pr_review_replies.py | Gate exit 0 |

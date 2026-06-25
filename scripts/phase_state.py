@@ -199,11 +199,33 @@ def _pr_is_merged() -> bool:
     return rc == 0 and out.strip().upper() == "MERGED"
 
 
+def _plan_ready_recorded() -> bool:
+    """Return True when check_plan_readiness.py stamped plan_ready into the phase cache.
+
+    This is written by check_plan_readiness.py on a passing run, which itself
+    requires jam + define-evidence to be recorded.  Once the stamp exists, the
+    phase gate enforces that all align substeps (specify, setup, jam, define-evidence)
+    are recorded done before the branch can push with a plan.
+    """
+    branch = _current_branch()
+    if not branch:
+        return False
+    cache_path = _cache_path(branch)
+    if not cache_path.exists():
+        return False
+    try:
+        data = json.loads(cache_path.read_text())
+        return bool(data.get("plan_ready"))
+    except Exception:
+        return False
+
+
 # OBSERVABLE_FLOOR: ordered list of (substep_name, detector_fn).
 # Each detector returns True when the real world shows evidence that substep's
 # work has happened.  The gate requires every substep before that index to be
 # recorded done.  Append one entry to register a new observable signal.
 OBSERVABLE_FLOOR: list[tuple[str]] = [
+    ("plan",              _plan_ready_recorded), # check_plan_readiness.py stamped plan_ready
     ("implement",         _has_nondoc_changes),  # non-doc code changed vs origin/main
     ("pr-evidence",       _pr_is_open),          # branch has an open PR
     ("post-merge-verify", _pr_is_merged),        # PR was merged

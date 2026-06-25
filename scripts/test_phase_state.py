@@ -647,10 +647,109 @@ class TestGate(PhaseStateTestBase):
         self.assertEqual(rc, 0)
 
     def test_observable_floor_registry_has_required_entries(self):
-        """OBSERVABLE_FLOOR must include implement and pr-evidence entries."""
+        """OBSERVABLE_FLOOR must include implement, pr-evidence, and plan entries."""
         entry_names = [name for name, _ in ps.OBSERVABLE_FLOOR]
         self.assertIn("implement", entry_names, "OBSERVABLE_FLOOR must include 'implement'")
         self.assertIn("pr-evidence", entry_names, "OBSERVABLE_FLOOR must include 'pr-evidence'")
+        self.assertIn("plan", entry_names, "OBSERVABLE_FLOOR must include 'plan'")
+
+    def test_gate_plan_detector_with_missing_align_fails(self):
+        """plan_ready stamp present but jam/define-evidence not recorded → gate fails."""
+        data = ps._load_cache("feat/plan-no-jam")
+        data["done"] = ["specify", "setup"]  # missing jam, define-evidence
+        data["plan_ready"] = {"plan": "test.md", "score": 9, "at": "2026-01-01T00:00:00Z"}
+        ps._save_cache("feat/plan-no-jam", data)
+
+        with patch.object(ps, "OBSERVABLE_FLOOR", [
+            ("plan", lambda: True),   # plan detector fires
+        ]):
+            args = self._make_args(branch="feat/plan-no-jam")
+            rc = ps.cmd_gate(args)
+        self.assertEqual(rc, 1)
+
+    def test_gate_plan_detector_with_all_align_passes(self):
+        """plan_ready stamp + all align substeps recorded → gate passes."""
+        data = ps._load_cache("feat/plan-all-align")
+        data["done"] = ["specify", "setup", "jam", "define-evidence"]
+        data["plan_ready"] = {"plan": "test.md", "score": 9, "at": "2026-01-01T00:00:00Z"}
+        ps._save_cache("feat/plan-all-align", data)
+
+        with patch.object(ps, "OBSERVABLE_FLOOR", [
+            ("plan", lambda: True),
+        ]):
+            args = self._make_args(branch="feat/plan-all-align")
+            rc = ps.cmd_gate(args)
+        self.assertEqual(rc, 0)
+
+    def test_plan_ready_detector_returns_false_without_stamp(self):
+        """_plan_ready_recorded returns False when no plan_ready key in cache."""
+        data = ps._load_cache("feat/no-stamp")
+        data["done"] = ["specify", "setup", "jam", "define-evidence"]
+        ps._save_cache("feat/no-stamp", data)
+
+        with patch.object(ps, "_current_branch", return_value="feat/no-stamp"):
+            result = ps._plan_ready_recorded()
+        self.assertFalse(result)
+
+    def test_plan_ready_detector_returns_true_with_stamp(self):
+        """_plan_ready_recorded returns True when plan_ready key is set."""
+        data = ps._load_cache("feat/with-stamp")
+        data["plan_ready"] = {"plan": "test.md", "score": 9, "at": "2026-01-01T00:00:00Z"}
+        ps._save_cache("feat/with-stamp", data)
+
+        with patch.object(ps, "_current_branch", return_value="feat/with-stamp"):
+            result = ps._plan_ready_recorded()
+        self.assertTrue(result)
+
+
+class TestCheckPlanReadinessPhasePrecheck(PhaseStateTestBase):
+    """Tests for the phase gate integration in check_plan_readiness.py."""
+
+    def test_phase_precheck_passes_when_untracked(self):
+        """Branch with no cache → phase precheck skipped (OK)."""
+        import scripts.check_plan_readiness as cpr
+        ok, detail = cpr._check_phase_gates("feat/untracked-zzz")
+        self.assertTrue(ok)
+        self.assertIn("not lifecycle-tracked", detail)
+
+    def test_phase_precheck_fails_when_jam_missing(self):
+        """Branch with jam not recorded → precheck fails with list of missing substeps."""
+        import scripts.check_plan_readiness as cpr
+        branch = "feat/precheck-no-jam"
+        data = ps._load_cache(branch)
+        data["done"] = ["specify", "setup"]
+        ps._save_cache(branch, data)
+
+        ok, detail = cpr._check_phase_gates(branch)
+        self.assertFalse(ok)
+        self.assertIn("jam", detail)
+        self.assertIn("define-evidence", detail)
+
+    def test_phase_precheck_passes_when_both_recorded(self):
+        """Branch with jam + define-evidence recorded → precheck passes."""
+        import scripts.check_plan_readiness as cpr
+        branch = "feat/precheck-ok"
+        data = ps._load_cache(branch)
+        data["done"] = ["specify", "setup", "jam", "define-evidence"]
+        ps._save_cache(branch, data)
+
+        ok, detail = cpr._check_phase_gates(branch)
+        self.assertTrue(ok)
+
+    def test_stamp_plan_ready_writes_to_cache(self):
+        """_stamp_plan_ready writes plan_ready key into the cache."""
+        import scripts.check_plan_readiness as cpr
+        branch = "feat/stamp-test"
+        data = ps._load_cache(branch)
+        data["done"] = ["specify", "setup", "jam", "define-evidence"]
+        ps._save_cache(branch, data)
+
+        cpr._stamp_plan_ready(branch, "test-plan.md", 9)
+
+        refreshed = ps._load_cache(branch)
+        self.assertIn("plan_ready", refreshed)
+        self.assertEqual(refreshed["plan_ready"]["plan"], "test-plan.md")
+        self.assertEqual(refreshed["plan_ready"]["score"], 9)
 
 
 if __name__ == "__main__":

@@ -210,6 +210,80 @@ def score_plan(text: str) -> list[tuple[str, bool, str]]:
     return results
 
 
+def _resolve_branch(branch: str | None) -> str | None:
+    """Return branch arg, or detect current branch via git, or None."""
+    if branch:
+        return branch
+    try:
+        import subprocess as _sub
+        repo = Path(__file__).parent.parent
+        res = _sub.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5, cwd=str(repo),
+        )
+        return res.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def _check_phase_gates(branch: str | None) -> tuple[bool, str | list]:
+    """Return (ok, message) — verify jam + define-evidence are recorded done.
+
+    Delegates cache path resolution to phase_state so the same METRICS_DIR
+    (patchable in tests) is used.
+    Loads the phase cache for the given branch (or current branch when None).
+    If the cache is absent the branch is untracked — gate skipped (ok=True).
+    """
+    try:
+        import json as _json
+        sys.path.insert(0, str(Path(__file__).parent))
+        from phase_state import _cache_path  # type: ignore
+
+        branch = _resolve_branch(branch)
+        if not branch:
+            return True, "could not determine branch — phase precheck skipped"
+
+        cache_path = _cache_path(branch)
+        if not cache_path.exists():
+            return True, f"branch {branch!r} not lifecycle-tracked — phase precheck skipped"
+
+        data = _json.loads(cache_path.read_text())
+        done_set = set(data.get("done", []))
+        missing = [g for g in ("jam", "define-evidence") if g not in done_set]
+        if missing:
+            return False, missing
+        return True, "jam and define-evidence are recorded done"
+    except Exception as exc:
+        return True, f"phase precheck error (non-fatal): {exc}"
+
+
+def _stamp_plan_ready(branch: str | None, plan_name: str, score: int) -> None:
+    """Write plan_ready stamp into the phase cache so OBSERVABLE_FLOOR can detect it."""
+    try:
+        import json as _json
+        import datetime as _dt
+        sys.path.insert(0, str(Path(__file__).parent))
+        from phase_state import _cache_path  # type: ignore
+
+        branch = _resolve_branch(branch)
+        if not branch:
+            return
+
+        cache_path = _cache_path(branch)
+        if not cache_path.exists():
+            return
+
+        data = _json.loads(cache_path.read_text())
+        data["plan_ready"] = {
+            "plan": plan_name,
+            "score": score,
+            "at": _dt.datetime.utcnow().isoformat() + "Z",
+        }
+        cache_path.write_text(_json.dumps(data, indent=2))
+    except Exception:
+        pass  # stamp is best-effort; never block plan gate on it
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Score a plan file against the 10-point execution-readiness checklist."
@@ -218,12 +292,42 @@ def main() -> None:
                         help="Path to the plan markdown file")
     parser.add_argument("--threshold", type=int, default=9, metavar="N",
                         help="Minimum passing score out of 10 (default: 9)")
+    parser.add_argument("--branch", default=None, metavar="BRANCH",
+                        help="Branch to check phase gates for (default: current branch)")
+    parser.add_argument("--skip-phase-check", action="store_true",
+                        help="Skip the jam/define-evidence phase precheck")
     args = parser.parse_args()
 
     plan_path = Path(args.plan)
     if not plan_path.exists():
         print(f"ERROR: plan file not found: {plan_path}", file=sys.stderr)
         sys.exit(1)
+
+    # Phase precheck: jam + define-evidence must be recorded before plan is ready.
+    if not args.skip_phase_check:
+        ok, detail = _check_phase_gates(args.branch)
+        if not ok:
+            missing = detail  # list of missing substeps
+            branch = args.branch or "(current)"
+            print(
+                f"\nPHASE PRECHECK FAILED — branch {branch!r}\n"
+                f"The plan gate requires operator gates to be recorded done first.\n"
+                f"Missing: {', '.join(missing)}\n",
+                file=sys.stderr,
+            )
+            for substep in missing:
+                print(
+                    f"  Record it:\n"
+                    f"    python3 scripts/phase_state.py advance --branch {branch}"
+                    f" --to {substep} --operator-approved [--note '<summary>']",
+                    file=sys.stderr,
+                )
+            print(
+                "\nObtain operator approval in chat (jam/define-evidence gates), record via "
+                "phase_state.py advance, then re-run check_plan_readiness.py.\n",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     text = plan_path.read_text(encoding="utf-8")
     results = score_plan(text)
@@ -248,6 +352,7 @@ def main() -> None:
         sys.exit(1)
     else:
         print(f"\nPlan is execution-ready (score {passed_count}/{total} >= {args.threshold}).")
+        _stamp_plan_ready(args.branch, plan_path.name, passed_count)
 
 
 if __name__ == "__main__":

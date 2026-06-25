@@ -23,6 +23,8 @@ Maintained by `skills/user_model/`. Source corpus (gitignored) at `skills/user_m
 | 6 | Use `markdown citations to existing files` when discussing them, not full path repeated each time | observed |
 | 7 | Be honest about what's working vs broken; precise terminology on failure modes (e.g. 'browser context closed' not 'MCP broken') | this session 2026-04-19 (Hard Lesson #11 update) |
 | 8 | **For ANY options/decision, ALWAYS present a trade-off comparison table (options × criteria) followed by an explicit recommendation with reasoning — never a bare list.** Make this the default format for tool picks, hosting, architecture, library choices, etc. | explicit user instruction 2026-06-03 ("make it part of how you present me options always for anything") |
+| G1 | When asked for a decision, the operator prefers giving a general direction and letting the agent pick the finer implementation detail — present trade-offs but don't hold for micro-decisions. | Issue #70 + pref-store design session backfill |
+| G1 | Globally: when the operator gives a general direction, always pick the finer implementation detail yourself — never ask micro-decision questions the operator already delegated by giving a broad answer. | Issue #70 + pref-store design session backfill |
 
 ## Design principles
 
@@ -45,6 +47,16 @@ Maintained by `skills/user_model/`. Source corpus (gitignored) at `skills/user_m
 | 17 | **Prod/runtime must run on hosted infra (Cloud Run, BQ, Grafana Cloud, GH Actions) — never on the laptop.** Laptop is only for build/implementation/one-time provisioning. If a prod step requires a local script, that is a gap — build the hosted equivalent. | jarvis.md Conventions (2026-06-03, PR #16) |
 | 15 | Passkey-gated portals (Touch ID / FIDO2 / WebAuthn) can NOT be automated via stored password — pivot to persistent Playwright browser-profile/ for session-cookie reuse. User authenticates with biometric once, session persists for days/weeks, Touch ID re-prompts only on session expiry. Do NOT capture 'something password-shaped' as a fallback — it's likely the Mac login or another service's password, not the portal's. | 2026-04-20 ADP RUN discovery (user logs in via Touch ID, no ADP password exists) |
 | 16 | The collaborative-browser credential interceptor should detect passkey-only flows and abort capture rather than storing whatever text-shaped input appears. Heuristic: if the portal never shows a password field during normal auth (only biometric prompts), suppress capture. Until that's implemented, ALWAYS test captured creds by running a from-scratch login before persisting — don't trust the capture blindly. | 2026-04-20 ADP — captured a 12-char password that was not the ADP password; deleted from Keychain on discovery |
+| B1 | For BHAGA: prefer sandbox (staging) e2e runs over touching prod sheets when proving changes pre-merge — prod sheets are integration, not a test env. | bhaga-principles.md backfill |
+| B2 | For BHAGA: run `python3 -m agents.bhaga.scripts.status --store palmetto` before any manual investigation to get a compact freshness table — never hand-write queries to answer 'did last night land?' | bhaga-principles.md backfill |
+| B3 | For BHAGA: always leave a greppable one-line breadcrumb on every failure with enough state (refresh_date, attempt N/M, evidence path) to diagnose from Cloud Run logs + Firestore alone on any machine. | bhaga-principles.md backfill |
+| J1 | For BHAGA: read-only diagnosis (BQ queries, Firestore reads, Cloud Run logs) is always pre-approved in jam mode — never ask for approval before running non-mutating diagnosis. | Issue #70 jam transcript backfill |
+| J2 | For BHAGA: acceptance evidence must always cover both sandbox e2e and prod ADP/Square live verification — sandbox alone is never sufficient. | Issue #70 jam transcript backfill |
+| J3 | For BHAGA: post-merge, always re-run all pending/failed dates together rather than rerunnning only the most recent — backfill the full gap. | Issue #70 jam transcript backfill |
+| J4 | For BHAGA: 'last night' should be derived automatically from prod state (most-recent failed/pending nightly in Firestore) — never ask the operator which date to fix when it can be derived. | Issue #70 jam transcript backfill |
+| J5 | For BHAGA sandbox evidence: prefer reusing an existing scenario (e.g. full-live) over adding a new dedicated scenario when the existing one already exercises the changed code path. | Issue #70 jam transcript backfill |
+| TGOOD | For BHAGA tests: always prefer the existing full-live scenario over adding new scenarios when it already exercises the changed path. | test |
+| TEST | Re-run the 2026-06-23 nightly after the merge. | test |
 
 ## Domain context
 

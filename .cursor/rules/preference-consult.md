@@ -1,0 +1,25 @@
+---
+description: "Preference consult: check stored prefs before asking, capture after answer"
+alwaysApply: true
+---
+
+# Preference consult protocol
+
+Before calling `AskQuestion` or presenting a binary decision to the operator:
+
+1. Check `.cursor/rules/user-preferences.md` (already in context). If an active preference clearly answers the question, apply it and do NOT ask — state which preference you applied.
+2. If no preference applies, ask normally.
+
+After the operator answers:
+
+3. Run `python -m skills.user_model.extractor` mentally on the answer. If it contains signal phrases (always/never/prefer/in general/next time/I want, etc.) and the answer looks generalizable, propose capturing it:
+   > *Noting under [category]: '[one-liner rule]'. Run `python -m skills.user_model.guardrail score "<text>"` to gate it, then `python -m skills.user_model.store add` on pass. Confirm y/n.*
+4. Only run `store.add_preference()` after explicit operator confirmation. The guardrail rejects non-generalizable candidates — it is enforced at write time regardless.
+
+## Corpus append (mechanical minimum)
+
+After every user turn, append to the corpus so signals are preserved for later distillation:
+```bash
+python -m skills.user_model.store corpus-append '<user_text>' --agent <agent_name>
+```
+(via the `append_to_corpus` function in `store.py`).

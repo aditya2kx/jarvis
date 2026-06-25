@@ -23,8 +23,9 @@ Assertions:
      and a deliberately vague requirement is accepted end-to-end (--dry-run). Encodes
      the intake contract — requirement refinement belongs in the jam phase, not the
      parent chat — as a mechanical check rather than a prose reminder.
-  10. Jam handoff pre-selects Ask mode + Opus 4.8 high via deeplink (new_requirement.py),
-      so the new chatspace does not inherit Agent/Auto from the parent window.
+  10. Jam handoff pre-selects Ask mode via deeplink (new_requirement.py); seed prompt
+      instructs the operator to set Opus 4.8 themselves (the deeplink model= param is
+      not honored by Cursor) and explicitly allows read-only diagnosis during jam.
   11. Phase-consistency gate (OBSERVABLE_FLOOR) enforces the whole lifecycle ladder:
       phase_state.py gate is registered as a hard gate in verify.py; with code changes
       on a branch whose phase cache lacks operator-gate records, gate exits nonzero;
@@ -321,11 +322,17 @@ def assert_9_front_door_interrogation_free() -> tuple[bool, str]:
     return True, "front door is interrogation-free (no input(); vague requirement accepted)"
 
 
-def assert_10_jam_handoff_ask_mode_opus() -> tuple[bool, str]:
-    """new_requirement front door opens jam in Ask mode + Opus 4.8 high (not parent-chat settings).
+def assert_10_jam_handoff_ask_mode_honest() -> tuple[bool, str]:
+    """Jam handoff pre-selects Ask mode and gives correct guidance in the seed prompt.
 
-    The deeplink must pre-select mode=ask and the jam model so the new chatspace does not
-    inherit Agent/Auto from the parent window.
+    The Cursor /prompt deeplink honors mode= but NOT model= (silently ignored).
+    Three checks:
+      (a) new_requirement.py uses seed_prompt_jam and passes mode=ask to make_deeplink.
+      (b) DEFAULT_JAM_HANDOFF_MODE == "ask" in start_pr_session.py.
+      (c) seed_prompt_jam source contains the operator model-selection instruction and
+          the read-only-diagnosis line — locking both against silent regression.
+    Note: we deliberately do NOT assert the model= link param reaches Cursor, because
+    Cursor does not honor it today (as confirmed against Cursor docs/forum).
     """
     nr = REPO_ROOT / "scripts" / "new_requirement.py"
     ss = REPO_ROOT / "scripts" / "start_pr_session.py"
@@ -339,9 +346,16 @@ def assert_10_jam_handoff_ask_mode_opus() -> tuple[bool, str]:
         return False, "new_requirement.py does not pass mode= to make_deeplink"
     if 'DEFAULT_JAM_HANDOFF_MODE = "ask"' not in ss_src:
         return False, 'start_pr_session.py missing DEFAULT_JAM_HANDOFF_MODE = "ask"'
-    if "claude-opus-4-8-thinking-high" not in ss_src:
-        return False, "start_pr_session.py missing DEFAULT_JAM_HANDOFF_MODEL (Opus 4.8 high)"
-    return True, "jam handoff pre-selects Ask mode + Opus 4.8 high"
+    # Operator model-selection: seed must instruct the operator to set the model themselves.
+    if "deeplink cannot pre-select the model" not in ss_src:
+        return False, ("seed_prompt_jam missing operator model-selection instruction "
+                       "('deeplink cannot pre-select the model')")
+    # Read-only diagnosis: seed must explicitly allow read-only work during jam.
+    if "Read-only diagnosis" not in ss_src:
+        return False, ("seed_prompt_jam missing read-only-diagnosis guidance "
+                       "('Read-only diagnosis/research … needs no approval')")
+    return True, ("jam handoff pre-selects Ask mode; seed instructs operator to set "
+                  "Opus 4.8 and confirms read-only diagnosis is allowed during jam")
 
 
 def assert_11_phase_gate_enforces_ladder() -> tuple[bool, str]:
@@ -411,7 +425,7 @@ ASSERTIONS: list[tuple[int, str, str]] = [
     (7, "phase_state advance --to operator-substep refused without approval", "assert_7_operator_gate_refused"),
     (8, "new_requirement wires phase_state init at kickoff", "assert_8_new_requirement_wires_phase_state"),
     (9, "front door is interrogation-free (no jam in parent chat)", "assert_9_front_door_interrogation_free"),
-    (10, "jam handoff pre-selects Ask mode + Opus 4.8 high", "assert_10_jam_handoff_ask_mode_opus"),
+    (10, "jam handoff: Ask mode + honest model guidance + diagnosis allowed", "assert_10_jam_handoff_ask_mode_honest"),
     (11, "phase-gate registered hard; OBSERVABLE_FLOOR enforces ladder", "assert_11_phase_gate_enforces_ladder"),
 ]
 

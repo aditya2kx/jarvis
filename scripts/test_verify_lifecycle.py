@@ -409,8 +409,56 @@ class TestAssertion9(unittest.TestCase):
 
 class TestAssertion10(unittest.TestCase):
     def test_passes_against_real_front_door(self):
-        passed, detail = vl.assert_10_jam_handoff_ask_mode_opus()
+        passed, detail = vl.assert_10_jam_handoff_ask_mode_honest()
         self.assertTrue(passed, msg=detail)
+
+    def _make_nr_stub(self, scripts_dir: Path) -> None:
+        """Write a new_requirement.py stub that passes the wiring checks."""
+        (scripts_dir / "new_requirement.py").write_text(
+            "# stub\n"
+            "seed_prompt_jam = True\n"
+            "# make_deeplink(seed, mode=mode, model=model)\n"
+        )
+
+    def test_fails_when_seed_missing_model_selection_line(self):
+        """seed_prompt_jam that lacks the operator model-selection instruction must fail."""
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts_dir = Path(tmp) / "scripts"
+            scripts_dir.mkdir()
+            self._make_nr_stub(scripts_dir)
+            # Ask mode + diagnosis line but missing model-selection line
+            (scripts_dir / "start_pr_session.py").write_text(textwrap.dedent("""\
+                DEFAULT_JAM_HANDOFF_MODE = "ask"
+                DEFAULT_JAM_HANDOFF_MODEL = "claude-opus-4-8-thinking-high"
+                def seed_prompt_jam(key, *, brief_rel, requirement=None):
+                    return "jam\\nRead-only diagnosis is expected during jam."
+                def make_deeplink(text, *, mode="agent", model=None):
+                    return f"cursor://x?text={text}&mode={mode}"
+            """))
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_10_jam_handoff_ask_mode_honest()
+        self.assertFalse(passed, f"Should fail without model-selection line: {detail}")
+        self.assertIn("model-selection", detail)
+
+    def test_fails_when_seed_missing_diagnosis_line(self):
+        """seed_prompt_jam that lacks the read-only-diagnosis line must fail."""
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts_dir = Path(tmp) / "scripts"
+            scripts_dir.mkdir()
+            self._make_nr_stub(scripts_dir)
+            # Has model-selection line but missing diagnosis line
+            (scripts_dir / "start_pr_session.py").write_text(textwrap.dedent("""\
+                DEFAULT_JAM_HANDOFF_MODE = "ask"
+                DEFAULT_JAM_HANDOFF_MODEL = "claude-opus-4-8-thinking-high"
+                def seed_prompt_jam(key, *, brief_rel, requirement=None):
+                    return "jam\\ndeeplink cannot pre-select the model."
+                def make_deeplink(text, *, mode="agent", model=None):
+                    return f"cursor://x?text={text}&mode={mode}"
+            """))
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_10_jam_handoff_ask_mode_honest()
+        self.assertFalse(passed, f"Should fail without diagnosis line: {detail}")
+        self.assertIn("diagnosis", detail)
 
 
 # ---------------------------------------------------------------------------
@@ -505,7 +553,7 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")), \
              patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
              patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
-             patch.object(vl, "assert_10_jam_handoff_ask_mode_opus", return_value=(True, "ok")), \
+             patch.object(vl, "assert_10_jam_handoff_ask_mode_honest", return_value=(True, "ok")), \
              patch.object(vl, "assert_11_phase_gate_enforces_ladder", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 0)
@@ -520,7 +568,7 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")), \
              patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
              patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
-             patch.object(vl, "assert_10_jam_handoff_ask_mode_opus", return_value=(True, "ok")), \
+             patch.object(vl, "assert_10_jam_handoff_ask_mode_honest", return_value=(True, "ok")), \
              patch.object(vl, "assert_11_phase_gate_enforces_ladder", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 1)
@@ -535,7 +583,7 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_7_operator_gate_refused", return_value=(False, "needs M3")), \
              patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
              patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
-             patch.object(vl, "assert_10_jam_handoff_ask_mode_opus", return_value=(True, "ok")), \
+             patch.object(vl, "assert_10_jam_handoff_ask_mode_honest", return_value=(True, "ok")), \
              patch.object(vl, "assert_11_phase_gate_enforces_ladder", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 0, "Pre-milestone WARNs should not cause exit 1")

@@ -50,9 +50,13 @@ class TestStartPrSession(unittest.TestCase):
         )
         self.assertIn("Ask mode", p)
         self.assertIn("jam", p.lower())
-        # Mechanical gate reference replaces prose "Do NOT implement"
+        # Mechanical gate reference
         self.assertIn("phase gate", p)
         self.assertNotIn("implement the requirement", p)
+        # Operator must set the model themselves (deeplink cannot)
+        self.assertIn("deeplink cannot pre-select the model", p)
+        # Read-only diagnosis must be explicitly allowed
+        self.assertIn("Read-only diagnosis", p)
 
     def test_make_deeplink_no_model_when_disabled(self):
         link = S.make_deeplink("hello", model=None)

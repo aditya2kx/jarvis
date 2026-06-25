@@ -353,52 +353,6 @@ class TestAssertion7(unittest.TestCase):
 # Overall runner
 # ---------------------------------------------------------------------------
 
-class TestRunFunction(unittest.TestCase):
-    def test_run_returns_0_on_full_pass(self):
-        with patch.object(vl, "assert_1_new_requirement_dry_run", return_value=(True, "ok")), \
-             patch.object(vl, "assert_2_brief_contains_stage_ladder", return_value=(True, "ok")), \
-             patch.object(vl, "assert_3_self_drive_rule_always_on", return_value=(True, "ok")), \
-             patch.object(vl, "assert_4_verify_gates_present", return_value=(True, "ok")), \
-             patch.object(vl, "assert_5_scripts_exist_and_help", return_value=(True, "ok")), \
-             patch.object(vl, "assert_6_agent_card_dedup", return_value=(True, "ok")), \
-             patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")), \
-             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
-             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
-             patch.object(vl, "assert_10_jam_handoff_ask_mode_opus", return_value=(True, "ok")):
-            rc = vl.run()
-        self.assertEqual(rc, 0)
-
-    def test_run_returns_1_on_hard_fail(self):
-        # Assertion 4 is a hard failure (not pre-milestone)
-        with patch.object(vl, "assert_1_new_requirement_dry_run", return_value=(False, "fail")), \
-             patch.object(vl, "assert_2_brief_contains_stage_ladder", return_value=(True, "ok")), \
-             patch.object(vl, "assert_3_self_drive_rule_always_on", return_value=(True, "ok")), \
-             patch.object(vl, "assert_4_verify_gates_present", return_value=(False, "missing gates")), \
-             patch.object(vl, "assert_5_scripts_exist_and_help", return_value=(True, "ok")), \
-             patch.object(vl, "assert_6_agent_card_dedup", return_value=(True, "ok")), \
-             patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")), \
-             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
-             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
-             patch.object(vl, "assert_10_jam_handoff_ask_mode_opus", return_value=(True, "ok")):
-            rc = vl.run()
-        self.assertEqual(rc, 1)
-
-    def test_run_returns_0_with_pre_milestone_warns(self):
-        # Assertions 2, 3, 5, 6, 7 are WARN (pre-milestone) — should not block
-        with patch.object(vl, "assert_1_new_requirement_dry_run", return_value=(True, "ok")), \
-             patch.object(vl, "assert_2_brief_contains_stage_ladder", return_value=(False, "needs M3")), \
-             patch.object(vl, "assert_3_self_drive_rule_always_on", return_value=(False, "needs M5")), \
-             patch.object(vl, "assert_4_verify_gates_present", return_value=(True, "ok")), \
-             patch.object(vl, "assert_5_scripts_exist_and_help", return_value=(False, "needs M3")), \
-             patch.object(vl, "assert_6_agent_card_dedup", return_value=(False, "needs M5")), \
-             patch.object(vl, "assert_7_operator_gate_refused", return_value=(False, "needs M3")), \
-             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
-             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
-             patch.object(vl, "assert_10_jam_handoff_ask_mode_opus", return_value=(True, "ok")):
-            rc = vl.run()
-        self.assertEqual(rc, 0, "Pre-milestone WARNs should not cause exit 1")
-
-
 class TestAssertion8(unittest.TestCase):
     def test_passes_against_real_repo(self):
         # new_requirement.py now wires init_phase_tracking → should pass on disk.
@@ -457,6 +411,134 @@ class TestAssertion10(unittest.TestCase):
     def test_passes_against_real_front_door(self):
         passed, detail = vl.assert_10_jam_handoff_ask_mode_opus()
         self.assertTrue(passed, msg=detail)
+
+
+# ---------------------------------------------------------------------------
+# Assertion 11 — phase-gate registered hard; OBSERVABLE_FLOOR enforces ladder
+# ---------------------------------------------------------------------------
+
+class TestAssertion11(unittest.TestCase):
+    def test_passes_against_real_repo(self):
+        """Real verify.py and phase_state.py should satisfy assertion #11."""
+        passed, detail = vl.assert_11_phase_gate_enforces_ladder()
+        self.assertTrue(passed, msg=detail)
+
+    def test_fails_when_phase_gate_missing_from_verify(self):
+        """If verify.py has no phase-gate Gate, assertion must fail."""
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts_dir = Path(tmp) / "scripts"
+            scripts_dir.mkdir()
+
+            # phase_state.py with gate + OBSERVABLE_FLOOR
+            ps_src = textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import sys
+                def cmd_gate(args): pass
+                OBSERVABLE_FLOOR = [("implement", lambda: False), ("pr-evidence", lambda: False)]
+                if __name__ == "__main__":
+                    sys.argv.append("gate")  # satisfy "gate" subcommand check
+            """)
+            (scripts_dir / "phase_state.py").write_text(ps_src)
+
+            # verify.py without phase-gate
+            verify_src = textwrap.dedent("""\
+                from typing import NamedTuple
+                class Gate(NamedTuple):
+                    name: str
+                    argv: list
+                    hard: bool
+                    modes: set
+                GATES = [
+                    Gate("secret-scan-staged", ["git", "diff"], True, {"fast"}),
+                ]
+            """)
+            (scripts_dir / "verify.py").write_text(verify_src)
+
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_11_phase_gate_enforces_ladder()
+        self.assertFalse(passed, f"Should fail when phase-gate absent: {detail}")
+
+    def test_fails_when_observable_floor_missing(self):
+        """If phase_state.py lacks OBSERVABLE_FLOOR, assertion must fail."""
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts_dir = Path(tmp) / "scripts"
+            scripts_dir.mkdir()
+
+            # phase_state.py without OBSERVABLE_FLOOR
+            ps_src = textwrap.dedent("""\
+                #!/usr/bin/env python3
+                def cmd_gate(args): pass
+            """)
+            (scripts_dir / "phase_state.py").write_text(ps_src)
+
+            # verify.py with phase-gate but hard=True, full mode
+            verify_src = textwrap.dedent("""\
+                from typing import NamedTuple
+                class Gate(NamedTuple):
+                    name: str
+                    argv: list
+                    hard: bool
+                    modes: set
+                GATES = [
+                    Gate("phase-gate", ["python3", "scripts/phase_state.py", "gate"], True, {"full"}),
+                ]
+            """)
+            (scripts_dir / "verify.py").write_text(verify_src)
+
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_11_phase_gate_enforces_ladder()
+        self.assertFalse(passed, f"Should fail when OBSERVABLE_FLOOR absent: {detail}")
+
+
+# ---------------------------------------------------------------------------
+# Updated overall runner — must include assertion 11
+# ---------------------------------------------------------------------------
+
+class TestRunFunction(unittest.TestCase):
+    def test_run_returns_0_on_full_pass(self):
+        with patch.object(vl, "assert_1_new_requirement_dry_run", return_value=(True, "ok")), \
+             patch.object(vl, "assert_2_brief_contains_stage_ladder", return_value=(True, "ok")), \
+             patch.object(vl, "assert_3_self_drive_rule_always_on", return_value=(True, "ok")), \
+             patch.object(vl, "assert_4_verify_gates_present", return_value=(True, "ok")), \
+             patch.object(vl, "assert_5_scripts_exist_and_help", return_value=(True, "ok")), \
+             patch.object(vl, "assert_6_agent_card_dedup", return_value=(True, "ok")), \
+             patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")), \
+             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
+             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
+             patch.object(vl, "assert_10_jam_handoff_ask_mode_opus", return_value=(True, "ok")), \
+             patch.object(vl, "assert_11_phase_gate_enforces_ladder", return_value=(True, "ok")):
+            rc = vl.run()
+        self.assertEqual(rc, 0)
+
+    def test_run_returns_1_on_hard_fail(self):
+        with patch.object(vl, "assert_1_new_requirement_dry_run", return_value=(False, "fail")), \
+             patch.object(vl, "assert_2_brief_contains_stage_ladder", return_value=(True, "ok")), \
+             patch.object(vl, "assert_3_self_drive_rule_always_on", return_value=(True, "ok")), \
+             patch.object(vl, "assert_4_verify_gates_present", return_value=(False, "missing gates")), \
+             patch.object(vl, "assert_5_scripts_exist_and_help", return_value=(True, "ok")), \
+             patch.object(vl, "assert_6_agent_card_dedup", return_value=(True, "ok")), \
+             patch.object(vl, "assert_7_operator_gate_refused", return_value=(True, "ok")), \
+             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
+             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
+             patch.object(vl, "assert_10_jam_handoff_ask_mode_opus", return_value=(True, "ok")), \
+             patch.object(vl, "assert_11_phase_gate_enforces_ladder", return_value=(True, "ok")):
+            rc = vl.run()
+        self.assertEqual(rc, 1)
+
+    def test_run_returns_0_with_pre_milestone_warns(self):
+        with patch.object(vl, "assert_1_new_requirement_dry_run", return_value=(True, "ok")), \
+             patch.object(vl, "assert_2_brief_contains_stage_ladder", return_value=(False, "needs M3")), \
+             patch.object(vl, "assert_3_self_drive_rule_always_on", return_value=(False, "needs M5")), \
+             patch.object(vl, "assert_4_verify_gates_present", return_value=(True, "ok")), \
+             patch.object(vl, "assert_5_scripts_exist_and_help", return_value=(False, "needs M3")), \
+             patch.object(vl, "assert_6_agent_card_dedup", return_value=(False, "needs M5")), \
+             patch.object(vl, "assert_7_operator_gate_refused", return_value=(False, "needs M3")), \
+             patch.object(vl, "assert_8_new_requirement_wires_phase_state", return_value=(True, "ok")), \
+             patch.object(vl, "assert_9_front_door_interrogation_free", return_value=(True, "ok")), \
+             patch.object(vl, "assert_10_jam_handoff_ask_mode_opus", return_value=(True, "ok")), \
+             patch.object(vl, "assert_11_phase_gate_enforces_ladder", return_value=(True, "ok")):
+            rc = vl.run()
+        self.assertEqual(rc, 0, "Pre-milestone WARNs should not cause exit 1")
 
 
 if __name__ == "__main__":

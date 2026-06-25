@@ -360,10 +360,9 @@ def seed_prompt_jam(key: int | str, *, brief_rel: str, requirement: str | None =
     return (
         f"{header}\n\n"
         f"Read `{brief_rel}` first (requirement, branch, lifecycle ladder, cost gate).\n\n"
-        f"You are in the **jam** phase (Ask mode). Restate the requirement, clarify scope, "
-        f"and draft the PR §4 acceptance-evidence contract. Do NOT implement or edit files — "
-        f"implementation waits until jam and define-evidence gates are approved in chat.\n\n"
-        f"Do NOT assume a PR number; it is assigned only when you run `gh pr create`."
+        f"You are at the **jam** operator gate in Ask mode. Restate the requirement and draft "
+        f"the PR §4 evidence contract. The phase gate in verify.py blocks shipping until "
+        f"jam and define-evidence are recorded via phase_state.py advance."
     )
 
 

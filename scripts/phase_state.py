@@ -27,6 +27,7 @@ Usage:
     python3 scripts/phase_state.py clear-fail --branch feat/foo
     python3 scripts/phase_state.py status [--branch feat/foo] [--json]
     python3 scripts/phase_state.py report
+    python3 scripts/phase_state.py gate [--branch feat/foo]
 """
 
 from __future__ import annotations
@@ -137,6 +138,76 @@ def _gh(*args, input_text: str | None = None, dry_run: bool = False) -> tuple[in
         return proc.returncode, proc.stdout + proc.stderr
     except Exception as e:
         return -1, str(e)
+
+
+# ---------------------------------------------------------------------------
+# Observable-floor detectors  (extension seam — append a row to add a signal)
+# ---------------------------------------------------------------------------
+
+def _current_branch() -> str | None:
+    """Return the current git branch name, or None if unavailable."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(REPO_ROOT),
+        )
+        branch = result.stdout.strip()
+        return branch if branch and branch != "HEAD" else None
+    except Exception:
+        return None
+
+
+# Paths/extensions that are documentation-only — not considered "implementation" work.
+_DOCS_PREFIXES = ("docs/", ".cursor/", "metrics/pr_cost/")
+_DOCS_SUFFIXES = (".md", ".txt", ".rst", ".json")
+
+
+def _has_nondoc_changes() -> bool:
+    """Return True when non-documentation files are changed vs origin/main merge-base."""
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--name-only", "origin/main...HEAD"],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(REPO_ROOT),
+        )
+        if proc.returncode != 0:
+            return False
+        files = [f.strip() for f in proc.stdout.splitlines() if f.strip()]
+        return any(
+            not any(f.startswith(p) for p in _DOCS_PREFIXES)
+            and not any(f.endswith(s) for s in _DOCS_SUFFIXES)
+            for f in files
+        )
+    except Exception:
+        return False
+
+
+def _pr_is_open() -> bool:
+    """Return True when the current branch has an open PR."""
+    if not _gh_available():
+        return False
+    rc, out = _gh("pr", "view", "--json", "state", "-q", ".state")
+    return rc == 0 and out.strip().upper() == "OPEN"
+
+
+def _pr_is_merged() -> bool:
+    """Return True when the current branch's PR is merged."""
+    if not _gh_available():
+        return False
+    rc, out = _gh("pr", "view", "--json", "state", "-q", ".state")
+    return rc == 0 and out.strip().upper() == "MERGED"
+
+
+# OBSERVABLE_FLOOR: ordered list of (substep_name, detector_fn).
+# Each detector returns True when the real world shows evidence that substep's
+# work has happened.  The gate requires every substep before that index to be
+# recorded done.  Append one entry to register a new observable signal.
+OBSERVABLE_FLOOR: list[tuple[str]] = [
+    ("implement",         _has_nondoc_changes),  # non-doc code changed vs origin/main
+    ("pr-evidence",       _pr_is_open),          # branch has an open PR
+    ("post-merge-verify", _pr_is_merged),        # PR was merged
+]
 
 
 # ---------------------------------------------------------------------------
@@ -561,6 +632,91 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_gate(args) -> int:
+    """Phase-consistency gate: observable progress may not outrun recorded progress.
+
+    For every substep whose index is less than the highest observed substep (per
+    OBSERVABLE_FLOOR detectors), that substep must be recorded done in the phase
+    cache.  This makes the whole lifecycle ladder non-bypassable: an agent cannot
+    push code, open a PR, or merge without the preceding substeps (including operator
+    gates) being on record.
+
+    Exits 0 when:
+      - Branch is not lifecycle-tracked (no cache) — untracked branches are ignored.
+      - No observable artifacts detected yet — nothing to enforce.
+      - All substeps before the highest observed one are recorded done.
+
+    Exits 1 when observable progress outran recorded progress, printing the exact
+    `phase_state.py advance` commands needed to catch up (in order).
+    """
+    branch = getattr(args, "branch", None) or _current_branch()
+    if not branch:
+        print("WARNING: could not determine branch; skipping phase gate.", file=sys.stderr)
+        return 0
+
+    cache_path = _cache_path(branch)
+    if not cache_path.exists():
+        print(f"[phase-gate] branch {branch!r} not lifecycle-tracked — skipping.")
+        return 0
+
+    data = _load_cache(branch)
+    done_set = set(data.get("done", []))
+    all_steps = lc.all_substeps()
+
+    # Find the highest observed substep index from live detectors
+    observed_idx = -1
+    observed_name = None
+    for sub_name, detector in OBSERVABLE_FLOOR:
+        try:
+            if detector():
+                idx = lc.substep_index(sub_name)
+                if idx > observed_idx:
+                    observed_idx = idx
+                    observed_name = sub_name
+        except Exception:
+            pass  # degrade gracefully if detector fails
+
+    if observed_idx < 0:
+        print(f"[phase-gate] branch {branch!r}: no observable artifacts yet — OK.")
+        return 0
+
+    # Every substep before observed_idx must be done
+    missing = [s for s in all_steps[:observed_idx] if s.name not in done_set]
+
+    if not missing:
+        print(f"[phase-gate] branch {branch!r}: ladder consistent up to "
+              f"'{observed_name}' — OK.")
+        return 0
+
+    print(
+        f"\nPHASE GATE FAILED — branch {branch!r}\n"
+        f"Observable world shows work at '{observed_name}', but these substep(s)\n"
+        f"are not recorded done in the phase cache:\n",
+        file=sys.stderr,
+    )
+    for s in missing:
+        if s.driver == "operator":
+            print(
+                f"  • {s.name!r} [operator-reserved] — obtain approval in chat, then run:\n"
+                f"    python3 scripts/phase_state.py advance --branch {branch}"
+                f" --to {s.name} --operator-approved [--note '<summary>']",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"  • {s.name!r} [agent] — record via:\n"
+                f"    python3 scripts/phase_state.py advance --branch {branch}"
+                f" --to {s.name}",
+                file=sys.stderr,
+            )
+    print(
+        f"\nRecord the missing substeps (in order) then re-run `verify.py --full`.\n"
+        f"The phase gate prevents shipping work that outran the lifecycle ladder.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -604,6 +760,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("report", help="List all open work items")
 
+    p_gate = sub.add_parser("gate", help="Phase-consistency gate (used by verify.py --full)")
+    p_gate.add_argument("--branch", default=None,
+                        help="Branch to check (default: current git branch)")
+
     args = parser.parse_args(argv)
 
     dispatch = {
@@ -614,6 +774,7 @@ def main(argv: list[str] | None = None) -> int:
         "clear-fail":    cmd_clear_fail,
         "status":        cmd_status,
         "report":        cmd_report,
+        "gate":          cmd_gate,
     }
     return dispatch[args.cmd](args)
 

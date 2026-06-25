@@ -49,8 +49,9 @@ class TestStartPrSession(unittest.TestCase):
             requirement="Debug ADP issues",
         )
         self.assertIn("Ask mode", p)
-        self.assertIn("Do NOT implement", p)
         self.assertIn("jam", p.lower())
+        # Mechanical gate reference replaces prose "Do NOT implement"
+        self.assertIn("phase gate", p)
         self.assertNotIn("implement the requirement", p)
 
     def test_make_deeplink_no_model_when_disabled(self):
@@ -80,7 +81,8 @@ class TestStartPrSession(unittest.TestCase):
             requirement="Add widget",
         )
         self.assertIn("Ask mode", p)
-        self.assertIn("Do NOT implement", p)
+        # Mechanical gate reference replaces prose "Do NOT implement"
+        self.assertIn("phase gate", p)
 
     def test_truncate_requirement(self):
         long = "x" * 200

@@ -38,7 +38,25 @@ LEARN      10  retrospective agent→op  doc-maintenance.md    PROGRESS.md + req
 ### Operator-reserved gates
 Phases 1, 3, 4, and 9 require the operator.  The operator gives approval **in the
 Cursor chat** — there is no need to add a label or type anything on the GitHub issue.
-When the chat approval has been given, the agent re-runs:
+
+The **phase-consistency gate** (`phase_state.py gate`, registered as a hard gate in
+`verify.py --full` and the pre-push hook) makes every substep in the ladder
+mechanically unskippable — operator gates and agent substeps alike.  It uses a
+declarative `OBSERVABLE_FLOOR` detector registry to compare real-world evidence
+against the phase cache:
+
+| Detector fires when… | Evidences substep |
+|---|---|
+| Non-doc files changed vs `origin/main` | `implement` |
+| Branch has an open PR | `pr-evidence` |
+| PR is merged | `post-merge-verify` |
+
+Every substep at an index less than the highest fired detector must be recorded done.
+When the gate fails it lists the exact `advance` commands to run, which automatically
+mirror approvals and progress to the GitHub issue.  To add a new observable signal,
+append one entry to `OBSERVABLE_FLOOR` in `phase_state.py` — no other code changes.
+
+When the chat approval has been given for operator gates, the agent re-runs:
 
 ```bash
 python3 scripts/phase_state.py advance --branch <b> --to <gate> --operator-approved \
@@ -247,6 +265,7 @@ L3 (roadmap):
 | L1 mechanisms wired | verify_lifecycle.py | Conformance PASS |
 | Phase tracking queryable | phase_state.py status/report | Status output |
 | Operator gates unskippable | phase_state.py advance → nonzero | Exit code |
+| Lifecycle ladder non-bypassable (whole ladder, not just jam) | verify_lifecycle.py assertion #11; phase_state.py gate (hard gate in verify --full) | Conformance PASS + Gate exit code |
 | Local loop mirrors CI | test_verify.py::test_ci_parity | Test PASS |
 | Babysit unprompted | pr-workflow.mdc + babysit skill | Always-on rule |
 | Review replies done | check_pr_review_replies.py | Gate exit 0 |

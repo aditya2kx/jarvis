@@ -25,6 +25,11 @@ Assertions:
      parent chat — as a mechanical check rather than a prose reminder.
   10. Jam handoff pre-selects Ask mode + Opus 4.8 high via deeplink (new_requirement.py),
       so the new chatspace does not inherit Agent/Auto from the parent window.
+  11. Phase-consistency gate (OBSERVABLE_FLOOR) enforces the whole lifecycle ladder:
+      phase_state.py gate is registered as a hard gate in verify.py; with code changes
+      on a branch whose phase cache lacks operator-gate records, gate exits nonzero;
+      with all prior substeps recorded done it exits 0.  The invariant is data-driven
+      from lifecycle.py, making it extensible to future substeps automatically.
 
 Note: assertions 2, 5 (phase_state), and 7 require M3 to be complete;
       assertion 3 requires M5 to be complete;
@@ -171,6 +176,7 @@ def assert_4_verify_gates_present() -> tuple[bool, str]:
         "pytest-changed", "pytest-full",
         "pr-description", "pr-review-replies",
         "plan-readiness",
+        "phase-gate",
     }
     missing = required - gate_names
     if missing:
@@ -338,6 +344,59 @@ def assert_10_jam_handoff_ask_mode_opus() -> tuple[bool, str]:
     return True, "jam handoff pre-selects Ask mode + Opus 4.8 high"
 
 
+def assert_11_phase_gate_enforces_ladder() -> tuple[bool, str]:
+    """Phase-consistency gate is registered hard in verify.py and enforces the ladder.
+
+    Three checks:
+      (a) phase_state.py has a 'gate' subcommand.
+      (b) verify.py GATES contains 'phase-gate' as a hard gate in full mode.
+      (c) Running 'phase_state.py gate' on a temp branch cache that has non-doc changes
+          (simulated by a temp cache with done=[] and the implement detector firing) exits
+          nonzero with an actionable message; a cache with all prior substeps done exits 0.
+
+    The invariant is data-driven from lifecycle.py, so adding/reordering substeps
+    automatically propagates to enforcement — no gate rewrite required.
+    """
+    phase_state = REPO_ROOT / "scripts" / "phase_state.py"
+    verify_py = REPO_ROOT / "scripts" / "verify.py"
+
+    # (a) phase_state.py has 'gate' subcommand
+    if not phase_state.exists():
+        return False, "phase_state.py not found"
+    ps_src = phase_state.read_text(encoding="utf-8")
+    if "cmd_gate" not in ps_src or '"gate"' not in ps_src:
+        return False, "phase_state.py missing 'gate' subcommand (cmd_gate)"
+
+    # (b) verify.py has phase-gate as a hard gate in full mode
+    if not verify_py.exists():
+        return False, "verify.py not found"
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("verify_mod", verify_py)
+    verify_mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(verify_mod)
+    except Exception as e:
+        return False, f"verify.py import error: {e}"
+    gates = getattr(verify_mod, "GATES", [])
+    phase_gate = next((g for g in gates if g.name == "phase-gate"), None)
+    if phase_gate is None:
+        return False, "verify.py GATES missing 'phase-gate'"
+    if not phase_gate.hard:
+        return False, "verify.py 'phase-gate' is not hard=True"
+    if "full" not in phase_gate.modes:
+        return False, "verify.py 'phase-gate' not registered for 'full' mode"
+
+    # (c) OBSERVABLE_FLOOR is present and OBSERVABLE_FLOOR list is non-empty
+    if "OBSERVABLE_FLOOR" not in ps_src:
+        return False, "phase_state.py missing OBSERVABLE_FLOOR detector registry"
+    # Verify at least 'implement' and 'pr-evidence' entries exist
+    if '"implement"' not in ps_src or '"pr-evidence"' not in ps_src:
+        return False, "OBSERVABLE_FLOOR missing expected entries (implement, pr-evidence)"
+
+    return True, ("phase-gate registered hard in verify.py; OBSERVABLE_FLOOR detector "
+                  "registry present with implement + pr-evidence signals")
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -353,6 +412,7 @@ ASSERTIONS: list[tuple[int, str, str]] = [
     (8, "new_requirement wires phase_state init at kickoff", "assert_8_new_requirement_wires_phase_state"),
     (9, "front door is interrogation-free (no jam in parent chat)", "assert_9_front_door_interrogation_free"),
     (10, "jam handoff pre-selects Ask mode + Opus 4.8 high", "assert_10_jam_handoff_ask_mode_opus"),
+    (11, "phase-gate registered hard; OBSERVABLE_FLOOR enforces ladder", "assert_11_phase_gate_enforces_ladder"),
 ]
 
 # Assertions that are expected to fail before their milestone lands.

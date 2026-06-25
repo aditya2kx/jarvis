@@ -97,6 +97,12 @@ GATES: list[Gate] = [
         hard=True,
         modes={"full"},
     ),
+    Gate(
+        name="phase-gate",
+        argv=["python3", "scripts/phase_state.py", "gate"],
+        hard=True,
+        modes={"full"},
+    ),
 ]
 
 # Names of CI scripts this local harness must cover (used by test_ci_parity).

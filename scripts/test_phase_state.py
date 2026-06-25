@@ -522,5 +522,136 @@ class TestDegrades(PhaseStateTestBase):
         self.assertIn(rc, (0, 1))  # 0 = cache-only, 1 = expected since no gh
 
 
+# ---------------------------------------------------------------------------
+# gate
+# ---------------------------------------------------------------------------
+
+class TestGate(PhaseStateTestBase):
+    def _make_args(self, branch=None):
+        args = MagicMock()
+        args.branch = branch
+        return args
+
+    def test_gate_skips_untracked_branch(self):
+        """No cache file → gate exits 0 (branch not lifecycle-tracked)."""
+        args = self._make_args(branch="feat/untracked-xyz")
+        rc = ps.cmd_gate(args)
+        self.assertEqual(rc, 0)
+
+    def test_gate_passes_when_no_detectors_fire(self):
+        """If no OBSERVABLE_FLOOR detector fires, gate exits 0."""
+        data = ps._load_cache("feat/no-obs")
+        data["done"] = []
+        ps._save_cache("feat/no-obs", data)
+
+        # All detectors return False
+        with patch.object(ps, "OBSERVABLE_FLOOR", [
+            ("implement",   lambda: False),
+            ("pr-evidence", lambda: False),
+        ]):
+            args = self._make_args(branch="feat/no-obs")
+            rc = ps.cmd_gate(args)
+        self.assertEqual(rc, 0)
+
+    def test_gate_passes_when_all_prior_substeps_done(self):
+        """Detector fires at 'implement'; all prior substeps recorded → gate exits 0."""
+        # Prior substeps to implement: specify, setup, jam, define-evidence, plan (5)
+        prior = ["specify", "setup", "jam", "define-evidence", "plan"]
+        data = ps._load_cache("feat/all-done")
+        data["done"] = prior
+        ps._save_cache("feat/all-done", data)
+
+        with patch.object(ps, "OBSERVABLE_FLOOR", [
+            ("implement", lambda: True),
+        ]):
+            args = self._make_args(branch="feat/all-done")
+            rc = ps.cmd_gate(args)
+        self.assertEqual(rc, 0)
+
+    def test_gate_fails_when_implement_detector_fires_and_operator_gates_missing(self):
+        """Detector fires at 'implement'; operator gates (jam, define-evidence) not done → exits 1."""
+        # Only specify and setup done — missing jam, define-evidence, plan
+        data = ps._load_cache("feat/missing-gates")
+        data["done"] = ["specify", "setup"]
+        ps._save_cache("feat/missing-gates", data)
+
+        with patch.object(ps, "OBSERVABLE_FLOOR", [
+            ("implement", lambda: True),
+        ]):
+            args = self._make_args(branch="feat/missing-gates")
+            rc = ps.cmd_gate(args)
+        self.assertEqual(rc, 1)
+
+    def test_gate_failure_message_names_advance_commands(self):
+        """Failure output names the exact advance commands needed."""
+        data = ps._load_cache("feat/msg-check")
+        data["done"] = ["specify", "setup"]
+        ps._save_cache("feat/msg-check", data)
+
+        import io
+        buf = io.StringIO()
+        with patch.object(ps, "OBSERVABLE_FLOOR", [("implement", lambda: True)]), \
+             patch("sys.stderr", buf):
+            args = self._make_args(branch="feat/msg-check")
+            ps.cmd_gate(args)
+
+        output = buf.getvalue()
+        self.assertIn("phase_state.py advance", output)
+        self.assertIn("feat/msg-check", output)
+        # Operator gates must mention --operator-approved
+        self.assertIn("--operator-approved", output)
+
+    def test_gate_uses_highest_observed_substep(self):
+        """When multiple detectors fire, the highest-index substep governs the floor."""
+        # pr-evidence detector fires (index > implement) → more substeps required
+        prior_to_pr_evidence = ["specify", "setup", "jam", "define-evidence",
+                                 "plan", "implement", "verify"]
+        data = ps._load_cache("feat/multi-detect")
+        data["done"] = prior_to_pr_evidence
+        ps._save_cache("feat/multi-detect", data)
+
+        with patch.object(ps, "OBSERVABLE_FLOOR", [
+            ("implement",   lambda: True),   # lower index
+            ("pr-evidence", lambda: True),   # higher index — governs
+        ]):
+            args = self._make_args(branch="feat/multi-detect")
+            rc = ps.cmd_gate(args)
+        self.assertEqual(rc, 0)  # all prior to pr-evidence are done
+
+    def test_gate_fails_multi_detect_missing_verify(self):
+        """pr-evidence fires but verify not recorded → gate fails."""
+        # Missing 'verify' (and pr-evidence itself hasn't run, but implement has)
+        data = ps._load_cache("feat/multi-fail")
+        data["done"] = ["specify", "setup", "jam", "define-evidence", "plan", "implement"]
+        ps._save_cache("feat/multi-fail", data)
+
+        with patch.object(ps, "OBSERVABLE_FLOOR", [
+            ("implement",   lambda: True),
+            ("pr-evidence", lambda: True),
+        ]):
+            args = self._make_args(branch="feat/multi-fail")
+            rc = ps.cmd_gate(args)
+        self.assertEqual(rc, 1)
+
+    def test_gate_docs_only_changes_pass(self):
+        """If only _has_nondoc_changes detector exists and returns False, gate passes even if some substeps missing."""
+        data = ps._load_cache("feat/docs-only")
+        data["done"] = []
+        ps._save_cache("feat/docs-only", data)
+
+        with patch.object(ps, "OBSERVABLE_FLOOR", [
+            ("implement", lambda: False),   # docs-only: detector does not fire
+        ]):
+            args = self._make_args(branch="feat/docs-only")
+            rc = ps.cmd_gate(args)
+        self.assertEqual(rc, 0)
+
+    def test_observable_floor_registry_has_required_entries(self):
+        """OBSERVABLE_FLOOR must include implement and pr-evidence entries."""
+        entry_names = [name for name, _ in ps.OBSERVABLE_FLOOR]
+        self.assertIn("implement", entry_names, "OBSERVABLE_FLOOR must include 'implement'")
+        self.assertIn("pr-evidence", entry_names, "OBSERVABLE_FLOOR must include 'pr-evidence'")
+
+
 if __name__ == "__main__":
     unittest.main()

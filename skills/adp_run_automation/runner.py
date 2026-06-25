@@ -964,6 +964,73 @@ def _assert_earnings_xlsx_has_rows(path: pathlib.Path) -> int:
     return data_rows
 
 
+def _wait_for_earnings_ready_button(page, *, timeout_ms: int, locator_specs: list) -> object:
+    """Wait for the "Your report is ready to download" button to appear.
+
+    ADP queues async report generation after the exportExcel click; the modal
+    can take 3-90+ seconds depending on server load. This function polls a
+    ranked list of locators until one becomes visible within *timeout_ms*, then
+    returns that locator (bound to the matched element) for the caller to click.
+
+    On total timeout, captures a full-page screenshot + HTML source into the
+    standard diagnostic snapshot directory (mirrors the tile-missing block) and
+    raises RuntimeError with the URL + selectors tried so future incidents are
+    debuggable from GCS evidence without a live browser session.
+
+    Locator specs: list of (selector_or_label, log_tag) pairs. The first entry
+    uses `page.locator(selector)`, subsequent entries are resolved by their
+    tag to support role-based locators.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + timeout_ms / 1000.0
+    poll_interval_s = 1.0
+
+    def _resolve(spec):
+        selector, tag = spec
+        if tag == "role-button-download-report":
+            return page.get_by_role("button", name=re.compile(r"Download report", re.I)).first
+        return page.locator(selector).first
+
+    tried = [tag for _, tag in locator_specs]
+    matched_btn = None
+    while _time.monotonic() < deadline:
+        for spec in locator_specs:
+            btn = _resolve(spec)
+            try:
+                if btn.is_visible():
+                    matched_btn = btn
+                    print(f"[earnings] step=ready-dialog-found selector={spec[1]!r}")
+                    return matched_btn
+            except Exception:  # noqa: BLE001
+                pass
+        _time.sleep(poll_interval_s)
+
+    # Total timeout — save diagnostic snapshot then raise.
+    try:
+        import datetime as _dt
+        ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        shot_dir = pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
+        shot_dir.mkdir(parents=True, exist_ok=True)
+        page.screenshot(
+            path=str(shot_dir / f"adp-earnings-ready-dialog-missing-{ts}.png"),
+            full_page=True,
+        )
+        (shot_dir / f"adp-earnings-ready-dialog-missing-{ts}.html").write_text(page.content())
+        print(f"[earnings] saved diagnostic snapshot: "
+              f"adp-earnings-ready-dialog-missing-{ts}.{{png,html}}")
+    except Exception as snap_exc:  # noqa: BLE001
+        print(f"[earnings] could not save diagnostic snapshot: {snap_exc}")
+
+    raise RuntimeError(
+        f"[earnings] ready-dialog button never appeared after {timeout_ms}ms "
+        f"(URL={page.url}). Selectors tried: {tried}. "
+        f"This is likely ADP async report generation taking longer than expected "
+        f"or a selector change on the 'Your report is ready to download' modal. "
+        f"Check the diagnostic snapshot in ~/.bhaga/state/screenshots/ for the DOM state."
+    )
+
+
 def _earnings_within_session(
     page,
     *,
@@ -1155,10 +1222,26 @@ def _earnings_within_session(
     page.locator('[data-test-id="exportExcel"]').first.click()
     print("[earnings] step=clicked-export-excel")
 
-    # "Your report is ready to download" focus-pane (~3-10s after
-    # exportExcel). The actual download fires on download-report click.
-    ready_dialog_btn = page.locator('[data-test-id="download-report"]').first
-    ready_dialog_btn.wait_for(state="visible", timeout=45_000)
+    # "Your report is ready to download" focus-pane — ADP queues async report
+    # generation after exportExcel; the modal can take up to ~90s on loaded
+    # servers. We poll a ranked list of locators for the full timeout window so
+    # a single slow generation cycle or minor selector rename doesn't abort the
+    # nightly. Configurable via BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS (default
+    # 90 000 ms — raised from the original 45 000 ms that failed 2026-06-23).
+    _ready_timeout_ms = int(
+        os.environ.get("BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS", "90000")
+    )
+    # Ranked fallback locators for the "Download report" button inside the
+    # ready dialog. Try primary first; if the selector ever drifts, role-based
+    # and dialog-scoped variants can still resolve.
+    _ready_locator_specs = [
+        ('[data-test-id="download-report"]', "data-test-id=download-report"),
+        ('get_by_role("button", name=re.compile(r"Download report", re.I))', "role-button-download-report"),
+        ('[aria-label="Download report"]', "aria-label=Download-report"),
+    ]
+    ready_dialog_btn = _wait_for_earnings_ready_button(
+        page, timeout_ms=_ready_timeout_ms, locator_specs=_ready_locator_specs
+    )
     print("[earnings] step=download-report-button-ready")
 
     rename = f"Earnings-and-Hours-V1-{datetime.date.today().isoformat()}.xlsx"

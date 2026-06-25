@@ -873,6 +873,22 @@ gcloud secrets versions add square_palmetto_oauth --data-file=- --project jarvis
 # Paste the new JSON token blob on stdin, then Ctrl-D
 ```
 
+**ADP earnings ready-dialog timeout (configurable, 2026-06-25 fix).** After the
+"Download → Excel (.xlsx)" click, ADP queues async report generation and shows a
+"Your report is ready to download" modal when it finishes. This can take 3–90+ seconds
+on loaded servers. The default wait is **90 s** (raised from the original 45 s that caused
+the 2026-06-23 nightly failure). Set `BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS` to override:
+
+| Env var | Default | Effect |
+|---|---|---|
+| `BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS` | `90000` | Max ms to wait for the ready-dialog button |
+
+The wait polls a ranked list of fallback selectors (`[data-test-id="download-report"]`,
+`getByRole("button", name=/Download report/i)`, `[aria-label="Download report"]`) every 1 s.
+On total timeout a full-page screenshot + HTML snapshot are written to
+`~/.bhaga/state/screenshots/adp-earnings-ready-dialog-missing-<ts>.{png,html}` for post-mortem
+review. (Files are local only; no automatic GCS upload is implemented.)
+
 **Concurrent-execution guard (ADP — distributed scrape lock).** ADP still uses a browser. If two
 Cloud Run executions run simultaneously, the ADP scrape lock (`ScrapeLockHeldError`) prevents
 duplicate SMS OTPs. This guard remains active for ADP. For Square there is no lock needed

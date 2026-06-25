@@ -10,6 +10,5 @@
 #
 # Last used: PR # (fix/debug-and-fix-issues-with-bhaga, 2026-06-25) — proves ADP
 # earnings ready-dialog wait fix (BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS=90s, fallbacks).
-scenarios:
-  - name: full-live
-    date: 2026-06-23
+scenarios: []
+# Evidence captured — see PR #72 §4.3 for verbatim Cloud Run logs.

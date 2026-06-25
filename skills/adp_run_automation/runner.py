@@ -1027,8 +1027,7 @@ def _wait_for_earnings_ready_button(page, *, timeout_ms: int, locator_specs: lis
         f"(URL={page.url}). Selectors tried: {tried}. "
         f"This is likely ADP async report generation taking longer than expected "
         f"or a selector change on the 'Your report is ready to download' modal. "
-        f"Check the diagnostic snapshot in ~/.bhaga/state/screenshots/ "
-        f"or gs://bhaga-scrape-cache/<date>/evidence/ for the DOM state."
+        f"Check the diagnostic snapshot in ~/.bhaga/state/screenshots/ for the DOM state."
     )
 
 

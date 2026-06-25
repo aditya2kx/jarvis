@@ -1,6 +1,27 @@
 # Jarvis Build Progress
 
-## 2026-06-25 — Make rules load: .md→.mdc migration + new-requirement-intake rule + .mdc guardrail (PR #73)
+## 2026-06-25 — Deterministic intake hook harness (PR #74, folded in)
+
+**Status:** In progress — implementing hook harness for deterministic new-requirement enforcement.
+
+Behavioural test of the `.mdc` rule failed: agent implemented a new requirement inline despite `alwaysApply: true`, because prose rules are advisory and conversation momentum wins. This extension replaces prose enforcement with code.
+
+**What landed:**
+- `.cursor/hooks/prompt_gate.py` — `beforeSubmitPrompt` gate: appends every prompt to corpus, detects new-requirement phrases via deterministic heuristic, hard-blocks with `new_requirement.py` one-liner instruction.
+- `.cursor/hooks/enforce.sh` — thin wrapper (repo-versioned, travels with each branch/worktree).
+- `scripts/install-git-hooks.sh` extended — one-time per-laptop `~/.cursor/hooks.json` dispatcher install (idempotent, preserves existing entries).
+- `skills/user_model/store.py` — `corpus-append` CLI subcommand added.
+- `.cursor/rules/new-requirement-intake.mdc` — reframed to point at the hook as enforcement; keeps canonical marker.
+- `.cursor/rules/preference-consult.mdc` — corpus-append is now automatic; manual step removed.
+- `.cursor/rules/self-drive.mdc` — duplicate "Make the plan thorough" line removed.
+- `verify_lifecycle.py` A18 + unit tests (5 new cases, 51 total pass).
+- `docs/contributing/hooks.md` — hook authoring guide.
+
+**Evidence (deterministic):**
+- M1: `echo '{"prompt":"I want to work on a new requirement"}' | CURSOR_PROJECT_DIR=$(pwd) python3 .cursor/hooks/prompt_gate.py` → `continue: false` + instruct message. `//inline` override → `continue: true`.
+- M2: `python3 scripts/verify_lifecycle.py --assert 18` → PASS. 51/51 unit tests pass.
+
+
 
 **Status:** PR open, awaiting operator merge.
 

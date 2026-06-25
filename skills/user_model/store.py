@@ -303,6 +303,11 @@ if __name__ == "__main__":
     p_corpus = sub.add_parser("corpus-tail", help="Show recent corpus entries")
     p_corpus.add_argument("--limit", type=int, default=10)
 
+    p_append = sub.add_parser("corpus-append", help="Append one user turn to the corpus")
+    p_append.add_argument("text", help="Text to append (user turn)")
+    p_append.add_argument("--agent", default=None, help="Agent name (optional)")
+    p_append.add_argument("--source", default="cursor", help="Source identifier (default: cursor)")
+
     args = parser.parse_args()
 
     if args.cmd == "add":
@@ -319,5 +324,8 @@ if __name__ == "__main__":
     elif args.cmd == "corpus-tail":
         for e in read_corpus()[-args.limit:]:
             print(json.dumps(e, ensure_ascii=False))
+    elif args.cmd == "corpus-append":
+        entry = append_to_corpus(args.text, agent=args.agent, source=args.source)
+        print(json.dumps({"status": "appended", "entry": entry}, ensure_ascii=False))
     else:
         parser.print_help()

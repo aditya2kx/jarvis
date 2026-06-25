@@ -16,10 +16,11 @@ After the operator answers:
    > *Noting under [category]: '[one-liner rule]'. Run `python -m skills.user_model.guardrail score "<text>"` to gate it, then `python -m skills.user_model.store add` on pass. Confirm y/n.*
 4. Only run `store.add_preference()` after explicit operator confirmation. The guardrail rejects non-generalizable candidates — it is enforced at write time regardless.
 
-## Corpus append (mechanical minimum)
+## Corpus append (automatic)
 
-After every user turn, append to the corpus so signals are preserved for later distillation:
+Every user prompt is now appended to the corpus automatically by the `beforeSubmitPrompt` hook (`.cursor/hooks/prompt_gate.py`).  The agent no longer needs to call `corpus-append` manually after each turn.
+
+For manual one-off appends:
 ```bash
-python -m skills.user_model.store corpus-append '<user_text>' --agent <agent_name>
+python3 skills/user_model/store.py corpus-append '<user_text>' --agent <agent_name>
 ```
-(via the `append_to_corpus` function in `store.py`).

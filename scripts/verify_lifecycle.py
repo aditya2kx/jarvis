@@ -649,6 +649,66 @@ def assert_17_new_requirement_seeds_worktree_cache() -> tuple[bool, str]:
     return True, "new_requirement.py seeds phase cache into worktree (worktree status fix)"
 
 
+def assert_18_intake_hook_harness_wired() -> tuple[bool, str]:
+    """Intake hook harness exists, is executable, references required symbols,
+    and the installer wires the user-level dispatcher.
+
+    Checks:
+    - .cursor/hooks/enforce.sh exists and is executable
+    - .cursor/hooks/prompt_gate.py exists and references:
+        new_requirement.py, append_to_corpus, "continue", //inline
+    - scripts/install-git-hooks.sh references ~/.cursor/hooks.json (dispatcher)
+    - skills/user_model/store.py has corpus-append subcommand
+    """
+    problems: list[str] = []
+
+    # enforce.sh
+    enforce_sh = REPO_ROOT / ".cursor" / "hooks" / "enforce.sh"
+    if not enforce_sh.exists():
+        problems.append(".cursor/hooks/enforce.sh not found")
+    elif not os.access(enforce_sh, os.X_OK):
+        problems.append(".cursor/hooks/enforce.sh is not executable")
+
+    # prompt_gate.py — content checks
+    gate = REPO_ROOT / ".cursor" / "hooks" / "prompt_gate.py"
+    if not gate.exists():
+        problems.append(".cursor/hooks/prompt_gate.py not found")
+    else:
+        gate_src = gate.read_text(encoding="utf-8")
+        for token, label in [
+            ("new_requirement", "new_requirement.py reference"),
+            ("append_to_corpus", "append_to_corpus call"),
+            ('"continue"', '"continue" key in output'),
+            ("//inline", "//inline override token"),
+        ]:
+            if token not in gate_src:
+                problems.append(f"prompt_gate.py missing: {label}")
+
+    # installer wires dispatcher
+    installer = REPO_ROOT / "scripts" / "install-git-hooks.sh"
+    if not installer.exists():
+        problems.append("scripts/install-git-hooks.sh not found")
+    else:
+        inst_src = installer.read_text(encoding="utf-8")
+        if "hooks.json" not in inst_src:
+            problems.append("install-git-hooks.sh does not wire ~/.cursor/hooks.json dispatcher")
+        if "beforeSubmitPrompt" not in inst_src:
+            problems.append("install-git-hooks.sh does not reference beforeSubmitPrompt")
+
+    # corpus-append CLI
+    store = REPO_ROOT / "skills" / "user_model" / "store.py"
+    if not store.exists():
+        problems.append("skills/user_model/store.py not found")
+    else:
+        store_src = store.read_text(encoding="utf-8")
+        if "corpus-append" not in store_src:
+            problems.append("store.py is missing corpus-append subcommand")
+
+    if problems:
+        return False, "; ".join(problems)
+    return True, "intake hook harness fully wired (enforce.sh + prompt_gate.py + dispatcher + corpus-append)"
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -671,6 +731,7 @@ ASSERTIONS: list[tuple[int, str, str]] = [
     (15, "no .md files in .cursor/rules/ (durable .mdc guardrail)", "assert_15_no_md_rules"),
     (16, "rule load semantics preserved after .md->.mdc migration", "assert_16_rule_semantics_preserved"),
     (17, "new_requirement.py seeds phase cache into worktree", "assert_17_new_requirement_seeds_worktree_cache"),
+    (18, "intake hook harness wired: enforce.sh + prompt_gate.py + dispatcher + corpus-append CLI", "assert_18_intake_hook_harness_wired"),
 ]
 
 # Assertions that are expected to fail before their milestone lands.

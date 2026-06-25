@@ -8,6 +8,12 @@ alwaysApply: true
 <!-- canonical:intake -->
 **When the operator signals a new requirement mid-session, the agent MUST call `scripts/new_requirement.py` to spin up an isolated worktree, branch, tracking issue, and brief — and MUST NEVER implement the requirement inline in the current chat.**
 
+## Deterministic enforcement
+
+This rule is enforced by code, not prose.  The `beforeSubmitPrompt` Cursor hook at `.cursor/hooks/enforce.sh` fires on **every** user prompt.  When the hook detects a new-requirement phrase it **hard-blocks the turn** and instructs the operator to run `new_requirement.py` instead.  The hook is installed once per laptop by `scripts/install-git-hooks.sh`.
+
+Override a false positive by prefixing your re-sent message with `//inline`.
+
 ## Trigger phrases (non-exhaustive)
 - "new requirement: …"
 - "let's also do X" / "can you also fix Y"
@@ -39,3 +45,5 @@ Implementing a new requirement in an existing chat's branch:
 ## See also
 - `self-drive.mdc` — self-drive rule and operator-reserved gates
 - `jarvis-hard-lessons.mdc` §19 — "Every new requirement MUST start in an isolated worktree"
+- `.cursor/hooks/enforce.sh` — the deterministic enforcement hook
+- `.cursor/hooks/prompt_gate.py` — detection heuristic and block message

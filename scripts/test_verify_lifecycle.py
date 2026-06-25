@@ -755,6 +755,105 @@ class TestAssertion17(unittest.TestCase):
         self.assertIn("worktree", detail.lower())
 
 
+class TestAssertion18(unittest.TestCase):
+    def test_passes_against_real_repo(self):
+        passed, detail = vl.assert_18_intake_hook_harness_wired()
+        self.assertTrue(passed, detail)
+
+    def test_fails_when_enforce_sh_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # create the other required files
+            hooks_dir = root / ".cursor" / "hooks"
+            hooks_dir.mkdir(parents=True)
+            gate = hooks_dir / "prompt_gate.py"
+            gate.write_text(
+                '# new_requirement.py\n'
+                'def main(): append_to_corpus("x"); print({"continue": True}); pass  # //inline\n'
+            )
+            (root / "scripts").mkdir()
+            (root / "scripts" / "install-git-hooks.sh").write_text(
+                "hooks.json\nbeforeSubmitPrompt"
+            )
+            (root / "skills" / "user_model").mkdir(parents=True)
+            (root / "skills" / "user_model" / "store.py").write_text("corpus-append\n")
+            # enforce.sh deliberately NOT created
+            with patch("verify_lifecycle.REPO_ROOT", root):
+                passed, detail = vl.assert_18_intake_hook_harness_wired()
+        self.assertFalse(passed)
+        self.assertIn("enforce.sh", detail)
+
+    def test_fails_when_prompt_gate_missing_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hooks_dir = root / ".cursor" / "hooks"
+            hooks_dir.mkdir(parents=True)
+            enforce = hooks_dir / "enforce.sh"
+            enforce.write_text("#!/bin/bash\nexec python3 prompt_gate.py\n")
+            enforce.chmod(0o755)
+            # prompt_gate.py missing //inline
+            gate = hooks_dir / "prompt_gate.py"
+            gate.write_text(
+                '# new_requirement.py\ndef main(): append_to_corpus("x"); return {"continue": True}\n'
+            )
+            (root / "scripts").mkdir()
+            (root / "scripts" / "install-git-hooks.sh").write_text(
+                "hooks.json\nbeforeSubmitPrompt"
+            )
+            (root / "skills" / "user_model").mkdir(parents=True)
+            (root / "skills" / "user_model" / "store.py").write_text("corpus-append\n")
+            with patch("verify_lifecycle.REPO_ROOT", root):
+                passed, detail = vl.assert_18_intake_hook_harness_wired()
+        self.assertFalse(passed)
+        self.assertIn("//inline", detail)
+
+    def test_fails_when_installer_missing_dispatcher(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hooks_dir = root / ".cursor" / "hooks"
+            hooks_dir.mkdir(parents=True)
+            enforce = hooks_dir / "enforce.sh"
+            enforce.write_text("#!/bin/bash\nexec python3 prompt_gate.py\n")
+            enforce.chmod(0o755)
+            gate = hooks_dir / "prompt_gate.py"
+            gate.write_text(
+                '# new_requirement.py\ndef main(): append_to_corpus("x"); return {"continue": True}  # //inline\n'
+            )
+            (root / "scripts").mkdir()
+            # installer missing hooks.json reference
+            (root / "scripts" / "install-git-hooks.sh").write_text("git config core.hooksPath\n")
+            (root / "skills" / "user_model").mkdir(parents=True)
+            (root / "skills" / "user_model" / "store.py").write_text("corpus-append\n")
+            with patch("verify_lifecycle.REPO_ROOT", root):
+                passed, detail = vl.assert_18_intake_hook_harness_wired()
+        self.assertFalse(passed)
+        self.assertIn("hooks.json", detail)
+
+    def test_fails_when_corpus_append_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hooks_dir = root / ".cursor" / "hooks"
+            hooks_dir.mkdir(parents=True)
+            enforce = hooks_dir / "enforce.sh"
+            enforce.write_text("#!/bin/bash\nexec python3 prompt_gate.py\n")
+            enforce.chmod(0o755)
+            gate = hooks_dir / "prompt_gate.py"
+            gate.write_text(
+                '# new_requirement.py\ndef main(): append_to_corpus("x"); return {"continue": True}  # //inline\n'
+            )
+            (root / "scripts").mkdir()
+            (root / "scripts" / "install-git-hooks.sh").write_text(
+                "hooks.json\nbeforeSubmitPrompt"
+            )
+            (root / "skills" / "user_model").mkdir(parents=True)
+            # store.py missing corpus-append
+            (root / "skills" / "user_model" / "store.py").write_text("corpus-tail\n")
+            with patch("verify_lifecycle.REPO_ROOT", root):
+                passed, detail = vl.assert_18_intake_hook_harness_wired()
+        self.assertFalse(passed)
+        self.assertIn("corpus-append", detail)
+
+
 class TestRunFunction(unittest.TestCase):
     def _all_mocks(self):
         return {
@@ -775,6 +874,7 @@ class TestRunFunction(unittest.TestCase):
             "assert_15_no_md_rules": (True, "ok"),
             "assert_16_rule_semantics_preserved": (True, "ok"),
             "assert_17_new_requirement_seeds_worktree_cache": (True, "ok"),
+            "assert_18_intake_hook_harness_wired": (True, "ok"),
         }
 
     def test_run_returns_0_on_full_pass(self):
@@ -801,7 +901,8 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_14_intake_rule_wired", return_value=(True, "ok")), \
              patch.object(vl, "assert_15_no_md_rules", return_value=(True, "ok")), \
              patch.object(vl, "assert_16_rule_semantics_preserved", return_value=(True, "ok")), \
-             patch.object(vl, "assert_17_new_requirement_seeds_worktree_cache", return_value=(True, "ok")):
+             patch.object(vl, "assert_17_new_requirement_seeds_worktree_cache", return_value=(True, "ok")), \
+             patch.object(vl, "assert_18_intake_hook_harness_wired", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 1)
 
@@ -822,7 +923,8 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_14_intake_rule_wired", return_value=(True, "ok")), \
              patch.object(vl, "assert_15_no_md_rules", return_value=(True, "ok")), \
              patch.object(vl, "assert_16_rule_semantics_preserved", return_value=(True, "ok")), \
-             patch.object(vl, "assert_17_new_requirement_seeds_worktree_cache", return_value=(True, "ok")):
+             patch.object(vl, "assert_17_new_requirement_seeds_worktree_cache", return_value=(True, "ok")), \
+             patch.object(vl, "assert_18_intake_hook_harness_wired", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 0, "Pre-milestone WARNs should not cause exit 1")
 

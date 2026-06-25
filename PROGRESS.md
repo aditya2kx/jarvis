@@ -1,5 +1,36 @@
 # Jarvis Build Progress
 
+## 2026-06-25 — BHAGA: Fix ADP earnings ready-dialog timeout (2026-06-23 nightly incident)
+
+**Incident:** The 2026-06-23 nightly (`run_id 2548caceda…`) failed at the `adp` step.
+The earnings flow completed through the "Download → Excel (.xlsx)" click but the
+"Your report is ready to download" modal button (`[data-test-id="download-report"]`) was
+not visible within the hardcoded 45 s wait (`TimeoutError`). Square and Google Reviews
+succeeded. `model_daily` for 6/23 was built from Square data; only the fresh ADP
+wage-rates refresh was skipped and the run was marked `failed`. 6/24's nightly was
+parked at `pending_otp.ready_received=False` (unanswered) on the unfixed image.
+
+**Root cause:** The 45 s wait was insufficient for ADP's async report generation on a
+loaded server. The wait is a single fixed-timeout `wait_for` with no fallback selectors.
+
+**Fix (`skills/adp_run_automation/runner.py`):**
+- Added `_wait_for_earnings_ready_button()` helper: poll loop over ranked fallback
+  selectors every 1 s for a configurable duration; diagnostic snapshot (PNG + HTML) on
+  total timeout.
+- Default timeout raised to **90 s** (`BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS=90000`);
+  override via env var.
+- Fallback selectors: `[data-test-id="download-report"]` (primary), role-based button,
+  `[aria-label="Download report"]`.
+- Updated `selectors/compensation.json` to document the fallbacks and timeout knob.
+
+**Evidence:**
+- 7 unit tests in `skills/adp_run_automation/test_earnings_ready_dialog.py` — all pass.
+- Live sandbox `full-live` scenario on 2026-06-23: `[earnings] step=downloaded` → rc=0.
+- Post-merge: full-scrape prod reruns for 2026-06-23 and 2026-06-24 (2 supervised OTPs);
+  stale 6/24 pending OTP abandoned (superseded by fresh force-scrape rerun).
+
+**PR:** `fix/debug-and-fix-issues-with-bhaga`
+
 ## 2026-06-23 — Harness-engineering redesign of repo guidance (L1 autonomy)
 
 **What changed:** Three-tier guidance framework (Gates / Spine / References), local verify harness,

@@ -35,7 +35,7 @@ from core.config_loader import project_dir
 
 _PROJECT = pathlib.Path(project_dir())
 CORPUS_PATH = _PROJECT / "skills" / "user_model" / "data" / "corpus.jsonl"
-PREFERENCES_PATH = _PROJECT / ".cursor" / "rules" / "user-preferences.md"
+PREFERENCES_PATH = _PROJECT / ".cursor" / "rules" / "user-preferences.mdc"
 
 
 # ── Categories → section headings in the preferences file ──────────

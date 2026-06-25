@@ -1,0 +1,90 @@
+---
+description: Jarvis Hard Lessons — on-demand reference. Load when debugging recurring patterns or starting a complex multi-step task. NOT always-on (see jarvis.md for the routing card).
+globs:
+  - ".cursor/rules/jarvis*.md"
+alwaysApply: false
+---
+
+# Jarvis Hard Lessons
+
+These are mistakes that actually happened.  Check before every multi-step task.
+
+0. **Never ask the user to perform manual web-UI steps that existing skills can automate.**
+   Build a Playwright skill instead (`skills/<service>_app_provisioning/`).
+   Ownership ladder: API/SDK → MCP → IaC → Playwright (`user-playwright`). "No API" never means "user does it by hand."
+
+1. **Never compare a folder against itself.** Validation = autonomous output (`2025-test`) vs. sealed benchmark (`2025`).
+2. **Never derive folder structure by reading the target.** Produce it from user data, not by copying.
+3. **When a diff is found, fix the derivation code, not the output.**
+4. **Every user correction = a file change.** No file write = the mistake repeats next chat.
+5. **Incremental = after each single action.** Not "do everything then check once."
+6. **Never ask the user what you can check yourself.**
+7. **Slack is the communication channel for async.** OTP, progress, questions when user is away → Slack DM.
+8. **Never timebox user input.** Wait indefinitely; the user will reply when they can.
+9. **After sending a question on Slack, poll for the reply** every 15-30 seconds.
+10. **Slack messages are user input** — check `/tmp/jarvis-slack-inbox.json` before every action.
+11. **Playwright recovery: MCP-server-dead ≠ browser-context-dead.** Recovery: `browser_close` → `browser_navigate`. Never describe a browser-context error as "MCP is broken." Do NOT silently fall back to `cursor-ide-browser`.
+12. **Never go idle — stay in a polling loop until user says "done" or "stop".**
+13. **Incremental validation after every upload.** Diff that folder immediately; don't batch.
+14. **Never assume personal information** — wait for user confirmation on accounts/credentials.
+15. **Verify inbox processor is alive at every session start.**
+16. **High bar for external tool/package recommendations:** 100+ stars, multiple contributors, active maintenance.
+17. **Build Gmail as a Jarvis skill** (raw API calls like `google_drive/`), not an MCP dependency.
+18. **Opening or pushing to a PR obligates you to babysit it to merge-ready — automatically, without being asked.**  Read the `babysit` skill immediately after `gh pr create`.  Also commit the cost ledger (`pr_cost_ledger.py sync`) as part of babysitting.
+19. **Every new requirement MUST start in an isolated worktree + new Cursor chat.**
+    ```bash
+    python3 scripts/new_requirement.py --requirement "<text>" [--branch fix/<slug>]
+    ```
+    Stop in the current chat after handoff.  Never implement a new requirement in the same chat as the previous PR.
+20. **PR descriptions MUST use the 6-section template verbatim** — CI fails otherwise. Never `--body` with free-form text.  Always use `gh pr create --base main --fill`.
+21. **The agent NEVER merges a PR.** Your job ends at *merge-ready*.  Never run `gh pr merge`.
+22. **Every GitHub API call must use the bot token** (`jarvis-agent-bot328`), never `ADI_TOKEN` except for owner-only admin operations.
+
+---
+
+## Session Continuity (laptop agents: CHITRA, CHANAKYA, AKSHAYA)
+
+*BHAGA is cloud-primary — skip the Slack listener / `/tmp` protocol below for BHAGA.  Use RUNBOOK.md.*
+
+### On Conversation Start
+1. Check Slack: read `/tmp/jarvis-pending-actions.json` + `/tmp/jarvis-slack-inbox.json`.
+2. Ensure listener is running: `python skills/slack/ensure_listening.py`.
+3. Read `.cursor/rules/user-preferences.md` before any ambiguous architectural call.
+4. Read `PROGRESS.md` — single source of truth for project state.
+5. Load agent/skill-specific files only when the task requires them.
+
+### During a Session
+- Check Slack before every major action.
+- Run the user_model capture protocol on every user turn (see full jarvis.md for details).
+- Update `PROGRESS.md` after each major milestone.
+
+### On Session End
+- Update `PROGRESS.md` with: accomplished, decisions, What's Next, blockers.
+
+### Handling User Design Feedback Mid-Session
+- Every correction → write to a persistent file.  Confirm the file name.
+
+---
+
+## Bidirectional Slack Communication
+- Send: `skills.slack.adapter.send_progress()`, `orchestrator.notify()`
+- Receive: `orchestrator.check_user_input()` between tasks
+- When to check: before each portal task, after each upload, when blocked, at session start/end
+
+---
+
+## Shadow Folder Validation — Autonomous Parity
+Hard rules: never read the sealed `Taxes/2025` benchmark; never copy from it; build from CHITRA's own sources only.
+See full jarvis.md for the complete workflow.
+
+---
+
+## Anti-Patterns
+- Never say "from our previous conversation"
+- Never store state only in conversation — write it to a file
+- Never defer PROGRESS.md updates
+- Never hardcode values that belong in `config.yaml`
+- Never copy structure from the sealed benchmark
+- Never go idle after sending a Slack message
+- Never end a turn without checking Slack
+- Never skip incremental validation

@@ -80,8 +80,8 @@ COUPLINGS: list[dict] = [
             ".github/pull_request_template.md",
             "scripts/build_claude_review_context.py",
         ],
-        "docs": ["CONTRIBUTING.md"],
-        "why": "PR process / review bot / template changed → update CONTRIBUTING.md (the process doc).",
+        "docs": ["CONTRIBUTING.md", "docs/contributing/review-bot.md"],
+        "why": "PR process / review bot / template changed → update CONTRIBUTING.md stub + docs/contributing/review-bot.md.",
     },
     {
         "code": [
@@ -97,8 +97,20 @@ COUPLINGS: list[dict] = [
             ".github/workflows/grafana-jarvis-dev-sync.yml",
             ".github/workflows/deploy.yml",
         ],
-        "docs": ["CONTRIBUTING.md", "RUNBOOK.md"],
-        "why": "cost ledger / attribution / BQ store / Grafana / deploy events changed → update CONTRIBUTING.md + RUNBOOK.md.",
+        "docs": ["docs/contributing/cost.md", "RUNBOOK.md"],
+        "why": "cost ledger / attribution / BQ store / Grafana / deploy events changed → update docs/contributing/cost.md + RUNBOOK.md.",
+    },
+    {
+        "code": [
+            "scripts/new_requirement.py",
+            "scripts/start_pr_session.py",
+            "scripts/phase_state.py",
+            "scripts/lifecycle.py",
+            "scripts/verify.py",
+            "scripts/requirements_tracker.py",
+        ],
+        "docs": ["docs/WORKFLOW.md"],
+        "why": "lifecycle scripts changed → update docs/WORKFLOW.md (the canonical lifecycle map).",
     },
     {
         "code": [

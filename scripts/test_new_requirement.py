@@ -51,6 +51,9 @@ class TestNewRequirement(unittest.TestCase):
         self.assertEqual(rc, 0)
         mock_wt.assert_called_once()
         mock_session.assert_called_once()
+        _, kwargs = mock_session.call_args
+        self.assertEqual(kwargs.get("mode"), N.S.DEFAULT_JAM_HANDOFF_MODE)
+        self.assertEqual(kwargs.get("model"), N.S.DEFAULT_JAM_HANDOFF_MODEL)
 
 
 if __name__ == "__main__":

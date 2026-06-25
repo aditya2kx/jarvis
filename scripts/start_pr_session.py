@@ -97,9 +97,14 @@ def update_requirement_status(
     _REQUIREMENTS_MD.write_text(text, encoding="utf-8")
     return True
 
-# Default Agent model for new-requirement handoffs (matches Cursor usage API slug).
-# Sonnet 4.6 medium thinking — CONTRIBUTING § Cost-efficiency playbook default.
+# Default model for continuing an existing PR session (implementation phase).
 DEFAULT_HANDOFF_MODEL = "claude-4.6-sonnet-medium-thinking"
+DEFAULT_HANDOFF_MODE = "agent"
+
+# Default for new_requirement.py front door — jam phase opens in Ask mode on a higher model.
+# Configurable later via new_requirement.py --mode / --model flags.
+DEFAULT_JAM_HANDOFF_MODE = "ask"
+DEFAULT_JAM_HANDOFF_MODEL = "claude-opus-4-8-thinking-high"
 
 # Model routing guidance (keep in sync with CONTRIBUTING.md § Cost-efficiency playbook).
 _ROUTING_REMINDER = """Model routing (CONTRIBUTING § Cost-efficiency playbook):
@@ -245,6 +250,32 @@ git add metrics/pr_cost/ && git commit -m "chore(cost): sync PR #<n> ledger"
                 f"Before your final push: `python3 scripts/pr_cost_ledger.py sync --pr {n}`\n"
                 f"Then: `git add metrics/pr_cost/ && git commit -m \"chore(cost): sync PR #{n} ledger\"`")
 
+    if _is_provisional(key):
+        model_block = f"""## Jam handoff (first chat in this worktree)
+**Ask mode** — the front-door deeplink pre-selects Ask mode. **Set the model to Opus 4.8
+thinking high (`{DEFAULT_JAM_HANDOFF_MODEL}`) yourself** (the deeplink cannot pre-select
+the model). You are at the **jam** operator gate: restate the requirement, clarify scope,
+and draft the PR §4 acceptance-evidence contract. Read-only diagnosis/research (logs, BQ,
+Firestore reads) is expected during jam and needs no approval; only code changes wait for
+the gates. Do NOT make code changes until jam and define-evidence are approved in chat.
+
+After plan passes `check_plan_readiness.py`, switch to Sonnet for implementation."""
+        open_line = (
+            "Open a **new** Cursor chat in **Ask mode** for jam (the handoff deeplink "
+            "pre-selects Ask mode). Build cost is attributed to chat space(s) with "
+            "AI edits after this timestamp (see `pr_cost_ledger.py sync`)."
+        )
+    else:
+        model_block = f"""## Default model
+**Sonnet 4.6 medium thinking** (`{DEFAULT_HANDOFF_MODEL}`) — set the model yourself
+(the handoff deeplink suggests this model but cannot pre-select it). Stay on Sonnet for
+feature work; escalate to Opus only when stuck."""
+        open_line = (
+            "Open a **new** Cursor chat for this requirement, then implement. Build cost is "
+            "attributed to chat space(s) with AI edits after this timestamp (see "
+            "`pr_cost_ledger.py sync`)."
+        )
+
     brief = f"""{heading}
 
 ## Requirement
@@ -258,23 +289,40 @@ git add metrics/pr_cost/ && git commit -m "chore(cost): sync PR #<n> ledger"
 ## Session started (cost attribution anchor)
 `{session_started}`
 
-## Default model
-**Sonnet 4.6 medium thinking** (`{DEFAULT_HANDOFF_MODEL}`) — the handoff deeplink
-pre-selects this. Stay on Sonnet for feature work; escalate to Opus only when stuck.
+{model_block}
 
-Open a **new** Cursor chat for this requirement, then implement. Build cost is
-attributed to chat space(s) with AI edits after this timestamp (see
-`pr_cost_ledger.py sync`).
+{open_line}
 
 ## Prior PR cost reference
 {prior}
 
 ## {_ROUTING_REMINDER}
 {gate}
+
+{_phase_ladder_section(br)}
 """
     brief_path = _brief_path(key)
     brief_path.write_text(brief, encoding="utf-8")
     return brief
+
+
+def _phase_ladder_section(branch: str) -> str:
+    """Return the phase ladder section for the brief, sourced from lifecycle.py."""
+    try:
+        from lifecycle import brief_ladder_text  # type: ignore
+        ladder = brief_ladder_text()
+        init_note = (
+            f"\n> Track progress: `python3 scripts/phase_state.py init --branch {branch!r}`\n"
+            f"> Check status:   `python3 scripts/phase_state.py status`\n"
+            f"> All in-flight:  `python3 scripts/phase_state.py report`"
+        )
+        return ladder + init_note
+    except ImportError:
+        return (
+            "## Phase ladder\n"
+            "align → plan → build → ship → verify-learn\n"
+            "See docs/WORKFLOW.md for the full lifecycle map."
+        )
 
 
 # macOS / browser URL handlers often fail silently above ~2 KB.
@@ -293,34 +341,51 @@ def _truncate_requirement(text: str, *, max_len: int = _SEED_REQUIREMENT_MAX) ->
 
 
 def seed_prompt(key: int | str, *, brief_rel: str, requirement: str | None = None) -> str:
-    """Short seed text — full brief lives in the markdown file, not the URL."""
+    """Short seed text for an existing-PR / implementation handoff."""
     if _is_provisional(key):
-        header = _truncate_requirement(requirement) if requirement else f"New requirement (`{key}`)"
-    else:
-        header = f"PR #{int(key)}"
-        if requirement:
-            header = f"{header} — {_truncate_requirement(requirement)}"
+        return seed_prompt_jam(key, brief_rel=brief_rel, requirement=requirement)
+    header = f"PR #{int(key)}"
+    if requirement:
+        header = f"{header} — {_truncate_requirement(requirement)}"
     return (
         f"{header}\n\n"
         f"Read `{brief_rel}` first (requirement, branch, model-routing, cost gate). "
         f"Acknowledge those rules from the brief, then implement the requirement — "
         f"do not ask what to build; it is already specified in the brief. "
         f"Do NOT assume a PR number; it is assigned only when you run `gh pr create`. "
-        f"Use **Sonnet 4.6 medium thinking** for this session (handoff should pre-select it)."
+        f"Use **Sonnet 4.6 medium thinking** for this session (set the model yourself — "
+        f"the deeplink cannot pre-select it)."
+    )
+
+
+def seed_prompt_jam(key: int | str, *, brief_rel: str, requirement: str | None = None) -> str:
+    """Short seed text for a new-requirement jam handoff (Ask mode, no code changes)."""
+    header = _truncate_requirement(requirement) if requirement else f"New requirement (`{key}`)"
+    return (
+        f"{header}\n\n"
+        f"Read `{brief_rel}` first (requirement, branch, lifecycle ladder, cost gate).\n\n"
+        f"You are at the **jam** operator gate in Ask mode. Restate the requirement and draft "
+        f"the PR §4 evidence contract. Read-only diagnosis/research (logs, BQ, Firestore reads) "
+        f"is expected during jam and needs no approval; only mutations/code changes wait for the gates. "
+        f"The phase gate in verify.py blocks shipping until jam and define-evidence are recorded "
+        f"via phase_state.py advance.\n\n"
+        f"Set the model to Opus 4.8 thinking high yourself (the deeplink cannot pre-select the model)."
     )
 
 
 def make_deeplink(
     text: str,
     *,
-    mode: str = "agent",
+    mode: str = DEFAULT_HANDOFF_MODE,
     model: str | None = DEFAULT_HANDOFF_MODEL,
 ) -> str:
     """cursor:// deeplink that opens a new IDE chat pre-seeded with text.
 
-    ``mode=agent`` and ``model=…`` are Cursor-specific extensions beyond the
-    documented ``text`` param; the deeplink handler in Cursor 3.6+ honors them
-    for Agent chat handoffs (Sonnet 4.6 medium by default).
+    ``mode`` (``ask``, ``agent``, ``plan``) is honored by the Cursor deeplink handler.
+    ``model`` is appended as a forward-compat param but is currently **not** honored by
+    Cursor's ``/prompt`` deeplink — the operator must set the model manually after the
+    chat opens. New-requirement handoffs use Ask mode (jam phase); PR continuation
+    handoffs default to Agent + Sonnet.
     """
     encoded = urllib.parse.quote(text, safe="")
     link = f"cursor://anysphere.cursor-deeplink/prompt?text={encoded}&mode={mode}"
@@ -363,8 +428,9 @@ def open_cursor_handoff(
     deeplink: str,
     launch_html: Path,
     delay_sec: float = 3.5,
+    mode: str = DEFAULT_HANDOFF_MODE,
 ) -> None:
-    """Open ``folder`` in a new Cursor window, then seed Agent chat + launcher backup.
+    """Open ``folder`` in a new Cursor window, then seed chat via deeplink + launcher backup.
 
     Order matters: open the worktree folder **first**, then fire the deeplink so
     the new chat attaches to the correct workspace (not whichever window was focused).
@@ -387,9 +453,10 @@ def open_cursor_handoff(
     print(f"Opening Cursor → {folder}")
     subprocess.Popen([str(cursor), "-n", str(folder)])
     time.sleep(delay_sec)
-    print("Seeding Agent chat (approve Cursor's deeplink dialog if prompted)…")
+    print(f"Seeding {mode} chat (approve Cursor's deeplink dialog if prompted)…")
     subprocess.run(["open", deeplink], check=False)
-    subprocess.run(["open", str(launch_html)], check=False)
+    # launch_html is the fallback for when the deeplink or Cursor CLI fails;
+    # don't open it automatically when Cursor already launched successfully.
 
 
 def write_launch_html(

@@ -1,0 +1,23 @@
+---
+description: Behavioral anchor — 4 coding principles (Karpathy). Always-on for all agents.
+alwaysApply: true
+---
+
+# Behavioral anchor
+
+Four principles that govern every code change.  Not a style guide — a forcing function for correctness.
+
+1. **Assume the simplest thing first, then escalate.**  Before adding a cache, retry loop, or abstraction,
+   confirm the simple version actually fails.  Complexity is debt; earn it.
+
+2. **Simplify without asking.**  When you see a function that can be cut in half without losing clarity,
+   cut it.  Don't ask permission to remove dead code, unused imports, or redundant branches.
+
+3. **Surgical diffs — minimize the blast radius.**  Change only what's necessary for the task.  Do not
+   "clean up nearby code" or refactor unrelated files in the same commit.  Every extra line is a
+   potential regression.
+
+4. **Declare intent, verify outcome.**  Comments explain *why*, not *what*.  After every change, run the
+   narrowest test that proves the invariant holds — don't rely on "it looks right".
+
+See also: `user-preferences.md` (operator design principles + decision history, do not restate here).

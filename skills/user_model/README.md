@@ -35,48 +35,71 @@ The two-layer split: corpus is rich + private + can be redistilled differently l
 
 | Module | Purpose |
 |---|---|
-| `extractor.py` | Heuristic signal detection. `detect_signals(text)` returns a list of `Signal(phrase, category, confidence, span, hint)` — categories: principle, style, correction, domain, explicit_capture. |
-| `store.py` | Persistence. `append_to_corpus()` for raw log. `add_preference(category, fields)` for the structured file (idempotent — dedups by main content column). `list_preferences()` for read-back. |
+| `extractor.py` | Heuristic signal detection. `detect_signals(text)` returns a list of `Signal(phrase, category, confidence, span, hint)`. |
+| `store.py` | Persistence. `append_to_corpus()` for raw log. `add_preference(category, fields)` — now **guardrail-gated** for `style`/`principle` rows. `list_preferences()` for read-back. |
+| `guardrail.py` | **Generalizability guardrail.** `score_candidate(text) -> GuardrailResult` scores a candidate across 6 criteria (generalizable, not-prescriptive, scoped, non-duplicate, actionable, durable). Criterion 1 (generalizable) is a hard gate — task-specific tokens always score 0. `add_preference()` rejects below threshold (default 4/6). CLI: `python -m skills.user_model.guardrail score "<text>"`. |
+| `backfill.py` | **One-shot idempotent backfill.** Extracts standing preferences from `bhaga-principles.md`, `CONTRIBUTING.md`, `jarvis.md` Hard Lessons, and the 5 Issue #70 jam answers; runs each through the guardrail; `add_preference`s passers. Run: `python -m skills.user_model.backfill`. |
 | `__init__.py` | Re-exports `extractor` + `store`. |
 
-Deferred to v2 (intentionally not built today):
-- `query.py` — programmatic relevance retrieval. Not needed yet because `.cursor/rules/user-preferences.md` auto-loads as context, so the AI naturally has all preferences available when reasoning. Add when the file gets too large to fit comfortably (~10KB+).
-- `digest.py` — re-distill the corpus into the preferences file (auto extract → propose → confirm). Not needed yet because v1 corpus is small and confirmations happen inline. Add when there's enough corpus volume to justify periodic distillation.
+Deferred to v2:
+- `query.py` — programmatic relevance retrieval. Not needed yet; preferences auto-load.
+- `digest.py` — re-distill the corpus into the preferences file. Add when corpus volume justifies it.
+
+## The mechanical preference loop
+
+```
+User answer / turn
+  → corpus.jsonl append (always — via store.append_to_corpus)
+  → extractor.detect_signals
+  → If signals: guardrail.score_candidate
+      → PASS (>=4/6): propose to operator → on confirm: store.add_preference
+           → guardrail re-checked at write; rejected if < threshold
+      → FAIL: discard (task-specific / transient / non-actionable)
+  → user-preferences.md auto-loads next chat
+       → agent consults before any AskQuestion (.cursor/rules/preference-consult.md)
+```
+
+**Honest limit:** Cursor hooks do not fire for `AskQuestion` or user-turn text events (`beforeSubmitPrompt` also does not fire — empirically confirmed June 2026). The corpus append must be called explicitly by the agent. The guardrail is the mechanical quality gate regardless of how an entry arrives.
 
 ## The capture protocol (AI-side)
 
-Codified in `.cursor/rules/jarvis.md` § "During a Session". Every assistant turn:
+Codified in `.cursor/rules/preference-consult.md` (always-on). Every assistant turn:
 
-1. **Append** the latest user message to `skills/user_model/data/corpus.jsonl` via `store.append_to_corpus()`. Cheap, always.
-2. **Extract** signals via `extractor.detect_signals(user_text)`.
-3. **If signals found**, surface inline at end of response:
+1. **Before `AskQuestion`**: check `.cursor/rules/user-preferences.md` (already in context). If an ACTIVE preference answers it, apply it and do not ask.
+2. **Append** the latest user message to `skills/user_model/data/corpus.jsonl` via `store.append_to_corpus()`. Cheap, always.
+3. **Extract** signals via `extractor.detect_signals(user_text)`.
+4. **If signals found + guardrail passes**, surface inline:
    > *Noting under [Section]: 'rephrased one-liner'. Reply `y`, `n`, or rewrite text to refine.*
-4. **On NEXT turn**, parse the user's first line for confirm/skip/edit tokens against any pending captures, then call `store.add_preference()` for confirmed ones.
+5. **On confirm**, call `store.add_preference()`. The guardrail re-checks at write; items below threshold are rejected.
 
 ## When to use the preferences file mid-decision
 
-Before making any ambiguous architectural call:
-- Re-read `.cursor/rules/user-preferences.md` (it's already in context — this is just a reminder to *consult* it, not to load it).
-- Check the **Decision history** section for analogous prior decisions.
-- Check the **Design principles** section for governing principles.
+Before any ambiguous architectural call:
+- `.cursor/rules/user-preferences.md` is already in context — consult the **Design principles** and **Decision history** sections.
 - If you find a relevant precedent, mirror it. If you don't, surface the decision per `dev-workflow-decisions.mdc`.
 
 ## Multi-agent reuse
 
-The skill is global — every Jarvis agent (CHITRA, CHANAKYA, AKSHAYA, BHAGA, future ones) consumes the same preferences file. Captures are tagged with the originating agent in the corpus (`agent` field) so future analysis can answer questions like "is this preference universal or BHAGA-specific?"
+The skill is global — every Jarvis agent (CHITRA, CHANAKYA, AKSHAYA, BHAGA, future ones) consumes the same preferences file. Captures are tagged with the originating agent in the corpus (`agent` field).
 
 ## CLI
 
 ```bash
-# Append a preference manually (e.g. when user explicitly says "remember this")
+# Quick lookup (recommended front door)
+python3 scripts/prefs.py list                     # all preferences
+python3 scripts/prefs.py list --category principle
+python3 scripts/prefs.py search "diagnosis"
+python3 scripts/prefs.py score "For BHAGA: always prefer sandbox over prod"
+
+# Score a candidate (guardrail preview — no writes)
+python -m skills.user_model.guardrail score "text here" [--threshold N]
+
+# Backfill from principle docs (idempotent)
+python -m skills.user_model.backfill [--dry-run] [--verbose]
+
+# Add a preference manually (after explicit operator confirmation)
 python -m skills.user_model.store add --category principle \
-    --fields-json '{"#": "X", "Principle": "Single source of truth", "Source": "2026-04-19 chat"}'
-
-# List all preferences
-python -m skills.user_model.store list
-
-# List by category
-python -m skills.user_model.store list --category style
+    --fields-json '{"#": "X", "Principle": "...", "Source": "..."}'
 
 # Tail the raw corpus
 python -m skills.user_model.store corpus-tail --limit 20

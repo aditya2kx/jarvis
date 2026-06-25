@@ -97,6 +97,18 @@ def _branch_exists(repo_root: Path, branch: str) -> bool:
     ).returncode == 0
 
 
+def _current_branch(repo_root: Path) -> str:
+    """Return the current branch name, or 'origin/main' as a safe fallback."""
+    try:
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_root, text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        return branch if branch and branch != "HEAD" else "origin/main"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "origin/main"
+
+
 def default_worktree_path(repo_root: Path, branch: str) -> Path:
     """Sibling directory: ``../<repo>-wt-<branch-slug>``."""
     repo_name = repo_root.name
@@ -122,9 +134,14 @@ def create_worktree(
             f"Branch '{branch}' already exists locally. Pick a different --branch name."
         )
 
-    print(f"Fetching {base} …")
-    if not dry_run:
-        _run_git(repo_root, "fetch", "origin", "main")
+    # Only fetch when base looks like a remote ref; local branches are already present.
+    if base.startswith("origin/"):
+        print(f"Fetching {base} …")
+        if not dry_run:
+            remote_branch = base.split("/", 1)[1]
+            _run_git(repo_root, "fetch", "origin", remote_branch)
+    else:
+        print(f"Using local base branch: {base}")
 
     cmd = ["worktree", "add", "-b", branch, str(worktree_path), base]
     print(f"git {' '.join(cmd)}")
@@ -139,7 +156,8 @@ def start_session_in_worktree(
     branch: str,
     requirement: str,
     requirement_id: str | None = None,
-    model: str = S.DEFAULT_HANDOFF_MODEL,
+    model: str = S.DEFAULT_JAM_HANDOFF_MODEL,
+    mode: str = S.DEFAULT_JAM_HANDOFF_MODE,
     dry_run: bool = False,
 ) -> tuple[Path, Path, str]:
     """Run start_pr_session in the worktree; return (brief, launch, deeplink)."""
@@ -168,8 +186,8 @@ def start_session_in_worktree(
     rec = json_load(worktree, branch)
     req = requirement or rec.get("requirement") or ""
     brief_rel = f"metrics/pr_cost/{brief.name}"
-    seed = S.seed_prompt(branch, brief_rel=brief_rel, requirement=req or None)
-    deeplink = S.make_deeplink(seed, model=model)
+    seed = S.seed_prompt_jam(branch, brief_rel=brief_rel, requirement=req or None)
+    deeplink = S.make_deeplink(seed, mode=mode, model=model)
     return brief, launch, deeplink
 
 
@@ -180,6 +198,35 @@ def json_load(worktree: Path, branch: str) -> dict:
     if path.is_file():
         return json.loads(path.read_text())
     return {}
+
+
+def init_phase_tracking(
+    *, branch: str, requirement: str, dry_run: bool, existing_issue: int | None = None
+) -> str | None:
+    """Create (or link) the GitHub work-tracking issue for this branch.
+
+    phase_state is GitHub-global (one issue per branch), so we call THIS repo's
+    copy, not the worktree copy. Non-fatal: a tracking failure must not abort the
+    handoff. Returns the issue URL when known.
+
+    Pass existing_issue to link a pre-filed issue instead of creating a new one.
+    """
+    script = Path(__file__).parent / "phase_state.py"
+    args = [sys.executable, str(script), "init", "--branch", branch]
+    if existing_issue:
+        args += ["--issue", str(existing_issue)]
+    else:
+        args += ["--requirement", requirement, "--kickoff"]
+    if dry_run:
+        args.append("--dry-run")
+    print("Creating work-tracking issue …")
+    proc = subprocess.run(args, capture_output=True, text=True)
+    sys.stdout.write(proc.stdout)
+    if proc.returncode != 0:
+        print(f"⚠️  phase_state init failed (non-fatal): {proc.stderr[:200]}", file=sys.stderr)
+        return None
+    m = re.search(r"https://github\.com/\S+/issues/\d+", proc.stdout)
+    return m.group(0) if m else None
 
 
 def _consolidated_requirement(requirements: list[str]) -> str:
@@ -199,8 +246,11 @@ def _run_one(
     requirement: str,
     requirement_id: str | None,
     model: str,
+    handoff_mode: str,
     cursor_delay: float,
     dry_run: bool,
+    no_open: bool = False,
+    existing_issue: int | None = None,
 ) -> int:
     """Create one worktree for a single (possibly consolidated) requirement."""
     wt = worktree or default_worktree_path(repo_root, branch)
@@ -224,14 +274,31 @@ def _run_one(
         requirement=requirement,
         requirement_id=requirement_id,
         model=model,
+        mode=handoff_mode,
         dry_run=dry_run,
     )
 
     print(f"\nBrief   → {brief}")
     print(f"Launcher → {launch}\n")
 
+    issue_url = init_phase_tracking(
+        branch=branch, requirement=requirement, dry_run=dry_run,
+        existing_issue=existing_issue,
+    )
+
     if dry_run:
         print("(dry-run — no Cursor opened)")
+        if issue_url:
+            print(f"Tracking issue → {issue_url}")
+        return 0
+
+    if no_open:
+        # Agent-driven run (cloud/CI/dogfood): skip the Cursor window.
+        print("\n─── WORKTREE READY (--no-open) ───")
+        print(f"Worktree: {wt}")
+        if issue_url:
+            print(f"Tracking issue: {issue_url}")
+        print("Pick up the work in this chat; commit and push from within the worktree.")
         return 0
 
     S.open_cursor_handoff(
@@ -239,11 +306,14 @@ def _run_one(
         deeplink=deeplink,
         launch_html=launch,
         delay_sec=cursor_delay,
+        mode=handoff_mode,
     )
 
     print("\n─── HANDOFF ───")
     print("Do NOT implement this requirement in the current chat.")
     print(f"Switch to the new Cursor window on: {wt}")
+    if issue_url:
+        print(f"  Tracking issue: {issue_url}")
     print("After `gh pr create` in that worktree:")
     print(f"  python3 scripts/pr_cost_ledger.py bind-pr --branch {branch}")
     print("  python3 scripts/pr_cost_ledger.py sync --pr <n>")
@@ -284,8 +354,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Worktree directory (default: ../<repo>-wt-<branch-slug> sibling)",
     )
     cli.add_argument(
-        "--base", default="origin/main",
-        help="Branch/ref to create the worktree from (default: origin/main)",
+        "--base", default=None,
+        help=(
+            "Branch/ref to create the worktree from. "
+            "Defaults to the current branch of this repo so that worktrees "
+            "inherit the framework changes in flight (e.g. an open PR branch). "
+            "Pass 'origin/main' explicitly to branch from clean main."
+        ),
     )
     cli.add_argument(
         "--requirement-id",
@@ -299,14 +374,27 @@ def main(argv: list[str] | None = None) -> int:
         help="Seconds to wait after opening Cursor before the deeplink (default: 3.5)",
     )
     cli.add_argument(
-        "--model", default=S.DEFAULT_HANDOFF_MODEL,
-        help=f"Agent model for handoff deeplink (default: {S.DEFAULT_HANDOFF_MODEL})",
+        "--mode", default=S.DEFAULT_JAM_HANDOFF_MODE,
+        choices=("ask", "agent", "plan"),
+        help=f"Cursor chat mode for the jam handoff deeplink (default: {S.DEFAULT_JAM_HANDOFF_MODE})",
     )
+    cli.add_argument(
+        "--model", default=S.DEFAULT_JAM_HANDOFF_MODEL,
+        help=f"Model slug for the jam handoff deeplink (default: {S.DEFAULT_JAM_HANDOFF_MODEL})",
+    )
+    cli.add_argument("--no-open", action="store_true",
+                     help="Create worktree + brief + issue without opening a Cursor window "
+                          "(agent-driven / cloud / dogfood runs).")
+    cli.add_argument("--issue", type=int, default=None,
+                     help="Link an already-filed GitHub issue instead of creating a new one.")
     cli.add_argument("--dry-run", action="store_true", help="Print plan without creating anything")
     args = cli.parse_args(argv)
 
     repo_root = _repo_root()
     requirements: list[str] = args.requirements
+
+    # Resolve base: default to current branch so worktrees inherit in-flight framework changes.
+    base = args.base or _current_branch(repo_root)
 
     if len(requirements) > 1 and args.split:
         # One worktree per requirement
@@ -321,12 +409,15 @@ def main(argv: list[str] | None = None) -> int:
                 repo_root=repo_root,
                 branch=branch,
                 worktree=None,
-                base=args.base,
+                base=base,
                 requirement=req,
                 requirement_id=args.requirement_id if i == 1 else None,
                 model=args.model,
+                handoff_mode=args.mode,
                 cursor_delay=args.cursor_delay,
                 dry_run=args.dry_run,
+                no_open=args.no_open,
+                existing_issue=args.issue,
             )
         return rc
 
@@ -342,12 +433,15 @@ def main(argv: list[str] | None = None) -> int:
         repo_root=repo_root,
         branch=branch,
         worktree=args.worktree,
-        base=args.base,
+        base=base,
         requirement=combined,
         requirement_id=args.requirement_id,
         model=args.model,
+        handoff_mode=args.mode,
         cursor_delay=args.cursor_delay,
         dry_run=args.dry_run,
+        no_open=args.no_open,
+        existing_issue=args.issue,
     )
 
 

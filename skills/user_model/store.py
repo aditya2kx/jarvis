@@ -168,7 +168,8 @@ def list_preferences(category=None):
     return entries
 
 
-def add_preference(category, fields, *, dedupe_key=None):
+def add_preference(category, fields, *, dedupe_key=None,
+                   skip_guardrail=False, guardrail_threshold=None):
     """Append (or overwrite if duplicate) a preference into the markdown file.
 
     Args:
@@ -178,13 +179,33 @@ def add_preference(category, fields, *, dedupe_key=None):
                     which is usually the human-readable text). If a preference
                     with the same normalized value is already present, this
                     call is a no-op. Pass dedupe_key=None to disable dedup.
+        skip_guardrail: bypass the generalizability gate (use for domain facts and
+                        decision-history rows, which are not principle-shaped).
+        guardrail_threshold: override the default threshold (4/6). Pass 0 to allow all.
 
     Returns:
-        ('added' | 'duplicate', new_or_existing_row)
+        ('added' | 'duplicate' | 'rejected', row_or_reason)
+        'rejected' means the guardrail score was below the threshold; row_or_reason
+        is a GuardrailResult describing which criteria failed.
     """
     section = _resolve_section(category)
     headers = SECTION_HEADERS[section]
     row_fields = {h: str(fields.get(h, "")).strip() for h in headers}
+
+    # Guardrail check: run on the "main content" column (second column — the text).
+    # Domain facts and decision history rows are exempt (they record facts, not rules).
+    if not skip_guardrail and section in ("style", "principle"):
+        try:
+            from skills.user_model.guardrail import (  # type: ignore
+                score_candidate, DEFAULT_THRESHOLD,
+            )
+            threshold = guardrail_threshold if guardrail_threshold is not None else DEFAULT_THRESHOLD
+            candidate_text = row_fields.get(headers[1], "")
+            result = score_candidate(candidate_text)
+            if result.score < threshold:
+                return ("rejected", result)
+        except ImportError:
+            pass  # guardrail not available (e.g., during bootstrap); proceed
 
     existing = list_preferences(category=section)
 
@@ -286,9 +307,12 @@ if __name__ == "__main__":
 
     if args.cmd == "add":
         fields = json.loads(args.fields_json)
-        status, pref = add_preference(args.category, fields)
-        print(json.dumps({"status": status, "section": pref.category, "fields": pref.fields},
-                         indent=2))
+        status, result = add_preference(args.category, fields)
+        if status == "rejected":
+            print(json.dumps({"status": "rejected", "reason": result.summary()}, indent=2))
+        else:
+            print(json.dumps({"status": status, "section": result.category, "fields": result.fields},
+                             indent=2))
     elif args.cmd == "list":
         for p in list_preferences(category=args.category):
             print(f"[{p.category}] {p.fields}")

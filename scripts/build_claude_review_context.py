@@ -73,6 +73,19 @@ def delta_paths_since(prev_head: str | None, head: str) -> list[str]:
     return [p for p in out.splitlines() if p.strip()]
 
 
+def effective_delta(prev_head: str | None, head: str, has_prior_review: bool) -> list[str]:
+    """Delta paths for a RE-REVIEW, or [] for a first review.
+
+    RE-REVIEW requires BOTH a resolvable prev_head AND a prior Claude review.
+    "A previous head SHA exists" (true on every synchronize push) is NOT enough:
+    the first *completed* review can run on a synchronize event when the earlier
+    `opened` review was cancelled by the concurrency rule.
+    """
+    if not has_prior_review:
+        return []
+    return delta_paths_since(prev_head, head)
+
+
 def paired_test_candidates(py_path: str) -> list[str]:
     """Heuristic test paths for a changed Python module."""
     p = Path(py_path)
@@ -178,7 +191,8 @@ def write_manifest(
     (out_dir / "MANIFEST.md").write_text("\n".join(lines), encoding="utf-8")
 
 
-def build(*, base: str, head: str, out_dir: Path, prev_head: str | None = None) -> dict:
+def build(*, base: str, head: str, out_dir: Path, prev_head: str | None = None,
+          has_prior_review: bool = False) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     # Clean prior bundle so cancelled runs don't leave stale files.
     for child in out_dir.iterdir():
@@ -188,7 +202,7 @@ def build(*, base: str, head: str, out_dir: Path, prev_head: str | None = None) 
             child.unlink()
 
     diff_paths = changed_paths(base, head)
-    delta = delta_paths_since(prev_head, head)
+    delta = effective_delta(prev_head, head, has_prior_review)
     planned = expand_paths(diff_paths, head)
     entries: list[tuple[str, str, bool, str | None]] = []
     materialized = 0
@@ -215,11 +229,15 @@ def main(argv: list[str] | None = None) -> int:
     cli.add_argument("--prev-head", default=None,
                      help="Previously-reviewed head SHA (github.event.before); enables "
                           "re-review focus on what changed since the last review")
+    cli.add_argument("--has-prior-review", default="false",
+                     help="'true' only when a prior claude[bot] review comment exists on "
+                          "this PR. RE-REVIEW requires this AND a resolvable --prev-head.")
     cli.add_argument("--out-dir", default="review-context")
     args = cli.parse_args(argv)
 
+    has_prior = str(args.has_prior_review).strip().lower() == "true"
     summary = build(base=args.base, head=args.head, out_dir=Path(args.out_dir),
-                    prev_head=args.prev_head)
+                    prev_head=args.prev_head, has_prior_review=has_prior)
     delta_note = f", {summary['delta']} since last review" if summary["delta"] else ""
     print(
         f"# review-context: {summary['materialized']}/{summary['planned']} files "

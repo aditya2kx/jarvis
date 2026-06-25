@@ -246,9 +246,17 @@ def _seed_cache_to_worktree(*, branch: str, worktree: Path, dry_run: bool) -> No
     metrics/pr_cost/*-phase.json.  The worktree is a sibling directory with its own
     metrics/pr_cost/, so without this copy phase_state.py status inside the worktree
     shows Issue: #none (no local cache) even though GitHub has the correct issue.
+
+    Uses phase_state._slug() (the canonical slugifier) to compute the cache filename,
+    guaranteeing the same filename that phase_state.py init wrote.
     """
-    import re as _re
-    slug = _re.sub(r"[^a-zA-Z0-9_-]", "-", branch)[:60]
+    # Import the canonical slug from phase_state so both sides agree on the filename.
+    import sys as _sys
+    _scripts_dir = str(Path(__file__).parent)
+    if _scripts_dir not in _sys.path:
+        _sys.path.insert(0, _scripts_dir)
+    from phase_state import _slug  # type: ignore[import]
+    slug = _slug(branch)
     src = Path(__file__).parent.parent / "metrics" / "pr_cost" / f"session-{slug}-phase.json"
     dst_dir = worktree / "metrics" / "pr_cost"
     dst = dst_dir / src.name

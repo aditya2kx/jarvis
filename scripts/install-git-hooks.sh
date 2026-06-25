@@ -50,11 +50,10 @@ _install_cursor_dispatcher() {
 import json, os, sys
 
 hooks_file = sys.argv[1]
-cmd = (
-    "bash -c "
-    "'f=\"$CURSOR_PROJECT_DIR/.cursor/hooks/enforce.sh\"; "
-    "[ -x \"$f\" ] && exec \"$f\" || echo \\'{ \"continue\": true }\\' '"
-)
+# Simple dispatch: run enforce.sh if present; with failClosed:false, a
+# non-zero exit (script absent / wrong repo) is treated as continue:true.
+# No nested shell quoting needed — bash receives the string verbatim.
+cmd = 'bash "$CURSOR_PROJECT_DIR/.cursor/hooks/enforce.sh"'
 
 entry = {"command": cmd, "failClosed": False}
 

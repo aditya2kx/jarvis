@@ -50,6 +50,26 @@ Output (last 3 entries):
 
 **Result: Both prompts appended automatically — corpus grew by 2 entries.**
 
+## Dispatcher command (stored in `~/.cursor/hooks.json`)
+
+```
+bash "$CURSOR_PROJECT_DIR/.cursor/hooks/enforce.sh"
+```
+
+With `failClosed: false`, a non-zero exit (script absent in non-Jarvis repos) is treated as `continue: true` by Cursor — no quoting issues, no inline JSON emission needed.
+
+Verified via:
+```
+$ export CURSOR_PROJECT_DIR=$(pwd)
+$ echo '{"prompt":"I want to work on a new requirement: X"}' \
+    | bash "$CURSOR_PROJECT_DIR/.cursor/hooks/enforce.sh"
+→ {"continue": false, "user_message": "New-requirement intake gate fired. ..."}
+
+$ echo '{"prompt":"//inline keep going"}' \
+    | bash "$CURSOR_PROJECT_DIR/.cursor/hooks/enforce.sh"
+→ {"continue": true}
+```
+
 ## M2 — Harness locked in conformance
 
 ```

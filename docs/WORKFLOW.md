@@ -77,9 +77,17 @@ Open failures: none        Summary: verify in progress
 ```
 
 ### The single front door creates the issue
-`new_requirement.py` is the only entry point for new work, and it **auto-creates the
+`new_requirement.py` is the only entry point for new work. It **auto-creates the
 tracking issue** at kickoff: after spinning up the worktree + brief + cost session it
-calls its own `init_phase_tracking()` → `phase_state.py init --kickoff`, which seeds
+calls `init_phase_tracking()` → `phase_state.py init --kickoff`, which seeds
+
+The worktree base defaults to the **current branch** of the repo you run from, so
+worktrees inherit any in-flight framework changes automatically (e.g. an open PR
+branch). Pass `--base origin/main` explicitly to branch from clean main instead.
+
+The Cursor launcher HTML is written as a fallback only; it is not opened automatically
+when the Cursor CLI succeeds. If the deeplink fails, open the `session-*-launch.html`
+file in the worktree's `metrics/pr_cost/` directory manually.
 `done = [specify, setup]` (both are factually complete the moment the front door runs)
 and prints the issue URL in the handoff banner.  So a fresh requirement shows **Align
 50%** with `jam` as the current operator gate — never a misleading "0%, nothing done".

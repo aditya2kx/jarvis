@@ -97,6 +97,18 @@ def _branch_exists(repo_root: Path, branch: str) -> bool:
     ).returncode == 0
 
 
+def _current_branch(repo_root: Path) -> str:
+    """Return the current branch name, or 'origin/main' as a safe fallback."""
+    try:
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_root, text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        return branch if branch and branch != "HEAD" else "origin/main"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "origin/main"
+
+
 def default_worktree_path(repo_root: Path, branch: str) -> Path:
     """Sibling directory: ``../<repo>-wt-<branch-slug>``."""
     repo_name = repo_root.name
@@ -122,9 +134,14 @@ def create_worktree(
             f"Branch '{branch}' already exists locally. Pick a different --branch name."
         )
 
-    print(f"Fetching {base} …")
-    if not dry_run:
-        _run_git(repo_root, "fetch", "origin", "main")
+    # Only fetch when base looks like a remote ref; local branches are already present.
+    if base.startswith("origin/"):
+        print(f"Fetching {base} …")
+        if not dry_run:
+            remote_branch = base.split("/", 1)[1]
+            _run_git(repo_root, "fetch", "origin", remote_branch)
+    else:
+        print(f"Using local base branch: {base}")
 
     cmd = ["worktree", "add", "-b", branch, str(worktree_path), base]
     print(f"git {' '.join(cmd)}")
@@ -333,8 +350,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Worktree directory (default: ../<repo>-wt-<branch-slug> sibling)",
     )
     cli.add_argument(
-        "--base", default="origin/main",
-        help="Branch/ref to create the worktree from (default: origin/main)",
+        "--base", default=None,
+        help=(
+            "Branch/ref to create the worktree from. "
+            "Defaults to the current branch of this repo so that worktrees "
+            "inherit the framework changes in flight (e.g. an open PR branch). "
+            "Pass 'origin/main' explicitly to branch from clean main."
+        ),
     )
     cli.add_argument(
         "--requirement-id",
@@ -362,6 +384,9 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = _repo_root()
     requirements: list[str] = args.requirements
 
+    # Resolve base: default to current branch so worktrees inherit in-flight framework changes.
+    base = args.base or _current_branch(repo_root)
+
     if len(requirements) > 1 and args.split:
         # One worktree per requirement
         print(f"--split: creating {len(requirements)} separate worktrees/PRs.\n")
@@ -375,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo_root=repo_root,
                 branch=branch,
                 worktree=None,
-                base=args.base,
+                base=base,
                 requirement=req,
                 requirement_id=args.requirement_id if i == 1 else None,
                 model=args.model,
@@ -398,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
         repo_root=repo_root,
         branch=branch,
         worktree=args.worktree,
-        base=args.base,
+        base=base,
         requirement=combined,
         requirement_id=args.requirement_id,
         model=args.model,

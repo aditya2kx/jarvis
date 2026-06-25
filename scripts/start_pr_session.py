@@ -410,7 +410,8 @@ def open_cursor_handoff(
     time.sleep(delay_sec)
     print("Seeding Agent chat (approve Cursor's deeplink dialog if prompted)…")
     subprocess.run(["open", deeplink], check=False)
-    subprocess.run(["open", str(launch_html)], check=False)
+    # launch_html is the fallback for when the deeplink or Cursor CLI fails;
+    # don't open it automatically when Cursor already launched successfully.
 
 
 def write_launch_html(

@@ -94,7 +94,7 @@
           "get_by_role('button', name=/Download report/i)",
           "[aria-label='Download report']"
         ],
-        "fallback_notes": "Primary selector tried first; fallbacks used if the primary is not visible within the poll cycle. On total timeout a diagnostic snapshot (PNG + HTML) is saved to ~/.bhaga/state/screenshots/ and also uploaded to gs://bhaga-scrape-cache/<date>/evidence/. The poll loop re-checks all selectors every 1s until BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS elapses.",
+        "fallback_notes": "Primary selector tried first; fallbacks used if the primary is not visible within the poll cycle. On total timeout a diagnostic snapshot (PNG + HTML) is saved to ~/.bhaga/state/screenshots/ Files are local only (no GCS upload implemented). The poll loop re-checks all selectors every 1s until BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS elapses.",
         "notes": "Triggers the actual file save. File arrives at extracted/downloads/Earnings-and-Hours-V1.xlsx."
       },
       "download_later_button": {

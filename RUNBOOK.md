@@ -886,8 +886,8 @@ the 2026-06-23 nightly failure). Set `BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS` to ov
 The wait polls a ranked list of fallback selectors (`[data-test-id="download-report"]`,
 `getByRole("button", name=/Download report/i)`, `[aria-label="Download report"]`) every 1 s.
 On total timeout a full-page screenshot + HTML snapshot are written to
-`~/.bhaga/state/screenshots/adp-earnings-ready-dialog-missing-<ts>.{png,html}` and uploaded
-to `gs://bhaga-scrape-cache/<date>/evidence/` for post-mortem review.
+`~/.bhaga/state/screenshots/adp-earnings-ready-dialog-missing-<ts>.{png,html}` for post-mortem
+review. (Files are local only; no automatic GCS upload is implemented.)
 
 **Concurrent-execution guard (ADP — distributed scrape lock).** ADP still uses a browser. If two
 Cloud Run executions run simultaneously, the ADP scrape lock (`ScrapeLockHeldError`) prevents

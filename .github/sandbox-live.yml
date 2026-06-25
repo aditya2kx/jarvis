@@ -1,11 +1,15 @@
-# Sandbox live run config — OFF.
+# Sandbox live run config — ACTIVE for fix/debug-and-fix-issues-with-bhaga.
 #
-# Add scenarios here + apply the `sandbox-live` label to a PR to run a real
-# (isolated) BHAGA scrape on the PR image; remove them once evidence is captured.
-# An empty/absent scenarios list means nothing runs.
+# Proves the ADP earnings ready-dialog fix on the real ADP portal with the PR
+# image. Runs the full-live scenario (Square + ADP + model) against sandbox
+# targets for 2026-06-23 (the date of the failing nightly). Evidence in PR §4.
+# REMOVE this file's scenarios (set to []) before merge — captured once is enough.
 #
-# Last used: PR #58 (otp-reprompt, 2026-06-14) — proved BHAGA_OTP_FORCE_REQUEST
-# force re-prompt on real bhaga-sandbox-refresh Cloud Run + Firestore (sandbox_runs):
-# seeded stale checkpoint, ran gate-only (no scrape/OTP reply), verified
-# requested_at advanced + ready_received=False. Evidence in PR #58 §4.
-scenarios: []
+# Operator: answer the [SANDBOX] ADP OTP prompt in Slack DM D0B67MW6J02.
+# Expected log lines: [earnings] step=download-report-button-ready → step=downloaded
+#
+# Last used: PR # (fix/debug-and-fix-issues-with-bhaga, 2026-06-25) — proves ADP
+# earnings ready-dialog wait fix (BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS=90s, fallbacks).
+scenarios:
+  - name: full-live
+    date: 2026-06-23

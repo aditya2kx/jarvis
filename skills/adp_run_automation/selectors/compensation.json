@@ -84,9 +84,17 @@
     },
     "ready_to_download_dialog": {
       "dialog_aria_name": "Your report is ready to download",
+      "wait_timeout_env": "BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS",
+      "wait_timeout_default_ms": 90000,
+      "wait_timeout_notes": "ADP queues async report generation after the exportExcel click; modal appearance can take 3-90+ seconds on loaded servers. The 2026-06-23 nightly failed because the prior hardcoded 45s was insufficient. Raised to 90s default. Override via BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS env var.",
       "download_report_button": {
         "playwright_locator": "[data-test-id='download-report']",
         "aria_name": "Download report",
+        "fallback_locators": [
+          "get_by_role('button', name=/Download report/i)",
+          "[aria-label='Download report']"
+        ],
+        "fallback_notes": "Primary selector tried first; fallbacks used if the primary is not visible within the poll cycle. On total timeout a diagnostic snapshot (PNG + HTML) is saved to ~/.bhaga/state/screenshots/ and also uploaded to gs://bhaga-scrape-cache/<date>/evidence/. The poll loop re-checks all selectors every 1s until BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS elapses.",
         "notes": "Triggers the actual file save. File arrives at extracted/downloads/Earnings-and-Hours-V1.xlsx."
       },
       "download_later_button": {

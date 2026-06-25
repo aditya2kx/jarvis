@@ -1,5 +1,5 @@
 ---
-description: Jarvis routing card — always-on architecture map, deployment surfaces, routing rules, and cross-agent conventions. Hard Lessons are in jarvis-hard-lessons.md (on-demand).
+description: Jarvis routing card — always-on architecture map, deployment surfaces, routing rules, and cross-agent conventions. Hard Lessons are in jarvis-hard-lessons.mdc (on-demand).
 alwaysApply: true
 ---
 
@@ -17,13 +17,13 @@ Jarvis (this workspace)
 - **BHAGA: cloud-primary** (GCP Cloud Run; laptop retired 2026-05-29). OTP/READY via Firestore+webhook.
   Operate via **[`RUNBOOK.md`](../../RUNBOOK.md)**. No local Slack-listener or `/tmp` protocol for BHAGA.
 - **CHITRA / CHANAKYA / AKSHAYA: local laptop** — Slack-listener + `/tmp/jarvis-*.json` protocol applies.
-  See `jarvis-hard-lessons.md` § Session Continuity.
+  See `jarvis-hard-lessons.mdc` § Session Continuity.
 
 ## Routing
-1. Tax → CHITRA (`chitra.md`, `chitra-workflows.md`, `chitra-playbook.md`)
-2. Product/strategy → CHANAKYA (`chanakya.md`)
-3. Inventory/ordering → AKSHAYA (`akshaya.md`)
-4. Tip allocation/payroll → BHAGA (`bhaga.md`, `RUNBOOK.md`)
+1. Tax → CHITRA (`chitra.mdc`, `chitra-workflows.mdc`, `chitra-playbook.mdc`)
+2. Product/strategy → CHANAKYA (`chanakya.mdc`)
+3. Inventory/ordering → AKSHAYA (`akshaya.mdc`)
+4. Tip allocation/payroll → BHAGA (`bhaga.mdc`, `RUNBOOK.md`)
 5. Skill request → `skills/<name>/`
 6. Cross-agent → coordinate; skills are shared infrastructure
 
@@ -46,10 +46,10 @@ Before planning or designing, read the relevant docs and derive proposals from t
 - **Prod/runtime on hosted infra** (Cloud Run, GH Actions, BQ). Laptop = build + one-time provisioning only.
 
 ## Adding an agent or skill
-- New agent: `agents/<name>/` + `knowledge-base/` + `scripts/` + `.cursor/rules/<name>.md` (glob-scoped)
+- New agent: `agents/<name>/` + `knowledge-base/` + `scripts/` + `.cursor/rules/<name>.mdc` (glob-scoped)
   + Slack identity (`skills/slack_app_provisioning/`) + update AGENTS.md routing table + PROGRESS.md.
 - New skill: `skills/<name>/` + direct API calls (no heavy deps) + `README.md` + `config.template.yaml` secrets.
 
 ## Hard Lessons
-Recurring patterns documented from actual mistakes → `jarvis-hard-lessons.md`.
+Recurring patterns documented from actual mistakes → `jarvis-hard-lessons.mdc`.
 Read before any multi-step task, debugging session, or when a pattern recurs.

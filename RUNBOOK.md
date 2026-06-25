@@ -400,7 +400,7 @@ Only after every box is checked is the laptop safe to decommission.
    sanctioned bypass. Do **not** `--no-verify` to push actual secrets.
 5. **Keep docs in lock-step (the reason this repo stays portable).** Any behavior change updates the
    matching doc in the **same** change. Targets: pipeline/sheets/secrets/scheduler → this file; a
-   script or extension recipe → `agents/bhaga/scripts/README.md`; an invariant → `.cursor/rules/bhaga.md`;
+   script or extension recipe → `agents/bhaga/scripts/README.md`; an invariant → `.cursor/rules/bhaga.mdc`;
    anything notable → a dated line in `PROGRESS.md`. See `AGENTS.md` § Keeping docs current. A doc
    that lags the code is a bug.
 

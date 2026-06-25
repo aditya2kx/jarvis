@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pool-by-day tip allocation — pure function with cent-exact rounding.
 
-THE rule (enshrined in `.cursor/rules/bhaga.md` rule #5):
+THE rule (enshrined in `.cursor/rules/bhaga.mdc` rule #5):
     For each individual date:
         employee_share_for_date =
             (employee_hours_on_date / total_team_hours_on_date) * tip_pool_for_date

@@ -134,7 +134,7 @@ Automation maturity: M0 manual prose → M1 scripted → M2 gate/hook → M3 sel
 | Planning | Plan execution-readiness | plan-execution-readiness.md | checklist | M1 | agent | M2 ✓ (check_plan_readiness) |
 | | Evidence definition | CONTRIBUTING.md §evidence | prose | M0 | operator+agent | M1 |
 | Engineering | Behavioral anchor | .cursor/rules/ spine | always-on rule | M1 | agent | M1 |
-| | Design principles | .cursor/rules/jarvis.md | always-on rule | M1 | agent | M1 |
+| | Design principles | .cursor/rules/jarvis.mdc | always-on rule | M1 | agent | M1 |
 | | Hard Lessons | jarvis-hard-lessons.md | on-demand rule | M1 | agent | M2 (gate conversions) |
 | | 100% test coverage | pytest | gate | M2 | agent | M2 |
 | Evidence & verification | Local verify harness | verify.py | gate | M2 | agent | M2 ✓ (this PR) |
@@ -268,7 +268,7 @@ L3 (roadmap):
 | Operator gates unskippable | phase_state.py advance → nonzero | Exit code |
 | Lifecycle ladder non-bypassable (whole ladder, not just jam) | verify_lifecycle.py assertion #11; phase_state.py gate (hard gate in verify --full) | Conformance PASS + Gate exit code |
 | Operator preference stored only if generalizable (guardrail) | skills/user_model/guardrail.py + store.add_preference; assertion #12 | score_candidate exits 0/6 for task-specific text |
-| Pre-ask consult: apply stored preference before asking | .cursor/rules/preference-consult.md (always-on rule) | Rule file present |
+| Pre-ask consult: apply stored preference before asking | .cursor/rules/preference-consult.mdc (always-on rule) | Rule file present |
 | Local loop mirrors CI | test_verify.py::test_ci_parity | Test PASS |
 | Babysit unprompted | pr-workflow.mdc + babysit skill | Always-on rule |
 | Review replies done | check_pr_review_replies.py | Gate exit 0 |

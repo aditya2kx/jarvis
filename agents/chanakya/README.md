@@ -45,4 +45,4 @@ Future agent names should follow this convention. Other candidates considered:
 
 ## Cursor Rules
 
-CHANAKYA's behavior will be defined at `.cursor/rules/chanakya.md`.
+CHANAKYA's behavior will be defined at `.cursor/rules/chanakya.mdc`.

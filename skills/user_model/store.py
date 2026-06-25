@@ -10,12 +10,12 @@ Two storage layers (Fork 3A — single auto-loaded preferences file):
    ─ Lines: {"ts": ISO, "agent": str|null, "source": str, "text": str, "metadata": {...}}
 
 2. Structured preferences (gittracked, auto-loads via Cursor rules)
-   ─ .cursor/rules/user-preferences.md
+   ─ .cursor/rules/user-preferences.mdc
    ─ Markdown with 4 fixed sections (Communication style, Design principles,
      Domain context, Decision history). Each section is a table.
    ─ This is what the AI reads at session start to predict user preferences.
    ─ Idempotent: add_preference() dedups by (category, normalized text).
-   ─ NEVER duplicates content from `.cursor/rules/jarvis.md` Hard Lessons —
+   ─ NEVER duplicates content from `.cursor/rules/jarvis.mdc` Hard Lessons —
      instead links via the `Source` column (Fork 5: single source of truth).
 """
 
@@ -252,7 +252,7 @@ def _write_sections(sections):
         "of every chat.",
         "",
         "**Single source of truth (Fork 5):** This file does NOT restate Hard "
-        "Lessons (`.cursor/rules/jarvis.md` § Hard Lessons). When a preference "
+        "Lessons (`.cursor/rules/jarvis.mdc` § Hard Lessons). When a preference "
         "is already a Hard Lesson, the `Source` column links to it. When a "
         "preference is NEW signal not yet codified elsewhere, it lives here.",
         "",

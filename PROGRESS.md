@@ -1,6 +1,20 @@
 # Jarvis Build Progress
 
-## 2026-06-25 — BHAGA: Fix ADP earnings ready-dialog timeout (2026-06-23 nightly incident)
+## 2026-06-25 — Make rules load: .md→.mdc migration + new-requirement-intake rule + .mdc guardrail (PR #73)
+
+**Status:** PR open, awaiting operator merge.
+
+**What landed:**
+- Migrated all 14 `.cursor/rules/*.md` files to `.mdc` — Cursor only loads `.mdc` as project rules; `.md` was silently ignored, so the entire always-on Spine was never loading.
+- Added `new-requirement-intake.mdc` (always-on): when operator signals a new requirement mid-session, agent MUST call `scripts/new_requirement.py` — never implement inline. Canonical sentence tagged `<!-- canonical:intake -->` for assertion dedup.
+- Added conformance assertions A14–A17: intake rule wired+single-source (A14), no `.md` in rules dir as durable guardrail (A15), load semantics preserved post-migration (A16), `new_requirement.py` seeds phase cache into worktree (A17).
+- Fixed bug in `new_requirement.py`: phase cache was written only to the parent repo, leaving the worktree's `phase_state.py status` showing `Issue: #none`. Now seeds a copy into the worktree's `metrics/pr_cost/`.
+- Rewrote ~40 `.cursor/rules/*.md` cross-references in scripts, docs, and code docstrings.
+- Added authoring guidance: `AGENTS.md` rule #8 + `docs/contributing/rules.md`.
+
+**Verification:** `verify_lifecycle.py` 17/17 PASS · `test_verify_lifecycle.py` 46/46 PASS · `check_doc_freshness.py` clean.
+
+
 
 **Incident:** The 2026-06-23 nightly (`run_id 2548caceda…`) failed at the `adp` step.
 The earnings flow completed through the "Download → Excel (.xlsx)" click but the

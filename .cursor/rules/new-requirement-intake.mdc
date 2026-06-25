@@ -1,0 +1,41 @@
+---
+description: New-requirement intake — always fire new_requirement.py for any new requirement; never implement inline in the current chat.
+alwaysApply: true
+---
+
+# New-requirement intake
+
+<!-- canonical:intake -->
+**When the operator signals a new requirement mid-session, the agent MUST call `scripts/new_requirement.py` to spin up an isolated worktree, branch, tracking issue, and brief — and MUST NEVER implement the requirement inline in the current chat.**
+
+## Trigger phrases (non-exhaustive)
+- "new requirement: …"
+- "let's also do X" / "can you also fix Y"
+- "I want to work on …" (where the subject is distinct from the current PR)
+- "add a requirement for …"
+- Any description of a new, scoped piece of work that is clearly separate from the current branch
+
+## The front door
+```bash
+python3 scripts/new_requirement.py \
+    --requirement "<operator's exact words>" \
+    [--branch fix/<slug>]   # optional; script derives a slug if omitted
+```
+
+This command:
+1. Creates a sibling git worktree on a fresh branch off `origin/main`
+2. Runs `start_pr_session.py` (cost session + brief + launcher)
+3. Opens Cursor in a new window with a jam-mode deeplink
+4. Creates a GitHub tracking issue and seeds the phase cache in both repos
+
+**After firing `new_requirement.py`, stop.** Do not ask clarifying questions before running it — the front door accepts rough text; refinement happens in the jam gate of the new chat space.
+
+## Why this rule exists
+Implementing a new requirement in an existing chat's branch:
+- Mixes unrelated concerns in one diff (CI, review, rollback all become harder)
+- Loses the phase-tracking, cost attribution, and evidence trail that `new_requirement.py` provides
+- Violates the worktree isolation invariant that lets concurrent PRs co-exist
+
+## See also
+- `self-drive.mdc` — self-drive rule and operator-reserved gates
+- `jarvis-hard-lessons.mdc` §19 — "Every new requirement MUST start in an isolated worktree"

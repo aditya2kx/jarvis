@@ -20,7 +20,7 @@ old scrape→GCS→BQ-mirror path created dual writers and Sheet/BQ drift, which
 exactly what the BQ-single-source-of-truth cutover removed.
 
 Sandbox isolation: writes honor BHAGA_GCS_CACHE_WRITE_BUCKET so staging runs
-never write to the prod bucket (see .cursor/rules/bhaga-principles.md).
+never write to the prod bucket (see .cursor/rules/bhaga-principles.mdc).
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ BUCKET_NAME = os.environ.get("BHAGA_GCS_CACHE_BUCKET", "bhaga-scrape-cache")
 
 # The canonical PRODUCTION cache bucket. Sandbox/staging runs may READ from it
 # (read-only replay) but must NEVER write to it — see the sandbox-isolation
-# invariant in .cursor/rules/bhaga-principles.md. Writes in staging mode must be
+# invariant in .cursor/rules/bhaga-principles.mdc. Writes in staging mode must be
 # diverted to BHAGA_GCS_CACHE_WRITE_BUCKET (a sandbox bucket).
 _PROD_CACHE_BUCKET = "bhaga-scrape-cache"
 
@@ -78,7 +78,7 @@ def _assert_sandbox_write_isolation(bucket_name: str) -> None:
 
     Mirrors ``core.config_loader._assert_not_production_sheet`` for GCS. Sandbox
     runs may read prod data sources but must never write to them (caches or
-    sheets) — see .cursor/rules/bhaga-principles.md (sandbox isolation).
+    sheets) — see .cursor/rules/bhaga-principles.mdc (sandbox isolation).
     """
     if os.environ.get("BHAGA_SHEET_MODE", "").lower() != "staging":
         return
@@ -87,7 +87,7 @@ def _assert_sandbox_write_isolation(bucket_name: str) -> None:
             f"BLOCKED: a sandbox/staging run attempted to WRITE to the production "
             f"GCS cache bucket '{bucket_name}'. Set BHAGA_GCS_CACHE_WRITE_BUCKET to a "
             f"sandbox bucket. Sandbox runs may READ prod data but must NEVER write it "
-            f"(see .cursor/rules/bhaga-principles.md — sandbox isolation)."
+            f"(see .cursor/rules/bhaga-principles.mdc — sandbox isolation)."
         )
 
 
@@ -145,7 +145,7 @@ def upload_evidence(local_path: pathlib.Path, *, refresh_date: datetime.date) ->
     Run Job the local ``~/.bhaga/state/screenshots`` path is discarded when the
     execution exits, so a browser failure must be reconstructable from
     ``gs://<bucket>/<date>/evidence/`` + Firestore + Cloud Run logs ALONE,
-    without a rerun (see ``.cursor/rules/bhaga-principles.md`` — observability).
+    without a rerun (see ``.cursor/rules/bhaga-principles.mdc`` — observability).
     """
     return upload_file(local_path, refresh_date=refresh_date, category="evidence")
 

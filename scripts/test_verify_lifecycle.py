@@ -196,7 +196,7 @@ class TestAssertion3(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             rules_dir = Path(tmp) / ".cursor" / "rules"
             rules_dir.mkdir(parents=True)
-            rule = rules_dir / "self-drive.md"
+            rule = rules_dir / "self-drive.mdc"
             rule.write_text(textwrap.dedent("""\
                 ---
                 alwaysApply: true
@@ -213,7 +213,7 @@ class TestAssertion3(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             rules_dir = Path(tmp) / ".cursor" / "rules"
             rules_dir.mkdir(parents=True)
-            rule = rules_dir / "self-drive.md"
+            rule = rules_dir / "self-drive.mdc"
             rule.write_text(textwrap.dedent("""\
                 ---
                 alwaysApply: true
@@ -302,7 +302,7 @@ class TestAssertion6(unittest.TestCase):
             rules_dir = Path(tmp) / ".cursor" / "rules"
             rules_dir.mkdir(parents=True)
             # Agent cards without hoisted phrases
-            for name in ("bhaga-principles.md", "chitra.md", "akshaya.md"):
+            for name in ("bhaga-principles.mdc", "chitra.mdc", "akshaya.mdc"):
                 (rules_dir / name).write_text(
                     "# Domain-specific content only\n"
                     "## Allocation invariants\nInteger cents, pool-by-day.\n"
@@ -315,11 +315,11 @@ class TestAssertion6(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             rules_dir = Path(tmp) / ".cursor" / "rules"
             rules_dir.mkdir(parents=True)
-            (rules_dir / "bhaga-principles.md").write_text(
+            (rules_dir / "bhaga-principles.mdc").write_text(
                 "# BHAGA\n\nNever push to main directly. Always use a PR.\n"
             )
-            (rules_dir / "chitra.md").write_text("# CHITRA\nDomain content.\n")
-            (rules_dir / "akshaya.md").write_text("# AKSHAYA\nDomain content.\n")
+            (rules_dir / "chitra.mdc").write_text("# CHITRA\nDomain content.\n")
+            (rules_dir / "akshaya.mdc").write_text("# AKSHAYA\nDomain content.\n")
             with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
                 passed, detail = vl.assert_6_agent_card_dedup()
         self.assertFalse(passed)
@@ -566,6 +566,195 @@ class TestAssertion13(unittest.TestCase):
 # Updated overall runner — must include assertions 11, 12, 13
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# Assertion 14 — intake rule wired
+# ---------------------------------------------------------------------------
+
+class TestAssertion14(unittest.TestCase):
+    def _make_intake_rule(self, rules_dir: Path, *, always_on: bool = True,
+                          has_marker: bool = True, has_xrefs: bool = True) -> None:
+        body = "---\n"
+        body += f"alwaysApply: {'true' if always_on else 'false'}\n"
+        body += "---\n\n"
+        if has_marker:
+            body += "<!-- canonical:intake -->\n"
+            body += "When the operator signals a new requirement, run new_requirement.py.\n\n"
+        if has_xrefs:
+            body += "See self-drive.mdc and jarvis-hard-lessons.mdc for context.\n"
+        (rules_dir / "new-requirement-intake.mdc").write_text(body)
+
+    def test_passes_with_valid_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_dir = Path(tmp) / ".cursor" / "rules"
+            rules_dir.mkdir(parents=True)
+            self._make_intake_rule(rules_dir)
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_14_intake_rule_wired()
+        self.assertTrue(passed, detail)
+
+    def test_fails_when_file_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_dir = Path(tmp) / ".cursor" / "rules"
+            rules_dir.mkdir(parents=True)
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_14_intake_rule_wired()
+        self.assertFalse(passed)
+        self.assertIn("not found", detail)
+
+    def test_fails_when_md_version_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_dir = Path(tmp) / ".cursor" / "rules"
+            rules_dir.mkdir(parents=True)
+            self._make_intake_rule(rules_dir)
+            (rules_dir / "new-requirement-intake.md").write_text("# wrong ext\n")
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_14_intake_rule_wired()
+        self.assertFalse(passed)
+        self.assertIn(".mdc", detail)
+
+    def test_fails_when_not_always_on(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_dir = Path(tmp) / ".cursor" / "rules"
+            rules_dir.mkdir(parents=True)
+            self._make_intake_rule(rules_dir, always_on=False)
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_14_intake_rule_wired()
+        self.assertFalse(passed)
+
+    def test_fails_when_canonical_marker_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_dir = Path(tmp) / ".cursor" / "rules"
+            rules_dir.mkdir(parents=True)
+            self._make_intake_rule(rules_dir, has_marker=False)
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_14_intake_rule_wired()
+        self.assertFalse(passed)
+        self.assertIn("canonical:intake", detail)
+
+    def test_fails_when_canonical_sentence_in_other_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_dir = Path(tmp) / ".cursor" / "rules"
+            rules_dir.mkdir(parents=True)
+            self._make_intake_rule(rules_dir)
+            # Duplicate the canonical sentence into another rule
+            (rules_dir / "self-drive.mdc").write_text(
+                "---\nalwaysApply: true\n---\n"
+                "When the operator signals a new requirement, run new_requirement.py.\n"
+            )
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_14_intake_rule_wired()
+        self.assertFalse(passed)
+        self.assertIn("single source", detail.lower())
+
+
+# ---------------------------------------------------------------------------
+# Assertion 15 — no .md files in rules dir
+# ---------------------------------------------------------------------------
+
+class TestAssertion15(unittest.TestCase):
+    def test_passes_when_all_mdc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_dir = Path(tmp) / ".cursor" / "rules"
+            rules_dir.mkdir(parents=True)
+            (rules_dir / "self-drive.mdc").write_text("---\nalwaysApply: true\n---\n# ok\n")
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_15_no_md_rules()
+        self.assertTrue(passed, detail)
+
+    def test_fails_when_md_file_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_dir = Path(tmp) / ".cursor" / "rules"
+            rules_dir.mkdir(parents=True)
+            (rules_dir / "self-drive.md").write_text("---\nalwaysApply: true\n---\n# wrong ext\n")
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_15_no_md_rules()
+        self.assertFalse(passed)
+        self.assertIn("self-drive.md", detail)
+
+    def test_passes_against_real_repo(self):
+        passed, detail = vl.assert_15_no_md_rules()
+        self.assertTrue(passed, detail)
+
+
+# ---------------------------------------------------------------------------
+# Assertion 16 — rule load semantics preserved
+# ---------------------------------------------------------------------------
+
+class TestAssertion16(unittest.TestCase):
+    def _write_rule(self, rules_dir: Path, name: str, always_on: bool,
+                    globs: list[str] | None = None) -> None:
+        body = "---\n"
+        if always_on:
+            body += "alwaysApply: true\n"
+        else:
+            body += "alwaysApply: false\n"
+        if globs is not None:
+            body += "globs:\n"
+            for g in globs:
+                body += f'  - "{g}"\n'
+        body += "---\n# content\n"
+        (rules_dir / name).write_text(body)
+
+    def test_passes_with_correct_semantics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_dir = Path(tmp) / ".cursor" / "rules"
+            rules_dir.mkdir(parents=True)
+            for name in ("behavioral-anchor.mdc", "jarvis.mdc", "plan-execution-readiness.mdc",
+                         "preference-consult.mdc", "self-drive.mdc", "user-preferences.mdc",
+                         "new-requirement-intake.mdc"):
+                self._write_rule(rules_dir, name, always_on=True)
+            self._write_rule(rules_dir, "jarvis-hard-lessons.mdc", always_on=False,
+                             globs=[".cursor/rules/jarvis*.mdc"])
+            self._write_rule(rules_dir, "chitra-playbook.mdc", always_on=False, globs=[])
+            self._write_rule(rules_dir, "chitra-workflows.mdc", always_on=False, globs=[])
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_16_rule_semantics_preserved()
+        self.assertTrue(passed, detail)
+
+    def test_fails_when_hard_lessons_made_always_on(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_dir = Path(tmp) / ".cursor" / "rules"
+            rules_dir.mkdir(parents=True)
+            for name in ("behavioral-anchor.mdc", "jarvis.mdc", "plan-execution-readiness.mdc",
+                         "preference-consult.mdc", "self-drive.mdc", "user-preferences.mdc",
+                         "new-requirement-intake.mdc"):
+                self._write_rule(rules_dir, name, always_on=True)
+            # Accidentally make hard-lessons always-on (regression)
+            self._write_rule(rules_dir, "jarvis-hard-lessons.mdc", always_on=True)
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_16_rule_semantics_preserved()
+        self.assertFalse(passed)
+        self.assertIn("jarvis-hard-lessons", detail)
+
+    def test_passes_against_real_repo(self):
+        passed, detail = vl.assert_16_rule_semantics_preserved()
+        self.assertTrue(passed, detail)
+
+
+# ---------------------------------------------------------------------------
+# Assertion 17 — new_requirement seeds worktree cache
+# ---------------------------------------------------------------------------
+
+class TestAssertion17(unittest.TestCase):
+    def test_passes_against_real_repo(self):
+        passed, detail = vl.assert_17_new_requirement_seeds_worktree_cache()
+        self.assertTrue(passed, detail)
+
+    def test_fails_when_seeding_code_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts_dir = Path(tmp) / "scripts"
+            scripts_dir.mkdir()
+            (scripts_dir / "new_requirement.py").write_text(
+                "# stub — no worktree cache seeding\n"
+                "def init_phase_tracking(**kw): pass\n"
+            )
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_17_new_requirement_seeds_worktree_cache()
+        self.assertFalse(passed)
+        self.assertIn("worktree", detail.lower())
+
+
 class TestRunFunction(unittest.TestCase):
     def _all_mocks(self):
         return {
@@ -582,6 +771,10 @@ class TestRunFunction(unittest.TestCase):
             "assert_11_phase_gate_enforces_ladder": (True, "ok"),
             "assert_12_guardrail_enforced_at_store": (True, "ok"),
             "assert_13_observable_floor_has_plan_entry": (True, "ok"),
+            "assert_14_intake_rule_wired": (True, "ok"),
+            "assert_15_no_md_rules": (True, "ok"),
+            "assert_16_rule_semantics_preserved": (True, "ok"),
+            "assert_17_new_requirement_seeds_worktree_cache": (True, "ok"),
         }
 
     def test_run_returns_0_on_full_pass(self):
@@ -604,7 +797,11 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_10_jam_handoff_ask_mode_honest", return_value=(True, "ok")), \
              patch.object(vl, "assert_11_phase_gate_enforces_ladder", return_value=(True, "ok")), \
              patch.object(vl, "assert_12_guardrail_enforced_at_store", return_value=(True, "ok")), \
-             patch.object(vl, "assert_13_observable_floor_has_plan_entry", return_value=(True, "ok")):
+             patch.object(vl, "assert_13_observable_floor_has_plan_entry", return_value=(True, "ok")), \
+             patch.object(vl, "assert_14_intake_rule_wired", return_value=(True, "ok")), \
+             patch.object(vl, "assert_15_no_md_rules", return_value=(True, "ok")), \
+             patch.object(vl, "assert_16_rule_semantics_preserved", return_value=(True, "ok")), \
+             patch.object(vl, "assert_17_new_requirement_seeds_worktree_cache", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 1)
 
@@ -621,7 +818,11 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_10_jam_handoff_ask_mode_honest", return_value=(True, "ok")), \
              patch.object(vl, "assert_11_phase_gate_enforces_ladder", return_value=(True, "ok")), \
              patch.object(vl, "assert_12_guardrail_enforced_at_store", return_value=(True, "ok")), \
-             patch.object(vl, "assert_13_observable_floor_has_plan_entry", return_value=(True, "ok")):
+             patch.object(vl, "assert_13_observable_floor_has_plan_entry", return_value=(True, "ok")), \
+             patch.object(vl, "assert_14_intake_rule_wired", return_value=(True, "ok")), \
+             patch.object(vl, "assert_15_no_md_rules", return_value=(True, "ok")), \
+             patch.object(vl, "assert_16_rule_semantics_preserved", return_value=(True, "ok")), \
+             patch.object(vl, "assert_17_new_requirement_seeds_worktree_cache", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 0, "Pre-milestone WARNs should not cause exit 1")
 

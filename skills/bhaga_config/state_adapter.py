@@ -47,7 +47,7 @@ CT = ZoneInfo("America/Chicago")
 
 # The canonical PRODUCTION run-state collection. A sandbox/staging run must
 # divert ALL run-state (markers, pending-OTP, failures) to its own collection so
-# it never reads or writes prod run state — see .cursor/rules/bhaga-principles.md
+# it never reads or writes prod run state — see .cursor/rules/bhaga-principles.mdc
 # (sandbox isolation). Override with BHAGA_FIRESTORE_COLLECTION.
 _PROD_FIRESTORE_COLLECTION = "runs"
 
@@ -69,7 +69,7 @@ def _collection_name() -> str:
 def _assert_sandbox_state_isolation(collection: str) -> None:
     """Hard guard: in staging/sandbox mode, block any use of the prod run-state
     collection. Mirrors the sheet + GCS guards — sandbox runs must never touch
-    prod data sources (see .cursor/rules/bhaga-principles.md — sandbox isolation).
+    prod data sources (see .cursor/rules/bhaga-principles.mdc — sandbox isolation).
     """
     if os.environ.get("BHAGA_SHEET_MODE", "").lower() != "staging":
         return
@@ -78,7 +78,7 @@ def _assert_sandbox_state_isolation(collection: str) -> None:
             f"BLOCKED: a sandbox/staging run targeted the production Firestore run-state "
             f"collection '{collection}'. Set BHAGA_FIRESTORE_COLLECTION to a sandbox "
             f"collection. Sandbox runs must never read or write prod run state "
-            f"(see .cursor/rules/bhaga-principles.md — sandbox isolation)."
+            f"(see .cursor/rules/bhaga-principles.mdc — sandbox isolation)."
         )
 
 
@@ -453,7 +453,7 @@ def record_step_failure(
 
     Captures the error class/message and the ``gs://`` evidence prefix so a future
     agent can diagnose the failure from Firestore + GCS + Cloud Run logs ALONE,
-    without a rerun (see .cursor/rules/bhaga-principles.md — observability). Keyed
+    without a rerun (see .cursor/rules/bhaga-principles.mdc — observability). Keyed
     by ``refresh_date`` like every other marker, NOT by wall-clock time.
 
     - firestore: ``runs/<date>`` document, ``failures.<step>`` map field

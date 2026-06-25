@@ -11,7 +11,7 @@ WHY THIS EXISTS
   (``bhaga-sandbox-refresh``) and runs the real pipeline against the live portals,
   but every write is diverted to a sandbox target.
 
-SANDBOX ISOLATION (hard invariant — see .cursor/rules/bhaga-principles.md)
+SANDBOX ISOLATION (hard invariant — see .cursor/rules/bhaga-principles.mdc)
   A sandbox run may READ prod data (the GCS scrape cache, raw sheets) but must
   NEVER write to a prod data source. This runner enforces that three ways and
   fails loud before it ever executes the job:

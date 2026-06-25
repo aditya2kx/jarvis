@@ -13,7 +13,7 @@ alwaysApply: false
 
 ## Before working on BHAGA
 Read these first and derive proposals from them (see also AGENTS.md § consult-first):
-- **[`bhaga.md`](bhaga.md)** — full correctness invariants + operational rules
+- **[`bhaga.mdc`](bhaga.mdc)** — full correctness invariants + operational rules
 - **[`RUNBOOK.md`](../../RUNBOOK.md)** — cloud operation, scheduler, secrets, Common tasks
 - **[`agents/bhaga/scripts/README.md`](../../agents/bhaga/scripts/README.md)** — script-by-script code map
 
@@ -32,7 +32,7 @@ Read these first and derive proposals from them (see also AGENTS.md § consult-f
 ## Operational rules (cloud-primary; laptop retired 2026-05-29)
 
 > Common process rules (PR flow, end-to-end ownership, doc lock-step, side-effect retry guard)
-> live in the **Spine** — see CONTRIBUTING.md, pr-workflow.mdc, self-drive.md, doc-maintenance.md.
+> live in the **Spine** — see CONTRIBUTING.md, pr-workflow.mdc, self-drive.mdc, doc-maintenance.mdc.
 
 - **Sheets/BQ are the production database — write only through the sanctioned layer**
   (`skills/tip_ledger_writer/`). No ad-hoc `values:clear`, `python -c`, or raw API writes against prod.
@@ -46,7 +46,7 @@ Read these first and derive proposals from them (see also AGENTS.md § consult-f
   (Slack). Never manually edit the Sheet config tab — it is a read-only projection of BQ.
   Read tunables in code via `core.store_config.get_config(store, key)`.
 - **Cloud reads from BQ, secrets from Secret Manager** — never laptop files or GCS data files.
-- Plan readiness → apply `plan-execution-readiness.md` before moving from Plan to Agent mode (Spine rule).
+- Plan readiness → apply `plan-execution-readiness.mdc` before moving from Plan to Agent mode (Spine rule).
 - **Prove changes with the per-PR sandbox e2e** (`sandbox_e2e.py`), not by touching prod sheets.
 - **Sandbox runs are read-only toward prod data sources.** A sandbox/staging run (`BHAGA_SHEET_MODE=staging`)
   may **read** prod data (GCS cache, raw sheets) but must **never write** to any prod data source —

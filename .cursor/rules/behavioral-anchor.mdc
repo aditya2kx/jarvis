@@ -20,4 +20,4 @@ Four principles that govern every code change.  Not a style guide — a forcing 
 4. **Declare intent, verify outcome.**  Comments explain *why*, not *what*.  After every change, run the
    narrowest test that proves the invariant holds — don't rely on "it looks right".
 
-See also: `user-preferences.md` (operator design principles + decision history, do not restate here).
+See also: `user-preferences.mdc` (operator design principles + decision history, do not restate here).

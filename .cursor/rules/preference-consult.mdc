@@ -7,7 +7,7 @@ alwaysApply: true
 
 Before calling `AskQuestion` or presenting a binary decision to the operator:
 
-1. Check `.cursor/rules/user-preferences.md` (already in context). If an active preference clearly answers the question, apply it and do NOT ask — state which preference you applied.
+1. Check `.cursor/rules/user-preferences.mdc` (already in context). If an active preference clearly answers the question, apply it and do NOT ask — state which preference you applied.
 2. If no preference applies, ask normally.
 
 After the operator answers:

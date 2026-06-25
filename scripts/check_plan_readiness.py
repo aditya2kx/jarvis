@@ -2,7 +2,7 @@
 """Plan execution-readiness gate.
 
 Scores a plan markdown file against the 10-point checklist in
-.cursor/rules/plan-execution-readiness.md and exits nonzero when the score is
+.cursor/rules/plan-execution-readiness.mdc and exits nonzero when the score is
 below the threshold.  Acts as the HARD gate in verify.py --full --plan <path>
 that guards the Plan -> Agent transition so a weaker model can execute the plan
 without additional operator prompting.

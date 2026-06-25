@@ -15,7 +15,7 @@ Read these first, derive proposals from them, cite what you used.
 
 1. **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — dev loop as success criteria; evidence-definition step; phase lifecycle.
 2. **[`docs/WORKFLOW.md`](docs/WORKFLOW.md)** — canonical lifecycle map: 10 phases → 5 stages, agent hierarchy, operator-reserved zone, autonomy ladder, verification matrix, roadmap.
-3. **[`.cursor/rules/bhaga-principles.md`](.cursor/rules/bhaga-principles.md)** (BHAGA work) / **[`.cursor/rules/chitra.md`](.cursor/rules/chitra.md)** (CHITRA work) — agent-specific invariants.
+3. **[`.cursor/rules/bhaga-principles.mdc`](.cursor/rules/bhaga-principles.mdc)** (BHAGA work) / **[`.cursor/rules/chitra.mdc`](.cursor/rules/chitra.mdc)** (CHITRA work) — agent-specific invariants.
 4. **[`RUNBOOK.md`](RUNBOOK.md)** — cloud operation (BHAGA only).
 
 ---
@@ -24,10 +24,10 @@ Read these first, derive proposals from them, cite what you used.
 
 | Agent | Purpose | Deployment | Read |
 |---|---|---|---|
-| **BHAGA** | Tip allocation, payroll prep, labor model | Cloud (GCP Cloud Run) | `RUNBOOK.md` + `bhaga.md` |
-| **CHITRA** | Tax document collection | Local laptop | `chitra.md` + `chitra-playbook.md` |
-| **CHANAKYA** | Product research, market analysis | Local laptop | `chanakya.md` |
-| **AKSHAYA** | Inventory forecasting & ordering | Local laptop | `akshaya.md` |
+| **BHAGA** | Tip allocation, payroll prep, labor model | Cloud (GCP Cloud Run) | `RUNBOOK.md` + `bhaga.mdc` |
+| **CHITRA** | Tax document collection | Local laptop | `chitra.mdc` + `chitra-playbook.mdc` |
+| **CHANAKYA** | Product research, market analysis | Local laptop | `chanakya.mdc` |
+| **AKSHAYA** | Inventory forecasting & ordering | Local laptop | `akshaya.mdc` |
 
 ---
 
@@ -40,6 +40,7 @@ Read these first, derive proposals from them, cite what you used.
 5. **Third-party portal automation uses `user-playwright` MCP**, never `cursor-ide-browser`.
 6. **Cloud reads from cloud** — prod data from GCS / BQ / Secret Manager, not laptop files.
 7. **Build & verify are part of the task** — run `scripts/verify.py --full` before declaring done.
+8. **Rule files in `.cursor/rules/` MUST use the `.mdc` extension** — Cursor only loads `.mdc` as project rules; `.md` files are silently ignored. `AGENTS.md` is a special filename loaded regardless of extension. See `docs/contributing/rules.md` for authoring guidance.
 
 ---
 
@@ -48,7 +49,7 @@ Read these first, derive proposals from them, cite what you used.
 | Tier | What | Where |
 |---|---|---|
 | **Tier 0 — Gates** | CI + `verify.py` (local mirror) | Mechanically enforced; can't be skipped |
-| **Tier 1 — Spine** | This file + `CONTRIBUTING.md` + routing card + behavioral anchor + self-drive rule | ~150-200 lines; always-on |
+| **Tier 1 — Spine** | This file + `CONTRIBUTING.md` + routing card + behavioral anchor + self-drive rule + new-requirement intake | ~150-200 lines; always-on |
 | **Tier 2 — References** | `docs/WORKFLOW.md`, `docs/contributing/*`, glob-scoped agent specs, `RUNBOOK.md` | On-demand; loaded only when relevant |
 
 ---
@@ -60,7 +61,7 @@ Read these first, derive proposals from them, cite what you used.
 | Operate / debug the live BHAGA cloud system | `RUNBOOK.md` |
 | Understand BHAGA domain (orders, items, labor, tips, reviews) | `agents/bhaga/knowledge-base/DOMAIN.md` |
 | Understand BHAGA pipeline code | `agents/bhaga/scripts/README.md` |
-| Know BHAGA behavioral rules & invariants | `.cursor/rules/bhaga.md` |
+| Know BHAGA behavioral rules & invariants | `.cursor/rules/bhaga.mdc` |
 | Open a PR / understand the review process | `CONTRIBUTING.md` + `docs/contributing/` |
 | See the full lifecycle (phases, stages, tracking) | `docs/WORKFLOW.md` |
 | Track work in flight / check phase state | `python3 scripts/phase_state.py report` |
@@ -77,9 +78,10 @@ When you change behavior, update the doc in the same change:
 |---|---|
 | BHAGA pipeline behavior, OTP flow, sheets | `RUNBOOK.md` |
 | BHAGA script, data flow, extending the model | `agents/bhaga/scripts/README.md` |
-| BHAGA invariant / behavioral rule | `.cursor/rules/bhaga.md` |
+| BHAGA invariant / behavioral rule | `.cursor/rules/bhaga.mdc` |
 | Lifecycle scripts (`phase_state.py`, `lifecycle.py`, `verify.py`, etc.) | `docs/WORKFLOW.md` |
-| Cross-agent architecture, added agent/skill | `.cursor/rules/jarvis.md` + this file's tables |
+| Cross-agent architecture, added agent/skill | `.cursor/rules/jarvis.mdc` + this file's tables |
+| Added a new `.cursor/rules/*.mdc` file | Update `ALWAYS_ON` set in `verify_lifecycle.py::assert_16` if always-on; add row to Tier-1 table above |
 | Anything notable (status, decision, blocker) | `PROGRESS.md` (dated entry) |
 
 Run `python3 scripts/check_doc_freshness.py` before finishing any change.

@@ -74,7 +74,7 @@ DOWNLOADS_DIR = PROJECT_ROOT / "extracted" / "downloads"
 # Cloud Run Job the filesystem is ephemeral and discarded when the execution
 # exits, so a browser failure must be reconstructable from
 # gs://<cache>/<date>/evidence/ + Firestore + Cloud Run logs ALONE, without a
-# rerun (see .cursor/rules/bhaga-principles.md — observability). Override with
+# rerun (see .cursor/rules/bhaga-principles.mdc — observability). Override with
 # BHAGA_EVIDENCE_DIR; defaults to the system temp dir — never a hardcoded laptop
 # path (the laptop is retired; cloud reads from GCS, not local files).
 EVIDENCE_DIR = pathlib.Path(

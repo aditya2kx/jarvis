@@ -11,7 +11,7 @@ Usage:
     python3 -m agents.bhaga.scripts.backfill_item_lines_from_cache --store palmetto --local-only
 
 See RUNBOOK.md § "Run a one-off backfill against prod" and
-.cursor/rules/bhaga.md § Operational rules.
+.cursor/rules/bhaga.mdc § Operational rules.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 
 Provisions a real, separate Slack app for any Jarvis agent — fully via the existing browser + credentials skills. No manual web-UI homework for the user; if the user's `api.slack.com` session needs login or MFA the collaborative-browser pattern hands the keyboard back to them just for that step, then resumes.
 
-**Reusable across every Jarvis agent.** The agent-creation checklist in `.cursor/rules/jarvis.md` calls this skill as the canonical "give the new agent its own Slack identity" step.
+**Reusable across every Jarvis agent.** The agent-creation checklist in `.cursor/rules/jarvis.mdc` calls this skill as the canonical "give the new agent its own Slack identity" step.
 
 ## Why it exists
 

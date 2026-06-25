@@ -1,7 +1,7 @@
 """skills/user_model — predictive model of how the user thinks.
 
 Captures preference signals from user turns, persists structured preferences
-to .cursor/rules/user-preferences.md (auto-loaded), and keeps an append-only
+to .cursor/rules/user-preferences.mdc (auto-loaded), and keeps an append-only
 raw corpus for later distillation.
 
 Public API:

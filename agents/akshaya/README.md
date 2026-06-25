@@ -84,7 +84,7 @@ Located at `agents/akshaya/knowledge-base/`:
 
 ## Cursor Rules
 
-AKSHAYA's behavior is defined at `.cursor/rules/akshaya.md`.
+AKSHAYA's behavior is defined at `.cursor/rules/akshaya.mdc`.
 
 ## Agent Naming Convention
 

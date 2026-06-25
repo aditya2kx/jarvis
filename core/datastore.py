@@ -63,7 +63,7 @@ def _assert_sandbox_write_isolation() -> None:
             f"BLOCKED: a sandbox/staging run attempted to WRITE to the production "
             f"BigQuery dataset '{_DEFAULT_DATASET}'. Set BHAGA_BQ_DATASET to a sandbox "
             f"dataset. Sandbox runs may READ prod data but must NEVER write it "
-            f"(see .cursor/rules/bhaga-principles.md — sandbox isolation)."
+            f"(see .cursor/rules/bhaga-principles.mdc — sandbox isolation)."
         )
 
 

@@ -25,7 +25,7 @@ Not "later," not "in a follow-up" — same change. A doc that lags the code is a
 | `agents/bhaga/scripts/*.py` or `skills/tip_ledger_writer/*.py` (pipeline, scripts, data model) | `agents/bhaga/scripts/README.md` (code map + "Extending the model") |
 | sheet columns / metrics / domain meaning (`schema.py`, `update_model_sheet.py`, `forecast.py`, `process_reviews.py`) | `agents/bhaga/knowledge-base/DOMAIN.md` (data dictionary) |
 | `cloud/**`, `.github/workflows/deploy.yml`, `daily_refresh*.py`, `otp_gate.py` (deploy / scheduler / secrets / OTP / orchestration) | `RUNBOOK.md` |
-| `skills/tip_pool_allocation/*.py` or `store-profiles/*.json` (allocation invariant / sheet source of truth) | `.cursor/rules/bhaga.md` (+ `RUNBOOK.md` for sheets) |
+| `skills/tip_pool_allocation/*.py` or `store-profiles/*.json` (allocation invariant / sheet source of truth) | `.cursor/rules/bhaga.mdc` (+ `RUNBOOK.md` for sheets) |
 | `scripts/new_requirement.py`, `start_pr_session.py`, `phase_state.py`, `lifecycle.py`, `verify.py` | `docs/WORKFLOW.md` (lifecycle map) |
 | `.github/workflows/claude-review.yml`, PR template, `check_pr_description.py` | `CONTRIBUTING.md` + `docs/contributing/review-bot.md` |
 | `scripts/pr_cost_ledger.py`, `install-git-hooks.sh`, cost workflows | `docs/contributing/cost.md` + `RUNBOOK.md` |

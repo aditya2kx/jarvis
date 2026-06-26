@@ -43,12 +43,34 @@ removed legacy jarvis dispatcher from /Users/.../.cursor/hooks.json
 
 After re-opening the verification worktree, no messages are blocked.
 
-## M2 — Behavioral: operator live test (pending)
+## M2 — End-to-end smoke run (new_requirement.py live)
 
-After this PR is pushed, the verification worktree (`demo/intake-rule-test`) will be reset to this branch.
+```
+$ python3 scripts/new_requirement.py --requirement "smoke: skill e2e proof" --no-open
+
+Brief written → .../jarvis-wt-fix-when-operator-says-they-want-to-wt-fix-smoke-skill-e2e-proof/metrics/pr_cost/session-fix-smoke-skill-e2e-proof-brief.md
+Created issue #75 for branch 'fix/smoke-skill-e2e-proof'.
+Tracking issue → https://github.com/aditya2kx/jarvis/issues/75
+Phase cache seeded into worktree: .../session-fix-smoke-skill-e2e-proof-phase.json
+```
+
+Phase state inside the new worktree:
+```
+$ python3 scripts/phase_state.py status
+Branch:  fix/smoke-skill-e2e-proof
+Issue:   #75
+Stage:   align  (50% of stage)
+Substep: jam
+```
+
+`Issue: #75` — not `#none`. Cache-seed fix (A17) confirmed working end-to-end.
+
+## M3 — Behavioral: operator live test (pending)
+
+After this PR is pushed, the verification worktree (`demo/intake-rule-test`) has been reset to this branch. The operator will type `/jarvis-new-task <text>` in a Cursor chat in that window to confirm the skill is offered and `new_requirement.py` runs.
 
 Expected results:
 - Typing `/jarvis-new-task add multi-date Slack command support` → agent runs `new_requirement.py`, new worktree opens
-- Typing any message containing "new requirement" in a meta context (e.g. "not asking for a new requirement") → passes through unblocked
+- Typing any message containing "new requirement" in a meta context (e.g. "not asking for a new requirement") → passes through unblocked (no hook firing)
 
 Operator screenshot/transcript to be captured here before merge.

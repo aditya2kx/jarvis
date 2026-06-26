@@ -436,8 +436,11 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = _repo_root()
     requirements: list[str] = args.requirements
 
-    # Resolve base: default to current branch so worktrees inherit in-flight framework changes.
-    base = args.base or _current_branch(repo_root)
+    # Resolve base: always default to origin/main so new worktrees never inherit
+    # in-flight commits from whatever branch the operator happens to be on.
+    # Branching off a feature branch caused PR #81 to include 19 unrelated commits
+    # from an older in-flight PR — every new requirement must start from clean main.
+    base = args.base or "origin/main"
 
     if len(requirements) > 1 and args.split:
         # One worktree per requirement

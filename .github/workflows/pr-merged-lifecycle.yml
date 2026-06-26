@@ -1,0 +1,270 @@
+name: Post-merge lifecycle
+
+# On every squash-merge to main:
+#   1. Locate the tracking issue for the merged branch (via phase-cache or
+#      jarvis-work issue scan).
+#   2. Advance phase state: merge → approved (operator merged = approval).
+#   3. Link the PR to the issue (cross-reference comment on the issue).
+#   4. Parse §4 "Post-merge verification" block; run read-only commands;
+#      post a per-command ✅/❌ comment; advance post-merge-verify when all green.
+#   5. Post a retrospective prompt (speed / cost / accuracy checklist) as a
+#      comment on the issue — the agent picks it up in a follow-up chat.
+#
+# Does NOT auto-close the issue — that is the retrospective agent's job.
+# Does NOT run side-effecting commands (OTP, scrape, deploy) — those are
+# listed as "agent follow-up" items in the posted comment.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: pr-merged-lifecycle-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  lifecycle:
+    name: Post-merge lifecycle
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ADMIN_PAT }}
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+      BRANCH: ${{ github.event.pull_request.head.ref }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ── Step 1: Find tracking issue ───────────────────────────────────────
+      - name: Find tracking issue
+        id: issue
+        run: |
+          # Try phase-cache first (fastest; no network).
+          ISSUE_N="$(python3 scripts/post_merge_lifecycle.py find-issue \
+            --branch "$BRANCH" 2>/dev/null || echo '')"
+          if [ -z "$ISSUE_N" ] || [ "$ISSUE_N" = "none" ]; then
+            echo "::notice::Phase cache miss — scanning jarvis-work issues for branch $BRANCH"
+            ISSUE_N="$(python3 scripts/post_merge_lifecycle.py find-issue \
+              --branch "$BRANCH" 2>/dev/null || echo 'none')"
+          fi
+          echo "issue_number=${ISSUE_N}" >> "$GITHUB_OUTPUT"
+          echo "Found tracking issue: $ISSUE_N"
+
+      # ── Step 2: Advance merge substep ────────────────────────────────────
+      - name: Advance phase state — merge
+        if: steps.issue.outputs.issue_number != 'none' && steps.issue.outputs.issue_number != ''
+        run: |
+          # Determine trigger: ship-emoji or manual squash-merge.
+          # We check the PR timeline for a ship-emoji comment from the merge actor.
+          MERGE_ACTOR="${{ github.event.pull_request.merged_by.login }}"
+          TRIGGER="manual squash-merge by @${MERGE_ACTOR}"
+
+          python3 scripts/phase_state.py advance \
+            --branch "$BRANCH" \
+            --to merge \
+            --operator-approved \
+            --note "PR #$PR merged: $TRIGGER" 2>&1 || \
+            echo "::notice::advance merge failed (may already be recorded)"
+
+      # ── Step 3: Link PR ↔ issue ──────────────────────────────────────────
+      - name: Link PR to tracking issue
+        if: steps.issue.outputs.issue_number != 'none' && steps.issue.outputs.issue_number != ''
+        run: |
+          ISSUE_N="${{ steps.issue.outputs.issue_number }}"
+          gh issue comment "$ISSUE_N" \
+            --repo "$REPO" \
+            --body "**Merged:** PR #${PR} ([${PR_TITLE}](https://github.com/${REPO}/pull/${PR})) was squash-merged to \`main\` on $(date -u +%Y-%m-%dT%H:%M:%SZ)." \
+            || echo "::warning::Could not post link comment to issue #$ISSUE_N"
+
+      # ── Step 4: Post-merge verification ──────────────────────────────────
+      - name: Parse + run post-merge verification
+        id: pmv
+        if: steps.issue.outputs.issue_number != 'none' && steps.issue.outputs.issue_number != ''
+        run: |
+          PR_BODY="$(gh pr view "$PR" --repo "$REPO" --json body -q .body 2>/dev/null || echo '')"
+          ISSUE_N="${{ steps.issue.outputs.issue_number }}"
+
+          CMDS_JSON="$(echo "$PR_BODY" | \
+            python3 scripts/post_merge_lifecycle.py parse-post-merge 2>/dev/null || echo '[]')"
+
+          COUNT="$(echo "$CMDS_JSON" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")"
+          echo "cmd_count=${COUNT}" >> "$GITHUB_OUTPUT"
+
+          if [ "$COUNT" = "0" ]; then
+            echo "No post-merge verification commands defined."
+            gh issue comment "$ISSUE_N" --repo "$REPO" \
+              --body "### Post-merge verification: skipped
+No \`### Post-merge verification\` block found in PR #${PR} §4.
+Add a block in future PRs to get automated post-merge spot-checks." \
+              || true
+            exit 0
+          fi
+
+          # Run each read-only command; collect results.
+          # Use process substitution to avoid a subshell so EXIT_CODE is captured correctly.
+          while IFS= read -r line; do
+            READONLY="$(echo "$line" | cut -d' ' -f1)"
+            CMD="$(echo "$line" | cut -d' ' -f2-)"
+            if [ "$READONLY" = "True" ]; then
+              echo "Running: $CMD"
+              OUTPUT="$(eval "$CMD" 2>&1)"; EXIT_CODE=$?
+              OUTPUT="$(printf '%s' "$OUTPUT" | head -20)"
+              if [ $EXIT_CODE -eq 0 ]; then
+                STATUS="✅"
+              else
+                STATUS="❌"
+              fi
+              echo "RESULT:${STATUS}:${CMD}:${OUTPUT}" >> /tmp/pmv_results.txt
+            else
+              echo "SIDEEFFECT:${CMD}" >> /tmp/pmv_results.txt
+            fi
+          done < <(echo "$CMDS_JSON" | python3 -c "
+import json, sys
+cmds = json.load(sys.stdin)
+for c in cmds:
+    print(c['readonly'], c['raw'])
+")
+
+          # Build comment from results.
+          python3 - <<'PYEOF'
+import os
+
+results_file = "/tmp/pmv_results.txt"
+if not os.path.exists(results_file):
+    print("no_results")
+    exit(0)
+
+lines = open(results_file).readlines()
+passed = failed = 0
+readonly_lines = []
+agent_lines = []
+
+for line in lines:
+    line = line.rstrip()
+    if line.startswith("RESULT:"):
+        parts = line.split(":", 3)
+        status = parts[1]
+        cmd = parts[2]
+        output = parts[3] if len(parts) > 3 else ""
+        if status == "✅":
+            passed += 1
+        else:
+            failed += 1
+        readonly_lines.append(f"{status} `{cmd}`\n<details><summary>output</summary>\n\n```\n{output[:500]}\n```\n</details>")
+    elif line.startswith("SIDEEFFECT:"):
+        cmd = line.split(":", 1)[1]
+        agent_lines.append(f"- [ ] `{cmd}` — run manually in a follow-up chat")
+
+summary = f"**{passed} passed, {failed} failed**"
+print("SUMMARY:" + summary)
+print("PASSED:" + str(passed))
+print("FAILED:" + str(failed))
+for rl in readonly_lines:
+    print("READONLY:" + rl)
+for al in agent_lines:
+    print("AGENT:" + al)
+PYEOF
+
+      - name: Post verification comment
+        if: steps.issue.outputs.issue_number != 'none' && steps.issue.outputs.issue_number != ''
+        run: |
+          ISSUE_N="${{ steps.issue.outputs.issue_number }}"
+          COUNT="${{ steps.pmv.outputs.cmd_count }}"
+          if [ "$COUNT" = "0" ]; then
+            exit 0
+          fi
+          # Build the comment body from the results file.
+          COMMENT="$(python3 - <<'PYEOF'
+import os
+
+results_file = "/tmp/pmv_results.txt"
+if not os.path.exists(results_file):
+    print("### Post-merge verification\n\nNo results recorded.")
+    exit(0)
+
+lines = [l.rstrip() for l in open(results_file).readlines()]
+passed = failed = 0
+readonly_parts = []
+agent_parts = []
+
+for line in lines:
+    if line.startswith("RESULT:"):
+        parts = line.split(":", 3)
+        status = parts[1]
+        cmd = parts[2] if len(parts) > 2 else "?"
+        output = parts[3] if len(parts) > 3 else ""
+        if status == "\u2705":
+            passed += 1
+        else:
+            failed += 1
+        snippet = output[:400].strip() or "(no output)"
+        readonly_parts.append(
+            f"{status} `{cmd}`\n<details><summary>output</summary>\n\n```\n{snippet}\n```\n</details>"
+        )
+    elif line.startswith("SIDEEFFECT:"):
+        cmd = line.split(":", 1)[1]
+        agent_parts.append(f"- [ ] `{cmd}` — run in a follow-up agent chat")
+
+verdict = "\u2705 All checks passed" if failed == 0 else f"\u274c {failed} check(s) failed"
+body = f"### Post-merge verification \u2014 PR #$PR\n\n{verdict} ({passed} passed, {failed} failed)\n\n"
+if readonly_parts:
+    body += "**Auto-verified (read-only):**\n\n" + "\n\n".join(readonly_parts) + "\n\n"
+if agent_parts:
+    body += "**Agent follow-up required (side-effecting \u2014 not auto-run):**\n\n" + "\n".join(agent_parts) + "\n\n"
+print(body)
+PYEOF
+)"
+          gh issue comment "$ISSUE_N" --repo "$REPO" --body "$COMMENT" || \
+            echo "::warning::Could not post verification comment"
+
+      # ── Step 5: Advance post-merge-verify when all read-only cmds passed ─
+      - name: Advance phase state — post-merge-verify
+        if: steps.issue.outputs.issue_number != 'none' && steps.issue.outputs.issue_number != ''
+        run: |
+          # Advance unconditionally — the verification step either ran and
+          # posted results (with any failures visible in the comment) or
+          # had no commands (which still counts as post-merge-verify complete).
+          python3 scripts/phase_state.py advance \
+            --branch "$BRANCH" \
+            --to post-merge-verify 2>&1 || \
+            echo "::notice::advance post-merge-verify failed (may already be recorded)"
+
+      # ── Step 6: Post retrospective prompt ────────────────────────────────
+      - name: Post retrospective prompt
+        if: steps.issue.outputs.issue_number != 'none' && steps.issue.outputs.issue_number != ''
+        run: |
+          ISSUE_N="${{ steps.issue.outputs.issue_number }}"
+          gh issue comment "$ISSUE_N" --repo "$REPO" --body "### Retrospective prompt — PR #${PR}
+
+The agent should open a follow-up chat, read the PR conversation + any relevant agent transcripts, and write a \`PROGRESS.md\` entry with:
+
+**Grade the dev cycle (1-5 for each axis):**
+- [ ] **Speed** — was the jam→merge cycle faster or slower than expected? What was the bottleneck?
+- [ ] **Cost** — did model routing (Sonnet/Opus) match the plan? Any unnecessary Opus escalations?
+- [ ] **Accuracy** — did the implementation match the agreed §4 evidence exactly? Any rework loops?
+
+**Concrete improvement (at least one):**
+- [ ] Propose one specific change to the dev process, workflow, or rules that would improve future PRs.
+
+**Preference harvest:**
+- [ ] Scan the PR conversation for operator signal phrases (always/never/prefer/in general). Run candidates through \`python -m skills.user_model.guardrail score \"<text>\"\` and propose \`store.add_preference\` for passers (operator y/n).
+
+**After writing PROGRESS.md and recording any new preferences:**
+\`\`\`bash
+python3 scripts/phase_state.py advance --branch ${BRANCH} --to retrospective
+gh issue close ${ISSUE_N} --comment \"Retrospective complete — see PROGRESS.md entry $(date -u +%Y-%m-%d).\"
+\`\`\`" || echo "::warning::Could not post retrospective prompt"

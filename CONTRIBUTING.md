@@ -36,6 +36,13 @@ Work is tracked as a GitHub Issue with `stage:*` labels + a progress status bloc
 
 The agent **self-advances** through agent phases and **pauses** at the 3 operator-reserved gates above.
 
+### Merge paths
+- **Normal:** operator reviews and squash-merges via GitHub UI; `auto-merge-on-approval.yml` arms `--auto` on APPROVED review.
+- **Ship-emoji override:** `aditya2kx` posts a standalone 🚀 or 🚢 PR comment to bypass the Claude evidence-confidence soft gate (< 95%) when all hard checks pass. See `docs/contributing/enforcement.md`.
+
+### Post-merge lifecycle
+After every merge, `pr-merged-lifecycle.yml` advances the phase tracker, runs read-only §4 post-merge verification commands, and posts a retrospective prompt on the tracking issue. The agent completes the retrospective (speed / cost / accuracy grade + preference harvest) in a follow-up chat and closes the issue. See `docs/WORKFLOW.md` § Post-merge lifecycle.
+
 ## Define acceptance evidence (operator-reserved step)
 Before the agent starts building, the operator and agent must agree on *what
 evidence the PR must show*.  The agent drafts a proposal; the operator approves it; it becomes PR §4.  This stops evidence being invented after the fact.

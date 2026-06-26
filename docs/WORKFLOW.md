@@ -230,6 +230,32 @@ The agent **self-sequences** all agent-zone phases.  `phase_state.py advance` po
 `awaiting:operator` prompt on the issue whenever an operator gate is reached, so the
 operator always knows where to input.
 
+### Post-merge lifecycle (automated)
+`pr-merged-lifecycle.yml` fires on every squash-merge to `main` and:
+1. Resolves the tracking issue (phase-cache → gh issue scan).
+2. Stamps `approved:merge` and advances `merge` (the squash-merge IS the operator approval).
+3. Posts a cross-reference comment on the issue linking the merged PR.
+4. Parses the §4 "Post-merge verification" block; runs read-only commands in CI; posts results.
+5. Advances `post-merge-verify` once verification runs (or is skipped).
+6. Posts a retrospective prompt (speed / cost / accuracy grading checklist) on the issue.
+
+The **retrospective** is always agent-driven in a follow-up chat (CI cannot read local transcripts).
+The agent reads the PR conversation + transcripts, grades the cycle, proposes ≥1 process improvement,
+runs preference candidates through the user-model guardrail, then closes the issue.
+See `self-drive.mdc` § Retrospective protocol for the full sequence.
+
+### Ship-emoji force-merge
+When `aditya2kx` posts a standalone 🚀 or 🚢 comment on a PR,
+`ship-emoji-force-merge.yml` checks:
+- Is the comment author `aditya2kx` with `OWNER` association?
+- Is the ONLY failing required check the Claude evidence-confidence gate (< 95%)?
+- Is the Claude verdict NOT `REQUEST CHANGES`?
+
+If all true → `gh pr merge --squash --admin`.  Hard CI checks (secret-scan, pytest,
+pr-cost-gate), REQUEST CHANGES verdicts, and unreplied threads are never bypassed.
+The workflow becomes active after this PR merges to `main` (issue_comment workflows
+require the workflow to be on the default branch).
+
 ---
 
 ## 6. Autonomy ladder (L0 → L3)

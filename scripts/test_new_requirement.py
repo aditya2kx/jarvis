@@ -128,5 +128,45 @@ class TestSeedCacheToWorktree(unittest.TestCase):
             )
 
 
+class TestDefaultBase(unittest.TestCase):
+    def test_returns_origin_main(self):
+        self.assertEqual(N.default_base(), "origin/main")
+
+    @patch("new_requirement.create_worktree")
+    @patch("new_requirement.start_session_in_worktree")
+    @patch("new_requirement._repo_root")
+    def test_main_no_base_uses_origin_main(self, mock_root, mock_session, mock_wt):
+        """When --base is not passed, main() must resolve to origin/main."""
+        mock_root.return_value = Path("/repo/jarvis")
+        mock_session.return_value = (
+            Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-brief.md"),
+            Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-launch.html"),
+            "cursor://test",
+        )
+        N.main(["--requirement", "Test base default", "--branch", "fix/test-base", "--dry-run"])
+        _, kwargs = mock_wt.call_args
+        self.assertEqual(kwargs.get("base"), "origin/main")
+
+    @patch("new_requirement.create_worktree")
+    @patch("new_requirement.start_session_in_worktree")
+    @patch("new_requirement._repo_root")
+    def test_main_explicit_base_honored(self, mock_root, mock_session, mock_wt):
+        """When --base is explicitly passed, it must be forwarded verbatim."""
+        mock_root.return_value = Path("/repo/jarvis")
+        mock_session.return_value = (
+            Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-brief.md"),
+            Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-launch.html"),
+            "cursor://test",
+        )
+        N.main([
+            "--requirement", "Test base override",
+            "--branch", "fix/test-base-override",
+            "--base", "feat/some-inflight-branch",
+            "--dry-run",
+        ])
+        _, kwargs = mock_wt.call_args
+        self.assertEqual(kwargs.get("base"), "feat/some-inflight-branch")
+
+
 if __name__ == "__main__":
     unittest.main()

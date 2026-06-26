@@ -1,5 +1,31 @@
 # Jarvis Build Progress
 
+## 2026-06-26 — Ship-emoji force-merge + post-merge lifecycle integrity (PR #85, branch fix/add-ship-emoji-comment-force-merge)
+
+**Status:** In flight — M1–M4 implemented; PR open, babysitting to green.
+
+Five requirements merged into one lifecycle-integrity PR:
+1. **Ship-emoji force-merge** — `aditya2kx` posts 🚀/🚢 on a PR → `ship-emoji-force-merge.yml` squash-merges via admin PAT, bypassing only the Claude evidence-confidence soft gate (< 95%). Hard CI checks, REQUEST CHANGES, unreplied threads: never bypassed.
+2. **Issue #76 class fix** — `pr-merged-lifecycle.yml` fires on every squash-merge: resolves tracking issue, stamps `approved:merge`, advances `merge` → `post-merge-verify` in phase_state, cross-links PR→issue.
+3. **Post-merge-verify execution** — reads §4 "Post-merge verification" block; runs read-only commands in CI; posts per-command ✅/❌ comment; side-effecting commands flagged as agent follow-up.
+4. **Retrospective from conversations** — lifecycle workflow posts structured prompt (speed/cost/accuracy grading + preference harvest) on the tracking issue; agent completes in a follow-up chat and closes the issue.
+5. **new_requirement.py base=origin/main** — R5 also landed via PR #82; our diff retains the `default_base()` DRY helper + tests.
+
+**What changed:**
+- `scripts/new_requirement.py`: `default_base()` helper (DRY over main's inline literal); `--base` arg default updated; tests added.
+- `scripts/ship_merge.py` (new): pure helpers `is_ship_intent`, `is_authorized`, `only_evidence_confidence_blocking`.
+- `scripts/test_ship_merge.py` (new): 28 tests covering §4 scenarios A-G.
+- `scripts/post_merge_lifecycle.py` (new): `find_tracking_issue`, `parse_post_merge_block` (line-by-line state machine, fence-aware).
+- `scripts/test_post_merge_lifecycle.py` (new): 13 tests.
+- `.github/workflows/ship-emoji-force-merge.yml` (new): issue_comment trigger.
+- `.github/workflows/pr-merged-lifecycle.yml` (new): pull_request closed + merged==true trigger.
+- `.github/pull_request_template.md`: added optional `### Post-merge verification` subsection in §4.
+- `.cursor/rules/self-drive.mdc`: full retrospective protocol (speed/cost/accuracy + preference harvest + issue close).
+- `docs/WORKFLOW.md`: post-merge lifecycle + ship-emoji sections.
+- `CONTRIBUTING.md`: merge paths + post-merge lifecycle documented.
+- `docs/contributing/enforcement.md`: ship-emoji + post-merge lifecycle documented.
+- `scripts/check_doc_freshness.py`: COUPLINGS entry for new workflows + helpers.
+
 ## 2026-06-26 — Evidence-tier gate at plan creation + sandbox-live proof for PR #82 (PR #82, branch fix/held-back-review-counter-fix)
 
 **Problem:** A recurring harness gap across multiple PRs: `check_plan_readiness.py` item 5 only regex-matched "sandbox/tier" (so a plan declaring "no live run" passed plan-readiness), but the Claude evidence-confidence gate hard-blocked unit-only evidence at <95%. The disagreement was only discovered after build + push + ~3-4 min Claude round-trip, costing many commits and tokens per PR.

@@ -43,12 +43,46 @@ removed legacy jarvis dispatcher from /Users/.../.cursor/hooks.json
 
 After re-opening the verification worktree, no messages are blocked.
 
-## M2 — Behavioral: operator live test (pending)
+## M2 — End-to-end smoke run (new_requirement.py live)
 
-After this PR is pushed, the verification worktree (`demo/intake-rule-test`) will be reset to this branch.
+```
+$ python3 scripts/new_requirement.py --requirement "smoke: skill e2e proof" --no-open
 
-Expected results:
-- Typing `/jarvis-new-task add multi-date Slack command support` → agent runs `new_requirement.py`, new worktree opens
-- Typing any message containing "new requirement" in a meta context (e.g. "not asking for a new requirement") → passes through unblocked
+Brief written → .../jarvis-wt-fix-when-operator-says-they-want-to-wt-fix-smoke-skill-e2e-proof/metrics/pr_cost/session-fix-smoke-skill-e2e-proof-brief.md
+Created issue #75 for branch 'fix/smoke-skill-e2e-proof'.
+Tracking issue → https://github.com/aditya2kx/jarvis/issues/75
+Phase cache seeded into worktree: .../session-fix-smoke-skill-e2e-proof-phase.json
+```
 
-Operator screenshot/transcript to be captured here before merge.
+Phase state inside the new worktree:
+```
+$ python3 scripts/phase_state.py status
+Branch:  fix/smoke-skill-e2e-proof
+Issue:   #75
+Stage:   align  (50% of stage)
+Substep: jam
+```
+
+`Issue: #75` — not `#none`. Cache-seed fix (A17) confirmed working end-to-end.
+
+## M3 — Behavioral: operator live test (PASSED)
+
+**Chat:** [Bhaga debugging → jarvis-new-task test](491d0e82-5e82-4070-93c2-1a0f8e47e0d5)
+
+The operator typed a new requirement in the verification worktree chat (`demo/intake-rule-test`, which is on this PR's branch):
+
+> "I want to work on a new requirement such that my Slack command can take in multiple days or start and end date or specific dates."
+
+The `/jarvis-new-task` skill was manually invoked (operator attached it). The agent ran `new_requirement.py` and responded:
+
+> "The new requirement is set up. Continue in the new Cursor window — don't implement anything here."
+>
+> **Branch:** `fix/slack-bhaga-cloud-refresh-command-support`
+> **Worktree:** `.../jarvis-wt-fix-redesign-repo-...-wt-fix-slack-bhaga-cloud-refresh-command-support`
+> **Tracking issue:** https://github.com/aditya2kx/jarvis/issues/76
+
+**Key behavioral properties confirmed:**
+- `/jarvis-new-task` skill executed `new_requirement.py` correctly
+- New isolated worktree + branch + GitHub issue created in one step
+- Agent correctly stopped ("don't implement anything here") rather than implementing inline
+- No false positive — the prior blocking hook is gone; message passed through to skill invocation cleanly

@@ -1,6 +1,6 @@
 # Jarvis Build Progress
 
-## 2026-06-25 — `/bhaga-cloud refresh` multi-date support (PR #TBD, branch fix/slack-bhaga-cloud-refresh-command-support)
+## 2026-06-25 — `/bhaga-cloud refresh` multi-date support (PR #77, branch fix/slack-bhaga-cloud-refresh-command-support)
 
 **Status:** Implementing — M1 (parser + tests) complete; M2 (evidence driver + RUNBOOK) complete; awaiting live sandbox evidence run.
 
@@ -11,7 +11,6 @@ Extended the `/bhaga-cloud refresh` slash command to accept comma/space lists, i
 - `cloud/webhook/test_handler.py`: `TestParseRefreshDates`, `TestBuildRefreshEnvOverrides`, `TestRefreshMultiDate` (122 tests total, all pass).
 - `cloud/webhook/sandbox_refresh_driver.py`: evidence harness for webhook slash-command changes.
 - `RUNBOOK.md`: §8 refresh-command section + sandbox evidence driver documentation.
-
 ## 2026-06-25 — Hook→skill pivot: /jarvis-new-task replaces blocking intake hook (PR #74)
 
 **Status:** PR open, awaiting operator live test as behavioral evidence, then merge.

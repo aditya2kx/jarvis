@@ -36,6 +36,17 @@ from google.cloud import firestore
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 CLOCK_SKEW_TOLERANCE_S = 5 * 60  # reject timestamps older than 5 minutes
 
+# Direct sandbox trigger — bypasses Slack HMAC verification when
+# X-Sandbox-Trigger: <token> matches this secret. The bypass path ALWAYS routes
+# to the sandbox job (bhaga-sandbox-refresh + bhaga_sandbox), never prod.
+# Fail-closed: when empty, no bypass is possible and the header is ignored.
+_SANDBOX_TRIGGER_TOKEN = os.environ.get("SANDBOX_TRIGGER_TOKEN", "")
+_SANDBOX_JOB_RESOURCE = os.environ.get(
+    "BHAGA_SANDBOX_JOB_NAME",
+    "projects/jarvis-bhaga-prod/locations/us-central1/jobs/bhaga-sandbox-refresh",
+)
+_SANDBOX_BQ_DATASET = "bhaga_sandbox"
+
 # Run-state collections. Prod is always "runs". A live sandbox run writes its
 # pending-OTP checkpoint to its own collection; the webhook scans it FIRST so a
 # sandbox OTP reply resumes the sandbox job — never prod — even when both await
@@ -393,26 +404,220 @@ def _handle_ready_reply(agent: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Multi-date refresh: parser, coverage probe, and env-override builder
+# ---------------------------------------------------------------------------
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_MAX_REFRESH_DATES = 31  # guard against typos like 2026-01-01..2026-12-31
+
+
+def _parse_refresh_dates(text: str) -> tuple[list[str], Optional[str]]:
+    """Parse the argument portion of a 'refresh ...' command into a sorted, deduped date list.
+
+    Accepted forms (comma-separated items; each item is a date or a range):
+      2026-06-14
+      2026-06-14,2026-06-15          (comma list, spaces optional)
+      2026-06-14 2026-06-15          (space-separated dates only — no 'to' keyword)
+      2026-06-14..2026-06-20         (inclusive range, double-dot)
+      2026-06-14 to 2026-06-20       (inclusive range, 'to' keyword)
+      2026-06-14,2026-06-20..2026-06-22,2026-06-25  (mixed)
+
+    Returns (dates, None) on success; ([], error_message) on any parse failure.
+    Pure — no I/O.
+    """
+    import datetime as _dt
+
+    raw = text.strip()
+    if not raw:
+        return [], "no dates provided"
+
+    # Normalise: treat 'YYYY-MM-DD to YYYY-MM-DD' ranges by replacing ' to ' with '..'
+    # so the tokeniser only sees two forms: bare dates and 'start..end' ranges.
+    # We do this carefully: only replace ' to ' when surrounded by date-shaped tokens.
+    # Strategy: split on commas first, then within each comma-token detect 'to'.
+    def _expand_item(item: str) -> tuple[list[str], Optional[str]]:
+        item = item.strip()
+        # 'YYYY-MM-DD to YYYY-MM-DD'
+        to_match = re.match(
+            r"^(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})$", item, re.IGNORECASE
+        )
+        if to_match:
+            start_s, end_s = to_match.group(1), to_match.group(2)
+            return _expand_range(start_s, end_s)
+        # 'YYYY-MM-DD..YYYY-MM-DD'
+        dotdot_match = re.match(r"^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$", item)
+        if dotdot_match:
+            start_s, end_s = dotdot_match.group(1), dotdot_match.group(2)
+            return _expand_range(start_s, end_s)
+        # bare date
+        if _DATE_RE.match(item):
+            try:
+                _dt.date.fromisoformat(item)
+                return [item], None
+            except ValueError:
+                return [], f"invalid date {item!r}"
+        return [], f"unrecognised token {item!r} (expected YYYY-MM-DD, YYYY-MM-DD..YYYY-MM-DD, or YYYY-MM-DD to YYYY-MM-DD)"
+
+    def _expand_range(start_s: str, end_s: str) -> tuple[list[str], Optional[str]]:
+        try:
+            start = _dt.date.fromisoformat(start_s)
+            end = _dt.date.fromisoformat(end_s)
+        except ValueError as exc:
+            return [], f"invalid date in range: {exc}"
+        if start > end:
+            return [], f"range start {start_s} is after end {end_s}"
+        days = (end - start).days + 1
+        return [
+            (start + _dt.timedelta(days=i)).isoformat() for i in range(days)
+        ], None
+
+    # Tokenise: if no comma present AND no '..' and no ' to ' keyword, allow space-sep dates.
+    # If a comma is present, split on commas (each token may be a range).
+    if "," in raw or ".." in raw or re.search(r"\bto\b", raw, re.IGNORECASE):
+        # Comma-split; each token can be a date or a range.
+        # ' to ' ranges are comma-delimited items themselves, so rejoin tokens.
+        tokens = [t.strip() for t in raw.split(",") if t.strip()]
+        # Re-join adjacent tokens connected by ' to ' that were split by comma
+        # (shouldn't happen in normal usage but be safe).
+        merged: list[str] = []
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            # Peek: if this token ends with a date and the next starts with 'to'
+            if (
+                i + 2 < len(tokens)
+                and _DATE_RE.match(tok)
+                and tokens[i + 1].lower() == "to"
+                and _DATE_RE.match(tokens[i + 2])
+            ):
+                merged.append(f"{tok} to {tokens[i + 2]}")
+                i += 3
+            else:
+                merged.append(tok)
+                i += 1
+        tokens = merged
+    else:
+        # Space-separated list of bare dates (no range syntax).
+        tokens = raw.split()
+
+    collected: list[str] = []
+    for tok in tokens:
+        dates_for_tok, err = _expand_item(tok)
+        if err:
+            return [], err
+        collected.extend(dates_for_tok)
+
+    # Dedup + sort ascending.
+    deduped = sorted(set(collected))
+    if len(deduped) > _MAX_REFRESH_DATES:
+        return [], (
+            f"too many dates resolved ({len(deduped)}) — cap is {_MAX_REFRESH_DATES}. "
+            f"Split into smaller batches."
+        )
+    return deduped, None
+
+
+def _date_is_covered(date_str: str, dataset: Optional[str] = None) -> bool:
+    """True if raw Square data already covers date_str in BigQuery.
+
+    ``dataset`` defaults to the module-level ``_BQ_DATASET`` (prod ``bhaga``).
+    Pass ``dataset="bhaga_sandbox"`` for the sandbox bypass path to avoid
+    mutating module state — the probe then reads the sandbox dataset, which is
+    empty for new dates → full scrape + OTP.
+
+    Mirrors scripts/trigger_dated_refresh.py::_date_is_covered.
+    Fail-open: returns False (→ full scrape) on any error so a BQ outage
+    never silently skips a date the operator asked to refresh.
+    """
+    if _bq is None:
+        return False
+    import datetime as _dt
+    ds = dataset or _BQ_DATASET
+    try:
+        sql = (
+            f"SELECT MAX(date_local) AS m"
+            f" FROM `{_BQ_PROJECT}.{ds}.square_daily_rollup`"
+        )
+        rows = list(_bq.query(sql).result())  # type: ignore[union-attr]
+        max_date = rows[0]["m"] if rows else None
+        if max_date is None:
+            return False
+        return _dt.date.fromisoformat(date_str) <= max_date
+    except Exception as exc:
+        log.warning("BQ coverage probe failed for %s (fail-open → full scrape): %s", date_str, exc)
+        return False
+
+
+def _decide_recompute(date_str: str, dataset: Optional[str] = None) -> bool:
+    """True when the date is already covered in BQ → recompute-only (no scrape, no OTP)."""
+    return _date_is_covered(date_str, dataset=dataset)
+
+
+def _build_refresh_env_overrides(date_str: str, recompute_only: bool) -> list[tuple[str, str]]:
+    """Return the per-execution env overrides as (name, value) tuples.
+
+    Mirrors scripts/trigger_dated_refresh.py::_build_env_overrides.
+    Both modes add BHAGA_IGNORE_HALT=1 (operator-driven backfill includes the fix).
+    """
+    env = [("REFRESH_DATE", date_str)]
+    if recompute_only:
+        env += [
+            ("BHAGA_SKIP_SQUARE", "1"),
+            ("BHAGA_SKIP_ADP", "1"),
+            ("BHAGA_SKIP_KDS", "1"),
+        ]
+    else:
+        env.append(("BHAGA_OTP_FORCE_REQUEST", "1"))
+    env.append(("BHAGA_IGNORE_HALT", "1"))
+    return env
+
+
+# ---------------------------------------------------------------------------
 # Slash command handler (/bhaga)
 # ---------------------------------------------------------------------------
 
 
-def _handle_slash_command(form: dict) -> Response:
+def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
     """Handle /bhaga slash commands.
 
     Must respond within 3 seconds. For long-running work, return an ack
     and post follow-up via response_url.
+
+    When ``sandbox=True`` (set by the direct-trigger bypass path), the refresh
+    targets ``bhaga-sandbox-refresh`` + ``bhaga_sandbox`` dataset and prefixes
+    all ack text with :test_tube:[SANDBOX]. The bypass path can never affect
+    prod: job name and BQ dataset are fixed to sandbox values per-call.
     """
     command_text = (form.get("text") or "").strip()
     # response_url = form.get("response_url")  # for async follow-ups
 
-    refresh_match = re.match(r"^refresh\s+(\d{4}-\d{2}-\d{2})$", command_text, re.IGNORECASE)
+    refresh_match = re.match(r"^refresh\s+(.+)$", command_text, re.IGNORECASE)
     if refresh_match:
-        date_str = refresh_match.group(1)
-        _trigger_cloud_run_job(date_str, force_otp_request=True)
+        dates, parse_err = _parse_refresh_dates(refresh_match.group(1))
+        if parse_err:
+            return jsonify({
+                "response_type": "ephemeral",
+                "text": f":x: refresh parse error: {parse_err}",
+            })
+        # Decide recompute-only vs full-scrape per date; build per-date label for the ack.
+        # For sandbox, probe bhaga_sandbox (empty → full scrape) and route to sandbox job.
+        probe_dataset = _SANDBOX_BQ_DATASET if sandbox else None
+        job_name = _SANDBOX_JOB_RESOURCE if sandbox else None
+        date_labels: list[str] = []
+        for date_str in dates:
+            recompute_only = _decide_recompute(date_str, dataset=probe_dataset)
+            mode_label = "recompute" if recompute_only else "full+OTP"
+            env_overrides = _build_refresh_env_overrides(date_str, recompute_only)
+            _trigger_cloud_run_job_with_env(date_str, env_overrides, job_name=job_name)
+            date_labels.append(f"{date_str} ({mode_label})")
+        dates_text = ", ".join(date_labels)
+        prefix = ":test_tube: [SANDBOX] " if sandbox else ":hourglass_flowing_sand: "
         return jsonify({
             "response_type": "ephemeral",
-            "text": f":hourglass_flowing_sand: Refresh triggered for *{date_str}*. Check #bhaga-runs for progress.",
+            "text": (
+                f"{prefix}Refresh triggered: {dates_text}. "
+                f"Check #bhaga-runs for progress."
+            ),
         })
 
     if command_text.lower() == "status":
@@ -480,14 +685,19 @@ def _handle_slash_command(form: dict) -> Response:
         "response_type": "ephemeral",
         "text": (
             ":robot_face: *BHAGA Commands*\n"
-            "  `/bhaga-cloud refresh 2025-05-26` — trigger daily refresh for a date\n"
+            "  `/bhaga-cloud refresh YYYY-MM-DD` — trigger daily refresh for a single date\n"
+            "  `/bhaga-cloud refresh YYYY-MM-DD,YYYY-MM-DD` — comma/space list of dates\n"
+            "  `/bhaga-cloud refresh YYYY-MM-DD..YYYY-MM-DD` — inclusive date range (.. or 'to')\n"
+            "  BQ-covered dates → recompute-only (no OTP); uncovered → full scrape + OTP.\n"
             "  `/bhaga-cloud status` — latest run summary\n"
             "  `/bhaga-cloud config get <key>` — read a store config tunable\n"
             "  `/bhaga-cloud config set <key> <value>` — update a store config tunable\n"
             "  `/bhaga-cloud training set \"Last, First\" YYYY-MM-DD [note]` — mark a shift as training\n"
             "  `/bhaga-cloud training rm \"Last, First\" YYYY-MM-DD` — remove a training shift mark\n"
             "  `/bhaga-cloud alias set <raw_name> \"Last, First\"` — add employee alias\n"
-            "  `/bhaga-cloud exclude set \"Last, First\" [YYYY-MM-DD]` — mark training exclusion through date"
+            "  `/bhaga-cloud exclude set \"Last, First\" [YYYY-MM-DD]` — mark training exclusion through date\n"
+            "  :test_tube: *Direct sandbox trigger* — POST to /slack/commands with "
+            "`X-Sandbox-Trigger: <token>` header (always routes to bhaga-sandbox-refresh, never prod)"
         ),
     })
 
@@ -806,25 +1016,20 @@ def _check_and_store_event_id(event_id: str) -> bool:
         return False
 
 
-def _trigger_cloud_run_job(
+def _trigger_cloud_run_job_with_env(
     date_str: str,
+    env_pairs: list[tuple[str, str]],
     job_name: Optional[str] = None,
-    *,
-    force_otp_request: bool = False,
 ) -> None:
-    """Enqueue a Cloud Run Job execution for the given date.
+    """Low-level: enqueue a Cloud Run Job execution with an explicit env-override list.
 
-    Uses the Cloud Run v2 API to create a job execution. ``job_name`` defaults to
-    the prod CLOUD_RUN_JOB_NAME env var; a sandbox OTP resume passes the sandbox
-    job's resource name so the reply runs the sandbox job, not prod.
+    ``env_pairs`` is a list of (name, value) tuples injected as container env overrides.
+    ``job_name`` defaults to the CLOUD_RUN_JOB_NAME env var.
 
-    Guards (both fail-open so a guard error never blocks a legitimate resume):
-    1. Already-running check: if a non-terminal execution for ``date_str`` already
-       exists on this job, skip the trigger and log — prevents the webhook from
-       spawning a second execution when the operator double-taps READY or Slack
-       retries the delivery.
-    2. The Slack-retry dedup (``_is_slack_retry`` / ``_check_and_store_event_id``)
-       is applied upstream (in ``slack_events``), before this function is called.
+    Guards (fail-open so a guard error never blocks a legitimate resume):
+    1. Already-running check: skips if a non-terminal execution for date_str already
+       exists on this job (duplicate-launch guard).
+    2. Slack-retry dedup applied upstream before this function is called.
     """
     job_name = job_name or os.environ.get("CLOUD_RUN_JOB_NAME")
     if not job_name:
@@ -841,13 +1046,7 @@ def _trigger_cloud_run_job(
     try:
         from google.cloud import run_v2
         client = run_v2.JobsClient()
-        env_overrides = [run_v2.EnvVar(name="REFRESH_DATE", value=date_str)]
-        if force_otp_request:
-            # Explicit operator-driven trigger: re-post a fresh OTP READY request
-            # even if a stale, unanswered pending_otp checkpoint already exists.
-            env_overrides.append(
-                run_v2.EnvVar(name="BHAGA_OTP_FORCE_REQUEST", value="1")
-            )
+        env_overrides = [run_v2.EnvVar(name=n, value=v) for n, v in env_pairs]
         client.run_job(
             request=run_v2.RunJobRequest(
                 name=job_name,
@@ -860,9 +1059,38 @@ def _trigger_cloud_run_job(
                 ),
             ),
         )
-        log.info("Cloud Run Job triggered for date=%s", date_str)
+        log.info("Cloud Run Job triggered for date=%s env=%s", date_str, env_pairs)
     except Exception as exc:
         log.error("Failed to trigger Cloud Run Job: %s", exc)
+
+
+def _trigger_cloud_run_job(
+    date_str: str,
+    job_name: Optional[str] = None,
+    *,
+    force_otp_request: bool = False,
+) -> None:
+    """Enqueue a Cloud Run Job execution for the given date.
+
+    Backward-compatible wrapper used by the READY-handshake path and tests.
+    Uses the Cloud Run v2 API to create a job execution. ``job_name`` defaults to
+    the prod CLOUD_RUN_JOB_NAME env var; a sandbox OTP resume passes the sandbox
+    job's resource name so the reply runs the sandbox job, not prod.
+
+    Guards (both fail-open so a guard error never blocks a legitimate resume):
+    1. Already-running check: if a non-terminal execution for ``date_str`` already
+       exists on this job, skip the trigger and log — prevents the webhook from
+       spawning a second execution when the operator double-taps READY or Slack
+       retries the delivery.
+    2. The Slack-retry dedup (``_is_slack_retry`` / ``_check_and_store_event_id``)
+       is applied upstream (in ``slack_events``), before this function is called.
+    """
+    env_pairs = [("REFRESH_DATE", date_str)]
+    if force_otp_request:
+        # Explicit operator-driven trigger: re-post a fresh OTP READY request
+        # even if a stale, unanswered pending_otp checkpoint already exists.
+        env_pairs.append(("BHAGA_OTP_FORCE_REQUEST", "1"))
+    _trigger_cloud_run_job_with_env(date_str, env_pairs, job_name)
 
 
 def _get_latest_run_summary() -> str:
@@ -948,6 +1176,25 @@ def slack_events():
 
 @app.route("/slack/commands", methods=["POST"])
 def slack_commands():
+    # Direct sandbox trigger bypass — checked before Slack HMAC verification.
+    # Only active when SANDBOX_TRIGGER_TOKEN is set (fail-closed when empty).
+    # The bypass path ONLY accepts `refresh` commands — all other commands
+    # (config/training/alias/exclude) write to prod BQ and must always go
+    # through the Slack HMAC path. Non-refresh via this bypass → 403.
+    sandbox_token = request.headers.get("X-Sandbox-Trigger", "")
+    if _SANDBOX_TRIGGER_TOKEN and hmac.compare_digest(sandbox_token, _SANDBOX_TRIGGER_TOKEN):
+        cmd_text = (request.form.get("text") or "").strip().lower()
+        if not cmd_text.startswith("refresh"):
+            return Response(
+                "sandbox trigger only supports refresh commands", status=403
+            )
+        return _handle_slash_command(request.form, sandbox=True)
+    # A non-empty header that doesn't match → 403 (not a Slack call and not
+    # an authorized sandbox trigger). An empty/missing header falls through
+    # to normal Slack HMAC verification below.
+    if sandbox_token:
+        return Response("invalid sandbox trigger token", status=403)
+
     body = request.get_data()
     timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
     signature = request.headers.get("X-Slack-Signature", "")

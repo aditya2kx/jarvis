@@ -1,5 +1,24 @@
 # Jarvis Build Progress
 
+## 2026-06-25 — `/bhaga-cloud refresh` multi-date support (PR #77, branch fix/slack-bhaga-cloud-refresh-command-support)
+
+**Status:** Implementing — M1 (parser + tests) complete; M2 (evidence driver + RUNBOOK + direct sandbox trigger) complete; awaiting live sandbox evidence run via direct trigger.
+
+**2026-06-26 addition — direct sandbox trigger endpoint:**
+Added `X-Sandbox-Trigger` bypass header to `POST /slack/commands`. When `SANDBOX_TRIGGER_TOKEN` env var is set and the request carries the matching token, the webhook routes to `bhaga-sandbox-refresh` + `bhaga_sandbox` (never prod) without requiring a Slack HMAC signature. Fail-closed when token unset; bypass restricted to `refresh` commands only (other commands still require Slack HMAC). Token comparison uses `hmac.compare_digest`. 9 new unit tests; 131 total, all pass.
+
+**2026-06-26 provisioning + evidence (ADC, no gcloud CLI):**
+- `scripts/provision_sandbox_token.py` — idempotent ADC script: creates the `sandbox-trigger-token` Secret Manager secret + version, mounts it as `SANDBOX_TRIGGER_TOKEN` on `bhaga-webhook`, waits for the new revision. `--rotate` issues a new version; `--dry-run` previews. Reusable for any future shared-secret bypass.
+- `cloud/webhook/sandbox_refresh_driver.py` refactored to ADC-only: `gcloud`/`bq` subprocess calls replaced with `run_v2.ExecutionsClient` + `bigquery.Client` (parameterized SQL). Now calls `_handle_slash_command(sandbox=True)` directly (no env mutation).
+- Live evidence captured 2026-06-26: `--dates 2026-06-23,2026-06-24` → both SUCCEEDED; `bhaga_sandbox.square_item_lines` = 87 / 110 rows; ack `:test_tube: [SANDBOX] Refresh triggered: 2026-06-23 (recompute), 2026-06-24 (full+OTP)`. No Slack OTP reply needed (sandbox job runs `BHAGA_OTP_ASSUME_READY=1`).
+
+Extended the `/bhaga-cloud refresh` slash command to accept comma/space lists, inclusive `..` and `to` ranges, and mixed combinations (up to 31 dates). Each resolved date fans out to one Cloud Run Job execution. Coverage-aware per date (mirrors `scripts/trigger_dated_refresh.py`): BQ-covered dates → recompute-only (no OTP); uncovered → full scrape + `BHAGA_OTP_FORCE_REQUEST=1`. Evidence: live sandbox run for 2026-06-23 and 2026-06-24 against prod Square REST + ADP, verified via `cloud/webhook/sandbox_refresh_driver.py`.
+
+**What changed:**
+- `cloud/webhook/handler.py`: `_parse_refresh_dates`, `_date_is_covered`, `_decide_recompute`, `_build_refresh_env_overrides`, `_trigger_cloud_run_job_with_env` (new); slash-command refresh block and help text updated.
+- `cloud/webhook/test_handler.py`: `TestParseRefreshDates`, `TestBuildRefreshEnvOverrides`, `TestRefreshMultiDate` (122 tests total, all pass).
+- `cloud/webhook/sandbox_refresh_driver.py`: evidence harness for webhook slash-command changes.
+- `RUNBOOK.md`: §8 refresh-command section + sandbox evidence driver documentation.
 ## 2026-06-25 — Hook→skill pivot: /jarvis-new-task replaces blocking intake hook (PR #74)
 
 **Status:** PR open, awaiting operator live test as behavioral evidence, then merge.

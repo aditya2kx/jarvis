@@ -9,9 +9,25 @@ Architecture:
 - OTP codes are written to Firestore for the orchestrator to poll
 - Agent-aware routing from _find_pending_portal (commit 6e4f72b) is preserved
 
+Slash command ack strategy (3s deadline):
+- Every /bhaga-cloud command returns a generic ephemeral ack immediately after
+  pure parsing, well within Slack's 3s deadline.  No BQ / Cloud Run / Firestore
+  I/O runs in the synchronous ack path.
+- All real work (BQ coverage probes, run_v2 triggers, Firestore reads/writes)
+  runs in a background daemon thread dispatched BEFORE the ack is returned.
+- The worker posts the real result back to Slack via the `response_url` that
+  Slack includes in every slash-command payload (valid ~30 min, up to 5 posts,
+  no bot token required):
+    - refresh  → response_type "in_channel" (visible to channel members when
+                 run in a shared channel like #bhaga-runs)
+    - all others → response_type "ephemeral" (operator-private, matches today's
+                 visibility for config/training/alias/exclude/status)
+- Parse errors (bad date, over-cap, unknown token) remain synchronous so the
+  operator gets an inline :x: immediately.
+
 Endpoints:
   POST /slack/events  — Slack Events API
-  POST /slack/commands — Slash commands (/bhaga refresh <date>, /bhaga status)
+  POST /slack/commands — Slash commands (/bhaga-cloud refresh, status, config, …)
   GET  /health        — Health check for Cloud Run
 """
 
@@ -23,8 +39,10 @@ import json
 import logging
 import os
 import re
+import threading
 import time
-from typing import Optional
+import urllib.request
+from typing import Callable, Optional
 
 from flask import Flask, Response, jsonify, request
 from google.cloud import firestore
@@ -573,23 +591,101 @@ def _build_refresh_env_overrides(date_str: str, recompute_only: bool) -> list[tu
 
 
 # ---------------------------------------------------------------------------
+# Async ack helpers
+# ---------------------------------------------------------------------------
+# handler.py is a standalone deploy unit (its Dockerfile copies only this file)
+# so it cannot import skills.slack.adapter.  All Slack I/O here uses stdlib
+# urllib.request directly.
+
+
+def _post_response_url(response_url: str, payload: dict) -> None:
+    """POST a follow-up payload to Slack's response_url (best-effort).
+
+    Slack's response_url is included in every slash-command payload, accepts
+    up to 5 follow-up posts within ~30 minutes, and requires no bot token.
+    Used by async workers to deliver the real command result after the 3s ack.
+
+    Fails silently: logs a greppable breadcrumb but never raises, so a dropped
+    follow-up never blocks the work that already ran in the worker thread.
+    """
+    if not response_url:
+        log.warning("_post_response_url: empty response_url — cannot deliver follow-up")
+        return
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            response_url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = resp.status
+            if status != 200:
+                log.warning("_post_response_url: Slack returned HTTP %s", status)
+    except Exception as exc:
+        log.error("_post_response_url failed (breadcrumb): %s", exc)
+
+
+def _dispatch_async(fn: Callable, *args) -> None:
+    """Spawn a daemon thread to run fn(*args) after the HTTP ack has returned.
+
+    Daemon=True so the thread does not prevent Cloud Run container shutdown.
+    Injectable for tests: monkeypatch _dispatch_async to lambda fn, *a: fn(*a)
+    to run the worker synchronously and inspect its side effects.
+    """
+    t = threading.Thread(target=fn, args=args, daemon=True)
+    t.start()
+
+
+# ---------------------------------------------------------------------------
 # Slash command handler (/bhaga)
 # ---------------------------------------------------------------------------
 
 
-def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
-    """Handle /bhaga slash commands.
+def _run_refresh_worker(
+    dates: list,
+    sandbox: bool,
+    response_url: str,
+) -> None:
+    """Background worker: BQ coverage probe + Cloud Run triggers + response_url follow-up.
 
-    Must respond within 3 seconds. For long-running work, return an ack
-    and post follow-up via response_url.
+    Runs in a daemon thread after the 3s ack has been returned. Posts the real
+    per-date mode-label summary back to the operator via response_url so they
+    see the actual per-date plan (full+OTP / recompute) rather than silence.
+    """
+    probe_dataset = _SANDBOX_BQ_DATASET if sandbox else None
+    job_name = _SANDBOX_JOB_RESOURCE if sandbox else None
+    prefix = ":test_tube: [SANDBOX] " if sandbox else ":hourglass_flowing_sand: "
+    date_labels: list[str] = []
+    for date_str in dates:
+        recompute_only = _decide_recompute(date_str, dataset=probe_dataset)
+        mode_label = "recompute" if recompute_only else "full+OTP"
+        env_overrides = _build_refresh_env_overrides(date_str, recompute_only)
+        _trigger_cloud_run_job_with_env(date_str, env_overrides, job_name=job_name)
+        date_labels.append(f"{date_str} ({mode_label})")
+    dates_text = ", ".join(date_labels)
+    summary = f"{prefix}Refresh triggered: {dates_text}."
+    _post_response_url(response_url, {"response_type": "in_channel", "text": summary})
+
+
+def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
+    """Handle /bhaga-cloud slash commands.
+
+    Returns an immediate generic ack within Slack's 3s deadline.  All BQ /
+    Cloud Run / Firestore I/O runs in a background thread dispatched BEFORE
+    the ack is returned; the real result is posted back via response_url.
+
+    Parse errors (bad date, over-cap, unknown token) are synchronous — the
+    operator gets an inline :x: immediately without a follow-up.
 
     When ``sandbox=True`` (set by the direct-trigger bypass path), the refresh
     targets ``bhaga-sandbox-refresh`` + ``bhaga_sandbox`` dataset and prefixes
-    all ack text with :test_tube:[SANDBOX]. The bypass path can never affect
-    prod: job name and BQ dataset are fixed to sandbox values per-call.
+    all ack/result text with :test_tube:[SANDBOX]. The bypass path can never
+    affect prod: job name and BQ dataset are fixed to sandbox values per-call.
     """
     command_text = (form.get("text") or "").strip()
-    # response_url = form.get("response_url")  # for async follow-ups
+    response_url = form.get("response_url", "")
 
     refresh_match = re.match(r"^refresh\s+(.+)$", command_text, re.IGNORECASE)
     if refresh_match:
@@ -599,46 +695,43 @@ def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
                 "response_type": "ephemeral",
                 "text": f":x: refresh parse error: {parse_err}",
             })
-        # Decide recompute-only vs full-scrape per date; build per-date label for the ack.
-        # For sandbox, probe bhaga_sandbox (empty → full scrape) and route to sandbox job.
-        probe_dataset = _SANDBOX_BQ_DATASET if sandbox else None
-        job_name = _SANDBOX_JOB_RESOURCE if sandbox else None
-        date_labels: list[str] = []
-        for date_str in dates:
-            recompute_only = _decide_recompute(date_str, dataset=probe_dataset)
-            mode_label = "recompute" if recompute_only else "full+OTP"
-            env_overrides = _build_refresh_env_overrides(date_str, recompute_only)
-            _trigger_cloud_run_job_with_env(date_str, env_overrides, job_name=job_name)
-            date_labels.append(f"{date_str} ({mode_label})")
-        dates_text = ", ".join(date_labels)
         prefix = ":test_tube: [SANDBOX] " if sandbox else ":hourglass_flowing_sand: "
+        _dispatch_async(_run_refresh_worker, dates, sandbox, response_url)
         return jsonify({
             "response_type": "ephemeral",
             "text": (
-                f"{prefix}Refresh triggered: {dates_text}. "
-                f"Check #bhaga-runs for progress."
+                f"{prefix}Refresh queued for {len(dates)} date(s) — "
+                f"probing coverage + triggering; per-date summary to follow."
             ),
         })
 
     if command_text.lower() == "status":
-        summary = _get_latest_run_summary()
+        _dispatch_async(_get_latest_run_summary_and_post, response_url)
         return jsonify({
             "response_type": "ephemeral",
-            "text": summary,
+            "text": ":hourglass_flowing_sand: status queued — posting summary shortly.",
         })
 
     # config get <key>
     config_get_match = re.match(r"^config\s+get\s+(\S+)$", command_text, re.IGNORECASE)
     if config_get_match:
         key = config_get_match.group(1)
-        return _handle_config_get(key, form)
+        _dispatch_async(_handle_config_get, key, form, response_url)
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": f":hourglass_flowing_sand: config get `{key}` — posting result shortly.",
+        })
 
     # config set <key> <value>
     config_set_match = re.match(r"^config\s+set\s+(\S+)\s+(.+)$", command_text, re.IGNORECASE)
     if config_set_match:
         key = config_set_match.group(1)
         value = config_set_match.group(2).strip()
-        return _handle_config_set(key, value, form)
+        _dispatch_async(_handle_config_set, key, value, form, response_url)
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": f":hourglass_flowing_sand: config set `{key}` — posting result shortly.",
+        })
 
     # training set "Last, First" YYYY-MM-DD [note]
     training_set_match = re.match(
@@ -649,7 +742,11 @@ def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
         name = training_set_match.group(1).strip()
         date_str = training_set_match.group(2)
         note = (training_set_match.group(3) or "").strip()
-        return _handle_training_set(name, date_str, note, form)
+        _dispatch_async(_handle_training_set, name, date_str, note, form, response_url)
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": ":hourglass_flowing_sand: training set — posting result shortly.",
+        })
 
     # training rm "Last, First" YYYY-MM-DD
     training_rm_match = re.match(
@@ -659,7 +756,11 @@ def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
     if training_rm_match:
         name = training_rm_match.group(1).strip()
         date_str = training_rm_match.group(2)
-        return _handle_training_rm(name, date_str, form)
+        _dispatch_async(_handle_training_rm, name, date_str, form, response_url)
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": ":hourglass_flowing_sand: training rm — posting result shortly.",
+        })
 
     # alias set <raw_or_"raw name"> "Last, First"
     alias_set_match = re.match(
@@ -669,7 +770,11 @@ def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
     if alias_set_match:
         raw_name = (alias_set_match.group(1) or alias_set_match.group(2)).strip()
         canonical = alias_set_match.group(3).strip()
-        return _handle_alias_set(raw_name, canonical, form)
+        _dispatch_async(_handle_alias_set, raw_name, canonical, form, response_url)
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": ":hourglass_flowing_sand: alias set — posting result shortly.",
+        })
 
     # exclude set "Last, First" [YYYY-MM-DD]
     exclude_set_match = re.match(
@@ -679,7 +784,11 @@ def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
     if exclude_set_match:
         name = exclude_set_match.group(1).strip()
         through_date = (exclude_set_match.group(2) or "").strip()
-        return _handle_exclude_set(name, through_date, form)
+        _dispatch_async(_handle_exclude_set, name, through_date, form, response_url)
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": ":hourglass_flowing_sand: exclude set — posting result shortly.",
+        })
 
     return jsonify({
         "response_type": "ephemeral",
@@ -702,13 +811,20 @@ def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
     })
 
 
-def _handle_config_get(key: str, form: dict) -> Response:
-    """Return the current value of a store config key from BQ."""
+def _get_latest_run_summary_and_post(response_url: str) -> None:
+    """Background worker: fetch latest run summary and post via response_url."""
+    summary = _get_latest_run_summary()
+    _post_response_url(response_url, {"response_type": "ephemeral", "text": summary})
+
+
+def _handle_config_get(key: str, form: dict, response_url: str = "") -> None:
+    """Fetch the current value of a store config key from BQ and post the result."""
     if _bq is None:
-        return jsonify({
+        _post_response_url(response_url, {
             "response_type": "ephemeral",
             "text": ":warning: BigQuery not available — config commands are unavailable.",
         })
+        return
     store = os.environ.get("BHAGA_STORE", "palmetto")
     try:
         rows = list(_bq.query(  # type: ignore[union-attr]
@@ -719,12 +835,13 @@ def _handle_config_get(key: str, form: dict) -> Response:
             job_config=_bq_param_config([("store", "STRING", store), ("key", "STRING", key)]),
         ).result())
         if not rows:
-            return jsonify({
+            _post_response_url(response_url, {
                 "response_type": "ephemeral",
                 "text": f":information_source: `{key}` is not set in `{store}` config.",
             })
+            return
         row = dict(rows[0])
-        return jsonify({
+        _post_response_url(response_url, {
             "response_type": "ephemeral",
             "text": (
                 f":white_check_mark: `{key}` = *{row['value']}*"
@@ -733,23 +850,23 @@ def _handle_config_get(key: str, form: dict) -> Response:
         })
     except Exception as exc:
         log.error("config get failed: %s", exc)
-        return jsonify({
+        _post_response_url(response_url, {
             "response_type": "ephemeral",
             "text": f":x: config get failed: {exc}",
         })
 
 
-def _handle_config_set(key: str, value: str, form: dict) -> Response:
-    """Upsert a store config key in BQ."""
+def _handle_config_set(key: str, value: str, form: dict, response_url: str = "") -> None:
+    """Upsert a store config key in BQ and post the result."""
     if _bq is None:
-        return jsonify({
+        _post_response_url(response_url, {
             "response_type": "ephemeral",
             "text": ":warning: BigQuery not available — config commands are unavailable.",
         })
+        return
     store = os.environ.get("BHAGA_STORE", "palmetto")
     user_name = form.get("user_name") or form.get("user_id") or "slack"
     try:
-        from google.cloud import bigquery as _bq_mod  # type: ignore[import]
         fq = f"`{_BQ_STORE_CONFIG_TABLE}`"
         _bq.query(  # type: ignore[union-attr]
             f"MERGE {fq} T"
@@ -765,13 +882,13 @@ def _handle_config_set(key: str, value: str, form: dict) -> Response:
                 ("by", "STRING", user_name),
             ]),
         ).result()
-        return jsonify({
+        _post_response_url(response_url, {
             "response_type": "ephemeral",
             "text": f":white_check_mark: `{key}` set to *{value}* (by {user_name})",
         })
     except Exception as exc:
         log.error("config set failed: %s", exc)
-        return jsonify({
+        _post_response_url(response_url, {
             "response_type": "ephemeral",
             "text": f":x: config set failed: {exc}",
         })
@@ -786,11 +903,12 @@ def _bq_param_config(params: list[tuple]) -> object:
     ])
 
 
-def _handle_training_set(name: str, date_str: str, note: str, form: dict) -> Response:
-    """MERGE a per-shift training mark into BQ training_shifts."""
+def _handle_training_set(name: str, date_str: str, note: str, form: dict, response_url: str = "") -> None:
+    """MERGE a per-shift training mark into BQ training_shifts and post the result."""
     if _bq is None:
-        return jsonify({"response_type": "ephemeral",
-                        "text": ":warning: BigQuery not available."})
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": ":warning: BigQuery not available."})
+        return
     store = os.environ.get("BHAGA_STORE", "palmetto")
     user_name = form.get("user_name") or form.get("user_id") or "slack"
     try:
@@ -810,19 +928,23 @@ def _handle_training_set(name: str, date_str: str, note: str, form: dict) -> Res
                 ("by", "STRING", user_name),
             ]),
         ).result()
-        return jsonify({"response_type": "ephemeral",
-                        "text": f":white_check_mark: Training shift set: *{name}* on {date_str}" +
-                                (f" ({note})" if note else "") + f" (by {user_name})"})
+        _post_response_url(response_url, {
+            "response_type": "ephemeral",
+            "text": f":white_check_mark: Training shift set: *{name}* on {date_str}" +
+                    (f" ({note})" if note else "") + f" (by {user_name})",
+        })
     except Exception as exc:
         log.error("training set failed: %s", exc)
-        return jsonify({"response_type": "ephemeral", "text": f":x: training set failed: {exc}"})
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": f":x: training set failed: {exc}"})
 
 
-def _handle_training_rm(name: str, date_str: str, form: dict) -> Response:
-    """Delete a per-shift training mark from BQ training_shifts."""
+def _handle_training_rm(name: str, date_str: str, form: dict, response_url: str = "") -> None:
+    """Delete a per-shift training mark from BQ training_shifts and post the result."""
     if _bq is None:
-        return jsonify({"response_type": "ephemeral",
-                        "text": ":warning: BigQuery not available."})
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": ":warning: BigQuery not available."})
+        return
     store = os.environ.get("BHAGA_STORE", "palmetto")
     user_name = form.get("user_name") or form.get("user_id") or "slack"
     try:
@@ -835,18 +957,22 @@ def _handle_training_rm(name: str, date_str: str, form: dict) -> Response:
                 ("date", "DATE", date_str),
             ]),
         ).result()
-        return jsonify({"response_type": "ephemeral",
-                        "text": f":white_check_mark: Training shift removed: *{name}* on {date_str} (by {user_name})"})
+        _post_response_url(response_url, {
+            "response_type": "ephemeral",
+            "text": f":white_check_mark: Training shift removed: *{name}* on {date_str} (by {user_name})",
+        })
     except Exception as exc:
         log.error("training rm failed: %s", exc)
-        return jsonify({"response_type": "ephemeral", "text": f":x: training rm failed: {exc}"})
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": f":x: training rm failed: {exc}"})
 
 
-def _handle_alias_set(raw_name: str, canonical: str, form: dict) -> Response:
-    """MERGE a new employee alias into BQ employee_aliases."""
+def _handle_alias_set(raw_name: str, canonical: str, form: dict, response_url: str = "") -> None:
+    """MERGE a new employee alias into BQ employee_aliases and post the result."""
     if _bq is None:
-        return jsonify({"response_type": "ephemeral",
-                        "text": ":warning: BigQuery not available."})
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": ":warning: BigQuery not available."})
+        return
     store = os.environ.get("BHAGA_STORE", "palmetto")
     user_name = form.get("user_name") or form.get("user_id") or "slack"
     try:
@@ -865,28 +991,32 @@ def _handle_alias_set(raw_name: str, canonical: str, form: dict) -> Response:
                 ("by", "STRING", user_name),
             ]),
         ).result()
-        return jsonify({"response_type": "ephemeral",
-                        "text": f":white_check_mark: Alias set: `{raw_name}` → *{canonical}* (by {user_name})"})
+        _post_response_url(response_url, {
+            "response_type": "ephemeral",
+            "text": f":white_check_mark: Alias set: `{raw_name}` → *{canonical}* (by {user_name})",
+        })
     except Exception as exc:
         log.error("alias set failed: %s", exc)
-        return jsonify({"response_type": "ephemeral", "text": f":x: alias set failed: {exc}"})
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": f":x: alias set failed: {exc}"})
 
 
-def _handle_exclude_set(name: str, through_date: str, form: dict) -> Response:
-    """Set a training_excluded:<name> entry in store_config BQ.
+def _handle_exclude_set(name: str, through_date: str, form: dict, response_url: str = "") -> None:
+    """Set a training_excluded:<name> entry in store_config BQ and post the result.
 
     If through_date is provided, sets training_excluded:<name>=<date>.
     If empty, appends name to excluded_from_tip_pool (permanent exclusion).
     """
     if _bq is None:
-        return jsonify({"response_type": "ephemeral",
-                        "text": ":warning: BigQuery not available."})
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": ":warning: BigQuery not available."})
+        return
     store = os.environ.get("BHAGA_STORE", "palmetto")
-    user_name = form.get("user_name") or form.get("user_id") or "slack"
 
     if through_date:
         key = f"training_excluded:{name}"
-        return _handle_config_set(key, through_date, form)
+        _handle_config_set(key, through_date, form, response_url)
+        return
 
     # Permanent exclusion: append to excluded_from_tip_pool
     try:
@@ -900,10 +1030,11 @@ def _handle_exclude_set(name: str, through_date: str, form: dict) -> Response:
         if name not in names:
             names.append(name)
         new_value = ";".join(names)
-        return _handle_config_set("excluded_from_tip_pool", new_value, form)
+        _handle_config_set("excluded_from_tip_pool", new_value, form, response_url)
     except Exception as exc:
         log.error("exclude set failed: %s", exc)
-        return jsonify({"response_type": "ephemeral", "text": f":x: exclude set failed: {exc}"})
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": f":x: exclude set failed: {exc}"})
 
 
 def _is_already_running(job_name: str, date_str: str) -> bool:

@@ -73,22 +73,67 @@ def _import_handler():
     return h
 
 
-def _fire_slash_command(handler, dates_text: str) -> dict:
+def _fire_slash_command(handler, dates_text: str, wait_s: float = 15.0) -> tuple[dict, dict | None]:
     """Call _handle_slash_command with sandbox=True, exercising the bypass path.
 
     sandbox=True routes to _SANDBOX_JOB_RESOURCE + bhaga_sandbox BQ dataset
-    and prefixes the ack with :test_tube: [SANDBOX].
+    and prefixes the ack/follow-up with :test_tube: [SANDBOX].
+
+    The async worker runs as a REAL daemon thread (``_dispatch_async`` is NOT
+    patched) so this proves the threading model rather than the synchronous
+    short-circuit used by unit tests.  ``_post_response_url`` is still patched
+    to capture the follow-up payload instead of firing a live Slack HTTP call.
+
+    Timeline:
+      t=0   _handle_slash_command returns the ack (< 3 s)
+      t=0+  daemon thread starts; BQ probe + run_v2 trigger run in background
+      t≈1-3 worker calls _post_response_url → captured in follow_up list
+      After wait_s we join the thread and return.
+
+    Returns (ack_data, follow_up_payload).
     """
-    form = {
-        "text": f"refresh {dates_text}",
-        "command": "/bhaga-cloud",
-        "user_name": "sandbox-evidence-driver",
-        "user_id": "U_DRIVER",
-    }
-    with handler.app.app_context():
-        resp = handler._handle_slash_command(form, sandbox=True)
-    data = resp.get_json()
-    return data
+    import threading
+
+    follow_up: list[dict] = []
+    worker_thread: list = []  # box for the spawned thread
+
+    def _capture_follow_up(url: str, payload: dict) -> None:
+        follow_up.append(payload)
+
+    def _real_dispatch(fn, *args):
+        t = threading.Thread(target=fn, args=args, daemon=True)
+        t.start()
+        worker_thread.append(t)
+
+    handler._dispatch_async = _real_dispatch
+    handler._post_response_url = _capture_follow_up
+
+    try:
+        form = {
+            "text": f"refresh {dates_text}",
+            "command": "/bhaga-cloud",
+            "user_name": "sandbox-evidence-driver",
+            "user_id": "U_DRIVER",
+            "response_url": "https://hooks.slack.com/commands/sandbox/evidence_driver",
+        }
+        with handler.app.app_context():
+            resp = handler._handle_slash_command(form, sandbox=True)
+        ack = resp.get_json()
+
+        # Wait for the worker thread to complete (proves daemon thread survives
+        # after _handle_slash_command returns, matching the production code path).
+        if worker_thread:
+            print(f"[sandbox_refresh_driver] Worker thread started; joining (max {wait_s}s)…")
+            worker_thread[0].join(timeout=wait_s)
+            alive = worker_thread[0].is_alive()
+            print(f"[sandbox_refresh_driver] Worker thread alive after join: {alive}")
+            if alive:
+                print("[sandbox_refresh_driver] WARNING: worker did not finish within timeout")
+
+        return ack, follow_up[0] if follow_up else None
+    finally:
+        del handler._dispatch_async
+        del handler._post_response_url
 
 
 def _list_executions(job_short_name: str, region: str = "us-central1",
@@ -242,6 +287,7 @@ def _print_evidence_summary(
     *,
     dates: list[str],
     ack_text: str,
+    follow_up_text: str,
     exec_states: dict[str, str],
     bq_counts: dict[str, int | None],
     fs_statuses: dict[str, str | None],
@@ -250,7 +296,8 @@ def _print_evidence_summary(
     print("\n" + "=" * 60)
     print("### BHAGA multi-date refresh — sandbox evidence summary\n")
     print(f"**Command:** `/bhaga-cloud refresh {','.join(dates)}`")
-    print(f"**Ack text:** {ack_text!r}\n")
+    print(f"**Immediate ack (<3s):** {ack_text!r}")
+    print(f"**Follow-up (response_url):** {follow_up_text!r}\n")
     print("| Date | Execution | BQ rows (square_item_lines) | Firestore status |")
     print("|---|---|---|---|")
     all_pass = True
@@ -294,9 +341,14 @@ def main(argv: list[str] | None = None) -> int:
     handler = _import_handler()
 
     print(f"[sandbox_refresh_driver] Firing: /bhaga-cloud refresh {args.dates}")
-    ack = _fire_slash_command(handler, args.dates)
+    ack, follow_up = _fire_slash_command(handler, args.dates)
     ack_text = ack.get("text", "")
-    print(f"[sandbox_refresh_driver] Ack: {ack_text!r}")
+    print(f"[sandbox_refresh_driver] Ack (immediate, <3s): {ack_text!r}")
+    if follow_up is not None:
+        follow_text = follow_up.get("text", "")
+        print(f"[sandbox_refresh_driver] Follow-up (response_url): {follow_text!r}")
+    else:
+        print("[sandbox_refresh_driver] WARNING: no response_url follow-up captured.", file=sys.stderr)
 
     if ":x:" in ack_text:
         print("[sandbox_refresh_driver] FAIL — command returned an error.", file=sys.stderr)
@@ -327,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
     all_pass = _print_evidence_summary(
         dates=dates,
         ack_text=ack_text,
+        follow_up_text=follow_up.get("text", "") if follow_up else "",
         exec_states=exec_states,
         bq_counts=bq_counts,
         fs_statuses=fs_statuses,

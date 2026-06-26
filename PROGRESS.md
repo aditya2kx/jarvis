@@ -14,6 +14,22 @@
 
 **Tests:** 25 plan-readiness + 11 evidence-confidence + 14 evidence-readiness = 50 new/updated tests, all green.
 
+## 2026-06-26 — Universal 3s-ack for all `/bhaga-cloud` slash commands (branch fix/fix-bhaga-cloud-refresh-slack-timeout)
+
+**Status:** In flight — code + tests complete; PR pending.
+
+Every `/bhaga-cloud` slash command now acks within Slack's 3s deadline so the operator never sees "Something went wrong." BQ / Cloud Run / Firestore I/O runs in a daemon thread dispatched before the ack is returned; the real result posts back via Slack's `response_url`. Parse errors (bad date, over-cap, unknown token) remain synchronous inline `:x:` — no worker dispatched. No feature flag; rollback = revert PR + redeploy.
+
+**Pattern:**
+- `refresh` → immediate generic ack, async worker posts per-date mode-label summary as `in_channel` follow-up.
+- `status` / `config get|set` / `training set|rm` / `alias set` / `exclude set` → immediate ack, async worker posts real result as ephemeral follow-up.
+
+**What changed:**
+- `cloud/webhook/handler.py`: added `_post_response_url`, `_dispatch_async`, `_run_refresh_worker`, `_get_latest_run_summary_and_post`; refactored `_handle_slash_command` and all `_handle_*` functions to the two-phase ack pattern.
+- `cloud/webhook/test_handler.py`: added `_sync_dispatch` test helper; updated all tests to assert on `response_url` follow-up instead of ack text; 135 tests, all pass.
+- `cloud/webhook/sandbox_refresh_driver.py`: `_fire_slash_command` now patches `_dispatch_async`/`_post_response_url` to run synchronously and capture the follow-up; evidence summary prints both ack and follow-up text.
+- `RUNBOOK.md`: documented two-phase ack UX for all `/bhaga-cloud` commands.
+
 ## 2026-06-26 — BHAGA: fix misleading HELD-BACK counter in process_reviews (branch fix/investigate-why-bhaga-cloud-runs-for)
 
 **Root cause:** The `running-austin-palmetto` ClickUp channel is a general ops channel (duty checklists, package photos, team messages). The `held_back` counter in `process_reviews.py` incremented before the `_is_review_message` filter, so every post-window message — including chatter — was counted. On both 2026-06-24 and 2026-06-25, 11 non-review messages after `data_window_end` produced `HELD-BACK: 11` when 0 actual reviews were deferred. Data was healthy throughout: `google_reviews` BQ had 91 rows through 2026-06-17 (the last real review), and the open 6/15→6/25 period rollup (including Browning, Skyler $10) was correctly credited.
@@ -23,7 +39,6 @@
 **Evidence:** 4 unit tests in `test_process_reviews.py::IsHeldBackReviewTests` using real 6/24-6/25 chatter strings as negative cases. 51/51 tests pass, no regressions.
 
 **Files:** `agents/bhaga/scripts/process_reviews.py`, `agents/bhaga/scripts/test_process_reviews.py`, `agents/bhaga/scripts/README.md`.
-
 ## 2026-06-25 — `/bhaga-cloud refresh` multi-date support (PR #77, branch fix/slack-bhaga-cloud-refresh-command-support)
 
 **Status:** Implementing — M1 (parser + tests) complete; M2 (evidence driver + RUNBOOK + direct sandbox trigger) complete; awaiting live sandbox evidence run via direct trigger.

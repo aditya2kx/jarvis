@@ -1,6 +1,21 @@
 # Jarvis Build Progress
 
-## 2026-06-25 — Deterministic intake hook harness (PR #74, folded in)
+## 2026-06-25 — Hook→skill pivot: /jarvis-new-task replaces blocking intake hook (PR #74)
+
+**Status:** PR open, awaiting operator live test as behavioral evidence, then merge.
+
+The `beforeSubmitPrompt` blocking hook (`prompt_gate.py` / `enforce.sh`) produced repeated false positives — any meta-discussion containing intake phrases was blocked, requiring `//inline` to bypass. Replaced with an explicit operator-invoked `/jarvis-new-task` Cursor Skill.
+
+**What landed:**
+- `.cursor/skills/jarvis-new-task/SKILL.md` — first member of the `/jarvis-*` skill family. `disable-model-invocation: true`. Typing `/jarvis-new-task <text>` runs `scripts/new_requirement.py --requirement "<text>"`.
+- `.cursor/hooks/prompt_gate.py` + `enforce.sh` deleted. No more `beforeSubmitPrompt` blocking.
+- `scripts/install-git-hooks.sh` — dispatcher install removed; idempotent cleanup prunes the legacy entry from `~/.cursor/hooks.json` on existing laptops.
+- `new-requirement-intake.mdc` reframed: front door is `/jarvis-new-task`; agent softly suggests it but never blocks.
+- `verify_lifecycle.py` A18 repurposed to assert the skill is wired. `test_prompt_gate.py` deleted.
+- `docs/contributing/hooks.md` → `docs/contributing/skills.md` (jarvis-* family authoring guide).
+- 59/59 unit tests pass; 18/18 conformance assertions pass.
+
+
 
 **Status:** In progress — implementing hook harness for deterministic new-requirement enforcement.
 

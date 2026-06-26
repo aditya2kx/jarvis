@@ -59,7 +59,7 @@ User answer / turn
        → agent consults before any AskQuestion (.cursor/rules/preference-consult.mdc)
 ```
 
-**Honest limit:** Cursor hooks do not fire for `AskQuestion` or user-turn text events (`beforeSubmitPrompt` also does not fire — empirically confirmed June 2026). The corpus append must be called explicitly by the agent. The guardrail is the mechanical quality gate regardless of how an entry arrives.
+**Honest limit:** The corpus append must be called explicitly by the agent via `store.append_to_corpus()` or the `corpus-append` CLI. The guardrail is the mechanical quality gate regardless of how an entry arrives.
 
 ## The capture protocol (AI-side)
 

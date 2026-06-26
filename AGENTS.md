@@ -82,7 +82,7 @@ When you change behavior, update the doc in the same change:
 | Lifecycle scripts (`phase_state.py`, `lifecycle.py`, `verify.py`, etc.) | `docs/WORKFLOW.md` |
 | Cross-agent architecture, added agent/skill | `.cursor/rules/jarvis.mdc` + this file's tables |
 | Added a new `.cursor/rules/*.mdc` file | Update `ALWAYS_ON` set in `verify_lifecycle.py::assert_16` if always-on; add row to Tier-1 table above |
-| Added or changed a Cursor hook | `docs/contributing/hooks.md` |
+| Added or changed a `/jarvis-*` Cursor Skill | `docs/contributing/skills.md` |
 | Anything notable (status, decision, blocker) | `PROGRESS.md` (dated entry) |
 
 Run `python3 scripts/check_doc_freshness.py` before finishing any change.

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Install the repo's git hooks + one-time Cursor hook dispatcher.
+# Install the repo's git hooks.  Points git at scripts/git-hooks via
+# core.hooksPath — undo with: git config --unset core.hooksPath
 #
-# Git hooks (points git at scripts/git-hooks via core.hooksPath):
+# Hooks installed:
 #   pre-commit : captures review cost from PR comments into BigQuery (jarvis_dev)
 #                on each commit.  Build cost must be recorded explicitly by the
 #                author (record-build or capture-build).  The gate validates from BQ.
@@ -11,22 +12,16 @@
 #                review-replies failures before they hit CI.
 #                Set VERIFY=0 to bypass (only after confirming the diff is clean).
 #
-# Cursor hook dispatcher (one-time per laptop, not per worktree):
-#   ~/.cursor/hooks.json  beforeSubmitPrompt dispatcher that executes
-#   $CURSOR_PROJECT_DIR/.cursor/hooks/enforce.sh on every user prompt.
-#   The enforcement script is repo-versioned and travels with each branch.
-#   No-ops gracefully when the repo doesn't have .cursor/hooks/enforce.sh.
-#   Idempotent — merges with any existing ~/.cursor/hooks.json entries.
+# Also removes any legacy Jarvis beforeSubmitPrompt dispatcher from
+# ~/.cursor/hooks.json (idempotent; preserves unrelated entries).
 #
 # Run this once on every fresh clone / laptop.
-# See docs/contributing/local-loop.md, docs/contributing/cost.md,
-# and docs/contributing/hooks.md for the Cursor hook setup.
+# See docs/contributing/local-loop.md and docs/contributing/cost.md.
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 chmod +x scripts/git-hooks/* 2>/dev/null || true
-chmod +x .cursor/hooks/enforce.sh 2>/dev/null || true
 git config core.hooksPath scripts/git-hooks
 
 # Seed GitHub Issue labels for phase tracking (idempotent; requires gh auth).
@@ -40,50 +35,47 @@ echo "  pre-push   : verify.py --full      (bypass: VERIFY=0)"
 echo "uninstall: git config --unset core.hooksPath"
 
 # ---------------------------------------------------------------------------
-# One-time Cursor hook dispatcher — idempotent merge into ~/.cursor/hooks.json
+# Remove legacy Jarvis beforeSubmitPrompt dispatcher from ~/.cursor/hooks.json
+# (was added by an earlier version of this script; the blocking hook has been
+#  replaced by the /jarvis-new-task Cursor Skill).
 # ---------------------------------------------------------------------------
-_install_cursor_dispatcher() {
+_prune_legacy_dispatcher() {
     local hooks_file="$HOME/.cursor/hooks.json"
-    mkdir -p "$(dirname "$hooks_file")"
+    [ -f "$hooks_file" ] || return 0
 
     python3 - "$hooks_file" <<'PYEOF'
 import json, os, sys
 
 hooks_file = sys.argv[1]
-# Simple dispatch: run enforce.sh if present; with failClosed:false, a
-# non-zero exit (script absent / wrong repo) is treated as continue:true.
-# No nested shell quoting needed — bash receives the string verbatim.
-cmd = 'bash "$CURSOR_PROJECT_DIR/.cursor/hooks/enforce.sh"'
+# The legacy command string installed by the old dispatcher
+legacy_cmd = 'bash "$CURSOR_PROJECT_DIR/.cursor/hooks/enforce.sh"'
 
-entry = {"command": cmd, "failClosed": False}
+try:
+    with open(hooks_file) as f:
+        doc = json.load(f)
+except Exception as e:
+    print(f"warning: could not parse {hooks_file}: {e}", file=sys.stderr)
+    sys.exit(0)
 
-if not os.path.exists(hooks_file):
-    doc = {"version": 1, "hooks": {"beforeSubmitPrompt": [entry]}}
-    with open(hooks_file, "w") as f:
-        json.dump(doc, f, indent=2)
-        f.write("\n")
-    print(f"created: {hooks_file}")
-else:
-    try:
-        with open(hooks_file) as f:
-            doc = json.load(f)
-    except Exception as e:
-        print(f"warning: could not parse {hooks_file}: {e}", file=sys.stderr)
-        sys.exit(0)
-    doc.setdefault("hooks", {})
-    entries = doc["hooks"].setdefault("beforeSubmitPrompt", [])
-    if any(e.get("command") == cmd for e in entries):
-        print("cursor hook dispatcher: already present — skipped")
-        sys.exit(0)
-    entries.append(entry)
-    with open(hooks_file, "w") as f:
-        json.dump(doc, f, indent=2)
-        f.write("\n")
-    print(f"merged cursor hook dispatcher into {hooks_file}")
+entries = doc.get("hooks", {}).get("beforeSubmitPrompt", [])
+filtered = [e for e in entries if e.get("command") != legacy_cmd]
+
+if len(filtered) == len(entries):
+    print("legacy jarvis dispatcher: not present — skipped")
+    sys.exit(0)
+
+doc["hooks"]["beforeSubmitPrompt"] = filtered
+# Clean up empty lists/dicts
+if not doc["hooks"]["beforeSubmitPrompt"]:
+    del doc["hooks"]["beforeSubmitPrompt"]
+if not doc["hooks"]:
+    del doc["hooks"]
+
+with open(hooks_file, "w") as f:
+    json.dump(doc, f, indent=2)
+    f.write("\n")
+print(f"removed legacy jarvis dispatcher from {hooks_file}")
 PYEOF
 }
 
-_install_cursor_dispatcher
-echo "  cursor hook : beforeSubmitPrompt dispatcher -> ~/.cursor/hooks.json"
-echo "                enforcement script: .cursor/hooks/enforce.sh (repo-versioned)"
-echo "                bypass: prefix prompt with  //inline"
+_prune_legacy_dispatcher

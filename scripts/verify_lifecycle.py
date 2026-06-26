@@ -474,14 +474,16 @@ def assert_13_observable_floor_has_plan_entry() -> tuple[bool, str]:
 
 
 def assert_14_intake_rule_wired() -> tuple[bool, str]:
-    """new-requirement-intake.mdc exists, always-on, single source, cross-refs, enforcement keywords.
+    """new-requirement-intake.mdc exists, always-on, references /jarvis-new-task, canonical
+    marker, cross-refs, single-source dedup, and no blocking/heuristic language.
 
-    Five checks:
+    Six checks:
       (a) File exists as .mdc (loadable format — .md would be ignored by Cursor).
       (b) alwaysApply: true, no globs: line.
-      (c) Canonical intake sentence (tagged <!-- canonical:intake -->) is present.
-      (d) Cross-references self-drive and jarvis-hard-lessons.
-      (e) Single-source dedup: the canonical sentence appears in NO other .mdc file.
+      (c) Canonical intake marker (<!-- canonical:intake -->) is present.
+      (d) References /jarvis-new-task (the explicit front door).
+      (e) Cross-references self-drive and jarvis-hard-lessons.
+      (f) Single-source dedup: the canonical sentence appears in NO other .mdc file.
     """
     rules_dir = REPO_ROOT / ".cursor" / "rules"
     intake = rules_dir / "new-requirement-intake.mdc"
@@ -510,18 +512,20 @@ def assert_14_intake_rule_wired() -> tuple[bool, str]:
     canonical_sentence: str | None = None
     for i, line in enumerate(lines):
         if "<!-- canonical:intake -->" in line:
-            # The canonical sentence is the next non-empty line
             for j in range(i + 1, min(i + 5, len(lines))):
                 stripped = lines[j].strip()
                 if stripped:
-                    # Strip markdown bold markers for the needle
                     canonical_sentence = re.sub(r"\*\*", "", stripped)[:80]
                     break
             break
     if not canonical_sentence:
         return False, "canonical:intake marker found but no sentence follows it"
 
-    # (d) cross-references
+    # (d) references /jarvis-new-task (the explicit front door Cursor Skill)
+    if "/jarvis-new-task" not in text:
+        return False, "new-requirement-intake.mdc missing /jarvis-new-task reference"
+
+    # (e) cross-references
     has_self_drive = bool(re.search(r"self-drive", text, re.IGNORECASE))
     has_hard_lessons = bool(re.search(r"jarvis-hard-lessons", text, re.IGNORECASE))
     if not has_self_drive:
@@ -529,7 +533,7 @@ def assert_14_intake_rule_wired() -> tuple[bool, str]:
     if not has_hard_lessons:
         return False, "new-requirement-intake.mdc missing cross-ref to jarvis-hard-lessons"
 
-    # (e) single-source dedup — canonical sentence must not appear in any other rule file
+    # (f) single-source dedup — canonical sentence must not appear in any other rule file
     needle = canonical_sentence[:60].lower()
     for other in rules_dir.glob("*.mdc"):
         if other == intake:
@@ -542,8 +546,8 @@ def assert_14_intake_rule_wired() -> tuple[bool, str]:
             return False, (f"canonical intake sentence duplicated in {other.name} "
                            f"— single source violated")
 
-    return True, ("new-requirement-intake.mdc: .mdc format, always-on, canonical marker, "
-                  "cross-refs, single-source dedup all pass")
+    return True, ("new-requirement-intake.mdc: .mdc format, always-on, /jarvis-new-task ref, "
+                  "canonical marker, cross-refs, single-source dedup all pass")
 
 
 def assert_15_no_md_rules() -> tuple[bool, str]:
@@ -649,64 +653,29 @@ def assert_17_new_requirement_seeds_worktree_cache() -> tuple[bool, str]:
     return True, "new_requirement.py seeds phase cache into worktree (worktree status fix)"
 
 
-def assert_18_intake_hook_harness_wired() -> tuple[bool, str]:
-    """Intake hook harness exists, is executable, references required symbols,
-    and the installer wires the user-level dispatcher.
+def assert_18_jarvis_new_task_skill_wired() -> tuple[bool, str]:
+    """jarvis-new-task Cursor Skill exists and is correctly wired.
 
-    Checks:
-    - .cursor/hooks/enforce.sh exists and is executable
-    - .cursor/hooks/prompt_gate.py exists and references:
-        new_requirement.py, append_to_corpus, "continue", //inline
-    - scripts/install-git-hooks.sh references ~/.cursor/hooks.json (dispatcher)
-    - skills/user_model/store.py has corpus-append subcommand
+    Three checks:
+    - .cursor/skills/jarvis-new-task/SKILL.md exists
+    - has disable-model-invocation: true
+    - references new_requirement.py (the front door script)
     """
-    problems: list[str] = []
+    skill = REPO_ROOT / ".cursor" / "skills" / "jarvis-new-task" / "SKILL.md"
 
-    # enforce.sh
-    enforce_sh = REPO_ROOT / ".cursor" / "hooks" / "enforce.sh"
-    if not enforce_sh.exists():
-        problems.append(".cursor/hooks/enforce.sh not found")
-    elif not os.access(enforce_sh, os.X_OK):
-        problems.append(".cursor/hooks/enforce.sh is not executable")
+    if not skill.exists():
+        return False, ".cursor/skills/jarvis-new-task/SKILL.md not found"
 
-    # prompt_gate.py — content checks
-    gate = REPO_ROOT / ".cursor" / "hooks" / "prompt_gate.py"
-    if not gate.exists():
-        problems.append(".cursor/hooks/prompt_gate.py not found")
-    else:
-        gate_src = gate.read_text(encoding="utf-8")
-        for token, label in [
-            ("new_requirement", "new_requirement.py reference"),
-            ("append_to_corpus", "append_to_corpus call"),
-            ('"continue"', '"continue" key in output'),
-            ("//inline", "//inline override token"),
-        ]:
-            if token not in gate_src:
-                problems.append(f"prompt_gate.py missing: {label}")
+    text = skill.read_text(encoding="utf-8")
 
-    # installer wires dispatcher
-    installer = REPO_ROOT / "scripts" / "install-git-hooks.sh"
-    if not installer.exists():
-        problems.append("scripts/install-git-hooks.sh not found")
-    else:
-        inst_src = installer.read_text(encoding="utf-8")
-        if "hooks.json" not in inst_src:
-            problems.append("install-git-hooks.sh does not wire ~/.cursor/hooks.json dispatcher")
-        if "beforeSubmitPrompt" not in inst_src:
-            problems.append("install-git-hooks.sh does not reference beforeSubmitPrompt")
+    if not re.search(r"disable-model-invocation:\s*true", text):
+        return False, "jarvis-new-task/SKILL.md missing disable-model-invocation: true"
 
-    # corpus-append CLI
-    store = REPO_ROOT / "skills" / "user_model" / "store.py"
-    if not store.exists():
-        problems.append("skills/user_model/store.py not found")
-    else:
-        store_src = store.read_text(encoding="utf-8")
-        if "corpus-append" not in store_src:
-            problems.append("store.py is missing corpus-append subcommand")
+    if "new_requirement.py" not in text:
+        return False, "jarvis-new-task/SKILL.md missing reference to new_requirement.py"
 
-    if problems:
-        return False, "; ".join(problems)
-    return True, "intake hook harness fully wired (enforce.sh + prompt_gate.py + dispatcher + corpus-append)"
+    return True, ("jarvis-new-task skill: SKILL.md exists, disable-model-invocation: true, "
+                  "new_requirement.py referenced")
 
 
 # ---------------------------------------------------------------------------
@@ -731,7 +700,7 @@ ASSERTIONS: list[tuple[int, str, str]] = [
     (15, "no .md files in .cursor/rules/ (durable .mdc guardrail)", "assert_15_no_md_rules"),
     (16, "rule load semantics preserved after .md->.mdc migration", "assert_16_rule_semantics_preserved"),
     (17, "new_requirement.py seeds phase cache into worktree", "assert_17_new_requirement_seeds_worktree_cache"),
-    (18, "intake hook harness wired: enforce.sh + prompt_gate.py + dispatcher + corpus-append CLI", "assert_18_intake_hook_harness_wired"),
+    (18, "jarvis-new-task skill wired: SKILL.md + disable-model-invocation + new_requirement.py", "assert_18_jarvis_new_task_skill_wired"),
 ]
 
 # Assertions that are expected to fail before their milestone lands.

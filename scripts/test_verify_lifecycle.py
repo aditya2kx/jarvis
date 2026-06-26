@@ -573,13 +573,16 @@ class TestAssertion13(unittest.TestCase):
 
 class TestAssertion14(unittest.TestCase):
     def _make_intake_rule(self, rules_dir: Path, *, always_on: bool = True,
-                          has_marker: bool = True, has_xrefs: bool = True) -> None:
+                          has_marker: bool = True, has_xrefs: bool = True,
+                          has_skill_ref: bool = True) -> None:
         body = "---\n"
         body += f"alwaysApply: {'true' if always_on else 'false'}\n"
         body += "---\n\n"
         if has_marker:
             body += "<!-- canonical:intake -->\n"
-            body += "When the operator signals a new requirement, run new_requirement.py.\n\n"
+            body += "When the operator signals a new requirement, invoke the Cursor Skill.\n\n"
+        if has_skill_ref:
+            body += "Use the /jarvis-new-task Cursor Skill to start a new requirement.\n"
         if has_xrefs:
             body += "See self-drive.mdc and jarvis-hard-lessons.mdc for context.\n"
         (rules_dir / "new-requirement-intake.mdc").write_text(body)
@@ -632,6 +635,16 @@ class TestAssertion14(unittest.TestCase):
         self.assertFalse(passed)
         self.assertIn("canonical:intake", detail)
 
+    def test_fails_when_skill_ref_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_dir = Path(tmp) / ".cursor" / "rules"
+            rules_dir.mkdir(parents=True)
+            self._make_intake_rule(rules_dir, has_skill_ref=False)
+            with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
+                passed, detail = vl.assert_14_intake_rule_wired()
+        self.assertFalse(passed)
+        self.assertIn("/jarvis-new-task", detail)
+
     def test_fails_when_canonical_sentence_in_other_rule(self):
         with tempfile.TemporaryDirectory() as tmp:
             rules_dir = Path(tmp) / ".cursor" / "rules"
@@ -640,7 +653,7 @@ class TestAssertion14(unittest.TestCase):
             # Duplicate the canonical sentence into another rule
             (rules_dir / "self-drive.mdc").write_text(
                 "---\nalwaysApply: true\n---\n"
-                "When the operator signals a new requirement, run new_requirement.py.\n"
+                "When the operator signals a new requirement, invoke the Cursor Skill.\n"
             )
             with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
                 passed, detail = vl.assert_14_intake_rule_wired()
@@ -756,102 +769,47 @@ class TestAssertion17(unittest.TestCase):
 
 
 class TestAssertion18(unittest.TestCase):
+    def _make_skill(self, root: Path, *, has_disable: bool = True,
+                    has_script_ref: bool = True) -> None:
+        skill_dir = root / ".cursor" / "skills" / "jarvis-new-task"
+        skill_dir.mkdir(parents=True)
+        body = "---\nname: jarvis-new-task\n"
+        if has_disable:
+            body += "disable-model-invocation: true\n"
+        body += "---\n\n# jarvis-new-task\n\n"
+        if has_script_ref:
+            body += "python3 scripts/new_requirement.py --requirement ...\n"
+        (skill_dir / "SKILL.md").write_text(body)
+
     def test_passes_against_real_repo(self):
-        passed, detail = vl.assert_18_intake_hook_harness_wired()
+        passed, detail = vl.assert_18_jarvis_new_task_skill_wired()
         self.assertTrue(passed, detail)
 
-    def test_fails_when_enforce_sh_missing(self):
+    def test_fails_when_skill_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            # create the other required files
-            hooks_dir = root / ".cursor" / "hooks"
-            hooks_dir.mkdir(parents=True)
-            gate = hooks_dir / "prompt_gate.py"
-            gate.write_text(
-                '# new_requirement.py\n'
-                'def main(): append_to_corpus("x"); print({"continue": True}); pass  # //inline\n'
-            )
-            (root / "scripts").mkdir()
-            (root / "scripts" / "install-git-hooks.sh").write_text(
-                "hooks.json\nbeforeSubmitPrompt"
-            )
-            (root / "skills" / "user_model").mkdir(parents=True)
-            (root / "skills" / "user_model" / "store.py").write_text("corpus-append\n")
-            # enforce.sh deliberately NOT created
             with patch("verify_lifecycle.REPO_ROOT", root):
-                passed, detail = vl.assert_18_intake_hook_harness_wired()
+                passed, detail = vl.assert_18_jarvis_new_task_skill_wired()
         self.assertFalse(passed)
-        self.assertIn("enforce.sh", detail)
+        self.assertIn("not found", detail)
 
-    def test_fails_when_prompt_gate_missing_token(self):
+    def test_fails_when_disable_model_invocation_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            hooks_dir = root / ".cursor" / "hooks"
-            hooks_dir.mkdir(parents=True)
-            enforce = hooks_dir / "enforce.sh"
-            enforce.write_text("#!/bin/bash\nexec python3 prompt_gate.py\n")
-            enforce.chmod(0o755)
-            # prompt_gate.py missing //inline
-            gate = hooks_dir / "prompt_gate.py"
-            gate.write_text(
-                '# new_requirement.py\ndef main(): append_to_corpus("x"); return {"continue": True}\n'
-            )
-            (root / "scripts").mkdir()
-            (root / "scripts" / "install-git-hooks.sh").write_text(
-                "hooks.json\nbeforeSubmitPrompt"
-            )
-            (root / "skills" / "user_model").mkdir(parents=True)
-            (root / "skills" / "user_model" / "store.py").write_text("corpus-append\n")
+            self._make_skill(root, has_disable=False)
             with patch("verify_lifecycle.REPO_ROOT", root):
-                passed, detail = vl.assert_18_intake_hook_harness_wired()
+                passed, detail = vl.assert_18_jarvis_new_task_skill_wired()
         self.assertFalse(passed)
-        self.assertIn("//inline", detail)
+        self.assertIn("disable-model-invocation", detail)
 
-    def test_fails_when_installer_missing_dispatcher(self):
+    def test_fails_when_script_ref_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            hooks_dir = root / ".cursor" / "hooks"
-            hooks_dir.mkdir(parents=True)
-            enforce = hooks_dir / "enforce.sh"
-            enforce.write_text("#!/bin/bash\nexec python3 prompt_gate.py\n")
-            enforce.chmod(0o755)
-            gate = hooks_dir / "prompt_gate.py"
-            gate.write_text(
-                '# new_requirement.py\ndef main(): append_to_corpus("x"); return {"continue": True}  # //inline\n'
-            )
-            (root / "scripts").mkdir()
-            # installer missing hooks.json reference
-            (root / "scripts" / "install-git-hooks.sh").write_text("git config core.hooksPath\n")
-            (root / "skills" / "user_model").mkdir(parents=True)
-            (root / "skills" / "user_model" / "store.py").write_text("corpus-append\n")
+            self._make_skill(root, has_script_ref=False)
             with patch("verify_lifecycle.REPO_ROOT", root):
-                passed, detail = vl.assert_18_intake_hook_harness_wired()
+                passed, detail = vl.assert_18_jarvis_new_task_skill_wired()
         self.assertFalse(passed)
-        self.assertIn("hooks.json", detail)
-
-    def test_fails_when_corpus_append_missing(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            hooks_dir = root / ".cursor" / "hooks"
-            hooks_dir.mkdir(parents=True)
-            enforce = hooks_dir / "enforce.sh"
-            enforce.write_text("#!/bin/bash\nexec python3 prompt_gate.py\n")
-            enforce.chmod(0o755)
-            gate = hooks_dir / "prompt_gate.py"
-            gate.write_text(
-                '# new_requirement.py\ndef main(): append_to_corpus("x"); return {"continue": True}  # //inline\n'
-            )
-            (root / "scripts").mkdir()
-            (root / "scripts" / "install-git-hooks.sh").write_text(
-                "hooks.json\nbeforeSubmitPrompt"
-            )
-            (root / "skills" / "user_model").mkdir(parents=True)
-            # store.py missing corpus-append
-            (root / "skills" / "user_model" / "store.py").write_text("corpus-tail\n")
-            with patch("verify_lifecycle.REPO_ROOT", root):
-                passed, detail = vl.assert_18_intake_hook_harness_wired()
-        self.assertFalse(passed)
-        self.assertIn("corpus-append", detail)
+        self.assertIn("new_requirement.py", detail)
 
 
 class TestRunFunction(unittest.TestCase):
@@ -874,7 +832,7 @@ class TestRunFunction(unittest.TestCase):
             "assert_15_no_md_rules": (True, "ok"),
             "assert_16_rule_semantics_preserved": (True, "ok"),
             "assert_17_new_requirement_seeds_worktree_cache": (True, "ok"),
-            "assert_18_intake_hook_harness_wired": (True, "ok"),
+            "assert_18_jarvis_new_task_skill_wired": (True, "ok"),
         }
 
     def test_run_returns_0_on_full_pass(self):
@@ -902,7 +860,7 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_15_no_md_rules", return_value=(True, "ok")), \
              patch.object(vl, "assert_16_rule_semantics_preserved", return_value=(True, "ok")), \
              patch.object(vl, "assert_17_new_requirement_seeds_worktree_cache", return_value=(True, "ok")), \
-             patch.object(vl, "assert_18_intake_hook_harness_wired", return_value=(True, "ok")):
+             patch.object(vl, "assert_18_jarvis_new_task_skill_wired", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 1)
 
@@ -924,7 +882,7 @@ class TestRunFunction(unittest.TestCase):
              patch.object(vl, "assert_15_no_md_rules", return_value=(True, "ok")), \
              patch.object(vl, "assert_16_rule_semantics_preserved", return_value=(True, "ok")), \
              patch.object(vl, "assert_17_new_requirement_seeds_worktree_cache", return_value=(True, "ok")), \
-             patch.object(vl, "assert_18_intake_hook_harness_wired", return_value=(True, "ok")):
+             patch.object(vl, "assert_18_jarvis_new_task_skill_wired", return_value=(True, "ok")):
             rc = vl.run()
         self.assertEqual(rc, 0, "Pre-milestone WARNs should not cause exit 1")
 

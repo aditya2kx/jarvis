@@ -290,6 +290,18 @@ def _is_review_message(content: str) -> bool:
     return content.lstrip().startswith(REVIEW_HEADER)
 
 
+def _is_held_back_review(content: str, ts_ms: int, window_end_ts_ms: int) -> bool:
+    """True iff a message is a genuine review posted after end-of-day CT on
+    data_window_end (so it is held back, not operational chatter).
+
+    The held-back counter must only count actual review-bot posts — the ClickUp
+    channel also carries duty checklists, package photos, and team messages that
+    must never inflate the counter (2026-06-25 incident: 11 chatter posts on both
+    6/24 and 6/25 triggered HELD-BACK: 11 when 0 real reviews were deferred).
+    """
+    return _is_review_message(content) and ts_ms > window_end_ts_ms
+
+
 def parse_review_message(
     *, message_id: str, post_ts_ms: int, content: str,
 ) -> Optional[dict]:
@@ -1146,15 +1158,17 @@ def main() -> int:
         ts_ms = m.get("date") or 0
         content = m.get("content") or ""
 
-        # Hard cap at end-of-day CT for data_window_end. Anything posted
+        # Filter non-review messages first (duty checklists, package photos,
+        # team chatter) so they never inflate the held-back counter.
+        if not _is_review_message(content):
+            continue
+
+        # Hard cap at end-of-day CT for data_window_end. A genuine review posted
         # after that is held back: don't advance the high-water past it, don't
         # parse, don't write. Tomorrow's run (after the window advances) will
         # see this message again.
         if ts_ms > window_end_ts_ms:
             held_back += 1
-            continue
-
-        if not _is_review_message(content):
             continue
 
         parsed = parse_review_message(
@@ -1340,11 +1354,10 @@ def main() -> int:
 
     # ── Slack summary ──
     # Build the summary line-by-line so HELD-BACK is prominent. The
-    # `held_back` count comes from messages that parsed cleanly but landed
-    # AFTER the model's data_window_end — they're correct reviews waiting on
-    # ADP/Square data to advance the window. Surfacing the count here is
-    # essential because the previous "+0" summary made it look like nothing
-    # was missed even when 17 reviews were dropped.
+    # `held_back` count is genuine reviews (not chatter) posted AFTER the
+    # model's data_window_end — they are waiting for upstream data to advance
+    # the window. Counting only reviews prevents operational channel messages
+    # (duty checklists, package photos) from inflating this figure.
     parts = [f"Reviews: +{n_bq_loaded} BQ upserted (master now {len(all_reviews)} in BQ)"]
     if held_back > 0:
         parts.append(

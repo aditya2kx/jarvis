@@ -1,5 +1,15 @@
 # Jarvis Build Progress
 
+## 2026-06-26 — BHAGA: fix misleading HELD-BACK counter in process_reviews (branch fix/investigate-why-bhaga-cloud-runs-for)
+
+**Root cause:** The `running-austin-palmetto` ClickUp channel is a general ops channel (duty checklists, package photos, team messages). The `held_back` counter in `process_reviews.py` incremented before the `_is_review_message` filter, so every post-window message — including chatter — was counted. On both 2026-06-24 and 2026-06-25, 11 non-review messages after `data_window_end` produced `HELD-BACK: 11` when 0 actual reviews were deferred. Data was healthy throughout: `google_reviews` BQ had 91 rows through 2026-06-17 (the last real review), and the open 6/15→6/25 period rollup (including Browning, Skyler $10) was correctly credited.
+
+**Fix:** Reorder the two guards in the message loop so `_is_review_message` runs before the window cap. Extract `_is_held_back_review(content, ts_ms, window_end_ts_ms)` as a pure predicate that locks the intent and is the direct unit-test target.
+
+**Evidence:** 4 unit tests in `test_process_reviews.py::IsHeldBackReviewTests` using real 6/24-6/25 chatter strings as negative cases. 51/51 tests pass, no regressions.
+
+**Files:** `agents/bhaga/scripts/process_reviews.py`, `agents/bhaga/scripts/test_process_reviews.py`, `agents/bhaga/scripts/README.md`.
+
 ## 2026-06-25 — `/bhaga-cloud refresh` multi-date support (PR #77, branch fix/slack-bhaga-cloud-refresh-command-support)
 
 **Status:** Implementing — M1 (parser + tests) complete; M2 (evidence driver + RUNBOOK + direct sandbox trigger) complete; awaiting live sandbox evidence run via direct trigger.

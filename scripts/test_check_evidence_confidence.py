@@ -71,3 +71,42 @@ class TestWaiverLogic(unittest.TestCase):
         ):
             result = main(["--text", "Evidence confidence rating: 90%", "--min", "95"])
         self.assertEqual(result, 1, "90% without waiver should fail (floor=95)")
+
+
+class TestHasWaiverParsing(unittest.TestCase):
+    """Exercise the real _has_waiver() body-regex / label parsing by mocking only
+    the gh api subprocess call (not _has_waiver itself)."""
+
+    def _run_with_payload(self, payload: dict):
+        import json
+        env = {**os.environ, "PR_NUMBER": "82", "GH_TOKEN": "x"}
+        completed = type("R", (), {"returncode": 0, "stdout": json.dumps(payload)})()
+        with patch.dict(os.environ, env, clear=True), patch(
+            "scripts.check_evidence_confidence.subprocess.run",
+            return_value=completed,
+        ):
+            return _has_waiver()
+
+    def test_body_waiver_phrase_detected(self):
+        body = "## §4\nEvidence tier: unit-only (waiver: scripts/docs-only, no runtime path)\n"
+        self.assertTrue(self._run_with_payload({"body": body, "labels": []}))
+
+    def test_label_waiver_detected(self):
+        self.assertTrue(
+            self._run_with_payload({"body": "no tier here", "labels": ["evidence-waiver"]})
+        )
+
+    def test_no_waiver_in_body_or_labels(self):
+        self.assertFalse(
+            self._run_with_payload(
+                {"body": "Evidence tier: sandbox-live (scenario: full-live)", "labels": ["bug"]}
+            )
+        )
+
+    def test_gh_api_failure_returns_false(self):
+        env = {**os.environ, "PR_NUMBER": "82", "GH_TOKEN": "x"}
+        failed = type("R", (), {"returncode": 1, "stdout": ""})()
+        with patch.dict(os.environ, env, clear=True), patch(
+            "scripts.check_evidence_confidence.subprocess.run", return_value=failed
+        ):
+            self.assertFalse(_has_waiver())

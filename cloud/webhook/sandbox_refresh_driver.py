@@ -48,7 +48,7 @@ _SANDBOX_BQ_DATASET = os.environ.get("BHAGA_SANDBOX_BQ_DATASET", "bhaga_sandbox"
 _SANDBOX_RUNS_COLLECTION = os.environ.get("BHAGA_SANDBOX_RUNS_COLLECTION", "sandbox_runs")
 _BQ_PROJECT = os.environ.get("GCP_PROJECT", "jarvis-bhaga-prod")
 _POLL_INTERVAL_S = 30
-_TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED", "EXECUTION_FAILED"}
+_TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED", "EXECUTION_FAILED", "COMPLETED"}
 
 
 def _inject_sandbox_env() -> None:
@@ -63,7 +63,6 @@ def _import_handler():
     """Import handler after injecting sandbox env (deferred to avoid import-time side effects)."""
     _inject_sandbox_env()
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-    import importlib
     import cloud.webhook.handler as h
     # Re-initialize BQ and Firestore clients with the updated env.
     h.init_app()

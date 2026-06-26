@@ -85,6 +85,20 @@ COUPLINGS: list[dict] = [
     },
     {
         "code": [
+            ".github/workflows/ship-emoji-force-merge.yml",
+            ".github/workflows/pr-merged-lifecycle.yml",
+            "scripts/ship_merge.py",
+            "scripts/post_merge_lifecycle.py",
+        ],
+        "docs": [
+            "CONTRIBUTING.md",
+            "docs/contributing/enforcement.md",
+            "docs/WORKFLOW.md",
+        ],
+        "why": "ship-emoji / post-merge lifecycle changed → update CONTRIBUTING.md merge section + enforcement.md + WORKFLOW.md.",
+    },
+    {
+        "code": [
             "scripts/cursor_usage.py",
             "scripts/pr_cost_ledger.py",
             "scripts/pr_cost_store.py",

@@ -30,4 +30,26 @@ the GitHub issue.  Do not attempt to self-advance past these gates.
 - Advance phase state after each completed substep
 - Verify post-merge state and write the retrospective to `PROGRESS.md`
 
+## Retrospective protocol (post-merge-verify → retrospective)
+
+After merge, `pr-merged-lifecycle.yml` runs the §4 post-merge commands and posts a retrospective prompt on the tracking issue.  The agent **must** pick this up in a follow-up chat and:
+
+1. **Read** the PR conversation + relevant agent transcripts in `~/.cursor/projects/*/agent-transcripts/`.
+2. **Grade the dev cycle** along three axes and write a dated `PROGRESS.md` entry:
+   - **Speed** — jam→merge cycle time vs expectation; identify the bottleneck.
+   - **Cost** — model routing compliance (Sonnet/Opus); unnecessary escalations.
+   - **Accuracy** — did implementation match the §4 evidence contract exactly?  Rework loops?
+3. **Propose ≥1 concrete dev-process improvement** derived from the retro.
+4. **Preference harvest** — scan PR conversation + transcripts for operator signal phrases
+   (`always`, `never`, `prefer`, `in general`, `next time`, `I want`).  Run candidates through:
+   ```bash
+   python -m skills.user_model.guardrail score "<candidate text>"
+   ```
+   Propose `store.add_preference` for each that scores ≥ 4/6 (operator y/n in chat).
+5. **Close the issue** and advance retrospective:
+   ```bash
+   python3 scripts/phase_state.py advance --branch <branch> --to retrospective
+   gh issue close <N> --comment "Retrospective complete — see PROGRESS.md entry <date>."
+   ```
+
 If a phase is taking longer than expected, fail it: `phase_state.py fail --branch <b> --reason "..."`.

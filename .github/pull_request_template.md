@@ -48,6 +48,23 @@ placeholder text. Delete these HTML comments before submitting.
 
 </details>
 
+<!-- OPTIONAL — for changes that have observable post-merge state to verify.
+     The pr-merged-lifecycle.yml workflow will automatically run READ-ONLY
+     commands from this block after the PR is merged and post results as an
+     issue comment.  Side-effecting commands (scrape, deploy, OTP, gcloud run)
+     are listed as "agent follow-up" items and NOT auto-run.
+     Omit this section entirely if there is nothing meaningful to verify post-merge.
+-->
+### Post-merge verification
+<!--
+```bash
+# Example read-only commands (replace or remove as appropriate):
+# python3 -m agents.bhaga.scripts.status --store palmetto
+# gh pr view <n> --json state,mergedAt
+# python3 scripts/phase_state.py status
+```
+-->
+
 
 ## 5. Backward compatibility — and proof
 <!-- State explicitly: yes or no, then PROVE it.

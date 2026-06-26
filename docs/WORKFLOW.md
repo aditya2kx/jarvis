@@ -99,9 +99,9 @@ Open failures: none        Summary: verify in progress
 tracking issue** at kickoff: after spinning up the worktree + brief + cost session it
 calls `init_phase_tracking()` → `phase_state.py init --kickoff`, which seeds
 
-The worktree base defaults to the **current branch** of the repo you run from, so
-worktrees inherit any in-flight framework changes automatically (e.g. an open PR
-branch). Pass `--base origin/main` explicitly to branch from clean main instead.
+The worktree base defaults to **`origin/main`** (fetched fresh) so each new
+requirement starts from a clean, isolated baseline. Pass `--base <local-branch>`
+explicitly to opt into inheriting in-flight changes from an open PR branch.
 
 The Cursor launcher HTML is written as a fallback only; it is not opened automatically
 when the Cursor CLI succeeds. If the deeplink fails, open the `session-*-launch.html`
@@ -228,6 +228,32 @@ OPERATOR-RESERVED                     AGENT ZONE
 The agent **self-sequences** all agent-zone phases.  `phase_state.py advance` posts an
 `awaiting:operator` prompt on the issue whenever an operator gate is reached, so the
 operator always knows where to input.
+
+### Post-merge lifecycle (automated)
+`pr-merged-lifecycle.yml` fires on every squash-merge to `main` and:
+1. Resolves the tracking issue (phase-cache → gh issue scan).
+2. Stamps `approved:merge` and advances `merge` (the squash-merge IS the operator approval).
+3. Posts a cross-reference comment on the issue linking the merged PR.
+4. Parses the §4 "Post-merge verification" block; runs read-only commands in CI; posts results.
+5. Advances `post-merge-verify` once verification runs (or is skipped).
+6. Posts a retrospective prompt (speed / cost / accuracy grading checklist) on the issue.
+
+The **retrospective** is always agent-driven in a follow-up chat (CI cannot read local transcripts).
+The agent reads the PR conversation + transcripts, grades the cycle, proposes ≥1 process improvement,
+runs preference candidates through the user-model guardrail, then closes the issue.
+See `self-drive.mdc` § Retrospective protocol for the full sequence.
+
+### Ship-emoji force-merge
+When `aditya2kx` posts a standalone 🚀 or 🚢 comment on a PR,
+`ship-emoji-force-merge.yml` checks:
+- Is the comment author `aditya2kx` with `OWNER` association?
+- Is the ONLY failing required check the Claude evidence-confidence gate (< 95%)?
+- Is the Claude verdict NOT `REQUEST CHANGES`?
+
+If all true → `gh pr merge --squash --admin`.  Hard CI checks (secret-scan, pytest,
+pr-cost-gate), REQUEST CHANGES verdicts, and unreplied threads are never bypassed.
+The workflow becomes active after this PR merges to `main` (issue_comment workflows
+require the workflow to be on the default branch).
 
 ---
 

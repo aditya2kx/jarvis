@@ -1,0 +1,156 @@
+name: Ship-emoji force-merge
+
+# When aditya2kx posts a standalone 🚀 or 🚢 comment on a PR and the only
+# failing required check is the Claude evidence-confidence gate (< 95%),
+# squash-merge immediately using the ADMIN_PAT.
+#
+# What this bypasses (and only this):
+#   - The "Evidence confidence gate (fail if < 95%)" Claude-review soft gate
+# What this NEVER bypasses:
+#   - Any hard CI check (secret-scan, pytest, pr-cost-gate, pr-description, …)
+#   - A Claude review verdict of REQUEST CHANGES
+#   - Unreplied inline review threads (caught by the Claude review CI step)
+#
+# Authorization: github.event.comment.user.login must be in
+#   SHIP_MERGE_AUTHORIZED_LOGINS (default: aditya2kx)
+#   AND author_association must be OWNER.
+#
+# Limitation: issue_comment workflows only fire once on the DEFAULT branch.
+# This workflow first becomes active after this PR is merged to main.
+# Pre-merge evidence is collected via the post-merge follow-up (see §4).
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# One run per PR at a time; new comment supersedes in-flight check.
+concurrency:
+  group: ship-emoji-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  ship:
+    name: Ship-emoji force-merge
+    # Only act on PR comments (not plain issue comments).
+    if: github.event.issue.pull_request != null
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ADMIN_PAT }}
+      PR: ${{ github.event.issue.number }}
+      REPO: ${{ github.repository }}
+      COMMENT_LOGIN: ${{ github.event.comment.user.login }}
+      COMMENT_ASSOC: ${{ github.event.comment.author_association }}
+      COMMENT_BODY: ${{ github.event.comment.body }}
+      SHIP_MERGE_AUTHORIZED_LOGINS: "aditya2kx"
+    steps:
+      - name: Checkout (scripts only)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check ship intent
+        id: intent
+        run: |
+          set +e
+          python3 scripts/ship_merge.py is-ship-intent --body "$COMMENT_BODY"
+          echo "ship_intent=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Check authorization
+        id: auth
+        if: steps.intent.outputs.ship_intent == '0'
+        run: |
+          set +e
+          python3 scripts/ship_merge.py is-authorized \
+            --login "$COMMENT_LOGIN" --assoc "$COMMENT_ASSOC"
+          echo "authorized=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch PR checks + Claude verdict
+        id: checks
+        if: steps.intent.outputs.ship_intent == '0' && steps.auth.outputs.authorized == '0'
+        run: |
+          # Fetch all checks for the PR head.
+          CHECKS_JSON="$(gh api "repos/$REPO/commits/$(gh pr view "$PR" \
+            --json headRefOid -q .headRefOid)/check-runs" \
+            --jq '[.check_runs[] | {name: .name, conclusion: .conclusion, state: .status}]' \
+            2>/dev/null || echo '[]')"
+          echo "checks_json<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$CHECKS_JSON" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          # Fetch latest claude[bot] comment for verdict + confidence.
+          CLAUDE_BODY="$(gh api "repos/$REPO/issues/$PR/comments" \
+            --jq '[.[] | select(.user.login == "claude[bot]" or (.user.login | startswith("claude")))] | last | .body' \
+            2>/dev/null || echo '')"
+
+          VERDICT_HEADER="$(echo "$CLAUDE_BODY" | head -3 | tr '[:lower:]' '[:upper:]')"
+          echo "verdict_header=$VERDICT_HEADER" >> "$GITHUB_OUTPUT"
+
+          # Parse evidence confidence score.
+          CONFIDENCE="$(echo "$CLAUDE_BODY" | \
+            python3 -c "
+import re, sys
+body = sys.stdin.read()
+m = re.search(r'Evidence confidence(?:\s+rating)?\s*[:*\s]+\*{0,2}(\d+)\s*%', body, re.IGNORECASE)
+print(m.group(1) if m else '')
+" 2>/dev/null || echo '')"
+          echo "confidence=${CONFIDENCE}" >> "$GITHUB_OUTPUT"
+
+      - name: Check if only evidence-confidence is blocking
+        id: blocking
+        if: steps.intent.outputs.ship_intent == '0' && steps.auth.outputs.authorized == '0'
+        run: |
+          CONFIDENCE_ARG=""
+          if [ -n "${{ steps.checks.outputs.confidence }}" ]; then
+            CONFIDENCE_ARG="--confidence ${{ steps.checks.outputs.confidence }}"
+          fi
+          set +e
+          python3 scripts/ship_merge.py check-blocking \
+            --checks-json '${{ steps.checks.outputs.checks_json }}' \
+            --verdict-header '${{ steps.checks.outputs.verdict_header }}' \
+            $CONFIDENCE_ARG
+          echo "blocked=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Force-merge (squash + admin)
+        if: |
+          steps.intent.outputs.ship_intent == '0' &&
+          steps.auth.outputs.authorized == '0' &&
+          steps.blocking.outputs.blocked == '0'
+        run: |
+          gh pr merge "$PR" --squash --admin --repo "$REPO" && \
+            gh pr comment "$PR" --repo "$REPO" \
+              --body "🚀 **Force-merged** via ship-emoji by @${COMMENT_LOGIN}. Evidence-confidence gate bypassed." || \
+            gh pr comment "$PR" --repo "$REPO" \
+              --body "⚠️ Ship-emoji: merge command returned non-zero (PR may already be merged, or branch protection blocked admin merge)."
+
+      - name: Post blocker comment (not merged)
+        if: |
+          steps.intent.outputs.ship_intent == '0' &&
+          steps.auth.outputs.authorized == '0' &&
+          steps.blocking.outputs.blocked != '0'
+        run: |
+          REASON="$(python3 scripts/ship_merge.py check-blocking \
+            --checks-json '${{ steps.checks.outputs.checks_json }}' \
+            --verdict-header '${{ steps.checks.outputs.verdict_header }}' \
+            $([[ -n "${{ steps.checks.outputs.confidence }}" ]] && echo "--confidence ${{ steps.checks.outputs.confidence }}") \
+            2>&1 | grep -v '^blocked=' || true)"
+          gh pr comment "$PR" --repo "$REPO" \
+            --body "🚢 **Ship-emoji received** but the PR has blocking issues that must be resolved first:
+
+${REASON}
+
+Fix the above, then post 🚀 again."
+
+      - name: Log skip (not ship intent or not authorized)
+        if: steps.intent.outputs.ship_intent != '0' || steps.auth.outputs.authorized != '0'
+        run: |
+          echo "Skipping: ship_intent=${{ steps.intent.outputs.ship_intent }} authorized=${{ steps.auth.outputs.authorized }}"

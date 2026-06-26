@@ -1,5 +1,31 @@
 # Jarvis Build Progress
 
+## 2026-06-26 — Ship-emoji force-merge + post-merge lifecycle integrity (PR #TBD, branch fix/add-ship-emoji-comment-force-merge)
+
+**Status:** In flight — implementing M1–M4; PR pending.
+
+Five requirements merged into one lifecycle-integrity PR:
+1. **Ship-emoji force-merge** — `aditya2kx` posts 🚀/🚢 on a PR → `ship-emoji-force-merge.yml` squash-merges via admin PAT, bypassing only the Claude evidence-confidence soft gate (< 95%). Hard CI checks, REQUEST CHANGES, unreplied threads: never bypassed.
+2. **Issue #76 class fix** — `pr-merged-lifecycle.yml` fires on every squash-merge: resolves tracking issue, stamps `approved:merge`, advances `merge` → `post-merge-verify` in phase_state, cross-links PR→issue.
+3. **Post-merge-verify execution** — reads §4 "Post-merge verification" block; runs read-only commands in CI; posts per-command ✅/❌ comment; side-effecting commands flagged as agent follow-up.
+4. **Retrospective from conversations** — lifecycle workflow posts structured prompt (speed/cost/accuracy grading + preference harvest) on the tracking issue; agent completes in a follow-up chat and closes the issue.
+5. **new_requirement.py base=origin/main** — fixed docstring/code mismatch: default base is now always `origin/main` (fetched fresh), not the current in-flight branch.
+
+**What changed:**
+- `scripts/new_requirement.py`: `default_base()` → `"origin/main"`; `--base` arg default updated; tests added.
+- `scripts/ship_merge.py` (new): pure helpers `is_ship_intent`, `is_authorized`, `only_evidence_confidence_blocking`.
+- `scripts/test_ship_merge.py` (new): 28 tests covering §4 scenarios A-G.
+- `scripts/post_merge_lifecycle.py` (new): `find_tracking_issue`, `parse_post_merge_block` (line-by-line state machine, fence-aware).
+- `scripts/test_post_merge_lifecycle.py` (new): 13 tests.
+- `.github/workflows/ship-emoji-force-merge.yml` (new): issue_comment trigger.
+- `.github/workflows/pr-merged-lifecycle.yml` (new): pull_request closed + merged==true trigger.
+- `.github/pull_request_template.md`: added optional `### Post-merge verification` subsection in §4.
+- `.cursor/rules/self-drive.mdc`: full retrospective protocol (speed/cost/accuracy + preference harvest + issue close).
+- `docs/WORKFLOW.md`: post-merge lifecycle + ship-emoji sections; new_requirement base ref corrected.
+- `CONTRIBUTING.md`: merge paths + post-merge lifecycle documented.
+- `docs/contributing/enforcement.md`: ship-emoji + post-merge lifecycle documented.
+- `scripts/check_doc_freshness.py`: COUPLINGS entry for new workflows + helpers.
+
 ## 2026-06-26 — Universal 3s-ack for all `/bhaga-cloud` slash commands (branch fix/fix-bhaga-cloud-refresh-slack-timeout)
 
 **Status:** In flight — code + tests complete; PR pending.

@@ -91,6 +91,14 @@ def default_branch(requirement: str, *, prefix: str = "fix") -> str:
     return f"{prefix}/{_slug_branch_part(requirement)}"
 
 
+def default_base() -> str:
+    """The default base ref for new worktrees: always origin/main.
+
+    Pass ``--base <ref>`` explicitly to opt into branching off an in-flight branch.
+    """
+    return "origin/main"
+
+
 def _branch_exists(repo_root: Path, branch: str) -> bool:
     return subprocess.run(
         ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
@@ -400,9 +408,9 @@ def main(argv: list[str] | None = None) -> int:
         "--base", default=None,
         help=(
             "Branch/ref to create the worktree from. "
-            "Defaults to the current branch of this repo so that worktrees "
-            "inherit the framework changes in flight (e.g. an open PR branch). "
-            "Pass 'origin/main' explicitly to branch from clean main."
+            "Defaults to origin/main (fetched fresh) so each new requirement "
+            "starts from a clean, isolated baseline. "
+            "Pass an explicit local branch to opt into inheriting in-flight changes."
         ),
     )
     cli.add_argument(
@@ -436,8 +444,10 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = _repo_root()
     requirements: list[str] = args.requirements
 
-    # Resolve base: default to current branch so worktrees inherit in-flight framework changes.
-    base = args.base or _current_branch(repo_root)
+    # Resolve base: always origin/main by default so each new requirement starts
+    # from a clean, isolated baseline.  Pass --base explicitly to opt into
+    # inheriting changes from an in-flight branch.
+    base = args.base or default_base()
 
     if len(requirements) > 1 and args.split:
         # One worktree per requirement

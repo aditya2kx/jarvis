@@ -92,6 +92,12 @@ GATES: list[Gate] = [
         modes={"full"},
     ),
     Gate(
+        name="evidence-readiness",
+        argv=["python3", "scripts/check_evidence_readiness.py", "--pr", "{PR}"],
+        hard=True,
+        modes={"full"},
+    ),
+    Gate(
         name="pr-review-replies",
         argv=["python3", "scripts/check_pr_review_replies.py", "--pr", "{PR}"],
         hard=True,

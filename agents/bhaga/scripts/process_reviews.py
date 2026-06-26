@@ -290,6 +290,41 @@ def _is_review_message(content: str) -> bool:
     return content.lstrip().startswith(REVIEW_HEADER)
 
 
+def _is_held_back_review(content: str, ts_ms: int, window_end_ts_ms: int) -> bool:
+    """True iff a message is a genuine review posted after end-of-day CT on
+    data_window_end (so it is held back, not operational chatter).
+
+    The held-back counter must only count actual review-bot posts — the ClickUp
+    channel also carries duty checklists, package photos, and team messages that
+    must never inflate the counter (2026-06-25 incident: 11 chatter posts on both
+    6/24 and 6/25 triggered HELD-BACK: 11 when 0 real reviews were deferred).
+    """
+    return _is_review_message(content) and ts_ms > window_end_ts_ms
+
+
+def count_held_back(msgs: list[dict], window_end_ts_ms: int) -> int:
+    """Return the number of genuine reviews in msgs posted after window_end_ts_ms.
+
+    Extracted from the message loop so tests can exercise the actual counter
+    logic (including the guard ordering) without running all of main(). The
+    production loop calls this indirectly via _is_held_back_review at the same
+    site that used to contain the ordering bug.
+
+    A message is counted iff it is a genuine review-bot post (_is_review_message)
+    AND its timestamp exceeds window_end_ts_ms (_is_held_back_review). Operational
+    chatter does NOT count regardless of timestamp.
+    """
+    count = 0
+    for m in msgs:
+        ts_ms = m.get("date") or 0
+        content = m.get("content") or ""
+        if not _is_review_message(content):
+            continue
+        if _is_held_back_review(content, ts_ms, window_end_ts_ms):
+            count += 1
+    return count
+
+
 def parse_review_message(
     *, message_id: str, post_ts_ms: int, content: str,
 ) -> Optional[dict]:
@@ -1139,22 +1174,22 @@ def main() -> int:
     unparseable_rows: list[list] = []
     anomalies: list[str] = []
     ingested_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    held_back = 0
+
+    # Count held-back genuine reviews in a dedicated pass through count_held_back()
+    # so that function IS the live code path — unit tests for count_held_back()
+    # therefore exercise the actual guard ordering, not a parallel helper.
+    held_back = count_held_back(msgs, window_end_ts_ms)
 
     for m in msgs:
         msg_id = m.get("id", "")
         ts_ms = m.get("date") or 0
         content = m.get("content") or ""
 
-        # Hard cap at end-of-day CT for data_window_end. Anything posted
-        # after that is held back: don't advance the high-water past it, don't
-        # parse, don't write. Tomorrow's run (after the window advances) will
-        # see this message again.
-        if ts_ms > window_end_ts_ms:
-            held_back += 1
-            continue
-
+        # Skip non-reviews and post-window genuine reviews; the counter already
+        # captured the held-back count in the pass above.
         if not _is_review_message(content):
+            continue
+        if _is_held_back_review(content, ts_ms, window_end_ts_ms):
             continue
 
         parsed = parse_review_message(
@@ -1340,11 +1375,10 @@ def main() -> int:
 
     # ── Slack summary ──
     # Build the summary line-by-line so HELD-BACK is prominent. The
-    # `held_back` count comes from messages that parsed cleanly but landed
-    # AFTER the model's data_window_end — they're correct reviews waiting on
-    # ADP/Square data to advance the window. Surfacing the count here is
-    # essential because the previous "+0" summary made it look like nothing
-    # was missed even when 17 reviews were dropped.
+    # `held_back` count is genuine reviews (not chatter) posted AFTER the
+    # model's data_window_end — they are waiting for upstream data to advance
+    # the window. Counting only reviews prevents operational channel messages
+    # (duty checklists, package photos) from inflating this figure.
     parts = [f"Reviews: +{n_bq_loaded} BQ upserted (master now {len(all_reviews)} in BQ)"]
     if held_back > 0:
         parts.append(

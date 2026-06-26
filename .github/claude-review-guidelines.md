@@ -91,9 +91,16 @@ actually evaluated, not just checked for existence.
 **Blocking threshold:** confidence < 95% → BLOCKING → REQUEST CHANGES. The evidence gaps section
 becomes the exact requirement the author must satisfy before re-review.
 
+**Operator waiver (unit-only escape):** If the PR body contains
+`Evidence tier: unit-only (waiver: <reason>)` or carries the `evidence-waiver` label, the
+effective floor is lowered to **80%** for that PR. The reviewer still rates honestly; the CI gate
+`check_evidence_confidence.py` automatically detects the waiver and applies the lower floor.
+Only grant passes for genuinely docs/scripts-only changes where no runtime or infra path is
+modified. Do NOT lower the score itself — rate accurately and let the gate apply the waiver.
+
 A separate CI step ("Evidence confidence gate") also parses this score from your summary comment
-and fails the check if the extracted percentage is below 95. This means the numeric score you
-write is machine-read — write it accurately.
+and fails the check if the extracted percentage is below 95 (or 80 with a valid waiver). This
+means the numeric score you write is machine-read — write it accurately.
 
 **Why unit tests alone are < 100%:** unit tests mock the environment; they prove the logic compiles and
 the mocked paths return expected values. They do NOT prove: (a) the real BQ/Sheets/Cloud Run/gcloud

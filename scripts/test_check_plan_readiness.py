@@ -86,7 +86,7 @@ python3 scripts/check_plan_readiness.py --plan this.plan.md
 
 ## Evidence
 - Per-scenario evidence: happy path + failure recovery + legacy
-- Sandbox tier: Tier-1 e2e; Tier-2 live run not needed (no live-only paths)
+- Evidence tier: sandbox-e2e
 """
 
 # A minimal stub plan that should fail most checklist items
@@ -124,10 +124,10 @@ class TestScorePlan(unittest.TestCase):
             f"Stub plan should fail most items; passed {passed_count}/10"
         )
 
-    def test_stub_plan_fails_evidence(self):
+    def test_stub_plan_fails_evidence_tier(self):
         results = cpr.score_plan(STUB_PLAN)
-        item4 = next(r for r in results if "evidence" in r[0].lower())
-        self.assertFalse(item4[1], "Stub plan should fail evidence check")
+        item5 = next(r for r in results if "evidence tier" in r[0].lower())
+        self.assertFalse(item5[1], "Stub plan should fail evidence tier check")
 
     def test_stub_plan_fails_line_citations(self):
         results = cpr.score_plan(STUB_PLAN)
@@ -201,6 +201,41 @@ class TestIndividualChecks(unittest.TestCase):
     def test_per_scenario_evidence_with_happy_path(self):
         text = "Evidence: happy path passes. Failure recovery: verify.py --full. PR §4 evidence pack."
         passed, _ = cpr._check_per_scenario_evidence(text)
+        self.assertTrue(passed)
+
+
+class TestEvidenceTierCheck(unittest.TestCase):
+    def test_sandbox_e2e_passes(self):
+        passed, detail = cpr._check_evidence_tier("Evidence tier: sandbox-e2e")
+        self.assertTrue(passed, detail)
+
+    def test_sandbox_live_with_scenario_passes(self):
+        text = "Evidence tier: sandbox-live\nscenario: full-live"
+        passed, detail = cpr._check_evidence_tier(text)
+        self.assertTrue(passed, detail)
+
+    def test_sandbox_live_without_scenario_fails(self):
+        passed, detail = cpr._check_evidence_tier("Evidence tier: sandbox-live")
+        self.assertFalse(passed, "sandbox-live without scenario: should fail")
+        self.assertIn("scenario", detail)
+
+    def test_unit_only_with_waiver_passes(self):
+        text = "Evidence tier: unit-only (waiver: scripts-only change, no runtime path modified)"
+        passed, detail = cpr._check_evidence_tier(text)
+        self.assertTrue(passed, detail)
+
+    def test_unit_only_without_waiver_fails(self):
+        passed, detail = cpr._check_evidence_tier("Evidence tier: unit-only")
+        self.assertFalse(passed, "unit-only without waiver: should fail")
+        self.assertIn("waiver", detail)
+
+    def test_missing_declaration_fails(self):
+        passed, detail = cpr._check_evidence_tier("Sandbox tier: Tier-1 e2e")
+        self.assertFalse(passed, "old-style sandbox tier should fail")
+        self.assertIn("Evidence tier", detail)
+
+    def test_case_insensitive(self):
+        passed, _ = cpr._check_evidence_tier("evidence tier: SANDBOX-E2E")
         self.assertTrue(passed)
 
 

@@ -372,6 +372,7 @@ It is NOT a `store_config` tunable; `set_config()` raises `ValueError` if you tr
 Reviews with `post_date_ct` after `data_window_end` are held back until the next run that has
 Square data through that date. If reviews are unexpectedly held back, check `bhaga.store_config`
 for a stale `data_window_end` row (see RUNBOOK.md §16 troubleshooting).
+**`HELD-BACK: N` in the Slack summary counts only genuine review-bot posts** (messages matching the `### Google Review` header); operational chatter in the ClickUp channel (duty checklists, package photos, team messages) is excluded before the window cap check so it never inflates the counter (2026-06-25 incident, fixed).
 - `review_pool_dollars` (default `20`) — total pool per qualifying review.
 
 The rebuild is idempotent and runs every night.

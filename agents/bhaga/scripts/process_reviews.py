@@ -1174,22 +1174,22 @@ def main() -> int:
     unparseable_rows: list[list] = []
     anomalies: list[str] = []
     ingested_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    held_back = 0
+
+    # Count held-back genuine reviews in a dedicated pass through count_held_back()
+    # so that function IS the live code path — unit tests for count_held_back()
+    # therefore exercise the actual guard ordering, not a parallel helper.
+    held_back = count_held_back(msgs, window_end_ts_ms)
 
     for m in msgs:
         msg_id = m.get("id", "")
         ts_ms = m.get("date") or 0
         content = m.get("content") or ""
 
-        # Skip non-review messages (duty checklists, package photos, team chatter)
-        # before any window check so they never inflate the held-back counter.
+        # Skip non-reviews and post-window genuine reviews; the counter already
+        # captured the held-back count in the pass above.
         if not _is_review_message(content):
             continue
-
-        # Hard cap at end-of-day CT for data_window_end. Route through the
-        # _is_held_back_review predicate so regression tests exercise this path.
         if _is_held_back_review(content, ts_ms, window_end_ts_ms):
-            held_back += 1
             continue
 
         parsed = parse_review_message(

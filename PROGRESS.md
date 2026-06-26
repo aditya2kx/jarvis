@@ -1,5 +1,21 @@
 # Jarvis Build Progress
 
+## 2026-06-26 — Universal 3s-ack for all `/bhaga-cloud` slash commands (branch fix/fix-bhaga-cloud-refresh-slack-timeout)
+
+**Status:** In flight — code + tests complete; PR pending.
+
+Every `/bhaga-cloud` slash command now acks within Slack's 3s deadline so the operator never sees "Something went wrong." BQ / Cloud Run / Firestore I/O runs in a daemon thread dispatched before the ack is returned; the real result posts back via Slack's `response_url`. Parse errors (bad date, over-cap, unknown token) remain synchronous inline `:x:` — no worker dispatched. No feature flag; rollback = revert PR + redeploy.
+
+**Pattern:**
+- `refresh` → immediate generic ack, async worker posts per-date mode-label summary as `in_channel` follow-up.
+- `status` / `config get|set` / `training set|rm` / `alias set` / `exclude set` → immediate ack, async worker posts real result as ephemeral follow-up.
+
+**What changed:**
+- `cloud/webhook/handler.py`: added `_post_response_url`, `_dispatch_async`, `_run_refresh_worker`, `_get_latest_run_summary_and_post`; refactored `_handle_slash_command` and all `_handle_*` functions to the two-phase ack pattern.
+- `cloud/webhook/test_handler.py`: added `_sync_dispatch` test helper; updated all tests to assert on `response_url` follow-up instead of ack text; 135 tests, all pass.
+- `cloud/webhook/sandbox_refresh_driver.py`: `_fire_slash_command` now patches `_dispatch_async`/`_post_response_url` to run synchronously and capture the follow-up; evidence summary prints both ack and follow-up text.
+- `RUNBOOK.md`: documented two-phase ack UX for all `/bhaga-cloud` commands.
+
 ## 2026-06-25 — `/bhaga-cloud refresh` multi-date support (PR #77, branch fix/slack-bhaga-cloud-refresh-command-support)
 
 **Status:** Implementing — M1 (parser + tests) complete; M2 (evidence driver + RUNBOOK + direct sandbox trigger) complete; awaiting live sandbox evidence run via direct trigger.

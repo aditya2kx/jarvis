@@ -310,8 +310,16 @@ ascending. Up to 31 dates per command; larger ranges are rejected with an error.
 
 Both modes add `BHAGA_IGNORE_HALT=1` (operator-driven backfill includes the fix).
 
-The ack text lists each date with its mode **before** any OTP fires, e.g.:
-> Refresh triggered: 2026-06-23 (full+OTP), 2026-06-24 (full+OTP). Check #bhaga-runs.
+**Two-phase ack** (prevents Slack's "Something went wrong" timeout on multi-date fan-out):
+
+1. **Immediate ack (<3s, synchronous):** Slack receives a generic queued message as soon as parsing succeeds, e.g.:
+   > ⏳ Refresh queued for 2 date(s) — probing coverage + triggering; per-date summary to follow.
+2. **Follow-up (async, via `response_url`):** After the BQ coverage probe and Cloud Run triggers complete, the real per-date mode-label summary is posted back to the channel where the command was run (visible to all members — `response_type: in_channel`), e.g.:
+   > ⏳ Refresh triggered: 2026-06-23 (full+OTP), 2026-06-24 (full+OTP).
+
+Parse errors (bad date, over-cap, unknown token) are still synchronous and appear inline.
+
+The same two-phase pattern applies to every `/bhaga-cloud` command: `status`, `config get/set`, `training set/rm`, `alias set`, and `exclude set` all return an immediate ack and post their real result as an ephemeral `response_url` follow-up (operator-private).
 
 **OTP concurrency caveat:** if multiple full-scrape dates are enqueued concurrently, `_find_pending_portal_for_agent` picks the *newest* pending OTP. ADP's distributed scrape lock serialises browser logins; Square uses the REST API (no browser, no OTP since 2026-06-23). The only OTP portal that fires a live SMS is ADP.
 

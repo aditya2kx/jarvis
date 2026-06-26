@@ -7,7 +7,7 @@ import hmac
 import json
 import os
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -60,7 +60,14 @@ def _post_event(client, payload: dict, *, secret: str = "test_signing_secret_123
 
 def _post_command(client, text: str, **extra_form):
     from urllib.parse import urlencode
-    form = {"text": text, "command": "/bhaga", **extra_form}
+    # Always include a response_url so async workers can call _post_response_url.
+    # Tests that want to capture the follow-up should monkeypatch _post_response_url.
+    form = {
+        "text": text,
+        "command": "/bhaga",
+        "response_url": "https://hooks.slack.com/commands/test/response_url",
+        **extra_form,
+    }
     body = urlencode(form).encode("utf-8")
     timestamp = str(int(time.time()))
     signature = _make_signature(body, timestamp)
@@ -73,6 +80,31 @@ def _post_command(client, text: str, **extra_form):
             "X-Slack-Signature": signature,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Test helpers for the async ack pattern
+# ---------------------------------------------------------------------------
+
+def _sync_dispatch(monkeypatch):
+    """Patch _dispatch_async to run synchronously; capture _post_response_url calls.
+
+    Returns a list that accumulates every (payload) dict passed to
+    _post_response_url, so tests can assert on the follow-up content.
+
+    Usage:
+        follow_ups = _sync_dispatch(monkeypatch)
+        # … make the HTTP request …
+        assert "recompute" in follow_ups[0]["text"]
+    """
+    posted: list[dict] = []
+
+    def _capture_post(url: str, payload: dict) -> None:
+        posted.append(payload)
+
+    monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: fn(*a))
+    monkeypatch.setattr(handler, "_post_response_url", _capture_post)
+    return posted
 
 
 # ===========================================================================
@@ -499,40 +531,51 @@ class TestReadyEventRouting:
 class TestSlashCommands:
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     @patch.object(handler, "_decide_recompute", return_value=False)
-    def test_refresh_command(self, mock_decide, mock_trigger):
+    def test_refresh_command(self, mock_decide, mock_trigger, monkeypatch):
+        """Ack is generic; real result (with date) arrives via response_url follow-up."""
+        follow_ups = _sync_dispatch(monkeypatch)
         with app.test_client() as c:
             resp = _post_command(c, "refresh 2025-05-26")
-            assert resp.status_code == 200
-            data = resp.get_json()
-            assert "2025-05-26" in data["text"]
-            mock_trigger.assert_called_once()
-            # verify REFRESH_DATE + OTP flag in env pairs
-            env_pairs = dict(mock_trigger.call_args[0][1])
-            assert env_pairs["REFRESH_DATE"] == "2025-05-26"
-            assert env_pairs["BHAGA_OTP_FORCE_REQUEST"] == "1"
-            assert env_pairs["BHAGA_IGNORE_HALT"] == "1"
+        assert resp.status_code == 200
+        ack = resp.get_json()
+        # Ack must NOT contain the date — that belongs to the follow-up
+        assert "queued" in ack["text"] or "Refresh" in ack["text"]
+        assert "2025-05-26" not in ack["text"]
+        # Follow-up has the date and the trigger happened
+        assert len(follow_ups) == 1
+        assert "2025-05-26" in follow_ups[0]["text"]
+        mock_trigger.assert_called_once()
+        env_pairs = dict(mock_trigger.call_args[0][1])
+        assert env_pairs["REFRESH_DATE"] == "2025-05-26"
+        assert env_pairs["BHAGA_OTP_FORCE_REQUEST"] == "1"
+        assert env_pairs["BHAGA_IGNORE_HALT"] == "1"
 
     @patch.object(handler, "_get_latest_run_summary", return_value=":white_check_mark: All good")
-    def test_status_command(self, mock_summary):
+    def test_status_command(self, mock_summary, monkeypatch):
+        """Status result arrives via response_url follow-up, not in the ack."""
+        follow_ups = _sync_dispatch(monkeypatch)
         with app.test_client() as c:
             resp = _post_command(c, "status")
-            assert resp.status_code == 200
-            data = resp.get_json()
-            assert "All good" in data["text"]
+        assert resp.status_code == 200
+        ack = resp.get_json()
+        assert "All good" not in ack["text"]
+        assert "status queued" in ack["text"].lower() or "posting" in ack["text"].lower()
+        assert len(follow_ups) == 1
+        assert "All good" in follow_ups[0]["text"]
 
     def test_help_command(self):
         with app.test_client() as c:
             resp = _post_command(c, "")
-            assert resp.status_code == 200
-            data = resp.get_json()
-            assert "Commands" in data["text"]
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "Commands" in data["text"]
 
     def test_unknown_command_shows_help(self):
         with app.test_client() as c:
             resp = _post_command(c, "foobar")
-            assert resp.status_code == 200
-            data = resp.get_json()
-            assert "Commands" in data["text"]
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "Commands" in data["text"]
 
 
 # ===========================================================================
@@ -665,27 +708,38 @@ class TestBuildRefreshEnvOverrides:
 # ===========================================================================
 
 class TestRefreshMultiDate:
-    """End-to-end slash-command tests for multi-date refresh parsing and triggering."""
+    """End-to-end slash-command tests for multi-date refresh parsing and triggering.
+
+    All tests that need to verify triggers or follow-up content use _sync_dispatch()
+    to run the background worker synchronously and capture _post_response_url calls.
+    Tests that only check parse errors or the generic ack do not need _sync_dispatch.
+    """
 
     def _call_refresh(self, client, text: str):
         return _post_command(client, f"refresh {text}")
 
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     @patch.object(handler, "_decide_recompute", return_value=False)
-    def test_comma_list_two_dates(self, mock_decide, mock_trigger):
+    def test_comma_list_two_dates(self, mock_decide, mock_trigger, monkeypatch):
+        follow_ups = _sync_dispatch(monkeypatch)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14,2026-06-15")
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert "2026-06-14" in data["text"]
-        assert "2026-06-15" in data["text"]
+        ack = resp.get_json()
+        # Ack is generic — dates appear only in the follow-up
+        assert "2026-06-14" not in ack["text"]
+        assert "2026-06-15" not in ack["text"]
+        assert len(follow_ups) == 1
+        assert "2026-06-14" in follow_ups[0]["text"]
+        assert "2026-06-15" in follow_ups[0]["text"]
         assert mock_trigger.call_count == 2
-        triggered_dates = [call[0][0] for call in mock_trigger.call_args_list]
+        triggered_dates = [c[0][0] for c in mock_trigger.call_args_list]
         assert triggered_dates == ["2026-06-14", "2026-06-15"]
 
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     @patch.object(handler, "_decide_recompute", return_value=False)
-    def test_space_list_three_dates(self, mock_decide, mock_trigger):
+    def test_space_list_three_dates(self, mock_decide, mock_trigger, monkeypatch):
+        _sync_dispatch(monkeypatch)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14 2026-06-15 2026-06-16")
         assert resp.status_code == 200
@@ -693,18 +747,20 @@ class TestRefreshMultiDate:
 
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     @patch.object(handler, "_decide_recompute", return_value=False)
-    def test_dotdot_range_seven_dates(self, mock_decide, mock_trigger):
+    def test_dotdot_range_seven_dates(self, mock_decide, mock_trigger, monkeypatch):
+        _sync_dispatch(monkeypatch)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14..2026-06-20")
         assert resp.status_code == 200
         assert mock_trigger.call_count == 7
-        triggered_dates = [call[0][0] for call in mock_trigger.call_args_list]
+        triggered_dates = [c[0][0] for c in mock_trigger.call_args_list]
         assert triggered_dates[0] == "2026-06-14"
         assert triggered_dates[-1] == "2026-06-20"
 
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     @patch.object(handler, "_decide_recompute", return_value=False)
-    def test_to_range_seven_dates(self, mock_decide, mock_trigger):
+    def test_to_range_seven_dates(self, mock_decide, mock_trigger, monkeypatch):
+        _sync_dispatch(monkeypatch)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14 to 2026-06-20")
         assert resp.status_code == 200
@@ -712,7 +768,8 @@ class TestRefreshMultiDate:
 
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     @patch.object(handler, "_decide_recompute", return_value=False)
-    def test_mixed_list(self, mock_decide, mock_trigger):
+    def test_mixed_list(self, mock_decide, mock_trigger, monkeypatch):
+        _sync_dispatch(monkeypatch)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14,2026-06-20..2026-06-22,2026-06-25")
         assert resp.status_code == 200
@@ -720,7 +777,8 @@ class TestRefreshMultiDate:
 
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     @patch.object(handler, "_decide_recompute", return_value=False)
-    def test_dedup(self, mock_decide, mock_trigger):
+    def test_dedup(self, mock_decide, mock_trigger, monkeypatch):
+        _sync_dispatch(monkeypatch)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14,2026-06-14")
         assert resp.status_code == 200
@@ -750,6 +808,7 @@ class TestRefreshMultiDate:
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     def test_covered_date_gets_recompute_env(self, mock_trigger, monkeypatch):
         """A BQ-covered date must produce skip flags and no OTP flag."""
+        follow_ups = _sync_dispatch(monkeypatch)
         monkeypatch.setattr(handler, "_date_is_covered", lambda d, dataset=None: True)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14")
@@ -759,11 +818,15 @@ class TestRefreshMultiDate:
         assert env.get("BHAGA_SKIP_ADP") == "1"
         assert env.get("BHAGA_SKIP_KDS") == "1"
         assert "BHAGA_OTP_FORCE_REQUEST" not in env
-        assert "recompute" in resp.get_json()["text"]
+        # Mode label is in the follow-up, not the ack
+        assert "recompute" not in resp.get_json()["text"]
+        assert len(follow_ups) == 1
+        assert "recompute" in follow_ups[0]["text"]
 
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     def test_uncovered_date_gets_full_scrape_env(self, mock_trigger, monkeypatch):
         """A BQ-uncovered date must produce the OTP flag and no skip flags."""
+        follow_ups = _sync_dispatch(monkeypatch)
         monkeypatch.setattr(handler, "_date_is_covered", lambda d, dataset=None: False)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14")
@@ -771,11 +834,15 @@ class TestRefreshMultiDate:
         env = dict(mock_trigger.call_args[0][1])
         assert env.get("BHAGA_OTP_FORCE_REQUEST") == "1"
         assert "BHAGA_SKIP_SQUARE" not in env
-        assert "full+OTP" in resp.get_json()["text"]
+        # Mode label is in the follow-up, not the ack
+        assert "full+OTP" not in resp.get_json()["text"]
+        assert len(follow_ups) == 1
+        assert "full+OTP" in follow_ups[0]["text"]
 
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     def test_bq_failure_falls_back_to_full_scrape(self, mock_trigger, monkeypatch):
         """BQ probe failure must fail-open to full scrape, not suppress the trigger."""
+        _sync_dispatch(monkeypatch)
         monkeypatch.setattr(handler, "_bq", None)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14")
@@ -787,21 +854,25 @@ class TestRefreshMultiDate:
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     def test_mixed_covered_uncovered_per_date_env(self, mock_trigger, monkeypatch):
         """Each date gets independent coverage probe; covered → recompute, uncovered → full."""
+        follow_ups = _sync_dispatch(monkeypatch)
         covered = {"2026-06-14"}
         monkeypatch.setattr(handler, "_date_is_covered", lambda d, dataset=None: d in covered)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14,2026-06-15")
         assert resp.status_code == 200
         assert mock_trigger.call_count == 2
-        calls = {call[0][0]: dict(call[0][1]) for call in mock_trigger.call_args_list}
-        assert "BHAGA_SKIP_SQUARE" in calls["2026-06-14"]
-        assert "BHAGA_OTP_FORCE_REQUEST" not in calls["2026-06-14"]
-        assert calls["2026-06-15"].get("BHAGA_OTP_FORCE_REQUEST") == "1"
-        assert "BHAGA_SKIP_SQUARE" not in calls["2026-06-15"]
-        # Ack text shows both mode labels
-        text = resp.get_json()["text"]
-        assert "recompute" in text
-        assert "full+OTP" in text
+        call_map = {c[0][0]: dict(c[0][1]) for c in mock_trigger.call_args_list}
+        assert "BHAGA_SKIP_SQUARE" in call_map["2026-06-14"]
+        assert "BHAGA_OTP_FORCE_REQUEST" not in call_map["2026-06-14"]
+        assert call_map["2026-06-15"].get("BHAGA_OTP_FORCE_REQUEST") == "1"
+        assert "BHAGA_SKIP_SQUARE" not in call_map["2026-06-15"]
+        # Mode labels are in the follow-up, not the ack
+        ack_text = resp.get_json()["text"]
+        assert "recompute" not in ack_text
+        assert "full+OTP" not in ack_text
+        follow_text = follow_ups[0]["text"]
+        assert "recompute" in follow_text
+        assert "full+OTP" in follow_text
 
     def test_help_text_shows_range_syntax(self):
         """Help text (unknown command) must document list + range syntax."""
@@ -811,6 +882,52 @@ class TestRefreshMultiDate:
         data = resp.get_json()
         assert ".." in data["text"]
         assert "to" in data["text"]
+
+    # -----------------------------------------------------------------------
+    # New tests: async ack contract
+    # -----------------------------------------------------------------------
+
+    def test_ack_is_generic_no_dates(self, monkeypatch):
+        """The synchronous ack must not contain date strings — only a queued message."""
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: None)  # don't run worker
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-06-14,2026-06-15")
+        assert resp.status_code == 200
+        ack = resp.get_json()
+        assert "2026-06-14" not in ack["text"]
+        assert "2026-06-15" not in ack["text"]
+        assert "queued" in ack["text"] or "Refresh" in ack["text"]
+
+    def test_parse_error_no_worker_dispatched(self, monkeypatch):
+        """Parse errors must return inline :x: synchronously; no worker is dispatched."""
+        dispatched = []
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: dispatched.append(fn))
+        for bad in ["foo", "2026-06-20..2026-06-14", "2026-01-01..2026-07-15"]:
+            dispatched.clear()
+            with app.test_client() as c:
+                resp = _post_command(c, f"refresh {bad}")
+            assert ":x:" in resp.get_json()["text"], f"expected :x: for {bad!r}"
+            assert not dispatched, f"worker must not be dispatched for parse error {bad!r}"
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_follow_up_is_in_channel(self, mock_decide, mock_trigger, monkeypatch):
+        """Refresh follow-up must use response_type='in_channel' (operational broadcast)."""
+        follow_ups = _sync_dispatch(monkeypatch)
+        with app.test_client() as c:
+            self._call_refresh(c, "2026-06-14")
+        assert len(follow_ups) == 1
+        assert follow_ups[0]["response_type"] == "in_channel"
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_ack_count_label(self, mock_decide, mock_trigger, monkeypatch):
+        """Ack text must include the count of dates queued."""
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: None)
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-06-14,2026-06-15,2026-06-16")
+        ack = resp.get_json()
+        assert "3" in ack["text"]
 
 
 # ===========================================================================
@@ -828,7 +945,12 @@ class TestSandboxTrigger:
             token = self._TOKEN
         return client.post(
             "/slack/commands",
-            data={"text": text, "command": "/bhaga-cloud", "user_name": "agent"},
+            data={
+                "text": text,
+                "command": "/bhaga-cloud",
+                "user_name": "agent",
+                "response_url": "https://hooks.slack.com/commands/test/sandbox_response_url",
+            },
             headers={"X-Sandbox-Trigger": token},
         )
 
@@ -836,18 +958,20 @@ class TestSandboxTrigger:
     @patch.object(handler, "_decide_recompute", return_value=False)
     def test_bypass_skips_slack_signature(self, mock_decide, mock_trigger, monkeypatch):
         """Valid token → no Slack HMAC required, request dispatched."""
+        _sync_dispatch(monkeypatch)
         monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
         with app.test_client() as c:
             resp = self._post_sandbox(c, "refresh 2026-06-23")
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert "2026-06-23" in data["text"]
+        # Ack is generic — trigger still fires via worker
+        assert "2026-06-23" not in resp.get_json()["text"]
         mock_trigger.assert_called_once()
 
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     @patch.object(handler, "_decide_recompute", return_value=False)
     def test_bypass_targets_sandbox_job(self, mock_decide, mock_trigger, monkeypatch):
         """Bypass path must pass the sandbox job resource name to the trigger."""
+        _sync_dispatch(monkeypatch)
         monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
         monkeypatch.setattr(
             handler, "_SANDBOX_JOB_RESOURCE",
@@ -856,7 +980,6 @@ class TestSandboxTrigger:
         with app.test_client() as c:
             resp = self._post_sandbox(c, "refresh 2026-06-23")
         assert resp.status_code == 200
-        _, _, kwargs = mock_trigger.call_args[0], mock_trigger.call_args[1], mock_trigger.call_args[1]
         # job_name is passed as a keyword argument
         call_kwargs = mock_trigger.call_args[1]
         assert call_kwargs.get("job_name") == "projects/jarvis-bhaga-prod/locations/us-central1/jobs/bhaga-sandbox-refresh"
@@ -864,6 +987,7 @@ class TestSandboxTrigger:
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     def test_bypass_uses_sandbox_bq_dataset(self, mock_trigger, monkeypatch):
         """Coverage probe receives dataset=bhaga_sandbox so module-global is not mutated."""
+        _sync_dispatch(monkeypatch)
         monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
         probe_calls: list = []
         monkeypatch.setattr(handler, "_date_is_covered", lambda d, dataset=None: probe_calls.append(dataset) or False)
@@ -875,15 +999,21 @@ class TestSandboxTrigger:
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     @patch.object(handler, "_decide_recompute", return_value=False)
     def test_bypass_ack_has_sandbox_prefix(self, mock_decide, mock_trigger, monkeypatch):
-        """Ack text must start with the :test_tube: [SANDBOX] prefix."""
+        """Ack text must have the :test_tube: [SANDBOX] prefix; dates are in the follow-up."""
+        follow_ups = _sync_dispatch(monkeypatch)
         monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
         with app.test_client() as c:
             resp = self._post_sandbox(c, "refresh 2026-06-23,2026-06-24")
         assert resp.status_code == 200
-        text = resp.get_json()["text"]
-        assert "[SANDBOX]" in text
-        assert "2026-06-23" in text
-        assert "2026-06-24" in text
+        ack_text = resp.get_json()["text"]
+        assert "[SANDBOX]" in ack_text
+        # Dates are in the follow-up, not the ack
+        assert "2026-06-23" not in ack_text
+        assert "2026-06-24" not in ack_text
+        assert len(follow_ups) == 1
+        assert "2026-06-23" in follow_ups[0]["text"]
+        assert "2026-06-24" in follow_ups[0]["text"]
+        assert "[SANDBOX]" in follow_ups[0]["text"]
 
     def test_wrong_token_returns_403(self, monkeypatch):
         """A non-matching sandbox token must be rejected with 403."""
@@ -918,13 +1048,13 @@ class TestSandboxTrigger:
     @patch.object(handler, "_decide_recompute", return_value=False)
     def test_prod_path_unchanged_with_bypass_configured(self, mock_decide, mock_trigger, monkeypatch):
         """Even with SANDBOX_TRIGGER_TOKEN set, a normal Slack-signed request still goes to prod path."""
+        _sync_dispatch(monkeypatch)
         monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
         # A Slack-signed POST without the sandbox header must hit the prod path.
-        # Use the existing helper which provides a valid Slack signature.
         with app.test_client() as c:
             resp = _post_command(c, "refresh 2025-05-26")
         assert resp.status_code == 200
-        # Prod path: no [SANDBOX] prefix, no sandbox job override
+        # Prod path: no [SANDBOX] prefix in the ack
         text = resp.get_json()["text"]
         assert "[SANDBOX]" not in text
 
@@ -932,12 +1062,13 @@ class TestSandboxTrigger:
     @patch.object(handler, "_decide_recompute", return_value=False)
     def test_multi_date_via_bypass(self, mock_decide, mock_trigger, monkeypatch):
         """Full multi-date fan-out works through the bypass path."""
+        _sync_dispatch(monkeypatch)
         monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
         with app.test_client() as c:
             resp = self._post_sandbox(c, "refresh 2026-06-23,2026-06-24")
         assert resp.status_code == 200
         assert mock_trigger.call_count == 2
-        triggered_dates = [call[0][0] for call in mock_trigger.call_args_list]
+        triggered_dates = [c[0][0] for c in mock_trigger.call_args_list]
         assert "2026-06-23" in triggered_dates
         assert "2026-06-24" in triggered_dates
 
@@ -1106,7 +1237,11 @@ class TestSandboxOtpRouting:
 
 
 class TestConfigCommands:
-    """Verify /bhaga-cloud config get/set parse and call BQ correctly."""
+    """Verify /bhaga-cloud config get/set parse and call BQ correctly.
+
+    All tests use _sync_dispatch so the worker runs synchronously and
+    _post_response_url calls are captured in follow_ups.
+    """
 
     def _make_bq_row(self, value: str, updated_by: str = "alice", updated_at: str = "2026-06-01 00:00:00") -> object:
         """Return a minimal fake BQ row dict."""
@@ -1116,7 +1251,8 @@ class TestConfigCommands:
         return row
 
     def test_config_get_returns_value(self, monkeypatch):
-        """config get returns the stored value."""
+        """config get returns the stored value via response_url follow-up."""
+        follow_ups = _sync_dispatch(monkeypatch)
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = [
             self._make_bq_row("12.5", updated_by="alice"),
@@ -1126,23 +1262,27 @@ class TestConfigCommands:
             resp = _post_command(client, "config get saturation_orders_per_labor_hour",
                                  user_name="alice")
         assert resp.status_code == 200
-        body = json.loads(resp.data)
-        assert "12.5" in body["text"]
-        assert "saturation_orders_per_labor_hour" in body["text"]
+        # Ack is generic; result is in the follow-up
+        assert "12.5" not in resp.get_json()["text"]
+        assert len(follow_ups) == 1
+        assert "12.5" in follow_ups[0]["text"]
+        assert "saturation_orders_per_labor_hour" in follow_ups[0]["text"]
 
     def test_config_get_not_found(self, monkeypatch):
-        """config get with missing key returns informational message."""
+        """config get with missing key returns informational message via follow-up."""
+        follow_ups = _sync_dispatch(monkeypatch)
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
         with app.test_client() as client:
             resp = _post_command(client, "config get nonexistent_key")
         assert resp.status_code == 200
-        body = json.loads(resp.data)
-        assert "not set" in body["text"]
+        assert len(follow_ups) == 1
+        assert "not set" in follow_ups[0]["text"]
 
     def test_config_set_upserts_and_confirms(self, monkeypatch):
-        """config set calls BQ MERGE and confirms the new value."""
+        """config set calls BQ MERGE and confirms the new value via follow-up."""
+        follow_ups = _sync_dispatch(monkeypatch)
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
@@ -1150,19 +1290,20 @@ class TestConfigCommands:
             resp = _post_command(client, "config set saturation_orders_per_labor_hour 11.5",
                                  user_name="bob")
         assert resp.status_code == 200
-        body = json.loads(resp.data)
-        assert "11.5" in body["text"]
-        assert "saturation_orders_per_labor_hour" in body["text"]
+        assert len(follow_ups) == 1
+        assert "11.5" in follow_ups[0]["text"]
+        assert "saturation_orders_per_labor_hour" in follow_ups[0]["text"]
         assert fake_bq.query.called
 
     def test_config_unavailable_without_bq(self, monkeypatch):
-        """When BQ is unavailable, config commands return a warning."""
+        """When BQ is unavailable, config commands post a warning via follow-up."""
+        follow_ups = _sync_dispatch(monkeypatch)
         monkeypatch.setattr(handler, "_bq", None)
         with app.test_client() as client:
             resp = _post_command(client, "config get some_key")
         assert resp.status_code == 200
-        body = json.loads(resp.data)
-        assert "unavailable" in body["text"].lower() or "not available" in body["text"].lower()
+        assert len(follow_ups) == 1
+        assert "unavailable" in follow_ups[0]["text"].lower() or "not available" in follow_ups[0]["text"].lower()
 
     def test_help_text_lists_config_commands(self):
         """The help text (unknown command) lists config get/set."""
@@ -1183,6 +1324,7 @@ class TestTrainingCommands:
     """Verify /bhaga-cloud training set|rm parse and call BQ correctly."""
 
     def test_training_set_merges_bq(self, monkeypatch):
+        follow_ups = _sync_dispatch(monkeypatch)
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
@@ -1190,15 +1332,16 @@ class TestTrainingCommands:
             resp = _post_command(client, 'training set "Flores, Juan" 2026-06-01 first shift',
                                  user_name="adi")
         assert resp.status_code == 200
-        body = json.loads(resp.data)
-        assert "Flores, Juan" in body["text"]
-        assert "2026-06-01" in body["text"]
+        assert len(follow_ups) == 1
+        assert "Flores, Juan" in follow_ups[0]["text"]
+        assert "2026-06-01" in follow_ups[0]["text"]
         assert fake_bq.query.called
         call_sql = fake_bq.query.call_args[0][0]
         assert "MERGE" in call_sql
         assert "training_shifts" in call_sql
 
     def test_training_set_with_note(self, monkeypatch):
+        follow_ups = _sync_dispatch(monkeypatch)
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
@@ -1206,11 +1349,12 @@ class TestTrainingCommands:
             resp = _post_command(client, 'training set "Smith, Alice" 2026-06-02 orientation',
                                  user_name="adi")
         assert resp.status_code == 200
-        body = json.loads(resp.data)
-        assert "Smith, Alice" in body["text"]
-        assert "orientation" in body["text"]
+        assert len(follow_ups) == 1
+        assert "Smith, Alice" in follow_ups[0]["text"]
+        assert "orientation" in follow_ups[0]["text"]
 
     def test_training_set_without_note(self, monkeypatch):
+        follow_ups = _sync_dispatch(monkeypatch)
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
@@ -1218,10 +1362,11 @@ class TestTrainingCommands:
             resp = _post_command(client, 'training set "Smith, Alice" 2026-06-02',
                                  user_name="adi")
         assert resp.status_code == 200
-        body = json.loads(resp.data)
-        assert "Smith, Alice" in body["text"]
+        assert len(follow_ups) == 1
+        assert "Smith, Alice" in follow_ups[0]["text"]
 
     def test_training_rm_deletes_from_bq(self, monkeypatch):
+        follow_ups = _sync_dispatch(monkeypatch)
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
@@ -1229,25 +1374,27 @@ class TestTrainingCommands:
             resp = _post_command(client, 'training rm "Flores, Juan" 2026-06-01',
                                  user_name="adi")
         assert resp.status_code == 200
-        body = json.loads(resp.data)
-        assert "Flores, Juan" in body["text"]
+        assert len(follow_ups) == 1
+        assert "Flores, Juan" in follow_ups[0]["text"]
         call_sql = fake_bq.query.call_args[0][0]
         assert "DELETE" in call_sql
         assert "training_shifts" in call_sql
 
     def test_training_unavailable_without_bq(self, monkeypatch):
+        follow_ups = _sync_dispatch(monkeypatch)
         monkeypatch.setattr(handler, "_bq", None)
         with app.test_client() as client:
             resp = _post_command(client, 'training set "A, B" 2026-06-01')
         assert resp.status_code == 200
-        body = json.loads(resp.data)
-        assert "not available" in body["text"].lower() or "unavailable" in body["text"].lower()
+        assert len(follow_ups) == 1
+        assert "not available" in follow_ups[0]["text"].lower() or "unavailable" in follow_ups[0]["text"].lower()
 
 
 class TestAliasCommands:
     """Verify /bhaga-cloud alias set parse and BQ call."""
 
     def test_alias_set_merges_bq(self, monkeypatch):
+        follow_ups = _sync_dispatch(monkeypatch)
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
@@ -1255,26 +1402,28 @@ class TestAliasCommands:
             resp = _post_command(client, 'alias set "Juan Flores" "Flores, Juan"',
                                  user_name="adi")
         assert resp.status_code == 200
-        body = json.loads(resp.data)
-        assert "Juan Flores" in body["text"]
-        assert "Flores, Juan" in body["text"]
+        assert len(follow_ups) == 1
+        assert "Juan Flores" in follow_ups[0]["text"]
+        assert "Flores, Juan" in follow_ups[0]["text"]
         call_sql = fake_bq.query.call_args[0][0]
         assert "MERGE" in call_sql
         assert "employee_aliases" in call_sql
 
     def test_alias_set_unavailable_without_bq(self, monkeypatch):
+        follow_ups = _sync_dispatch(monkeypatch)
         monkeypatch.setattr(handler, "_bq", None)
         with app.test_client() as client:
             resp = _post_command(client, 'alias set rawname "Canonical, Name"')
         assert resp.status_code == 200
-        body = json.loads(resp.data)
-        assert "not available" in body["text"].lower() or "unavailable" in body["text"].lower()
+        assert len(follow_ups) == 1
+        assert "not available" in follow_ups[0]["text"].lower() or "unavailable" in follow_ups[0]["text"].lower()
 
 
 class TestExcludeCommands:
     """Verify /bhaga-cloud exclude set parse and store_config call."""
 
     def test_exclude_set_with_through_date_delegates_to_config_set(self, monkeypatch):
+        follow_ups = _sync_dispatch(monkeypatch)
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
@@ -1282,10 +1431,11 @@ class TestExcludeCommands:
             resp = _post_command(client, 'exclude set "Flores, Juan" 2026-05-31',
                                  user_name="adi")
         assert resp.status_code == 200
-        body = json.loads(resp.data)
-        assert "training_excluded:Flores, Juan" in body["text"] or "2026-05-31" in body["text"]
+        assert len(follow_ups) == 1
+        assert "training_excluded:Flores, Juan" in follow_ups[0]["text"] or "2026-05-31" in follow_ups[0]["text"]
 
     def test_exclude_set_without_date_appends_permanent(self, monkeypatch):
+        follow_ups = _sync_dispatch(monkeypatch)
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.side_effect = [
             [{"value": "Krause, Lindsay"}],  # first query reads existing permanent list

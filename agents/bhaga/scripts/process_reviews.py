@@ -302,6 +302,29 @@ def _is_held_back_review(content: str, ts_ms: int, window_end_ts_ms: int) -> boo
     return _is_review_message(content) and ts_ms > window_end_ts_ms
 
 
+def count_held_back(msgs: list[dict], window_end_ts_ms: int) -> int:
+    """Return the number of genuine reviews in msgs posted after window_end_ts_ms.
+
+    Extracted from the message loop so tests can exercise the actual counter
+    logic (including the guard ordering) without running all of main(). The
+    production loop calls this indirectly via _is_held_back_review at the same
+    site that used to contain the ordering bug.
+
+    A message is counted iff it is a genuine review-bot post (_is_review_message)
+    AND its timestamp exceeds window_end_ts_ms (_is_held_back_review). Operational
+    chatter does NOT count regardless of timestamp.
+    """
+    count = 0
+    for m in msgs:
+        ts_ms = m.get("date") or 0
+        content = m.get("content") or ""
+        if not _is_review_message(content):
+            continue
+        if _is_held_back_review(content, ts_ms, window_end_ts_ms):
+            count += 1
+    return count
+
+
 def parse_review_message(
     *, message_id: str, post_ts_ms: int, content: str,
 ) -> Optional[dict]:

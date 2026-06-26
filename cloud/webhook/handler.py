@@ -1178,13 +1178,21 @@ def slack_events():
 def slack_commands():
     # Direct sandbox trigger bypass — checked before Slack HMAC verification.
     # Only active when SANDBOX_TRIGGER_TOKEN is set (fail-closed when empty).
-    # The bypass path always routes to the sandbox job, never prod.
+    # The bypass path ONLY accepts `refresh` commands — all other commands
+    # (config/training/alias/exclude) write to prod BQ and must always go
+    # through the Slack HMAC path. Non-refresh via this bypass → 403.
     sandbox_token = request.headers.get("X-Sandbox-Trigger", "")
-    if _SANDBOX_TRIGGER_TOKEN and sandbox_token == _SANDBOX_TRIGGER_TOKEN:
+    if _SANDBOX_TRIGGER_TOKEN and hmac.compare_digest(sandbox_token, _SANDBOX_TRIGGER_TOKEN):
+        cmd_text = (request.form.get("text") or "").strip().lower()
+        if not cmd_text.startswith("refresh"):
+            return Response(
+                "sandbox trigger only supports refresh commands", status=403
+            )
         return _handle_slash_command(request.form, sandbox=True)
-    # Missing/wrong token with a non-empty token header → 403 (not a Slack call
-    # and not an authorized sandbox trigger).
-    if sandbox_token and sandbox_token != _SANDBOX_TRIGGER_TOKEN:
+    # A non-empty header that doesn't match → 403 (not a Slack call and not
+    # an authorized sandbox trigger). An empty/missing header falls through
+    # to normal Slack HMAC verification below.
+    if sandbox_token:
         return Response("invalid sandbox trigger token", status=403)
 
     body = request.get_data()

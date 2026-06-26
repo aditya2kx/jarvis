@@ -906,6 +906,14 @@ class TestSandboxTrigger:
         # Falls through to Slack sig verification which fails (no real sig) → 403
         assert resp.status_code == 403
 
+    def test_non_refresh_command_via_bypass_rejected(self, monkeypatch):
+        """The bypass path must reject non-refresh commands to prevent prod BQ mutation."""
+        monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
+        for non_refresh in ["config set store_name Test", "training set \"Doe, J\" 2026-06-23", "status"]:
+            with app.test_client() as c:
+                resp = self._post_sandbox(c, non_refresh)
+            assert resp.status_code == 403, f"Expected 403 for '{non_refresh}', got {resp.status_code}"
+
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     @patch.object(handler, "_decide_recompute", return_value=False)
     def test_prod_path_unchanged_with_bypass_configured(self, mock_decide, mock_trigger, monkeypatch):

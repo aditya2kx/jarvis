@@ -58,7 +58,6 @@ Maintained by `skills/user_model/`. Source corpus (gitignored) at `skills/user_m
 | J5 | For BHAGA sandbox evidence: prefer reusing an existing scenario (e.g. full-live) over adding a new dedicated scenario when the existing one already exercises the changed code path. | Issue #70 jam transcript backfill |
 | TGOOD | For BHAGA tests: always prefer the existing full-live scenario over adding new scenarios when it already exercises the changed path. | test |
 | TEST | Re-run the 2026-06-23 nightly after the merge. | test |
-|  |  |  |
 
 ## Domain context
 

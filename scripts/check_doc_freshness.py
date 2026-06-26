@@ -35,7 +35,7 @@ import sys
 # the `docs` is expected to also be in the change set. `why` is printed to the
 # operator/agent so the reminder is actionable. Keep these coarse and obvious;
 # add a new entry whenever you create a new code<->doc dependency (the rule in
-# .cursor/rules/doc-maintenance.md tells agents to do exactly this).
+# .cursor/rules/doc-maintenance.mdc tells agents to do exactly this).
 COUPLINGS: list[dict] = [
     {
         "code": ["agents/bhaga/scripts/*.py", "skills/tip_ledger_writer/*.py"],
@@ -70,7 +70,7 @@ COUPLINGS: list[dict] = [
             "skills/tip_pool_allocation/*.py",
             "agents/bhaga/knowledge-base/store-profiles/*.json",
         ],
-        "docs": [".cursor/rules/bhaga.md", "RUNBOOK.md"],
+        "docs": [".cursor/rules/bhaga.mdc", "RUNBOOK.md"],
         "why": "allocation invariant / sheet source-of-truth change → update BHAGA behavioral spec / RUNBOOK.",
     },
     {
@@ -229,7 +229,7 @@ def main() -> int:
     print("\n\n".join(reminders))
     print(
         "\nIf the change genuinely needs no doc update, ignore this (it's a nudge)."
-        "\nSee .cursor/rules/doc-maintenance.md and AGENTS.md § Keeping docs current."
+        "\nSee .cursor/rules/doc-maintenance.mdc and AGENTS.md § Keeping docs current."
     )
     return 1 if args.strict else 0
 

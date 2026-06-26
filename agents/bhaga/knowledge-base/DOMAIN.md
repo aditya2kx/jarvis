@@ -7,12 +7,12 @@ maps to. It exists so a future agent can understand the *meaning* of the data be
 
 - **Where the data lives / how it's computed:** [`agents/bhaga/scripts/README.md`](../scripts/README.md)
   (pipeline + "Extending the model").
-- **Behavioral invariants:** [`../../../.cursor/rules/bhaga.md`](../../../.cursor/rules/bhaga.md).
+- **Behavioral invariants:** [`../../../.cursor/rules/bhaga.mdc`](../../../.cursor/rules/bhaga.mdc).
 - **Operate the live system:** [`../../../RUNBOOK.md`](../../../RUNBOOK.md).
 - **Exact headers / natural keys (the contract):** `skills/tip_ledger_writer/schema.py` (raw + some
   model tabs) and the `build_*_rows` functions in `agents/bhaga/scripts/update_model_sheet.py`
   (the labor / tip-alloc / forecast / review tabs). **When columns change, update this file too**
-  (see `.cursor/rules/doc-maintenance.md`).
+  (see `.cursor/rules/doc-maintenance.mdc`).
 
 ---
 

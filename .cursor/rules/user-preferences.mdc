@@ -7,7 +7,7 @@ alwaysApply: true
 
 Predictive model of Aditya's communication style, design principles, domain context, and prior decisions. Auto-loaded by Cursor at the start of every chat.
 
-**Single source of truth (Fork 5):** This file does NOT restate Hard Lessons (`.cursor/rules/jarvis.md` § Hard Lessons). When a preference is already a Hard Lesson, the `Source` column links to it. When a preference is NEW signal not yet codified elsewhere, it lives here.
+**Single source of truth (Fork 5):** This file does NOT restate Hard Lessons (`.cursor/rules/jarvis.mdc` § Hard Lessons). When a preference is already a Hard Lesson, the `Source` column links to it. When a preference is NEW signal not yet codified elsewhere, it lives here.
 
 Maintained by `skills/user_model/`. Source corpus (gitignored) at `skills/user_model/data/corpus.jsonl`.
 
@@ -30,26 +30,26 @@ Maintained by `skills/user_model/`. Source corpus (gitignored) at `skills/user_m
 
 | # | Principle | Source |
 |---|---|---|
-| 1 | If a third-party service has a self-serve developer dashboard, build a `skills/<service>_app_provisioning/` skill — never ask the user to do manual web steps | jarvis.md HL#0 |
-| 2 | When 'separate' could mean 'looks separate' (cosmetic) vs 'is separate' (real identity), always ask before silently picking the cheaper option | jarvis.md HL#1 + this session |
+| 1 | If a third-party service has a self-serve developer dashboard, build a `skills/<service>_app_provisioning/` skill — never ask the user to do manual web steps | jarvis.mdc HL#0 |
+| 2 | When 'separate' could mean 'looks separate' (cosmetic) vs 'is separate' (real identity), always ask before silently picking the cheaper option | jarvis.mdc HL#1 + this session |
 | 3 | Single source of truth — never duplicate content across files; cross-reference instead | this session 2026-04-19 (Fork 5) |
 | 4 | Prefer parallel conversations over serialized when multiple threads are blocked on different inputs | this session 2026-04-19 |
-| 5 | Browser automation is a stepping stone, not the destination — every Playwright-based extraction has a backlog item to migrate to the service's REST API | jarvis.md § Conventions |
+| 5 | Browser automation is a stepping stone, not the destination — every Playwright-based extraction has a backlog item to migrate to the service's REST API | jarvis.mdc § Conventions |
 | 6 | Permission/scope choices: never silently pick the lesser scope and discover the failure later | .cursor/rules/dev-workflow-decisions.mdc |
 | 7 | Execute explicit user instructions before improvising alternatives — don't substitute your idea of better for what the user asked | .cursor/rules/dev-workflow-decisions.mdc § Execution Order |
 | 8 | When user gives N instructions in one message, address all N — don't hyper-focus on one and forget the rest | .cursor/rules/dev-workflow-decisions.mdc |
-| 9 | Hard Lessons / corrections must persist to a file in the same turn. 'Noted' without a file write means the mistake will repeat | jarvis.md Hard Lesson #4 |
-| 10 | macOS Keychain only for secrets; never plaintext config, never in git | jarvis.md § Conventions |
-| 11 | Prefer building Jarvis skills with direct API calls (urllib.request + OAuth) over depending on third-party packages with low maintenance signal | jarvis.md HL#16 |
-| 12 | Slack is the async communication channel for any user-input-needed moment; Cursor IDE is co-equal but not assumed | jarvis.md HL#7 |
-| 13 | Workspace restart is the canonical Playwright recovery; do NOT silently fall back to `cursor-ide-browser` MCP | jarvis.md HL#11 |
+| 9 | Hard Lessons / corrections must persist to a file in the same turn. 'Noted' without a file write means the mistake will repeat | jarvis.mdc Hard Lesson #4 |
+| 10 | macOS Keychain only for secrets; never plaintext config, never in git | jarvis.mdc § Conventions |
+| 11 | Prefer building Jarvis skills with direct API calls (urllib.request + OAuth) over depending on third-party packages with low maintenance signal | jarvis.mdc HL#16 |
+| 12 | Slack is the async communication channel for any user-input-needed moment; Cursor IDE is co-equal but not assumed | jarvis.mdc HL#7 |
+| 13 | Workspace restart is the canonical Playwright recovery; do NOT silently fall back to `cursor-ide-browser` MCP | jarvis.mdc HL#11 |
 | 14 | Build a predictive user model proactively — capture preference signals as they appear, not only as corrections after they fail | this session 2026-04-19 (this skill exists) |
-| 17 | **Prod/runtime must run on hosted infra (Cloud Run, BQ, Grafana Cloud, GH Actions) — never on the laptop.** Laptop is only for build/implementation/one-time provisioning. If a prod step requires a local script, that is a gap — build the hosted equivalent. | jarvis.md Conventions (2026-06-03, PR #16) |
+| 17 | **Prod/runtime must run on hosted infra (Cloud Run, BQ, Grafana Cloud, GH Actions) — never on the laptop.** Laptop is only for build/implementation/one-time provisioning. If a prod step requires a local script, that is a gap — build the hosted equivalent. | jarvis.mdc Conventions (2026-06-03, PR #16) |
 | 15 | Passkey-gated portals (Touch ID / FIDO2 / WebAuthn) can NOT be automated via stored password — pivot to persistent Playwright browser-profile/ for session-cookie reuse. User authenticates with biometric once, session persists for days/weeks, Touch ID re-prompts only on session expiry. Do NOT capture 'something password-shaped' as a fallback — it's likely the Mac login or another service's password, not the portal's. | 2026-04-20 ADP RUN discovery (user logs in via Touch ID, no ADP password exists) |
 | 16 | The collaborative-browser credential interceptor should detect passkey-only flows and abort capture rather than storing whatever text-shaped input appears. Heuristic: if the portal never shows a password field during normal auth (only biometric prompts), suppress capture. Until that's implemented, ALWAYS test captured creds by running a from-scratch login before persisting — don't trust the capture blindly. | 2026-04-20 ADP — captured a 12-char password that was not the ADP password; deleted from Keychain on discovery |
-| B1 | For BHAGA: prefer sandbox (staging) e2e runs over touching prod sheets when proving changes pre-merge — prod sheets are integration, not a test env. | bhaga-principles.md backfill |
-| B2 | For BHAGA: run `python3 -m agents.bhaga.scripts.status --store palmetto` before any manual investigation to get a compact freshness table — never hand-write queries to answer 'did last night land?' | bhaga-principles.md backfill |
-| B3 | For BHAGA: always leave a greppable one-line breadcrumb on every failure with enough state (refresh_date, attempt N/M, evidence path) to diagnose from Cloud Run logs + Firestore alone on any machine. | bhaga-principles.md backfill |
+| B1 | For BHAGA: prefer sandbox (staging) e2e runs over touching prod sheets when proving changes pre-merge — prod sheets are integration, not a test env. | bhaga-principles.mdc backfill |
+| B2 | For BHAGA: run `python3 -m agents.bhaga.scripts.status --store palmetto` before any manual investigation to get a compact freshness table — never hand-write queries to answer 'did last night land?' | bhaga-principles.mdc backfill |
+| B3 | For BHAGA: always leave a greppable one-line breadcrumb on every failure with enough state (refresh_date, attempt N/M, evidence path) to diagnose from Cloud Run logs + Firestore alone on any machine. | bhaga-principles.mdc backfill |
 | J1 | For BHAGA: read-only diagnosis (BQ queries, Firestore reads, Cloud Run logs) is always pre-approved in jam mode — never ask for approval before running non-mutating diagnosis. | Issue #70 jam transcript backfill |
 | J2 | For BHAGA: acceptance evidence must always cover both sandbox e2e and prod ADP/Square live verification — sandbox alone is never sufficient. | Issue #70 jam transcript backfill |
 | J3 | For BHAGA: post-merge, always re-run all pending/failed dates together rather than rerunnning only the most recent — backfill the full gap. | Issue #70 jam transcript backfill |

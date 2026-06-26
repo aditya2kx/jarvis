@@ -10,12 +10,12 @@ Two storage layers (Fork 3A — single auto-loaded preferences file):
    ─ Lines: {"ts": ISO, "agent": str|null, "source": str, "text": str, "metadata": {...}}
 
 2. Structured preferences (gittracked, auto-loads via Cursor rules)
-   ─ .cursor/rules/user-preferences.md
+   ─ .cursor/rules/user-preferences.mdc
    ─ Markdown with 4 fixed sections (Communication style, Design principles,
      Domain context, Decision history). Each section is a table.
    ─ This is what the AI reads at session start to predict user preferences.
    ─ Idempotent: add_preference() dedups by (category, normalized text).
-   ─ NEVER duplicates content from `.cursor/rules/jarvis.md` Hard Lessons —
+   ─ NEVER duplicates content from `.cursor/rules/jarvis.mdc` Hard Lessons —
      instead links via the `Source` column (Fork 5: single source of truth).
 """
 
@@ -35,7 +35,7 @@ from core.config_loader import project_dir
 
 _PROJECT = pathlib.Path(project_dir())
 CORPUS_PATH = _PROJECT / "skills" / "user_model" / "data" / "corpus.jsonl"
-PREFERENCES_PATH = _PROJECT / ".cursor" / "rules" / "user-preferences.md"
+PREFERENCES_PATH = _PROJECT / ".cursor" / "rules" / "user-preferences.mdc"
 
 
 # ── Categories → section headings in the preferences file ──────────
@@ -252,7 +252,7 @@ def _write_sections(sections):
         "of every chat.",
         "",
         "**Single source of truth (Fork 5):** This file does NOT restate Hard "
-        "Lessons (`.cursor/rules/jarvis.md` § Hard Lessons). When a preference "
+        "Lessons (`.cursor/rules/jarvis.mdc` § Hard Lessons). When a preference "
         "is already a Hard Lesson, the `Source` column links to it. When a "
         "preference is NEW signal not yet codified elsewhere, it lives here.",
         "",
@@ -303,6 +303,11 @@ if __name__ == "__main__":
     p_corpus = sub.add_parser("corpus-tail", help="Show recent corpus entries")
     p_corpus.add_argument("--limit", type=int, default=10)
 
+    p_append = sub.add_parser("corpus-append", help="Append one user turn to the corpus")
+    p_append.add_argument("text", help="Text to append (user turn)")
+    p_append.add_argument("--agent", default=None, help="Agent name (optional)")
+    p_append.add_argument("--source", default="cursor", help="Source identifier (default: cursor)")
+
     args = parser.parse_args()
 
     if args.cmd == "add":
@@ -319,5 +324,8 @@ if __name__ == "__main__":
     elif args.cmd == "corpus-tail":
         for e in read_corpus()[-args.limit:]:
             print(json.dumps(e, ensure_ascii=False))
+    elif args.cmd == "corpus-append":
+        entry = append_to_corpus(args.text, agent=args.agent, source=args.source)
+        print(json.dumps({"status": "appended", "entry": entry}, ensure_ascii=False))
     else:
         parser.print_help()

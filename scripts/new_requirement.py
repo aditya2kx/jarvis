@@ -48,6 +48,7 @@ import argparse
 import re
 import subprocess
 import sys
+import shutil
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -237,6 +238,42 @@ def _consolidated_requirement(requirements: list[str]) -> str:
     return lines
 
 
+def _seed_cache_to_worktree(*, branch: str, worktree: Path, dry_run: bool) -> None:
+    """Copy the phase cache from the parent repo into the worktree's metrics/pr_cost/.
+
+    new_requirement.py calls phase_state.py init from the PARENT repo (intentional —
+    phase tracking is GitHub-global).  That writes the cache to the parent's
+    metrics/pr_cost/*-phase.json.  The worktree is a sibling directory with its own
+    metrics/pr_cost/, so without this copy phase_state.py status inside the worktree
+    shows Issue: #none (no local cache) even though GitHub has the correct issue.
+
+    Uses phase_state._slug() (the canonical slugifier) to compute the cache filename,
+    guaranteeing the same filename that phase_state.py init wrote.
+    """
+    # Import the canonical slug from phase_state so both sides agree on the filename.
+    import sys as _sys
+    _scripts_dir = str(Path(__file__).parent)
+    if _scripts_dir not in _sys.path:
+        _sys.path.insert(0, _scripts_dir)
+    from phase_state import _slug  # type: ignore[import]
+    slug = _slug(branch)
+    src = Path(__file__).parent.parent / "metrics" / "pr_cost" / f"session-{slug}-phase.json"
+    dst_dir = worktree / "metrics" / "pr_cost"
+    dst = dst_dir / src.name
+    if dry_run:
+        print(f"(dry-run) would seed phase cache: {src.name} → worktree/metrics/pr_cost/")
+        return
+    if not src.exists():
+        # init_phase_tracking failed silently; nothing to copy
+        return
+    try:
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(src, dst)
+        print(f"Phase cache seeded into worktree: {dst}")
+    except Exception as exc:
+        print(f"⚠️  Could not seed phase cache to worktree (non-fatal): {exc}", file=sys.stderr)
+
+
 def _run_one(
     *,
     repo_root: Path,
@@ -285,6 +322,12 @@ def _run_one(
         branch=branch, requirement=requirement, dry_run=dry_run,
         existing_issue=existing_issue,
     )
+
+    # Seed the phase cache into the worktree so `phase_state.py status` inside
+    # the worktree shows the correct issue number and substep state.  Without
+    # this copy the worktree's metrics/pr_cost/ has no *-phase.json and status
+    # reports Issue: #none even though GitHub has the correct issue.
+    _seed_cache_to_worktree(branch=branch, worktree=wt, dry_run=dry_run)
 
     if dry_run:
         print("(dry-run — no Cursor opened)")

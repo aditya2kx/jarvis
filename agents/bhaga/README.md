@@ -68,7 +68,7 @@ Located at `agents/bhaga/knowledge-base/`:
 
 ## Cursor Rules
 
-BHAGA's behavior is defined at `.cursor/rules/bhaga.md` (auto-loads when working in `agents/bhaga/**`).
+BHAGA's behavior is defined at `.cursor/rules/bhaga.mdc` (auto-loads when working in `agents/bhaga/**`).
 
 ## Risk Acknowledgments (accepted by user)
 

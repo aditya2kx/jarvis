@@ -23,7 +23,7 @@ At each operator gate, `phase_state.py advance` will refuse and post an `awaitin
 the GitHub issue.  Do not attempt to self-advance past these gates.
 
 **You do NOT need the operator to remind you to:**
-- Set up a worktree and kickoff brief (run `new_requirement.py`)
+- Spin up a worktree for a new requirement — see `new-requirement-intake.mdc` for the full front-door rule
 - Make the plan thorough (apply `check_plan_readiness.py` yourself)
 - Run `verify.py --full` before pushing
 - Create/update the PR, populate §4 evidence, and babysit to green

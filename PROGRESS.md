@@ -1,6 +1,56 @@
 # Jarvis Build Progress
 
-## 2026-06-25 — BHAGA: Fix ADP earnings ready-dialog timeout (2026-06-23 nightly incident)
+## 2026-06-25 — Hook→skill pivot: /jarvis-new-task replaces blocking intake hook (PR #74)
+
+**Status:** PR open, awaiting operator live test as behavioral evidence, then merge.
+
+The `beforeSubmitPrompt` blocking hook (`prompt_gate.py` / `enforce.sh`) produced repeated false positives — any meta-discussion containing intake phrases was blocked, requiring `//inline` to bypass. Replaced with an explicit operator-invoked `/jarvis-new-task` Cursor Skill.
+
+**What landed:**
+- `.cursor/skills/jarvis-new-task/SKILL.md` — first member of the `/jarvis-*` skill family. `disable-model-invocation: true`. Typing `/jarvis-new-task <text>` runs `scripts/new_requirement.py --requirement "<text>"`.
+- `.cursor/hooks/prompt_gate.py` + `enforce.sh` deleted. No more `beforeSubmitPrompt` blocking.
+- `scripts/install-git-hooks.sh` — dispatcher install removed; idempotent cleanup prunes the legacy entry from `~/.cursor/hooks.json` on existing laptops.
+- `new-requirement-intake.mdc` reframed: front door is `/jarvis-new-task`; agent softly suggests it but never blocks.
+- `verify_lifecycle.py` A18 repurposed to assert the skill is wired. `test_prompt_gate.py` deleted.
+- `docs/contributing/hooks.md` → `docs/contributing/skills.md` (jarvis-* family authoring guide).
+- 59/59 unit tests pass; 18/18 conformance assertions pass.
+
+
+
+**Status:** In progress — implementing hook harness for deterministic new-requirement enforcement.
+
+Behavioural test of the `.mdc` rule failed: agent implemented a new requirement inline despite `alwaysApply: true`, because prose rules are advisory and conversation momentum wins. This extension replaces prose enforcement with code.
+
+**What landed:**
+- `.cursor/hooks/prompt_gate.py` — `beforeSubmitPrompt` gate: appends every prompt to corpus, detects new-requirement phrases via deterministic heuristic, hard-blocks with `new_requirement.py` one-liner instruction.
+- `.cursor/hooks/enforce.sh` — thin wrapper (repo-versioned, travels with each branch/worktree).
+- `scripts/install-git-hooks.sh` extended — one-time per-laptop `~/.cursor/hooks.json` dispatcher install (idempotent, preserves existing entries).
+- `skills/user_model/store.py` — `corpus-append` CLI subcommand added.
+- `.cursor/rules/new-requirement-intake.mdc` — reframed to point at the hook as enforcement; keeps canonical marker.
+- `.cursor/rules/preference-consult.mdc` — corpus-append is now automatic; manual step removed.
+- `.cursor/rules/self-drive.mdc` — duplicate "Make the plan thorough" line removed.
+- `verify_lifecycle.py` A18 + unit tests (5 new cases, 51 total pass).
+- `docs/contributing/hooks.md` — hook authoring guide.
+
+**Evidence (deterministic):**
+- M1: `echo '{"prompt":"I want to work on a new requirement"}' | CURSOR_PROJECT_DIR=$(pwd) python3 .cursor/hooks/prompt_gate.py` → `continue: false` + instruct message. `//inline` override → `continue: true`.
+- M2: `python3 scripts/verify_lifecycle.py --assert 18` → PASS. 51/51 unit tests pass.
+
+
+
+**Status:** PR open, awaiting operator merge.
+
+**What landed:**
+- Migrated all 14 `.cursor/rules/*.md` files to `.mdc` — Cursor only loads `.mdc` as project rules; `.md` was silently ignored, so the entire always-on Spine was never loading.
+- Added `new-requirement-intake.mdc` (always-on): when operator signals a new requirement mid-session, agent MUST call `scripts/new_requirement.py` — never implement inline. Canonical sentence tagged `<!-- canonical:intake -->` for assertion dedup.
+- Added conformance assertions A14–A17: intake rule wired+single-source (A14), no `.md` in rules dir as durable guardrail (A15), load semantics preserved post-migration (A16), `new_requirement.py` seeds phase cache into worktree (A17).
+- Fixed bug in `new_requirement.py`: phase cache was written only to the parent repo, leaving the worktree's `phase_state.py status` showing `Issue: #none`. Now seeds a copy into the worktree's `metrics/pr_cost/`.
+- Rewrote ~40 `.cursor/rules/*.md` cross-references in scripts, docs, and code docstrings.
+- Added authoring guidance: `AGENTS.md` rule #8 + `docs/contributing/rules.md`.
+
+**Verification:** `verify_lifecycle.py` 17/17 PASS · `test_verify_lifecycle.py` 46/46 PASS · `check_doc_freshness.py` clean.
+
+
 
 **Incident:** The 2026-06-23 nightly (`run_id 2548caceda…`) failed at the `adp` step.
 The earnings flow completed through the "Download → Excel (.xlsx)" click but the

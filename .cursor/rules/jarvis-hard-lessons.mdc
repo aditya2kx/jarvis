@@ -1,7 +1,7 @@
 ---
-description: Jarvis Hard Lessons — on-demand reference. Load when debugging recurring patterns or starting a complex multi-step task. NOT always-on (see jarvis.md for the routing card).
+description: Jarvis Hard Lessons — on-demand reference. Load when debugging recurring patterns or starting a complex multi-step task. NOT always-on (see jarvis.mdc for the routing card).
 globs:
-  - ".cursor/rules/jarvis*.md"
+  - ".cursor/rules/jarvis*.mdc"
 alwaysApply: false
 ---
 
@@ -31,11 +31,7 @@ These are mistakes that actually happened.  Check before every multi-step task.
 16. **High bar for external tool/package recommendations:** 100+ stars, multiple contributors, active maintenance.
 17. **Build Gmail as a Jarvis skill** (raw API calls like `google_drive/`), not an MCP dependency.
 18. **Opening or pushing to a PR obligates you to babysit it to merge-ready — automatically, without being asked.**  Read the `babysit` skill immediately after `gh pr create`.  Also commit the cost ledger (`pr_cost_ledger.py sync`) as part of babysitting.
-19. **Every new requirement MUST start in an isolated worktree + new Cursor chat.**
-    ```bash
-    python3 scripts/new_requirement.py --requirement "<text>" [--branch fix/<slug>]
-    ```
-    Stop in the current chat after handoff.  Never implement a new requirement in the same chat as the previous PR.
+19. **Every new requirement MUST start in an isolated worktree + new Cursor chat.** See `new-requirement-intake.mdc` for the full front-door rule and trigger phrases.
 20. **PR descriptions MUST use the 6-section template verbatim** — CI fails otherwise. Never `--body` with free-form text.  Always use `gh pr create --base main --fill`.
 21. **The agent NEVER merges a PR.** Your job ends at *merge-ready*.  Never run `gh pr merge`.
 22. **Every GitHub API call must use the bot token** (`jarvis-agent-bot328`), never `ADI_TOKEN` except for owner-only admin operations.
@@ -49,13 +45,13 @@ These are mistakes that actually happened.  Check before every multi-step task.
 ### On Conversation Start
 1. Check Slack: read `/tmp/jarvis-pending-actions.json` + `/tmp/jarvis-slack-inbox.json`.
 2. Ensure listener is running: `python skills/slack/ensure_listening.py`.
-3. Read `.cursor/rules/user-preferences.md` before any ambiguous architectural call.
+3. Read `.cursor/rules/user-preferences.mdc` before any ambiguous architectural call.
 4. Read `PROGRESS.md` — single source of truth for project state.
 5. Load agent/skill-specific files only when the task requires them.
 
 ### During a Session
 - Check Slack before every major action.
-- Run the user_model capture protocol on every user turn (see full jarvis.md for details).
+- Run the user_model capture protocol on every user turn (see full jarvis.mdc for details).
 - Update `PROGRESS.md` after each major milestone.
 
 ### On Session End
@@ -75,7 +71,7 @@ These are mistakes that actually happened.  Check before every multi-step task.
 
 ## Shadow Folder Validation — Autonomous Parity
 Hard rules: never read the sealed `Taxes/2025` benchmark; never copy from it; build from CHITRA's own sources only.
-See full jarvis.md for the complete workflow.
+See full jarvis.mdc for the complete workflow.
 
 ---
 

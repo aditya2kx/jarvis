@@ -31,7 +31,7 @@ say which section.
   claims backward compatibility, confirm the proof actually demonstrates the legacy path (existing
   tests green, or a legacy run) — don't accept an unsubstantiated claim.
 
-## C. BHAGA correctness invariants (from `.cursor/rules/bhaga.md`)
+## C. BHAGA correctness invariants (from `.cursor/rules/bhaga.mdc`)
 - **Money:** `Decimal`, cents precision, round-half-up. No float arithmetic on money. Allocated totals
   must reconcile to the pool (no cents lost/created).
 - **Idempotent writes:** upsert by natural key. A re-run must overwrite, never duplicate. Flag any new

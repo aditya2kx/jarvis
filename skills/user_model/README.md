@@ -1,13 +1,13 @@
 # skills/user_model
 
-Predictive model of how Aditya thinks. Captures preference signals from user turns and persists them to a single auto-loaded preferences file (`.cursor/rules/user-preferences.md`) so any future Jarvis turn — any chat, any agent — has accumulated context to predict what the user will want.
+Predictive model of how Aditya thinks. Captures preference signals from user turns and persists them to a single auto-loaded preferences file (`.cursor/rules/user-preferences.mdc`) so any future Jarvis turn — any chat, any agent — has accumulated context to predict what the user will want.
 
 ## Why it exists
 
 Two existing systems are *similar* but neither does what the user-model does:
 
 - `~/.cursor/skills-cursor/skill-evolution/` — mandates persisting **corrections** after they happen. Reactive.
-- `.cursor/rules/jarvis.md` § Hard Lessons — project-specific behavior rules. Imperative.
+- `.cursor/rules/jarvis.mdc` § Hard Lessons — project-specific behavior rules. Imperative.
 
 The user-model is **predictive** — capture preference signals proactively, so future ambiguous decisions can mirror the user's prior judgments instead of needing to ask. Per the user (2026-04-19): *"anytime I provide inputs or thoughts, it starts building a model to understand how I would have responded to use in other problems."*
 
@@ -16,7 +16,7 @@ The user-model is **predictive** — capture preference signals proactively, so 
 | Layer | What | Where | Tracked? |
 |---|---|---|---|
 | **Raw corpus** | Append-only log of every user turn | `skills/user_model/data/corpus.jsonl` | gitignored |
-| **Distilled preferences** | 4-section markdown (style / principles / domain / decisions) | `.cursor/rules/user-preferences.md` | **gittracked + auto-loads on every chat** |
+| **Distilled preferences** | 4-section markdown (style / principles / domain / decisions) | `.cursor/rules/user-preferences.mdc` | **gittracked + auto-loads on every chat** |
 | **Cross-references** | When a preference duplicates a Hard Lesson, the preferences file links to it instead of restating | `Source` column | — |
 
 The two-layer split: corpus is rich + private + can be redistilled differently later; preferences file is curated + public + fed straight into Cursor's context window every session.
@@ -27,7 +27,7 @@ The two-layer split: corpus is rich + private + can be redistilled differently l
 |---|---|---|
 | 1 — Capture aggressiveness | A | Heuristic-triggered (signal phrases) — not every turn, not manual-only |
 | 2 — Confirmation | A | Inline confirm before persist — "Noting: 'X'. Reply y/n/edit" |
-| 3 — Storage | A | Single `.cursor/rules/user-preferences.md` file (auto-loads) |
+| 3 — Storage | A | Single `.cursor/rules/user-preferences.mdc` file (auto-loads) |
 | 4 — Naming | A | Skill, no new agent |
 | 5 — Hard Lessons relationship | (cross-reference) | Single source of truth — preferences file links, never duplicates |
 
@@ -56,16 +56,16 @@ User answer / turn
            → guardrail re-checked at write; rejected if < threshold
       → FAIL: discard (task-specific / transient / non-actionable)
   → user-preferences.md auto-loads next chat
-       → agent consults before any AskQuestion (.cursor/rules/preference-consult.md)
+       → agent consults before any AskQuestion (.cursor/rules/preference-consult.mdc)
 ```
 
-**Honest limit:** Cursor hooks do not fire for `AskQuestion` or user-turn text events (`beforeSubmitPrompt` also does not fire — empirically confirmed June 2026). The corpus append must be called explicitly by the agent. The guardrail is the mechanical quality gate regardless of how an entry arrives.
+**Honest limit:** The corpus append must be called explicitly by the agent via `store.append_to_corpus()` or the `corpus-append` CLI. The guardrail is the mechanical quality gate regardless of how an entry arrives.
 
 ## The capture protocol (AI-side)
 
-Codified in `.cursor/rules/preference-consult.md` (always-on). Every assistant turn:
+Codified in `.cursor/rules/preference-consult.mdc` (always-on). Every assistant turn:
 
-1. **Before `AskQuestion`**: check `.cursor/rules/user-preferences.md` (already in context). If an ACTIVE preference answers it, apply it and do not ask.
+1. **Before `AskQuestion`**: check `.cursor/rules/user-preferences.mdc` (already in context). If an ACTIVE preference answers it, apply it and do not ask.
 2. **Append** the latest user message to `skills/user_model/data/corpus.jsonl` via `store.append_to_corpus()`. Cheap, always.
 3. **Extract** signals via `extractor.detect_signals(user_text)`.
 4. **If signals found + guardrail passes**, surface inline:
@@ -75,7 +75,7 @@ Codified in `.cursor/rules/preference-consult.md` (always-on). Every assistant t
 ## When to use the preferences file mid-decision
 
 Before any ambiguous architectural call:
-- `.cursor/rules/user-preferences.md` is already in context — consult the **Design principles** and **Decision history** sections.
+- `.cursor/rules/user-preferences.mdc` is already in context — consult the **Design principles** and **Decision history** sections.
 - If you find a relevant precedent, mirror it. If you don't, surface the decision per `dev-workflow-decisions.mdc`.
 
 ## Multi-agent reuse

@@ -56,5 +56,77 @@ class TestNewRequirement(unittest.TestCase):
         self.assertEqual(kwargs.get("model"), N.S.DEFAULT_JAM_HANDOFF_MODEL)
 
 
+import shutil
+import tempfile
+
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from phase_state import _slug as _ps_slug  # canonical slugifier from phase_state
+
+
+class TestSeedCacheToWorktree(unittest.TestCase):
+    """Behavioral proof that _seed_cache_to_worktree copies the cache file."""
+
+    def test_slug_matches_phase_state(self):
+        """_seed_cache_to_worktree must use the same slug as phase_state._slug."""
+        branches = [
+            "fix/when-operator-says-they-want-to",
+            "fix/add-multi-date-support-123",
+            "feat/some-long-branch-name-that-exceeds-sixty-chars-should-be-truncated",
+        ]
+        for branch in branches:
+            # The filename phase_state.py writes
+            expected = f"session-{_ps_slug(branch)}-phase.json"
+            # What _seed_cache_to_worktree would look for (via phase_state._slug import)
+            with tempfile.TemporaryDirectory() as tmp:
+                wt = Path(tmp) / "jarvis-wt-test"
+                (wt / "metrics" / "pr_cost").mkdir(parents=True)
+                real_root = Path(N.__file__).parent.parent
+                src_dir = real_root / "metrics" / "pr_cost"
+                src_dir.mkdir(parents=True, exist_ok=True)
+                cache_file = src_dir / expected
+                cache_file.write_text('{"issue": "#99"}')
+                try:
+                    N._seed_cache_to_worktree(branch=branch, worktree=wt, dry_run=False)
+                    dst = wt / "metrics" / "pr_cost" / expected
+                    self.assertTrue(
+                        dst.exists(),
+                        f"cache file {expected} not found in worktree for branch {branch}",
+                    )
+                finally:
+                    cache_file.unlink(missing_ok=True)
+
+    def test_copies_cache_to_worktree(self):
+        branch = "fix/test-seed-cache-unit"
+        expected = f"session-{_ps_slug(branch)}-phase.json"
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = Path(tmp) / "jarvis-wt-test"
+            real_root = Path(N.__file__).parent.parent
+            src_dir = real_root / "metrics" / "pr_cost"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            cache_file = src_dir / expected
+            cache_file.write_text('{"issue": "#42"}')
+            try:
+                dst_dir = wt / "metrics" / "pr_cost"
+                dst_dir.mkdir(parents=True)
+                N._seed_cache_to_worktree(branch=branch, worktree=wt, dry_run=False)
+                dst_file = dst_dir / expected
+                self.assertTrue(dst_file.exists(), "cache file must be copied to worktree")
+                self.assertEqual(dst_file.read_text(), '{"issue": "#42"}')
+            finally:
+                cache_file.unlink(missing_ok=True)
+
+    def test_no_op_if_source_missing(self):
+        """Should not raise if the source cache doesn't exist yet."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = Path(tmp) / "jarvis-wt-test"
+            (wt / "metrics" / "pr_cost").mkdir(parents=True)
+            N._seed_cache_to_worktree(
+                branch="fix/xyzzy-nonexistent-99999",
+                worktree=wt,
+                dry_run=False,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

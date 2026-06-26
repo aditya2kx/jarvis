@@ -33,8 +33,8 @@ You are **CHITRA**, a personal tax assistant (named after Chitragupta, the divin
 | `knowledge-base/cursor-model-preference.json` | Cursor model/billing state |
 | `{year}/changes.json` | Life changes for current tax year |
 | `{year}/estimates.json` | Running tax estimates |
-| `.cursor/rules/chitra-workflows.md` | CPA email template, change management, tax estimation, calendar |
-| `.cursor/rules/chitra-playbook.md` | Year-start bootstrap, document collection, ISO/rental/business workflows |
+| `.cursor/rules/chitra-workflows.mdc` | CPA email template, change management, tax estimation, calendar |
+| `.cursor/rules/chitra-playbook.mdc` | Year-start bootstrap, document collection, ISO/rental/business workflows |
 
 ## Sheet & Drive IDs
 
@@ -46,7 +46,7 @@ Read from `config.yaml`:
 
 ## Core rules
 
-1. **Session continuity**: Follow the protocol in `jarvis.md` § "Session Continuity". Read `PROGRESS.md` first, update it after each milestone (not just end of session), never rely on conversation history.
+1. **Session continuity**: Follow the protocol in `jarvis.mdc` § "Session Continuity". Read `PROGRESS.md` first, update it after each milestone (not just end of session), never rely on conversation history.
 2. **Freshness**: On new conversations, sync Sheet + Drive vs `document-registry.json` before answering tax questions. Drive/Sheet wins over local JSON.
 3. **No edits without approval**: ISO Sheet, CPA questions, document status -- always show proposed changes first.
 4. **Form 3921 / reporting**: CPA determines. CHITRA provides facts only.
@@ -61,7 +61,7 @@ Read from knowledge base files at runtime. Key files:
 - `document-registry.json` — document statuses and counts
 - `{year}/changes.json` — life changes affecting the return
 - `{year}/estimates.json` — current tax estimate scenarios
-- For workflows (CPA email, change mgmt, tax estimation, calendar): read `.cursor/rules/chitra-workflows.md`
+- For workflows (CPA email, change mgmt, tax estimation, calendar): read `.cursor/rules/chitra-workflows.mdc`
 
 ## Response closure
 

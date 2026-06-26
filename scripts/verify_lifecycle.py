@@ -134,7 +134,7 @@ def assert_2_brief_contains_stage_ladder() -> tuple[bool, str]:
 def assert_3_self_drive_rule_always_on() -> tuple[bool, str]:
     """The self-drive Spine rule exists and is alwaysApply: true (no globs)."""
     rules_dir = REPO_ROOT / ".cursor" / "rules"
-    candidates = list(rules_dir.glob("*.md")) + list(rules_dir.glob("*.mdc"))
+    candidates = list(rules_dir.glob("*.mdc"))
     for rule_file in candidates:
         try:
             text = rule_file.read_text(encoding="utf-8")
@@ -231,9 +231,9 @@ def assert_6_agent_card_dedup() -> tuple[bool, str]:
         r"config.driven.*no\s+hardcod",
     ]
     agent_cards = {
-        "bhaga-principles.md": REPO_ROOT / ".cursor" / "rules" / "bhaga-principles.md",
-        "chitra.md": REPO_ROOT / ".cursor" / "rules" / "chitra.md",
-        "akshaya.md": REPO_ROOT / ".cursor" / "rules" / "akshaya.md",
+        "bhaga-principles.mdc": REPO_ROOT / ".cursor" / "rules" / "bhaga-principles.mdc",
+        "chitra.mdc": REPO_ROOT / ".cursor" / "rules" / "chitra.mdc",
+        "akshaya.mdc": REPO_ROOT / ".cursor" / "rules" / "akshaya.mdc",
     }
     violations: list[str] = []
     for card_name, card_path in agent_cards.items():
@@ -473,6 +473,211 @@ def assert_13_observable_floor_has_plan_entry() -> tuple[bool, str]:
                   "check_plan_readiness.py has phase precheck + stamp")
 
 
+def assert_14_intake_rule_wired() -> tuple[bool, str]:
+    """new-requirement-intake.mdc exists, always-on, references /jarvis-new-task, canonical
+    marker, cross-refs, single-source dedup, and no blocking/heuristic language.
+
+    Six checks:
+      (a) File exists as .mdc (loadable format — .md would be ignored by Cursor).
+      (b) alwaysApply: true, no globs: line.
+      (c) Canonical intake marker (<!-- canonical:intake -->) is present.
+      (d) References /jarvis-new-task (the explicit front door).
+      (e) Cross-references self-drive and jarvis-hard-lessons.
+      (f) Single-source dedup: the canonical sentence appears in NO other .mdc file.
+    """
+    rules_dir = REPO_ROOT / ".cursor" / "rules"
+    intake = rules_dir / "new-requirement-intake.mdc"
+
+    # (a) file exists as .mdc
+    if not intake.exists():
+        return False, "new-requirement-intake.mdc not found"
+    md_version = rules_dir / "new-requirement-intake.md"
+    if md_version.exists():
+        return False, "new-requirement-intake.md exists (must be .mdc, not .md)"
+
+    text = intake.read_text(encoding="utf-8")
+
+    # (b) always-on, no globs
+    if not re.search(r"alwaysApply:\s*true", text):
+        return False, "new-requirement-intake.mdc missing alwaysApply: true"
+    if re.search(r"^globs:", text, re.MULTILINE):
+        return False, "new-requirement-intake.mdc has globs: (must be always-on)"
+
+    # (c) canonical marker present
+    if "<!-- canonical:intake -->" not in text:
+        return False, "new-requirement-intake.mdc missing <!-- canonical:intake --> marker"
+
+    # Extract the canonical sentence (line immediately after the marker)
+    lines = text.splitlines()
+    canonical_sentence: str | None = None
+    for i, line in enumerate(lines):
+        if "<!-- canonical:intake -->" in line:
+            for j in range(i + 1, min(i + 5, len(lines))):
+                stripped = lines[j].strip()
+                if stripped:
+                    canonical_sentence = re.sub(r"\*\*", "", stripped)[:80]
+                    break
+            break
+    if not canonical_sentence:
+        return False, "canonical:intake marker found but no sentence follows it"
+
+    # (d) references /jarvis-new-task (the explicit front door Cursor Skill)
+    if "/jarvis-new-task" not in text:
+        return False, "new-requirement-intake.mdc missing /jarvis-new-task reference"
+
+    # (e) cross-references
+    has_self_drive = bool(re.search(r"self-drive", text, re.IGNORECASE))
+    has_hard_lessons = bool(re.search(r"jarvis-hard-lessons", text, re.IGNORECASE))
+    if not has_self_drive:
+        return False, "new-requirement-intake.mdc missing cross-ref to self-drive"
+    if not has_hard_lessons:
+        return False, "new-requirement-intake.mdc missing cross-ref to jarvis-hard-lessons"
+
+    # (f) single-source dedup — canonical sentence must not appear in any other rule file
+    needle = canonical_sentence[:60].lower()
+    for other in rules_dir.glob("*.mdc"):
+        if other == intake:
+            continue
+        try:
+            other_text = other.read_text(encoding="utf-8").lower()
+        except Exception:
+            continue
+        if needle in other_text:
+            return False, (f"canonical intake sentence duplicated in {other.name} "
+                           f"— single source violated")
+
+    return True, ("new-requirement-intake.mdc: .mdc format, always-on, /jarvis-new-task ref, "
+                  "canonical marker, cross-refs, single-source dedup all pass")
+
+
+def assert_15_no_md_rules() -> tuple[bool, str]:
+    """No .md files remain in .cursor/rules/ — durable guardrail.
+
+    Every project rule file must be .mdc (the only format Cursor loads as a rule).
+    .md files in .cursor/rules/ are silently ignored by Cursor, making any
+    alwaysApply or globs frontmatter inert.  This assertion catches regressions
+    where a new rule is accidentally authored as .md.
+
+    See AGENTS.md § Repo-wide rules and docs/contributing/rules.md for authoring guidance.
+    """
+    rules_dir = REPO_ROOT / ".cursor" / "rules"
+    md_files = [f.name for f in rules_dir.glob("*.md")]
+    if md_files:
+        return False, (f"{len(md_files)} .md file(s) found in .cursor/rules/ — "
+                       f"must be .mdc: {sorted(md_files)[:5]}. "
+                       f"See AGENTS.md § Repo-wide rules for authoring guidance.")
+    return True, "no .md files in .cursor/rules/ — all rules are .mdc"
+
+
+def assert_16_rule_semantics_preserved() -> tuple[bool, str]:
+    """Each migrated rule file preserved its intended load semantics.
+
+    Checks three classes:
+      (a) Always-on rules (alwaysApply: true, no globs): the 6 known always-on files.
+      (b) On-demand rules (globs: [] with no paths): chitra-playbook, chitra-workflows.
+      (c) jarvis-hard-lessons: NOT always-on (must have alwaysApply: false and a glob).
+    """
+    rules_dir = REPO_ROOT / ".cursor" / "rules"
+
+    ALWAYS_ON = {
+        "behavioral-anchor.mdc", "jarvis.mdc", "plan-execution-readiness.mdc",
+        "preference-consult.mdc", "self-drive.mdc", "user-preferences.mdc",
+        "new-requirement-intake.mdc",
+    }
+    ON_DEMAND_EMPTY_GLOBS = {"chitra-playbook.mdc", "chitra-workflows.mdc"}
+    MUST_NOT_BE_ALWAYS_ON = {"jarvis-hard-lessons.mdc"}
+
+    issues: list[str] = []
+
+    for fname in ALWAYS_ON:
+        path = rules_dir / fname
+        if not path.exists():
+            issues.append(f"{fname}: not found")
+            continue
+        text = path.read_text(encoding="utf-8")
+        if not re.search(r"alwaysApply:\s*true", text):
+            issues.append(f"{fname}: missing alwaysApply: true")
+        if re.search(r"^globs:", text, re.MULTILINE):
+            issues.append(f"{fname}: has globs: (should be always-on, not glob-scoped)")
+
+    for fname in ON_DEMAND_EMPTY_GLOBS:
+        path = rules_dir / fname
+        if not path.exists():
+            continue  # file may not exist in all setups
+        text = path.read_text(encoding="utf-8")
+        if re.search(r"alwaysApply:\s*true", text):
+            issues.append(f"{fname}: marked alwaysApply: true (should be on-demand)")
+
+    for fname in MUST_NOT_BE_ALWAYS_ON:
+        path = rules_dir / fname
+        if not path.exists():
+            issues.append(f"{fname}: not found")
+            continue
+        text = path.read_text(encoding="utf-8")
+        if re.search(r"alwaysApply:\s*true", text):
+            issues.append(f"{fname}: marked alwaysApply: true (must stay on-demand)")
+        if not re.search(r"^globs:", text, re.MULTILINE):
+            issues.append(f"{fname}: missing globs: (should be glob-scoped, not always-on)")
+
+    if issues:
+        return False, f"load semantics violated: {'; '.join(issues[:3])}"
+    return True, "all checked rules preserved correct load semantics (always-on / on-demand / glob)"
+
+
+def assert_17_new_requirement_seeds_worktree_cache() -> tuple[bool, str]:
+    """new_requirement.py seeds the phase cache into the worktree, not just the parent repo.
+
+    Root-cause bug: new_requirement.py calls phase_state.py init from the parent repo,
+    writing the cache to jarvis/metrics/pr_cost/*-phase.json.  The worktree is a sibling
+    directory with its own metrics/pr_cost/, so phase_state.py status inside the worktree
+    shows Issue: #none even though GitHub has the correct issue.
+
+    Fix: new_requirement.py must shutil.copy (or equivalent) the cache into the worktree
+    immediately after init_phase_tracking returns.  This assertion checks the source for
+    the seeding code path.
+    """
+    nr = REPO_ROOT / "scripts" / "new_requirement.py"
+    if not nr.exists():
+        return False, "scripts/new_requirement.py not found"
+    src = nr.read_text(encoding="utf-8")
+
+    # The fix must copy or write the phase cache into the worktree's metrics/pr_cost/
+    has_worktree_seed = bool(re.search(
+        r"shutil\.copy.*phase\.json|_cache_path.*worktree|worktree.*phase.*json|"
+        r"_seed_cache_to_worktree|seed.*cache.*worktree|copy.*phase.*worktree",
+        src, re.IGNORECASE
+    ))
+    if not has_worktree_seed:
+        return False, ("new_requirement.py does not seed phase cache into worktree — "
+                       "phase_state.py status shows Issue: #none inside worktrees")
+    return True, "new_requirement.py seeds phase cache into worktree (worktree status fix)"
+
+
+def assert_18_jarvis_new_task_skill_wired() -> tuple[bool, str]:
+    """jarvis-new-task Cursor Skill exists and is correctly wired.
+
+    Three checks:
+    - .cursor/skills/jarvis-new-task/SKILL.md exists
+    - has disable-model-invocation: true
+    - references new_requirement.py (the front door script)
+    """
+    skill = REPO_ROOT / ".cursor" / "skills" / "jarvis-new-task" / "SKILL.md"
+
+    if not skill.exists():
+        return False, ".cursor/skills/jarvis-new-task/SKILL.md not found"
+
+    text = skill.read_text(encoding="utf-8")
+
+    if not re.search(r"disable-model-invocation:\s*true", text):
+        return False, "jarvis-new-task/SKILL.md missing disable-model-invocation: true"
+
+    if "new_requirement.py" not in text:
+        return False, "jarvis-new-task/SKILL.md missing reference to new_requirement.py"
+
+    return True, ("jarvis-new-task skill: SKILL.md exists, disable-model-invocation: true, "
+                  "new_requirement.py referenced")
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -491,6 +696,11 @@ ASSERTIONS: list[tuple[int, str, str]] = [
     (11, "phase-gate registered hard; OBSERVABLE_FLOOR enforces ladder", "assert_11_phase_gate_enforces_ladder"),
     (12, "guardrail wired in store; task-specific text scores 0/6", "assert_12_guardrail_enforced_at_store"),
     (13, "OBSERVABLE_FLOOR has plan entry + _plan_ready_recorded + CPR precheck", "assert_13_observable_floor_has_plan_entry"),
+    (14, "new-requirement-intake.mdc wired, always-on, single-source", "assert_14_intake_rule_wired"),
+    (15, "no .md files in .cursor/rules/ (durable .mdc guardrail)", "assert_15_no_md_rules"),
+    (16, "rule load semantics preserved after .md->.mdc migration", "assert_16_rule_semantics_preserved"),
+    (17, "new_requirement.py seeds phase cache into worktree", "assert_17_new_requirement_seeds_worktree_cache"),
+    (18, "jarvis-new-task skill wired: SKILL.md + disable-model-invocation + new_requirement.py", "assert_18_jarvis_new_task_skill_wired"),
 ]
 
 # Assertions that are expected to fail before their milestone lands.

@@ -1,0 +1,54 @@
+---
+description: New-requirement intake — always run /jarvis-new-task to start a new requirement; never implement a new requirement inline.
+alwaysApply: true
+---
+
+# New-requirement intake
+
+<!-- canonical:intake -->
+**When the operator signals a new requirement mid-session, the agent MUST invoke the `/jarvis-new-task` Cursor Skill (which runs `scripts/new_requirement.py`) to spin up an isolated worktree, branch, tracking issue, and brief — and MUST NEVER implement the requirement inline in the current chat.**
+
+## The front door: `/jarvis-new-task`
+
+Type `/jarvis-new-task` followed by a one-line requirement description:
+
+```
+/jarvis-new-task add multi-date support to the Slack command
+```
+
+This invokes the `.cursor/skills/jarvis-new-task/SKILL.md` skill, which runs:
+
+```bash
+python3 scripts/new_requirement.py --requirement "<operator's text>"
+```
+
+The script:
+1. Creates a sibling git worktree on a fresh branch off `origin/main`
+2. Runs `start_pr_session.py` (cost session + brief + launcher)
+3. Opens Cursor in a new window with a jam-mode deeplink
+4. Creates a GitHub tracking issue and seeds the phase cache in both repos
+
+**After `/jarvis-new-task` fires, stop.** The agent must NOT ask clarifying questions before running — the front door accepts rough text; refinement happens in the jam gate of the new chat space.
+
+## Agent behaviour (soft guidance — does NOT block)
+
+If the agent notices a mid-session message that looks like a new, distinct requirement:
+
+- **Suggest** (never demand): "This sounds like a new requirement — want me to run `/jarvis-new-task <text>`?"
+- Do **not** block the turn or raise an error.
+- Do **not** implement it inline regardless of whether the operator explicitly typed `/jarvis-new-task`.
+
+The agent owns the "never inline" constraint; the operator owns the explicit invocation decision.
+
+## Why this rule exists
+
+Implementing a new requirement in an existing chat's branch:
+- Mixes unrelated concerns in one diff (CI, review, rollback all become harder)
+- Loses the phase-tracking, cost attribution, and evidence trail that `new_requirement.py` provides
+- Violates the worktree isolation invariant that lets concurrent PRs co-exist
+
+## See also
+
+- `.cursor/skills/jarvis-new-task/SKILL.md` — the `/jarvis-new-task` Cursor Skill
+- `self-drive.mdc` — self-drive rule and operator-reserved gates
+- `jarvis-hard-lessons.mdc` §19 — "Every new requirement MUST start in an isolated worktree"

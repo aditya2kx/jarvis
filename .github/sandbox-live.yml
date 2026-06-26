@@ -1,14 +1,15 @@
-# Sandbox live run config — ACTIVE for fix/debug-and-fix-issues-with-bhaga.
+# Sandbox live run config — ACTIVE for fix/held-back-review-counter-fix (PR #82).
 #
-# Proves the ADP earnings ready-dialog fix on the real ADP portal with the PR
-# image. Runs the full-live scenario (Square + ADP + model) against sandbox
-# targets for 2026-06-23 (the date of the failing nightly). Evidence in PR §4.
-# REMOVE this file's scenarios (set to []) before merge — captured once is enough.
+# Proves the held-back counter fix on the real ClickUp channel. Runs the
+# full-live scenario against sandbox targets for 2026-06-25 (the date that
+# triggered HELD-BACK: 11 due to the ordering bug). Evidence in PR #82 §4.
+# REMOVE this file's scenarios (set to []) after evidence is captured.
 #
-# Operator: answer the [SANDBOX] ADP OTP prompt in Slack DM D0B67MW6J02.
-# Expected log lines: [earnings] step=download-report-button-ready → step=downloaded
+# Operator: answer the [SANDBOX] ADP OTP prompt in Slack DM D0B67MW6J02 if prompted.
+# Expected log lines: reviews step should log HELD-BACK: 0 (was 11 before fix).
 #
-# Last used: PR # (fix/debug-and-fix-issues-with-bhaga, 2026-06-25) — proves ADP
-# earnings ready-dialog wait fix (BHAGA_ADP_EARNINGS_READY_TIMEOUT_MS=90s, fallbacks).
-scenarios: []
-# Evidence captured — see PR #72 §4.3 for verbatim Cloud Run logs.
+# Last used: PR #82 (fix/held-back-review-counter-fix, 2026-06-25) — proves
+# held-back counter fix (only genuine review-bot posts counted, not chatter).
+scenarios:
+  - name: full-live
+    date: "2026-06-25"

@@ -12,7 +12,7 @@ A plan is execution-ready when a Sonnet/Composer model could implement it withou
 2. Concrete artifacts are inline: SQL DDL, function stubs, exact CLI commands, env vars, migration numbers.
 3. Milestones are 3-4 max, each independently verifiable, each with its own test command and pass criterion (CONTRIBUTING dev-loop).
 4. Per-scenario evidence is enumerated (happy path + each failure/recovery + legacy), not "all green".
-5. Sandbox tier is stated: Tier-1 e2e always; Tier-2 live run iff a live-only path changes.
+5. Evidence tier is explicitly declared: `Evidence tier: sandbox-live` (also requires `scenario: <name>`), `Evidence tier: sandbox-e2e`, or `Evidence tier: unit-only` (also requires `waiver: <reason>`). Silent unit-only is rejected at plan-creation time by `check_plan_readiness.py`.
 6. Invariants are explicitly preserved (idempotent upserts, integer cents, America/Chicago, read-only ADP, sandbox isolation).
 7. Feature-flag decision is made via the "can it silently produce wrong numbers?" test, with FEATURE_FLAGS.md entry if flagged.
 8. Docs lock-step targets are listed (RUNBOOK/README/DOMAIN/bhaga.mdc/PROGRESS) + `check_doc_freshness.py`.

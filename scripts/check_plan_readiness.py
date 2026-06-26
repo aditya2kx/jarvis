@@ -99,17 +99,34 @@ def _check_per_scenario_evidence(text: str) -> tuple[bool, str]:
     return False, f"only {matches} evidence signals — enumerate happy path + failure cases"
 
 
-def _check_sandbox_tier(text: str) -> tuple[bool, str]:
-    """Item 5: Sandbox tier stated (Tier-1 e2e / Tier-2 live)."""
-    signals = [
-        r"sandbox|tier.?\d|e2e|end.to.end",
-        r"live.?run|prod.*change|local.*verify|verify.*local",
-        r"out.of.scope|in.scope",
-    ]
-    matches = sum(1 for pat in signals if re.search(pat, text, re.IGNORECASE))
-    if matches >= 2:
-        return True, "sandbox/scope context present"
-    return False, "sandbox tier not stated (add scope/out-of-scope section)"
+def _check_evidence_tier(text: str) -> tuple[bool, str]:
+    """Item 5: explicit evidence tier declared (no silent unit-only).
+
+    Plans must contain a line of the form:
+        Evidence tier: sandbox-live   (also requires: scenario: <name>)
+        Evidence tier: sandbox-e2e
+        Evidence tier: unit-only      (also requires: waiver: <reason>)
+
+    This prevents silent unit-only plans from breezing past plan-readiness
+    and then being blocked by the Claude evidence-confidence gate post-push —
+    the disagreement is surfaced at plan-creation time instead.
+    """
+    m = re.search(r"Evidence tier:\s*(sandbox-live|sandbox-e2e|unit-only)", text, re.IGNORECASE)
+    if not m:
+        return False, (
+            "no 'Evidence tier:' declaration — add one of: "
+            "'Evidence tier: sandbox-live', 'Evidence tier: sandbox-e2e', "
+            "or 'Evidence tier: unit-only (waiver: <reason>)'"
+        )
+    tier = m.group(1).lower()
+    if tier == "sandbox-live" and not re.search(r"scenario:\s*[\w-]+", text, re.IGNORECASE):
+        return False, "sandbox-live tier must name a scenario (add 'scenario: <name>')"
+    if tier == "unit-only" and not re.search(r"waiver:\s*\S", text, re.IGNORECASE):
+        return False, (
+            "unit-only tier requires an operator waiver "
+            "(add 'waiver: <reason>' on the same or adjacent line)"
+        )
+    return True, f"evidence tier '{tier}' declared"
 
 
 def _check_invariants(text: str) -> tuple[bool, str]:
@@ -192,7 +209,7 @@ CHECKLIST: list[tuple[str, object]] = [
     ("2. Inline stubs/CLI commands", _check_inline_stubs),
     ("3. >=3 milestones with verify", _check_milestones_with_verify),
     ("4. Per-scenario evidence", _check_per_scenario_evidence),
-    ("5. Sandbox tier / scope", _check_sandbox_tier),
+    ("5. Evidence tier declared", _check_evidence_tier),
     ("6. Invariants preserved", _check_invariants),
     ("7. Feature-flag decision", _check_feature_flag_decision),
     ("8. Docs lock-step listed", _check_docs_lockstep),

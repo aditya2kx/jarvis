@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 import sys
+import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from scripts.check_evidence_confidence import main, parse_score
+from scripts.check_evidence_confidence import main, parse_score, _has_waiver, _WAIVER_FLOOR
 
 
 def test_parses_rating_phrasing():
@@ -36,3 +38,36 @@ def test_main_passes_at_or_above_min():
 
 def test_main_missing_is_noop():
     assert main(["--text", "nothing here", "--min", "95"]) == 0
+
+
+class TestWaiverLogic(unittest.TestCase):
+    def test_no_env_vars_no_waiver(self):
+        """Without PR_NUMBER/GH_TOKEN set, _has_waiver() returns False."""
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PR_NUMBER", "GH_TOKEN")}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertFalse(_has_waiver())
+
+    def test_waiver_lowers_floor_to_80(self):
+        """Score of 82% passes when a waiver is detected (floor lowered to 80)."""
+        with patch(
+            "scripts.check_evidence_confidence._has_waiver", return_value=True
+        ):
+            result = main(["--text", "Evidence confidence rating: 82%", "--min", "95"])
+        self.assertEqual(result, 0, "82% with waiver should pass (floor=80)")
+
+    def test_waiver_still_blocks_below_waiver_floor(self):
+        """Score below 80% is blocked even with a waiver present."""
+        with patch(
+            "scripts.check_evidence_confidence._has_waiver", return_value=True
+        ):
+            result = main(["--text", "Evidence confidence rating: 75%", "--min", "95"])
+        self.assertEqual(result, 1, "75% with waiver should still fail (floor=80)")
+
+    def test_no_waiver_still_blocks_below_95(self):
+        """Without waiver, score of 90% is blocked at the default 95% floor."""
+        with patch(
+            "scripts.check_evidence_confidence._has_waiver", return_value=False
+        ):
+            result = main(["--text", "Evidence confidence rating: 90%", "--min", "95"])
+        self.assertEqual(result, 1, "90% without waiver should fail (floor=95)")

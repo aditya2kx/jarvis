@@ -15,7 +15,6 @@ Every `/bhaga-cloud` slash command now acks within Slack's 3s deadline so the op
 - `cloud/webhook/test_handler.py`: added `_sync_dispatch` test helper; updated all tests to assert on `response_url` follow-up instead of ack text; 135 tests, all pass.
 - `cloud/webhook/sandbox_refresh_driver.py`: `_fire_slash_command` now patches `_dispatch_async`/`_post_response_url` to run synchronously and capture the follow-up; evidence summary prints both ack and follow-up text.
 - `RUNBOOK.md`: documented two-phase ack UX for all `/bhaga-cloud` commands.
-
 ## 2026-06-25 — `/bhaga-cloud refresh` multi-date support (PR #77, branch fix/slack-bhaga-cloud-refresh-command-support)
 
 **Status:** Implementing — M1 (parser + tests) complete; M2 (evidence driver + RUNBOOK + direct sandbox trigger) complete; awaiting live sandbox evidence run via direct trigger.

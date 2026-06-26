@@ -8,8 +8,8 @@
 # Operator: answer the [SANDBOX] ADP OTP prompt in Slack DM D0B67MW6J02 if prompted.
 # Expected log lines: reviews step should log HELD-BACK: 0 (was 11 before fix).
 #
-# Last used: PR #82 (fix/held-back-review-counter-fix, 2026-06-25) — proves
-# held-back counter fix (only genuine review-bot posts counted, not chatter).
-scenarios:
-  - name: full-live
-    date: "2026-06-25"
+# Last used: PR #82 (fix/held-back-review-counter-fix, 2026-06-25) — proved
+# held-back counter fix on the real stack: execution bhaga-sandbox-refresh-vcv24
+# logged "held-back (post-window): 0" on 72 real ClickUp messages (was 11 before).
+# Evidence captured in PR #82 §4; scenarios reset to [] per remove-after-capture rule.
+scenarios: []

@@ -36,6 +36,13 @@ and exits 1 when §4 appears to be pytest-only with no waiver. Run it before pus
 
 Never run a live scenario against prod data.  The sandbox uses isolated targets.
 
+> **Remove the `sandbox-live` label the moment evidence is captured.** The label
+> triggers `sandbox-live-run.yml` on every `synchronize` (i.e. every push), so each
+> later commit re-runs a full live Square+ADP scrape (cost + possible `[SANDBOX]` OTP
+> prompt). Capture the evidence line → delete the label → then reset
+> `.github/sandbox-live.yml` to `scenarios: []`. Do not leave it armed across the
+> babysit loop.
+
 ## Per-scenario evidence checklist
 Each scenario should produce:
 1. **Happy path** — the expected output exists (screenshot / log excerpt / diff of the sheet row / API response).

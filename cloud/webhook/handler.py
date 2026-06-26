@@ -36,6 +36,17 @@ from google.cloud import firestore
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 CLOCK_SKEW_TOLERANCE_S = 5 * 60  # reject timestamps older than 5 minutes
 
+# Direct sandbox trigger — bypasses Slack HMAC verification when
+# X-Sandbox-Trigger: <token> matches this secret. The bypass path ALWAYS routes
+# to the sandbox job (bhaga-sandbox-refresh + bhaga_sandbox), never prod.
+# Fail-closed: when empty, no bypass is possible and the header is ignored.
+_SANDBOX_TRIGGER_TOKEN = os.environ.get("SANDBOX_TRIGGER_TOKEN", "")
+_SANDBOX_JOB_RESOURCE = os.environ.get(
+    "BHAGA_SANDBOX_JOB_NAME",
+    "projects/jarvis-bhaga-prod/locations/us-central1/jobs/bhaga-sandbox-refresh",
+)
+_SANDBOX_BQ_DATASET = "bhaga_sandbox"
+
 # Run-state collections. Prod is always "runs". A live sandbox run writes its
 # pending-OTP checkpoint to its own collection; the webhook scans it FIRST so a
 # sandbox OTP reply resumes the sandbox job — never prod — even when both await
@@ -506,8 +517,13 @@ def _parse_refresh_dates(text: str) -> tuple[list[str], Optional[str]]:
     return deduped, None
 
 
-def _date_is_covered(date_str: str) -> bool:
+def _date_is_covered(date_str: str, dataset: Optional[str] = None) -> bool:
     """True if raw Square data already covers date_str in BigQuery.
+
+    ``dataset`` defaults to the module-level ``_BQ_DATASET`` (prod ``bhaga``).
+    Pass ``dataset="bhaga_sandbox"`` for the sandbox bypass path to avoid
+    mutating module state — the probe then reads the sandbox dataset, which is
+    empty for new dates → full scrape + OTP.
 
     Mirrors scripts/trigger_dated_refresh.py::_date_is_covered.
     Fail-open: returns False (→ full scrape) on any error so a BQ outage
@@ -516,10 +532,11 @@ def _date_is_covered(date_str: str) -> bool:
     if _bq is None:
         return False
     import datetime as _dt
+    ds = dataset or _BQ_DATASET
     try:
         sql = (
             f"SELECT MAX(date_local) AS m"
-            f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.square_daily_rollup`"
+            f" FROM `{_BQ_PROJECT}.{ds}.square_daily_rollup`"
         )
         rows = list(_bq.query(sql).result())  # type: ignore[union-attr]
         max_date = rows[0]["m"] if rows else None
@@ -531,9 +548,9 @@ def _date_is_covered(date_str: str) -> bool:
         return False
 
 
-def _decide_recompute(date_str: str) -> bool:
+def _decide_recompute(date_str: str, dataset: Optional[str] = None) -> bool:
     """True when the date is already covered in BQ → recompute-only (no scrape, no OTP)."""
-    return _date_is_covered(date_str)
+    return _date_is_covered(date_str, dataset=dataset)
 
 
 def _build_refresh_env_overrides(date_str: str, recompute_only: bool) -> list[tuple[str, str]]:
@@ -560,11 +577,16 @@ def _build_refresh_env_overrides(date_str: str, recompute_only: bool) -> list[tu
 # ---------------------------------------------------------------------------
 
 
-def _handle_slash_command(form: dict) -> Response:
+def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
     """Handle /bhaga slash commands.
 
     Must respond within 3 seconds. For long-running work, return an ack
     and post follow-up via response_url.
+
+    When ``sandbox=True`` (set by the direct-trigger bypass path), the refresh
+    targets ``bhaga-sandbox-refresh`` + ``bhaga_sandbox`` dataset and prefixes
+    all ack text with :test_tube:[SANDBOX]. The bypass path can never affect
+    prod: job name and BQ dataset are fixed to sandbox values per-call.
     """
     command_text = (form.get("text") or "").strip()
     # response_url = form.get("response_url")  # for async follow-ups
@@ -578,18 +600,22 @@ def _handle_slash_command(form: dict) -> Response:
                 "text": f":x: refresh parse error: {parse_err}",
             })
         # Decide recompute-only vs full-scrape per date; build per-date label for the ack.
+        # For sandbox, probe bhaga_sandbox (empty → full scrape) and route to sandbox job.
+        probe_dataset = _SANDBOX_BQ_DATASET if sandbox else None
+        job_name = _SANDBOX_JOB_RESOURCE if sandbox else None
         date_labels: list[str] = []
         for date_str in dates:
-            recompute_only = _decide_recompute(date_str)
+            recompute_only = _decide_recompute(date_str, dataset=probe_dataset)
             mode_label = "recompute" if recompute_only else "full+OTP"
             env_overrides = _build_refresh_env_overrides(date_str, recompute_only)
-            _trigger_cloud_run_job_with_env(date_str, env_overrides)
+            _trigger_cloud_run_job_with_env(date_str, env_overrides, job_name=job_name)
             date_labels.append(f"{date_str} ({mode_label})")
         dates_text = ", ".join(date_labels)
+        prefix = ":test_tube: [SANDBOX] " if sandbox else ":hourglass_flowing_sand: "
         return jsonify({
             "response_type": "ephemeral",
             "text": (
-                f":hourglass_flowing_sand: Refresh triggered: {dates_text}. "
+                f"{prefix}Refresh triggered: {dates_text}. "
                 f"Check #bhaga-runs for progress."
             ),
         })
@@ -669,7 +695,9 @@ def _handle_slash_command(form: dict) -> Response:
             "  `/bhaga-cloud training set \"Last, First\" YYYY-MM-DD [note]` — mark a shift as training\n"
             "  `/bhaga-cloud training rm \"Last, First\" YYYY-MM-DD` — remove a training shift mark\n"
             "  `/bhaga-cloud alias set <raw_name> \"Last, First\"` — add employee alias\n"
-            "  `/bhaga-cloud exclude set \"Last, First\" [YYYY-MM-DD]` — mark training exclusion through date"
+            "  `/bhaga-cloud exclude set \"Last, First\" [YYYY-MM-DD]` — mark training exclusion through date\n"
+            "  :test_tube: *Direct sandbox trigger* — POST to /slack/commands with "
+            "`X-Sandbox-Trigger: <token>` header (always routes to bhaga-sandbox-refresh, never prod)"
         ),
     })
 
@@ -1148,6 +1176,17 @@ def slack_events():
 
 @app.route("/slack/commands", methods=["POST"])
 def slack_commands():
+    # Direct sandbox trigger bypass — checked before Slack HMAC verification.
+    # Only active when SANDBOX_TRIGGER_TOKEN is set (fail-closed when empty).
+    # The bypass path always routes to the sandbox job, never prod.
+    sandbox_token = request.headers.get("X-Sandbox-Trigger", "")
+    if _SANDBOX_TRIGGER_TOKEN and sandbox_token == _SANDBOX_TRIGGER_TOKEN:
+        return _handle_slash_command(request.form, sandbox=True)
+    # Missing/wrong token with a non-empty token header → 403 (not a Slack call
+    # and not an authorized sandbox trigger).
+    if sandbox_token and sandbox_token != _SANDBOX_TRIGGER_TOKEN:
+        return Response("invalid sandbox trigger token", status=403)
+
     body = request.get_data()
     timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
     signature = request.headers.get("X-Slack-Signature", "")

@@ -888,34 +888,71 @@ Run env layer (unit tests can only mock those). Adapt: change `skip` to keep onl
 reach your gate, add a seed function for your precondition, add a `verify` gate that reads Firestore
 or BQ state after the run.
 
-**Proving webhook slash-command changes end-to-end (`sandbox_refresh_driver.py`).** For changes
-to `cloud/webhook/handler.py` that alter how slash commands trigger Cloud Run jobs (e.g. multi-date
-refresh fan-out), use `cloud/webhook/sandbox_refresh_driver.py` instead of (or in addition to) a
-scenario run. It drives `_handle_slash_command` directly — the real parse → coverage-probe →
-`_trigger_cloud_run_job_with_env` path — and points `CLOUD_RUN_JOB_NAME` at `bhaga-sandbox-refresh`
-so the triggered executions land on the sandbox job (full isolation preserved):
+**Proving webhook slash-command changes end-to-end — direct sandbox trigger.**
 
-```bash
-# 1. Deploy the sandbox job from the PR image (once; isolation env baked in):
-python3 -m agents.bhaga.scripts.sandbox_live_run \
-    --store palmetto --pr-number <N> --pr-label "<branch>" \
-    --refresh-date 2026-06-23 --image <registry>/bhaga-orchestrator:<sha> \
-    --no-execute
+The webhook exposes a direct, auth'd entry point that bypasses the Slack HMAC signature check so
+the agent (or any bearer-token holder) can trigger the sandbox job without a human typing a Slack
+slash command or running `gcloud` on a laptop:
 
-# 2. Run the evidence driver (with ADC / gcloud auth application-default login):
-python3 cloud/webhook/sandbox_refresh_driver.py \
-    --dates 2026-06-23,2026-06-24 \
-    --wait-minutes 60
+```
+POST https://bhaga-webhook-4yl5izovxq-uc.a.run.app/slack/commands
+X-Sandbox-Trigger: <SANDBOX_TRIGGER_TOKEN>
+Content-Type: application/x-www-form-urlencoded
 
-# Reply to ADP OTP prompts in Slack (labeled [SANDBOX · PR#…]).
-# The driver polls executions to terminal, then verifies:
-#   - bhaga_sandbox.square_item_lines has >0 rows for each date (real prod Square REST)
-#   - sandbox_runs Firestore docs for each date show status=success
-# Prints a markdown evidence table for the PR §4 comment.
+text=refresh 2026-06-23,2026-06-24&user_name=agent
 ```
 
-`BHAGA_BQ_DATASET` is overridden to `bhaga_sandbox` by the driver so the coverage probe reads the
-sandbox dataset (both dates uncovered → full live scrape + ADP OTP).
+**What the bypass does (invariants):**
+- Always routes to `bhaga-sandbox-refresh` (never `bhaga-daily-refresh` / prod).
+- BQ coverage probe reads `bhaga_sandbox.square_daily_rollup` (empty for new dates → full live
+  scrape + OTP). Module-global `_BQ_DATASET` is never mutated.
+- Ack text is prefixed with `:test_tube: [SANDBOX]` so sandbox and prod acks are unambiguous.
+- OTP is labeled `[SANDBOX · PR#…]` (from `BHAGA_RUN_ENV=sandbox` in the sandbox job env); reply
+  in the BHAGA cloud DM as usual — the webhook scans `sandbox_runs` first.
+
+**Security rationale:** sandbox targets are fully isolated (separate Cloud Run job, BQ dataset,
+Firestore collection, GCS bucket); a request on this bypass path can never touch prod data or prod
+runs. Auth is relaxed accordingly. Prod slash commands still require a valid Slack HMAC signature.
+Fail-closed: if `SANDBOX_TRIGGER_TOKEN` env var is empty, no bypass is possible.
+
+**Provisioning (one-time operator setup):**
+```bash
+# Generate and store the token in Secret Manager:
+TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+echo -n "$TOKEN" | gcloud secrets create sandbox-trigger-token \
+    --data-file=- --project=jarvis-bhaga-prod
+# Mount as env var on the webhook service:
+gcloud run services update bhaga-webhook \
+    --update-secrets SANDBOX_TRIGGER_TOKEN=sandbox-trigger-token:latest \
+    --region us-central1 --project jarvis-bhaga-prod
+# Confirm SANDBOX_RUNS_COLLECTION=sandbox_runs is also set (sandbox OTP precedence):
+gcloud run services describe bhaga-webhook --region us-central1 \
+    --format='value(spec.template.spec.containers[0].env)' | grep SANDBOX
+```
+
+**Evidence harness (agent-runnable):**
+```python
+import urllib.request, urllib.parse, os
+token = os.environ["SANDBOX_TRIGGER_TOKEN"]
+url = "https://bhaga-webhook-4yl5izovxq-uc.a.run.app/slack/commands"
+body = urllib.parse.urlencode({"text": "refresh 2026-06-23,2026-06-24", "user_name": "agent"}).encode()
+req = urllib.request.Request(url, data=body, headers={
+    "Content-Type": "application/x-www-form-urlencoded",
+    "X-Sandbox-Trigger": token,
+})
+resp = urllib.request.urlopen(req)
+print(resp.read().decode())
+# Expect: {"text": ":test_tube: [SANDBOX] Refresh triggered: 2026-06-23 (full+OTP), 2026-06-24 (full+OTP)..."}
+```
+
+Reply to both `[SANDBOX]` ADP OTP prompts in Slack, then verify:
+- `gcloud run jobs executions list --job=bhaga-sandbox-refresh` → two `SUCCEEDED` executions.
+- `bq query --project_id=jarvis-bhaga-prod --use_legacy_sql=false 'SELECT date_local, COUNT(*) n FROM bhaga_sandbox.square_item_lines WHERE date_local IN ("2026-06-23","2026-06-24") GROUP BY 1'` → >0 rows per date.
+- Firestore `sandbox_runs/2026-06-23` and `sandbox_runs/2026-06-24` → `status=success`.
+
+**Legacy driver (`sandbox_refresh_driver.py`):** `cloud/webhook/sandbox_refresh_driver.py` is
+preserved as an alternative that works without a deployed webhook (imports `handler` in-process and
+overrides env). Use it when the webhook is not yet redeployed with the sandbox token.
 
 **Square uses OAuth REST API — no browser, no OTP.** As of 2026-06-23, Square transactions, item
 sales, and KDS data are ingested directly via the Square REST API (OAuth 2.0) through

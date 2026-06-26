@@ -2,7 +2,10 @@
 
 ## 2026-06-25 — `/bhaga-cloud refresh` multi-date support (PR #77, branch fix/slack-bhaga-cloud-refresh-command-support)
 
-**Status:** Implementing — M1 (parser + tests) complete; M2 (evidence driver + RUNBOOK) complete; awaiting live sandbox evidence run.
+**Status:** Implementing — M1 (parser + tests) complete; M2 (evidence driver + RUNBOOK + direct sandbox trigger) complete; awaiting live sandbox evidence run via direct trigger.
+
+**2026-06-26 addition — direct sandbox trigger endpoint:**
+Added `X-Sandbox-Trigger` bypass header to `POST /slack/commands`. When `SANDBOX_TRIGGER_TOKEN` env var is set and the request carries the matching token, the webhook routes to `bhaga-sandbox-refresh` + `bhaga_sandbox` (never prod) without requiring a Slack HMAC signature. Fail-closed when token unset. This lets the agent (or any bearer token holder) fire the evidence run without a human typing a slash command or running `gcloud`. 8 new unit tests; 130 total, all pass.
 
 Extended the `/bhaga-cloud refresh` slash command to accept comma/space lists, inclusive `..` and `to` ranges, and mixed combinations (up to 31 dates). Each resolved date fans out to one Cloud Run Job execution. Coverage-aware per date (mirrors `scripts/trigger_dated_refresh.py`): BQ-covered dates → recompute-only (no OTP); uncovered → full scrape + `BHAGA_OTP_FORCE_REQUEST=1`. Evidence: live sandbox run for 2026-06-23 and 2026-06-24 against prod Square REST + ADP, verified via `cloud/webhook/sandbox_refresh_driver.py`.
 

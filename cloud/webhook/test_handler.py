@@ -649,9 +649,9 @@ class TestBuildRefreshEnvOverrides:
         assert "BHAGA_SKIP_ADP" not in env
 
     def test_decide_recompute_uses_bq_probe(self, monkeypatch):
-        monkeypatch.setattr(handler, "_date_is_covered", lambda d: True)
+        monkeypatch.setattr(handler, "_date_is_covered", lambda d, dataset=None: True)
         assert handler._decide_recompute("2026-06-13") is True
-        monkeypatch.setattr(handler, "_date_is_covered", lambda d: False)
+        monkeypatch.setattr(handler, "_date_is_covered", lambda d, dataset=None: False)
         assert handler._decide_recompute("2026-06-14") is False
 
     def test_decide_recompute_fail_open_when_bq_none(self, monkeypatch):
@@ -750,7 +750,7 @@ class TestRefreshMultiDate:
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     def test_covered_date_gets_recompute_env(self, mock_trigger, monkeypatch):
         """A BQ-covered date must produce skip flags and no OTP flag."""
-        monkeypatch.setattr(handler, "_date_is_covered", lambda d: True)
+        monkeypatch.setattr(handler, "_date_is_covered", lambda d, dataset=None: True)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14")
         assert resp.status_code == 200
@@ -764,7 +764,7 @@ class TestRefreshMultiDate:
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     def test_uncovered_date_gets_full_scrape_env(self, mock_trigger, monkeypatch):
         """A BQ-uncovered date must produce the OTP flag and no skip flags."""
-        monkeypatch.setattr(handler, "_date_is_covered", lambda d: False)
+        monkeypatch.setattr(handler, "_date_is_covered", lambda d, dataset=None: False)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14")
         assert resp.status_code == 200
@@ -788,7 +788,7 @@ class TestRefreshMultiDate:
     def test_mixed_covered_uncovered_per_date_env(self, mock_trigger, monkeypatch):
         """Each date gets independent coverage probe; covered → recompute, uncovered → full."""
         covered = {"2026-06-14"}
-        monkeypatch.setattr(handler, "_date_is_covered", lambda d: d in covered)
+        monkeypatch.setattr(handler, "_date_is_covered", lambda d, dataset=None: d in covered)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14,2026-06-15")
         assert resp.status_code == 200
@@ -811,6 +811,127 @@ class TestRefreshMultiDate:
         data = resp.get_json()
         assert ".." in data["text"]
         assert "to" in data["text"]
+
+
+# ===========================================================================
+# 5e. Direct sandbox trigger bypass
+# ===========================================================================
+
+class TestSandboxTrigger:
+    """Tests for the X-Sandbox-Trigger bypass header path."""
+
+    _TOKEN = "test-sandbox-token-abc123"
+
+    def _post_sandbox(self, client, text: str, token: str = None):
+        """POST to /slack/commands with X-Sandbox-Trigger header (no Slack sig)."""
+        if token is None:
+            token = self._TOKEN
+        return client.post(
+            "/slack/commands",
+            data={"text": text, "command": "/bhaga-cloud", "user_name": "agent"},
+            headers={"X-Sandbox-Trigger": token},
+        )
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_bypass_skips_slack_signature(self, mock_decide, mock_trigger, monkeypatch):
+        """Valid token → no Slack HMAC required, request dispatched."""
+        monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
+        with app.test_client() as c:
+            resp = self._post_sandbox(c, "refresh 2026-06-23")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "2026-06-23" in data["text"]
+        mock_trigger.assert_called_once()
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_bypass_targets_sandbox_job(self, mock_decide, mock_trigger, monkeypatch):
+        """Bypass path must pass the sandbox job resource name to the trigger."""
+        monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
+        monkeypatch.setattr(
+            handler, "_SANDBOX_JOB_RESOURCE",
+            "projects/jarvis-bhaga-prod/locations/us-central1/jobs/bhaga-sandbox-refresh",
+        )
+        with app.test_client() as c:
+            resp = self._post_sandbox(c, "refresh 2026-06-23")
+        assert resp.status_code == 200
+        _, _, kwargs = mock_trigger.call_args[0], mock_trigger.call_args[1], mock_trigger.call_args[1]
+        # job_name is passed as a keyword argument
+        call_kwargs = mock_trigger.call_args[1]
+        assert call_kwargs.get("job_name") == "projects/jarvis-bhaga-prod/locations/us-central1/jobs/bhaga-sandbox-refresh"
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    def test_bypass_uses_sandbox_bq_dataset(self, mock_trigger, monkeypatch):
+        """Coverage probe receives dataset=bhaga_sandbox so module-global is not mutated."""
+        monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
+        probe_calls: list = []
+        monkeypatch.setattr(handler, "_date_is_covered", lambda d, dataset=None: probe_calls.append(dataset) or False)
+        with app.test_client() as c:
+            self._post_sandbox(c, "refresh 2026-06-23")
+        assert probe_calls, "coverage probe not called"
+        assert probe_calls[0] == handler._SANDBOX_BQ_DATASET
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_bypass_ack_has_sandbox_prefix(self, mock_decide, mock_trigger, monkeypatch):
+        """Ack text must start with the :test_tube: [SANDBOX] prefix."""
+        monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
+        with app.test_client() as c:
+            resp = self._post_sandbox(c, "refresh 2026-06-23,2026-06-24")
+        assert resp.status_code == 200
+        text = resp.get_json()["text"]
+        assert "[SANDBOX]" in text
+        assert "2026-06-23" in text
+        assert "2026-06-24" in text
+
+    def test_wrong_token_returns_403(self, monkeypatch):
+        """A non-matching sandbox token must be rejected with 403."""
+        monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
+        with app.test_client() as c:
+            resp = self._post_sandbox(c, "refresh 2026-06-23", token="wrong-token")
+        assert resp.status_code == 403
+
+    def test_no_token_env_no_bypass(self, monkeypatch):
+        """When SANDBOX_TRIGGER_TOKEN is unset, the bypass header is ignored → falls through to Slack sig check → 403."""
+        monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", "")
+        # Send with a header that looks like a bypass attempt but env token is unset.
+        # With no valid Slack sig, it must fall through to the sig check and get 403.
+        with app.test_client() as c:
+            resp = c.post(
+                "/slack/commands",
+                data={"text": "refresh 2026-06-23", "command": "/bhaga-cloud"},
+                headers={"X-Sandbox-Trigger": "some-token"},
+            )
+        # Falls through to Slack sig verification which fails (no real sig) → 403
+        assert resp.status_code == 403
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_prod_path_unchanged_with_bypass_configured(self, mock_decide, mock_trigger, monkeypatch):
+        """Even with SANDBOX_TRIGGER_TOKEN set, a normal Slack-signed request still goes to prod path."""
+        monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
+        # A Slack-signed POST without the sandbox header must hit the prod path.
+        # Use the existing helper which provides a valid Slack signature.
+        with app.test_client() as c:
+            resp = _post_command(c, "refresh 2025-05-26")
+        assert resp.status_code == 200
+        # Prod path: no [SANDBOX] prefix, no sandbox job override
+        text = resp.get_json()["text"]
+        assert "[SANDBOX]" not in text
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_multi_date_via_bypass(self, mock_decide, mock_trigger, monkeypatch):
+        """Full multi-date fan-out works through the bypass path."""
+        monkeypatch.setattr(handler, "_SANDBOX_TRIGGER_TOKEN", self._TOKEN)
+        with app.test_client() as c:
+            resp = self._post_sandbox(c, "refresh 2026-06-23,2026-06-24")
+        assert resp.status_code == 200
+        assert mock_trigger.call_count == 2
+        triggered_dates = [call[0][0] for call in mock_trigger.call_args_list]
+        assert "2026-06-23" in triggered_dates
+        assert "2026-06-24" in triggered_dates
 
 
 # ===========================================================================

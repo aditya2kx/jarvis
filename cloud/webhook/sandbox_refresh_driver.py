@@ -110,10 +110,6 @@ def _list_executions(job_short_name: str, region: str = "us-central1",
 def _execution_state(execution: dict) -> str:
     """Extract the terminal state string from an execution JSON blob."""
     conditions = execution.get("status", {}).get("conditions") or []
-    for cond in conditions:
-        state = cond.get("type", "")
-        if state in _TERMINAL_STATES or state == "Ready":
-            pass
     # Prefer the top-level completionTime presence + succeeded/failed counts.
     status = execution.get("status") or {}
     if execution.get("completionTime") or status.get("completionTime"):

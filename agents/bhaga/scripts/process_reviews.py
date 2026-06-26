@@ -1158,16 +1158,14 @@ def main() -> int:
         ts_ms = m.get("date") or 0
         content = m.get("content") or ""
 
-        # Filter non-review messages first (duty checklists, package photos,
-        # team chatter) so they never inflate the held-back counter.
+        # Skip non-review messages (duty checklists, package photos, team chatter)
+        # before any window check so they never inflate the held-back counter.
         if not _is_review_message(content):
             continue
 
-        # Hard cap at end-of-day CT for data_window_end. A genuine review posted
-        # after that is held back: don't advance the high-water past it, don't
-        # parse, don't write. Tomorrow's run (after the window advances) will
-        # see this message again.
-        if ts_ms > window_end_ts_ms:
+        # Hard cap at end-of-day CT for data_window_end. Route through the
+        # _is_held_back_review predicate so regression tests exercise this path.
+        if _is_held_back_review(content, ts_ms, window_end_ts_ms):
             held_back += 1
             continue
 

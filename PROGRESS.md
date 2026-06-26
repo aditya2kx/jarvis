@@ -1,5 +1,17 @@
 # Jarvis Build Progress
 
+## 2026-06-25 — `/bhaga-cloud refresh` multi-date support (PR #TBD, branch fix/slack-bhaga-cloud-refresh-command-support)
+
+**Status:** Implementing — M1 (parser + tests) complete; M2 (evidence driver + RUNBOOK) complete; awaiting live sandbox evidence run.
+
+Extended the `/bhaga-cloud refresh` slash command to accept comma/space lists, inclusive `..` and `to` ranges, and mixed combinations (up to 31 dates). Each resolved date fans out to one Cloud Run Job execution. Coverage-aware per date (mirrors `scripts/trigger_dated_refresh.py`): BQ-covered dates → recompute-only (no OTP); uncovered → full scrape + `BHAGA_OTP_FORCE_REQUEST=1`. Evidence: live sandbox run for 2026-06-23 and 2026-06-24 against prod Square REST + ADP, verified via `cloud/webhook/sandbox_refresh_driver.py`.
+
+**What changed:**
+- `cloud/webhook/handler.py`: `_parse_refresh_dates`, `_date_is_covered`, `_decide_recompute`, `_build_refresh_env_overrides`, `_trigger_cloud_run_job_with_env` (new); slash-command refresh block and help text updated.
+- `cloud/webhook/test_handler.py`: `TestParseRefreshDates`, `TestBuildRefreshEnvOverrides`, `TestRefreshMultiDate` (122 tests total, all pass).
+- `cloud/webhook/sandbox_refresh_driver.py`: evidence harness for webhook slash-command changes.
+- `RUNBOOK.md`: §8 refresh-command section + sandbox evidence driver documentation.
+
 ## 2026-06-25 — Hook→skill pivot: /jarvis-new-task replaces blocking intake hook (PR #74)
 
 **Status:** PR open, awaiting operator live test as behavioral evidence, then merge.

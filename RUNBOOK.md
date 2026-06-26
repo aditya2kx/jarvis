@@ -284,6 +284,37 @@ gcloud secrets versions add <name> --data-file=- --project jarvis-bhaga-prod
 There is **no laptop listener** anymore. If OTPs are not being delivered, debug the **webhook**
 (logs below) and the Slack app's Events API subscription, not any local process.
 
+### `/bhaga-cloud refresh` — multi-date, lists, and ranges
+
+The refresh command accepts a single date, a comma/space list, an inclusive range (`..` or `to`),
+or any mix:
+
+```
+/bhaga-cloud refresh 2026-06-14
+/bhaga-cloud refresh 2026-06-14,2026-06-15,2026-06-16
+/bhaga-cloud refresh 2026-06-14 2026-06-15
+/bhaga-cloud refresh 2026-06-14..2026-06-20
+/bhaga-cloud refresh 2026-06-14 to 2026-06-20
+/bhaga-cloud refresh 2026-06-14,2026-06-20..2026-06-22,2026-06-25
+```
+
+Each resolved date triggers **one Cloud Run Job execution** (fan-out). Dates are deduped and sorted
+ascending. Up to 31 dates per command; larger ranges are rejected with an error.
+
+**Coverage-aware mode selection per date** (mirrors `scripts/trigger_dated_refresh.py`):
+
+- Date already covered in `bhaga.square_daily_rollup` (BQ) → **recompute-only**: executes with
+  `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1`. No portal login, no OTP.
+- Date not covered (or BQ probe fails — fail-open) → **full scrape + OTP**: executes with
+  `BHAGA_OTP_FORCE_REQUEST=1`. The job re-prompts READY even if a stale checkpoint exists.
+
+Both modes add `BHAGA_IGNORE_HALT=1` (operator-driven backfill includes the fix).
+
+The ack text lists each date with its mode **before** any OTP fires, e.g.:
+> Refresh triggered: 2026-06-23 (full+OTP), 2026-06-24 (full+OTP). Check #bhaga-runs.
+
+**OTP concurrency caveat:** if multiple full-scrape dates are enqueued concurrently, `_find_pending_portal_for_agent` picks the *newest* pending OTP. ADP's distributed scrape lock serialises browser logins; Square uses the REST API (no browser, no OTP since 2026-06-23). The only OTP portal that fires a live SMS is ADP.
+
 ### Re-prompting for OTP on explicit triggers
 
 The **nightly** job suppresses duplicate Slack pings: if a `pending_otp` checkpoint already exists
@@ -291,10 +322,10 @@ in Firestore for a date (an unanswered READY request), the nightly exits quietly
 
 Explicit operator-driven triggers behave differently:
 
-- **`/bhaga-cloud refresh <date>`** (slash command) — always sets `BHAGA_OTP_FORCE_REQUEST=1` in
-  the Cloud Run execution's env. The job re-saves the checkpoint with a fresh `requested_at` and
+- **`/bhaga-cloud refresh <dates>`** (slash command) — for each uncovered date, always sets
+  `BHAGA_OTP_FORCE_REQUEST=1`. The job re-saves the checkpoint with a fresh `requested_at` and
   re-posts the READY prompt to Slack, resetting the 48h window. Stale or cap-expired markers are
-  cleared and re-prompted.
+  cleared and re-prompted. Covered dates skip portals entirely.
 - **`Retry-Dates` full-scrape reruns** (deploy.yml) — `scripts/trigger_dated_refresh.py` sets the
   same flag when the date is not yet covered in BigQuery (full-scrape mode). Recompute-only reruns
   skip portal login entirely and never touch the OTP checkpoint.
@@ -856,6 +887,35 @@ Use this pattern as the prototype for any PR whose key logic fires at the Firest
 Run env layer (unit tests can only mock those). Adapt: change `skip` to keep only the steps that
 reach your gate, add a seed function for your precondition, add a `verify` gate that reads Firestore
 or BQ state after the run.
+
+**Proving webhook slash-command changes end-to-end (`sandbox_refresh_driver.py`).** For changes
+to `cloud/webhook/handler.py` that alter how slash commands trigger Cloud Run jobs (e.g. multi-date
+refresh fan-out), use `cloud/webhook/sandbox_refresh_driver.py` instead of (or in addition to) a
+scenario run. It drives `_handle_slash_command` directly — the real parse → coverage-probe →
+`_trigger_cloud_run_job_with_env` path — and points `CLOUD_RUN_JOB_NAME` at `bhaga-sandbox-refresh`
+so the triggered executions land on the sandbox job (full isolation preserved):
+
+```bash
+# 1. Deploy the sandbox job from the PR image (once; isolation env baked in):
+python3 -m agents.bhaga.scripts.sandbox_live_run \
+    --store palmetto --pr-number <N> --pr-label "<branch>" \
+    --refresh-date 2026-06-23 --image <registry>/bhaga-orchestrator:<sha> \
+    --no-execute
+
+# 2. Run the evidence driver (with ADC / gcloud auth application-default login):
+python3 cloud/webhook/sandbox_refresh_driver.py \
+    --dates 2026-06-23,2026-06-24 \
+    --wait-minutes 60
+
+# Reply to ADP OTP prompts in Slack (labeled [SANDBOX · PR#…]).
+# The driver polls executions to terminal, then verifies:
+#   - bhaga_sandbox.square_item_lines has >0 rows for each date (real prod Square REST)
+#   - sandbox_runs Firestore docs for each date show status=success
+# Prints a markdown evidence table for the PR §4 comment.
+```
+
+`BHAGA_BQ_DATASET` is overridden to `bhaga_sandbox` by the driver so the coverage probe reads the
+sandbox dataset (both dates uncovered → full live scrape + ADP OTP).
 
 **Square uses OAuth REST API — no browser, no OTP.** As of 2026-06-23, Square transactions, item
 sales, and KDS data are ingested directly via the Square REST API (OAuth 2.0) through

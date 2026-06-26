@@ -497,14 +497,20 @@ class TestReadyEventRouting:
 # ===========================================================================
 
 class TestSlashCommands:
-    @patch.object(handler, "_trigger_cloud_run_job")
-    def test_refresh_command(self, mock_trigger):
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_refresh_command(self, mock_decide, mock_trigger):
         with app.test_client() as c:
             resp = _post_command(c, "refresh 2025-05-26")
             assert resp.status_code == 200
             data = resp.get_json()
             assert "2025-05-26" in data["text"]
-            mock_trigger.assert_called_once_with("2025-05-26", force_otp_request=True)
+            mock_trigger.assert_called_once()
+            # verify REFRESH_DATE + OTP flag in env pairs
+            env_pairs = dict(mock_trigger.call_args[0][1])
+            assert env_pairs["REFRESH_DATE"] == "2025-05-26"
+            assert env_pairs["BHAGA_OTP_FORCE_REQUEST"] == "1"
+            assert env_pairs["BHAGA_IGNORE_HALT"] == "1"
 
     @patch.object(handler, "_get_latest_run_summary", return_value=":white_check_mark: All good")
     def test_status_command(self, mock_summary):
@@ -527,6 +533,284 @@ class TestSlashCommands:
             assert resp.status_code == 200
             data = resp.get_json()
             assert "Commands" in data["text"]
+
+
+# ===========================================================================
+# 5b. _parse_refresh_dates — pure parser unit tests
+# ===========================================================================
+
+class TestParseRefreshDates:
+    """Direct unit tests for the pure parser — no HTTP, no mocks."""
+
+    def test_single_date(self):
+        dates, err = handler._parse_refresh_dates("2026-06-14")
+        assert err is None
+        assert dates == ["2026-06-14"]
+
+    def test_comma_list(self):
+        dates, err = handler._parse_refresh_dates("2026-06-14,2026-06-15")
+        assert err is None
+        assert dates == ["2026-06-14", "2026-06-15"]
+
+    def test_comma_list_with_spaces(self):
+        dates, err = handler._parse_refresh_dates("2026-06-14, 2026-06-15")
+        assert err is None
+        assert dates == ["2026-06-14", "2026-06-15"]
+
+    def test_space_separated_dates(self):
+        dates, err = handler._parse_refresh_dates("2026-06-14 2026-06-15 2026-06-16")
+        assert err is None
+        assert dates == ["2026-06-14", "2026-06-15", "2026-06-16"]
+
+    def test_dotdot_range(self):
+        dates, err = handler._parse_refresh_dates("2026-06-14..2026-06-20")
+        assert err is None
+        assert len(dates) == 7
+        assert dates[0] == "2026-06-14"
+        assert dates[-1] == "2026-06-20"
+
+    def test_to_range(self):
+        dates, err = handler._parse_refresh_dates("2026-06-14 to 2026-06-20")
+        assert err is None
+        assert len(dates) == 7
+        assert dates[0] == "2026-06-14"
+        assert dates[-1] == "2026-06-20"
+
+    def test_mixed(self):
+        # 1 + 3 + 1 = 5 unique dates
+        dates, err = handler._parse_refresh_dates("2026-06-14,2026-06-20..2026-06-22,2026-06-25")
+        assert err is None
+        assert len(dates) == 5
+        assert "2026-06-14" in dates
+        assert "2026-06-20" in dates
+        assert "2026-06-21" in dates
+        assert "2026-06-22" in dates
+        assert "2026-06-25" in dates
+
+    def test_dedup(self):
+        dates, err = handler._parse_refresh_dates("2026-06-14,2026-06-14")
+        assert err is None
+        assert dates == ["2026-06-14"]
+
+    def test_sorted_ascending(self):
+        dates, err = handler._parse_refresh_dates("2026-06-20,2026-06-14,2026-06-17")
+        assert err is None
+        assert dates == ["2026-06-14", "2026-06-17", "2026-06-20"]
+
+    def test_reverse_range_error(self):
+        dates, err = handler._parse_refresh_dates("2026-06-20..2026-06-14")
+        assert dates == []
+        assert err is not None
+        assert "after" in err
+
+    def test_bad_token(self):
+        dates, err = handler._parse_refresh_dates("foo")
+        assert dates == []
+        assert err is not None
+
+    def test_bad_token_in_range(self):
+        dates, err = handler._parse_refresh_dates("2026-06-14..foo")
+        assert dates == []
+        assert err is not None
+
+    def test_over_cap(self):
+        # 2026-01-01 to 2026-07-15 = 196 days → exceeds cap of 31
+        dates, err = handler._parse_refresh_dates("2026-01-01..2026-07-15")
+        assert dates == []
+        assert err is not None
+        assert "31" in err or "cap" in err.lower()
+
+    def test_empty_string(self):
+        dates, err = handler._parse_refresh_dates("")
+        assert dates == []
+        assert err is not None
+
+
+# ===========================================================================
+# 5c. _build_refresh_env_overrides + _decide_recompute unit tests
+# ===========================================================================
+
+class TestBuildRefreshEnvOverrides:
+    def test_recompute_only_has_skip_flags(self):
+        env = dict(handler._build_refresh_env_overrides("2026-06-13", recompute_only=True))
+        assert env["REFRESH_DATE"] == "2026-06-13"
+        assert env["BHAGA_SKIP_SQUARE"] == "1"
+        assert env["BHAGA_SKIP_ADP"] == "1"
+        assert env["BHAGA_SKIP_KDS"] == "1"
+        assert env["BHAGA_IGNORE_HALT"] == "1"
+        assert "BHAGA_OTP_FORCE_REQUEST" not in env
+
+    def test_full_scrape_has_otp_flag(self):
+        env = dict(handler._build_refresh_env_overrides("2026-06-14", recompute_only=False))
+        assert env["REFRESH_DATE"] == "2026-06-14"
+        assert env["BHAGA_OTP_FORCE_REQUEST"] == "1"
+        assert env["BHAGA_IGNORE_HALT"] == "1"
+        assert "BHAGA_SKIP_SQUARE" not in env
+        assert "BHAGA_SKIP_ADP" not in env
+
+    def test_decide_recompute_uses_bq_probe(self, monkeypatch):
+        monkeypatch.setattr(handler, "_date_is_covered", lambda d: True)
+        assert handler._decide_recompute("2026-06-13") is True
+        monkeypatch.setattr(handler, "_date_is_covered", lambda d: False)
+        assert handler._decide_recompute("2026-06-14") is False
+
+    def test_decide_recompute_fail_open_when_bq_none(self, monkeypatch):
+        monkeypatch.setattr(handler, "_bq", None)
+        # _date_is_covered returns False when _bq is None → full scrape
+        assert handler._decide_recompute("2026-06-14") is False
+
+
+# ===========================================================================
+# 5d. Multi-date refresh — full HTTP command tests
+# ===========================================================================
+
+class TestRefreshMultiDate:
+    """End-to-end slash-command tests for multi-date refresh parsing and triggering."""
+
+    def _call_refresh(self, client, text: str):
+        return _post_command(client, f"refresh {text}")
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_comma_list_two_dates(self, mock_decide, mock_trigger):
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-06-14,2026-06-15")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "2026-06-14" in data["text"]
+        assert "2026-06-15" in data["text"]
+        assert mock_trigger.call_count == 2
+        triggered_dates = [call[0][0] for call in mock_trigger.call_args_list]
+        assert triggered_dates == ["2026-06-14", "2026-06-15"]
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_space_list_three_dates(self, mock_decide, mock_trigger):
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-06-14 2026-06-15 2026-06-16")
+        assert resp.status_code == 200
+        assert mock_trigger.call_count == 3
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_dotdot_range_seven_dates(self, mock_decide, mock_trigger):
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-06-14..2026-06-20")
+        assert resp.status_code == 200
+        assert mock_trigger.call_count == 7
+        triggered_dates = [call[0][0] for call in mock_trigger.call_args_list]
+        assert triggered_dates[0] == "2026-06-14"
+        assert triggered_dates[-1] == "2026-06-20"
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_to_range_seven_dates(self, mock_decide, mock_trigger):
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-06-14 to 2026-06-20")
+        assert resp.status_code == 200
+        assert mock_trigger.call_count == 7
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_mixed_list(self, mock_decide, mock_trigger):
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-06-14,2026-06-20..2026-06-22,2026-06-25")
+        assert resp.status_code == 200
+        assert mock_trigger.call_count == 5
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_dedup(self, mock_decide, mock_trigger):
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-06-14,2026-06-14")
+        assert resp.status_code == 200
+        assert mock_trigger.call_count == 1
+
+    def test_reverse_range_returns_error(self):
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-06-20..2026-06-14")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert ":x:" in data["text"]
+
+    def test_bad_token_returns_error(self):
+        with app.test_client() as c:
+            resp = _post_command(c, "refresh foo")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert ":x:" in data["text"]
+
+    def test_over_cap_returns_error(self):
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-01-01..2026-07-15")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert ":x:" in data["text"]
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    def test_covered_date_gets_recompute_env(self, mock_trigger, monkeypatch):
+        """A BQ-covered date must produce skip flags and no OTP flag."""
+        monkeypatch.setattr(handler, "_date_is_covered", lambda d: True)
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-06-14")
+        assert resp.status_code == 200
+        env = dict(mock_trigger.call_args[0][1])
+        assert env.get("BHAGA_SKIP_SQUARE") == "1"
+        assert env.get("BHAGA_SKIP_ADP") == "1"
+        assert env.get("BHAGA_SKIP_KDS") == "1"
+        assert "BHAGA_OTP_FORCE_REQUEST" not in env
+        assert "recompute" in resp.get_json()["text"]
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    def test_uncovered_date_gets_full_scrape_env(self, mock_trigger, monkeypatch):
+        """A BQ-uncovered date must produce the OTP flag and no skip flags."""
+        monkeypatch.setattr(handler, "_date_is_covered", lambda d: False)
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-06-14")
+        assert resp.status_code == 200
+        env = dict(mock_trigger.call_args[0][1])
+        assert env.get("BHAGA_OTP_FORCE_REQUEST") == "1"
+        assert "BHAGA_SKIP_SQUARE" not in env
+        assert "full+OTP" in resp.get_json()["text"]
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    def test_bq_failure_falls_back_to_full_scrape(self, mock_trigger, monkeypatch):
+        """BQ probe failure must fail-open to full scrape, not suppress the trigger."""
+        monkeypatch.setattr(handler, "_bq", None)
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-06-14")
+        assert resp.status_code == 200
+        mock_trigger.assert_called_once()
+        env = dict(mock_trigger.call_args[0][1])
+        assert env.get("BHAGA_OTP_FORCE_REQUEST") == "1"
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    def test_mixed_covered_uncovered_per_date_env(self, mock_trigger, monkeypatch):
+        """Each date gets independent coverage probe; covered → recompute, uncovered → full."""
+        covered = {"2026-06-14"}
+        monkeypatch.setattr(handler, "_date_is_covered", lambda d: d in covered)
+        with app.test_client() as c:
+            resp = self._call_refresh(c, "2026-06-14,2026-06-15")
+        assert resp.status_code == 200
+        assert mock_trigger.call_count == 2
+        calls = {call[0][0]: dict(call[0][1]) for call in mock_trigger.call_args_list}
+        assert "BHAGA_SKIP_SQUARE" in calls["2026-06-14"]
+        assert "BHAGA_OTP_FORCE_REQUEST" not in calls["2026-06-14"]
+        assert calls["2026-06-15"].get("BHAGA_OTP_FORCE_REQUEST") == "1"
+        assert "BHAGA_SKIP_SQUARE" not in calls["2026-06-15"]
+        # Ack text shows both mode labels
+        text = resp.get_json()["text"]
+        assert "recompute" in text
+        assert "full+OTP" in text
+
+    def test_help_text_shows_range_syntax(self):
+        """Help text (unknown command) must document list + range syntax."""
+        with app.test_client() as c:
+            resp = _post_command(c, "unknown-command-xyz-multi")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert ".." in data["text"]
+        assert "to" in data["text"]
 
 
 # ===========================================================================

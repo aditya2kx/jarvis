@@ -444,9 +444,10 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = _repo_root()
     requirements: list[str] = args.requirements
 
-    # Resolve base: always origin/main by default so each new requirement starts
-    # from a clean, isolated baseline.  Pass --base explicitly to opt into
-    # inheriting changes from an in-flight branch.
+    # Resolve base: always default to origin/main so new worktrees never inherit
+    # in-flight commits from whatever branch the operator happens to be on.
+    # Branching off a feature branch caused PR #81 to include 19 unrelated commits
+    # from an older in-flight PR — every new requirement must start from clean main.
     base = args.base or default_base()
 
     if len(requirements) > 1 and args.split:

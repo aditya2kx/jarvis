@@ -47,6 +47,21 @@ After every merge, `pr-merged-lifecycle.yml` advances the phase tracker, runs re
 Before the agent starts building, the operator and agent must agree on *what
 evidence the PR must show*.  The agent drafts a proposal; the operator approves it; it becomes PR §4.  This stops evidence being invented after the fact.
 
+**The plan must declare an evidence tier** (enforced by `check_plan_readiness.py`):
+
+| Tier | Plan declaration | Extra field | Claude confidence floor |
+|---|---|---|---|
+| sandbox-live | `Evidence tier: sandbox-live` | `scenario: <name>` | 95% |
+| sandbox-e2e | `Evidence tier: sandbox-e2e` | — | 95% |
+| unit-only | `Evidence tier: unit-only` | `waiver: <reason>` | 80% |
+
+Use `unit-only` only for docs/scripts-only changes with no runtime impact. Before pushing,
+run `python3 scripts/check_evidence_readiness.py --pr N` to predict whether §4 will pass
+the Claude confidence gate — exit 1 means the evidence needs to be strengthened first.
+
+See [docs/contributing/sandbox-evidence.md](docs/contributing/sandbox-evidence.md) for the full
+evidence tier guide and per-scenario checklist.
+
 ## Local fast loop
 ```bash
 python3 scripts/verify.py --fast     # secret scan + doc-freshness + changed tests

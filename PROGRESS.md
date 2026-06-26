@@ -1,18 +1,18 @@
 # Jarvis Build Progress
 
-## 2026-06-26 — Ship-emoji force-merge + post-merge lifecycle integrity (PR #TBD, branch fix/add-ship-emoji-comment-force-merge)
+## 2026-06-26 — Ship-emoji force-merge + post-merge lifecycle integrity (PR #85, branch fix/add-ship-emoji-comment-force-merge)
 
-**Status:** In flight — implementing M1–M4; PR pending.
+**Status:** In flight — M1–M4 implemented; PR open, babysitting to green.
 
 Five requirements merged into one lifecycle-integrity PR:
 1. **Ship-emoji force-merge** — `aditya2kx` posts 🚀/🚢 on a PR → `ship-emoji-force-merge.yml` squash-merges via admin PAT, bypassing only the Claude evidence-confidence soft gate (< 95%). Hard CI checks, REQUEST CHANGES, unreplied threads: never bypassed.
 2. **Issue #76 class fix** — `pr-merged-lifecycle.yml` fires on every squash-merge: resolves tracking issue, stamps `approved:merge`, advances `merge` → `post-merge-verify` in phase_state, cross-links PR→issue.
 3. **Post-merge-verify execution** — reads §4 "Post-merge verification" block; runs read-only commands in CI; posts per-command ✅/❌ comment; side-effecting commands flagged as agent follow-up.
 4. **Retrospective from conversations** — lifecycle workflow posts structured prompt (speed/cost/accuracy grading + preference harvest) on the tracking issue; agent completes in a follow-up chat and closes the issue.
-5. **new_requirement.py base=origin/main** — fixed docstring/code mismatch: default base is now always `origin/main` (fetched fresh), not the current in-flight branch.
+5. **new_requirement.py base=origin/main** — R5 also landed via PR #82; our diff retains the `default_base()` DRY helper + tests.
 
 **What changed:**
-- `scripts/new_requirement.py`: `default_base()` → `"origin/main"`; `--base` arg default updated; tests added.
+- `scripts/new_requirement.py`: `default_base()` helper (DRY over main's inline literal); `--base` arg default updated; tests added.
 - `scripts/ship_merge.py` (new): pure helpers `is_ship_intent`, `is_authorized`, `only_evidence_confidence_blocking`.
 - `scripts/test_ship_merge.py` (new): 28 tests covering §4 scenarios A-G.
 - `scripts/post_merge_lifecycle.py` (new): `find_tracking_issue`, `parse_post_merge_block` (line-by-line state machine, fence-aware).
@@ -21,10 +21,24 @@ Five requirements merged into one lifecycle-integrity PR:
 - `.github/workflows/pr-merged-lifecycle.yml` (new): pull_request closed + merged==true trigger.
 - `.github/pull_request_template.md`: added optional `### Post-merge verification` subsection in §4.
 - `.cursor/rules/self-drive.mdc`: full retrospective protocol (speed/cost/accuracy + preference harvest + issue close).
-- `docs/WORKFLOW.md`: post-merge lifecycle + ship-emoji sections; new_requirement base ref corrected.
+- `docs/WORKFLOW.md`: post-merge lifecycle + ship-emoji sections.
 - `CONTRIBUTING.md`: merge paths + post-merge lifecycle documented.
 - `docs/contributing/enforcement.md`: ship-emoji + post-merge lifecycle documented.
 - `scripts/check_doc_freshness.py`: COUPLINGS entry for new workflows + helpers.
+
+## 2026-06-26 — Evidence-tier gate at plan creation + sandbox-live proof for PR #82 (PR #82, branch fix/held-back-review-counter-fix)
+
+**Problem:** A recurring harness gap across multiple PRs: `check_plan_readiness.py` item 5 only regex-matched "sandbox/tier" (so a plan declaring "no live run" passed plan-readiness), but the Claude evidence-confidence gate hard-blocked unit-only evidence at <95%. The disagreement was only discovered after build + push + ~3-4 min Claude round-trip, costing many commits and tokens per PR.
+
+**Fix (M1):** Replaced `_check_sandbox_tier` with `_check_evidence_tier` in `scripts/check_plan_readiness.py`. Plans must now contain an explicit `Evidence tier: sandbox-live|sandbox-e2e|unit-only` declaration. `sandbox-live` also requires `scenario: <name>`; `unit-only` requires `waiver: <reason>`. Updated `plan-execution-readiness.mdc` item 5.
+
+**Fix (M2):** Added `scripts/check_evidence_readiness.py` — a local predictor that mirrors Claude rubric D2a. Exits 1 when §4 is pytest-only with no waiver/tier declaration. Wired into `verify.py GATES` (full mode, hard). Taught `check_evidence_confidence.py` to honor a `unit-only (waiver: ...)` declaration by lowering the CI floor from 95% to 80% (reads PR body via `GH_TOKEN`+`PR_NUMBER` env vars already set by `claude-review.yml`). No changes to `claude-review.yml`.
+
+**Fix (M3):** Set `.github/sandbox-live.yml` to `full-live @ 2026-06-25` to prove the held-back counter fix on the real ClickUp channel (expect `HELD-BACK: 0` where the old ordering produced 11). Added `sandbox-live` label to PR #82.
+
+**Docs:** Updated `claude-review-guidelines.md` §D2a (waiver path), `docs/contributing/sandbox-evidence.md` (three-tier table), `CONTRIBUTING.md` (evidence tier table + predictor usage).
+
+**Tests:** 25 plan-readiness + 11 evidence-confidence + 14 evidence-readiness = 50 new/updated tests, all green.
 
 ## 2026-06-26 — Universal 3s-ack for all `/bhaga-cloud` slash commands (branch fix/fix-bhaga-cloud-refresh-slack-timeout)
 
@@ -41,6 +55,16 @@ Every `/bhaga-cloud` slash command now acks within Slack's 3s deadline so the op
 - `cloud/webhook/test_handler.py`: added `_sync_dispatch` test helper; updated all tests to assert on `response_url` follow-up instead of ack text; 135 tests, all pass.
 - `cloud/webhook/sandbox_refresh_driver.py`: `_fire_slash_command` now patches `_dispatch_async`/`_post_response_url` to run synchronously and capture the follow-up; evidence summary prints both ack and follow-up text.
 - `RUNBOOK.md`: documented two-phase ack UX for all `/bhaga-cloud` commands.
+
+## 2026-06-26 — BHAGA: fix misleading HELD-BACK counter in process_reviews (branch fix/investigate-why-bhaga-cloud-runs-for)
+
+**Root cause:** The `running-austin-palmetto` ClickUp channel is a general ops channel (duty checklists, package photos, team messages). The `held_back` counter in `process_reviews.py` incremented before the `_is_review_message` filter, so every post-window message — including chatter — was counted. On both 2026-06-24 and 2026-06-25, 11 non-review messages after `data_window_end` produced `HELD-BACK: 11` when 0 actual reviews were deferred. Data was healthy throughout: `google_reviews` BQ had 91 rows through 2026-06-17 (the last real review), and the open 6/15→6/25 period rollup (including Browning, Skyler $10) was correctly credited.
+
+**Fix:** Reorder the two guards in the message loop so `_is_review_message` runs before the window cap. Extract `_is_held_back_review(content, ts_ms, window_end_ts_ms)` as a pure predicate that locks the intent and is the direct unit-test target.
+
+**Evidence:** 4 unit tests in `test_process_reviews.py::IsHeldBackReviewTests` using real 6/24-6/25 chatter strings as negative cases. 51/51 tests pass, no regressions.
+
+**Files:** `agents/bhaga/scripts/process_reviews.py`, `agents/bhaga/scripts/test_process_reviews.py`, `agents/bhaga/scripts/README.md`.
 ## 2026-06-25 — `/bhaga-cloud refresh` multi-date support (PR #77, branch fix/slack-bhaga-cloud-refresh-command-support)
 
 **Status:** Implementing — M1 (parser + tests) complete; M2 (evidence driver + RUNBOOK + direct sandbox trigger) complete; awaiting live sandbox evidence run via direct trigger.

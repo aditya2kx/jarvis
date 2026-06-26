@@ -99,9 +99,9 @@ Open failures: none        Summary: verify in progress
 tracking issue** at kickoff: after spinning up the worktree + brief + cost session it
 calls `init_phase_tracking()` → `phase_state.py init --kickoff`, which seeds
 
-The worktree base defaults to **`origin/main`** (fetched fresh) so each new
-requirement starts from a clean, isolated baseline. Pass `--base <local-branch>`
-explicitly to opt into inheriting in-flight changes from an open PR branch.
+The worktree base defaults to **`origin/main`** so new worktrees always start from
+clean main regardless of which branch the operator is on. Pass `--base <ref>`
+explicitly to inherit a different base (e.g. an in-flight framework PR).
 
 The Cursor launcher HTML is written as a fallback only; it is not opened automatically
 when the Cursor CLI succeeds. If the deeplink fails, open the `session-*-launch.html`
@@ -138,7 +138,8 @@ Automation maturity: M0 manual prose → M1 scripted → M2 gate/hook → M3 sel
 | | Hard Lessons | jarvis-hard-lessons.md | on-demand rule | M1 | agent | M2 (gate conversions) |
 | | 100% test coverage | pytest | gate | M2 | agent | M2 |
 | Evidence & verification | Local verify harness | verify.py | gate | M2 | agent | M2 ✓ (this PR) |
-| | Plan readiness gate | check_plan_readiness.py | gate | M2 | agent | M2 ✓ |
+| | Plan readiness gate | check_plan_readiness.py (evidence-tier declaration required) | gate | M2 | agent | M2 ✓ |
+| | Evidence readiness predictor | check_evidence_readiness.py (mirrors D2a rubric; exits 1 for pytest-only) | gate | M2 | agent | M2 ✓ |
 | | Lifecycle conformance | verify_lifecycle.py | gate | M2 | agent | M2 ✓ |
 | | Secret scan | verify.py (diff-based) | gate | M2 | agent | M2 ✓ |
 | PR lifecycle | PR description | check_pr_description.py | CI gate | M2 | agent | M2 |

@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from agents.bhaga.scripts.process_reviews import (
     _resolve_data_window_end,
+    count_held_back,
     rebuild_review_bonus_period,
 )
 
@@ -789,6 +790,143 @@ class ProcessReviewsMainDerivedWindowTests(unittest.TestCase):
         )
         self.assertEqual(trackers["resolve_calls"], [],
                          "resolve_data_window_end must NOT be called when --until is provided")
+
+
+class IsHeldBackReviewTests(unittest.TestCase):
+    """Regression guard for the 2026-06-25 incident.
+
+    The `running-austin-palmetto` ClickUp channel is a general ops channel.
+    On both 2026-06-24 and 2026-06-25, 11 non-review messages (duty checklists,
+    team chatter, package photos) were posted after data_window_end, causing the
+    nightly to report HELD-BACK: 11 when 0 actual reviews were deferred.
+
+    Fix: _is_review_message filter runs BEFORE the window cap, so only genuine
+    review-bot posts can increment held_back.  _is_held_back_review encapsulates
+    the combined predicate and is the direct test target.
+    """
+
+    # Real sample strings from the 6/24-6/25 ClickUp channel
+    _CHATTER = [
+        "Opening Duties \u2013 crushed it this morning \U0001f389 Checklist: 26/26 Opening tasks done today",
+        "Closing Duties \u2013 \U0001f389 all wrapped up strong tonight! Checklist: 42/42 Closing tasks done today",
+        "Shift Change Duties \u2013 crushed it this afternoon \U0001f389 Checklist: 16/16 Shift Change tasks done",
+        "I didn\u2019t place anything yesterday but today before I leave I\u2019m going to place a produce order",
+        "Hey Team, am observing considerably less orders in past few days.",
+        "Good morning! What\u2019s the Spotify login ?",
+        "running a few mins late",
+        "Package received ![image_picker_foo.jpg](https://private/...)",
+        "can ube be shut off online? we just ran out",
+        "Will be a couple mins late my uber cancelled \U0001f972",
+        "Submitted by: Myles Guerrero Submission task: Form Submission - #2026-06-25T19:37",
+    ]
+
+    _REVIEW_HEADER = (
+        "### Google Review\n\n"
+        "*   **Time of Comment:** June 17, 2026 9:23 PM CT\n"
+        "*   **Rating:** 5\n"
+        "*   **Commented By:** Natalia Farias\n"
+        "*   **Comment:** Great smoothie!\n"
+        "*   **Google Reviews Page:** https://maps.google.com/...\n"
+    )
+
+    # Window: messages after this are "post-window"
+    _WINDOW_END_MS = 1_750_809_599_000   # 2026-06-25 23:59:59.999 CT
+    _BEFORE_MS     = 1_750_000_000_000   # 2026-06-15 — well inside window
+    _AFTER_MS      = 1_750_900_000_000   # 2026-06-26 — after window
+
+    def _check(self, content, ts_ms, window_end_ms):
+        from agents.bhaga.scripts.process_reviews import _is_held_back_review
+        return _is_held_back_review(content, ts_ms, window_end_ms)
+
+    def test_review_after_window_is_held_back(self):
+        """A genuine review-bot post after data_window_end must count as held back."""
+        self.assertTrue(self._check(self._REVIEW_HEADER, self._AFTER_MS, self._WINDOW_END_MS))
+
+    def test_review_inside_window_is_not_held_back(self):
+        """A genuine review inside the window must NOT be held back (it proceeds to parse)."""
+        self.assertFalse(self._check(self._REVIEW_HEADER, self._BEFORE_MS, self._WINDOW_END_MS))
+
+    def test_chatter_after_window_never_held_back(self):
+        """Operational chatter after data_window_end must NOT increment held_back.
+
+        This is the direct regression guard for the 2026-06-25 incident (11 chatter
+        messages produced HELD-BACK: 11 when 0 actual reviews were deferred).
+        """
+        for msg in self._CHATTER:
+            with self.subTest(msg=msg[:60]):
+                self.assertFalse(
+                    self._check(msg, self._AFTER_MS, self._WINDOW_END_MS),
+                    f"Chatter should not count as held-back: {msg[:60]!r}",
+                )
+
+    def test_empty_content_not_held_back(self):
+        """Empty and whitespace-only messages must never count as held-back."""
+        for content in ("", "   ", "\n\n"):
+            self.assertFalse(self._check(content, self._AFTER_MS, self._WINDOW_END_MS))
+
+
+class HeldBackLoopRegressionTests(unittest.TestCase):
+    """Loop-level regression guard for the 2026-06-25 incident.
+
+    Exercises count_held_back(), which runs the same guard-ordering logic
+    (including _is_held_back_review) as the production message loop in main().
+    This tests the actual fixed code path — not a parallel predicate — and would
+    catch a re-swap of the two if-blocks at the original bug site.
+
+    On 2026-06-24 and 2026-06-25: 11 chatter messages posted after
+    data_window_end, 0 genuine reviews → held_back should be 0.
+    """
+
+    _CHATTER = [
+        {"id": f"c{i}", "date": 1_750_900_000_000, "content": c}
+        for i, c in enumerate([
+            "Opening Duties \u2013 crushed it this morning \U0001f389 Checklist: 26/26 Opening tasks done today",
+            "Closing Duties \u2013 \U0001f389 all wrapped up strong tonight! Checklist: 42/42 Closing tasks done today",
+            "Shift Change Duties \u2013 crushed it this afternoon \U0001f389 Checklist: 16/16 Shift Change tasks done",
+            "I didn\u2019t place anything yesterday but today before I leave I\u2019m going to place a produce order",
+            "Hey Team, am observing considerably less orders in past few days.",
+            "Good morning! What\u2019s the Spotify login ?",
+            "running a few mins late",
+            "Package received ![image_picker_foo.jpg](https://private/...)",
+            "can ube be shut off online? we just ran out",
+            "Will be a couple mins late my uber cancelled \U0001f972",
+            "Submitted by: Myles Guerrero Submission task: Form Submission - #2026-06-25T19:37",
+        ])
+    ]
+
+    _REVIEW_POST_WINDOW = {
+        "id": "rev1",
+        "date": 1_750_900_000_000,  # post-window
+        "content": (
+            "### Google Review\n\n"
+            "*   **Time of Comment:** June 17, 2026 9:23 PM CT\n"
+            "*   **Rating:** 5\n"
+            "*   **Commented By:** Natalia Farias\n"
+            "*   **Comment:** Great smoothie!\n"
+            "*   **Google Reviews Page:** https://maps.google.com/...\n"
+        ),
+    }
+
+    _WINDOW_END_MS = 1_750_809_599_000  # 2026-06-25 23:59:59.999 CT
+
+    def test_11_chatter_held_back_zero(self):
+        """11 real 6/24-6/25 chatter messages post-window → count_held_back == 0.
+
+        This is the direct regression for the incident: before the fix,
+        the loop incremented held_back before _is_review_message, so all 11
+        chatter posts were counted. The fix (guard reorder + _is_held_back_review
+        wired into the loop) must produce 0 here.
+        """
+        self.assertEqual(count_held_back(self._CHATTER, self._WINDOW_END_MS), 0)
+
+    def test_genuine_review_post_window_held_back_one(self):
+        """A genuine post-window review → count_held_back == 1."""
+        self.assertEqual(count_held_back([self._REVIEW_POST_WINDOW], self._WINDOW_END_MS), 1)
+
+    def test_chatter_plus_review_post_window_held_back_one(self):
+        """11 chatter + 1 genuine post-window review → count_held_back == 1 (not 12)."""
+        msgs = list(self._CHATTER) + [self._REVIEW_POST_WINDOW]
+        self.assertEqual(count_held_back(msgs, self._WINDOW_END_MS), 1)
 
 
 if __name__ == "__main__":

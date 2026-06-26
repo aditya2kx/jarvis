@@ -115,33 +115,29 @@ Add a block in future PRs to get automated post-merge spot-checks." \
           fi
 
           # Run each read-only command; collect results.
-          COMMENT_BODY="### Post-merge verification — PR #${PR}\n\n"
-          ALL_PASSED=true
-          AGENT_ITEMS=""
-
-          echo "$CMDS_JSON" | python3 -c "
-import json, sys
-cmds = json.load(sys.stdin)
-for c in cmds:
-    print(c['readonly'], c['raw'])
-" | while IFS= read -r line; do
+          # Use process substitution to avoid a subshell so EXIT_CODE is captured correctly.
+          while IFS= read -r line; do
             READONLY="$(echo "$line" | cut -d' ' -f1)"
             CMD="$(echo "$line" | cut -d' ' -f2-)"
             if [ "$READONLY" = "True" ]; then
               echo "Running: $CMD"
-              OUTPUT="$(eval "$CMD" 2>&1 | head -20)"
-              EXIT_CODE=$?
+              OUTPUT="$(eval "$CMD" 2>&1)"; EXIT_CODE=$?
+              OUTPUT="$(printf '%s' "$OUTPUT" | head -20)"
               if [ $EXIT_CODE -eq 0 ]; then
                 STATUS="✅"
               else
                 STATUS="❌"
-                ALL_PASSED=false
               fi
               echo "RESULT:${STATUS}:${CMD}:${OUTPUT}" >> /tmp/pmv_results.txt
             else
               echo "SIDEEFFECT:${CMD}" >> /tmp/pmv_results.txt
             fi
-          done
+          done < <(echo "$CMDS_JSON" | python3 -c "
+import json, sys
+cmds = json.load(sys.stdin)
+for c in cmds:
+    print(c['readonly'], c['raw'])
+")
 
           # Build comment from results.
           python3 - <<'PYEOF'

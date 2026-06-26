@@ -3,36 +3,36 @@
 
 Drives the real webhook handler's slash-command dispatch against the
 ``bhaga-sandbox-refresh`` Cloud Run job so the evidence proves the actual
-parse → coverage-probe → trigger path, not a mock.
+parse → coverage-probe → trigger path, not a mock. Calls
+``_handle_slash_command(form, sandbox=True)`` in-process, which routes to
+the sandbox job + ``bhaga_sandbox`` BQ dataset via the module-level
+``_SANDBOX_JOB_RESOURCE`` / ``_SANDBOX_BQ_DATASET`` constants (no env
+mutation). All GCP access (run_v2 trigger, execution polling, BQ verify,
+Firestore verify) uses ADC via the Python google-cloud libraries — no
+``gcloud``/``bq`` CLI required.
 
-Usage (operator, from a machine with ADC / gcloud auth):
+Usage (operator, from a machine with ADC):
 
-    # 1. Deploy the sandbox job from the PR image (once):
-    python3 -m agents.bhaga.scripts.sandbox_live_run \\
-        --store palmetto --pr-number <N> --pr-label "<branch>" \\
-        --refresh-date 2026-06-23 --image <registry>/bhaga-orchestrator:<sha> \\
-        --no-execute
-
+    # 1. Ensure the sandbox job exists + is sandbox-isolated
+    #    (BHAGA_RUN_ENV=sandbox, BHAGA_OTP_ASSUME_READY=1).
     # 2. Run this driver:
-    python3 cloud/webhook/sandbox_refresh_driver.py \\
-        --dates 2026-06-23,2026-06-24 \\
-        [--wait-minutes 60]
+    GCP_PROJECT=jarvis-bhaga-prod python3 cloud/webhook/sandbox_refresh_driver.py \\
+        --dates 2026-06-23,2026-06-24 [--wait-minutes 30]
 
-    Reply to the ADP OTP prompts (labeled [SANDBOX · PR#…]) in Slack.
-    The driver polls until both executions finish, then verifies BQ + Firestore.
+The sandbox job runs with BHAGA_OTP_ASSUME_READY=1, so full+OTP dates
+service ADP inline — NO Slack OTP prompt to reply to. The driver polls
+until both executions finish, then verifies BQ rows + Firestore and
+prints a markdown evidence table (exit 0 = all dates PASS).
 
-Env vars required (or already on CLOUD_RUN_JOB_NAME / SLACK_SIGNING_SECRET):
-    CLOUD_RUN_JOB_NAME  — overridden to sandbox job by this script
+Env vars:
+    GCP_PROJECT         — jarvis-bhaga-prod (or set GOOGLE_CLOUD_PROJECT)
     SLACK_SIGNING_SECRET — any non-empty string (handler import only)
     AGENT_CONFIG_JSON   — can be "{}" (not used for slash commands)
-    BHAGA_BQ_DATASET    — set to bhaga_sandbox so coverage probe reads sandbox
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import subprocess
 import sys
 import time
 
@@ -52,11 +52,15 @@ _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED", "EXECUTION_FAILED", "COM
 
 
 def _inject_sandbox_env() -> None:
-    """Point handler at the sandbox job + sandbox BQ dataset before import."""
-    os.environ["CLOUD_RUN_JOB_NAME"] = _SANDBOX_JOB_NAME
-    # Point the BQ coverage probe at the sandbox dataset so both dates report
-    # as uncovered → full live scrape + OTP (the interesting evidence path).
-    os.environ["BHAGA_BQ_DATASET"] = _SANDBOX_BQ_DATASET
+    """Set minimal env so handler imports cleanly.
+
+    The sandbox job and BQ dataset are now controlled by passing
+    sandbox=True to _handle_slash_command, which uses the module-level
+    _SANDBOX_JOB_RESOURCE and _SANDBOX_BQ_DATASET constants rather than
+    mutating env globals. We still set GCP_PROJECT so init_app() can
+    initialize the BQ client correctly.
+    """
+    os.environ.setdefault("GCP_PROJECT", _BQ_PROJECT)
 
 
 def _import_handler():
@@ -70,7 +74,11 @@ def _import_handler():
 
 
 def _fire_slash_command(handler, dates_text: str) -> dict:
-    """Call _handle_slash_command directly with the multi-date refresh text."""
+    """Call _handle_slash_command with sandbox=True, exercising the bypass path.
+
+    sandbox=True routes to _SANDBOX_JOB_RESOURCE + bhaga_sandbox BQ dataset
+    and prefixes the ack with :test_tube: [SANDBOX].
+    """
     form = {
         "text": f"refresh {dates_text}",
         "command": "/bhaga-cloud",
@@ -78,62 +86,66 @@ def _fire_slash_command(handler, dates_text: str) -> dict:
         "user_id": "U_DRIVER",
     }
     with handler.app.app_context():
-        resp = handler._handle_slash_command(form)
+        resp = handler._handle_slash_command(form, sandbox=True)
     data = resp.get_json()
     return data
 
 
 def _list_executions(job_short_name: str, region: str = "us-central1",
-                     project: str = _BQ_PROJECT) -> list[dict]:
-    """Return recent executions for the sandbox job via gcloud."""
-    result = subprocess.run(
-        [
-            "gcloud", "run", "jobs", "executions", "list",
-            f"--job={job_short_name}",
-            f"--region={region}",
-            f"--project={project}",
-            "--format=json",
-            "--limit=20",
-        ],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print(f"  WARN: gcloud executions list failed: {result.stderr.strip()}", file=sys.stderr)
-        return []
+                     project: str = _BQ_PROJECT) -> list:
+    """Return recent executions for the sandbox job via run_v2 (ADC, no gcloud CLI)."""
     try:
-        return json.loads(result.stdout or "[]")
-    except json.JSONDecodeError:
+        from google.cloud import run_v2
+        client = run_v2.ExecutionsClient()
+        job_resource = f"projects/{project}/locations/{region}/jobs/{job_short_name}"
+        request = run_v2.ListExecutionsRequest(parent=job_resource, page_size=20)
+        return list(client.list_executions(request=request))
+    except Exception as exc:
+        print(f"  WARN: executions list failed: {exc}", file=sys.stderr)
         return []
 
 
-def _execution_state(execution: dict) -> str:
-    """Extract the terminal state string from an execution JSON blob."""
-    conditions = execution.get("status", {}).get("conditions") or []
-    # Prefer the top-level completionTime presence + succeeded/failed counts.
-    status = execution.get("status") or {}
-    if execution.get("completionTime") or status.get("completionTime"):
-        succeeded = status.get("succeededCount", 0) or 0
-        failed = status.get("failedCount", 0) or 0
-        if succeeded > 0:
-            return "SUCCEEDED"
-        if failed > 0:
-            return "FAILED"
+def _execution_state(execution) -> str:
+    """Extract the terminal state string from a run_v2 Execution proto.
+
+    The Execution proto exposes conditions (not succeeded_count/failed_count).
+    The "Completed" condition with CONDITION_SUCCEEDED means the job succeeded;
+    with CONDITION_FAILED it failed. While running the state is CONDITION_RECONCILING.
+    """
+    for cond in execution.conditions:
+        if cond.type_ == "Completed":
+            from google.cloud.run_v2.types.condition import Condition
+            if cond.state == Condition.State.CONDITION_SUCCEEDED:
+                return "SUCCEEDED"
+            if cond.state == Condition.State.CONDITION_FAILED:
+                return "FAILED"
+    # completion_time present but no conclusive condition → treat as COMPLETED
+    if execution.completion_time and execution.completion_time.seconds > 0:
         return "COMPLETED"
-    # Fall back to conditions
-    for cond in conditions:
-        t = cond.get("type", "")
-        s = cond.get("status", "")
-        if t == "Completed" and s == "True":
-            return "SUCCEEDED"
-        if t == "Failed" and s == "True":
-            return "FAILED"
     return "RUNNING"
+
+
+def _refresh_date_from_execution(execution) -> str | None:
+    """Extract the REFRESH_DATE env value from a run_v2 Execution proto.
+
+    The run-time env overrides are merged into execution.template.containers[i].env,
+    so REFRESH_DATE is accessible there even though it was passed as a RunJobRequest
+    override rather than baked into the job definition.
+    """
+    try:
+        for container in execution.template.containers:
+            for env_entry in container.env:
+                if env_entry.name == "REFRESH_DATE":
+                    return env_entry.value
+    except Exception:
+        pass
+    return None
 
 
 def _poll_executions_until_done(
     dates: list[str], job_short_name: str, wait_minutes: int
 ) -> dict[str, str]:
-    """Poll gcloud until executions for all dates reach a terminal state.
+    """Poll via run_v2 until executions for all dates reach a terminal state.
 
     Returns {date: state} for each date. Dates with no matching execution
     after the timeout are reported as TIMEOUT.
@@ -145,27 +157,22 @@ def _poll_executions_until_done(
     while time.time() < deadline:
         executions = _list_executions(job_short_name)
         for exe in executions:
-            overrides = exe.get("spec", {}).get("overrides", {}) or {}
-            container_overrides = overrides.get("containerOverrides", []) or []
-            exe_date = None
-            for co in container_overrides:
-                for env_entry in (co.get("env") or []):
-                    if env_entry.get("name") == "REFRESH_DATE":
-                        exe_date = env_entry.get("value")
+            exe_date = _refresh_date_from_execution(exe)
             if exe_date and exe_date in states and states[exe_date] not in _TERMINAL_STATES:
                 state = _execution_state(exe)
-                states[exe_date] = state
-                print(f"  {exe_date}: {state}")
+                if state != states[exe_date]:
+                    states[exe_date] = state
+                    print(f"  {exe_date}: {state}")
 
-        pending = [d for d, s in states.items() if s not in _TERMINAL_STATES and s != "PENDING"]
         not_found = [d for d, s in states.items() if s == "PENDING"]
+        running = [d for d, s in states.items() if s not in _TERMINAL_STATES and s != "PENDING"]
         all_done = all(s in _TERMINAL_STATES for s in states.values())
         if all_done:
             break
         if not_found:
             print(f"  Waiting for executions to appear: {not_found}")
-        if pending:
-            print(f"  Still running: {pending}")
+        if running:
+            print(f"  Still running: {running}")
         print(f"  Sleeping {_POLL_INTERVAL_S}s ...")
         time.sleep(_POLL_INTERVAL_S)
 
@@ -176,28 +183,35 @@ def _poll_executions_until_done(
 
 
 def _verify_bq(dates: list[str]) -> dict[str, int | None]:
-    """Query bhaga_sandbox.square_item_lines for each date. Returns {date: row_count}."""
+    """Query bhaga_sandbox.square_item_lines for each date via the Python BQ client.
+
+    Uses a parameterized query so date values are never interpolated directly
+    into the SQL string.
+    """
     counts: dict[str, int | None] = {}
+    try:
+        from google.cloud import bigquery
+        bq = bigquery.Client(project=_BQ_PROJECT)
+    except Exception as exc:
+        print(f"  WARN: BQ client init failed: {exc}", file=sys.stderr)
+        return {d: None for d in dates}
+
+    sql = (
+        f"SELECT COUNT(*) AS n"
+        f" FROM `{_BQ_PROJECT}.{_SANDBOX_BQ_DATASET}.square_item_lines`"
+        f" WHERE date_local = @date"
+    )
     for date_str in dates:
-        query = (
-            f"SELECT COUNT(*) AS n FROM `{_BQ_PROJECT}.{_SANDBOX_BQ_DATASET}.square_item_lines`"
-            f" WHERE date_local = '{date_str}'"
-        )
-        result = subprocess.run(
-            ["bq", "query", f"--project_id={_BQ_PROJECT}", "--use_legacy_sql=false",
-             "--format=csv", "--quiet", query],
-            capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            counts[date_str] = None
-            continue
-        lines = [ln.strip() for ln in (result.stdout or "").splitlines() if ln.strip()]
-        if len(lines) < 2:
-            counts[date_str] = None
-            continue
         try:
-            counts[date_str] = int(lines[-1])
-        except ValueError:
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("date", "STRING", date_str)
+                ]
+            )
+            rows = list(bq.query(sql, job_config=job_config).result())
+            counts[date_str] = rows[0]["n"] if rows else None
+        except Exception as exc:
+            print(f"  WARN: BQ query failed for {date_str}: {exc}", file=sys.stderr)
             counts[date_str] = None
     return counts
 

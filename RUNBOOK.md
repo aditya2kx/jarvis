@@ -907,52 +907,84 @@ text=refresh 2026-06-23,2026-06-24&user_name=agent
 - BQ coverage probe reads `bhaga_sandbox.square_daily_rollup` (empty for new dates → full live
   scrape + OTP). Module-global `_BQ_DATASET` is never mutated.
 - Ack text is prefixed with `:test_tube: [SANDBOX]` so sandbox and prod acks are unambiguous.
-- OTP is labeled `[SANDBOX · PR#…]` (from `BHAGA_RUN_ENV=sandbox` in the sandbox job env); reply
-  in the BHAGA cloud DM as usual — the webhook scans `sandbox_runs` first.
+- OTP: the sandbox job runs with `BHAGA_OTP_ASSUME_READY=1`, so full+OTP dates service ADP
+  inline (no Slack OTP prompt to reply to). See the OTP note below.
 
 **Security rationale:** sandbox targets are fully isolated (separate Cloud Run job, BQ dataset,
 Firestore collection, GCS bucket); a request on this bypass path can never touch prod data or prod
 runs. Auth is relaxed accordingly. Prod slash commands still require a valid Slack HMAC signature.
 Fail-closed: if `SANDBOX_TRIGGER_TOKEN` env var is empty, no bypass is possible.
 
-**Provisioning (one-time operator setup):**
+**Provisioning (one-time, ADC — no `gcloud` CLI required):**
+
+The token is provisioned by `scripts/provision_sandbox_token.py`, which uses the Python
+`google-cloud-secret-manager` + `google-cloud-run` libraries with Application Default
+Credentials. It works from any machine with ADC (laptop or CI); no `gcloud` binary needed.
+
 ```bash
-# Generate and store the token in Secret Manager:
-TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
-echo -n "$TOKEN" | gcloud secrets create sandbox-trigger-token \
-    --data-file=- --project=jarvis-bhaga-prod
-# Mount as env var on the webhook service:
-gcloud run services update bhaga-webhook \
-    --update-secrets SANDBOX_TRIGGER_TOKEN=sandbox-trigger-token:latest \
-    --region us-central1 --project jarvis-bhaga-prod
-# Confirm SANDBOX_RUNS_COLLECTION=sandbox_runs is also set (sandbox OTP precedence):
-gcloud run services describe bhaga-webhook --region us-central1 \
-    --format='value(spec.template.spec.containers[0].env)' | grep SANDBOX
+# Dry-run first — prints the intended secret + env mutation, no changes:
+python3 scripts/provision_sandbox_token.py --dry-run
+
+# Provision (idempotent — creates the secret, adds a random token version, mounts it
+# as SANDBOX_TRIGGER_TOKEN on bhaga-webhook, waits for the new revision to be ACTIVE):
+python3 scripts/provision_sandbox_token.py
+
+# Rotate the token (generates a new version; "latest" is re-pinned automatically,
+# so the webhook picks it up on the next request with no redeploy):
+python3 scripts/provision_sandbox_token.py --rotate
+
+# Non-default targets (defaults: project=jarvis-bhaga-prod, region=us-central1,
+# service=bhaga-webhook, secret-name=sandbox-trigger-token, env-var=SANDBOX_TRIGGER_TOKEN):
+python3 scripts/provision_sandbox_token.py --project <p> --service <svc> --secret-name <s>
 ```
 
-**Evidence harness (agent-runnable):**
+The script preserves all other env vars and secret mounts on the webhook; it only
+adds/replaces the `SANDBOX_TRIGGER_TOKEN` entry. The token value is never printed.
+
+**Mount survival across deploys:** `deploy.yml` uses
+`gcloud run services update --image ...`, which preserves existing secret mounts — so
+routine image-only deploys do NOT require re-running the provisioning script. Re-run it
+only when the service is recreated from scratch (e.g. `gcloud run services delete` +
+recreate), or to rotate the token.
+
+**Evidence harness — two modes:**
+
+*Mode 1 — direct HTTP (post-merge, exercises the deployed bypass end-to-end):*
 ```python
-import urllib.request, urllib.parse, os
-token = os.environ["SANDBOX_TRIGGER_TOKEN"]
+import urllib.request, urllib.parse
+from google.cloud import secretmanager
+sm = secretmanager.SecretManagerServiceClient()
+resp = sm.access_secret_version(
+    name="projects/jarvis-bhaga-prod/secrets/sandbox-trigger-token/versions/latest")
+token = resp.payload.data.decode()
 url = "https://bhaga-webhook-4yl5izovxq-uc.a.run.app/slack/commands"
 body = urllib.parse.urlencode({"text": "refresh 2026-06-23,2026-06-24", "user_name": "agent"}).encode()
 req = urllib.request.Request(url, data=body, headers={
     "Content-Type": "application/x-www-form-urlencoded",
     "X-Sandbox-Trigger": token,
 })
-resp = urllib.request.urlopen(req)
-print(resp.read().decode())
-# Expect: {"text": ":test_tube: [SANDBOX] Refresh triggered: 2026-06-23 (full+OTP), 2026-06-24 (full+OTP)..."}
+print(urllib.request.urlopen(req).read().decode())
+# Expect: {"text": ":test_tube: [SANDBOX] Refresh triggered: 2026-06-23 (recompute), 2026-06-24 (full+OTP)..."}
 ```
 
-Reply to both `[SANDBOX]` ADP OTP prompts in Slack, then verify:
-- `gcloud run jobs executions list --job=bhaga-sandbox-refresh` → two `SUCCEEDED` executions.
-- `bq query --project_id=jarvis-bhaga-prod --use_legacy_sql=false 'SELECT date_local, COUNT(*) n FROM bhaga_sandbox.square_item_lines WHERE date_local IN ("2026-06-23","2026-06-24") GROUP BY 1'` → >0 rows per date.
-- Firestore `sandbox_runs/2026-06-23` and `sandbox_runs/2026-06-24` → `status=success`.
+*Mode 2 — in-process driver (pre-merge, exercises the PR-branch handler code directly
+without needing the merged image deployed):*
+```bash
+# Imports handler in-process, calls _handle_slash_command(sandbox=True), triggers the
+# real bhaga-sandbox-refresh job via run_v2, polls executions to terminal, verifies
+# BQ rows + Firestore. All via ADC — no gcloud/bq CLI needed.
+GCP_PROJECT=jarvis-bhaga-prod python3 cloud/webhook/sandbox_refresh_driver.py \
+    --dates 2026-06-23,2026-06-24 --wait-minutes 30
+```
 
-**Legacy driver (`sandbox_refresh_driver.py`):** `cloud/webhook/sandbox_refresh_driver.py` is
-preserved as an alternative that works without a deployed webhook (imports `handler` in-process and
-overrides env). Use it when the webhook is not yet redeployed with the sandbox token.
+The driver prints a markdown evidence table (per date: execution state, BQ row count,
+Firestore status). Exit 0 = all dates PASS.
+
+**OTP note:** the sandbox job runs with `BHAGA_OTP_ASSUME_READY=1`, so full+OTP dates
+service ADP inline via the `otps` collection and do **not** post a Slack OTP prompt for
+the operator to reply to. (Prod runs use the real OTP handshake.) If a sandbox execution
+appears stuck at the ADP step, check `BHAGA_OTP_ASSUME_READY` on the job rather than
+waiting for a Slack prompt.
 
 **Square uses OAuth REST API — no browser, no OTP.** As of 2026-06-23, Square transactions, item
 sales, and KDS data are ingested directly via the Square REST API (OAuth 2.0) through

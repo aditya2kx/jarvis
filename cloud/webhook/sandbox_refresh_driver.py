@@ -73,27 +73,39 @@ def _import_handler():
     return h
 
 
-def _fire_slash_command(handler, dates_text: str) -> tuple[dict, dict | None]:
+def _fire_slash_command(handler, dates_text: str, wait_s: float = 15.0) -> tuple[dict, dict | None]:
     """Call _handle_slash_command with sandbox=True, exercising the bypass path.
 
     sandbox=True routes to _SANDBOX_JOB_RESOURCE + bhaga_sandbox BQ dataset
     and prefixes the ack/follow-up with :test_tube: [SANDBOX].
 
-    Returns (ack_data, follow_up_payload) where follow_up_payload is the
-    payload posted to response_url by the async worker (captured in-process by
-    patching _post_response_url and running _dispatch_async synchronously).
+    The async worker runs as a REAL daemon thread (``_dispatch_async`` is NOT
+    patched) so this proves the threading model rather than the synchronous
+    short-circuit used by unit tests.  ``_post_response_url`` is still patched
+    to capture the follow-up payload instead of firing a live Slack HTTP call.
+
+    Timeline:
+      t=0   _handle_slash_command returns the ack (< 3 s)
+      t=0+  daemon thread starts; BQ probe + run_v2 trigger run in background
+      t≈1-3 worker calls _post_response_url → captured in follow_up list
+      After wait_s we join the thread and return.
+
+    Returns (ack_data, follow_up_payload).
     """
+    import threading
+
     follow_up: list[dict] = []
+    worker_thread: list = []  # box for the spawned thread
 
     def _capture_follow_up(url: str, payload: dict) -> None:
         follow_up.append(payload)
 
-    original_dispatch = handler._dispatch_async
+    def _real_dispatch(fn, *args):
+        t = threading.Thread(target=fn, args=args, daemon=True)
+        t.start()
+        worker_thread.append(t)
 
-    def _sync_dispatch(fn, *args):
-        fn(*args)
-
-    handler._dispatch_async = _sync_dispatch
+    handler._dispatch_async = _real_dispatch
     handler._post_response_url = _capture_follow_up
 
     try:
@@ -106,10 +118,21 @@ def _fire_slash_command(handler, dates_text: str) -> tuple[dict, dict | None]:
         }
         with handler.app.app_context():
             resp = handler._handle_slash_command(form, sandbox=True)
-        data = resp.get_json()
-        return data, follow_up[0] if follow_up else None
+        ack = resp.get_json()
+
+        # Wait for the worker thread to complete (proves daemon thread survives
+        # after _handle_slash_command returns, matching the production code path).
+        if worker_thread:
+            print(f"[sandbox_refresh_driver] Worker thread started; joining (max {wait_s}s)…")
+            worker_thread[0].join(timeout=wait_s)
+            alive = worker_thread[0].is_alive()
+            print(f"[sandbox_refresh_driver] Worker thread alive after join: {alive}")
+            if alive:
+                print("[sandbox_refresh_driver] WARNING: worker did not finish within timeout")
+
+        return ack, follow_up[0] if follow_up else None
     finally:
-        handler._dispatch_async = original_dispatch
+        del handler._dispatch_async
         del handler._post_response_url
 
 

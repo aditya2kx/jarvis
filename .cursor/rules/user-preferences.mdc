@@ -45,11 +45,14 @@ Maintained by `skills/user_model/`. Source corpus (gitignored) at `skills/user_m
 | 13 | Workspace restart is the canonical Playwright recovery; do NOT silently fall back to `cursor-ide-browser` MCP | jarvis.mdc HL#11 |
 | 14 | Build a predictive user model proactively — capture preference signals as they appear, not only as corrections after they fail | this session 2026-04-19 (this skill exists) |
 | 17 | **Prod/runtime must run on hosted infra (Cloud Run, BQ, Grafana Cloud, GH Actions) — never on the laptop.** Laptop is only for build/implementation/one-time provisioning. If a prod step requires a local script, that is a gap — build the hosted equivalent. | jarvis.mdc Conventions (2026-06-03, PR #16) |
+| 18 | Globally: when embedding screenshots/images in PRs or chat, always upload to GitHub (releases or user-attachments) or a valid https URL and verify it renders before referencing — never a local file path (e.g. /tmp/, ./, ~/). | 2026-06-27 G1 gate + B4 harness |
+| 19 | Globally: for recurring gotchas/corrections, prefer building a mechanical gate (CI check in verify.py or check_*.py) over only recording a preference — whenever a deterministic check is feasible. | 2026-06-27 G1/G2/G3 gates |
 | 15 | Passkey-gated portals (Touch ID / FIDO2 / WebAuthn) can NOT be automated via stored password — pivot to persistent Playwright browser-profile/ for session-cookie reuse. User authenticates with biometric once, session persists for days/weeks, Touch ID re-prompts only on session expiry. Do NOT capture 'something password-shaped' as a fallback — it's likely the Mac login or another service's password, not the portal's. | 2026-04-20 ADP RUN discovery (user logs in via Touch ID, no ADP password exists) |
 | 16 | The collaborative-browser credential interceptor should detect passkey-only flows and abort capture rather than storing whatever text-shaped input appears. Heuristic: if the portal never shows a password field during normal auth (only biometric prompts), suppress capture. Until that's implemented, ALWAYS test captured creds by running a from-scratch login before persisting — don't trust the capture blindly. | 2026-04-20 ADP — captured a 12-char password that was not the ADP password; deleted from Keychain on discovery |
 | B1 | For BHAGA: prefer sandbox (staging) e2e runs over touching prod sheets when proving changes pre-merge — prod sheets are integration, not a test env. | bhaga-principles.mdc backfill |
 | B2 | For BHAGA: run `python3 -m agents.bhaga.scripts.status --store palmetto` before any manual investigation to get a compact freshness table — never hand-write queries to answer 'did last night land?' | bhaga-principles.mdc backfill |
 | B3 | For BHAGA: always leave a greppable one-line breadcrumb on every failure with enough state (refresh_date, attempt N/M, evidence path) to diagnose from Cloud Run logs + Firestore alone on any machine. | bhaga-principles.mdc backfill |
+| B4 | For BHAGA Grafana dashboard changes, capture screenshots via the Grafana render API with a Bearer service-account token (`get_api_token()` from Keychain/env) — NOT browser/Playwright login. Use `agents/bhaga/grafana/capture_screenshot.py --panel <id> --label <label>`. Uploads PNGs to GitHub releases (`evidence-screenshots` tag) and returns viewable `https://github.com/.../releases/download/...` URLs for PR §4 evidence. | 2026-06-27 capture_screenshot.py harness |
 | SB1 | For BHAGA: relax authorization for sandbox-only entry points (e.g. bypass headers, weaker tokens) since sandbox targets are isolated and cannot affect prod; prod routes must keep strict auth. | 2026-06-26 direct-sandbox-trigger design |
 | J1 | For BHAGA: read-only diagnosis (BQ queries, Firestore reads, Cloud Run logs) is always pre-approved in jam mode — never ask for approval before running non-mutating diagnosis. | Issue #70 jam transcript backfill |
 | J2 | For BHAGA: acceptance evidence must always cover both sandbox e2e and prod ADP/Square live verification — sandbox alone is never sufficient. | Issue #70 jam transcript backfill |
@@ -75,6 +78,7 @@ Maintained by `skills/user_model/`. Source corpus (gitignored) at `skills/user_m
 | Property | Primary residence: 1414 Crown Forest Dr, Missouri City TX (Fort Bend); rental: Brisbane CA | CHITRA tax data |
 | OS | macOS (Apple Silicon) | observed |
 | Tools | Cursor IDE with Playwright + multi Google MCPs + Slack MCP + ClickUp MCP + Chronosphere MCP | config.yaml mcps directory |
+|  |  |  |
 
 ## Decision history
 

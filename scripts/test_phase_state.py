@@ -752,5 +752,143 @@ class TestCheckPlanReadinessPhasePrecheck(PhaseStateTestBase):
         self.assertEqual(refreshed["plan_ready"]["score"], 9)
 
 
+class TestG2InitLinkExistingAppliesLabels(PhaseStateTestBase):
+    """G2: cmd_init link-existing path must apply labels + kickoff state to GitHub."""
+
+    def test_link_existing_calls_add_label(self):
+        """When --issue N is given, _gh must be called with issue edit --add-label."""
+        gh_calls = []
+
+        def mock_gh(*args, **kwargs):
+            gh_calls.append(args)
+            return 0, ""
+
+        with patch.object(ps, "_gh_available", return_value=True), \
+             patch.object(ps, "_gh", side_effect=mock_gh):
+            args = MagicMock()
+            args.branch = "feat/link-g2"
+            args.requirement = None
+            args.kickoff = False
+            args.requirement_id = None
+            args.issue = 77
+            args.source = "github"
+            args.dry_run = False
+            rc = ps.cmd_init(args)
+
+        self.assertEqual(rc, 0)
+        add_label_calls = [c for c in gh_calls if "--add-label" in c]
+        self.assertTrue(add_label_calls, "expected gh issue edit --add-label call")
+        all_args_str = " ".join(str(a) for c in add_label_calls for a in c)
+        self.assertIn("jarvis-work", all_args_str)
+        self.assertIn("stage:align", all_args_str)
+
+    def test_link_existing_seeds_done_when_empty(self):
+        """When cache has no done list, link-existing must seed [specify, setup]."""
+        def mock_gh(*args, **kwargs):
+            return 0, ""
+
+        with patch.object(ps, "_gh_available", return_value=True), \
+             patch.object(ps, "_gh", side_effect=mock_gh):
+            args = MagicMock()
+            args.branch = "feat/link-seed"
+            args.requirement = None
+            args.kickoff = False
+            args.requirement_id = None
+            args.issue = 78
+            args.source = "github"
+            args.dry_run = False
+            ps.cmd_init(args)
+
+        data = ps._load_cache("feat/link-seed")
+        self.assertIn("specify", data.get("done", []))
+        self.assertIn("setup", data.get("done", []))
+
+    def test_link_existing_preserves_existing_done(self):
+        """When cache already has done substeps, _apply_kickoff must NOT reset them."""
+        # Pre-seed with more progress
+        existing_branch = "feat/link-preserve"
+        data = ps._load_cache(existing_branch)
+        data["done"] = ["specify", "setup", "jam"]
+        ps._save_cache(existing_branch, data)
+
+        def mock_gh(*args, **kwargs):
+            return 0, ""
+
+        with patch.object(ps, "_gh_available", return_value=True), \
+             patch.object(ps, "_gh", side_effect=mock_gh):
+            args = MagicMock()
+            args.branch = existing_branch
+            args.requirement = None
+            args.kickoff = False
+            args.requirement_id = None
+            args.issue = 79
+            args.source = "github"
+            args.dry_run = False
+            ps.cmd_init(args)
+
+        refreshed = ps._load_cache(existing_branch)
+        self.assertIn("jam", refreshed.get("done", []))
+
+
+class TestG2GateDriftCheck(PhaseStateTestBase):
+    """G2: cmd_gate must fail when the linked issue has no stage:* label on GitHub."""
+
+    def _make_gate_args(self, branch: str):
+        args = MagicMock()
+        args.branch = branch
+        return args
+
+    def _seed_issue(self, branch: str, issue_num: int, done: list[str] | None = None):
+        data = ps._load_cache(branch)
+        data["issue"] = issue_num
+        if done:
+            data["done"] = done
+        ps._save_cache(branch, data)
+
+    def test_gate_fails_when_issue_has_no_stage_label(self):
+        """cmd_gate should return 1 when the linked issue lacks stage:* on GitHub."""
+        branch = "feat/drift-fail"
+        self._seed_issue(branch, 100)
+
+        def mock_gh(*args, **kwargs):
+            if "issue" in args and "view" in args:
+                return 0, "jarvis-work"  # no stage:* label
+            return 0, ""
+
+        with patch.object(ps, "_gh_available", return_value=True), \
+             patch.object(ps, "_gh", side_effect=mock_gh):
+            rc = ps.cmd_gate(self._make_gate_args(branch))
+
+        self.assertEqual(rc, 1, "gate must fail when issue has no stage:* label")
+
+    def test_gate_passes_when_issue_has_stage_label(self):
+        """cmd_gate should NOT fail the drift check when issue has stage:* label."""
+        branch = "feat/drift-pass"
+        self._seed_issue(branch, 101, done=["specify", "setup"])
+
+        def mock_gh(*args, **kwargs):
+            if "issue" in args and "view" in args:
+                return 0, "jarvis-work,stage:align"  # has stage:*
+            return 0, ""
+
+        with patch.object(ps, "_gh_available", return_value=True), \
+             patch.object(ps, "_gh", side_effect=mock_gh), \
+             patch.object(ps, "OBSERVABLE_FLOOR", []):  # skip artifact detectors
+            rc = ps.cmd_gate(self._make_gate_args(branch))
+
+        # rc can be 0 (no observable artifacts) or 0 (drift ok); must not be 1 from drift
+        self.assertNotEqual(rc, 1)
+
+    def test_gate_skips_drift_check_when_gh_unavailable(self):
+        """Without gh, the drift check must be skipped (not fail)."""
+        branch = "feat/drift-no-gh"
+        self._seed_issue(branch, 102)
+
+        with patch.object(ps, "OBSERVABLE_FLOOR", []):
+            rc = ps.cmd_gate(self._make_gate_args(branch))
+
+        self.assertEqual(rc, 0, "no gh → drift check skipped → gate ok")
+
+
 if __name__ == "__main__":
     unittest.main()

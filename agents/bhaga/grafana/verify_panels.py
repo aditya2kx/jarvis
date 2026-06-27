@@ -67,11 +67,20 @@ def _template_defaults(dashboard: dict) -> dict[str, str]:
     ``query``-type variables with an empty ``current.value`` (e.g. kds_date after
     clearing the pinned default so Grafana auto-selects on load) are left as an
     empty string here; callers should resolve them via ``_resolve_empty_query_vars``.
+
+    Multi-select variables whose value is a list are handled: if the list contains
+    only ``$__all`` (the "All" sentinel), the value is set to empty string so
+    ``_resolve_empty_query_vars`` can fetch a real value for SQL validation.
     """
     defaults: dict[str, str] = {}
     for var in dashboard.get("templating", {}).get("list", []):
         if var.get("type") in ("textbox", "custom", "query"):
-            defaults[var["name"]] = str((var.get("current") or {}).get("value", ""))
+            val = (var.get("current") or {}).get("value", "")
+            if isinstance(val, list):
+                # Multi-select: drop $__all sentinel; resolve to real values later.
+                real = [v for v in val if v != "$__all"]
+                val = ",".join(real) if real else ""
+            defaults[var["name"]] = str(val)
     return defaults
 
 
@@ -106,11 +115,33 @@ def _resolve_empty_query_vars(
             variables[name] = str(frames_values)
 
 
+def _singlequote_format(val: str) -> str:
+    """Format a comma-separated value list as BigQuery IN-list items in single quotes.
+
+    e.g. ``"DoorDash,Point of Sale"`` → ``"'DoorDash','Point of Sale'"``
+    Used for Grafana's ``${var:singlequote}`` template format.
+    """
+    return ",".join(f"'{part.strip()}'" for part in val.split(",") if part.strip())
+
+
 def _substitute(sql: str, variables: dict[str, str]) -> str:
-    """Replace ${name} and $name occurrences with their values (longest-first)."""
+    """Replace ${name}, ${name:format}, and $name occurrences with their values.
+
+    Handles Grafana template formats in ``${name:format}`` syntax:
+    - ``:singlequote`` — wraps each comma-separated value in single quotes for SQL IN lists.
+    - other formats — substituted with the raw value (good enough for verification).
+    """
     for name in sorted(variables, key=len, reverse=True):
         val = variables[name]
-        sql = re.sub(r"\$\{" + re.escape(name) + r"\}", val, sql)
+        # Handle ${name:singlequote} first (most specific)
+        sql = re.sub(
+            r"\$\{" + re.escape(name) + r":singlequote\}",
+            lambda m, v=val: _singlequote_format(v),
+            sql,
+        )
+        # Handle remaining ${name:anyformat} or plain ${name}
+        sql = re.sub(r"\$\{" + re.escape(name) + r"(?::[^}]*)?\}", val, sql)
+        # Handle bare $name
         sql = re.sub(r"\$" + re.escape(name) + r"\b", val, sql)
     return sql
 

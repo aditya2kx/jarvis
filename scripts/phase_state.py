@@ -331,6 +331,24 @@ def _update_issue_body(issue_num: int, data: dict, dry_run: bool = False) -> Non
     _gh("issue", "edit", str(issue_num), "--body", body, dry_run=dry_run)
 
 
+def _apply_kickoff(issue_num: int, branch: str, data: dict, *, dry_run: bool = False) -> None:
+    """Idempotently wire a tracking issue: labels + kickoff state + checklist body.
+
+    Called from both the create-new and link-existing paths of cmd_init so they
+    can never drift.  --add-label is a no-op if the label is already present, so
+    re-running is safe.
+    """
+    if not _gh_available():
+        return
+    _gh("issue", "edit", str(issue_num),
+        "--add-label", "jarvis-work", "--add-label", "stage:align", dry_run=dry_run)
+    # specify (operator typed the requirement) + setup (worktree/issue exists)
+    # are factually complete the moment we link the issue.
+    if not data.get("done"):
+        data["done"] = ["specify", "setup"]
+    _update_issue_body(issue_num, data, dry_run=dry_run)
+
+
 # ---------------------------------------------------------------------------
 # Sub-commands
 # ---------------------------------------------------------------------------
@@ -375,6 +393,10 @@ def cmd_init(args) -> int:
 
     if issue_num:
         data["issue"] = issue_num
+        # Apply labels + kickoff state + body to GitHub (idempotent).
+        # Previously this path only wrote the local cache, causing the "no labels
+        # on pre-filed issues" bug (root cause of #86 wiring miss).
+        _apply_kickoff(issue_num, branch, data, dry_run=dry_run)
         _save_cache(branch, data)
         print(f"Linked to existing issue #{issue_num} for branch {branch!r}.")
         return 0
@@ -409,13 +431,12 @@ def cmd_init(args) -> int:
     if match:
         data["issue_url"] = match.group(1)
         data["issue"] = int(match.group(2))
-        # --kickoff: specify (operator typed the requirement) + setup (worktree/issue
-        # created) are factually complete the moment new_requirement runs.
         if kickoff:
+            # --kickoff seeds done=[specify,setup]; _apply_kickoff below also
+            # sets them when done is empty, but honor the explicit flag here.
             data["done"] = ["specify", "setup"]
+        _apply_kickoff(data["issue"], branch, data, dry_run=dry_run)
         _save_cache(branch, data)
-        if kickoff and _gh_available():
-            _update_issue_body(data["issue"], data)
         print(f"Created issue #{data['issue']} for branch {branch!r}.")
         print(f"Tracking issue → {data['issue_url']}")
     else:
@@ -684,6 +705,23 @@ def cmd_gate(args) -> int:
     data = _load_cache(branch)
     done_set = set(data.get("done", []))
     all_steps = lc.all_substeps()
+
+    # G2 drift check: if the branch has a linked tracking issue but that issue
+    # is missing its stage:* label on GitHub, the link-wiring step was skipped
+    # (root cause of the #86 miss).  Fail fast with a clear fix command.
+    issue_num = data.get("issue")
+    if issue_num and _gh_available():
+        rc, out = _gh("issue", "view", str(issue_num),
+                      "--json", "labels",
+                      "-q", "[.labels[].name] | join(\",\")")
+        if rc == 0 and "stage:" not in out:
+            print(
+                f"\nPHASE GATE FAILED — issue #{issue_num} (branch {branch!r}) "
+                f"has no stage:* label — incomplete link.\n"
+                f"Fix: python3 scripts/phase_state.py init --branch {branch} --issue {issue_num}\n",
+                file=sys.stderr,
+            )
+            return 1
 
     # Find the highest observed substep index from live detectors
     observed_idx = -1

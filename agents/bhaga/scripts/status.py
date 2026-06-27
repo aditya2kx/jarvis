@@ -143,6 +143,8 @@ GRAFANA_VIEWS: list[Target] = [
     # per-item KDS time distribution (percentile chart); dashboard v27 added
     # a dashed p99 Goal series — same view, no new entry needed.
     Target("vw_order_quality_daily", "date"),
+    # migration 025: per-source daily p95 KDS time (panel 51 per-source chart).
+    Target("vw_kds_order_quality_by_source_daily", "date"),
     # migration 009: order-level KDS investigation (slow-orders table);
     # dashboard v27 wired $kds_date / $kds_min_per_item vars; v28 fixed the
     # $kds_date query-var shape + unquoted threshold — same view, no new entry.

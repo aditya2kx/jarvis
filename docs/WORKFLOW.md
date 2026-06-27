@@ -99,6 +99,13 @@ Open failures: none        Summary: verify in progress
 tracking issue** at kickoff: after spinning up the worktree + brief + cost session it
 calls `init_phase_tracking()` → `phase_state.py init --kickoff`, which seeds
 
+**Linking an existing issue** (`phase_state.py init --branch <b> --issue <N>`) is also
+idempotent and fully wires the GitHub issue: it applies `jarvis-work` + `stage:align`
+labels and seeds the checklist body via `_apply_kickoff()`.  Previously, this path only
+wrote the local cache and skipped the GitHub update (root cause of the #86 wiring miss,
+fixed PR #86).  `phase_state.py gate` additionally fails if a tracked branch's linked
+issue is missing its `stage:*` label on GitHub (drift check).
+
 The worktree base defaults to **`origin/main`** so new worktrees always start from
 clean main regardless of which branch the operator is on. Pass `--base <ref>`
 explicitly to inherit a different base (e.g. an in-flight framework PR).

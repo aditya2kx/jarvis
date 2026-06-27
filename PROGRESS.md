@@ -1,5 +1,18 @@
 # Jarvis Build Progress
 
+## 2026-06-27 — Order Quality per-source P95 chart + Grafana screenshot harness + 3 CI gates (PR #86, branch fix/bhaga-order-quality-dashboard)
+
+**Status:** In flight — all milestones implemented; PR open, babysitting to green.
+
+- **Panel 51** rewritten to long-format per-source P95 (one line per `order_source`) backed by new BQ view `vw_kds_order_quality_by_source_daily` (migration 025). Dashed `p95 Goal` line preserved via `byName` override + `displayName: ${__field.labels.metric}`.
+- **`kds_source` variable** added to dashboard: multi-select, `includeAll`, queries `square_kds_tickets` directly. Sources: DoorDash, DoorDash - Storefront, Grubhub, Kiosk, Per Diem, Point of Sale, Uber Eats, Uber Eats - Postmates.
+- **`capture_screenshot.py` harness** (`agents/bhaga/grafana/`) — Grafana render API + Bearer token (no Playwright login) → download panel PNG → upload to GitHub releases → returns viewable URL for PR §4 evidence. Eliminates broken-screenshot recurring issue.
+- **G1 gate**: `check_pr_description.py` now rejects local-path screenshots in §4 evidence (require https URL).
+- **G2 gate**: `phase_state.py cmd_init` link-existing path now calls `_apply_kickoff()` — applies `jarvis-work` + `stage:align` labels + seeds `done=[specify,setup]` + updates issue body on GitHub. Root cause of #86 miss fixed. `cmd_gate` now fails if linked issue lacks `stage:*` label.
+- **G3 gate**: `check_evidence_readiness.py` is now path-aware: when diff touches `agents/bhaga/grafana/`, §4 must include a screenshot https URL + `verify_panels.py` output (overrides unit-only waiver).
+- **`verify_panels.py` fix**: multi-select vars with `$__all` are correctly resolved to a real source value; `${var:singlequote}` format is now handled (wraps value in single quotes for SQL IN lists).
+- Convention locked: derived analytics objects backing prod Grafana live as prod BQ views via `core/migrations`; prod Grafana reads prod BQ, never sandbox BQ.
+
 ## 2026-06-26 — Ship-emoji force-merge + post-merge lifecycle integrity (PR #85, branch fix/add-ship-emoji-comment-force-merge)
 
 **Status:** In flight — M1–M4 implemented; PR open, babysitting to green.

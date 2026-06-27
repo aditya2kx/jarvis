@@ -103,6 +103,12 @@ _EVIDENCE_BLOCK_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# G1: reject local file paths in markdown image references inside §4 evidence.
+# Local paths (e.g. /tmp/foo.png, ./shot.png, ~/Desktop/x.png) are not viewable
+# by the operator. Screenshots must be uploaded to GitHub or a public https host.
+_IMG_REF_RE = re.compile(r"!\[[^\]]*\]\(\s*([^)\s]+)[^)]*\)", re.IGNORECASE)
+_LOCAL_IMG_RE = re.compile(r"^(?:/|\./|\.\./|~|file://|[A-Za-z]:\\|/?tmp/)", re.IGNORECASE)
+
 
 def _is_real_evidence(evidence_block_content: str) -> bool:
     """Return True if evidence contains real tool output beyond just pytest results.
@@ -200,6 +206,17 @@ def _check_body(body: str) -> list[str]:
             "`python3 -m agents.bhaga.scripts.status --store palmetto`) "
             "showing actual data rows / sheet diffs / job logs."
         )
+
+    # G1: screenshots in §4 evidence must be viewable https URLs (not local paths).
+    if evidence_match:
+        for src in _IMG_REF_RE.findall(evidence_match.group(1)):
+            src_stripped = src.strip()
+            if _LOCAL_IMG_RE.match(src_stripped) or not src_stripped.lower().startswith("http"):
+                errors.append(
+                    f"  ✗ §4: screenshot '{src_stripped}' must be a viewable https URL "
+                    "(e.g. GitHub releases/user-attachments or grafana.net), not a local path. "
+                    "Upload via `agents/bhaga/grafana/capture_screenshot.py` or drag-drop to GitHub."
+                )
 
     # At least 3 checklist items must be checked [x]
     checked = len(re.findall(r"^\s*-\s*\[x\]", body, re.IGNORECASE | re.MULTILINE))

@@ -1137,7 +1137,7 @@
       "id": 52,
       "type": "table",
       "title": "Order KDS Times — set your slow threshold with the Min / Item filter",
-      "description": "One row per order (ticket) with its whole-order KDS prep time (Start → End). Defaults to the most-recent order date and Min/Item ≥ 8 — adjust both with the 'KDS: Order Date' and 'KDS: Min / Item ≥' inputs at the top of the dashboard. After typing a new Min/Item threshold, press Enter (or click away) to apply it. If results still look wrong, clear any column filter you may have set on the 'Min / Item' column header (the top input and the in-table column filter are independent). 'Min / Item' = Order Min ÷ Items. 'On Shift (punched in)' = everyone whose ADP punch overlapped that order's time window. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order.",
+      "description": "One row per order (ticket) with its whole-order KDS prep time (Start → End). Defaults to the most-recent order date and Min/Item ≥ 8 — adjust both with the 'KDS: Order Date', 'KDS: Min / Item ≥', and 'KDS: Order Source' inputs at the top of the dashboard. After typing a new Min/Item threshold, press Enter (or click away) to apply it. If results still look wrong, clear any column filter you may have set on the 'Min / Item' column header (the top input and the in-table column filter are independent). 'Min / Item' = Order Min ÷ Items. 'On Shift (punched in)' = everyone whose ADP punch overlapped that order's time window. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -1335,7 +1335,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT date_local, ticket_name, order_source, start_time, end_time, num_items, order_min, ROUND(order_min / num_items, 1) AS min_per_item, (SELECT STRING_AGG(DISTINCT s.employee, ' | ' ORDER BY s.employee) FROM `jarvis-bhaga-prod.bhaga.vw_staff_on_shift` s WHERE s.date = o.date_local AND SAFE.PARSE_TIME('%H:%M', s.in_time) <= SAFE.PARSE_TIME('%H:%M:%S', o.end_time) AND SAFE.PARSE_TIME('%H:%M', s.out_time) >= SAFE.PARSE_TIME('%H:%M:%S', o.start_time)) AS staff_on_shift, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` o WHERE date_local = '$kds_date' AND ROUND(order_min / num_items, 1) >= $kds_min_per_item ORDER BY min_per_item DESC, ticket_name"
+          "rawSql": "SELECT date_local, ticket_name, order_source, start_time, end_time, num_items, order_min, ROUND(order_min / num_items, 1) AS min_per_item, (SELECT STRING_AGG(DISTINCT s.employee, ' | ' ORDER BY s.employee) FROM `jarvis-bhaga-prod.bhaga.vw_staff_on_shift` s WHERE s.date = o.date_local AND SAFE.PARSE_TIME('%H:%M', s.in_time) <= SAFE.PARSE_TIME('%H:%M:%S', o.end_time) AND SAFE.PARSE_TIME('%H:%M', s.out_time) >= SAFE.PARSE_TIME('%H:%M:%S', o.start_time)) AS staff_on_shift, items_in_ticket FROM `jarvis-bhaga-prod.bhaga.vw_kds_order_investigation` o WHERE date_local = '$kds_date' AND order_source IN (${kds_source:singlequote}) AND ROUND(order_min / num_items, 1) >= $kds_min_per_item ORDER BY min_per_item DESC, ticket_name"
         }
       ]
     },

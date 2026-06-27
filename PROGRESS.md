@@ -2,7 +2,7 @@
 
 ## 2026-06-27 — Order Quality per-source P95 chart + Grafana screenshot harness + 3 CI gates (PR #86, branch fix/bhaga-order-quality-dashboard)
 
-**Status:** In flight — all milestones implemented; PR open, babysitting to green.
+**Status:** Merged — SHA 47759ef on main (2026-06-27). 100% lifecycle complete.
 
 - **Panel 51** rewritten to long-format per-source P95 (one line per `order_source`) backed by new BQ view `vw_kds_order_quality_by_source_daily` (migration 025). Dashed `p95 Goal` line preserved via `byName` override + `displayName: ${__field.labels.metric}`.
 - **`kds_source` variable** added to dashboard: multi-select, `includeAll`, queries `square_kds_tickets` directly. Sources: DoorDash, DoorDash - Storefront, Grubhub, Kiosk, Per Diem, Point of Sale, Uber Eats, Uber Eats - Postmates.

@@ -410,6 +410,32 @@ def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
     _adapter_clear_step(refresh_date, step_name)
 
 
+def apply_force_model_recompute(refresh_date: datetime.date) -> list[str]:
+    """Clear _MODEL_RECOMPUTE_STEPS markers when BHAGA_FORCE_MODEL_RECOMPUTE is set.
+
+    Called once at daily_refresh startup.  When trigger_dated_refresh runs in
+    recompute-only mode it injects BHAGA_FORCE_MODEL_RECOMPUTE=1 so this function
+    clears the model markers via the backend-aware clear_step_done path (local or
+    Firestore) — ensuring materialize_model_bq re-runs even if a prior invocation
+    already marked it done in Firestore.
+
+    Returns the list of step names cleared (empty when env var is absent).
+    """
+    if not os.environ.get("BHAGA_FORCE_MODEL_RECOMPUTE"):
+        return []
+    cleared: list[str] = []
+    print(
+        f"  [force-recompute] BHAGA_FORCE_MODEL_RECOMPUTE set — "
+        f"clearing {len(_MODEL_RECOMPUTE_STEPS)} model marker(s) for "
+        f"{refresh_date.isoformat()}"
+    )
+    for step in _MODEL_RECOMPUTE_STEPS:
+        clear_step_done(refresh_date, step)
+        print(f"    cleared: {step}")
+        cleared.append(step)
+    return cleared
+
+
 # Downstream steps whose markers must be invalidated when a previously-failed
 # OTP portal recovers with fresh data on a later run (otherwise run_step would
 # short-circuit them and the fresh data would never reach the Model sheet).
@@ -2220,19 +2246,7 @@ def _run_refresh() -> int:
 
     # ── Force-recompute marker clear (BHAGA_FORCE_MODEL_RECOMPUTE=1) ──────────
     # When trigger_dated_refresh runs in recompute-only mode it injects this env.
-    # Clearing the model step markers here ensures the materialize step runs even
-    # if Firestore already recorded it as done for this date on a prior invocation.
-    # Uses the same backend-aware clear_step_done path as OTP recovery so the
-    # correct backend (local or Firestore) is always targeted.
-    if os.environ.get("BHAGA_FORCE_MODEL_RECOMPUTE"):
-        print(
-            f"  [force-recompute] BHAGA_FORCE_MODEL_RECOMPUTE set — "
-            f"clearing {len(_MODEL_RECOMPUTE_STEPS)} model marker(s) for "
-            f"{refresh_date.isoformat()}"
-        )
-        for step in _MODEL_RECOMPUTE_STEPS:
-            clear_step_done(refresh_date, step)
-            print(f"    cleared: {step}")
+    apply_force_model_recompute(refresh_date)
 
     t_start = time.monotonic()
     info_ping(

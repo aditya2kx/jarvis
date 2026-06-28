@@ -1,11 +1,6 @@
-# Sandbox live run config — ACTIVE for fix/https-github-com-aditya2kx-jarvis-issues (PR #99).
+# Sandbox live run config — INACTIVE (scenarios reset after evidence captured for PR #99).
 #
-# Two scenarios for PR #94 evidence:
-#   1. nightly-autostart (DONE — gate-only proof, PASS 2026-06-28)
-#   2. full-live-inline-gate — full pipeline with inline default (no ASSUME_READY).
-#      Proves the PROCEED gate actually drives Square+ADP+reviews+model to completion.
-#
-# REMOVE this file's scenarios (set to []) after evidence is captured.
-scenarios:
-  - name: full-live-inline-gate
-    date: "2026-06-27"
+# Evidence captured: nightly-autostart (2026-06-28) + full-live-inline-gate (2026-06-28).
+# Both runs PASS — see PR #99 §4 for full log excerpts.
+# REMOVE this comment/reset block after the PR merges.
+scenarios: []

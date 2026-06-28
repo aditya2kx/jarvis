@@ -106,8 +106,83 @@ def _slug_branch_part(text: str, *, max_len: int = 48) -> str:
     return slug[:max_len].rstrip("-") or "requirement"
 
 
-def default_branch(requirement: str, *, prefix: str = "fix") -> str:
-    return f"{prefix}/{_slug_branch_part(requirement)}"
+# Generic preamble tokens that appear in requirement text but should not
+# dominate the branch slug (meta-instruction phrases).
+_PREAMBLE_PHRASES = (
+    "consider above as new requirements so that",
+    "consider above as new requirements so",
+    "consider above as new requirements",
+    "consider above as new requirement",
+    "new requirements so that",
+    "new requirements so",
+    "new requirement so that",
+    "new requirement so",
+    "new requirement",
+    "let's work on",
+    "lets work on",
+)
+
+
+def _sanitize_requirement(text: str) -> str:
+    """Strip issue refs + generic preamble so the slug reflects the actual ask."""
+    t = _ISSUE_URL_RE.sub(" ", text)
+    t = _ISSUE_HASH_RE.sub(" ", t)
+    low = t.lower()
+    for p in _PREAMBLE_PHRASES:
+        if low.startswith(p):
+            t = t[len(p):]
+            break
+    return t.strip()
+
+
+def _disambiguate(base: str, existing: set[str], *, max_try: int = 99) -> str:
+    """Return *base* if not in *existing*, otherwise *base-2*, *base-3*, …"""
+    if base not in existing:
+        return base
+    for i in range(2, max_try + 1):
+        cand = f"{base}-{i}"
+        if cand not in existing:
+            return cand
+    raise SystemExit(f"branch collision: {base}…-{max_try} all exist — pick a different branch with --branch")
+
+
+def _existing_branches(repo_root: Path) -> set[str]:
+    """Return local + remote branch names (best-effort; degrade to empty set on any error)."""
+    names: set[str] = set()
+    for args in (
+        ["branch", "--format=%(refname:short)"],
+        ["branch", "-r", "--format=%(refname:short)"],
+    ):
+        try:
+            out = _run_git(repo_root, *args, check=False)
+            names.update(line.strip() for line in out.splitlines() if line.strip())
+        except Exception:
+            pass
+    return names
+
+
+def default_branch(
+    requirement: str,
+    *,
+    issue_num: int | None = None,
+    existing: set[str] | None = None,
+    prefix: str = "fix",
+) -> str:
+    """Compute a collision-free branch name for *requirement*.
+
+    - When *issue_num* is known (link or create path) the branch is
+      ``fix/i{N}-<slug>`` so two issues with identical requirement text
+      always get distinct branches.
+    - When *issue_num* is None (create-path, N not yet known) the branch is
+      ``fix/<slug>``; any collision is resolved by appending ``-2``, ``-3``, …
+    - Explicit ``--branch`` in main() wins over this default.
+    """
+    slug = _slug_branch_part(_sanitize_requirement(requirement))
+    if issue_num:
+        base = f"{prefix}/i{issue_num}-{slug}" if slug else f"{prefix}/i{issue_num}"
+    else:
+        base = f"{prefix}/{slug}" if slug else f"{prefix}/requirement"
+    return _disambiguate(base, existing or set())
 
 
 def default_base() -> str:
@@ -469,6 +544,9 @@ def main(argv: list[str] | None = None) -> int:
     # from an older in-flight PR — every new requirement must start from clean main.
     base = args.base or default_base()
 
+    # Collect existing branches once (best-effort) so default_branch can avoid collisions.
+    existing = _existing_branches(repo_root)
+
     if len(requirements) > 1 and args.split:
         # One worktree per requirement
         print(f"--split: creating {len(requirements)} separate worktrees/PRs.\n")
@@ -477,11 +555,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n{'=' * 60}")
             print(f"Requirement {i}/{len(requirements)}: {req[:80]}")
             print('=' * 60)
-            branch = default_branch(req)
-            # Explicit --issue wins; fall back to auto-detection from requirement text.
+            # Resolve issue ref BEFORE computing branch so issue number can be embedded.
             issue_ref = args.issue or _extract_issue_ref(req)
             if issue_ref and not args.issue:
                 print(f"Auto-detected issue #{issue_ref} from requirement text — linking instead of creating.")
+            branch = default_branch(req, issue_num=issue_ref, existing=existing)
+            # Track the chosen branch so later split iterations avoid the same name.
+            existing.add(branch)
             rc = rc or _run_one(
                 repo_root=repo_root,
                 branch=branch,
@@ -500,16 +580,21 @@ def main(argv: list[str] | None = None) -> int:
 
     # Consolidate all requirements into one worktree/PR (default)
     combined = _consolidated_requirement(requirements)
-    branch = args.branch or default_branch(combined if len(requirements) == 1 else requirements[0])
+
+    # Resolve issue ref BEFORE computing branch so issue number can be embedded.
+    issue_ref = args.issue or _extract_issue_ref(combined)
+    if issue_ref and not args.issue:
+        print(f"Auto-detected issue #{issue_ref} from requirement text — linking instead of creating.")
+
+    if args.branch:
+        branch = args.branch  # explicit --branch always wins
+    else:
+        req_for_slug = combined if len(requirements) == 1 else requirements[0]
+        branch = default_branch(req_for_slug, issue_num=issue_ref, existing=existing)
 
     if len(requirements) > 1:
         print(f"Consolidating {len(requirements)} requirements into one PR (branch: {branch}).")
         print("Pass --split to create one PR per requirement.\n")
-
-    # Explicit --issue wins; fall back to auto-detection from requirement text.
-    issue_ref = args.issue or _extract_issue_ref(combined)
-    if issue_ref and not args.issue:
-        print(f"Auto-detected issue #{issue_ref} from requirement text — linking instead of creating.")
 
     return _run_one(
         repo_root=repo_root,

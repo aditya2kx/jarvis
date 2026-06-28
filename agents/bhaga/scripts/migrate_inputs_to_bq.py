@@ -175,6 +175,37 @@ def migrate_training_shifts(
         print("  training_shifts: 0 rows to ingest after open-period filter")
         return 0
 
+    # ── Alias-normalize employee names (warn-and-skip on unknown) ─────────────
+    # Runs after open-period filter so the filter's SKIP breadcrumbs use raw names.
+    # Falls through silently when BQ is unavailable (BHAGA_DATASTORE != bigquery).
+    try:
+        from agents.bhaga.scripts.model_inputs import normalize_input_name  # noqa: PLC0415
+        normalized: set[tuple[str, str]] = set()
+        new_notes: dict[tuple[str, str], str] = {}
+        unresolved: list[str] = []
+        for raw_name, date_iso in sorted(out):
+            try:
+                canon = normalize_input_name(store, raw_name)
+                normalized.add((canon, date_iso))
+                new_notes[(canon, date_iso)] = notes_map.get((raw_name, date_iso), "")
+            except ValueError:
+                unresolved.append(f"{raw_name!r} {date_iso}")
+        if unresolved:
+            print(
+                f"  [migrate] WARN: {len(unresolved)} training-shift row(s) skipped — "
+                f"name not in employee_aliases (add via `/bhaga-cloud alias set`):"
+            )
+            for entry in unresolved:
+                print(f"    {entry}")
+        out = normalized
+        notes_map = new_notes
+    except ImportError as _norm_exc:  # noqa: BLE001
+        print(f"  [migrate] WARN: alias normalization unavailable ({_norm_exc}); using raw names")
+
+    if not out:
+        print("  training_shifts: 0 rows to ingest after alias normalization")
+        return 0
+
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     rows = [
         {

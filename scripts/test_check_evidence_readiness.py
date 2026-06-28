@@ -163,6 +163,82 @@ class TestG3GrafanaPathAwareCheck(unittest.TestCase):
         self.assertIn("screenshot", reason.lower())
 
 
+class TestG3ChangedPanelIdGate(unittest.TestCase):
+    """G3 tightening: §4 must mention OK for each changed panel id specifically."""
+
+    def _predict(self, body: str, changed_ids: set[int]) -> tuple[bool, str]:
+        """Run predict with grafana diff active and the given changed panel ids."""
+        with patch.object(cer, "_diff_touches", return_value=True), \
+             patch.object(cer, "_changed_panel_ids", return_value=changed_ids):
+            return predict(body)
+
+    def _good_body(self, panel_mention: str = "") -> str:
+        return (
+            "## §4 Evidence\n"
+            "<details><summary>Evidence</summary>\n"
+            "![panel76](https://github.com/owner/repo/releases/download/tag/panel76.png)\n"
+            f"verify_panels.py: OK=19 EMPTY=0 ERROR=0\n"
+            f"{panel_mention}\n"
+            "</details>\n"
+        )
+
+    def test_changed_panel_with_ok_in_body_passes(self):
+        body = self._good_body("panel 76 executed OK")
+        ok, reason = self._predict(body, {76})
+        self.assertTrue(ok, f"body with panel 76 OK should pass: {reason}")
+
+    def test_changed_panel_missing_from_body_fails(self):
+        """Panel 76 changed but §4 says nothing about panel 76 → FAIL."""
+        body = (
+            "## §4 Evidence\n"
+            "![screenshot](https://github.com/owner/repo/releases/download/tag/img.png)\n"
+            "verify_panels.py: OK=19 EMPTY=0 ERROR=0\n"
+            "All panels verified.\n"
+        )
+        ok, reason = self._predict(body, {76})
+        self.assertFalse(ok, "missing panel-id OK reference should fail")
+        self.assertIn("76", reason)
+
+    def test_multiple_changed_panels_all_must_be_ok(self):
+        """Both panel 76 and panel 91 changed; only 76 mentioned → FAIL."""
+        body = self._good_body("panel 76 executed OK")
+        ok, reason = self._predict(body, {76, 91})
+        self.assertFalse(ok, "missing panel 91 OK reference should fail")
+        self.assertIn("91", reason)
+
+    def test_multiple_changed_panels_both_ok_passes(self):
+        body = self._good_body("panel 76 OK\npanel 91 OK")
+        ok, reason = self._predict(body, {76, 91})
+        self.assertTrue(ok, f"both panels OK should pass: {reason}")
+
+    def test_no_changed_panels_no_per_panel_requirement(self):
+        """When _changed_panel_ids() returns empty (non-grafana PR), no per-panel check."""
+        body = self._good_body()
+        ok, reason = self._predict(body, set())
+        self.assertTrue(ok, f"no changed panels → no per-panel gate: {reason}")
+
+    def test_grafana_dir_changed_panel_in_grafana_dir(self):
+        """Covers grafana/ as well as agents/bhaga/grafana/."""
+        body = self._good_body("panel 55 OK")
+        # Simulate that only grafana/ (not agents/bhaga/grafana/) changed
+        with patch.object(cer, "_diff_touches", return_value=True), \
+             patch.object(cer, "_changed_panel_ids", return_value={55}):
+            ok, reason = predict(body)
+        self.assertTrue(ok, f"grafana/ dir changed panel with OK should pass: {reason}")
+
+    def test_non_grafana_pr_not_affected(self):
+        """A PR that doesn't touch grafana must not fail on panel id checks."""
+        body = (
+            "## §4 Evidence\n"
+            "54 passed in 1.2s\n"
+            "HELD-BACK: 0\n"
+        )
+        with patch.object(cer, "_diff_touches", return_value=False), \
+             patch.object(cer, "_changed_panel_ids", return_value={99}):
+            ok, _ = predict(body)
+        self.assertTrue(ok, "non-grafana PR must not be blocked by panel id check")
+
+
 class TestBacktickTierDetection(unittest.TestCase):
     """G4: backtick-wrapped Evidence tier must be caught as an error."""
 

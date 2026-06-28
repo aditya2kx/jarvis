@@ -95,6 +95,15 @@ _MERGE_KEYS: dict[str, list[str]] = {
     "model_review_bonus_period": ["period_start", "employee"],
 }
 
+# Per-employee model tables: any table whose merge key contains "employee".
+# These must be scope-cleared before reload so a dropped employee leaves no ghost.
+# Maps table -> the non-employee partition column to delete on (date or period_start).
+_SCOPE_CLEAR_COL: dict[str, str] = {
+    t: next(k for k in keys if k != "employee")
+    for t, keys in _MERGE_KEYS.items()
+    if "employee" in keys
+}
+
 
 def _clean_str(v: object) -> str:
     """Strip Google Sheets text-force prefix (') and whitespace from strings."""
@@ -232,6 +241,7 @@ def load_model_rows(
     dry_run: bool = False,
     materialized_at: datetime.datetime | None = None,
     replace: bool = False,
+    replace_scope: bool = False,
 ) -> int:
     """Convert build_*-style header+rows output and upsert into a BQ model table.
 
@@ -241,11 +251,15 @@ def load_model_rows(
     ``header_rows`` is the raw build_* output (first element = header list,
     rest = data rows). Returns the number of rows merged (0 on dry-run or empty).
 
-    ``replace=True`` truncates the table before loading, mirroring the Sheet's
-    clear-and-write semantics for tabs that are FULLY rebuilt each run (e.g.
-    review_bonus_period). Without it the MERGE-upsert leaves ghost rows whenever
-    a (period_start, employee) key drops out of the rebuild — which is how a
-    leaked sandbox 'Alice' row stranded itself in prod model_review_bonus_period.
+    ``replace=True`` truncates the table before loading — correct for tabs that
+    are FULLY rebuilt each run. Avoid for per-employee tables where only a subset
+    of partitions is rebuilt per run (would drop out-of-window rows).
+
+    ``replace_scope=True`` (preferred for per-employee model tables) deletes only
+    the partition values present in the incoming batch before the MERGE. This
+    evicts ghost rows for employees who dropped out (e.g. excluded mid-period)
+    without touching unrelated partitions. Use for all tables in _SCOPE_CLEAR_COL.
+    The delete is idempotent: re-running with the same batch converges correctly.
     """
     if not header_rows or len(header_rows) < 2:
         return 0
@@ -258,6 +272,18 @@ def load_model_rows(
         _assert_sandbox_write_isolation()
         read_query(f"DELETE FROM `{_PROJECT_ID}.{_DATASET}.{table}` WHERE TRUE")
     dicts = _header_rows_to_dicts(header_rows)
+    if replace_scope and not dry_run:
+        from core.datastore import (  # noqa: PLC0415
+            read_query, _PROJECT_ID, _DATASET, _assert_sandbox_write_isolation,
+        )
+        _assert_sandbox_write_isolation()
+        col = _SCOPE_CLEAR_COL[table]
+        vals = sorted({str(d[col]) for d in dicts if d.get(col) is not None})
+        if vals:
+            in_list = ", ".join(f"'{v}'" for v in vals)
+            read_query(
+                f"DELETE FROM `{_PROJECT_ID}.{_DATASET}.{table}` WHERE {col} IN ({in_list})"
+            )
     return _load(table, dicts, materialized_at, dry_run)
 
 
@@ -395,6 +421,33 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
         spreadsheet_id=model_sid, store=store
     )
 
+    # ── Normalize training input names through the alias map ─────────────────
+    # training_shifts is {(raw_name, date_iso)}; training_through is {raw_name: date}.
+    # Normalize so a typo'd Sheet name still matches the canonical roster entry.
+    # Unresolved names are dropped with a warning — they would produce a silent no-op
+    # in the allocator, so skipping them here is the safer failure mode.
+    normalized_shifts: set[tuple[str, str]] = set()
+    for raw_name, date_iso in training_shifts:
+        canon = aliases.get(raw_name.strip())
+        if canon:
+            normalized_shifts.add((canon, date_iso))
+        else:
+            print(
+                f"  [materialize] WARN: training_shifts name {raw_name!r} not in aliases — skipped"
+            )
+    training_shifts = normalized_shifts
+
+    normalized_through: dict = {}
+    for raw_name, excl_date in training_through.items():
+        canon = aliases.get(raw_name.strip())
+        if canon:
+            normalized_through[canon] = excl_date
+        else:
+            print(
+                f"  [materialize] WARN: training_excluded name {raw_name!r} not in aliases — skipped"
+            )
+    training_through = normalized_through
+
     # ── Build all model tabs (same logic as update_model_sheet) ──────────────
     print("# Building model...")
     daily_rows, daily_summary = build_daily_rows(
@@ -452,8 +505,8 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     load_model_rows("model_labor_daily", labor_daily_rows, dry_run=dry_run, materialized_at=materialized_at)
     load_model_rows("model_labor_weekly", labor_weekly_rows, dry_run=dry_run, materialized_at=materialized_at)
     load_model_rows("model_labor_period", labor_period_rows, dry_run=dry_run, materialized_at=materialized_at)
-    load_model_rows("model_tip_alloc_period", period_rows, dry_run=dry_run, materialized_at=materialized_at)
-    load_model_rows("model_tip_alloc_daily", day_alloc_rows, dry_run=dry_run, materialized_at=materialized_at)
+    load_model_rows("model_tip_alloc_period", period_rows, dry_run=dry_run, materialized_at=materialized_at, replace_scope=True)
+    load_model_rows("model_tip_alloc_daily", day_alloc_rows, dry_run=dry_run, materialized_at=materialized_at, replace_scope=True)
     load_model_rows("model_period_summary", summary_rows, dry_run=dry_run, materialized_at=materialized_at)
 
     # ── Load forecast (future window + gap-fill backfill; non-fatal) ─────────

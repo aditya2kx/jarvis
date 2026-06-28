@@ -1,5 +1,15 @@
 # Jarvis Build Progress
 
+## 2026-06-28 — Generic hardening: ghost rows, name normalization, Grafana gate, recompute marker (Issue #108, branch fix/i108-https)
+
+Five-milestone PR hardening the bug *classes* exposed post-#90/#100 — each fix is a generic invariant, not a single-instance patch:
+
+- **M1 (ghost rows):** `_SCOPE_CLEAR_COL` + `replace_scope=True` in `load_model_rows` for all per-employee model tables (`model_tip_alloc_daily/period`, `model_review_bonus_period`). A dropped/excluded employee now leaves zero ghost rows across any partition. Meta-guard test fails the suite if a future per-employee table bypasses this.
+- **M2 (name normalization):** `model_inputs.normalize_input_name(store, raw)` — one helper, shared by the Slack webhook (`_handle_training_set`, `_handle_exclude_set`) and `migrate_training_shifts`. Raises `ValueError` on unknown names so a typo is never a silent no-op. Read-side in `materialize()` also normalizes `training_shifts` and `training_through` through the alias map.
+- **M3 (sandbox e2e):** `TestRetroExclusion` in `test_sandbox_e2e.py` — training-shift + permanent-exclusion sub-cases proving exclusion, conservation Δ=$0.00, and no ghost row, plus a negative control proving why scope-clear is necessary.
+- **M4 (Grafana gate):** `check_evidence_readiness.py` G3 now requires `verify_panels OK` for each *changed panel id* (not just the generic `OK=N` string) across both `agents/bhaga/grafana/` and `grafana/`. Non-grafana PRs unaffected.
+- **M5 (recompute marker clear):** `trigger_dated_refresh --recompute-only` now injects `BHAGA_FORCE_MODEL_RECOMPUTE=1`, which makes `daily_refresh` clear `_MODEL_RECOMPUTE_STEPS` via the backend-aware `state_adapter.clear_step` at startup. No manual Firestore incantation needed for recompute runs. Tests cover both local and Firestore (stub) backends.
+
 ## 2026-06-28 — pr_triage.py: log drilling, pending awareness, waiver floor (Issue #105, branch fix/i105-https)
 
 Three post-merge gaps from PR #104's `scripts/pr_triage.py` closed in one PR:

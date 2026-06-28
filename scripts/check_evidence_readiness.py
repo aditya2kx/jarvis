@@ -122,6 +122,39 @@ _GRAFANA_SCREENSHOT_RE = re.compile(
 )
 _VERIFY_PANELS_RE = re.compile(r"verify_panels|/api/ds/query", re.IGNORECASE)
 
+# Grafana dashboard directories to watch (either contains dashboard.json files)
+_GRAFANA_DIRS = ("agents/bhaga/grafana/", "grafana/")
+
+
+def _diff_touches_grafana() -> bool:
+    """True when the current branch diff touches any grafana dashboard directory."""
+    return any(_diff_touches(d) for d in _GRAFANA_DIRS)
+
+
+def _changed_panel_ids() -> set[int]:
+    """Return panel ids whose JSON changed vs origin/main in any grafana dashboard dir.
+
+    Parses `git diff -U0 origin/main` for lines like `"id": 76` inside changed
+    hunks under agents/bhaga/grafana/ or grafana/.  Returns an empty set if git
+    is unavailable or the diff cannot be parsed (gate degrades gracefully).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "diff", "-U0", "origin/main", "--", "*/grafana/**/*.json",
+             "grafana/**/*.json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        ids: set[int] = set()
+        # Only look at added/changed lines in the diff (lines starting with '+')
+        for line in result.stdout.splitlines():
+            if line.startswith("+") and not line.startswith("+++"):
+                m = re.search(r'"id"\s*:\s*(\d+)', line)
+                if m:
+                    ids.add(int(m.group(1)))
+        return ids
+    except Exception:
+        return set()
+
 
 def predict(body: str) -> tuple[bool, str]:
     """Return (ok, reason).
@@ -130,11 +163,11 @@ def predict(body: str) -> tuple[bool, str]:
     ok=False → predict <95%; name the gap
     """
     # G3: Grafana dashboard changes require a viewable screenshot URL + verify_panels
-    # output in §4, even when a unit-only waiver is present.  The visual proof is
-    # the only meaningful evidence for a dashboard edit.
-    # Only activate when the body contains a §4 / Evidence section (avoids false
-    # positives on short bodies in tests and on PRs still being drafted).
-    if _diff_touches("agents/bhaga/grafana/") and _extract_section4(body) != body:
+    # output in §4 showing OK for each changed panel id — even when a unit-only
+    # waiver is present. The visual proof is the only meaningful evidence for a
+    # dashboard edit.  Only activate when the body contains a §4 / Evidence section
+    # (avoids false positives on short bodies in tests and on PRs still being drafted).
+    if _diff_touches_grafana() and _extract_section4(body) != body:
         section4 = _extract_section4(body)
         has_screenshot = bool(_GRAFANA_SCREENSHOT_RE.search(section4))
         # Match "verify_panels" as a standalone word/token, not embedded in e.g.
@@ -142,12 +175,29 @@ def predict(body: str) -> tuple[bool, str]:
         has_verify_panels = bool(
             re.search(r"verify_panels\.py|OK=\d+|verify_panels.*output", section4, re.IGNORECASE)
         )
-        if not has_screenshot or not has_verify_panels:
+
+        # Per-panel check: §4 must mention OK for each changed panel id specifically.
+        changed_ids = _changed_panel_ids()
+        missing_panel_ids: list[int] = []
+        for pid in sorted(changed_ids):
+            # Accept "panel 76 ... OK", "panel76 OK", "id: 76 ... OK", "76 ... OK"
+            if not re.search(
+                rf"\b{pid}\b.{{0,80}}OK|\bpanel\s*{pid}\b", section4, re.IGNORECASE
+            ):
+                missing_panel_ids.append(pid)
+
+        if not has_screenshot or not has_verify_panels or missing_panel_ids:
             missing = []
             if not has_screenshot:
                 missing.append("a viewable https screenshot URL (e.g. GitHub releases PNG)")
             if not has_verify_panels:
                 missing.append("verify_panels.py output (OK=N)")
+            if missing_panel_ids:
+                ids_str = ", ".join(str(i) for i in missing_panel_ids)
+                missing.append(
+                    f"verify_panels OK for changed panel id(s): {ids_str} "
+                    f"(mention each id with OK in §4, e.g. 'panel {missing_panel_ids[0]} ... OK')"
+                )
             return False, (
                 "grafana change → §4 must show: "
                 + " AND ".join(missing)

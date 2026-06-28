@@ -912,6 +912,13 @@ def _handle_training_set(name: str, date_str: str, note: str, form: dict, respon
     store = os.environ.get("BHAGA_STORE", "palmetto")
     user_name = form.get("user_name") or form.get("user_id") or "slack"
     try:
+        from agents.bhaga.scripts.model_inputs import normalize_input_name  # noqa: PLC0415
+        name = normalize_input_name(store, name)
+    except ValueError as exc:
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": f":x: {exc}"})
+        return
+    try:
         fq = f"`{_BQ_TRAINING_SHIFTS_TABLE}`"
         _bq.query(  # type: ignore[union-attr]
             f"MERGE {fq} T"
@@ -1012,6 +1019,13 @@ def _handle_exclude_set(name: str, through_date: str, form: dict, response_url: 
                                           "text": ":warning: BigQuery not available."})
         return
     store = os.environ.get("BHAGA_STORE", "palmetto")
+    try:
+        from agents.bhaga.scripts.model_inputs import normalize_input_name  # noqa: PLC0415
+        name = normalize_input_name(store, name)
+    except ValueError as exc:
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": f":x: {exc}"})
+        return
 
     if through_date:
         key = f"training_excluded:{name}"

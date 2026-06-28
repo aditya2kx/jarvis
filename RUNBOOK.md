@@ -594,17 +594,26 @@ is only set for child subprocesses in the daily refresh, not the orchestrator pr
 `get_client()` would silently return `None` and the reconciliation query would no-op every run.
 The same parent-env pattern affected `_record_pipeline_run` until 2026-06-13 (see §14 Pipeline Health).
 
-**Manual recovery** (if BQ is unavailable and auto-detect cannot fire): clear the model-recompute markers
-by hand and retrigger:
+**Preferred recompute path (2026-06 hardening):** use `trigger_dated_refresh --recompute-only`.
+This now automatically injects `BHAGA_FORCE_MODEL_RECOMPUTE=1`, which makes `daily_refresh` clear
+the `_MODEL_RECOMPUTE_STEPS` markers via `state_adapter.clear_step` at startup — backend-agnostic
+(works for both local and Firestore state). No manual Firestore incantation needed:
+
+```bash
+# Recompute 2026-06-19 (no scrape; markers cleared automatically via BHAGA_FORCE_MODEL_RECOMPUTE)
+python3 scripts/trigger_dated_refresh.py --date 2026-06-19 --recompute-only
+```
+
+**Manual recovery** (only if `trigger_dated_refresh` is unavailable): clear model markers by hand:
 ```bash
 BHAGA_STATE_BACKEND=firestore BHAGA_SECRETS_BACKEND=gcp python3 -c "
 import sys, datetime; sys.path.insert(0,'.')
 from skills.bhaga_config import state_adapter as sa
 rd = datetime.date(2026, 6, 9)  # replace with affected date
-for step in ('materialize_model_bq',):  # post-Sheets-exit: only materialize needs clearing
+for step in ('materialize_model_bq',):
     sa.clear_step(rd, step); print('cleared', step)"
 ```
-Then retrigger the job for that date.
+Then retrigger the job for that date (or use `trigger_dated_refresh --recompute-only`).
 
 ### Recover a partial-failure date (e.g. the 2026-05-31 Square-launch crash)
 

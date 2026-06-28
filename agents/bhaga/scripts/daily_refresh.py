@@ -2218,6 +2218,22 @@ def _run_refresh() -> int:
     print(f"  dry_run:        {args.dry_run}")
     print(f"{'='*60}")
 
+    # ── Force-recompute marker clear (BHAGA_FORCE_MODEL_RECOMPUTE=1) ──────────
+    # When trigger_dated_refresh runs in recompute-only mode it injects this env.
+    # Clearing the model step markers here ensures the materialize step runs even
+    # if Firestore already recorded it as done for this date on a prior invocation.
+    # Uses the same backend-aware clear_step_done path as OTP recovery so the
+    # correct backend (local or Firestore) is always targeted.
+    if os.environ.get("BHAGA_FORCE_MODEL_RECOMPUTE"):
+        print(
+            f"  [force-recompute] BHAGA_FORCE_MODEL_RECOMPUTE set — "
+            f"clearing {len(_MODEL_RECOMPUTE_STEPS)} model marker(s) for "
+            f"{refresh_date.isoformat()}"
+        )
+        for step in _MODEL_RECOMPUTE_STEPS:
+            clear_step_done(refresh_date, step)
+            print(f"    cleared: {step}")
+
     t_start = time.monotonic()
     info_ping(
         f"daily refresh starting for {refresh_date.isoformat()} "

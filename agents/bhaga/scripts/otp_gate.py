@@ -1,32 +1,30 @@
 #!/usr/bin/env python3
-"""Two-step OTP availability gate for the BHAGA daily refresh.
+"""OTP availability gate for the BHAGA daily refresh.
 
-Implements the "READY handshake + checkpoint-and-resume" model so the
-operator can be unavailable for a long time without a run failing or
-burning compute waiting on an OTP that would expire anyway.
+Default behaviour (BHAGA_OTP_REQUIRE_READY unset / "0"):
+  The nightly run proceeds inline to the portal scrape. If ADP actually
+  challenges for a 2FA code, the runner posts a Slack OTP-code ask and blocks
+  up to BHAGA_OTP_WAIT_S (default 900 s). On no-reply timeout the ADP step
+  raises OtpWaitTimeout, which daily_refresh treats as a graceful skip (alert
+  posted, run finishes on existing data, next nightly retries). No READY
+  handshake is needed on a trusted-device night — ADP's persisted session
+  clears 2FA silently.
 
-The flow (generalized to ALL OTP-needing portals, not just Square):
+Opt-in rollback (BHAGA_OTP_REQUIRE_READY=1):
+  Restores the legacy two-step READY handshake + checkpoint-and-resume model:
+  1. On a run that WILL trigger an OTP, post a READY request, persist a
+     pending checkpoint, and exit cleanly (exit 0). OTP codes expire in
+     minutes; we never pre-send and block for hours.
+  2. ONE READY (operator reply in the BHAGA Slack DM) covers ALL OTP portals.
+     On resume, drive each portal back-to-back in a short bounded window.
+  3. No reply within 48 h → skip the OTP-gated steps, alert, next nightly
+     retries. Zero idle compute cost.
 
-  1. When a run reaches a step that WILL trigger an OTP, it does NOT send
-     the OTP immediately. Instead it asks the operator if they're available
-     ("reply READY when you can grab your phone"), persists a pending
-     checkpoint, and EXITS CLEANLY. OTP codes expire in minutes, so we never
-     pre-send a code and block for hours.
+BHAGA_OTP_ASSUME_READY=1 (sandbox/supervised runs): skip the gate entirely
+and drive OTP portals inline regardless of require-ready mode.
 
-  2. ONE READY covers ALL OTP portals the run will need. When the operator
-     replies READY (anytime within the 48h cap), the run resumes from the
-     checkpoint and drives each OTP portal back-to-back, triggering a FRESH
-     OTP per portal and taking the reply in a short bounded window while the
-     operator is actively engaged.
-
-  3. If no READY arrives within 48h of the request, the OTP-gated step(s) are
-     skipped, everything else finishes, an alert is posted, and the next
-     nightly run retries. The long wait costs nothing (the laptop is closed /
-     the Cloud Run job has exited).
-
-This module is the backend-agnostic brain. The checkpoint itself is stored
-via skills.bhaga_config.state_adapter (Firestore in cloud, disk locally) so
-the same code resumes in either environment.
+The checkpoint is stored via skills.bhaga_config.state_adapter (Firestore in
+cloud, local disk in tests) so both environments share the same code.
 """
 
 from __future__ import annotations
@@ -80,6 +78,16 @@ class PendingOtpAvailability(Exception):
         )
 
 
+class OtpWaitTimeout(Exception):
+    """Raised by the ADP runner when the operator does not reply with an OTP
+    code within the inline wait window (BHAGA_OTP_WAIT_S seconds).
+
+    Distinct from a selector/scrape failure so daily_refresh can treat it as
+    a graceful skip (post an alert, continue on existing ADP data, do not
+    trip the pipeline halt breaker) rather than a hard failure.
+    """
+
+
 def is_ready_reply(text) -> bool:
     """Return True if a Slack reply means "I'm available — send the codes".
 
@@ -129,27 +137,41 @@ def evaluate(
     to post a NEW READY request (True) or a request is already outstanding
     (False — just re-exit without re-pinging the operator).
 
-    ``force_request`` (defaults to env ``BHAGA_OTP_FORCE_REQUEST == "1"``) makes
-    an explicit operator-driven trigger re-post a fresh READY request when a
-    stale, unanswered checkpoint exists — so a manual ``/bhaga-cloud refresh`` or
-    a deploy ``Retry-Dates`` rerun re-prompts the operator instead of silently
-    deferring to the old request. The nightly leaves it unset (unchanged).
+    Default mode (BHAGA_OTP_REQUIRE_READY unset):
+      Always returns PROCEED so the nightly scrape starts immediately. If ADP
+      actually challenges for a 2FA code, the runner posts a Slack OTP-code ask
+      inline and raises OtpWaitTimeout on no reply, which the caller treats as a
+      graceful skip.
+
+    Rollback mode (BHAGA_OTP_REQUIRE_READY=1):
+      Restores the legacy READY handshake: no READY → EXIT_PENDING (checkpoint
+      + exit 0); READY received → PROCEED; 48 h elapsed → SKIP_OTP.
+
+    ``force_request`` (relevant only in rollback mode; defaults to env
+    ``BHAGA_OTP_FORCE_REQUEST == "1"``) makes an explicit operator-driven trigger
+    re-post a fresh READY request when a stale checkpoint exists.
     """
     if not otp_portals:
         # Zero-OTP happy path — nothing will launch a browser this run.
         return PROCEED, {"reason": "no OTP portals needed"}
 
     if os.environ.get("BHAGA_OTP_ASSUME_READY") == "1":
-        # Operator-supervised run (e.g. a live sandbox run): skip the READY
-        # checkpoint-and-exit dance and drive the OTP portals INLINE, blocking for
-        # the code. This needs no webhook resume — the operator just replies with
-        # the code, which the existing webhook delivers via the otps collection
-        # (keyed by agent, env-agnostic). Off by default → the nightly is unchanged.
+        # Operator-supervised run (e.g. a live sandbox run): drive OTP portals
+        # inline regardless of require-ready mode.
         return PROCEED, {
             "reason": "assume-ready (operator supervising — inline OTP)",
             "portals": list(otp_portals),
         }
 
+    if os.environ.get("BHAGA_OTP_REQUIRE_READY") != "1":
+        # Default inline-autostart mode: proceed immediately; runner handles
+        # the real OTP ask (if any) and raises OtpWaitTimeout on no reply.
+        return PROCEED, {
+            "reason": "inline OTP autostart (no READY handshake required)",
+            "portals": list(otp_portals),
+        }
+
+    # ── Legacy READY handshake (BHAGA_OTP_REQUIRE_READY=1) ──────────────────
     if now is None:
         now = datetime.datetime.now(CT)
     if force_request is None:
@@ -174,11 +196,9 @@ def evaluate(
         }
 
     if force_request:
-        # An explicit operator-driven trigger (manual /bhaga-cloud refresh, or a
-        # deploy Retry-Dates rerun) found a stale, unanswered checkpoint. The
-        # nightly suppresses duplicate pings, but here the operator just asked for
-        # this run NOW, so re-post a FRESH READY request (resets the 48h window)
-        # instead of silently deferring — even if the old request is past the cap.
+        # Explicit operator-driven trigger (manual /bhaga-cloud refresh or
+        # Retry-Dates deploy rerun): re-post a fresh READY request to reset
+        # the 48 h window instead of silently deferring.
         return EXIT_PENDING, {
             "reason": "force re-request (explicit trigger) — re-posting READY",
             "first_request": True,

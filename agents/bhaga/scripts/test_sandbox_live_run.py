@@ -412,7 +412,7 @@ class TestVerifyOtpReprompt:
         )
         assert ok, msg
         assert "PASS" in msg
-        assert "BHAGA_OTP_FORCE_REQUEST" in msg
+        assert "re-prompt" in msg
 
     def test_fail_when_no_checkpoint(self):
         ok, msg = slr.verify_otp_reprompt(

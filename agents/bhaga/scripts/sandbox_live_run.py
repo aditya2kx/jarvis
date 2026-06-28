@@ -98,6 +98,7 @@ def build_sandbox_env(
     fresh_scrape: bool = False,
     sheet_from_bq: bool = False,
     otp_force_request: bool = False,
+    gate_only_autostart: bool = False,
 ) -> dict[str, str]:
     """Construct the sandbox job's env overlay.
 
@@ -151,11 +152,24 @@ def build_sandbox_env(
         # error when a scrape batch has duplicate natural keys (e.g. ADP
         # earnings line-items). Safe only because the window covers all history.
         env["BHAGA_RAW_REPLACE"] = "1"
-    # OTP gate mode: set assume-ready (default) or force re-prompt (otp_force_request).
+    # OTP gate mode:
+    #   default supervised (assume-ready=1): operator inline, OTP ask if challenged.
+    #   gate_only_autostart (neither flag): exercises the new inline-autostart default
+    #     — no ASSUME_READY, no REQUIRE_READY → gate returns PROCEED without a READY
+    #     ping; job reaches the pipeline executor; ADP/Square steps skipped so no
+    #     real OTP fires. Used by the nightly-autostart scenario (PR #94 evidence).
+    #   otp_force_request (force-request=1 + require-ready=1): exercises the legacy
+    #     READY checkpoint-and-resume path (otp-reprompt scenario).
     if otp_force_request:
+        env["BHAGA_OTP_REQUIRE_READY"] = "1"
         env["BHAGA_OTP_FORCE_REQUEST"] = "1"
         # Deliberately omit BHAGA_OTP_ASSUME_READY so otp_gate.evaluate hits the
-        # real checkpoint-and-resume path (force re-prompt branch).
+        # real READY checkpoint-and-resume path (force re-prompt branch).
+    elif gate_only_autostart:
+        # Deliberately omit ALL three OTP env vars so the new inline-autostart
+        # default activates: evaluate() returns PROCEED immediately, no READY ping,
+        # no pending_otp checkpoint written to Firestore.
+        pass
     else:
         env["BHAGA_OTP_ASSUME_READY"] = "1"
     # BQ-canonical model path is unconditional in daily_refresh (materialize_model_bq
@@ -609,7 +623,49 @@ def verify_otp_reprompt(
     return True, (
         f"otp_reprompt PASS — fresh checkpoint saved: requested_at={requested_at_str!r} "
         f"(advanced past seeded_at={seeded_at!r}), ready_received=False. "
-        "BHAGA_OTP_FORCE_REQUEST triggered re-prompt correctly on real Cloud Run + Firestore."
+        "BHAGA_OTP_REQUIRE_READY+FORCE_REQUEST triggered re-prompt correctly on real Cloud Run + Firestore."
+    )
+
+
+def verify_nightly_autostart(
+    refresh_date: str,
+    *,
+    collection: str = SANDBOX_RUNS_COLLECTION,
+) -> tuple[bool, str]:
+    """Post-run gate for the nightly-autostart scenario (PR #94 evidence).
+
+    Asserts that daily_refresh ran with the new inline-autostart gate default:
+    - No pending_otp checkpoint was written to Firestore (gate returned PROCEED
+      immediately, no READY ping posted).
+    - The job exited 0 (ensured by the caller — a non-zero rc fails before here).
+    """
+    import datetime as _dt
+    import os as _os
+
+    # Temporarily override the Firestore collection to the sandbox collection.
+    orig = _os.environ.get("BHAGA_FIRESTORE_COLLECTION")
+    try:
+        _os.environ["BHAGA_FIRESTORE_COLLECTION"] = collection
+        from skills.bhaga_config.state_adapter import get_pending_otp
+
+        refresh_date_obj = _dt.date.fromisoformat(refresh_date)
+        pending = get_pending_otp(refresh_date_obj)
+    finally:
+        if orig is None:
+            _os.environ.pop("BHAGA_FIRESTORE_COLLECTION", None)
+        else:
+            _os.environ["BHAGA_FIRESTORE_COLLECTION"] = orig
+
+    if pending is not None:
+        return False, (
+            f"nightly_autostart FAIL — a pending_otp checkpoint WAS written to "
+            f"'{collection}' for {refresh_date}. Expected none: inline-autostart "
+            "gate should return PROCEED without saving any checkpoint or posting READY."
+        )
+    return True, (
+        "nightly_autostart PASS — no pending_otp checkpoint in Firestore for "
+        f"{refresh_date}: otp_gate.evaluate returned PROCEED inline (no READY ping, "
+        "no checkpoint). Inline-autostart default confirmed on real Cloud Run + Firestore."
     )
 
 
@@ -656,12 +712,19 @@ def main(argv: list[str] | None = None) -> int:
     cli.add_argument("--skip", default="",
                      help="Comma-separated pipeline steps to skip so the run is focused "
                           "(e.g. 'adp,reviews,model' for a Square-only scenario).")
-    cli.add_argument("--verify", choices=["item_sales", "otp_reprompt"], default=None,
+    cli.add_argument("--verify",
+                     choices=["item_sales", "otp_reprompt", "nightly_autostart"],
+                     default=None,
                      help="Post-run verification gate; fails the run if the deliverable is absent.")
     cli.add_argument("--otp-force-request", action="store_true",
-                     help="Drop BHAGA_OTP_ASSUME_READY; set BHAGA_OTP_FORCE_REQUEST=1 so "
-                          "otp_gate.evaluate exercises the real force re-prompt path "
-                          "(checkpoint-and-resume) instead of the inline supervised path.")
+                     help="Set BHAGA_OTP_REQUIRE_READY=1 + BHAGA_OTP_FORCE_REQUEST=1 so "
+                          "otp_gate.evaluate exercises the real READY checkpoint-and-resume "
+                          "force re-prompt path instead of the inline default.")
+    cli.add_argument("--gate-only-autostart", action="store_true",
+                     help="Omit all three OTP env vars (ASSUME_READY / REQUIRE_READY / "
+                          "FORCE_REQUEST) so the new inline-autostart default activates: "
+                          "gate returns PROCEED immediately, no READY ping. Use with "
+                          "--verify nightly_autostart.")
     cli.add_argument("--seed-stale-otp-hours", type=int, default=0, metavar="N",
                      help="Before executing the job, seed a stale pending_otp checkpoint "
                           "in sandbox_runs with requested_at=<now-N h>. Use with "
@@ -716,12 +779,17 @@ def main(argv: list[str] | None = None) -> int:
         fresh_scrape=args.fresh_scrape,
         sheet_from_bq=args.sheet_from_bq,
         otp_force_request=args.otp_force_request,
+        gate_only_autostart=args.gate_only_autostart,
     )
     if skip_steps:
         print(f"[sandbox_live_run] scenario scoped — skipping steps: {', '.join(skip_steps)}")
     if args.otp_force_request:
         print("[sandbox_live_run] otp_force_request ON — assume-ready dropped, "
-              "BHAGA_OTP_FORCE_REQUEST=1 set; real otp_gate force-reprompt path active")
+              "BHAGA_OTP_REQUIRE_READY=1 + BHAGA_OTP_FORCE_REQUEST=1 set; "
+              "real otp_gate READY checkpoint-and-resume path active")
+    if args.gate_only_autostart:
+        print("[sandbox_live_run] gate_only_autostart ON — all OTP env vars omitted; "
+              "new inline-autostart default active (no READY ping, PROCEED immediately)")
     assert_sandbox_isolation(env)  # fail loud BEFORE any deploy/execute
     print("[sandbox_live_run] isolation pre-flight OK (sheets/cache/firestore all sandbox)")
 
@@ -765,6 +833,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[sandbox_live_run] verify(otp_reprompt): {verify_msg}")
             if not ok and rc == 0:
                 rc = 2  # re-prompt did not fire → fail loud despite a 0 job exit
+        elif args.verify == "nightly_autostart":
+            ok, verify_msg = verify_nightly_autostart(args.refresh_date)
+            print(f"[sandbox_live_run] verify(nightly_autostart): {verify_msg}")
+            if not ok and rc == 0:
+                rc = 2  # checkpoint found → inline-autostart did not activate
 
         if args.evidence_file:
             _write_evidence(args.evidence_file, run_label=run_label,

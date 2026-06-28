@@ -274,15 +274,34 @@ gcloud secrets versions add <name> --data-file=- --project jarvis-bhaga-prod
 
 ## 8. OTP / 2FA path (cloud is the sole path)
 
-1. The nightly job hits a portal (ADP/Square) that challenges for an OTP.
-2. The job writes `otps/<portal>` in Firestore and **blocks** (checkpoint-and-resume).
-3. The Slack bot DMs the operator in **`D0B67MW6J02`** ("bhaga cloud") asking for the code (or a
-   `READY` handshake before login).
-4. The operator replies in that DM. Slack delivers the event to `POST /slack/events` on the webhook.
-5. The webhook validates the signature, writes the code into `otps/<portal>`, and the job unblocks.
+### Default behaviour (inline autostart, since PR #94)
 
-There is **no laptop listener** anymore. If OTPs are not being delivered, debug the **webhook**
-(logs below) and the Slack app's Events API subscription, not any local process.
+The nightly job **no longer sends a READY-handshake Slack message before starting**. It proceeds
+directly to the ADP/Square scrapes. If ADP's browser session is trusted (the usual case), no OTP
+challenge fires at all.
+
+If ADP *does* challenge for a 2FA code:
+
+1. The runner posts a Slack OTP-code ask to **`D0B67MW6J02`** ("bhaga cloud"): "Reply with your ADP SMS code".
+2. The operator replies in that DM within **15 minutes** (`BHAGA_OTP_WAIT_S=900`). Slack delivers
+   the event to `POST /slack/events` on the webhook, which writes the code into `otps/adp` in
+   Firestore. The runner unblocks and submits the code.
+3. If the operator does **not** reply within 15 minutes, the ADP step is **gracefully skipped**:
+   `otp_skipped_alert` is posted to Slack, the run completes on existing ADP data (exit 0), and
+   the next nightly retries with a fresh browser session.
+
+There is **no laptop listener** anymore. If the OTP code is not being accepted, debug the
+**webhook** (logs below) and the Slack app's Events API subscription, not any local process.
+
+### Rollback: restore the legacy READY handshake
+
+Set `BHAGA_OTP_REQUIRE_READY=1` on the Cloud Run Job to re-enable the two-step flow:
+1. Job posts a READY request to the operator DM, writes a Firestore checkpoint, and exits 0.
+2. Operator replies `READY` (any time within 48 h). Webhook triggers a fresh Cloud Run execution.
+3. Fresh job reads the checkpoint, sees `ready_received=True`, drives the OTP portal inline, and
+   completes normally. After 48 h with no READY: skips OTP steps, alerts, next nightly retries.
+
+See `FEATURE_FLAGS.md` — `BHAGA_OTP_REQUIRE_READY` — for the cleanup timeline.
 
 ### `/bhaga-cloud refresh` — multi-date, lists, and ranges
 
@@ -305,8 +324,9 @@ ascending. Up to 31 dates per command; larger ranges are rejected with an error.
 
 - Date already covered in `bhaga.square_daily_rollup` (BQ) → **recompute-only**: executes with
   `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1`. No portal login, no OTP.
-- Date not covered (or BQ probe fails — fail-open) → **full scrape + OTP**: executes with
-  `BHAGA_OTP_FORCE_REQUEST=1`. The job re-prompts READY even if a stale checkpoint exists.
+- Date not covered (or BQ probe fails — fail-open) → **full scrape (inline OTP)**: starts inline;
+  ADP will only request an OTP code if the browser session is challenged. No READY prompt is sent
+  up-front. `BHAGA_OTP_FORCE_REQUEST` is no longer injected.
 
 Both modes add `BHAGA_IGNORE_HALT=1` (operator-driven backfill includes the fix).
 
@@ -322,24 +342,6 @@ Parse errors (bad date, over-cap, unknown token) are still synchronous and appea
 The same two-phase pattern applies to every `/bhaga-cloud` command: `status`, `config get/set`, `training set/rm`, `alias set`, and `exclude set` all return an immediate ack and post their real result as an ephemeral `response_url` follow-up (operator-private).
 
 **OTP concurrency caveat:** if multiple full-scrape dates are enqueued concurrently, `_find_pending_portal_for_agent` picks the *newest* pending OTP. ADP's distributed scrape lock serialises browser logins; Square uses the REST API (no browser, no OTP since 2026-06-23). The only OTP portal that fires a live SMS is ADP.
-
-### Re-prompting for OTP on explicit triggers
-
-The **nightly** job suppresses duplicate Slack pings: if a `pending_otp` checkpoint already exists
-in Firestore for a date (an unanswered READY request), the nightly exits quietly without re-posting.
-
-Explicit operator-driven triggers behave differently:
-
-- **`/bhaga-cloud refresh <dates>`** (slash command) — for each uncovered date, always sets
-  `BHAGA_OTP_FORCE_REQUEST=1`. The job re-saves the checkpoint with a fresh `requested_at` and
-  re-posts the READY prompt to Slack, resetting the 48h window. Stale or cap-expired markers are
-  cleared and re-prompted. Covered dates skip portals entirely.
-- **`Retry-Dates` full-scrape reruns** (deploy.yml) — `scripts/trigger_dated_refresh.py` sets the
-  same flag when the date is not yet covered in BigQuery (full-scrape mode). Recompute-only reruns
-  skip portal login entirely and never touch the OTP checkpoint.
-
-This means if you issue `/bhaga-cloud refresh 2026-06-14` and a stale checkpoint from the previous
-night's run exists, you will get a fresh Slack prompt — not silence.
 
 ---
 
@@ -886,10 +888,12 @@ OTP reply needed, the job exits `EXIT_PENDING`. Pattern and knobs:
 
 | Knob | What it does |
 |---|---|
-| `otp_force_request: True` | Sets `BHAGA_OTP_FORCE_REQUEST=1` in the Cloud Run job env; drops `BHAGA_OTP_ASSUME_READY` so `otp_gate.evaluate` exercises the real checkpoint path |
+| `otp_force_request: True` | Sets `BHAGA_OTP_REQUIRE_READY=1` and `BHAGA_OTP_FORCE_REQUEST=1` in the Cloud Run job env; drops `BHAGA_OTP_ASSUME_READY` so `otp_gate.evaluate` exercises the real READY checkpoint path (rollback mode) |
 | `seed_stale_otp_hours: 72` | Before the job runs, seeds a stale `pending_otp` checkpoint (72h old) in `sandbox_runs` so the job finds an unanswered marker |
 | `verify: otp_reprompt` | After the job exits, reads `sandbox_runs` and asserts `requested_at` advanced past the seeded value (proves re-prompt fired) and `ready_received=False` |
 
+The `otp-reprompt` scenario requires `BHAGA_OTP_REQUIRE_READY=1` to exercise the READY checkpoint
+path (the default inline-autostart mode would skip checkpointing and proceed directly).
 The run posts **one** `[SANDBOX]` Slack READY ping — part of the proof; ignore it (no reply needed).
 Use this pattern as the prototype for any PR whose key logic fires at the Firestore / OTP gate / Cloud
 Run env layer (unit tests can only mock those). Adapt: change `skip` to keep only the steps that

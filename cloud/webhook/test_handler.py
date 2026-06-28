@@ -547,7 +547,7 @@ class TestSlashCommands:
         mock_trigger.assert_called_once()
         env_pairs = dict(mock_trigger.call_args[0][1])
         assert env_pairs["REFRESH_DATE"] == "2025-05-26"
-        assert env_pairs["BHAGA_OTP_FORCE_REQUEST"] == "1"
+        assert "BHAGA_OTP_FORCE_REQUEST" not in env_pairs
         assert env_pairs["BHAGA_IGNORE_HALT"] == "1"
 
     @patch.object(handler, "_get_latest_run_summary", return_value=":white_check_mark: All good")
@@ -683,10 +683,12 @@ class TestBuildRefreshEnvOverrides:
         assert env["BHAGA_IGNORE_HALT"] == "1"
         assert "BHAGA_OTP_FORCE_REQUEST" not in env
 
-    def test_full_scrape_has_otp_flag(self):
+    def test_full_scrape_starts_inline_no_force_request(self):
+        # Full-scrape dates start inline (default gate mode); BHAGA_OTP_FORCE_REQUEST
+        # is no longer injected — the nightly handles any real ADP challenge itself.
         env = dict(handler._build_refresh_env_overrides("2026-06-14", recompute_only=False))
         assert env["REFRESH_DATE"] == "2026-06-14"
-        assert env["BHAGA_OTP_FORCE_REQUEST"] == "1"
+        assert "BHAGA_OTP_FORCE_REQUEST" not in env
         assert env["BHAGA_IGNORE_HALT"] == "1"
         assert "BHAGA_SKIP_SQUARE" not in env
         assert "BHAGA_SKIP_ADP" not in env
@@ -825,14 +827,14 @@ class TestRefreshMultiDate:
 
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     def test_uncovered_date_gets_full_scrape_env(self, mock_trigger, monkeypatch):
-        """A BQ-uncovered date must produce the OTP flag and no skip flags."""
+        """A BQ-uncovered date triggers a full scrape (inline OTP, no force flag)."""
         follow_ups = _sync_dispatch(monkeypatch)
         monkeypatch.setattr(handler, "_date_is_covered", lambda d, dataset=None: False)
         with app.test_client() as c:
             resp = self._call_refresh(c, "2026-06-14")
         assert resp.status_code == 200
         env = dict(mock_trigger.call_args[0][1])
-        assert env.get("BHAGA_OTP_FORCE_REQUEST") == "1"
+        assert "BHAGA_OTP_FORCE_REQUEST" not in env
         assert "BHAGA_SKIP_SQUARE" not in env
         # Mode label is in the follow-up, not the ack
         assert "full+OTP" not in resp.get_json()["text"]
@@ -849,7 +851,7 @@ class TestRefreshMultiDate:
         assert resp.status_code == 200
         mock_trigger.assert_called_once()
         env = dict(mock_trigger.call_args[0][1])
-        assert env.get("BHAGA_OTP_FORCE_REQUEST") == "1"
+        assert "BHAGA_OTP_FORCE_REQUEST" not in env
 
     @patch.object(handler, "_trigger_cloud_run_job_with_env")
     def test_mixed_covered_uncovered_per_date_env(self, mock_trigger, monkeypatch):
@@ -864,7 +866,7 @@ class TestRefreshMultiDate:
         call_map = {c[0][0]: dict(c[0][1]) for c in mock_trigger.call_args_list}
         assert "BHAGA_SKIP_SQUARE" in call_map["2026-06-14"]
         assert "BHAGA_OTP_FORCE_REQUEST" not in call_map["2026-06-14"]
-        assert call_map["2026-06-15"].get("BHAGA_OTP_FORCE_REQUEST") == "1"
+        assert "BHAGA_OTP_FORCE_REQUEST" not in call_map["2026-06-15"]
         assert "BHAGA_SKIP_SQUARE" not in call_map["2026-06-15"]
         # Mode labels are in the follow-up, not the ack
         ack_text = resp.get_json()["text"]
@@ -1620,22 +1622,9 @@ class TestAlreadyRunningGuard:
             if old is not None:
                 os.environ["CLOUD_RUN_JOB_NAME"] = old
 
-    def test_force_otp_request_adds_env_flag(self):
-        import sys
-        mock_rv2 = self._mock_run_v2()
-        with patch.object(handler, "_is_already_running", return_value=False), \
-             patch.dict(sys.modules, {"google.cloud.run_v2": mock_rv2}):
-            handler._trigger_cloud_run_job(
-                "2026-06-14", job_name="projects/p/jobs/bhaga", force_otp_request=True,
-            )
-        names = {
-            c.kwargs.get("name"): c.kwargs.get("value")
-            for c in mock_rv2.EnvVar.call_args_list
-        }
-        assert names.get("REFRESH_DATE") == "2026-06-14"
-        assert names.get("BHAGA_OTP_FORCE_REQUEST") == "1"
-
-    def test_no_force_omits_env_flag(self):
+    def test_trigger_sets_refresh_date_no_force_flag(self):
+        # _trigger_cloud_run_job (READY-resume path) no longer injects
+        # BHAGA_OTP_FORCE_REQUEST — the default gate mode handles the OTP inline.
         import sys
         mock_rv2 = self._mock_run_v2()
         with patch.object(handler, "_is_already_running", return_value=False), \
@@ -1645,4 +1634,5 @@ class TestAlreadyRunningGuard:
             c.kwargs.get("name"): c.kwargs.get("value")
             for c in mock_rv2.EnvVar.call_args_list
         }
+        assert names.get("REFRESH_DATE") == "2026-06-14"
         assert "BHAGA_OTP_FORCE_REQUEST" not in names

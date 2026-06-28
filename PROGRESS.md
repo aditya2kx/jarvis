@@ -20,6 +20,16 @@
 
 **What changed:** `scripts/new_requirement.py`, `scripts/test_new_requirement.py` (+11 tests, 31 total), `docs/WORKFLOW.md` (branch naming section), `.cursor/skills/jarvis-new-task/SKILL.md`. Evidence tier: unit-only (waiver: lifecycle intake scripts only, no BHAGA runtime).
 
+## 2026-06-28 — Auto-start BHAGA incremental runs (PR #94, branch fix/https-github-com-aditya2kx-jarvis-issues)
+
+**Status:** In flight — all code milestones (M1–M3) implemented; M4 sandbox evidence in progress.
+
+- **Gate inverted (M1):** `otp_gate.evaluate()` now defaults to PROCEED inline (no READY handshake). Legacy two-step READY handshake preserved behind `BHAGA_OTP_REQUIRE_READY=1` rollback flag. `OtpWaitTimeout` exception added to `otp_gate.py`; `runner.py` raises it instead of `RuntimeError` when the ADP OTP inline wait expires.
+- **Graceful ADP skip (M2):** `daily_refresh` results loop catches `OtpWaitTimeout` on the ADP pipeline, posts `otp_skipped_alert`, and continues — no hard failure, exit 0, next nightly retries. `_is_otp_wait_timeout()` helper added (duck-typed, same pattern as `_is_scrape_lock_held`).
+- **Dead code removed (M3):** `BHAGA_OTP_FORCE_REQUEST=1` injection removed from `_build_refresh_env_overrides` (handler.py), `_build_env_overrides` (trigger_dated_refresh.py), and `_trigger_cloud_run_job` (handler.py). All related test assertions updated. `BHAGA_OTP_REQUIRE_READY` registered in `FEATURE_FLAGS.md`. RUNBOOK §8, `bhaga.mdc`, `README.md` updated lock-step.
+- **Tests:** `test_otp_gate.py` (28 tests, new inline-proceed + OtpWaitTimeout tests; legacy tests gated behind `BHAGA_OTP_REQUIRE_READY=1`); `test_daily_refresh_otp_gate.py` (8 tests, new inline-autostart + graceful-timeout tests); `test_daily_refresh.py` (82 tests, `TestOtpForceRequestIntegration` updated); `test_handler.py` + `test_trigger_dated_refresh.py` expectations updated.
+- **M4 evidence:** `nightly-autostart` sandbox scenario to be added + sandbox-live runs.
+
 ## 2026-06-27 — Order Quality per-source P95 chart + Grafana screenshot harness + 3 CI gates (PR #86, branch fix/bhaga-order-quality-dashboard)
 
 **Status:** In flight — all milestones implemented; PR open, babysitting to green.

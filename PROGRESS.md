@@ -1,5 +1,14 @@
 # Jarvis Build Progress
 
+## 2026-06-28 — pr_triage.py: log drilling, pending awareness, waiver floor (Issue #105, branch fix/i105-https)
+
+Three post-merge gaps from PR #104's `scripts/pr_triage.py` closed in one PR:
+- **Gap 1 — inline log tails:** `_collect_failing_checks` now fetches the last 50 lines of each failing job's log via `gh run view --log-failed` (parses `run_id`/`job_id` from the Actions URL). Agent can diagnose without leaving the terminal.
+- **Gap 2 — pending check awareness:** `_collect_pending_checks` (PENDING/IN_PROGRESS/QUEUED/WAITING); `_has_work` returns True ("wait, don't push"); human report prints `CI: N checks still running`. Race-safety documented.
+- **Gap 3 — waiver-aware confidence floor:** `_pr_has_waiver` reads PR body or `evidence-waiver` label; lowers blocking floor 95%→80% for `unit-only` waivers (mirrors `check_evidence_confidence.py`). Eliminates false "work remaining" on waived PRs.
+- **Tests:** 37 → 63 (26 new covering all three gaps + regression pass).
+- **Docs:** `docs/contributing/review-bot.md` updated to describe new `pr_triage.py` output sections.
+
 ## 2026-06-28 — Smarter PR babysitting: batch triage aggregator (Issue #102, branch fix/i102-https)
 
 **Status:** In flight — implementation done; PR pending.

@@ -38,9 +38,14 @@ cycles mean N pushes = N paid reviews.  Batch all fixes into one push = 1 paid r
 ```bash
 python3 scripts/pr_triage.py --pr N
 ```
-This enumerates every blocking signal: unresolved inline threads (classified as
-claude-bot / bugbot / human), failing CI checks with log links, behind-base / conflict
-flags, and the latest Claude verdict + evidence-confidence score.
+This enumerates every blocking signal:
+- **unresolved_threads** — inline review-comment roots with no reply, classified as `claude-bot` / `bugbot` / `human`.
+- **failing_checks** — CI checks in FAILURE / ERROR / CANCELLED state, each with an inline `log_tail` (last 50 lines of `gh run view --log-failed`) so the agent can diagnose without leaving the terminal.
+- **pending_checks** — CI checks still in PENDING / IN_PROGRESS / QUEUED / WAITING state. These are blocking ("wait, don't push yet"). Race-safety guarantee: if a pending check later fails, the merge-protection gate blocks the merge and the next `pr_triage` round surfaces it in `failing_checks`.
+- **merge_status** — BEHIND base or DIRTY (merge conflict) flags.
+- **claude_verdict** — latest Claude bot verdict + evidence-confidence score. The blocking floor is 95% by default, lowered to 80% when the PR carries `Evidence tier: unit-only (waiver: ...)` in its body or an `evidence-waiver` label (mirrors `check_evidence_confidence.py`).
+
+Add `--json` to get machine-readable output including all sections.
 
 **Step 2 — fix everything before pushing:**
 - Resolve merge conflicts.

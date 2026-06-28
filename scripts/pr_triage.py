@@ -117,18 +117,100 @@ def _collect_unresolved_threads(pr: int, repo: str) -> list[dict]:
 
 
 _FAILING_STATES = {"FAILURE", "ERROR", "CANCELLED"}
+_PENDING_STATES = {"PENDING", "IN_PROGRESS", "QUEUED", "WAITING"}
+_LOG_TAIL_LINES = 50
+# Matches GitHub Actions URLs: .../runs/<run_id>/job/<job_id>
+_RUN_JOB_RE = re.compile(r"/runs/(\d+)/job/(\d+)")
+
+# Waiver / confidence-floor constants (mirror check_evidence_confidence.py)
+_CONFIDENCE_FLOOR = 95
+_WAIVER_FLOOR = 80
+_WAIVER_PATTERN = re.compile(
+    r"Evidence\s+tier:\s*unit-only\b[^\n]*waiver\s*:\s*\S",
+    re.IGNORECASE,
+)
+
+
+def _parse_run_job(link: str) -> tuple[str | None, str | None]:
+    """Extract run_id and job_id from a GitHub Actions URL, or return (None, None)."""
+    m = _RUN_JOB_RE.search(link or "")
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
+def _fetch_log_tail(run_id: str, job_id: str, max_lines: int = _LOG_TAIL_LINES) -> str:
+    """Return the last `max_lines` lines of the failing job's log, or '' on any error.
+
+    Never raises or calls sys.exit — callers treat empty string as "log unavailable".
+    """
+    try:
+        out = subprocess.run(
+            ["gh", "run", "view", run_id, "--job", job_id, "--log-failed"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return ""
+    lines = out.splitlines()
+    return "\n".join(lines[-max_lines:])
 
 
 def _collect_failing_checks(pr: int) -> list[dict]:
-    """Return CI checks that are failing/erroring/cancelled."""
+    """Return CI checks that are failing/erroring/cancelled, with inline log tail."""
+    raw = _gh_json(["pr", "checks", str(pr), "--json", "name,state,link"])
+    if not isinstance(raw, list):
+        return []
+    result = []
+    for c in raw:
+        if (c.get("state") or "").upper() not in _FAILING_STATES:
+            continue
+        link = c.get("link", "")
+        run_id, job_id = _parse_run_job(link)
+        log_tail = _fetch_log_tail(run_id, job_id) if run_id and job_id else ""
+        result.append({
+            "name": c.get("name", ""),
+            "state": c.get("state", ""),
+            "link": link,
+            "log_tail": log_tail,
+        })
+    return result
+
+
+def _collect_pending_checks(pr: int) -> list[dict]:
+    """Return CI checks that are still running (PENDING / IN_PROGRESS / QUEUED / WAITING).
+
+    Race-safety guarantee: if a pending check later fails, the merge-protection gate
+    blocks the merge and the *next* pr_triage round picks it up in failing_checks.
+    Nothing is silently lost — pending is informational about "not ready yet", not "clean".
+    """
     raw = _gh_json(["pr", "checks", str(pr), "--json", "name,state,link"])
     if not isinstance(raw, list):
         return []
     return [
         {"name": c.get("name", ""), "state": c.get("state", ""), "link": c.get("link", "")}
         for c in raw
-        if (c.get("state") or "").upper() in _FAILING_STATES
+        if (c.get("state") or "").upper() in _PENDING_STATES
     ]
+
+
+def _pr_has_waiver(pr: int, repo: str) -> bool:
+    """Return True if this PR carries a unit-only evidence waiver.
+
+    Checks two sources (either sufficient):
+    1. PR body containing 'Evidence tier: unit-only (waiver: ...)'.
+    2. 'evidence-waiver' label on the PR.
+
+    Returns False on any API error (safe default: apply stricter floor).
+    Mirrors the convention in check_evidence_confidence.py::_has_waiver().
+    """
+    try:
+        data = _gh_json(["pr", "view", str(pr), "--repo", repo, "--json", "body,labels"])
+    except SystemExit:
+        return False
+    if not isinstance(data, dict):
+        return False
+    labels = {(lbl.get("name") or "") for lbl in (data.get("labels") or [])}
+    if "evidence-waiver" in labels:
+        return True
+    return bool(_WAIVER_PATTERN.search(data.get("body") or ""))
 
 
 def _collect_merge_status(pr: int, repo: str) -> dict:
@@ -211,16 +293,26 @@ def collect(pr: int, repo: str) -> dict:
         "repo": repo,
         "unresolved_threads": _collect_unresolved_threads(pr, repo),
         "failing_checks": _collect_failing_checks(pr),
+        "pending_checks": _collect_pending_checks(pr),
         "merge_status": _collect_merge_status(pr, repo),
         "claude_verdict": _collect_claude_verdict(pr, repo),
+        "has_waiver": _pr_has_waiver(pr, repo),
     }
 
 
 def _has_work(triage: dict) -> bool:
-    """Return True if any blocking signal exists."""
+    """Return True if any blocking signal exists.
+
+    Pending checks are blocking — they mean "wait, don't push yet". If they
+    later fail the merge-protection gate catches them; next triage round surfaces them.
+    The confidence floor is lowered to _WAIVER_FLOOR (80) when the PR carries a
+    unit-only evidence waiver (mirrors check_evidence_confidence.py behaviour).
+    """
     if triage["unresolved_threads"]:
         return True
     if triage["failing_checks"]:
+        return True
+    if triage.get("pending_checks"):
         return True
     ms = triage["merge_status"]
     if ms.get("behind") or ms.get("conflict"):
@@ -228,7 +320,8 @@ def _has_work(triage: dict) -> bool:
     cv = triage["claude_verdict"]
     if cv.get("verdict") == "REQUEST_CHANGES":
         return True
-    if cv.get("confidence") is not None and cv["confidence"] < 95:
+    floor = _WAIVER_FLOOR if triage.get("has_waiver") else _CONFIDENCE_FLOOR
+    if cv.get("confidence") is not None and cv["confidence"] < floor:
         return True
     return False
 
@@ -250,6 +343,15 @@ def _print_report(triage: dict) -> None:
     if not ms.get("behind") and not ms.get("conflict"):
         print("merge status: clean")
 
+    # Pending CI
+    pending = triage.get("pending_checks", [])
+    if pending:
+        print(f"\nCI: {len(pending)} check(s) still running — wait before pushing:")
+        for c in pending:
+            print(f"  [{c['state']}] {c['name']}")
+            if c.get("link"):
+                print(f"         {c['link']}")
+
     # Failing CI
     checks = triage["failing_checks"]
     if checks:
@@ -258,7 +360,12 @@ def _print_report(triage: dict) -> None:
             print(f"  [{c['state']}] {c['name']}")
             if c.get("link"):
                 print(f"         {c['link']}")
-    else:
+            if c.get("log_tail"):
+                print("         --- log tail ---")
+                for line in c["log_tail"].splitlines():
+                    print(f"         {line}")
+                print("         --- end log tail ---")
+    elif not pending:
         print("\nCI checks: all passing")
 
     # Claude verdict
@@ -266,7 +373,9 @@ def _print_report(triage: dict) -> None:
     if cv:
         verdict_str = cv.get("verdict", "UNKNOWN")
         conf = cv.get("confidence")
-        conf_str = f"  Evidence confidence: {conf}%" if conf is not None else ""
+        has_waiver = triage.get("has_waiver", False)
+        floor = _WAIVER_FLOOR if has_waiver else _CONFIDENCE_FLOOR
+        conf_str = f"  Evidence confidence: {conf}% (floor: {floor}%{', waiver active' if has_waiver else ''})" if conf is not None else ""
         print(f"\nCLAUDE VERDICT: {verdict_str}{conf_str}")
         if cv.get("evidence_gaps"):
             print(f"  Evidence gaps:\n    {cv['evidence_gaps'][:300]}")

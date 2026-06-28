@@ -71,21 +71,7 @@ def migrate_training_shifts(
     Pass ``--allow-closed-periods`` on the CLI (or ``open_period_only=False``)
     to ingest all rows regardless of period status.
     """
-    from agents.bhaga.scripts.update_model_sheet import (  # noqa: PLC0415
-        _read_training_shifts_from_sheet as _sheet_reader,
-    )
     model_sid = resolve_sheet_id("bhaga_model", profile)
-
-    # Temporarily patch model_inputs so the Sheet reader still reads the Sheet.
-    import agents.bhaga.scripts.model_inputs as _mi_mod
-    from unittest import mock
-    with mock.patch.object(_mi_mod, "read_training_shifts", side_effect=NotImplementedError):
-        # Since _read_training_shifts_from_sheet now delegates to model_inputs,
-        # we need to call the raw Sheet API directly here.
-        pass
-
-    # Call the sheet reader directly (it delegates to BQ now, which is empty).
-    # Instead use the underlying sheet read logic directly.
     import urllib.parse
     import urllib.request
 

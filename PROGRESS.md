@@ -5,6 +5,21 @@
 - **Part A — per-review Payroll table:** Added BQ view `vw_review_bonus_detail` (`core/migrations/026_review_bonus_detail.sql`) over `google_reviews` — one row per paid review (`total_bonus > 0`), columns: `post_ts_ct`, `post_date_ct`, `reviewer`, `rating`, `comment`, `review_url`, `employees_considered`, `member_count`, `per_employee_bonus` (= `ROUND(total_bonus / member_count, 2)`), `total_bonus`, `shift_date_credited`, `shift_assignment_reason`. Added Grafana panel 76 "Google Reviews accounted for in Payroll" under section "6. Payroll" in `agents/bhaga/grafana/dashboard.json`. View and panel deployed automatically on merge via `ensure_schema()` + `grafana-dashboard-sync.yml`.
 - **Part B — training-shift ingest guard:** Added `open_period_only=True` parameter to `migrate_inputs_to_bq.py::migrate_training_shifts`. By default only rows in the current open pay period are ingested; closed-period rows are skipped with a greppable `[migrate] SKIP closed-period:` breadcrumb. CLI: `--allow-closed-periods` disables the guard for explicit backfills. Docs updated in `DOMAIN.md` §6b and `scripts/README.md`. Post-merge data step: run `migrate_inputs_to_bq --dry-run` to confirm new Sheet rows, then real MERGE, then `trigger_dated_refresh.py` for the open period to recompute `our_calc`.
 
+## 2026-06-28 — Unique branch slug per GitHub issue (branch fix/consider-above-as-new-requirements-so)
+
+**Status:** In flight — M1–M3 implemented; PR pending.
+
+**Problem:** `new_requirement.default_branch()` derived branch names solely from requirement text, so two different issues with similar or boilerplate phrasing (e.g. "consider above as new requirements…") would collide on the same `fix/<slug>` branch. `create_worktree` hard-aborted on "branch already exists". PR #95 fixed duplicate *issues* but not duplicate *branches*.
+
+**Fix:**
+- `_sanitize_requirement()` — strips `#NN`/issue-URL refs and a curated list of meta-instruction preamble phrases before slugging, so the branch slug reflects the actual task.
+- `default_branch(issue_num=N, existing=…)` — embeds the issue number when known (`fix/i{N}-<slug>`), guaranteeing two different issues always produce distinct branches even with identical requirement text.
+- `_disambiguate()` — collision fallback for the create-path (no issue yet): appends `-2`, `-3`, … when `fix/<slug>` already exists locally or on `origin`.
+- `_existing_branches(repo_root)` — best-effort set of local + remote branch names; degrades to empty set on any error.
+- `main()` and `--split` loop: issue ref resolved before branch name so `i{N}` can be embedded.
+
+**What changed:** `scripts/new_requirement.py`, `scripts/test_new_requirement.py` (+11 tests, 31 total), `docs/WORKFLOW.md` (branch naming section), `.cursor/skills/jarvis-new-task/SKILL.md`. Evidence tier: unit-only (waiver: lifecycle intake scripts only, no BHAGA runtime).
+
 ## 2026-06-27 — Order Quality per-source P95 chart + Grafana screenshot harness + 3 CI gates (PR #86, branch fix/bhaga-order-quality-dashboard)
 
 **Status:** In flight — all milestones implemented; PR open, babysitting to green.

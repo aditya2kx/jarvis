@@ -163,5 +163,39 @@ class TestG3GrafanaPathAwareCheck(unittest.TestCase):
         self.assertIn("screenshot", reason.lower())
 
 
+class TestBacktickTierDetection(unittest.TestCase):
+    """G4: backtick-wrapped Evidence tier must be caught as an error."""
+
+    def _predict(self, body):
+        with patch.object(cer, "_diff_touches", return_value=False):
+            return predict(body)
+
+    def test_backtick_wrapped_unit_only_waiver_fails(self):
+        """The canonical mistake: wrapping the waiver in backticks defeats regex matching."""
+        body = "Evidence tier: `unit-only (waiver: lifecycle intake scripts only)`\n"
+        ok, reason = self._predict(body)
+        self.assertFalse(ok, "backtick-wrapped waiver must be rejected")
+        self.assertIn("backtick", reason.lower())
+
+    def test_backtick_wrapped_sandbox_live_fails(self):
+        body = "Evidence tier: `sandbox-live`\n"
+        ok, reason = self._predict(body)
+        self.assertFalse(ok)
+        self.assertIn("backtick", reason.lower())
+
+    def test_plain_unit_only_waiver_still_passes(self):
+        """Un-wrapped waiver must continue to pass."""
+        body = "Evidence tier: unit-only (waiver: lifecycle intake scripts only)\n"
+        ok, reason = self._predict(body)
+        self.assertTrue(ok, f"plain waiver should pass: {reason}")
+
+    def test_backtick_tier_error_message_is_actionable(self):
+        """Error message must tell the author exactly what to remove."""
+        body = "Evidence tier: `unit-only (waiver: foo)`\n"
+        _, reason = self._predict(body)
+        self.assertIn("backtick", reason.lower())
+        self.assertIn("Evidence tier:", reason)
+
+
 if __name__ == "__main__":
     unittest.main()

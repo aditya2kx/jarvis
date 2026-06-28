@@ -31,6 +31,11 @@ the requirement text (e.g. `/jarvis-new-task fix the auth bug #42`), the script
 auto-detects it and links the existing issue instead of creating a new one.  Pass it
 through verbatim — do **not** ask a clarifying question about the issue number.
 
+**Unique branch per issue:** when `#NN` or a URL is detected, the branch is named
+`fix/i{N}-<slug>`, guaranteeing that two different issues never share a branch even if
+the requirement text is identical.  If no issue number is present the branch is
+`fix/<slug>` with an automatic `-2`, `-3`, … suffix on collision.
+
 4. After the script launches (it creates or links a worktree, branch, GitHub issue, and opens a new Cursor window), **stop**. Do NOT continue implementing in the current chat.
 5. Confirm to the operator that the new worktree is being set up and that they should continue work in the new Cursor window.
 

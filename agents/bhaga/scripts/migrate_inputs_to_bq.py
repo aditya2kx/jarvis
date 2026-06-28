@@ -164,9 +164,11 @@ def migrate_training_shifts(
                 )
             out = in_open
         else:
-            print(
-                "  [migrate] WARN: no pay_periods_anchor_end_date in store profile "
-                "— open-period filter skipped; all rows will be ingested"
+            raise RuntimeError(
+                f"open_period_only=True but store profile for {store!r} has no "
+                f"pay_periods_anchor_end_date under adp_run. "
+                f"Either add the anchor date to the store profile or pass "
+                f"--allow-closed-periods to disable the guard."
             )
 
     if not out:

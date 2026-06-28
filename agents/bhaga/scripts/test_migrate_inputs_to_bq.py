@@ -105,6 +105,50 @@ class TestOpenPeriodFilter(unittest.TestCase):
         rows = _run(["2026-05-31"])  # closed_end = 2026-05-31
         self.assertEqual(rows, [])
 
+    def test_missing_anchor_raises_when_guard_on(self):
+        """Missing pay_periods_anchor_end_date is a hard error under open_period_only=True."""
+        bad_profile = {
+            "google_sheets": {"bhaga_model": {"spreadsheet_id": "fake-sid"}},
+            "adp_run": {},  # no anchor
+        }
+        captured: list[dict] = []
+
+        def _fake_load(_t, rows, **_kw):
+            captured.extend(rows)
+
+        with (
+            mock.patch.object(_mod, "refresh_access_token", return_value="tok"),
+            mock.patch.object(_mod, "resolve_sheet_id", return_value="fake-sid"),
+            mock.patch("urllib.request.urlopen", return_value=_sheet_response(["2026-06-05"])),
+            mock.patch.object(_mod, "load_rows", side_effect=_fake_load),
+            mock.patch.object(_mod, "_today_central", return_value=_TODAY_CT),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                _mod.migrate_training_shifts(
+                    bad_profile, "palmetto",
+                    dry_run=False,
+                    open_period_only=True,
+                )
+        self.assertIn("pay_periods_anchor_end_date", str(ctx.exception))
+        self.assertEqual(captured, [], "no rows must be written on guard error")
+
+    def test_real_palmetto_profile_has_required_keys(self):
+        """Real palmetto.json must have the keys the guard depends on."""
+        import json, pathlib
+        profile_path = (
+            pathlib.Path(__file__).resolve().parents[1]
+            / "knowledge-base" / "store-profiles" / "palmetto.json"
+        )
+        profile = json.loads(profile_path.read_text())
+        adp = profile.get("adp_run", {})
+        self.assertIn(
+            "pay_periods_anchor_end_date", adp,
+            "palmetto.json must have adp_run.pay_periods_anchor_end_date for the open-period guard",
+        )
+        self.assertIn("pay_frequency", adp)
+        import datetime
+        datetime.date.fromisoformat(adp["pay_periods_anchor_end_date"])
+
 
 if __name__ == "__main__":
     unittest.main()

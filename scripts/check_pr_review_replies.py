@@ -87,24 +87,21 @@ def _check_issue_comments(repo: str, pr: int) -> list[str]:
     all_comments = _gh_json(["api", "--paginate", f"repos/{repo}/issues/{pr}/comments"])
 
     errors = []
-    # Track the index of the last agent reply seen as we scan forward.
-    last_agent_idx = -1
-    # Collect (idx, comment) pairs for operator comments that need a reply.
-    pending_operator: list[tuple[int, dict]] = []
+    # Collect operator comments that still need a subsequent agent reply.
+    pending_operator: list[dict] = []
 
-    for idx, c in enumerate(all_comments):
+    for c in all_comments:
         login = c.get("user", {}).get("login", "")
         if login in _IGNORED_LOGINS:
             continue
         if login in _AGENT_LOGINS:
             # This agent comment addresses all pending operator comments before it.
             pending_operator.clear()
-            last_agent_idx = idx
         elif not _is_bot(login):
             # Human/operator comment — needs a subsequent agent reply.
-            pending_operator.append((idx, c))
+            pending_operator.append(c)
 
-    for _idx, c in pending_operator:
+    for c in pending_operator:
         snippet = " ".join((c.get("body") or "").split())[:120]
         errors.append(
             f"  [issue comment] id={c['id']} by {c['user']['login']}\n"

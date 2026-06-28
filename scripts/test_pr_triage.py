@@ -15,8 +15,12 @@ from scripts.pr_triage import (
     _collect_claude_verdict,
     _collect_failing_checks,
     _collect_merge_status,
+    _collect_pending_checks,
     _collect_unresolved_threads,
+    _fetch_log_tail,
     _has_work,
+    _parse_run_job,
+    _pr_has_waiver,
     collect,
     main,
 )
@@ -270,8 +274,10 @@ class TestHasWork(unittest.TestCase):
             "repo": "owner/repo",
             "unresolved_threads": [],
             "failing_checks": [],
+            "pending_checks": [],
             "merge_status": {"behind": False, "conflict": False, "raw": "CLEAN"},
             "claude_verdict": {"verdict": "APPROVE", "confidence": 97, "evidence_gaps": ""},
+            "has_waiver": False,
         }
 
     def test_clean_is_false(self):
@@ -329,8 +335,10 @@ class TestExitCodes(unittest.TestCase):
             "repo": repo,
             "unresolved_threads": [],
             "failing_checks": [],
+            "pending_checks": [],
             "merge_status": {"behind": False, "conflict": False, "raw": "CLEAN"},
             "claude_verdict": {"verdict": "APPROVE", "confidence": 98, "evidence_gaps": ""},
+            "has_waiver": False,
         }
 
     def _mock_work_collect(self, pr, repo):
@@ -351,6 +359,201 @@ class TestExitCodes(unittest.TestCase):
              patch("scripts.pr_triage._repo", return_value="owner/repo"):
             code = main(argv=[])
         self.assertEqual(code, 1)
+
+
+# ---------------------------------------------------------------------------
+# Gap 1 — log tail helpers
+# ---------------------------------------------------------------------------
+
+class TestParseRunJob(unittest.TestCase):
+    def test_valid_url(self):
+        link = "https://github.com/owner/repo/actions/runs/12345/job/67890"
+        run_id, job_id = _parse_run_job(link)
+        self.assertEqual(run_id, "12345")
+        self.assertEqual(job_id, "67890")
+
+    def test_malformed_url_returns_none(self):
+        run_id, job_id = _parse_run_job("https://github.com/owner/repo/actions")
+        self.assertIsNone(run_id)
+        self.assertIsNone(job_id)
+
+    def test_empty_string(self):
+        run_id, job_id = _parse_run_job("")
+        self.assertIsNone(run_id)
+        self.assertIsNone(job_id)
+
+    def test_none_handled(self):
+        run_id, job_id = _parse_run_job(None)
+        self.assertIsNone(run_id)
+
+
+class TestFetchLogTail(unittest.TestCase):
+    def test_returns_last_n_lines(self):
+        fake_output = "\n".join([f"line {i}" for i in range(100)])
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.stdout = fake_output
+            tail = _fetch_log_tail("123", "456", max_lines=5)
+        lines = tail.splitlines()
+        self.assertEqual(len(lines), 5)
+        self.assertEqual(lines[-1], "line 99")
+
+    def test_CalledProcessError_returns_empty(self):
+        import subprocess as _sp
+        with patch("subprocess.run", side_effect=_sp.CalledProcessError(1, "gh")):
+            tail = _fetch_log_tail("123", "456")
+        self.assertEqual(tail, "")
+
+    def test_FileNotFoundError_returns_empty(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            tail = _fetch_log_tail("123", "456")
+        self.assertEqual(tail, "")
+
+
+class TestFailingChecksWithLogTail(unittest.TestCase):
+    _FAILING_LINK = "https://github.com/owner/repo/actions/runs/9999/job/1111"
+
+    def _run(self, checks, log_output="error: something broke\nfailed"):
+        with patch("scripts.pr_triage._gh_json", return_value=checks), \
+             patch("scripts.pr_triage._fetch_log_tail", return_value=log_output):
+            return _collect_failing_checks(pr=1)
+
+    def test_log_tail_attached_to_failing_check(self):
+        checks = [{"name": "pytest", "state": "FAILURE", "link": self._FAILING_LINK}]
+        results = self._run(checks)
+        self.assertEqual(len(results), 1)
+        self.assertIn("error: something broke", results[0]["log_tail"])
+
+    def test_no_link_no_log_tail(self):
+        checks = [{"name": "pytest", "state": "FAILURE", "link": ""}]
+        with patch("scripts.pr_triage._gh_json", return_value=checks), \
+             patch("scripts.pr_triage._fetch_log_tail") as mock_fetch:
+            results = _collect_failing_checks(pr=1)
+        mock_fetch.assert_not_called()
+        self.assertEqual(results[0]["log_tail"], "")
+
+    def test_log_fetch_error_does_not_crash(self):
+        import subprocess as _sp
+        checks = [{"name": "pytest", "state": "FAILURE", "link": self._FAILING_LINK}]
+        with patch("scripts.pr_triage._gh_json", return_value=checks), \
+             patch("scripts.pr_triage._fetch_log_tail", return_value=""):
+            results = _collect_failing_checks(pr=1)
+        self.assertEqual(results[0]["log_tail"], "")
+
+
+# ---------------------------------------------------------------------------
+# Gap 2 — pending checks
+# ---------------------------------------------------------------------------
+
+class TestPendingChecks(unittest.TestCase):
+    _ALL_CHECKS = [
+        {"name": "pytest", "state": "SUCCESS", "link": "https://ci/1"},
+        {"name": "Claude review", "state": "FAILURE", "link": "https://ci/2"},
+        {"name": "doc-freshness", "state": "PENDING", "link": "https://ci/3"},
+        {"name": "sandbox", "state": "IN_PROGRESS", "link": "https://ci/4"},
+        {"name": "queue-job", "state": "QUEUED", "link": "https://ci/5"},
+    ]
+
+    def _run(self, checks):
+        with patch("scripts.pr_triage._gh_json", return_value=checks):
+            return _collect_pending_checks(pr=1)
+
+    def test_pending_and_in_progress_surfaced(self):
+        results = self._run(self._ALL_CHECKS)
+        names = {r["name"] for r in results}
+        self.assertIn("doc-freshness", names)
+        self.assertIn("sandbox", names)
+        self.assertIn("queue-job", names)
+
+    def test_failing_and_passing_not_in_pending(self):
+        results = self._run(self._ALL_CHECKS)
+        names = {r["name"] for r in results}
+        self.assertNotIn("pytest", names)
+        self.assertNotIn("Claude review", names)
+
+    def test_empty_returns_empty(self):
+        self.assertEqual(self._run([]), [])
+
+    def test_non_list_returns_empty(self):
+        self.assertEqual(self._run({}), [])
+
+
+class TestHasWorkWithPending(unittest.TestCase):
+    def _base(self):
+        return {
+            "pr": 1,
+            "repo": "owner/repo",
+            "unresolved_threads": [],
+            "failing_checks": [],
+            "pending_checks": [],
+            "merge_status": {"behind": False, "conflict": False, "raw": "CLEAN"},
+            "claude_verdict": {"verdict": "APPROVE", "confidence": 97, "evidence_gaps": ""},
+            "has_waiver": False,
+        }
+
+    def test_pending_check_blocks(self):
+        t = self._base()
+        t["pending_checks"] = [{"name": "deploy", "state": "IN_PROGRESS", "link": ""}]
+        self.assertTrue(_has_work(t))
+
+    def test_no_pending_is_clean(self):
+        self.assertFalse(_has_work(self._base()))
+
+
+# ---------------------------------------------------------------------------
+# Gap 3 — waiver-aware confidence floor
+# ---------------------------------------------------------------------------
+
+class TestPrHasWaiver(unittest.TestCase):
+    def _run(self, body="", labels=None):
+        data = {"body": body, "labels": [{"name": n} for n in (labels or [])]}
+        with patch("scripts.pr_triage._gh_json", return_value=data):
+            return _pr_has_waiver(pr=1, repo="owner/repo")
+
+    def test_waiver_in_body_detected(self):
+        self.assertTrue(self._run(body="Evidence tier: unit-only (waiver: dev-process only)"))
+
+    def test_evidence_waiver_label_detected(self):
+        self.assertTrue(self._run(labels=["evidence-waiver"]))
+
+    def test_no_waiver_returns_false(self):
+        self.assertFalse(self._run(body="Evidence tier: sandbox-live"))
+
+    def test_api_error_returns_false(self):
+        with patch("scripts.pr_triage._gh_json", side_effect=SystemExit(2)):
+            result = _pr_has_waiver(pr=1, repo="owner/repo")
+        self.assertFalse(result)
+
+
+class TestHasWorkWaiverFloor(unittest.TestCase):
+    def _base(self, confidence, has_waiver):
+        return {
+            "pr": 1,
+            "repo": "owner/repo",
+            "unresolved_threads": [],
+            "failing_checks": [],
+            "pending_checks": [],
+            "merge_status": {"behind": False, "conflict": False, "raw": "CLEAN"},
+            "claude_verdict": {"verdict": "APPROVE", "confidence": confidence, "evidence_gaps": ""},
+            "has_waiver": has_waiver,
+        }
+
+    def test_82_confidence_with_waiver_is_clean(self):
+        self.assertFalse(_has_work(self._base(confidence=82, has_waiver=True)))
+
+    def test_82_confidence_without_waiver_blocks(self):
+        self.assertTrue(_has_work(self._base(confidence=82, has_waiver=False)))
+
+    def test_boundary_80_with_waiver_is_clean(self):
+        self.assertFalse(_has_work(self._base(confidence=80, has_waiver=True)))
+
+    def test_79_with_waiver_blocks(self):
+        self.assertTrue(_has_work(self._base(confidence=79, has_waiver=True)))
+
+    def test_95_without_waiver_is_clean(self):
+        self.assertFalse(_has_work(self._base(confidence=95, has_waiver=False)))
+
+    def test_94_without_waiver_blocks(self):
+        self.assertTrue(_has_work(self._base(confidence=94, has_waiver=False)))
 
 
 if __name__ == "__main__":

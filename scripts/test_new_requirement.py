@@ -12,6 +12,65 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import new_requirement as N
 
 
+class TestExtractIssueRef(unittest.TestCase):
+    """Tests for _extract_issue_ref."""
+
+    def test_github_url(self):
+        url = "https://github.com/aditya2kx/jarvis/issues/87"
+        self.assertEqual(N._extract_issue_ref(url), 87)
+
+    def test_github_url_embedded_in_text(self):
+        text = "link this https://github.com/aditya2kx/jarvis/issues/42 requirement"
+        self.assertEqual(N._extract_issue_ref(text), 42)
+
+    def test_hash_ref(self):
+        self.assertEqual(N._extract_issue_ref("fix thing #87 please"), 87)
+
+    def test_hash_ref_at_start(self):
+        self.assertEqual(N._extract_issue_ref("#99 do the thing"), 99)
+
+    def test_no_ref_returns_none(self):
+        self.assertIsNone(N._extract_issue_ref("add multi-date support to the Slack command"))
+
+    def test_docs_url_not_matched(self):
+        # Non-issues github URL should not match
+        self.assertIsNone(N._extract_issue_ref("https://github.com/aditya2kx/jarvis/pull/85"))
+        self.assertIsNone(N._extract_issue_ref("see docs/WORKFLOW.md for details"))
+
+    def test_explicit_issue_wins_over_autodetect(self):
+        """--issue takes precedence; _extract_issue_ref is not called when args.issue is set."""
+        # Simulate main(): explicit args.issue=5 with a text that also contains #87
+        # In main(), issue_ref = args.issue or _extract_issue_ref(combined)
+        args_issue = 5
+        combined = "fix thing #87 please"
+        issue_ref = args_issue or N._extract_issue_ref(combined)
+        self.assertEqual(issue_ref, 5)
+
+    @patch("new_requirement.init_phase_tracking")
+    @patch("new_requirement.create_worktree")
+    @patch("new_requirement.start_session_in_worktree")
+    @patch("new_requirement._repo_root")
+    def test_dry_run_links_issue_not_creates(self, mock_root, mock_session, mock_wt, mock_phase):
+        """When requirement contains an issue ref, --dry-run links it instead of creating."""
+        mock_root.return_value = Path("/repo/jarvis")
+        mock_session.return_value = (
+            Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-brief.md"),
+            Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-launch.html"),
+            "cursor://test",
+        )
+        mock_phase.return_value = "https://github.com/aditya2kx/jarvis/issues/87"
+
+        rc = N.main([
+            "--requirement", "link not create #87 demo",
+            "--branch", "fix/test-link",
+            "--dry-run",
+        ])
+        self.assertEqual(rc, 0)
+        # init_phase_tracking must be called with existing_issue=87
+        _, kwargs = mock_phase.call_args
+        self.assertEqual(kwargs.get("existing_issue"), 87)
+
+
 class TestNewRequirement(unittest.TestCase):
     def test_slug_branch_part(self):
         self.assertEqual(

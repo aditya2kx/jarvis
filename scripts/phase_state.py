@@ -370,6 +370,33 @@ def cmd_ensure_labels(args) -> int:
     return 0
 
 
+def _ensure_issue_tracked(issue_num: int, branch: str, *, requirement: str | None = None) -> None:
+    """Idempotently make a manually-filed issue fully lifecycle-trackable.
+
+    When ``--issue N`` links an existing issue that was created outside of
+    new_requirement.py, it may lack the ``jarvis-work``/``stage:align`` labels
+    and the ``<!-- phase-state -->`` checklist body that phase_state's helpers
+    (report, gate, advance) expect.  This function adds them if absent.
+
+    Safe to call multiple times: label add is a no-op when the label is already
+    present; body injection is skipped when the status block already exists.
+    """
+    # Ensure required labels
+    _gh("issue", "edit", str(issue_num), "--add-label", "jarvis-work,stage:align")
+
+    # Inject checklist body only when the status sentinel is absent
+    rc, body = _gh("issue", "view", str(issue_num), "--json", "body", "-q", ".body")
+    if rc != 0:
+        return
+    if _STATUS_START in body:
+        return  # already has the tracking block — idempotent
+
+    # Append the phase checklist + status block to whatever body the issue had
+    checklist = _build_issue_body(branch, requirement=requirement)
+    new_body = (body.rstrip() + "\n\n" + checklist) if body.strip() else checklist
+    _gh("issue", "edit", str(issue_num), "--body", new_body)
+
+
 def cmd_init(args) -> int:
     """Create a GitHub issue for this branch (idempotent)."""
     branch = args.branch
@@ -399,6 +426,8 @@ def cmd_init(args) -> int:
         _apply_kickoff(issue_num, branch, data, dry_run=dry_run)
         _save_cache(branch, data)
         print(f"Linked to existing issue #{issue_num} for branch {branch!r}.")
+        if not dry_run and _gh_available():
+            _ensure_issue_tracked(issue_num, branch, requirement=requirement)
         return 0
 
     # Create the issue

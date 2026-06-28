@@ -13,6 +13,24 @@
 - **`verify_panels.py` fix**: multi-select vars with `$__all` are correctly resolved to a real source value; `${var:singlequote}` format is now handled (wraps value in single quotes for SQL IN lists).
 - Convention locked: derived analytics objects backing prod Grafana live as prod BQ views via `core/migrations`; prod Grafana reads prod BQ, never sandbox BQ.
 
+## 2026-06-27 — Link-not-create for /jarvis-new-task + issue hygiene (branch fix/when-i-create-a-git-issue)
+
+**Status:** In flight — M1–M3 implemented; verifying and opening PR.
+
+Two requirements:
+1. **Link-not-create** — `/jarvis-new-task` with an issue URL or `#NN` in the requirement text now links the existing issue instead of creating a duplicate `[work] …` issue. `_extract_issue_ref()` added to `new_requirement.py`; `phase_state.cmd_init --issue` now also ensures `jarvis-work`/`stage:align` labels and injects the `<!-- phase-state -->` checklist body on the linked issue (idempotent).
+2. **Issue hygiene** — new `scripts/issue_cleanup.py`: detects duplicates (branch-key or `(issue #NN)` cross-ref) and issues whose merged PR closed them (by `closes/fixes/resolves #NN` keyword or branch-name match). One-time remediation: closed #88 (duplicate of #87) and #83 (PR #85 merged on that branch).
+
+**What changed:**
+- `scripts/new_requirement.py`: added `_extract_issue_ref()` + auto-detection wiring in `main()`.
+- `scripts/phase_state.py`: `_ensure_issue_tracked()` helper; `cmd_init --issue` path now calls it.
+- `scripts/issue_cleanup.py` (new): `find_duplicates`, `find_merged_pr_issues`, `close_issues`, `main`.
+- `scripts/test_new_requirement.py`: 8 new tests for `_extract_issue_ref` + link-not-create dry-run.
+- `scripts/test_phase_state.py`: 4 new tests for linked-issue label/body injection.
+- `scripts/test_issue_cleanup.py` (new): 19 tests covering all detection + action branches.
+- `docs/WORKFLOW.md`: link-not-create + `issue_cleanup.py` usage documented.
+- `.cursor/skills/jarvis-new-task/SKILL.md`: link-not-create passthrough documented.
+
 ## 2026-06-26 — Ship-emoji force-merge + post-merge lifecycle integrity (PR #85, branch fix/add-ship-emoji-comment-force-merge)
 
 **Status:** In flight — M1–M4 implemented; PR open, babysitting to green.

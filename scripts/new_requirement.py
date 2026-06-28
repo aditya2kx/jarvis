@@ -56,6 +56,25 @@ import pr_cost_ledger as L
 import start_pr_session as S
 
 
+_ISSUE_URL_RE = re.compile(r"github\.com/[^/\s]+/[^/\s]+/issues/(\d+)")
+_ISSUE_HASH_RE = re.compile(r"(?:^|\s)#(\d+)\b")
+
+
+def _extract_issue_ref(text: str) -> int | None:
+    """Return a GitHub issue number embedded in *text*, or None.
+
+    Recognises:
+      - https://github.com/<org>/<repo>/issues/<N>
+      - #<N> (preceded by whitespace or start of string)
+
+    Explicit ``--issue N`` always wins; this is only consulted as a fallback
+    when the operator pastes an issue URL or ``#NN`` directly into the
+    requirement text.
+    """
+    m = _ISSUE_URL_RE.search(text) or _ISSUE_HASH_RE.search(text)
+    return int(m.group(1)) if m else None
+
+
 def _repo_root() -> Path:
     try:
         out = subprocess.check_output(
@@ -459,6 +478,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Requirement {i}/{len(requirements)}: {req[:80]}")
             print('=' * 60)
             branch = default_branch(req)
+            # Explicit --issue wins; fall back to auto-detection from requirement text.
+            issue_ref = args.issue or _extract_issue_ref(req)
+            if issue_ref and not args.issue:
+                print(f"Auto-detected issue #{issue_ref} from requirement text — linking instead of creating.")
             rc = rc or _run_one(
                 repo_root=repo_root,
                 branch=branch,
@@ -471,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
                 cursor_delay=args.cursor_delay,
                 dry_run=args.dry_run,
                 no_open=args.no_open,
-                existing_issue=args.issue,
+                existing_issue=issue_ref,
             )
         return rc
 
@@ -482,6 +505,11 @@ def main(argv: list[str] | None = None) -> int:
     if len(requirements) > 1:
         print(f"Consolidating {len(requirements)} requirements into one PR (branch: {branch}).")
         print("Pass --split to create one PR per requirement.\n")
+
+    # Explicit --issue wins; fall back to auto-detection from requirement text.
+    issue_ref = args.issue or _extract_issue_ref(combined)
+    if issue_ref and not args.issue:
+        print(f"Auto-detected issue #{issue_ref} from requirement text — linking instead of creating.")
 
     return _run_one(
         repo_root=repo_root,
@@ -495,7 +523,7 @@ def main(argv: list[str] | None = None) -> int:
         cursor_delay=args.cursor_delay,
         dry_run=args.dry_run,
         no_open=args.no_open,
-        existing_issue=args.issue,
+        existing_issue=issue_ref,
     )
 
 

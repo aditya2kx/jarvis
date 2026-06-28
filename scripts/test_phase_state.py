@@ -130,6 +130,89 @@ class TestInit(PhaseStateTestBase):
         data = ps._load_cache("feat/link")
         self.assertEqual(data["issue"], 99)
 
+    def test_init_link_adds_labels_and_injects_body(self):
+        """--issue path adds jarvis-work+stage:align and injects checklist when block absent."""
+        gh_calls = []
+
+        def mock_gh(*args, **kwargs):
+            gh_calls.append(args)
+            if "view" in args and "--json" in args:
+                # Return a bare body without the status block
+                return 0, '{"body": "Manually filed issue, no tracking block."}'
+            return 0, ""
+
+        with patch.object(ps, "_gh_available", return_value=True), \
+             patch.object(ps, "_gh", side_effect=mock_gh):
+            args = MagicMock()
+            args.branch = "feat/link-track"
+            args.requirement = "Fix the thing"
+            args.kickoff = False
+            args.requirement_id = None
+            args.issue = 77
+            args.source = "github"
+            args.dry_run = False
+            rc = ps.cmd_init(args)
+
+        self.assertEqual(rc, 0)
+        all_calls_str = str(gh_calls)
+        # Labels must be added
+        self.assertIn("jarvis-work", all_calls_str)
+        self.assertIn("stage:align", all_calls_str)
+        # Body must be edited (checklist injected)
+        edit_body_calls = [c for c in gh_calls if "edit" in c and "--body" in c]
+        self.assertTrue(edit_body_calls, "expected a body-edit call to inject checklist")
+
+    def test_init_link_idempotent_body_already_tracked(self):
+        """When the status block already exists, body is not edited again."""
+        gh_calls = []
+
+        def mock_gh(*args, **kwargs):
+            gh_calls.append(args)
+            if "view" in args and "--json" in args:
+                body_with_block = f'{{"body": "existing content\\n{ps._STATUS_START}\\nstatus\\n{ps._STATUS_END}"}}'
+                return 0, body_with_block
+            return 0, ""
+
+        with patch.object(ps, "_gh_available", return_value=True), \
+             patch.object(ps, "_gh", side_effect=mock_gh):
+            args = MagicMock()
+            args.branch = "feat/link-idem"
+            args.requirement = None
+            args.kickoff = False
+            args.requirement_id = None
+            args.issue = 88
+            args.source = "github"
+            args.dry_run = False
+            rc = ps.cmd_init(args)
+
+        self.assertEqual(rc, 0)
+        # No --body edit should be made since block is already present
+        edit_body_calls = [c for c in gh_calls if "edit" in c and "--body" in c]
+        self.assertEqual(edit_body_calls, [], "body must not be re-injected when block already exists")
+
+    def test_init_link_dry_run_skips_gh(self):
+        """--issue with --dry-run must not call gh for label/body work."""
+        gh_calls = []
+
+        def mock_gh(*args, **kwargs):
+            gh_calls.append(args)
+            return 0, ""
+
+        with patch.object(ps, "_gh_available", return_value=True), \
+             patch.object(ps, "_gh", side_effect=mock_gh):
+            args = MagicMock()
+            args.branch = "feat/link-dry"
+            args.requirement = None
+            args.kickoff = False
+            args.requirement_id = None
+            args.issue = 55
+            args.source = "github"
+            args.dry_run = True
+            rc = ps.cmd_init(args)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(gh_calls, [], "dry-run must not call gh at all")
+
     def test_init_with_requirement_sets_title(self):
         captured = []
 

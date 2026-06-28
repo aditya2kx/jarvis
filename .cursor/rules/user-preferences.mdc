@@ -61,6 +61,9 @@ Maintained by `skills/user_model/`. Source corpus (gitignored) at `skills/user_m
 | J5 | For BHAGA sandbox evidence: prefer reusing an existing scenario (e.g. full-live) over adding a new dedicated scenario when the existing one already exercises the changed code path. | Issue #70 jam transcript backfill |
 | TGOOD | For BHAGA tests: always prefer the existing full-live scenario over adding new scenarios when it already exercises the changed path. | test |
 | TEST | Re-run the 2026-06-23 nightly after the merge. | test |
+| 20 | Globally: when a task requires operator/ops work (GitHub/account settings, web portals, credential rotation, infra provisioning), do it yourself using your tooling — git CLI, user-playwright MCP, gcloud/ADC, Keychain — never ask the operator to perform manual web/ops steps. | 2026-06-28 Issue #103 jam (operator: you should be doing all the operator work using your skills) |
+| 21 | Globally: when a secret or credential is exposed (printed into a session/transcript or log), rotate it proactively as part of the same work — store the new secret in Keychain/Secret Manager and revoke the old one; do not defer to the operator. | 2026-06-28 Issue #103 jam (operator: rotate it yourself) |
+| 22 | Globally: provision account-level auth such as 2FA/TOTP enrollment by driving the target account via user-playwright MCP as one-time provisioning, rather than asking the operator to do it in web settings. | 2026-06-28 Issue #103 jam (operator: drive TOTP via Playwright) |
 
 ## Domain context
 
@@ -78,7 +81,6 @@ Maintained by `skills/user_model/`. Source corpus (gitignored) at `skills/user_m
 | Property | Primary residence: 1414 Crown Forest Dr, Missouri City TX (Fort Bend); rental: Brisbane CA | CHITRA tax data |
 | OS | macOS (Apple Silicon) | observed |
 | Tools | Cursor IDE with Playwright + multi Google MCPs + Slack MCP + ClickUp MCP + Chronosphere MCP | config.yaml mcps directory |
-|  |  |  |
 
 ## Decision history
 

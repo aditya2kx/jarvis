@@ -1,5 +1,26 @@
 # Jarvis Build Progress
 
+## 2026-06-28 — Smarter PR babysitting: batch triage aggregator (Issue #102, branch fix/i102-https)
+
+**Status:** In flight — implementation done; PR pending.
+
+**Problem:** The babysit loop was serial (find one issue → fix → push → wait for Opus review → repeat).
+Every completed push triggers a paid Claude Opus review (~$2–4). N serial fix-push cycles = N paid reviews.
+
+**Fix (Option A):**
+- `scripts/pr_triage.py` — read-only one-shot aggregator: unresolved inline threads (classified
+  as claude-bot / bugbot / human, with reply commands), failing CI checks, behind-base/conflict
+  flags, Claude verdict + evidence-confidence score. Exit 0 (clean) / 1 (work remaining) / 2 (tooling error).
+- `scripts/test_pr_triage.py` — 37 unit tests covering all sections + exit codes.
+- `.cursor/rules/pr-workflow.mdc` step 4 — rewritten to mandate batch loop: collect-all → fix-all →
+  reply-all → push once → re-collect once.
+- `docs/contributing/review-bot.md` convergence loop — rewritten with cost rationale (1 push = 1 review).
+- `scripts/check_doc_freshness.py` COUPLINGS — new entry: `pr_triage.py` → `review-bot.md` + `pr-workflow.mdc`.
+
+**Follow-ups (not in this PR):**
+- Option B: update global `~/.cursor/skills-cursor/babysit/SKILL.md` to the batch form (not in git; can't be CI-verified).
+- Option C: debounce `claude-review.yml` to skip review on pushes tagged `wip` or during active babysit (riskier; separate PR).
+
 ## 2026-06-28 — Unique branch slug per GitHub issue (branch fix/consider-above-as-new-requirements-so)
 
 **Status:** In flight — M1–M3 implemented; PR pending.

@@ -16,11 +16,12 @@ Do NOT ask whether to babysit — just do it.
 1. **Install the cost hook (once per clone/worktree)** → `bash scripts/install-git-hooks.sh`. The `pre-commit` hook captures review cost into BigQuery on each commit. No `git add`, no staged files.
 2. **Create PR** → `gh pr create …`
 3. **Seed cost ledger (BQ)** → `pr_cost_ledger.py set-meta --pr N --branch <branch>`, then record build cost (`record-build` or `capture-build`) into BQ so `validate --require-build` passes. **Do NOT commit `metrics/pr_cost/`** — the ledger is now in BQ, not git. Zero build cost is a hard failure.
-4. **Babysit immediately** — read `/Users/adiniekkajj/.cursor/skills-cursor/babysit/SKILL.md` and follow it:
-   - Resolve merge conflicts (take ours/theirs intelligently; never blindly prefer one side)
-   - Wait for CI; fix any failures within this PR's scope
-   - Triage review comments (Claude review bot + Adi's comments)
-   - Loop until all checks are green and no open blocking comments remain
+4. **Babysit immediately** — read `/Users/adiniekkajj/.cursor/skills-cursor/babysit/SKILL.md` and follow it using the **batch loop** (each completed push triggers a paid Claude Opus review; minimise push count):
+   - **Collect all signals first** → `python3 scripts/pr_triage.py --pr N` enumerates every blocking item in one pass: unresolved inline threads (by author class), failing CI checks, merge/behind-base status, Claude verdict + evidence-confidence score.
+   - **Fix everything in one go** — resolve merge conflicts, address ALL unresolved threads, fix ALL failing checks within scope. Do not push after each individual fix.
+   - **Reply on every thread** — `gh api repos/{repo}/pulls/{pr}/comments/{id}/replies -f body='fixed in <sha> / won't fix: <reason>'` on each thread before pushing.
+   - **Push once** — one commit, one push. This triggers exactly one paid Opus re-review.
+   - **Re-collect once** → re-run `pr_triage.py` after the review completes. Only loop again if genuinely new blocking signals appear; do not nitpick-loop on already-approved code.
 5. **Arm auto-merge** → `gh pr merge N --auto --squash` once the PR is approved and green
 6. **Confirm merged** → verify `state == MERGED` before ending the session
 7. **Post-merge pull + verify** — after confirmed merged:

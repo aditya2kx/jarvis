@@ -29,13 +29,37 @@ The agent **must reply to every inline comment** — either "fixed in <sha>" or
 Batching multiple comments into one summary reply is **not acceptable** — reply
 on each inline thread separately.
 
-## Convergence loop
-1. Push commits.
-2. Wait for the bot review (typically 2–3 minutes).
-3. Read every comment.
-4. Fix or reply.
-5. Re-push.
-6. Repeat until no unresolved comments.
+## Convergence loop (batch, not serial)
+
+Every completed push triggers a paid Claude Opus review (~$2–4).  Serial fix-one-push
+cycles mean N pushes = N paid reviews.  Batch all fixes into one push = 1 paid review.
+
+**Step 1 — collect all signals in one pass:**
+```bash
+python3 scripts/pr_triage.py --pr N
+```
+This enumerates every blocking signal: unresolved inline threads (classified as
+claude-bot / bugbot / human), failing CI checks with log links, behind-base / conflict
+flags, and the latest Claude verdict + evidence-confidence score.
+
+**Step 2 — fix everything before pushing:**
+- Resolve merge conflicts.
+- Address every unresolved thread (fix the code or write your rebuttal).
+- Fix every failing CI check that is within this PR's scope.
+
+**Step 3 — reply on every thread before pushing:**
+```bash
+gh api repos/{repo}/pulls/{pr}/comments/{id}/replies -f body='fixed in <sha> / won't fix: <reason>'
+```
+Each thread must have a reply. `check_pr_review_replies.py` gates on this.
+
+**Step 4 — push once:**
+One commit. One push. This triggers exactly one paid Opus re-review.
+
+**Step 5 — re-collect once:**
+After the re-review completes, run `pr_triage.py` again.  Only loop back to Step 2
+if genuinely new blocking signals appear.  Do NOT re-raise issues that Claude already
+approved in a prior round.
 
 The `babysit` skill automates this loop.  Read `~/.cursor/skills-cursor/babysit/SKILL.md`
 and follow it — do not hand back to the operator until CI is green and all comments are resolved.

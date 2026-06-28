@@ -116,6 +116,18 @@ wrote the local cache and skipped the GitHub update (root cause of the #86 wirin
 fixed PR #86).  `phase_state.py gate` additionally fails if a tracked branch's linked
 issue is missing its `stage:*` label on GitHub (drift check).
 
+**Branch naming** — the branch is derived from the requirement text and (when known)
+the GitHub issue number:
+
+- **Link path** (`--issue N` or auto-detected `#NN` / URL): branch is `fix/i{N}-<slug>`.
+  Two different issues with identical requirement text therefore always get distinct branches.
+- **Create path** (no pre-filed issue): branch is `fix/<slug>`.  If that branch already
+  exists locally or on `origin`, a numeric suffix (`-2`, `-3`, …) is appended automatically.
+- **Explicit `--branch`** always wins and bypasses the collision logic.
+- `_sanitize_requirement()` strips issue refs and common preamble phrases (e.g. "consider above
+  as new requirements") from the text before slugging, so meta-instruction boilerplate does not
+  dominate the slug.
+
 The worktree base defaults to **`origin/main`** so new worktrees always start from
 clean main regardless of which branch the operator is on. Pass `--base <ref>`
 explicitly to inherit a different base (e.g. an in-flight framework PR).

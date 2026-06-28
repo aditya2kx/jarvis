@@ -1,15 +1,13 @@
-# Sandbox live run config — ACTIVE for fix/held-back-review-counter-fix (PR #82).
+# Sandbox live run config — ACTIVE for fix/https-github-com-aditya2kx-jarvis-issues (PR #99).
 #
-# Proves the held-back counter fix on the real ClickUp channel. Runs the
-# full-live scenario against sandbox targets for 2026-06-25 (the date that
-# triggered HELD-BACK: 11 due to the ordering bug). Evidence in PR #82 §4.
+# Proves the inline-autostart OTP gate default on real Cloud Run + Firestore.
+# Runs the nightly-autostart gate-only scenario (no scrape, no OTP reply needed)
+# to verify otp_gate.evaluate returns PROCEED immediately with no BHAGA_OTP_ASSUME_READY
+# and no BHAGA_OTP_REQUIRE_READY set, and that no pending_otp checkpoint is written.
+#
 # REMOVE this file's scenarios (set to []) after evidence is captured.
 #
-# Operator: answer the [SANDBOX] ADP OTP prompt in Slack DM D0B67MW6J02 if prompted.
-# Expected log lines: reviews step should log HELD-BACK: 0 (was 11 before fix).
-#
-# Last used: PR #82 (fix/held-back-review-counter-fix, 2026-06-25) — proved
-# held-back counter fix on the real stack: execution bhaga-sandbox-refresh-vcv24
-# logged "held-back (post-window): 0" on 72 real ClickUp messages (was 11 before).
-# Evidence captured in PR #82 §4; scenarios reset to [] per remove-after-capture rule.
-scenarios: []
+# Last used: PR #99 (fix/https-github-com-aditya2kx-jarvis-issues, 2026-06-28)
+scenarios:
+  - name: nightly-autostart
+    date: "2026-06-27"

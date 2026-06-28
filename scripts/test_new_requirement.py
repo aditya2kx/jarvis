@@ -227,5 +227,130 @@ class TestDefaultBase(unittest.TestCase):
         self.assertEqual(kwargs.get("base"), "feat/some-inflight-branch")
 
 
+class TestDefaultBranchUniqueness(unittest.TestCase):
+    """Tests for issue-keyed + collision-safe default_branch."""
+
+    def test_default_branch_issue_prefix(self):
+        """Issue num embeds as i{N} prefix."""
+        branch = N.default_branch("foo bar", issue_num=99)
+        self.assertEqual(branch, "fix/i99-foo-bar")
+
+    def test_default_branch_strips_issue_ref_from_slug(self):
+        """#NN and URL should not appear in the slug when issue_num is given."""
+        branch = N.default_branch("fix thing #87 please", issue_num=87)
+        self.assertTrue(branch.startswith("fix/i87-"), branch)
+        self.assertNotIn("87", branch.replace("i87", ""))  # only in prefix
+
+    def test_default_branch_strips_preamble(self):
+        """Meta-instruction preamble must not dominate slug; actual words must appear."""
+        branch = N.default_branch(
+            "consider above as new requirements so branch slugs don't collide",
+            issue_num=97,
+        )
+        self.assertTrue(branch.startswith("fix/i97-"), branch)
+        # Slug must reflect "branch slugs" not "consider above"
+        self.assertIn("branch", branch)
+
+    def test_default_branch_no_issue_keeps_slug(self):
+        """Without issue_num the old fix/<slug> shape is preserved."""
+        branch = N.default_branch("Add zero-shift guard")
+        self.assertEqual(branch, "fix/add-zero-shift-guard")
+
+    def test_disambiguate_suffix(self):
+        """Collision on create path gets a -2 suffix."""
+        branch = N.default_branch("unique-test-word", existing={"fix/unique-test-word"})
+        self.assertEqual(branch, "fix/unique-test-word-2")
+
+    def test_disambiguate_multiple_collisions(self):
+        existing = {"fix/unique-test-word", "fix/unique-test-word-2", "fix/unique-test-word-3"}
+        branch = N.default_branch("unique-test-word", existing=existing)
+        self.assertEqual(branch, "fix/unique-test-word-4")
+
+    def test_disambiguate_exhausted_raises(self):
+        """When all 99 suffixes are taken, SystemExit is raised."""
+        existing = {"fix/x"} | {f"fix/x-{i}" for i in range(2, 100)}
+        with self.assertRaises(SystemExit):
+            N._disambiguate("fix/x", existing)
+
+    def test_two_issues_same_text_distinct_branches(self):
+        """Two issues with identical requirement text must produce distinct branches."""
+        b1 = N.default_branch("consider above as new requirements", issue_num=101)
+        b2 = N.default_branch("consider above as new requirements", issue_num=102)
+        self.assertNotEqual(b1, b2)
+        self.assertTrue(b1.startswith("fix/i101-"), b1)
+        self.assertTrue(b2.startswith("fix/i102-"), b2)
+
+    def test_sanitize_strips_issue_url(self):
+        url = "https://github.com/aditya2kx/jarvis/issues/55"
+        text = f"do the thing {url}"
+        result = N._sanitize_requirement(text)
+        self.assertNotIn("github.com", result)
+        self.assertIn("do", result)
+
+    def test_sanitize_strips_preamble_only_at_start(self):
+        """Preamble in the middle of text must NOT be stripped."""
+        text = "Fix the new requirement handling"
+        result = N._sanitize_requirement(text)
+        # "new requirement" not at start → no stripping
+        self.assertIn("Fix", result)
+
+    @patch("new_requirement.init_phase_tracking")
+    @patch("new_requirement._existing_branches")
+    @patch("new_requirement.create_worktree")
+    @patch("new_requirement.start_session_in_worktree")
+    @patch("new_requirement._repo_root")
+    def test_main_link_path_uses_issue_prefix(
+        self, mock_root, mock_session, mock_wt, mock_existing, mock_phase
+    ):
+        """main() with --issue N must produce branch fix/i{N}-<slug>."""
+        mock_root.return_value = Path("/repo/jarvis")
+        mock_existing.return_value = set()
+        mock_session.return_value = (
+            Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-brief.md"),
+            Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-launch.html"),
+            "cursor://test",
+        )
+        mock_phase.return_value = None
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = N.main([
+                "--requirement", "branch slug uniqueness",
+                "--issue", "97",
+                "--dry-run",
+            ])
+        self.assertEqual(rc, 0)
+        output = buf.getvalue()
+        self.assertIn("i97-", output)
+
+    @patch("new_requirement.init_phase_tracking")
+    @patch("new_requirement._existing_branches")
+    @patch("new_requirement.create_worktree")
+    @patch("new_requirement.start_session_in_worktree")
+    @patch("new_requirement._repo_root")
+    def test_main_create_path_collision_falls_back(
+        self, mock_root, mock_session, mock_wt, mock_existing, mock_phase
+    ):
+        """main() must use -2 suffix when base branch already exists."""
+        mock_root.return_value = Path("/repo/jarvis")
+        mock_existing.return_value = {"fix/collision-test-word"}
+        mock_session.return_value = (
+            Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-brief.md"),
+            Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-launch.html"),
+            "cursor://test",
+        )
+        mock_phase.return_value = None
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = N.main([
+                "--requirement", "collision test word",
+                "--dry-run",
+            ])
+        self.assertEqual(rc, 0)
+        output = buf.getvalue()
+        self.assertIn("collision-test-word-2", output)
+
+
 if __name__ == "__main__":
     unittest.main()

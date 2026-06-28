@@ -1,5 +1,20 @@
 # Jarvis Build Progress
 
+## 2026-06-28 — Unique branch slug per GitHub issue (branch fix/consider-above-as-new-requirements-so)
+
+**Status:** In flight — M1–M3 implemented; PR pending.
+
+**Problem:** `new_requirement.default_branch()` derived branch names solely from requirement text, so two different issues with similar or boilerplate phrasing (e.g. "consider above as new requirements…") would collide on the same `fix/<slug>` branch. `create_worktree` hard-aborted on "branch already exists". PR #95 fixed duplicate *issues* but not duplicate *branches*.
+
+**Fix:**
+- `_sanitize_requirement()` — strips `#NN`/issue-URL refs and a curated list of meta-instruction preamble phrases before slugging, so the branch slug reflects the actual task.
+- `default_branch(issue_num=N, existing=…)` — embeds the issue number when known (`fix/i{N}-<slug>`), guaranteeing two different issues always produce distinct branches even with identical requirement text.
+- `_disambiguate()` — collision fallback for the create-path (no issue yet): appends `-2`, `-3`, … when `fix/<slug>` already exists locally or on `origin`.
+- `_existing_branches(repo_root)` — best-effort set of local + remote branch names; degrades to empty set on any error.
+- `main()` and `--split` loop: issue ref resolved before branch name so `i{N}` can be embedded.
+
+**What changed:** `scripts/new_requirement.py`, `scripts/test_new_requirement.py` (+11 tests, 31 total), `docs/WORKFLOW.md` (branch naming section), `.cursor/skills/jarvis-new-task/SKILL.md`. Evidence tier: unit-only (waiver: lifecycle intake scripts only, no BHAGA runtime).
+
 ## 2026-06-27 — Order Quality per-source P95 chart + Grafana screenshot harness + 3 CI gates (PR #86, branch fix/bhaga-order-quality-dashboard)
 
 **Status:** In flight — all milestones implemented; PR open, babysitting to green.

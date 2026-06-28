@@ -54,6 +54,15 @@ _WAIVER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Detect the common authoring mistake: wrapping the tier in backticks, e.g.
+#   Evidence tier: `unit-only (waiver: …)`
+# The backtick prevents _WAIVER_PATTERN from matching, so check_evidence_confidence.py
+# silently ignores the waiver and the CI gate hard-fails at 95%.
+_BACKTICK_TIER_PATTERN = re.compile(
+    r"Evidence\s+tier:\s*`[^`]*`",
+    re.IGNORECASE,
+)
+
 # Scenario pattern for sandbox-live (matches plan's "Evidence tier: sandbox-live")
 _SANDBOX_LIVE_PATTERN = re.compile(
     r"Evidence\s+tier:\s*sandbox-live",
@@ -145,6 +154,18 @@ def predict(body: str) -> tuple[bool, str]:
                 + ". Run: python3 agents/bhaga/grafana/capture_screenshot.py --panel <id> "
                 "--label <label> && python3 agents/bhaga/grafana/verify_panels.py"
             )
+
+    # G4: Backtick-wrapped evidence tier defeats waiver detection in both this script
+    # and check_evidence_confidence.py (which shares the same regex).  Catch it here
+    # so the agent gets a clear, actionable error before pushing rather than a cryptic
+    # "90% < 95%" CI failure after the Claude review round-trip.
+    if _BACKTICK_TIER_PATTERN.search(body):
+        return False, (
+            "Evidence tier declaration is wrapped in backticks "
+            "(e.g. `unit-only (waiver: …)`) — the waiver regex cannot match it. "
+            "Remove the backtick wrapping: "
+            "Evidence tier: unit-only (waiver: <reason>)"
+        )
 
     # Waiver or explicit sandbox tier → pass immediately
     if _WAIVER_PATTERN.search(body):

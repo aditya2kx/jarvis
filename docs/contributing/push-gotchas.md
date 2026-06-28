@@ -23,6 +23,35 @@ All agent GitHub operations use **`jarvis-agent-bot328`** — the dedicated bot
 collaborator.  `GH_TOKEN` is pre-loaded from Keychain in `~/.zshrc` so `gh`
 picks it up automatically.  No additional setup needed.
 
+**Auth model (single source of truth):** The `origin` remote URL is tokenless
+(`https://github.com/aditya2kx/jarvis.git`). Git authenticates via the `gh` credential
+helper (`gh auth setup-git`) which reads `GH_TOKEN` → Keychain `github-bot-pat`.
+There is no PAT embedded in any `.git/config`. All worktrees share the same remote config.
+
+**2FA status:** `jarvis-agent-bot328` has TOTP 2FA enrolled (enrolled 2026-06-28).
+Classic PATs are **not affected** by GitHub's 2FA enforcement — token-based git/`gh` ops
+keep working regardless. The TOTP secret is stored in Keychain (`github-bot-totp`);
+recovery codes in Keychain (`github-bot-recovery`).
+
+**PAT rotation procedure:**
+```bash
+# 1. Generate a new classic PAT at github.com/settings/tokens (scopes: repo, workflow, read:org)
+# 2. Store it:
+security add-generic-password -a jarvis-agent-bot328 -s github-bot-pat -w <new_token> -U
+# 3. Open a new shell (GH_TOKEN reloads from Keychain) and verify:
+gh api user --jq .login
+# 4. Revoke the old PAT via github.com/settings/tokens (last step)
+```
+
+**After rotation — recover open workspaces** (existing shells hold the revoked token):
+```bash
+# In each open Cursor workspace / terminal tab:
+source ~/.zshrc                          # reload GH_TOKEN from Keychain
+gh api user --jq .login                 # must print: jarvis-agent-bot328
+git ls-remote origin HEAD               # must exit 0 (push path live)
+```
+If `gh api user` returns 401, the shell still has the old token — open a new terminal tab.
+
 ## 3. Never push to `main` directly
 `main` is the deployed branch.  Push to `main` → image rebuild → prod change.
 Always work on a feature branch and land via PR.

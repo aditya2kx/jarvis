@@ -22,7 +22,7 @@ Do NOT ask whether to babysit — just do it.
    - **Reply on every thread** — `gh api repos/{repo}/pulls/{pr}/comments/{id}/replies -f body='fixed in <sha> / won't fix: <reason>'` on each thread before pushing.
    - **Push once** — one commit, one push. This triggers exactly one paid Opus re-review.
    - **Re-collect once** → re-run `pr_triage.py` after the review completes. Only loop again if genuinely new blocking signals appear; do not nitpick-loop on already-approved code.
-5. **Arm auto-merge** → `gh pr merge N --auto --squash` once the PR is approved and green
+5. **Wait for operator approval** — do NOT arm auto-merge. Auto-merge is operator-only (`gh pr merge N --auto --squash` is run by the operator after they approve, not by the agent). The agent's job ends at "all checks green, all comments replied, no conflicts" — then hand back to the operator.
 6. **Confirm merged** → verify `state == MERGED` before ending the session
 7. **Post-merge pull + verify** — after confirmed merged:
    - `git -C /Users/adiniekkajj/Documents/build-workspace/jarvis pull` to bring the squash commit into the main working copy.

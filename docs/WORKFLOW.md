@@ -94,10 +94,20 @@ Remaining: verify, pr-evidence, babysit, merge, post-merge-verify, retrospective
 Open failures: none        Summary: verify in progress
 ```
 
-### The single front door creates the issue
+### The single front door creates or links the issue
 `new_requirement.py` is the only entry point for new work. It **auto-creates the
-tracking issue** at kickoff: after spinning up the worktree + brief + cost session it
-calls `init_phase_tracking()` → `phase_state.py init --kickoff`, which seeds
+tracking issue** at kickoff — unless the operator already filed one manually.
+
+**Link-not-create:** if the requirement text contains a GitHub issue URL
+(`https://github.com/<org>/<repo>/issues/<N>`) or a `#NN` reference, the front door
+detects it via `_extract_issue_ref()` and passes `--issue N` to `init_phase_tracking()`
+instead of creating a new issue.  `phase_state.py init --issue N` then ensures the
+existing issue has the `jarvis-work`/`stage:align` labels and the `<!-- phase-state -->`
+checklist body injected (idempotent — safe to repeat).  This prevents the duplicate
+`[work] …` issue that would otherwise be created alongside the manually-filed one.
+
+After spinning up the worktree + brief + cost session it calls
+`init_phase_tracking()` → `phase_state.py init --kickoff`, which seeds
 
 **Linking an existing issue** (`phase_state.py init --branch <b> --issue <N>`) is also
 idempotent and fully wires the GitHub issue: it applies `jarvis-work` + `stage:align`
@@ -121,6 +131,25 @@ inherit Agent/Auto settings from the parent window.
 and prints the issue URL in the handoff banner.  So a fresh requirement shows **Align
 50%** with `jam` as the current operator gate — never a misleading "0%, nothing done".
 `--dry-run` prints the `gh issue create` it *would* run without touching GitHub.
+
+### Issue hygiene
+Over time, duplicate issues or issues whose PRs merged without explicit `closes #NN`
+syntax can accumulate.  `scripts/issue_cleanup.py` handles periodic hygiene:
+
+```bash
+python3 scripts/issue_cleanup.py --dry-run          # show plan, no changes
+python3 scripts/issue_cleanup.py --apply            # execute
+python3 scripts/issue_cleanup.py --apply --issues 88,83  # restrict scope
+```
+
+Detection rules:
+- **Duplicates:** two open `jarvis-work` issues share the same `Branch: ...` value in
+  their bodies, or one issue's body contains `(issue #NN)` referencing an open issue.
+  The `[work]`-prefixed issue (or lowest number) is the survivor; the other is closed
+  with a breadcrumb comment.
+- **Stale merged-PR issues:** a merged PR either uses `closes/fixes/resolves #NN` syntax
+  in its body, or its `headRefName` matches the branch recorded in the issue body.
+  Issues with any open PR are never closed.
 
 ### Jira/Linear migration seam
 `phase_state.py` defaults to `source="github"`.  When the backend switches, update

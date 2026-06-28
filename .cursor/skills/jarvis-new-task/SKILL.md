@@ -26,7 +26,12 @@ Type `/jarvis-new-task` followed by the requirement text, e.g.:
 python3 scripts/new_requirement.py --requirement "<operator's text>"
 ```
 
-4. After the script launches (it creates a new worktree, branch, GitHub issue, and opens a new Cursor window), **stop**. Do NOT continue implementing in the current chat.
+**Link-not-create:** if the operator includes a GitHub issue URL or `#NN` reference in
+the requirement text (e.g. `/jarvis-new-task fix the auth bug #42`), the script
+auto-detects it and links the existing issue instead of creating a new one.  Pass it
+through verbatim — do **not** ask a clarifying question about the issue number.
+
+4. After the script launches (it creates or links a worktree, branch, GitHub issue, and opens a new Cursor window), **stop**. Do NOT continue implementing in the current chat.
 5. Confirm to the operator that the new worktree is being set up and that they should continue work in the new Cursor window.
 
 ## Hard rules

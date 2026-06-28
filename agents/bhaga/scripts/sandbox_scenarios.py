@@ -71,23 +71,54 @@ SCENARIOS: dict[str, dict] = {
         "description": (
             "Prove the explicit-trigger OTP re-prompt fix on REAL Cloud Run + Firestore: "
             "seed a stale unanswered pending_otp checkpoint in sandbox_runs, run "
-            "daily_refresh with BHAGA_OTP_FORCE_REQUEST=1 (BHAGA_OTP_ASSUME_READY OFF), "
-            "then verify the checkpoint was re-saved with a fresh requested_at. "
-            "Gate EXIT_PENDINGs before any browser launch — cheap, no scrape, no OTP "
-            "reply needed. Use this pattern for any change whose key logic fires at "
-            "the OTP/Firestore/Cloud Run layer that unit tests can only mock."
+            "daily_refresh with BHAGA_OTP_REQUIRE_READY=1 + BHAGA_OTP_FORCE_REQUEST=1 "
+            "(BHAGA_OTP_ASSUME_READY OFF), then verify the checkpoint was re-saved with "
+            "a fresh requested_at. Gate EXIT_PENDINGs before any browser launch — cheap, "
+            "no scrape, no OTP reply needed."
         ),
         # Keep Square in scope so otp_portals=['Square'] — triggers the OTP gate.
         # Skip ADP, reviews, and model so the run stops at the gate, not mid-scrape.
         "skip": ["adp", "reviews", "model"],
-        # Drop BHAGA_OTP_ASSUME_READY; set BHAGA_OTP_FORCE_REQUEST=1 instead so
-        # otp_gate.evaluate exercises the real force re-prompt path (not the
-        # supervisor inline path that bypasses the gate entirely).
+        # Drop BHAGA_OTP_ASSUME_READY; set BHAGA_OTP_REQUIRE_READY=1 + BHAGA_OTP_FORCE_REQUEST=1
+        # so otp_gate.evaluate exercises the real READY checkpoint-and-resume force-reprompt path.
         "otp_force_request": True,
         # Seed a stale checkpoint 72h old (past the 48h cap) so the run definitely
         # finds an unanswered marker and exercises the force branch.
         "seed_stale_otp_hours": 72,
         "verify": "otp_reprompt",
+    },
+    "nightly-autostart": {
+        "description": (
+            "Prove the inline-autostart OTP gate default on REAL Cloud Run + Firestore "
+            "(PR #94 evidence): run daily_refresh with NO BHAGA_OTP_ASSUME_READY and "
+            "NO BHAGA_OTP_REQUIRE_READY so otp_gate.evaluate hits the new default path "
+            "(returns PROCEED immediately, no READY ping, no pending_otp checkpoint). "
+            "Skips ADP/reviews/model so the run exits quickly without a real OTP. "
+            "verify:nightly_autostart asserts no checkpoint was written to sandbox "
+            "Firestore. Gate-only, cheap — no browser launched, no SMS fired."
+        ),
+        # Skip ADP, reviews, and model — we only need to prove the gate fires PROCEED
+        # and does NOT write a pending_otp checkpoint. Square is left in scope so
+        # otp_portals=['ADP'] (or whatever the real compute yields) reaches the gate;
+        # the gate short-circuits before any browser launches.
+        "skip": ["adp", "reviews", "model"],
+        # Use the new gate_only_autostart mode: drop ASSUME_READY and all legacy flags
+        # so the new inline-autostart default activates on the real Cloud Run stack.
+        "gate_only_autostart": True,
+        "verify": "nightly_autostart",
+    },
+    "full-live-inline-gate": {
+        "description": (
+            "Full live pipeline (Square + ADP + reviews + model) with NO "
+            "BHAGA_OTP_ASSUME_READY and NO BHAGA_OTP_REQUIRE_READY, exercising the new "
+            "inline-autostart default end-to-end. If ADP logs in on trusted device the "
+            "run completes in full; if ADP challenges it waits up to BHAGA_OTP_WAIT_S "
+            "(15 min) and gracefully skips on timeout (proves the C1 skip path). "
+            "PR #94 evidence tier 2: proves PROCEED drives a real pipeline beyond the gate."
+        ),
+        # No skip — full pipeline to prove the inline gate drives real work.
+        # gate_only_autostart drops BHAGA_OTP_ASSUME_READY so the new default activates.
+        "gate_only_autostart": True,
     },
 }
 
@@ -185,6 +216,8 @@ def run_scenario(
         argv.append("--sheet-from-bq")
     if meta.get("otp_force_request"):
         argv.append("--otp-force-request")
+    if meta.get("gate_only_autostart"):
+        argv.append("--gate-only-autostart")
     if meta.get("seed_stale_otp_hours"):
         argv += ["--seed-stale-otp-hours", str(meta["seed_stale_otp_hours"])]
     if evidence_file:

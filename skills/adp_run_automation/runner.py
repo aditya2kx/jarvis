@@ -406,10 +406,11 @@ def _handle_adp_two_factor(page, *, store: str) -> None:
 
     # Step 4: request OTP via Slack DM, block until operator replies.
     from skills.slack.adapter import request_otp  # local import: optional dep
+    from agents.bhaga.scripts.otp_gate import OtpWaitTimeout  # local import
 
-    # Bounded wait: the READY handshake already confirmed the operator is
-    # present, so BHAGA_OTP_WAIT_S (default 900s on resume) is plenty.
-    # Standalone callers with no env set keep the generous 1800s default.
+    # In inline-autostart mode the gate already returned PROCEED and set
+    # BHAGA_OTP_WAIT_S=900. Standalone/supervised callers with no env set keep
+    # the generous 1800 s default.
     wait_s = int(os.environ.get("BHAGA_OTP_WAIT_S", "1800"))
     print(f"[adp 2fa] requesting OTP via Slack for store={store!r} (wait={wait_s}s); SMS expected at +1-XXX-XXX-0038")
     code = request_otp(
@@ -420,9 +421,9 @@ def _handle_adp_two_factor(page, *, store: str) -> None:
         agent="bhaga",
     )
     if not code:
-        raise RuntimeError(
-            "ADP 2FA: operator did not reply with the OTP within 30 minutes. "
-            "Either retry the scrape (a new SMS will fire) or complete login manually."
+        raise OtpWaitTimeout(
+            f"ADP 2FA: operator did not reply with the OTP within {wait_s}s. "
+            "ADP step will be skipped; next nightly will retry with a fresh SMS."
         )
     code = code.strip().replace(" ", "").replace("-", "")
     print(f"[adp 2fa] got code (len={len(code)}); submitting.")

@@ -1,15 +1,6 @@
-# Sandbox live run config — ACTIVE for fix/held-back-review-counter-fix (PR #82).
+# Sandbox live run config — INACTIVE (scenarios reset after evidence captured for PR #99).
 #
-# Proves the held-back counter fix on the real ClickUp channel. Runs the
-# full-live scenario against sandbox targets for 2026-06-25 (the date that
-# triggered HELD-BACK: 11 due to the ordering bug). Evidence in PR #82 §4.
-# REMOVE this file's scenarios (set to []) after evidence is captured.
-#
-# Operator: answer the [SANDBOX] ADP OTP prompt in Slack DM D0B67MW6J02 if prompted.
-# Expected log lines: reviews step should log HELD-BACK: 0 (was 11 before fix).
-#
-# Last used: PR #82 (fix/held-back-review-counter-fix, 2026-06-25) — proved
-# held-back counter fix on the real stack: execution bhaga-sandbox-refresh-vcv24
-# logged "held-back (post-window): 0" on 72 real ClickUp messages (was 11 before).
-# Evidence captured in PR #82 §4; scenarios reset to [] per remove-after-capture rule.
+# Evidence captured: nightly-autostart (2026-06-28) + full-live-inline-gate (2026-06-28).
+# Both runs PASS — see PR #99 §4 for full log excerpts.
+# REMOVE this comment/reset block after the PR merges.
 scenarios: []

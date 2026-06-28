@@ -1264,7 +1264,10 @@ class TestOtpForceRequestIntegration(unittest.TestCase):
         save_calls = []
         post_calls = []
         get_pending_calls: list[dict] = []  # spy: prove state_adapter is called
-        env_patch = {"HOME": tmp}
+        # BHAGA_OTP_REQUIRE_READY=1 activates the legacy READY handshake so the
+        # force-request path in otp_gate.evaluate is reachable (default inline
+        # mode returns PROCEED immediately without consulting the checkpoint).
+        env_patch = {"HOME": tmp, "BHAGA_OTP_REQUIRE_READY": "1"}
         if force:
             env_patch["BHAGA_OTP_FORCE_REQUEST"] = "1"
         else:

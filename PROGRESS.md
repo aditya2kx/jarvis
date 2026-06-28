@@ -1,5 +1,26 @@
 # Jarvis Build Progress
 
+## 2026-06-28 — Smarter PR babysitting: batch triage aggregator (Issue #102, branch fix/i102-https)
+
+**Status:** In flight — implementation done; PR pending.
+
+**Problem:** The babysit loop was serial (find one issue → fix → push → wait for Opus review → repeat).
+Every completed push triggers a paid Claude Opus review (~$2–4). N serial fix-push cycles = N paid reviews.
+
+**Fix (Option A):**
+- `scripts/pr_triage.py` — read-only one-shot aggregator: unresolved inline threads (classified
+  as claude-bot / bugbot / human, with reply commands), failing CI checks, behind-base/conflict
+  flags, Claude verdict + evidence-confidence score. Exit 0 (clean) / 1 (work remaining) / 2 (tooling error).
+- `scripts/test_pr_triage.py` — 37 unit tests covering all sections + exit codes.
+- `.cursor/rules/pr-workflow.mdc` step 4 — rewritten to mandate batch loop: collect-all → fix-all →
+  reply-all → push once → re-collect once.
+- `docs/contributing/review-bot.md` convergence loop — rewritten with cost rationale (1 push = 1 review).
+- `scripts/check_doc_freshness.py` COUPLINGS — new entry: `pr_triage.py` → `review-bot.md` + `pr-workflow.mdc`.
+
+**Follow-ups (not in this PR):**
+- Option B: update global `~/.cursor/skills-cursor/babysit/SKILL.md` to the batch form (not in git; can't be CI-verified).
+- Option C: debounce `claude-review.yml` to skip review on pushes tagged `wip` or during active babysit (riskier; separate PR).
+
 ## 2026-06-28 — Google-reviews payroll table + training-shift ingest guard (issue #90, branch fix/google-reviews-payroll-table)
 
 - **Part A — per-review Payroll table:** Added BQ view `vw_review_bonus_detail` (`core/migrations/026_review_bonus_detail.sql`) over `google_reviews` — one row per paid review (`total_bonus > 0`), columns: `post_ts_ct`, `post_date_ct`, `reviewer`, `rating`, `comment`, `review_url`, `employees_considered`, `member_count`, `per_employee_bonus` (= `ROUND(total_bonus / member_count, 2)`), `total_bonus`, `shift_date_credited`, `shift_assignment_reason`. Added Grafana panel 76 "Google Reviews accounted for in Payroll" under section "6. Payroll" in `agents/bhaga/grafana/dashboard.json`. View and panel deployed automatically on merge via `ensure_schema()` + `grafana-dashboard-sync.yml`.

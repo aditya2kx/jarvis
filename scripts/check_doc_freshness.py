@@ -84,6 +84,11 @@ COUPLINGS: list[dict] = [
         "why": "PR process / review bot / template changed → update CONTRIBUTING.md stub + docs/contributing/review-bot.md.",
     },
     {
+        "code": ["scripts/pr_triage.py"],
+        "docs": ["docs/contributing/review-bot.md", ".cursor/rules/pr-workflow.mdc"],
+        "why": "PR triage aggregator changed → update review-bot convergence loop + pr-workflow babysit step.",
+    },
+    {
         "code": [
             ".github/workflows/ship-emoji-force-merge.yml",
             ".github/workflows/pr-merged-lifecycle.yml",

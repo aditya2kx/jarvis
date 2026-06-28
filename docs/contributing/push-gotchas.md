@@ -43,11 +43,14 @@ gh api user --jq .login
 # 4. Revoke the old PAT via github.com/settings/tokens (last step)
 ```
 
-> **After rotation — open workspaces:** Any Cursor workspace or terminal tab that was already open
-> before the old token was revoked will have the stale revoked token in its `GH_TOKEN` env var.
-> In each open workspace, run `source ~/.zshrc` (or open a new terminal tab) to reload `GH_TOKEN`
-> from Keychain. This is required after every rotation — it's not a bug, just how the zshrc +
-> Keychain pattern works.
+**After rotation — recover open workspaces** (existing shells hold the revoked token):
+```bash
+# In each open Cursor workspace / terminal tab:
+source ~/.zshrc                          # reload GH_TOKEN from Keychain
+gh api user --jq .login                 # must print: jarvis-agent-bot328
+git ls-remote origin HEAD               # must exit 0 (push path live)
+```
+If `gh api user` returns 401, the shell still has the old token — open a new terminal tab.
 
 ## 3. Never push to `main` directly
 `main` is the deployed branch.  Push to `main` → image rebuild → prod change.

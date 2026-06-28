@@ -425,6 +425,12 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 
 **Grafana dashboard** (`agents/bhaga/grafana/dashboard.json`) reads from these views in 5 sections: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll.
 
+**Migration 026 additions** (`core/migrations/026_review_bonus_detail.sql`):
+
+| BQ view | Grain | Key columns | Purpose |
+|---|---|---|---|
+| `vw_review_bonus_detail` | one row per paid review | `post_ts_ct`, `post_date_ct`, `reviewer`, `rating`, `comment`, `review_url`, `employees_considered` (`shift_members`), `member_count`, `per_employee_bonus`, `total_bonus`, `shift_date_credited`, `shift_assignment_reason` | Per-review payroll detail. Filter: `total_bonus > 0` (only reviews that generated a bonus). `per_employee_bonus = ROUND(total_bonus / member_count, 2)`. Pool mode: equals `base_credit_each`. Backs Grafana "6. Payroll" panel "Google Reviews accounted for in Payroll". |
+
 ---
 
 ## 7. Forecast — `model_forecast_daily` (BQ-authoritative, 2026-06-09)

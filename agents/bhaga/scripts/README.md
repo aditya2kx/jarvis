@@ -324,6 +324,13 @@ There are three sources, all sheet-driven (no code change to add an exemption):
 `set[(canonical_name, date_iso)]`). All human inputs live in BigQuery; operators edit via
 `/bhaga-cloud` Slack commands. No Sheet editing needed.
 
+**Ingesting new training-shift rows from the Sheet (one-time / backfill):** use
+`migrate_inputs_to_bq.py`.  By default (`open_period_only=True`) the script only ingests rows whose
+date falls in the **current open pay period** and skips closed/paid-period rows with a clear
+`[migrate] SKIP closed-period:` breadcrumb.  To ingest historical rows into a closed period (explicit
+backfill), pass `--allow-closed-periods`.  Always run `--dry-run` first to confirm which rows will
+land vs be skipped before the real MERGE.
+
 ### After any recipe
 
 - **Tests:** `python3 -m pytest agents/bhaga/scripts/ skills/tip_ledger_writer/`.

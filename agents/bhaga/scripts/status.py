@@ -176,6 +176,9 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 020: vw_training_shifts (panel 62, 6. Payroll — Training Shifts table).
     # PR2 (Sheets exit): Sheet projection panels removed; vw_training_shifts remains.
     Target("vw_training_shifts", "date"),
+    # migration 026: vw_review_bonus_detail (panel 76, 6. Payroll — per-review payroll table).
+    # Filters google_reviews to total_bonus > 0; per_employee_bonus = total_bonus / member_count.
+    Target("vw_review_bonus_detail", "post_date_ct"),
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

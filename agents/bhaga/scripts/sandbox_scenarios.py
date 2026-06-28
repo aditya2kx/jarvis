@@ -107,6 +107,19 @@ SCENARIOS: dict[str, dict] = {
         "gate_only_autostart": True,
         "verify": "nightly_autostart",
     },
+    "full-live-inline-gate": {
+        "description": (
+            "Full live pipeline (Square + ADP + reviews + model) with NO "
+            "BHAGA_OTP_ASSUME_READY and NO BHAGA_OTP_REQUIRE_READY, exercising the new "
+            "inline-autostart default end-to-end. If ADP logs in on trusted device the "
+            "run completes in full; if ADP challenges it waits up to BHAGA_OTP_WAIT_S "
+            "(15 min) and gracefully skips on timeout (proves the C1 skip path). "
+            "PR #94 evidence tier 2: proves PROCEED drives a real pipeline beyond the gate."
+        ),
+        # No skip — full pipeline to prove the inline gate drives real work.
+        # gate_only_autostart drops BHAGA_OTP_ASSUME_READY so the new default activates.
+        "gate_only_autostart": True,
+    },
 }
 
 _COMMENT_RE = re.compile(

@@ -40,6 +40,15 @@ STORE_PROFILES = (
 )
 
 
+def _today_central() -> datetime.date:
+    """Return today's date in America/Chicago (Central Time).
+
+    Isolated so tests can patch it without fighting the datetime module.
+    """
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+    return datetime.datetime.now(ZoneInfo("America/Chicago")).date()
+
+
 def _load_profile(store: str) -> dict:
     return json.loads((STORE_PROFILES / f"{store}.json").read_text())
 
@@ -145,7 +154,7 @@ def migrate_training_shifts(
             _, closed_end = most_recent_closed_period(
                 anchor_end_date=anchor,
                 pay_frequency=freq,
-                today=datetime.date.today(),
+                today=_today_central(),
             )
             open_start_iso = (
                 closed_end + datetime.timedelta(days=1)

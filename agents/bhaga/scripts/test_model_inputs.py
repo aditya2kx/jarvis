@@ -156,5 +156,46 @@ class TestReadExclusions(unittest.TestCase):
         self.assertEqual(result, {"permanent": [], "training": {}})
 
 
+class TestNormalizeInputName(unittest.TestCase):
+    """normalize_input_name resolves typo'd names and raises loudly on truly unknown names."""
+
+    def _aliases(self):
+        return {
+            "Willingham, Brooke": "Willingham, Brooke",  # canonical maps to itself
+            "Wilingham, Brooke": "Willingham, Brooke",   # typo alias
+            "Flores, Juan": "Flores, Juan",
+        }
+
+    def test_canonical_resolves_to_itself(self):
+        with mock.patch.object(mi, "read_aliases", return_value=self._aliases()):
+            result = mi.normalize_input_name("palmetto", "Flores, Juan")
+        self.assertEqual(result, "Flores, Juan")
+
+    def test_typo_resolves_to_canonical(self):
+        """Wilingham (one L) must resolve to Willingham (two Ls) via alias."""
+        with mock.patch.object(mi, "read_aliases", return_value=self._aliases()):
+            result = mi.normalize_input_name("palmetto", "Wilingham, Brooke")
+        self.assertEqual(result, "Willingham, Brooke")
+
+    def test_strips_whitespace(self):
+        with mock.patch.object(mi, "read_aliases", return_value=self._aliases()):
+            result = mi.normalize_input_name("palmetto", "  Flores, Juan  ")
+        self.assertEqual(result, "Flores, Juan")
+
+    def test_unknown_name_raises_valueerror(self):
+        """A genuinely unknown name must raise ValueError, not silently no-op."""
+        with mock.patch.object(mi, "read_aliases", return_value=self._aliases()):
+            with self.assertRaises(ValueError) as ctx:
+                mi.normalize_input_name("palmetto", "Zzz, Unknown")
+        self.assertIn("Zzz, Unknown", str(ctx.exception))
+        self.assertIn("employee_aliases", str(ctx.exception))
+
+    def test_unknown_name_mentions_alias_set_command(self):
+        with mock.patch.object(mi, "read_aliases", return_value=self._aliases()):
+            with self.assertRaises(ValueError) as ctx:
+                mi.normalize_input_name("palmetto", "Nobody")
+        self.assertIn("/bhaga-cloud alias set", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

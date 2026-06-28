@@ -92,6 +92,26 @@ def read_aliases(store: str = "palmetto") -> dict[str, str]:
         return {}
 
 
+def normalize_input_name(store: str, raw: str) -> str:
+    """Resolve a raw employee name to its canonical form via employee_aliases.
+
+    Raises ValueError when the name resolves to no known canonical so an
+    unknown trainee/exclusion name is never a silent no-op.  The only
+    intentional exception is _handle_alias_set (which defines the mapping).
+
+    Callers: _handle_training_set, _handle_exclude_set (webhook),
+             migrate_training_shifts (migration).
+    """
+    aliases = read_aliases(store)
+    canon = aliases.get(raw.strip())
+    if not canon:
+        raise ValueError(
+            f"unknown employee name {raw!r} for store {store!r} — not in "
+            f"employee_aliases. Add it via `/bhaga-cloud alias set` first."
+        )
+    return canon
+
+
 def read_punches_bq(store: str = "palmetto") -> list[dict]:
     """Return ADP punches from BQ adp_punches table as list[dict].
 

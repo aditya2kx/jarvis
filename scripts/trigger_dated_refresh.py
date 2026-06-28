@@ -56,6 +56,11 @@ def _build_env_overrides(date_str: str, recompute_only: bool) -> list[tuple[str,
             ("BHAGA_SKIP_SQUARE", "1"),
             ("BHAGA_SKIP_ADP", "1"),
             ("BHAGA_SKIP_KDS", "1"),
+            # Tell daily_refresh to clear model step-markers before running so the
+            # model rebuild is forced regardless of which backend (local or Firestore)
+            # holds the markers.  Without this, a Firestore-marked step survives
+            # across Cloud Run invocations and the recompute is a silent no-op.
+            ("BHAGA_FORCE_MODEL_RECOMPUTE", "1"),
         ]
     # Full-scrape reruns start inline (no READY handshake) in the default gate
     # mode. BHAGA_OTP_FORCE_REQUEST was only meaningful under the legacy

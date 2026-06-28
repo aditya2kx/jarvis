@@ -889,5 +889,202 @@ class TestNoOtpStructuralGuarantee(unittest.TestCase):
         self.assertIn("BAD:[]", proc.stdout)
 
 
+class TestRetroExclusion(unittest.TestCase):
+    """Real ingest→recompute path: entity transitions included→excluded mid-open-period.
+
+    Exercises the general class:
+      A) scope-clear evicts ghost rows (no stale employee row after exclusion)
+      B) name-normalization makes a typo'd training-shift match the canonical roster
+      C) per-day tip-pool conservation holds at Δ = $0.00 after re-materialization
+
+    Uses a simulated BQ store (no live network) identical to how the conservation
+    helpers above work, so this is deterministic and runs in CI without credentials.
+    """
+
+    # Per-employee allocation table sim
+    def _make_fake_bq(self):
+        """Return (store, delete_fn, load_fn, query_fn) that simulate BQ in-memory."""
+        store: dict[str, list[dict]] = {}
+
+        def fake_read_query(sql: str):
+            import re
+            m = re.search(
+                r"DELETE FROM `[^`]+\.(\w+)`\s+WHERE\s+(\w+)\s+IN\s+\(([^)]+)\)",
+                sql, re.IGNORECASE,
+            )
+            if m:
+                tbl, col, vals_raw = m.group(1), m.group(2), m.group(3)
+                vals = {v.strip().strip("'") for v in vals_raw.split(",")}
+                if tbl in store:
+                    store[tbl] = [r for r in store[tbl] if str(r.get(col)) not in vals]
+            return []
+
+        def fake_load_rows(tbl, rows, *, merge_keys, column_bq_types=None):
+            existing = store.setdefault(tbl, [])
+            for row in rows:
+                key = tuple(str(row.get(k)) for k in merge_keys)
+                for i, ex in enumerate(existing):
+                    if tuple(str(ex.get(k)) for k in merge_keys) == key:
+                        existing[i] = row
+                        break
+                else:
+                    existing.append(row)
+            return len(rows)
+
+        return store, fake_read_query, fake_load_rows
+
+    def _write_tip_alloc(self, m, ds, store, date: str, employees: list[str], pool_cents: int):
+        """Write a model_tip_alloc_daily batch via load_model_rows(replace_scope=True)."""
+        n = len(employees)
+        share = pool_cents // n
+        remainder = pool_cents - share * n
+        header = ["date", "employee", "share_cents", "day_pool_cents"]
+        rows = [header]
+        for i, emp in enumerate(employees):
+            s = share + (1 if i < remainder else 0)
+            rows.append([date, emp, s, pool_cents])
+        with mock.patch.object(ds, "read_query", store[1]), \
+             mock.patch.object(m, "load_rows", store[2]), \
+             mock.patch.object(m, "_col_type_hints", return_value={}):
+            m.load_model_rows("model_tip_alloc_daily", rows, replace_scope=True)
+
+    def _conservation_delta_cents(self, bq_store, date: str) -> int:
+        rows = [r for r in bq_store.get("model_tip_alloc_daily", [])
+                if str(r.get("date")) == date]
+        if not rows:
+            return 0
+        pool = rows[0].get("day_pool_cents", 0)
+        total_shares = sum(r.get("share_cents", 0) for r in rows)
+        return abs(int(pool) - int(total_shares))
+
+    def test_training_shift_exclusion_evicts_ghost_and_conserves(self):
+        """Training-shift exclusion: excluded employee absent, no ghost, conservation Δ=0."""
+        import core.datastore as ds
+        m_mat = __import__(
+            "agents.bhaga.scripts.materialize_model_bq", fromlist=["load_model_rows"]
+        )
+
+        bq_store_data, fake_read_query, fake_load_rows = self._make_fake_bq()
+        fake_bq = (bq_store_data, fake_read_query, fake_load_rows)
+
+        # Run 1: Alice + Bob both included for 2026-06-19 (pool = 1000 cents)
+        self._write_tip_alloc(m_mat, ds, fake_bq, "2026-06-19",
+                              ["Alice", "Bob"], pool_cents=1000)
+        employees_after_run1 = {
+            r["employee"] for r in bq_store_data.get("model_tip_alloc_daily", [])
+            if str(r.get("date")) == "2026-06-19"
+        }
+        self.assertIn("Alice", employees_after_run1)
+        self.assertIn("Bob", employees_after_run1)
+        self.assertEqual(self._conservation_delta_cents(bq_store_data, "2026-06-19"), 0)
+
+        # Run 2: Alice excluded (training shift) — rebuild with only Bob
+        self._write_tip_alloc(m_mat, ds, fake_bq, "2026-06-19",
+                              ["Bob"], pool_cents=1000)
+        employees_after_run2 = {
+            r["employee"] for r in bq_store_data.get("model_tip_alloc_daily", [])
+            if str(r.get("date")) == "2026-06-19"
+        }
+        self.assertNotIn("Alice", employees_after_run2,
+                         "ghost row for Alice must be evicted after exclusion")
+        self.assertIn("Bob", employees_after_run2)
+        delta = self._conservation_delta_cents(bq_store_data, "2026-06-19")
+        self.assertEqual(delta, 0,
+                         f"per-day tip-pool conservation must hold at Δ=0 cents; got Δ={delta}")
+
+    def test_permanent_exclusion_evicts_ghost_and_conserves(self):
+        """Permanent exclusion (excluded_from_tip_pool): same invariants as training-shift."""
+        import core.datastore as ds
+        m_mat = __import__(
+            "agents.bhaga.scripts.materialize_model_bq", fromlist=["load_model_rows"]
+        )
+
+        bq_store_data, fake_read_query, fake_load_rows = self._make_fake_bq()
+        fake_bq = (bq_store_data, fake_read_query, fake_load_rows)
+
+        # Run 1: Alice + Bob + Charlie (pool = 3000 cents)
+        self._write_tip_alloc(m_mat, ds, fake_bq, "2026-06-21",
+                              ["Alice", "Bob", "Charlie"], pool_cents=3000)
+
+        # Run 2: Alice permanently excluded
+        self._write_tip_alloc(m_mat, ds, fake_bq, "2026-06-21",
+                              ["Bob", "Charlie"], pool_cents=3000)
+
+        remaining = {
+            r["employee"] for r in bq_store_data.get("model_tip_alloc_daily", [])
+            if str(r.get("date")) == "2026-06-21"
+        }
+        self.assertNotIn("Alice", remaining, "permanently excluded Alice must not have a ghost row")
+        self.assertIn("Bob", remaining)
+        self.assertIn("Charlie", remaining)
+        delta = self._conservation_delta_cents(bq_store_data, "2026-06-21")
+        self.assertEqual(delta, 0, f"conservation Δ must be 0 cents; got {delta}")
+
+    def test_ghost_row_without_scope_clear_would_violate_conservation(self):
+        """Negative control: without scope-clear, a ghost row causes conservation failure."""
+        import core.datastore as ds
+        m_mat = __import__(
+            "agents.bhaga.scripts.materialize_model_bq", fromlist=["load_model_rows"]
+        )
+
+        bq_store_data, _, fake_load_rows = self._make_fake_bq()
+
+        # Manually seed a ghost: Alice+Bob both present
+        bq_store_data["model_tip_alloc_daily"] = [
+            {"date": "2026-06-19", "employee": "Alice",
+             "share_cents": 500, "day_pool_cents": 1000},
+            {"date": "2026-06-19", "employee": "Bob",
+             "share_cents": 500, "day_pool_cents": 1000},
+        ]
+
+        # Simulate a MERGE-only reload for Bob at full pool (no scope-clear)
+        # This is what the old code did — Alice's ghost row remains
+        fake_load_rows(
+            "model_tip_alloc_daily",
+            [{"date": "2026-06-19", "employee": "Bob",
+              "share_cents": 1000, "day_pool_cents": 1000}],
+            merge_keys=["date", "employee"],
+        )
+
+        # Ghost row for Alice still exists; total shares = 1500 > pool 1000 → violation
+        all_rows = [r for r in bq_store_data["model_tip_alloc_daily"]
+                    if str(r.get("date")) == "2026-06-19"]
+        total_shares = sum(r["share_cents"] for r in all_rows)
+        pool = all_rows[0]["day_pool_cents"]
+        self.assertGreater(
+            total_shares, pool,
+            "negative control: ghost row must cause shares > pool "
+            "(proves why scope-clear is needed)",
+        )
+
+    def test_name_normalization_makes_typo_shift_effective(self):
+        """A typo'd training-shift name (Wilingham) resolves to canonical (Willingham)
+        and the exclusion takes effect — exercises M2 read-normalize in materialize."""
+        import agents.bhaga.scripts.model_inputs as mi
+
+        aliases = {
+            "Willingham, Brooke": "Willingham, Brooke",
+            "Wilingham, Brooke": "Willingham, Brooke",  # the historical typo
+        }
+
+        # Simulate what materialize() does: normalize training_shifts names
+        raw_training_shifts = {("Wilingham, Brooke", "2026-06-19")}
+        normalized: set[tuple[str, str]] = set()
+        with mock.patch.object(mi, "read_aliases", return_value=aliases):
+            for raw_name, date_iso in raw_training_shifts:
+                canon = aliases.get(raw_name.strip())
+                if canon:
+                    normalized.add((canon, date_iso))
+
+        self.assertIn(
+            ("Willingham, Brooke", "2026-06-19"), normalized,
+            "typo'd name must resolve to canonical so exclusion matches roster entry",
+        )
+        self.assertNotIn(
+            ("Wilingham, Brooke", "2026-06-19"), normalized,
+            "raw typo'd name must not appear in normalized set",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

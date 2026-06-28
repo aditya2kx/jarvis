@@ -1330,6 +1330,9 @@ class TestTrainingCommands:
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
+        # Stub out alias normalization — these tests exercise BQ write behaviour only
+        import agents.bhaga.scripts.model_inputs as _mi
+        monkeypatch.setattr(_mi, "normalize_input_name", lambda store, raw: raw)
         with app.test_client() as client:
             resp = _post_command(client, 'training set "Flores, Juan" 2026-06-01 first shift',
                                  user_name="adi")
@@ -1347,6 +1350,8 @@ class TestTrainingCommands:
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
+        import agents.bhaga.scripts.model_inputs as _mi
+        monkeypatch.setattr(_mi, "normalize_input_name", lambda store, raw: raw)
         with app.test_client() as client:
             resp = _post_command(client, 'training set "Smith, Alice" 2026-06-02 orientation',
                                  user_name="adi")
@@ -1360,6 +1365,8 @@ class TestTrainingCommands:
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
+        import agents.bhaga.scripts.model_inputs as _mi
+        monkeypatch.setattr(_mi, "normalize_input_name", lambda store, raw: raw)
         with app.test_client() as client:
             resp = _post_command(client, 'training set "Smith, Alice" 2026-06-02',
                                  user_name="adi")
@@ -1390,6 +1397,26 @@ class TestTrainingCommands:
         assert resp.status_code == 200
         assert len(follow_ups) == 1
         assert "not available" in follow_ups[0]["text"].lower() or "unavailable" in follow_ups[0]["text"].lower()
+
+    def test_training_set_unknown_name_rejected(self, monkeypatch):
+        """Unknown employee name must post an error message and NOT write to BQ."""
+        follow_ups = _sync_dispatch(monkeypatch)
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        import agents.bhaga.scripts.model_inputs as _mi
+        monkeypatch.setattr(
+            _mi, "normalize_input_name",
+            lambda store, raw: (_ for _ in ()).throw(
+                ValueError(f"unknown employee name {raw!r} — not in employee_aliases")
+            )
+        )
+        with app.test_client() as client:
+            resp = _post_command(client, 'training set "Zzz, Unknown" 2026-06-01')
+        assert resp.status_code == 200
+        assert len(follow_ups) == 1
+        assert "unknown employee" in follow_ups[0]["text"].lower() or "employee_aliases" in follow_ups[0]["text"]
+        assert not fake_bq.query.called, "BQ must NOT be written for an unknown name"
 
 
 class TestAliasCommands:
@@ -1429,6 +1456,8 @@ class TestExcludeCommands:
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
+        import agents.bhaga.scripts.model_inputs as _mi
+        monkeypatch.setattr(_mi, "normalize_input_name", lambda store, raw: raw)
         with app.test_client() as client:
             resp = _post_command(client, 'exclude set "Flores, Juan" 2026-05-31',
                                  user_name="adi")

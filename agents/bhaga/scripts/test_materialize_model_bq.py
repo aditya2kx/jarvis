@@ -260,5 +260,160 @@ class TestReplaceMode(unittest.TestCase):
         self.assertEqual(called, [], "dry-run must not issue a DELETE")
 
 
+class TestReplaceScopeMode(unittest.TestCase):
+    """load_model_rows(replace_scope=True) deletes only the rebuilt partition before MERGE."""
+
+    def _run_scope_clear(self, table: str, scope_col: str, scope_val: str):
+        import core.datastore as ds
+        m = _load_module()
+        delete_sql = []
+        loaded = []
+
+        def fake_read_query(sql):
+            if sql.strip().upper().startswith("DELETE"):
+                delete_sql.append(sql)
+            return []
+
+        def fake_load_rows(tbl, rows, *, merge_keys, column_bq_types=None):
+            loaded.append((tbl, len(rows)))
+            return len(rows)
+
+        employee_col = "employee"
+        header = [scope_col, employee_col]
+        rows = [header, [scope_val, "Alice"]]
+
+        with mock.patch.object(ds, "read_query", fake_read_query), \
+             mock.patch.object(m, "load_rows", fake_load_rows), \
+             mock.patch.object(m, "_col_type_hints", return_value={}):
+            n = m.load_model_rows(table, rows, replace_scope=True)
+
+        self.assertEqual(n, 1)
+        self.assertEqual(len(delete_sql), 1, f"expected exactly one DELETE for {table}")
+        self.assertIn(table, delete_sql[0])
+        self.assertIn(scope_col, delete_sql[0])
+        self.assertIn(scope_val, delete_sql[0])
+        # Must NOT delete WHERE TRUE (that's replace=True; scope-clear is partial)
+        self.assertNotIn("WHERE TRUE", delete_sql[0].upper())
+        return delete_sql, loaded
+
+    def test_scope_clear_tip_alloc_daily(self):
+        self._run_scope_clear("model_tip_alloc_daily", "date", "2026-06-19")
+
+    def test_scope_clear_tip_alloc_period(self):
+        self._run_scope_clear("model_tip_alloc_period", "period_start", "2026-06-09")
+
+    def test_scope_clear_review_bonus_period(self):
+        self._run_scope_clear("model_review_bonus_period", "period_start", "2026-06-09")
+
+    def test_scope_clear_dry_run_skips_delete(self):
+        import core.datastore as ds
+        m = _load_module()
+        called = []
+        with mock.patch.object(ds, "read_query", lambda sql: called.append(sql) or []):
+            n = m.load_model_rows(
+                "model_tip_alloc_daily",
+                [["date", "employee"], ["2026-06-19", "Alice"]],
+                replace_scope=True, dry_run=True,
+            )
+        self.assertEqual(n, 0)
+        self.assertEqual(called, [], "dry-run must not issue a DELETE")
+
+    def test_scope_clear_evicts_dropped_employee(self):
+        """After scope-clear+reload without employee X, X must not appear for that partition."""
+        import core.datastore as ds
+        m = _load_module()
+
+        # Simulate in-memory BQ state: {table: list[dict]}
+        fake_store: dict[str, list[dict]] = {
+            "model_tip_alloc_daily": [
+                {"date": "2026-06-19", "employee": "Alice", "share_cents": 1000},
+                {"date": "2026-06-19", "employee": "Bob",   "share_cents": 2000},
+            ],
+        }
+
+        def fake_read_query(sql):
+            # Handle scope-clear DELETE: remove matching rows from fake_store
+            import re
+            m_del = re.search(r"DELETE FROM `[^`]+\.(\w+)`\s+WHERE\s+(\w+)\s+IN\s+\(([^)]+)\)", sql, re.I)
+            if m_del:
+                tbl = m_del.group(1)
+                col = m_del.group(2)
+                vals = {v.strip().strip("'") for v in m_del.group(3).split(",")}
+                if tbl in fake_store:
+                    fake_store[tbl] = [r for r in fake_store[tbl] if str(r.get(col)) not in vals]
+            return []
+
+        def fake_load_rows(tbl, rows, *, merge_keys, column_bq_types=None):
+            # Simulate MERGE: upsert by merge_keys
+            existing = fake_store.setdefault(tbl, [])
+            for row in rows:
+                key = tuple(str(row.get(k)) for k in merge_keys)
+                for i, ex in enumerate(existing):
+                    if tuple(str(ex.get(k)) for k in merge_keys) == key:
+                        existing[i] = row
+                        break
+                else:
+                    existing.append(row)
+            return len(rows)
+
+        # Rebuild for 2026-06-19 with only Alice (Bob excluded/dropped)
+        header = ["date", "employee", "share_cents"]
+        new_rows = [header, ["2026-06-19", "Alice", 3000]]
+
+        with mock.patch.object(ds, "read_query", fake_read_query), \
+             mock.patch.object(m, "load_rows", fake_load_rows), \
+             mock.patch.object(m, "_col_type_hints", return_value={}):
+            m.load_model_rows("model_tip_alloc_daily", new_rows, replace_scope=True)
+
+        remaining = fake_store["model_tip_alloc_daily"]
+        employees_on_date = {
+            r["employee"] for r in remaining if str(r.get("date")) == "2026-06-19"
+        }
+        self.assertNotIn("Bob", employees_on_date, "ghost row for Bob must be evicted")
+        self.assertIn("Alice", employees_on_date, "Alice (rebuilt) must remain")
+
+
+class TestScopeClearMetaGuard(unittest.TestCase):
+    """_SCOPE_CLEAR_COL must cover every per-employee table in _MERGE_KEYS and
+    every per-employee table's write call must use replace_scope=True."""
+
+    def test_scope_clear_col_covers_all_employee_tables(self):
+        m = _load_module()
+        expected = {t for t, keys in m._MERGE_KEYS.items() if "employee" in keys}
+        self.assertEqual(
+            set(m._SCOPE_CLEAR_COL),
+            expected,
+            "_SCOPE_CLEAR_COL must contain exactly the tables whose merge key includes 'employee'",
+        )
+
+    def test_per_employee_write_calls_use_replace_scope(self):
+        """Source-scan: every per-employee table write must pass replace_scope=True.
+
+        model_tip_alloc_daily/period are written in materialize_model_bq.py;
+        model_review_bonus_period is written in process_reviews.py.
+        """
+        import pathlib
+        import re
+
+        root = pathlib.Path(__file__).parent
+        # All sources that write model tables via load_model_rows
+        sources = {
+            "materialize_model_bq.py": (root / "materialize_model_bq.py").read_text(),
+            "process_reviews.py": (root / "process_reviews.py").read_text(),
+        }
+        combined = "\n".join(sources.values())
+
+        m = _load_module()
+        for table in m._SCOPE_CLEAR_COL:
+            pattern = rf'load_model_rows\(\s*"{re.escape(table)}"[^)]+\)'
+            calls = re.findall(pattern, combined, re.DOTALL)
+            self.assertTrue(calls, f"no load_model_rows call found for {table!r} in any source")
+            for call in calls:
+                self.assertIn(
+                    "replace_scope=True", call,
+                    f"load_model_rows for {table!r} must pass replace_scope=True; got:\n{call}",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

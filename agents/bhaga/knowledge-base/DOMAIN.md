@@ -389,7 +389,7 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 
 | BQ table / view | Grain | Key columns | Purpose |
 |---|---|---|---|
-| `model_review_bonus_period` | (period_start, employee) | `reviews_credited`, `named_count`, `base_dollars`, `named_dollars`, `total_bonus` | BQ mirror of the `review_bonus_period` Sheet tab; written by `process_reviews.py` when `BHAGA_DATASTORE=bigquery`. Merge keys: (period_start, employee). |
+| `model_review_bonus_period` | (period_start, employee) | `reviews_credited`, `named_count`, `base_dollars`, `named_dollars`, `total_bonus` | BQ mirror of the `review_bonus_period` Sheet tab; written by `process_reviews.py` when `BHAGA_DATASTORE=bigquery`. Merge keys: (period_start, employee). **Write semantics (2026-06 hardening):** uses `replace_scope=True` in `load_model_rows` — partition values present in the batch are deleted before the MERGE so a dropped employee leaves no ghost row. Schema unchanged. |
 | `vw_model_labor_daily` (extended) | day | All `model_labor_daily` cols + `labor_pct`, `hourly_pct`, `fulltime_pct` aliases | Extended view for the Grafana Labor Cost section. No view-on-view — source: `model_labor_daily`. |
 | `vw_model_labor_daily` (ext 005) | day | All prior cols + `total_hours`, `hourly/fulltime_hours_per_item`, `*_hours_per_1k_net_sales` | Adds per-$1k and per-item hours ratios for the Labor section charts. |
 | `vw_model_labor_weekly` (ext 005) | ISO week | All `model_labor_weekly` cols + same new Labor section cols | Same extensions as daily. Source: `model_labor_weekly`. |

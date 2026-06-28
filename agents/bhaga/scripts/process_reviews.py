@@ -938,11 +938,12 @@ def rebuild_review_bonus_period(
     if _bq_enabled():
         try:
             from agents.bhaga.scripts.materialize_model_bq import load_model_rows  # noqa: PLC0415
-            # replace=True: this rollup is a FULL rebuild (every period/employee),
-            # so truncate-then-load mirrors the Sheet's clear-and-write and prevents
-            # ghost rows from periods/employees that dropped out of the rebuild.
-            n_bq = load_model_rows("model_review_bonus_period", rollup_rows, replace=True)
-            print(f"  [review_bonus_period→BQ] {n_bq} rows written (full replace) into model_review_bonus_period")
+            # replace_scope=True: delete rows for the rebuilt period_start values
+            # before the MERGE. Prevents ghost rows when an employee drops out of a
+            # given period, while leaving other periods untouched (unlike replace=True
+            # which truncated the whole table — unnecessarily destructive).
+            n_bq = load_model_rows("model_review_bonus_period", rollup_rows, replace_scope=True)
+            print(f"  [review_bonus_period→BQ] {n_bq} rows written (scope-clear) into model_review_bonus_period")
         except Exception as exc:  # noqa: BLE001
             print(f"  [review_bonus_period→BQ] WARNING: BQ write failed (Sheet is unaffected): {exc}")
 

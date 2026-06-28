@@ -19,6 +19,22 @@ def test_recompute_env_has_skip_flags():
     assert env["BHAGA_IGNORE_HALT"] == "1"
 
 
+def test_recompute_env_injects_force_model_recompute():
+    """recompute_only must inject BHAGA_FORCE_MODEL_RECOMPUTE so daily_refresh clears markers."""
+    env = dict(t._build_env_overrides("2026-06-13", recompute_only=True))
+    assert env.get("BHAGA_FORCE_MODEL_RECOMPUTE") == "1", (
+        "BHAGA_FORCE_MODEL_RECOMPUTE must be '1' in recompute-only mode"
+    )
+
+
+def test_scrape_env_does_not_inject_force_model_recompute():
+    """Full-scrape mode must NOT inject BHAGA_FORCE_MODEL_RECOMPUTE."""
+    env = dict(t._build_env_overrides("2026-06-14", recompute_only=False))
+    assert "BHAGA_FORCE_MODEL_RECOMPUTE" not in env, (
+        "BHAGA_FORCE_MODEL_RECOMPUTE must not be set for full-scrape runs"
+    )
+
+
 def test_scrape_env_starts_inline_no_force_request():
     # Full-scrape dates start inline (no READY handshake) — BHAGA_OTP_FORCE_REQUEST
     # is no longer injected; the default gate mode handles the OTP automatically.

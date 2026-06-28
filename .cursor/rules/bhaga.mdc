@@ -86,6 +86,20 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
    not failed — and review-bonus survival). A semantic failure trips the pipeline halt circuit breaker
    so the known-bad run can't repeat (RUNBOOK §13). When you remove/replace a data source, **diff the
    affected sheet columns before/after** and add a semantic guard — never let a column silently go dead.
+9. **No ghost rows in per-employee model tables.** Any `model_*` table whose merge key contains
+   `employee` (`model_tip_alloc_daily`, `model_tip_alloc_period`, `model_review_bonus_period`) MUST
+   use `load_model_rows(..., replace_scope=True)` — never a naked MERGE. `replace_scope=True` deletes
+   rows for the rebuilt partition values before the MERGE so a dropped/excluded employee leaves no
+   stale row. `_SCOPE_CLEAR_COL` in `materialize_model_bq.py` drives this mapping; a meta-guard test
+   enforces it. Adding a new per-employee table: add it to `_MERGE_KEYS` with `"employee"` in the key
+   and it will automatically appear in `_SCOPE_CLEAR_COL` — the meta-guard will then require
+   `replace_scope=True` in its write call or the test suite will fail.
+10. **No raw, un-normalized employee name enters a comparison.** All human-input write paths
+    (Slack `/bhaga-cloud training set`, `/bhaga-cloud exclude set`, `migrate_inputs_to_bq`) MUST route
+    the employee name through `model_inputs.normalize_input_name(store, raw)` before writing to BQ.
+    This helper resolves aliases and raises `ValueError` loudly on unknown names. The read side in
+    `materialize()` also normalizes `training_shifts` and `training_through` through the alias map.
+    The only permitted exception is `_handle_alias_set` (which defines the mapping itself).
 
 ## Edge cases
 

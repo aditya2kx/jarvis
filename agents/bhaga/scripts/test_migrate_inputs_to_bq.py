@@ -51,12 +51,16 @@ def _run(
         captured.extend(rows)
         return len(rows)
 
+    import agents.bhaga.scripts.model_inputs as _mi
+
     with (
         mock.patch.object(_mod, "refresh_access_token", return_value="tok"),
         mock.patch.object(_mod, "resolve_sheet_id", return_value="fake-sid"),
         mock.patch("urllib.request.urlopen", return_value=_sheet_response(dates)),
         mock.patch.object(_mod, "load_rows", side_effect=_fake_load_rows),
         mock.patch.object(_mod, "_today_central", return_value=today),
+        # Pass names through — these tests exercise the open-period filter, not normalization
+        mock.patch.object(_mi, "normalize_input_name", lambda store, raw: raw),
     ):
         _mod.migrate_training_shifts(
             _PROFILE, "palmetto",
@@ -162,12 +166,15 @@ class TestCliDryRun(unittest.TestCase):
         def _fake_load(_table, rows, **_kw):
             merged_calls.append(rows)
 
+        import agents.bhaga.scripts.model_inputs as _mi
+
         with (
             mock.patch.object(_mod, "refresh_access_token", return_value="tok"),
             mock.patch.object(_mod, "resolve_sheet_id", return_value="fake-sid"),
             mock.patch("urllib.request.urlopen", return_value=_sheet_response(sheet_dates)),
             mock.patch.object(_mod, "load_rows", side_effect=_fake_load),
             mock.patch.object(_mod, "_today_central", return_value=_TODAY_CT),
+            mock.patch.object(_mi, "normalize_input_name", lambda store, raw: raw),
             # Skip ensure_schema, migrate_config_keys, migrate_employee_aliases
             mock.patch.object(_mod, "ensure_schema", return_value=[]),
             mock.patch(

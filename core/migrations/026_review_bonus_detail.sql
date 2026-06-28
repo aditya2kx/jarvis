@@ -19,7 +19,7 @@
 CREATE OR REPLACE VIEW `jarvis-bhaga-prod.bhaga.vw_review_bonus_detail` AS
 SELECT
   post_ts_ct,
-  CAST(post_date_ct AS STRING)                                    AS post_date_ct,
+  post_date_ct,
   reviewer,
   rating,
   comment,

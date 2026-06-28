@@ -19,10 +19,12 @@ def test_recompute_env_has_skip_flags():
     assert env["BHAGA_IGNORE_HALT"] == "1"
 
 
-def test_scrape_env_forces_otp_request():
+def test_scrape_env_starts_inline_no_force_request():
+    # Full-scrape dates start inline (no READY handshake) — BHAGA_OTP_FORCE_REQUEST
+    # is no longer injected; the default gate mode handles the OTP automatically.
     env = dict(t._build_env_overrides("2026-06-14", recompute_only=False))
     assert env["REFRESH_DATE"] == "2026-06-14"
-    assert env["BHAGA_OTP_FORCE_REQUEST"] == "1"
+    assert "BHAGA_OTP_FORCE_REQUEST" not in env
     assert "BHAGA_SKIP_SQUARE" not in env
     assert env["BHAGA_IGNORE_HALT"] == "1"
 

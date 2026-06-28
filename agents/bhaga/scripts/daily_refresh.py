@@ -386,6 +386,21 @@ def _is_scrape_lock_held(exc: BaseException | None) -> bool:
     return False
 
 
+def _is_otp_wait_timeout(exc: BaseException | None) -> bool:
+    """True if ``exc`` is an OtpWaitTimeout raised by the ADP 2FA handler.
+
+    Duck-typed so the import stays optional (same pattern as _is_scrape_lock_held).
+    """
+    seen = 0
+    cur = exc
+    while cur is not None and seen < 20:
+        if type(cur).__name__ == "OtpWaitTimeout":
+            return True
+        cur = cur.__cause__ or cur.__context__
+        seen += 1
+    return False
+
+
 def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
     """Invalidate a step's success marker (sanctioned, via the state adapter).
 
@@ -2287,8 +2302,11 @@ def _run_refresh() -> int:
             print(f"[otp_gate] 48h cap hit — skipped {otp_portals}; finishing "
                   "every step that does NOT need an OTP.")
         elif decision == otp_gate.PROCEED:
-            # READY in hand → operator is active now. Use a SHORT bounded wait
-            # per code (the long wait already happened, for free, before READY).
+            # Inline autostart (default) or READY already received (require-ready
+            # rollback mode): bound the OTP code wait to 15 min. In the inline
+            # path, ADP may not challenge at all (trusted-device session); if it
+            # does, the runner posts a Slack OTP-code ask for up to 900 s, then
+            # raises OtpWaitTimeout (caught below as a graceful ADP skip).
             # Serialize OTP portals so two SMS can't collide.
             os.environ.setdefault("BHAGA_OTP_WAIT_S", "900")
             serialize_otp = len(otp_portals) > 1
@@ -2356,6 +2374,16 @@ def _run_refresh() -> int:
         })
         if not pr.success:
             if pr.error:
+                # Inline-OTP timeout on ADP: the operator didn't reply with the
+                # SMS code within BHAGA_OTP_WAIT_S seconds. Treat as a graceful
+                # ADP-skip: alert, continue on existing ADP data, do NOT count
+                # as a hard failure, do NOT trip the pipeline halt breaker.
+                if pipeline_name == "adp" and _is_otp_wait_timeout(pr.error):
+                    print(f"[otp_gate] ADP inline OTP timed out — skipping ADP step; "
+                          f"next nightly will retry. ({pr.error})")
+                    otp_skipped_alert(date=refresh_date.isoformat(), portals=["ADP"])
+                    _RUN_SUMMARY["source_pulls"][-1]["status"] = "skipped_otp_timeout"
+                    continue
                 failures.append((pipeline_name, pr.error))
                 if pipeline_name in ("square", "adp"):
                     otp_portal_failed = True

@@ -576,6 +576,8 @@ def _build_refresh_env_overrides(date_str: str, recompute_only: bool) -> list[tu
 
     Mirrors scripts/trigger_dated_refresh.py::_build_env_overrides.
     Both modes add BHAGA_IGNORE_HALT=1 (operator-driven backfill includes the fix).
+    Full-scrape dates start inline (no READY handshake) under the default gate
+    mode; BHAGA_OTP_FORCE_REQUEST is no longer injected here.
     """
     env = [("REFRESH_DATE", date_str)]
     if recompute_only:
@@ -584,8 +586,6 @@ def _build_refresh_env_overrides(date_str: str, recompute_only: bool) -> list[tu
             ("BHAGA_SKIP_ADP", "1"),
             ("BHAGA_SKIP_KDS", "1"),
         ]
-    else:
-        env.append(("BHAGA_OTP_FORCE_REQUEST", "1"))
     env.append(("BHAGA_IGNORE_HALT", "1"))
     return env
 
@@ -1198,12 +1198,10 @@ def _trigger_cloud_run_job_with_env(
 def _trigger_cloud_run_job(
     date_str: str,
     job_name: Optional[str] = None,
-    *,
-    force_otp_request: bool = False,
 ) -> None:
     """Enqueue a Cloud Run Job execution for the given date.
 
-    Backward-compatible wrapper used by the READY-handshake path and tests.
+    Used by the READY-handshake OTP resume path (BHAGA_OTP_REQUIRE_READY=1).
     Uses the Cloud Run v2 API to create a job execution. ``job_name`` defaults to
     the prod CLOUD_RUN_JOB_NAME env var; a sandbox OTP resume passes the sandbox
     job's resource name so the reply runs the sandbox job, not prod.
@@ -1217,10 +1215,6 @@ def _trigger_cloud_run_job(
        is applied upstream (in ``slack_events``), before this function is called.
     """
     env_pairs = [("REFRESH_DATE", date_str)]
-    if force_otp_request:
-        # Explicit operator-driven trigger: re-post a fresh OTP READY request
-        # even if a stale, unanswered pending_otp checkpoint already exists.
-        env_pairs.append(("BHAGA_OTP_FORCE_REQUEST", "1"))
     _trigger_cloud_run_job_with_env(date_str, env_pairs, job_name)
 
 

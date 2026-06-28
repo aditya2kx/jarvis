@@ -22,9 +22,12 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 
 - **Nightly:** Cloud Scheduler `bhaga-nightly` (21:30 CT) → Cloud Run Job `bhaga-daily-refresh`
   (`agents/bhaga/scripts/daily_refresh.py`).
-- **OTP / READY round-trips:** the job writes a pending OTP record to **Firestore** + posts to the
-  BHAGA Slack DM; the operator replies; the Cloud Run **`bhaga-webhook`** records the answer; the job
-  resumes. There is **no** local Slack listener and **no** `/tmp/jarvis-*.json` for BHAGA.
+- **OTP / 2FA (inline autostart default):** the nightly job proceeds directly to scraping without a
+  READY handshake. If ADP challenges for a 2FA code, the runner posts an OTP-code ask to the BHAGA
+  Slack DM (`D0B67MW6J02`); the operator replies within 15 min; the Cloud Run **`bhaga-webhook`**
+  records the answer. On no reply: ADP step is gracefully skipped, run exits 0, next nightly retries.
+  There is **no** local Slack listener and **no** `/tmp/jarvis-*.json` for BHAGA. Legacy READY
+  handshake mode is available via `BHAGA_OTP_REQUIRE_READY=1` (see `FEATURE_FLAGS.md`).
 - **State / idempotency:** Firestore `runs/<YYYY-MM-DD>` holds per-step completion markers
   (`skills/bhaga_config/state_adapter.py`). Re-running a date skips steps already marked done; to
   force a step, clear its marker (see `RUNBOOK.md` § Common tasks → force-rerun).
@@ -104,8 +107,9 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 
 ## Operational rules
 
-- **OTP via Slack, never the IDE.** ADP/Square 2FA codes are requested via the Firestore+webhook
-  round-trip. The operator is not at a laptop. Announce any action that fires an SMS/email before
+- **OTP via Slack, never the IDE.** ADP 2FA codes are requested inline via the Firestore+webhook
+  round-trip (only when ADP actually challenges; most nights the trusted-device session clears it
+  silently). The operator is not at a laptop. Announce any action that fires an SMS/email before
   triggering it.
 - **Square scrape/OTP login is serialized across Cloud Run executions, not just within a container.**
   `_acquire_scrape_lock` uses a TTL-based Firestore distributed lock (`runs/_lock_scrape-square-<store>`,

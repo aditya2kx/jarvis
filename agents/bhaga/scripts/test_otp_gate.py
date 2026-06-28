@@ -21,6 +21,7 @@ from agents.bhaga.scripts.otp_gate import (
     EXIT_PENDING,
     PROCEED,
     SKIP_OTP,
+    OtpWaitTimeout,
     PendingOtpAvailability,
     evaluate,
     is_ready_reply,
@@ -93,10 +94,26 @@ class TestAssumeReady:
         assert decision == PROCEED
         assert "assume-ready" in info["reason"]
 
-    def test_unset_keeps_checkpoint_behavior(self, monkeypatch):
+    def test_unset_inline_autostart_proceeds(self, monkeypatch):
+        # Default (no env vars): inline-autostart mode → PROCEED immediately.
         monkeypatch.delenv("BHAGA_OTP_ASSUME_READY", raising=False)
+        monkeypatch.delenv("BHAGA_OTP_REQUIRE_READY", raising=False)
+        decision, info = _gate(["ADP"], None)
+        assert decision == PROCEED
+        assert "inline" in info["reason"]
+
+    def test_require_ready_restores_checkpoint_behavior(self, monkeypatch):
+        monkeypatch.delenv("BHAGA_OTP_ASSUME_READY", raising=False)
+        monkeypatch.setenv("BHAGA_OTP_REQUIRE_READY", "1")
         decision, _ = _gate(["Square"], None)
         assert decision == EXIT_PENDING
+
+
+class TestOtpWaitTimeout:
+    def test_is_exception(self):
+        exc = OtpWaitTimeout("timed out")
+        assert isinstance(exc, Exception)
+        assert "timed out" in str(exc)
 
 
 class TestGateEvaluate:
@@ -106,12 +123,24 @@ class TestGateEvaluate:
         decision, info = evaluate(REFRESH_DATE, [], get_pending=lambda _d: None)
         assert decision == PROCEED
 
-    def test_no_checkpoint_exits_pending_first_request(self):
+    def test_default_inline_proceeds_without_checkpoint(self, monkeypatch):
+        # Default mode: no env set → PROCEED immediately, no pending check.
+        monkeypatch.delenv("BHAGA_OTP_ASSUME_READY", raising=False)
+        monkeypatch.delenv("BHAGA_OTP_REQUIRE_READY", raising=False)
+        decision, info = evaluate(REFRESH_DATE, ["ADP"],
+                                  get_pending=lambda _d: (_ for _ in ()).throw(
+                                      AssertionError("get_pending should not be called")))
+        assert decision == PROCEED
+        assert "inline" in info["reason"]
+
+    def test_no_checkpoint_exits_pending_first_request(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_OTP_REQUIRE_READY", "1")
         decision, info = _gate(["Square"], None)
         assert decision == EXIT_PENDING
         assert info["first_request"] is True
 
-    def test_outstanding_request_exits_pending_no_reping(self):
+    def test_outstanding_request_exits_pending_no_reping(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_OTP_REQUIRE_READY", "1")
         pending = {
             "portals": ["Square"],
             "requested_at": (NOW - datetime.timedelta(hours=3)).isoformat(),
@@ -121,7 +150,8 @@ class TestGateEvaluate:
         assert decision == EXIT_PENDING
         assert info["first_request"] is False
 
-    def test_ready_received_proceeds(self):
+    def test_ready_received_proceeds(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_OTP_REQUIRE_READY", "1")
         pending = {
             "portals": ["Square", "ADP"],
             "requested_at": (NOW - datetime.timedelta(hours=2)).isoformat(),
@@ -133,7 +163,8 @@ class TestGateEvaluate:
         # One READY covers ALL portals in the run.
         assert info["portals"] == ["Square", "ADP"]
 
-    def test_48h_cap_not_yet_reached_exits_pending(self):
+    def test_48h_cap_not_yet_reached_exits_pending(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_OTP_REQUIRE_READY", "1")
         pending = {
             "portals": ["Square"],
             "requested_at": (NOW - datetime.timedelta(hours=47, minutes=59)).isoformat(),
@@ -142,7 +173,8 @@ class TestGateEvaluate:
         decision, _ = _gate(["Square"], pending)
         assert decision == EXIT_PENDING
 
-    def test_48h_cap_reached_skips_otp(self):
+    def test_48h_cap_reached_skips_otp(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_OTP_REQUIRE_READY", "1")
         pending = {
             "portals": ["Square", "ADP"],
             "requested_at": (NOW - datetime.timedelta(hours=48)).isoformat(),
@@ -152,7 +184,8 @@ class TestGateEvaluate:
         assert decision == SKIP_OTP
         assert info["portals"] == ["Square", "ADP"]
 
-    def test_48h_cap_well_past_skips_otp(self):
+    def test_48h_cap_well_past_skips_otp(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_OTP_REQUIRE_READY", "1")
         pending = {
             "portals": ["ADP"],
             "requested_at": (NOW - datetime.timedelta(days=3)).isoformat(),
@@ -161,8 +194,9 @@ class TestGateEvaluate:
         decision, _ = _gate(["ADP"], pending)
         assert decision == SKIP_OTP
 
-    def test_naive_requested_at_is_tolerated(self):
+    def test_naive_requested_at_is_tolerated(self, monkeypatch):
         # A naive (tz-less) timestamp must not raise; it's treated as CT.
+        monkeypatch.setenv("BHAGA_OTP_REQUIRE_READY", "1")
         naive = (NOW - datetime.timedelta(hours=50)).replace(tzinfo=None)
         pending = {"portals": ["Square"], "requested_at": naive.isoformat(),
                    "ready_received": False}
@@ -178,7 +212,10 @@ class TestPendingOtpAvailability:
 
 
 class TestForceRequest:
-    def test_force_re_posts_on_stale_outstanding(self):
+    """force_request is only meaningful in BHAGA_OTP_REQUIRE_READY=1 mode."""
+
+    def test_force_re_posts_on_stale_outstanding(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_OTP_REQUIRE_READY", "1")
         pending = {
             "portals": ["Square"],
             "requested_at": (NOW - datetime.timedelta(hours=3)).isoformat(),
@@ -191,8 +228,9 @@ class TestForceRequest:
         assert decision == EXIT_PENDING
         assert info["first_request"] is True
 
-    def test_force_beats_48h_cap(self):
+    def test_force_beats_48h_cap(self, monkeypatch):
         # Past the cap, force still re-posts (operator wants the data now).
+        monkeypatch.setenv("BHAGA_OTP_REQUIRE_READY", "1")
         pending = {
             "portals": ["Square", "ADP"],
             "requested_at": (NOW - datetime.timedelta(days=3)).isoformat(),
@@ -205,7 +243,8 @@ class TestForceRequest:
         assert decision == EXIT_PENDING
         assert info["first_request"] is True
 
-    def test_force_still_proceeds_when_ready_received(self):
+    def test_force_still_proceeds_when_ready_received(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_OTP_REQUIRE_READY", "1")
         pending = {
             "portals": ["Square"],
             "requested_at": (NOW - datetime.timedelta(hours=2)).isoformat(),
@@ -219,6 +258,7 @@ class TestForceRequest:
         assert decision == PROCEED
 
     def test_force_from_env(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_OTP_REQUIRE_READY", "1")
         monkeypatch.setenv("BHAGA_OTP_FORCE_REQUEST", "1")
         pending = {
             "portals": ["Square"],
@@ -233,6 +273,7 @@ class TestForceRequest:
         assert info["first_request"] is True
 
     def test_no_force_keeps_silent_outstanding(self, monkeypatch):
+        monkeypatch.setenv("BHAGA_OTP_REQUIRE_READY", "1")
         monkeypatch.delenv("BHAGA_OTP_FORCE_REQUEST", raising=False)
         pending = {
             "portals": ["Square"],

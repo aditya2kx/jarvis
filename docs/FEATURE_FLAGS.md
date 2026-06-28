@@ -13,6 +13,7 @@ Deployment-env config variables (e.g. `BHAGA_SECRETS_BACKEND`, `BHAGA_STATE_BACK
 |------|---------|-------|---------|--------------|---------------------|-----------|
 | **BQ datastore** | `BHAGA_DATASTORE=bigquery` | 2026-03 (early) | off | Enables BigQuery client for raw reads and model writes. Without it, all reads/writes go to Google Sheets only. | **Keep permanently** — this is a permanent infrastructure toggle, not a temporary flag. Setting to `bigquery` is the prod-normal state for Cloud Run. | — |
 | **Sheet staging isolation** | `BHAGA_SHEET_MODE=staging` | 2026-04 | off | Redirects Sheet writes to the sandbox slot (read-prod / write-sandbox). Guards CI and dev runs from touching production Sheets. | **Keep permanently** — safety gate for all CI and sandbox runs. | — |
+| **OTP READY handshake (rollback)** | `BHAGA_OTP_REQUIRE_READY=1` | 2026-06 (PR #94) | **off (new default: inline autostart)** | When set, restores the legacy two-step READY handshake: nightly posts a READY request, checkpoints to Firestore, exits 0, and resumes only after the operator replies READY via Slack. When unset (default), the nightly proceeds inline and only contacts the operator if ADP actually challenges for a 2FA code. | Remove once inline-autostart has run ≥ 14 consecutive nightly cycles without needing READY rollback. | Follow-up cleanup — remove flag + legacy branch from `otp_gate.evaluate()`. |
 
 **Removed flags:**
 

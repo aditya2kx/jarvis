@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
-"""Merge-readiness gate: every inline review comment must have an author reply.
+"""Merge-readiness gate: every review comment must have an agent reply.
+
+Checks two categories:
+1. Inline review-comment threads (diff view) — every root thread must have a reply.
+2. Operator issue-level comments — every top-level comment from a human (non-bot)
+   user must have a subsequent reply from an agent account.
 
 CONTRIBUTING.md requires the agent to address *every* review comment (bot or
-human) and **reply on each inline thread** — not batch them into one summary.
-That policy kept getting skipped because nothing mechanically checked it. This
-script is the gate (run it like ``check_doc_freshness.py`` before declaring a PR
-merge-ready): it fails if any inline review-comment thread has no reply.
-
-A "thread" is a root review comment (``in_reply_to_id is null``). It's considered
-ADDRESSED when at least one later comment replies into it (``in_reply_to_id`` ==
-root id) — typically the agent's "fixed in <sha> / won't-fix because …" note —
-OR the thread is marked resolved on GitHub.
+human) and reply — not batch them into one summary.
 
 Usage:
     python3 scripts/check_pr_review_replies.py [--pr N] [--repo owner/name]
 
-Exits 0 when every thread is addressed, 1 when any is unaddressed (printing the
-file:line + body snippet of each), 2 on a usage/tooling error. Requires ``gh``.
+Exits 0 when every thread/comment is addressed, 1 when any is unaddressed, 2 on
+a usage/tooling error. Requires ``gh``.
 """
 
 from __future__ import annotations
@@ -25,6 +22,13 @@ import argparse
 import json
 import subprocess
 import sys
+
+# Logins that count as "agent" — a reply from any of these satisfies an
+# operator comment. Extend if new bot accounts are added.
+_AGENT_LOGINS = {"jarvis-agent-bot328"}
+
+# Logins whose comments never need a reply (CI bots, cost reporters, etc.)
+_IGNORED_LOGINS = {"github-actions[bot]"}
 
 
 def _gh_json(args: list[str]):
@@ -51,10 +55,66 @@ def _repo() -> str:
     return data["nameWithOwner"]
 
 
+def _is_bot(login: str) -> bool:
+    return login.endswith("[bot]") or login in _AGENT_LOGINS or login in _IGNORED_LOGINS
+
+
+def _check_inline_threads(repo: str, pr: int) -> list[str]:
+    """Return error strings for unaddressed inline review-comment threads."""
+    comments = _gh_json(["api", "--paginate", f"repos/{repo}/pulls/{pr}/comments"])
+    roots = {c["id"]: c for c in comments if not c.get("in_reply_to_id")}
+    replied_roots = {c["in_reply_to_id"] for c in comments if c.get("in_reply_to_id")}
+    errors = []
+    for cid, c in roots.items():
+        if cid not in replied_roots:
+            loc = f"{c.get('path')}:{c.get('line') or c.get('original_line')}"
+            snippet = " ".join((c.get("body") or "").split())[:100]
+            errors.append(
+                f"  [inline] id={cid} {loc}\n"
+                f"      {snippet}\n"
+                f"      Reply: gh api repos/{repo}/pulls/{pr}/comments/{cid}/replies -f body='...'"
+            )
+    return errors
+
+
+def _check_issue_comments(repo: str, pr: int) -> list[str]:
+    """Return error strings for operator issue-level comments with no agent reply.
+
+    An operator comment (from any non-bot user) is ADDRESSED when any comment
+    from an _AGENT_LOGIN appears after it in the thread (by list position,
+    which GitHub returns in ascending created_at order).
+    """
+    all_comments = _gh_json(["api", "--paginate", f"repos/{repo}/issues/{pr}/comments"])
+
+    errors = []
+    # Collect operator comments that still need a subsequent agent reply.
+    pending_operator: list[dict] = []
+
+    for c in all_comments:
+        login = c.get("user", {}).get("login", "")
+        if login in _IGNORED_LOGINS:
+            continue
+        if login in _AGENT_LOGINS:
+            # This agent comment addresses all pending operator comments before it.
+            pending_operator.clear()
+        elif not _is_bot(login):
+            # Human/operator comment — needs a subsequent agent reply.
+            pending_operator.append(c)
+
+    for c in pending_operator:
+        snippet = " ".join((c.get("body") or "").split())[:120]
+        errors.append(
+            f"  [issue comment] id={c['id']} by {c['user']['login']}\n"
+            f"      {snippet}\n"
+            f"      Reply: gh api repos/{repo}/issues/{pr}/comments -f body='...'"
+        )
+    return errors
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pr", type=int, default=None, help="PR number (default: current branch's PR)")
-    ap.add_argument("--repo", default=None, help="owner/name (default: current repo)")
+    ap.add_argument("--pr", type=int, default=None)
+    ap.add_argument("--repo", default=None)
     args = ap.parse_args()
 
     repo = args.repo or _repo()
@@ -63,32 +123,20 @@ def main() -> int:
         print("error: no PR found for the current branch (pass --pr N).", file=sys.stderr)
         return 2
 
-    # All inline review comments (paginated).
-    comments = _gh_json(["api", "--paginate", f"repos/{repo}/pulls/{pr}/comments"])
+    inline_errors = _check_inline_threads(repo, pr)
+    issue_errors = _check_issue_comments(repo, pr)
+    all_errors = inline_errors + issue_errors
 
-    roots = {c["id"]: c for c in comments if not c.get("in_reply_to_id")}
-    replied_roots = {c["in_reply_to_id"] for c in comments if c.get("in_reply_to_id")}
-
-    unaddressed = [c for cid, c in roots.items() if cid not in replied_roots]
-
-    if not unaddressed:
-        print(f"pr-review-replies: PR #{pr} — all {len(roots)} inline thread(s) have a reply. ✓")
+    if not all_errors:
+        print(f"pr-review-replies: PR #{pr} — all threads and operator comments addressed. ✓")
         return 0
 
     print(
-        f"pr-review-replies: PR #{pr} — {len(unaddressed)} of {len(roots)} inline "
-        f"thread(s) have NO reply (CONTRIBUTING requires a reply on each):",
+        f"pr-review-replies: PR #{pr} — {len(all_errors)} unaddressed comment(s):",
         file=sys.stderr,
     )
-    for c in unaddressed:
-        loc = f"{c.get('path')}:{c.get('line') or c.get('original_line')}"
-        snippet = " ".join((c.get("body") or "").split())[:100]
-        print(f"  - id={c['id']} {loc}\n      {snippet}", file=sys.stderr)
-    print(
-        "\nReply on each with:\n"
-        f"  gh api repos/{repo}/pulls/{pr}/comments/<id>/replies -f body='…what you did / why not…'",
-        file=sys.stderr,
-    )
+    for e in all_errors:
+        print(e, file=sys.stderr)
     return 1
 
 

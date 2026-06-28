@@ -7,7 +7,7 @@ GitHub + GCP access** — no dependency on the old laptop, its Keychain, or its 
 - **GCP project:** `jarvis-bhaga-prod`
 - **Region:** `us-central1`
 - **Store:** `palmetto` (Palmetto Superfoods, Austin) — `AK JUICY BOWLS LLC`
-- **Repo:** `https://github.com/aditya2kx/jarvis` (branch `main`; agent pushes via `jarvis-agent-bot328` HTTPS, PAT in Keychain)
+- **Repo:** `https://github.com/aditya2kx/jarvis` (branch `main`; agent pushes via `jarvis-agent-bot328` HTTPS, PAT in Keychain — see §7 bot-PAT auth model)
 
 ---
 
@@ -409,6 +409,7 @@ Before wiping the laptop, confirm ALL of the following are captured online / off
       all Slack tokens) — NOT just the macOS Keychain. See §7.
 - [ ] You can authenticate `gcloud` from a fresh machine and see project `jarvis-bhaga-prod`.
 - [ ] `jarvis-agent-bot328` PAT is in Keychain (`security find-generic-password -s github-bot-pat -a jarvis-agent-bot328 -w`). This bot is a Write collaborator on the repo and is used for all agent pushes and PRs.
+      The bot account has 2FA (TOTP) enrolled (enrolled 2026-06-28); TOTP secret is in Keychain `github-bot-totp`; recovery codes in `github-bot-recovery`. The `origin` remote is tokenless (`https://github.com/aditya2kx/jarvis.git`) and `gh auth setup-git` provides credentials via the Keychain-backed `GH_TOKEN`. When rotating the bot PAT, update Keychain `github-bot-pat` using: `security add-generic-password -a jarvis-agent-bot328 -s github-bot-pat -w <new_token> -U`
 - [ ] You (as `aditya2kx`) have GitHub access to approve and merge PRs — use `gh-adi` alias in terminal. Bot pushes; you approve + merge.
 - [ ] WIF secrets (`WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT`) are configured in the repo (they are; no
       laptop dependency).

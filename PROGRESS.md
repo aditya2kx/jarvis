@@ -19,6 +19,13 @@ Three post-merge gaps from PR #104's `scripts/pr_triage.py` closed in one PR:
 - **Tests:** 37 → 63 (26 new covering all three gaps + regression pass).
 - **Docs:** `docs/contributing/review-bot.md` updated to describe new `pr_triage.py` output sections.
 
+## 2026-06-28 — Bot 2FA enrollment + PAT rotation (issue #103, branch fix/i103-https)
+
+- **Problem:** GitHub mandatory-2FA enforcement email for `jarvis-agent-bot328` (deadline Aug 11 2026). Diagnosis also surfaced that the bot PAT was embedded in-session (exposure) and in `.git/config` remote URLs of all worktrees (secret-custody drift).
+- **Fix:** Enrolled TOTP 2FA on the bot account via Playwright; stored TOTP secret + recovery codes in Keychain (`github-bot-totp`, `github-bot-recovery`). Minted a new classic PAT (`repo`, `workflow`, `read:org`), stored in Keychain `github-bot-pat`. Migrated all worktrees' `origin` remote to tokenless URL via `gh auth setup-git` + `git remote set-url`. Old PAT revoked after verifying the new path in a fresh shell.
+- **Evidence:** `X-Oauth-Scopes: read:org, repo, workflow`; `git ls-remote origin HEAD` works; all 9 worktrees show tokenless remote; `gh api user` → `jarvis-agent-bot328`. 2FA and PAT screenshots: https://github.com/aditya2kx/jarvis/releases/tag/evidence-screenshots
+- **Docs updated:** `RUNBOOK.md` (§7 bot-PAT auth model, laptop checklist), `docs/contributing/push-gotchas.md` §2 (tokenless remote + 2FA posture + rotation procedure).
+
 ## 2026-06-28 — Smarter PR babysitting: batch triage aggregator (Issue #102, branch fix/i102-https)
 
 **Status:** In flight — implementation done; PR pending.

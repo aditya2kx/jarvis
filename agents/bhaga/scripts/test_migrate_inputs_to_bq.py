@@ -150,5 +150,63 @@ class TestOpenPeriodFilter(unittest.TestCase):
         datetime.date.fromisoformat(adp["pay_periods_anchor_end_date"])
 
 
+class TestCliDryRun(unittest.TestCase):
+    """Prove the --dry-run CLI path end-to-end — breadcrumbs, no MERGE fired."""
+
+    def test_dry_run_emits_skip_breadcrumb_and_no_merge(self):
+        """--dry-run must print [migrate] SKIP closed-period: and not call load_rows."""
+        # Sheet has one closed (2026-05-20) and one open row (2026-06-05).
+        sheet_dates = ["2026-05-20", "2026-06-05"]  # closed, then open
+        merged_calls: list = []
+
+        def _fake_load(_table, rows, **_kw):
+            merged_calls.append(rows)
+
+        with (
+            mock.patch.object(_mod, "refresh_access_token", return_value="tok"),
+            mock.patch.object(_mod, "resolve_sheet_id", return_value="fake-sid"),
+            mock.patch("urllib.request.urlopen", return_value=_sheet_response(sheet_dates)),
+            mock.patch.object(_mod, "load_rows", side_effect=_fake_load),
+            mock.patch.object(_mod, "_today_central", return_value=_TODAY_CT),
+            # Skip ensure_schema, migrate_config_keys, migrate_employee_aliases
+            mock.patch.object(_mod, "ensure_schema", return_value=[]),
+            mock.patch(
+                "agents.bhaga.scripts.migrate_inputs_to_bq.migrate_config_keys",
+                return_value=0,
+            ),
+            mock.patch(
+                "agents.bhaga.scripts.migrate_inputs_to_bq.migrate_employee_aliases",
+                return_value=0,
+            ),
+            mock.patch(
+                "agents.bhaga.scripts.migrate_inputs_to_bq.verify",
+                return_value=None,
+            ),
+        ):
+            import io as _io
+            from contextlib import redirect_stdout
+            buf = _io.StringIO()
+            with redirect_stdout(buf):
+                rc = _mod.main(["--store", "palmetto", "--dry-run", "--skip-schema"])
+
+        output = buf.getvalue()
+
+        # Guard engaged: one SKIP breadcrumb for the closed-period row
+        self.assertIn("[migrate] SKIP closed-period:", output,
+                      "Expected SKIP breadcrumb in dry-run output")
+        self.assertIn("2026-05-20", output)
+
+        # One eligible open-period row
+        self.assertIn("eligible for open period", output)
+        self.assertIn("2026-06-05", output)
+
+        # --dry-run must NOT fire load_rows (no MERGE)
+        self.assertEqual(merged_calls, [],
+                         "--dry-run must not call load_rows (no MERGE)")
+
+        # Zero exit code
+        self.assertEqual(rc, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

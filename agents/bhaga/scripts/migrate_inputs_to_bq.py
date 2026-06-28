@@ -40,27 +40,38 @@ STORE_PROFILES = (
 )
 
 
+def _today_central() -> datetime.date:
+    """Return today's date in America/Chicago (Central Time).
+
+    Isolated so tests can patch it without fighting the datetime module.
+    """
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+    return datetime.datetime.now(ZoneInfo("America/Chicago")).date()
+
+
 def _load_profile(store: str) -> dict:
     return json.loads((STORE_PROFILES / f"{store}.json").read_text())
 
 
-def migrate_training_shifts(profile: dict, store: str, *, dry_run: bool) -> int:
-    """Read training_shifts Sheet tab -> BQ training_shifts table."""
-    from agents.bhaga.scripts.update_model_sheet import (  # noqa: PLC0415
-        _read_training_shifts_from_sheet as _sheet_reader,
-    )
+def migrate_training_shifts(
+    profile: dict,
+    store: str,
+    *,
+    dry_run: bool,
+    open_period_only: bool = True,
+) -> int:
+    """Read training_shifts Sheet tab -> BQ training_shifts table.
+
+    When ``open_period_only=True`` (the default), only rows whose date falls
+    within the current open pay period are ingested.  Rows dated in a closed/
+    already-paid period are skipped and reported so the operator can decide
+    whether a backfill is warranted.  This prevents a late training-shift entry
+    from silently restating a closed period's ``our_calc``.
+
+    Pass ``--allow-closed-periods`` on the CLI (or ``open_period_only=False``)
+    to ingest all rows regardless of period status.
+    """
     model_sid = resolve_sheet_id("bhaga_model", profile)
-
-    # Temporarily patch model_inputs so the Sheet reader still reads the Sheet.
-    import agents.bhaga.scripts.model_inputs as _mi_mod
-    from unittest import mock
-    with mock.patch.object(_mi_mod, "read_training_shifts", side_effect=NotImplementedError):
-        # Since _read_training_shifts_from_sheet now delegates to model_inputs,
-        # we need to call the raw Sheet API directly here.
-        pass
-
-    # Call the sheet reader directly (it delegates to BQ now, which is empty).
-    # Instead use the underlying sheet read logic directly.
     import urllib.parse
     import urllib.request
 
@@ -112,6 +123,56 @@ def migrate_training_shifts(profile: dict, store: str, *, dry_run: bool) -> int:
 
     print(f"  training_shifts: {len(out)} row(s) from Sheet")
     if not out:
+        return 0
+
+    # ── Open-period filter (default-on guard) ──────────────────────────────
+    # Prevents a Sheet entry dated in a closed/already-paid period from
+    # restating that period's our_calc.  Only rows in the current open period
+    # (i.e. date > most-recent closed period end) are ingested.
+    if open_period_only:
+        from agents.bhaga.scripts.update_model_sheet import (  # noqa: PLC0415
+            most_recent_closed_period,
+        )
+        adp_cfg = profile.get("adp_run", {})
+        anchor = adp_cfg.get("pay_periods_anchor_end_date", "")
+        freq = adp_cfg.get("pay_frequency", "Biweekly")
+        if anchor:
+            _, closed_end = most_recent_closed_period(
+                anchor_end_date=anchor,
+                pay_frequency=freq,
+                today=_today_central(),
+            )
+            open_start_iso = (
+                closed_end + datetime.timedelta(days=1)
+            ).isoformat()
+            in_open: set[tuple[str, str]] = set()
+            skipped: list[tuple[str, str]] = []
+            for name, date_iso in out:
+                if date_iso >= open_start_iso:
+                    in_open.add((name, date_iso))
+                else:
+                    skipped.append((name, date_iso))
+            for name, date_iso in sorted(skipped):
+                print(
+                    f"  [migrate] SKIP closed-period: {name!r} {date_iso}"
+                    f" (open period starts {open_start_iso})"
+                )
+            if skipped:
+                print(
+                    f"  [migrate] {len(skipped)} row(s) skipped (closed period); "
+                    f"{len(in_open)} eligible for open period"
+                )
+            out = in_open
+        else:
+            raise RuntimeError(
+                f"open_period_only=True but store profile for {store!r} has no "
+                f"pay_periods_anchor_end_date under adp_run. "
+                f"Either add the anchor date to the store profile or pass "
+                f"--allow-closed-periods to disable the guard."
+            )
+
+    if not out:
+        print("  training_shifts: 0 rows to ingest after open-period filter")
         return 0
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
@@ -248,6 +309,15 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-schema", action="store_true",
         help="Skip ensure_schema() (useful if migration 020 is already applied)",
     )
+    cli.add_argument(
+        "--allow-closed-periods", action="store_true",
+        help=(
+            "Disable the default open-period-only guard and ingest training-shift rows "
+            "regardless of whether their date falls in a closed/already-paid pay period. "
+            "Use only for explicit historical backfills; the default (guard on) prevents "
+            "silent restatement of closed-period our_calc values."
+        ),
+    )
     args = cli.parse_args(argv)
 
     print(f"=== migrate_inputs_to_bq store={args.store} dry_run={args.dry_run} ===")
@@ -259,7 +329,11 @@ def main(argv: list[str] | None = None) -> int:
 
     profile = _load_profile(args.store)
     print(f"\n[Step 1] Migrating training_shifts...")
-    migrate_training_shifts(profile, args.store, dry_run=args.dry_run)
+    migrate_training_shifts(
+        profile, args.store,
+        dry_run=args.dry_run,
+        open_period_only=not args.allow_closed_periods,
+    )
 
     print(f"\n[Step 2] Migrating config/tunable keys to store_config BQ...")
     migrate_config_keys(profile, args.store, dry_run=args.dry_run)

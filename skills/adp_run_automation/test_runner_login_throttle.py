@@ -205,5 +205,51 @@ class TestWaitForLoginFormThrottleRecovery(unittest.TestCase):
         self.assertEqual(page.reload_calls, 0)
 
 
+class _FakeEvidencePage:
+    """Minimal page stub for _raise_with_evidence (screenshot must not fail)."""
+
+    def __init__(self, url: str):
+        self._url = url
+
+    @property
+    def url(self) -> str:
+        return self._url
+
+    def screenshot(self, *, path=None, full_page=None):
+        # Writing under /Users/.../ .bhaga in CI would fail; raising here is fine
+        # because _raise_with_evidence swallows screenshot errors by design.
+        raise OSError("no screenshot dir in test")
+
+
+class TestPostLoginSorryGracefulSkip(unittest.TestCase):
+    """_raise_with_evidence must raise the typed exception passed via exc_factory.
+
+    This is the mechanism behind the post-login sorry.adp.com graceful skip in
+    _ensure_logged_in: when ADP redirects to sorry.adp.com *after* a valid login
+    (RUN maintenance window / post-auth throttle), it raises AdpLoginThrottled
+    (→ daily_refresh graceful skip) instead of a hard RuntimeError.
+    """
+
+    def test_exc_factory_raises_adp_login_throttled(self):
+        from skills.adp_run_automation.runner import _raise_with_evidence
+
+        page = _FakeEvidencePage("https://sorry.adp.com/sorry/")
+        with self.assertRaises(AdpLoginThrottled):
+            _raise_with_evidence(
+                page, store="palmetto",
+                reason="post-login sorry redirect",
+                exc_factory=AdpLoginThrottled,
+            )
+
+    def test_exc_factory_default_is_runtime_error(self):
+        from skills.adp_run_automation.runner import _raise_with_evidence
+
+        page = _FakeEvidencePage("https://online.adp.com/somewhere")
+        with self.assertRaises(RuntimeError) as ctx:
+            _raise_with_evidence(page, store="palmetto", reason="generic auth fail")
+        # Default path must NOT be AdpLoginThrottled (different handling).
+        self.assertNotIsInstance(ctx.exception, AdpLoginThrottled)
+
+
 if __name__ == "__main__":
     unittest.main()

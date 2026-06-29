@@ -1052,6 +1052,14 @@ same pattern as an OTP-wait timeout. The next nightly or `Retry-Dates` rerun re-
 A date where ADP was skipped has Square in BQ but missing `adp_shifts` → `trigger_dated_refresh.py`
 correctly selects **full scrape** (not recompute-only) on a `Retry-Dates` rerun.
 
+**Post-login sorry.adp.com (RUN maintenance window).** ADP also serves `sorry.adp.com`
+**after** a valid login — e.g. during scheduled RUN maintenance (banners like *"Planned RUN
+Maintenance Sun 10pm ET → Mon 2am ET"*). This surfaces in `_ensure_logged_in` when
+`wait_for_url(POST_LOGIN_URL_RE)` lands on `sorry.adp.com` instead of the dashboard. It is
+treated the same way: `_raise_with_evidence(..., exc_factory=AdpLoginThrottled)` → graceful
+skip → exit 0 + alert. Because BHAGA's nightly (21:31 CT ≈ 22:31 ET) can fall inside a
+10pm-2am ET maintenance window, run `Retry-Dates: <date>` after the window closes to backfill.
+
 **ADP earnings ready-dialog timeout (configurable, 2026-06-25 fix).** After the
 "Download → Excel (.xlsx)" click, ADP queues async report generation and shows a
 "Your report is ready to download" modal when it finishes. This can take 3–90+ seconds

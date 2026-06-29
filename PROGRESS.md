@@ -4,7 +4,9 @@
 
 **Root cause (confirmed via live browser + curl):** ADP retired the bare `https://runpayroll.adp.com` entry point on 2026-06-28 — it now server-redirects to `https://sorry.adp.com/sorry/` (a plain redirect, reproduced from the laptop, not an IP block). That broke tonight's nightly at the `adp` step. The live login flow is reachable via `https://runpayroll.adp.com/enrollment.aspx`, which routes through ADP's federation redirector to the sign-in SPA (`online.adp.com/signin/v1/?APPID=RUN&productId=…`) with the correct, ADP-supplied productId. Verified the User ID box renders via Playwright.
 
-**Primary fix:** `LOGIN_URL` updated to `https://runpayroll.adp.com/enrollment.aspx` in `runner.py`, `compensation_backend.py`, `shift_backend.py`, and the `compensation.json`/`timecards.json` selectors. This is what restores ADP data collection.
+**Primary fix:** `LOGIN_URL` updated to `https://runpayroll.adp.com/enrollment.aspx` in `runner.py`, `compensation_backend.py`, `shift_backend.py`, and the `compensation.json`/`timecards.json` selectors. This is what restores ADP data collection. **Proven in the PR #111 full-live sandbox run:** `[adp_login] step=goto url=…/enrollment.aspx` → `domcontentloaded url=…signin/v1/?APPID=RUN&productId=…` → `step=uid-box-visible (attempt 1/3)` → `clicked-next`.
+
+**Secondary finding (same run):** after a valid login, ADP redirected to `sorry.adp.com` — this run executed at 00:16 ET Mon 6/29, inside ADP's *"Planned RUN Maintenance Sun 10pm ET → Mon 2am ET"* window (banner shown on the login page). Previously this post-login redirect raised a hard `RuntimeError` in `_ensure_logged_in`. Now `_raise_with_evidence` takes an `exc_factory` and the post-login sorry.adp.com case raises `AdpLoginThrottled` → graceful skip (exit 0 + alert), so maintenance windows no longer hard-fail the nightly; `Retry-Dates` backfills after the window.
 
 The two changes below are the complementary safety net (shipped in the same PR), in case ADP ever serves the throttle interstitial transiently again:
 

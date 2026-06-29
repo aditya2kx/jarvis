@@ -278,6 +278,20 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
                 )
         except Exception:  # noqa: BLE001
             pass
+        # ADP serves sorry.adp.com *after* a valid login during RUN maintenance
+        # windows or post-auth throttling — distinct from the login-form throttle
+        # handled in _wait_for_login_form. Treat it as a graceful skip
+        # (AdpLoginThrottled → daily_refresh._handle_adp_throttle_skip) rather than
+        # a hard failure, so the nightly exits 0 + alerts and Retry-Dates backfills
+        # once ADP is back.
+        if "sorry.adp.com" in page.url.lower():
+            from agents.bhaga.scripts.otp_gate import AdpLoginThrottled  # local import
+            _raise_with_evidence(
+                page, store=store,
+                reason=f"ADP redirected to sorry.adp.com after login "
+                       f"(RUN maintenance window or post-auth throttle); url={page.url}",
+                exc_factory=AdpLoginThrottled,
+            )
         _raise_with_evidence(
             page, store=store,
             reason=f"ADP login did not reach dashboard. Current URL: {page.url}",
@@ -600,13 +614,17 @@ def _mark_run_step_done(
         print(f"[adp_bundle] WARN: could not write {step_name} marker: {exc}")
 
 
-def _raise_with_evidence(page, *, store: str, reason: str) -> None:
+def _raise_with_evidence(page, *, store: str, reason: str, exc_factory=RuntimeError) -> None:
     """Save screenshot + URL alongside the raise so failures are debuggable.
 
     The standard _browser_runtime evidence capture also fires when the
     exception propagates out of the launch_persistent with-block, so we
     end up with two snapshots — the one taken here is at the exact moment
     of the auth failure (most useful), the other is at context teardown.
+
+    ``exc_factory`` lets the caller raise a typed exception (e.g.
+    ``AdpLoginThrottled`` for a sorry.adp.com / maintenance redirect) while
+    reusing the same screenshot-capture path; defaults to ``RuntimeError``.
     """
     try:
         ts = subprocess.run(["date", "+%Y%m%d-%H%M%S"], capture_output=True, text=True).stdout.strip()
@@ -615,7 +633,7 @@ def _raise_with_evidence(page, *, store: str, reason: str) -> None:
         reason += f"\nScreenshot: {snap}"
     except Exception:  # noqa: BLE001
         pass
-    raise RuntimeError(reason)
+    raise exc_factory(reason)
 
 
 # ── Shared Reports navigation ─────────────────────────────────────

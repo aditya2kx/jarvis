@@ -15,6 +15,14 @@ The two changes below are the complementary safety net (shipped in the same PR),
 
 Post-merge: the `Retry-Dates: 2026-06-28` deploy trailer re-runs tonight's date as a full scrape to backfill the missing ADP data.
 
+**Smart post-maintenance retry (operator-requested, same PR).** Instead of waiting ~24h for the next nightly after a maintenance skip, BHAGA now schedules a one-shot retry just after the window closes:
+- `skills/adp_run_automation/maintenance.py` — DST-aware parser (`zoneinfo`, "ET" = `America/New_York`) turning the login banner ("…to Mon, Jun 29th at 2am ET") into a UTC window-end; `compute_retry_at` adds a 7-min buffer (middle of the operator's 5–10 min ask). 11 unit tests (EDT/EST offsets, year rollover, no-date fallback, rejection of non-banner text).
+- `runner._ensure_logged_in` parses the banner while the login page is visible and raises `AdpLoginThrottled(retry_at=…)`; `daily_refresh._handle_adp_throttle_skip` schedules the retry (status `skipped_adp_maintenance`) with a **stateless attempt cap** (`BHAGA_MAINT_RETRY_ATTEMPT` carried in the scheduler env; `BHAGA_MAINT_RETRY_MAX` default 3). Degrades gracefully to `skipped_adp_throttle` on cap or scheduling failure.
+- `agents/bhaga/scripts/retry_scheduler.py` — creates an ephemeral Cloud Scheduler job `bhaga-retry-<date>` mirroring `bhaga-nightly` (HTTP → `bhaga-daily-refresh:run`, OAuth as `bhaga-orchestrator`), fires once at `retry_at`, self-deletes at the start of the run it triggers. Pure spec-build + injectable client (7 tests); spec validated against the live Cloud Scheduler API (create+delete of a throwaway job).
+- **IAM (one-time, 2026-06-29):** granted `bhaga-orchestrator` `roles/cloudscheduler.admin` (project) + `roles/iam.serviceAccountUser` on itself; enabled `cloudresourcemanager.googleapis.com`; added `google-cloud-scheduler` to `requirements.txt`.
+
+**Deterministic `sandbox-live` label (operator-requested, same PR).** The "label only to gather evidence, remove straight after" convention is now mechanical, not memory: `sandbox-live-run.yml` gained a `delabel` job (`if: always() && pull_request`) that removes the `sandbox-live` label after every PR-triggered run (pass/fail/no-run). Re-add the label to trigger fresh evidence.
+
 ## 2026-06-28 — Generic hardening: ghost rows, name normalization, Grafana gate, recompute marker (Issue #108, branch fix/i108-https)
 
 Five-milestone PR hardening the bug *classes* exposed post-#90/#100 — each fix is a generic invariant, not a single-instance patch:

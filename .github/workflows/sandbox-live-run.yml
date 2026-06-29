@@ -186,3 +186,35 @@ jobs:
               issue_number: Number('${{ needs.resolve.outputs.pr_number }}'),
               body,
             });
+
+  # Deterministic enforcement of "the `sandbox-live` label is a single-shot evidence
+  # trigger — remove it straight after the run." Runs for EVERY pull_request-triggered
+  # invocation (the `labeled` event that started this, plus any synchronize/reopen),
+  # with always() so the label is cleared whether the scenario passed, failed, or the
+  # resolve step decided not to run. This makes the convention mechanical instead of
+  # relying on an operator/agent to remember (see RUNBOOK §13).
+  delabel:
+    name: Remove sandbox-live label
+    needs: [resolve, live]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = Number('${{ github.event.pull_request.number }}');
+            if (!pr) { core.info('no PR number — nothing to delabel'); return; }
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr,
+                name: 'sandbox-live',
+              });
+              core.info(`Removed sandbox-live label from PR #${pr}`);
+            } catch (e) {
+              if (e.status === 404) { core.info('sandbox-live label already absent'); return; }
+              throw e;
+            }

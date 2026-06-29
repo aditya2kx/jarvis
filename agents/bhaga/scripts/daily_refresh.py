@@ -417,28 +417,98 @@ def _is_adp_login_throttled(exc: BaseException | None) -> bool:
     return False
 
 
+def _adp_throttle_retry_at(exc: BaseException | None):
+    """Return the AdpLoginThrottled.retry_at carried on ``exc`` (or its chain), else None."""
+    seen = 0
+    cur = exc
+    while cur is not None and seen < 20:
+        if type(cur).__name__ == "AdpLoginThrottled":
+            return getattr(cur, "retry_at", None)
+        cur = cur.__cause__ or cur.__context__
+        seen += 1
+    return None
+
+
 def _handle_adp_throttle_skip(
     pipeline_name: str,
     pr,
     run_summary: dict,
     refresh_date_iso: str,
+    *,
+    schedule_fn=None,
 ) -> bool:
     """Apply the graceful ADP-throttle skip and return True if the caller should continue.
 
     Extracted from the results loop so the full branch — classifier + state
-    mutation + Slack alert — can be exercised by a unit test rather than only
-    the classifier in isolation.
+    mutation + Slack alert (+ smart-retry scheduling) — can be exercised by a
+    unit test rather than only the classifier in isolation.
 
-    Side effects (when returning True):
-    - Prints a greppable breadcrumb.
-    - Posts a non-alarming Slack ``info_ping``.
-    - Sets ``run_summary["source_pulls"][-1]["status"] = "skipped_adp_throttle"``.
+    Two flavours, distinguished by whether the AdpLoginThrottled carries a
+    ``retry_at`` (parsed maintenance-window end + buffer):
+    - ``retry_at`` present → schedule a one-shot Cloud Scheduler retry just after
+      the window closes; status ``skipped_adp_maintenance``.
+    - ``retry_at`` absent (plain login throttle) → status ``skipped_adp_throttle``;
+      the next nightly re-attempts (unchanged behaviour).
 
-    Does NOT append to failures, does NOT set otp_portal_failed, does NOT trip
-    the pipeline halt breaker.
+    Never appends to failures, never sets otp_portal_failed, never trips the halt
+    breaker. ``schedule_fn`` is injectable for tests (defaults to
+    retry_scheduler.schedule_one_shot_retry).
     """
     if pipeline_name != "adp" or not _is_adp_login_throttled(pr.error):
         return False
+
+    retry_at = _adp_throttle_retry_at(pr.error)
+    scheduled_for = None
+    if retry_at is not None:
+        attempt = 0
+        try:
+            attempt = int(os.environ.get("BHAGA_MAINT_RETRY_ATTEMPT", "0") or "0")
+        except ValueError:
+            attempt = 0
+        from agents.bhaga.scripts.retry_scheduler import (  # noqa: PLC0415
+            MAX_MAINTENANCE_RETRIES,
+            schedule_one_shot_retry,
+        )
+        if attempt < MAX_MAINTENANCE_RETRIES:
+            fn = schedule_fn or schedule_one_shot_retry
+            try:
+                fn(
+                    refresh_date_iso,
+                    retry_at,
+                    env={
+                        "REFRESH_DATE": refresh_date_iso,
+                        "BHAGA_IGNORE_HALT": "1",
+                        "BHAGA_MAINT_RETRY_ATTEMPT": str(attempt + 1),
+                    },
+                )
+                scheduled_for = retry_at
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[adp_login] WARN: smart-retry scheduling failed for "
+                    f"{refresh_date_iso} (falling back to next nightly): {exc}"
+                )
+        else:
+            print(
+                f"[adp_login] maintenance retry cap reached "
+                f"(attempt={attempt}/{MAX_MAINTENANCE_RETRIES}) for {refresh_date_iso} "
+                f"— not rescheduling; next nightly will retry."
+            )
+
+    if scheduled_for is not None:
+        local = scheduled_for.astimezone(CT)
+        print(
+            f"[adp_login] ADP maintenance window (sorry.adp.com) — skipping ADP step; "
+            f"smart retry scheduled for {scheduled_for.isoformat()} "
+            f"({local.strftime('%Y-%m-%d %H:%M %Z')}). ({pr.error})"
+        )
+        info_ping(
+            f":hourglass_flowing_sand: BHAGA: ADP in maintenance window on "
+            f"{refresh_date_iso} — ADP step skipped, running on existing data. "
+            f"Smart retry auto-scheduled for {local.strftime('%-I:%M %p %Z')}."
+        )
+        run_summary["source_pulls"][-1]["status"] = "skipped_adp_maintenance"
+        return True
+
     print(
         f"[adp_login] ADP login throttle (sorry.adp.com) — skipping ADP step; "
         f"next nightly will retry. ({pr.error})"
@@ -2078,6 +2148,19 @@ def _run_refresh() -> int:
         datetime.date.fromisoformat(date_arg) if date_arg else _today_ct()
     )
     _RUN_SUMMARY.update(refresh_date=refresh_date, store=args.store, dry_run=args.dry_run)
+
+    # Self-clean any one-shot maintenance smart-retry scheduler for this date. The
+    # run it triggered (or any stale one for the same date) is removed here so the
+    # scheduler never re-fires. Cloud-only + best-effort (never blocks the run);
+    # see agents/bhaga/scripts/retry_scheduler.py.
+    if not args.dry_run and os.environ.get("BHAGA_STATE_BACKEND") == "firestore":
+        try:
+            from agents.bhaga.scripts.retry_scheduler import delete_retry_schedule  # noqa: PLC0415
+            if delete_retry_schedule(refresh_date.isoformat()):
+                print(f"[adp_login] cleaned up smart-retry scheduler "
+                      f"bhaga-retry-{refresh_date.isoformat()}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[adp_login] WARN: retry-scheduler cleanup failed (non-fatal): {exc}")
 
     if not args.dry_run and _should_record_pipeline_run():
         try:

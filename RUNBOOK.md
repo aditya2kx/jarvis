@@ -877,8 +877,9 @@ e.g. `item-sales-live`, `full-live`) so you control **what** runs and **when**, 
 ```bash
 # 1. Committed config (works PRE-MERGE): list scenarios in .github/sandbox-live.yml
 #    and add the `sandbox-live` label to the PR. Each runs the live pipeline and
-#    posts evidence as a PR comment. Remove the label/scenarios (and delete the
-#    file before merge) to turn it off.
+#    posts evidence as a PR comment. The label is a SINGLE-SHOT trigger — the
+#    workflow's `delabel` job removes it automatically after every run (see below).
+#    Empty .github/sandbox-live.yml back to `scenarios: []` before merge.
 #
 # 2. PR comment (works once this workflow is on main): control a one-shot run —
 #    /sandbox run item-sales-live date=2026-05-31
@@ -887,6 +888,15 @@ e.g. `item-sales-live`, `full-live`) so you control **what** runs and **when**, 
 gh workflow run sandbox-live-run.yml \
   -f scenario=item-sales-live -f date=2026-05-31 -f pr_number=<PR#>
 ```
+
+**The `sandbox-live` label is mechanically single-shot.** The convention is
+"add the label only to gather new evidence, remove it straight after" — this is
+enforced by code, not memory. `sandbox-live-run.yml` has a `delabel` job
+(`needs: [resolve, live]`, `if: always() && github.event_name == 'pull_request'`)
+that removes the `sandbox-live` label after **every** PR-triggered run — pass,
+fail, or no-run. So the label is gone by the time the run finishes; re-add it to
+trigger fresh evidence. The committed `.github/sandbox-live.yml` scenario list is
+the separate "what runs" knob — empty it (`scenarios: []`) before merge.
 
 Forks are refused (secrets never exposed) and comment commands require an
 OWNER/COLLABORATOR/MEMBER author. Add a scenario by extending
@@ -1052,13 +1062,34 @@ same pattern as an OTP-wait timeout. The next nightly or `Retry-Dates` rerun re-
 A date where ADP was skipped has Square in BQ but missing `adp_shifts` → `trigger_dated_refresh.py`
 correctly selects **full scrape** (not recompute-only) on a `Retry-Dates` rerun.
 
-**Post-login sorry.adp.com (RUN maintenance window).** ADP also serves `sorry.adp.com`
-**after** a valid login — e.g. during scheduled RUN maintenance (banners like *"Planned RUN
-Maintenance Sun 10pm ET → Mon 2am ET"*). This surfaces in `_ensure_logged_in` when
-`wait_for_url(POST_LOGIN_URL_RE)` lands on `sorry.adp.com` instead of the dashboard. It is
-treated the same way: `_raise_with_evidence(..., exc_factory=AdpLoginThrottled)` → graceful
-skip → exit 0 + alert. Because BHAGA's nightly (21:31 CT ≈ 22:31 ET) can fall inside a
-10pm-2am ET maintenance window, run `Retry-Dates: <date>` after the window closes to backfill.
+**Post-login sorry.adp.com (RUN maintenance window) + smart retry.** ADP also serves
+`sorry.adp.com` **after** a valid login — e.g. during scheduled RUN maintenance (banners like
+*"Planned RUN Maintenance Sun 10pm ET → Mon 2am ET"*). This surfaces in `_ensure_logged_in`
+when `wait_for_url(POST_LOGIN_URL_RE)` lands on `sorry.adp.com` instead of the dashboard. It is
+a graceful skip (`exc_factory=AdpLoginThrottled` → `info_ping` alert → exit 0).
+
+Because BHAGA's nightly (21:31 CT ≈ 22:31 ET) can fall inside a 10pm–2am ET maintenance window,
+the runner **parses the window-end from the banner** (`skills/adp_run_automation/maintenance.py`,
+DST-aware via `zoneinfo`; "ET" = `America/New_York`) while the login page is still visible, and
+attaches `retry_at = window_end + 7 min` to `AdpLoginThrottled`. `daily_refresh` then schedules a
+**one-shot smart retry** instead of waiting ~24h for the next nightly:
+
+- `agents/bhaga/scripts/retry_scheduler.py` creates an ephemeral Cloud Scheduler job
+  `bhaga-retry-<date>` that mirrors `bhaga-nightly` (HTTP target → `bhaga-daily-refresh:run`,
+  OAuth as `bhaga-orchestrator`) but fires once at `retry_at` and carries a `REFRESH_DATE`
+  override + `BHAGA_MAINT_RETRY_ATTEMPT`.
+- The retry run **deletes its own scheduler at start** (`delete_retry_schedule`), so it is
+  self-cleaning, and skips the BQ-coverage probe via the `REFRESH_DATE` full-scrape path.
+- A **stateless attempt cap** (`BHAGA_MAINT_RETRY_MAX`, default 3) prevents infinite reschedule
+  if the window slips; on cap, it degrades to `skipped_adp_throttle` (next nightly retries).
+- Status on a scheduled skip is `skipped_adp_maintenance` (vs `skipped_adp_throttle` when no
+  window end could be parsed). If scheduling itself fails (e.g. IAM), it degrades gracefully to
+  the plain skip + next nightly — never blocks the run.
+
+IAM (one-time, provisioned 2026-06-29): `bhaga-orchestrator` has `roles/cloudscheduler.admin`
+(project) + `roles/iam.serviceAccountUser` on itself (to set the scheduler's OAuth SA). The
+`google-cloud-scheduler` dep is in `requirements.txt`. Manual fallback if needed:
+`Retry-Dates: <date>` after the window closes still works.
 
 **ADP earnings ready-dialog timeout (configurable, 2026-06-25 fix).** After the
 "Download → Excel (.xlsx)" click, ADP queues async report generation and shows a

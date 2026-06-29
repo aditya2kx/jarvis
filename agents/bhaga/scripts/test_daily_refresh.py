@@ -1687,5 +1687,105 @@ class TestHandleAdpThrottleSkip(unittest.TestCase):
         self.assertEqual(entry["status"], "skipped_adp_throttle")
 
 
+class TestMaintenanceSmartRetry(unittest.TestCase):
+    """When AdpLoginThrottled carries retry_at (parsed maintenance window end),
+    _handle_adp_throttle_skip schedules a one-shot retry instead of just waiting
+    for the next nightly."""
+
+    def _import_dr(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+        return dr
+
+    def _make_pr(self, dr, name, error):
+        pr = dr.PipelineResult(name=name)
+        pr.success = False
+        pr.error = error
+        return pr
+
+    def _throttle_with_retry(self):
+        import datetime
+        from agents.bhaga.scripts.otp_gate import AdpLoginThrottled
+        retry_at = datetime.datetime(2026, 6, 29, 6, 7, tzinfo=datetime.timezone.utc)
+        return AdpLoginThrottled("maintenance", retry_at=retry_at), retry_at
+
+    def test_schedules_retry_and_sets_maintenance_status(self):
+        dr = self._import_dr()
+        exc, retry_at = self._throttle_with_retry()
+        entry = {"status": "failed"}
+        run_summary = {"source_pulls": [entry]}
+        pr = self._make_pr(dr, "adp", exc)
+        calls = []
+
+        with mock.patch.object(dr, "info_ping", return_value=None), \
+                mock.patch.dict(dr.os.environ, {"BHAGA_MAINT_RETRY_ATTEMPT": "0"}, clear=False):
+            ok = dr._handle_adp_throttle_skip(
+                "adp", pr, run_summary, "2026-06-28",
+                schedule_fn=lambda *a, **k: calls.append((a, k)),
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(entry["status"], "skipped_adp_maintenance")
+        self.assertEqual(len(calls), 1)
+        args, kwargs = calls[0]
+        self.assertEqual(args[0], "2026-06-28")
+        self.assertEqual(args[1], retry_at)
+        self.assertEqual(kwargs["env"]["BHAGA_MAINT_RETRY_ATTEMPT"], "1")
+        self.assertEqual(kwargs["env"]["REFRESH_DATE"], "2026-06-28")
+
+    def test_info_ping_mentions_smart_retry(self):
+        dr = self._import_dr()
+        exc, _ = self._throttle_with_retry()
+        run_summary = {"source_pulls": [{"status": "failed"}]}
+        pr = self._make_pr(dr, "adp", exc)
+        pings = []
+
+        with mock.patch.object(dr, "info_ping", side_effect=pings.append), \
+                mock.patch.dict(dr.os.environ, {"BHAGA_MAINT_RETRY_ATTEMPT": "0"}, clear=False):
+            dr._handle_adp_throttle_skip(
+                "adp", pr, run_summary, "2026-06-28", schedule_fn=lambda *a, **k: None,
+            )
+
+        self.assertEqual(len(pings), 1)
+        self.assertIn("smart retry", pings[0].lower())
+
+    def test_attempt_cap_falls_back_to_plain_skip(self):
+        dr = self._import_dr()
+        exc, _ = self._throttle_with_retry()
+        entry = {"status": "failed"}
+        run_summary = {"source_pulls": [entry]}
+        pr = self._make_pr(dr, "adp", exc)
+        calls = []
+
+        with mock.patch.object(dr, "info_ping", return_value=None), \
+                mock.patch.dict(dr.os.environ, {"BHAGA_MAINT_RETRY_ATTEMPT": "3"}, clear=False):
+            ok = dr._handle_adp_throttle_skip(
+                "adp", pr, run_summary, "2026-06-28",
+                schedule_fn=lambda *a, **k: calls.append(1),
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(calls, [], "cap reached → no scheduling")
+        self.assertEqual(entry["status"], "skipped_adp_throttle")
+
+    def test_schedule_failure_falls_back_to_plain_skip(self):
+        dr = self._import_dr()
+        exc, _ = self._throttle_with_retry()
+        entry = {"status": "failed"}
+        run_summary = {"source_pulls": [entry]}
+        pr = self._make_pr(dr, "adp", exc)
+
+        def _boom(*a, **k):
+            raise RuntimeError("scheduler API down")
+
+        with mock.patch.object(dr, "info_ping", return_value=None), \
+                mock.patch.dict(dr.os.environ, {"BHAGA_MAINT_RETRY_ATTEMPT": "0"}, clear=False):
+            ok = dr._handle_adp_throttle_skip(
+                "adp", pr, run_summary, "2026-06-28", schedule_fn=_boom,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(entry["status"], "skipped_adp_throttle")
+
+
 if __name__ == "__main__":
     unittest.main()

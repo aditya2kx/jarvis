@@ -218,6 +218,9 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
 
     # Step 1: User ID. sdf-input wraps a real <input>; get_by_role finds it.
     uid_box = _wait_for_login_form(page)
+    # The login page carries any scheduled-maintenance banner; capture the window
+    # end NOW (it's gone once a post-login redirect bounces us to sorry.adp.com).
+    maintenance_end = _read_maintenance_end(page)
     uid_box.fill(_get_adp_username(store))
     page.get_by_role("button", name=re.compile(r"^Next$", re.I)).first.click()
     print(f"[adp_login] step=clicked-next url={page.url}")
@@ -286,11 +289,18 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
         # once ADP is back.
         if "sorry.adp.com" in page.url.lower():
             from agents.bhaga.scripts.otp_gate import AdpLoginThrottled  # local import
+            from skills.adp_run_automation.maintenance import compute_retry_at
+            retry_at = compute_retry_at(maintenance_end) if maintenance_end else None
+            reason = (
+                f"ADP redirected to sorry.adp.com after login "
+                f"(RUN maintenance window or post-auth throttle); url={page.url}"
+            )
+            if retry_at is not None:
+                reason += f"; smart-retry scheduled for {retry_at.isoformat()}"
+            print(f"[adp_login] step=post-login-sorry retry_at={retry_at}")
             _raise_with_evidence(
-                page, store=store,
-                reason=f"ADP redirected to sorry.adp.com after login "
-                       f"(RUN maintenance window or post-auth throttle); url={page.url}",
-                exc_factory=AdpLoginThrottled,
+                page, store=store, reason=reason,
+                exc_factory=lambda msg: AdpLoginThrottled(msg, retry_at=retry_at),
             )
         _raise_with_evidence(
             page, store=store,
@@ -612,6 +622,24 @@ def _mark_run_step_done(
         (d / f"{step_name}.done").write_text(body)
     except Exception as exc:  # noqa: BLE001
         print(f"[adp_bundle] WARN: could not write {step_name} marker: {exc}")
+
+
+def _read_maintenance_end(page):
+    """Best-effort: parse ADP's maintenance-window END from the page banner.
+
+    Returns a UTC-aware datetime (window end), or None if no banner / unparseable.
+    Never raises — a miss just means no smart retry is scheduled (next nightly
+    re-attempts). Call this while the login page is visible (the banner shows
+    there); the post-login sorry.adp.com page usually does not carry the times.
+    """
+    try:
+        import datetime as _dt
+
+        from skills.adp_run_automation.maintenance import parse_maintenance_end
+        text = page.inner_text("body", timeout=2_000)
+        return parse_maintenance_end(text, now=_dt.datetime.now(_dt.timezone.utc))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _raise_with_evidence(page, *, store: str, reason: str, exc_factory=RuntimeError) -> None:

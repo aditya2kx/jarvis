@@ -89,14 +89,25 @@ class OtpWaitTimeout(Exception):
 
 
 class AdpLoginThrottled(Exception):
-    """Raised by _wait_for_login_form when ADP's sorry.adp.com throttle
-    interstitial persists across all login retry attempts.
+    """Raised when ADP serves its sorry.adp.com interstitial during login.
 
-    This is a transient upstream condition (ADP rate-limits the login SPA,
-    typically clearing within minutes). daily_refresh treats it as a graceful
-    ADP skip — alert, continue on existing ADP data, do not trip the pipeline
-    halt breaker — identical to OtpWaitTimeout. The next nightly re-attempts.
+    Two surfaces raise this:
+      - the login-form throttle (``_wait_for_login_form`` exhausts its retries), and
+      - a post-login redirect to sorry.adp.com (``_ensure_logged_in``), e.g. during
+        a scheduled RUN maintenance window.
+
+    daily_refresh treats it as a graceful ADP skip — alert, continue on existing
+    ADP data, do not trip the pipeline halt breaker — identical to OtpWaitTimeout.
+
+    ``retry_at`` (UTC-aware datetime, optional) carries the maintenance-window end
+    + buffer when it could be parsed from the page banner. When present,
+    daily_refresh schedules a one-shot smart retry at that time instead of waiting
+    for the next nightly. When None, the next nightly / Retry-Dates re-attempts.
     """
+
+    def __init__(self, *args, retry_at=None):
+        super().__init__(*args)
+        self.retry_at = retry_at
 
 
 def is_ready_reply(text) -> bool:

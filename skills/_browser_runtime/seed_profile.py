@@ -7,7 +7,7 @@ periodically — see retry guidance in agents/bhaga/README.md OPS section).
 
 Usage:
     python3 -m skills._browser_runtime.seed_profile --portal square --url https://app.squareup.com/login
-    python3 -m skills._browser_runtime.seed_profile --portal adp    --url https://runpayroll.adp.com
+    python3 -m skills._browser_runtime.seed_profile --portal adp    --url https://runpayroll.adp.com/enrollment.aspx
 
 The flow:
     1. Opens a visible Chromium window pointed at the portal's login URL.

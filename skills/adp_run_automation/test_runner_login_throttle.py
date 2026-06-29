@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Regression tests for _wait_for_login_form ADP throttle recovery.
 
-Covers the 2026-06-28 incident: the nightly job's first goto to
-runpayroll.adp.com was redirected to https://sorry.adp.com/sorry/ (ADP
-throttle interstitial). The old recovery called page.reload(), which
-re-requests the current (sorry) URL and can never escape — burning 3x60s
-before hard-failing the nightly. The fix replaces reload() with a fresh
-goto(LOGIN_URL) + exponential backoff.
+Covers the 2026-06-28 incident: ADP retired the bare runpayroll.adp.com
+entry point, which now server-redirects to https://sorry.adp.com/sorry/.
+The root-cause fix points LOGIN_URL at runpayroll.adp.com/enrollment.aspx
+(ADP's federation redirector → live sign-in SPA). These tests cover the
+complementary resilience net: if a future goto still lands on sorry.adp.com,
+the recovery must use a fresh goto(LOGIN_URL) (NOT page.reload(), which
+re-requests the current sorry URL and can never escape) + exponential backoff,
+and raise AdpLoginThrottled (graceful skip) rather than hard-failing.
 
 Three scenarios:
 
@@ -123,8 +125,8 @@ class TestWaitForLoginFormThrottleRecovery(unittest.TestCase):
         # url read in the final retry-settled log.
         url_seq = [
             "https://sorry.adp.com/sorry/",  # first wait-uid-box sees this
-            "https://runpayroll.adp.com",      # after goto(LOGIN_URL) on retry
-            "https://runpayroll.adp.com",      # retry-settled log
+            "https://online.adp.com/signin/v1/?APPID=RUN",  # after goto(LOGIN_URL) on retry
+            "https://online.adp.com/signin/v1/?APPID=RUN",  # retry-settled log
         ]
         # UID box becomes visible on the 2nd call (attempt 2 after retry goto).
         locator = _FakeLocator(visible_on_attempt=2)
@@ -171,7 +173,7 @@ class TestWaitForLoginFormThrottleRecovery(unittest.TestCase):
 
     def test_non_throttle_stall_raises_runtime_error(self):
         """Form stalls on real login SPA (not sorry page) → RuntimeError unchanged."""
-        login_url = "https://runpayroll.adp.com"
+        login_url = "https://online.adp.com/signin/v1/?APPID=RUN"
         url_seq = [login_url] * 10  # real login page but form never renders
         locator = _FakeLocator(visible_on_attempt=None)  # never visible
         page = _FakePage(url_seq, locator)
@@ -181,7 +183,7 @@ class TestWaitForLoginFormThrottleRecovery(unittest.TestCase):
 
     def test_non_throttle_stall_does_not_raise_adp_login_throttled(self):
         """A JS-hydration stall on the real SPA must not be misclassified as throttle."""
-        login_url = "https://runpayroll.adp.com"
+        login_url = "https://online.adp.com/signin/v1/?APPID=RUN"
         page = _FakePage([login_url] * 10, _FakeLocator(visible_on_attempt=None))
 
         try:
@@ -194,7 +196,7 @@ class TestWaitForLoginFormThrottleRecovery(unittest.TestCase):
     def test_no_retry_needed_returns_uid_box(self):
         """Login form renders on first attempt — no retry, no goto, no reload."""
         page = _FakePage(
-            ["https://runpayroll.adp.com"],
+            ["https://online.adp.com/signin/v1/?APPID=RUN"],
             _FakeLocator(visible_on_attempt=1),
         )
         result = _wait_for_login_form(page, max_retries=2, _sleep_fn=self._no_sleep)

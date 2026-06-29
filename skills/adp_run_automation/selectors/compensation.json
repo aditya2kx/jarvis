@@ -15,7 +15,7 @@
     "Creation flow (manual, one-time per store): Reports > '+ Create custom report' (TBD calibration). Until that flow is documented, treat the report as a per-store prerequisite captured in the store profile."
   ],
   "page_urls": {
-    "login": "https://runpayroll.adp.com",
+    "login": "https://runpayroll.adp.com/enrollment.aspx",
     "post_login_pattern": "https://runpayrollmain.adp.com/@{tenant_uuid}/v2/",
     "main_dashboard": "https://runpayrollmain.adp.com/@{tenant_uuid}/v2/"
   },

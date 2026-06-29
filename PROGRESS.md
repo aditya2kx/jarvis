@@ -1,8 +1,12 @@
 # Jarvis Build Progress
 
-## 2026-06-29 — BHAGA ADP throttle resilience + ADP-aware Retry-Dates (Issue #110, branch fix/sharing-requirements-first-one-being-tonight)
+## 2026-06-29 — BHAGA ADP login URL fix (root cause) + throttle resilience + ADP-aware Retry-Dates (Issue #110, branch fix/sharing-requirements-first-one-being-tonight)
 
-Tonight's nightly (run_date=2026-06-28) failed because ADP's `sorry.adp.com` throttle interstitial persisted across all three login retry attempts. The old recovery called `page.reload()`, which stays stuck on the sorry URL and never reaches the login SPA. Two changes:
+**Root cause (confirmed via live browser + curl):** ADP retired the bare `https://runpayroll.adp.com` entry point on 2026-06-28 — it now server-redirects to `https://sorry.adp.com/sorry/` (a plain redirect, reproduced from the laptop, not an IP block). That broke tonight's nightly at the `adp` step. The live login flow is reachable via `https://runpayroll.adp.com/enrollment.aspx`, which routes through ADP's federation redirector to the sign-in SPA (`online.adp.com/signin/v1/?APPID=RUN&productId=…`) with the correct, ADP-supplied productId. Verified the User ID box renders via Playwright.
+
+**Primary fix:** `LOGIN_URL` updated to `https://runpayroll.adp.com/enrollment.aspx` in `runner.py`, `compensation_backend.py`, `shift_backend.py`, and the `compensation.json`/`timecards.json` selectors. This is what restores ADP data collection.
+
+The two changes below are the complementary safety net (shipped in the same PR), in case ADP ever serves the throttle interstitial transiently again:
 
 - **A2 (ADP login resilience):** `_wait_for_login_form` in `skills/adp_run_automation/runner.py` now detects `sorry.adp.com in page.url` and issues a fresh `goto(LOGIN_URL)` with exponential backoff instead of `reload()`. If the throttle persists, raises `AdpLoginThrottled` (new typed exception in `otp_gate.py`). `daily_refresh` treats `AdpLoginThrottled` as a graceful ADP skip (Slack alert, exit 0, `source_pulls.status = skipped_adp_throttle`) — same pattern as `OtpWaitTimeout`.
 - **B1 (ADP-aware coverage):** `trigger_dated_refresh.py` `_date_is_covered()` now requires BOTH `square_daily_rollup` AND `adp_shifts` to cover a date before returning recompute-only. A throttle night leaves Square in BQ but `adp_shifts` missing → `Retry-Dates: 2026-06-28` in the PR body triggers a full scrape (not the broken recompute-only that would have skipped ADP again).

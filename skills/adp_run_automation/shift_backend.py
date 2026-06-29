@@ -63,7 +63,9 @@ _PROJECT = pathlib.Path(project_dir())
 DOWNLOADS_DIR = _PROJECT / "extracted" / "downloads"
 SELECTORS_PATH = _PROJECT / "skills" / "adp_run_automation" / "selectors" / "timecards.json"
 
-LOGIN_URL = "https://runpayroll.adp.com"
+# ADP retired the bare runpayroll.adp.com (now redirects to sorry.adp.com);
+# /enrollment.aspx routes to the live sign-in SPA. See runner.py for full note.
+LOGIN_URL = "https://runpayroll.adp.com/enrollment.aspx"
 
 
 # Open-shift exclusion: ADP RUN's Timecard Excel export omits ANY shift where

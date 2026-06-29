@@ -65,7 +65,7 @@ records = pull_daily_hours(
 ## Flow (planned)
 
 1. Resolve credentials from Keychain via `skills.credentials.registry.lookup(credential_handle)`
-2. Open `https://runpayroll.adp.com` in a Playwright session
+2. Open `https://runpayroll.adp.com/enrollment.aspx` in a Playwright session (the bare `runpayroll.adp.com` was retired 2026-06-28 and now redirects to `sorry.adp.com`)
 3. Reuse cached session cookie if valid; otherwise log in
 4. If MFA required: pause, send Slack DM via `skills.slack.adapter.request_otp("ADP RUN", phone_hint=...)`, wait for reply, enter code
 5. Persist session cookie for reuse across same-session subsequent runs (minimize MFA re-challenges)

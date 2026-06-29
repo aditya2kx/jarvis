@@ -54,7 +54,13 @@ from skills.credentials import registry as cred_registry
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 STORE_PROFILES = PROJECT_ROOT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
 
-LOGIN_URL = "https://runpayroll.adp.com"
+# ADP retired the bare https://runpayroll.adp.com entry point (2026-06-28): it now
+# server-redirects to https://sorry.adp.com/sorry/. The live login flow is reachable
+# via /enrollment.aspx, which routes through ADP's federation redirector to the
+# sign-in SPA (online.adp.com/signin/v1/?APPID=RUN&productId=...) with the correct,
+# self-supplied productId. Using enrollment.aspx lets ADP resolve the current
+# productId rather than hardcoding a value that can rotate.
+LOGIN_URL = "https://runpayroll.adp.com/enrollment.aspx"
 POST_LOGIN_URL_RE = re.compile(r"runpayrollmain\.adp\.com/.*/v2/")
 
 # Match ADP's "Current Pay Period" / "Current" / "This Pay Period" dropdown
@@ -1663,7 +1669,7 @@ def download_adp_bundle(
         if needs_earnings:
             try:
                 # Navigate back to the dashboard URL (runpayrollmain.adp.com)
-                # rather than LOGIN_URL (runpayroll.adp.com). The login domain
+                # rather than LOGIN_URL (runpayroll.adp.com/enrollment.aspx). The login domain
                 # doesn't share session cookies with the dashboard domain, so
                 # hitting it triggers re-auth + a second OTP. Using the captured
                 # dashboard_url keeps us on the same domain and preserves the

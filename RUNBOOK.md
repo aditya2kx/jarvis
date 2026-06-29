@@ -1029,17 +1029,27 @@ gcloud secrets versions add square_palmetto_oauth --data-file=- --project jarvis
 # Paste the new JSON token blob on stdin, then Ctrl-D
 ```
 
-**ADP login throttle / sorry.adp.com interstitial (2026-06-28 fix).** ADP occasionally
-returns a throttle interstitial (`https://sorry.adp.com/sorry/`) instead of the login SPA
-on the first navigation. The runner (`skills/adp_run_automation/runner.py`
-`_wait_for_login_form`) detects this via `sorry.adp.com in page.url` and issues a fresh
-`page.goto(LOGIN_URL)` — **never** `page.reload()` (which would stay on the sorry URL).
-Attempts use exponential backoff (base 3 s) to let a transient rate-limit clear. If the
+**ADP login URL changed — bare runpayroll.adp.com retired (2026-06-28 root cause).**
+ADP retired the bare `https://runpayroll.adp.com` entry point; it now **server-redirects to
+`https://sorry.adp.com/sorry/`** (verify with `curl -sIL https://runpayroll.adp.com` — it's a
+plain redirect, not an IP block; the same redirect happens from any network). This broke the
+2026-06-28 nightly at the `adp` step. **Fix:** `LOGIN_URL` now points at
+`https://runpayroll.adp.com/enrollment.aspx`, which routes through ADP's federation redirector
+to the live sign-in SPA (`online.adp.com/signin/v1/?APPID=RUN&productId=…`) with the correct,
+ADP-supplied `productId`. Set in `skills/adp_run_automation/runner.py`,
+`compensation_backend.py`, `shift_backend.py`, and the two selector JSONs. If ADP changes the
+entry point again, re-derive it by opening `runpayroll.adp.com/enrollment.aspx` in a browser and
+confirming the **User ID** box renders.
+
+**ADP sorry.adp.com throttle resilience (2026-06-28 safety net).** As a complement to the URL
+fix, if any future `goto` still lands on `sorry.adp.com`, the runner (`_wait_for_login_form`)
+detects it via `sorry.adp.com in page.url` and issues a fresh `page.goto(LOGIN_URL)` — **never**
+`page.reload()` (which would stay on the sorry URL) — with exponential backoff (base 3 s). If the
 throttle persists across all attempts, `AdpLoginThrottled` is raised (from
 `agents/bhaga/scripts/otp_gate.py`); `daily_refresh` treats it as a **graceful ADP skip**
 (Slack alert via `info_ping`, `source_pulls.status = skipped_adp_throttle`, exit 0) — the
 same pattern as an OTP-wait timeout. The next nightly or `Retry-Dates` rerun re-attempts.
-A date where ADP was throttled has Square in BQ but missing `adp_shifts` → `trigger_dated_refresh.py`
+A date where ADP was skipped has Square in BQ but missing `adp_shifts` → `trigger_dated_refresh.py`
 correctly selects **full scrape** (not recompute-only) on a `Retry-Dates` rerun.
 
 **ADP earnings ready-dialog timeout (configurable, 2026-06-25 fix).** After the

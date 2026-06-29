@@ -417,6 +417,41 @@ def _is_adp_login_throttled(exc: BaseException | None) -> bool:
     return False
 
 
+def _handle_adp_throttle_skip(
+    pipeline_name: str,
+    pr,
+    run_summary: dict,
+    refresh_date_iso: str,
+) -> bool:
+    """Apply the graceful ADP-throttle skip and return True if the caller should continue.
+
+    Extracted from the results loop so the full branch — classifier + state
+    mutation + Slack alert — can be exercised by a unit test rather than only
+    the classifier in isolation.
+
+    Side effects (when returning True):
+    - Prints a greppable breadcrumb.
+    - Posts a non-alarming Slack ``info_ping``.
+    - Sets ``run_summary["source_pulls"][-1]["status"] = "skipped_adp_throttle"``.
+
+    Does NOT append to failures, does NOT set otp_portal_failed, does NOT trip
+    the pipeline halt breaker.
+    """
+    if pipeline_name != "adp" or not _is_adp_login_throttled(pr.error):
+        return False
+    print(
+        f"[adp_login] ADP login throttle (sorry.adp.com) — skipping ADP step; "
+        f"next nightly will retry. ({pr.error})"
+    )
+    info_ping(
+        f":warning: BHAGA: ADP login throttled (sorry.adp.com) on "
+        f"{refresh_date_iso} — ADP step skipped, running on existing data. "
+        f"Next nightly auto-retries."
+    )
+    run_summary["source_pulls"][-1]["status"] = "skipped_adp_throttle"
+    return True
+
+
 def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
     """Invalidate a step's success marker (sanctioned, via the state adapter).
 
@@ -2435,15 +2470,9 @@ def _run_refresh() -> int:
                 # graceful ADP-skip identical to the OTP-timeout path — alert,
                 # continue on existing ADP data, do NOT trip the halt breaker.
                 # Next nightly or Retry-Dates rerun will re-attempt.
-                if pipeline_name == "adp" and _is_adp_login_throttled(pr.error):
-                    print(f"[adp_login] ADP login throttle (sorry.adp.com) — skipping ADP step; "
-                          f"next nightly will retry. ({pr.error})")
-                    info_ping(
-                        f":warning: BHAGA: ADP login throttled (sorry.adp.com) on "
-                        f"{refresh_date.isoformat()} — ADP step skipped, running on existing data. "
-                        f"Next nightly auto-retries."
-                    )
-                    _RUN_SUMMARY["source_pulls"][-1]["status"] = "skipped_adp_throttle"
+                if _handle_adp_throttle_skip(
+                    pipeline_name, pr, _RUN_SUMMARY, refresh_date.isoformat()
+                ):
                     continue
                 failures.append((pipeline_name, pr.error))
                 if pipeline_name in ("square", "adp"):

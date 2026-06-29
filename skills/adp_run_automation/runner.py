@@ -125,7 +125,7 @@ def _is_throttled(page) -> bool:
     return _SORRY_ADP_HOST in (page.url or "")
 
 
-def _wait_for_login_form(page, *, max_retries: int = 2):
+def _wait_for_login_form(page, *, max_retries: int = 2, _sleep_fn=None):
     """Wait for the User ID textbox to appear, recovering on stall or throttle.
 
     Two failure modes are handled:
@@ -149,6 +149,8 @@ def _wait_for_login_form(page, *, max_retries: int = 2):
     uid_box = page.get_by_role("textbox", name=re.compile(r"^User ID$", re.I)).first
     total_attempts = max_retries + 1
 
+    sleep = _sleep_fn if _sleep_fn is not None else time.sleep
+
     for attempt in range(1, total_attempts + 1):
         print(f"[adp_login] step=wait-uid-box (attempt {attempt}/{total_attempts})")
         t0 = time.monotonic()
@@ -167,7 +169,7 @@ def _wait_for_login_form(page, *, max_retries: int = 2):
         if attempt <= max_retries:
             backoff_s = _LOGIN_RETRY_BACKOFF_BASE_S * (2 ** (attempt - 1))
             print(f"[adp_login] step=retry-goto-login url={LOGIN_URL} backoff={backoff_s}s")
-            time.sleep(backoff_s)
+            sleep(backoff_s)
             page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
             try:
                 page.wait_for_load_state("networkidle", timeout=30_000)

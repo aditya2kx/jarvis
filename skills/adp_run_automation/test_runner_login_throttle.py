@@ -113,6 +113,9 @@ class _FakePage:
 
 class TestWaitForLoginFormThrottleRecovery(unittest.TestCase):
 
+    def _no_sleep(self, seconds):
+        """Drop-in for time.sleep that returns immediately."""
+
     def test_throttle_then_recovery(self):
         """first goto lands on sorry; retry-goto navigates back; form renders."""
         # URL sequence: sorry on first access (initial page after _load_login_page),
@@ -127,7 +130,7 @@ class TestWaitForLoginFormThrottleRecovery(unittest.TestCase):
         locator = _FakeLocator(visible_on_attempt=2)
         page = _FakePage(url_seq, locator)
 
-        result = _wait_for_login_form(page, max_retries=2)
+        result = _wait_for_login_form(page, max_retries=2, _sleep_fn=self._no_sleep)
 
         self.assertIs(result, locator)
         # Must have issued a fresh goto (not reload) to escape the sorry page.
@@ -144,7 +147,7 @@ class TestWaitForLoginFormThrottleRecovery(unittest.TestCase):
         page = _FakePage(url_seq, locator)
 
         with self.assertRaises(AdpLoginThrottled) as ctx:
-            _wait_for_login_form(page, max_retries=2)
+            _wait_for_login_form(page, max_retries=2, _sleep_fn=self._no_sleep)
 
         msg = str(ctx.exception)
         self.assertIn("sorry.adp.com", msg)
@@ -156,11 +159,11 @@ class TestWaitForLoginFormThrottleRecovery(unittest.TestCase):
         page = _FakePage([sorry_url] * 10, _FakeLocator(visible_on_attempt=None))
 
         with self.assertRaises(AdpLoginThrottled):
-            _wait_for_login_form(page, max_retries=2)
+            _wait_for_login_form(page, max_retries=2, _sleep_fn=self._no_sleep)
 
         # Confirm it is NOT a plain RuntimeError (different handling path).
         try:
-            _wait_for_login_form(page, max_retries=2)
+            _wait_for_login_form(page, max_retries=2, _sleep_fn=self._no_sleep)
         except AdpLoginThrottled:
             pass
         except RuntimeError:
@@ -174,7 +177,7 @@ class TestWaitForLoginFormThrottleRecovery(unittest.TestCase):
         page = _FakePage(url_seq, locator)
 
         with self.assertRaises(RuntimeError):
-            _wait_for_login_form(page, max_retries=2)
+            _wait_for_login_form(page, max_retries=2, _sleep_fn=self._no_sleep)
 
     def test_non_throttle_stall_does_not_raise_adp_login_throttled(self):
         """A JS-hydration stall on the real SPA must not be misclassified as throttle."""
@@ -182,7 +185,7 @@ class TestWaitForLoginFormThrottleRecovery(unittest.TestCase):
         page = _FakePage([login_url] * 10, _FakeLocator(visible_on_attempt=None))
 
         try:
-            _wait_for_login_form(page, max_retries=2)
+            _wait_for_login_form(page, max_retries=2, _sleep_fn=self._no_sleep)
         except AdpLoginThrottled:
             self.fail("Non-throttle stall must not raise AdpLoginThrottled")
         except RuntimeError:
@@ -194,7 +197,7 @@ class TestWaitForLoginFormThrottleRecovery(unittest.TestCase):
             ["https://runpayroll.adp.com"],
             _FakeLocator(visible_on_attempt=1),
         )
-        result = _wait_for_login_form(page, max_retries=2)
+        result = _wait_for_login_form(page, max_retries=2, _sleep_fn=self._no_sleep)
         self.assertIsNotNone(result)
         self.assertEqual(page.goto_calls, [])
         self.assertEqual(page.reload_calls, 0)

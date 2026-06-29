@@ -77,22 +77,6 @@ def test_main_rejects_bad_date():
 # B1: ADP-aware coverage logic
 # ---------------------------------------------------------------------------
 
-def _patch_coverage(monkeypatch, sq_max=None, adp_max=None):
-    """Helper: patch _max_date_in_table to return given max dates by table."""
-    def fake_max(client, table, date_col):
-        if table == "square_daily_rollup":
-            return sq_max
-        if table == "adp_shifts":
-            return adp_max
-        return None
-    monkeypatch.setattr(t, "_max_date_in_table", fake_max)
-    # Also stub out bigquery.Client so no real GCP call is made.
-    import unittest.mock as mock
-    monkeypatch.setattr(t, "__import__", lambda *a, **kw: None, raising=False)
-
-
-class _FakeBQClient:
-    pass
 
 
 def _make_covered_client(monkeypatch, sq_max, adp_max):

@@ -71,3 +71,142 @@ def test_main_dry_run_covered(monkeypatch, capsys):
 
 def test_main_rejects_bad_date():
     assert t.main(["--date", "not-a-date", "--dry-run"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# B1: ADP-aware coverage logic
+# ---------------------------------------------------------------------------
+
+def _patch_coverage(monkeypatch, sq_max=None, adp_max=None):
+    """Helper: patch _max_date_in_table to return given max dates by table."""
+    def fake_max(client, table, date_col):
+        if table == "square_daily_rollup":
+            return sq_max
+        if table == "adp_shifts":
+            return adp_max
+        return None
+    monkeypatch.setattr(t, "_max_date_in_table", fake_max)
+    # Also stub out bigquery.Client so no real GCP call is made.
+    import unittest.mock as mock
+    monkeypatch.setattr(t, "__import__", lambda *a, **kw: None, raising=False)
+
+
+class _FakeBQClient:
+    pass
+
+
+def _make_covered_client(monkeypatch, sq_max, adp_max):
+    """Monkeypatch _max_date_in_table and bigquery.Client import."""
+    import datetime as _dt
+
+    def fake_max(client, table, date_col):
+        if table == "square_daily_rollup":
+            return sq_max
+        if table == "adp_shifts":
+            return adp_max
+        return None
+
+    monkeypatch.setattr(t, "_max_date_in_table", fake_max)
+
+
+def test_both_covered_is_recompute_only(monkeypatch):
+    """Square and ADP both cover 2026-06-28 → recompute-only."""
+    import datetime
+
+    _make_covered_client(
+        monkeypatch,
+        sq_max=datetime.date(2026, 6, 28),
+        adp_max=datetime.date(2026, 6, 28),
+    )
+
+    class _FakeBQModule:
+        class Client:
+            def __init__(self, **kw): pass
+
+    import unittest.mock as mock
+    with mock.patch.dict("sys.modules", {"google.cloud.bigquery": _FakeBQModule}):
+        result = t._date_is_covered("2026-06-28")
+    assert result is True, "Both covered → recompute-only"
+
+
+def test_square_covered_adp_missing_is_full_scrape(monkeypatch):
+    """Square covers 2026-06-28 but ADP is missing → full scrape (tonight's bug)."""
+    import datetime
+
+    _make_covered_client(
+        monkeypatch,
+        sq_max=datetime.date(2026, 6, 28),
+        adp_max=datetime.date(2026, 6, 27),  # one day behind
+    )
+
+    class _FakeBQModule:
+        class Client:
+            def __init__(self, **kw): pass
+
+    import unittest.mock as mock
+    with mock.patch.dict("sys.modules", {"google.cloud.bigquery": _FakeBQModule}):
+        result = t._date_is_covered("2026-06-28")
+    assert result is False, "ADP missing → full scrape (not recompute-only)"
+
+
+def test_neither_covered_is_full_scrape(monkeypatch):
+    """Neither Square nor ADP covers the date → full scrape."""
+    import datetime
+
+    _make_covered_client(
+        monkeypatch,
+        sq_max=datetime.date(2026, 6, 27),
+        adp_max=datetime.date(2026, 6, 27),
+    )
+
+    class _FakeBQModule:
+        class Client:
+            def __init__(self, **kw): pass
+
+    import unittest.mock as mock
+    with mock.patch.dict("sys.modules", {"google.cloud.bigquery": _FakeBQModule}):
+        result = t._date_is_covered("2026-06-28")
+    assert result is False, "Neither covered → full scrape"
+
+
+def test_adp_covered_square_missing_is_full_scrape(monkeypatch):
+    """ADP covers but Square doesn't → full scrape."""
+    import datetime
+
+    _make_covered_client(
+        monkeypatch,
+        sq_max=datetime.date(2026, 6, 27),
+        adp_max=datetime.date(2026, 6, 28),
+    )
+
+    class _FakeBQModule:
+        class Client:
+            def __init__(self, **kw): pass
+
+    import unittest.mock as mock
+    with mock.patch.dict("sys.modules", {"google.cloud.bigquery": _FakeBQModule}):
+        result = t._date_is_covered("2026-06-28")
+    assert result is False, "Square missing → full scrape"
+
+
+def test_bq_probe_error_fails_open_to_full_scrape(monkeypatch):
+    """If _max_date_in_table returns None (BQ error), fails open → full scrape."""
+    _make_covered_client(monkeypatch, sq_max=None, adp_max=None)
+
+    class _FakeBQModule:
+        class Client:
+            def __init__(self, **kw): pass
+
+    import unittest.mock as mock
+    with mock.patch.dict("sys.modules", {"google.cloud.bigquery": _FakeBQModule}):
+        result = t._date_is_covered("2026-06-28")
+    assert result is False, "BQ error → fail-open to full scrape"
+
+
+def test_decide_uses_adp_aware_coverage(monkeypatch):
+    """_decide_recompute delegates to _date_is_covered (which is now ADP-aware)."""
+    monkeypatch.setattr(t, "_date_is_covered", lambda d: False)
+    assert t._decide_recompute("2026-06-28", force_recompute=False, force_scrape=False) is False
+
+    monkeypatch.setattr(t, "_date_is_covered", lambda d: True)
+    assert t._decide_recompute("2026-06-28", force_recompute=False, force_scrape=False) is True

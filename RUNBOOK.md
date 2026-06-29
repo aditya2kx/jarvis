@@ -322,11 +322,12 @@ ascending. Up to 31 dates per command; larger ranges are rejected with an error.
 
 **Coverage-aware mode selection per date** (mirrors `scripts/trigger_dated_refresh.py`):
 
-- Date already covered in `bhaga.square_daily_rollup` (BQ) → **recompute-only**: executes with
-  `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1`. No portal login, no OTP.
-- Date not covered (or BQ probe fails — fail-open) → **full scrape (inline OTP)**: starts inline;
-  ADP will only request an OTP code if the browser session is challenged. No READY prompt is sent
-  up-front. `BHAGA_OTP_FORCE_REQUEST` is no longer injected.
+- Date already covered in **both** `bhaga.square_daily_rollup` (Square) **and** `bhaga.adp_shifts`
+  (ADP) → **recompute-only**: executes with `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`,
+  `BHAGA_SKIP_KDS=1`. No portal login, no OTP.
+- Either source missing, or BQ probe fails (fail-open) → **full scrape (inline OTP)**: starts
+  inline; ADP will only request an OTP code if the browser session is challenged. No READY prompt
+  is sent up-front. `BHAGA_OTP_FORCE_REQUEST` is no longer injected.
 
 Both modes add `BHAGA_IGNORE_HALT=1` (operator-driven backfill includes the fix).
 
@@ -482,10 +483,14 @@ Retry-Dates: 2026-06-13
 Multiple dates are comma-separated: `Retry-Dates: 2026-06-12, 2026-06-13`.
 
 **Smart mode selection per date** (via `scripts/trigger_dated_refresh.py`):
-- If the date is already covered by raw Square data in `square_daily_rollup` (BQ) → **recompute-only**:
-  sets `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1` so no browser/OTP; only the
-  model is rebuilt from updated human inputs (`training_shifts`, `store_config`).
-- If the date is NOT covered → **full refresh**: normal scrape + OTP flow.
+- If the date is covered by **both** `square_daily_rollup` (Square) **and** `adp_shifts` (ADP) in
+  BQ → **recompute-only**: sets `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1` so
+  no browser/OTP; only the model is rebuilt from updated human inputs (`training_shifts`,
+  `store_config`). Both sources must be present: a date where ADP failed (e.g. a sorry.adp.com
+  throttle night) has Square coverage but missing ADP — that date triggers a full scrape even though
+  Square is already in BQ.
+- If either source is missing, or BQ probes fail (fail-open) → **full refresh**: normal scrape + OTP
+  flow.
 
 The rerun uses Cloud Run v2 per-execution env overrides (`RunJobRequest.Overrides`) so the job
 definition is **never mutated** (a persisted `REFRESH_DATE` would corrupt future nightlies). The
@@ -1023,6 +1028,19 @@ OAuth app was disconnected), re-authorize via the Square Developer Console and u
 gcloud secrets versions add square_palmetto_oauth --data-file=- --project jarvis-bhaga-prod
 # Paste the new JSON token blob on stdin, then Ctrl-D
 ```
+
+**ADP login throttle / sorry.adp.com interstitial (2026-06-28 fix).** ADP occasionally
+returns a throttle interstitial (`https://sorry.adp.com/sorry/`) instead of the login SPA
+on the first navigation. The runner (`skills/adp_run_automation/runner.py`
+`_wait_for_login_form`) detects this via `sorry.adp.com in page.url` and issues a fresh
+`page.goto(LOGIN_URL)` — **never** `page.reload()` (which would stay on the sorry URL).
+Attempts use exponential backoff (base 3 s) to let a transient rate-limit clear. If the
+throttle persists across all attempts, `AdpLoginThrottled` is raised (from
+`agents/bhaga/scripts/otp_gate.py`); `daily_refresh` treats it as a **graceful ADP skip**
+(Slack alert via `info_ping`, `source_pulls.status = skipped_adp_throttle`, exit 0) — the
+same pattern as an OTP-wait timeout. The next nightly or `Retry-Dates` rerun re-attempts.
+A date where ADP was throttled has Square in BQ but missing `adp_shifts` → `trigger_dated_refresh.py`
+correctly selects **full scrape** (not recompute-only) on a `Retry-Dates` rerun.
 
 **ADP earnings ready-dialog timeout (configurable, 2026-06-25 fix).** After the
 "Download → Excel (.xlsx)" click, ADP queues async report generation and shows a

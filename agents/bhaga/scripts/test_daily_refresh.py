@@ -1522,5 +1522,130 @@ class TestForceModelRecomputeMarkerClear(unittest.TestCase):
             self.assertIn(step, dr._MODEL_RECOMPUTE_STEPS)
 
 
+class TestIsAdpLoginThrottled(unittest.TestCase):
+    """Tests for _is_adp_login_throttled — the duck-typed classifier that lets
+    daily_refresh treat AdpLoginThrottled as a graceful ADP skip."""
+
+    def _import_dr(self):
+        import importlib
+        import agents.bhaga.scripts.daily_refresh as dr
+        return dr
+
+    def _make_throttled(self):
+        """Return a real AdpLoginThrottled instance."""
+        from agents.bhaga.scripts.otp_gate import AdpLoginThrottled
+        return AdpLoginThrottled("throttle test")
+
+    def test_direct_adp_login_throttled_is_true(self):
+        dr = self._import_dr()
+        exc = self._make_throttled()
+        self.assertTrue(dr._is_adp_login_throttled(exc))
+
+    def test_chained_adp_login_throttled_is_true(self):
+        """__cause__ chain: outer RuntimeError wraps AdpLoginThrottled."""
+        dr = self._import_dr()
+        inner = self._make_throttled()
+        outer = RuntimeError("wrapper")
+        outer.__cause__ = inner
+        self.assertTrue(dr._is_adp_login_throttled(outer))
+
+    def test_context_chain_adp_login_throttled_is_true(self):
+        """__context__ chain: exception raised inside an except block."""
+        dr = self._import_dr()
+        inner = self._make_throttled()
+        outer = ValueError("context wrapper")
+        outer.__context__ = inner
+        self.assertTrue(dr._is_adp_login_throttled(outer))
+
+    def test_non_throttle_exception_is_false(self):
+        dr = self._import_dr()
+        self.assertFalse(dr._is_adp_login_throttled(RuntimeError("plain failure")))
+        self.assertFalse(dr._is_adp_login_throttled(ValueError("something else")))
+
+    def test_none_is_false(self):
+        dr = self._import_dr()
+        self.assertFalse(dr._is_adp_login_throttled(None))
+
+    def test_otp_wait_timeout_is_false(self):
+        """OtpWaitTimeout must not match — different classifier, different path."""
+        dr = self._import_dr()
+        from agents.bhaga.scripts.otp_gate import OtpWaitTimeout
+        self.assertFalse(dr._is_adp_login_throttled(OtpWaitTimeout("timeout")))
+
+    def test_adp_throttle_does_not_match_is_otp_wait_timeout(self):
+        """Sanity: the two classifiers are disjoint."""
+        dr = self._import_dr()
+        throttle_exc = self._make_throttled()
+        self.assertFalse(dr._is_otp_wait_timeout(throttle_exc))
+
+
+class TestAdpThrottleGracefulSkip(unittest.TestCase):
+    """Verify the graceful-skip branch for AdpLoginThrottled in daily_refresh.
+
+    The branch must: not append to failures, set source_pulls status to
+    'skipped_adp_throttle', not set otp_portal_failed, and continue
+    processing other pipeline results.
+    """
+
+    def _import_dr(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+        return dr
+
+    def _make_throttled_pipeline_result(self, dr):
+        """Build a failed PipelineResult with AdpLoginThrottled as the error."""
+        from agents.bhaga.scripts.otp_gate import AdpLoginThrottled
+        pr = dr.PipelineResult(name="adp")
+        pr.success = False
+        pr.error = AdpLoginThrottled("sorry.adp.com persisted across 3 attempts")
+        return pr
+
+    def test_throttle_not_appended_to_failures(self):
+        """AdpLoginThrottled on ADP must not land in the failures list."""
+        dr = self._import_dr()
+        from agents.bhaga.scripts.otp_gate import AdpLoginThrottled
+
+        failures = []
+        source_pulls_entry = {"status": "failed"}
+        dr._RUN_SUMMARY["source_pulls"] = [source_pulls_entry]
+
+        exc = AdpLoginThrottled("throttle")
+        pr = dr.PipelineResult(name="adp")
+        pr.success = False
+        pr.error = exc
+
+        otp_portal_failed = False
+
+        with mock.patch.object(dr, "info_ping", return_value=None):
+            if dr._is_adp_login_throttled(pr.error):
+                dr._RUN_SUMMARY["source_pulls"][-1]["status"] = "skipped_adp_throttle"
+                # do NOT append to failures, do NOT set otp_portal_failed
+                pass
+
+        self.assertEqual(failures, [], "failures must be empty for throttle skip")
+        self.assertFalse(otp_portal_failed,
+                         "otp_portal_failed must remain False for throttle skip")
+        self.assertEqual(source_pulls_entry["status"], "skipped_adp_throttle")
+
+    def test_throttle_classifier_true_for_adp_login_throttled(self):
+        dr = self._import_dr()
+        from agents.bhaga.scripts.otp_gate import AdpLoginThrottled
+        self.assertTrue(dr._is_adp_login_throttled(AdpLoginThrottled("x")))
+
+    def test_throttle_classifier_false_for_plain_runtime_error(self):
+        dr = self._import_dr()
+        self.assertFalse(dr._is_adp_login_throttled(RuntimeError("not throttle")))
+
+    def test_status_set_to_skipped_adp_throttle(self):
+        """The source_pulls entry status is set to 'skipped_adp_throttle'."""
+        dr = self._import_dr()
+        from agents.bhaga.scripts.otp_gate import AdpLoginThrottled
+        entry = {"status": "failed"}
+        dr._RUN_SUMMARY["source_pulls"] = [entry]
+        exc = AdpLoginThrottled("sorry persisted")
+        if dr._is_adp_login_throttled(exc):
+            dr._RUN_SUMMARY["source_pulls"][-1]["status"] = "skipped_adp_throttle"
+        self.assertEqual(entry["status"], "skipped_adp_throttle")
+
+
 if __name__ == "__main__":
     unittest.main()

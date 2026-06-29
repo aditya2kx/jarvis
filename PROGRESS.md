@@ -1,5 +1,14 @@
 # Jarvis Build Progress
 
+## 2026-06-29 — BHAGA ADP throttle resilience + ADP-aware Retry-Dates (Issue #110, branch fix/sharing-requirements-first-one-being-tonight)
+
+Tonight's nightly (run_date=2026-06-28) failed because ADP's `sorry.adp.com` throttle interstitial persisted across all three login retry attempts. The old recovery called `page.reload()`, which stays stuck on the sorry URL and never reaches the login SPA. Two changes:
+
+- **A2 (ADP login resilience):** `_wait_for_login_form` in `skills/adp_run_automation/runner.py` now detects `sorry.adp.com in page.url` and issues a fresh `goto(LOGIN_URL)` with exponential backoff instead of `reload()`. If the throttle persists, raises `AdpLoginThrottled` (new typed exception in `otp_gate.py`). `daily_refresh` treats `AdpLoginThrottled` as a graceful ADP skip (Slack alert, exit 0, `source_pulls.status = skipped_adp_throttle`) — same pattern as `OtpWaitTimeout`.
+- **B1 (ADP-aware coverage):** `trigger_dated_refresh.py` `_date_is_covered()` now requires BOTH `square_daily_rollup` AND `adp_shifts` to cover a date before returning recompute-only. A throttle night leaves Square in BQ but `adp_shifts` missing → `Retry-Dates: 2026-06-28` in the PR body triggers a full scrape (not the broken recompute-only that would have skipped ADP again).
+
+Post-merge: the `Retry-Dates: 2026-06-28` deploy trailer re-runs tonight's date as a full scrape to backfill the missing ADP data.
+
 ## 2026-06-28 — Generic hardening: ghost rows, name normalization, Grafana gate, recompute marker (Issue #108, branch fix/i108-https)
 
 Five-milestone PR hardening the bug *classes* exposed post-#90/#100 — each fix is a generic invariant, not a single-instance patch:

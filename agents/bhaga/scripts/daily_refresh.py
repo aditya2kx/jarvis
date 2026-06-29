@@ -401,6 +401,22 @@ def _is_otp_wait_timeout(exc: BaseException | None) -> bool:
     return False
 
 
+def _is_adp_login_throttled(exc: BaseException | None) -> bool:
+    """True if ``exc`` is an AdpLoginThrottled from _wait_for_login_form.
+
+    Duck-typed (same pattern as _is_otp_wait_timeout) so the import stays
+    optional and test mocks need not inherit from the real exception class.
+    """
+    seen = 0
+    cur = exc
+    while cur is not None and seen < 20:
+        if type(cur).__name__ == "AdpLoginThrottled":
+            return True
+        cur = cur.__cause__ or cur.__context__
+        seen += 1
+    return False
+
+
 def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
     """Invalidate a step's success marker (sanctioned, via the state adapter).
 
@@ -2413,6 +2429,21 @@ def _run_refresh() -> int:
                           f"next nightly will retry. ({pr.error})")
                     otp_skipped_alert(date=refresh_date.isoformat(), portals=["ADP"])
                     _RUN_SUMMARY["source_pulls"][-1]["status"] = "skipped_otp_timeout"
+                    continue
+                # ADP login throttle (sorry.adp.com interstitial persisted across
+                # all login attempts): transient upstream rate-limit. Treat as a
+                # graceful ADP-skip identical to the OTP-timeout path — alert,
+                # continue on existing ADP data, do NOT trip the halt breaker.
+                # Next nightly or Retry-Dates rerun will re-attempt.
+                if pipeline_name == "adp" and _is_adp_login_throttled(pr.error):
+                    print(f"[adp_login] ADP login throttle (sorry.adp.com) — skipping ADP step; "
+                          f"next nightly will retry. ({pr.error})")
+                    info_ping(
+                        f":warning: BHAGA: ADP login throttled (sorry.adp.com) on "
+                        f"{refresh_date.isoformat()} — ADP step skipped, running on existing data. "
+                        f"Next nightly auto-retries."
+                    )
+                    _RUN_SUMMARY["source_pulls"][-1]["status"] = "skipped_adp_throttle"
                     continue
                 failures.append((pipeline_name, pr.error))
                 if pipeline_name in ("square", "adp"):

@@ -88,6 +88,17 @@ class OtpWaitTimeout(Exception):
     """
 
 
+class AdpLoginThrottled(Exception):
+    """Raised by _wait_for_login_form when ADP's sorry.adp.com throttle
+    interstitial persists across all login retry attempts.
+
+    This is a transient upstream condition (ADP rate-limits the login SPA,
+    typically clearing within minutes). daily_refresh treats it as a graceful
+    ADP skip — alert, continue on existing ADP data, do not trip the pipeline
+    halt breaker — identical to OtpWaitTimeout. The next nightly re-attempts.
+    """
+
+
 def is_ready_reply(text) -> bool:
     """Return True if a Slack reply means "I'm available — send the codes".
 

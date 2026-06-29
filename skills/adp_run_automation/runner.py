@@ -116,41 +116,73 @@ def _load_login_page(page, *, timeout_ms: int = 60_000) -> None:
           f"elapsed={time.monotonic() - t0:.1f}s url={page.url}")
 
 
-def _wait_for_login_form(page, *, max_retries: int = 2):
-    """Wait for the User ID textbox to appear, reloading on stall.
+_SORRY_ADP_HOST = "sorry.adp.com"
+_LOGIN_RETRY_BACKOFF_BASE_S = 3  # base sleep between login retry attempts
 
-    ADP's login spinner sometimes stalls permanently (JS hydration
-    failure). A page reload fixes it. We try up to max_retries reloads
-    before giving up.
+
+def _is_throttled(page) -> bool:
+    """Return True if the current page URL is ADP's throttle interstitial."""
+    return _SORRY_ADP_HOST in (page.url or "")
+
+
+def _wait_for_login_form(page, *, max_retries: int = 2):
+    """Wait for the User ID textbox to appear, recovering on stall or throttle.
+
+    Two failure modes are handled:
+
+    1. **JS-hydration stall** (page.url is still the login SPA but the form
+       never renders): re-navigate to LOGIN_URL to trigger a fresh hydration.
+    2. **ADP throttle interstitial** (page.url is sorry.adp.com/sorry/):
+       ``page.reload()`` is wrong here — it re-requests the sorry URL and
+       can never get back to the login SPA. We must issue a fresh
+       ``page.goto(LOGIN_URL)`` to escape the throttle, with exponential
+       backoff so a transient rate-limit has time to clear.
+
+    On exhaustion: if the final page is still on the throttle host, raises
+    ``AdpLoginThrottled`` so daily_refresh can treat it as a graceful ADP skip
+    (next nightly retries). Any other stall raises ``RuntimeError`` as before.
 
     Returns the User ID locator once visible.
     """
-    uid_box = page.get_by_role("textbox", name=re.compile(r"^User ID$", re.I)).first
+    from agents.bhaga.scripts.otp_gate import AdpLoginThrottled  # local import
 
-    for attempt in range(1, max_retries + 2):
-        print(f"[adp_login] step=wait-uid-box (attempt {attempt})")
+    uid_box = page.get_by_role("textbox", name=re.compile(r"^User ID$", re.I)).first
+    total_attempts = max_retries + 1
+
+    for attempt in range(1, total_attempts + 1):
+        print(f"[adp_login] step=wait-uid-box (attempt {attempt}/{total_attempts})")
         t0 = time.monotonic()
         try:
             uid_box.wait_for(state="visible", timeout=60_000)
             print(f"[adp_login] step=uid-box-visible "
-                  f"elapsed={time.monotonic() - t0:.1f}s (attempt {attempt})")
+                  f"elapsed={time.monotonic() - t0:.1f}s (attempt {attempt}/{total_attempts})")
             return uid_box
         except Exception:  # noqa: BLE001
             elapsed = time.monotonic() - t0
+            throttled = _is_throttled(page)
             print(f"[adp_login] step=uid-box-timeout "
-                  f"elapsed={elapsed:.1f}s (attempt {attempt})")
+                  f"elapsed={elapsed:.1f}s (attempt {attempt}/{total_attempts}) "
+                  f"throttled={throttled} url={page.url}")
 
         if attempt <= max_retries:
-            print(f"[adp_login] step=reload-login-page (attempt {attempt})")
-            page.reload(wait_until="domcontentloaded", timeout=60_000)
+            backoff_s = _LOGIN_RETRY_BACKOFF_BASE_S * (2 ** (attempt - 1))
+            print(f"[adp_login] step=retry-goto-login url={LOGIN_URL} backoff={backoff_s}s")
+            time.sleep(backoff_s)
+            page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
             try:
                 page.wait_for_load_state("networkidle", timeout=30_000)
             except Exception:  # noqa: BLE001
                 pass
-            print(f"[adp_login] step=reload-settled url={page.url}")
+            print(f"[adp_login] step=retry-settled url={page.url}")
 
+    if _is_throttled(page):
+        raise AdpLoginThrottled(
+            f"[adp_login] ADP throttle interstitial (sorry.adp.com) persisted across "
+            f"all {total_attempts} login attempts — graceful ADP skip; next nightly retries. "
+            f"URL: {page.url}"
+        )
     raise RuntimeError(
-        f"ADP login form did not render after {max_retries + 1} attempts "
+        f"ADP login form did not render after {total_attempts} attempts "
         f"(User ID textbox never became visible). URL: {page.url}"
     )
 

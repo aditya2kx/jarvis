@@ -1,6 +1,8 @@
-# Sandbox live run config — INACTIVE (scenarios reset after evidence captured for PR #99).
+# Sandbox live run config — PR #111: ADP throttle resilience + ADP-aware retry-dates.
 #
-# Evidence captured: nightly-autostart (2026-06-28) + full-live-inline-gate (2026-06-28).
-# Both runs PASS — see PR #99 §4 for full log excerpts.
-# REMOVE this comment/reset block after the PR merges.
-scenarios: []
+# full-live: exercises the refactored _wait_for_login_form against real ADP (happy path:
+# step=uid-box-visible log line proves goto-based recovery still lands on the login SPA).
+# Evidence needed to lift Claude review confidence from 88% to ≥95%.
+scenarios:
+  - name: full-live
+    date: "2026-06-28"

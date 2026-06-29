@@ -25,6 +25,8 @@ Post-merge: the `Retry-Dates: 2026-06-28` deploy trailer re-runs tonight's date 
 
 **Deterministic `sandbox-live` label (operator-requested, same PR).** The "label only to gather evidence, remove straight after" convention is now mechanical, not memory: `sandbox-live-run.yml` gained a `delabel` job (`if: always() && pull_request`) that removes the `sandbox-live` label after every PR-triggered run (pass/fail/no-run). Re-add the label to trigger fresh evidence.
 
+**Live verification (2026-06-29 ~13:24Z, after ADP recovered).** ADP's maintenance overran 2am ET by ~1h45m; the smart-retry loop ran all 4 bounded iterations and self-terminated at the cap (`attempt=3/3 ... not rescheduling`). Once ADP came back, a fresh full-live sandbox run (`bhaga-sandbox-refresh-5x2k6`, run 28374713207) reached the dashboard and completed the **full ADP scrape end-to-end**: `dashboard_url=runpayrollmain.adp.com/...`, timecard/earnings/schedule OK, BQ upserts `adp_shifts=608, adp_punches=1140, adp_scheduled_daily=14, adp_wage_rates=17, adp_earnings=2`, `verify_model_bq OK`, tip-pool conservation residual `0`, `exit(0)`. This is the terminal happy-path proving A1 (URL fix) + A3 (graceful maintenance) carry through to a clean scrape.
+
 ## 2026-06-28 — Generic hardening: ghost rows, name normalization, Grafana gate, recompute marker (Issue #108, branch fix/i108-https)
 
 Five-milestone PR hardening the bug *classes* exposed post-#90/#100 — each fix is a generic invariant, not a single-instance patch:

@@ -54,7 +54,13 @@ from skills.credentials import registry as cred_registry
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 STORE_PROFILES = PROJECT_ROOT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
 
-LOGIN_URL = "https://runpayroll.adp.com"
+# ADP retired the bare https://runpayroll.adp.com entry point (2026-06-28): it now
+# server-redirects to https://sorry.adp.com/sorry/. The live login flow is reachable
+# via /enrollment.aspx, which routes through ADP's federation redirector to the
+# sign-in SPA (online.adp.com/signin/v1/?APPID=RUN&productId=...) with the correct,
+# self-supplied productId. Using enrollment.aspx lets ADP resolve the current
+# productId rather than hardcoding a value that can rotate.
+LOGIN_URL = "https://runpayroll.adp.com/enrollment.aspx"
 POST_LOGIN_URL_RE = re.compile(r"runpayrollmain\.adp\.com/.*/v2/")
 
 # Match ADP's "Current Pay Period" / "Current" / "This Pay Period" dropdown
@@ -116,41 +122,75 @@ def _load_login_page(page, *, timeout_ms: int = 60_000) -> None:
           f"elapsed={time.monotonic() - t0:.1f}s url={page.url}")
 
 
-def _wait_for_login_form(page, *, max_retries: int = 2):
-    """Wait for the User ID textbox to appear, reloading on stall.
+_SORRY_ADP_HOST = "sorry.adp.com"
+_LOGIN_RETRY_BACKOFF_BASE_S = 3  # base sleep between login retry attempts
 
-    ADP's login spinner sometimes stalls permanently (JS hydration
-    failure). A page reload fixes it. We try up to max_retries reloads
-    before giving up.
+
+def _is_throttled(page) -> bool:
+    """Return True if the current page URL is ADP's throttle interstitial."""
+    return _SORRY_ADP_HOST in (page.url or "")
+
+
+def _wait_for_login_form(page, *, max_retries: int = 2, _sleep_fn=None):
+    """Wait for the User ID textbox to appear, recovering on stall or throttle.
+
+    Two failure modes are handled:
+
+    1. **JS-hydration stall** (page.url is still the login SPA but the form
+       never renders): re-navigate to LOGIN_URL to trigger a fresh hydration.
+    2. **ADP throttle interstitial** (page.url is sorry.adp.com/sorry/):
+       ``page.reload()`` is wrong here — it re-requests the sorry URL and
+       can never get back to the login SPA. We must issue a fresh
+       ``page.goto(LOGIN_URL)`` to escape the throttle, with exponential
+       backoff so a transient rate-limit has time to clear.
+
+    On exhaustion: if the final page is still on the throttle host, raises
+    ``AdpLoginThrottled`` so daily_refresh can treat it as a graceful ADP skip
+    (next nightly retries). Any other stall raises ``RuntimeError`` as before.
 
     Returns the User ID locator once visible.
     """
-    uid_box = page.get_by_role("textbox", name=re.compile(r"^User ID$", re.I)).first
+    from agents.bhaga.scripts.otp_gate import AdpLoginThrottled  # local import
 
-    for attempt in range(1, max_retries + 2):
-        print(f"[adp_login] step=wait-uid-box (attempt {attempt})")
+    uid_box = page.get_by_role("textbox", name=re.compile(r"^User ID$", re.I)).first
+    total_attempts = max_retries + 1
+
+    sleep = _sleep_fn if _sleep_fn is not None else time.sleep
+
+    for attempt in range(1, total_attempts + 1):
+        print(f"[adp_login] step=wait-uid-box (attempt {attempt}/{total_attempts})")
         t0 = time.monotonic()
         try:
             uid_box.wait_for(state="visible", timeout=60_000)
             print(f"[adp_login] step=uid-box-visible "
-                  f"elapsed={time.monotonic() - t0:.1f}s (attempt {attempt})")
+                  f"elapsed={time.monotonic() - t0:.1f}s (attempt {attempt}/{total_attempts})")
             return uid_box
         except Exception:  # noqa: BLE001
             elapsed = time.monotonic() - t0
+            throttled = _is_throttled(page)
             print(f"[adp_login] step=uid-box-timeout "
-                  f"elapsed={elapsed:.1f}s (attempt {attempt})")
+                  f"elapsed={elapsed:.1f}s (attempt {attempt}/{total_attempts}) "
+                  f"throttled={throttled} url={page.url}")
 
         if attempt <= max_retries:
-            print(f"[adp_login] step=reload-login-page (attempt {attempt})")
-            page.reload(wait_until="domcontentloaded", timeout=60_000)
+            backoff_s = _LOGIN_RETRY_BACKOFF_BASE_S * (2 ** (attempt - 1))
+            print(f"[adp_login] step=retry-goto-login url={LOGIN_URL} backoff={backoff_s}s")
+            sleep(backoff_s)
+            page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
             try:
                 page.wait_for_load_state("networkidle", timeout=30_000)
             except Exception:  # noqa: BLE001
                 pass
-            print(f"[adp_login] step=reload-settled url={page.url}")
+            print(f"[adp_login] step=retry-settled url={page.url}")
 
+    if _is_throttled(page):
+        raise AdpLoginThrottled(
+            f"[adp_login] ADP throttle interstitial (sorry.adp.com) persisted across "
+            f"all {total_attempts} login attempts — graceful ADP skip; next nightly retries. "
+            f"URL: {page.url}"
+        )
     raise RuntimeError(
-        f"ADP login form did not render after {max_retries + 1} attempts "
+        f"ADP login form did not render after {total_attempts} attempts "
         f"(User ID textbox never became visible). URL: {page.url}"
     )
 
@@ -178,6 +218,9 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
 
     # Step 1: User ID. sdf-input wraps a real <input>; get_by_role finds it.
     uid_box = _wait_for_login_form(page)
+    # The login page carries any scheduled-maintenance banner; capture the window
+    # end NOW (it's gone once a post-login redirect bounces us to sorry.adp.com).
+    maintenance_end = _read_maintenance_end(page)
     uid_box.fill(_get_adp_username(store))
     page.get_by_role("button", name=re.compile(r"^Next$", re.I)).first.click()
     print(f"[adp_login] step=clicked-next url={page.url}")
@@ -238,6 +281,34 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
                 )
         except Exception:  # noqa: BLE001
             pass
+        # ADP serves a maintenance/throttle interstitial *after* a valid login —
+        # sorry.adp.com (throttle) OR runpayroll.adp.com/public/maintenance/
+        # maintenance.html (scheduled RUN maintenance) — distinct from the
+        # login-form throttle handled in _wait_for_login_form. Treat it as a
+        # graceful skip (AdpLoginThrottled → daily_refresh._handle_adp_throttle_skip)
+        # rather than a hard failure, so the nightly exits 0 + alerts and a smart
+        # retry auto-recovers. retry_at = parsed window-end + buffer when the banner
+        # published one (login page OR this interstitial); else a fixed backoff.
+        if _is_maintenance_interstitial(page.url):
+            from agents.bhaga.scripts.otp_gate import AdpLoginThrottled  # local import
+            from skills.adp_run_automation.maintenance import (
+                compute_retry_at,
+                default_retry_at,
+            )
+            end = maintenance_end or _read_maintenance_end(page)
+            retry_at = compute_retry_at(end) if end else default_retry_at()
+            basis = "window-end+buffer" if end else "no published end → fixed backoff"
+            reason = (
+                f"ADP served a maintenance/throttle interstitial after login "
+                f"(url={page.url}); smart-retry scheduled for {retry_at.isoformat()} "
+                f"({basis})"
+            )
+            print(f"[adp_login] step=post-login-maintenance url={page.url} "
+                  f"retry_at={retry_at.isoformat()} basis={basis}")
+            _raise_with_evidence(
+                page, store=store, reason=reason,
+                exc_factory=lambda msg: AdpLoginThrottled(msg, retry_at=retry_at),
+            )
         _raise_with_evidence(
             page, store=store,
             reason=f"ADP login did not reach dashboard. Current URL: {page.url}",
@@ -560,13 +631,48 @@ def _mark_run_step_done(
         print(f"[adp_bundle] WARN: could not write {step_name} marker: {exc}")
 
 
-def _raise_with_evidence(page, *, store: str, reason: str) -> None:
+def _is_maintenance_interstitial(url: str) -> bool:
+    """True if a post-login URL is an ADP maintenance / throttle interstitial.
+
+    ADP serves at least two distinct pages for "service unavailable":
+      - https://sorry.adp.com/sorry/                     (throttle / sorry)
+      - https://runpayroll.adp.com/public/maintenance/maintenance.html  (RUN maintenance)
+    Either means we did NOT reach the dashboard for a transient upstream reason —
+    treat as a graceful skip (+ smart retry), never a hard scrape failure.
+    """
+    u = (url or "").lower()
+    return ("sorry.adp.com" in u) or ("maintenance.html" in u) or ("/maintenance/" in u)
+
+
+def _read_maintenance_end(page):
+    """Best-effort: parse ADP's maintenance-window END from the page banner.
+
+    Returns a UTC-aware datetime (window end), or None if no banner / unparseable.
+    Never raises — a miss just means no smart retry is scheduled (next nightly
+    re-attempts). Call this while the login page is visible (the banner shows
+    there); the post-login sorry.adp.com page usually does not carry the times.
+    """
+    try:
+        import datetime as _dt
+
+        from skills.adp_run_automation.maintenance import parse_maintenance_end
+        text = page.inner_text("body", timeout=2_000)
+        return parse_maintenance_end(text, now=_dt.datetime.now(_dt.timezone.utc))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _raise_with_evidence(page, *, store: str, reason: str, exc_factory=RuntimeError) -> None:
     """Save screenshot + URL alongside the raise so failures are debuggable.
 
     The standard _browser_runtime evidence capture also fires when the
     exception propagates out of the launch_persistent with-block, so we
     end up with two snapshots — the one taken here is at the exact moment
     of the auth failure (most useful), the other is at context teardown.
+
+    ``exc_factory`` lets the caller raise a typed exception (e.g.
+    ``AdpLoginThrottled`` for a sorry.adp.com / maintenance redirect) while
+    reusing the same screenshot-capture path; defaults to ``RuntimeError``.
     """
     try:
         ts = subprocess.run(["date", "+%Y%m%d-%H%M%S"], capture_output=True, text=True).stdout.strip()
@@ -575,7 +681,7 @@ def _raise_with_evidence(page, *, store: str, reason: str) -> None:
         reason += f"\nScreenshot: {snap}"
     except Exception:  # noqa: BLE001
         pass
-    raise RuntimeError(reason)
+    raise exc_factory(reason)
 
 
 # ── Shared Reports navigation ─────────────────────────────────────
@@ -1629,7 +1735,7 @@ def download_adp_bundle(
         if needs_earnings:
             try:
                 # Navigate back to the dashboard URL (runpayrollmain.adp.com)
-                # rather than LOGIN_URL (runpayroll.adp.com). The login domain
+                # rather than LOGIN_URL (runpayroll.adp.com/enrollment.aspx). The login domain
                 # doesn't share session cookies with the dashboard domain, so
                 # hitting it triggers re-auth + a second OTP. Using the captured
                 # dashboard_url keeps us on the same domain and preserves the

@@ -1522,5 +1522,270 @@ class TestForceModelRecomputeMarkerClear(unittest.TestCase):
             self.assertIn(step, dr._MODEL_RECOMPUTE_STEPS)
 
 
+class TestIsAdpLoginThrottled(unittest.TestCase):
+    """Tests for _is_adp_login_throttled — the duck-typed classifier that lets
+    daily_refresh treat AdpLoginThrottled as a graceful ADP skip."""
+
+    def _import_dr(self):
+        import importlib
+        import agents.bhaga.scripts.daily_refresh as dr
+        return dr
+
+    def _make_throttled(self):
+        """Return a real AdpLoginThrottled instance."""
+        from agents.bhaga.scripts.otp_gate import AdpLoginThrottled
+        return AdpLoginThrottled("throttle test")
+
+    def test_direct_adp_login_throttled_is_true(self):
+        dr = self._import_dr()
+        exc = self._make_throttled()
+        self.assertTrue(dr._is_adp_login_throttled(exc))
+
+    def test_chained_adp_login_throttled_is_true(self):
+        """__cause__ chain: outer RuntimeError wraps AdpLoginThrottled."""
+        dr = self._import_dr()
+        inner = self._make_throttled()
+        outer = RuntimeError("wrapper")
+        outer.__cause__ = inner
+        self.assertTrue(dr._is_adp_login_throttled(outer))
+
+    def test_context_chain_adp_login_throttled_is_true(self):
+        """__context__ chain: exception raised inside an except block."""
+        dr = self._import_dr()
+        inner = self._make_throttled()
+        outer = ValueError("context wrapper")
+        outer.__context__ = inner
+        self.assertTrue(dr._is_adp_login_throttled(outer))
+
+    def test_non_throttle_exception_is_false(self):
+        dr = self._import_dr()
+        self.assertFalse(dr._is_adp_login_throttled(RuntimeError("plain failure")))
+        self.assertFalse(dr._is_adp_login_throttled(ValueError("something else")))
+
+    def test_none_is_false(self):
+        dr = self._import_dr()
+        self.assertFalse(dr._is_adp_login_throttled(None))
+
+    def test_otp_wait_timeout_is_false(self):
+        """OtpWaitTimeout must not match — different classifier, different path."""
+        dr = self._import_dr()
+        from agents.bhaga.scripts.otp_gate import OtpWaitTimeout
+        self.assertFalse(dr._is_adp_login_throttled(OtpWaitTimeout("timeout")))
+
+    def test_adp_throttle_does_not_match_is_otp_wait_timeout(self):
+        """Sanity: the two classifiers are disjoint."""
+        dr = self._import_dr()
+        throttle_exc = self._make_throttled()
+        self.assertFalse(dr._is_otp_wait_timeout(throttle_exc))
+
+
+class TestHandleAdpThrottleSkip(unittest.TestCase):
+    """Integration tests for _handle_adp_throttle_skip — the real branch body extracted
+    from the daily_refresh results loop.
+
+    Each test calls the actual production helper, NOT a re-implementation.
+    Verifies the full branch contract: classifier → state mutation → Slack alert →
+    caller-should-continue return value.
+    """
+
+    def _import_dr(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+        return dr
+
+    def _make_pr(self, dr, name: str, error=None):
+        pr = dr.PipelineResult(name=name)
+        pr.success = False
+        pr.error = error
+        return pr
+
+    def test_adp_throttle_returns_true_and_sets_skipped_status(self):
+        """The real _handle_adp_throttle_skip: returns True, sets skipped_adp_throttle."""
+        dr = self._import_dr()
+        from agents.bhaga.scripts.otp_gate import AdpLoginThrottled
+        entry = {"status": "failed"}
+        run_summary = {"source_pulls": [entry]}
+        pr = self._make_pr(dr, "adp", AdpLoginThrottled("sorry.adp.com x3"))
+
+        with mock.patch.object(dr, "info_ping", return_value=None):
+            should_continue = dr._handle_adp_throttle_skip("adp", pr, run_summary, "2026-06-28")
+
+        self.assertTrue(should_continue, "_handle_adp_throttle_skip must return True → caller continues")
+        self.assertEqual(entry["status"], "skipped_adp_throttle")
+
+    def test_adp_throttle_does_not_append_to_failures(self):
+        """ADP throttle must NOT add to failures (no halt breaker trip)."""
+        dr = self._import_dr()
+        from agents.bhaga.scripts.otp_gate import AdpLoginThrottled
+        failures = []
+        otp_portal_failed = False
+        entry = {"status": "failed"}
+        run_summary = {"source_pulls": [entry]}
+        pr = self._make_pr(dr, "adp", AdpLoginThrottled("throttle"))
+
+        with mock.patch.object(dr, "info_ping", return_value=None):
+            if dr._handle_adp_throttle_skip("adp", pr, run_summary, "2026-06-28"):
+                pass  # caller continues; does NOT execute failures.append(...)
+            else:
+                failures.append(("adp", pr.error))
+                otp_portal_failed = True
+
+        self.assertEqual(failures, [], "failures must be empty")
+        self.assertFalse(otp_portal_failed, "otp_portal_failed must remain False")
+
+    def test_non_adp_pipeline_returns_false(self):
+        """Non-ADP pipeline (e.g. square) is never classified as throttle."""
+        dr = self._import_dr()
+        from agents.bhaga.scripts.otp_gate import AdpLoginThrottled
+        entry = {"status": "failed"}
+        run_summary = {"source_pulls": [entry]}
+        pr = self._make_pr(dr, "square", AdpLoginThrottled("doesn't matter"))
+
+        result = dr._handle_adp_throttle_skip("square", pr, run_summary, "2026-06-28")
+        self.assertFalse(result, "non-ADP pipeline must never trigger throttle skip")
+        self.assertEqual(entry["status"], "failed", "status must be unchanged")
+
+    def test_non_throttle_adp_error_returns_false(self):
+        """A real ADP scrape failure (RuntimeError) is not a graceful skip."""
+        dr = self._import_dr()
+        entry = {"status": "failed"}
+        run_summary = {"source_pulls": [entry]}
+        pr = self._make_pr(dr, "adp", RuntimeError("selector not found"))
+
+        result = dr._handle_adp_throttle_skip("adp", pr, run_summary, "2026-06-28")
+        self.assertFalse(result, "non-throttle error must not be treated as graceful skip")
+
+    def test_info_ping_called_on_throttle(self):
+        """info_ping is called (not failure_alert or otp_skipped_alert) for throttle."""
+        dr = self._import_dr()
+        from agents.bhaga.scripts.otp_gate import AdpLoginThrottled
+        entry = {"status": "failed"}
+        run_summary = {"source_pulls": [entry]}
+        pr = self._make_pr(dr, "adp", AdpLoginThrottled("throttle"))
+
+        ping_calls = []
+        with mock.patch.object(dr, "info_ping", side_effect=ping_calls.append):
+            dr._handle_adp_throttle_skip("adp", pr, run_summary, "2026-06-28")
+
+        self.assertEqual(len(ping_calls), 1, "exactly one info_ping call expected")
+        self.assertIn("throttled", ping_calls[0].lower())
+
+    def test_chained_throttle_exception_still_skips(self):
+        """An AdpLoginThrottled wrapped in another exception triggers graceful skip."""
+        dr = self._import_dr()
+        from agents.bhaga.scripts.otp_gate import AdpLoginThrottled
+        inner = AdpLoginThrottled("throttle")
+        outer = RuntimeError("wrapped")
+        outer.__cause__ = inner
+        entry = {"status": "failed"}
+        run_summary = {"source_pulls": [entry]}
+        pr = self._make_pr(dr, "adp", outer)
+
+        with mock.patch.object(dr, "info_ping", return_value=None):
+            should_continue = dr._handle_adp_throttle_skip("adp", pr, run_summary, "2026-06-28")
+
+        self.assertTrue(should_continue)
+        self.assertEqual(entry["status"], "skipped_adp_throttle")
+
+
+class TestMaintenanceSmartRetry(unittest.TestCase):
+    """When AdpLoginThrottled carries retry_at (parsed maintenance window end),
+    _handle_adp_throttle_skip schedules a one-shot retry instead of just waiting
+    for the next nightly."""
+
+    def _import_dr(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+        return dr
+
+    def _make_pr(self, dr, name, error):
+        pr = dr.PipelineResult(name=name)
+        pr.success = False
+        pr.error = error
+        return pr
+
+    def _throttle_with_retry(self):
+        import datetime
+        from agents.bhaga.scripts.otp_gate import AdpLoginThrottled
+        retry_at = datetime.datetime(2026, 6, 29, 6, 7, tzinfo=datetime.timezone.utc)
+        return AdpLoginThrottled("maintenance", retry_at=retry_at), retry_at
+
+    def test_schedules_retry_and_sets_maintenance_status(self):
+        dr = self._import_dr()
+        exc, retry_at = self._throttle_with_retry()
+        entry = {"status": "failed"}
+        run_summary = {"source_pulls": [entry]}
+        pr = self._make_pr(dr, "adp", exc)
+        calls = []
+
+        with mock.patch.object(dr, "info_ping", return_value=None), \
+                mock.patch.dict(dr.os.environ, {"BHAGA_MAINT_RETRY_ATTEMPT": "0"}, clear=False):
+            ok = dr._handle_adp_throttle_skip(
+                "adp", pr, run_summary, "2026-06-28",
+                schedule_fn=lambda *a, **k: calls.append((a, k)),
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(entry["status"], "skipped_adp_maintenance")
+        self.assertEqual(len(calls), 1)
+        args, kwargs = calls[0]
+        self.assertEqual(args[0], "2026-06-28")
+        self.assertEqual(args[1], retry_at)
+        self.assertEqual(kwargs["env"]["BHAGA_MAINT_RETRY_ATTEMPT"], "1")
+        self.assertEqual(kwargs["env"]["REFRESH_DATE"], "2026-06-28")
+
+    def test_info_ping_mentions_smart_retry(self):
+        dr = self._import_dr()
+        exc, _ = self._throttle_with_retry()
+        run_summary = {"source_pulls": [{"status": "failed"}]}
+        pr = self._make_pr(dr, "adp", exc)
+        pings = []
+
+        with mock.patch.object(dr, "info_ping", side_effect=pings.append), \
+                mock.patch.dict(dr.os.environ, {"BHAGA_MAINT_RETRY_ATTEMPT": "0"}, clear=False):
+            dr._handle_adp_throttle_skip(
+                "adp", pr, run_summary, "2026-06-28", schedule_fn=lambda *a, **k: None,
+            )
+
+        self.assertEqual(len(pings), 1)
+        self.assertIn("smart retry", pings[0].lower())
+
+    def test_attempt_cap_falls_back_to_plain_skip(self):
+        dr = self._import_dr()
+        exc, _ = self._throttle_with_retry()
+        entry = {"status": "failed"}
+        run_summary = {"source_pulls": [entry]}
+        pr = self._make_pr(dr, "adp", exc)
+        calls = []
+
+        with mock.patch.object(dr, "info_ping", return_value=None), \
+                mock.patch.dict(dr.os.environ, {"BHAGA_MAINT_RETRY_ATTEMPT": "3"}, clear=False):
+            ok = dr._handle_adp_throttle_skip(
+                "adp", pr, run_summary, "2026-06-28",
+                schedule_fn=lambda *a, **k: calls.append(1),
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(calls, [], "cap reached → no scheduling")
+        self.assertEqual(entry["status"], "skipped_adp_throttle")
+
+    def test_schedule_failure_falls_back_to_plain_skip(self):
+        dr = self._import_dr()
+        exc, _ = self._throttle_with_retry()
+        entry = {"status": "failed"}
+        run_summary = {"source_pulls": [entry]}
+        pr = self._make_pr(dr, "adp", exc)
+
+        def _boom(*a, **k):
+            raise RuntimeError("scheduler API down")
+
+        with mock.patch.object(dr, "info_ping", return_value=None), \
+                mock.patch.dict(dr.os.environ, {"BHAGA_MAINT_RETRY_ATTEMPT": "0"}, clear=False):
+            ok = dr._handle_adp_throttle_skip(
+                "adp", pr, run_summary, "2026-06-28", schedule_fn=_boom,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(entry["status"], "skipped_adp_throttle")
+
+
 if __name__ == "__main__":
     unittest.main()

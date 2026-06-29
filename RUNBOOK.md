@@ -322,11 +322,12 @@ ascending. Up to 31 dates per command; larger ranges are rejected with an error.
 
 **Coverage-aware mode selection per date** (mirrors `scripts/trigger_dated_refresh.py`):
 
-- Date already covered in `bhaga.square_daily_rollup` (BQ) → **recompute-only**: executes with
-  `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1`. No portal login, no OTP.
-- Date not covered (or BQ probe fails — fail-open) → **full scrape (inline OTP)**: starts inline;
-  ADP will only request an OTP code if the browser session is challenged. No READY prompt is sent
-  up-front. `BHAGA_OTP_FORCE_REQUEST` is no longer injected.
+- Date already covered in **both** `bhaga.square_daily_rollup` (Square) **and** `bhaga.adp_shifts`
+  (ADP) → **recompute-only**: executes with `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`,
+  `BHAGA_SKIP_KDS=1`. No portal login, no OTP.
+- Either source missing, or BQ probe fails (fail-open) → **full scrape (inline OTP)**: starts
+  inline; ADP will only request an OTP code if the browser session is challenged. No READY prompt
+  is sent up-front. `BHAGA_OTP_FORCE_REQUEST` is no longer injected.
 
 Both modes add `BHAGA_IGNORE_HALT=1` (operator-driven backfill includes the fix).
 
@@ -482,10 +483,14 @@ Retry-Dates: 2026-06-13
 Multiple dates are comma-separated: `Retry-Dates: 2026-06-12, 2026-06-13`.
 
 **Smart mode selection per date** (via `scripts/trigger_dated_refresh.py`):
-- If the date is already covered by raw Square data in `square_daily_rollup` (BQ) → **recompute-only**:
-  sets `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1` so no browser/OTP; only the
-  model is rebuilt from updated human inputs (`training_shifts`, `store_config`).
-- If the date is NOT covered → **full refresh**: normal scrape + OTP flow.
+- If the date is covered by **both** `square_daily_rollup` (Square) **and** `adp_shifts` (ADP) in
+  BQ → **recompute-only**: sets `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1` so
+  no browser/OTP; only the model is rebuilt from updated human inputs (`training_shifts`,
+  `store_config`). Both sources must be present: a date where ADP failed (e.g. a sorry.adp.com
+  throttle night) has Square coverage but missing ADP — that date triggers a full scrape even though
+  Square is already in BQ.
+- If either source is missing, or BQ probes fail (fail-open) → **full refresh**: normal scrape + OTP
+  flow.
 
 The rerun uses Cloud Run v2 per-execution env overrides (`RunJobRequest.Overrides`) so the job
 definition is **never mutated** (a persisted `REFRESH_DATE` would corrupt future nightlies). The
@@ -872,8 +877,9 @@ e.g. `item-sales-live`, `full-live`) so you control **what** runs and **when**, 
 ```bash
 # 1. Committed config (works PRE-MERGE): list scenarios in .github/sandbox-live.yml
 #    and add the `sandbox-live` label to the PR. Each runs the live pipeline and
-#    posts evidence as a PR comment. Remove the label/scenarios (and delete the
-#    file before merge) to turn it off.
+#    posts evidence as a PR comment. The label is a SINGLE-SHOT trigger — the
+#    workflow's `delabel` job removes it automatically after every run (see below).
+#    Empty .github/sandbox-live.yml back to `scenarios: []` before merge.
 #
 # 2. PR comment (works once this workflow is on main): control a one-shot run —
 #    /sandbox run item-sales-live date=2026-05-31
@@ -882,6 +888,15 @@ e.g. `item-sales-live`, `full-live`) so you control **what** runs and **when**, 
 gh workflow run sandbox-live-run.yml \
   -f scenario=item-sales-live -f date=2026-05-31 -f pr_number=<PR#>
 ```
+
+**The `sandbox-live` label is mechanically single-shot.** The convention is
+"add the label only to gather new evidence, remove it straight after" — this is
+enforced by code, not memory. `sandbox-live-run.yml` has a `delabel` job
+(`needs: [resolve, live]`, `if: always() && github.event_name == 'pull_request'`)
+that removes the `sandbox-live` label after **every** PR-triggered run — pass,
+fail, or no-run. So the label is gone by the time the run finishes; re-add it to
+trigger fresh evidence. The committed `.github/sandbox-live.yml` scenario list is
+the separate "what runs" knob — empty it (`scenarios: []`) before merge.
 
 Forks are refused (secrets never exposed) and comment commands require an
 OWNER/COLLABORATOR/MEMBER author. Add a scenario by extending
@@ -1023,6 +1038,69 @@ OAuth app was disconnected), re-authorize via the Square Developer Console and u
 gcloud secrets versions add square_palmetto_oauth --data-file=- --project jarvis-bhaga-prod
 # Paste the new JSON token blob on stdin, then Ctrl-D
 ```
+
+**ADP login URL changed — bare runpayroll.adp.com retired (2026-06-28 root cause).**
+ADP retired the bare `https://runpayroll.adp.com` entry point; it now **server-redirects to
+`https://sorry.adp.com/sorry/`** (verify with `curl -sIL https://runpayroll.adp.com` — it's a
+plain redirect, not an IP block; the same redirect happens from any network). This broke the
+2026-06-28 nightly at the `adp` step. **Fix:** `LOGIN_URL` now points at
+`https://runpayroll.adp.com/enrollment.aspx`, which routes through ADP's federation redirector
+to the live sign-in SPA (`online.adp.com/signin/v1/?APPID=RUN&productId=…`) with the correct,
+ADP-supplied `productId`. Set in `skills/adp_run_automation/runner.py`,
+`compensation_backend.py`, `shift_backend.py`, and the two selector JSONs. If ADP changes the
+entry point again, re-derive it by opening `runpayroll.adp.com/enrollment.aspx` in a browser and
+confirming the **User ID** box renders.
+
+**ADP sorry.adp.com throttle resilience (2026-06-28 safety net).** As a complement to the URL
+fix, if any future `goto` still lands on `sorry.adp.com`, the runner (`_wait_for_login_form`)
+detects it via `sorry.adp.com in page.url` and issues a fresh `page.goto(LOGIN_URL)` — **never**
+`page.reload()` (which would stay on the sorry URL) — with exponential backoff (base 3 s). If the
+throttle persists across all attempts, `AdpLoginThrottled` is raised (from
+`agents/bhaga/scripts/otp_gate.py`); `daily_refresh` treats it as a **graceful ADP skip**
+(Slack alert via `info_ping`, `source_pulls.status = skipped_adp_throttle`, exit 0) — the
+same pattern as an OTP-wait timeout. The next nightly or `Retry-Dates` rerun re-attempts.
+A date where ADP was skipped has Square in BQ but missing `adp_shifts` → `trigger_dated_refresh.py`
+correctly selects **full scrape** (not recompute-only) on a `Retry-Dates` rerun.
+
+**Post-login maintenance interstitial (RUN maintenance window) + smart retry.** ADP also serves
+a maintenance/throttle interstitial **after** a valid login during scheduled RUN maintenance.
+It uses **two distinct URLs** (`_is_maintenance_interstitial` matches both):
+- `https://sorry.adp.com/sorry/` — throttle/sorry page (sometimes carries a window-end banner like
+  *"Planned RUN Maintenance Sun 10pm ET → Mon 2am ET"*).
+- `https://runpayroll.adp.com/public/maintenance/maintenance.html` — generic *"We'll be back
+  soon"* page with **no published end time** (the 2026-06-29 incident; the old sorry-only check
+  missed it → hard `RuntimeError` + Slack alert).
+
+This surfaces in `_ensure_logged_in` when `wait_for_url(POST_LOGIN_URL_RE)` lands on a maintenance
+URL instead of the dashboard. It is a graceful skip (`exc_factory=AdpLoginThrottled` → `info_ping`
+alert → exit 0) — **never** a hard failure.
+
+Because BHAGA's nightly (21:31 CT ≈ 22:31 ET) can fall inside a 10pm–2am ET maintenance window,
+the runner computes a `retry_at` for `AdpLoginThrottled`:
+- **Known end:** parse the window-end from the banner (`skills/adp_run_automation/maintenance.py`,
+  DST-aware via `zoneinfo`; "ET" = `America/New_York`) → `retry_at = window_end + 7 min`.
+- **Unknown end** (generic `maintenance.html`): fall back to `retry_at = now + 30 min`
+  (`default_retry_at`, override `BHAGA_MAINT_RETRY_DEFAULT_DELAY_MIN`) so the run still self-heals,
+  bounded by the attempt cap, instead of waiting ~24h.
+
+`daily_refresh` then schedules a **one-shot smart retry**:
+
+- `agents/bhaga/scripts/retry_scheduler.py` creates an ephemeral Cloud Scheduler job
+  `bhaga-retry-<date>` that mirrors `bhaga-nightly` (HTTP target → `bhaga-daily-refresh:run`,
+  OAuth as `bhaga-orchestrator`) but fires once at `retry_at` and carries a `REFRESH_DATE`
+  override + `BHAGA_MAINT_RETRY_ATTEMPT`.
+- The retry run **deletes its own scheduler at start** (`delete_retry_schedule`), so it is
+  self-cleaning, and skips the BQ-coverage probe via the `REFRESH_DATE` full-scrape path.
+- A **stateless attempt cap** (`BHAGA_MAINT_RETRY_MAX`, default 3) prevents infinite reschedule
+  if the window slips; on cap, it degrades to `skipped_adp_throttle` (next nightly retries).
+- Status on a scheduled skip is `skipped_adp_maintenance`. `skipped_adp_throttle` is reserved for
+  the login-form throttle (no `retry_at`) or when the attempt cap is hit. If scheduling itself
+  fails (e.g. IAM), it degrades gracefully to the plain skip + next nightly — never blocks the run.
+
+IAM (one-time, provisioned 2026-06-29): `bhaga-orchestrator` has `roles/cloudscheduler.admin`
+(project) + `roles/iam.serviceAccountUser` on itself (to set the scheduler's OAuth SA). The
+`google-cloud-scheduler` dep is in `requirements.txt`. Manual fallback if needed:
+`Retry-Dates: <date>` after the window closes still works.
 
 **ADP earnings ready-dialog timeout (configurable, 2026-06-25 fix).** After the
 "Download → Excel (.xlsx)" click, ADP queues async report generation and shows a

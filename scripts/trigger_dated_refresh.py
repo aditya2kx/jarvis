@@ -27,17 +27,39 @@ _DATASET = os.environ.get("BHAGA_BQ_DATASET", "bhaga")
 _JOB_RESOURCE = f"projects/{_PROJECT}/locations/{_REGION}/jobs/{_JOB}"
 
 
+def _max_date_in_table(client, table: str, date_col: str):
+    """Return MAX(date_col) from table, or None if empty / on error."""
+    sql = f"SELECT MAX({date_col}) AS m FROM `{_PROJECT}.{_DATASET}.{table}`"
+    try:
+        rows = list(client.query(sql).result())
+        return rows[0]["m"] if rows else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _date_is_covered(date_str: str) -> bool:
-    """True if raw Square data already covers date_str (=> recompute-only)."""
+    """True if both Square and ADP raw data cover date_str (=> recompute-only).
+
+    A date is considered fully covered — and safe to recompute without a fresh
+    scrape — only when BOTH sources are present in BQ:
+      - square_daily_rollup (date_local): Square transactions for that date.
+      - adp_shifts (date): ADP timecard punches for that date.
+
+    If either source is missing (e.g. the ADP step failed the previous night),
+    the date is NOT covered → full scrape. Fails open to full scrape on any
+    BQ error so a probe failure never silently skips a needed ADP re-pull.
+    """
     from google.cloud import bigquery  # noqa: PLC0415
 
     client = bigquery.Client(project=_PROJECT)
-    sql = f"SELECT MAX(date_local) AS m FROM `{_PROJECT}.{_DATASET}.square_daily_rollup`"
-    rows = list(client.query(sql).result())
-    max_date = rows[0]["m"] if rows else None
-    if max_date is None:
-        return False
-    return datetime.date.fromisoformat(date_str) <= max_date
+    target = datetime.date.fromisoformat(date_str)
+
+    sq_max = _max_date_in_table(client, "square_daily_rollup", "date_local")
+    adp_max = _max_date_in_table(client, "adp_shifts", "date")
+
+    sq_covered = sq_max is not None and target <= sq_max
+    adp_covered = adp_max is not None and target <= adp_max
+    return sq_covered and adp_covered
 
 
 def _decide_recompute(date_str: str, *, force_recompute: bool, force_scrape: bool) -> bool:

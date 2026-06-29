@@ -9,7 +9,7 @@
     "Found 'Export To Excel' button (visible only after the report renders) -- produces a clean .xlsx with a flat 'Details' sheet. Use this instead of HTML scraping."
   ],
   "page_urls": {
-    "login": "https://runpayroll.adp.com",
+    "login": "https://runpayroll.adp.com/enrollment.aspx",
     "post_login_pattern": "https://runpayrollmain.adp.com/@{tenant_uuid}/v2/",
     "main_dashboard": "https://runpayrollmain.adp.com/@{tenant_uuid}/v2/"
   },

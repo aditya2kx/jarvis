@@ -281,23 +281,30 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
                 )
         except Exception:  # noqa: BLE001
             pass
-        # ADP serves sorry.adp.com *after* a valid login during RUN maintenance
-        # windows or post-auth throttling — distinct from the login-form throttle
-        # handled in _wait_for_login_form. Treat it as a graceful skip
-        # (AdpLoginThrottled → daily_refresh._handle_adp_throttle_skip) rather than
-        # a hard failure, so the nightly exits 0 + alerts and Retry-Dates backfills
-        # once ADP is back.
-        if "sorry.adp.com" in page.url.lower():
+        # ADP serves a maintenance/throttle interstitial *after* a valid login —
+        # sorry.adp.com (throttle) OR runpayroll.adp.com/public/maintenance/
+        # maintenance.html (scheduled RUN maintenance) — distinct from the
+        # login-form throttle handled in _wait_for_login_form. Treat it as a
+        # graceful skip (AdpLoginThrottled → daily_refresh._handle_adp_throttle_skip)
+        # rather than a hard failure, so the nightly exits 0 + alerts and a smart
+        # retry auto-recovers. retry_at = parsed window-end + buffer when the banner
+        # published one (login page OR this interstitial); else a fixed backoff.
+        if _is_maintenance_interstitial(page.url):
             from agents.bhaga.scripts.otp_gate import AdpLoginThrottled  # local import
-            from skills.adp_run_automation.maintenance import compute_retry_at
-            retry_at = compute_retry_at(maintenance_end) if maintenance_end else None
-            reason = (
-                f"ADP redirected to sorry.adp.com after login "
-                f"(RUN maintenance window or post-auth throttle); url={page.url}"
+            from skills.adp_run_automation.maintenance import (
+                compute_retry_at,
+                default_retry_at,
             )
-            if retry_at is not None:
-                reason += f"; smart-retry scheduled for {retry_at.isoformat()}"
-            print(f"[adp_login] step=post-login-sorry retry_at={retry_at}")
+            end = maintenance_end or _read_maintenance_end(page)
+            retry_at = compute_retry_at(end) if end else default_retry_at()
+            basis = "window-end+buffer" if end else "no published end → fixed backoff"
+            reason = (
+                f"ADP served a maintenance/throttle interstitial after login "
+                f"(url={page.url}); smart-retry scheduled for {retry_at.isoformat()} "
+                f"({basis})"
+            )
+            print(f"[adp_login] step=post-login-maintenance url={page.url} "
+                  f"retry_at={retry_at.isoformat()} basis={basis}")
             _raise_with_evidence(
                 page, store=store, reason=reason,
                 exc_factory=lambda msg: AdpLoginThrottled(msg, retry_at=retry_at),
@@ -622,6 +629,19 @@ def _mark_run_step_done(
         (d / f"{step_name}.done").write_text(body)
     except Exception as exc:  # noqa: BLE001
         print(f"[adp_bundle] WARN: could not write {step_name} marker: {exc}")
+
+
+def _is_maintenance_interstitial(url: str) -> bool:
+    """True if a post-login URL is an ADP maintenance / throttle interstitial.
+
+    ADP serves at least two distinct pages for "service unavailable":
+      - https://sorry.adp.com/sorry/                     (throttle / sorry)
+      - https://runpayroll.adp.com/public/maintenance/maintenance.html  (RUN maintenance)
+    Either means we did NOT reach the dashboard for a transient upstream reason —
+    treat as a graceful skip (+ smart retry), never a hard scrape failure.
+    """
+    u = (url or "").lower()
+    return ("sorry.adp.com" in u) or ("maintenance.html" in u) or ("/maintenance/" in u)
 
 
 def _read_maintenance_end(page):

@@ -1062,17 +1062,28 @@ same pattern as an OTP-wait timeout. The next nightly or `Retry-Dates` rerun re-
 A date where ADP was skipped has Square in BQ but missing `adp_shifts` → `trigger_dated_refresh.py`
 correctly selects **full scrape** (not recompute-only) on a `Retry-Dates` rerun.
 
-**Post-login sorry.adp.com (RUN maintenance window) + smart retry.** ADP also serves
-`sorry.adp.com` **after** a valid login — e.g. during scheduled RUN maintenance (banners like
-*"Planned RUN Maintenance Sun 10pm ET → Mon 2am ET"*). This surfaces in `_ensure_logged_in`
-when `wait_for_url(POST_LOGIN_URL_RE)` lands on `sorry.adp.com` instead of the dashboard. It is
-a graceful skip (`exc_factory=AdpLoginThrottled` → `info_ping` alert → exit 0).
+**Post-login maintenance interstitial (RUN maintenance window) + smart retry.** ADP also serves
+a maintenance/throttle interstitial **after** a valid login during scheduled RUN maintenance.
+It uses **two distinct URLs** (`_is_maintenance_interstitial` matches both):
+- `https://sorry.adp.com/sorry/` — throttle/sorry page (sometimes carries a window-end banner like
+  *"Planned RUN Maintenance Sun 10pm ET → Mon 2am ET"*).
+- `https://runpayroll.adp.com/public/maintenance/maintenance.html` — generic *"We'll be back
+  soon"* page with **no published end time** (the 2026-06-29 incident; the old sorry-only check
+  missed it → hard `RuntimeError` + Slack alert).
+
+This surfaces in `_ensure_logged_in` when `wait_for_url(POST_LOGIN_URL_RE)` lands on a maintenance
+URL instead of the dashboard. It is a graceful skip (`exc_factory=AdpLoginThrottled` → `info_ping`
+alert → exit 0) — **never** a hard failure.
 
 Because BHAGA's nightly (21:31 CT ≈ 22:31 ET) can fall inside a 10pm–2am ET maintenance window,
-the runner **parses the window-end from the banner** (`skills/adp_run_automation/maintenance.py`,
-DST-aware via `zoneinfo`; "ET" = `America/New_York`) while the login page is still visible, and
-attaches `retry_at = window_end + 7 min` to `AdpLoginThrottled`. `daily_refresh` then schedules a
-**one-shot smart retry** instead of waiting ~24h for the next nightly:
+the runner computes a `retry_at` for `AdpLoginThrottled`:
+- **Known end:** parse the window-end from the banner (`skills/adp_run_automation/maintenance.py`,
+  DST-aware via `zoneinfo`; "ET" = `America/New_York`) → `retry_at = window_end + 7 min`.
+- **Unknown end** (generic `maintenance.html`): fall back to `retry_at = now + 30 min`
+  (`default_retry_at`, override `BHAGA_MAINT_RETRY_DEFAULT_DELAY_MIN`) so the run still self-heals,
+  bounded by the attempt cap, instead of waiting ~24h.
+
+`daily_refresh` then schedules a **one-shot smart retry**:
 
 - `agents/bhaga/scripts/retry_scheduler.py` creates an ephemeral Cloud Scheduler job
   `bhaga-retry-<date>` that mirrors `bhaga-nightly` (HTTP target → `bhaga-daily-refresh:run`,
@@ -1082,9 +1093,9 @@ attaches `retry_at = window_end + 7 min` to `AdpLoginThrottled`. `daily_refresh`
   self-cleaning, and skips the BQ-coverage probe via the `REFRESH_DATE` full-scrape path.
 - A **stateless attempt cap** (`BHAGA_MAINT_RETRY_MAX`, default 3) prevents infinite reschedule
   if the window slips; on cap, it degrades to `skipped_adp_throttle` (next nightly retries).
-- Status on a scheduled skip is `skipped_adp_maintenance` (vs `skipped_adp_throttle` when no
-  window end could be parsed). If scheduling itself fails (e.g. IAM), it degrades gracefully to
-  the plain skip + next nightly — never blocks the run.
+- Status on a scheduled skip is `skipped_adp_maintenance`. `skipped_adp_throttle` is reserved for
+  the login-form throttle (no `retry_at`) or when the attempt cap is hit. If scheduling itself
+  fails (e.g. IAM), it degrades gracefully to the plain skip + next nightly — never blocks the run.
 
 IAM (one-time, provisioned 2026-06-29): `bhaga-orchestrator` has `roles/cloudscheduler.admin`
 (project) + `roles/iam.serviceAccountUser` on itself (to set the scheduler's OAuth SA). The

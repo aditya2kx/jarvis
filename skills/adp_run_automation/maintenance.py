@@ -124,3 +124,31 @@ def compute_retry_at(
 ) -> datetime.datetime:
     """Window end + buffer (default 7 min) → the smart-retry time, UTC-aware."""
     return end_utc + datetime.timedelta(minutes=buffer_minutes)
+
+
+# When ADP serves a maintenance interstitial with NO published end time (e.g. the
+# generic runpayroll.adp.com/public/maintenance/maintenance.html "We'll be back
+# soon" page), we cannot compute a precise window-end. Fall back to a fixed
+# backoff so the run still self-heals (capped by BHAGA_MAINT_RETRY_MAX) instead of
+# waiting ~24h for the next nightly. Override via BHAGA_MAINT_RETRY_DEFAULT_DELAY_MIN.
+DEFAULT_NO_END_DELAY_MINUTES = 30
+
+
+def default_retry_at(
+    *,
+    now: datetime.datetime | None = None,
+    delay_minutes: int | None = None,
+) -> datetime.datetime:
+    """Retry time when the maintenance end is unknown: now + fixed backoff (UTC)."""
+    import os
+    if now is None:
+        now = datetime.datetime.now(UTC)
+    if delay_minutes is None:
+        try:
+            delay_minutes = int(
+                os.environ.get("BHAGA_MAINT_RETRY_DEFAULT_DELAY_MIN", "")
+                or DEFAULT_NO_END_DELAY_MINUTES
+            )
+        except ValueError:
+            delay_minutes = DEFAULT_NO_END_DELAY_MINUTES
+    return now.astimezone(UTC) + datetime.timedelta(minutes=delay_minutes)

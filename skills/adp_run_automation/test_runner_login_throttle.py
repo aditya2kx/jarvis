@@ -251,5 +251,42 @@ class TestPostLoginSorryGracefulSkip(unittest.TestCase):
         self.assertNotIsInstance(ctx.exception, AdpLoginThrottled)
 
 
+class TestIsMaintenanceInterstitial(unittest.TestCase):
+    """Post-login maintenance/throttle detection must catch BOTH ADP variants.
+
+    2026-06-29 incident: login succeeded but ADP redirected to
+    runpayroll.adp.com/public/maintenance/maintenance.html (NOT sorry.adp.com),
+    which the old sorry-only check missed → hard RuntimeError + Slack alert.
+    """
+
+    def test_sorry_url_matches(self):
+        from skills.adp_run_automation.runner import _is_maintenance_interstitial
+        self.assertTrue(_is_maintenance_interstitial("https://sorry.adp.com/sorry/"))
+
+    def test_maintenance_html_matches(self):
+        from skills.adp_run_automation.runner import _is_maintenance_interstitial
+        self.assertTrue(_is_maintenance_interstitial(
+            "https://runpayroll.adp.com/public/maintenance/maintenance.html"))
+
+    def test_maintenance_path_matches(self):
+        from skills.adp_run_automation.runner import _is_maintenance_interstitial
+        self.assertTrue(_is_maintenance_interstitial(
+            "https://runpayroll.adp.com/public/maintenance/"))
+
+    def test_dashboard_url_does_not_match(self):
+        from skills.adp_run_automation.runner import _is_maintenance_interstitial
+        self.assertFalse(_is_maintenance_interstitial(
+            "https://runpayroll.adp.com/Pages/dashboard.aspx"))
+
+    def test_login_spa_does_not_match(self):
+        from skills.adp_run_automation.runner import _is_maintenance_interstitial
+        self.assertFalse(_is_maintenance_interstitial(
+            "https://online.adp.com/signin/v1/?APPID=RUN"))
+
+    def test_empty_url_does_not_match(self):
+        from skills.adp_run_automation.runner import _is_maintenance_interstitial
+        self.assertFalse(_is_maintenance_interstitial(""))
+
+
 if __name__ == "__main__":
     unittest.main()

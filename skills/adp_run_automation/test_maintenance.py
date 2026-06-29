@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from skills.adp_run_automation.maintenance import (  # noqa: E402
     compute_retry_at,
+    default_retry_at,
     parse_maintenance_end,
 )
 
@@ -92,6 +93,26 @@ class TestComputeRetryAt(unittest.TestCase):
         end = datetime.datetime(2026, 6, 29, 6, 0, tzinfo=UTC)
         self.assertEqual(compute_retry_at(end, buffer_minutes=10),
                          datetime.datetime(2026, 6, 29, 6, 10, tzinfo=UTC))
+
+
+class TestDefaultRetryAt(unittest.TestCase):
+    """When ADP publishes no window-end (generic maintenance.html), fall back to
+    a fixed backoff so the run still self-heals."""
+
+    def test_default_delay_is_thirty_minutes(self):
+        now = datetime.datetime(2026, 6, 29, 5, 57, tzinfo=UTC)
+        self.assertEqual(default_retry_at(now=now),
+                         datetime.datetime(2026, 6, 29, 6, 27, tzinfo=UTC))
+
+    def test_explicit_delay_overrides(self):
+        now = datetime.datetime(2026, 6, 29, 5, 57, tzinfo=UTC)
+        self.assertEqual(default_retry_at(now=now, delay_minutes=10),
+                         datetime.datetime(2026, 6, 29, 6, 7, tzinfo=UTC))
+
+    def test_result_is_utc_aware(self):
+        out = default_retry_at()
+        self.assertIsNotNone(out.tzinfo)
+        self.assertEqual(out.utcoffset(), datetime.timedelta(0))
 
 
 if __name__ == "__main__":

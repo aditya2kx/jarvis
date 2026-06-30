@@ -343,14 +343,21 @@ def _apply_kickoff(issue_num: int, branch: str, data: dict, *, dry_run: bool = F
     can never drift.  --add-label is a no-op if the label is already present, so
     re-running is safe.
     """
+    if dry_run:
+        print(f"[dry-run] would wire issue #{issue_num}: labels + kickoff + body")
+        return
     if not _gh_available():
         return
     _gh("issue", "edit", str(issue_num),
-        "--add-label", "jarvis-work", "--add-label", "stage:align", dry_run=dry_run)
+        "--add-label", "jarvis-work", "--add-label", "stage:align")
     # specify (operator typed the requirement) + setup (worktree/issue exists)
     # are factually complete the moment we link the issue.
     if not data.get("done"):
         data["done"] = ["specify", "setup"]
+    # Skip body update when the status block is already present (idempotent).
+    rc, existing_body = _gh("issue", "view", str(issue_num), "--json", "body", "-q", ".body")
+    if rc == 0 and _STATUS_START in existing_body:
+        return
     _update_issue_body(issue_num, data, dry_run=dry_run)
 
 

@@ -90,6 +90,18 @@ jobs:
             --body "**Merged:** PR #${PR} ([${PR_TITLE}](https://github.com/${REPO}/pull/${PR})) was squash-merged to \`main\` on $(date -u +%Y-%m-%dT%H:%M:%SZ)." \
             || echo "::warning::Could not post link comment to issue #$ISSUE_N"
 
+      # ── Step 3b: Emit pr_merged signal ───────────────────────────────────
+      - name: Emit pr_merged signal
+        if: steps.issue.outputs.issue_number != 'none' && steps.issue.outputs.issue_number != ''
+        run: |
+          ISSUE_N="${{ steps.issue.outputs.issue_number }}"
+          SIG="$(python3 scripts/post_merge_lifecycle.py emit-signal \
+            --event pr_merged --branch "$BRANCH" --pr "$PR" \
+            --issue "$ISSUE_N")"
+          RBODY="Retrospective queued for branch \`$BRANCH\`."$'\n\n'"$SIG"
+          gh issue comment "$ISSUE_N" --repo "$REPO" \
+            --body "$RBODY" || echo "::warning::could not emit pr_merged signal"
+
       # ── Step 4: Post-merge verification ──────────────────────────────────
       - name: Parse + run post-merge verification
         id: pmv

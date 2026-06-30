@@ -39,14 +39,14 @@ After merge, `pr-merged-lifecycle.yml` runs the §4 post-merge commands and post
    - **Speed** — jam→merge cycle time vs expectation; identify the bottleneck.
    - **Cost** — model routing compliance (Sonnet/Opus); unnecessary escalations.
    - **Accuracy** — did implementation match the §4 evidence contract exactly?  Rework loops?
-3. **Propose ≥1 concrete dev-process improvement** derived from the retro.
+3. **Propose ≥1 concrete dev-process improvement** derived from the retro and **open a GitHub follow-up issue** for each accepted improvement (`gh issue create --label jarvis-work`).
 4. **Preference harvest** — scan PR conversation + transcripts for operator signal phrases
    (`always`, `never`, `prefer`, `in general`, `next time`, `I want`).  Run candidates through:
    ```bash
    python -m skills.user_model.guardrail score "<candidate text>"
    ```
    Propose `store.add_preference` for each that scores ≥ 4/6 (operator y/n in chat).
-5. **Close the issue** and advance retrospective:
+5. **Jam the retro findings with the operator in chat and get a go-ahead** before closing — do not auto-close on merge (the `pr-merged-lifecycle.yml` retrospective prompt is the trigger, not the close). Then **close the issue** and advance retrospective:
    ```bash
    python3 scripts/phase_state.py advance --branch <branch> --to retrospective
    gh issue close <N> --comment "Retrospective complete — see PROGRESS.md entry <date>."

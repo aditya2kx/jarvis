@@ -115,6 +115,12 @@ GATES: list[Gate] = [
         hard=True,
         modes={"full"},
     ),
+    Gate(
+        name="progress-push-guard",
+        argv=["python3", "scripts/check_no_main_progress_push.py", "--gate"],
+        hard=True,
+        modes={"fast", "full"},
+    ),
 ]
 
 # Names of CI scripts this local harness must cover (used by test_ci_parity).

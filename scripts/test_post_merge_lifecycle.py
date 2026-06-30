@@ -156,5 +156,60 @@ bash scripts/deploy.sh prod
         self.assertEqual(cmds, [])
 
 
+class TestFormatSignal(unittest.TestCase):
+    def test_round_trip(self):
+        sig = PML.format_signal("ci_failed", "fix/my-branch", pr=42, issue=101, signal_id="test-uuid")
+        self.assertIn("jarvis-signal:", sig)
+        parsed = PML.parse_signal(sig)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["event"], "ci_failed")
+        self.assertEqual(parsed["branch"], "fix/my-branch")
+        self.assertEqual(parsed["pr"], 42)
+        self.assertEqual(parsed["issue"], 101)
+        self.assertEqual(parsed["id"], "test-uuid")
+
+    def test_auto_uuid_generated(self):
+        sig1 = PML.format_signal("pr_merged", "fix/branch-a")
+        sig2 = PML.format_signal("pr_merged", "fix/branch-a")
+        p1 = PML.parse_signal(sig1)
+        p2 = PML.parse_signal(sig2)
+        self.assertIsNotNone(p1)
+        self.assertIsNotNone(p2)
+        self.assertNotEqual(p1["id"], p2["id"])
+
+    def test_extra_kwargs_included(self):
+        sig = PML.format_signal("ci_other", "fix/b", conclusion="cancelled")
+        parsed = PML.parse_signal(sig)
+        self.assertEqual(parsed["conclusion"], "cancelled")
+
+    def test_parse_signal_malformed_json(self):
+        self.assertIsNone(PML.parse_signal("<!-- jarvis-signal:{bad json} -->"))
+
+    def test_parse_signal_no_block(self):
+        self.assertIsNone(PML.parse_signal("Just a plain comment with no signal."))
+
+    def test_parse_signal_none_body(self):
+        self.assertIsNone(PML.parse_signal(None))
+
+    def test_parse_signal_empty(self):
+        self.assertIsNone(PML.parse_signal(""))
+
+
+class TestEmitSignalCLI(unittest.TestCase):
+    def test_emit_signal_outputs_parseable_block(self):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = PML.main(["emit-signal", "--event", "pr_merged", "--branch", "fix/test-branch",
+                           "--pr", "99", "--issue", "101", "--signal-id", "fixed-uuid"])
+        self.assertEqual(rc, 0)
+        out = buf.getvalue().strip()
+        parsed = PML.parse_signal(out)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["event"], "pr_merged")
+        self.assertEqual(parsed["id"], "fixed-uuid")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -37,6 +37,10 @@ Do NOT ask whether to babysit — just do it.
 - Making out-of-scope code changes to fix pre-existing issues
 - Marking things done without actually verifying CI output
 
+## PROGRESS.md discipline
+
+`PROGRESS.md` changes land only via PR; never `git push origin main` — enforced by `check_no_main_progress_push.py` (wired as a `verify.py` gate and optionally as a `pre-push` git hook). After merge, the retrospective agent picks up the `pr_merged` signal from the worktree inbox and writes the dated `PROGRESS.md` entry in the retro chat.
+
 ## Reminders
 
 - `pr_cost_ledger.py validate --pr N --require-build` must pass before merge (reads BQ; zero cost = hard fail)

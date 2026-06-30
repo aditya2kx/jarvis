@@ -171,7 +171,11 @@ class TestSeedCacheToWorktree(unittest.TestCase):
                 N._seed_cache_to_worktree(branch=branch, worktree=wt, dry_run=False)
                 dst_file = dst_dir / expected
                 self.assertTrue(dst_file.exists(), "cache file must be copied to worktree")
-                self.assertEqual(dst_file.read_text(), '{"issue": "#42"}')
+                import json as _json
+                data = _json.loads(dst_file.read_text())
+                self.assertEqual(data.get("issue"), "#42")
+                # _seed_cache_to_worktree now also writes worktree_path into the copy (H2)
+                self.assertIn("worktree_path", data)
             finally:
                 cache_file.unlink(missing_ok=True)
 

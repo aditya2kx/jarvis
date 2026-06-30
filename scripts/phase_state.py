@@ -104,6 +104,11 @@ def _load_cache(branch: str) -> dict:
         "done": [],
         "failures": [],
         "updated_at": None,
+        # v2 event-routing fields (backward compatible — absent in old caches)
+        "worktree_path": None,
+        "last_signal_cursor": None,
+        "delivered_signals": [],
+        "pending_event_count": 0,
     }
 
 
@@ -631,6 +636,8 @@ def cmd_status(args) -> int:
 
     print(f"Branch:  {branch}")
     print(f"Issue:   #{data.get('issue') or 'none'}")
+    print(f"Worktree: {data.get('worktree_path') or '(not set)'}")
+    print(f"Pending events: {data.get('pending_event_count', 0)}")
     print(f"Stage:   {cur_stage.name}  ({s_pct}% of stage)")
     print(f"Overall: {overall}%")
     print(f"Substep: {cur.name if cur else 'complete'}")
@@ -682,6 +689,8 @@ def cmd_report(args) -> int:
                 local_issues[issue_num] = {
                     "pct": lc.overall_pct(done_set),
                     "failures": data.get("failures", []),
+                    "worktree_path": data.get("worktree_path"),
+                    "pending_event_count": data.get("pending_event_count", 0),
                 }
             except Exception:
                 pass
@@ -692,15 +701,23 @@ def cmd_report(args) -> int:
             row["pct"] = f"{local['pct']}%"
             if local["failures"]:
                 row["blocked"] = "YES"
+            row["worktree"] = local.get("worktree_path") or ""
+            row["pending"] = local.get("pending_event_count", 0)
 
     if not rows:
         print("No open jarvis-work issues found.")
         return 0
 
-    print(f"\n{'#':<6} {'Title':<52} {'Stage':<14} {'%':<6} {'Blocked'}")
-    print("─" * 85)
+    print(f"\n{'#':<6} {'Title':<50} {'Stage':<14} {'%':<6} {'Pending':<8} {'Blocked'}")
+    print("─" * 95)
     for row in rows:
-        print(f"  {row['issue']:<4} {row['title']:<52} {row['stage']:<14} {str(row['pct']):<6} {row['blocked']}")
+        pending = str(row.get("pending", 0)) if row.get("pending", 0) else ""
+        print(f"  {row['issue']:<4} {row['title']:<50} {row['stage']:<14} {str(row['pct']):<6} {pending:<8} {row['blocked']}")
+        if row.get("worktree"):
+            import os
+            wt = row["worktree"]
+            wt_short = "…" + wt[-60:] if len(wt) > 63 else wt
+            print(f"        Worktree: {wt_short}")
     return 0
 
 

@@ -1,0 +1,223 @@
+name: Jarvis dev signals
+
+# Emit jarvis-signal comments on tracking issues when CI completes or
+# a /jarvis-new-task comment is posted.
+#
+# Production triggers:
+#   check_suite.completed  → ci_failed / ci_passed / ci_other
+#   issue_comment.created  → intake (/jarvis-new-task, allowlisted authors only)
+#
+# IMPORTANT: check_suite and issue_comment workflows resolve from the DEFAULT
+# BRANCH (main), so they only fire once this workflow is merged.
+#
+# Pre-merge evidence trigger:
+#   pull_request.labeled / synchronize → dev-signals-premerge job
+#   This job runs from the PR head/merge ref (same as sandbox-live-run.yml and
+#   sandbox-e2e.yml), so it fires on THIS branch before merge.
+#   Opt in by adding the `dev-signals` label; the job self-removes it after one run.
+#
+# All jobs use post_merge_lifecycle.py emit-signal (pure stdlib, no network).
+# Network calls (gh issue comment) are done in shell to keep the Python clean.
+
+on:
+  # Production triggers (active once on main — default-branch resolution):
+  check_suite:
+    types: [completed]
+  issue_comment:
+    types: [created]
+  # Pre-merge evidence trigger (runs from the PR head, like sandbox-live-run.yml):
+  pull_request:
+    types: [labeled, synchronize]
+
+permissions:
+  issues: write
+  contents: read
+  checks: read
+  pull-requests: write
+
+concurrency:
+  group: jarvis-dev-signals-${{ github.event.check_suite.head_sha || github.event.issue.number || github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  # ── CI signal (check_suite.completed, production only) ──────────────────────
+  ci-signal:
+    name: Emit CI signal
+    if: >-
+      github.event_name == 'check_suite' &&
+      github.event.check_suite.head_branch != 'main' &&
+      github.event.check_suite.app.slug == 'github-actions' &&
+      github.event.check_suite.head_commit.message != null
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ADMIN_PAT }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Emit CI signal
+        run: |
+          HEAD_BRANCH="${{ github.event.check_suite.head_branch }}"
+          CONCLUSION="${{ github.event.check_suite.conclusion }}"
+          PR_NUM="$(echo '${{ toJson(github.event.check_suite.pull_requests) }}' \
+            | python3 -c "import json,sys; prs=json.load(sys.stdin); print(prs[0]['number'] if prs else '')" 2>/dev/null || true)"
+
+          # Resolve tracking issue (exits 1 on none — use || true)
+          ISSUE="$(python3 scripts/post_merge_lifecycle.py find-issue --branch "$HEAD_BRANCH" || true)"
+          if [ "$ISSUE" = "none" ] || [ -z "$ISSUE" ]; then
+            echo "No tracking issue for branch $HEAD_BRANCH — skipping."
+            exit 0
+          fi
+
+          # Map conclusion to event
+          case "$CONCLUSION" in
+            failure|timed_out) EVENT="ci_failed" ;;
+            success)           EVENT="ci_passed" ;;
+            *)                 EVENT="ci_other"  ;;
+          esac
+
+          SIG="$(python3 scripts/post_merge_lifecycle.py emit-signal \
+            --event "$EVENT" \
+            --branch "$HEAD_BRANCH" \
+            ${PR_NUM:+--pr "$PR_NUM"} \
+            --issue "$ISSUE" \
+            -- 2>/dev/null || true)"
+
+          BODY="CI ${EVENT} on branch \`${HEAD_BRANCH}\` (conclusion: ${CONCLUSION})."$'\n\n'"${SIG}"
+          gh issue comment "$ISSUE" --repo "$REPO" \
+            --body "$BODY" || echo "::warning::could not post CI signal on issue #$ISSUE"
+
+  # ── Intake signal (/jarvis-new-task comment, production only) ───────────────
+  intake-signal:
+    name: Emit intake signal
+    if: >-
+      github.event_name == 'issue_comment' &&
+      startsWith(github.event.comment.body, '/jarvis-new-task') &&
+      contains(fromJSON('["aditya2kx","jarvis-agent-bot328"]'), github.event.comment.user.login)
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ADMIN_PAT }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Emit intake signal
+        run: |
+          ISSUE="${{ github.event.issue.number }}"
+          BODY="${{ github.event.comment.body }}"
+          AUTHOR="${{ github.event.comment.user.login }}"
+
+          SIG="$(python3 scripts/post_merge_lifecycle.py emit-signal \
+            --event intake \
+            --branch "" \
+            --issue "$ISSUE" || true)"
+
+          IBODY="Intake signal queued from \`${AUTHOR}\`: \`${BODY:0:120}\`."$'\n\n'"${SIG}"
+          gh issue comment "$ISSUE" --repo "$REPO" \
+            --body "$IBODY" || echo "::warning::could not post intake signal on issue #$ISSUE"
+
+  # ── Pre-merge evidence: dev-signals label-gated (runs from PR head) ──────────
+  # This job resolves from the PR head/merge ref, so it fires on THIS branch
+  # before merge — the same mechanism sandbox-live-run.yml and sandbox-e2e.yml use.
+  # Opt in by adding the `dev-signals` label; self-removed after one run.
+  dev-signals-premerge:
+    name: Emit dev-signals (pre-merge evidence)
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'dev-signals')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ADMIN_PAT }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Emit CI signal based on head SHA check state
+        id: emit
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
+
+          # Resolve tracking issue (exits 1 on none — use || true)
+          ISSUE="$(python3 scripts/post_merge_lifecycle.py find-issue --branch "$BRANCH" || true)"
+          if [ "$ISSUE" = "none" ] || [ -z "$ISSUE" ]; then
+            echo "No tracking issue for branch $BRANCH — skipping signal."
+            echo "issue_found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "issue_found=true" >> "$GITHUB_OUTPUT"
+
+          # Derive conclusion from real check-runs for this head SHA (checks: read)
+          CONC="$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs" \
+            --jq '[.check_runs[].conclusion] |
+              if any(. == null) then "pending"
+              elif all(. == "success" or . == "neutral" or . == "skipped") then "success"
+              else "failure" end' 2>/dev/null || echo "pending")"
+
+          echo "conclusion=$CONC"
+          if [ "$CONC" = "pending" ]; then
+            echo "Checks still pending — no signal emitted."
+            exit 0
+          fi
+
+          case "$CONC" in
+            success) EVENT="ci_passed" ;;
+            failure) EVENT="ci_failed" ;;
+            *)       EVENT="ci_other"  ;;
+          esac
+
+          SIG="$(python3 scripts/post_merge_lifecycle.py emit-signal \
+            --event "$EVENT" \
+            --branch "$BRANCH" \
+            --pr "$PR_NUM" \
+            --issue "$ISSUE" || true)"
+
+          PBODY="CI ${EVENT} on \`${BRANCH}\` (pre-merge dev-signals, conclusion: ${CONC})."$'\n\n'"${SIG}"
+          gh issue comment "$ISSUE" --repo "$REPO" \
+            --body "$PBODY" || echo "::warning::could not post pre-merge CI signal on issue #$ISSUE"
+
+      - name: Emit intake signal (pre-merge simulation)
+        if: steps.emit.outputs.issue_found == 'true'
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
+          ISSUE="$(python3 scripts/post_merge_lifecycle.py find-issue --branch "$BRANCH" || true)"
+          if [ "$ISSUE" = "none" ] || [ -z "$ISSUE" ]; then exit 0; fi
+
+          SIG="$(python3 scripts/post_merge_lifecycle.py emit-signal \
+            --event intake \
+            --branch "$BRANCH" \
+            --pr "$PR_NUM" \
+            --issue "$ISSUE" || true)"
+
+          SBODY="Intake signal (pre-merge dev-signals simulation for \`$BRANCH\`)."$'\n\n'"${SIG}"
+          gh issue comment "$ISSUE" --repo "$REPO" \
+            --body "$SBODY" || echo "::warning::could not post intake simulation signal"
+
+      - name: Remove dev-signals label (one-shot convention)
+        if: always()
+        run: |
+          gh pr edit "${{ github.event.pull_request.number }}" \
+            --remove-label dev-signals --repo "$REPO" || true

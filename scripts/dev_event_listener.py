@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""Local event listener — catch up and route jarvis-signal comments to worktree inboxes.
+
+CLI subcommands:
+    catch-up --issue <N> [--branch <b>] [--since <ISO>] [--dry-run]
+        Read jarvis-signal comments on a GitHub tracking issue since the last
+        cursor (or since the given ISO timestamp). Route each signal to the owning
+        worktree inbox via dev_event_router. Updates last_signal_cursor in the phase
+        cache.  Returns the count of delivered signals.
+
+    watch --issue <N> [--branch <b>] [--interval <sec>] [--dry-run]
+        Poll for new signals on the given interval (default 60 s). Runs until
+        interrupted (Ctrl-C). Calls catch-up on each tick.
+
+    dispatch --branch <b> --event-json '<json>'
+        Open/focus the worktree window (OQ-8) and — if AUTO_DISPATCH is on and
+        the chat is idle — seed the drain prompt. Non-preemptive: if the chat is
+        busy the event stays in the inbox and the operator is notified.
+
+Design:
+    - stdlib-only for catch-up/watch; dispatch uses subprocess for cursor CLI +
+      osascript (macOS only).
+    - gh CLI is the only network dependency for catch-up/watch.
+    - All routing goes through dev_event_router.route_signal (no direct inbox writes).
+    - Busy detection via session-<slug>-status.json written by Cursor hooks.
+    - AUTO_DISPATCH controlled by LOCAL_EVENT_AUTO_DISPATCH env var (default on).
+    - AUTO_OPEN controlled by LOCAL_EVENT_AUTO_OPEN env var (default on).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Paths / constants
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+METRICS_DIR = REPO_ROOT / "metrics" / "pr_cost"
+
+STALE_LOCK_SEC = 600   # heartbeat older than 10 min → treat as idle
+
+# env-var defaults (both default ON per plan OQ-9)
+_AUTO_OPEN_DEFAULT = "1"
+_AUTO_DISPATCH_DEFAULT = "1"
+
+# ---------------------------------------------------------------------------
+# Import router helpers
+# ---------------------------------------------------------------------------
+
+sys.path.insert(0, str(Path(__file__).parent))
+from post_merge_lifecycle import parse_signal, find_tracking_issue_from_cache
+import dev_event_router as _R
+
+
+# ---------------------------------------------------------------------------
+# Phase-cache helpers
+# ---------------------------------------------------------------------------
+
+def _slug(branch: str) -> str:
+    import re
+    return re.sub(r"[^a-zA-Z0-9_-]", "-", branch)[:60]
+
+
+def _phase_path(branch: str) -> Path:
+    return METRICS_DIR / f"session-{_slug(branch)}-phase.json"
+
+
+def _status_path(branch: str) -> Path:
+    return METRICS_DIR / f"session-{_slug(branch)}-status.json"
+
+
+def _load_phase(branch: str) -> dict | None:
+    p = _phase_path(branch)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return None
+
+
+def _save_phase(branch: str, data: dict) -> None:
+    import datetime
+    data["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+    METRICS_DIR.mkdir(parents=True, exist_ok=True)
+    _phase_path(branch).write_text(json.dumps(data, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# GH API helpers
+# ---------------------------------------------------------------------------
+
+def _gh_issue_comments(issue: int) -> list[dict]:
+    """Fetch all comments for a GH issue as a list of dicts (body + created_at)."""
+    try:
+        out = subprocess.check_output(
+            ["gh", "issue", "view", str(issue),
+             "--json", "comments", "-q", ".comments"],
+            text=True, stderr=subprocess.DEVNULL, timeout=30,
+        )
+        return json.loads(out or "[]")
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Catch-up
+# ---------------------------------------------------------------------------
+
+def catch_up(
+    issue: int,
+    *,
+    branch: str | None = None,
+    since: str | None = None,
+    dry_run: bool = False,
+) -> int:
+    """Deliver un-seen jarvis-signal comments on ``issue`` to the owning inbox.
+
+    Reads all comments on the tracking issue, extracts jarvis-signal blocks,
+    filters by ``since`` (ISO timestamp), routes each via dev_event_router.
+
+    ``branch`` is optional — when given, it restricts routing to signals whose
+    branch field matches (useful when one issue tracks multiple branches).
+    ``since`` defaults to the ``last_signal_cursor`` in the phase cache for
+    the matched branch (or epoch 0 if no cache).
+
+    Returns the count of newly delivered signals.
+    """
+    comments = _gh_issue_comments(issue)
+    if not comments:
+        return 0
+
+    # Determine since timestamp
+    cursor: str | None = since
+    if cursor is None and branch:
+        cache = _load_phase(branch)
+        cursor = cache.get("last_signal_cursor") if cache else None
+
+    delivered = 0
+    for comment in comments:
+        created = comment.get("createdAt") or comment.get("created_at") or ""
+        if cursor and created and created <= cursor:
+            continue  # already seen
+        body = comment.get("body") or ""
+        signal = parse_signal(body)
+        if signal is None:
+            continue
+        sig_branch = signal.get("branch") or ""
+        if branch and sig_branch and sig_branch != branch:
+            continue  # different branch
+
+        if dry_run:
+            print(f"(dry-run) would route signal: {signal.get('event')} on {sig_branch or issue}")
+            delivered += 1
+            continue
+
+        author = comment.get("author", {}).get("login") if isinstance(comment.get("author"), dict) else None
+        verdict = _R.route_signal(signal, author=author)
+        print(f"signal {signal.get('id', '?')[:8]} → {verdict}  [{signal.get('event')} branch={sig_branch or '?'}]")
+        if verdict == "delivered":
+            delivered += 1
+            # Dispatch: open/focus worktree + (if idle) seed drain prompt
+            _dispatch(sig_branch or "", signal)
+
+    return delivered
+
+
+# ---------------------------------------------------------------------------
+# Watch (poll loop)
+# ---------------------------------------------------------------------------
+
+def watch(
+    issue: int,
+    *,
+    branch: str | None = None,
+    interval: int = 60,
+    dry_run: bool = False,
+) -> None:
+    """Poll for new signals on ``issue`` every ``interval`` seconds."""
+    print(f"Watching issue #{issue} every {interval}s … (Ctrl-C to stop)")
+    while True:
+        try:
+            n = catch_up(issue, branch=branch, dry_run=dry_run)
+            if n:
+                print(f"  delivered {n} signal(s)")
+        except Exception as exc:
+            print(f"  watch tick error (non-fatal): {exc}", file=sys.stderr)
+        time.sleep(interval)
+
+
+# ---------------------------------------------------------------------------
+# Auto-open / focus worktree window (OQ-8)
+# ---------------------------------------------------------------------------
+
+def _auto_open_enabled() -> bool:
+    return os.environ.get("LOCAL_EVENT_AUTO_OPEN", _AUTO_OPEN_DEFAULT) not in ("0", "false", "no")
+
+
+def _auto_dispatch_enabled() -> bool:
+    return os.environ.get("LOCAL_EVENT_AUTO_DISPATCH", _AUTO_DISPATCH_DEFAULT) not in ("0", "false", "no")
+
+
+def _cursor_open(path: Path) -> None:
+    """Open or focus the Cursor IDE on ``path``.
+
+    Prefers the ``cursor`` CLI (opens-or-focuses the folder window).
+    Falls back to ``open -a Cursor`` so this never hits a "can't do this".
+    """
+    cursor_bin = shutil.which("cursor")
+    if cursor_bin:
+        subprocess.run([cursor_bin, str(path)], check=False)
+    else:
+        subprocess.run(["open", "-a", "Cursor", str(path)], check=False)
+    # Raise Cursor to the foreground (macOS) — raise to front covers minimized case
+    subprocess.run(
+        ["osascript", "-e", 'tell application "Cursor" to activate'],
+        check=False, capture_output=True,
+    )
+
+
+def _open_or_focus_worktree(
+    path: Path,
+    *,
+    requirement: str | None = None,
+    create_if_missing: bool = False,
+) -> None:
+    """Open or focus the Cursor window for ``path``."""
+    if not path.exists():
+        if create_if_missing and requirement:
+            subprocess.run(
+                [sys.executable, str(REPO_ROOT / "scripts" / "new_requirement.py"),
+                 "--requirement", requirement],
+                check=False,
+            )
+        return
+    _cursor_open(path)
+
+
+# ---------------------------------------------------------------------------
+# Busy detection (reads status lock written by Cursor hooks)
+# ---------------------------------------------------------------------------
+
+def _worktree_busy(branch: str) -> bool:
+    """Return True when the worktree's Cursor chat is currently running a turn."""
+    status_file = _status_path(branch)
+    if not status_file.exists():
+        return False
+    try:
+        data = json.loads(status_file.read_text())
+    except Exception:
+        return False
+    if data.get("state") != "busy":
+        return False
+    # Stale lock check
+    heartbeat_str = data.get("heartbeat")
+    if not heartbeat_str:
+        return False
+    import datetime
+    try:
+        hb = datetime.datetime.fromisoformat(heartbeat_str.rstrip("Z")).replace(
+            tzinfo=datetime.timezone.utc
+        )
+        elapsed = time.time() - hb.timestamp()
+        if elapsed > STALE_LOCK_SEC:
+            return False  # stale — treat as idle
+    except Exception:
+        return False
+    return True
+
+
+def _pending_count(branch: str) -> int:
+    cache = _load_phase(branch)
+    return (cache or {}).get("pending_event_count", 0)
+
+
+def _worktree_path_for(branch: str) -> Path | None:
+    """Resolve the worktree path from the phase cache, or derive the default."""
+    cache = _load_phase(branch)
+    if cache and cache.get("worktree_path"):
+        return Path(cache["worktree_path"])
+    if not branch:
+        return None
+    # Derive using new_requirement.default_worktree_path convention
+    # ../jarvis-wt-<slug>
+    slug = _slug(branch)
+    repo_name = REPO_ROOT.name.split("-wt-")[0] if "-wt-" in REPO_ROOT.name else REPO_ROOT.name
+    default = REPO_ROOT.parent / f"{repo_name}-wt-{slug}"
+    if default.exists():
+        return default
+    return None
+
+
+def _seed_drain_prompt(branch: str, wt: Path) -> None:
+    """Fire the cold-start deeplink to pre-seed the drain prompt in a new chat."""
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(REPO_ROOT / "scripts"))
+        import start_pr_session as S
+        import pr_cost_ledger as L
+        brief_rel = f"metrics/pr_cost/session-{L._slug(branch)}-brief.md"
+        seed = f"[{branch}] You have pending events in your inbox. Drain the FIFO queue:\n\n" \
+               f"```bash\npython3 scripts/dev_event_router.py drain --branch {branch}\n```\n\n" \
+               f"Read the event kind and act on it (babysit for babysit_ci, retrospective for retrospective)."
+        deeplink = S.make_deeplink(seed, mode="agent")
+        S.open_cursor_handoff(folder=wt, deeplink=deeplink,
+                              launch_html=wt / "metrics" / "pr_cost" / f"session-{L._slug(branch)}-launch.html",
+                              delay_sec=1.5)
+    except Exception as exc:
+        print(f"  (cold-start seed failed, non-fatal): {exc}", file=sys.stderr)
+
+
+def _notify(branch: str, message: str) -> None:
+    """Send a macOS notification (best-effort)."""
+    try:
+        subprocess.run(
+            ["osascript", "-e",
+             f'display notification "{message}" with title "Jarvis dev signals"'],
+            check=False, capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
+
+
+def _dispatch(branch: str, event: dict) -> str:
+    """Open/focus the worktree window and optionally start the drain agent.
+
+    Returns one of: dispatched | queued | notify_only | no_worktree | disabled
+    """
+    if not _auto_open_enabled():
+        return "disabled"
+
+    event_kind = event.get("event", "unknown")
+    requirement = event.get("requirement")
+
+    wt = _worktree_path_for(branch)
+    is_intake = event_kind == "intake"
+    _open_or_focus_worktree(
+        wt or Path("/nonexistent"),
+        requirement=requirement,
+        create_if_missing=is_intake,
+    )
+
+    if wt is None or not wt.exists():
+        return "no_worktree"
+
+    if not _auto_dispatch_enabled():
+        _notify(branch, f"Event {event_kind} queued — AUTO_DISPATCH is off.")
+        return "notify_only"
+
+    if _worktree_busy(branch):
+        count = _pending_count(branch)
+        _notify(branch, f"{count} event(s) queued — chat busy, will drain when idle.")
+        return "queued"
+
+    # Idle — seed the drain prompt (one-click cold start)
+    _seed_drain_prompt(branch, wt)
+    return "dispatched"
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _cmd_catch_up(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(description="Deliver new jarvis-signal comments to worktree inboxes.")
+    ap.add_argument("--issue", type=int, required=True)
+    ap.add_argument("--branch", default=None)
+    ap.add_argument("--since", default=None, help="ISO timestamp; defaults to phase cache cursor")
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args(argv)
+    n = catch_up(args.issue, branch=args.branch, since=args.since, dry_run=args.dry_run)
+    print(f"Delivered {n} signal(s).")
+    return 0
+
+
+def _cmd_watch(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(description="Poll for new jarvis-signal comments.")
+    ap.add_argument("--issue", type=int, required=True)
+    ap.add_argument("--branch", default=None)
+    ap.add_argument("--interval", type=int, default=60)
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args(argv)
+    watch(args.issue, branch=args.branch, interval=args.interval, dry_run=args.dry_run)
+    return 0
+
+
+def _cmd_dispatch(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(description="Dispatch a signal to the owning worktree.")
+    ap.add_argument("--branch", required=True)
+    ap.add_argument("--event-json", required=True)
+    args = ap.parse_args(argv)
+    try:
+        event = json.loads(args.event_json)
+    except json.JSONDecodeError as e:
+        print(f"ERROR: invalid JSON: {e}", file=sys.stderr)
+        return 2
+    result = _dispatch(args.branch, event)
+    print(result)
+    return 0
+
+
+_COMMANDS = {
+    "catch-up": _cmd_catch_up,
+    "watch": _cmd_watch,
+    "dispatch": _cmd_dispatch,
+}
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = argv if argv is not None else sys.argv[1:]
+    if not args or args[0] not in _COMMANDS:
+        print(f"Usage: dev_event_listener.py <{'|'.join(_COMMANDS)}> [opts]", file=sys.stderr)
+        return 2
+    return _COMMANDS[args[0]](args[1:])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

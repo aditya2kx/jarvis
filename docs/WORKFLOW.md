@@ -367,7 +367,84 @@ The latest run's annotated transcript lives in `docs/dogfood/lifecycle-run-<date
 
 ---
 
-## 8. Deferred roadmap (out of scope for this PR)
+## 8. Local event-driven dev lifecycle (v2, PR #101)
+
+### Overview
+
+v2 replaces cloud agents with a **local-first, event-driven** flow:
+- GitHub Actions emit cheap **`jarvis-signal` comments** on tracking issues (zero AI token cost).
+- A laptop listener (`dev_event_listener.py`) catches up on signals when the Mac is online.
+- Signals are routed to the correct **worktree inbox** (`session-<slug>-pending.jsonl`) via `dev_event_router.py`.
+- Local Cursor chats pick up events via `.cursor/hooks.json` (busy/idle lock + queue drain) or explicit catch-up.
+
+### Event path
+
+```
+GH Action (check_suite / issue_comment / pr-merged-lifecycle)
+  → jarvis-signal comment on tracking issue
+  → dev_event_listener catch-up (reads comments since last_signal_cursor)
+  → dev_event_router.route_signal (dedupe, debounce, branch lookup)
+  → session-<slug>-pending.jsonl (FIFO inbox)
+  → Cursor hooks / catch-up drain → agent handles event
+```
+
+### New scripts
+
+| Script | Role |
+|---|---|
+| `scripts/dev_event_router.py` | Parse signals, idempotency, debounce, write inbox, update phase cache |
+| `scripts/dev_event_listener.py` | `catch-up`, `watch`, `dispatch`; macOS auto-open/focus worktree |
+| `scripts/check_no_main_progress_push.py` | Mechanical guard: block PROGRESS.md direct push to main |
+
+### Signal format
+
+```html
+<!-- jarvis-signal:{"id":"<uuid>","event":"ci_failed","branch":"fix/…","pr":109,"ts":"…"} -->
+```
+
+Human-readable summary above; machine block in HTML comment (greppable, idempotent by UUID).
+
+### Phase cache v2 schema (new fields)
+
+```json
+{ "worktree_path": "/path/to/jarvis-wt-…", "last_signal_cursor": "ISO",
+  "delivered_signals": ["uuid-1"], "pending_event_count": 0 }
+```
+
+`phase_state.py status` and `report` print `Worktree:` and `Pending events:`.
+
+### Cursor hooks (`.cursor/hooks.json`)
+
+| Hook | Script | Behavior |
+|---|---|---|
+| `beforeSubmitPrompt` | `mark_busy.sh` | Write `state=busy` + heartbeat to status lock |
+| `stop` | `drain.sh` | Mark idle; if `LOCAL_EVENT_AUTO_DISPATCH≠0` and inbox non-empty, pop oldest event and return `followup_message` (warm zero-click drain) |
+| `sessionStart` | `announce_pending.sh` | Surface pending event count as context |
+
+### Feature flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `LOCAL_EVENT_AUTO_OPEN` | on | Opens/focuses worktree Cursor window on signal delivery |
+| `LOCAL_EVENT_AUTO_DISPATCH` | on | Seeds drain prompt to auto-start agent on actionable events; non-preemptive |
+| `LOCAL_EVENT_WEBHOOK` | off | HTTP push endpoint (v2.1, deferred) |
+
+### `new_requirement.py` changes (H2)
+
+After creating a worktree, posts a comment on the tracking issue with the worktree path and branch so it's visible on GitHub. Also writes `worktree_path` into both the parent and worktree phase caches.
+
+### `check_no_main_progress_push.py`
+
+Wired as a `verify.py` gate (`progress-push-guard`). Blocks pushes that target `refs/heads/main` and include `PROGRESS.md`. On feature branches always exits 0 (PROGRESS via PR is the sanctioned path).
+
+### Workflows
+
+| Workflow | Change |
+|---|---|
+| `pr-merged-lifecycle.yml` | Added `Emit pr_merged signal` step after "Link PR to tracking issue" |
+| `jarvis-dev-signals.yml` (new) | `check_suite`, `issue_comment` (production, post-merge) + label-gated `pull_request` (pre-merge evidence via `dev-signals` label) |
+
+## 9. Deferred roadmap (out of scope for this PR)
 
 - Jira/Linear backend for phase_state.py (only `source` seam built now)
 - Agent researching candidate capabilities from a brief requirement (L2)

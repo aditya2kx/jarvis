@@ -38,7 +38,7 @@ fi
 FIRST_KIND="$(head -1 "$INBOX_FILE" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('kind','?'))" 2>/dev/null || echo "?")"
 
 # Print an announcement to stdout for the agent to see as session context
-echo "=== Jarvis: $COUNT pending event(s) in inbox (next: $KIND) ===" >&2
+echo "=== Jarvis: $COUNT pending event(s) in inbox (next: $FIRST_KIND) ===" >&2
 echo "Run: python3 scripts/dev_event_router.py drain --branch $BRANCH" >&2
 
 echo '{}'

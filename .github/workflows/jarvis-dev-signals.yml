@@ -62,10 +62,12 @@ jobs:
           python-version: "3.12"
 
       - name: Emit CI signal
+        env:
+          HEAD_BRANCH: ${{ github.event.check_suite.head_branch }}
+          CONCLUSION: ${{ github.event.check_suite.conclusion }}
+          PR_JSON: ${{ toJson(github.event.check_suite.pull_requests) }}
         run: |
-          HEAD_BRANCH="${{ github.event.check_suite.head_branch }}"
-          CONCLUSION="${{ github.event.check_suite.conclusion }}"
-          PR_NUM="$(echo '${{ toJson(github.event.check_suite.pull_requests) }}' \
+          PR_NUM="$(echo "$PR_JSON" \
             | python3 -c "import json,sys; prs=json.load(sys.stdin); print(prs[0]['number'] if prs else '')" 2>/dev/null || true)"
 
           # Resolve tracking issue (exits 1 on none — use || true)
@@ -114,11 +116,11 @@ jobs:
           python-version: "3.12"
 
       - name: Emit intake signal
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+          BODY: ${{ github.event.comment.body }}
+          AUTHOR: ${{ github.event.comment.user.login }}
         run: |
-          ISSUE="${{ github.event.issue.number }}"
-          BODY="${{ github.event.comment.body }}"
-          AUTHOR="${{ github.event.comment.user.login }}"
-
           SIG="$(python3 scripts/post_merge_lifecycle.py emit-signal \
             --event intake \
             --branch "" \
@@ -155,10 +157,11 @@ jobs:
 
       - name: Emit CI signal based on head SHA check state
         id: emit
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUM: ${{ github.event.pull_request.number }}
         run: |
-          BRANCH="${{ github.event.pull_request.head.ref }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          PR_NUM="${{ github.event.pull_request.number }}"
 
           # Resolve tracking issue (exits 1 on none — use || true)
           ISSUE="$(python3 scripts/post_merge_lifecycle.py find-issue --branch "$BRANCH" || true)"
@@ -200,9 +203,10 @@ jobs:
 
       - name: Emit intake signal (pre-merge simulation)
         if: steps.emit.outputs.issue_found == 'true'
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_NUM: ${{ github.event.pull_request.number }}
         run: |
-          BRANCH="${{ github.event.pull_request.head.ref }}"
-          PR_NUM="${{ github.event.pull_request.number }}"
           ISSUE="$(python3 scripts/post_merge_lifecycle.py find-issue --branch "$BRANCH" || true)"
           if [ "$ISSUE" = "none" ] || [ -z "$ISSUE" ]; then exit 0; fi
 
@@ -218,6 +222,8 @@ jobs:
 
       - name: Remove dev-signals label (one-shot convention)
         if: always()
+        env:
+          PR_NUM: ${{ github.event.pull_request.number }}
         run: |
-          gh pr edit "${{ github.event.pull_request.number }}" \
+          gh pr edit "$PR_NUM" \
             --remove-label dev-signals --repo "$REPO" || true

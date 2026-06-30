@@ -44,7 +44,7 @@ def _make_started() -> datetime.datetime:
 class TestHappyPath:
     def test_success_row_written(self, monkeypatch):
         _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
-        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+        monkeypatch.setenv("BHAGA_RECORD_PIPELINE_RUN", "1")
 
         captured: list[dict] = []
 
@@ -73,7 +73,7 @@ class TestHappyPath:
 class TestFailurePath:
     def test_failed_step_captured(self, monkeypatch):
         _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
-        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+        monkeypatch.setenv("BHAGA_RECORD_PIPELINE_RUN", "1")
 
         # Simulate _record_failure being called for the first failure
         exc = RuntimeError("bq write failed")
@@ -116,7 +116,7 @@ class TestOtpPending:
             refresh_date=_REF_DATE, store="palmetto", dry_run=False,
             status_override="otp_pending",
         )
-        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+        monkeypatch.setenv("BHAGA_RECORD_PIPELINE_RUN", "1")
 
         captured: list[dict] = []
 
@@ -139,7 +139,7 @@ class TestOtpPending:
 class TestHalted:
     def test_halted_status(self, monkeypatch):
         _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
-        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+        monkeypatch.setenv("BHAGA_RECORD_PIPELINE_RUN", "1")
 
         captured: list[dict] = []
 
@@ -206,7 +206,7 @@ class TestGating:
 class TestCloudRecorderGate:
     def test_cloud_gcp_backend_records_without_bhaga_datastore(self, monkeypatch):
         _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
-        monkeypatch.setenv("BHAGA_SECRETS_BACKEND", "gcp")
+        monkeypatch.setenv("CLOUD_RUN_JOB", "bhaga-daily-refresh")
         monkeypatch.delenv("BHAGA_DATASTORE", raising=False)
 
         mock_load = MagicMock(return_value=1)
@@ -220,13 +220,15 @@ class TestCloudRecorderGate:
         _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
         monkeypatch.delenv("BHAGA_DATASTORE", raising=False)
         monkeypatch.delenv("BHAGA_SECRETS_BACKEND", raising=False)
+        monkeypatch.delenv("CLOUD_RUN_JOB", raising=False)
+        monkeypatch.delenv("BHAGA_RECORD_PIPELINE_RUN", raising=False)
 
         mock_load = MagicMock()
         with patch("core.datastore.load_rows", mock_load):
             dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0, run_id="testrun123")
 
         mock_load.assert_not_called()
-        assert "skip: laptop_without_BHAGA_DATASTORE" in capsys.readouterr().err
+        assert "skip: not_cloud_run" in capsys.readouterr().err
 
     def test_cloud_with_source_pulls(self, monkeypatch):
         _reset_summary(
@@ -236,7 +238,7 @@ class TestCloudRecorderGate:
                 "finished_at_utc": _STARTED, "status": "success", "error": None,
             }],
         )
-        monkeypatch.setenv("BHAGA_SECRETS_BACKEND", "gcp")
+        monkeypatch.setenv("CLOUD_RUN_JOB", "bhaga-daily-refresh")
         monkeypatch.delenv("BHAGA_DATASTORE", raising=False)
         captured: dict = {}
         kwargs_captured: dict = {}
@@ -256,7 +258,7 @@ class TestCloudRecorderGate:
 
     def test_staging_sandbox_blocked_from_prod_dataset(self, monkeypatch, capsys):
         _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
-        monkeypatch.setenv("BHAGA_SECRETS_BACKEND", "gcp")
+        monkeypatch.setenv("CLOUD_RUN_JOB", "bhaga-daily-refresh")
         monkeypatch.setenv("BHAGA_SHEET_MODE", "staging")
         monkeypatch.delenv("BHAGA_BQ_DATASET", raising=False)
         monkeypatch.delenv("BHAGA_DATASTORE", raising=False)
@@ -351,7 +353,7 @@ class TestSourcePulls:
                 "finished_at_utc": _STARTED, "status": "success", "error": None,
             }],
         )
-        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+        monkeypatch.setenv("BHAGA_RECORD_PIPELINE_RUN", "1")
         captured, fake_load_rows, kwargs_captured = self._fake_load_rows_per_table()
 
         with patch("core.datastore.load_rows", fake_load_rows):
@@ -379,7 +381,7 @@ class TestSourcePulls:
                 "error": "RuntimeError: scrape blew up",
             }],
         )
-        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+        monkeypatch.setenv("BHAGA_RECORD_PIPELINE_RUN", "1")
         captured, fake_load_rows, kwargs_captured = self._fake_load_rows_per_table()
 
         with patch("core.datastore.load_rows", fake_load_rows):
@@ -392,7 +394,7 @@ class TestSourcePulls:
     def test_no_pulls_no_second_insert(self, monkeypatch):
         """When source_pulls absent, only pipeline_runs is inserted."""
         _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
-        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+        monkeypatch.setenv("BHAGA_RECORD_PIPELINE_RUN", "1")
         captured, fake_load_rows, kwargs_captured = self._fake_load_rows_per_table()
 
         with patch("core.datastore.load_rows", fake_load_rows):
@@ -410,7 +412,7 @@ class TestSourcePulls:
                 "finished_at_utc": _STARTED, "status": "success", "error": None,
             }],
         )
-        monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
+        monkeypatch.setenv("BHAGA_RECORD_PIPELINE_RUN", "1")
         captured, fake_load_rows, kwargs_captured = self._fake_load_rows_per_table()
 
         with patch("core.datastore.load_rows", fake_load_rows):

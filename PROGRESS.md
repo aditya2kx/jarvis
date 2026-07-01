@@ -1,5 +1,16 @@
 # Jarvis Build Progress
 
+## 2026-07-01 — Weekly Shift Hours per Person chart (Issue #112, branch fix/i112-would-love-to-see-a-chart)
+
+**Scope:** Grafana panel-only addition — no BQ view/migration change. Section "4. Weekly Labor" gets a new panel 38 breaking down the existing aggregate "Weekly Shift Hours" (panel 35) by employee.
+
+**Key changes:**
+- Panel 38 (`dashboard.json`): stacked bar (`timeseries` + `drawStyle: bars` + `stacking.mode: normal`), one series per person via a `partitionByValues` transform on the `Person` field. Source: `vw_labor_weekly` (already-existing per-employee weekly view from `core/migrations/002_views.sql`, `canonical_name AS employee_name`). Week-ending alignment (`DATE_ADD(week_start, INTERVAL 6 DAY)`) matches panel 35.
+- Placed at `y:68` (end of section 4); all downstream panels (ids 51, 52, 60, 61, 62, 76, 70, 71, 74, 72, 75, 73, 77, 80, 81, 79) shifted `y += 9` to avoid overlap — no gaps introduced, pre-existing gap before section 8 preserved.
+- `vw_labor_weekly` added to `GRAFANA_VIEWS` in `agents/bhaga/scripts/status.py` (anti-drift registry — `test_status.py::TestGrafanaContractInSync` requires every `vw_*` referenced in `dashboard.json` to be registered).
+- **Verification:** `verify_panels.py` OK=23/23, EMPTY=0, ERROR=0 (panel 38: 187 rows). **Reconciliation:** for week_start=2026-06-22, `SUM(per-person Hours)=308.48` vs `vw_model_labor_weekly.total_hours=308.49` (matches within rounding) — confirms no dropped/ghost employee in the breakdown.
+- Evidence tier: unit-only (waiver — Grafana dashboard-only change, no pipeline/allocation code, no schema migration).
+
 ## 2026-07-01 — Incident: PR merged into wrong base branch (repo default-branch drift) + process hardening
 
 **Incident:** PR #119 (Order Weight column, Issue #113) was opened with `gh pr create` and no explicit `--base` flag. It silently targeted `fix/i101-combine-related-tasks-1-retrospective-protocol` instead of `main` and auto-merged there — because the GitHub repo's *configured default branch* had drifted to that (unrelated, still-open, large dev-process) branch instead of `main`. The working branch's own ancestry looked correct throughout (`git log` showed `main`'s tip as its true parent), so nothing in the local session signaled a problem; the only observable symptom was the PR's `baseRefName`.

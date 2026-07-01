@@ -1089,6 +1089,88 @@
       ]
     },
     {
+      "id": 38,
+      "type": "timeseries",
+      "title": "Weekly Shift Hours per Person",
+      "description": "Total shift hours per person per week (stacked). Each stack is the Mon–Sun week plotted at its week-ENDING date (Sunday), so a '6/7' tick = the week ending 6/7. Source: vw_labor_weekly (canonical employee name).",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 68
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: h",
+          "decimals": 1,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "time"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:M/D"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "rawSql": "SELECT TIMESTAMP(DATE_ADD(week_start, INTERVAL 6 DAY), 'America/Chicago') AS time, employee_name AS `Person`, total_hours AS `Hours` FROM `jarvis-bhaga-prod.bhaga.vw_labor_weekly` WHERE week_start >= DATE('$date_from') AND total_hours > 0 ORDER BY week_start, employee_name"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "Person"
+            ],
+            "keepFields": false
+          }
+        },
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^Hours (.*)$",
+            "renamePattern": "$1"
+          }
+        }
+      ]
+    },
+    {
       "id": 50,
       "type": "row",
       "title": "5. Order Quality",
@@ -1097,7 +1179,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 68
+        "y": 77
       }
     },
     {
@@ -1113,7 +1195,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 69
+        "y": 78
       },
       "options": {
         "tooltip": {
@@ -1180,7 +1262,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 78
+        "y": 87
       },
       "options": {
         "sortBy": [
@@ -1382,7 +1464,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 90
+        "y": 99
       }
     },
     {
@@ -1398,7 +1480,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 91
+        "y": 100
       },
       "options": {
         "sortBy": [
@@ -1748,7 +1830,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 103
+        "y": 112
       },
       "options": {
         "sortBy": [
@@ -1789,7 +1871,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 111
+        "y": 120
       },
       "options": {
         "sortBy": [
@@ -1826,7 +1908,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 121
+        "y": 130
       }
     },
     {
@@ -1842,7 +1924,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 122
+        "y": 131
       },
       "options": {
         "sortBy": [
@@ -2132,7 +2214,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 134
+        "y": 143
       },
       "options": {
         "tooltip": {
@@ -2196,7 +2278,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 143
+        "y": 152
       },
       "options": {
         "tooltip": {
@@ -2256,7 +2338,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 143
+        "y": 152
       },
       "options": {
         "tooltip": {
@@ -2316,7 +2398,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 152
+        "y": 161
       },
       "options": {
         "sortBy": [
@@ -2676,7 +2758,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 200
+        "y": 209
       },
       "panels": []
     },
@@ -2688,7 +2770,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 201
+        "y": 210
       },
       "options": {
         "mode": "markdown",
@@ -2704,7 +2786,7 @@
         "h": 16,
         "w": 24,
         "x": 0,
-        "y": 208
+        "y": 217
       },
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -2779,7 +2861,7 @@
         "h": 16,
         "w": 24,
         "x": 0,
-        "y": 224
+        "y": 233
       },
       "datasource": {
         "type": "grafana-bigquery-datasource",

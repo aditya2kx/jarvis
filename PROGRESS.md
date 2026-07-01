@@ -1,5 +1,18 @@
 # Jarvis Build Progress
 
+## 2026-07-01 — Order Recommendation: add Order Weight (lbs) column with pallet-aware TOTAL (branch fix/add-weights-in-lbs-per-row)
+
+**Scope:** Grafana panel 81 (`dashboard.json`) only — no BQ view/migration change.
+
+**Key changes:**
+- Added `Order Weight lbs` column to panel 81 `rawSql`: per-row = `Order Tubs × per-tub weight` (Açaí 18 lbs; all other active bases 20 lbs). BQ alias uses no parentheses (`Order Weight lbs`); Grafana `displayName` override renders it as `Order Weight (lbs)` in the table header.
+- Blade row: `order_weight_lbs = NULL`, displayed as `NA` via `noValue` override; excluded from weight total and pallet count.
+- TOTAL row: `Σ per-row weight + 50 × CEIL(Σ order_tubs / 40)` — pallet packaging (40 tubs = 1 pallet, +50 lbs/pallet). Intentionally exceeds plain row sum by the pallet allowance.
+- Panel 80 (Methodology) and panel 81 description updated with per-tub weights + pallet rule.
+- `fieldConfig` override: `displayName`, `custom.width=200`, `noValue=NA`.
+- `bhaga.mdc` panel-81 invariant block updated (BQ parens restriction, displayName pattern, TOTAL pallet formula).
+- `verify_panels.py --fail-on-empty` OK=22/22, panel 81 OK.
+
 ## 2026-07-01 — Order Assistant: order-recommendation table + Grafana variables (Issue #113, branch feat/i113-order-reco)
 
 **Scope:** new PR following #116. Replaces the base-inventory line chart (panel 78) with an order-recommendation table (panel 81) + methodology text panel (panel 80). Introduces `oa_`-prefixed Grafana variables.

@@ -543,3 +543,4 @@ tab — **edit them in-sheet, no code change**.
 
 When columns / metrics / domain meaning change, update §3 / §4–7 here in the same change (the
 `doc-maintenance` rule + `check_doc_freshness.py` will remind you).
+

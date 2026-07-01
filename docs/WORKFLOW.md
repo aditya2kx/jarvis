@@ -81,6 +81,7 @@ python3 scripts/phase_state.py status                  # this branch
 python3 scripts/phase_state.py status --branch feat/x  # specific branch
 python3 scripts/phase_state.py status --json           # machine-readable
 python3 scripts/phase_state.py report                  # all open work items
+python3 scripts/phase_state.py drift-check --branch b  # advisory: nudge to advance phases as work completes (obs 1; used by drain.sh)
 ```
 
 Every work item has a GitHub Issue (label `jarvis-work` + `stage:*`).  The issue
@@ -403,12 +404,13 @@ GH Action (check_suite / issue_comment / pr-merged-lifecycle)
 | `pr_merged` | `retrospective` | `pr-merged-lifecycle.yml` | Triggers retro jam flow |
 | `intake` | `intake` | `/jarvis-new-task` comment | Allowlist-gated; no debounce. The signal's `issue` field is threaded through to `new_requirement.py --issue N`, which fetches the issue's title+body (`gh issue view`) to seed the brief — a short intake comment alone (e.g. "let's work on this") is not enough context — and links the EXISTING issue instead of creating a duplicate. Branch is `fix/i{N}-<title-slug>` (issue-based, unique). |
 | `comment` | `address_comment` | Operator comment on any issue/PR | Allowlist-gated (workflow primary gate); loop-safe. **Note:** for PR comments, branch is resolved via `gh pr view --json headRefName` (no phase cache needed). For plain issue comments, branch is resolved via `find-branch` (reads laptop phase cache); absent on the Actions runner → gracefully skips with log message. |
+| _(PR→issue link)_ | _(GH-side, no inbox)_ | `pull_request.opened` → `pr-issue-link` job in `jarvis-dev-signals.yml` | obs 3: comments the PR URL on the tracking issue + appends `Refs #N` to the PR body (both idempotent). Resolves the issue via `find-issue --branch` (gh scan fallback works in CI). Active once merged to `main`. |
 
 ### New scripts
 
 | Script | Role |
 |---|---|
-| `scripts/dev_event_router.py` | Parse signals, idempotency, debounce, write inbox, update phase cache |
+| `scripts/dev_event_router.py` | Parse signals, idempotency, debounce, write inbox, update phase cache. **Inbox routing (obs 4b):** the pending/processed inbox is written to the **child worktree's** `metrics/pr_cost/` (from `cache["worktree_path"]`) so the child's `drain.sh` actually sees it — the daemon-side phase cache + `delivered_signals` dedup stay in the daemon repo. Falls back to the module dir when no worktree is recorded. |
 | `scripts/dev_event_listener.py` | `catch-up`, `watch`, `dispatch`; macOS auto-open/focus worktree (osascript + `open -a Cursor` fallback; `LOCAL_EVENT_AUTO_OPEN`). GH API → `parse_signal` → `route_signal` → `pending.jsonl` write proven via non-dry-run catch-up run. |
 | `scripts/check_no_main_progress_push.py` | Mechanical guard: block PROGRESS.md direct push to main |
 
@@ -434,7 +436,7 @@ Human-readable summary above; machine block in HTML comment (greppable, idempote
 | Hook | Script | Behavior |
 |---|---|---|
 | `beforeSubmitPrompt` | `mark_busy.sh` | Write `state=busy` + heartbeat to status lock |
-| `stop` | `drain.sh` | Mark idle; if `LOCAL_EVENT_AUTO_DISPATCH≠0` and inbox non-empty, pop oldest event and return `followup_message` (warm zero-click drain). Real output: `{"followup_message": "[AUTO-DISPATCH] New requirement intake signal received.\n\nEvent: {…}\n\nRun: python3 scripts/new_requirement.py …"}`. When `LOCAL_EVENT_AUTO_DISPATCH=0`, returns `{}` (no auto-dispatch). |
+| `stop` | `drain.sh` | Mark idle; if `LOCAL_EVENT_AUTO_DISPATCH≠0` and inbox non-empty, pop oldest event and return `followup_message` (warm zero-click drain). Real output: `{"followup_message": "[AUTO-DISPATCH] New requirement intake signal received.\n\nEvent: {…}\n\nRun: python3 scripts/new_requirement.py …"}`. When `LOCAL_EVENT_AUTO_DISPATCH=0`, returns `{}` (no auto-dispatch). **Phase-drift nudge (obs 1):** when the inbox is empty, runs `phase_state.py drift-check` and, if observable progress has outrun the recorded `done` list, returns a `followup_message` listing the exact `advance` commands so phases are recorded per-substep instead of batched at PR time. |
 | `sessionStart` | `announce_pending.sh` | Surface pending event count as context |
 
 ### Feature flags
@@ -457,8 +459,8 @@ Wired as a `verify.py` gate (`progress-push-guard`). Blocks pushes that target `
 
 | Workflow | Change |
 |---|---|
-| `pr-merged-lifecycle.yml` | Added `Emit pr_merged signal` step; retrospective prompt now instructs jam→plan→issues flow (no direct `PROGRESS.md` write) |
-| `jarvis-dev-signals.yml` (new) | `check_suite` → CI signals; `issue_comment` → `intake-signal` (/jarvis-new-task) + `comment-signal` (operator comments, loop-safe); label-gated `pull_request` → pre-merge evidence. **Note:** `issue_comment` and `check_suite` jobs only activate once the workflow lands on `main` (GitHub resolves those triggers from the default branch). `comment-signal` end-to-end proven pre-merge by temporarily setting the PR branch as default branch — run [28486518592](https://github.com/aditya2kx/jarvis/actions/runs/28486518592) ✅. |
+| `pr-merged-lifecycle.yml` | Added `Emit pr_merged signal` step; retrospective prompt now instructs jam→plan→issues flow (no direct `PROGRESS.md` write). **Fixed (2026-07-01):** the file was invalid YAML from #85 onward (column-0 Python heredocs + a multi-line `--body` broke the `run:` block scalars) so the post-merge job silently never ran — every merge since #85 stranded its issue (no merge-advance / PR-link / post-merge-verify / retro). Re-indented the mis-authored spans into their block scalars (byte-identical content); now parses + `bash -n` + `py_compile` clean. |
+| `jarvis-dev-signals.yml` | `check_suite` → CI signals; `issue_comment` → `intake-signal` (/jarvis-new-task) + `comment-signal` (operator comments, loop-safe); `pull_request.opened` → `pr-issue-link` (obs 3: link PR↔issue, idempotent); label-gated `pull_request` → pre-merge evidence. **Note:** `issue_comment` and `check_suite` jobs only activate once the workflow lands on `main` (GitHub resolves those triggers from the default branch). `comment-signal` end-to-end proven pre-merge by temporarily setting the PR branch as default branch — run [28486518592](https://github.com/aditya2kx/jarvis/actions/runs/28486518592) ✅. |
 
 ## 9. Deferred roadmap (out of scope for this PR)
 

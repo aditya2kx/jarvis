@@ -27,8 +27,9 @@ on:
   issue_comment:
     types: [created]
   # Pre-merge evidence trigger (runs from the PR head, like sandbox-live-run.yml):
+  # `opened` also drives the pr-issue-link job below (obs 3).
   pull_request:
-    types: [labeled, synchronize]
+    types: [labeled, synchronize, opened]
 
 permissions:
   issues: write
@@ -192,6 +193,61 @@ jobs:
           CBODY="Comment routed to worktree for \`${BRANCH}\`."$'\n\n'"${SIG}"
           gh issue comment "$ISSUE" --repo "$REPO" \
             --body "$CBODY" || echo "::warning::could not post comment signal on issue #$ISSUE"
+
+  # ── Link PR ↔ tracking issue on open (obs 3) ────────────────────────────────
+  # When a PR is opened for a tracked branch, cross-link it: comment the PR URL
+  # on the tracking issue and append `Refs #N` to the PR body. Both steps are
+  # idempotent so a re-open / re-run never double-posts.
+  pr-issue-link:
+    name: Link PR to tracking issue
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'opened' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ADMIN_PAT }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Link PR to tracking issue
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          ISSUE="$(python3 scripts/post_merge_lifecycle.py find-issue --branch "$BRANCH" || true)"
+          if [ "$ISSUE" = "none" ] || [ -z "$ISSUE" ]; then
+            echo "No tracking issue for branch $BRANCH — skipping link."
+            exit 0
+          fi
+
+          # 1. Comment the PR link on the issue (idempotent — skip if already linked).
+          if gh issue view "$ISSUE" --repo "$REPO" --json comments \
+               -q '.comments[].body' 2>/dev/null | grep -qF "PR #${PR_NUM} opened for this issue"; then
+            echo "Issue #$ISSUE already links PR #$PR_NUM — skipping comment."
+          else
+            gh issue comment "$ISSUE" --repo "$REPO" \
+              --body "PR #${PR_NUM} opened for this issue: ${PR_URL}" \
+              || echo "::warning::could not comment PR link on issue #$ISSUE"
+          fi
+
+          # 2. Ensure the PR body references the issue (idempotent).
+          PR_BODY="$(gh pr view "$PR_NUM" --repo "$REPO" --json body -q .body 2>/dev/null || echo '')"
+          if printf '%s' "$PR_BODY" | grep -qE "Refs #${ISSUE}([^0-9]|$)"; then
+            echo "PR body already refs #$ISSUE — skipping."
+          else
+            printf '%s\n\nRefs #%s\n' "$PR_BODY" "$ISSUE" \
+              | gh pr edit "$PR_NUM" --repo "$REPO" --body-file - \
+              || echo "::warning::could not add Refs #$ISSUE to PR body"
+          fi
 
   # ── Pre-merge evidence: dev-signals label-gated (runs from PR head) ──────────
   # This job resolves from the PR head/merge ref, so it fires on THIS branch

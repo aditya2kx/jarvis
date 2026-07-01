@@ -7,10 +7,19 @@ alwaysApply: true
 
 **You drive every agent-zone phase autonomously.  You pause only at operator-reserved gates.**
 
-After each agent substep's exit criterion is met:
+Advance **immediately** as each agent substep's exit criterion is met — one `advance`
+per substep, the moment it completes:
 ```bash
 python3 scripts/phase_state.py advance --branch <branch> --to <next-substep>
 ```
+
+**Never batch phase advances.** Do not sit at an early substep and then fire every
+`advance` at PR-creation time — the tracking issue must reflect real progress as it
+happens (jam done → advance; plan done → advance; implement done → advance; …). The
+`drain.sh` stop hook runs `phase_state.py drift-check` on idle turns and will nudge
+you with the exact `advance` commands when observable progress (plan file, non-doc
+changes, open PR, merge) has outrun the recorded `done` list. Act on that nudge in
+the same turn.
 
 The 5 tracking stages and 12 substeps are in `scripts/lifecycle.py`.
 Operator-reserved gates (where you MUST pause and await approval):

@@ -58,6 +58,18 @@ fi
 # Drain oldest event from inbox
 NEXT_EVENT="$(python3 "$REPO_ROOT/scripts/dev_event_router.py" drain --branch "$BRANCH" 2>/dev/null || true)"
 if [ -z "$NEXT_EVENT" ]; then
+  # No queued events — nudge on phase drift (obs 1). If observable progress
+  # (plan file, non-doc changes, open PR, merge) has outrun the recorded `done`
+  # list, remind the agent to advance each substep now instead of batching them
+  # all just before the PR. Advisory: empty output ⇒ a genuine no-op.
+  DRIFT="$(python3 "$REPO_ROOT/scripts/phase_state.py" drift-check --branch "$BRANCH" 2>/dev/null || true)"
+  if [ -n "$DRIFT" ]; then
+    python3 -c "
+import json, sys
+print(json.dumps({'followup_message': sys.argv[1]}))
+" "$DRIFT" 2>/dev/null || echo '{}'
+    exit 0
+  fi
   echo '{}'
   exit 0
 fi

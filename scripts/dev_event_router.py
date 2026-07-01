@@ -66,15 +66,32 @@ def _slug(branch: str) -> str:
 
 
 def _phase_path(branch: str) -> Path:
+    # Phase cache + delivered-signal dedup stay daemon-side (module METRICS_DIR),
+    # never in the child worktree — the daemon owns dedup across all worktrees.
     return METRICS_DIR / f"session-{_slug(branch)}-phase.json"
 
 
-def _inbox_path(branch: str) -> Path:
-    return METRICS_DIR / f"session-{_slug(branch)}-pending.jsonl"
+def _worktree_metrics_dir(cache: dict | None) -> Path:
+    """metrics/pr_cost dir the child worktree's drain.sh reads from.
+
+    The daemon routes from the parent repo but the child chat drains its own
+    worktree's inbox; writing to the module METRICS_DIR would strand events in
+    the parent (obs 4b). When the phase cache records an on-disk worktree, write
+    the inbox there so the child sees it; otherwise fall back to the module dir.
+    """
+    if cache:
+        wt = cache.get("worktree_path")
+        if wt and Path(wt).is_dir():
+            return Path(wt) / "metrics" / "pr_cost"
+    return METRICS_DIR
 
 
-def _processed_path(branch: str) -> Path:
-    return METRICS_DIR / f"session-{_slug(branch)}-processed.jsonl"
+def _inbox_path(branch: str, cache: dict | None = None) -> Path:
+    return _worktree_metrics_dir(cache) / f"session-{_slug(branch)}-pending.jsonl"
+
+
+def _processed_path(branch: str, cache: dict | None = None) -> Path:
+    return _worktree_metrics_dir(cache) / f"session-{_slug(branch)}-processed.jsonl"
 
 
 # ---------------------------------------------------------------------------
@@ -133,9 +150,10 @@ def _iso(ts: float) -> str:
 # Inbox helpers
 # ---------------------------------------------------------------------------
 
-def _append_inbox(branch: str, record: dict) -> None:
-    METRICS_DIR.mkdir(parents=True, exist_ok=True)
-    with _inbox_path(branch).open("a", encoding="utf-8") as f:
+def _append_inbox(branch: str, record: dict, cache: dict | None = None) -> None:
+    inbox = _inbox_path(branch, cache)
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    with inbox.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
 
@@ -201,7 +219,7 @@ def route_signal(
         return "debounced"
 
     kind = EVENT_KIND.get(event, event)
-    _append_inbox(branch, {"kind": kind, **signal})
+    _append_inbox(branch, {"kind": kind, **signal}, cache)
     _mark_delivered(branch, sid or "", now, event or "", cache)
     return "delivered"
 
@@ -212,7 +230,11 @@ def drain(branch: str) -> dict | None:
     Moves the record to the processed log and decrements pending_event_count
     in the phase cache. Returns the event dict, or None when the inbox is empty.
     """
-    inbox = _inbox_path(branch)
+    # Resolve the inbox from the phase cache so drain reads the same worktree
+    # dir route_signal wrote to (obs 4b). When run inside the child worktree the
+    # local cache's worktree_path points at itself, so this stays consistent.
+    cache = _load_cache(branch)
+    inbox = _inbox_path(branch, cache)
     if not inbox.exists():
         return None
 
@@ -230,14 +252,13 @@ def drain(branch: str) -> dict | None:
     except Exception:
         record = {"raw": first_line.strip()}
 
-    # Append to processed log
-    processed = _processed_path(branch)
-    METRICS_DIR.mkdir(parents=True, exist_ok=True)
+    # Append to processed log (same worktree dir as the inbox)
+    processed = _processed_path(branch, cache)
+    processed.parent.mkdir(parents=True, exist_ok=True)
     with processed.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
-    # Decrement pending count in cache
-    cache = _load_cache(branch)
+    # Decrement pending count in the (daemon-side) phase cache.
     if cache is not None:
         count = cache.get("pending_event_count", 0)
         cache["pending_event_count"] = max(0, count - 1)

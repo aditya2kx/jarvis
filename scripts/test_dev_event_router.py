@@ -322,6 +322,94 @@ class TestWorkflowYamlValid(unittest.TestCase):
         self.assertIn("jarvis-signal", job_if,
                       "loop guard (!contains(... 'jarvis-signal')) must be in comment-signal if:")
 
+    def test_pr_issue_link_job_exists_and_triggers_on_opened(self):
+        """obs 3: a pr-issue-link job must fire on pull_request.opened."""
+        import yaml  # type: ignore
+        wf = Path(__file__).parent.parent / ".github" / "workflows" / "jarvis-dev-signals.yml"
+        if not wf.exists():
+            self.skipTest("jarvis-dev-signals.yml not yet written")
+        data = yaml.safe_load(wf.read_text())
+        jobs = data.get("jobs", {})
+        self.assertIn("pr-issue-link", jobs, "pr-issue-link job must exist")
+        # `on.pull_request.types` must include `opened`.
+        # PyYAML parses the bare key `on:` as boolean True, so accept either.
+        on = data.get("on", data.get(True, {}))
+        pr_types = on["pull_request"]["types"]
+        self.assertIn("opened", pr_types, "pull_request trigger must include 'opened'")
+        job_if = jobs["pr-issue-link"].get("if", "")
+        self.assertIn("opened", job_if, "pr-issue-link if: must gate on action == 'opened'")
+
+    def test_pr_issue_link_is_idempotent_and_refs_issue(self):
+        """The link step must be idempotent and append Refs #<issue> to the PR body."""
+        import yaml  # type: ignore
+        wf = Path(__file__).parent.parent / ".github" / "workflows" / "jarvis-dev-signals.yml"
+        if not wf.exists():
+            self.skipTest("jarvis-dev-signals.yml not yet written")
+        data = yaml.safe_load(wf.read_text())
+        steps = data["jobs"]["pr-issue-link"]["steps"]
+        run_text = "\n".join(s.get("run", "") for s in steps)
+        self.assertIn("Refs #", run_text, "must add Refs #<issue> to the PR body")
+        self.assertIn("already refs", run_text, "must guard against double-appending Refs")
+        self.assertIn("already links", run_text, "must guard against double-commenting the link")
+
+
+class TestWorktreeInboxRouting(unittest.TestCase):
+    """obs 4b: the daemon must write the inbox to the child worktree's metrics
+    dir (from cache['worktree_path']) so the child drain.sh actually sees it."""
+
+    def test_inbox_written_to_worktree_when_cache_has_path(self):
+        branch = "fix/test-wt-route"
+        with tempfile.TemporaryDirectory() as daemon, tempfile.TemporaryDirectory() as wt:
+            daemon_mdir = Path(daemon) / "metrics" / "pr_cost"
+            # Child worktree must exist on disk for the router to honor it.
+            (Path(wt) / "metrics" / "pr_cost").mkdir(parents=True, exist_ok=True)
+            _make_cache(daemon, branch, extra={"worktree_path": str(wt)})
+            with patch.object(R, "METRICS_DIR", daemon_mdir):
+                result = R.route_signal(_signal("ci_failed", branch))
+            self.assertEqual(result, "delivered")
+            child_inbox = Path(wt) / "metrics" / "pr_cost" / f"session-{R._slug(branch)}-pending.jsonl"
+            self.assertTrue(child_inbox.exists(), "inbox must land in the child worktree")
+            # And NOT in the daemon dir.
+            daemon_inbox = daemon_mdir / f"session-{R._slug(branch)}-pending.jsonl"
+            self.assertFalse(daemon_inbox.exists(), "inbox must NOT stay in the daemon dir")
+            # Dedup/phase cache stays daemon-side.
+            self.assertTrue((daemon_mdir / f"session-{R._slug(branch)}-phase.json").exists())
+
+    def test_fallback_to_module_dir_when_no_worktree_path(self):
+        branch = "fix/test-wt-fallback"
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = Path(tmp) / "metrics" / "pr_cost"
+            _make_cache(tmp, branch)  # no worktree_path
+            with patch.object(R, "METRICS_DIR", mdir):
+                result = R.route_signal(_signal("ci_failed", branch))
+            self.assertEqual(result, "delivered")
+            self.assertTrue((mdir / f"session-{R._slug(branch)}-pending.jsonl").exists())
+
+    def test_fallback_when_worktree_path_missing_on_disk(self):
+        branch = "fix/test-wt-gone"
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = Path(tmp) / "metrics" / "pr_cost"
+            _make_cache(tmp, branch, extra={"worktree_path": "/nonexistent/gone-wt"})
+            with patch.object(R, "METRICS_DIR", mdir):
+                result = R.route_signal(_signal("ci_failed", branch))
+            self.assertEqual(result, "delivered")
+            self.assertTrue((mdir / f"session-{R._slug(branch)}-pending.jsonl").exists())
+
+    def test_route_then_drain_roundtrip_via_worktree(self):
+        """End-to-end: route writes to worktree, drain (reading same cache) pops it."""
+        branch = "fix/test-wt-roundtrip"
+        with tempfile.TemporaryDirectory() as daemon, tempfile.TemporaryDirectory() as wt:
+            daemon_mdir = Path(daemon) / "metrics" / "pr_cost"
+            (Path(wt) / "metrics" / "pr_cost").mkdir(parents=True, exist_ok=True)
+            _make_cache(daemon, branch, extra={"worktree_path": str(wt)})
+            with patch.object(R, "METRICS_DIR", daemon_mdir):
+                R.route_signal(_signal("pr_merged", branch, sid="rt-1"))
+                popped = R.drain(branch)
+            self.assertIsNotNone(popped)
+            self.assertEqual(popped["id"], "rt-1")
+            processed = Path(wt) / "metrics" / "pr_cost" / f"session-{R._slug(branch)}-processed.jsonl"
+            self.assertTrue(processed.exists(), "processed log must also live in the worktree")
+
 
 if __name__ == "__main__":
     unittest.main()

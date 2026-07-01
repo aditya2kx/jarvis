@@ -830,6 +830,70 @@ def cmd_gate(args) -> int:
     return 1
 
 
+def _observed_floor() -> tuple[int, str | None]:
+    """Highest substep the real world shows evidence for (per OBSERVABLE_FLOOR)."""
+    observed_idx = -1
+    observed_name = None
+    for sub_name, detector in OBSERVABLE_FLOOR:
+        try:
+            if detector():
+                idx = lc.substep_index(sub_name)
+                if idx > observed_idx:
+                    observed_idx = idx
+                    observed_name = sub_name
+        except Exception:
+            pass  # degrade gracefully if a detector fails
+    return observed_idx, observed_name
+
+
+def cmd_drift_check(args) -> int:
+    """Advisory phase-drift nudge (obs 1) — always exits 0.
+
+    Sibling of cmd_gate, but *inclusive* of the observed substep and non-blocking.
+    When observable progress (plan file, non-doc changes, open PR, merge) has
+    outrun the recorded ``done`` list, prints the exact ``advance --to <substep>``
+    commands so the agent records phases *as each substep completes* instead of
+    batching them all just before the PR. Wired into drain.sh's idle followup.
+
+    Prints nothing (and exits 0) when the branch is untracked or already in sync,
+    so it is safe to call unconditionally on every idle turn.
+    """
+    branch = getattr(args, "branch", None) or _current_branch()
+    if not branch or not _cache_path(branch).exists():
+        return 0
+
+    data = _load_cache(branch)
+    done_set = set(data.get("done", []))
+    all_steps = lc.all_substeps()
+
+    observed_idx, observed_name = _observed_floor()
+    if observed_idx < 0:
+        return 0
+
+    # Inclusive of the observed substep: if the world shows 'implement' evidence,
+    # 'implement' itself should be on record too (the gate only enforces priors).
+    missing = [s for s in all_steps[: observed_idx + 1] if s.name not in done_set]
+    if not missing:
+        return 0
+
+    print(
+        f"PHASE DRIFT — branch {branch!r}: observable work reached "
+        f"'{observed_name}' but these substep(s) are not recorded yet. "
+        f"Advance them now, in order (don't batch until PR time):"
+    )
+    for s in missing:
+        if s.driver == "operator":
+            print(
+                f"  python3 scripts/phase_state.py advance --branch {branch} "
+                f"--to {s.name} --operator-approved --note '<approval summary>'"
+            )
+        else:
+            print(
+                f"  python3 scripts/phase_state.py advance --branch {branch} --to {s.name}"
+            )
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -877,6 +941,11 @@ def main(argv: list[str] | None = None) -> int:
     p_gate.add_argument("--branch", default=None,
                         help="Branch to check (default: current git branch)")
 
+    p_drift = sub.add_parser("drift-check",
+                             help="Advisory nudge to advance phases as work completes (non-blocking)")
+    p_drift.add_argument("--branch", default=None,
+                         help="Branch to check (default: current git branch)")
+
     args = parser.parse_args(argv)
 
     dispatch = {
@@ -888,6 +957,7 @@ def main(argv: list[str] | None = None) -> int:
         "status":        cmd_status,
         "report":        cmd_report,
         "gate":          cmd_gate,
+        "drift-check":   cmd_drift_check,
     }
     return dispatch[args.cmd](args)
 

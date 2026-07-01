@@ -48,6 +48,23 @@ _STATUS_DONE        = "✅ Done"
 _STATUS_P0          = "🔴 P0"
 
 
+def _tracking_issue(branch: str) -> int | None:
+    """Best-effort tracking-issue number for ``branch`` from the local phase cache.
+
+    Used only to enrich the brief's PR-open instructions (belt-and-suspenders;
+    the pr-issue-link CI job is the authoritative linker). Returns None quietly
+    when the cache is absent or unreadable.
+    """
+    import json
+    slug = re.sub(r"[^a-zA-Z0-9_-]", "-", branch)[:60]
+    cache = Path(__file__).parent.parent / "metrics" / "pr_cost" / f"session-{slug}-phase.json"
+    try:
+        issue = json.loads(cache.read_text()).get("issue")
+        return int(issue) if issue else None
+    except Exception:
+        return None
+
+
 def _req_status_line_pattern(req_id: int | str) -> re.Pattern:
     """Match a table row for the given requirement ID."""
     return re.compile(
@@ -227,10 +244,20 @@ def generate_brief(
         else f"# Session brief — `{br}` (PR # assigned at open)"
 
     if provisional:
+        issue_n = _tracking_issue(br)
+        refs = f"Refs #{issue_n}" if issue_n else "Refs #<tracking-issue>"
         pr_number_block = f"""## PR number
 **Not assigned yet — do NOT guess it.** The PR number is allocated by GitHub when
 you run `gh pr create`; multiple chat spaces may be opening PRs at the same time.
 This session is tracked provisionally by its **branch** (`{br}`).
+
+**Open the PR against `main` and link the tracking issue** (the CI job also links
+it, but include this so the link is never missed):
+```bash
+gh pr create --base main --head {br} --title "<title>" --body "<summary>
+
+{refs}"
+```
 
 **Right after you open the PR**, bind the cost ledger to the real number:
 ```bash

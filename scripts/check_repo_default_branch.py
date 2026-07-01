@@ -43,11 +43,10 @@ def _detect_repo() -> str | None:
     except Exception:
         return None
     # Handles both git@github.com:owner/repo.git and https://github.com/owner/repo.git
-    for sep in (":", "/"):
-        if "github.com" in url:
-            tail = url.split("github.com", 1)[1].lstrip(":/")
-            return tail[:-4] if tail.endswith(".git") else tail
-    return None
+    if "github.com" not in url:
+        return None
+    tail = url.split("github.com", 1)[1].lstrip(":/").rstrip("/")
+    return tail[:-4] if tail.endswith(".git") else tail
 
 
 def get_default_branch(repo: str) -> str:

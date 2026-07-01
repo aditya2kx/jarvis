@@ -2685,7 +2685,7 @@
       "type": "text",
       "title": "Order Recommendation — Methodology",
       "gridPos": {
-        "h": 4,
+        "h": 7,
         "w": 24,
         "x": 0,
         "y": 201
@@ -2701,10 +2701,10 @@
       "title": "Order Recommendation — What to Order Now",
       "description": "Per-base order recommendation for the next replenishment. Lead time and max capacity driven by the oa_ship_days / oa_max_tubs dashboard variables. Order Weight (lbs) = Order Tubs × per-tub weight (Açaí 18 lbs; all other bases 20 lbs; Blade delivered directly → NA, excluded from weight). TOTAL Order Weight adds pallet packaging: 40 tubs = 1 pallet, +50 lbs/pallet, so TOTAL = Σ per-row weight + 50 × CEIL(total order tubs ÷ 40).",
       "gridPos": {
-        "h": 10,
+        "h": 16,
         "w": 24,
         "x": 0,
-        "y": 205
+        "y": 208
       },
       "datasource": {
         "type": "grafana-bigquery-datasource",

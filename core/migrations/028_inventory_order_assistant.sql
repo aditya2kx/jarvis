@@ -16,13 +16,31 @@
 --   4. Store was open: orders > 0 in vw_model_labor_daily for D
 --   5. Not a restock day: curr_close - prev_close <= 1.0
 --
--- Outlier exclusion (applied before window selection):
---   Robust-z = (usage - median) / (1.4826 * MAD) over the trailing 60-day
---   eligible window, mirroring forecast.py compute_outlier_stats.
---   |z| > 2.5 AND elig_n >= 5 AND MAD > 0 => excluded as outlier.
---   Both directions excluded (spike UP = suspect data; spike DOWN = error).
+-- Outlier filter (applied before window selection, per item, trailing 30 days):
+--   Two tails need two different instruments because usage is right-skewed
+--   against a hard floor at 0 (empirically verified across all 9 bases):
 --
--- Window: most recent ELIGIBLE (non-outlier) day per WEEKDAY (Mon-Sun).
+--   LOW tail -- fixed relative floor:
+--     1. Take eligible transitions from the last 30 days.
+--     2. Compute the median usage among the NONZERO days only.
+--     3. Drop zero-usage days (unreliable manual readings -- perishable bases
+--        are used daily) and any day < 20% of that nonzero median.
+--     A z-score CANNOT catch the low tail: the median sits only ~1.3-2.3 MADs
+--     above zero, so even a reading of 0 can't reach |z| > 2.5. A fixed
+--     relative floor is the correct low-side instrument.
+--
+--   HIGH tail -- robust-z on the low-filtered survivors:
+--     4. On the days surviving the low filter, compute median + MAD and drop
+--        robust-z = (usage - median) / (1.4826 * MAD) > 2.5. The high tail is
+--        unbounded, so z (adaptive to each base's spread) works well here.
+--        Guard: only when MAD > 0 (no spread => nothing flagged). Threshold
+--        2.5 mirrors forecast.py compute_outlier_stats for model consistency.
+--
+--   This is intentionally NOT tied to restock proximity -- it doesn't assume
+--   post-restock days are bad; it catches implausible low/high readings
+--   wherever they occur, using each item's own recent usage as the reference.
+--
+-- Window: most recent surviving (non-outlier) day per WEEKDAY (Mon-Sun).
 --   Deduplicates e.g. "two Fridays" when a gap week falls back to the prior week.
 --
 -- Apply: BHAGA_DATASTORE=bigquery python3 -c
@@ -60,68 +78,69 @@ transitions AS (
     ON l.date = b.submitted_date
   WINDOW w AS (PARTITION BY b.store, b.item ORDER BY b.submitted_date)
 ),
-scored_raw AS (
+scored AS (
   SELECT *,
     GREATEST(prev_close - curr_close, 0.0)        AS usage_units,
-    (curr_close - COALESCE(prev_close, 0) > 1.0)  AS is_restock
-  FROM transitions
-),
-scored AS (
-  -- The first reading right after a restock is structurally unreliable (staff
-  -- can't precisely gauge usage from a just-refilled large container) and often
-  -- reads near-zero regardless of true consumption. Robust-z alone can't catch
-  -- this because near-zero days are common store-wide; exclude it explicitly.
-  SELECT *,
-    LAG(is_restock) OVER (PARTITION BY store, item ORDER BY submitted_date) AS prev_was_restock,
+    (curr_close - COALESCE(prev_close, 0) > 1.0)  AS is_restock,
     (prev_close IS NOT NULL
       AND DATE_DIFF(submitted_date, prev_date, DAY) = 1
       AND curr_close >= 1.0
       AND COALESCE(orders_on_day, 0) > 0
-      AND NOT is_restock
-      AND NOT COALESCE(
-            LAG(is_restock) OVER (PARTITION BY store, item ORDER BY submitted_date),
-            FALSE)
+      AND NOT (curr_close - COALESCE(prev_close, 0) > 1.0)
     ) AS eligible
-  FROM scored_raw
+  FROM transitions
 ),
--- ── Robust-z outlier detection over trailing 60-day eligible window ──────────
--- Mirrors forecast.py compute_outlier_stats: median + MAD, |z| > 2.5.
--- Guard: requires elig_n >= 5 AND MAD > 0; otherwise no rows are excluded.
+-- ── Per-item low-usage filter over trailing 30-day eligible window ──────────
 elig_recent AS (
   SELECT * FROM scored
   WHERE eligible
-    AND submitted_date >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 60 DAY)
+    AND submitted_date >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 30 DAY)
 ),
-stat AS (
-  SELECT *,
-    PERCENTILE_CONT(usage_units, 0.5) OVER (PARTITION BY store, item) AS med_usage,
-    COUNT(*) OVER (PARTITION BY store, item)                           AS elig_n
+nonzero_stats AS (
+  -- Median computed from NONZERO eligible days only, so zero days don't drag
+  -- the reference value down (which would make near-zero noise look "normal").
+  SELECT DISTINCT store, item,
+    PERCENTILE_CONT(usage_units, 0.5) OVER (PARTITION BY store, item) AS med_nonzero
   FROM elig_recent
+  WHERE usage_units > 0
 ),
-stat2 AS (
-  SELECT *,
-    PERCENTILE_CONT(ABS(usage_units - med_usage), 0.5)
-      OVER (PARTITION BY store, item) AS mad
-  FROM stat
+scored_clean AS (
+  SELECT e.*, s.med_nonzero,
+    (e.usage_units = 0)                                                    AS is_zero_usage,
+    (e.usage_units > 0 AND s.med_nonzero IS NOT NULL
+      AND e.usage_units < 0.20 * s.med_nonzero)                            AS is_low_outlier
+  FROM elig_recent e
+  LEFT JOIN nonzero_stats s USING (store, item)
 ),
-scored_outlier AS (
+-- ── High-side robust-z over the low-filtered survivors ──────────────────────
+hi_med AS (
   SELECT *,
-    (elig_n >= 5
-     AND mad > 0
-     AND ABS(SAFE_DIVIDE(usage_units - med_usage, 1.4826 * mad)) > 2.5
-    ) AS is_outlier
-  FROM stat2
+    PERCENTILE_CONT(usage_units, 0.5) OVER (PARTITION BY store, item) AS med_surv
+  FROM scored_clean
+  WHERE NOT is_zero_usage AND NOT is_low_outlier
+),
+hi_mad AS (
+  SELECT *,
+    PERCENTILE_CONT(ABS(usage_units - med_surv), 0.5)
+      OVER (PARTITION BY store, item) AS mad_surv
+  FROM hi_med
+),
+hi_scored AS (
+  SELECT *,
+    (mad_surv > 0
+     AND SAFE_DIVIDE(usage_units - med_surv, 1.4826 * mad_surv) > 2.5) AS is_high_outlier
+  FROM hi_mad
 ),
 ranked_dow AS (
-  -- Per weekday (Mon-Sun), keep only the most recent non-outlier eligible transition.
-  -- Prevents "two Fridays" and filters anomalous readings from the average.
+  -- Per weekday (Mon-Sun), keep only the most recent day surviving both filters.
+  -- Prevents "two Fridays" and drops zero/near-zero lows + robust-z high spikes.
   SELECT *,
     ROW_NUMBER() OVER (
       PARTITION BY store, item, EXTRACT(DAYOFWEEK FROM submitted_date)
       ORDER BY submitted_date DESC
     ) AS dow_rn
-  FROM scored_outlier
-  WHERE NOT is_outlier
+  FROM hi_scored
+  WHERE NOT is_high_outlier
 ),
 last7 AS (
   -- Aggregate across up to 7 unique weekdays (most recent eligible non-outlier day each)
@@ -170,9 +189,6 @@ excluded_recent AS (
           FORMAT_DATE('%m/%d', submitted_date), FORMAT_DATE('%a', submitted_date),
           DATE_DIFF(submitted_date, prev_date, DAY) - 1,
           FORMAT_DATE('%m/%d', prev_date))
-      WHEN COALESCE(prev_was_restock, FALSE) THEN
-        FORMAT('%s %s: post-restock (first reading after refill, unreliable)',
-          FORMAT_DATE('%m/%d', submitted_date), FORMAT_DATE('%a', submitted_date))
       WHEN COALESCE(orders_on_day, 0) = 0 THEN
         FORMAT('%s %s: closed',
           FORMAT_DATE('%m/%d', submitted_date), FORMAT_DATE('%a', submitted_date))
@@ -187,15 +203,30 @@ excluded_recent AS (
     AND prev_close IS NOT NULL
     AND submitted_date >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 30 DAY)
 ),
-outlier_recent AS (
-  -- Eligible transitions excluded as statistical outliers (last 30 days).
+low_usage_recent AS (
+  -- Eligible transitions dropped by the low-usage filter (zero or < 20% of
+  -- the item's nonzero median), within the same 30-day window they're computed over.
   SELECT store, item, submitted_date,
-    FORMAT('%s %s: outlier (%.2f vs med %.2f)',
+    CASE
+      WHEN is_zero_usage THEN
+        FORMAT('%s %s: zero usage (likely reporting gap)',
+          FORMAT_DATE('%m/%d', submitted_date), FORMAT_DATE('%a', submitted_date))
+      ELSE
+        FORMAT('%s %s: low outlier (%.2f vs med %.2f, <20%%)',
+          FORMAT_DATE('%m/%d', submitted_date), FORMAT_DATE('%a', submitted_date),
+          usage_units, med_nonzero)
+    END AS excl_note
+  FROM scored_clean
+  WHERE (is_zero_usage OR is_low_outlier)
+),
+high_usage_recent AS (
+  -- Survivors of the low filter dropped as high-side robust-z outliers.
+  SELECT store, item, submitted_date,
+    FORMAT('%s %s: high outlier (%.2f vs med %.2f)',
       FORMAT_DATE('%m/%d', submitted_date), FORMAT_DATE('%a', submitted_date),
-      usage_units, med_usage) AS excl_note
-  FROM scored_outlier
-  WHERE is_outlier
-    AND submitted_date >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 30 DAY)
+      usage_units, med_surv) AS excl_note
+  FROM hi_scored
+  WHERE is_high_outlier
 ),
 exclusions AS (
   SELECT store, item,
@@ -203,7 +234,9 @@ exclusions AS (
   FROM (
     SELECT store, item, submitted_date, excl_note FROM excluded_recent WHERE excl_note IS NOT NULL
     UNION ALL
-    SELECT store, item, submitted_date, excl_note FROM outlier_recent
+    SELECT store, item, submitted_date, excl_note FROM low_usage_recent
+    UNION ALL
+    SELECT store, item, submitted_date, excl_note FROM high_usage_recent
   ) combined
   GROUP BY store, item
 )

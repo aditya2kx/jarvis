@@ -39,7 +39,7 @@ Do NOT ask whether to babysit — just do it.
 
 ## PROGRESS.md discipline
 
-`PROGRESS.md` changes land only via PR; never `git push origin main` — enforced by `check_no_main_progress_push.py` (wired as a `verify.py` gate and optionally as a `pre-push` git hook). After merge, the retrospective agent picks up the `pr_merged` signal from the worktree inbox and writes the dated `PROGRESS.md` entry in the retro chat.
+`PROGRESS.md` changes land only via PR; never `git push origin main` — enforced by `check_no_main_progress_push.py` (wired as a `verify.py` gate and optionally as a `pre-push` git hook). After merge, the retrospective agent picks up the `pr_merged` signal from the worktree inbox and runs a **retro jam** (plan → follow-up issues) with the operator; any `PROGRESS.md` entry lands via its own follow-up PR (never a direct main push).
 
 ## Reminders
 

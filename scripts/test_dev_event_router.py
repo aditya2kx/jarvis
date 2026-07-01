@@ -241,8 +241,59 @@ class TestDrain(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestCommentSignal(unittest.TestCase):
+    """Comment events → address_comment kind; allowlist enforced."""
+
+    def test_comment_from_allowed_author_delivered(self):
+        branch = "fix/test-comment-ok"
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = Path(tmp) / "metrics" / "pr_cost"
+            _make_cache(tmp, branch)
+            with patch.object(R, "METRICS_DIR", mdir):
+                result = R.route_signal(
+                    _signal("comment", branch, comment_url="https://github.com/test/1"),
+                    author="aditya2kx",
+                )
+                self.assertEqual(result, "delivered")
+                inbox = mdir / f"session-{R._slug(branch)}-pending.jsonl"
+                record = json.loads(inbox.read_text().strip())
+                self.assertEqual(record["kind"], "address_comment")
+
+    def test_comment_unauthorized_author(self):
+        branch = "fix/test-comment-bad"
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = Path(tmp) / "metrics" / "pr_cost"
+            _make_cache(tmp, branch)
+            with patch.object(R, "METRICS_DIR", mdir):
+                result = R.route_signal(
+                    _signal("comment", branch),
+                    author="random-outsider",
+                )
+        self.assertEqual(result, "unauthorized")
+
+    def test_comment_no_author_passes_through(self):
+        """Comment signals with no author pass through — workflow is the primary gate."""
+        branch = "fix/test-comment-noauth"
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = Path(tmp) / "metrics" / "pr_cost"
+            _make_cache(tmp, branch)
+            with patch.object(R, "METRICS_DIR", mdir):
+                result = R.route_signal(_signal("comment", branch), author=None)
+        self.assertEqual(result, "delivered")
+
+    def test_ci_failed_still_works_without_author(self):
+        """CI signals are NOT gated by author even after the comment change."""
+        branch = "fix/test-ci-no-author-post-comment"
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = Path(tmp) / "metrics" / "pr_cost"
+            _make_cache(tmp, branch)
+            with patch.object(R, "METRICS_DIR", mdir):
+                result = R.route_signal(_signal("ci_failed", branch))
+        self.assertEqual(result, "delivered")
+
+
 class TestWorkflowYamlValid(unittest.TestCase):
-    """Smoke-check that jarvis-dev-signals.yml is valid YAML when it exists."""
+    """Smoke-check that jarvis-dev-signals.yml is valid YAML and has expected jobs."""
 
     def test_workflow_yaml_parses(self):
         import yaml  # type: ignore
@@ -250,6 +301,26 @@ class TestWorkflowYamlValid(unittest.TestCase):
         if not wf.exists():
             self.skipTest("jarvis-dev-signals.yml not yet written (M3)")
         yaml.safe_load(wf.read_text())
+
+    def test_comment_signal_job_exists(self):
+        import yaml  # type: ignore
+        wf = Path(__file__).parent.parent / ".github" / "workflows" / "jarvis-dev-signals.yml"
+        if not wf.exists():
+            self.skipTest("jarvis-dev-signals.yml not yet written")
+        data = yaml.safe_load(wf.read_text())
+        jobs = data.get("jobs", {})
+        self.assertIn("comment-signal", jobs, "comment-signal job must exist in jarvis-dev-signals.yml")
+
+    def test_comment_signal_loop_guard(self):
+        """The comment-signal if: must exclude comments that already contain 'jarvis-signal'."""
+        import yaml  # type: ignore
+        wf = Path(__file__).parent.parent / ".github" / "workflows" / "jarvis-dev-signals.yml"
+        if not wf.exists():
+            self.skipTest("jarvis-dev-signals.yml not yet written")
+        data = yaml.safe_load(wf.read_text())
+        job_if = data["jobs"]["comment-signal"].get("if", "")
+        self.assertIn("jarvis-signal", job_if,
+                      "loop guard (!contains(... 'jarvis-signal')) must be in comment-signal if:")
 
 
 if __name__ == "__main__":

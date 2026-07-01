@@ -47,7 +47,12 @@ EVENT_KIND: dict[str, str] = {
     "ci_other": "ci_status",
     "pr_merged": "retrospective",
     "intake": "intake",
+    "comment": "address_comment",
 }
+
+# Events that require an allowlisted author when an author is supplied.
+# CI/merge events are emitted by trusted GH Actions workflows (no user-comment gate needed).
+AUTHOR_GATED_EVENTS = {"intake", "comment"}
 
 
 # ---------------------------------------------------------------------------
@@ -164,15 +169,21 @@ def route_signal(
         duplicate     — signal id already in delivered_signals; skipped
         debounced     — ci_failed within DEBOUNCE_WINDOW_SEC of previous; skipped
         unrouted      — no phase cache for this branch (branch not tracked locally)
-        unauthorized  — intake signal from non-allowlisted author
+        unauthorized  — intake/comment signal from non-allowlisted author
     """
     branch = signal.get("branch")
     sid = signal.get("id")
     event = signal.get("event")
     now = now or time.time()
 
-    # Intake is gated by author allowlist; CI/merge signals come from trusted workflows
+    # Intake/comment signals are gated by author allowlist.
+    # Intake: no author == unauthorized (strict; the router is the primary gate).
+    # Comment: reject only when author is explicitly provided and not allowlisted
+    #          (the workflow is the primary gate; no-author comment passes through).
+    # CI/merge signals come from trusted GH Actions workflows (no author gate).
     if event == "intake" and author not in ALLOWED_AUTHORS:
+        return "unauthorized"
+    if event == "comment" and author is not None and author not in ALLOWED_AUTHORS:
         return "unauthorized"
 
     if not branch:

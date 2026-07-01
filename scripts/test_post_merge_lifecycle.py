@@ -210,6 +210,75 @@ class TestEmitSignalCLI(unittest.TestCase):
         self.assertEqual(parsed["event"], "pr_merged")
         self.assertEqual(parsed["id"], "fixed-uuid")
 
+    def test_emit_signal_comment_url_round_trips(self):
+        """--comment-url must appear in parsed payload as comment_url."""
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = PML.main([
+                "emit-signal", "--event", "comment",
+                "--branch", "fix/test-branch",
+                "--issue", "115",
+                "--signal-id", "fixed-uuid-2",
+                "--comment-url", "https://github.com/foo/bar/issues/115#issuecomment-999",
+            ])
+        self.assertEqual(rc, 0)
+        out = buf.getvalue().strip()
+        parsed = PML.parse_signal(out)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["event"], "comment")
+        self.assertEqual(parsed["comment_url"],
+                         "https://github.com/foo/bar/issues/115#issuecomment-999")
+
+
+class TestFindBranchForIssue(unittest.TestCase):
+    def test_finds_branch_from_seeded_cache(self):
+        branch = "fix/test-find-branch"
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = os.path.join(tmp, "metrics", "pr_cost")
+            os.makedirs(mdir)
+            slug = PML._slug(branch)
+            cache = os.path.join(mdir, f"session-{slug}-phase.json")
+            open(cache, "w").write(json.dumps({"branch": branch, "issue": 77}))
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmp}):
+                result = PML.find_branch_for_issue(77)
+        self.assertEqual(result, branch)
+
+    def test_returns_none_when_not_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmp}):
+                result = PML.find_branch_for_issue(999)
+        self.assertIsNone(result)
+
+    def test_find_branch_cli_prints_branch(self):
+        branch = "fix/test-find-branch-cli"
+        with tempfile.TemporaryDirectory() as tmp:
+            import io
+            from contextlib import redirect_stdout
+            mdir = os.path.join(tmp, "metrics", "pr_cost")
+            os.makedirs(mdir)
+            slug = PML._slug(branch)
+            cache = os.path.join(mdir, f"session-{slug}-phase.json")
+            open(cache, "w").write(json.dumps({"branch": branch, "issue": 88}))
+            buf = io.StringIO()
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmp}):
+                with redirect_stdout(buf):
+                    rc = PML.main(["find-branch", "--issue", "88"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(buf.getvalue().strip(), branch)
+
+    def test_find_branch_cli_none_on_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            import io
+            from contextlib import redirect_stdout
+            buf = io.StringIO()
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmp}):
+                with redirect_stdout(buf):
+                    rc = PML.main(["find-branch", "--issue", "9999"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(buf.getvalue().strip(), "none")
+
 
 if __name__ == "__main__":
     unittest.main()

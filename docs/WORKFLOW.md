@@ -288,8 +288,13 @@ operator always knows where to input.
 6. Posts a retrospective prompt (speed / cost / accuracy grading checklist) on the issue.
 
 The **retrospective** is always agent-driven in a follow-up chat (CI cannot read local transcripts).
-The agent reads the PR conversation + transcripts, grades the cycle, proposes ≥1 process improvement,
-runs preference candidates through the user-model guardrail, then closes the issue.
+The agent reads the PR conversation + transcripts, **grades the cycle in a retro plan (Plan mode),
+jams it with the operator**, proposes ≥1 process improvement as follow-up GitHub issues, runs
+preference candidates through the user-model guardrail, then closes the tracking issue.
+
+> **No direct `PROGRESS.md` push on the merged branch** — `check_no_main_progress_push.py` blocks it.
+> Any PROGRESS entry lands via a follow-up issue / its own PR.
+
 See `self-drive.mdc` § Retrospective protocol for the full sequence.
 
 ### Ship-emoji force-merge
@@ -388,6 +393,17 @@ GH Action (check_suite / issue_comment / pr-merged-lifecycle)
   → Cursor hooks / catch-up drain → agent handles event
 ```
 
+### Event → kind mapping
+
+| Signal event | Router kind | Trigger | Notes |
+|---|---|---|---|
+| `ci_failed` | `babysit_ci` | `check_suite.completed` failure | Debounced (5 min) |
+| `ci_passed` | `ci_green` | `check_suite.completed` success | — |
+| `ci_other` | `ci_status` | `check_suite.completed` other | — |
+| `pr_merged` | `retrospective` | `pr-merged-lifecycle.yml` | Triggers retro jam flow |
+| `intake` | `intake` | `/jarvis-new-task` comment | Allowlist-gated; no debounce |
+| `comment` | `address_comment` | Operator comment on any issue/PR | Allowlist-gated (workflow primary gate); loop-safe |
+
 ### New scripts
 
 | Script | Role |
@@ -441,8 +457,8 @@ Wired as a `verify.py` gate (`progress-push-guard`). Blocks pushes that target `
 
 | Workflow | Change |
 |---|---|
-| `pr-merged-lifecycle.yml` | Added `Emit pr_merged signal` step after "Link PR to tracking issue" |
-| `jarvis-dev-signals.yml` (new) | `check_suite`, `issue_comment` (production, post-merge) + label-gated `pull_request` (pre-merge evidence via `dev-signals` label) |
+| `pr-merged-lifecycle.yml` | Added `Emit pr_merged signal` step; retrospective prompt now instructs jam→plan→issues flow (no direct `PROGRESS.md` write) |
+| `jarvis-dev-signals.yml` (new) | `check_suite` → CI signals; `issue_comment` → `intake-signal` (/jarvis-new-task) + `comment-signal` (operator comments, loop-safe); label-gated `pull_request` → pre-merge evidence |
 
 ## 9. Deferred roadmap (out of scope for this PR)
 

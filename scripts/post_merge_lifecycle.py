@@ -211,6 +211,35 @@ def parse_post_merge_block(pr_body: str) -> list[PostMergeCommand]:
 # CLI
 # ---------------------------------------------------------------------------
 
+def find_branch_for_issue(issue: int) -> str | None:
+    """Reverse of find_tracking_issue: scan phase caches for issue==N -> branch.
+
+    Returns None when no local cache maps to the given issue number.
+    """
+    import glob as _glob
+    for p in _glob.glob(os.path.join(_metrics_dir(), "session-*-phase.json")):
+        try:
+            d = json.loads(open(p).read())
+            if d.get("issue") and int(d["issue"]) == int(issue):
+                return d.get("branch") or None
+        except Exception:
+            continue
+    return None
+
+
+def _cmd_find_branch(argv: list[str]) -> int:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--issue", required=True, type=int)
+    args = ap.parse_args(argv)
+    b = find_branch_for_issue(args.issue)
+    if b:
+        print(b)
+        return 0
+    print("none")
+    return 1
+
+
 def _cmd_find_issue(argv: list[str]) -> int:
     import argparse
     ap = argparse.ArgumentParser()
@@ -298,24 +327,30 @@ def _cmd_emit_signal(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(
         description="Print a jarvis-signal HTML comment for embedding in a GH issue comment."
     )
-    ap.add_argument("--event", required=True, help="Event name (ci_failed, ci_passed, pr_merged, intake, …)")
+    ap.add_argument("--event", required=True, help="Event name (ci_failed, ci_passed, pr_merged, intake, comment, …)")
     ap.add_argument("--branch", required=True)
     ap.add_argument("--pr", type=int, default=None)
     ap.add_argument("--issue", type=int, default=None)
     ap.add_argument("--signal-id", default=None, help="Override the UUID (useful for tests/idempotency)")
+    ap.add_argument("--comment-url", default=None, help="URL of the originating comment (for comment events)")
     args = ap.parse_args(argv)
+    extra: dict = {}
+    if args.comment_url:
+        extra["comment_url"] = args.comment_url
     print(format_signal(
         args.event,
         args.branch,
         pr=args.pr,
         issue=args.issue,
         signal_id=args.signal_id,
+        **extra,
     ))
     return 0
 
 
 _COMMANDS = {
     "find-issue": _cmd_find_issue,
+    "find-branch": _cmd_find_branch,
     "parse-post-merge": _cmd_parse_post_merge,
     "emit-signal": _cmd_emit_signal,
 }

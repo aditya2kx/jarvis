@@ -1,11 +1,12 @@
 name: Jarvis dev signals
 
-# Emit jarvis-signal comments on tracking issues when CI completes or
-# a /jarvis-new-task comment is posted.
+# Emit jarvis-signal comments on tracking issues when CI completes,
+# a /jarvis-new-task comment is posted, or the operator leaves a comment.
 #
 # Production triggers:
 #   check_suite.completed  → ci_failed / ci_passed / ci_other
 #   issue_comment.created  → intake (/jarvis-new-task, allowlisted authors only)
+#                          → comment  (operator comment on any issue/PR, loop-safe)
 #
 # IMPORTANT: check_suite and issue_comment workflows resolve from the DEFAULT
 # BRANCH (main), so they only fire once this workflow is merged.
@@ -129,6 +130,57 @@ jobs:
           IBODY="Intake signal queued from \`${AUTHOR}\`: \`${BODY:0:120}\`."$'\n\n'"${SIG}"
           gh issue comment "$ISSUE" --repo "$REPO" \
             --body "$IBODY" || echo "::warning::could not post intake signal on issue #$ISSUE"
+
+  # ── Operator comment signal (any issue/PR comment from aditya2kx) ───────────
+  # Loop guard: skip comments that already contain 'jarvis-signal' so the
+  # emitted acknowledgement reply never re-triggers this job.
+  comment-signal:
+    name: Emit comment signal
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.comment.user.login == 'aditya2kx' &&
+      !startsWith(github.event.comment.body, '/jarvis-new-task') &&
+      !contains(github.event.comment.body, 'jarvis-signal')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ADMIN_PAT }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Emit comment signal
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+          CURL: ${{ github.event.comment.html_url }}
+          IS_PR: ${{ toJson(github.event.issue.pull_request) }}
+        run: |
+          # Resolve branch: for PR comments use the PR's head branch;
+          # for issue comments reverse-lookup via phase cache.
+          if [ "$IS_PR" != "null" ]; then
+            BRANCH="$(gh pr view "$ISSUE" --repo "$REPO" --json headRefName -q .headRefName 2>/dev/null || true)"
+          else
+            BRANCH="$(python3 scripts/post_merge_lifecycle.py find-branch --issue "$ISSUE" || true)"
+          fi
+          if [ -z "$BRANCH" ] || [ "$BRANCH" = "none" ]; then
+            echo "No branch mapped to issue/PR #$ISSUE — skipping comment signal."
+            exit 0
+          fi
+
+          SIG="$(python3 scripts/post_merge_lifecycle.py emit-signal \
+            --event comment \
+            --branch "$BRANCH" \
+            --issue "$ISSUE" \
+            --comment-url "$CURL" || true)"
+
+          CBODY="Comment routed to worktree for \`${BRANCH}\`."$'\n\n'"${SIG}"
+          gh issue comment "$ISSUE" --repo "$REPO" \
+            --body "$CBODY" || echo "::warning::could not post comment signal on issue #$ISSUE"
 
   # ── Pre-merge evidence: dev-signals label-gated (runs from PR head) ──────────
   # This job resolves from the PR head/merge ref, so it fires on THIS branch

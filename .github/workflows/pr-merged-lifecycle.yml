@@ -262,21 +262,21 @@ PYEOF
           ISSUE_N="${{ steps.issue.outputs.issue_number }}"
           gh issue comment "$ISSUE_N" --repo "$REPO" --body "### Retrospective prompt — PR #${PR}
 
-The agent should open a follow-up chat, read the PR conversation + any relevant agent transcripts, and write a \`PROGRESS.md\` entry with:
+The agent should open a follow-up chat, read the PR conversation + any relevant agent transcripts, then **run a retro jam with the operator** (Plan mode → retro plan → follow-up issues). Do NOT write \`PROGRESS.md\` directly on the merged branch — the branch is gone and the push guard blocks main.
 
-**Grade the dev cycle (1-5 for each axis):**
+**Grade the dev cycle (jam with operator in Plan mode, three axes):**
 - [ ] **Speed** — was the jam→merge cycle faster or slower than expected? What was the bottleneck?
 - [ ] **Cost** — did model routing (Sonnet/Opus) match the plan? Any unnecessary Opus escalations?
 - [ ] **Accuracy** — did the implementation match the agreed §4 evidence exactly? Any rework loops?
 
 **Concrete improvement (at least one):**
-- [ ] Propose one specific change to the dev process, workflow, or rules that would improve future PRs.
+- [ ] Propose one specific change to the dev process, workflow, or rules that would improve future PRs. Open a GitHub issue for each (\`gh issue create --label jarvis-work\`). If a \`PROGRESS.md\` entry is warranted, it becomes one of these follow-up issues / its own PR.
 
 **Preference harvest:**
 - [ ] Scan the PR conversation for operator signal phrases (always/never/prefer/in general). Run candidates through \`python -m skills.user_model.guardrail score \"<text>\"\` and propose \`store.add_preference\` for passers (operator y/n).
 
-**After writing PROGRESS.md and recording any new preferences:**
+**After operator alignment on the retro plan and creating follow-up issues:**
 \`\`\`bash
 python3 scripts/phase_state.py advance --branch ${BRANCH} --to retrospective
-gh issue close ${ISSUE_N} --comment \"Retrospective complete — see PROGRESS.md entry $(date -u +%Y-%m-%d).\"
+gh issue close ${ISSUE_N} --comment \"Retrospective complete — follow-up issues: #X, #Y.\"
 \`\`\`" || echo "::warning::Could not post retrospective prompt"

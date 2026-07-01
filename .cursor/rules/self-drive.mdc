@@ -28,17 +28,20 @@ the GitHub issue.  Do not attempt to self-advance past these gates.
 - Run `verify.py --full` before pushing
 - Create/update the PR, populate §4 evidence, and babysit to green
 - Advance phase state after each completed substep
-- Verify post-merge state and write the retrospective to `PROGRESS.md`
+- Verify post-merge state and run the retrospective **jam** (Plan mode → retro plan → follow-up issues); never a direct `PROGRESS.md` write on the merged branch.
 
 ## Retrospective protocol (post-merge-verify → retrospective)
 
 After merge, `pr-merged-lifecycle.yml` runs the §4 post-merge commands and posts a retrospective prompt on the tracking issue.  The agent **must** pick this up in a follow-up chat and:
 
 1. **Read** the PR conversation + relevant agent transcripts in `~/.cursor/projects/*/agent-transcripts/`.
-2. **Grade the dev cycle** along three axes and write a dated `PROGRESS.md` entry:
+2. **Grade the dev cycle** along three axes and capture the findings in a **retro plan** (Plan mode / `CreatePlan`) — **jam it with the operator in chat, do not write `PROGRESS.md` directly**:
    - **Speed** — jam→merge cycle time vs expectation; identify the bottleneck.
    - **Cost** — model routing compliance (Sonnet/Opus); unnecessary escalations.
    - **Accuracy** — did implementation match the §4 evidence contract exactly?  Rework loops?
+
+   > The branch is already merged; `check_no_main_progress_push.py` blocks direct main pushes.
+   > If a `PROGRESS.md` entry is warranted, it becomes one of the follow-up issues / its own PR.
 3. **Propose ≥1 concrete dev-process improvement** derived from the retro and **open a GitHub follow-up issue** for each accepted improvement (`gh issue create --label jarvis-work`).
 4. **Preference harvest** — scan PR conversation + transcripts for operator signal phrases
    (`always`, `never`, `prefer`, `in general`, `next time`, `I want`).  Run candidates through:
@@ -46,10 +49,10 @@ After merge, `pr-merged-lifecycle.yml` runs the §4 post-merge commands and post
    python -m skills.user_model.guardrail score "<candidate text>"
    ```
    Propose `store.add_preference` for each that scores ≥ 4/6 (operator y/n in chat).
-5. **Jam the retro findings with the operator in chat and get a go-ahead** before closing — do not auto-close on merge (the `pr-merged-lifecycle.yml` retrospective prompt is the trigger, not the close). Then **close the issue** and advance retrospective:
+5. **Close the issue** and advance retrospective after operator alignment on the retro plan:
    ```bash
    python3 scripts/phase_state.py advance --branch <branch> --to retrospective
-   gh issue close <N> --comment "Retrospective complete — see PROGRESS.md entry <date>."
+   gh issue close <N> --comment "Retrospective complete — follow-up issues: #X, #Y."
    ```
 
 If a phase is taking longer than expected, fail it: `phase_state.py fail --branch <b> --reason "..."`.

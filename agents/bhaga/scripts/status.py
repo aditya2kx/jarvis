@@ -133,6 +133,7 @@ GRAFANA_VIEWS: list[Target] = [
     # contract.  See dashboard URL printed in output.
     Target("vw_daily_sales", "date_local"),
     Target("vw_labor_daily", "date"),
+    Target("vw_labor_weekly", "week_start"),  # panel 38 — Weekly Shift Hours per Person
     Target("vw_tips_by_hour", "date_local"),
     Target("vw_sales_labor_daily", "date_local"),
     Target("vw_model_labor_daily", "date"),

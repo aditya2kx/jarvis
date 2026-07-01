@@ -1,0 +1,24 @@
+name: PR Base Branch
+
+# HARD gate: every PR must target `main`. Prevents the 2026-07-01 incident where
+# `gh pr create` (no --base flag) silently targeted a drifted repo default
+# branch (a long-lived feature branch) instead of `main`, and the PR auto-merged
+# there instead. See scripts/check_repo_default_branch.py for the root-cause
+# check (repo default-branch drift) — this workflow is the second line of
+# defense that catches ANY wrong-base PR regardless of cause.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  check:
+    name: PR Base Branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify base branch is main
+        run: |
+          if [ "${{ github.event.pull_request.base.ref }}" != "main" ]; then
+            echo "::error::PR #${{ github.event.pull_request.number }} targets '${{ github.event.pull_request.base.ref }}', not 'main'. Every PR in this repo must target main (branch -> PR -> CI -> operator squash-merge). If this is intentional (e.g. a deliberate stacked PR), an operator must override this check manually; the agent must not merge against a non-main base."
+            exit 1
+          fi
+          echo "OK — base branch is main."

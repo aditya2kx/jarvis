@@ -14,7 +14,7 @@ Do NOT ask whether to babysit — just do it.
 
 0. **Check for open PRs first** → `gh pr list --state open`. If a PR from this session is still open, push the new changes to **that** branch instead of opening a second PR. Never have two in-flight PRs from the same session.
 1. **Install the cost hook (once per clone/worktree)** → `bash scripts/install-git-hooks.sh`. The `pre-commit` hook captures review cost into BigQuery on each commit. No `git add`, no staged files.
-2. **Create PR** → `gh pr create …`
+2. **Create PR** → `gh pr create --base main …` — **always pass `--base main` explicitly, never rely on the default.** `gh pr create` with no `--base` targets the repo's *configured* default branch, which can silently drift away from `main` (incident 2026-07-01: PR #119 auto-merged into a stale feature branch because the repo default branch had been misconfigured — `git log` on the working branch looked correct throughout, so the only symptom was the PR's `baseRefName`). `scripts/check_repo_default_branch.py` (wired into `verify.py --full`) and the `pr-base-branch.yml` CI gate are the two mechanical backstops; `--base main` is the first line of defense and costs nothing to type.
 3. **Seed cost ledger (BQ)** → `pr_cost_ledger.py set-meta --pr N --branch <branch>`, then record build cost (`record-build` or `capture-build`) into BQ so `validate --require-build` passes. **Do NOT commit `metrics/pr_cost/`** — the ledger is now in BQ, not git. Zero build cost is a hard failure.
 4. **Babysit immediately** — read `/Users/adiniekkajj/.cursor/skills-cursor/babysit/SKILL.md` and follow it using the **batch loop** (each completed push triggers a paid Claude Opus review; minimise push count):
    - **Collect all signals first** → `python3 scripts/pr_triage.py --pr N` enumerates every blocking item in one pass: unresolved inline threads (by author class), failing CI checks, merge/behind-base status, Claude verdict + evidence-confidence score.
@@ -23,7 +23,7 @@ Do NOT ask whether to babysit — just do it.
    - **Push once** — one commit, one push. This triggers exactly one paid Opus re-review.
    - **Re-collect once** → re-run `pr_triage.py` after the review completes. Only loop again if genuinely new blocking signals appear; do not nitpick-loop on already-approved code.
 5. **Wait for operator approval** — do NOT arm auto-merge. Auto-merge is operator-only (`gh pr merge N --auto --squash` is run by the operator after they approve, not by the agent). The agent's job ends at "all checks green, all comments replied, no conflicts" — then hand back to the operator.
-6. **Confirm merged** → verify `state == MERGED` before ending the session
+6. **Confirm merged** → verify `state == MERGED` **and** `baseRefName == main` (`gh pr view N --json state,baseRefName`) before ending the session. A merge into any other base is a failure even if `state == MERGED`.
 7. **Post-merge pull + verify** — after confirmed merged:
    - `git -C /Users/adiniekkajj/Documents/build-workspace/jarvis pull` to bring the squash commit into the main working copy.
    - CI's `pr-cost-finalize.yml` writes `merged_at` + final review cost to BQ automatically.

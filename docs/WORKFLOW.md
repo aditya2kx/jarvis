@@ -434,7 +434,7 @@ Human-readable summary above; machine block in HTML comment (greppable, idempote
 | Hook | Script | Behavior |
 |---|---|---|
 | `beforeSubmitPrompt` | `mark_busy.sh` | Write `state=busy` + heartbeat to status lock |
-| `stop` | `drain.sh` | Mark idle; if `LOCAL_EVENT_AUTO_DISPATCH≠0` and inbox non-empty, pop oldest event and return `followup_message` (warm zero-click drain) |
+| `stop` | `drain.sh` | Mark idle; if `LOCAL_EVENT_AUTO_DISPATCH≠0` and inbox non-empty, pop oldest event and return `followup_message` (warm zero-click drain). Real output: `{"followup_message": "[AUTO-DISPATCH] New requirement intake signal received.\n\nEvent: {…}\n\nRun: python3 scripts/new_requirement.py …"}` |
 | `sessionStart` | `announce_pending.sh` | Surface pending event count as context |
 
 ### Feature flags

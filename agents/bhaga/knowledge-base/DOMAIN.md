@@ -431,6 +431,13 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 |---|---|---|---|
 | `vw_review_bonus_detail` | one row per paid review | `post_ts_ct`, `post_date_ct`, `reviewer`, `rating`, `comment`, `review_url`, `employees_considered` (`shift_members`), `member_count`, `per_employee_bonus`, `total_bonus`, `shift_date_credited`, `shift_assignment_reason` | Per-review payroll detail. Filter: `total_bonus > 0` (only reviews that generated a bonus). `per_employee_bonus = ROUND(total_bonus / member_count, 2)`. Pool mode: equals `base_credit_each`. Backs Grafana "6. Payroll" panel "Google Reviews accounted for in Payroll". |
 
+**Migration 027 additions** (`core/migrations/027_inventory_closing.sql`):
+
+| BQ table / view | Grain | Key columns | Purpose |
+|---|---|---|---|
+| `inventory_closing_daily` | one row per (store, task, field) | `store`, `submitted_date` (DATE CT), `submitted_ts` (UTC TIMESTAMP), `source_task_id`, `category`, `item`, `field_id` (natural key deduplicator), `raw_text`, `quantity_units` (FLOAT64 normalized), `unit`, `parse_ok` (BOOL), `run_id`, `scraped_at_utc` | ClickUp "Closing" list inventory readings. Natural merge key: `(store, source_task_id, field_id)`. Partitioned by `submitted_date`. Populated by `ingest_inventory.py` (nightly non-fatal step). |
+| `vw_inventory_base_latest_daily` | one row per (store, submitted_date, item) | `store`, `submitted_date`, `item`, `quantity_units`, `raw_text`, `submitted_ts`, `parse_ok` | Latest closing-form reading per base per day (`ROW_NUMBER` dedup, `category='base'`). Backs Grafana "8. Order Assistant" panels 78+79. |
+
 ---
 
 ## 7. Forecast — `model_forecast_daily` (BQ-authoritative, 2026-06-09)

@@ -167,6 +167,40 @@
         "description": "Target p95 per-order KDS prep time in minutes; drawn as a dashed baseline on the KDS Time per Item chart."
       },
       {
+        "name": "oa_ship_days",
+        "label": "Order Assistant: Shipping Lead (days)",
+        "type": "textbox",
+        "current": {
+          "value": "10"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "10",
+            "value": "10"
+          }
+        ],
+        "hide": 0,
+        "description": "Shipping lead time in days for the Order Recommendation table. Projected on-hand at arrival = current_qty - oa_ship_days * avg_per_day."
+      },
+      {
+        "name": "oa_max_tubs",
+        "label": "Order Assistant: Max Capacity (tubs)",
+        "type": "textbox",
+        "current": {
+          "value": "120"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "120",
+            "value": "120"
+          }
+        ],
+        "hide": 0,
+        "description": "Maximum tubs allowed in the shop at any time. Order quantities are capped so total stock after restock does not exceed this ceiling."
+      },
+      {
         "name": "ds_bigquery",
         "label": "BigQuery Datasource",
         "type": "datasource",
@@ -2647,15 +2681,30 @@
       "panels": []
     },
     {
-      "id": 78,
-      "type": "timeseries",
-      "title": "Base Inventory — Daily Closing Stock (tubs per base)",
-      "description": "Each line is one HQ base from the daily ClickUp closing form. Source: vw_inventory_base_latest_daily.",
+      "id": 80,
+      "type": "text",
+      "title": "Order Recommendation — Methodology",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 201
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**How orders are computed**\n\n- **Projection:** stock available when the order arrives = `max(0, current_qty − oa_ship_days × avg_per_day)`. Adjust the `Order Assistant: Shipping Lead` variable above.\n- **Budget:** `floor(oa_max_tubs − Σ projected_on_hand_all_bases)` whole tubs available to order. Adjust the `Order Assistant: Max Capacity` variable above.\n- **Allocation (max-min water-fill):** each tub in the budget goes to the base with the lowest post-restock days-of-coverage at that moment, maximising the shop's overall runway (the base that runs out first).\n- **Blade:** delivered directly — not ordered, but its projected on-hand counts against the capacity ceiling."
+      }
+    },
+    {
+      "id": 81,
+      "type": "table",
+      "title": "Order Recommendation — What to Order Now",
+      "description": "Per-base order recommendation for the next replenishment. Lead time and max capacity driven by the oa_ship_days / oa_max_tubs dashboard variables.",
       "gridPos": {
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 201
+        "y": 205
       },
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -2664,21 +2713,52 @@
       "targets": [
         {
           "refId": "A",
-          "format": 0,
+          "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT  TIMESTAMP(submitted_date, 'America/Chicago') AS time,  MAX(CASE WHEN item = 'Açaí'     THEN quantity_units END) AS `Açaí`,  MAX(CASE WHEN item = 'Coconut'  THEN quantity_units END) AS `Coconut`,  MAX(CASE WHEN item = 'Tropical' THEN quantity_units END) AS `Tropical`,  MAX(CASE WHEN item = 'Mango'    THEN quantity_units END) AS `Mango`,  MAX(CASE WHEN item = 'Pitaya'   THEN quantity_units END) AS `Pitaya`,  MAX(CASE WHEN item = 'Matcha'   THEN quantity_units END) AS `Matcha`,  MAX(CASE WHEN item = 'Ube'      THEN quantity_units END) AS `Ube`,  MAX(CASE WHEN item = 'Pog'      THEN quantity_units END) AS `Pog` FROM `jarvis-bhaga-prod.bhaga.vw_inventory_base_latest_daily` WHERE store = 'palmetto'   AND submitted_date >= DATE('$date_from')   AND parse_ok = TRUE GROUP BY submitted_date ORDER BY submitted_date"
+          "rawSql": "WITH oa AS (SELECT item, current_qty, COALESCE(avg_daily_usage,0) AS avg_daily_usage, GREATEST(current_qty - $oa_ship_days * COALESCE(avg_daily_usage,0), 0) AS on_hand_arrival FROM `jarvis-bhaga-prod.bhaga.vw_inventory_order_assistant` WHERE store = 'palmetto'), budget AS (SELECT GREATEST(CAST(FLOOR($oa_max_tubs - SUM(on_hand_arrival)) AS INT64), 0) AS tubs_budget FROM oa), candidates AS (SELECT o.item, (o.on_hand_arrival + k - 1) / o.avg_daily_usage AS sort_key FROM oa o CROSS JOIN UNNEST(GENERATE_ARRAY(1, GREATEST((SELECT tubs_budget FROM budget),1))) AS k WHERE o.item != 'Blade' AND o.avg_daily_usage > 0), ranked AS (SELECT item, ROW_NUMBER() OVER (ORDER BY sort_key ASC) AS rn FROM candidates), selected AS (SELECT item, COUNT(*) AS order_tubs FROM ranked WHERE rn <= (SELECT tubs_budget FROM budget) GROUP BY item), reco AS (SELECT o.item, o.current_qty, o.avg_daily_usage, ROUND(o.on_hand_arrival,2) AS on_hand_arrival, COALESCE(s.order_tubs,0) AS order_tubs, ROUND(o.on_hand_arrival + COALESCE(s.order_tubs,0),2) AS post_restock_qty, ROUND(SAFE_DIVIDE(o.on_hand_arrival + COALESCE(s.order_tubs,0), NULLIF(o.avg_daily_usage,0)),1) AS post_restock_days_left FROM oa o LEFT JOIN selected s USING (item)), combined AS (SELECT *, 0 AS _ord FROM reco UNION ALL SELECT 'TOTAL', ROUND(SUM(current_qty),2), ROUND(SUM(avg_daily_usage),2), ROUND(SUM(on_hand_arrival),2), SUM(order_tubs), ROUND(SUM(post_restock_qty),2), ROUND(SAFE_DIVIDE(SUM(post_restock_qty),NULLIF(SUM(avg_daily_usage),0)),1), 1 FROM reco) SELECT item AS Item, current_qty AS `Current Qty`, avg_daily_usage AS `Avg per day`, on_hand_arrival AS `On Hand in 10d`, order_tubs AS `Order Tubs`, post_restock_qty AS `After Restock`, post_restock_days_left AS `Days Left After Restock` FROM combined ORDER BY _ord ASC, current_qty DESC"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
-        }
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Item" },
+            "properties": [{ "id": "custom.width", "value": 110 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Current Qty" },
+            "properties": [{ "id": "custom.width", "value": 150 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Avg per day" },
+            "properties": [{ "id": "custom.width", "value": 150 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "On Hand in 10d" },
+            "properties": [{ "id": "custom.width", "value": 175 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Order Tubs" },
+            "properties": [{ "id": "custom.width", "value": 155 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "After Restock" },
+            "properties": [{ "id": "custom.width", "value": 155 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Days Left After Restock" },
+            "properties": [{ "id": "custom.width", "value": 230 }]
+          }
+        ]
       },
       "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+        "footer": {
+          "show": false
         }
       }
     },
@@ -2691,7 +2771,7 @@
         "h": 16,
         "w": 24,
         "x": 0,
-        "y": 211
+        "y": 215
       },
       "datasource": {
         "type": "grafana-bigquery-datasource",

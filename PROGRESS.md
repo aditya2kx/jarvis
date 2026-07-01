@@ -1,5 +1,16 @@
 # Jarvis Build Progress
 
+## 2026-07-01 — Order Assistant: order-recommendation table + Grafana variables (Issue #113, branch feat/i113-order-reco)
+
+**Scope:** new PR following #116. Replaces the base-inventory line chart (panel 78) with an order-recommendation table (panel 81) + methodology text panel (panel 80). Introduces `oa_`-prefixed Grafana variables.
+
+**Key changes:**
+- **Grafana variable prefix convention** codified: `date_from` global, `kds_*` KDS section, `goal_*` labor baselines, `oa_*` Order Assistant. `oa_ship_days` (default 10 days) and `oa_max_tubs` (default 120 tubs) added to `dashboard.json templating.list` — both `textbox` type, auto-resolved by `verify_panels.py`.
+- **Panel 80** (text): methodology explanation — max-min water-fill; Blade reserved-not-ordered; projection formula; references the `oa_*` dashboard variables as the single edit point for lead time and capacity.
+- **Panel 81** (table): order-recommendation table with a UNION-ALL TOTAL row (same pattern as panel 79). `rawSql` inlines the max-min water-fill over `vw_inventory_order_assistant` using `$oa_ship_days` / `$oa_max_tubs`. Water-fill: `budget = floor(oa_max_tubs − Σ projected_on_hand_all_bases)`; greedy allocation via `GENERATE_ARRAY + ROW_NUMBER` distributes whole tubs to the base with lowest current post-restock coverage, maximizing the shop's minimum runway. Columns: Item, Current Qty, Avg per day, On Hand in 10d, Order Tubs, After Restock, Days Left After Restock. No stored view / migration needed.
+- Panel 78 (line chart) removed. `vw_inventory_base_latest_daily` stays in `GRAFANA_VIEWS`.
+- **Reconciliation (oa_max_tubs=120):** 88 tubs ordered, total after restock = 120.00, Blade order=0. Post-restock days cluster 13.6–14.7. **Sensitivity (oa_max_tubs=90):** 58 tubs, total = 90.00 — variable drives panel correctly. `verify_panels.py` OK=22/22, EMPTY=0, ERROR=0.
+
 ## 2026-06-30 — Order Assistant: ClickUp closing-form ingestion → BQ → Grafana (Issue #113, branch fix/i113-https)
 
 **Scope (slice A):** ClickUp "Closing" list → daily base inventory → `bhaga.inventory_closing_daily` + Grafana Order Assistant section (8. row). Slices B+C (weekday-split consumption model, data-quality detection) tracked in issue #114.

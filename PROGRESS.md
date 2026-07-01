@@ -1,6 +1,17 @@
 # Jarvis Build Progress
 
-## 2026-07-01 — Order Recommendation: add Order Weight (lbs) column with pallet-aware TOTAL (branch fix/add-weights-in-lbs-per-row)
+## 2026-07-01 — Incident: PR merged into wrong base branch (repo default-branch drift) + process hardening
+
+**Incident:** PR #119 (Order Weight column, Issue #113) was opened with `gh pr create` and no explicit `--base` flag. It silently targeted `fix/i101-combine-related-tasks-1-retrospective-protocol` instead of `main` and auto-merged there — because the GitHub repo's *configured default branch* had drifted to that (unrelated, still-open, large dev-process) branch instead of `main`. The working branch's own ancestry looked correct throughout (`git log` showed `main`'s tip as its true parent), so nothing in the local session signaled a problem; the only observable symptom was the PR's `baseRefName`.
+
+**Recovery:** restored `default_branch=main` via `gh api repos/aditya2kx/jarvis -X PATCH -f default_branch=main` (owner-only admin op — briefly switched `gh auth` to `aditya2kx`, then back to `jarvis-agent-bot328` immediately). Cherry-picked PR #119's two real commits onto a fresh branch off `origin/main` and re-opened as PR #120 with `--base main` passed explicitly — merged into `main` (`c29ff6a`). PR #115 (the branch that had wrongly become "default") was left untouched/unmerged as instructed.
+
+**Process hardening (this PR, branch `fix/pr-base-branch-guard`):**
+- `scripts/check_repo_default_branch.py` — new gate; fails if the repo's default branch isn't `main`. Wired into `scripts/verify.py --full` (`repo-default-branch` gate).
+- `.github/workflows/pr-base-branch.yml` — new CI gate; hard-fails any PR whose `base.ref != main` (second line of defense, independent of the default-branch setting — catches an explicit wrong `--base` too). Verified against PR history: PR #119 is the only prior offender out of 30 PRs checked.
+- `.cursor/rules/pr-workflow.mdc` — step 2 now mandates `gh pr create --base main` explicitly rather than relying on the default; step 6 ("confirm merged") now also asserts `baseRefName == main`, not just `state == MERGED`.
+
+## 2026-07-01 — Order Recommendation: add Order Weight (lbs) column with pallet-aware TOTAL (branch fix/add-weights-in-lbs-per-row, merged via PR #120)
 
 **Scope:** Grafana panel 81 (`dashboard.json`) only — no BQ view/migration change.
 
@@ -10,7 +21,8 @@
 - TOTAL row: `Σ per-row weight + 50 × CEIL(Σ order_tubs / 40)` — pallet packaging (40 tubs = 1 pallet, +50 lbs/pallet). Intentionally exceeds plain row sum by the pallet allowance.
 - Panel 80 (Methodology) and panel 81 description updated with per-tub weights + pallet rule.
 - `fieldConfig` override: `displayName`, `custom.width=200`, `noValue=NA`.
-- `bhaga.mdc` panel-81 invariant block updated (BQ parens restriction, displayName pattern, TOTAL pallet formula).
+- Panel 79 repositioned (`y:215→224`) to close the overlap with panel 81's expanded range `[208,224)` — caught by Claude review on PR #120.
+- `bhaga.mdc` panel-81 invariant block, `agents/bhaga/scripts/status.py` (comment), `agents/bhaga/scripts/README.md` updated in lock-step.
 - `verify_panels.py --fail-on-empty` OK=22/22, panel 81 OK.
 
 ## 2026-07-01 — Order Assistant: order-recommendation table + Grafana variables (Issue #113, branch feat/i113-order-reco)

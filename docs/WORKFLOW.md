@@ -342,6 +342,7 @@ L3 (roadmap):
 | Phase tracking queryable | phase_state.py status/report | Status output |
 | Operator gates unskippable | phase_state.py advance → nonzero | Exit code |
 | Lifecycle ladder non-bypassable (whole ladder, not just jam) | verify_lifecycle.py assertion #11; phase_state.py gate (hard gate in verify --full) | Conformance PASS + Gate exit code |
+| Every PR merges into `main`, never a drifted repo default branch | check_repo_default_branch.py (hard gate in verify --full) + `pr-base-branch.yml` CI workflow (fails any PR with `base.ref != main`) | Gate exit code + CI check |
 | Operator preference stored only if generalizable (guardrail) | skills/user_model/guardrail.py + store.add_preference; assertion #12 | score_candidate exits 0/6 for task-specific text |
 | Pre-ask consult: apply stored preference before asking | .cursor/rules/preference-consult.mdc (always-on rule) | Rule file present |
 | Local loop mirrors CI | test_verify.py::test_ci_parity | Test PASS |

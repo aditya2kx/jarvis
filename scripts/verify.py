@@ -109,6 +109,12 @@ GATES: list[Gate] = [
         hard=True,
         modes={"full"},
     ),
+    Gate(
+        name="repo-default-branch",
+        argv=["python3", "scripts/check_repo_default_branch.py"],
+        hard=True,
+        modes={"full"},
+    ),
 ]
 
 # Names of CI scripts this local harness must cover (used by test_ci_parity).

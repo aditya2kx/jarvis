@@ -186,6 +186,10 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 028: vw_inventory_order_assistant (panel 79, 8. Order Assistant analytics table).
     # Per-base: current qty, usage/avg/days-left over last 7 eligible reading days.
     Target("vw_inventory_order_assistant", "reported_date"),
+    # panel 81 "Order Weight (lbs)" column (2026-07-01): computed in-panel rawSql from
+    # existing order_tubs (Açaí 18 lbs/tub, others 20 lbs/tub, +50 lbs/pallet at 40
+    # tubs/pallet). No new BQ view — reads the same vw_inventory_order_assistant Target
+    # above, so no new GRAFANA_VIEWS entry needed.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

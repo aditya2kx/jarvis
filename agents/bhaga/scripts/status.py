@@ -179,9 +179,9 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 026: vw_review_bonus_detail (panel 76, 6. Payroll — per-review payroll table).
     # Filters google_reviews to total_bonus > 0; per_employee_bonus = total_bonus / member_count.
     Target("vw_review_bonus_detail", "post_date_ct"),
-    # migration 027: vw_inventory_base_latest_daily (panel 78, 8. Order Assistant timeseries).
-    # Latest base inventory reading per (store, submitted_date, item). Sourced from
-    # inventory_closing_daily; deduplicated via ROW_NUMBER on submitted_ts DESC.
+    # migration 027: vw_inventory_base_latest_daily (previously panel 78, 8. Order Assistant timeseries;
+    # panel 78 removed in feat/i113-order-reco — replaced by reco table + text panels 80/81).
+    # View still registered for freshness checks; test only enforces dashboard→registry direction.
     Target("vw_inventory_base_latest_daily", "submitted_date"),
     # migration 028: vw_inventory_order_assistant (panel 79, 8. Order Assistant analytics table).
     # Per-base: current qty, usage/avg/days-left over last 7 eligible reading days.

@@ -295,6 +295,9 @@ def catch_up(
             if sid and sid in seen:
                 print(f"signal {sid[:8]} → duplicate  [intake already dispatched]")
                 continue
+            # age is None when the signal has no/unparseable `ts` — fall back to
+            # seen-file dedup only (safe: format_signal always emits `ts`, so a
+            # missing ts means a hand-crafted/legacy signal, not a normal replay).
             age = _signal_age_sec(signal)
             if age is not None and age > _INTAKE_MAX_AGE_SEC:
                 # Seen-file dedup is the only guard against replay; if it's ever

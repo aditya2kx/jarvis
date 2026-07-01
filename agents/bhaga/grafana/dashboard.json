@@ -2686,9 +2686,9 @@
       "id": 79,
       "type": "table",
       "title": "Order Assistant — Base Inventory Analytics",
-      "description": "Per-base: current stock, last restock, last-7-eligible-days usage (downward-only, restock/gap/closed days excluded), days remaining, and the specific dates counted in the window.",
+      "description": "Per-base: current stock, last restock, last-7-eligible-weekday-days usage (downward-only; restock/gap/closed days excluded), days remaining, days considered with per-day consumed amount, and recent exclusion reasons.",
       "gridPos": {
-        "h": 10,
+        "h": 16,
         "w": 24,
         "x": 0,
         "y": 211
@@ -2703,16 +2703,72 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT category AS Category, item AS Item, current_qty AS `Current Qty`, reported AS Reported, CAST(last_restock_date AS STRING) AS `Last Restock`, usage_7d_total AS `Usage 7d`, avg_daily_usage AS `Avg per day`, days_left AS `Days Left`, days_considered AS `Days Considered`, excluded_days AS Exclusions FROM `jarvis-bhaga-prod.bhaga.vw_inventory_order_assistant` WHERE store = 'palmetto' ORDER BY current_qty DESC"
+          "rawSql": "SELECT item AS Item, current_qty AS `Current Qty`, reported AS Reported, CAST(last_restock_date AS STRING) AS `Last Restock`, usage_7d_total AS `Usage 7d`, avg_daily_usage AS `Avg per day`, days_left AS `Days Left`, days_considered AS `Days Considered`, excluded_days AS Exclusions FROM `jarvis-bhaga-prod.bhaga.vw_inventory_order_assistant` WHERE store = 'palmetto' ORDER BY current_qty DESC"
         }
       ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Item" },
+            "properties": [{ "id": "custom.width", "value": 100 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Current Qty" },
+            "properties": [{ "id": "custom.width", "value": 95 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Reported" },
+            "properties": [{ "id": "custom.width", "value": 140 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Last Restock" },
+            "properties": [{ "id": "custom.width", "value": 105 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Usage 7d" },
+            "properties": [{ "id": "custom.width", "value": 90 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Avg per day" },
+            "properties": [{ "id": "custom.width", "value": 95 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Days Left" },
+            "properties": [{ "id": "custom.width", "value": 85 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Days Considered" },
+            "properties": [
+              { "id": "custom.width", "value": 380 },
+              { "id": "custom.cellOptions", "value": { "type": "auto", "wrapText": true } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Exclusions" },
+            "properties": [
+              { "id": "custom.width", "value": 320 },
+              { "id": "custom.cellOptions", "value": { "type": "auto", "wrapText": true } }
+            ]
+          }
+        ]
+      },
       "options": {
         "sortBy": [
           {
             "displayName": "Current Qty",
             "desc": true
           }
-        ]
+        ],
+        "footer": {
+          "show": true,
+          "reducer": ["sum"],
+          "fields": ["Current Qty", "Usage 7d", "Avg per day"]
+        }
       }
     }
   ]

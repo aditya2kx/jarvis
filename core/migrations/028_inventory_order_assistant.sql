@@ -86,8 +86,8 @@ last7 AS (
     ROUND(SUM(usage_units), 2)                                AS usage_7d_total,
     ROUND(AVG(usage_units), 2)                                AS avg_daily_usage,
     STRING_AGG(
-      FORMAT_DATE('%m/%d %a', submitted_date), ', '
-      ORDER BY submitted_date
+      FORMAT('%s (%.2f)', FORMAT_DATE('%m/%d %a', submitted_date), usage_units),
+      ', ' ORDER BY submitted_date
     )                                                         AS days_considered
   FROM ranked_dow
   WHERE dow_rn = 1

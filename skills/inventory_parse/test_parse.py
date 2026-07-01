@@ -43,6 +43,11 @@ from skills.inventory_parse.parse import parse_qty, FIELD_REGISTRY, ACTIVE_BASES
     ("3.75",            3.75),
     # Extra whitespace
     ("  12+75%  ",      12.75),
+    # Leading-dot decimals (staff entry for near-empty tub, e.g. ".95" means 0.95)
+    (".95",             0.95),
+    (".5",              0.50),
+    (".85",             0.85),
+    (".5 cambro",       0.50),
 ])
 def test_parse_qty_happy(raw, expected):
     result = parse_qty(raw)

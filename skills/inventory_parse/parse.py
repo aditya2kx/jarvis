@@ -11,6 +11,7 @@ Semantics (from akshaya.mdc data parsing table):
     '16+85%+15%'           -> 17.00   (multiple fractional parts)
     'N/A', '-', 'o', ''    -> None    (missing; do NOT coerce to 0)
     '90%'                  -> 0.90    (standalone percentage = fraction of a unit)
+    '.95'                  -> 0.95    (leading-dot decimal, e.g. nearly-empty tub)
 
 Convention: the first token uses its own % sign (or lack thereof); every
 subsequent token after a '+' or ',' is treated as a percentage regardless of
@@ -88,7 +89,7 @@ def parse_qty(raw: str | None) -> float | None:
     )
 
     for idx, part in enumerate(parts):
-        nums = re.findall(r"(\d+\.?\d*)", part)
+        nums = re.findall(r"(\d*\.?\d+)", part)
         if not nums:
             continue
         val = float(nums[0])

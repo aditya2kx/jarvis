@@ -16,9 +16,14 @@
 --   4. Store was open: orders > 0 in vw_model_labor_daily for D
 --   5. Not a restock day: curr_close - prev_close <= 1.0
 --
--- Window: most recent ELIGIBLE day per WEEKDAY (Mon-Sun).
---   Deduplicates e.g. "two Fridays" when a week has a gap; each weekday
---   contributes at most once, giving a representative weekly usage sample.
+-- Outlier exclusion (applied before window selection):
+--   Robust-z = (usage - median) / (1.4826 * MAD) over the trailing 60-day
+--   eligible window, mirroring forecast.py compute_outlier_stats.
+--   |z| > 2.5 AND elig_n >= 5 AND MAD > 0 => excluded as outlier.
+--   Both directions excluded (spike UP = suspect data; spike DOWN = error).
+--
+-- Window: most recent ELIGIBLE (non-outlier) day per WEEKDAY (Mon-Sun).
+--   Deduplicates e.g. "two Fridays" when a gap week falls back to the prior week.
 --
 -- Apply: BHAGA_DATASTORE=bigquery python3 -c
 --   "from core.datastore import ensure_schema; print(ensure_schema())"
@@ -67,19 +72,47 @@ scored AS (
     ) AS eligible
   FROM transitions
 ),
+-- ── Robust-z outlier detection over trailing 60-day eligible window ──────────
+-- Mirrors forecast.py compute_outlier_stats: median + MAD, |z| > 2.5.
+-- Guard: requires elig_n >= 5 AND MAD > 0; otherwise no rows are excluded.
+elig_recent AS (
+  SELECT * FROM scored
+  WHERE eligible
+    AND submitted_date >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 60 DAY)
+),
+stat AS (
+  SELECT *,
+    PERCENTILE_CONT(usage_units, 0.5) OVER (PARTITION BY store, item) AS med_usage,
+    COUNT(*) OVER (PARTITION BY store, item)                           AS elig_n
+  FROM elig_recent
+),
+stat2 AS (
+  SELECT *,
+    PERCENTILE_CONT(ABS(usage_units - med_usage), 0.5)
+      OVER (PARTITION BY store, item) AS mad
+  FROM stat
+),
+scored_outlier AS (
+  SELECT *,
+    (elig_n >= 5
+     AND mad > 0
+     AND ABS(SAFE_DIVIDE(usage_units - med_usage, 1.4826 * mad)) > 2.5
+    ) AS is_outlier
+  FROM stat2
+),
 ranked_dow AS (
-  -- Per weekday (Mon-Sun), keep only the most recent eligible transition.
-  -- Prevents "two Fridays" when a gap week falls back to the prior week.
+  -- Per weekday (Mon-Sun), keep only the most recent non-outlier eligible transition.
+  -- Prevents "two Fridays" and filters anomalous readings from the average.
   SELECT *,
     ROW_NUMBER() OVER (
       PARTITION BY store, item, EXTRACT(DAYOFWEEK FROM submitted_date)
       ORDER BY submitted_date DESC
     ) AS dow_rn
-  FROM scored
-  WHERE eligible
+  FROM scored_outlier
+  WHERE NOT is_outlier
 ),
 last7 AS (
-  -- Aggregate across up to 7 unique weekdays (most recent eligible day each)
+  -- Aggregate across up to 7 unique weekdays (most recent eligible non-outlier day each)
   SELECT
     store,
     item,
@@ -139,11 +172,24 @@ excluded_recent AS (
     AND prev_close IS NOT NULL
     AND submitted_date >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 30 DAY)
 ),
+outlier_recent AS (
+  -- Eligible transitions excluded as statistical outliers (last 30 days).
+  SELECT store, item, submitted_date,
+    FORMAT('%s %s: outlier (%.2f vs med %.2f)',
+      FORMAT_DATE('%m/%d', submitted_date), FORMAT_DATE('%a', submitted_date),
+      usage_units, med_usage) AS excl_note
+  FROM scored_outlier
+  WHERE is_outlier
+    AND submitted_date >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 30 DAY)
+),
 exclusions AS (
   SELECT store, item,
     STRING_AGG(excl_note, '; ' ORDER BY submitted_date DESC) AS excluded_days
-  FROM excluded_recent
-  WHERE excl_note IS NOT NULL
+  FROM (
+    SELECT store, item, submitted_date, excl_note FROM excluded_recent WHERE excl_note IS NOT NULL
+    UNION ALL
+    SELECT store, item, submitted_date, excl_note FROM outlier_recent
+  ) combined
   GROUP BY store, item
 )
 SELECT

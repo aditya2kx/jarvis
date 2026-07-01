@@ -1160,6 +1160,13 @@
             ],
             "keepFields": false
           }
+        },
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^Hours (.*)$",
+            "renamePattern": "$1"
+          }
         }
       ]
     },

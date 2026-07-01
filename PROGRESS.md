@@ -9,7 +9,8 @@
 - New shared skill `skills/inventory_parse/` — `parse_qty()` parser (unit + pct + unit-word disambiguation); `FIELD_REGISTRY` for scalable category support; 34-test harness.
 - New `core/migrations/027_inventory_closing.sql` — `bhaga.inventory_closing_daily` (DATE-partitioned, natural key `(store, source_task_id, field_id)`) + `vw_inventory_base_latest_daily` view.
 - New `agents/bhaga/scripts/ingest_inventory.py` — backfill + incremental high-water ingest; non-fatal `run_step` in `daily_refresh.py`.
-- Grafana: "8. Order Assistant" section added to `agents/bhaga/grafana/dashboard.json` — per-base timeseries + latest-reading table, sourced from the new view.
+- New `core/migrations/028_inventory_order_assistant.sql` — `vw_inventory_order_assistant` analytical view: per-base current stock, last-7-eligible-days usage (downward-only, restock/gap/closed days excluded), avg/day, days remaining, last restock date, days considered. Eligibility: no gap, qty ≥ 1 tub, store open, not a restock. `days_left = current_qty / avg_daily_usage`.
+- Grafana: "8. Order Assistant" section in `dashboard.json` — per-base timeseries (panel 78) + 10-column analytical table (panel 79) sourced from `vw_inventory_order_assistant`. Verified OK=22/22, 9 rows with real data.
 - `skills/credentials/registry.py`: `hydrate()` / `hydrate-all` / upgraded `audit` — all-provider local bootstrap via ADC + Secret Manager, no gcloud binary required. Fixes the recurring "PAT missing on fresh clone" rediscovery loop.
 
 **Branding note:** built under BHAGA (future "Palmetto Assistant"); extraction logic in `skills/` for cross-agent reuse.

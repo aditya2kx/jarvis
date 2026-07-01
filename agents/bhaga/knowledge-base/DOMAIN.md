@@ -436,7 +436,13 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 | BQ table / view | Grain | Key columns | Purpose |
 |---|---|---|---|
 | `inventory_closing_daily` | one row per (store, task, field) | `store`, `submitted_date` (DATE CT), `submitted_ts` (UTC TIMESTAMP), `source_task_id`, `category`, `item`, `field_id` (natural key deduplicator), `raw_text`, `quantity_units` (FLOAT64 normalized), `unit`, `parse_ok` (BOOL), `run_id`, `scraped_at_utc` | ClickUp "Closing" list inventory readings. Natural merge key: `(store, source_task_id, field_id)`. Partitioned by `submitted_date`. Populated by `ingest_inventory.py` (nightly non-fatal step). |
-| `vw_inventory_base_latest_daily` | one row per (store, submitted_date, item) | `store`, `submitted_date`, `item`, `quantity_units`, `raw_text`, `submitted_ts`, `parse_ok` | Latest closing-form reading per base per day (`ROW_NUMBER` dedup, `category='base'`). Backs Grafana "8. Order Assistant" panels 78+79. |
+| `vw_inventory_base_latest_daily` | one row per (store, submitted_date, item) | `store`, `submitted_date`, `item`, `quantity_units`, `raw_text`, `submitted_ts`, `parse_ok` | Latest closing-form reading per base per day (`ROW_NUMBER` dedup, `category='base'`). Backs Grafana "8. Order Assistant" panel 78 (timeseries). |
+
+**Migration 028 additions** (`core/migrations/028_inventory_order_assistant.sql`):
+
+| BQ table / view | Grain | Key columns | Purpose |
+|---|---|---|---|
+| `vw_inventory_order_assistant` | one row per (store, item) | `category`, `store`, `item`, `current_qty`, `reported` (CT timestamp string), `reported_date`, `last_restock_date`, `usage_7d_total`, `avg_daily_usage`, `days_in_window`, `days_left`, `days_considered` | Analytical view for the Order Assistant table. Per-base: current stock, usage/avg/days-left over the **last 7 eligible reading-day transitions** (downward-only: `GREATEST(prev_close - curr_close, 0)`). Eligibility: previous reading exists, no submission gap (date = prev + 1), qty ≥ 1 tub, store open (orders > 0), not a restock day (curr − prev ≤ 1.0). Restock days flagged for `last_restock_date` but excluded from usage average. `days_left = current_qty / avg_daily_usage` (NULL if usage = 0). Backs Grafana "8. Order Assistant" panel 79 (analytics table). |
 
 ---
 

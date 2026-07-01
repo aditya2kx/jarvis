@@ -2685,10 +2685,10 @@
     {
       "id": 79,
       "type": "table",
-      "title": "Base Inventory — Latest Reading per Base",
-      "description": "Most recent closing-form reading for each base. raw_text = original free-text entered by staff.",
+      "title": "Order Assistant — Base Inventory Analytics",
+      "description": "Per-base: current stock, last restock, last-7-eligible-days usage (downward-only, restock/gap/closed days excluded), days remaining, and the specific dates counted in the window.",
       "gridPos": {
-        "h": 8,
+        "h": 10,
         "w": 24,
         "x": 0,
         "y": 211
@@ -2703,14 +2703,14 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT  item AS Base,  quantity_units AS Stock,  raw_text AS `Raw Entry`,  FORMAT_TIMESTAMP('%Y-%m-%d', submitted_ts, 'America/Chicago') AS `Last Updated` FROM `jarvis-bhaga-prod.bhaga.vw_inventory_base_latest_daily` WHERE store = 'palmetto' ORDER BY item"
+          "rawSql": "SELECT category AS Category, item AS Item, current_qty AS `Current Qty`, reported AS Reported, CAST(last_restock_date AS STRING) AS `Last Restock`, usage_7d_total AS `Usage 7d`, avg_daily_usage AS `Avg per day`, days_left AS `Days Left`, days_considered AS `Days Considered`, excluded_days AS Exclusions FROM `jarvis-bhaga-prod.bhaga.vw_inventory_order_assistant` WHERE store = 'palmetto' ORDER BY current_qty DESC"
         }
       ],
       "options": {
         "sortBy": [
           {
-            "displayName": "Base",
-            "desc": false
+            "displayName": "Current Qty",
+            "desc": true
           }
         ]
       }

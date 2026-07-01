@@ -109,6 +109,7 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 - **Non-fatal nightly step**: an ingest failure does NOT abort tip/payroll. `ingest_inventory` is wrapped in `run_step` and its failure is recorded but not propagated to the failure list that gates the nightly exit code.
 - **Scalable by config**: adding a new inventory category (milks, supplies, …) requires only a `FIELD_REGISTRY` entry in `skills/inventory_parse/parse.py` — no schema migration.
 - **Sandbox isolation**: pre-merge runs set `BHAGA_BQ_DATASET=bhaga_sandbox`; `datastore._assert_sandbox_write_isolation` guards prod.
+- **Usage estimator (migration 028 `vw_inventory_order_assistant`)**: downward-only, restock-robust — `GREATEST(prev_close - curr_close, 0)`. Upward jumps (curr − prev > 1.0 tub) = restock; 0 contribution to usage but flagged for `last_restock_date`. Eligibility for the 7-day window: previous reading exists, no gap (date = prev + 1), qty ≥ 1 tub, store open (orders > 0 in `vw_model_labor_daily`), not a restock day. `days_left = current_qty / avg_daily_usage` (NULL when avg = 0).
 
 ## Review bonus allocation invariant (date-bracketed, effective 2026-06-08)
 - **Pool mode** (`post_date_ct >= review_pool_effective_date`, default `2026-06-08`): a fixed

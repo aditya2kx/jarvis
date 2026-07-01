@@ -253,7 +253,17 @@ gcloud run services update bhaga-webhook \
 | `adp_palmetto_login` | refresh job (ADP scrape) | ADP RUN username + password (timecards / earnings) |
 | `square_palmetto_oauth` | refresh job (Square API) | Square OAuth 2.0 access + refresh tokens for production Square API |
 | `google_palmetto` | refresh job (Sheets/Drive) | Google OAuth creds for the `palmetto` account |
-| `jarvis-clickup-palmetto-pat` | refresh job (`CLICKUP_PAT`) | ClickUp PAT — read review channel |
+| `jarvis-clickup-palmetto-pat` | refresh job (`CLICKUP_PAT`) | ClickUp PAT — read review channel + closing-form inventory ingest |
+
+> **Local bootstrap (all providers):** If a secret is missing from your macOS Keychain on a fresh
+> clone, use:
+> ```bash
+> python3 -m skills.credentials.registry hydrate jarvis-clickup-palmetto-pat
+> python3 -m skills.credentials.registry hydrate-all   # hydrate all missing secrets
+> python3 -m skills.credentials.registry audit          # shows fix command for each missing cred
+> ```
+> `hydrate` reads from GCP Secret Manager via ADC (no `gcloud` binary required) and writes to
+> Keychain without printing the value. Works for ClickUp, Google, Square, ADP, and Slack.
 | `clickup_palmetto_pat` | (legacy ClickUp PAT) | ClickUp PAT (older handle) |
 | `clickup` | (legacy ClickUp) | Legacy ClickUp credential |
 

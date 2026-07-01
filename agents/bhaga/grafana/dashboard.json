@@ -66,7 +66,7 @@
       },
       {
         "name": "kds_min_per_item",
-        "label": "KDS: Min / Item \u2265",
+        "label": "KDS: Min / Item ≥",
         "type": "textbox",
         "current": {
           "value": "8"
@@ -113,7 +113,7 @@
         },
         "options": [],
         "hide": 0,
-        "description": "Filter the KDS p95 chart to one or more order sources (Per Diem / Uber Eats / Point of Sale / \u2026). Defaults to All."
+        "description": "Filter the KDS p95 chart to one or more order sources (Per Diem / Uber Eats / Point of Sale / …). Defaults to All."
       },
       {
         "name": "goal_hours_per_item",
@@ -130,7 +130,7 @@
           }
         ],
         "hide": 0,
-        "description": "Target shift hours per item as a raw ratio (0.20) \u2014 the Hours / Item charts display it percent-style (\u00d7 100), so 0.20 shows as 20%"
+        "description": "Target shift hours per item as a raw ratio (0.20) — the Hours / Item charts display it percent-style (× 100), so 0.20 shows as 20%"
       },
       {
         "name": "goal_labor_pct_of_net_sales",
@@ -147,7 +147,7 @@
           }
         ],
         "hide": 0,
-        "description": "Target labor wages as a fraction of net sales (labor_cost \u00f7 net_sales, e.g. 0.20 = 20%) \u2014 rendered as a baseline line on the Weekly Labor Wages / Net Sales chart"
+        "description": "Target labor wages as a fraction of net sales (labor_cost ÷ net_sales, e.g. 0.20 = 20%) — rendered as a baseline line on the Weekly Labor Wages / Net Sales chart"
       },
       {
         "name": "goal_kds_p95_min",
@@ -195,7 +195,7 @@
       "id": 2,
       "type": "table",
       "title": "Pipeline Runs",
-      "description": "Last 30 nightly daily_refresh outcomes, newest first. Model path: materialize_model_bq (BQ canonical) \u2192 BQ-internal verify. No Sheet projection steps (render_raw_sheets / render_model_sheet_from_bq deleted post-Sheets-exit). recovery_retrigger=TRUE means scrape/OTP was skipped and the model was recomputed because BQ data was already present from a prior partial run. Status: success | failed | halted | otp_pending.",
+      "description": "Last 30 nightly daily_refresh outcomes, newest first. Model path: materialize_model_bq (BQ canonical) → BQ-internal verify. No Sheet projection steps (render_raw_sheets / render_model_sheet_from_bq deleted post-Sheets-exit). recovery_retrigger=TRUE means scrape/OTP was skipped and the model was recomputed because BQ data was already present from a prior partial run. Status: success | failed | halted | otp_pending.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -345,7 +345,7 @@
       "id": 3,
       "type": "table",
       "title": "Data Source Pulls",
-      "description": "Last 50 per-source pull attempts (square / adp / google_reviews), newest first. Only attempted pulls are recorded \u2014 sources skipped via step markers or recovery retriggers (BQ data already present) do not appear. That empty pull list on a recovery_retrigger run is expected, not a gap.",
+      "description": "Last 50 per-source pull attempts (square / adp / google_reviews), newest first. Only attempted pulls are recorded — sources skipped via step markers or recovery retriggers (BQ data already present) do not appear. That empty pull list on a recovery_retrigger run is expected, not a gap.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -587,7 +587,7 @@
       "id": 21,
       "type": "barchart",
       "title": "Weekly Order & Item Volume",
-      "description": "Each bar is one full week (Mon\u2013Sun), labeled by its date range (e.g. '6/1-6/7') so the period a bar covers is explicit. Orders on the left axis, Items Sold on the right. Solid fill.",
+      "description": "Each bar is one full week (Mon–Sun), labeled by its date range (e.g. '6/1-6/7') so the period a bar covers is explicit. Orders on the left axis, Items Sold on the right. Solid fill.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -704,7 +704,7 @@
       "id": 32,
       "type": "timeseries",
       "title": "Daily Labor Wages / Net Sales (total / part-time / full-time)",
-      "description": "Labor wages (shift hours \u00d7 wage rate) as a share of net sales, split by total / part-time / full-time. Total = all labor; Part-time = hourly staff; Full-time = salaried/full-time staff. Lower is leaner. Shown as a percent (e.g. 35% = labor costs 35\u00a2 per $1 of net sales). Non-positive-sales days are blanked. Dashed line = goal ($goal_labor_pct_of_net_sales).",
+      "description": "Labor wages (shift hours × wage rate) as a share of net sales, split by total / part-time / full-time. Total = all labor; Part-time = hourly staff; Full-time = salaried/full-time staff. Lower is leaner. Shown as a percent (e.g. 35% = labor costs 35¢ per $1 of net sales). Non-positive-sales days are blanked. Dashed line = goal ($goal_labor_pct_of_net_sales).",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -770,7 +770,7 @@
       "id": 33,
       "type": "timeseries",
       "title": "Daily Hours / Item (total / part-time / full-time)",
-      "description": "Shift hours per item sold, split by total / part-time / full-time, shown percent-style (value \u00d7 100, e.g. 0.15 h/item displays as 15%). Lower is leaner. Dashed line = goal ($goal_hours_per_item).",
+      "description": "Shift hours per item sold, split by total / part-time / full-time, shown percent-style (value × 100, e.g. 0.15 h/item displays as 15%). Lower is leaner. Dashed line = goal ($goal_hours_per_item).",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -848,7 +848,7 @@
       "id": 35,
       "type": "timeseries",
       "title": "Weekly Shift Hours",
-      "description": "Total / part-time / full-time shift hours per week. Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
+      "description": "Total / part-time / full-time shift hours per week. Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon–Sun week ending 6/7.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -902,7 +902,7 @@
       "id": 36,
       "type": "timeseries",
       "title": "Weekly Labor Wages / Net Sales (total / part-time / full-time)",
-      "description": "Labor wages (shift hours \u00d7 wage rate) as a share of net sales, split by total / part-time / full-time. Total = all labor; Part-time = hourly staff; Full-time = salaried/full-time staff. Lower is leaner. Shown as a percent (e.g. 35% = labor costs 35\u00a2 per $1 of net sales). Non-positive-sales weeks are blanked. Dashed line = goal ($goal_labor_pct_of_net_sales). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
+      "description": "Labor wages (shift hours × wage rate) as a share of net sales, split by total / part-time / full-time. Total = all labor; Part-time = hourly staff; Full-time = salaried/full-time staff. Lower is leaner. Shown as a percent (e.g. 35% = labor costs 35¢ per $1 of net sales). Non-positive-sales weeks are blanked. Dashed line = goal ($goal_labor_pct_of_net_sales). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon–Sun week ending 6/7.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -980,7 +980,7 @@
       "id": 37,
       "type": "timeseries",
       "title": "Weekly Hours / Item (total / part-time / full-time)",
-      "description": "Shift hours per item sold, split by total / part-time / full-time, shown percent-style (value \u00d7 100, e.g. 0.15 h/item displays as 15%). Lower is leaner. Dashed line = goal ($goal_hours_per_item). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon\u2013Sun week ending 6/7.",
+      "description": "Shift hours per item sold, split by total / part-time / full-time, shown percent-style (value × 100, e.g. 0.15 h/item displays as 15%). Lower is leaner. Dashed line = goal ($goal_hours_per_item). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon–Sun week ending 6/7.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -1070,7 +1070,7 @@
       "id": 51,
       "type": "timeseries",
       "title": "KDS p95 Time per Item by Source",
-      "description": "p95 of per-ITEM prep time (order completion time \u00f7 items) per day, one line per order source ($kds_source). Dashed line = p95 goal ($goal_kds_p95_min min). Y-axis capped at 30 min.",
+      "description": "p95 of per-ITEM prep time (order completion time ÷ items) per day, one line per order source ($kds_source). Dashed line = p95 goal ($goal_kds_p95_min min). Y-axis capped at 30 min.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -1136,8 +1136,8 @@
     {
       "id": 52,
       "type": "table",
-      "title": "Order KDS Times \u2014 set your slow threshold with the Min / Item filter",
-      "description": "One row per order (ticket) with its whole-order KDS prep time (Start \u2192 End). Defaults to the most-recent order date and Min/Item \u2265 8 \u2014 adjust both with the 'KDS: Order Date', 'KDS: Min / Item \u2265', and 'KDS: Order Source' inputs at the top of the dashboard. After typing a new Min/Item threshold, press Enter (or click away) to apply it. If results still look wrong, clear any column filter you may have set on the 'Min / Item' column header (the top input and the in-table column filter are independent). 'Min / Item' = Order Min \u00f7 Items. 'On Shift (punched in)' = everyone whose ADP punch overlapped that order's time window. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x \u2026'). KDS times are per-order.",
+      "title": "Order KDS Times — set your slow threshold with the Min / Item filter",
+      "description": "One row per order (ticket) with its whole-order KDS prep time (Start → End). Defaults to the most-recent order date and Min/Item ≥ 8 — adjust both with the 'KDS: Order Date', 'KDS: Min / Item ≥', and 'KDS: Order Source' inputs at the top of the dashboard. After typing a new Min/Item threshold, press Enter (or click away) to apply it. If results still look wrong, clear any column filter you may have set on the 'Min / Item' column header (the top input and the in-table column filter are independent). 'Min / Item' = Order Min ÷ Items. 'On Shift (punched in)' = everyone whose ADP punch overlapped that order's time window. 'Items in Order' lists every item with its quantity (e.g. '2x Build Your Own BOWL; 1x …'). KDS times are per-order.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -1354,8 +1354,8 @@
     {
       "id": 61,
       "type": "table",
-      "title": "Payroll \u2014 per Employee per Pay Period",
-      "description": "Each pay component is shown as a Calculated / ADP / Diff triad. Calculated = our model; ADP = what ADP actually paid; Diff = Calculated \u2212 ADP (positive means we computed more than ADP paid). Hourly Pay = hours \u00d7 wage rate; Tip Pay = allocated tips; Review Bonus = earned review bonus; Total Pay = Hourly + Tip + Bonus. So 'Diff Review Bonus' is our review bonus minus ADP's bonus line, and 'Calculated Total Pay' is the sum of the three calculated components.",
+      "title": "Payroll — per Employee per Pay Period",
+      "description": "Each pay component is shown as a Calculated / ADP / Diff triad. Calculated = our model; ADP = what ADP actually paid; Diff = Calculated − ADP (positive means we computed more than ADP paid). Hourly Pay = hours × wage rate; Tip Pay = allocated tips; Review Bonus = earned review bonus; Total Pay = Hourly + Tip + Bonus. So 'Diff Review Bonus' is our review bonus minus ADP's bonus line, and 'Calculated Total Pay' is the sum of the three calculated components.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -1705,7 +1705,7 @@
       "id": 62,
       "type": "table",
       "title": "Training Shifts (current)",
-      "description": "Operator-marked training shifts (per-shift tip-pool exclusions). Edited only via /bhaga-cloud training set|rm \u2014 BQ is the source of truth (no Sheet). One row per (employee, date).",
+      "description": "Operator-marked training shifts (per-shift tip-pool exclusions). Edited only via /bhaga-cloud training set|rm — BQ is the source of truth (no Sheet). One row per (employee, date).",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -1798,8 +1798,8 @@
     {
       "id": 71,
       "type": "table",
-      "title": "Labor Forecast \u2014 next 30 days",
-      "description": "Daily forecast (today + next 30 days): Day-of-week, Forecast Orders/Items, Prior-Week comparison (actual@-7d, falling back to forecast@-7d when last week failed/was an ongoing day), % change vs prior week, Goal Total Hours (Forecast Items \u00d7 $goal_hours_per_item; covers part-time + the one full-time employee), Scheduled Part Time (ADP scheduled hours, current + next week only, excludes the full-time employee; blank beyond), and the Scheduled-PT minus Goal-Total gap (absolute hrs and %; note this compares part-time scheduled against the total goal). Override forecast_exclude on the labor_daily BQ tab to flag anomaly days.",
+      "title": "Labor Forecast — next 30 days",
+      "description": "Daily forecast (today + next 30 days): Day-of-week, Forecast Orders/Items, Prior-Week comparison (actual@-7d, falling back to forecast@-7d when last week failed/was an ongoing day), % change vs prior week, Goal Total Hours (Forecast Items × $goal_hours_per_item; covers part-time + the one full-time employee), Scheduled Part Time (ADP scheduled hours, current + next week only, excludes the full-time employee; blank beyond), and the Scheduled-PT minus Goal-Total gap (absolute hrs and %; note this compares part-time scheduled against the total goal). Override forecast_exclude on the labor_daily BQ tab to flag anomaly days.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -2041,7 +2041,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Sched PT \u2212 Goal Total (hrs)"
+                "value": "Sched PT − Goal Total (hrs)"
               },
               {
                 "id": "unit",
@@ -2061,7 +2061,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Sched PT \u2212 Goal Total (%)"
+                "value": "Sched PT − Goal Total (%)"
               },
               {
                 "id": "unit",
@@ -2089,7 +2089,7 @@
       "id": 74,
       "type": "timeseries",
       "title": "Goal Total Hours vs Scheduled Part Time",
-      "description": "Daily labor target vs ADP Team Schedule part-time hours (current + next week only; excludes the one full-time employee). Goal Total Hours = forecast_items \u00d7 $goal_hours_per_item (same as the forecast table; covers part-time + full-time). Goal updates on each nightly forecast rebuild for upcoming days; past dates freeze at the last stored forecast row. Scheduled Part Time is blank beyond the ADP scrape horizon.",
+      "description": "Daily labor target vs ADP Team Schedule part-time hours (current + next week only; excludes the one full-time employee). Goal Total Hours = forecast_items × $goal_hours_per_item (same as the forecast table; covers part-time + full-time). Goal updates on each nightly forecast rebuild for upcoming days; past dates freeze at the last stored forecast row. Scheduled Part Time is blank beyond the ADP scrape horizon.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -2152,7 +2152,7 @@
     {
       "id": 72,
       "type": "timeseries",
-      "title": "Forecast vs Actual \u2014 Orders",
+      "title": "Forecast vs Actual — Orders",
       "description": "Order forecast (today + next 30 days) with actuals overlaid through the most recent completed day. Dashed line = forecast; solid = actual (ends where data stops).",
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -2212,7 +2212,7 @@
     {
       "id": 75,
       "type": "timeseries",
-      "title": "Forecast vs Actual \u2014 Items",
+      "title": "Forecast vs Actual — Items",
       "description": "Item forecast (today + next 30 days) with actuals overlaid through the most recent completed day. Dashed line = forecast; solid = actual (ends where data stops).",
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -2273,7 +2273,7 @@
       "id": 73,
       "type": "table",
       "title": "Forecast Inputs / Exclusions",
-      "description": "Recent input days the forecaster saw (last 60 days). Rows with forecast_exclude=TRUE were dropped from the forecast seed averages \u2014 either auto-detected outliers (including low-AOV / comped days) or operator-overridden. Net Sales and AOV columns help spot promo / comped days where order count was normal but revenue was anomalously low. To override: set forecast_exclude=TRUE on the model_labor_daily BQ row for the anomaly day.",
+      "description": "Recent input days the forecaster saw (last 60 days). Rows with forecast_exclude=TRUE were dropped from the forecast seed averages — either auto-detected outliers (including low-AOV / comped days) or operator-overridden. Net Sales and AOV columns help spot promo / comped days where order count was normal but revenue was anomalously low. To override: set forecast_exclude=TRUE on the model_labor_daily BQ row for the anomaly day.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -2411,7 +2411,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Orders \u0394 vs Prev Wk"
+                "value": "Orders Δ vs Prev Wk"
               },
               {
                 "id": "unit",
@@ -2489,7 +2489,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Items \u0394 vs Prev Wk"
+                "value": "Items Δ vs Prev Wk"
               },
               {
                 "id": "unit",
@@ -2557,7 +2557,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Net Sales \u0394 vs Prev Wk"
+                "value": "Net Sales Δ vs Prev Wk"
               },
               {
                 "id": "unit",
@@ -2632,6 +2632,136 @@
           "rawSql": "SELECT date, dow, orders, prev_wk_orders, orders_vs_prev_wk, items_sold, prev_wk_items, items_vs_prev_wk, net_sales, prev_wk_net_sales, net_sales_vs_prev_wk, aov, prev_wk_aov, forecast_exclude, outlier_reason, forecast_exclude_reason FROM `jarvis-bhaga-prod.bhaga.vw_forecast_exclusions` ORDER BY date DESC"
         }
       ]
+    },
+    {
+      "id": 77,
+      "type": "row",
+      "title": "8. Order Assistant",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 200
+      },
+      "panels": []
+    },
+    {
+      "id": 78,
+      "type": "timeseries",
+      "title": "Base Inventory — Daily Closing Stock (tubs per base)",
+      "description": "Each line is one HQ base from the daily ClickUp closing form. Source: vw_inventory_base_latest_daily.",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 201
+      },
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 0,
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "rawSql": "SELECT  TIMESTAMP(submitted_date, 'America/Chicago') AS time,  MAX(CASE WHEN item = 'Açaí'     THEN quantity_units END) AS `Açaí`,  MAX(CASE WHEN item = 'Coconut'  THEN quantity_units END) AS `Coconut`,  MAX(CASE WHEN item = 'Tropical' THEN quantity_units END) AS `Tropical`,  MAX(CASE WHEN item = 'Mango'    THEN quantity_units END) AS `Mango`,  MAX(CASE WHEN item = 'Pitaya'   THEN quantity_units END) AS `Pitaya`,  MAX(CASE WHEN item = 'Matcha'   THEN quantity_units END) AS `Matcha`,  MAX(CASE WHEN item = 'Ube'      THEN quantity_units END) AS `Ube`,  MAX(CASE WHEN item = 'Pog'      THEN quantity_units END) AS `Pog` FROM `jarvis-bhaga-prod.bhaga.vw_inventory_base_latest_daily` WHERE store = 'palmetto'   AND submitted_date >= DATE('$date_from')   AND parse_ok = TRUE GROUP BY submitted_date ORDER BY submitted_date"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 79,
+      "type": "table",
+      "title": "Order Assistant — Base Inventory Analytics",
+      "description": "Per-base: current stock, last restock, last-7-eligible-weekday-days usage (downward-only; restock/gap/closed days excluded), days remaining, days considered with per-day consumed amount, and recent exclusion reasons.",
+      "gridPos": {
+        "h": 16,
+        "w": 24,
+        "x": 0,
+        "y": 211
+      },
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "${ds_bigquery}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "rawSql": "WITH b AS (SELECT item, current_qty, reported, CAST(last_restock_date AS STRING) AS last_restock, usage_7d_total, avg_daily_usage, days_left, days_considered, excluded_days FROM `jarvis-bhaga-prod.bhaga.vw_inventory_order_assistant` WHERE store = 'palmetto'), combined AS (SELECT *, 0 AS _ord FROM b UNION ALL SELECT 'TOTAL', ROUND(SUM(current_qty),2), CAST(NULL AS STRING), CAST(NULL AS STRING), ROUND(SUM(usage_7d_total),2), ROUND(SUM(usage_7d_total)/7,2), ROUND(SAFE_DIVIDE(SUM(current_qty),NULLIF(SUM(usage_7d_total)/7,0)),1), CAST(NULL AS STRING), CAST(NULL AS STRING), 1 FROM b) SELECT item AS Item, current_qty AS `Current Qty`, reported AS Reported, last_restock AS `Last Restock`, usage_7d_total AS `Usage 7d`, avg_daily_usage AS `Avg per day`, days_left AS `Days Left`, days_considered AS `Days Considered`, excluded_days AS Exclusions FROM combined ORDER BY _ord ASC, current_qty DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Item" },
+            "properties": [{ "id": "custom.width", "value": 110 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Current Qty" },
+            "properties": [{ "id": "custom.width", "value": 150 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Reported" },
+            "properties": [{ "id": "custom.width", "value": 165 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Last Restock" },
+            "properties": [{ "id": "custom.width", "value": 160 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Usage 7d" },
+            "properties": [{ "id": "custom.width", "value": 125 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Avg per day" },
+            "properties": [{ "id": "custom.width", "value": 150 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Days Left" },
+            "properties": [{ "id": "custom.width", "value": 135 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Days Considered" },
+            "properties": [
+              { "id": "custom.width", "value": 380 },
+              { "id": "custom.cellOptions", "value": { "type": "auto", "wrapText": true } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Exclusions" },
+            "properties": [
+              { "id": "custom.width", "value": 320 },
+              { "id": "custom.cellOptions", "value": { "type": "auto", "wrapText": true } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "footer": {
+          "show": false
+        }
+      }
     }
   ]
 }

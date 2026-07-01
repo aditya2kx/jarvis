@@ -458,7 +458,7 @@ Wired as a `verify.py` gate (`progress-push-guard`). Blocks pushes that target `
 | Workflow | Change |
 |---|---|
 | `pr-merged-lifecycle.yml` | Added `Emit pr_merged signal` step; retrospective prompt now instructs jam→plan→issues flow (no direct `PROGRESS.md` write) |
-| `jarvis-dev-signals.yml` (new) | `check_suite` → CI signals; `issue_comment` → `intake-signal` (/jarvis-new-task) + `comment-signal` (operator comments, loop-safe); label-gated `pull_request` → pre-merge evidence |
+| `jarvis-dev-signals.yml` (new) | `check_suite` → CI signals; `issue_comment` → `intake-signal` (/jarvis-new-task) + `comment-signal` (operator comments, loop-safe); label-gated `pull_request` → pre-merge evidence. **Note:** `issue_comment` and `check_suite` jobs only activate once the workflow lands on `main` (GitHub resolves those triggers from the default branch). `comment-signal` end-to-end proven pre-merge by temporarily setting the PR branch as default branch — run [28486518592](https://github.com/aditya2kx/jarvis/actions/runs/28486518592) ✅. |
 
 ## 9. Deferred roadmap (out of scope for this PR)
 

@@ -193,7 +193,12 @@ def catch_up(
     ``branch`` is optional — when given, it restricts routing to signals whose
     branch field matches (useful when one issue tracks multiple branches).
     ``since`` defaults to the ``last_signal_cursor`` in the phase cache for
-    the matched branch (or epoch 0 if no cache).
+    the matched branch (or epoch 0 if no cache). The cursor is not written back
+    here; dedup relies on the router's ``delivered_signals`` set (idempotent).
+
+    Intake signals (event == "intake") are handled before route_signal — they
+    need no branch, go through an author allowlist + seen-file dedup, then call
+    _dispatch("", signal) which invokes new_requirement.py.
 
     Returns the count of newly delivered signals.
     """
@@ -291,7 +296,7 @@ def watch_all(
     ci/comment/merge routing. Intended to be managed by launchd — auto-starts
     on login, auto-restarts on crash. No per-PR watcher process is needed.
     """
-    print(f"watch-all: polling every {interval}s (Ctrl-C to stop)")
+    print(f"watch-all: polling every {interval}s (Ctrl-C to stop)", flush=True)
     while True:
         try:
             issues = _gh_open_jarvis_issue_numbers()
@@ -303,11 +308,11 @@ def watch_all(
                     delivered = catch_up(n, dry_run=dry_run)
                     total += delivered
                 except Exception as exc:
-                    print(f"  catch-up #{n} error (non-fatal): {exc}", file=sys.stderr)
+                    print(f"  catch-up #{n} error (non-fatal): {exc}", file=sys.stderr, flush=True)
             if total:
-                print(f"  watch-all: delivered {total} signal(s) across {len(targets)} targets")
+                print(f"  watch-all: delivered {total} signal(s) across {len(targets)} targets", flush=True)
         except Exception as exc:
-            print(f"  watch-all tick error (non-fatal): {exc}", file=sys.stderr)
+            print(f"  watch-all tick error (non-fatal): {exc}", file=sys.stderr, flush=True)
         time.sleep(interval)
 
 
@@ -512,6 +517,7 @@ def ensure_daemon(interval: int = 30) -> str:
   <key>ProgramArguments</key>
   <array>
     <string>{python_bin}</string>
+    <string>-u</string>
     <string>{listener_script}</string>
     <string>watch-all</string>
     <string>--interval</string>
@@ -519,12 +525,18 @@ def ensure_daemon(interval: int = 30) -> str:
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>HOME</key>
+    <string>{Path.home()}</string>
     <key>LOCAL_EVENT_AUTO_OPEN</key>
     <string>1</string>
     <key>LOCAL_EVENT_AUTO_DISPATCH</key>
     <string>0</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
     <key>PATH</key>
-    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    <string>{Path.home() / ".local" / "bin"}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:{Path(python_bin).parent}</string>
+    <key>PYTHONPATH</key>
+    <string>{str(REPO_ROOT / "scripts")}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

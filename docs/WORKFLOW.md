@@ -402,7 +402,7 @@ GH Action (check_suite / issue_comment / pr-merged-lifecycle)
 | `ci_other` | `ci_status` | `check_suite.completed` other | — |
 | `pr_merged` | `retrospective` | `pr-merged-lifecycle.yml` | Triggers retro jam flow |
 | `intake` | `intake` | `/jarvis-new-task` comment | Allowlist-gated; no debounce |
-| `comment` | `address_comment` | Operator comment on any issue/PR | Allowlist-gated (workflow primary gate); loop-safe |
+| `comment` | `address_comment` | Operator comment on any issue/PR | Allowlist-gated (workflow primary gate); loop-safe. **Note:** for PR comments, branch is resolved via `gh pr view --json headRefName` (no phase cache needed). For plain issue comments, branch is resolved via `find-branch` (reads laptop phase cache); absent on the Actions runner → gracefully skips with log message. |
 
 ### New scripts
 

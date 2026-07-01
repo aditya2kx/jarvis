@@ -409,7 +409,7 @@ GH Action (check_suite / issue_comment / pr-merged-lifecycle)
 | Script | Role |
 |---|---|
 | `scripts/dev_event_router.py` | Parse signals, idempotency, debounce, write inbox, update phase cache |
-| `scripts/dev_event_listener.py` | `catch-up`, `watch`, `dispatch`; macOS auto-open/focus worktree |
+| `scripts/dev_event_listener.py` | `catch-up`, `watch`, `dispatch`; macOS auto-open/focus worktree (osascript + `open -a Cursor` fallback; `LOCAL_EVENT_AUTO_OPEN`). GH API → `parse_signal` → `route_signal` → `pending.jsonl` write proven via non-dry-run catch-up run. |
 | `scripts/check_no_main_progress_push.py` | Mechanical guard: block PROGRESS.md direct push to main |
 
 ### Signal format

@@ -130,7 +130,19 @@ def _gh_issue_comments(issue: int) -> list[dict]:
 
 
 def _gh_open_jarvis_issue_numbers() -> list[int]:
-    """Return issue numbers for all open jarvis-work issues."""
+    """Return issue numbers for all open jarvis-work issues.
+
+    Two sources are merged to ensure freshly-created issues (which have the
+    jarvis-work label added by the intake-signal job but may not yet be visible
+    in the label-filtered list on the first poll) are still caught:
+
+    1. Issues explicitly labelled ``jarvis-work`` (the stable set).
+    2. The most-recently-updated open issues (last 20), which covers the window
+       between /jarvis-new-task comment and the label being added by the workflow.
+    """
+    numbers: list[int] = []
+
+    # Source 1: labelled jarvis-work
     try:
         out = subprocess.check_output(
             ["gh", "issue", "list", "--label", "jarvis-work",
@@ -138,9 +150,30 @@ def _gh_open_jarvis_issue_numbers() -> list[int]:
              "--json", "number", "-q", "[.[].number]"],
             text=True, stderr=subprocess.DEVNULL, timeout=30,
         )
-        return json.loads(out or "[]")
+        numbers.extend(json.loads(out or "[]"))
     except Exception:
-        return []
+        pass
+
+    # Source 2: most recently updated open issues (covers pre-label window)
+    try:
+        out = subprocess.check_output(
+            ["gh", "issue", "list", "--state", "open", "--limit", "20",
+             "--json", "number,updatedAt",
+             "-q", "[.[] | select(.updatedAt > (now - 300 | todate)) | .number]"],
+            text=True, stderr=subprocess.DEVNULL, timeout=30,
+        )
+        numbers.extend(json.loads(out or "[]"))
+    except Exception:
+        pass
+
+    # Deduplicate while preserving order for readability in logs
+    seen: set[int] = set()
+    result: list[int] = []
+    for n in numbers:
+        if n not in seen:
+            seen.add(n)
+            result.append(n)
+    return result
 
 
 def _gh_open_pr_numbers() -> list[int]:

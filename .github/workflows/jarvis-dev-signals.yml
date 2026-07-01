@@ -132,6 +132,12 @@ jobs:
             --issue "$ISSUE" \
             ${REQ:+--requirement "$REQ"} || true)"
 
+          # Add jarvis-work label so the local watch-all daemon picks up this issue
+          # on its next poll cycle (within 30s). Required because new issues from
+          # /jarvis-new-task comments don't have the label yet.
+          gh issue edit "$ISSUE" --repo "$REPO" \
+            --add-label "jarvis-work" || echo "::warning::could not add jarvis-work label to #$ISSUE"
+
           IBODY="Intake signal queued from \`${AUTHOR}\`: \`${BODY:0:120}\`."$'\n\n'"${SIG}"
           gh issue comment "$ISSUE" --repo "$REPO" \
             --body "$IBODY" || echo "::warning::could not post intake signal on issue #$ISSUE"

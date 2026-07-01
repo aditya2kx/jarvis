@@ -12,16 +12,28 @@ CLI subcommands:
         Poll for new signals on the given interval (default 60 s). Runs until
         interrupted (Ctrl-C). Calls catch-up on each tick.
 
+    watch-all [--interval <sec>] [--dry-run]
+        Always-on daemon mode. Each tick enumerates every open jarvis-work issue
+        and every open PR, then calls catch-up on each. Intended to be run via
+        launchd (auto-start on login, auto-restart on crash). Handles intake
+        (creates new worktrees) as well as all ci/comment/merge routing.
+
     dispatch --branch <b> --event-json '<json>'
         Open/focus the worktree window (OQ-8) and — if AUTO_DISPATCH is on and
         the chat is idle — seed the drain prompt. Non-preemptive: if the chat is
         busy the event stays in the inbox and the operator is notified.
+
+    ensure-daemon [--interval <sec>]
+        Idempotently install and load the launchd LaunchAgent that runs watch-all.
+        Safe to call on every new_requirement.py run — no-op if already running.
 
 Design:
     - stdlib-only for catch-up/watch; dispatch uses subprocess for cursor CLI +
       osascript (macOS only).
     - gh CLI is the only network dependency for catch-up/watch.
     - All routing goes through dev_event_router.route_signal (no direct inbox writes).
+    - Intake signals are handled in catch_up before route_signal (intake has no
+      branch, so route_signal returns unrouted; the listener is the intake gate).
     - Busy detection via session-<slug>-status.json written by Cursor hooks.
     - AUTO_DISPATCH controlled by LOCAL_EVENT_AUTO_DISPATCH env var (default on).
     - AUTO_OPEN controlled by LOCAL_EVENT_AUTO_OPEN env var (default on).
@@ -49,6 +61,13 @@ STALE_LOCK_SEC = 600   # heartbeat older than 10 min → treat as idle
 # env-var defaults (both default ON per plan OQ-9)
 _AUTO_OPEN_DEFAULT = "1"
 _AUTO_DISPATCH_DEFAULT = "1"
+
+# Seen-file for intake dedup — prevents re-running new_requirement.py on rescan
+_INTAKE_SEEN_FILE = METRICS_DIR / "listener-intake-seen.json"
+
+# launchd agent label / plist path
+_LAUNCHD_LABEL = "com.jarvis.devsignals"
+_LAUNCHD_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{_LAUNCHD_LABEL}.plist"
 
 # ---------------------------------------------------------------------------
 # Import router helpers
@@ -110,6 +129,51 @@ def _gh_issue_comments(issue: int) -> list[dict]:
         return []
 
 
+def _gh_open_jarvis_issue_numbers() -> list[int]:
+    """Return issue numbers for all open jarvis-work issues."""
+    try:
+        out = subprocess.check_output(
+            ["gh", "issue", "list", "--label", "jarvis-work",
+             "--state", "open", "--limit", "50",
+             "--json", "number", "-q", "[.[].number]"],
+            text=True, stderr=subprocess.DEVNULL, timeout=30,
+        )
+        return json.loads(out or "[]")
+    except Exception:
+        return []
+
+
+def _gh_open_pr_numbers() -> list[int]:
+    """Return PR numbers for all open PRs in the repo."""
+    try:
+        out = subprocess.check_output(
+            ["gh", "pr", "list", "--state", "open", "--limit", "50",
+             "--json", "number", "-q", "[.[].number]"],
+            text=True, stderr=subprocess.DEVNULL, timeout=30,
+        )
+        return json.loads(out or "[]")
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Intake seen-file (prevents re-creating a worktree on rescan)
+# ---------------------------------------------------------------------------
+
+def _load_intake_seen() -> set[str]:
+    try:
+        if _INTAKE_SEEN_FILE.exists():
+            return set(json.loads(_INTAKE_SEEN_FILE.read_text()))
+    except Exception:
+        pass
+    return set()
+
+
+def _save_intake_seen(seen: set[str]) -> None:
+    METRICS_DIR.mkdir(parents=True, exist_ok=True)
+    _INTAKE_SEEN_FILE.write_text(json.dumps(sorted(seen)))
+
+
 # ---------------------------------------------------------------------------
 # Catch-up
 # ---------------------------------------------------------------------------
@@ -162,6 +226,27 @@ def catch_up(
             continue
 
         author = comment.get("author", {}).get("login") if isinstance(comment.get("author"), dict) else None
+
+        # Intake signals have no branch — route_signal returns unrouted for them.
+        # Handle them here: allowlist check + seen-file dedup + run new_requirement.py.
+        if signal.get("event") == "intake":
+            if author not in _R.ALLOWED_AUTHORS:
+                print(f"signal {signal.get('id', '?')[:8]} → unauthorized  [intake author={author}]")
+                continue
+            sid = signal.get("id") or ""
+            seen = _load_intake_seen()
+            if sid and sid in seen:
+                print(f"signal {sid[:8]} → duplicate  [intake already dispatched]")
+                continue
+            requirement = signal.get("requirement") or ""
+            print(f"signal {sid[:8]} → intake  [requirement={requirement[:60]!r}]")
+            _dispatch("", signal)
+            if sid:
+                seen.add(sid)
+                _save_intake_seen(seen)
+            delivered += 1
+            continue
+
         verdict = _R.route_signal(signal, author=author)
         print(f"signal {signal.get('id', '?')[:8]} → {verdict}  [{signal.get('event')} branch={sig_branch or '?'}]")
         if verdict == "delivered":
@@ -192,6 +277,37 @@ def watch(
                 print(f"  delivered {n} signal(s)")
         except Exception as exc:
             print(f"  watch tick error (non-fatal): {exc}", file=sys.stderr)
+        time.sleep(interval)
+
+
+def watch_all(
+    *,
+    interval: int = 30,
+    dry_run: bool = False,
+) -> None:
+    """Always-on daemon: each tick catch-up every open jarvis-work issue + open PR.
+
+    Handles intake (creates new worktrees via new_requirement.py) and all
+    ci/comment/merge routing. Intended to be managed by launchd — auto-starts
+    on login, auto-restarts on crash. No per-PR watcher process is needed.
+    """
+    print(f"watch-all: polling every {interval}s (Ctrl-C to stop)")
+    while True:
+        try:
+            issues = _gh_open_jarvis_issue_numbers()
+            prs = _gh_open_pr_numbers()
+            targets = sorted(set(issues + prs))
+            total = 0
+            for n in targets:
+                try:
+                    delivered = catch_up(n, dry_run=dry_run)
+                    total += delivered
+                except Exception as exc:
+                    print(f"  catch-up #{n} error (non-fatal): {exc}", file=sys.stderr)
+            if total:
+                print(f"  watch-all: delivered {total} signal(s) across {len(targets)} targets")
+        except Exception as exc:
+            print(f"  watch-all tick error (non-fatal): {exc}", file=sys.stderr)
         time.sleep(interval)
 
 
@@ -368,6 +484,103 @@ def _dispatch(branch: str, event: dict) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+def ensure_daemon(interval: int = 30) -> str:
+    """Idempotently install and load the launchd LaunchAgent that runs watch-all.
+
+    Writes ~/Library/LaunchAgents/com.jarvis.devsignals.plist and loads it
+    with launchctl. Safe to call repeatedly — no-op if the agent is already
+    loaded. Returns 'installed' | 'already_running' | 'load_failed' | 'not_macos'.
+    """
+    if sys.platform != "darwin":
+        print("ensure-daemon: not macOS — skipping launchd install", file=sys.stderr)
+        return "not_macos"
+
+    python_bin = sys.executable
+    listener_script = str(Path(__file__).resolve())
+    log_dir = REPO_ROOT / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_out = str(log_dir / "dev-daemon.log")
+    log_err = str(log_dir / "dev-daemon-err.log")
+
+    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{_LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{python_bin}</string>
+    <string>{listener_script}</string>
+    <string>watch-all</string>
+    <string>--interval</string>
+    <string>{interval}</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>LOCAL_EVENT_AUTO_OPEN</key>
+    <string>1</string>
+    <key>LOCAL_EVENT_AUTO_DISPATCH</key>
+    <string>0</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{log_out}</string>
+  <key>StandardErrorPath</key>
+  <string>{log_err}</string>
+  <key>WorkingDirectory</key>
+  <string>{str(REPO_ROOT)}</string>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+</dict>
+</plist>
+"""
+
+    # Check if already running
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", _LAUNCHD_LABEL],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode == 0:
+            print(f"ensure-daemon: {_LAUNCHD_LABEL} already loaded.")
+            return "already_running"
+    except Exception:
+        pass
+
+    # Write plist
+    _LAUNCHD_PLIST.parent.mkdir(parents=True, exist_ok=True)
+    _LAUNCHD_PLIST.write_text(plist_content)
+    print(f"ensure-daemon: wrote {_LAUNCHD_PLIST}")
+
+    # Load
+    try:
+        result = subprocess.run(
+            ["launchctl", "load", "-w", str(_LAUNCHD_PLIST)],
+            capture_output=True, timeout=10,
+        )
+        if result.returncode == 0:
+            print(f"ensure-daemon: loaded {_LAUNCHD_LABEL} successfully.")
+            return "installed"
+        else:
+            err = result.stderr.decode(errors="replace").strip()
+            print(f"ensure-daemon: launchctl load failed: {err}", file=sys.stderr)
+            return "load_failed"
+    except Exception as exc:
+        print(f"ensure-daemon: launchctl load error: {exc}", file=sys.stderr)
+        return "load_failed"
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 def _cmd_catch_up(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Deliver new jarvis-signal comments to worktree inboxes.")
     ap.add_argument("--issue", type=int, required=True)
@@ -391,6 +604,17 @@ def _cmd_watch(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_watch_all(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(
+        description="Always-on daemon: poll all open jarvis-work issues + open PRs."
+    )
+    ap.add_argument("--interval", type=int, default=30)
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args(argv)
+    watch_all(interval=args.interval, dry_run=args.dry_run)
+    return 0
+
+
 def _cmd_dispatch(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Dispatch a signal to the owning worktree.")
     ap.add_argument("--branch", required=True)
@@ -406,10 +630,22 @@ def _cmd_dispatch(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_ensure_daemon(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(
+        description="Idempotently install and load the launchd daemon for watch-all."
+    )
+    ap.add_argument("--interval", type=int, default=30)
+    args = ap.parse_args(argv)
+    status = ensure_daemon(interval=args.interval)
+    return 0 if status in ("installed", "already_running") else 1
+
+
 _COMMANDS = {
     "catch-up": _cmd_catch_up,
     "watch": _cmd_watch,
+    "watch-all": _cmd_watch_all,
     "dispatch": _cmd_dispatch,
+    "ensure-daemon": _cmd_ensure_daemon,
 }
 
 

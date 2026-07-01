@@ -232,6 +232,43 @@ class TestEmitSignalCLI(unittest.TestCase):
                          "https://github.com/foo/bar/issues/115#issuecomment-999")
 
 
+class TestEmitSignalRequirement(unittest.TestCase):
+    def test_emit_signal_requirement_round_trips(self):
+        """--requirement must appear in parsed payload as requirement field."""
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = PML.main([
+                "emit-signal", "--event", "intake",
+                "--branch", "",
+                "--issue", "101",
+                "--signal-id", "req-uuid-test",
+                "--requirement", "add dark mode toggle",
+            ])
+        self.assertEqual(rc, 0)
+        parsed = PML.parse_signal(buf.getvalue().strip())
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["event"], "intake")
+        self.assertEqual(parsed["requirement"], "add dark mode toggle")
+
+    def test_emit_signal_no_requirement_omits_field(self):
+        """Without --requirement, the field must not appear in the payload."""
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            PML.main([
+                "emit-signal", "--event", "intake",
+                "--branch", "",
+                "--issue", "101",
+                "--signal-id", "req-uuid-none",
+            ])
+        parsed = PML.parse_signal(buf.getvalue().strip())
+        self.assertIsNotNone(parsed)
+        self.assertNotIn("requirement", parsed)
+
+
 class TestFindBranchForIssue(unittest.TestCase):
     def test_finds_branch_from_seeded_cache(self):
         branch = "fix/test-find-branch"

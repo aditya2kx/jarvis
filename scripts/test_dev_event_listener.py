@@ -272,5 +272,190 @@ class TestDrainViaRouter(unittest.TestCase):
         self.assertIsNone(result)
 
 
+# ---------------------------------------------------------------------------
+# Intake handling in catch_up
+# ---------------------------------------------------------------------------
+
+def _make_intake_signal_comment(requirement: str, sid: str, author: str = "aditya2kx") -> dict:
+    from post_merge_lifecycle import format_signal
+    sig_block = format_signal("intake", "", signal_id=sid, issue=101, requirement=requirement)
+    return {
+        "body": f"/jarvis-new-task {requirement}\n\n{sig_block}",
+        "createdAt": "2026-06-30T10:00:00Z",
+        "author": {"login": author},
+    }
+
+
+class TestIntakeCatchUp(unittest.TestCase):
+    def test_intake_dispatches_new_requirement(self):
+        """Intake signal from allowlisted author triggers _dispatch (which runs new_requirement.py)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = Path(tmp) / "metrics" / "pr_cost"
+            mdir.mkdir(parents=True)
+            intake_seen = mdir / "listener-intake-seen.json"
+            comment = _make_intake_signal_comment("add dark mode", "intake-uuid-1")
+            with patch.object(L, "METRICS_DIR", mdir), \
+                 patch.object(R, "METRICS_DIR", mdir), \
+                 patch.object(L, "_INTAKE_SEEN_FILE", intake_seen), \
+                 patch.object(L, "_gh_issue_comments", return_value=[comment]), \
+                 patch.object(L, "_dispatch", return_value="dispatched") as mock_dispatch:
+                n = L.catch_up(101)
+        self.assertEqual(n, 1)
+        mock_dispatch.assert_called_once()
+        call_args = mock_dispatch.call_args
+        self.assertEqual(call_args[0][0], "")  # branch is empty for intake
+        self.assertEqual(call_args[0][1].get("requirement"), "add dark mode")
+
+    def test_intake_dedup_via_seen_file(self):
+        """Second catch_up with same intake signal id is a no-op."""
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = Path(tmp) / "metrics" / "pr_cost"
+            mdir.mkdir(parents=True)
+            intake_seen = mdir / "listener-intake-seen.json"
+            comment = _make_intake_signal_comment("add dark mode", "intake-uuid-dup")
+            with patch.object(L, "METRICS_DIR", mdir), \
+                 patch.object(R, "METRICS_DIR", mdir), \
+                 patch.object(L, "_INTAKE_SEEN_FILE", intake_seen), \
+                 patch.object(L, "_gh_issue_comments", return_value=[comment]), \
+                 patch.object(L, "_dispatch", return_value="dispatched") as mock_dispatch:
+                # First call — should dispatch
+                n1 = L.catch_up(101)
+                # Second call with same comment — should be deduped
+                n2 = L.catch_up(101)
+        self.assertEqual(n1, 1)
+        self.assertEqual(n2, 0)  # deduped
+        self.assertEqual(mock_dispatch.call_count, 1)
+
+    def test_intake_unauthorized_author_skipped(self):
+        """Intake signal from non-allowlisted author is ignored."""
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = Path(tmp) / "metrics" / "pr_cost"
+            mdir.mkdir(parents=True)
+            intake_seen = mdir / "listener-intake-seen.json"
+            comment = _make_intake_signal_comment("bad actor", "intake-uuid-unauth",
+                                                   author="random-outsider")
+            with patch.object(L, "METRICS_DIR", mdir), \
+                 patch.object(R, "METRICS_DIR", mdir), \
+                 patch.object(L, "_INTAKE_SEEN_FILE", intake_seen), \
+                 patch.object(L, "_gh_issue_comments", return_value=[comment]), \
+                 patch.object(L, "_dispatch") as mock_dispatch:
+                n = L.catch_up(101)
+        self.assertEqual(n, 0)
+        mock_dispatch.assert_not_called()
+
+    def test_intake_no_requirement_still_dispatches(self):
+        """Intake signal without a requirement text still dispatches (empty string)."""
+        from post_merge_lifecycle import format_signal
+        sig_block = format_signal("intake", "", signal_id="intake-uuid-noreq", issue=101)
+        comment = {
+            "body": f"/jarvis-new-task\n\n{sig_block}",
+            "createdAt": "2026-06-30T10:00:00Z",
+            "author": {"login": "aditya2kx"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = Path(tmp) / "metrics" / "pr_cost"
+            mdir.mkdir(parents=True)
+            intake_seen = mdir / "listener-intake-seen.json"
+            with patch.object(L, "METRICS_DIR", mdir), \
+                 patch.object(R, "METRICS_DIR", mdir), \
+                 patch.object(L, "_INTAKE_SEEN_FILE", intake_seen), \
+                 patch.object(L, "_gh_issue_comments", return_value=[comment]), \
+                 patch.object(L, "_dispatch", return_value="dispatched") as mock_dispatch:
+                n = L.catch_up(101)
+        self.assertEqual(n, 1)
+        mock_dispatch.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# watch-all enumeration
+# ---------------------------------------------------------------------------
+
+class TestWatchAll(unittest.TestCase):
+    def test_watch_all_calls_catch_up_for_each_target(self):
+        """watch-all enumerates issues + PRs and calls catch_up for each unique number."""
+        call_log: list[int] = []
+
+        def fake_catch_up(n, **kwargs):
+            call_log.append(n)
+            return 0
+
+        with patch.object(L, "_gh_open_jarvis_issue_numbers", return_value=[101, 102]), \
+             patch.object(L, "_gh_open_pr_numbers", return_value=[115, 102]), \
+             patch.object(L, "catch_up", side_effect=fake_catch_up), \
+             patch("time.sleep", side_effect=KeyboardInterrupt):
+            try:
+                L.watch_all(interval=1)
+            except KeyboardInterrupt:
+                pass
+
+        # Should have called catch_up for union: {101, 102, 115}
+        self.assertEqual(sorted(call_log), [101, 102, 115])
+
+    def test_watch_all_deduplicates_issue_and_pr_numbers(self):
+        """PR #102 is in both lists — catch_up called once per unique number."""
+        call_log: list[int] = []
+
+        def fake_catch_up(n, **kwargs):
+            call_log.append(n)
+            return 0
+
+        with patch.object(L, "_gh_open_jarvis_issue_numbers", return_value=[101]), \
+             patch.object(L, "_gh_open_pr_numbers", return_value=[101, 115]), \
+             patch.object(L, "catch_up", side_effect=fake_catch_up), \
+             patch("time.sleep", side_effect=KeyboardInterrupt):
+            try:
+                L.watch_all(interval=1)
+            except KeyboardInterrupt:
+                pass
+
+        self.assertEqual(sorted(call_log), [101, 115])
+
+
+# ---------------------------------------------------------------------------
+# ensure-daemon idempotency
+# ---------------------------------------------------------------------------
+
+class TestEnsureDaemon(unittest.TestCase):
+    def test_already_running_is_noop(self):
+        """If launchctl list succeeds, ensure_daemon returns already_running."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            result = L.ensure_daemon()
+        self.assertEqual(result, "already_running")
+        # launchctl load should NOT have been called
+        load_calls = [c for c in mock_run.call_args_list
+                      if "load" in str(c)]
+        self.assertEqual(len(load_calls), 0)
+
+    def test_not_macos_returns_not_macos(self):
+        """On non-macOS platforms, ensure_daemon returns not_macos."""
+        with patch.object(L.sys, "platform", "linux"):
+            result = L.ensure_daemon()
+        self.assertEqual(result, "not_macos")
+
+    def test_installs_when_not_loaded(self):
+        """If launchctl list fails (not loaded), plist is written and load is called."""
+        with tempfile.TemporaryDirectory() as tmp:
+            # Place the fake plist inside tmp (parent already exists)
+            fake_dir = Path(tmp) / "LaunchAgents"
+            fake_dir.mkdir()
+            fake_plist = fake_dir / "com.jarvis.devsignals.plist"
+            with patch.object(L, "_LAUNCHD_PLIST", fake_plist), \
+                 patch("subprocess.run") as mock_run:
+                # First call (launchctl list) returns non-zero → not loaded
+                # Second call (launchctl load) returns 0 → success
+                mock_run.side_effect = [
+                    MagicMock(returncode=1),   # launchctl list → not loaded
+                    MagicMock(returncode=0),   # launchctl load → success
+                ]
+                result = L.ensure_daemon()
+            # Assertions inside the with block while temp dir still exists
+            self.assertEqual(result, "installed")
+            self.assertTrue(fake_plist.exists())
+            plist_text = fake_plist.read_text()
+            self.assertIn("watch-all", plist_text)
+            self.assertIn("com.jarvis.devsignals", plist_text)
+
+
 if __name__ == "__main__":
     unittest.main()

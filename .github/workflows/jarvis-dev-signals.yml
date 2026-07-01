@@ -122,10 +122,15 @@ jobs:
           BODY: ${{ github.event.comment.body }}
           AUTHOR: ${{ github.event.comment.user.login }}
         run: |
+          # Strip the /jarvis-new-task prefix (with optional trailing space) using bash
+          STRIPPED="${BODY#/jarvis-new-task}"
+          REQ="${STRIPPED# }"
+
           SIG="$(python3 scripts/post_merge_lifecycle.py emit-signal \
             --event intake \
             --branch "" \
-            --issue "$ISSUE" || true)"
+            --issue "$ISSUE" \
+            ${REQ:+--requirement "$REQ"} || true)"
 
           IBODY="Intake signal queued from \`${AUTHOR}\`: \`${BODY:0:120}\`."$'\n\n'"${SIG}"
           gh issue comment "$ISSUE" --repo "$REPO" \

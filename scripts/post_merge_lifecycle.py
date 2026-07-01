@@ -333,10 +333,13 @@ def _cmd_emit_signal(argv: list[str]) -> int:
     ap.add_argument("--issue", type=int, default=None)
     ap.add_argument("--signal-id", default=None, help="Override the UUID (useful for tests/idempotency)")
     ap.add_argument("--comment-url", default=None, help="URL of the originating comment (for comment events)")
+    ap.add_argument("--requirement", default=None, help="Requirement text extracted from /jarvis-new-task comment (for intake events)")
     args = ap.parse_args(argv)
     extra: dict = {}
     if args.comment_url:
         extra["comment_url"] = args.comment_url
+    if args.requirement:
+        extra["requirement"] = args.requirement
     print(format_signal(
         args.event,
         args.branch,

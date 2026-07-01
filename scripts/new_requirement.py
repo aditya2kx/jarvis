@@ -496,6 +496,14 @@ def _run_one(
         print("Pick up the work in this chat; commit and push from within the worktree.")
         return 0
 
+    # Ensure the always-on dev-signals daemon is running so every new worktree
+    # is automatically covered for CI/comment/merge events without manual setup.
+    try:
+        import dev_event_listener as _DEL
+        _DEL.ensure_daemon()
+    except Exception as _e:
+        print(f"(ensure-daemon: non-fatal: {_e})", file=sys.stderr)
+
     S.open_cursor_handoff(
         folder=wt,
         deeplink=deeplink,

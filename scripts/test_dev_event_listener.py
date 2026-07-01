@@ -130,6 +130,30 @@ class TestOpenOrFocusWorktree(unittest.TestCase):
         calls = [str(c) for c in mock_run.call_args_list]
         self.assertTrue(any("new_requirement" in c for c in calls))
 
+    def test_creates_worktree_threads_issue_number(self):
+        """Intake with a known tracking issue must pass --issue N to new_requirement.py
+        so the new worktree links the existing issue and seeds context from it,
+        rather than only the short intake comment."""
+        wt = Path("/nonexistent/new-worktree-issue")
+        with patch("subprocess.run") as mock_run:
+            L._open_or_focus_worktree(
+                wt, requirement="let's work on this", issue=112, create_if_missing=True
+            )
+        cmd = mock_run.call_args_list[0][0][0]
+        self.assertIn("--issue", cmd)
+        self.assertIn("112", cmd)
+        self.assertIn("--requirement", cmd)
+
+    def test_creates_worktree_with_issue_and_no_requirement_text(self):
+        """A bare /jarvis-new-task (no note) on a known issue must still create."""
+        wt = Path("/nonexistent/new-worktree-bare")
+        with patch("subprocess.run") as mock_run:
+            L._open_or_focus_worktree(wt, requirement="", issue=112, create_if_missing=True)
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args_list[0][0][0]
+        self.assertIn("--issue", cmd)
+        self.assertIn("112", cmd)
+
 
 class TestCursorOpen(unittest.TestCase):
     def test_uses_cursor_cli_when_available(self):
@@ -229,6 +253,19 @@ class TestDispatch(unittest.TestCase):
         self.assertEqual(result, "dispatched")
         mock_seed.assert_called_once()
 
+    def test_dispatch_passes_issue_from_event_to_open_or_focus(self):
+        """The intake signal's 'issue' field must reach _open_or_focus_worktree,
+        so new_requirement.py links the existing tracking issue instead of
+        creating a duplicate."""
+        with patch.object(L, "_auto_open_enabled", return_value=True), \
+             patch.object(L, "_worktree_path_for", return_value=None), \
+             patch.object(L, "_open_or_focus_worktree") as mock_open:
+            result = L._dispatch("", {"event": "intake", "issue": 112, "requirement": "note"})
+        self.assertEqual(result, "no_worktree")
+        _, kwargs = mock_open.call_args
+        self.assertEqual(kwargs.get("issue"), 112)
+        self.assertEqual(kwargs.get("requirement"), "note")
+
     def test_notify_only_when_auto_dispatch_off(self):
         branch = "fix/test-dispatch-notify"
         with tempfile.TemporaryDirectory() as tmp:
@@ -276,9 +313,12 @@ class TestDrainViaRouter(unittest.TestCase):
 # Intake handling in catch_up
 # ---------------------------------------------------------------------------
 
-def _make_intake_signal_comment(requirement: str, sid: str, author: str = "aditya2kx") -> dict:
+def _make_intake_signal_comment(
+    requirement: str, sid: str, author: str = "aditya2kx", ts: str | None = None
+) -> dict:
     from post_merge_lifecycle import format_signal
-    sig_block = format_signal("intake", "", signal_id=sid, issue=101, requirement=requirement)
+    extra = {"ts": ts} if ts else {}
+    sig_block = format_signal("intake", "", signal_id=sid, issue=101, requirement=requirement, **extra)
     return {
         "body": f"/jarvis-new-task {requirement}\n\n{sig_block}",
         "createdAt": "2026-06-30T10:00:00Z",
@@ -356,6 +396,45 @@ class TestIntakeCatchUp(unittest.TestCase):
             mdir = Path(tmp) / "metrics" / "pr_cost"
             mdir.mkdir(parents=True)
             intake_seen = mdir / "listener-intake-seen.json"
+            with patch.object(L, "METRICS_DIR", mdir), \
+                 patch.object(R, "METRICS_DIR", mdir), \
+                 patch.object(L, "_INTAKE_SEEN_FILE", intake_seen), \
+                 patch.object(L, "_gh_issue_comments", return_value=[comment]), \
+                 patch.object(L, "_dispatch", return_value="dispatched") as mock_dispatch:
+                n = L.catch_up(101)
+        self.assertEqual(n, 1)
+        mock_dispatch.assert_called_once()
+
+    def test_intake_stale_signal_skipped_not_dispatched(self):
+        """A signal older than _INTAKE_MAX_AGE_SEC must never re-open Cursor —
+        defense-in-depth for when the seen-file is lost/reset (crash, manual
+        cache cleanup) and an old comment looks 'unseen' again."""
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = Path(tmp) / "metrics" / "pr_cost"
+            mdir.mkdir(parents=True)
+            intake_seen = mdir / "listener-intake-seen.json"
+            comment = _make_intake_signal_comment(
+                "let's work on this", "intake-uuid-stale", ts="2020-01-01T00:00:00Z"
+            )
+            with patch.object(L, "METRICS_DIR", mdir), \
+                 patch.object(R, "METRICS_DIR", mdir), \
+                 patch.object(L, "_INTAKE_SEEN_FILE", intake_seen), \
+                 patch.object(L, "_gh_issue_comments", return_value=[comment]), \
+                 patch.object(L, "_dispatch") as mock_dispatch:
+                n = L.catch_up(101)
+            self.assertEqual(n, 0)
+            mock_dispatch.assert_not_called()
+            # Stale signal is still marked seen so it isn't re-evaluated every poll.
+            seen = json.loads(intake_seen.read_text())
+            self.assertIn("intake-uuid-stale", seen)
+
+    def test_intake_recent_signal_still_dispatches(self):
+        """A freshly-emitted signal (ts=now) must NOT be treated as stale."""
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = Path(tmp) / "metrics" / "pr_cost"
+            mdir.mkdir(parents=True)
+            intake_seen = mdir / "listener-intake-seen.json"
+            comment = _make_intake_signal_comment("add feature Y", "intake-uuid-fresh")
             with patch.object(L, "METRICS_DIR", mdir), \
                  patch.object(R, "METRICS_DIR", mdir), \
                  patch.object(L, "_INTAKE_SEEN_FILE", intake_seen), \

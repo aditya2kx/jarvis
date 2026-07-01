@@ -41,6 +41,7 @@ Design:
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import shutil
@@ -64,6 +65,11 @@ _AUTO_DISPATCH_DEFAULT = "1"
 
 # Seen-file for intake dedup — prevents re-running new_requirement.py on rescan
 _INTAKE_SEEN_FILE = METRICS_DIR / "listener-intake-seen.json"
+
+# Defense-in-depth: if the seen-file is ever lost/reset (crash, disk swap, manual
+# cache cleanup), don't blindly replay an old intake signal and pop open a new
+# Cursor window — bound the blast radius to signals emitted recently.
+_INTAKE_MAX_AGE_SEC = 900  # 15 min
 
 # launchd agent label / plist path
 _LAUNCHD_LABEL = "com.jarvis.devsignals"
@@ -207,6 +213,19 @@ def _save_intake_seen(seen: set[str]) -> None:
     _INTAKE_SEEN_FILE.write_text(json.dumps(sorted(seen)))
 
 
+def _signal_age_sec(signal: dict) -> float | None:
+    """Seconds since ``signal['ts']`` was emitted, or None if unparseable."""
+    ts = signal.get("ts")
+    if not ts:
+        return None
+    try:
+        emitted = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        return (now - emitted).total_seconds()
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Catch-up
 # ---------------------------------------------------------------------------
@@ -275,6 +294,16 @@ def catch_up(
             seen = _load_intake_seen()
             if sid and sid in seen:
                 print(f"signal {sid[:8]} → duplicate  [intake already dispatched]")
+                continue
+            age = _signal_age_sec(signal)
+            if age is not None and age > _INTAKE_MAX_AGE_SEC:
+                # Seen-file dedup is the only guard against replay; if it's ever
+                # lost (crash, manual cache reset), don't reopen a Cursor window
+                # for a signal that's minutes-to-days old — just mark it seen.
+                print(f"signal {sid[:8]} → stale-skip  [intake age={age:.0f}s > {_INTAKE_MAX_AGE_SEC}s]")
+                if sid:
+                    seen.add(sid)
+                    _save_intake_seen(seen)
                 continue
             requirement = signal.get("requirement") or ""
             print(f"signal {sid[:8]} → intake  [requirement={requirement[:60]!r}]")
@@ -383,16 +412,23 @@ def _open_or_focus_worktree(
     path: Path,
     *,
     requirement: str | None = None,
+    issue: int | None = None,
     create_if_missing: bool = False,
 ) -> None:
-    """Open or focus the Cursor window for ``path``."""
+    """Open or focus the Cursor window for ``path``.
+
+    ``issue`` (when known) is threaded into ``new_requirement.py --issue`` so
+    the new worktree links the EXISTING tracking issue (instead of creating a
+    duplicate) and seeds its brief from the issue's title + body rather than
+    just the operator's short intake comment.
+    """
     if not path.exists():
-        if create_if_missing and requirement:
-            subprocess.run(
-                [sys.executable, str(REPO_ROOT / "scripts" / "new_requirement.py"),
-                 "--requirement", requirement],
-                check=False,
-            )
+        if create_if_missing and (requirement or issue):
+            cmd = [sys.executable, str(REPO_ROOT / "scripts" / "new_requirement.py")]
+            if issue:
+                cmd += ["--issue", str(issue)]
+            cmd += ["--requirement", requirement or ""]
+            subprocess.run(cmd, check=False)
         return
     _cursor_open(path)
 
@@ -492,12 +528,14 @@ def _dispatch(branch: str, event: dict) -> str:
 
     event_kind = event.get("event", "unknown")
     requirement = event.get("requirement")
+    issue = event.get("issue")
 
     wt = _worktree_path_for(branch)
     is_intake = event_kind == "intake"
     _open_or_focus_worktree(
         wt or Path("/nonexistent"),
         requirement=requirement,
+        issue=issue,
         create_if_missing=is_intake,
     )
 

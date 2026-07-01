@@ -123,6 +123,37 @@ _PREAMBLE_PHRASES = (
 )
 
 
+def _fetch_issue_context(issue_num: int) -> tuple[str, str] | None:
+    """Return (title, body) for an existing GitHub issue, or None (best-effort).
+
+    Used by the intake path (daemon dispatch on a tracking issue) so the new
+    worktree's brief is seeded from the issue's actual title/body instead of
+    just the operator's short intake comment (e.g. "let's work on this").
+    """
+    try:
+        out = subprocess.check_output(
+            ["gh", "issue", "view", str(issue_num), "--json", "title,body"],
+            text=True, stderr=subprocess.DEVNULL, timeout=30,
+        )
+        import json as _json
+        data = _json.loads(out or "{}")
+        return data.get("title") or "", data.get("body") or ""
+    except Exception:
+        return None
+
+
+def _compose_requirement(title: str, body: str, note: str) -> str:
+    """Combine an issue's title/body with the operator's intake note.
+
+    Skips empty parts so this degrades gracefully to just ``note`` when the
+    issue has no body, or just ``title`` when there is no separate note.
+    """
+    parts = [p.strip() for p in (title, body) if p and p.strip()]
+    if note and note.strip():
+        parts.append(f"---\nOperator intake note: {note.strip()}")
+    return "\n\n".join(parts) if parts else note
+
+
 def _sanitize_requirement(text: str) -> str:
     """Strip issue refs + generic preamble so the slug reflects the actual ask."""
     t = _ISSUE_URL_RE.sub(" ", text)
@@ -167,6 +198,7 @@ def default_branch(
     issue_num: int | None = None,
     existing: set[str] | None = None,
     prefix: str = "fix",
+    slug_hint: str | None = None,
 ) -> str:
     """Compute a collision-free branch name for *requirement*.
 
@@ -175,9 +207,13 @@ def default_branch(
       always get distinct branches.
     - When *issue_num* is None (create-path, N not yet known) the branch is
       ``fix/<slug>``; any collision is resolved by appending ``-2``, ``-3``, …
+    - ``slug_hint`` (e.g. the linked issue's title) overrides *requirement*
+      as the slug source — used by the intake path so the branch reflects
+      the actual issue title rather than a short operator comment like
+      "let's work on this".
     - Explicit ``--branch`` in main() wins over this default.
     """
-    slug = _slug_branch_part(_sanitize_requirement(requirement))
+    slug = _slug_branch_part(_sanitize_requirement(slug_hint or requirement))
     if issue_num:
         base = f"{prefix}/i{issue_num}-{slug}" if slug else f"{prefix}/i{issue_num}"
     else:
@@ -644,11 +680,27 @@ def main(argv: list[str] | None = None) -> int:
     if issue_ref and not args.issue:
         print(f"Auto-detected issue #{issue_ref} from requirement text — linking instead of creating.")
 
+    # When an existing tracking issue is known (intake path, or --issue N),
+    # enrich the requirement from its title/body — a short intake comment
+    # like "let's work on this" is not enough context for the jam handoff.
+    issue_title = ""
+    if issue_ref:
+        ctx = _fetch_issue_context(issue_ref)
+        if ctx:
+            issue_title, issue_body = ctx
+            combined = _compose_requirement(issue_title, issue_body, combined)
+        else:
+            print(f"⚠️  Could not fetch context for issue #{issue_ref} (non-fatal) — "
+                  f"using intake text as-is.", file=sys.stderr)
+
     if args.branch:
         branch = args.branch  # explicit --branch always wins
     else:
         req_for_slug = combined if len(requirements) == 1 else requirements[0]
-        branch = default_branch(req_for_slug, issue_num=issue_ref, existing=existing)
+        branch = default_branch(
+            req_for_slug, issue_num=issue_ref, existing=existing,
+            slug_hint=issue_title or None,
+        )
 
     if len(requirements) > 1:
         print(f"Consolidating {len(requirements)} requirements into one PR (branch: {branch}).")

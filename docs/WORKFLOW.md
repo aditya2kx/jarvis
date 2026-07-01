@@ -401,7 +401,7 @@ GH Action (check_suite / issue_comment / pr-merged-lifecycle)
 | `ci_passed` | `ci_green` | `check_suite.completed` success | — |
 | `ci_other` | `ci_status` | `check_suite.completed` other | — |
 | `pr_merged` | `retrospective` | `pr-merged-lifecycle.yml` | Triggers retro jam flow |
-| `intake` | `intake` | `/jarvis-new-task` comment | Allowlist-gated; no debounce |
+| `intake` | `intake` | `/jarvis-new-task` comment | Allowlist-gated; no debounce. The signal's `issue` field is threaded through to `new_requirement.py --issue N`, which fetches the issue's title+body (`gh issue view`) to seed the brief — a short intake comment alone (e.g. "let's work on this") is not enough context — and links the EXISTING issue instead of creating a duplicate. Branch is `fix/i{N}-<title-slug>` (issue-based, unique). |
 | `comment` | `address_comment` | Operator comment on any issue/PR | Allowlist-gated (workflow primary gate); loop-safe. **Note:** for PR comments, branch is resolved via `gh pr view --json headRefName` (no phase cache needed). For plain issue comments, branch is resolved via `find-branch` (reads laptop phase cache); absent on the Actions runner → gracefully skips with log message. |
 
 ### New scripts

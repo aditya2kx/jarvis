@@ -2685,26 +2685,26 @@
       "type": "text",
       "title": "Order Recommendation — Methodology",
       "gridPos": {
-        "h": 4,
+        "h": 7,
         "w": 24,
         "x": 0,
         "y": 201
       },
       "options": {
         "mode": "markdown",
-        "content": "**How orders are computed**\n\n- **Projection:** stock available when the order arrives = `max(0, current_qty − oa_ship_days × avg_per_day)`. Adjust the `Order Assistant: Shipping Lead` variable above.\n- **Budget:** `floor(oa_max_tubs − Σ projected_on_hand_all_bases)` whole tubs available to order. Adjust the `Order Assistant: Max Capacity` variable above.\n- **Allocation (max-min water-fill):** each tub in the budget goes to the base with the lowest post-restock days-of-coverage at that moment, maximising the shop's overall runway (the base that runs out first).\n- **Blade:** delivered directly — not ordered, but its projected on-hand counts against the capacity ceiling."
+        "content": "**How orders are computed**\n\n- **Projection:** stock available when the order arrives = `max(0, current_qty − oa_ship_days × avg_per_day)`. Adjust the `Order Assistant: Shipping Lead` variable above.\n- **Budget:** `floor(oa_max_tubs − Σ projected_on_hand_all_bases)` whole tubs available to order. Adjust the `Order Assistant: Max Capacity` variable above.\n- **Allocation (max-min water-fill):** each tub in the budget goes to the base with the lowest post-restock days-of-coverage at that moment, maximising the shop's overall runway (the base that runs out first).\n- **Blade:** delivered directly — not ordered, but its projected on-hand counts against the capacity ceiling.\n- **Order Weight (lbs):** per-row = Order Tubs × per-tub weight (Açaí 18 lbs; Pitaya, Coconut, Mango, Tropical, Matcha, Ube, Pog = 20 lbs each; Blade = NA). TOTAL row adds pallet packaging: 40 tubs = 1 pallet, +50 lbs/pallet → TOTAL = Σ per-row weight + 50 × CEIL(total order tubs ÷ 40)."
       }
     },
     {
       "id": 81,
       "type": "table",
       "title": "Order Recommendation — What to Order Now",
-      "description": "Per-base order recommendation for the next replenishment. Lead time and max capacity driven by the oa_ship_days / oa_max_tubs dashboard variables.",
+      "description": "Per-base order recommendation for the next replenishment. Lead time and max capacity driven by the oa_ship_days / oa_max_tubs dashboard variables. Order Weight (lbs) = Order Tubs × per-tub weight (Açaí 18 lbs; all other bases 20 lbs; Blade delivered directly → NA, excluded from weight). TOTAL Order Weight adds pallet packaging: 40 tubs = 1 pallet, +50 lbs/pallet, so TOTAL = Σ per-row weight + 50 × CEIL(total order tubs ÷ 40).",
       "gridPos": {
-        "h": 10,
+        "h": 16,
         "w": 24,
         "x": 0,
-        "y": 205
+        "y": 208
       },
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -2716,7 +2716,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "WITH oa AS (SELECT item, current_qty, COALESCE(avg_daily_usage,0) AS avg_daily_usage, GREATEST(current_qty - $oa_ship_days * COALESCE(avg_daily_usage,0), 0) AS on_hand_arrival FROM `jarvis-bhaga-prod.bhaga.vw_inventory_order_assistant` WHERE store = 'palmetto'), budget AS (SELECT GREATEST(CAST(FLOOR($oa_max_tubs - SUM(on_hand_arrival)) AS INT64), 0) AS tubs_budget FROM oa), candidates AS (SELECT o.item, (o.on_hand_arrival + k - 1) / o.avg_daily_usage AS sort_key FROM oa o CROSS JOIN UNNEST(GENERATE_ARRAY(1, GREATEST((SELECT tubs_budget FROM budget),1))) AS k WHERE o.item != 'Blade' AND o.avg_daily_usage > 0), ranked AS (SELECT item, ROW_NUMBER() OVER (ORDER BY sort_key ASC) AS rn FROM candidates), selected AS (SELECT item, COUNT(*) AS order_tubs FROM ranked WHERE rn <= (SELECT tubs_budget FROM budget) GROUP BY item), reco AS (SELECT o.item, o.current_qty, o.avg_daily_usage, ROUND(o.on_hand_arrival,2) AS on_hand_arrival, COALESCE(s.order_tubs,0) AS order_tubs, ROUND(o.on_hand_arrival + COALESCE(s.order_tubs,0),2) AS post_restock_qty, ROUND(SAFE_DIVIDE(o.on_hand_arrival + COALESCE(s.order_tubs,0), NULLIF(o.avg_daily_usage,0)),1) AS post_restock_days_left FROM oa o LEFT JOIN selected s USING (item)), combined AS (SELECT *, 0 AS _ord FROM reco UNION ALL SELECT 'TOTAL', ROUND(SUM(current_qty),2), ROUND(SUM(avg_daily_usage),2), ROUND(SUM(on_hand_arrival),2), SUM(order_tubs), ROUND(SUM(post_restock_qty),2), ROUND(SAFE_DIVIDE(SUM(post_restock_qty),NULLIF(SUM(avg_daily_usage),0)),1), 1 FROM reco) SELECT item AS Item, current_qty AS `Current Qty`, avg_daily_usage AS `Avg per day`, on_hand_arrival AS `On Hand in 10d`, order_tubs AS `Order Tubs`, post_restock_qty AS `After Restock`, post_restock_days_left AS `Days Left After Restock` FROM combined ORDER BY _ord ASC, current_qty DESC"
+          "rawSql": "WITH oa AS (SELECT item, current_qty, COALESCE(avg_daily_usage,0) AS avg_daily_usage, GREATEST(current_qty - $oa_ship_days * COALESCE(avg_daily_usage,0), 0) AS on_hand_arrival FROM `jarvis-bhaga-prod.bhaga.vw_inventory_order_assistant` WHERE store = 'palmetto'), budget AS (SELECT GREATEST(CAST(FLOOR($oa_max_tubs - SUM(on_hand_arrival)) AS INT64), 0) AS tubs_budget FROM oa), candidates AS (SELECT o.item, (o.on_hand_arrival + k - 1) / o.avg_daily_usage AS sort_key FROM oa o CROSS JOIN UNNEST(GENERATE_ARRAY(1, GREATEST((SELECT tubs_budget FROM budget),1))) AS k WHERE o.item != 'Blade' AND o.avg_daily_usage > 0), ranked AS (SELECT item, ROW_NUMBER() OVER (ORDER BY sort_key ASC) AS rn FROM candidates), selected AS (SELECT item, COUNT(*) AS order_tubs FROM ranked WHERE rn <= (SELECT tubs_budget FROM budget) GROUP BY item), reco AS (SELECT o.item, o.current_qty, o.avg_daily_usage, ROUND(o.on_hand_arrival,2) AS on_hand_arrival, COALESCE(s.order_tubs,0) AS order_tubs, ROUND(o.on_hand_arrival + COALESCE(s.order_tubs,0),2) AS post_restock_qty, ROUND(SAFE_DIVIDE(o.on_hand_arrival + COALESCE(s.order_tubs,0), NULLIF(o.avg_daily_usage,0)),1) AS post_restock_days_left, CASE WHEN o.item = 'Blade' THEN NULL ELSE COALESCE(s.order_tubs,0) * (CASE WHEN o.item = 'Açaí' THEN 18 ELSE 20 END) END AS order_weight_lbs FROM oa o LEFT JOIN selected s USING (item)), combined AS (SELECT *, 0 AS _ord FROM reco UNION ALL SELECT 'TOTAL', ROUND(SUM(current_qty),2), ROUND(SUM(avg_daily_usage),2), ROUND(SUM(on_hand_arrival),2), SUM(order_tubs), ROUND(SUM(post_restock_qty),2), ROUND(SAFE_DIVIDE(SUM(post_restock_qty),NULLIF(SUM(avg_daily_usage),0)),1), ROUND(SUM(order_weight_lbs) + 50 * CEIL(SAFE_DIVIDE(SUM(order_tubs), 40)), 0), 1 FROM reco) SELECT item AS Item, current_qty AS `Current Qty`, avg_daily_usage AS `Avg per day`, on_hand_arrival AS `On Hand in 10d`, order_tubs AS `Order Tubs`, order_weight_lbs AS `Order Weight lbs`, post_restock_qty AS `After Restock`, post_restock_days_left AS `Days Left After Restock` FROM combined ORDER BY _ord ASC, current_qty DESC"
         }
       ],
       "fieldConfig": {
@@ -2747,6 +2747,14 @@
             "properties": [{ "id": "custom.width", "value": 155 }]
           },
           {
+            "matcher": { "id": "byName", "options": "Order Weight lbs" },
+            "properties": [
+              { "id": "displayName", "value": "Order Weight (lbs)" },
+              { "id": "custom.width", "value": 200 },
+              { "id": "noValue", "value": "NA" }
+            ]
+          },
+          {
             "matcher": { "id": "byName", "options": "After Restock" },
             "properties": [{ "id": "custom.width", "value": 155 }]
           },
@@ -2771,7 +2779,7 @@
         "h": 16,
         "w": 24,
         "x": 0,
-        "y": 215
+        "y": 224
       },
       "datasource": {
         "type": "grafana-bigquery-datasource",

@@ -44,6 +44,24 @@ COUPLINGS: list[dict] = [
     },
     {
         "code": [
+            "agents/bhaga/scripts/ingest_inventory.py",
+            "skills/inventory_parse/*.py",
+            "core/migrations/027_inventory_closing.sql",
+        ],
+        "docs": [
+            "agents/bhaga/scripts/README.md",
+            "RUNBOOK.md",
+            ".cursor/rules/bhaga.mdc",
+        ],
+        "why": "inventory ingest / parser / schema change → update README script map, RUNBOOK, and bhaga.mdc invariants.",
+    },
+    {
+        "code": ["skills/credentials/registry.py"],
+        "docs": ["RUNBOOK.md", "AGENTS.md"],
+        "why": "credentials registry change (hydrate, new secrets) → update RUNBOOK § local bootstrap + AGENTS.md doc map.",
+    },
+    {
+        "code": [
             "skills/tip_ledger_writer/schema.py",
             "agents/bhaga/scripts/update_model_sheet.py",
             "agents/bhaga/scripts/forecast.py",

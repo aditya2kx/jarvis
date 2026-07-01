@@ -28,6 +28,7 @@ __all__ = [
     "lookup", "verify", "audit_all", "add_keychain",
     "list_all", "register", "remove",
     "get_secret", "mirror_to_gcp",
+    "hydrate", "hydrate_all",
 ]
 
 _GCP_PROJECT = "jarvis-bhaga-prod"
@@ -43,6 +44,37 @@ BHAGA_SECRETS = frozenset([
     "clickup",
     "clickup_palmetto_pat",
 ])
+
+# Committed map: GCP Secret Manager secret name -> Keychain metadata.
+# Works on a fresh clone without the gitignored registry.json.
+# Used by hydrate() to bootstrap any provider without re-discovery.
+# Providers: ClickUp, Google, Square, ADP, Slack.
+SECRET_TO_KEYCHAIN: dict[str, dict[str, str]] = {
+    "jarvis-clickup-palmetto-pat": {
+        "service": "jarvis-clickup-palmetto-pat",
+        "account": "CLICKUP_PAT",
+    },
+    "google_palmetto": {
+        "service": "google_palmetto",
+        "account": "palmetto_google_oauth",
+    },
+    "square_palmetto_oauth": {
+        "service": "square_palmetto_oauth",
+        "account": "palmetto_square",
+    },
+    "adp_palmetto_login": {
+        "service": "adp_palmetto_login",
+        "account": "palmetto_adp",
+    },
+    "slack_bhaga_bot": {
+        "service": "slack_bhaga_bot",
+        "account": "bhaga_slack_bot",
+    },
+    "slack_bhaga_cloud_bot": {
+        "service": "slack_bhaga_cloud_bot",
+        "account": "bhaga_cloud_slack_bot",
+    },
+}
 
 
 def _secrets_backend() -> str:
@@ -135,6 +167,108 @@ def get_secret(name: str) -> str:
             return f.read()
 
     raise ValueError(f"Unsupported credential type '{cred_type}' for '{name}'")
+
+
+def hydrate(name: str, *, force: bool = False) -> str:
+    """Pull a secret from GCP Secret Manager (via ADC) and store it in Keychain.
+
+    Works for any provider in SECRET_TO_KEYCHAIN — ClickUp, Google, Square,
+    ADP, Slack — without needing the gcloud CLI binary.
+
+    Args:
+        name: GCP Secret Manager secret name, e.g. 'jarvis-clickup-palmetto-pat'.
+        force: Re-hydrate even if the Keychain entry already exists.
+
+    Returns:
+        The Keychain service name the secret was stored under.
+
+    The secret value is NEVER printed. If ADC credentials are absent, a clear
+    actionable message is printed: run 'gcloud auth application-default login'.
+    """
+    if name not in SECRET_TO_KEYCHAIN:
+        raise KeyError(
+            f"Secret {name!r} not in SECRET_TO_KEYCHAIN committed map. "
+            f"Known: {sorted(SECRET_TO_KEYCHAIN)}"
+        )
+    kc = SECRET_TO_KEYCHAIN[name]
+    service = kc["service"]
+    account = kc["account"]
+
+    # Skip if already present and not forced.
+    if not force:
+        probe = subprocess.run(
+            ["security", "find-generic-password", "-s", service, "-w"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if probe.returncode == 0:
+            print(f"[hydrate] {name}: already in Keychain (service={service}), skipping.")
+            return service
+
+    # Read from GCP Secret Manager via ADC (no gcloud binary required).
+    try:
+        import base64 as _b64
+        import urllib.request as _req
+        try:
+            import google.auth as _gauth
+            from google.auth.transport.requests import Request as _Req
+            creds, _ = _gauth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            creds.refresh(_Req())
+        except Exception as e:
+            raise RuntimeError(
+                f"ADC credentials unavailable: {e}. "
+                f"Run: gcloud auth application-default login"
+            ) from e
+
+        url = (
+            f"https://secretmanager.googleapis.com/v1"
+            f"/projects/{_GCP_PROJECT}/secrets/{name}/versions/latest:access"
+        )
+        request = _req.Request(
+            url, headers={"Authorization": f"Bearer {creds.token}"}
+        )
+        with _req.urlopen(request, timeout=30) as resp:
+            payload = json.loads(resp.read())
+        secret_value = _b64.b64decode(payload["payload"]["data"]).decode().strip()
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to fetch secret {name!r} from Secret Manager: {e}"
+        ) from e
+
+    # Write to Keychain — value never printed.
+    subprocess.run(
+        ["security", "delete-generic-password", "-s", service, "-a", account],
+        capture_output=True,
+    )
+    result = subprocess.run(
+        ["security", "add-generic-password", "-s", service, "-a", account,
+         "-w", secret_value, "-U"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to write secret to Keychain (service={service}): "
+            f"{result.stderr.strip()}"
+        )
+    print(f"[hydrate] {name}: stored in Keychain (service={service})")
+    return service
+
+
+def hydrate_all(*, force: bool = False) -> dict[str, str]:
+    """Hydrate every secret in SECRET_TO_KEYCHAIN that is missing locally.
+
+    Returns a dict mapping secret name -> 'hydrated' | 'already_present' | error.
+    """
+    results: dict[str, str] = {}
+    for name in sorted(SECRET_TO_KEYCHAIN):
+        try:
+            service = hydrate(name, force=force)
+            results[name] = "hydrated" if force else "ok"
+        except Exception as exc:
+            results[name] = f"error: {exc}"
+            print(f"[hydrate_all] {name}: FAILED — {exc}", file=sys.stderr)
+    return results
 
 
 def mirror_to_gcp() -> dict[str, str]:
@@ -279,11 +413,27 @@ def verify(name):
 
 
 def audit_all():
-    """Verify every registered credential. Returns list of verify results."""
+    """Verify every registered credential. Returns list of verify results.
+
+    When a credential is missing, the detail field includes the exact fix command:
+        python3 -m skills.credentials.registry hydrate <name>
+    """
     reg = _load_registry()
     results = []
     for name in sorted(reg.keys()):
-        results.append(verify(name))
+        r = verify(name)
+        if not r["ok"]:
+            # Emit a fix hint when a hydrate mapping exists for this credential.
+            hint_key = next(
+                (k for k, v in SECRET_TO_KEYCHAIN.items()
+                 if v["service"] == reg[name].get("service", "")),
+                None,
+            )
+            if hint_key:
+                r["detail"] += (
+                    f"  Fix: python3 -m skills.credentials.registry hydrate {hint_key}"
+                )
+        results.append(r)
     return results
 
 
@@ -354,6 +504,19 @@ if __name__ == "__main__":
     verify_p = sub.add_parser("verify", help="Verify a credential is accessible")
     verify_p.add_argument("name")
 
+    hydrate_p = sub.add_parser(
+        "hydrate",
+        help="Pull a secret from GCP Secret Manager (via ADC) into Keychain.",
+    )
+    hydrate_p.add_argument("name", help="GCP Secret Manager secret name")
+    hydrate_p.add_argument("--force", action="store_true",
+                           help="Re-hydrate even if already in Keychain")
+
+    sub.add_parser(
+        "hydrate-all",
+        help="Hydrate every secret in SECRET_TO_KEYCHAIN that is missing locally.",
+    )
+
     args = parser.parse_args()
 
     if args.action == "list":
@@ -379,5 +542,12 @@ if __name__ == "__main__":
         r = verify(args.name)
         status = "OK" if r["ok"] else "FAIL"
         print(f"[{status}] {r['name']}: {r['detail']}")
+    elif args.action == "hydrate":
+        service = hydrate(args.name, force=args.force)
+        print(f"[hydrate] Done. service={service}")
+    elif args.action == "hydrate-all":
+        results = hydrate_all()
+        for name, status in sorted(results.items()):
+            print(f"  {name}: {status}")
     else:
         parser.print_help()

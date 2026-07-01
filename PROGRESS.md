@@ -1,5 +1,19 @@
 # Jarvis Build Progress
 
+## 2026-06-30 — Order Assistant: ClickUp closing-form ingestion → BQ → Grafana (Issue #113, branch fix/i113-https)
+
+**Scope (slice A):** ClickUp "Closing" list → daily base inventory → `bhaga.inventory_closing_daily` + Grafana Order Assistant section (8. row). Slices B+C (weekday-split consumption model, data-quality detection) tracked in issue #114.
+
+**Key changes:**
+- New shared skill `skills/clickup_tasks/` — PAT-backed ClickUp Tasks REST client (headless, Cloud Run–ready); mirrors `skills/clickup_chat` auth pattern.
+- New shared skill `skills/inventory_parse/` — `parse_qty()` parser (unit + pct + unit-word disambiguation); `FIELD_REGISTRY` for scalable category support; 34-test harness.
+- New `core/migrations/027_inventory_closing.sql` — `bhaga.inventory_closing_daily` (DATE-partitioned, natural key `(store, source_task_id, field_id)`) + `vw_inventory_base_latest_daily` view.
+- New `agents/bhaga/scripts/ingest_inventory.py` — backfill + incremental high-water ingest; non-fatal `run_step` in `daily_refresh.py`.
+- Grafana: "8. Order Assistant" section added to `agents/bhaga/grafana/dashboard.json` — per-base timeseries + latest-reading table, sourced from the new view.
+- `skills/credentials/registry.py`: `hydrate()` / `hydrate-all` / upgraded `audit` — all-provider local bootstrap via ADC + Secret Manager, no gcloud binary required. Fixes the recurring "PAT missing on fresh clone" rediscovery loop.
+
+**Branding note:** built under BHAGA (future "Palmetto Assistant"); extraction logic in `skills/` for cross-agent reuse.
+
 ## 2026-06-29 — BHAGA ADP login URL fix (root cause) + throttle resilience + ADP-aware Retry-Dates (Issue #110, branch fix/sharing-requirements-first-one-being-tonight)
 
 **Root cause (confirmed via live browser + curl):** ADP retired the bare `https://runpayroll.adp.com` entry point on 2026-06-28 — it now server-redirects to `https://sorry.adp.com/sorry/` (a plain redirect, reproduced from the laptop, not an IP block). That broke tonight's nightly at the `adp` step. The live login flow is reachable via `https://runpayroll.adp.com/enrollment.aspx`, which routes through ADP's federation redirector to the sign-in SPA (`online.adp.com/signin/v1/?APPID=RUN&productId=…`) with the correct, ADP-supplied productId. Verified the User ID box renders via Playwright.

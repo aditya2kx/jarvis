@@ -67,6 +67,7 @@ Read these first, derive proposals from them, cite what you used.
 | Track work in flight / check phase state | `python3 scripts/phase_state.py report` |
 | Run local CI mirror | `python3 scripts/verify.py --full` |
 | See project state / decisions | `PROGRESS.md` |
+| Missing a cloud secret locally (ClickUp, Google, Square, ADP, Slack) | `python3 -m skills.credentials.registry audit` (shows exact fix) then `hydrate <name>` |
 
 ---
 

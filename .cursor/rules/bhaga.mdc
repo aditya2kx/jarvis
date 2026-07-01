@@ -103,6 +103,13 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 
 ## Edge cases
 
+## Inventory ingest invariants (Order Assistant, slice A — 2026-06-30)
+- **Read-only toward ClickUp**: `ingest_inventory.py` only reads tasks; never creates/updates ClickUp tasks.
+- **Idempotent MERGE** on `(store, source_task_id, field_id)` — re-running converges, never dupes. Duplicate display-name fields (e.g. two 'Mango' ClickUp fields) are handled by deduping on `field_id`.
+- **Non-fatal nightly step**: an ingest failure does NOT abort tip/payroll. `ingest_inventory` is wrapped in `run_step` and its failure is recorded but not propagated to the failure list that gates the nightly exit code.
+- **Scalable by config**: adding a new inventory category (milks, supplies, …) requires only a `FIELD_REGISTRY` entry in `skills/inventory_parse/parse.py` — no schema migration.
+- **Sandbox isolation**: pre-merge runs set `BHAGA_BQ_DATASET=bhaga_sandbox`; `datastore._assert_sandbox_write_isolation` guards prod.
+
 ## Review bonus allocation invariant (date-bracketed, effective 2026-06-08)
 - **Pool mode** (`post_date_ct >= review_pool_effective_date`, default `2026-06-08`): a fixed
   `review_pool_dollars` ($20) pool is split **equally** among non-excluded in-hours part-time staff.

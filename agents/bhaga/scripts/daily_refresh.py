@@ -2783,6 +2783,33 @@ def _run_refresh() -> int:
     else:
         print("[process_reviews] SKIPPED — raw_sheets_ok=False (need fresh ADP punches).")
 
+    # ── Inventory ingest (Order Assistant) ──────────────────────────────────
+    # Non-fatal: an ingest failure must not block the tip/payroll pipeline.
+    # Runs after process_reviews so it doesn't delay the critical path.
+    print("\n[ingest_inventory] starting incremental inventory ingest...")
+    ingest_env = {
+        **os.environ,
+        "BHAGA_DATASTORE": "bigquery",
+        "BHAGA_RUN_ID": run_id,
+        "PYTHONUNBUFFERED": "1",
+    }
+    ingest_cmd = [
+        sys.executable, "-m", "agents.bhaga.scripts.ingest_inventory",
+        "--store", args.store,
+    ]
+    ok, _ = run_step(
+        "ingest_inventory",
+        lambda: subprocess.run(
+            ingest_cmd, cwd=str(PROJECT_ROOT), check=True, env=ingest_env,
+        ),
+        refresh_date=refresh_date,
+        dry_run=args.dry_run,
+    )
+    if not ok:
+        # Non-fatal: record failure for summary but don't abort the run.
+        print("[ingest_inventory] FAILED (non-fatal) — inventory data will be stale for today.",
+              file=sys.stderr)
+
     runtime_s = time.monotonic() - t_start
 
     if failures:

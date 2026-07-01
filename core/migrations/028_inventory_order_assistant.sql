@@ -60,17 +60,29 @@ transitions AS (
     ON l.date = b.submitted_date
   WINDOW w AS (PARTITION BY b.store, b.item ORDER BY b.submitted_date)
 ),
-scored AS (
+scored_raw AS (
   SELECT *,
     GREATEST(prev_close - curr_close, 0.0)        AS usage_units,
-    (curr_close - COALESCE(prev_close, 0) > 1.0)  AS is_restock,
+    (curr_close - COALESCE(prev_close, 0) > 1.0)  AS is_restock
+  FROM transitions
+),
+scored AS (
+  -- The first reading right after a restock is structurally unreliable (staff
+  -- can't precisely gauge usage from a just-refilled large container) and often
+  -- reads near-zero regardless of true consumption. Robust-z alone can't catch
+  -- this because near-zero days are common store-wide; exclude it explicitly.
+  SELECT *,
+    LAG(is_restock) OVER (PARTITION BY store, item ORDER BY submitted_date) AS prev_was_restock,
     (prev_close IS NOT NULL
       AND DATE_DIFF(submitted_date, prev_date, DAY) = 1
       AND curr_close >= 1.0
       AND COALESCE(orders_on_day, 0) > 0
-      AND NOT (curr_close - COALESCE(prev_close, 0) > 1.0)
+      AND NOT is_restock
+      AND NOT COALESCE(
+            LAG(is_restock) OVER (PARTITION BY store, item ORDER BY submitted_date),
+            FALSE)
     ) AS eligible
-  FROM transitions
+  FROM scored_raw
 ),
 -- ── Robust-z outlier detection over trailing 60-day eligible window ──────────
 -- Mirrors forecast.py compute_outlier_stats: median + MAD, |z| > 2.5.
@@ -158,6 +170,9 @@ excluded_recent AS (
           FORMAT_DATE('%m/%d', submitted_date), FORMAT_DATE('%a', submitted_date),
           DATE_DIFF(submitted_date, prev_date, DAY) - 1,
           FORMAT_DATE('%m/%d', prev_date))
+      WHEN COALESCE(prev_was_restock, FALSE) THEN
+        FORMAT('%s %s: post-restock (first reading after refill, unreliable)',
+          FORMAT_DATE('%m/%d', submitted_date), FORMAT_DATE('%a', submitted_date))
       WHEN COALESCE(orders_on_day, 0) = 0 THEN
         FORMAT('%s %s: closed',
           FORMAT_DATE('%m/%d', submitted_date), FORMAT_DATE('%a', submitted_date))

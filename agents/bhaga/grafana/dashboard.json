@@ -2767,7 +2767,7 @@
         "footer": {
           "show": true,
           "reducer": ["sum"],
-          "fields": ["Current Qty", "Usage 7d", "Avg per day"]
+          "fields": ["Current Qty", "Usage 7d", "Avg per day", "Days Left"]
         }
       }
     }

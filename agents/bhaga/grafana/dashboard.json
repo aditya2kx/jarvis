@@ -2715,31 +2715,31 @@
         "overrides": [
           {
             "matcher": { "id": "byName", "options": "Item" },
-            "properties": [{ "id": "custom.width", "value": 100 }]
+            "properties": [{ "id": "custom.width", "value": 110 }]
           },
           {
             "matcher": { "id": "byName", "options": "Current Qty" },
-            "properties": [{ "id": "custom.width", "value": 110 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Reported" },
             "properties": [{ "id": "custom.width", "value": 150 }]
           },
           {
+            "matcher": { "id": "byName", "options": "Reported" },
+            "properties": [{ "id": "custom.width", "value": 165 }]
+          },
+          {
             "matcher": { "id": "byName", "options": "Last Restock" },
-            "properties": [{ "id": "custom.width", "value": 120 }]
+            "properties": [{ "id": "custom.width", "value": 160 }]
           },
           {
             "matcher": { "id": "byName", "options": "Usage 7d" },
-            "properties": [{ "id": "custom.width", "value": 100 }]
+            "properties": [{ "id": "custom.width", "value": 125 }]
           },
           {
             "matcher": { "id": "byName", "options": "Avg per day" },
-            "properties": [{ "id": "custom.width", "value": 110 }]
+            "properties": [{ "id": "custom.width", "value": 150 }]
           },
           {
             "matcher": { "id": "byName", "options": "Days Left" },
-            "properties": [{ "id": "custom.width", "value": 100 }]
+            "properties": [{ "id": "custom.width", "value": 135 }]
           },
           {
             "matcher": { "id": "byName", "options": "Days Considered" },

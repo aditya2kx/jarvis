@@ -36,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import lifecycle as lc
+import dev_models as _DM
 
 REPO_ROOT = Path(__file__).parent.parent
 PS = REPO_ROOT / "scripts" / "phase_state.py"
@@ -249,7 +250,7 @@ def step_pr_evidence(state: dict, *, run=_run) -> StepRecord:
     _rec_cmd(rec, "pr_cost_ledger set-meta", rc, out, err)
     rc, out, err = run(["python3", str(COST), "record-build", "--pr", pr,
                         "--ts", ts, "--tokens", "1000", "--cost", "0.01",
-                        "--model", "claude-4.6-sonnet-medium-thinking",
+                        "--model", _DM.DEFAULT_IMPL_MODEL,
                         "--note", "dogfood synthetic build cost"], cwd=str(REPO_ROOT))
     _rec_cmd(rec, "pr_cost_ledger record-build (synthetic)", rc, out, err)
     rc, out, err = run(["python3", str(COST), "validate", "--pr", pr, "--require-build"],

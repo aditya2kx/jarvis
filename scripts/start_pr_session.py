@@ -37,6 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import pr_cost_ledger as L
+import dev_models as _DM
 
 _REQUIREMENTS_MD = Path(__file__).parent.parent / "Playground" / "REQUIREMENTS.md"
 
@@ -98,20 +99,18 @@ def update_requirement_status(
     return True
 
 # Default model for continuing an existing PR session (implementation phase).
-DEFAULT_HANDOFF_MODEL = "claude-4.6-sonnet-medium-thinking"
+# Sourced from dev_models.py — the single source of truth for dev-flow slugs.
+DEFAULT_HANDOFF_MODEL = _DM.DEFAULT_IMPL_MODEL
 DEFAULT_HANDOFF_MODE = "agent"
 
 # Default for new_requirement.py front door — jam phase opens in Ask mode on a higher model.
 # Configurable later via new_requirement.py --mode / --model flags.
 DEFAULT_JAM_HANDOFF_MODE = "ask"
-DEFAULT_JAM_HANDOFF_MODEL = "claude-opus-4-8-thinking-high"
+DEFAULT_JAM_HANDOFF_MODEL = _DM.DEFAULT_JAM_MODEL
 
-# Model routing guidance (keep in sync with CONTRIBUTING.md § Cost-efficiency playbook).
-_ROUTING_REMINDER = """Model routing (CONTRIBUTING § Cost-efficiency playbook):
-  • Sonnet 4.6 medium thinking — DEFAULT for new chats (handoff pre-selects this model)
-  • Opus 4.8 med   — Hard multi-file reasoning, subtle bugs, architecture decisions
-  • Opus 4.8 high  — Only when genuinely stuck; adds ~30% output tokens vs medium
-  • Composer 2.5   — Mechanical: renames, test scaffolding, doc edits, log reading
+# Model routing guidance (rendered from dev_models.py; keep in sync with
+# docs/contributing/cost.md, generated from the same source).
+_ROUTING_REMINDER = f"""{_DM.render_routing_reminder()}
   Rates (verified 2026-06-03): Opus cache-read $0.50/M · Sonnet $0.30/M · Composer $0.20/M
 
 Context discipline:
@@ -252,8 +251,8 @@ git add metrics/pr_cost/ && git commit -m "chore(cost): sync PR #<n> ledger"
 
     if _is_provisional(key):
         model_block = f"""## Jam handoff (first chat in this worktree)
-**Ask mode** — the front-door deeplink pre-selects Ask mode. **Set the model to Opus 4.8
-thinking high (`{DEFAULT_JAM_HANDOFF_MODEL}`) yourself** (the deeplink cannot pre-select
+**Ask mode** — the front-door deeplink pre-selects Ask mode. **Set the model to
+{_DM.FRIENDLY[DEFAULT_JAM_HANDOFF_MODEL]} (`{DEFAULT_JAM_HANDOFF_MODEL}`) yourself** (the deeplink cannot pre-select
 the model). You are at the **jam** operator gate: restate the requirement, clarify scope,
 and draft the PR §4 acceptance-evidence contract. Read-only diagnosis/research (logs, BQ,
 Firestore reads) is expected during jam and needs no approval; only code changes wait for
@@ -267,7 +266,7 @@ After plan passes `check_plan_readiness.py`, switch to Sonnet for implementation
         )
     else:
         model_block = f"""## Default model
-**Sonnet 4.6 medium thinking** (`{DEFAULT_HANDOFF_MODEL}`) — set the model yourself
+**{_DM.FRIENDLY[DEFAULT_HANDOFF_MODEL]}** (`{DEFAULT_HANDOFF_MODEL}`) — set the model yourself
 (the handoff deeplink suggests this model but cannot pre-select it). Stay on Sonnet for
 feature work; escalate to Opus only when stuck."""
         open_line = (
@@ -353,7 +352,7 @@ def seed_prompt(key: int | str, *, brief_rel: str, requirement: str | None = Non
         f"Acknowledge those rules from the brief, then implement the requirement — "
         f"do not ask what to build; it is already specified in the brief. "
         f"Do NOT assume a PR number; it is assigned only when you run `gh pr create`. "
-        f"Use **Sonnet 4.6 medium thinking** for this session (set the model yourself — "
+        f"Use **{_DM.FRIENDLY[DEFAULT_HANDOFF_MODEL]}** for this session (set the model yourself — "
         f"the deeplink cannot pre-select it)."
     )
 
@@ -369,7 +368,7 @@ def seed_prompt_jam(key: int | str, *, brief_rel: str, requirement: str | None =
         f"is expected during jam and needs no approval; only mutations/code changes wait for the gates. "
         f"The phase gate in verify.py blocks shipping until jam and define-evidence are recorded "
         f"via phase_state.py advance.\n\n"
-        f"Set the model to Opus 4.8 thinking high yourself (the deeplink cannot pre-select the model)."
+        f"Set the model to {_DM.FRIENDLY[DEFAULT_JAM_HANDOFF_MODEL]} yourself (the deeplink cannot pre-select the model)."
     )
 
 

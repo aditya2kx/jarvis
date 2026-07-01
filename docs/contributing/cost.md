@@ -22,12 +22,23 @@ View cost data: https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jar
 ## Model routing
 Use the cheapest model that does the job well.  Escalate only when stuck.
 
+The table below is generated from `scripts/dev_models.py` — the single source of
+truth for dev-flow model slugs. To change the default model repo-wide, edit the
+constants there and regenerate:
+```bash
+python3 scripts/dev_models.py emit-routing-md
+```
+Do not hand-edit the block between the markers; `test_dev_models.py` asserts it
+stays in sync.
+
+<!-- dev-models:begin -->
 | Task | Model |
 |---|---|
-| Feature work, refactors, doc edits | **Sonnet 4.6 medium** (default) |
-| Complex logic, architecture decisions | Sonnet 4.6 medium thinking |
-| Hard bugs, plan reviews, code review | **Opus 4.8** (escalate explicitly) |
+| Feature work, refactors, doc edits | Sonnet 5 medium thinking |
+| Complex logic, architecture decisions | Sonnet 5 medium thinking |
+| Hard bugs, plan reviews, code review | Opus 4.8 thinking medium |
 | Doc-only changes, table of contents | Composer 2.5 |
+<!-- dev-models:end -->
 
 One chat per PR — each new PR gets a fresh Cursor chat.  Reusing a merged PR's
 thread drags its full history into every turn at cache-read cost ($0.50/M on Opus).

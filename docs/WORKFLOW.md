@@ -354,6 +354,7 @@ L3 (roadmap):
 | Local loop mirrors CI | test_verify.py::test_ci_parity | Test PASS |
 | Babysit unprompted | pr-workflow.mdc + babysit skill | Always-on rule |
 | Review replies done | check_pr_review_replies.py | Gate exit 0 |
+| Grafana stays visualization-only (no business/SQL logic in `rawSql`) | check_grafana_no_logic.py (hard gate in verify --full) + `grafana-dashboard-sync.yml` CI step | Gate exit code |
 | Whole lifecycle works end-to-end | dogfood_lifecycle.py run/resume/check | Annotated transcript in docs/dogfood/ |
 
 ### Dogfooding the lifecycle

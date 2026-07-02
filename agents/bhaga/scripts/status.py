@@ -84,7 +84,7 @@ GRAFANA_DASHBOARD_URL = "https://steadyangelfish2985.grafana.net/d/bhaga-analyti
 
 SHEET_TABS: tuple[str, ...] = ("daily", "tip_alloc_daily")
 
-CheckMode = Literal["exact", "iso_week", "period_coverage"]
+CheckMode = Literal["exact", "iso_week", "period_coverage", "date_prefix"]
 
 
 @dataclass(frozen=True)
@@ -184,13 +184,16 @@ GRAFANA_VIEWS: list[Target] = [
     # panel 78 removed in feat/i113-order-reco — replaced by reco table + text panels 80/81).
     # View still registered for freshness checks; test only enforces dashboard→registry direction.
     Target("vw_inventory_base_latest_daily", "submitted_date"),
-    # migration 028: vw_inventory_order_assistant (panel 79, 8. Order Assistant analytics table).
-    # Per-base: current qty, usage/avg/days-left over last 7 eligible reading days.
+    # migration 028: vw_inventory_order_assistant (source view — usage/avg/days-left
+    # analytics over last 7 eligible reading days; feeds both panel 79 and the
+    # tvf_order_reco table function below).
     Target("vw_inventory_order_assistant", "reported_date"),
-    # panel 81 "Order Weight (lbs)" column (2026-07-01): computed in-panel rawSql from
-    # existing order_tubs (Açaí 18 lbs/tub, others 20 lbs/tub, +50 lbs/pallet at 40
-    # tubs/pallet). No new BQ view — reads the same vw_inventory_order_assistant Target
-    # above, so no new GRAFANA_VIEWS entry needed.
+    # migration 029 (Issue #126 — Grafana=visualization-only): panel 79's
+    # analytics-table-with-TOTAL-row logic moved out of Grafana rawSql into this
+    # view. Grafana now just does `SELECT * FROM vw_order_assistant_table`.
+    # date_column is the "YYYY-MM-DD HH:MM" display string (matches panel 79's
+    # original output exactly) — date_prefix mode compares only the date part.
+    Target("vw_order_assistant_table", "Reported", "date_prefix"),
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are
@@ -202,6 +205,11 @@ KNOWN_UNCHECKED_GRAFANA_REFS: frozenset[str] = frozenset({
     "model_forecast_daily",    # panels 72/75 — Forecast vs Actual charts query the
                                # table directly (LEFT JOIN vw_model_labor_daily) so
                                # future forecast rows appear alongside historical actuals.
+    "tvf_order_reco",          # migration 029 (Issue #126): panel 81's water-fill order
+                               # recommendation, a parameterized BQ table function (not a
+                               # vw_* view) so the oa_ship_days/oa_max_tubs Grafana
+                               # variables keep working. No date_column — freshness is
+                               # covered by its source, vw_inventory_order_assistant.
 })
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -255,6 +263,16 @@ def _run_bq_target(t: Target, date: datetime.date, layer: str = "bq") -> CheckRe
             f" AND period_end >= '{date.isoformat()}'"
         )
         note = "covers date"
+    elif t.mode == "date_prefix":
+        # For a formatted-string column like "YYYY-MM-DD HH:MM" (Grafana display
+        # columns, e.g. vw_order_assistant_table.Reported) — an exact match would
+        # never hit since the time-of-day varies. Prefix match on the date part.
+        sql = (
+            f"SELECT COUNT(*) AS c, MAX({t.date_column}) AS m"
+            f" FROM {fq}"
+            f" WHERE {t.date_column} LIKE '{date.isoformat()}%'"
+        )
+        note = "prefix match"
     else:
         raise ValueError(f"Unknown CheckMode: {t.mode!r}")
 

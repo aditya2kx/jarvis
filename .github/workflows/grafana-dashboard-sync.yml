@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: false
+      schema_only:
+        description: "Apply BQ schema migrations only — skip pushing the dashboard to Grafana (pre-merge preview of new views/TVFs against real prod data)"
+        required: false
+        type: boolean
+        default: false
 
 env:
   PROJECT_ID: jarvis-bhaga-prod
@@ -59,6 +64,7 @@ jobs:
           python3 agents/bhaga/grafana/deploy.py --create-sa --datasource-only
 
       - name: Sync dashboard to Grafana Cloud
+        if: ${{ inputs.schema_only != true }}
         env:
           GRAFANA_API_TOKEN: ${{ secrets.GRAFANA_API_TOKEN }}
           GRAFANA_ORG_SLUG: ${{ secrets.GRAFANA_ORG_SLUG }}

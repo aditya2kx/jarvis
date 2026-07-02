@@ -184,6 +184,15 @@ COUPLINGS: list[dict] = [
             "and its anti-drift sync tests so the freshness checker stays in sync."
         ),
     },
+    {
+        "code": ["agents/bhaga/grafana/*.py"],
+        "docs": ["agents/bhaga/grafana/README.md"],
+        "why": (
+            "Grafana tooling changed (deploy/verify/compare/screenshot/evidence) → update "
+            "the Grafana README (auth model + tool catalog) so the next agent finds it "
+            "instead of rediscovering the Bearer-token/render-API path from scratch."
+        ),
+    },
 ]
 
 # Files that never *trigger* a doc reminder. Docs (*.md) are excluded because a

@@ -116,6 +116,12 @@ GATES: list[Gate] = [
         modes={"full"},
     ),
     Gate(
+        name="grafana-no-logic",
+        argv=["python3", "scripts/check_grafana_no_logic.py"],
+        hard=True,
+        modes={"fast", "full"},
+    ),
+    Gate(
         name="progress-push-guard",
         argv=["python3", "scripts/check_no_main_progress_push.py", "--gate"],
         hard=True,
@@ -128,6 +134,7 @@ GATES: list[Gate] = [
 CI_SCRIPT_NAMES: frozenset[str] = frozenset([
     "check_doc_freshness.py",
     "check_pr_description.py",
+    "check_grafana_no_logic.py",  # grafana-dashboard-sync.yml (Issue #126)
     "pr_cost_ledger.py",   # cost gate — handled outside verify.py (pr-workflow.mdc)
 ])
 

@@ -1202,6 +1202,14 @@ and alerts.  Don't hand-investigate; run this first.
 - `scripts/check_doc_freshness.py --strict` coupling (CI hard-fails a migration or
   dashboard PR that doesn't also update `status.py`).
 
+**Rendering/verifying/comparing/screenshotting a dashboard panel does NOT need
+this `BHAGA_SECRETS_BACKEND`/`BHAGA_IMPERSONATE_SA`/ADC dance at all** — see
+`agents/bhaga/grafana/README.md` § Auth model. That tooling (`verify_panels.py`,
+`compare_panels.py`, `capture_screenshot.py`, `evidence.py`) talks to Grafana
+Cloud with a Bearer token; Grafana queries BigQuery server-side. Only applying
+schema DDL (`ensure_schema()`) needs the cloud service account. A `config.yaml
+not found` error from `status.py` is unrelated and does not block Grafana work.
+
 ### Pipeline Health row (updated to two-table design, PR feat/bhaga-dashboard-pipeline-health, 2026-06-12)
 
 The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side-by-side tables:
@@ -1335,7 +1343,9 @@ built-in `h` (and `m`) units are *durations* that auto-scale — `60` renders as
 panels. Use the custom unit `suffix: h` (and `suffix: min` for the slow-orders
 table) so the raw number is shown with a unit and no rescaling.
 
-**Verify panels return data (read-only, end-to-end):**
+**Verify panels return data (read-only, end-to-end):** full tool catalog
+(including prod-vs-branch parity and the one-command PR-evidence entrypoint)
+is `agents/bhaga/grafana/README.md` — start there.
 
 ```bash
 # Runs every panel's rawSql through Grafana /api/ds/query with the real datasource UID

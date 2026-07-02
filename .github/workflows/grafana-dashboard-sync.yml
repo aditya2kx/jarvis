@@ -42,6 +42,9 @@ jobs:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
 
+      - name: Grafana visualization-only gate (Issue #126)
+        run: python3 scripts/check_grafana_no_logic.py
+
       - name: Apply BQ schema migrations
         run: |
           BHAGA_DATASTORE=bigquery python3 -c \

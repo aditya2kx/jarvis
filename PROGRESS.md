@@ -1,5 +1,18 @@
 # Jarvis Build Progress
 
+## 2026-07-02 — Slack restock webhook + storage (Issue #137, PR A of 2, branch fix/i137-slack-restock-webhook)
+
+**Scope:** PR A of the dual-date Order Recommendation feature — adds the `/bhaga-cloud restock` Slack command (modal: register a restock delivery date + optionally upload/reset actual order quantities via CSV) and its BQ storage tables. PR B (Issue #137, migration 031 + dual-date Grafana views) builds on top of this once merged.
+
+**Key changes:**
+- `core/migrations/030_restock_plan.sql`: `bhaga.inventory_restock_schedule` (store, delivery_date — the tracked calendar dates, MERGE-upserted) and `bhaga.inventory_restock_orders` (store, delivery_date, item, quantity_tubs — actual CSV-uploaded quantities, replace-per-date semantics).
+- `cloud/webhook/handler.py`: new `/bhaga-cloud restock` slash command (opens a modal via `views.open` — bypasses the usual response_url-deferred pattern since Slack requires the modal to open within the 3s ack window and there's no response_url yet at that point), new `POST /slack/interactions` route handling the modal's `view_submission`, CSV parsing (`_parse_restock_csv`, validated against the same `ACTIVE_BASES` list used elsewhere) and BQ writes. Reuses the already-mounted `SLACK_BOT_TOKEN` env var (secret `slack-bot-token`) for `views.open`/`files.info`/`chat.postMessage` — no new secret needed.
+- `agents/bhaga/setup/slack-app-manifest-cloud.yaml` (new): source-of-truth manifest for the separate "bhaga cloud" Slack app (bot token `slack-bot-token`, distinct from the local socket-mode `bhaga` bot's `slack-app-manifest.yaml`) — adds `interactivity.is_enabled: true` + `files:read` scope + the `/slack/interactions` request URL, none of which existed in this app before.
+- Docs updated in lock-step: `RUNBOOK.md` (`/slack/interactions` route + `/bhaga-cloud restock` usage section), `agents/bhaga/knowledge-base/DOMAIN.md` (migration 030 objects), `agents/bhaga/scripts/status.py` (comment noting the two new tables are intentionally excluded from freshness `BQ_TARGETS`, same rationale as `store_config`).
+- Tests: `cloud/webhook/test_handler.py` (`TestRestockCommand`, `TestRestockCsvParsing`, `TestRestockSubmission` — modal open/failure paths, CSV validation, schedule MERGE + orders replace-per-date writes, DM confirmation, bad-signature rejection), `core/test_migration_030_restock_plan.py` (migration parses, table/column names).
+- Evidence tier: sandbox-e2e (unit tests only for the command/parsing logic) + prod-live for the actual Slack interaction (modal load + BQ write), captured post-merge once the cloud app manifest change is live.
+- **`verify.py --full` note:** `pytest-full` fails on 2 pre-existing tests unrelated to this PR — `scripts/test_build_claude_review_context.py::TestExpandPaths::test_dedupes_and_tags_reasons` (order-dependent: passes in isolation, part of the same class of test-pollution leak tracked in **Issue #134**) and `scripts/test_verify_lifecycle.py::TestAssertion9::test_passes_against_real_front_door` (fails deterministically even on a clean pre-change `origin/main` checkout — reproduced with `git stash`). All other gates pass; targeted pytest for every file touched in this PR passes (158/158).
+
 ## 2026-07-02 — Grafana = visualization only (Order Assistant) + 7/1 freshness fix (Issue #126, branch fix/i126-for-order-assistant-and-in-general)
 
 **Scope:** Move Order Assistant's business/SQL logic out of Grafana `rawSql` into BigQuery, add a CI gate that keeps Grafana logic-free going forward, and fix the root cause of Order Assistant not picking up the 7/1 incremental inventory run.

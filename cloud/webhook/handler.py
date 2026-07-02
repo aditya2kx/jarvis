@@ -1318,6 +1318,11 @@ def _handle_restock_submission(payload: dict) -> dict:
     delivery_date = values.get("delivery_date", {}).get("value", {}).get("selected_date")
     files = values.get("csv_file", {}).get("value", {}).get("files") or []
 
+    log.info(
+        "restock view_submission: user=%s action=%r delivery_date=%s files=%d",
+        user_name, action, delivery_date, len(files),
+    )
+
     if not delivery_date:
         return {"response_action": "errors", "errors": {"delivery_date": "Delivery date is required."}}
 

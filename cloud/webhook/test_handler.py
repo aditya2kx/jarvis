@@ -1297,6 +1297,31 @@ class TestConfigCommands:
         assert "saturation_orders_per_labor_hour" in follow_ups[0]["text"]
         assert fake_bq.query.called
 
+    def test_config_set_max_tubs_dispatches_order_reco_refresh(self, monkeypatch):
+        """Setting order_reco_max_tubs recomputes the reco (Issue #137) so a
+        capacity change reflects on the Grafana tables promptly."""
+        dispatched = []
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: dispatched.append((fn, a)) or fn(*a))
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, "config set order_reco_max_tubs 140", user_name="bob")
+        assert resp.status_code == 200
+        assert any(fn is handler._refresh_order_reco for fn, _args in dispatched)
+
+    def test_config_set_other_key_does_not_dispatch_order_reco_refresh(self, monkeypatch):
+        """Only order_reco_max_tubs triggers the recompute — other keys must not."""
+        dispatched = []
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: dispatched.append((fn, a)) or fn(*a))
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, "config set saturation_orders_per_labor_hour 11.5", user_name="bob")
+        assert resp.status_code == 200
+        assert not any(fn is handler._refresh_order_reco for fn, _args in dispatched)
+
     def test_config_unavailable_without_bq(self, monkeypatch):
         """When BQ is unavailable, config commands post a warning via follow-up."""
         follow_ups = _sync_dispatch(monkeypatch)
@@ -1795,6 +1820,9 @@ class TestRestockSubmission:
         monkeypatch.setattr(handler, "_bq", fake_bq)
         fake_api = MagicMock(return_value={"ok": True})
         monkeypatch.setattr(handler, "_slack_api", fake_api)
+        # Recompute is fire-and-forget off the request path — don't let it
+        # race with this test's exact call-count assertions on fake_bq.
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: None)
         payload = _restock_view_submission("Register date only (estimated)", "2026-07-16")
         with app.test_client() as client:
             resp = _post_interaction(client, payload)
@@ -1821,6 +1849,7 @@ class TestRestockSubmission:
         monkeypatch.setattr(handler, "_bq", fake_bq)
         monkeypatch.setattr(handler, "_slack_api", MagicMock(return_value={"ok": True}))
         monkeypatch.setattr(handler, "_download_slack_file", lambda url: "Açaí,12\nMango,8\n")
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: None)
         payload = _restock_view_submission("Add order (actuals)", "2026-07-16", with_file=True)
         with app.test_client() as client:
             resp = _post_interaction(client, payload)
@@ -1848,12 +1877,31 @@ class TestRestockSubmission:
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
         monkeypatch.setattr(handler, "_slack_api", MagicMock(return_value={"ok": True}))
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: None)
         payload = _restock_view_submission("Reset to estimated", "2026-07-16")
         with app.test_client() as client:
             resp = _post_interaction(client, payload)
         assert resp.get_json() == {"response_action": "clear"}
         sqls = [c[0][0] for c in fake_bq.query.call_args_list]
         assert any("DELETE" in s and "inventory_restock_orders" in s for s in sqls)
+
+    def test_submission_dispatches_order_reco_refresh(self, monkeypatch):
+        """Every successful submission path recomputes the reco off the request
+        path (Issue #137) — dispatched, never inline (would blow the 3s deadline).
+        """
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        monkeypatch.setattr(handler, "_slack_api", MagicMock(return_value={"ok": True}))
+        dispatched = []
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: dispatched.append((fn, a)))
+        payload = _restock_view_submission("Register date only (estimated)", "2026-07-16")
+        with app.test_client() as client:
+            _post_interaction(client, payload)
+        assert len(dispatched) == 1
+        fn, args = dispatched[0]
+        assert fn is handler._refresh_order_reco
+        assert args == ("palmetto",)
 
     def test_missing_delivery_date_returns_error(self, monkeypatch):
         payload = _restock_view_submission("Register date only (estimated)", "")

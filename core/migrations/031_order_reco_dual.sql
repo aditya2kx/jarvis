@@ -189,7 +189,11 @@ CREATE OR REPLACE TABLE FUNCTION `jarvis-bhaga-prod.bhaga.tvf_order_reco_slot1`(
     current_qty AS `Current Qty`,
     avg_daily_usage AS `Avg per day`,
     on_hand_arrival AS `On Hand at Restock`,
-    order_tubs AS `Order Tubs`,
+    -- order_tubs is FLOAT64 here because the actuals branch (SUM of
+    -- inventory_restock_orders.quantity_tubs, FLOAT64) and the estimated
+    -- branch (COUNT(*), INT64) share one CASE expression, which BQ widens
+    -- to FLOAT64. inventory_order_reco.`Order Tubs` is INT64, so cast here.
+    CAST(ROUND(order_tubs) AS INT64) AS `Order Tubs`,
     order_weight_lbs AS `Order Weight lbs`,
     post_restock_qty AS `After Restock`,
     post_restock_days_left AS `Days Left After Restock`,
@@ -306,7 +310,7 @@ CREATE OR REPLACE TABLE FUNCTION `jarvis-bhaga-prod.bhaga.tvf_order_reco_slot2`(
     current_qty AS `Current Qty`,
     avg_daily_usage AS `Avg per day`,
     on_hand_arrival AS `On Hand at Restock`,
-    order_tubs AS `Order Tubs`,
+    CAST(ROUND(order_tubs) AS INT64) AS `Order Tubs`,
     order_weight_lbs AS `Order Weight lbs`,
     post_restock_qty AS `After Restock`,
     post_restock_days_left AS `Days Left After Restock`,

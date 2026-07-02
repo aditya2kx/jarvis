@@ -104,3 +104,17 @@ class TestOrderRecoInvariantsPreservedPerSlot(unittest.TestCase):
 class TestEmptyOnNoSecondDate(unittest.TestCase):
     def test_slot2_guards_on_second_date_presence(self):
         self.assertIn("WHERE o.store = 'palmetto' AND dd.d2 IS NOT NULL", _MIGRATION)
+
+
+class TestOrderTubsTypeCast(unittest.TestCase):
+    """Regression: inventory_restock_orders.quantity_tubs is FLOAT64, so the
+    actuals-vs-estimated CASE (SUM(quantity_tubs) vs. COUNT(*)) widens to
+    FLOAT64. inventory_order_reco.`Order Tubs` is INT64 -- caught live via
+    `400 ... FLOAT64 which cannot be inserted into column Order Tubs` when
+    refresh_order_reco() actually ran against prod BQ with real actuals
+    uploaded. Both TVFs must cast at the final SELECT so the INSERT succeeds."""
+
+    def test_both_tvfs_cast_order_tubs_to_int64(self):
+        self.assertEqual(
+            _MIGRATION.count("CAST(ROUND(order_tubs) AS INT64) AS `Order Tubs`"), 2
+        )

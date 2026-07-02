@@ -143,8 +143,9 @@ def _gh_open_jarvis_issue_numbers() -> list[int]:
     in the label-filtered list on the first poll) are still caught:
 
     1. Issues explicitly labelled ``jarvis-work`` (the stable set).
-    2. The most-recently-updated open issues (last 20), which covers the window
-       between /jarvis-new-task comment and the label being added by the workflow.
+    2. The most-recently-updated open issues (last 50, matching Source 1's
+       limit), which covers the window between /jarvis-new-task comment and
+       the label being added by the workflow.
     """
     numbers: list[int] = []
 
@@ -160,10 +161,12 @@ def _gh_open_jarvis_issue_numbers() -> list[int]:
     except Exception:
         pass
 
-    # Source 2: most recently updated open issues (covers pre-label window)
+    # Source 2: most recently updated open issues (covers pre-label window).
+    # Limit matches Source 1 (50) so a burst of >20 recently-updated issues
+    # can't push a still-unlabelled one out of the enumerated window.
     try:
         out = subprocess.check_output(
-            ["gh", "issue", "list", "--state", "open", "--limit", "20",
+            ["gh", "issue", "list", "--state", "open", "--limit", "50",
              "--json", "number,updatedAt",
              "-q", "[.[] | select(.updatedAt > (now - 300 | todate)) | .number]"],
             text=True, stderr=subprocess.DEVNULL, timeout=30,

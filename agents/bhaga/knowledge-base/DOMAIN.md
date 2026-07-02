@@ -451,6 +451,13 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 | `vw_order_assistant_table` | one row per (store, item) + 1 TOTAL row | `Item`, `Current Qty`, `Reported`, `Last Restock`, `Usage 7d`, `Avg per day`, `Days Left`, `Days Considered`, `Exclusions` | Verbatim port of the analytics-table-with-TOTAL-row logic that used to live in Grafana panel 79's `rawSql`. Grafana panel 79 is now `SELECT * FROM vw_order_assistant_table` — no logic in Grafana (`scripts/check_grafana_no_logic.py` enforces this going forward). |
 | `tvf_order_reco(ship_days INT64, max_tubs INT64)` | one row per (store, item) + 1 TOTAL row | `Item`, `Current Qty`, `Avg per day`, `On Hand in 10d`, `Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock` | Table-valued function — verbatim port of panel 81's max-min water-fill order-recommendation algorithm. Parameterized so the `oa_ship_days`/`oa_max_tubs` Grafana variables keep working as live sliders; Grafana panel 81 is now `SELECT * FROM tvf_order_reco($oa_ship_days, $oa_max_tubs)`. Invariants unchanged: Blade reserved against the cap but never ordered (`order_tubs = 0`, excluded from weight); TOTAL pallet weight = `Σ per-row weight + 50 × CEIL(Σ order_tubs / 40)`. |
 
+**Migration 030 additions** (`core/migrations/030_restock_plan.sql`, Issue #137 — dual-date restock upload, PR A of 2):
+
+| BQ table | Grain | Key columns | Purpose |
+|---|---|---|---|
+| `inventory_restock_schedule` | one row per (store, delivery_date) | `store`, `delivery_date`, `updated_by`, `updated_at` | The calendar delivery dates being tracked, written by `/bhaga-cloud restock`'s modal (`cloud/webhook/handler.py`). MERGE-upserted — a date is "registered" here regardless of whether actuals exist for it yet. Migration 031 (PR B) reads this to pick the next two future dates for the dual-date recommendation. |
+| `inventory_restock_orders` | one row per (store, delivery_date, item) | `store`, `delivery_date`, `item`, `quantity_tubs`, `updated_by`, `updated_at` | Actual placed-order quantities per item once the operator uploads a CSV for a delivery date via the restock modal's `Add order (actuals)` action. **Replace-per-date semantics**: the handler DELETEs all rows for `(store, delivery_date)` then INSERTs the parsed CSV, so re-uploading a corrected CSV always converges instead of accumulating duplicates. Absence of rows for a date means "no actuals yet" — migration 031's TVFs fall back to the estimated water-fill for that date. `Reset to estimated` in the modal DELETEs these rows without touching `inventory_restock_schedule`. |
+
 ---
 
 ## 7. Forecast — `model_forecast_daily` (BQ-authoritative, 2026-06-09)

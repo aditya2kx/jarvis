@@ -125,6 +125,10 @@ BQ_TARGETS: list[Target] = [
     # Team Schedule scrape); max_date is in the future, so the freshness check
     # reads as fresh. Empty until the first nightly schedule scrape runs.
     Target("adp_scheduled_daily", "date"),
+    # migration 030 (Issue #137): inventory_restock_schedule / inventory_restock_orders
+    # are operator-input tables (like store_config) intentionally NOT freshness
+    # targets — they only have rows once the operator registers a restock date via
+    # /bhaga-cloud restock, so "no rows yet" is expected and not a staleness signal.
 ]
 
 GRAFANA_VIEWS: list[Target] = [

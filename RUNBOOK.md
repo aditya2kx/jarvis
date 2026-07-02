@@ -145,7 +145,8 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
   `deploy.yml`'s `gcloud run jobs update` step so it survives a recreate-from-scratch.
 - **Webhook URL:** https://bhaga-webhook-4yl5izovxq-uc.a.run.app
   - Routes: `POST /slack/events` (Events API), `POST /slack/commands` (`/bhaga refresh <date>`,
-    `/bhaga status`), `GET /health`.
+    `/bhaga status`), `POST /slack/interactions` (Slack interactivity — restock modal
+    `view_submission`, Issue #137), `GET /health`.
 
 ### `bhaga-daily-refresh` environment (no secret values shown)
 
@@ -351,6 +352,39 @@ Both modes add `BHAGA_IGNORE_HALT=1` (operator-driven backfill includes the fix)
 Parse errors (bad date, over-cap, unknown token) are still synchronous and appear inline.
 
 The same two-phase pattern applies to every `/bhaga-cloud` command: `status`, `config get/set`, `training set/rm`, `alias set`, and `exclude set` all return an immediate ack and post their real result as an ephemeral `response_url` follow-up (operator-private).
+
+### `/bhaga-cloud restock` — register a restock delivery date + upload/reset actuals (Issue #137)
+
+```
+/bhaga-cloud restock
+```
+
+Opens a modal (`views.open`, needs a live `trigger_id` — bypasses the async response_url pattern
+used by every other command since the modal must open within Slack's 3s ack window):
+
+- **Action** — one of `Register date only (estimated)`, `Add order (actuals)`, `Reset to estimated`.
+- **Restock delivery date** — a date picker.
+- **Order CSV (base,quantity)** — a `file_input` block, required only for `Add order`. Header row is
+  optional; bases are validated against the same `ACTIVE_BASES` list the pipeline uses elsewhere
+  (case-sensitive, exact match) and quantities must be non-negative numbers.
+
+On submit, the handler always MERGEs the delivery date into `bhaga.inventory_restock_schedule`
+(idempotent — the date becomes "registered" whether or not actuals exist for it). Then:
+
+- `Register date only` — no further write; the date participates in migration 031's dual-date
+  recommendation as an *estimated* delivery.
+- `Add order` — downloads the CSV via `files:read` + the bot token, parses it, and does a
+  **replace-per-date** write to `bhaga.inventory_restock_orders` (DELETE all rows for
+  `(store, delivery_date)`, then INSERT the parsed rows) — re-uploading a corrected CSV for the same
+  date always converges rather than accumulating duplicates.
+- `Reset to estimated` — DELETEs all `inventory_restock_orders` rows for that date, reverting the
+  date back to estimated-only.
+
+Validation errors (missing date, missing CSV for `Add order`, unknown base, non-numeric or negative
+quantity) are returned inline via the modal's `response_action: errors` — this only works because the
+Slack app has **Interactivity** enabled with a request URL pointed at
+`POST /slack/interactions` (see `agents/bhaga/setup/slack-app-manifest-cloud.yaml`). Success is
+confirmed via a DM to the submitting operator, not the modal (which just closes).
 
 **OTP concurrency caveat:** if multiple full-scrape dates are enqueued concurrently, `_find_pending_portal_for_agent` picks the *newest* pending OTP. ADP's distributed scrape lock serialises browser logins; Square uses the REST API (no browser, no OTP since 2026-06-23). The only OTP portal that fires a live SMS is ADP.
 

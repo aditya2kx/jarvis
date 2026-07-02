@@ -26,15 +26,18 @@ Slash command ack strategy (3s deadline):
   operator gets an inline :x: immediately.
 
 Endpoints:
-  POST /slack/events  — Slack Events API
-  POST /slack/commands — Slash commands (/bhaga-cloud refresh, status, config, …)
-  GET  /health        — Health check for Cloud Run
+  POST /slack/events       — Slack Events API
+  POST /slack/commands     — Slash commands (/bhaga-cloud refresh, status, config, restock, …)
+  POST /slack/interactions — Slack interactivity (restock modal view_submission, Issue #137)
+  GET  /health             — Health check for Cloud Run
 """
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import hmac
+import io
 import json
 import logging
 import os
@@ -148,6 +151,21 @@ _BQ_DATASET = os.environ.get("BHAGA_BQ_DATASET", "bhaga")
 _BQ_STORE_CONFIG_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.store_config"
 _BQ_TRAINING_SHIFTS_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.training_shifts"
 _BQ_EMPLOYEE_ALIASES_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.employee_aliases"
+_BQ_RESTOCK_SCHEDULE_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_restock_schedule"
+_BQ_RESTOCK_ORDERS_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_restock_orders"
+
+# Bot token for Slack Web API calls (views.open, files download, chat.postMessage).
+# Unlike response_url (used by every other command), the restock modal needs a
+# real bot token because views.open must be called BEFORE any response_url
+# exists (there's no slash-command response_url yet at modal-open time).
+# Secret: slack-bot-token (already mounted on bhaga-webhook — see RUNBOOK.md
+# § bhaga-webhook environment; this is the "bhaga cloud" bot's token).
+SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
+
+# Copied from skills/inventory_parse/parse.py ACTIVE_BASES. handler.py is a
+# standalone deploy unit (Dockerfile copies only this file) so it cannot
+# import skills/ — duplicated here deliberately, not a shared import.
+_ACTIVE_BASES = ("Açaí", "Coconut", "Tropical", "Mango", "Pitaya", "Matcha", "Ube", "Pog")
 
 
 def _init_bigquery() -> None:
@@ -790,6 +808,18 @@ def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
             "text": ":hourglass_flowing_sand: exclude set — posting result shortly.",
         })
 
+    # restock — opens a modal (add/reset restock date + CSV upload); the modal
+    # itself is opened synchronously via views.open (fast Slack Web API call,
+    # well within the 3s ack deadline) — there is no response_url-deferred
+    # path here because the real work happens on view_submission, handled by
+    # the separate /slack/interactions route.
+    if command_text.lower() == "restock":
+        trigger_id = form.get("trigger_id", "")
+        error = _open_restock_modal(trigger_id)
+        if error:
+            return jsonify({"response_type": "ephemeral", "text": f":x: {error}"})
+        return Response("", status=200)
+
     return jsonify({
         "response_type": "ephemeral",
         "text": (
@@ -805,6 +835,8 @@ def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
             "  `/bhaga-cloud training rm \"Last, First\" YYYY-MM-DD` — remove a training shift mark\n"
             "  `/bhaga-cloud alias set <raw_name> \"Last, First\"` — add employee alias\n"
             "  `/bhaga-cloud exclude set \"Last, First\" [YYYY-MM-DD]` — mark training exclusion through date\n"
+            "  `/bhaga-cloud restock` — open a modal to register a restock delivery date and "
+            "upload/reset its actual order CSV (base,quantity)\n"
             "  :test_tube: *Direct sandbox trigger* — POST to /slack/commands with "
             "`X-Sandbox-Trigger: <token>` header (always routes to bhaga-sandbox-refresh, never prod)"
         ),
@@ -1049,6 +1081,299 @@ def _handle_exclude_set(name: str, through_date: str, form: dict, response_url: 
         log.error("exclude set failed: %s", exc)
         _post_response_url(response_url, {"response_type": "ephemeral",
                                           "text": f":x: exclude set failed: {exc}"})
+
+
+# ---------------------------------------------------------------------------
+# Restock modal (Issue #137) — register a restock delivery date and
+# optionally upload/reset the actual order CSV for it.
+# ---------------------------------------------------------------------------
+
+_RESTOCK_CALLBACK_ID = "restock_submit"
+_RESTOCK_ACTIONS = ("Add order (actuals)", "Register date only (estimated)", "Reset to estimated")
+
+
+def _slack_api(method: str, payload: dict) -> dict:
+    """POST JSON to https://slack.com/api/<method> with the bot token.
+
+    Returns the parsed JSON response (may contain ok=False + an 'error' key
+    on failure — callers check 'ok' explicitly). Raises on transport errors
+    (timeout, DNS, etc.) so callers can log a breadcrumb.
+    """
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"https://slack.com/api/{method}",
+        data=body,
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _restock_modal_view() -> dict:
+    """Build the /bhaga-cloud restock modal: action selector + date + CSV file."""
+    return {
+        "type": "modal",
+        "callback_id": _RESTOCK_CALLBACK_ID,
+        "title": {"type": "plain_text", "text": "Restock"},
+        "submit": {"type": "plain_text", "text": "Submit"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "action",
+                "label": {"type": "plain_text", "text": "Action"},
+                "element": {
+                    "type": "static_select",
+                    "action_id": "value",
+                    "options": [
+                        {"text": {"type": "plain_text", "text": label}, "value": label}
+                        for label in _RESTOCK_ACTIONS
+                    ],
+                },
+            },
+            {
+                "type": "input",
+                "block_id": "delivery_date",
+                "label": {"type": "plain_text", "text": "Restock delivery date"},
+                "element": {"type": "datepicker", "action_id": "value"},
+            },
+            {
+                "type": "input",
+                "block_id": "csv_file",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "Order CSV (base,quantity) — required for Add order"},
+                "element": {
+                    "type": "file_input",
+                    "action_id": "value",
+                    "filetypes": ["csv", "txt"],
+                    "max_files": 1,
+                },
+            },
+        ],
+    }
+
+
+def _open_restock_modal(trigger_id: str) -> Optional[str]:
+    """views.open the restock modal. Returns an error string on failure, else None."""
+    if not SLACK_BOT_TOKEN:
+        return "BHAGA restock is unavailable — bot token not configured."
+    if not trigger_id:
+        return "restock: missing trigger_id."
+    try:
+        result = _slack_api("views.open", {"trigger_id": trigger_id, "view": _restock_modal_view()})
+        if not result.get("ok"):
+            log.error("views.open failed: %s", result.get("error"))
+            return f"could not open restock modal ({result.get('error', 'unknown error')})."
+        return None
+    except Exception as exc:
+        log.error("views.open failed (breadcrumb): %s", exc)
+        return "could not open restock modal — see webhook logs."
+
+
+def _download_slack_file(url_private_download: str) -> str:
+    """Download a Slack file's content using the bot token. Returns decoded text."""
+    req = urllib.request.Request(
+        url_private_download,
+        headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read().decode("utf-8-sig")
+
+
+def _parse_restock_csv(text: str) -> tuple[list[tuple[str, float]], list[str]]:
+    """Parse a (base, quantity) CSV. Returns (valid_rows, error_messages).
+
+    Header row is optional — a row whose first cell doesn't parse as a known
+    base AND whose second cell doesn't parse as a float is silently treated as
+    a header rather than an error, so both "base,quantity\\nAçaí,12" and plain
+    "Açaí,12" work.
+    """
+    rows: list[tuple[str, float]] = []
+    errors: list[str] = []
+    reader = list(csv.reader(io.StringIO(text)))
+    for i, raw_row in enumerate(reader):
+        if not raw_row or all(not c.strip() for c in raw_row):
+            continue
+        if len(raw_row) < 2:
+            errors.append(f"row {i + 1}: expected 'base,quantity', got {raw_row!r}")
+            continue
+        base, qty_str = raw_row[0].strip(), raw_row[1].strip()
+        if i == 0 and base not in _ACTIVE_BASES:
+            try:
+                float(qty_str)
+            except ValueError:
+                continue  # header row — skip
+        if base not in _ACTIVE_BASES:
+            errors.append(f"row {i + 1}: unknown base {base!r} (expected one of {_ACTIVE_BASES})")
+            continue
+        try:
+            qty = float(qty_str)
+        except ValueError:
+            errors.append(f"row {i + 1}: quantity {qty_str!r} is not a number")
+            continue
+        if qty < 0:
+            errors.append(f"row {i + 1}: quantity for {base} must be >= 0, got {qty}")
+            continue
+        rows.append((base, qty))
+    # De-dup by base, last occurrence wins — a CSV with the same base twice
+    # (e.g. a copy-paste mistake) should not produce two INSERT rows for the
+    # same (store, delivery_date, item) grain.
+    deduped = dict(rows)
+    return list(deduped.items()), errors
+
+
+def _restock_set_schedule(store: str, delivery_date: str, user_name: str) -> None:
+    """MERGE the delivery date into inventory_restock_schedule (idempotent)."""
+    fq = f"`{_BQ_RESTOCK_SCHEDULE_TABLE}`"
+    _bq.query(  # type: ignore[union-attr]
+        f"MERGE {fq} T"
+        f" USING (SELECT @store AS store, @date AS delivery_date) S"
+        f" ON T.store = S.store AND T.delivery_date = S.delivery_date"
+        f" WHEN MATCHED THEN UPDATE SET updated_at = CURRENT_TIMESTAMP(), updated_by = @by"
+        f" WHEN NOT MATCHED THEN INSERT (store, delivery_date, updated_at, updated_by)"
+        f"   VALUES (@store, @date, CURRENT_TIMESTAMP(), @by)",
+        job_config=_bq_param_config([
+            ("store", "STRING", store),
+            ("date", "DATE", delivery_date),
+            ("by", "STRING", user_name),
+        ]),
+    ).result()
+
+
+def _restock_clear_orders(store: str, delivery_date: str) -> None:
+    """DELETE all actual-order rows for (store, delivery_date) — the 'reset to estimated' path."""
+    fq = f"`{_BQ_RESTOCK_ORDERS_TABLE}`"
+    _bq.query(  # type: ignore[union-attr]
+        f"DELETE FROM {fq} WHERE store = @store AND delivery_date = @date",
+        job_config=_bq_param_config([
+            ("store", "STRING", store),
+            ("date", "DATE", delivery_date),
+        ]),
+    ).result()
+
+
+def _restock_replace_orders(
+    store: str, delivery_date: str, rows: list[tuple[str, float]], user_name: str,
+) -> None:
+    """Replace-per-date write: DELETE then INSERT so re-uploading a corrected
+    CSV for the same date always converges rather than accumulating duplicate
+    rows (mirrors the idempotent-MERGE convention used elsewhere in BHAGA,
+    adapted for a multi-row per-date payload where MERGE-per-row would leave
+    stale items behind if the new CSV drops one).
+
+    Not atomic (two separate BQ jobs) — a failure between DELETE and INSERT
+    leaves the date with zero actuals rather than stale-but-present ones.
+    Acceptable: the fallback for "no actuals" is the estimated water-fill
+    (migration 031), never a crash or wrong number, and the operator can
+    always re-run "Add order" to retry.
+    """
+    from google.cloud import bigquery as _bq_mod  # type: ignore[import]  # noqa: PLC0415
+
+    _restock_clear_orders(store, delivery_date)
+    if not rows:
+        return
+    fq = f"`{_BQ_RESTOCK_ORDERS_TABLE}`"
+    values_sql = ", ".join(
+        f"(@store, @date, @item{i}, @qty{i}, @by, CURRENT_TIMESTAMP())" for i in range(len(rows))
+    )
+    params = [
+        _bq_mod.ScalarQueryParameter("store", "STRING", store),
+        _bq_mod.ScalarQueryParameter("date", "DATE", delivery_date),
+        _bq_mod.ScalarQueryParameter("by", "STRING", user_name),
+    ]
+    for i, (item, qty) in enumerate(rows):
+        params.append(_bq_mod.ScalarQueryParameter(f"item{i}", "STRING", item))
+        params.append(_bq_mod.ScalarQueryParameter(f"qty{i}", "FLOAT64", qty))
+    _bq.query(  # type: ignore[union-attr]
+        f"INSERT INTO {fq} (store, delivery_date, item, quantity_tubs, updated_by, updated_at)"
+        f" VALUES {values_sql}",
+        job_config=_bq_mod.QueryJobConfig(query_parameters=params),
+    ).result()
+
+
+def _handle_restock_submission(payload: dict) -> dict:
+    """view_submission handler for the restock modal (Issue #137).
+
+    Called synchronously from /slack/interactions (Slack expects a response
+    within 3s for view_submission too, same deadline as slash commands — BQ
+    writes here are small single-date operations so this stays fast).
+
+    Returns a Slack view_submission response dict:
+      - {"response_action": "clear"} on success (closes the modal), with a
+        confirmation DM sent to the operator.
+      - {"response_action": "errors", "errors": {block_id: message}} to show
+        inline validation errors and keep the modal open.
+    """
+    store = os.environ.get("BHAGA_STORE", "palmetto")
+    user_id = payload.get("user", {}).get("id", "")
+    user_name = payload.get("user", {}).get("username") or user_id or "slack"
+    values = payload.get("view", {}).get("state", {}).get("values", {})
+
+    action = values.get("action", {}).get("value", {}).get("selected_option", {}).get("value")
+    delivery_date = values.get("delivery_date", {}).get("value", {}).get("selected_date")
+    files = values.get("csv_file", {}).get("value", {}).get("files") or []
+
+    log.info(
+        "restock view_submission: user=%s action=%r delivery_date=%s files=%d",
+        user_name, action, delivery_date, len(files),
+    )
+
+    if not delivery_date:
+        return {"response_action": "errors", "errors": {"delivery_date": "Delivery date is required."}}
+
+    if action == "Add order (actuals)" and not files:
+        return {"response_action": "errors", "errors": {"csv_file": "A CSV file is required for Add order."}}
+
+    if _bq is None:
+        _slack_api("chat.postMessage", {
+            "channel": user_id,
+            "text": ":warning: BigQuery not available — restock command is unavailable.",
+        })
+        return {"response_action": "clear"}
+
+    try:
+        # Always MERGE the schedule first, even before CSV validation — a
+        # rejected/bad CSV submit still registers the date as "tracked"
+        # (idempotent no-op if the date was already registered). This is
+        # intended: the operator picked a real date regardless of whether
+        # the CSV they attached was well-formed.
+        _restock_set_schedule(store, delivery_date, user_name)
+
+        if action == "Reset to estimated":
+            _restock_clear_orders(store, delivery_date)
+            summary = f":white_check_mark: Restock {delivery_date} reset to estimated (actuals cleared)."
+        elif action == "Add order (actuals)":
+            csv_text = _download_slack_file(files[0]["url_private_download"])
+            rows, errors = _parse_restock_csv(csv_text)
+            if errors:
+                return {
+                    "response_action": "errors",
+                    "errors": {"csv_file": "; ".join(errors[:3]) + (" …" if len(errors) > 3 else "")},
+                }
+            if not rows:
+                return {"response_action": "errors", "errors": {"csv_file": "CSV contained no valid (base, quantity) rows."}}
+            _restock_replace_orders(store, delivery_date, rows, user_name)
+            summary = (
+                f":white_check_mark: Restock {delivery_date} — {len(rows)} item(s) uploaded "
+                f"(by {user_name}): " + ", ".join(f"{b}={q}" for b, q in rows)
+            )
+        else:  # Register date only (estimated)
+            summary = f":white_check_mark: Restock {delivery_date} registered (estimated — no actuals uploaded)."
+
+        _slack_api("chat.postMessage", {"channel": user_id, "text": summary})
+        return {"response_action": "clear"}
+    except Exception as exc:
+        log.error("restock submission failed: %s", exc)
+        _slack_api("chat.postMessage", {
+            "channel": user_id,
+            "text": f":x: restock failed: {exc}",
+        })
+        return {"response_action": "clear"}
 
 
 def _is_already_running(job_name: str, date_str: str) -> bool:
@@ -1342,6 +1667,33 @@ def slack_commands():
         return Response("invalid signature", status=403)
 
     return _handle_slash_command(request.form)
+
+
+@app.route("/slack/interactions", methods=["POST"])
+def slack_interactions():
+    """Slack interactivity endpoint — handles the restock modal's view_submission.
+
+    Slack posts interactivity payloads as a form field named "payload"
+    containing a JSON string (not a raw JSON body), so this route parses the
+    body differently from /slack/events and /slack/commands.
+    """
+    body = request.get_data()
+    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
+    signature = request.headers.get("X-Slack-Signature", "")
+
+    if not verify_slack_signature(body, timestamp, signature):
+        return Response("invalid signature", status=403)
+
+    try:
+        payload = json.loads(request.form.get("payload", "{}"))
+    except json.JSONDecodeError:
+        return Response("bad payload", status=400)
+
+    if payload.get("type") == "view_submission" and payload.get("view", {}).get("callback_id") == _RESTOCK_CALLBACK_ID:
+        result = _handle_restock_submission(payload)
+        return jsonify(result)
+
+    return Response("", status=200)
 
 
 # ---------------------------------------------------------------------------

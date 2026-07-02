@@ -158,7 +158,8 @@ _BQ_RESTOCK_ORDERS_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_restock_order
 # Unlike response_url (used by every other command), the restock modal needs a
 # real bot token because views.open must be called BEFORE any response_url
 # exists (there's no slash-command response_url yet at modal-open time).
-# Secret: slack_bhaga_cloud_bot (see RUNBOOK.md).
+# Secret: slack-bot-token (already mounted on bhaga-webhook — see RUNBOOK.md
+# § bhaga-webhook environment; this is the "bhaga cloud" bot's token).
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 
 # Copied from skills/inventory_parse/parse.py ACTIVE_BASES. handler.py is a
@@ -1219,7 +1220,11 @@ def _parse_restock_csv(text: str) -> tuple[list[tuple[str, float]], list[str]]:
             errors.append(f"row {i + 1}: quantity for {base} must be >= 0, got {qty}")
             continue
         rows.append((base, qty))
-    return rows, errors
+    # De-dup by base, last occurrence wins — a CSV with the same base twice
+    # (e.g. a copy-paste mistake) should not produce two INSERT rows for the
+    # same (store, delivery_date, item) grain.
+    deduped = dict(rows)
+    return list(deduped.items()), errors
 
 
 def _restock_set_schedule(store: str, delivery_date: str, user_name: str) -> None:
@@ -1260,6 +1265,12 @@ def _restock_replace_orders(
     rows (mirrors the idempotent-MERGE convention used elsewhere in BHAGA,
     adapted for a multi-row per-date payload where MERGE-per-row would leave
     stale items behind if the new CSV drops one).
+
+    Not atomic (two separate BQ jobs) — a failure between DELETE and INSERT
+    leaves the date with zero actuals rather than stale-but-present ones.
+    Acceptable: the fallback for "no actuals" is the estimated water-fill
+    (migration 031), never a crash or wrong number, and the operator can
+    always re-run "Add order" to retry.
     """
     from google.cloud import bigquery as _bq_mod  # type: ignore[import]  # noqa: PLC0415
 
@@ -1321,6 +1332,11 @@ def _handle_restock_submission(payload: dict) -> dict:
         return {"response_action": "clear"}
 
     try:
+        # Always MERGE the schedule first, even before CSV validation — a
+        # rejected/bad CSV submit still registers the date as "tracked"
+        # (idempotent no-op if the date was already registered). This is
+        # intended: the operator picked a real date regardless of whether
+        # the CSV they attached was well-formed.
         _restock_set_schedule(store, delivery_date, user_name)
 
         if action == "Reset to estimated":

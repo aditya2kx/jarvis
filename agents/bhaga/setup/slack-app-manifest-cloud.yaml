@@ -1,5 +1,6 @@
 # Manifest for the SEPARATE "bhaga cloud" Slack app (bot token secret
-# slack_bhaga_cloud_bot; DM channel D0B67MW6J02). This is the app whose
+# slack-bot-token, already mounted on bhaga-webhook; DM channel D0B67MW6J02).
+# This is the app whose
 # Slash Command + Event Subscriptions + Interactivity Request URLs point at
 # the bhaga-webhook Cloud Run service (cloud/webhook/handler.py) — distinct
 # from agents/bhaga/setup/slack-app-manifest.yaml, which is the LOCAL

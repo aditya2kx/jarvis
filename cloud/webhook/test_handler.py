@@ -1779,6 +1779,12 @@ class TestRestockCsvParsing:
         assert errors == []
         assert rows == [("Açaí", 12.0), ("Mango", 8.0)]
 
+    def test_duplicate_base_last_wins(self):
+        rows, errors = handler._parse_restock_csv("Açaí,12\nMango,5\nAçaí,20\n")
+        assert errors == []
+        assert dict(rows) == {"Açaí": 20.0, "Mango": 5.0}
+        assert len(rows) == 2
+
 
 class TestRestockSubmission:
     """view_submission handling: schedule + orders writes, DM confirmation."""

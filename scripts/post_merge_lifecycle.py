@@ -211,6 +211,35 @@ def parse_post_merge_block(pr_body: str) -> list[PostMergeCommand]:
 # CLI
 # ---------------------------------------------------------------------------
 
+def find_branch_for_issue(issue: int) -> str | None:
+    """Reverse of find_tracking_issue: scan phase caches for issue==N -> branch.
+
+    Returns None when no local cache maps to the given issue number.
+    """
+    import glob as _glob
+    for p in _glob.glob(os.path.join(_metrics_dir(), "session-*-phase.json")):
+        try:
+            d = json.loads(open(p).read())
+            if d.get("issue") and int(d["issue"]) == int(issue):
+                return d.get("branch") or None
+        except Exception:
+            continue
+    return None
+
+
+def _cmd_find_branch(argv: list[str]) -> int:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--issue", required=True, type=int)
+    args = ap.parse_args(argv)
+    b = find_branch_for_issue(args.issue)
+    if b:
+        print(b)
+        return 0
+    print("none")
+    return 1
+
+
 def _cmd_find_issue(argv: list[str]) -> int:
     import argparse
     ap = argparse.ArgumentParser()
@@ -239,9 +268,94 @@ def _cmd_parse_post_merge(argv: list[str]) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Signal codec (jarvis-signal comment format)
+# ---------------------------------------------------------------------------
+
+_SIGNAL_RE = re.compile(r"<!--\s*jarvis-signal:(\{.*?\})\s*-->", re.DOTALL)
+
+
+def format_signal(
+    event: str,
+    branch: str,
+    *,
+    pr: int | None = None,
+    issue: int | None = None,
+    signal_id: str | None = None,
+    **extra,
+) -> str:
+    """Return an HTML-comment ``jarvis-signal`` block for embedding in an issue comment.
+
+    The block is machine-readable and idempotent: the ``id`` field is a UUID
+    that the router uses for deduplication.
+
+    Example output::
+
+        <!-- jarvis-signal:{"id":"...","event":"ci_failed","branch":"fix/…","pr":109,"ts":"…"} -->
+    """
+    import datetime
+    import uuid
+
+    payload = {
+        "id": signal_id or str(uuid.uuid4()),
+        "event": event,
+        "branch": branch,
+        "pr": pr,
+        "issue": issue,
+        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+        **extra,
+    }
+    return "<!-- jarvis-signal:" + json.dumps(payload, separators=(",", ":")) + " -->"
+
+
+def parse_signal(comment_body: str) -> dict | None:
+    """Extract and JSON-decode the ``jarvis-signal`` payload from a comment body.
+
+    Returns ``None`` when no signal block is present or the JSON is malformed.
+    """
+    m = _SIGNAL_RE.search(comment_body or "")
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(1))
+    except Exception:
+        return None
+
+
+def _cmd_emit_signal(argv: list[str]) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(
+        description="Print a jarvis-signal HTML comment for embedding in a GH issue comment."
+    )
+    ap.add_argument("--event", required=True, help="Event name (ci_failed, ci_passed, pr_merged, intake, comment, …)")
+    ap.add_argument("--branch", required=True)
+    ap.add_argument("--pr", type=int, default=None)
+    ap.add_argument("--issue", type=int, default=None)
+    ap.add_argument("--signal-id", default=None, help="Override the UUID (useful for tests/idempotency)")
+    ap.add_argument("--comment-url", default=None, help="URL of the originating comment (for comment events)")
+    ap.add_argument("--requirement", default=None, help="Requirement text extracted from /jarvis-new-task comment (for intake events)")
+    args = ap.parse_args(argv)
+    extra: dict = {}
+    if args.comment_url:
+        extra["comment_url"] = args.comment_url
+    if args.requirement:
+        extra["requirement"] = args.requirement
+    print(format_signal(
+        args.event,
+        args.branch,
+        pr=args.pr,
+        issue=args.issue,
+        signal_id=args.signal_id,
+        **extra,
+    ))
+    return 0
+
+
 _COMMANDS = {
     "find-issue": _cmd_find_issue,
+    "find-branch": _cmd_find_branch,
     "parse-post-merge": _cmd_parse_post_merge,
+    "emit-signal": _cmd_emit_signal,
 }
 
 

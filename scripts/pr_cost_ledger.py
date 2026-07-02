@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Any
 
 import pr_cost_store as _store
+import dev_models as _dm
 
 LEDGER_DIR = Path(__file__).resolve().parent.parent / "metrics" / "pr_cost"
 
@@ -988,8 +989,8 @@ def _recommendations(rec: dict[str, Any]) -> list[str]:
                 for s in sorted(opus_sessions, key=lambda s: s.get("cost_usd") or 0, reverse=True)[:3]
             )
             recs.append(
-                f"Route standard feature work to Sonnet 4.6 (default) — reserve Opus 4.8 "
-                f"only for hard multi-file reasoning or subtle bugs. "
+                f"Route standard feature work to {_dm.FRIENDLY[_dm.DEFAULT_IMPL_MODEL]} (default) — "
+                f"reserve Opus 4.8 only for hard multi-file reasoning or subtle bugs. "
                 f"{len(opus_sessions)} Opus session(s) ({sessions_desc}) cost ${total_opus:.2f}; "
                 f"same work on Sonnet ≈ ${total_sonnet:.2f}. "
                 f"Est. saving: ~${saving:.2f}. "

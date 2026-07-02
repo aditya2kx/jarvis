@@ -90,6 +90,18 @@ jobs:
             --body "**Merged:** PR #${PR} ([${PR_TITLE}](https://github.com/${REPO}/pull/${PR})) was squash-merged to \`main\` on $(date -u +%Y-%m-%dT%H:%M:%SZ)." \
             || echo "::warning::Could not post link comment to issue #$ISSUE_N"
 
+      # ── Step 3b: Emit pr_merged signal ───────────────────────────────────
+      - name: Emit pr_merged signal
+        if: steps.issue.outputs.issue_number != 'none' && steps.issue.outputs.issue_number != ''
+        run: |
+          ISSUE_N="${{ steps.issue.outputs.issue_number }}"
+          SIG="$(python3 scripts/post_merge_lifecycle.py emit-signal \
+            --event pr_merged --branch "$BRANCH" --pr "$PR" \
+            --issue "$ISSUE_N")"
+          RBODY="Retrospective queued for branch \`$BRANCH\`."$'\n\n'"$SIG"
+          gh issue comment "$ISSUE_N" --repo "$REPO" \
+            --body "$RBODY" || echo "::warning::could not emit pr_merged signal"
+
       # ── Step 4: Post-merge verification ──────────────────────────────────
       - name: Parse + run post-merge verification
         id: pmv
@@ -108,8 +120,8 @@ jobs:
             echo "No post-merge verification commands defined."
             gh issue comment "$ISSUE_N" --repo "$REPO" \
               --body "### Post-merge verification: skipped
-No \`### Post-merge verification\` block found in PR #${PR} §4.
-Add a block in future PRs to get automated post-merge spot-checks." \
+          No \`### Post-merge verification\` block found in PR #${PR} §4.
+          Add a block in future PRs to get automated post-merge spot-checks." \
               || true
             exit 0
           fi
@@ -133,51 +145,51 @@ Add a block in future PRs to get automated post-merge spot-checks." \
               echo "SIDEEFFECT:${CMD}" >> /tmp/pmv_results.txt
             fi
           done < <(echo "$CMDS_JSON" | python3 -c "
-import json, sys
-cmds = json.load(sys.stdin)
-for c in cmds:
-    print(c['readonly'], c['raw'])
-")
+          import json, sys
+          cmds = json.load(sys.stdin)
+          for c in cmds:
+              print(c['readonly'], c['raw'])
+          ")
 
           # Build comment from results.
           python3 - <<'PYEOF'
-import os
+          import os
 
-results_file = "/tmp/pmv_results.txt"
-if not os.path.exists(results_file):
-    print("no_results")
-    exit(0)
+          results_file = "/tmp/pmv_results.txt"
+          if not os.path.exists(results_file):
+              print("no_results")
+              exit(0)
 
-lines = open(results_file).readlines()
-passed = failed = 0
-readonly_lines = []
-agent_lines = []
+          lines = open(results_file).readlines()
+          passed = failed = 0
+          readonly_lines = []
+          agent_lines = []
 
-for line in lines:
-    line = line.rstrip()
-    if line.startswith("RESULT:"):
-        parts = line.split(":", 3)
-        status = parts[1]
-        cmd = parts[2]
-        output = parts[3] if len(parts) > 3 else ""
-        if status == "✅":
-            passed += 1
-        else:
-            failed += 1
-        readonly_lines.append(f"{status} `{cmd}`\n<details><summary>output</summary>\n\n```\n{output[:500]}\n```\n</details>")
-    elif line.startswith("SIDEEFFECT:"):
-        cmd = line.split(":", 1)[1]
-        agent_lines.append(f"- [ ] `{cmd}` — run manually in a follow-up chat")
+          for line in lines:
+              line = line.rstrip()
+              if line.startswith("RESULT:"):
+                  parts = line.split(":", 3)
+                  status = parts[1]
+                  cmd = parts[2]
+                  output = parts[3] if len(parts) > 3 else ""
+                  if status == "✅":
+                      passed += 1
+                  else:
+                      failed += 1
+                  readonly_lines.append(f"{status} `{cmd}`\n<details><summary>output</summary>\n\n```\n{output[:500]}\n```\n</details>")
+              elif line.startswith("SIDEEFFECT:"):
+                  cmd = line.split(":", 1)[1]
+                  agent_lines.append(f"- [ ] `{cmd}` — run manually in a follow-up chat")
 
-summary = f"**{passed} passed, {failed} failed**"
-print("SUMMARY:" + summary)
-print("PASSED:" + str(passed))
-print("FAILED:" + str(failed))
-for rl in readonly_lines:
-    print("READONLY:" + rl)
-for al in agent_lines:
-    print("AGENT:" + al)
-PYEOF
+          summary = f"**{passed} passed, {failed} failed**"
+          print("SUMMARY:" + summary)
+          print("PASSED:" + str(passed))
+          print("FAILED:" + str(failed))
+          for rl in readonly_lines:
+              print("READONLY:" + rl)
+          for al in agent_lines:
+              print("AGENT:" + al)
+          PYEOF
 
       - name: Post verification comment
         if: steps.issue.outputs.issue_number != 'none' && steps.issue.outputs.issue_number != ''
@@ -189,45 +201,45 @@ PYEOF
           fi
           # Build the comment body from the results file.
           COMMENT="$(python3 - <<'PYEOF'
-import os
+          import os
 
-results_file = "/tmp/pmv_results.txt"
-if not os.path.exists(results_file):
-    print("### Post-merge verification\n\nNo results recorded.")
-    exit(0)
+          results_file = "/tmp/pmv_results.txt"
+          if not os.path.exists(results_file):
+              print("### Post-merge verification\n\nNo results recorded.")
+              exit(0)
 
-lines = [l.rstrip() for l in open(results_file).readlines()]
-passed = failed = 0
-readonly_parts = []
-agent_parts = []
+          lines = [l.rstrip() for l in open(results_file).readlines()]
+          passed = failed = 0
+          readonly_parts = []
+          agent_parts = []
 
-for line in lines:
-    if line.startswith("RESULT:"):
-        parts = line.split(":", 3)
-        status = parts[1]
-        cmd = parts[2] if len(parts) > 2 else "?"
-        output = parts[3] if len(parts) > 3 else ""
-        if status == "\u2705":
-            passed += 1
-        else:
-            failed += 1
-        snippet = output[:400].strip() or "(no output)"
-        readonly_parts.append(
-            f"{status} `{cmd}`\n<details><summary>output</summary>\n\n```\n{snippet}\n```\n</details>"
-        )
-    elif line.startswith("SIDEEFFECT:"):
-        cmd = line.split(":", 1)[1]
-        agent_parts.append(f"- [ ] `{cmd}` — run in a follow-up agent chat")
+          for line in lines:
+              if line.startswith("RESULT:"):
+                  parts = line.split(":", 3)
+                  status = parts[1]
+                  cmd = parts[2] if len(parts) > 2 else "?"
+                  output = parts[3] if len(parts) > 3 else ""
+                  if status == "\u2705":
+                      passed += 1
+                  else:
+                      failed += 1
+                  snippet = output[:400].strip() or "(no output)"
+                  readonly_parts.append(
+                      f"{status} `{cmd}`\n<details><summary>output</summary>\n\n```\n{snippet}\n```\n</details>"
+                  )
+              elif line.startswith("SIDEEFFECT:"):
+                  cmd = line.split(":", 1)[1]
+                  agent_parts.append(f"- [ ] `{cmd}` — run in a follow-up agent chat")
 
-verdict = "\u2705 All checks passed" if failed == 0 else f"\u274c {failed} check(s) failed"
-body = f"### Post-merge verification \u2014 PR #$PR\n\n{verdict} ({passed} passed, {failed} failed)\n\n"
-if readonly_parts:
-    body += "**Auto-verified (read-only):**\n\n" + "\n\n".join(readonly_parts) + "\n\n"
-if agent_parts:
-    body += "**Agent follow-up required (side-effecting \u2014 not auto-run):**\n\n" + "\n".join(agent_parts) + "\n\n"
-print(body)
-PYEOF
-)"
+          verdict = "\u2705 All checks passed" if failed == 0 else f"\u274c {failed} check(s) failed"
+          body = f"### Post-merge verification \u2014 PR #$PR\n\n{verdict} ({passed} passed, {failed} failed)\n\n"
+          if readonly_parts:
+              body += "**Auto-verified (read-only):**\n\n" + "\n\n".join(readonly_parts) + "\n\n"
+          if agent_parts:
+              body += "**Agent follow-up required (side-effecting \u2014 not auto-run):**\n\n" + "\n".join(agent_parts) + "\n\n"
+          print(body)
+          PYEOF
+          )"
           gh issue comment "$ISSUE_N" --repo "$REPO" --body "$COMMENT" || \
             echo "::warning::Could not post verification comment"
 
@@ -250,21 +262,21 @@ PYEOF
           ISSUE_N="${{ steps.issue.outputs.issue_number }}"
           gh issue comment "$ISSUE_N" --repo "$REPO" --body "### Retrospective prompt — PR #${PR}
 
-The agent should open a follow-up chat, read the PR conversation + any relevant agent transcripts, and write a \`PROGRESS.md\` entry with:
+          The agent should open a follow-up chat, read the PR conversation + any relevant agent transcripts, then **run a retro jam with the operator** (Plan mode → retro plan → follow-up issues). Do NOT write \`PROGRESS.md\` directly on the merged branch — the branch is gone and the push guard blocks main.
 
-**Grade the dev cycle (1-5 for each axis):**
-- [ ] **Speed** — was the jam→merge cycle faster or slower than expected? What was the bottleneck?
-- [ ] **Cost** — did model routing (Sonnet/Opus) match the plan? Any unnecessary Opus escalations?
-- [ ] **Accuracy** — did the implementation match the agreed §4 evidence exactly? Any rework loops?
+          **Grade the dev cycle (jam with operator in Plan mode, three axes):**
+          - [ ] **Speed** — was the jam→merge cycle faster or slower than expected? What was the bottleneck?
+          - [ ] **Cost** — did model routing (Sonnet/Opus) match the plan? Any unnecessary Opus escalations?
+          - [ ] **Accuracy** — did the implementation match the agreed §4 evidence exactly? Any rework loops?
 
-**Concrete improvement (at least one):**
-- [ ] Propose one specific change to the dev process, workflow, or rules that would improve future PRs.
+          **Concrete improvement (at least one):**
+          - [ ] Propose one specific change to the dev process, workflow, or rules that would improve future PRs. Open a GitHub issue for each (\`gh issue create --label jarvis-work\`). If a \`PROGRESS.md\` entry is warranted, it becomes one of these follow-up issues / its own PR.
 
-**Preference harvest:**
-- [ ] Scan the PR conversation for operator signal phrases (always/never/prefer/in general). Run candidates through \`python -m skills.user_model.guardrail score \"<text>\"\` and propose \`store.add_preference\` for passers (operator y/n).
+          **Preference harvest:**
+          - [ ] Scan the PR conversation for operator signal phrases (always/never/prefer/in general). Run candidates through \`python -m skills.user_model.guardrail score \"<text>\"\` and propose \`store.add_preference\` for passers (operator y/n).
 
-**After writing PROGRESS.md and recording any new preferences:**
-\`\`\`bash
-python3 scripts/phase_state.py advance --branch ${BRANCH} --to retrospective
-gh issue close ${ISSUE_N} --comment \"Retrospective complete — see PROGRESS.md entry $(date -u +%Y-%m-%d).\"
-\`\`\`" || echo "::warning::Could not post retrospective prompt"
+          **After operator alignment on the retro plan and creating follow-up issues:**
+          \`\`\`bash
+          python3 scripts/phase_state.py advance --branch ${BRANCH} --to retrospective
+          gh issue close ${ISSUE_N} --comment \"Retrospective complete — follow-up issues: #X, #Y.\"
+          \`\`\`" || echo "::warning::Could not post retrospective prompt"

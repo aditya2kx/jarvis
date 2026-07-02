@@ -785,6 +785,75 @@ class TestGate(PhaseStateTestBase):
         self.assertTrue(result)
 
 
+# ---------------------------------------------------------------------------
+# drift-check (obs 1) — advisory, always exit 0
+# ---------------------------------------------------------------------------
+
+class TestDriftCheck(PhaseStateTestBase):
+    def _args(self, branch=None):
+        args = MagicMock()
+        args.branch = branch
+        return args
+
+    def _run(self, branch):
+        import io
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            rc = ps.cmd_drift_check(self._args(branch=branch))
+        return rc, buf.getvalue()
+
+    def test_untracked_branch_silent_exit0(self):
+        rc, out = self._run("feat/untracked-drift")
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.strip(), "")
+
+    def test_no_observable_progress_silent(self):
+        data = ps._load_cache("feat/no-progress")
+        data["done"] = []
+        ps._save_cache("feat/no-progress", data)
+        with patch.object(ps, "OBSERVABLE_FLOOR", [("implement", lambda: False)]):
+            rc, out = self._run("feat/no-progress")
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.strip(), "")
+
+    def test_in_sync_silent(self):
+        """implement fires and implement (+priors) already recorded → no nudge."""
+        data = ps._load_cache("feat/in-sync")
+        data["done"] = ["specify", "setup", "jam", "define-evidence", "plan", "implement"]
+        ps._save_cache("feat/in-sync", data)
+        with patch.object(ps, "OBSERVABLE_FLOOR", [("implement", lambda: True)]):
+            rc, out = self._run("feat/in-sync")
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.strip(), "")
+
+    def test_drift_lists_advance_commands(self):
+        """Non-doc changes present but only specify/setup recorded → nudge lists the rest."""
+        data = ps._load_cache("feat/drifted")
+        data["done"] = ["specify", "setup"]
+        ps._save_cache("feat/drifted", data)
+        with patch.object(ps, "OBSERVABLE_FLOOR", [("implement", lambda: True)]):
+            rc, out = self._run("feat/drifted")
+        self.assertEqual(rc, 0)  # advisory — never blocks
+        self.assertIn("PHASE DRIFT", out)
+        self.assertIn("phase_state.py advance", out)
+        self.assertIn("feat/drifted", out)
+        # Operator gates get the --operator-approved form.
+        self.assertIn("--operator-approved", out)
+
+    def test_drift_is_inclusive_of_observed_substep(self):
+        """Unlike the gate, drift-check nudges the observed substep itself too.
+
+        implement fires; all priors recorded but implement not → nudge --to implement.
+        """
+        data = ps._load_cache("feat/inclusive")
+        data["done"] = ["specify", "setup", "jam", "define-evidence", "plan"]
+        ps._save_cache("feat/inclusive", data)
+        with patch.object(ps, "OBSERVABLE_FLOOR", [("implement", lambda: True)]):
+            rc, out = self._run("feat/inclusive")
+        self.assertEqual(rc, 0)
+        self.assertIn("--to implement", out)
+
+
 class TestCheckPlanReadinessPhasePrecheck(PhaseStateTestBase):
     """Tests for the phase gate integration in check_plan_readiness.py."""
 

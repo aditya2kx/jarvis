@@ -84,8 +84,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          COUNT="$(gh api repos/${{ github.repository }}/issues/$PR_NUMBER/comments \
-            --jq '[.[] | select(.user.login=="claude[bot]" or (.user.login|startswith("claude")))] | length' \
+          COUNT="$(gh api --paginate repos/${{ github.repository }}/issues/$PR_NUMBER/comments --jq '.[]' 2>/dev/null \
+            | jq -s '[.[] | select(.user.login=="claude[bot]" or (.user.login|startswith("claude")))] | length' \
             2>/dev/null || echo 0)"
           if [ "${COUNT:-0}" -gt 0 ]; then
             echo "has_prior=true"  >> "$GITHUB_OUTPUT"
@@ -252,16 +252,23 @@ jobs:
           python3 - <<'PYEOF'
           import json, subprocess, sys, re
 
+          # --paginate emits one JSON array per page; --jq '.[]' unrolls each
+          # page to one object per line so pages concatenate into flat NDJSON
+          # regardless of comment count (a single-page fetch silently missed
+          # comments beyond page 1 on PRs with 30+ comments).
           result = subprocess.run(
-              ["gh", "api", f"repos/${{ github.repository }}/issues/$PR_NUMBER/comments",
-               "--jq", '[.[] | select(.user.login == "claude[bot]" or (.user.login | startswith("claude")))]'],
+              ["gh", "api", "--paginate", f"repos/${{ github.repository }}/issues/$PR_NUMBER/comments",
+               "--jq", ".[]"],
               capture_output=True, text=True
           )
           if result.returncode != 0 or not result.stdout.strip():
               print("No Claude comments found — skipping verdict check.")
               sys.exit(0)
 
-          comments = json.loads(result.stdout)
+          all_comments = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+          comments = [c for c in all_comments
+                      if c.get("user", {}).get("login") == "claude[bot]"
+                      or c.get("user", {}).get("login", "").startswith("claude")]
           if not comments:
               print("No Claude summary comment found — skipping verdict check.")
               sys.exit(0)
@@ -290,8 +297,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          BODY="$(gh api repos/${{ github.repository }}/issues/$PR_NUMBER/comments \
-            --jq '[.[] | select(.user.login == "claude[bot]" or (.user.login | startswith("claude")))] | last | .body' \
+          BODY="$(gh api --paginate repos/${{ github.repository }}/issues/$PR_NUMBER/comments --jq '.[]' 2>/dev/null \
+            | jq -s '[.[] | select(.user.login == "claude[bot]" or (.user.login | startswith("claude")))] | last | .body' -r \
             2>/dev/null || echo '')"
           if [ -z "$BODY" ] || [ "$BODY" = "null" ]; then
             echo "No Claude comment found — skipping evidence confidence check."

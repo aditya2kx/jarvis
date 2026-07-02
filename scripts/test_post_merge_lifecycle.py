@@ -156,5 +156,166 @@ bash scripts/deploy.sh prod
         self.assertEqual(cmds, [])
 
 
+class TestFormatSignal(unittest.TestCase):
+    def test_round_trip(self):
+        sig = PML.format_signal("ci_failed", "fix/my-branch", pr=42, issue=101, signal_id="test-uuid")
+        self.assertIn("jarvis-signal:", sig)
+        parsed = PML.parse_signal(sig)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["event"], "ci_failed")
+        self.assertEqual(parsed["branch"], "fix/my-branch")
+        self.assertEqual(parsed["pr"], 42)
+        self.assertEqual(parsed["issue"], 101)
+        self.assertEqual(parsed["id"], "test-uuid")
+
+    def test_auto_uuid_generated(self):
+        sig1 = PML.format_signal("pr_merged", "fix/branch-a")
+        sig2 = PML.format_signal("pr_merged", "fix/branch-a")
+        p1 = PML.parse_signal(sig1)
+        p2 = PML.parse_signal(sig2)
+        self.assertIsNotNone(p1)
+        self.assertIsNotNone(p2)
+        self.assertNotEqual(p1["id"], p2["id"])
+
+    def test_extra_kwargs_included(self):
+        sig = PML.format_signal("ci_other", "fix/b", conclusion="cancelled")
+        parsed = PML.parse_signal(sig)
+        self.assertEqual(parsed["conclusion"], "cancelled")
+
+    def test_parse_signal_malformed_json(self):
+        self.assertIsNone(PML.parse_signal("<!-- jarvis-signal:{bad json} -->"))
+
+    def test_parse_signal_no_block(self):
+        self.assertIsNone(PML.parse_signal("Just a plain comment with no signal."))
+
+    def test_parse_signal_none_body(self):
+        self.assertIsNone(PML.parse_signal(None))
+
+    def test_parse_signal_empty(self):
+        self.assertIsNone(PML.parse_signal(""))
+
+
+class TestEmitSignalCLI(unittest.TestCase):
+    def test_emit_signal_outputs_parseable_block(self):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = PML.main(["emit-signal", "--event", "pr_merged", "--branch", "fix/test-branch",
+                           "--pr", "99", "--issue", "101", "--signal-id", "fixed-uuid"])
+        self.assertEqual(rc, 0)
+        out = buf.getvalue().strip()
+        parsed = PML.parse_signal(out)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["event"], "pr_merged")
+        self.assertEqual(parsed["id"], "fixed-uuid")
+
+    def test_emit_signal_comment_url_round_trips(self):
+        """--comment-url must appear in parsed payload as comment_url."""
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = PML.main([
+                "emit-signal", "--event", "comment",
+                "--branch", "fix/test-branch",
+                "--issue", "115",
+                "--signal-id", "fixed-uuid-2",
+                "--comment-url", "https://github.com/foo/bar/issues/115#issuecomment-999",
+            ])
+        self.assertEqual(rc, 0)
+        out = buf.getvalue().strip()
+        parsed = PML.parse_signal(out)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["event"], "comment")
+        self.assertEqual(parsed["comment_url"],
+                         "https://github.com/foo/bar/issues/115#issuecomment-999")
+
+
+class TestEmitSignalRequirement(unittest.TestCase):
+    def test_emit_signal_requirement_round_trips(self):
+        """--requirement must appear in parsed payload as requirement field."""
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = PML.main([
+                "emit-signal", "--event", "intake",
+                "--branch", "",
+                "--issue", "101",
+                "--signal-id", "req-uuid-test",
+                "--requirement", "add dark mode toggle",
+            ])
+        self.assertEqual(rc, 0)
+        parsed = PML.parse_signal(buf.getvalue().strip())
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["event"], "intake")
+        self.assertEqual(parsed["requirement"], "add dark mode toggle")
+
+    def test_emit_signal_no_requirement_omits_field(self):
+        """Without --requirement, the field must not appear in the payload."""
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            PML.main([
+                "emit-signal", "--event", "intake",
+                "--branch", "",
+                "--issue", "101",
+                "--signal-id", "req-uuid-none",
+            ])
+        parsed = PML.parse_signal(buf.getvalue().strip())
+        self.assertIsNotNone(parsed)
+        self.assertNotIn("requirement", parsed)
+
+
+class TestFindBranchForIssue(unittest.TestCase):
+    def test_finds_branch_from_seeded_cache(self):
+        branch = "fix/test-find-branch"
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = os.path.join(tmp, "metrics", "pr_cost")
+            os.makedirs(mdir)
+            slug = PML._slug(branch)
+            cache = os.path.join(mdir, f"session-{slug}-phase.json")
+            open(cache, "w").write(json.dumps({"branch": branch, "issue": 77}))
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmp}):
+                result = PML.find_branch_for_issue(77)
+        self.assertEqual(result, branch)
+
+    def test_returns_none_when_not_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmp}):
+                result = PML.find_branch_for_issue(999)
+        self.assertIsNone(result)
+
+    def test_find_branch_cli_prints_branch(self):
+        branch = "fix/test-find-branch-cli"
+        with tempfile.TemporaryDirectory() as tmp:
+            import io
+            from contextlib import redirect_stdout
+            mdir = os.path.join(tmp, "metrics", "pr_cost")
+            os.makedirs(mdir)
+            slug = PML._slug(branch)
+            cache = os.path.join(mdir, f"session-{slug}-phase.json")
+            open(cache, "w").write(json.dumps({"branch": branch, "issue": 88}))
+            buf = io.StringIO()
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmp}):
+                with redirect_stdout(buf):
+                    rc = PML.main(["find-branch", "--issue", "88"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(buf.getvalue().strip(), branch)
+
+    def test_find_branch_cli_none_on_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            import io
+            from contextlib import redirect_stdout
+            buf = io.StringIO()
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmp}):
+                with redirect_stdout(buf):
+                    rc = PML.main(["find-branch", "--issue", "9999"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(buf.getvalue().strip(), "none")
+
+
 if __name__ == "__main__":
     unittest.main()

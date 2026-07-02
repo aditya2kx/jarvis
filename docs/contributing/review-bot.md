@@ -40,6 +40,17 @@ python3 agents/bhaga/grafana/capture_screenshot.py --panel 76 --label my-change
 python3 agents/bhaga/grafana/verify_panels.py
 ```
 
+## Fetching the latest bot comment (pagination)
+
+All three gates that read `claude[bot]` comments — bootstrap `has_prior`, the
+verdict gate, and the evidence-confidence gate — must fetch **every** page of
+`gh api repos/.../issues/$PR_NUMBER/comments`, not just the first 30. A bare
+`gh api ... --jq '... | last'` silently truncates on PRs with 30+ comments and
+can gate on a stale round's verdict/score instead of the latest one. The fix:
+`gh api --paginate ... --jq '.[]'` (unrolls each page to one object per line,
+so pages concatenate into flat NDJSON) piped into `jq -s '...'` for the actual
+`select`/`last` logic (`--slurp` is not combinable with `--jq` in `gh api`).
+
 ## Responding to comments
 The agent **must reply to every inline comment** — either "fixed in <sha>" or
 "won't fix because <reason>".  `check_pr_review_replies.py --pr N` is the gate;

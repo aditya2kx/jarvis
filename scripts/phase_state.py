@@ -104,6 +104,11 @@ def _load_cache(branch: str) -> dict:
         "done": [],
         "failures": [],
         "updated_at": None,
+        # v2 event-routing fields (backward compatible — absent in old caches)
+        "worktree_path": None,
+        "last_signal_cursor": None,
+        "delivered_signals": [],
+        "pending_event_count": 0,
     }
 
 
@@ -338,14 +343,21 @@ def _apply_kickoff(issue_num: int, branch: str, data: dict, *, dry_run: bool = F
     can never drift.  --add-label is a no-op if the label is already present, so
     re-running is safe.
     """
+    if dry_run:
+        print(f"[dry-run] would wire issue #{issue_num}: labels + kickoff + body")
+        return
     if not _gh_available():
         return
     _gh("issue", "edit", str(issue_num),
-        "--add-label", "jarvis-work", "--add-label", "stage:align", dry_run=dry_run)
+        "--add-label", "jarvis-work", "--add-label", "stage:align")
     # specify (operator typed the requirement) + setup (worktree/issue exists)
     # are factually complete the moment we link the issue.
     if not data.get("done"):
         data["done"] = ["specify", "setup"]
+    # Skip body update when the status block is already present (idempotent).
+    rc, existing_body = _gh("issue", "view", str(issue_num), "--json", "body", "-q", ".body")
+    if rc == 0 and _STATUS_START in existing_body:
+        return
     _update_issue_body(issue_num, data, dry_run=dry_run)
 
 
@@ -631,6 +643,8 @@ def cmd_status(args) -> int:
 
     print(f"Branch:  {branch}")
     print(f"Issue:   #{data.get('issue') or 'none'}")
+    print(f"Worktree: {data.get('worktree_path') or '(not set)'}")
+    print(f"Pending events: {data.get('pending_event_count', 0)}")
     print(f"Stage:   {cur_stage.name}  ({s_pct}% of stage)")
     print(f"Overall: {overall}%")
     print(f"Substep: {cur.name if cur else 'complete'}")
@@ -682,6 +696,8 @@ def cmd_report(args) -> int:
                 local_issues[issue_num] = {
                     "pct": lc.overall_pct(done_set),
                     "failures": data.get("failures", []),
+                    "worktree_path": data.get("worktree_path"),
+                    "pending_event_count": data.get("pending_event_count", 0),
                 }
             except Exception:
                 pass
@@ -692,15 +708,23 @@ def cmd_report(args) -> int:
             row["pct"] = f"{local['pct']}%"
             if local["failures"]:
                 row["blocked"] = "YES"
+            row["worktree"] = local.get("worktree_path") or ""
+            row["pending"] = local.get("pending_event_count", 0)
 
     if not rows:
         print("No open jarvis-work issues found.")
         return 0
 
-    print(f"\n{'#':<6} {'Title':<52} {'Stage':<14} {'%':<6} {'Blocked'}")
-    print("─" * 85)
+    print(f"\n{'#':<6} {'Title':<50} {'Stage':<14} {'%':<6} {'Pending':<8} {'Blocked'}")
+    print("─" * 95)
     for row in rows:
-        print(f"  {row['issue']:<4} {row['title']:<52} {row['stage']:<14} {str(row['pct']):<6} {row['blocked']}")
+        pending = str(row.get("pending", 0)) if row.get("pending", 0) else ""
+        print(f"  {row['issue']:<4} {row['title']:<50} {row['stage']:<14} {str(row['pct']):<6} {pending:<8} {row['blocked']}")
+        if row.get("worktree"):
+            import os
+            wt = row["worktree"]
+            wt_short = "…" + wt[-60:] if len(wt) > 63 else wt
+            print(f"        Worktree: {wt_short}")
     return 0
 
 
@@ -806,6 +830,70 @@ def cmd_gate(args) -> int:
     return 1
 
 
+def _observed_floor() -> tuple[int, str | None]:
+    """Highest substep the real world shows evidence for (per OBSERVABLE_FLOOR)."""
+    observed_idx = -1
+    observed_name = None
+    for sub_name, detector in OBSERVABLE_FLOOR:
+        try:
+            if detector():
+                idx = lc.substep_index(sub_name)
+                if idx > observed_idx:
+                    observed_idx = idx
+                    observed_name = sub_name
+        except Exception:
+            pass  # degrade gracefully if a detector fails
+    return observed_idx, observed_name
+
+
+def cmd_drift_check(args) -> int:
+    """Advisory phase-drift nudge (obs 1) — always exits 0.
+
+    Sibling of cmd_gate, but *inclusive* of the observed substep and non-blocking.
+    When observable progress (plan file, non-doc changes, open PR, merge) has
+    outrun the recorded ``done`` list, prints the exact ``advance --to <substep>``
+    commands so the agent records phases *as each substep completes* instead of
+    batching them all just before the PR. Wired into drain.sh's idle followup.
+
+    Prints nothing (and exits 0) when the branch is untracked or already in sync,
+    so it is safe to call unconditionally on every idle turn.
+    """
+    branch = getattr(args, "branch", None) or _current_branch()
+    if not branch or not _cache_path(branch).exists():
+        return 0
+
+    data = _load_cache(branch)
+    done_set = set(data.get("done", []))
+    all_steps = lc.all_substeps()
+
+    observed_idx, observed_name = _observed_floor()
+    if observed_idx < 0:
+        return 0
+
+    # Inclusive of the observed substep: if the world shows 'implement' evidence,
+    # 'implement' itself should be on record too (the gate only enforces priors).
+    missing = [s for s in all_steps[: observed_idx + 1] if s.name not in done_set]
+    if not missing:
+        return 0
+
+    print(
+        f"PHASE DRIFT — branch {branch!r}: observable work reached "
+        f"'{observed_name}' but these substep(s) are not recorded yet. "
+        f"Advance them now, in order (don't batch until PR time):"
+    )
+    for s in missing:
+        if s.driver == "operator":
+            print(
+                f"  python3 scripts/phase_state.py advance --branch {branch} "
+                f"--to {s.name} --operator-approved --note '<approval summary>'"
+            )
+        else:
+            print(
+                f"  python3 scripts/phase_state.py advance --branch {branch} --to {s.name}"
+            )
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -853,6 +941,11 @@ def main(argv: list[str] | None = None) -> int:
     p_gate.add_argument("--branch", default=None,
                         help="Branch to check (default: current git branch)")
 
+    p_drift = sub.add_parser("drift-check",
+                             help="Advisory nudge to advance phases as work completes (non-blocking)")
+    p_drift.add_argument("--branch", default=None,
+                         help="Branch to check (default: current git branch)")
+
     args = parser.parse_args(argv)
 
     dispatch = {
@@ -864,6 +957,7 @@ def main(argv: list[str] | None = None) -> int:
         "status":        cmd_status,
         "report":        cmd_report,
         "gate":          cmd_gate,
+        "drift-check":   cmd_drift_check,
     }
     return dispatch[args.cmd](args)
 

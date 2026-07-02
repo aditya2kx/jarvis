@@ -31,7 +31,7 @@ class TestStartPrSession(unittest.TestCase):
         self.assertIn("Hello", link)
         self.assertNotIn(" ", link)  # spaces must be percent-encoded
         self.assertIn("mode=agent", link)
-        self.assertIn("model=claude-4.6-sonnet-medium-thinking", link)
+        self.assertIn(f"model={S.DEFAULT_HANDOFF_MODEL}", link)
 
     def test_make_deeplink_jam_handoff(self):
         link = S.make_deeplink(
@@ -40,7 +40,7 @@ class TestStartPrSession(unittest.TestCase):
             model=S.DEFAULT_JAM_HANDOFF_MODEL,
         )
         self.assertIn("mode=ask", link)
-        self.assertIn("claude-opus-4-8-thinking-high", link)
+        self.assertIn(S.DEFAULT_JAM_HANDOFF_MODEL, link)
 
     def test_seed_prompt_jam_no_implement(self):
         p = S.seed_prompt_jam(

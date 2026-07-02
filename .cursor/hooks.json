@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [
+      {
+        "command": ".cursor/hooks/mark_busy.sh",
+        "matcher": "UserPromptSubmit",
+        "failClosed": false,
+        "timeout": 5
+      }
+    ],
+    "stop": [
+      {
+        "command": ".cursor/hooks/drain.sh",
+        "failClosed": false,
+        "timeout": 15,
+        "loop_limit": 10
+      }
+    ],
+    "sessionStart": [
+      {
+        "command": ".cursor/hooks/announce_pending.sh",
+        "failClosed": false,
+        "timeout": 5
+      }
+    ]
+  }
+}

@@ -123,6 +123,37 @@ _PREAMBLE_PHRASES = (
 )
 
 
+def _fetch_issue_context(issue_num: int) -> tuple[str, str] | None:
+    """Return (title, body) for an existing GitHub issue, or None (best-effort).
+
+    Used by the intake path (daemon dispatch on a tracking issue) so the new
+    worktree's brief is seeded from the issue's actual title/body instead of
+    just the operator's short intake comment (e.g. "let's work on this").
+    """
+    try:
+        out = subprocess.check_output(
+            ["gh", "issue", "view", str(issue_num), "--json", "title,body"],
+            text=True, stderr=subprocess.DEVNULL, timeout=30,
+        )
+        import json as _json
+        data = _json.loads(out or "{}")
+        return data.get("title") or "", data.get("body") or ""
+    except Exception:
+        return None
+
+
+def _compose_requirement(title: str, body: str, note: str) -> str:
+    """Combine an issue's title/body with the operator's intake note.
+
+    Skips empty parts so this degrades gracefully to just ``note`` when the
+    issue has no body, or just ``title`` when there is no separate note.
+    """
+    parts = [p.strip() for p in (title, body) if p and p.strip()]
+    if note and note.strip():
+        parts.append(f"---\nOperator intake note: {note.strip()}")
+    return "\n\n".join(parts) if parts else note
+
+
 def _sanitize_requirement(text: str) -> str:
     """Strip issue refs + generic preamble so the slug reflects the actual ask."""
     t = _ISSUE_URL_RE.sub(" ", text)
@@ -167,6 +198,7 @@ def default_branch(
     issue_num: int | None = None,
     existing: set[str] | None = None,
     prefix: str = "fix",
+    slug_hint: str | None = None,
 ) -> str:
     """Compute a collision-free branch name for *requirement*.
 
@@ -175,9 +207,13 @@ def default_branch(
       always get distinct branches.
     - When *issue_num* is None (create-path, N not yet known) the branch is
       ``fix/<slug>``; any collision is resolved by appending ``-2``, ``-3``, …
+    - ``slug_hint`` (e.g. the linked issue's title) overrides *requirement*
+      as the slug source — used by the intake path so the branch reflects
+      the actual issue title rather than a short operator comment like
+      "let's work on this".
     - Explicit ``--branch`` in main() wins over this default.
     """
-    slug = _slug_branch_part(_sanitize_requirement(requirement))
+    slug = _slug_branch_part(_sanitize_requirement(slug_hint or requirement))
     if issue_num:
         base = f"{prefix}/i{issue_num}-{slug}" if slug else f"{prefix}/i{issue_num}"
     else:
@@ -340,6 +376,34 @@ def _consolidated_requirement(requirements: list[str]) -> str:
     return lines
 
 
+def _post_worktree_comment(
+    issue: int, worktree: Path, branch: str, *, dry_run: bool = False
+) -> None:
+    """Post a comment on the tracking issue with the worktree path (H2 pattern).
+
+    Non-fatal: a failure must not abort the handoff.
+    """
+    body = (
+        f"Worktree ready for `{branch}`.\n\n"
+        f"**Path:** `{worktree}`\n\n"
+        f"Pick up work with:\n"
+        f"```bash\ncd {worktree}\ngit status\n```"
+    )
+    if dry_run:
+        print(f"(dry-run) would post worktree comment on issue #{issue}: {worktree}")
+        return
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "comment", str(issue), "--body", body],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            print(f"⚠️  Could not post worktree comment on #{issue} (non-fatal): {result.stderr[:200]}",
+                  file=sys.stderr)
+    except Exception as exc:
+        print(f"⚠️  Could not post worktree comment on #{issue} (non-fatal): {exc}", file=sys.stderr)
+
+
 def _seed_cache_to_worktree(*, branch: str, worktree: Path, dry_run: bool) -> None:
     """Copy the phase cache from the parent repo into the worktree's metrics/pr_cost/.
 
@@ -374,6 +438,20 @@ def _seed_cache_to_worktree(*, branch: str, worktree: Path, dry_run: bool) -> No
         print(f"Phase cache seeded into worktree: {dst}")
     except Exception as exc:
         print(f"⚠️  Could not seed phase cache to worktree (non-fatal): {exc}", file=sys.stderr)
+        return
+
+    # Write worktree_path into BOTH the parent and the worktree phase caches (H2).
+    for cache_path in (src, dst):
+        if not cache_path.exists():
+            continue
+        try:
+            import json as _json
+            data = _json.loads(cache_path.read_text())
+            data["worktree_path"] = str(worktree.resolve())
+            cache_path.write_text(_json.dumps(data, indent=2))
+        except Exception as exc2:
+            print(f"⚠️  Could not write worktree_path into {cache_path.name} (non-fatal): {exc2}",
+                  file=sys.stderr)
 
 
 def _run_one(
@@ -429,7 +507,15 @@ def _run_one(
     # the worktree shows the correct issue number and substep state.  Without
     # this copy the worktree's metrics/pr_cost/ has no *-phase.json and status
     # reports Issue: #none even though GitHub has the correct issue.
+    # Also writes worktree_path into both copies of the cache (H2).
     _seed_cache_to_worktree(branch=branch, worktree=wt, dry_run=dry_run)
+
+    # Post worktree path on the tracking issue (H2) so it's visible on GitHub.
+    if issue_url:
+        import re as _re
+        m = _re.search(r"/issues/(\d+)", issue_url or "")
+        if m:
+            _post_worktree_comment(int(m.group(1)), wt, branch, dry_run=dry_run)
 
     if dry_run:
         print("(dry-run — no Cursor opened)")
@@ -445,6 +531,14 @@ def _run_one(
             print(f"Tracking issue: {issue_url}")
         print("Pick up the work in this chat; commit and push from within the worktree.")
         return 0
+
+    # Ensure the always-on dev-signals daemon is running so every new worktree
+    # is automatically covered for CI/comment/merge events without manual setup.
+    try:
+        import dev_event_listener as _DEL
+        _DEL.ensure_daemon()
+    except Exception as _e:
+        print(f"(ensure-daemon: non-fatal: {_e})", file=sys.stderr)
 
     S.open_cursor_handoff(
         folder=wt,
@@ -586,11 +680,27 @@ def main(argv: list[str] | None = None) -> int:
     if issue_ref and not args.issue:
         print(f"Auto-detected issue #{issue_ref} from requirement text — linking instead of creating.")
 
+    # When an existing tracking issue is known (intake path, or --issue N),
+    # enrich the requirement from its title/body — a short intake comment
+    # like "let's work on this" is not enough context for the jam handoff.
+    issue_title = ""
+    if issue_ref:
+        ctx = _fetch_issue_context(issue_ref)
+        if ctx:
+            issue_title, issue_body = ctx
+            combined = _compose_requirement(issue_title, issue_body, combined)
+        else:
+            print(f"⚠️  Could not fetch context for issue #{issue_ref} (non-fatal) — "
+                  f"using intake text as-is.", file=sys.stderr)
+
     if args.branch:
         branch = args.branch  # explicit --branch always wins
     else:
         req_for_slug = combined if len(requirements) == 1 else requirements[0]
-        branch = default_branch(req_for_slug, issue_num=issue_ref, existing=existing)
+        branch = default_branch(
+            req_for_slug, issue_num=issue_ref, existing=existing,
+            slug_hint=issue_title or None,
+        )
 
     if len(requirements) > 1:
         print(f"Consolidating {len(requirements)} requirements into one PR (branch: {branch}).")

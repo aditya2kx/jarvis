@@ -385,5 +385,55 @@ class TestFindBranchForIssue(unittest.TestCase):
         self.assertEqual(buf.getvalue().strip(), "none")
 
 
+class TestFindTrackingIssueWorkflowStepShell(unittest.TestCase):
+    """Regression test for the `pr-merged-lifecycle.yml` 'Find tracking issue'
+    step: the shell body is extracted from the workflow YAML and executed
+    verbatim under bash, so a regression to the old `|| echo 'none'` form
+    (which double-appended onto find-issue's own "none" + exit-1, producing
+    the literal string "nonenone") is caught even though it lives in YAML,
+    not Python, and `yaml.safe_load` alone only proves the file parses."""
+
+    STEP_NAME = "Find tracking issue"
+
+    @classmethod
+    def _step_shell(cls) -> str:
+        import yaml
+        wf_path = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "pr-merged-lifecycle.yml"
+        wf = yaml.safe_load(wf_path.read_text())
+        for step in wf["jobs"]["lifecycle"]["steps"]:
+            if step.get("name") == cls.STEP_NAME:
+                return step["run"]
+        raise AssertionError(f"step {cls.STEP_NAME!r} not found in workflow")
+
+    def _run_step(self, branch: str) -> tuple[str, int]:
+        import subprocess
+        github_output = tempfile.NamedTemporaryFile(delete=False)
+        github_output.close()
+        env = dict(os.environ, BRANCH=branch, GITHUB_OUTPUT=github_output.name)
+        proc = subprocess.run(
+            ["bash", "-e", "-c", self._step_shell()],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            env=env, capture_output=True, text=True,
+        )
+        output = Path(github_output.name).read_text()
+        os.unlink(github_output.name)
+        return output, proc.returncode
+
+    def test_unresolvable_branch_writes_exactly_none(self):
+        output, rc = self._run_step("fix/i999999-does-not-exist-anywhere")
+        self.assertEqual(rc, 0, "step must never hard-fail (the #130 bug)")
+        self.assertIn("issue_number<<EOF\nnone\nEOF\n", output,
+                      "regression: old `|| echo 'none'` form double-appends onto "
+                      "find-issue's own \"none\", writing \"nonenone\"")
+
+    def test_slug_resolvable_branch_writes_the_issue_number(self):
+        # fix/i112-... resolves via find_tracking_issue_from_slug purely from
+        # the branch string plus a live `gh issue view 112` existence check —
+        # no mocking needed since #112 is a real (open) issue in this repo.
+        output, rc = self._run_step("fix/i112-would-love-to-see-a-chart")
+        self.assertEqual(rc, 0)
+        self.assertIn("issue_number<<EOF\n112\nEOF\n", output)
+
+
 if __name__ == "__main__":
     unittest.main()

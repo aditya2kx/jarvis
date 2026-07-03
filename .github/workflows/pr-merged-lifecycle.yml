@@ -60,8 +60,14 @@ jobs:
       - name: Find tracking issue
         id: issue
         run: |
+          # find-issue already prints exactly one token ("none" on a miss) and
+          # exits 1 on a miss — capture stdout unconditionally (`|| true`) so a
+          # non-zero exit never triggers a *second* fallback echo stacked on
+          # top of the script's own "none" (that double-write produced the
+          # literal string "nonenone" once `tr -d '[:space:]'` collapsed the
+          # newline between them).
           ISSUE_N="$(python3 scripts/post_merge_lifecycle.py find-issue \
-            --branch "$BRANCH" 2>/dev/null || echo 'none')"
+            --branch "$BRANCH" 2>/dev/null)" || true
           ISSUE_N="$(echo "$ISSUE_N" | tr -d '[:space:]')"
           if [ -z "$ISSUE_N" ]; then
             ISSUE_N="none"

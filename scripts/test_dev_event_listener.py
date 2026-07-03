@@ -480,6 +480,7 @@ class TestWatchAll(unittest.TestCase):
 
         with patch.object(L, "_gh_open_jarvis_issue_numbers", return_value=[101]), \
              patch.object(L, "_gh_open_pr_numbers", return_value=[101, 115]), \
+             patch.object(L, "_gh_recently_closed_pr_numbers", return_value=[]), \
              patch.object(L, "catch_up", side_effect=fake_catch_up), \
              patch("time.sleep", side_effect=KeyboardInterrupt):
             try:
@@ -488,6 +489,39 @@ class TestWatchAll(unittest.TestCase):
                 pass
 
         self.assertEqual(sorted(call_log), [101, 115])
+
+    def test_watch_all_includes_recently_closed_prs(self):
+        """Issue #140 defense-in-depth: a merged PR within the coverage
+        window is still polled even though it's no longer 'open'."""
+        call_log: list[int] = []
+
+        def fake_catch_up(n, **kwargs):
+            call_log.append(n)
+            return 0
+
+        with patch.object(L, "_gh_open_jarvis_issue_numbers", return_value=[101]), \
+             patch.object(L, "_gh_open_pr_numbers", return_value=[]), \
+             patch.object(L, "_gh_recently_closed_pr_numbers", return_value=[139]), \
+             patch.object(L, "catch_up", side_effect=fake_catch_up), \
+             patch("time.sleep", side_effect=KeyboardInterrupt):
+            try:
+                L.watch_all(interval=1)
+            except KeyboardInterrupt:
+                pass
+
+        self.assertEqual(sorted(call_log), [101, 139])
+
+
+class TestRecentlyClosedPrNumbers(unittest.TestCase):
+    def test_returns_parsed_numbers(self):
+        with patch("subprocess.check_output", return_value='[139, 138]'):
+            result = L._gh_recently_closed_pr_numbers()
+        self.assertEqual(result, [139, 138])
+
+    def test_returns_empty_on_gh_failure(self):
+        with patch("subprocess.check_output", side_effect=Exception("gh not found")):
+            result = L._gh_recently_closed_pr_numbers()
+        self.assertEqual(result, [])
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +568,109 @@ class TestEnsureDaemon(unittest.TestCase):
             plist_text = fake_plist.read_text()
             self.assertIn("watch-all", plist_text)
             self.assertIn("com.jarvis.devsignals", plist_text)
+
+
+# ---------------------------------------------------------------------------
+# Daemon health self-check
+# ---------------------------------------------------------------------------
+
+_PLIST_DICT_RUNNING = """{
+	"StandardOutPath" = "/x/logs/dev-daemon.log";
+	"LimitLoadToSessionType" = "Aqua";
+	"StandardErrorPath" = "/x/logs/dev-daemon-err.log";
+	"Label" = "com.jarvis.devsignals";
+	"OnDemand" = false;
+	"LastExitStatus" = 0;
+	"PID" = 95723;
+	"Program" = "/usr/bin/python3";
+};
+"""
+
+_PLIST_DICT_NOT_RUNNING = """{
+	"Label" = "com.jarvis.devsignals";
+	"OnDemand" = false;
+	"LastExitStatus" = 15;
+};
+"""
+
+
+class TestParseLaunchctlListOutput(unittest.TestCase):
+    """launchctl's `list <label>` output format has changed across macOS
+    versions — this daemon-health parser must handle both shapes."""
+
+    def test_parses_modern_plist_dict_running(self):
+        pid, last_exit = L._parse_launchctl_list_output(_PLIST_DICT_RUNNING)
+        self.assertEqual(pid, 95723)
+        self.assertEqual(last_exit, 0)
+
+    def test_parses_modern_plist_dict_not_running(self):
+        pid, last_exit = L._parse_launchctl_list_output(_PLIST_DICT_NOT_RUNNING)
+        self.assertIsNone(pid)
+        self.assertEqual(last_exit, 15)
+
+    def test_parses_legacy_tab_separated_running(self):
+        pid, last_exit = L._parse_launchctl_list_output("30632\t0\tcom.jarvis.devsignals\n")
+        self.assertEqual(pid, 30632)
+        self.assertEqual(last_exit, 0)
+
+    def test_parses_legacy_tab_separated_not_running(self):
+        pid, last_exit = L._parse_launchctl_list_output("-\t-15\tcom.jarvis.devsignals\n")
+        self.assertIsNone(pid)
+        self.assertEqual(last_exit, -15)
+
+    def test_empty_output_returns_none_none(self):
+        self.assertEqual(L._parse_launchctl_list_output(""), (None, None))
+
+
+class TestCheckDaemonHealth(unittest.TestCase):
+    def test_not_macos_returns_unhealthy_without_shelling_out(self):
+        with patch.object(L.sys, "platform", "linux"):
+            status = L.check_daemon_health()
+        self.assertFalse(status["healthy"])
+        self.assertEqual(status["platform"], "not_macos")
+
+    def test_not_loaded_is_unhealthy(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="")
+            status = L.check_daemon_health()
+        self.assertFalse(status["loaded"])
+        self.assertFalse(status["healthy"])
+
+    def test_loaded_with_live_pid_is_healthy(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=_PLIST_DICT_RUNNING)
+            status = L.check_daemon_health()
+        self.assertTrue(status["loaded"])
+        self.assertEqual(status["pid"], 95723)
+        self.assertTrue(status["healthy"])
+
+    def test_loaded_but_dead_pid_is_unhealthy(self):
+        """Reproduces the observed real-world state: loaded but no PID key
+        (last exit was a signal, e.g. 15/SIGTERM, and it hasn't restarted)."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=_PLIST_DICT_NOT_RUNNING)
+            status = L.check_daemon_health()
+        self.assertTrue(status["loaded"])
+        self.assertIsNone(status["pid"])
+        self.assertEqual(status["last_exit_status"], 15)
+        self.assertFalse(status["healthy"])
+
+    def test_auto_heal_reinstalls_when_unhealthy(self):
+        with patch("subprocess.run") as mock_run, \
+             patch.object(L, "ensure_daemon", return_value="installed") as mock_ensure:
+            mock_run.return_value = MagicMock(returncode=1, stdout="")
+            status = L.check_daemon_health(auto_heal=True)
+        self.assertTrue(status["auto_healed"])
+        mock_ensure.assert_called_once()
+
+    def test_no_auto_heal_when_healthy(self):
+        with patch("subprocess.run") as mock_run, \
+             patch.object(L, "ensure_daemon") as mock_ensure:
+            mock_run.return_value = MagicMock(returncode=0, stdout=_PLIST_DICT_RUNNING)
+            status = L.check_daemon_health(auto_heal=True)
+        self.assertTrue(status["healthy"])
+        self.assertNotIn("auto_healed", status)
+        mock_ensure.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1,10 +1,13 @@
 import { loadHealthScorecard } from "@/lib/kpi/health";
-import { pipelineRuns } from "@/lib/bq/queries";
+import { pipelineRuns, storeConfig } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { formatDate } from "@/lib/format";
 import { HealthScorecard } from "@/components/kpi/HealthScorecard";
+import { GoalsDrawer } from "@/components/drawers/GoalsDrawer";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { FEATURES } from "@/lib/config/features";
+import type { GoalKey } from "@/lib/bq/writes";
 
 export const revalidate = 600;
 
@@ -12,15 +15,19 @@ export default async function HomePage() {
   let weekly, monthly;
   let latestRunStatus: string | undefined;
   let latestRunDate: string | undefined;
+  let goals: Partial<Record<GoalKey, string>> = {};
   let error: string | undefined;
   try {
     [weekly, monthly] = await Promise.all([
       loadHealthScorecard("weekly"),
       loadHealthScorecard("monthly"),
     ]);
-    const runs = await pipelineRuns();
+    const [runs, config] = await Promise.all([pipelineRuns(), storeConfig(DEFAULT_STORE)]);
     latestRunStatus = runs[0]?.status;
     latestRunDate = runs[0]?.run_date;
+    goals = Object.fromEntries(
+      config.filter((r) => r.key.startsWith("goal_")).map((r) => [r.key as GoalKey, r.value]),
+    );
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
@@ -29,7 +36,10 @@ export default async function HomePage() {
     <div className="flex flex-col gap-4">
       <div className="flex items-baseline justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Home</h1>
-        <span className="text-sm text-muted-foreground">{DEFAULT_STORE}</span>
+        <div className="flex items-center gap-2">
+          {FEATURES.writeGoals ? <GoalsDrawer current={goals} /> : null}
+          <span className="text-sm text-muted-foreground">{DEFAULT_STORE}</span>
+        </div>
       </div>
 
       {error || !weekly || !monthly ? (
@@ -54,9 +64,8 @@ export default async function HomePage() {
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground">
-                Goals editor, training quick-add, and recognition bonuses land in M4 — this queue
-                will surface open restock dates, unset goals, and failed runs once those write
-                paths exist.
+                Use &quot;Edit goals&quot; above to set weekly/monthly targets — the scorecard
+                below tracks against them as soon as they&apos;re set.
               </p>
             </CardContent>
           </Card>

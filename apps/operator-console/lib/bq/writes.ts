@@ -133,3 +133,68 @@ export async function setConfig(store: string, key: string, value: string, by: s
     await refreshOrderReco(store);
   }
 }
+
+/** Goal keys editable from the Home health scorecard's Goals drawer. */
+export const GOAL_KEYS = [
+  "goal_net_sales_weekly",
+  "goal_net_sales_monthly",
+  "goal_labor_pct_max",
+  "goal_food_cost_pct_max",
+  "goal_speed_on_time_pct_min",
+  "goal_inventory_runway_days_min",
+] as const;
+export type GoalKey = (typeof GOAL_KEYS)[number];
+
+/** MERGE a single goal key — thin, named wrapper over setConfig (M4). */
+export async function upsertGoal(store: string, key: GoalKey, value: string, by: string): Promise<void> {
+  await setConfig(store, key, value, by);
+}
+
+/**
+ * MERGE a per-shift training mark — mirrors handler.py::_handle_training_set's
+ * exact statement (key store, employee_name, date) so the console and the
+ * Slack `training set` command converge on the same rows. `name` must
+ * already be the canonical employee name (the console has no alias
+ * resolution — pick from the known-employee list, don't free-type).
+ */
+export async function addTrainingShift(
+  store: string,
+  employeeName: string,
+  date: string,
+  by: string,
+  note = "",
+): Promise<void> {
+  await mutate(
+    `MERGE ${fq("training_shifts")} T
+     USING (SELECT @store AS store, @name AS employee_name, @date AS date) S
+     ON T.store = S.store AND T.employee_name = S.employee_name AND T.date = S.date
+     WHEN MATCHED THEN UPDATE SET note = @note, updated_at = CURRENT_TIMESTAMP(), updated_by = @by
+     WHEN NOT MATCHED THEN INSERT (store, employee_name, date, note, updated_at, updated_by)
+       VALUES (@store, @name, @date, @note, CURRENT_TIMESTAMP(), @by)`,
+    { store, name: employeeName, date: dateParam(date), note, by },
+  );
+}
+
+/**
+ * MERGE a manual recognition bonus (migration 033) — key
+ * (store, pay_period, employee). amount_cents is integer cents.
+ */
+export async function addRecognitionBonus(
+  store: string,
+  payPeriod: string,
+  employee: string,
+  amountCents: number,
+  reason: string,
+  by: string,
+): Promise<void> {
+  await mutate(
+    `MERGE ${fq("recognition_bonuses")} T
+     USING (SELECT @store AS store, @period AS pay_period, @employee AS employee) S
+     ON T.store = S.store AND T.pay_period = S.pay_period AND T.employee = S.employee
+     WHEN MATCHED THEN UPDATE SET amount_cents = @cents, reason = @reason,
+       updated_at = CURRENT_TIMESTAMP(), updated_by = @by
+     WHEN NOT MATCHED THEN INSERT (store, pay_period, employee, amount_cents, reason, updated_at, updated_by)
+       VALUES (@store, @period, @employee, @cents, @reason, CURRENT_TIMESTAMP(), @by)`,
+    { store, period: payPeriod, employee, cents: intParam(amountCents), reason, by },
+  );
+}

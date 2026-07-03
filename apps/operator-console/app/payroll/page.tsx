@@ -1,18 +1,34 @@
-import { payrollPeriod, reviewBonusDetail } from "@/lib/bq/queries";
+import { payrollPeriod, reviewBonusDetail, trainingShifts, recognitionBonuses } from "@/lib/bq/queries";
 import { formatDollars } from "@/lib/format";
 import { DataTable } from "@/components/tables/DataTable";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { TrainingQuickAdd } from "@/components/drawers/TrainingQuickAdd";
+import { RecognitionDrawer } from "@/components/drawers/RecognitionDrawer";
+import { FEATURES } from "@/lib/config/features";
+import { DEFAULT_STORE } from "@/lib/auth/identity";
 import type { ColumnDef } from "@tanstack/react-table";
-import type { PayrollPeriodRow, ReviewBonusDetailRow } from "@/lib/bq/queries";
+import type {
+  PayrollPeriodRow,
+  ReviewBonusDetailRow,
+  TrainingShiftRow,
+  RecognitionBonusRow,
+} from "@/lib/bq/queries";
 
 export const revalidate = 600;
 
 export default async function PayrollPage() {
   let periods: PayrollPeriodRow[] = [];
   let reviews: ReviewBonusDetailRow[] = [];
+  let training: TrainingShiftRow[] = [];
+  let recognitions: RecognitionBonusRow[] = [];
   let error: string | undefined;
   try {
-    [periods, reviews] = await Promise.all([payrollPeriod(2), reviewBonusDetail(30)]);
+    [periods, reviews, training, recognitions] = await Promise.all([
+      payrollPeriod(2),
+      reviewBonusDetail(30),
+      trainingShifts(DEFAULT_STORE, 30),
+      recognitionBonuses(DEFAULT_STORE, 2),
+    ]);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
@@ -38,6 +54,19 @@ export default async function PayrollPage() {
     { accessorKey: "rating", header: "Rating" },
     { accessorKey: "total_bonus", header: "Total bonus", meta: { format: { kind: "dollars" } } },
     { accessorKey: "employees_considered", header: "Employees" },
+  ];
+
+  const trainingColumns: ColumnDef<TrainingShiftRow>[] = [
+    { accessorKey: "date", header: "Date", meta: { format: { kind: "date" } } },
+    { accessorKey: "employee_name", header: "Employee" },
+    { accessorKey: "note", header: "Note" },
+  ];
+
+  const recognitionColumns: ColumnDef<RecognitionBonusRow>[] = [
+    { accessorKey: "pay_period", header: "Pay period" },
+    { accessorKey: "employee", header: "Employee" },
+    { accessorKey: "amount_cents", header: "Amount", meta: { format: { kind: "cents" } } },
+    { accessorKey: "reason", header: "Reason" },
   ];
 
   return (
@@ -93,6 +122,28 @@ export default async function PayrollPage() {
               Google review bonuses — last 30 days
             </h2>
             <DataTable columns={reviewColumns} data={reviews} />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-medium text-muted-foreground">
+                Training shifts — last 30 days
+              </h2>
+              {FEATURES.writeTraining ? <TrainingQuickAdd /> : null}
+            </div>
+            <DataTable columns={trainingColumns} data={training} />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-medium text-muted-foreground">
+                Recognition bonuses — last 2 periods
+              </h2>
+              {FEATURES.writeRecognition ? (
+                <RecognitionDrawer defaultPayPeriod={periods[0]?.period_start ?? ""} />
+              ) : null}
+            </div>
+            <DataTable columns={recognitionColumns} data={recognitions} />
           </div>
         </>
       )}

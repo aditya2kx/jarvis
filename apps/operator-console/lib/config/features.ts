@@ -8,8 +8,8 @@ export const FEATURES = {
   inventory: true,
   payroll: true,
   pipeline: true,
-  writeGoals: false,
-  writeTraining: false,
-  writeRecognition: false,
+  writeGoals: true,
+  writeTraining: true,
+  writeRecognition: true,
   writeRestock: true,
 } as const;

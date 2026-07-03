@@ -1,5 +1,5 @@
 import "server-only";
-import { fq, q } from "./client";
+import { fq, intParam, q } from "./client";
 
 // Column names/units verified against core/migrations/005_raw_parity.sql
 // (vw_model_labor_daily) and agents/bhaga/knowledge-base/DOMAIN.md — money
@@ -305,4 +305,43 @@ export interface NextDateRow {
 
 export function nextDates(): Promise<NextDateRow[]> {
   return q<NextDateRow>(`SELECT * FROM ${fq("vw_order_reco_next_dates")} ORDER BY slot`);
+}
+
+// training_shifts (migration 011-era table, written by /bhaga-cloud
+// `training set`/`training rm` and now also the console's quick-add — M4).
+export interface TrainingShiftRow {
+  employee_name: string;
+  date: string;
+  note: string | null;
+  updated_by: string | null;
+  updated_at: string | null;
+}
+
+export function trainingShifts(store: string, days: number): Promise<TrainingShiftRow[]> {
+  return q<TrainingShiftRow>(
+    `SELECT employee_name, date, note, updated_by, updated_at FROM ${fq("training_shifts")}
+     WHERE store=@store AND date >= DATE_SUB(CURRENT_DATE("America/Chicago"), INTERVAL @days DAY)
+     ORDER BY date DESC`,
+    { store, days },
+  );
+}
+
+// recognition_bonuses (migration 033) — manual per-employee bonus, distinct
+// from the automated vw_review_bonus_detail (migration 026).
+export interface RecognitionBonusRow {
+  pay_period: string;
+  employee: string;
+  amount_cents: number;
+  reason: string | null;
+  updated_by: string | null;
+  updated_at: string | null;
+}
+
+export function recognitionBonuses(store: string, periods = 4): Promise<RecognitionBonusRow[]> {
+  return q<RecognitionBonusRow>(
+    `SELECT pay_period, employee, amount_cents, reason, updated_by, updated_at
+     FROM ${fq("recognition_bonuses")} WHERE store=@store
+     ORDER BY pay_period DESC LIMIT @limit`,
+    { store, limit: intParam(periods * 20) },
+  );
 }

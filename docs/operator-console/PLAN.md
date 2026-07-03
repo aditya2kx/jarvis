@@ -77,15 +77,16 @@ Model routing per the cost playbook noted per phase.
 | **M1** ✅ | Foundation | Scaffold `apps/operator-console/` (Next.js 16, Tailwind v4, shadcn); `lib/bq/` data-access; IAP identity + store scoping; app shell (sidebar/topbar/store filter); Dockerfile; Cloud Run deploy workflow | `npm run build`/`test`/`lint` clean; `/home` renders shell + attempts a real `vw_model_labor_daily` read (falls back honestly without local ADC) | Sonnet |
 | **M2** ✅ | Read screens | Home (health scorecard from views + goals read), Sales, Labor, Forecast, Order Quality, Payroll & People, Pipeline Health, read-only Inventory cut | Verified: `build`/`test`/`lint` clean against **live BQ data** (local ADC); Sales/Labor cross-checked against a raw `vw_model_labor_daily` query (2026-07-02: net_sales $1,625.07, labor_pct 51.4% — matches page render); all 8 screens statically prerender with real numbers | Sonnet |
 | **M3** ✅ | Inventory + restock | Dual-date reco from `vw_order_reco_combined` (frozen cols, Estimated/Actuals); restock register/add-actuals/reset + capacity edit reusing handler contracts; Gemini CSV/photo import → confirm | Verified **live against prod BQ** (not just unit): `submitRestock()` run end-to-end against a disposable far-future test date — schedule MERGE, actuals replace-converge (2nd upload replaces, doesn't accumulate), `refreshOrderReco` recompute, cleanup confirmed empty; `build`/`test`/`lint` clean | Sonnet + Opus (parse) |
-| **M4** | Write-backs | Goals editor → `store_config` (weekly+monthly); training quick-add → `training_shifts`; recognition bonus → new `recognition_bonuses` table (migration + reconciliation) | Writes idempotent, reflected on refresh; migration applies clean; `verify.py --full` green | Sonnet |
+| **M4** ✅ | Write-backs | Goals editor → `store_config` (weekly+monthly); training quick-add → `training_shifts`; recognition bonus → new `recognition_bonuses` table (migration `033_recognition_bonuses.sql`, applied) | Verified **live against prod BQ**: migration applied clean (`ensure_schema()` → `['033_recognition_bonuses']`); all 3 writes (`upsertGoal`, `addTrainingShift`, `addRecognitionBonus`) run end-to-end against disposable test rows — MERGE converges on re-submit, no dupes, cleanup confirmed empty; `build`/`test`/`lint` clean | Sonnet |
 | **M5** | Parity + cutover | Grafana coexistence check, evidence screenshots, docs (RUNBOOK/README/PROGRESS), flip feature flags | Parity matrix green; docs fresh; PR §4 evidence complete | Sonnet |
 
-### New migration required (M4)
+### Migration applied (M4)
 
 `recognition_bonuses` — key `(store, pay_period, employee)`; columns `amount_cents`
 (integer cents), `reason`, `updated_by`, `updated_at`; reconciled against the ADP
-bonus earnings line. Mirrors `training_shifts` MERGE semantics. Full DDL +
-step-by-step in [`EXECUTION.md`](EXECUTION.md) §M4.
+bonus earnings line. Mirrors `training_shifts` MERGE semantics. DDL in
+[`core/migrations/033_recognition_bonuses.sql`](../../core/migrations/033_recognition_bonuses.sql),
+applied to `jarvis-bhaga-prod.bhaga` 2026-07-03.
 
 > **Step-by-step implementation** (exact files, commands, DDL, per-step verify) is
 > in [`EXECUTION.md`](EXECUTION.md) — written for a weaker/cheaper model to execute.

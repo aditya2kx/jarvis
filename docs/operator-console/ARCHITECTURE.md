@@ -1,0 +1,277 @@
+# Palmetto Operator Console — Architecture
+
+> **Status:** Design / alignment draft (pre-milestones). This is the high-level
+> component + technology design for the website that replaces the Grafana BHAGA
+> Analytics dashboard. Milestones and execution plan follow **after** we align
+> on this doc. See [`PLAN.md`](PLAN.md) for the living project plan.
+
+The console is a single operator-facing web app (title: **Palmetto · Texas —
+Operator Console**) that unifies data currently fragmented across Square, ADP,
+ClickUp, Google, and Grafana into one navigable surface, and adds first-class
+**write-backs** (goals, training shifts, recognition bonuses, restock schedule /
+actuals) that today live only in Slack slash-commands or nowhere.
+
+---
+
+## 1. Design principles
+
+1. **The app is a thin, read-mostly skin over the existing BHAGA warehouse.** All
+   analytics already exist as `jarvis-bhaga-prod.bhaga.*` BigQuery views. The app
+   does **no** metric math — it renders views, exactly like Grafana does today
+   (`scripts/check_grafana_no_logic.py` philosophy). New numbers = new BQ view, not
+   app logic.
+2. **Every write goes through the sanctioned MERGE layer.** Writes reuse the exact
+   idempotent BQ MERGE / replace-per-key patterns already in
+   `cloud/webhook/handler.py` (training shifts, `store_config`, restock schedule /
+   orders). The app is another caller of the same contracts — never a new,
+   divergent write path.
+3. **Prod runs on hosted infra.** Cloud Run + IAP + BigQuery + Secret Manager.
+   No laptop runtime. (Matches the repo-wide convention.)
+4. **Config-driven, multi-store from day one.** `store` is a first-class filter;
+   goals and capacity live in `store_config`, never hardcoded.
+5. **Grafana coexists during migration.** The dashboard stays live until the
+   console reaches parity; both read the same views, so they can't diverge.
+
+---
+
+## 2. Technology stack (with trade-offs)
+
+### 2.1 Framework
+
+| Option | Pros | Cons | Verdict |
+|---|---|---|---|
+| **Next.js 15 (App Router, RSC)** | Server Components query BQ directly (no separate API tier); server actions for writes; one deployable; great DX | React Server Component learning curve | **Chosen** |
+| Remix | Great data loaders/mutations | Smaller ecosystem for our chart/table libs | No |
+| Vite SPA + separate API | Clean split | Two deploy units, must hand-build API + auth plumbing | No |
+
+**Why:** RSC lets each screen fetch its BQ views on the server (credentials never
+reach the browser), and **server actions** give us typed, CSRF-safe write-backs
+without a bespoke REST layer.
+
+### 2.2 UI, charts, tables
+
+| Concern | Choice | Alternatives considered |
+|---|---|---|
+| Component kit | **shadcn/ui + Tailwind v4** | MUI (heavier), Chakra |
+| Charts | **Recharts** via shadcn `Chart` | visx (lower-level), ECharts, Tremor |
+| Tables (sortable, frozen cols) | **TanStack Table v8** | AG Grid (heavy/licensed) |
+| Icons | **lucide-react** | — |
+
+TanStack Table's column pinning covers the Order Assistant "freeze Item / Current
+Qty / Avg per day while scrolling the date column-groups" requirement (mirrors
+Grafana panel 83's `frozenColumns.left = 3`).
+
+### 2.3 Data, auth, infra
+
+| Concern | Choice | Notes |
+|---|---|---|
+| Warehouse client | **`@google-cloud/bigquery`** (server-only) | Parameterized queries; ADC on Cloud Run |
+| Reads | RSC + short-TTL cache (`revalidate`) | Views refresh nightly; 5–15 min cache is fine |
+| Client interactivity | **TanStack Query** (only where needed) | Most screens are static RSC |
+| Writes | **Next.js server actions** → BQ MERGE | Same contracts as `handler.py` |
+| Auth | **Google IAP** in front of Cloud Run | Restrict to `@mypalmetto.co`; app trusts `X-Goog-Authenticated-User-Email` |
+| Secrets | **Secret Manager** + ADC | No secrets in image/git |
+| LLM ingestion | Server route → Gemini/Claude (vision) | CSV/photo → structured rows → operator confirm |
+| Hosting | **Cloud Run** (Next.js `output: standalone` container) | Autoscale to zero |
+| CI/CD | **GitHub Actions** (build → deploy) | Mirrors existing `deploy.yml` |
+
+### 2.4 Proposed repo location
+
+```
+apps/operator-console/          # Next.js app (new)
+  app/                          # App Router routes (one dir per screen)
+  components/                   # shared UI (charts, tables, KPI, drawers)
+  lib/bq/                       # BigQuery data-access layer (query fns per view)
+  lib/actions/                  # server actions (write-backs)
+  lib/auth/                     # IAP identity extraction + store scoping
+  Dockerfile
+docs/operator-console/          # this doc + PLAN.md
+```
+
+---
+
+## 3. System context
+
+How the console sits in the existing BHAGA data flow. The **left half already
+exists** (nightly pipeline → BQ). The console is the new read/write client on the
+right.
+
+```mermaid
+flowchart LR
+  subgraph Sources
+    SQ[Square POS]
+    ADP[ADP RUN]
+    KDS[KDS times]
+    CU[ClickUp closing form]
+    GR[Google reviews]
+  end
+  subgraph Pipeline["Nightly pipeline (Cloud Run) — existing"]
+    DR[daily_refresh.py]
+    OR[order_reco.refresh]
+  end
+  subgraph BQ["BigQuery: jarvis-bhaga-prod.bhaga — existing"]
+    V[(analytics views vw_*)]
+    T[(state tables:\nstore_config, training_shifts,\ninventory_restock_*, inventory_order_reco)]
+  end
+  FS[(Firestore:\nrun state / locks)]
+
+  SQ & ADP & KDS & CU & GR --> DR --> V
+  DR --> OR --> T
+  DR <--> FS
+
+  subgraph Console["Operator Console (Cloud Run + IAP) — NEW"]
+    RSC[Server Components\nread]
+    ACT[Server Actions\nwrite]
+  end
+  IAP{{Google IAP\n@mypalmetto.co}}
+  OP((Operator)) --> IAP --> Console
+  V --> RSC
+  T --> RSC
+  FS -. freshness .-> RSC
+  ACT -->|idempotent MERGE| T
+  ACT -.triggers.-> OR
+```
+
+**Key point:** the console does not replace the pipeline or the Slack command —
+it's a parallel, richer client on the same tables. A restock uploaded in the app
+and one uploaded via `/bhaga-cloud restock` converge on the same rows.
+
+---
+
+## 4. Read architecture
+
+Each screen is a route whose Server Component calls typed query functions in
+`lib/bq/` that `SELECT * FROM vw_*` (plus store/date params). No math in the app.
+
+```mermaid
+flowchart TD
+  Screen[Route / Server Component] --> Q[lib/bq query fn]
+  Q --> C{cache\nrevalidate 5-15m}
+  C -->|miss| BQ[(BigQuery view)]
+  C -->|hit| R[rows]
+  BQ --> R --> Screen --> UI[shadcn Chart / TanStack Table]
+```
+
+### Screen → data source → write-back matrix
+
+| Screen | Reads (BQ `vw_*` / tables) | Write-backs |
+|---|---|---|
+| **Home** | labor/sales/orders (`vw_model_labor_daily`), speed (`vw_order_quality_daily`), inventory risk (`vw_inventory_order_assistant`), goals (`store_config`), freshness (Firestore + `refresh_date`) | Goals → `store_config` |
+| **Sales** | `vw_model_labor_daily`, `square_item_daily` | — |
+| **Labor** | `vw_model_labor_daily` / `_weekly` | — |
+| **Forecast** | `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` | — |
+| **Order Quality** | `vw_order_quality_daily`, `vw_kds_order_quality_by_source_daily` | — |
+| **Payroll & People** | `vw_model_payroll_period` (+ per-review), `training_shifts` | `training_shifts`, **recognition bonuses (new table)**, `employee_aliases` |
+| **Inventory / Ordering** | `vw_order_assistant_table`, `vw_inventory_order_assistant`, `vw_order_reco_combined`, `vw_order_reco_next_dates`, `inventory_restock_schedule/orders` | `inventory_restock_schedule`, `inventory_restock_orders` (+ trigger `refresh_order_reco`), `order_reco_max_tubs` → `store_config` |
+| **Pipeline Health** | Firestore run state, per-view `refresh_date`, `status.py` logic | (optional) trigger refresh |
+
+---
+
+## 5. Write architecture
+
+Writes are **server actions** that call the same idempotent contracts as
+`cloud/webhook/handler.py`. Nothing is written to BQ until the operator confirms.
+
+```mermaid
+flowchart LR
+  UI[Drawer / form] --> SA[Server Action]
+  SA --> AU{IAP identity\n= updated_by}
+  AU --> M[BQ MERGE / replace-per-key]
+  M --> OK[revalidate screen]
+  SA -. restock/config .-> RR[refresh_order_reco]
+```
+
+Reused write contracts (already proven in `handler.py`):
+
+- **Training shift** → MERGE into `training_shifts` (key: store, employee, date).
+- **Goals / capacity** → MERGE into `store_config` (key: store, key). Capacity =
+  `order_reco_max_tubs`; changing it re-runs `refresh_order_reco`.
+- **Restock schedule** → MERGE into `inventory_restock_schedule` (key: store, date).
+- **Restock actuals** → **replace-per-date**: DELETE `inventory_restock_orders`
+  for (store, date), INSERT parsed rows, then `refresh_order_reco`.
+- **Reset to estimated** → DELETE actuals for (store, date), then refresh.
+- **Recognition bonus** → *new* MERGE table (mirror `training_shifts`) — no write
+  path exists on `main` yet (flagged in PLAN.md).
+
+### 5.1 LLM restock import (CSV or photo) — the superset of the Slack modal
+
+The Slack `/bhaga-cloud restock` modal accepts a **CSV** (`base,quantity`). The
+console generalizes this to **CSV or a photo of the delivery slip**, parsed by an
+LLM, with a mandatory human confirm step before any BQ write.
+
+```mermaid
+sequenceDiagram
+  actor Op as Operator
+  participant UI as Import drawer
+  participant API as Server route (LLM)
+  participant BQ as BigQuery
+  participant RR as refresh_order_reco
+  Op->>UI: upload CSV / photo + pick date + action
+  UI->>API: file bytes
+  API->>API: CSV → skills/inventory_parse rules\nphoto → vision LLM → rows+confidence
+  API-->>UI: parsed rows (editable, per-row confidence)
+  Op->>UI: review / correct / Confirm
+  UI->>BQ: replace-per-date INSERT (inventory_restock_orders)
+  BQ->>RR: recompute dual-date reco
+  RR-->>UI: updated recommendation
+```
+
+---
+
+## 6. Order Assistant coverage (dual-date model)
+
+The Inventory / Ordering screen must render the **dual-date** recommendation from
+`vw_order_reco_combined`, not a single list. Layout:
+
+- **Frozen identity columns** (left, pinned): `Item`, `Current Qty`, `Avg per day`.
+- **Per-date column group ×2** (the next two future registered delivery dates from
+  `vw_order_reco_next_dates`): `On Hand at Restock`, `Order Tubs`,
+  `Order Weight (lbs)`, `After Restock`, `Days Left After Restock`, and a
+  **Source badge** (`Estimated` vs `Actuals`).
+- **TOTAL row** per date incl. pallet weight (`Σ weight + 50·CEIL(Σtubs/40)`).
+- **Restock schedule panel** with the three operator actions from the Slack modal:
+  **Register date (estimated)**, **Add order (actuals)** (CSV/photo → §5.1),
+  **Reset to estimated**.
+- **Capacity control** bound to `order_reco_max_tubs` (default 120); editing it
+  recomputes the recommendation.
+- **Days of cover** chart from `vw_inventory_order_assistant` (already designed).
+
+Freshness for the closing-form source (`inventory_closing_daily` /
+`vw_inventory_base_latest_daily`) and the restock schedule is surfaced on
+**Pipeline Health**.
+
+---
+
+## 7. Auth & deployment
+
+```mermaid
+flowchart LR
+  Op((Operator)) --> LB[HTTPS LB]
+  LB --> IAP{{Google IAP}}
+  IAP -->|@mypalmetto.co only| CR[Cloud Run: operator-console]
+  CR --> BQ[(BigQuery)]
+  CR --> SM[(Secret Manager)]
+  CR --> FS[(Firestore)]
+  GH[GitHub Actions] -->|build + deploy| CR
+```
+
+- **IAP** enforces Google SSO; the app reads the verified email header for
+  `updated_by` on every write and to scope store access.
+- **Cloud Run** service account has least-privilege BQ (dataset-scoped) +
+  Firestore read + Secret Manager access via ADC.
+- **CI**: build the standalone container, push to Artifact Registry, deploy — a
+  new workflow modeled on the existing `deploy.yml`.
+
+---
+
+## 8. Open decisions (for alignment)
+
+1. **Repo location** — `apps/operator-console/` (proposed) vs a separate repo.
+2. **Recognition-bonus storage** — new `recognition_bonuses` MERGE table + ADP
+   bonus reconciliation (no write path exists today).
+3. **LLM provider for photo parsing** — Gemini (native GCP) vs Claude.
+4. **One-shot PR vs staged** — you asked for one-shot; §PLAN captures how we keep
+   it reviewable (feature-flag unfinished screens, land read-only first internally).
+5. **Goals model granularity** — per-store weekly + monthly targets in
+   `store_config` (keys like `goal_net_sales_weekly`).
+```

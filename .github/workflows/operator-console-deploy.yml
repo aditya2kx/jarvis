@@ -1,0 +1,81 @@
+name: Build and Deploy Operator Console
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/operator-console/**"
+      - ".github/workflows/operator-console-deploy.yml"
+
+env:
+  PROJECT_ID: jarvis-bhaga-prod
+  REGION: us-central1
+  REGISTRY: us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images
+  SERVICE: operator-console
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build image
+        working-directory: apps/operator-console
+        run: |
+          docker build -t ${{ env.REGISTRY }}/operator-console:${{ github.sha }} \
+                       -t ${{ env.REGISTRY }}/operator-console:latest .
+
+      - name: Push image
+        run: |
+          docker push ${{ env.REGISTRY }}/operator-console:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/operator-console:latest
+
+      # Apply pending BQ migrations (e.g. 033_recognition_bonuses) before the
+      # new revision starts serving. Idempotent — no-op when already applied.
+      - name: Apply BQ schema migrations
+        run: |
+          pip install --quiet google-cloud-bigquery google-auth
+          BHAGA_DATASTORE=bigquery python3 -c \
+            "from core.datastore import ensure_schema; applied = ensure_schema(); print('applied:', applied or 'none')"
+
+      # --no-allow-unauthenticated + IAP restricts access to the
+      # @mypalmetto.co group; least-privilege runtime SA (BQ dataUser/jobUser
+      # on `bhaga`, Secret Manager accessor) is provisioned once, not here.
+      - name: Deploy to Cloud Run (direct IAP)
+        run: |
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image ${{ env.REGISTRY }}/operator-console:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --no-allow-unauthenticated \
+            --iap \
+            --memory 512Mi \
+            --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga
+
+      - name: Record deploy event (BQ)
+        run: |
+          pip install --quiet google-cloud-bigquery google-auth
+          python3 scripts/deploy_events.py record \
+            --agent bhaga \
+            --unit operator-console \
+            --sha "${{ github.sha }}" \
+            --kind deploy \
+            --actor "${{ github.actor }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+          || echo "[deploy_events] WARNING: record failed (non-fatal)"

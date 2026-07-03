@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { formatCents, formatPct, formatNumber, formatDate } from "@/lib/format";
+import { formatCents, formatDollars, formatPct, formatNumber, formatDate } from "@/lib/format";
+
+describe("formatDollars", () => {
+  it("formats a dollars-and-cents float as USD (vw_model_labor_daily shape)", () => {
+    expect(formatDollars(1234.5)).toBe("$1,234.50");
+  });
+  it("handles null/undefined as em dash", () => {
+    expect(formatDollars(null)).toBe("—");
+  });
+});
 
 describe("formatCents", () => {
-  it("formats integer cents as USD", () => {
+  it("formats integer cents as USD (recognition_bonuses shape)", () => {
     expect(formatCents(123456)).toBe("$1,234.56");
   });
   it("handles null/undefined as em dash", () => {

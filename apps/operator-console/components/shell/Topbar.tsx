@@ -1,15 +1,34 @@
 import { StoreFilter } from "./StoreFilter";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
+import { pipelineRuns } from "@/lib/bq/queries";
+import { cn } from "@/lib/utils";
 
-// Pipeline-health status is wired to vw_pipeline_runs / vw_source_pulls in M2
-// (see docs/operator-console/EXECUTION.md §4 M2); "unknown" is the honest
-// default until that read path exists.
+async function PipelineDot() {
+  let status: string | undefined;
+  try {
+    status = (await pipelineRuns())[0]?.status;
+  } catch {
+    status = undefined; // honest "unknown" without local ADC — never fake a color
+  }
+  const color =
+    status === "success" ? "bg-emerald-500" : status ? "bg-red-500" : "bg-muted-foreground/40";
+  return (
+    <span
+      title={`Last pipeline run: ${status ?? "unknown"}`}
+      className={cn("size-2 rounded-full", color)}
+    />
+  );
+}
+
 export function Topbar({ operatorEmail }: { operatorEmail?: string }) {
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-background px-4">
-      <span className="text-sm font-semibold tracking-tight">
-        Palmetto · Texas — Operator Console
-      </span>
+      <div className="flex items-center gap-2">
+        <PipelineDot />
+        <span className="text-sm font-semibold tracking-tight">
+          Palmetto · Texas — Operator Console
+        </span>
+      </div>
       <div className="flex items-center gap-3 text-sm text-muted-foreground">
         <StoreFilter store={DEFAULT_STORE} />
         {operatorEmail ? <span className="hidden sm:inline">{operatorEmail}</span> : null}

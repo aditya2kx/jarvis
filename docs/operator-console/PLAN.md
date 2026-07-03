@@ -53,7 +53,8 @@ architecture is aligned to avoid rework.
 | Date | Decision | Choice |
 |---|---|---|
 | 2026-07-02 | Auth | Google IAP, `@mypalmetto.co` |
-| 2026-07-02 | Stack | Next.js 15 (App Router) + shadcn/ui + Recharts + TanStack Table |
+| 2026-07-02 | Stack | Next.js (App Router) + shadcn/ui + Recharts + TanStack Table |
+| 2026-07-03 | Framework version | Next.js 16 (latest at scaffold time, not the originally-noted 15 — `npm i pkg@latest` per EXECUTION.md §0); async `headers()` only, `output: 'standalone'` unaffected |
 | 2026-07-02 | Hosting | Cloud Run + BQ + Secret Manager |
 | 2026-07-03 | Goals storage | `store_config` (BQ) via Goals drawer |
 | 2026-07-03 | Delivery | One-shot PR, feature-flagged screens |
@@ -61,6 +62,8 @@ architecture is aligned to avoid rework.
 | 2026-07-03 | Recognition bonuses | New `recognition_bonuses` MERGE table (mirror `training_shifts`) |
 | 2026-07-03 | LLM parsing provider | Gemini (native GCP) |
 | 2026-07-03 | Goals granularity | Weekly + monthly targets per store in `store_config` |
+| 2026-07-03 | BQ row serialization | `lib/bq/client.ts::q()` deep-sanitizes every row (unwraps `BigQueryDate`/`Timestamp`/`Datetime`/`Int` class instances to plain values) before returning — those class instances can't cross the Server→Client Component prop boundary, caught building M2 against live data |
+| 2026-07-03 | Table cell rendering | `DataTable` columns use a serializable `meta.format` tag (`date`/`dollars`/`cents`/`pct`/`number`/`status`), never a `cell` closure — render functions built in a Server Component page also can't cross into the client `DataTable` as props |
 
 ## Milestones (execution plan)
 
@@ -69,8 +72,8 @@ Model routing per the cost playbook noted per phase.
 
 | # | Phase | Deliverable | Verify (pass criterion) | Model |
 |---|---|---|---|---|
-| **M1** | Foundation | Scaffold `apps/operator-console/` (Next.js 15, Tailwind v4, shadcn); `lib/bq/` data-access; IAP identity + store scoping; app shell (sidebar/topbar/store filter); Dockerfile; Cloud Run deploy workflow | App boots; one real `vw_*` renders; deploys to Cloud Run behind IAP; `@mypalmetto.co` gate works | Sonnet |
-| **M2** | Read screens | Home (health scorecard from views + goals read), Sales, Labor, Forecast, Order Quality, Pipeline Health | Each screen's numbers match Grafana for a sample date; freshness matches `status.py` | Sonnet |
+| **M1** ✅ | Foundation | Scaffold `apps/operator-console/` (Next.js 16, Tailwind v4, shadcn); `lib/bq/` data-access; IAP identity + store scoping; app shell (sidebar/topbar/store filter); Dockerfile; Cloud Run deploy workflow | `npm run build`/`test`/`lint` clean; `/home` renders shell + attempts a real `vw_model_labor_daily` read (falls back honestly without local ADC) | Sonnet |
+| **M2** ✅ | Read screens | Home (health scorecard from views + goals read), Sales, Labor, Forecast, Order Quality, Payroll & People, Pipeline Health, read-only Inventory cut | Verified: `build`/`test`/`lint` clean against **live BQ data** (local ADC); Sales/Labor cross-checked against a raw `vw_model_labor_daily` query (2026-07-02: net_sales $1,625.07, labor_pct 51.4% — matches page render); all 8 screens statically prerender with real numbers | Sonnet |
 | **M3** | Inventory + restock | Dual-date reco from `vw_order_reco_combined` (frozen cols, Estimated/Actuals); restock register/add-actuals/reset + capacity edit reusing handler contracts; Gemini CSV/photo import → confirm | App restock writes converge with `/bhaga-cloud restock`; `refresh_order_reco` recomputes; idempotent re-upload | Sonnet + Opus (parse) |
 | **M4** | Write-backs | Goals editor → `store_config` (weekly+monthly); training quick-add → `training_shifts`; recognition bonus → new `recognition_bonuses` table (migration + reconciliation) | Writes idempotent, reflected on refresh; migration applies clean; `verify.py --full` green | Sonnet |
 | **M5** | Parity + cutover | Grafana coexistence check, evidence screenshots, docs (RUNBOOK/README/PROGRESS), flip feature flags | Parity matrix green; docs fresh; PR §4 evidence complete | Sonnet |

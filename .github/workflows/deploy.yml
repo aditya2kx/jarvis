@@ -79,12 +79,21 @@ jobs:
       - name: Deploy webhook (Cloud Run Service)
         if: ${{ !inputs.rollback_sha }}
         run: |
+          # --cpu-boost gives 2x vCPU only during instance startup ($0 extra
+          # cost, min-instances stays 0) — mitigates the cold-start
+          # operation_timeout Slack sees on the first /bhaga-cloud command
+          # after idle (init_app() eagerly builds Firestore+BigQuery clients
+          # on import, which can exceed Slack's 3s ack deadline on a cold
+          # start). Persists across rollback (line below doesn't reset it —
+          # `gcloud run services update` only touches explicitly-passed
+          # flags, so a rollback keeps whatever the last full deploy set).
           gcloud run services update bhaga-webhook \
             --image ${{ env.REGISTRY }}/bhaga-webhook:${{ github.sha }} \
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT_ID }} \
             --no-cpu-throttling \
-            --memory 512Mi
+            --memory 512Mi \
+            --cpu-boost
 
       # Apply pending BQ migrations from core/migrations/ before recording the
       # deploy. Idempotent — no-op when already applied. Keeps schema in sync

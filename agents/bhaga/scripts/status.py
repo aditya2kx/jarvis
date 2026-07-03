@@ -84,7 +84,7 @@ GRAFANA_DASHBOARD_URL = "https://steadyangelfish2985.grafana.net/d/bhaga-analyti
 
 SHEET_TABS: tuple[str, ...] = ("daily", "tip_alloc_daily")
 
-CheckMode = Literal["exact", "iso_week", "period_coverage", "date_prefix"]
+CheckMode = Literal["exact", "iso_week", "period_coverage", "date_prefix", "refreshed_recently"]
 
 
 @dataclass(frozen=True)
@@ -198,6 +198,19 @@ GRAFANA_VIEWS: list[Target] = [
     # date_column is the "YYYY-MM-DD HH:MM" display string (matches panel 79's
     # original output exactly) — date_prefix mode compares only the date part.
     Target("vw_order_assistant_table", "Reported", "date_prefix"),
+    # migration 031 (Issue #137, Option D): dual-date Order Recommendation is
+    # MATERIALIZED into inventory_order_reco (nightly + on restock submit + on
+    # order_reco_max_tubs change -- see refresh_order_reco). tvf_order_reco (029)
+    # is superseded. slot1/slot2 are no longer read by any panel (combined
+    # into vw_order_reco_combined / panel 83, migration 032) but stay listed
+    # here -- harmless, and useful if a panel ever splits back out.
+    # refresh_date is a recompute timestamp, not a business date -- "refreshed_recently"
+    # mode checks recency against real now, not the --date argument.
+    Target("vw_order_reco_slot1", "refresh_date", "refreshed_recently"),
+    Target("vw_order_reco_slot2", "refresh_date", "refreshed_recently"),
+    # migration 032 (Issue #137 iteration): panel 83 combines both slots into
+    # one row per item with per-date Source (Estimated/Actuals) columns.
+    Target("vw_order_reco_combined", "refresh_date", "refreshed_recently"),
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are
@@ -209,11 +222,6 @@ KNOWN_UNCHECKED_GRAFANA_REFS: frozenset[str] = frozenset({
     "model_forecast_daily",    # panels 72/75 — Forecast vs Actual charts query the
                                # table directly (LEFT JOIN vw_model_labor_daily) so
                                # future forecast rows appear alongside historical actuals.
-    "tvf_order_reco",          # migration 029 (Issue #126): panel 81's water-fill order
-                               # recommendation, a parameterized BQ table function (not a
-                               # vw_* view) so the oa_ship_days/oa_max_tubs Grafana
-                               # variables keep working. No date_column — freshness is
-                               # covered by its source, vw_inventory_order_assistant.
 })
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -277,6 +285,20 @@ def _run_bq_target(t: Target, date: datetime.date, layer: str = "bq") -> CheckRe
             f" WHERE {t.date_column} LIKE '{date.isoformat()}%'"
         )
         note = "prefix match"
+    elif t.mode == "refreshed_recently":
+        # For recompute-triggered tables (e.g. inventory_order_reco, refreshed
+        # nightly + on every restock submit / order_reco_max_tubs change) the
+        # date_column is a recompute timestamp, not a business date -- comparing
+        # it against `date` (yesterday, Chicago) would false-fail whenever the
+        # last recompute landed "today". Check recency against real now instead,
+        # ignoring the `date` argument entirely.
+        sql = (
+            f"SELECT COUNT(*) AS c, MAX({t.date_column}) AS m"
+            f" FROM {fq}"
+            f" WHERE TIMESTAMP({t.date_column}) >="
+            f" TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 2 DAY)"
+        )
+        note = "refreshed within 2 days"
     else:
         raise ValueError(f"Unknown CheckMode: {t.mode!r}")
 

@@ -72,7 +72,7 @@ class TestDiffRows(unittest.TestCase):
 
 class TestOaPanelIds(unittest.TestCase):
     def test_only_order_assistant_panels_are_waived(self):
-        self.assertEqual(cp.OA_PANEL_IDS, frozenset({79, 81}))
+        self.assertEqual(cp.OA_PANEL_IDS, frozenset({79, 83}))
 
 
 if __name__ == "__main__":

@@ -176,6 +176,8 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
 | `SLACK_SIGNING_SECRET` | secret → `slack-signing-secret` |
 | `SLACK_BOT_TOKEN` | secret → `slack-bot-token` |
 
+**Cold-start mitigation (`--cpu-boost`, Issue #137):** `bhaga-webhook` runs with `min-instances=0` (no idle cost), so a request after any idle period is a cold start. `init_app()` eagerly builds Firestore + BigQuery clients at import time, and Slack's slash-command/interaction ack deadline is 3s — a cold start can blow that deadline and surface to the operator as a Slack `operation_timeout` (seen 2026-07-02 on `/bhaga-cloud restock`). Fix: `deploy.yml`'s `gcloud run services update bhaga-webhook` passes `--cpu-boost`, which gives the instance 2x vCPU only during startup — **$0 extra cost**, `min-instances` stays 0. Rejected alternative: `--min-instances=1` eliminates cold starts entirely but keeps an instance warm 24/7, which is a real recurring cost the operator explicitly didn't want. `--cpu-boost` persists across a rollback (`gcloud run services update` only touches explicitly-passed flags, and the rollback step doesn't reset it). Verify: `gcloud run services describe bhaga-webhook --region us-central1 --format 'value(spec.template.metadata.annotations["run.googleapis.com/startup-cpu-boost"])'` should print `true`.
+
 ---
 
 ## 4. Scheduler
@@ -1556,6 +1558,23 @@ than failing with no local files in the ephemeral Cloud Run container).
 
 Pipeline reads `store_config` via `core.store_config.get_config(store, key)` — BQ first, Sheet as
 fallback while the BQ table is being seeded. After seeding, Sheet config becomes display-only.
+
+> **`order_reco_max_tubs` (default `120`, Issue #137)** — the freezer capacity ceiling for the
+> dual-date Order Recommendation (Grafana panels 81/82). Change it with
+> `/bhaga-cloud config set order_reco_max_tubs <N>` — expected to change *seldomly* (only when the
+> shop's freezer capacity itself changes, e.g. a bigger freezer), never per-day. Setting it triggers
+> an immediate recompute (`cloud/webhook/handler.py::_handle_config_set` dispatches
+> `_refresh_order_reco` async). The recommendation is a MATERIALIZED table, `bhaga.inventory_order_reco`
+> — see `agents/bhaga/knowledge-base/DOMAIN.md` § migration 031 for why (BQ query-planning complexity
+> limit) and `.cursor/rules/bhaga.mdc` for the full invariant. It is recomputed by
+> `core.order_reco.refresh_order_reco()` from **three** triggers: (1) the nightly `daily_refresh.py`
+> step `refresh_order_reco` (runs after `ingest_inventory`, non-fatal), (2) the restock modal's
+> `view_submission` handler after any schedule/orders write, and (3) this config-set. If the tables
+> on the dashboard look stale, check which of the three last ran via
+> `python3 -m agents.bhaga.scripts.status --store palmetto` (nightly step) or re-trigger manually:
+> ```bash
+> BHAGA_DATASTORE=bigquery python3 -c "from core.order_reco import refresh_order_reco; refresh_order_reco('palmetto')"
+> ```
 
 > **`data_window_end` is DERIVED — never stored in `store_config`.** It is computed
 > live as `MAX(square_transactions.date_local)` via `core.store_config.resolve_data_window_end()`.

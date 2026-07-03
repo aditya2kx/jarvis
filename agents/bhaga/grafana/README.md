@@ -52,8 +52,8 @@ print('token found' if get_api_token('steadyangelfish2985') else 'MISSING — se
 | `evidence.py` | Runs `verify_panels.py` + `compare_panels.py` + `capture_screenshot.py` in one command and prints a paste-ready PR §4 markdown block. | The one command to run before opening/updating a PR that touches Grafana. |
 
 ```bash
-# One-shot evidence for a PR that changed panels 79 and 81
-python3 agents/bhaga/grafana/evidence.py --changed-panels 79 81
+# One-shot evidence for a PR that changed panels 79 and 83
+python3 agents/bhaga/grafana/evidence.py --changed-panels 79 83
 
 # Just check nothing broke
 python3 agents/bhaga/grafana/verify_panels.py

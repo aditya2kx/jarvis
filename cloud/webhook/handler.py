@@ -153,6 +153,8 @@ _BQ_TRAINING_SHIFTS_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.training_shifts"
 _BQ_EMPLOYEE_ALIASES_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.employee_aliases"
 _BQ_RESTOCK_SCHEDULE_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_restock_schedule"
 _BQ_RESTOCK_ORDERS_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_restock_orders"
+_BQ_ORDER_RECO_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_order_reco"
+_ORDER_RECO_DEFAULT_MAX_TUBS = 120
 
 # Bot token for Slack Web API calls (views.open, files download, chat.postMessage).
 # Unlike response_url (used by every other command), the restock modal needs a
@@ -918,6 +920,10 @@ def _handle_config_set(key: str, value: str, form: dict, response_url: str = "")
             "response_type": "ephemeral",
             "text": f":white_check_mark: `{key}` set to *{value}* (by {user_name})",
         })
+        if key == "order_reco_max_tubs":
+            # Recompute async so a capacity change reflects on the Grafana
+            # tables promptly without delaying the config-set confirmation.
+            _dispatch_async(_refresh_order_reco, store)
     except Exception as exc:
         log.error("config set failed: %s", exc)
         _post_response_url(response_url, {
@@ -1296,6 +1302,48 @@ def _restock_replace_orders(
     ).result()
 
 
+def _refresh_order_reco(store: str) -> None:
+    """Recompute inventory_order_reco for `store` (Issue #137, Option D).
+
+    Mirrors core/order_reco.py's refresh_order_reco — duplicated here because
+    handler.py is a standalone deploy unit and cannot import core/ (see
+    module docstring; same rationale as _ACTIVE_BASES). Keep both in sync.
+    Dispatched async from a restock submission or an order_reco_max_tubs
+    config-set — never called on the 3s-deadline request path.
+    """
+    if _bq is None:
+        return
+    try:
+        rows = list(_bq.query(  # type: ignore[union-attr]
+            f"SELECT value FROM `{_BQ_STORE_CONFIG_TABLE}`"
+            f" WHERE store = @store AND key = 'order_reco_max_tubs'"
+            f" ORDER BY updated_at DESC LIMIT 1",
+            job_config=_bq_param_config([("store", "STRING", store)]),
+        ).result())
+        max_tubs = int(rows[0]["value"]) if rows else _ORDER_RECO_DEFAULT_MAX_TUBS
+
+        fq_reco = f"`{_BQ_ORDER_RECO_TABLE}`"
+        _bq.query(  # type: ignore[union-attr]
+            f"DELETE FROM {fq_reco} WHERE store = @store",
+            job_config=_bq_param_config([("store", "STRING", store)]),
+        ).result()
+        _bq.query(  # type: ignore[union-attr]
+            f"INSERT INTO {fq_reco} SELECT @store, 1, t.*, CURRENT_TIMESTAMP()"
+            f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot1`(@mt) t",
+            job_config=_bq_param_config([("store", "STRING", store), ("mt", "INT64", max_tubs)]),
+        ).result()
+        # Slot 2 must run AFTER slot 1's INSERT lands — its TVF reads slot 1's
+        # row back from inventory_order_reco (see migration 031).
+        _bq.query(  # type: ignore[union-attr]
+            f"INSERT INTO {fq_reco} SELECT @store, 2, t.*, CURRENT_TIMESTAMP()"
+            f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot2`(@mt) t",
+            job_config=_bq_param_config([("store", "STRING", store), ("mt", "INT64", max_tubs)]),
+        ).result()
+        log.info("refresh_order_reco: recomputed store=%s max_tubs=%d", store, max_tubs)
+    except Exception as exc:
+        log.error("refresh_order_reco failed (breadcrumb): store=%s exc=%s", store, exc)
+
+
 def _handle_restock_submission(payload: dict) -> dict:
     """view_submission handler for the restock modal (Issue #137).
 
@@ -1366,6 +1414,9 @@ def _handle_restock_submission(payload: dict) -> dict:
             summary = f":white_check_mark: Restock {delivery_date} registered (estimated — no actuals uploaded)."
 
         _slack_api("chat.postMessage", {"channel": user_id, "text": summary})
+        # Recompute the dual-date reco off the request path (Issue #137) —
+        # keeps the modal's < 3s deadline; the Grafana tables catch up async.
+        _dispatch_async(_refresh_order_reco, store)
         return {"response_action": "clear"}
     except Exception as exc:
         log.error("restock submission failed: %s", exc)

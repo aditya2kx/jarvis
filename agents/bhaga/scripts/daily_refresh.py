@@ -2826,6 +2826,23 @@ def _run_refresh(run_id: str) -> int:
         print("[ingest_inventory] FAILED (non-fatal) — inventory data will be stale for today.",
               file=sys.stderr)
 
+    # ── Order Recommendation (dual-date, materialized — Issue #137) ────────
+    # Non-fatal, mirrors ingest_inventory: a reco recompute failure must not
+    # block the tip/payroll pipeline. Runs after ingest_inventory so the
+    # water-fill reads today's freshly-ingested current_qty/avg_daily_usage.
+    print("\n[refresh_order_reco] recomputing dual-date order recommendation...")
+    os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+    from core.order_reco import refresh_order_reco  # noqa: PLC0415
+    ok, _ = run_step(
+        "refresh_order_reco",
+        lambda: refresh_order_reco(args.store),
+        refresh_date=refresh_date,
+        dry_run=args.dry_run,
+    )
+    if not ok:
+        print("[refresh_order_reco] FAILED (non-fatal) — Order Recommendation panels will be stale.",
+              file=sys.stderr)
+
     runtime_s = time.monotonic() - t_start
 
     if failures:

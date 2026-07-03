@@ -66,7 +66,8 @@ jobs:
             --no-allow-unauthenticated \
             --iap \
             --memory 512Mi \
-            --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga
+            --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga \
+            --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest
 
       - name: Record deploy event (BQ)
         run: |

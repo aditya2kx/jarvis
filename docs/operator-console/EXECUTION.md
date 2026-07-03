@@ -388,7 +388,7 @@ server's local tz.
 ```
 BQ_PROJECT=jarvis-bhaga-prod
 BQ_DATASET=bhaga
-GEMINI_API_KEY=            # from Secret Manager at runtime, not committed
+GEMINI_TOKEN=            # from Secret Manager at runtime, not committed
 ```
 
 ---

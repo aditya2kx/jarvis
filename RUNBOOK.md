@@ -257,6 +257,7 @@ gcloud run services update bhaga-webhook \
 | `square_palmetto_oauth` | refresh job (Square API) | Square OAuth 2.0 access + refresh tokens for production Square API |
 | `google_palmetto` | refresh job (Sheets/Drive) | Google OAuth creds for the `palmetto` account |
 | `jarvis-clickup-palmetto-pat` | refresh job (`CLICKUP_PAT`) | ClickUp PAT — read review channel + closing-form inventory ingest |
+| `operator-console-gemini-token` | operator-console (`GEMINI_TOKEN`) | Gemini API key (Generative Language API), restricted to that one API — restock photo parsing (`lib/restock/gemini.ts`). Wired via `--set-secrets` in `operator-console-deploy.yml`; default compute SA holds `secretAccessor` on it. |
 
 > **Local bootstrap (all providers):** If a secret is missing from your macOS Keychain on a fresh
 > clone, use:
@@ -1642,3 +1643,46 @@ never collided with new per-group rows (`0`) under the merge key, so prod accumu
 item lines. The fix is the one-time Step 3 `--replace` rebuild above; after that, nightly MERGE is
 idempotent (re-scrapes hit identical keys) and the model self-heals via `materialize_model_bq`. No
 daily wipe. Full reasoning in `docs/POST_MERGE_BQ_CUTOVER.md` § "Why a one-time rebuild".
+
+---
+
+## 17. Operator Console (Issue #132, replaces Grafana as the primary UI)
+
+### What it is
+
+A Next.js app (`apps/operator-console/`) reading/writing the same `bhaga` BQ dataset as
+this pipeline, deployed as its own Cloud Run **service** (`operator-console`, not a job) behind
+direct Identity-Aware Proxy — no separate app-level auth, IAP itself restricts access to
+`@mypalmetto.co`. Grafana **stays live** (coexistence, not a replacement in v1) — the console is
+additive, giving the operator navigation, goal tracking, and write-backs Grafana never had.
+
+Full design/build docs: [`docs/operator-console/`](docs/operator-console/) (`PLAN.md` — living plan
++ decisions log + milestones; `ARCHITECTURE.md`; `EXECUTION.md` — step-by-step; `COST.md`).
+App-level dev loop: [`apps/operator-console/README.md`](apps/operator-console/README.md).
+
+### Deploy
+
+Automatic on push to `main` touching `apps/operator-console/**` via
+[`.github/workflows/operator-console-deploy.yml`](.github/workflows/operator-console-deploy.yml):
+builds the container, applies any pending `core/migrations/*.sql` (same runner as this pipeline —
+`core.datastore.ensure_schema()`), then `gcloud run deploy --iap`. No manual deploy step.
+
+### Operating
+
+- **Identity:** the signed-in operator's email is available server-side via
+  `lib/auth/identity.ts::operatorEmail()` (reads the IAP-forwarded header) — used as `updated_by`
+  on every write, same field the Slack `/bhaga-cloud` commands stamp.
+- **Write parity with Slack:** every console write in `lib/bq/writes.ts` mirrors the exact
+  MERGE/DELETE/INSERT statement `cloud/webhook/handler.py` uses for the equivalent Slack command
+  (restock, training, config/goals) — the two paths converge on identical rows, never diverge.
+- **New table (M4):** `recognition_bonuses` (migration `033_recognition_bonuses.sql`) — manual
+  per-employee bonus, separate from the automated `vw_review_bonus_detail` (migration 026).
+- **New goal keys:** `goal_net_sales_weekly`, `goal_net_sales_monthly`, `goal_labor_pct_max`,
+  `goal_food_cost_pct_max`, `goal_speed_on_time_pct_min`, `goal_inventory_runway_days_min` — all in
+  `store_config`, edited via the console's Home → "Edit goals" drawer (no Slack command for these).
+- **Troubleshooting a stuck write:** every write function in `lib/bq/writes.ts` is a plain
+  parameterized query — reproduce it directly against BQ (see `docs/operator-console/PLAN.md`
+  decisions log for two real bugs already caught this way: a row-sanitizer that corrupted any
+  column literally named `value`, and an INT64-vs-FLOAT64 TVF param mismatch).
+- **Local dev against live BQ:** `apps/operator-console/README.md` § Local development
+  (`gcloud auth application-default login`, `BYPASS_IAP_EMAIL` for local identity).

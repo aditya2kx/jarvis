@@ -32,7 +32,8 @@ export type ColumnFormat =
   | { kind: "cents" }
   | { kind: "pct"; digits?: number }
   | { kind: "number"; digits?: number }
-  | { kind: "status" };
+  | { kind: "status" }
+  | { kind: "source" };
 
 declare module "@tanstack/react-table" {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -61,6 +62,11 @@ function renderFormatted(format: ColumnFormat, value: unknown): ReactNode {
       return formatNumber(value as number | null | undefined, format.digits);
     case "status":
       return <Badge variant={statusVariant(value as string | null | undefined)}>{(value as string) ?? "unknown"}</Badge>;
+    case "source": {
+      const v = value as "Estimated" | "Actuals" | null | undefined;
+      if (!v) return null; // no second date registered yet (vw_order_reco_combined §Source 2)
+      return <Badge variant={v === "Actuals" ? "default" : "secondary"}>{v}</Badge>;
+    }
   }
 }
 

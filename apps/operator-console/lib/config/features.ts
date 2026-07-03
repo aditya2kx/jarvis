@@ -11,5 +11,5 @@ export const FEATURES = {
   writeGoals: false,
   writeTraining: false,
   writeRecognition: false,
-  writeRestock: false,
+  writeRestock: true,
 } as const;

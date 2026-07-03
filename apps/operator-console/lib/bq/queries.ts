@@ -267,3 +267,42 @@ export interface OrderAssistantRow {
 export function orderAssistantTable(): Promise<OrderAssistantRow[]> {
   return q<OrderAssistantRow>(`SELECT * FROM ${fq("vw_order_assistant_table")}`);
 }
+
+// vw_order_reco_combined (migration 032) — one row per Item, date-qualified
+// "N" suffix columns for slot 1/2. Hardcoded to store='palmetto' inside the
+// view itself (Issue #137, single-store today); no store param here to match.
+export interface OrderRecoCombinedRow {
+  Item: string;
+  "Current Qty": number;
+  "Avg per day": number;
+  "On Hand 1": number | null;
+  "Order Tubs 1": number | null;
+  "Order Weight 1": number | null;
+  "After Restock 1": number | null;
+  "Days Left 1": number | null;
+  "Source 1": "Estimated" | "Actuals" | null;
+  "On Hand 2": number | null;
+  "Order Tubs 2": number | null;
+  "Order Weight 2": number | null;
+  "After Restock 2": number | null;
+  "Days Left 2": number | null;
+  "Source 2": "Estimated" | "Actuals" | null;
+  _ord: number;
+  refresh_date: string | null;
+  [key: string]: unknown;
+}
+
+export function orderRecoCombined(): Promise<OrderRecoCombinedRow[]> {
+  return q<OrderRecoCombinedRow>(`SELECT * FROM ${fq("vw_order_reco_combined")}`);
+}
+
+// vw_order_reco_next_dates (migration 031) — the next 2 future registered
+// delivery dates, slot 1 = sooner. Empty/short when fewer dates are registered.
+export interface NextDateRow {
+  delivery_date: string;
+  slot: number;
+}
+
+export function nextDates(): Promise<NextDateRow[]> {
+  return q<NextDateRow>(`SELECT * FROM ${fq("vw_order_reco_next_dates")} ORDER BY slot`);
+}

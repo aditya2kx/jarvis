@@ -1,5 +1,20 @@
 # Jarvis Build Progress
 
+## 2026-07-02 — Combined Order Recommendation table (Issue #137 iteration, folded into PR #139, branch fix/i137-dual-date-order-reco)
+
+**Scope:** operator feedback on the just-shipped dual-date tables (panel 80's methodology text needed no scrolling; date-qualified columns; an estimated-vs-actual indicator per date; and — the layout redesign — one combined table instead of two, with `Item`/`Current Qty`/`Avg per day` frozen). Folded into the still-open PR #139 (operator elected to fold rather than open a follow-up).
+
+**Key changes:**
+- `core/migrations/032_order_reco_combined.sql` (new) — `vw_order_reco_combined`: a self-join pivot (`FULL OUTER JOIN` on `Item`) of `inventory_order_reco`'s Slot 1/2 rows into one row per item, with a `Source N` column per date (`'Actuals'` if `inventory_restock_orders` has rows for that date, else `'Estimated'`; `NULL` for `Source 2` when no second date is registered). Pure read/pivot — no water-fill logic re-derived here; `inventory_order_reco`, the TVFs (031), and `refresh_order_reco()` are all untouched.
+- `agents/bhaga/grafana/dashboard.json` — removed panels 81/82; added panel 83 reading `vw_order_reco_combined`, `options.frozenColumns.left = 3` (pins `Item`/`Current Qty`/`Avg per day` while scrolling), `displayName` overrides render the real `${oa_restock_date_1/2}` values into every per-date column header, `Source N` columns color-mapped (Actuals=green, Estimated=neutral). Panel 80's methodology text trimmed to a single no-scroll paragraph.
+- `scripts/check_grafana_no_logic.py` — `MUST_BE_CLEAN` updated from `{79, 81, 82}` to `{79, 83}`.
+- `agents/bhaga/grafana/compare_panels.py` — `OA_PANEL_IDS` updated from `{79, 81}` to `{79, 83}`.
+- `agents/bhaga/scripts/status.py` — `vw_order_reco_combined` added to `GRAFANA_VIEWS` (`refreshed_recently` mode, same as slot1/slot2); slot1/slot2 stay listed for freshness tracking even though no panel renders them anymore.
+- Schema flexibility (operator question): restock dates can already be freely registered/changed/reset via `/bhaga-cloud restock` — `vw_order_reco_next_dates` always recomputes the 2 soonest FUTURE dates, so an earlier date automatically becomes slot 1 and elapsed dates silently drop. Going beyond 2 concurrent restock dates would require a small, enumerable set of changes (next-dates view cap, one TVF + one refresh-loop iteration + one dashboard column-group per extra slot) — deferred; operator chose to keep the 2-date design for this iteration.
+- Tests: `core/test_migration_032_order_reco_combined.py` (new — statement shape, shared-column coalesce, per-date column groups, Source derivation, no water-fill logic reintroduced), `scripts/test_check_grafana_no_logic.py` / `agents/bhaga/grafana/test_compare_panels.py` updated for the 81→83 panel-id swap.
+- Docs updated in lock-step: `agents/bhaga/knowledge-base/DOMAIN.md`, `.cursor/rules/bhaga.mdc`, `agents/bhaga/grafana/README.md`, `agents/bhaga/scripts/README.md`.
+- Evidence tier: sandbox-e2e (unit, this entry) + operator-required prod-live capture (apply migration 032, deploy dashboard, screenshot the combined table across estimated/actuals-upload/reset/frozen-scroll/single-date-edge scenarios) as a follow-up step in the same PR before merge.
+
 ## 2026-07-02 — Dual-date Order Recommendation, materialized (Issue #137, PR B of 2, branch fix/i137-dual-date-order-reco)
 
 **Scope:** PR B of the dual-date Order Recommendation feature — turns the single hardcoded-lead-time recommendation (migration 029's `tvf_order_reco`) into two calendar-date-driven, chained tables fed by PR A's operator-uploaded restock schedule/actuals (migration 030).

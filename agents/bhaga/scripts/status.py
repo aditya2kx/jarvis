@@ -201,11 +201,16 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 031 (Issue #137, Option D): dual-date Order Recommendation is
     # MATERIALIZED into inventory_order_reco (nightly + on restock submit + on
     # order_reco_max_tubs change -- see refresh_order_reco). tvf_order_reco (029)
-    # is superseded; panels 81/82 now read these two pass-through views.
+    # is superseded. slot1/slot2 are no longer read by any panel (combined
+    # into vw_order_reco_combined / panel 83, migration 032) but stay listed
+    # here -- harmless, and useful if a panel ever splits back out.
     # refresh_date is a recompute timestamp, not a business date -- "refreshed_recently"
     # mode checks recency against real now, not the --date argument.
     Target("vw_order_reco_slot1", "refresh_date", "refreshed_recently"),
     Target("vw_order_reco_slot2", "refresh_date", "refreshed_recently"),
+    # migration 032 (Issue #137 iteration): panel 83 combines both slots into
+    # one row per item with per-date Source (Estimated/Actuals) columns.
+    Target("vw_order_reco_combined", "refresh_date", "refreshed_recently"),
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

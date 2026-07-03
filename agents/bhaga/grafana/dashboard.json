@@ -2789,26 +2789,26 @@
       "type": "text",
       "title": "Order Recommendation — Methodology",
       "gridPos": {
-        "h": 7,
+        "h": 5,
         "w": 24,
         "x": 0,
         "y": 210
       },
       "options": {
         "mode": "markdown",
-        "content": "**How orders are computed**\n\n- **Two calendar restock dates, not a fixed lead time:** the next two FUTURE delivery dates registered via `/bhaga-cloud restock` (past dates are ignored automatically). Restock 1 = the sooner date; Restock 2 = the next one after it.\n- **Projection:** stock available when Restock 1 arrives = `max(0, current_qty − ship_days_to_date_1 × avg_per_day)`, where `ship_days_to_date_1` is the real calendar gap (`DATE_DIFF`) to that date — no manual lead-time variable to keep in sync.\n- **Chaining:** Restock 2's projection assumes Restock 1's recommendation (estimated, or the uploaded actual once it exists) already arrived and was consumed until Restock 2's date.\n- **Budget:** `floor(order_reco_max_tubs − Σ projected_on_hand_all_bases)` whole tubs available to order at each restock. Adjust via `/bhaga-cloud config set order_reco_max_tubs <N>` in Slack (changes seldom — only when shop freezer capacity changes).\n- **Allocation (max-min water-fill):** each tub in the budget goes to the base with the lowest post-restock days-of-coverage at that moment, maximising the shop's overall runway (the base that runs out first).\n- **Estimated vs. actual:** each table shows the estimated water-fill allocation until actual order quantities are uploaded for that date (via the same Slack modal), after which it shows the actuals verbatim. `Reset to estimated` reverts to the water-fill projection.\n- **Blade:** delivered directly — not ordered, but its projected on-hand counts against the capacity ceiling.\n- **Order Weight (lbs):** per-row = Order Tubs × per-tub weight (Açaí 18 lbs; Pitaya, Coconut, Mango, Tropical, Matcha, Ube, Pog = 20 lbs each; Blade = NA). TOTAL row adds pallet packaging: 40 tubs = 1 pallet, +50 lbs/pallet → TOTAL = Σ per-row weight + 50 × CEIL(total order tubs ÷ 40)."
+        "content": "**How orders are computed:** the next two FUTURE restock dates registered via `/bhaga-cloud restock` (past dates auto-drop) — Restock 1 = sooner, Restock 2 = next. Each date's projected on-hand = `max(0, current_qty − calendar_days_to_date × avg_per_day)`; Restock 2 assumes Restock 1's recommendation (estimated, or actual once uploaded) already arrived. Budget = `floor(order_reco_max_tubs − Σ projected_on_hand)` tubs (`/bhaga-cloud config set order_reco_max_tubs <N>` to change — rare). **Allocation:** max-min water-fill, one tub at a time to the lowest-coverage base. **Source** column shows Estimated (water-fill) until actuals are uploaded for that date, then Actuals verbatim (`Reset to estimated` reverts). Blade is delivered directly (counts toward capacity, never ordered/weighed). **Order Weight:** Order Tubs × per-tub weight (Açaí 18 lbs, others 20 lbs); TOTAL adds +50 lbs/pallet (40 tubs/pallet)."
       }
     },
     {
-      "id": 81,
+      "id": 83,
       "type": "table",
-      "title": "Order Recommendation — Restock 1 (${oa_restock_date_1})",
-      "description": "Per-base order recommendation for the next registered restock date. Date comes from inventory_restock_schedule; max capacity from the order_reco_max_tubs store_config key (see /bhaga-cloud config). Shows the estimated water-fill allocation until actual order quantities are uploaded for this date, then shows the actuals. Order Weight (lbs) = Order Tubs × per-tub weight (Açaí 18 lbs; all other bases 20 lbs; Blade delivered directly → NA, excluded from weight). TOTAL Order Weight adds pallet packaging: 40 tubs = 1 pallet, +50 lbs/pallet, so TOTAL = Σ per-row weight + 50 × CEIL(total order tubs ÷ 40).",
+      "title": "Order Recommendation (Restock 1 ${oa_restock_date_1} · Restock 2 ${oa_restock_date_2})",
+      "description": "Combined per-base order recommendation for both registered restock dates. Item/Current Qty/Avg per day are shown once (frozen while scrolling); each date has its own On Hand / Order Tubs / Order Weight / After Restock / Days Left / Source column group. Source = Estimated (water-fill projection) until actual order quantities are uploaded for that date via /bhaga-cloud restock, then Actuals. Restock 2 columns are blank when only one future date is registered. Order Weight (lbs) = Order Tubs × per-tub weight (Açaí 18 lbs; all other bases 20 lbs; Blade delivered directly → NA). TOTAL Order Weight adds pallet packaging: 40 tubs = 1 pallet, +50 lbs/pallet.",
       "gridPos": {
         "h": 16,
         "w": 24,
         "x": 0,
-        "y": 217
+        "y": 215
       },
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -2820,7 +2820,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT * EXCEPT(store, Slot, _ord, refreshed_at, refresh_date) FROM `jarvis-bhaga-prod.bhaga.vw_order_reco_slot1`"
+          "rawSql": "SELECT * EXCEPT(_ord, refresh_date) FROM `jarvis-bhaga-prod.bhaga.vw_order_reco_combined`"
         }
       ],
       "fieldConfig": {
@@ -2836,122 +2836,132 @@
           },
           {
             "matcher": { "id": "byName", "options": "Current Qty" },
-            "properties": [{ "id": "custom.width", "value": 150 }]
+            "properties": [{ "id": "custom.width", "value": 130 }]
           },
           {
             "matcher": { "id": "byName", "options": "Avg per day" },
-            "properties": [{ "id": "custom.width", "value": 150 }]
+            "properties": [{ "id": "custom.width", "value": 130 }]
           },
           {
-            "matcher": { "id": "byName", "options": "On Hand at Restock" },
+            "matcher": { "id": "byName", "options": "On Hand 1" },
             "properties": [
-              { "id": "displayName", "value": "On Hand on ${oa_restock_date_1}" },
-              { "id": "custom.width", "value": 175 }
+              { "id": "displayName", "value": "On Hand ${oa_restock_date_1}" },
+              { "id": "custom.width", "value": 155 }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Order Tubs" },
-            "properties": [{ "id": "custom.width", "value": 155 }]
+            "matcher": { "id": "byName", "options": "Order Tubs 1" },
+            "properties": [
+              { "id": "displayName", "value": "Order Tubs ${oa_restock_date_1}" },
+              { "id": "custom.width", "value": 155 }
+            ]
           },
           {
-            "matcher": { "id": "byName", "options": "Order Weight lbs" },
+            "matcher": { "id": "byName", "options": "Order Weight 1" },
             "properties": [
-              { "id": "displayName", "value": "Order Weight (lbs)" },
-              { "id": "custom.width", "value": 200 },
+              { "id": "displayName", "value": "Order Weight ${oa_restock_date_1} (lbs)" },
+              { "id": "custom.width", "value": 195 },
               { "id": "noValue", "value": "NA" }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "After Restock" },
-            "properties": [{ "id": "custom.width", "value": 155 }]
+            "matcher": { "id": "byName", "options": "After Restock 1" },
+            "properties": [
+              { "id": "displayName", "value": "After ${oa_restock_date_1}" },
+              { "id": "custom.width", "value": 145 }
+            ]
           },
           {
-            "matcher": { "id": "byName", "options": "Days Left After Restock" },
-            "properties": [{ "id": "custom.width", "value": 230 }]
+            "matcher": { "id": "byName", "options": "Days Left 1" },
+            "properties": [
+              { "id": "displayName", "value": "Days Left after ${oa_restock_date_1}" },
+              { "id": "custom.width", "value": 195 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Source 1" },
+            "properties": [
+              { "id": "displayName", "value": "Source ${oa_restock_date_1}" },
+              { "id": "custom.width", "value": 115 },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "Actuals": { "color": "green", "index": 0 },
+                      "Estimated": { "color": "text", "index": 1 }
+                    }
+                  }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "On Hand 2" },
+            "properties": [
+              { "id": "displayName", "value": "On Hand ${oa_restock_date_2}" },
+              { "id": "custom.width", "value": 155 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Order Tubs 2" },
+            "properties": [
+              { "id": "displayName", "value": "Order Tubs ${oa_restock_date_2}" },
+              { "id": "custom.width", "value": 155 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Order Weight 2" },
+            "properties": [
+              { "id": "displayName", "value": "Order Weight ${oa_restock_date_2} (lbs)" },
+              { "id": "custom.width", "value": 195 },
+              { "id": "noValue", "value": "NA" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "After Restock 2" },
+            "properties": [
+              { "id": "displayName", "value": "After ${oa_restock_date_2}" },
+              { "id": "custom.width", "value": 145 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Days Left 2" },
+            "properties": [
+              { "id": "displayName", "value": "Days Left after ${oa_restock_date_2}" },
+              { "id": "custom.width", "value": 195 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Source 2" },
+            "properties": [
+              { "id": "displayName", "value": "Source ${oa_restock_date_2}" },
+              { "id": "custom.width", "value": 115 },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "Actuals": { "color": "green", "index": 0 },
+                      "Estimated": { "color": "text", "index": 1 }
+                    }
+                  }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
           }
         ]
       },
       "options": {
         "footer": {
           "show": false
-        }
-      }
-    },
-    {
-      "id": 82,
-      "type": "table",
-      "title": "Order Recommendation — Restock 2 (${oa_restock_date_2})",
-      "description": "Per-base order recommendation for the 2nd registered restock date, chained off Restock 1 (assumes Restock 1's recommendation — estimated or actual — already arrived and was consumed by this date). Empty when only one future restock date is registered. Shows the estimated water-fill allocation until actual order quantities are uploaded for this date, then shows the actuals. Order Weight (lbs) = Order Tubs × per-tub weight (Açaí 18 lbs; all other bases 20 lbs; Blade delivered directly → NA, excluded from weight). TOTAL Order Weight adds pallet packaging: 40 tubs = 1 pallet, +50 lbs/pallet, so TOTAL = Σ per-row weight + 50 × CEIL(total order tubs ÷ 40).",
-      "gridPos": {
-        "h": 16,
-        "w": 24,
-        "x": 0,
-        "y": 233
-      },
-      "datasource": {
-        "type": "grafana-bigquery-datasource",
-        "uid": "${ds_bigquery}"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "format": 1,
-          "project": "jarvis-bhaga-prod",
-          "dataset": "bhaga",
-          "rawSql": "SELECT * EXCEPT(store, Slot, _ord, refreshed_at, refresh_date) FROM `jarvis-bhaga-prod.bhaga.vw_order_reco_slot2`"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "filterable": true
-          }
         },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "Item" },
-            "properties": [{ "id": "custom.width", "value": 110 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Current Qty" },
-            "properties": [{ "id": "custom.width", "value": 150 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Avg per day" },
-            "properties": [{ "id": "custom.width", "value": 150 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "On Hand at Restock" },
-            "properties": [
-              { "id": "displayName", "value": "On Hand on ${oa_restock_date_2}" },
-              { "id": "custom.width", "value": 175 }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Order Tubs" },
-            "properties": [{ "id": "custom.width", "value": 155 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Order Weight lbs" },
-            "properties": [
-              { "id": "displayName", "value": "Order Weight (lbs)" },
-              { "id": "custom.width", "value": 200 },
-              { "id": "noValue", "value": "NA" }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "After Restock" },
-            "properties": [{ "id": "custom.width", "value": 155 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Days Left After Restock" },
-            "properties": [{ "id": "custom.width", "value": 230 }]
-          }
-        ]
-      },
-      "options": {
-        "footer": {
-          "show": false
+        "frozenColumns": {
+          "left": 3
         }
       }
     },
@@ -2964,7 +2974,7 @@
         "h": 16,
         "w": 24,
         "x": 0,
-        "y": 249
+        "y": 231
       },
       "datasource": {
         "type": "grafana-bigquery-datasource",

@@ -59,9 +59,10 @@ WAIVED_PANELS: dict[int, str] = {
 
 # Panels that MUST be clean (no waiver permitted) — the Order Assistant
 # panels this issue specifically fixed. Regressing any back to inline logic
-# is a hard failure, not a waivable one. 82 added by Issue #137 (dual-date
-# Order Recommendation, Restock 2 — must stay a pure pass-through like 81).
-MUST_BE_CLEAN: frozenset[int] = frozenset({79, 81, 82})
+# is a hard failure, not a waivable one. 83 (combined Order Recommendation,
+# migration 032) supersedes the dual-table 81/82 pair from the Issue #137
+# iteration — must stay a pure pass-through like 79.
+MUST_BE_CLEAN: frozenset[int] = frozenset({79, 83})
 
 # Constructs that indicate real computation, not presentation.
 _BANNED_PATTERNS: list[tuple[str, str]] = [

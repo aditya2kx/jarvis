@@ -70,9 +70,10 @@ _DS_TYPE = "grafana-bigquery-datasource"
 
 # Panels the operator has agreed may legitimately differ, and why. Any other
 # panel difference is a hard failure. Keep this list to exactly the panels
-# Milestone 2 converted — regressing scope here silently widens the "allowed
-# to differ" surface, which defeats the point of the gate.
-OA_PANEL_IDS: frozenset[int] = frozenset({79, 81})
+# Milestone 2 converted (plus 83, which supersedes 81/82 in the Issue #137
+# combined-table iteration) — regressing scope here silently widens the
+# "allowed to differ" surface, which defeats the point of the gate.
+OA_PANEL_IDS: frozenset[int] = frozenset({79, 83})
 
 
 def _resolve_token(org_slug: str) -> str:

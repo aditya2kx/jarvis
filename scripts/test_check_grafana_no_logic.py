@@ -88,7 +88,7 @@ class TestMainExitCodes(unittest.TestCase):
     def test_clean_panels_exit_zero(self):
         path = self._write_dashboard([
             _panel(79, "SELECT * FROM `bhaga.vw_order_assistant_table`"),
-            _panel(81, "SELECT * FROM `bhaga.tvf_order_reco`($oa_ship_days, $oa_max_tubs)"),
+            _panel(83, "SELECT * FROM `bhaga.vw_order_reco_combined`"),
         ])
         dashboard = json.loads(path.read_text())
         hard_failures = []
@@ -100,10 +100,10 @@ class TestMainExitCodes(unittest.TestCase):
         path.unlink()
 
     def test_must_be_clean_panel_with_logic_fails(self):
-        dashboard = _dashboard([_panel(81, "WITH x AS (SELECT 1) SELECT * FROM x")])
+        dashboard = _dashboard([_panel(83, "WITH x AS (SELECT 1) SELECT * FROM x")])
         violations = gate._violations(dashboard["panels"][0]["targets"][0]["rawSql"])
         self.assertTrue(violations)
-        self.assertIn(81, gate.MUST_BE_CLEAN)
+        self.assertIn(83, gate.MUST_BE_CLEAN)
 
     def test_unwaived_logic_panel_fails(self):
         sql = "WITH x AS (SELECT 1) SELECT * FROM x"

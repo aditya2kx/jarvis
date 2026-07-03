@@ -50,18 +50,27 @@ jobs:
           python-version: "3.12"
 
       # ── Step 1: Find tracking issue ───────────────────────────────────────
+      # find-issue itself now tries phase-cache -> branch-slug (iNNN) -> gh
+      # body-scan (see post_merge_lifecycle.find_tracking_issue), so a single
+      # call covers all strategies — no need to re-invoke it here. This step
+      # must NEVER hard-fail the job: `|| echo 'none'` guarantees exactly one
+      # token is produced, and the heredoc form of the $GITHUB_OUTPUT write
+      # is immune to stray whitespace/newlines breaking the key=value parser
+      # (the root cause of the "Invalid format 'none'" failure in Issue #130).
       - name: Find tracking issue
         id: issue
         run: |
-          # Try phase-cache first (fastest; no network).
           ISSUE_N="$(python3 scripts/post_merge_lifecycle.py find-issue \
-            --branch "$BRANCH" 2>/dev/null || echo '')"
-          if [ -z "$ISSUE_N" ] || [ "$ISSUE_N" = "none" ]; then
-            echo "::notice::Phase cache miss — scanning jarvis-work issues for branch $BRANCH"
-            ISSUE_N="$(python3 scripts/post_merge_lifecycle.py find-issue \
-              --branch "$BRANCH" 2>/dev/null || echo 'none')"
+            --branch "$BRANCH" 2>/dev/null || echo 'none')"
+          ISSUE_N="$(echo "$ISSUE_N" | tr -d '[:space:]')"
+          if [ -z "$ISSUE_N" ]; then
+            ISSUE_N="none"
           fi
-          echo "issue_number=${ISSUE_N}" >> "$GITHUB_OUTPUT"
+          {
+            echo "issue_number<<EOF"
+            echo "$ISSUE_N"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
           echo "Found tracking issue: $ISSUE_N"
 
       # ── Step 2: Advance merge substep ────────────────────────────────────

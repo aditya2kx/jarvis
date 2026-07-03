@@ -103,15 +103,51 @@ def _processed_path(branch: str, cache: dict | None = None) -> Path:
 # We need the None semantics to return "unrouted" for unknown branches.
 # ---------------------------------------------------------------------------
 
+def _derive_worktree_path(branch: str) -> Path | None:
+    """Best-effort sibling worktree path for ``branch`` (``../<repo>-wt-<slug>``
+    convention, matches ``new_requirement.py`` / ``dev_event_listener._worktree_path_for``).
+
+    Returns None when no such directory exists on disk.
+    """
+    if not branch:
+        return None
+    slug = _slug(branch)
+    repo_name = REPO_ROOT.name.split("-wt-")[0] if "-wt-" in REPO_ROOT.name else REPO_ROOT.name
+    candidate = REPO_ROOT.parent / f"{repo_name}-wt-{slug}"
+    return candidate if candidate.is_dir() else None
+
+
 def _load_cache(branch: str) -> dict | None:
-    """Return the phase-cache dict for ``branch``, or None when not tracked."""
+    """Return the phase-cache dict for ``branch``, or None when not tracked.
+
+    Tries the daemon-side path first (``METRICS_DIR``, shared with
+    ``phase_state.py`` when run from this checkout). Falls back to reading
+    the branch's own worktree metrics dir when the daemon-side cache is
+    missing but the worktree exists on disk — a signal must not go
+    "unrouted" merely because the daemon process happens to be running from
+    a checkout that never saw ``phase_state.py init`` for this branch
+    (Issue #140 defense-in-depth). The worktree's cache is mirrored into the
+    daemon-side path so subsequent lookups are fast and consistent.
+    """
     path = _phase_path(branch)
-    if not path.exists():
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return None
+
+    wt = _derive_worktree_path(branch)
+    if wt is None:
+        return None
+    wt_cache = wt / "metrics" / "pr_cost" / f"session-{_slug(branch)}-phase.json"
+    if not wt_cache.exists():
         return None
     try:
-        return json.loads(path.read_text())
+        data = json.loads(wt_cache.read_text())
     except Exception:
         return None
+    _save_cache(branch, data)
+    return data
 
 
 def _save_cache(branch: str, data: dict) -> None:

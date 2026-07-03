@@ -43,6 +43,9 @@ The agent **self-advances** through agent phases and **pauses** at the 3 operato
 ### Post-merge lifecycle
 After every merge, `pr-merged-lifecycle.yml` advances the phase tracker, runs read-only §4 post-merge verification commands, and posts a retrospective prompt on the tracking issue. The agent completes the retrospective (speed / cost / accuracy grade + preference harvest) in a follow-up chat and closes the issue. See `docs/WORKFLOW.md` § Post-merge lifecycle.
 
+### Every PR must link its tracking issue
+The PR body must assert which issue it implements via a `Closes|Fixes|Resolves #N` keyword — a bare `Refs #N` or `#N` mention is not enough (`check_pr_description.py`, a hard gate in `verify.py --full`, Issue #123). This is what lets GitHub auto-close the tracking issue on merge and lets `pr-merged-lifecycle.yml` reliably resolve the issue even when the issue body still says `Branch: TBD`. Skipping this stranded Issues #101/#108/#112/#113/#118 before the one-time `scripts/audit_stranded_issues.py --reconcile` cleanup; run `scripts/audit_stranded_issues.py --report` any time to confirm 0 stranded.
+
 ## Define acceptance evidence (operator-reserved step)
 Before the agent starts building, the operator and agent must agree on *what
 evidence the PR must show*.  The agent drafts a proposal; the operator approves it; it becomes PR §4.  This stops evidence being invented after the fact.

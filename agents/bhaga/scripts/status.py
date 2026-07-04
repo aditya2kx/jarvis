@@ -211,6 +211,10 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 032 (Issue #137 iteration): panel 83 combines both slots into
     # one row per item with per-date Source (Estimated/Actuals) columns.
     Target("vw_order_reco_combined", "refresh_date", "refreshed_recently"),
+    # migration 033 (Issue #132, operator console): recognition_bonuses is a new
+    # write table consumed only by apps/operator-console/ (Payroll & People screen)
+    # via its own typed queries.js reads — it is not a model_* table and has no
+    # vw_* Grafana-facing view, so no new BQ_TARGETS/GRAFANA_VIEWS entry applies.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

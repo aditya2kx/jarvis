@@ -1,4 +1,7 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import {
   Home,
   LineChart,
@@ -9,6 +12,7 @@ import {
   PackageSearch,
   Activity,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 // Mirrors the Figma IA agreed in docs/operator-console/PLAN.md — grouped by
 // operator intent, not by Grafana's original folder structure.
@@ -41,6 +45,8 @@ const NAV_GROUPS = [
 ] as const;
 
 export function Sidebar() {
+  const pathname = usePathname();
+
   return (
     <nav className="hidden w-60 shrink-0 border-r border-sidebar-border bg-sidebar px-3 py-4 md:flex md:flex-col md:gap-6">
       {NAV_GROUPS.map((group) => (
@@ -48,16 +54,24 @@ export function Sidebar() {
           <span className="px-2 text-xs font-medium uppercase tracking-wide text-sidebar-foreground/50">
             {group.label}
           </span>
-          {group.items.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            >
-              <item.icon className="size-4" />
-              {item.label}
-            </Link>
-          ))}
+          {group.items.map((item) => {
+            const active = pathname === item.href || pathname?.startsWith(item.href + "/");
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                  active
+                    ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                    : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                )}
+              >
+                <item.icon className="size-4" />
+                {item.label}
+              </Link>
+            );
+          })}
         </div>
       ))}
     </nav>

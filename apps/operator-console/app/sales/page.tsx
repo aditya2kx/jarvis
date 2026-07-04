@@ -4,6 +4,7 @@ import { dateSortKey, formatDate } from "@/lib/format";
 import { LineChartCard } from "@/components/charts/LineChartCard";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { DataTable } from "@/components/tables/DataTable";
+import { RangeFilter, parseRange } from "@/components/filters/RangeFilter";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { LaborDailyRow } from "@/lib/bq/queries";
 
@@ -12,12 +13,18 @@ export const revalidate = 600;
 // Net sales, orders, and items — the sales-facing subset of
 // vw_model_labor_daily (same source the old Grafana "Daily Sales" section
 // read; no separate sales view exists yet).
-export default async function SalesPage() {
+export default async function SalesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ range?: string }>;
+}) {
+  const range = parseRange((await searchParams).range);
+
   let rows: LaborDailyRow[] = [];
   let goalWeekly: number | undefined;
   let error: string | undefined;
   try {
-    const [labor, config] = await Promise.all([laborDaily(30), storeConfig(DEFAULT_STORE)]);
+    const [labor, config] = await Promise.all([laborDaily(range), storeConfig(DEFAULT_STORE)]);
     rows = labor;
     const g = config.find((r) => r.key === "goal_net_sales_weekly");
     goalWeekly = g ? Number(g.value) / 7 : undefined; // daily equivalent for the daily chart
@@ -46,7 +53,7 @@ export default async function SalesPage() {
     <div className="flex flex-col gap-4">
       <div className="flex items-baseline justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Sales</h1>
-        <span className="text-sm text-muted-foreground">Last 30 days · daily</span>
+        <RangeFilter basePath="/sales" value={range} />
       </div>
 
       {error ? (

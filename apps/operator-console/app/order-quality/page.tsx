@@ -2,17 +2,24 @@ import { kdsBySource, orderQualityDaily } from "@/lib/bq/queries";
 import { dateSortKey, formatDate } from "@/lib/format";
 import { LineChartCard } from "@/components/charts/LineChartCard";
 import { DataTable } from "@/components/tables/DataTable";
+import { RangeFilter, parseRange } from "@/components/filters/RangeFilter";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { OrderQualityDailyRow } from "@/lib/bq/queries";
 
 export const revalidate = 600;
 
-export default async function OrderQualityPage() {
+export default async function OrderQualityPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ range?: string }>;
+}) {
+  const range = parseRange((await searchParams).range);
+
   let rows: OrderQualityDailyRow[] = [];
   let bySourceChart: Record<string, unknown>[] = [];
   let error: string | undefined;
   try {
-    const [oq, src] = await Promise.all([orderQualityDaily(30), kdsBySource(30)]);
+    const [oq, src] = await Promise.all([orderQualityDaily(range), kdsBySource(range)]);
     rows = oq;
 
     // Pivot per-source rows into one chart series per order_source.
@@ -53,7 +60,7 @@ export default async function OrderQualityPage() {
     <div className="flex flex-col gap-4">
       <div className="flex items-baseline justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Order Quality</h1>
-        <span className="text-sm text-muted-foreground">Last 30 days · daily</span>
+        <RangeFilter basePath="/order-quality" value={range} />
       </div>
 
       {error ? (

@@ -48,20 +48,24 @@ export function HealthScorecard({
           ))}
         </div>
       </CardHeader>
-      <CardContent className="grid gap-4 sm:grid-cols-2">
+      <CardContent className="flex flex-col divide-y divide-border">
         {data.metrics.map((m) => (
-          <div key={m.key} className="flex flex-col gap-1.5">
-            <div className="flex items-baseline justify-between">
-              <span className="text-sm text-muted-foreground">{m.label}</span>
-              <Badge variant={m.status === "on-track" ? "default" : m.status === "no-goal" ? "secondary" : "destructive"}>
+          <div key={m.key} className="flex flex-col gap-1.5 py-3 first:pt-0 last:pb-0">
+            <div className="flex items-center justify-between gap-3">
+              <span className="w-48 shrink-0 text-sm text-muted-foreground">{m.label}</span>
+              <div className="flex flex-1 items-center gap-3">
+                <span className="w-24 shrink-0 text-lg font-semibold">{m.formatted}</span>
+                <GoalBar status={m.status} pace={m.pace} />
+                <span className="w-24 shrink-0 text-right text-xs text-muted-foreground">
+                  goal {m.goalFormatted}
+                </span>
+              </div>
+              <Badge
+                variant={m.status === "on-track" ? "default" : m.status === "no-goal" ? "secondary" : "destructive"}
+              >
                 {STATUS_LABEL[m.status]}
               </Badge>
             </div>
-            <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-semibold">{m.formatted}</span>
-              <span className="text-xs text-muted-foreground">goal {m.goalFormatted}</span>
-            </div>
-            <GoalBar status={m.status} pace={m.pace} />
           </div>
         ))}
       </CardContent>

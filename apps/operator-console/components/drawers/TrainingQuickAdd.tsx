@@ -20,8 +20,8 @@ export function TrainingQuickAdd() {
 
   if (!open) {
     return (
-      <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
-        Add training shift…
+      <Button size="sm" onClick={() => setOpen(true)}>
+        + Training shift
       </Button>
     );
   }

@@ -2,17 +2,24 @@ import { forecast, forecastAccuracy } from "@/lib/bq/queries";
 import { dateSortKey, formatDate } from "@/lib/format";
 import { LineChartCard } from "@/components/charts/LineChartCard";
 import { DataTable } from "@/components/tables/DataTable";
+import { RangeFilter, parseRange } from "@/components/filters/RangeFilter";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { ForecastRow } from "@/lib/bq/queries";
 
 export const revalidate = 600;
 
-export default async function ForecastPage() {
+export default async function ForecastPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ range?: string }>;
+}) {
+  const range = parseRange((await searchParams).range);
+
   let rows: ForecastRow[] = [];
   let accuracyChart: Record<string, unknown>[] = [];
   let error: string | undefined;
   try {
-    const [fc, acc] = await Promise.all([forecast(30), forecastAccuracy(30)]);
+    const [fc, acc] = await Promise.all([forecast(range), forecastAccuracy(range)]);
     rows = fc;
     accuracyChart = [...acc]
       .sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1))
@@ -46,7 +53,7 @@ export default async function ForecastPage() {
     <div className="flex flex-col gap-4">
       <div className="flex items-baseline justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Forecast</h1>
-        <span className="text-sm text-muted-foreground">Today + next 30 days</span>
+        <RangeFilter basePath="/forecast" value={range} />
       </div>
 
       {error ? (

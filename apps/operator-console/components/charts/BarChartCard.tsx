@@ -21,6 +21,7 @@ export function BarChartCard({
   goal,
   goalLabel,
   height = 260,
+  stacked = false,
 }: {
   title: string;
   data: Record<string, unknown>[];
@@ -29,6 +30,7 @@ export function BarChartCard({
   goal?: number;
   goalLabel?: string;
   height?: number;
+  stacked?: boolean;
 }) {
   return (
     <Card>
@@ -55,6 +57,7 @@ export function BarChartCard({
                 name={s.label}
                 fill={s.color ?? `var(--chart-${(i % 5) + 1})`}
                 radius={2}
+                stackId={stacked ? "stack" : undefined}
               />
             ))}
             {goal != null ? (

@@ -51,18 +51,39 @@ architecture is aligned to avoid rework.
 **Canonical design reference (persist here — do not rely on chat history):**
 - File: [BHAGA Operator Console — Designs](https://www.figma.com/design/Mdlm8YGTIvi6WzgLcNdaXI/BHAGA-Operator-Console-%E2%80%94-Designs?node-id=0-1)
 - fileKey: `Mdlm8YGTIvi6WzgLcNdaXI` · top-level page: `0:1`
-- Per-screen frame node IDs: TBD — the Figma MCP tool cannot resolve node-scoped
-  calls (`get_metadata`/`get_screenshot` with a `nodeId`) from a Cursor workspace
-  whose folder path exceeds macOS's practical length limit; it errors
-  `ENAMETOOLONG` trying to `mkdir` its own working directory under
-  `~/.cursor/projects/<workspace-name>/agent-tools`. Fix: open the branch from a
-  short-path worktree (e.g. `/Users/<user>/Documents/build-workspace/i132`) —
-  shallow, no-`nodeId` calls (top-level page listing) work from any path; only
-  node-scoped calls need the short path.
+- Per-screen frame node IDs (Page 1):
+
+  | Screen | node-id |
+  |---|---|
+  | Today — BHAGA Console (Home) | `2:2` |
+  | Order Quality — Palmetto Console | `47:2` |
+  | Pipeline Health — Palmetto Console | `50:2` |
+  | Forecast — Palmetto Console | `45:2` |
+  | Sales — Palmetto Console | `43:2` |
+  | Home · Edit goals (goals editor drawer) | `37:2` |
+  | Inventory — BHAGA Console | `13:32` |
+  | Payroll & People — BHAGA Console | `10:2` |
+  | Labor — BHAGA Console | `8:2` |
+
+- **Tooling caveat (worked around, no workspace move needed):** some Figma MCP
+  calls (`get_metadata`, and `get_screenshot`/`get_design_context` called *without*
+  a resolvable `nodeId`) shell out to a local `mkdir` under
+  `~/.cursor/projects/<workspace-slug>/agent-tools`, where `<workspace-slug>` is
+  this workspace's full folder path with `/` → `-`. That slug is 277 characters —
+  over macOS's 255-byte single-path-component limit — so those calls fail with
+  `ENAMETOOLONG` from this long-named worktree. **`get_screenshot` with a valid
+  `nodeId` does not hit this path and works fine** (confirmed 2026-07-04), because
+  it just returns a remote asset URL rather than writing locally. Node IDs above
+  were obtained by driving a real browser to the Figma file URL via Playwright
+  (`user-playwright browser_navigate` — authenticates automatically via the
+  existing Google session in that persistent profile) and reading the
+  `node-id=` query param after clicking each layer, then passing that id to
+  `get_screenshot`. No Cursor workspace-folder change was needed.
 - Screenshot-capture method for parity checks: `plugin-figma-figma-get_screenshot`
-  (Figma side) + Playwright `browser_navigate` + `browser_take_screenshot` against
-  the deployed Cloud Run URL (console side) — mirrors the existing Grafana capture
-  method (`agents/bhaga/grafana/capture_screenshot.py`, render-API + Bearer token).
+  with the node IDs above (Figma side) + Playwright `browser_navigate` +
+  `browser_take_screenshot` against the deployed Cloud Run URL (console side) —
+  mirrors the existing Grafana capture method
+  (`agents/bhaga/grafana/capture_screenshot.py`, render-API + Bearer token).
 
 ## Decisions log
 

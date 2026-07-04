@@ -48,6 +48,22 @@ reco → dual-date model + Estimated/Actuals + reset action; add closing-form &
 restock schedule rows to Pipeline Health (per ARCHITECTURE §6). Deferred until
 architecture is aligned to avoid rework.
 
+**Canonical design reference (persist here — do not rely on chat history):**
+- File: [BHAGA Operator Console — Designs](https://www.figma.com/design/Mdlm8YGTIvi6WzgLcNdaXI/BHAGA-Operator-Console-%E2%80%94-Designs?node-id=0-1)
+- fileKey: `Mdlm8YGTIvi6WzgLcNdaXI` · top-level page: `0:1`
+- Per-screen frame node IDs: TBD — the Figma MCP tool cannot resolve node-scoped
+  calls (`get_metadata`/`get_screenshot` with a `nodeId`) from a Cursor workspace
+  whose folder path exceeds macOS's practical length limit; it errors
+  `ENAMETOOLONG` trying to `mkdir` its own working directory under
+  `~/.cursor/projects/<workspace-name>/agent-tools`. Fix: open the branch from a
+  short-path worktree (e.g. `/Users/<user>/Documents/build-workspace/i132`) —
+  shallow, no-`nodeId` calls (top-level page listing) work from any path; only
+  node-scoped calls need the short path.
+- Screenshot-capture method for parity checks: `plugin-figma-figma-get_screenshot`
+  (Figma side) + Playwright `browser_navigate` + `browser_take_screenshot` against
+  the deployed Cloud Run URL (console side) — mirrors the existing Grafana capture
+  method (`agents/bhaga/grafana/capture_screenshot.py`, render-API + Bearer token).
+
 ## Decisions log
 
 | Date | Decision | Choice |

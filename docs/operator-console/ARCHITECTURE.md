@@ -11,6 +11,10 @@ ClickUp, Google, and Grafana into one navigable surface, and adds first-class
 **write-backs** (goals, training shifts, recognition bonuses, restock schedule /
 actuals) that today live only in Slack slash-commands or nowhere.
 
+**Design reference:** [BHAGA Operator Console — Designs](https://www.figma.com/design/Mdlm8YGTIvi6WzgLcNdaXI/BHAGA-Operator-Console-%E2%80%94-Designs?node-id=0-1)
+(fileKey `Mdlm8YGTIvi6WzgLcNdaXI`) — see [`PLAN.md`](PLAN.md) § Design status for
+per-screen node IDs and the Figma-tooling path-length caveat.
+
 ---
 
 ## 1. Design principles

@@ -115,6 +115,46 @@ class TestG1LocalScreenshotRejected(unittest.TestCase):
         self.assertFalse(g1_errors, f"No images should produce no G1 error, got: {g1_errors}")
 
 
+class TestRequiredIssueLink(unittest.TestCase):
+    """Issue #123: PR body must assert Closes/Fixes/Resolves #N."""
+
+    def test_skeleton_body_with_fixes_passes(self):
+        errors = _check_body(_SKELETON_BODY)
+        link_errors = [e for e in errors if "tracking issue" in e.lower()]
+        self.assertFalse(link_errors, f"Expected no issue-link error, got: {link_errors}")
+
+    def test_closes_keyword_passes(self):
+        body = _SKELETON_BODY.replace("Fixes #42.", "Closes #123.")
+        errors = _check_body(body)
+        link_errors = [e for e in errors if "tracking issue" in e.lower()]
+        self.assertFalse(link_errors)
+
+    def test_resolves_keyword_passes(self):
+        body = _SKELETON_BODY.replace("Fixes #42.", "Resolves #99.")
+        errors = _check_body(body)
+        link_errors = [e for e in errors if "tracking issue" in e.lower()]
+        self.assertFalse(link_errors)
+
+    def test_bare_refs_mention_fails(self):
+        """A 'Refs #N' mention does not assert implementation — must fail."""
+        body = _SKELETON_BODY.replace("Fixes #42.", "Refs #42 for background.")
+        errors = _check_body(body)
+        link_errors = [e for e in errors if "tracking issue" in e.lower()]
+        self.assertTrue(link_errors, "Expected an issue-link error for a bare Refs mention")
+
+    def test_bare_hash_mention_fails(self):
+        body = _SKELETON_BODY.replace("Fixes #42.", "See #42 for context.")
+        errors = _check_body(body)
+        link_errors = [e for e in errors if "tracking issue" in e.lower()]
+        self.assertTrue(link_errors, "Expected an issue-link error for a bare #N mention")
+
+    def test_no_issue_reference_at_all_fails(self):
+        body = _SKELETON_BODY.replace("Fixes #42.", "No issue reference here.")
+        errors = _check_body(body)
+        link_errors = [e for e in errors if "tracking issue" in e.lower()]
+        self.assertTrue(link_errors)
+
+
 class TestImgRegexes(unittest.TestCase):
     """Verify the regex patterns work as expected."""
 

@@ -4,9 +4,22 @@ name: Jarvis dev signals
 # a /jarvis-new-task comment is posted, or the operator leaves a comment.
 #
 # Production triggers:
-#   check_suite.completed  → ci_failed / ci_passed / ci_other
-#   issue_comment.created  → intake (/jarvis-new-task, allowlisted authors only)
-#                          → comment  (operator comment on any issue/PR, loop-safe)
+#   check_suite.completed              → ci_failed / ci_passed / ci_other
+#   issue_comment.created              → intake (/jarvis-new-task, allowlisted authors only)
+#                                       → comment  (operator comment on any issue/PR, loop-safe)
+#   pull_request_review_comment.created → comment  (operator inline/diff review comment)
+#   pull_request_review.submitted      → comment  (operator top-level review, e.g. approve/request-changes with a body)
+#
+# Issue #140: a comment left on the PR's *diff* (inline) or as part of a
+# review submission fires pull_request_review_comment / pull_request_review,
+# NOT issue_comment — the original comment-signal job (issue_comment-only)
+# silently never ran for these, so the operator's queue-triggering comments
+# were dropped. review-comment-signal below covers both event types.
+#
+# All PR-scoped comment signals (comment-signal AND review-comment-signal)
+# resolve and post on the branch's TRACKING ISSUE, not the PR itself — the
+# issue stays open long after the PR merges/closes, so watch-all's open-issue
+# enumeration always catches it (Issue #123 Layer B).
 #
 # IMPORTANT: check_suite and issue_comment workflows resolve from the DEFAULT
 # BRANCH (main), so they only fire once this workflow is merged.
@@ -26,6 +39,10 @@ on:
     types: [completed]
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
   # Pre-merge evidence trigger (runs from the PR head, like sandbox-live-run.yml):
   # `opened` also drives the pr-issue-link job below (obs 3).
   pull_request:
@@ -184,15 +201,83 @@ jobs:
             exit 0
           fi
 
+          # Route to the tracking ISSUE (not $ISSUE, which is the PR number
+          # when this comment was left on a PR) — the tracking issue stays
+          # open long after the PR merges/closes (Issue #123 Layer B).
+          # Fall back to $ISSUE itself if no separate tracking issue resolves
+          # (e.g. a plain issue comment, where $ISSUE already is the tracking issue).
+          TRACKING_ISSUE="$(python3 scripts/post_merge_lifecycle.py find-issue --branch "$BRANCH" || true)"
+          if [ -z "$TRACKING_ISSUE" ] || [ "$TRACKING_ISSUE" = "none" ]; then
+            TRACKING_ISSUE="$ISSUE"
+          fi
+
           SIG="$(python3 scripts/post_merge_lifecycle.py emit-signal \
             --event comment \
             --branch "$BRANCH" \
-            --issue "$ISSUE" \
+            --issue "$TRACKING_ISSUE" \
             --comment-url "$CURL" || true)"
 
           CBODY="Comment routed to worktree for \`${BRANCH}\`."$'\n\n'"${SIG}"
-          gh issue comment "$ISSUE" --repo "$REPO" \
-            --body "$CBODY" || echo "::warning::could not post comment signal on issue #$ISSUE"
+          gh issue comment "$TRACKING_ISSUE" --repo "$REPO" \
+            --body "$CBODY" || echo "::warning::could not post comment signal on issue #$TRACKING_ISSUE"
+
+  # ── Review-comment signal (inline diff comments + review submissions) ──────
+  # Issue #140: pull_request_review_comment (inline/diff comment) and
+  # pull_request_review (top-level review, e.g. "Request changes" with a
+  # body) are DIFFERENT events from issue_comment — a comment left this way
+  # never triggered comment-signal above, so the operator's queue-triggering
+  # comment silently dropped. Loop guard: skip bodies that already contain
+  # 'jarvis-signal' so the emitted acknowledgement never re-triggers this job.
+  review-comment-signal:
+    name: Emit review-comment signal
+    if: >-
+      (github.event_name == 'pull_request_review_comment' &&
+       github.event.comment.user.login == 'aditya2kx' &&
+       !contains(github.event.comment.body, 'jarvis-signal')) ||
+      (github.event_name == 'pull_request_review' &&
+       github.event.review.user.login == 'aditya2kx' &&
+       github.event.review.body != null &&
+       !contains(github.event.review.body, 'jarvis-signal'))
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ADMIN_PAT }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Emit review-comment signal
+        env:
+          PR_NUM: ${{ github.event.pull_request.number }}
+          CURL: ${{ github.event.comment.html_url || github.event.review.html_url }}
+        run: |
+          BRANCH="$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefName -q .headRefName 2>/dev/null || true)"
+          if [ -z "$BRANCH" ]; then
+            echo "No branch resolved for PR #$PR_NUM — skipping review-comment signal."
+            exit 0
+          fi
+
+          TRACKING_ISSUE="$(python3 scripts/post_merge_lifecycle.py find-issue --branch "$BRANCH" || true)"
+          if [ -z "$TRACKING_ISSUE" ] || [ "$TRACKING_ISSUE" = "none" ]; then
+            echo "No tracking issue for branch $BRANCH — skipping review-comment signal."
+            exit 0
+          fi
+
+          SIG="$(python3 scripts/post_merge_lifecycle.py emit-signal \
+            --event comment \
+            --branch "$BRANCH" \
+            --pr "$PR_NUM" \
+            --issue "$TRACKING_ISSUE" \
+            --comment-url "$CURL" || true)"
+
+          CBODY="Review comment routed to worktree for \`${BRANCH}\` (PR #${PR_NUM})."$'\n\n'"${SIG}"
+          gh issue comment "$TRACKING_ISSUE" --repo "$REPO" \
+            --body "$CBODY" || echo "::warning::could not post review-comment signal on issue #$TRACKING_ISSUE"
 
   # ── Link PR ↔ tracking issue on open (obs 3) ────────────────────────────────
   # When a PR is opened for a tracked branch, cross-link it: comment the PR URL

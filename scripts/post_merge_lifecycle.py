@@ -78,12 +78,53 @@ def find_tracking_issue_from_gh(branch: str) -> int | None:
     return None
 
 
+_BRANCH_ISSUE_SLUG_RE = re.compile(r"(?:^|/)i(\d+)(?:-|$)")
+
+
+def find_tracking_issue_from_slug(branch: str) -> int | None:
+    """Parse a leading ``iNNN`` issue-number token out of the branch slug.
+
+    Matches the convention used by ``new_requirement.py`` branch naming
+    (e.g. ``fix/i112-would-love-to-see-a-chart`` -> 112). Confirms the
+    parsed number is a real, existing issue via ``gh issue view`` before
+    returning it — a bare regex match is not enough evidence on its own
+    (branch text could coincidentally contain ``iNNN``).
+
+    Returns None when the branch has no ``iNNN`` token, or when ``gh``
+    reports the parsed number does not exist (or is unavailable).
+    """
+    m = _BRANCH_ISSUE_SLUG_RE.search(branch or "")
+    if not m:
+        return None
+    candidate = int(m.group(1))
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "view", str(candidate), "--json", "number"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout or "{}")
+        if data.get("number") == candidate:
+            return candidate
+    except Exception:
+        pass
+    return None
+
+
 def find_tracking_issue(branch: str) -> int | None:
     """Resolve the tracking issue for ``branch``.
 
-    Strategy: phase-cache first (fast, no network), then gh scan (network).
+    Strategy: phase-cache first (fast, no network), then branch-slug
+    (``iNNN`` token, confirmed via ``gh issue view``), then a full gh
+    body-scan as the last resort. The slug strategy is what recovers
+    branches whose tracking-issue body still says ``Branch: TBD`` and was
+    never updated with the real branch name (Issue #130).
     """
     n = find_tracking_issue_from_cache(branch)
+    if n:
+        return n
+    n = find_tracking_issue_from_slug(branch)
     if n:
         return n
     return find_tracking_issue_from_gh(branch)

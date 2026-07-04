@@ -109,6 +109,13 @@ _EVIDENCE_BLOCK_RE = re.compile(
 _IMG_REF_RE = re.compile(r"!\[[^\]]*\]\(\s*([^)\s]+)[^)]*\)", re.IGNORECASE)
 _LOCAL_IMG_RE = re.compile(r"^(?:/|\./|\.\./|~|file://|[A-Za-z]:\\|/?tmp/)", re.IGNORECASE)
 
+# Issue #123: PRs must assert which issue they implement via a Closes/Fixes/
+# Resolves keyword so GitHub auto-closes the tracking issue on merge, and so
+# the merge-lifecycle signal chain's branch-slug fallback has a second source
+# of truth. A bare "Refs #N" / "#N" mention does not count — those describe a
+# relationship (follow-up, background) without asserting "this implements N".
+_CLOSE_KEYWORD_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.IGNORECASE)
+
 
 def _is_real_evidence(evidence_block_content: str) -> bool:
     """Return True if evidence contains real tool output beyond just pytest results.
@@ -224,6 +231,19 @@ def _check_body(body: str) -> list[str]:
         errors.append(
             f"  ✗ §6 Checklist: only {checked} item(s) checked [x]; "
             "review each item and check all that apply (at least 3 expected)"
+        )
+
+    # Issue #123: the PR body must assert which issue it implements via
+    # Closes/Fixes/Resolves — a bare "Refs #N" mention doesn't count. This is
+    # what lets GitHub auto-close the tracking issue on merge and prevents
+    # the class of bug that stranded Issues #101/#108/#112/#113/#118 (merged
+    # PRs whose tracking issue was never closed).
+    if not _CLOSE_KEYWORD_RE.search(body):
+        errors.append(
+            "  ✗ PR must link its tracking issue with a "
+            "Closes/Fixes/Resolves #N keyword (not just Refs #N or a bare "
+            "mention) — this is required so the merge auto-closes the "
+            "issue instead of stranding it (Issue #123)."
         )
 
     return errors

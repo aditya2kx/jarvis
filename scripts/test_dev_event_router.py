@@ -34,6 +34,64 @@ class TestRouteSignalUntracked(unittest.TestCase):
                 result = R.route_signal(_signal("ci_failed", "fix/no-cache"))
         self.assertEqual(result, "unrouted")
 
+    def test_unrouted_when_no_cache_and_no_worktree(self):
+        branch = "fix/nonexistent-worktree-branch"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp) / "jarvis"
+            (repo_root / "metrics" / "pr_cost").mkdir(parents=True)
+            with patch.object(R, "REPO_ROOT", repo_root), \
+                 patch.object(R, "METRICS_DIR", repo_root / "metrics" / "pr_cost"):
+                result = R.route_signal(_signal("ci_failed", branch))
+        self.assertEqual(result, "unrouted")
+
+
+class TestLoadCacheWorktreeFallback(unittest.TestCase):
+    def test_falls_back_to_worktree_cache_when_daemon_side_missing(self):
+        """Issue #140 defense-in-depth: a signal must still route when the
+        daemon-side METRICS_DIR never saw phase_state.py init for this
+        branch, as long as the branch's own worktree has its own cache."""
+        branch = "fix/i999-example"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp) / "jarvis"
+            daemon_mdir = repo_root / "metrics" / "pr_cost"
+            daemon_mdir.mkdir(parents=True)
+
+            wt = Path(tmp) / f"jarvis-wt-{R._slug(branch)}"
+            wt_mdir = wt / "metrics" / "pr_cost"
+            wt_mdir.mkdir(parents=True)
+            (wt_mdir / f"session-{R._slug(branch)}-phase.json").write_text(
+                json.dumps({"branch": branch, "issue": 999, "delivered_signals": [],
+                            "pending_event_count": 0})
+            )
+
+            with patch.object(R, "REPO_ROOT", repo_root), \
+                 patch.object(R, "METRICS_DIR", daemon_mdir):
+                cache = R._load_cache(branch)
+                self.assertIsNotNone(cache)
+                self.assertEqual(cache["issue"], 999)
+                # Mirrored into the daemon-side path for next time.
+                self.assertTrue((daemon_mdir / f"session-{R._slug(branch)}-phase.json").exists())
+
+    def test_returns_none_when_neither_daemon_nor_worktree_cache_exists(self):
+        branch = "fix/totally-untracked"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp) / "jarvis"
+            daemon_mdir = repo_root / "metrics" / "pr_cost"
+            daemon_mdir.mkdir(parents=True)
+            with patch.object(R, "REPO_ROOT", repo_root), \
+                 patch.object(R, "METRICS_DIR", daemon_mdir):
+                self.assertIsNone(R._load_cache(branch))
+
+
+class TestDeriveWorktreePath(unittest.TestCase):
+    def test_returns_none_for_empty_branch(self):
+        self.assertIsNone(R._derive_worktree_path(""))
+
+    def test_returns_none_when_worktree_dir_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(R, "REPO_ROOT", Path(tmp) / "jarvis"):
+                self.assertIsNone(R._derive_worktree_path("fix/no-such-worktree"))
+
 
 class TestRouteSignalDelivered(unittest.TestCase):
     def test_delivers_ci_failed(self):

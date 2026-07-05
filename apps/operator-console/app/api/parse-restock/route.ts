@@ -8,7 +8,7 @@ import { parseRestockImage } from "@/lib/restock/gemini";
 // submits via the submitRestockAction server action (EXECUTION.md §M3 step 5).
 export async function POST(req: NextRequest) {
   try {
-    await operatorEmail(); // throws for non-@mypalmetto.co / missing IAP identity
+    await operatorEmail(); // throws if IAP's identity headers are absent/unverifiable
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "unauthorized" }, { status: 403 });
   }

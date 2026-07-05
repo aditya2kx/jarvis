@@ -149,14 +149,16 @@ Steps:
      return rows as T[];
    }
    ```
-4. `lib/auth/identity.ts` — read IAP header (server only):
+4. `lib/auth/identity.ts` — resolve + verify IAP identity (server only; see §5.4 for the final
+   shape, which verifies `x-goog-iap-jwt-assertion` via `google-auth-library` rather than trusting
+   the plain header alone):
    ```ts
    import { headers } from 'next/headers';
    export async function operatorEmail(): Promise<string> {
      const h = await headers();
      const raw = h.get('x-goog-authenticated-user-email') ?? '';
      const email = raw.replace(/^accounts\.google\.com:/, '');
-     if (!email.endsWith('@mypalmetto.co')) throw new Error('unauthorized');
+     if (!email) throw new Error('operatorEmail: no IAP header present');
      return email;
    }
    export const DEFAULT_STORE = 'palmetto';
@@ -384,29 +386,34 @@ server's local tz.
 - Trigger on push to `main` touching `apps/operator-console/**`.
 - Steps: checkout → auth to GCP (WIF, same pattern as `.github/workflows/deploy.yml`)
   → build container → push to Artifact Registry → `gcloud run deploy operator-console
-  --image … --region … --no-allow-unauthenticated` → `gcloud run services
-  add-iam-policy-binding operator-console --member=user:adi@mypalmetto.co
-  --role=roles/run.invoker`.
-- **Not Cloud Run direct IAP** as originally planned (2026-07-02): `--iap` needs an IAP OAuth
-  brand, and brand creation requires a Google Workspace organization that `jarvis-bhaga-prod`
-  does not have (confirmed 2026-07-04 in CI; the legacy `gcloud iap oauth-brands` API is also
-  deprecated). See `PLAN.md` decisions log 2026-07-04 and `RUNBOOK.md` §17 for the resulting
-  Bearer-token identity model and the `gcloud run services proxy` access pattern.
-- **Admin allowlist:** the deploy also mounts `--set-secrets ALLOWED_EMAILS=operator-console-allowed-emails:latest`.
-  `operatorEmail()` accepts an identity inside `@mypalmetto.co` **or** in this allowlist, so a
-  personal Google account can be granted admin access without weakening the domain rule. The
-  value lives in Secret Manager (not git); grant each account `roles/run.invoker` too. Interim
-  until Google Groups + IAP land — see `RUNBOOK.md` §17 "Granting a new admin/operator".
+  --image … --region … --no-allow-unauthenticated --iap` → `gcloud iap web
+  add-iam-policy-binding --resource-type=cloud-run --service=operator-console
+  --member=user:adi@mypalmetto.co --role=roles/iap.httpsResourceAccessor` (repeated per
+  operator account).
+- **Cloud Run direct IAP, reversing the 2026-07-04 "no IAP" pivot.** That pivot hit the
+  Google-managed/internal OAuth brand flow (`gcloud iap oauth-brands`), which needs a Workspace
+  org `jarvis-bhaga-prod` doesn't have and is deprecated anyway. Current GCP docs confirm a
+  custom **"External"** OAuth client — created once, Console-only, via Google Auth Platform
+  branding + the Cloud Run Security tab's IAP checkbox (see `RUNBOOK.md` §17 "One-time IAP
+  provisioning") — supports projects outside an organization. `--iap` on `gcloud run deploy`
+  then just enables IAP against that existing client; it does not redo the one-time step. See
+  `PLAN.md` decisions log 2026-07-05.
+- **No app-level allowlist.** `operatorEmail()` trusts the IAP-verified identity as-is (any
+  Google account IAP let through); access control is entirely `roles/iap.httpsResourceAccessor`
+  IAM, granted per the deploy workflow above or manually per `RUNBOOK.md` §17 "Granting a new
+  admin/operator". The interim `ALLOWED_EMAILS` Secret Manager allowlist and the
+  `gcloud run services proxy` access pattern from the earlier pivot are removed.
 - Service account: least-privilege — BQ dataUser/jobUser on `bhaga`, Firestore
-  viewer, Secret Manager accessor.
+  viewer, Secret Manager accessor, plus `roles/iap.admin` so CI can manage the
+  `iap.httpsResourceAccessor` bindings above.
 
 ### 5.5 Env vars (`.env.example`)
 ```
 BQ_PROJECT=jarvis-bhaga-prod
 BQ_DATASET=bhaga
 GEMINI_TOKEN=            # from Secret Manager at runtime, not committed
-ALLOWED_EMAILS=         # admin allowlist (comma-separated) for identities outside @mypalmetto.co;
-                        # from Secret Manager (operator-console-allowed-emails) at runtime, not committed
+IAP_AUDIENCE=            # optional override; defaults to /projects/{N}/locations/{R}/services/operator-console
+BYPASS_IAP_EMAIL=        # local dev only (npm run dev) — no IAP headers exist off Cloud Run
 ```
 
 ---
@@ -414,7 +421,7 @@ ALLOWED_EMAILS=         # admin allowlist (comma-separated) for identities outsi
 ## 6. Global acceptance checklist (Definition of Done)
 
 - [ ] `npm run build` clean; `vitest` unit tests pass (queries mocked).
-- [ ] All 9 screens render live BQ data behind Cloud Run IAM auth (`@mypalmetto.co` accounts, or accounts in the `ALLOWED_EMAILS` admin allowlist, via `roles/run.invoker` — see §5.4).
+- [ ] All 9 screens render live BQ data behind Cloud Run direct IAP (any Google account granted `roles/iap.httpsResourceAccessor` — see §5.4).
 - [ ] Every write is idempotent and converges with the Slack path where one exists.
 - [ ] Dual-date reco matches `vw_order_reco_combined` incl. Estimated/Actuals + TOTAL.
 - [ ] Restock/goal/capacity writes trigger `refresh_order_reco` where required.

@@ -1652,12 +1652,15 @@ daily wipe. Full reasoning in `docs/POST_MERGE_BQ_CUTOVER.md` § "Why a one-time
 
 A Next.js app (`apps/operator-console/`) reading/writing the same `bhaga` BQ dataset as
 this pipeline, deployed as its own Cloud Run **service** (`operator-console`, not a job) with
-`--no-allow-unauthenticated` + native Cloud Run IAM (`roles/run.invoker`) — **not** Cloud Run
-direct IAP. Creating the IAP OAuth brand requires a Google Workspace organization, which
-`jarvis-bhaga-prod` does not have (confirmed 2026-07; the old `gcloud iap oauth-brands` flow is
-also deprecated project-wide — see `docs/operator-console/PLAN.md` decisions log). Grafana **stays
-live** (coexistence, not a replacement in v1) — the console is additive, giving the operator
-navigation, goal tracking, and write-backs Grafana never had.
+`--no-allow-unauthenticated` + Cloud Run **direct IAP** (GA, no load balancer). Operators open the
+plain `https://operator-console-…run.app` URL in a browser and sign in with Google — no terminal,
+no proxy command. The legacy `gcloud iap oauth-brands` API requires a Google Workspace
+organization and is deprecated project-wide (confirmed 2026-07-04), but a custom **"External"**
+OAuth client — provisioned once via the Cloud Console's Google Auth Platform + the Cloud Run
+Security tab's IAP checkbox — works fine without an org (reversing the earlier "no IAP" pivot; see
+`docs/operator-console/PLAN.md` decisions log, 2026-07-05). Grafana **stays live** (coexistence,
+not a replacement in v1) — the console is additive, giving the operator navigation, goal tracking,
+and write-backs Grafana never had.
 
 Full design/build docs: [`docs/operator-console/`](docs/operator-console/) (`PLAN.md` — living plan
 + decisions log + milestones; `ARCHITECTURE.md`; `EXECUTION.md` — step-by-step; `COST.md`).
@@ -1668,48 +1671,59 @@ App-level dev loop: [`apps/operator-console/README.md`](apps/operator-console/RE
 Automatic on push to `main` touching `apps/operator-console/**` via
 [`.github/workflows/operator-console-deploy.yml`](.github/workflows/operator-console-deploy.yml):
 builds the container, applies any pending `core/migrations/*.sql` (same runner as this pipeline —
-`core.datastore.ensure_schema()`), deploys `--no-allow-unauthenticated`, then grants
-`roles/run.invoker` to the operator account. No manual deploy step.
+`core.datastore.ensure_schema()`), deploys `--no-allow-unauthenticated --iap`, then grants
+`roles/iap.httpsResourceAccessor` to each operator account. No manual deploy step. `--iap` is
+idempotent against the one-time Console-only provisioning below — it does not redo it.
 
-### Accessing the console (no IAP — Bearer-token auth)
+### One-time IAP provisioning (Console-only, cannot be scripted)
 
-Because the service is `--no-allow-unauthenticated` with no IAP in front, a plain browser URL
-will 403. Reach it via `gcloud run services proxy`, which transparently attaches your own
-identity token to every request:
+Two Console steps, done once per project (already done for `jarvis-bhaga-prod` — see
+`docs/operator-console/PLAN.md` decisions log, 2026-07-05):
+1. **Google Auth Platform branding** — `console.cloud.google.com/auth/overview` → "Get started" →
+   App name "Palmetto Operator Console", **External** audience (Internal is greyed out — no
+   Workspace org), any contact email you're signed in as.
+2. **Enable IAP on the Cloud Run service** — service → **Security** tab → check
+   **Identity Aware Proxy (IAP)** alongside IAM → Save. Google auto-creates the OAuth client tied
+   to the branding above; no manual client creation.
+
+Both steps only need to happen again if the branding/OAuth client is ever deleted.
+
+### Accessing the console (Cloud Run direct IAP — browser sign-in)
+
+Open `https://operator-console-887772634501.us-central1.run.app` in a browser. IAP redirects to
+Google's account chooser ("Sign in to Palmetto Operator Console"), and after picking an account
+either loads the console (if authorized) or shows IAP's own "You don't have access" page with the
+denied email printed (if not). No terminal, no proxy command, no app-level allowlist — access is
+pure IAM.
+
+**Granting a new admin/operator** — one command, one layer:
 ```
-gcloud run services proxy operator-console --region us-central1 --project jarvis-bhaga-prod
+gcloud iap web add-iam-policy-binding \
+  --resource-type=cloud-run --service=operator-console --region=us-central1 --project=jarvis-bhaga-prod \
+  --member=user:NEW@EMAIL --role=roles/iap.httpsResourceAccessor
 ```
-This opens a local `localhost:<port>` that proxies to the live service — open that URL in a
-browser as usual. Requires the Google account you are logged into `gcloud` with (`gcloud config
-get-value account`) to already have `roles/run.invoker` (granted automatically to
-`adi@mypalmetto.co` by the deploy workflow above; run the same
-`gcloud run services add-iam-policy-binding` command manually to add another account).
-
-**Granting a new admin/operator (two layers, both required):**
-1. **Reach the service** — bind `roles/run.invoker`:
-   `gcloud run services add-iam-policy-binding operator-console --region us-central1 --project jarvis-bhaga-prod --member=user:NEW@EMAIL --role=roles/run.invoker`
-2. **Be accepted by the app** — if the email is **not** `@mypalmetto.co`, add it to the
-   `ALLOWED_EMAILS` allowlist secret (comma-separated), then redeploy so the new secret version
-   is picked up:
-   `printf 'a@mypalmetto.co,b@gmail.com' | gcloud secrets versions add operator-console-allowed-emails --project jarvis-bhaga-prod --data-file=-`
-   `@mypalmetto.co` accounts skip step 2 (accepted by the domain rule). This allowlist is an
-   interim stopgap until the Google Groups + IAP (`admin`/`operator` groups) model lands.
+Any Google account works — no domain restriction, since IAP's IAM is the sole gate. IAM changes
+can take up to a couple of minutes to propagate; if a just-granted account still sees "no access",
+visit `<service-url>?gcp-iap-mode=CLEAR_LOGIN_COOKIE` to force IAP to re-check the current session
+against the latest policy instead of a cached session decision. Revoke with
+`gcloud iap web remove-iam-policy-binding` (same flags). A Google Groups (`admin`/`operator`) model
+for `mypalmetto.co` is a documented follow-up so grants don't need per-user `gcloud` calls; per-user
+grants are the current mechanism.
 
 ### Operating
 
 - **Identity:** the signed-in operator's email is available server-side via
-  `lib/auth/identity.ts::operatorEmail()`. It checks, in order: (1) the
-  `X-Goog-Authenticated-User-Email` header (IAP, kept as a fallback for if IAP is ever adopted),
-  (2) the `email` claim decoded from the JWT in `X-Serverless-Authorization` — the header Cloud
-  Run's own IAM check populates with the caller's already-verified ID token (confirmed live via a
-  header dump: `gcloud run services proxy` sends no plain `Authorization` header at all, only
-  `x-serverless-authorization: bearer <JWT>`), (3) a `tokeninfo` lookup for callers presenting an
-  opaque OAuth2 access token instead of a JWT. Decoding (not re-verifying) is safe because Cloud
-  Run's IAM already authorized that exact token before the request reached the app. Used as
-  `updated_by` on every write, same field the Slack `/bhaga-cloud` commands stamp. The resolved
-  email is accepted only if it is inside `@mypalmetto.co` **or** listed in the `ALLOWED_EMAILS`
-  allowlist secret (interim admin allowlist for personal Google accounts — see "Granting a new
-  admin/operator" above); otherwise `operatorEmail()` throws and the request is rejected.
+  `lib/auth/identity.ts::operatorEmail()`. IAP forwards the caller's email in the plain
+  `X-Goog-Authenticated-User-Email` header (trustworthy because only the IAP service agent holds
+  `run.invoker` on the Cloud Run service — end users hold `roles/iap.httpsResourceAccessor`
+  instead, never direct invoker), and additionally signs a JWT in `X-Goog-IAP-JWT-Assertion`.
+  `operatorEmail()` verifies that JWT via `google-auth-library` (`OAuth2Client.getIapPublicKeys()` +
+  `verifySignedJwtWithCertsAsync()`) against the direct-Cloud-Run-IAP audience format
+  `/projects/{PROJECT_NUMBER}/locations/{REGION}/services/{SERVICE_NAME}`, and requires the JWT's
+  `email` claim to agree with the plain header before trusting either — so a header-forwarding
+  misconfiguration can't silently downgrade this to an unverified header. Used as `updated_by` on
+  every write, same field the Slack `/bhaga-cloud` commands stamp. Local dev has no IAP headers at
+  all — `BYPASS_IAP_EMAIL` in `.env.local` stands in.
 - **Caching:** every page uses `export const dynamic = "force-dynamic"`, never `revalidate` —
   Next's Full Route Cache would otherwise serve a cached render at the CDN edge to a new
   unauthenticated caller regardless of Cloud Run's IAM check on *that* request (found + fixed

@@ -54,17 +54,16 @@ jobs:
           BHAGA_DATASTORE=bigquery python3 -c \
             "from core.datastore import ensure_schema; applied = ensure_schema(); print('applied:', applied or 'none')"
 
-      # --no-allow-unauthenticated + native Cloud Run IAM (roles/run.invoker),
-      # not Cloud Run direct IAP: creating the IAP OAuth brand requires a
-      # Google Workspace organization, which jarvis-bhaga-prod does not have
-      # (confirmed 2026-07 — see docs/operator-console/EXECUTION.md §5.4).
-      # The app extracts the caller's identity from the already-Google-verified
-      # Authorization Bearer token instead of an IAP-forwarded header — see
-      # lib/auth/identity.ts. Least-privilege runtime SA (BQ dataUser/jobUser
-      # on `bhaga`, Secret Manager accessor) is provisioned once, not here.
-      # ALLOWED_EMAILS (Secret Manager) is the admin allowlist for identities
-      # outside @mypalmetto.co — kept in Secret Manager, not git, so no personal
-      # address is committed. Superseded once Google Groups + IAP land.
+      # Cloud Run direct IAP (GA, no load balancer) fronts this service — a
+      # custom "External" OAuth client + branding works fine without a Google
+      # Workspace organization (reversing the 2026-07-04 "no IAP" pivot; see
+      # docs/operator-console/PLAN.md decision log 2026-07-05). --iap is
+      # idempotent against the one-time Console-driven consent-screen +
+      # OAuth-client provisioning already done for this service (Console-only
+      # step, cannot be scripted — see RUNBOOK.md §17). The app verifies the
+      # IAP-forwarded identity in lib/auth/identity.ts. Least-privilege
+      # runtime SA (BQ dataUser/jobUser on `bhaga`, Secret Manager accessor)
+      # is provisioned once, not here.
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${{ env.SERVICE }} \
@@ -72,20 +71,24 @@ jobs:
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT_ID }} \
             --no-allow-unauthenticated \
+            --iap \
             --memory 512Mi \
             --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga \
-            --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest,ALLOWED_EMAILS=operator-console-allowed-emails:latest
+            --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest
 
-      # Grant the operator account run.invoker so `gcloud run services proxy`
-      # (the access pattern — see RUNBOOK.md) can reach the service. Idempotent:
-      # re-adding an existing binding is a no-op, not an error.
-      - name: Grant operator invoker access
+      # IAP IAM (roles/iap.httpsResourceAccessor), not run.invoker — only the
+      # IAP service agent invokes the Cloud Run service now. Idempotent:
+      # re-adding an existing binding is a no-op, not an error. Per-user grants
+      # for now; a Google Groups (admin/operator) model is a documented
+      # follow-up — see RUNBOOK.md §17.
+      - name: Grant operator IAP access
         run: |
-          gcloud run services add-iam-policy-binding ${{ env.SERVICE }} \
-            --region ${{ env.REGION }} \
-            --project ${{ env.PROJECT_ID }} \
-            --member="user:adi@mypalmetto.co" \
-            --role="roles/run.invoker"
+          for member in "user:adi@mypalmetto.co" "user:aditya.2ky@gmail.com"; do
+            gcloud iap web add-iam-policy-binding \
+              --resource-type=cloud-run --service=${{ env.SERVICE }} \
+              --region ${{ env.REGION }} --project ${{ env.PROJECT_ID }} \
+              --member="$member" --role="roles/iap.httpsResourceAccessor"
+          done
 
       - name: Record deploy event (BQ)
         run: |

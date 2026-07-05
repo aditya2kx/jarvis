@@ -1,14 +1,16 @@
 import { laborDaily, storeConfig } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey, formatDate } from "@/lib/format";
+import { storeDisplayName } from "@/lib/config/stores";
 import { LineChartCard } from "@/components/charts/LineChartCard";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { DataTable } from "@/components/tables/DataTable";
+import { PageHeader } from "@/components/shell/PageHeader";
 import { RangeFilter, parseRange } from "@/components/filters/RangeFilter";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { LaborDailyRow } from "@/lib/bq/queries";
 
-export const revalidate = 600;
+export const dynamic = "force-dynamic";
 
 // Net sales, orders, and items — the sales-facing subset of
 // vw_model_labor_daily (same source the old Grafana "Daily Sales" section
@@ -51,10 +53,11 @@ export default async function SalesPage({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-baseline justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Sales</h1>
-        <RangeFilter basePath="/sales" value={range} />
-      </div>
+      <PageHeader
+        title="Sales"
+        subtitle={`Net sales, orders, and items sold · ${storeDisplayName(DEFAULT_STORE)}`}
+        right={<RangeFilter basePath="/sales" value={range} />}
+      />
 
       {error ? (
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>

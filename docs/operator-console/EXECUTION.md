@@ -209,7 +209,12 @@ Steps:
    (`vw_source_pulls`), `storeConfig`.
 2. Each screen is a **Server Component** calling its query fn(s) and rendering
    `components/charts/*` + `components/tables/DataTable.tsx`. Add
-   `export const revalidate = 600;` (10-min cache) to each page.
+   `export const dynamic = "force-dynamic";` to each page — **not**
+   `export const revalidate = N`, which lets Next's Full Route Cache serve a
+   cached render to a subsequent unauthenticated caller regardless of Cloud
+   Run's IAM check on that request (a real vulnerability found and fixed
+   2026-07-05 while re-locking the preview after the temporary public-access
+   review window — see RUNBOOK.md §17).
 3. Home: `components/kpi/HealthScorecard.tsx` — reads the daily views + goal keys
    from `store_config`; computes **status/pace in the component from already-fetched
    rows only** (comparison to a goal is presentation, not a new metric). Weekly/
@@ -379,8 +384,14 @@ server's local tz.
 - Trigger on push to `main` touching `apps/operator-console/**`.
 - Steps: checkout → auth to GCP (WIF, same pattern as `.github/workflows/deploy.yml`)
   → build container → push to Artifact Registry → `gcloud run deploy operator-console
-  --image … --region … --no-allow-unauthenticated` → enable Cloud Run IAP + bind
-  `roles/iap.httpsResourceAccessor` to the `@mypalmetto.co` group only.
+  --image … --region … --no-allow-unauthenticated` → `gcloud run services
+  add-iam-policy-binding operator-console --member=user:adi@mypalmetto.co
+  --role=roles/run.invoker`.
+- **Not Cloud Run direct IAP** as originally planned (2026-07-02): `--iap` needs an IAP OAuth
+  brand, and brand creation requires a Google Workspace organization that `jarvis-bhaga-prod`
+  does not have (confirmed 2026-07-04 in CI; the legacy `gcloud iap oauth-brands` API is also
+  deprecated). See `PLAN.md` decisions log 2026-07-04 and `RUNBOOK.md` §17 for the resulting
+  Bearer-token identity model and the `gcloud run services proxy` access pattern.
 - Service account: least-privilege — BQ dataUser/jobUser on `bhaga`, Firestore
   viewer, Secret Manager accessor.
 
@@ -396,7 +407,7 @@ GEMINI_TOKEN=            # from Secret Manager at runtime, not committed
 ## 6. Global acceptance checklist (Definition of Done)
 
 - [ ] `npm run build` clean; `vitest` unit tests pass (queries mocked).
-- [ ] All 8 screens render live BQ data behind IAP (`@mypalmetto.co` only).
+- [ ] All 9 screens render live BQ data behind Cloud Run IAM auth (`@mypalmetto.co` operator accounts only, via `roles/run.invoker` — see §5.4).
 - [ ] Every write is idempotent and converges with the Slack path where one exists.
 - [ ] Dual-date reco matches `vw_order_reco_combined` incl. Estimated/Actuals + TOTAL.
 - [ ] Restock/goal/capacity writes trigger `refresh_order_reco` where required.

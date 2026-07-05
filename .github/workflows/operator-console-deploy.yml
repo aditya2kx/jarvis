@@ -54,20 +54,35 @@ jobs:
           BHAGA_DATASTORE=bigquery python3 -c \
             "from core.datastore import ensure_schema; applied = ensure_schema(); print('applied:', applied or 'none')"
 
-      # --no-allow-unauthenticated + IAP restricts access to the
-      # @mypalmetto.co group; least-privilege runtime SA (BQ dataUser/jobUser
+      # --no-allow-unauthenticated + native Cloud Run IAM (roles/run.invoker),
+      # not Cloud Run direct IAP: creating the IAP OAuth brand requires a
+      # Google Workspace organization, which jarvis-bhaga-prod does not have
+      # (confirmed 2026-07 — see docs/operator-console/EXECUTION.md §5.4).
+      # The app extracts the caller's identity from the already-Google-verified
+      # Authorization Bearer token instead of an IAP-forwarded header — see
+      # lib/auth/identity.ts. Least-privilege runtime SA (BQ dataUser/jobUser
       # on `bhaga`, Secret Manager accessor) is provisioned once, not here.
-      - name: Deploy to Cloud Run (direct IAP)
+      - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${{ env.SERVICE }} \
             --image ${{ env.REGISTRY }}/operator-console:${{ github.sha }} \
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT_ID }} \
             --no-allow-unauthenticated \
-            --iap \
             --memory 512Mi \
             --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga \
             --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest
+
+      # Grant the operator account run.invoker so `gcloud run services proxy`
+      # (the access pattern — see RUNBOOK.md) can reach the service. Idempotent:
+      # re-adding an existing binding is a no-op, not an error.
+      - name: Grant operator invoker access
+        run: |
+          gcloud run services add-iam-policy-binding ${{ env.SERVICE }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --member="user:adi@mypalmetto.co" \
+            --role="roles/run.invoker"
 
       - name: Record deploy event (BQ)
         run: |

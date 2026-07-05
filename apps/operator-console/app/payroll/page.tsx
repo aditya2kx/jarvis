@@ -1,6 +1,9 @@
 import { payrollPeriod, reviewBonusDetail, trainingShifts, recognitionBonuses } from "@/lib/bq/queries";
 import { formatDollars } from "@/lib/format";
+import { storeDisplayName } from "@/lib/config/stores";
 import { DataTable } from "@/components/tables/DataTable";
+import { PageHeader } from "@/components/shell/PageHeader";
+import { FilterPills } from "@/components/filters/FilterPills";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TrainingQuickAdd } from "@/components/drawers/TrainingQuickAdd";
 import { RecognitionDrawer } from "@/components/drawers/RecognitionDrawer";
@@ -14,9 +17,27 @@ import type {
   RecognitionBonusRow,
 } from "@/lib/bq/queries";
 
-export const revalidate = 600;
+export const dynamic = "force-dynamic";
 
-export default async function PayrollPage() {
+type View = "reconciliation" | "detail";
+
+function parseView(value: string | string[] | undefined): View {
+  return (Array.isArray(value) ? value[0] : value) === "detail" ? "detail" : "reconciliation";
+}
+
+function parsePeriod(value: string | string[] | undefined): "current" | "last" {
+  return (Array.isArray(value) ? value[0] : value) === "last" ? "last" : "current";
+}
+
+export default async function PayrollPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ view?: string; period?: string }>;
+}) {
+  const sp = await searchParams;
+  const view = parseView(sp.view);
+  const period = parsePeriod(sp.period);
+
   let periods: PayrollPeriodRow[] = [];
   let reviews: ReviewBonusDetailRow[] = [];
   let training: TrainingShiftRow[] = [];
@@ -37,6 +58,12 @@ export default async function PayrollPage() {
   const totalBonus = periods.reduce((s, p) => s + (p.review_bonus ?? 0), 0);
   const totalWageDiff = periods.reduce((s, p) => s + (p.wage_diff ?? 0), 0);
 
+  const periodStarts = Array.from(new Set(periods.map((p) => p.period_start)));
+  const selectedPeriodStart = period === "last" ? periodStarts[1] : periodStarts[0];
+  const periodRows = selectedPeriodStart
+    ? periods.filter((p) => p.period_start === selectedPeriodStart)
+    : periods;
+
   const periodColumns: ColumnDef<PayrollPeriodRow>[] = [
     { accessorKey: "period_start", header: "Period", meta: { format: { kind: "date" } } },
     { accessorKey: "employee", header: "Employee" },
@@ -45,7 +72,18 @@ export default async function PayrollPage() {
     { accessorKey: "tips_allocated", header: "Tips", meta: { format: { kind: "dollars" } } },
     { accessorKey: "review_bonus", header: "Review bonus", meta: { format: { kind: "dollars" } } },
     { accessorKey: "est_total_pay", header: "Est. total", meta: { format: { kind: "dollars" } } },
-    { accessorKey: "wage_diff", header: "Wage diff (est-ADP)", meta: { format: { kind: "dollars" } } },
+    {
+      accessorKey: "wage_diff",
+      header: "Wage diff (est-ADP)",
+      // Either direction of a large gap is the reconciliation problem, not
+      // just under- or over-paying — compare |diff| against the bands.
+      meta: {
+        format: {
+          kind: "dollars",
+          thresholds: { warn: 50, bad: 150, direction: "higher-bad", useAbs: true },
+        },
+      },
+    },
   ];
 
   const reviewColumns: ColumnDef<ReviewBonusDetailRow>[] = [
@@ -71,7 +109,22 @@ export default async function PayrollPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-2xl font-semibold tracking-tight">Payroll &amp; People</h1>
+      <PageHeader
+        title="Payroll & People"
+        subtitle={`Wages, tips, bonuses, and training · ${storeDisplayName(DEFAULT_STORE)}`}
+        right={
+          <FilterPills
+            label="View"
+            param="view"
+            value={view}
+            options={[
+              { value: "reconciliation", label: "Reconciliation" },
+              { value: "detail", label: "Detail" },
+            ]}
+            basePath="/payroll"
+          />
+        }
+      />
 
       {error ? (
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
@@ -110,41 +163,58 @@ export default async function PayrollPage() {
             </Card>
           </div>
 
-          <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
-              Per-employee, per-period detail
-            </h2>
-            <DataTable columns={periodColumns} data={periods} />
-          </div>
-
-          <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
-              Google review bonuses — last 30 days
-            </h2>
-            <DataTable columns={reviewColumns} data={reviews} />
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-medium text-muted-foreground">
-                Training shifts — last 30 days
-              </h2>
-              {FEATURES.writeTraining ? <TrainingQuickAdd /> : null}
+          {view === "reconciliation" ? (
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-medium text-muted-foreground">
+                  Per-employee, per-period detail
+                </h2>
+                <FilterPills
+                  label="Period"
+                  param="period"
+                  value={period}
+                  options={[
+                    { value: "current", label: "Current" },
+                    { value: "last", label: "Last" },
+                  ]}
+                  basePath="/payroll"
+                  extraParams={{ view }}
+                />
+              </div>
+              <DataTable columns={periodColumns} data={periodRows} />
             </div>
-            <DataTable columns={trainingColumns} data={training} />
-          </div>
+          ) : (
+            <>
+              <div>
+                <h2 className="mb-2 text-sm font-medium text-muted-foreground">
+                  Google review bonuses — last 30 days
+                </h2>
+                <DataTable columns={reviewColumns} data={reviews} />
+              </div>
 
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-medium text-muted-foreground">
-                Recognition bonuses — last 2 periods
-              </h2>
-              {FEATURES.writeRecognition ? (
-                <RecognitionDrawer defaultPayPeriod={periods[0]?.period_start ?? ""} />
-              ) : null}
-            </div>
-            <DataTable columns={recognitionColumns} data={recognitions} />
-          </div>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-medium text-muted-foreground">
+                    Training shifts — last 30 days
+                  </h2>
+                  {FEATURES.writeTraining ? <TrainingQuickAdd /> : null}
+                </div>
+                <DataTable columns={trainingColumns} data={training} />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-medium text-muted-foreground">
+                    Recognition bonuses — last 2 periods
+                  </h2>
+                  {FEATURES.writeRecognition ? (
+                    <RecognitionDrawer defaultPayPeriod={periods[0]?.period_start ?? ""} />
+                  ) : null}
+                </div>
+                <DataTable columns={recognitionColumns} data={recognitions} />
+              </div>
+            </>
+          )}
         </>
       )}
     </div>

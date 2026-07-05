@@ -29,7 +29,7 @@ per-screen node IDs and the Figma-tooling path-length caveat.
    `cloud/webhook/handler.py` (training shifts, `store_config`, restock schedule /
    orders). The app is another caller of the same contracts — never a new,
    divergent write path.
-3. **Prod runs on hosted infra.** Cloud Run + IAP + BigQuery + Secret Manager.
+3. **Prod runs on hosted infra.** Cloud Run (native IAM) + BigQuery + Secret Manager.
    No laptop runtime. (Matches the repo-wide convention.)
 4. **Config-driven, multi-store from day one.** `store` is a first-class filter;
    goals and capacity live in `store_config`, never hardcoded.
@@ -70,10 +70,10 @@ Grafana panel 83's `frozenColumns.left = 3`).
 | Concern | Choice | Notes |
 |---|---|---|
 | Warehouse client | **`@google-cloud/bigquery`** (server-only) | Parameterized queries; ADC on Cloud Run |
-| Reads | RSC + short-TTL cache (`revalidate`) | Views refresh nightly; 5–15 min cache is fine |
+| Reads | RSC, `export const dynamic = "force-dynamic"` | Not `revalidate` — Next's Full Route Cache would serve a cached render at the CDN edge to a *new* unauthenticated caller even after Cloud Run's IAM check passed for the original request, bypassing auth for that path (found 2026-07-05 while re-locking the preview: `/home` kept returning cached 200s after IAM was re-enabled). Views still refresh nightly; the per-request BQ read is cheap enough that always-dynamic has no material cost here. |
 | Client interactivity | **TanStack Query** (only where needed) | Most screens are static RSC |
 | Writes | **Next.js server actions** → BQ MERGE | Same contracts as `handler.py` |
-| Auth | **Google IAP** in front of Cloud Run | Restrict to `@mypalmetto.co`; app trusts `X-Goog-Authenticated-User-Email` |
+| Auth | **Native Cloud Run IAM** (`--no-allow-unauthenticated` + `roles/run.invoker`) | Not IAP — brand creation needs a Workspace org we don't have (2026-07-04, see PLAN.md decisions log); app decodes the caller's Bearer ID token, restricted to `@mypalmetto.co` |
 | Secrets | **Secret Manager** + ADC | No secrets in image/git |
 | LLM ingestion | Server route → Gemini/Claude (vision) | CSV/photo → structured rows → operator confirm |
 | Hosting | **Cloud Run** (Next.js `output: standalone` container) | Autoscale to zero |
@@ -87,7 +87,7 @@ apps/operator-console/          # Next.js app (new)
   components/                   # shared UI (charts, tables, KPI, drawers)
   lib/bq/                       # BigQuery data-access layer (query fns per view)
   lib/actions/                  # server actions (write-backs)
-  lib/auth/                     # IAP identity extraction + store scoping
+  lib/auth/                     # Bearer-token identity extraction + store scoping
   Dockerfile
 docs/operator-console/          # this doc + PLAN.md
 ```
@@ -123,12 +123,12 @@ flowchart LR
   DR --> OR --> T
   DR <--> FS
 
-  subgraph Console["Operator Console (Cloud Run + IAP) — NEW"]
+  subgraph Console["Operator Console (Cloud Run IAM) — NEW"]
     RSC[Server Components\nread]
     ACT[Server Actions\nwrite]
   end
-  IAP{{Google IAP\n@mypalmetto.co}}
-  OP((Operator)) --> IAP --> Console
+  IAM{{Cloud Run IAM\nrun.invoker: @mypalmetto.co}}
+  OP((Operator)) -->|gcloud run services proxy| IAM --> Console
   V --> RSC
   T --> RSC
   FS -. freshness .-> RSC
@@ -179,7 +179,7 @@ Writes are **server actions** that call the same idempotent contracts as
 ```mermaid
 flowchart LR
   UI[Drawer / form] --> SA[Server Action]
-  SA --> AU{IAP identity\n= updated_by}
+  SA --> AU{Bearer token identity\n= updated_by}
   AU --> M[BQ MERGE / replace-per-key]
   M --> OK[revalidate screen]
   SA -. restock/config .-> RR[refresh_order_reco]
@@ -250,16 +250,17 @@ Freshness for the closing-form source (`inventory_closing_daily` /
 
 ```mermaid
 flowchart LR
-  Op((Operator)) --> LB[HTTPS LB]
-  LB --> IAP{{Google IAP}}
-  IAP -->|@mypalmetto.co only| CR[Cloud Run: operator-console]
+  Op((Operator)) -->|gcloud run services proxy| GFE[Google Front End\nverifies ID token]
+  GFE -->|run.invoker: @mypalmetto.co only| CR[Cloud Run: operator-console]
   CR --> BQ[(BigQuery)]
   CR --> SM[(Secret Manager)]
   CR --> FS[(Firestore)]
-  GH[GitHub Actions] -->|build + deploy| CR
+  GH[GitHub Actions] -->|build + deploy + bind run.invoker| CR
 ```
 
-- **IAP** enforces Google SSO; the app reads the verified email header for
+- **Cloud Run IAM** (not IAP — no Workspace org, see PLAN.md decisions log
+  2026-07-04) verifies the caller's Google-signed ID token before the request
+  reaches the container; the app decodes that same token's `email` claim for
   `updated_by` on every write and to scope store access.
 - **Cloud Run** service account has least-privilege BQ (dataset-scoped) +
   Firestore read + Secret Manager access via ADC.

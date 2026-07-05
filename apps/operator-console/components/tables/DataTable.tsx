@@ -21,6 +21,19 @@ import { Badge } from "@/components/ui/badge";
 import { formatDate, formatDollars, formatCents, formatNumber, formatPct } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
+// Threshold coloring for numeric/pct/dollars columns (Figma: red/amber/green
+// on p95, % late, Days-left, wage-diff). `warn`/`bad` are in the same unit as
+// the raw cell value (e.g. a "pct" column's thresholds are fractions like
+// 0.05, matching the value before the *100 display conversion). `useAbs`
+// compares |value| — for columns like wage-diff where either direction of a
+// large gap is the problem, not just one sign.
+export interface Thresholds {
+  warn: number;
+  bad: number;
+  direction: "higher-bad" | "lower-bad";
+  useAbs?: boolean;
+}
+
 // Column `cell` render functions can't cross the Server->Client Component
 // boundary (they're closures created in the page's server render, and RSC
 // props must be serializable) — see docs/operator-console/PLAN.md decisions
@@ -28,10 +41,10 @@ import { cn } from "@/lib/utils";
 // `cell` fn, and DataTable — already a client component — owns rendering.
 export type ColumnFormat =
   | { kind: "date" }
-  | { kind: "dollars" }
+  | { kind: "dollars"; thresholds?: Thresholds }
   | { kind: "cents" }
-  | { kind: "pct"; digits?: number }
-  | { kind: "number"; digits?: number }
+  | { kind: "pct"; digits?: number; thresholds?: Thresholds }
+  | { kind: "number"; digits?: number; thresholds?: Thresholds }
   | { kind: "status" }
   | { kind: "source" };
 
@@ -48,18 +61,37 @@ function statusVariant(value: string | null | undefined): "default" | "destructi
   return "secondary";
 }
 
+function thresholdClass(value: number | null | undefined, t: Thresholds): string | undefined {
+  if (value == null || Number.isNaN(value)) return undefined;
+  const v = t.useAbs ? Math.abs(value) : value;
+  const bad = t.direction === "higher-bad" ? v >= t.bad : v <= t.bad;
+  if (bad) return "text-red-500 font-medium";
+  const warn = t.direction === "higher-bad" ? v >= t.warn : v <= t.warn;
+  if (warn) return "text-amber-500 font-medium";
+  return "text-emerald-500 font-medium";
+}
+
 function renderFormatted(format: ColumnFormat, value: unknown): ReactNode {
   switch (format.kind) {
     case "date":
       return formatDate(value as Parameters<typeof formatDate>[0]);
-    case "dollars":
-      return formatDollars(value as number | null | undefined);
+    case "dollars": {
+      const v = value as number | null | undefined;
+      const cls = format.thresholds ? thresholdClass(v, format.thresholds) : undefined;
+      return <span className={cls}>{formatDollars(v)}</span>;
+    }
     case "cents":
       return formatCents(value as number | null | undefined);
-    case "pct":
-      return formatPct(value as number | null | undefined, format.digits);
-    case "number":
-      return formatNumber(value as number | null | undefined, format.digits);
+    case "pct": {
+      const v = value as number | null | undefined;
+      const cls = format.thresholds ? thresholdClass(v, format.thresholds) : undefined;
+      return <span className={cls}>{formatPct(v, format.digits)}</span>;
+    }
+    case "number": {
+      const v = value as number | null | undefined;
+      const cls = format.thresholds ? thresholdClass(v, format.thresholds) : undefined;
+      return <span className={cls}>{formatNumber(v, format.digits)}</span>;
+    }
     case "status":
       return <Badge variant={statusVariant(value as string | null | undefined)}>{(value as string) ?? "unknown"}</Badge>;
     case "source": {

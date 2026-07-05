@@ -2,47 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  Home,
-  LineChart,
-  Clock,
-  TrendingUp,
-  ShieldCheck,
-  Wallet,
-  PackageSearch,
-  Activity,
-} from "lucide-react";
 import { cn } from "@/lib/utils";
-
-// Mirrors the Figma IA agreed in docs/operator-console/PLAN.md — grouped by
-// operator intent, not by Grafana's original folder structure.
-const NAV_GROUPS = [
-  {
-    label: "Overview",
-    items: [{ href: "/home", label: "Home", icon: Home }],
-  },
-  {
-    label: "Performance",
-    items: [
-      { href: "/sales", label: "Sales", icon: LineChart },
-      { href: "/labor", label: "Labor", icon: Clock },
-      { href: "/forecast", label: "Forecast", icon: TrendingUp },
-      { href: "/order-quality", label: "Order Quality", icon: ShieldCheck },
-    ],
-  },
-  {
-    label: "People",
-    items: [{ href: "/payroll", label: "Payroll & People", icon: Wallet }],
-  },
-  {
-    label: "Inventory",
-    items: [{ href: "/inventory", label: "Inventory / Ordering", icon: PackageSearch }],
-  },
-  {
-    label: "System",
-    items: [{ href: "/pipeline", label: "Pipeline Health", icon: Activity }],
-  },
-] as const;
+import { NAV_GROUPS, isNavItemActive } from "./nav-items";
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -55,7 +16,7 @@ export function Sidebar() {
             {group.label}
           </span>
           {group.items.map((item) => {
-            const active = pathname === item.href || pathname?.startsWith(item.href + "/");
+            const active = isNavItemActive(pathname, item.href);
             return (
               <Link
                 key={item.href}

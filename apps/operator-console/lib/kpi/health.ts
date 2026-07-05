@@ -73,13 +73,10 @@ export async function loadHealthScorecard(window: "weekly" | "monthly"): Promise
   // (migration 032), the same view the Inventory screen reads. No food-cost
   // source exists yet (no COGS table) — left null/"—", matching the design's
   // own placeholder dash for that row rather than fabricating a number.
-  const runwayDays = reco.length
-    ? Math.min(
-        ...reco
-          .map((r) => r["Days Left 1"] ?? r["Days Left 2"])
-          .filter((d): d is number => d != null),
-      )
-    : null;
+  const runwayCandidates = reco
+    .map((r) => r["Days Left 1"] ?? r["Days Left 2"])
+    .filter((d): d is number => d != null);
+  const runwayDays = runwayCandidates.length ? Math.min(...runwayCandidates) : null;
 
   const goalNetSales = goalValue(config, window === "weekly" ? "goal_net_sales_weekly" : "goal_net_sales_monthly");
   const goalLaborPctMax = goalValue(config, "goal_labor_pct_max");

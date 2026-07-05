@@ -51,12 +51,12 @@ export function HealthScorecard({
       <CardContent className="flex flex-col divide-y divide-border">
         {data.metrics.map((m) => (
           <div key={m.key} className="flex flex-col gap-1.5 py-3 first:pt-0 last:pb-0">
-            <div className="flex items-center justify-between gap-3">
-              <span className="w-48 shrink-0 text-sm text-muted-foreground">{m.label}</span>
-              <div className="flex flex-1 items-center gap-3">
-                <span className="w-24 shrink-0 text-lg font-semibold">{m.formatted}</span>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+              <span className="shrink-0 text-sm text-muted-foreground sm:w-40">{m.label}</span>
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                <span className="w-16 shrink-0 text-lg font-semibold sm:w-24">{m.formatted}</span>
                 <GoalBar status={m.status} pace={m.pace} />
-                <span className="w-24 shrink-0 text-right text-xs text-muted-foreground">
+                <span className="hidden shrink-0 text-right text-xs text-muted-foreground sm:inline sm:w-24">
                   goal {m.goalFormatted}
                 </span>
               </div>

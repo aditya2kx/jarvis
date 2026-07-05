@@ -1,12 +1,13 @@
 import { pipelineRuns, sourcePulls } from "@/lib/bq/queries";
-import { formatDate } from "@/lib/format";
+import { formatDate, dateSortKey } from "@/lib/format";
 import { DataTable } from "@/components/tables/DataTable";
+import { PageHeader } from "@/components/shell/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { PipelineRunRow, SourcePullRow } from "@/lib/bq/queries";
 
-export const revalidate = 600;
+export const dynamic = "force-dynamic";
 
 function StatusBadge({ status }: { status: string | null }) {
   const variant = status === "success" ? "default" : status ? "destructive" : "secondary";
@@ -28,6 +29,10 @@ export default async function PipelinePage() {
   for (const p of pulls) {
     if (!latestPerSource.has(p.source)) latestPerSource.set(p.source, p);
   }
+  const dataThrough = pulls.reduce<string | undefined>(
+    (max, p) => (!max || dateSortKey(p.run_date) > dateSortKey(max) ? p.run_date : max),
+    undefined,
+  );
 
   const runColumns: ColumnDef<PipelineRunRow>[] = [
     { accessorKey: "run_date", header: "Run date", meta: { format: { kind: "date" } } },
@@ -46,13 +51,16 @@ export default async function PipelinePage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-2xl font-semibold tracking-tight">Pipeline Health</h1>
+      <PageHeader
+        title="Pipeline Health"
+        subtitle="Nightly refresh status and source freshness"
+      />
 
       {error ? (
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm font-medium text-muted-foreground">Latest run</CardTitle>
@@ -78,6 +86,16 @@ export default async function PipelinePage() {
               </CardHeader>
               <CardContent>
                 <p className="text-3xl font-semibold">{runs.length}</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium text-muted-foreground">Data through</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-3xl font-semibold">
+                  {dataThrough ? formatDate(dataThrough) : "—"}
+                </p>
               </CardContent>
             </Card>
           </div>

@@ -146,7 +146,7 @@ export function RestockImportDrawer({ dates }: { dates: string[] }) {
               <Label>Review before submitting</Label>
               {rows.map((r) => (
                 <div key={r.item} className="flex items-center justify-between gap-2">
-                  <span className="text-sm">{r.item}</span>
+                  <span className="min-w-0 flex-1 truncate text-sm">{r.item}</span>
                   <Input
                     type="number"
                     min={0}

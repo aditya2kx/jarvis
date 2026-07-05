@@ -1,4 +1,5 @@
 import { StoreFilter } from "./StoreFilter";
+import { MobileNav } from "./MobileNav";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { pipelineRuns } from "@/lib/bq/queries";
 import { cn } from "@/lib/utils";
@@ -22,14 +23,15 @@ async function PipelineDot() {
 
 export function Topbar({ operatorEmail }: { operatorEmail?: string }) {
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-background px-4">
-      <div className="flex items-center gap-2">
+    <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-background px-4">
+      <div className="flex min-w-0 items-center gap-2">
+        <MobileNav />
         <PipelineDot />
-        <span className="text-sm font-semibold tracking-tight">
+        <span className="truncate text-sm font-semibold tracking-tight">
           Palmetto · Texas — Operator Console
         </span>
       </div>
-      <div className="flex items-center gap-3 text-sm text-muted-foreground">
+      <div className="flex shrink-0 items-center gap-3 text-sm text-muted-foreground">
         <StoreFilter store={DEFAULT_STORE} />
         {operatorEmail ? <span className="hidden sm:inline">{operatorEmail}</span> : null}
       </div>

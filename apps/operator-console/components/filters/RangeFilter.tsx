@@ -1,13 +1,10 @@
-import Link from "next/link";
-import { cn } from "@/lib/utils";
-
-const PILL = "rounded-md px-2.5 py-1 text-xs font-medium transition-colors";
+import { FilterPills } from "./FilterPills";
 
 /**
  * Range pill row (Figma: "Range 7d / 30d / 90d") — drives the page's own
- * query day-count via a `range` search param, re-rendered server-side (no
- * client fetch). `basePath` must be the page's own route so the link
- * preserves any other search params via `extraParams`.
+ * query day-count via a `range` search param. Thin wrapper over the
+ * generic `FilterPills` so every screen gets the same labeled-pill look;
+ * kept as its own component since every page already imports it by name.
  */
 export function RangeFilter({
   basePath,
@@ -21,26 +18,14 @@ export function RangeFilter({
   extraParams?: Record<string, string>;
 }) {
   return (
-    <div className="flex items-center gap-1 rounded-md bg-secondary p-0.5">
-      {options.map((days) => {
-        const params = new URLSearchParams({ ...extraParams, range: String(days) });
-        const active = days === value;
-        return (
-          <Link
-            key={days}
-            href={`${basePath}?${params.toString()}`}
-            className={cn(
-              PILL,
-              active
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {days}d
-          </Link>
-        );
-      })}
-    </div>
+    <FilterPills
+      label="Range"
+      param="range"
+      value={String(value)}
+      options={options.map((days) => ({ value: String(days), label: `${days}d` }))}
+      basePath={basePath}
+      extraParams={extraParams}
+    />
   );
 }
 

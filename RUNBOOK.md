@@ -1651,10 +1651,13 @@ daily wipe. Full reasoning in `docs/POST_MERGE_BQ_CUTOVER.md` § "Why a one-time
 ### What it is
 
 A Next.js app (`apps/operator-console/`) reading/writing the same `bhaga` BQ dataset as
-this pipeline, deployed as its own Cloud Run **service** (`operator-console`, not a job) behind
-direct Identity-Aware Proxy — no separate app-level auth, IAP itself restricts access to
-`@mypalmetto.co`. Grafana **stays live** (coexistence, not a replacement in v1) — the console is
-additive, giving the operator navigation, goal tracking, and write-backs Grafana never had.
+this pipeline, deployed as its own Cloud Run **service** (`operator-console`, not a job) with
+`--no-allow-unauthenticated` + native Cloud Run IAM (`roles/run.invoker`) — **not** Cloud Run
+direct IAP. Creating the IAP OAuth brand requires a Google Workspace organization, which
+`jarvis-bhaga-prod` does not have (confirmed 2026-07; the old `gcloud iap oauth-brands` flow is
+also deprecated project-wide — see `docs/operator-console/PLAN.md` decisions log). Grafana **stays
+live** (coexistence, not a replacement in v1) — the console is additive, giving the operator
+navigation, goal tracking, and write-backs Grafana never had.
 
 Full design/build docs: [`docs/operator-console/`](docs/operator-console/) (`PLAN.md` — living plan
 + decisions log + milestones; `ARCHITECTURE.md`; `EXECUTION.md` — step-by-step; `COST.md`).
@@ -1665,13 +1668,38 @@ App-level dev loop: [`apps/operator-console/README.md`](apps/operator-console/RE
 Automatic on push to `main` touching `apps/operator-console/**` via
 [`.github/workflows/operator-console-deploy.yml`](.github/workflows/operator-console-deploy.yml):
 builds the container, applies any pending `core/migrations/*.sql` (same runner as this pipeline —
-`core.datastore.ensure_schema()`), then `gcloud run deploy --iap`. No manual deploy step.
+`core.datastore.ensure_schema()`), deploys `--no-allow-unauthenticated`, then grants
+`roles/run.invoker` to the operator account. No manual deploy step.
+
+### Accessing the console (no IAP — Bearer-token auth)
+
+Because the service is `--no-allow-unauthenticated` with no IAP in front, a plain browser URL
+will 403. Reach it via `gcloud run services proxy`, which transparently attaches your own
+identity token to every request:
+```
+gcloud run services proxy operator-console --region us-central1 --project jarvis-bhaga-prod
+```
+This opens a local `localhost:<port>` that proxies to the live service — open that URL in a
+browser as usual. Requires `user:<you>@mypalmetto.co` to already have `roles/run.invoker`
+(granted automatically to `adi@mypalmetto.co` by the deploy workflow above; run the same
+`gcloud run services add-iam-policy-binding` command manually to add another operator).
 
 ### Operating
 
 - **Identity:** the signed-in operator's email is available server-side via
-  `lib/auth/identity.ts::operatorEmail()` (reads the IAP-forwarded header) — used as `updated_by`
-  on every write, same field the Slack `/bhaga-cloud` commands stamp.
+  `lib/auth/identity.ts::operatorEmail()`. It checks, in order: (1) the
+  `X-Goog-Authenticated-User-Email` header (IAP, kept as a fallback for if IAP is ever adopted),
+  (2) the `email` claim decoded from the JWT in `X-Serverless-Authorization` — the header Cloud
+  Run's own IAM check populates with the caller's already-verified ID token (confirmed live via a
+  header dump: `gcloud run services proxy` sends no plain `Authorization` header at all, only
+  `x-serverless-authorization: bearer <JWT>`), (3) a `tokeninfo` lookup for callers presenting an
+  opaque OAuth2 access token instead of a JWT. Decoding (not re-verifying) is safe because Cloud
+  Run's IAM already authorized that exact token before the request reached the app. Used as
+  `updated_by` on every write, same field the Slack `/bhaga-cloud` commands stamp.
+- **Caching:** every page uses `export const dynamic = "force-dynamic"`, never `revalidate` —
+  Next's Full Route Cache would otherwise serve a cached render at the CDN edge to a new
+  unauthenticated caller regardless of Cloud Run's IAM check on *that* request (found + fixed
+  2026-07-05 while re-locking the preview after the temporary public-access review window).
 - **Write parity with Slack:** every console write in `lib/bq/writes.ts` mirrors the exact
   MERGE/DELETE/INSERT statement `cloud/webhook/handler.py` uses for the equivalent Slack command
   (restock, training, config/goals) — the two paths converge on identical rows, never diverge.

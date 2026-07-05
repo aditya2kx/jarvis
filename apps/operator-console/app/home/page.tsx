@@ -4,7 +4,9 @@ import { loadActionItems, type ActionItem } from "@/lib/kpi/actions";
 import { pipelineRuns, storeConfig, payrollPeriod } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { formatDate } from "@/lib/format";
+import { storeDisplayName } from "@/lib/config/stores";
 import { HealthScorecard } from "@/components/kpi/HealthScorecard";
+import { PageHeader } from "@/components/shell/PageHeader";
 import { GoalsDrawer } from "@/components/drawers/GoalsDrawer";
 import { TrainingQuickAdd } from "@/components/drawers/TrainingQuickAdd";
 import { RecognitionDrawer } from "@/components/drawers/RecognitionDrawer";
@@ -14,7 +16,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { FEATURES } from "@/lib/config/features";
 import type { GoalKey } from "@/lib/bq/writes";
 
-export const revalidate = 600;
+export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
   let weekly, monthly;
@@ -48,18 +50,11 @@ export default async function HomePage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <div className="flex items-baseline justify-between">
-          <h1 className="text-2xl font-semibold tracking-tight">Home</h1>
-          <div className="flex items-center gap-2">
-            {FEATURES.writeGoals ? <GoalsDrawer current={goals} /> : null}
-            <span className="text-sm text-muted-foreground">{DEFAULT_STORE}</span>
-          </div>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          Your store at a glance · {DEFAULT_STORE}
-        </p>
-      </div>
+      <PageHeader
+        title="Home"
+        subtitle={`Your store at a glance · ${storeDisplayName(DEFAULT_STORE)}`}
+        right={FEATURES.writeGoals ? <GoalsDrawer current={goals} /> : null}
+      />
 
       {error || !weekly || !monthly ? (
         <p className="text-sm text-muted-foreground">

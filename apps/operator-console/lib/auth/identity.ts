@@ -14,6 +14,19 @@ import { headers } from "next/headers";
 const IAP_EMAIL_HEADER = "x-goog-authenticated-user-email";
 const ALLOWED_DOMAIN = "@mypalmetto.co";
 
+// Admin allowlist for identities *outside* ALLOWED_DOMAIN (e.g. a personal
+// Google account granted admin access for testing). Comma-separated, supplied
+// via the ALLOWED_EMAILS env var on the Cloud Run service — deliberately kept
+// out of git so no personal address is committed, and changeable without a
+// rebuild. This is a stopgap: it is superseded by Google Groups + IAP once the
+// org-level auth model lands (see docs/operator-console/PLAN.md, 2026-07-05).
+const ALLOWED_EMAILS = new Set(
+  (process.env.ALLOWED_EMAILS ?? "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+);
+
 export const DEFAULT_STORE = "palmetto";
 
 // Cloud Run's own IAM check puts its verified ID token in a dedicated
@@ -59,7 +72,8 @@ async function emailFromBearerToken(h: Headers): Promise<string | null> {
  * access) — see the Next 16 upgrade notes in node_modules/next/dist/docs.
  * Throws if neither an IAP header nor a Bearer identity token is present, or
  * if running locally without either where BYPASS_IAP_EMAIL is unset — never
- * fabricate an identity.
+ * fabricate an identity. The resolved email is accepted only if it is inside
+ * ALLOWED_DOMAIN or explicitly listed in the ALLOWED_EMAILS admin allowlist.
  */
 export async function operatorEmail(): Promise<string> {
   const h = await headers();
@@ -71,8 +85,9 @@ export async function operatorEmail(): Promise<string> {
     }
     throw new Error("operatorEmail: no IAP header or Bearer identity token present");
   }
-  if (!email.endsWith(ALLOWED_DOMAIN)) {
-    throw new Error(`operatorEmail: ${email} is outside ${ALLOWED_DOMAIN}`);
+  const normalized = email.toLowerCase();
+  if (!normalized.endsWith(ALLOWED_DOMAIN) && !ALLOWED_EMAILS.has(normalized)) {
+    throw new Error(`operatorEmail: ${email} is not an authorized operator`);
   }
   return email;
 }

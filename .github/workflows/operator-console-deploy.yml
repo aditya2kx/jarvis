@@ -62,6 +62,9 @@ jobs:
       # Authorization Bearer token instead of an IAP-forwarded header — see
       # lib/auth/identity.ts. Least-privilege runtime SA (BQ dataUser/jobUser
       # on `bhaga`, Secret Manager accessor) is provisioned once, not here.
+      # ALLOWED_EMAILS (Secret Manager) is the admin allowlist for identities
+      # outside @mypalmetto.co — kept in Secret Manager, not git, so no personal
+      # address is committed. Superseded once Google Groups + IAP land.
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${{ env.SERVICE }} \
@@ -71,7 +74,7 @@ jobs:
             --no-allow-unauthenticated \
             --memory 512Mi \
             --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga \
-            --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest
+            --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest,ALLOWED_EMAILS=operator-console-allowed-emails:latest
 
       # Grant the operator account run.invoker so `gcloud run services proxy`
       # (the access pattern — see RUNBOOK.md) can reach the service. Idempotent:

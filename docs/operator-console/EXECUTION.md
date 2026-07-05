@@ -392,6 +392,11 @@ server's local tz.
   does not have (confirmed 2026-07-04 in CI; the legacy `gcloud iap oauth-brands` API is also
   deprecated). See `PLAN.md` decisions log 2026-07-04 and `RUNBOOK.md` §17 for the resulting
   Bearer-token identity model and the `gcloud run services proxy` access pattern.
+- **Admin allowlist:** the deploy also mounts `--set-secrets ALLOWED_EMAILS=operator-console-allowed-emails:latest`.
+  `operatorEmail()` accepts an identity inside `@mypalmetto.co` **or** in this allowlist, so a
+  personal Google account can be granted admin access without weakening the domain rule. The
+  value lives in Secret Manager (not git); grant each account `roles/run.invoker` too. Interim
+  until Google Groups + IAP land — see `RUNBOOK.md` §17 "Granting a new admin/operator".
 - Service account: least-privilege — BQ dataUser/jobUser on `bhaga`, Firestore
   viewer, Secret Manager accessor.
 
@@ -400,6 +405,8 @@ server's local tz.
 BQ_PROJECT=jarvis-bhaga-prod
 BQ_DATASET=bhaga
 GEMINI_TOKEN=            # from Secret Manager at runtime, not committed
+ALLOWED_EMAILS=         # admin allowlist (comma-separated) for identities outside @mypalmetto.co;
+                        # from Secret Manager (operator-console-allowed-emails) at runtime, not committed
 ```
 
 ---
@@ -407,7 +414,7 @@ GEMINI_TOKEN=            # from Secret Manager at runtime, not committed
 ## 6. Global acceptance checklist (Definition of Done)
 
 - [ ] `npm run build` clean; `vitest` unit tests pass (queries mocked).
-- [ ] All 9 screens render live BQ data behind Cloud Run IAM auth (`@mypalmetto.co` operator accounts only, via `roles/run.invoker` — see §5.4).
+- [ ] All 9 screens render live BQ data behind Cloud Run IAM auth (`@mypalmetto.co` accounts, or accounts in the `ALLOWED_EMAILS` admin allowlist, via `roles/run.invoker` — see §5.4).
 - [ ] Every write is idempotent and converges with the Slack path where one exists.
 - [ ] Dual-date reco matches `vw_order_reco_combined` incl. Estimated/Actuals + TOTAL.
 - [ ] Restock/goal/capacity writes trigger `refresh_order_reco` where required.

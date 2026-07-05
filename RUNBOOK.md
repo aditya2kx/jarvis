@@ -1680,9 +1680,20 @@ identity token to every request:
 gcloud run services proxy operator-console --region us-central1 --project jarvis-bhaga-prod
 ```
 This opens a local `localhost:<port>` that proxies to the live service — open that URL in a
-browser as usual. Requires `user:<you>@mypalmetto.co` to already have `roles/run.invoker`
-(granted automatically to `adi@mypalmetto.co` by the deploy workflow above; run the same
-`gcloud run services add-iam-policy-binding` command manually to add another operator).
+browser as usual. Requires the Google account you are logged into `gcloud` with (`gcloud config
+get-value account`) to already have `roles/run.invoker` (granted automatically to
+`adi@mypalmetto.co` by the deploy workflow above; run the same
+`gcloud run services add-iam-policy-binding` command manually to add another account).
+
+**Granting a new admin/operator (two layers, both required):**
+1. **Reach the service** — bind `roles/run.invoker`:
+   `gcloud run services add-iam-policy-binding operator-console --region us-central1 --project jarvis-bhaga-prod --member=user:NEW@EMAIL --role=roles/run.invoker`
+2. **Be accepted by the app** — if the email is **not** `@mypalmetto.co`, add it to the
+   `ALLOWED_EMAILS` allowlist secret (comma-separated), then redeploy so the new secret version
+   is picked up:
+   `printf 'a@mypalmetto.co,b@gmail.com' | gcloud secrets versions add operator-console-allowed-emails --project jarvis-bhaga-prod --data-file=-`
+   `@mypalmetto.co` accounts skip step 2 (accepted by the domain rule). This allowlist is an
+   interim stopgap until the Google Groups + IAP (`admin`/`operator` groups) model lands.
 
 ### Operating
 
@@ -1695,7 +1706,10 @@ browser as usual. Requires `user:<you>@mypalmetto.co` to already have `roles/run
   `x-serverless-authorization: bearer <JWT>`), (3) a `tokeninfo` lookup for callers presenting an
   opaque OAuth2 access token instead of a JWT. Decoding (not re-verifying) is safe because Cloud
   Run's IAM already authorized that exact token before the request reached the app. Used as
-  `updated_by` on every write, same field the Slack `/bhaga-cloud` commands stamp.
+  `updated_by` on every write, same field the Slack `/bhaga-cloud` commands stamp. The resolved
+  email is accepted only if it is inside `@mypalmetto.co` **or** listed in the `ALLOWED_EMAILS`
+  allowlist secret (interim admin allowlist for personal Google accounts — see "Granting a new
+  admin/operator" above); otherwise `operatorEmail()` throws and the request is rejected.
 - **Caching:** every page uses `export const dynamic = "force-dynamic"`, never `revalidate` —
   Next's Full Route Cache would otherwise serve a cached render at the CDN edge to a new
   unauthenticated caller regardless of Cloud Run's IAM check on *that* request (found + fixed

@@ -285,4 +285,52 @@ flowchart LR
    it reviewable (feature-flag unfinished screens, land read-only first internally).
 5. **Goals model granularity** — per-store weekly + monthly targets in
    `store_config` (keys like `goal_net_sales_weekly`).
+
+---
+
+## 9. Responsive design
+
+The console is used on operator phones as much as the office desktop, so every
+screen must render without horizontal page-overflow at **390px** (mobile) and
+**768px** (tablet); the sidebar collapses to a `Sheet`-based `MobileNav` below
+the `md` breakpoint (unchanged).
+
+- **Dense tables keep horizontal scroll, not a stacked-card redesign.** Pinned
+  identity columns (`DataTable` `pinLeft`) stay `sticky`, but their `left`
+  offset is **measured from rendered header widths** (`useLayoutEffect` +
+  `ResizeObserver` in `components/tables/DataTable.tsx`), not hardcoded to
+  `left:0` — a fixed offset made every pinned column collapse onto the first
+  one as soon as the table scrolled. A right-edge fade (`bg-gradient-to-l`)
+  signals there is more to scroll; it disappears once the container reaches
+  `scrollWidth`.
+- **Stat-card grids default to 2-up on mobile** (`grid-cols-2 …`) instead of
+  1-up, so KPI tiles stay legible without an oversized single column
+  (Pipeline Health, Payroll reconciliation).
+- **Tap targets** (mobile nav rows, filter pills) target ~44px per the
+  standard mobile hit-area guideline.
+
+## 10. Filter-control convention
+
+One rule, applied everywhere a screen exposes a filter:
+
+| Option count | Control | Examples |
+|---|---|---|
+| ≤4 fixed options | `components/filters/FilterPills.tsx` | Payroll `View` (Reconciliation / Detail) |
+| ≥5 options, or a dynamic/data-driven set | `components/filters/FilterSelect.tsx` (dropdown) | `Period` (6 date-range presets, every Performance screen + Home); Order Quality `Source` (9 channels) |
+
+Both are thin client components that read/write the same URL search param via
+`useRouter`/`usePathname` (so filters are shareable/bookmarkable links, and the
+Server Component re-fetches on navigation) — `FilterSelect` differs only in
+rendering a `ui/select.tsx` trigger instead of a pill row, which keeps a
+long option list from wrapping into multiple rows at narrow widths.
+
+## 11. Grafana / console shared dataset
+
+The console and the Grafana BHAGA Analytics dashboard read the **same**
+`jarvis-bhaga-prod.bhaga.vw_*` views, populated by the **same** nightly
+`daily_refresh.py` run (§3). There is no separate sync layer and none is
+needed: a write from the console (goals, training shifts, restock) lands via
+the same idempotent MERGE contracts the Slack path uses (§5), so the next
+Grafana panel render and the next console page render both see it — they are
+two read clients of one warehouse, not two warehouses.
 ```

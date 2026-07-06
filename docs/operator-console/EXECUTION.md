@@ -407,6 +407,42 @@ server's local tz.
   viewer, Secret Manager accessor, plus `roles/iap.admin` so CI can manage the
   `iap.httpsResourceAccessor` bindings above.
 
+### 5.5a Date-range preset semantics (`lib/filters/range.ts`)
+Six presets, shared by every Performance screen + Home via the `Period`
+`FilterSelect` (§ filter-control convention, `ARCHITECTURE.md` §10): **Last 7
+days, Last 30 days, This week, This month, Last week, Last month**. Weeks
+start **Monday** (ISO, matches `vw_model_labor_weekly.iso_week`); all
+arithmetic runs in **America/Chicago** ("today" is Chicago-local, not server
+UTC). `resolveRange()` returns `{ start, end, label, preset }`; BQ readers
+filter `WHERE <datecol> BETWEEN @start AND @end` instead of `INTERVAL @days
+DAY`, so the six presets are exact calendar windows, not rolling day counts.
+
+- `this_week` / `this_month` end on the calendar boundary, which can be in the
+  future — that's expected for the **Forecast** screen (§4 M3), which uses the
+  *same* control as every other Performance screen: the historical-accuracy
+  half of the page always has data for the elapsed portion of the window; the
+  upcoming/forecast half renders its normal empty-state copy when a
+  **past-only** preset (`last_week`, `last_month`) is selected, since no
+  forecast rows exist before the pipeline's run date. Forecast defaults to
+  **This month**; every other Performance screen + Home default to
+  **Last 30 days**.
+- Net-sales goal picks weekly vs. monthly `store_config` key by
+  `isMonthLike(win.preset)` (`30d` / `this_month` / `last_month` -> monthly;
+  else weekly) — the same window drives both the query and which goal it's
+  compared against.
+
+### 5.5b Percent-goal unit rule (fixes the "15 -> 1500%" bug)
+`store_config` **always stores goal fractions** (`0.15`, not `15`) — this did
+not change. The bug was a missing unit boundary at the *input*, not the
+storage: `GoalsDrawer` / the inline Home editor accept a **whole percent**
+(operator types `15`) for any goal tagged `kind: "percent"` in
+`lib/kpi/goal-fields.ts` (`goal_labor_pct_max`, `goal_food_cost_pct_max`,
+`goal_speed_on_time_pct_min`), convert with `percentInputToFraction` before
+the MERGE, and convert back with `fractionToPercentInput` when re-populating
+an edit field. `kind: "dollars"` / `"days"` goals pass through unchanged.
+Never add a second "is this already a fraction?" heuristic downstream —
+the percent/fraction boundary lives at this one conversion pair.
+
 ### 5.5 Env vars (`.env.example`)
 ```
 BQ_PROJECT=jarvis-bhaga-prod
@@ -428,4 +464,7 @@ BYPASS_IAP_EMAIL=        # local dev only (npm run dev) — no IAP headers exist
 - [ ] Migration 033 applied; `verify.py --full` + `check_doc_freshness.py` green.
 - [ ] Grafana parity matrix complete with hosted screenshots.
 - [ ] No secrets, project IDs, or metrics committed; docs updated in lock-step.
+- [ ] No horizontal page-overflow at 390px/768px on any of the 9 screens; pinned table columns report distinct `left` offsets after scroll (`ARCHITECTURE.md` §9).
+- [ ] Filters follow the ≤4-pills / ≥5-dropdown convention everywhere (`ARCHITECTURE.md` §10); `Period` and `Source` are dropdowns.
+- [ ] Percent goals round-trip through the UI as whole percents (`15` in -> `15.0%` shown, `0.15` stored) — no `1500%` regressions (§5.5b).
 ```

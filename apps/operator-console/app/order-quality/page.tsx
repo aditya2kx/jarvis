@@ -5,8 +5,9 @@ import { storeDisplayName } from "@/lib/config/stores";
 import { LineChartCard } from "@/components/charts/LineChartCard";
 import { DataTable } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
-import { RangeFilter, parseRange } from "@/components/filters/RangeFilter";
 import { FilterPills } from "@/components/filters/FilterPills";
+import { FilterSelect } from "@/components/filters/FilterSelect";
+import { RANGE_PRESETS, resolveRange } from "@/lib/filters/range";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { OrderQualityDailyRow } from "@/lib/bq/queries";
 
@@ -23,13 +24,19 @@ function parseSource(value: string | string[] | undefined): string {
   return (Array.isArray(value) ? value[0] : value) ?? "All";
 }
 
+// Chart tooltips/goal-line values are minutes — 1 decimal reads as "6.8m",
+// not the raw "6.833333333333333" the BQ FLOAT64 column carries.
+function round1(n: number | null | undefined): number | null | undefined {
+  return n == null ? n : Number(n.toFixed(1));
+}
+
 export default async function OrderQualityPage({
   searchParams,
 }: {
   searchParams: Promise<{ range?: string; onTime?: string; source?: string }>;
 }) {
   const sp = await searchParams;
-  const range = parseRange(sp.range);
+  const win = resolveRange(sp.range, "30d");
   const onTime = parseOnTime(sp.onTime);
   const source = parseSource(sp.source);
 
@@ -38,7 +45,7 @@ export default async function OrderQualityPage({
   let sourceOptions: string[] = [];
   let error: string | undefined;
   try {
-    const [oq, src] = await Promise.all([orderQualityDaily(range), kdsBySource(range)]);
+    const [oq, src] = await Promise.all([orderQualityDaily(win), kdsBySource(win)]);
     rows = oq;
 
     sourceOptions = Array.from(new Set(src.map((r) => r.order_source))).sort();
@@ -49,7 +56,7 @@ export default async function OrderQualityPage({
     for (const r of filteredSrc) {
       const key = formatDate(r.date);
       const entry = bySourceDate.get(key) ?? { date: key };
-      entry[r.order_source] = r.kds_p95_min;
+      entry[r.order_source] = round1(r.kds_p95_min);
       bySourceDate.set(key, entry);
     }
     bySourceChart = Array.from(bySourceDate.values());
@@ -61,8 +68,8 @@ export default async function OrderQualityPage({
     .sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1))
     .map((r) => ({
       date: formatDate(r.date),
-      kds_p95_min: r.kds_p95_min,
-      kds_median_min: r.kds_median_min,
+      kds_p95_min: round1(r.kds_p95_min),
+      kds_median_min: round1(r.kds_median_min),
     }));
 
   const sourceKeys =
@@ -109,9 +116,9 @@ export default async function OrderQualityPage({
               value={String(onTime)}
               options={ON_TIME_OPTIONS.map((m) => ({ value: String(m), label: `${m}m` }))}
               basePath="/order-quality"
-              extraParams={{ range: String(range), source }}
+              extraParams={{ range: win.preset, source }}
             />
-            <FilterPills
+            <FilterSelect
               label="Source"
               param="source"
               value={source}
@@ -120,9 +127,16 @@ export default async function OrderQualityPage({
                 ...sourceOptions.map((s) => ({ value: s, label: s })),
               ]}
               basePath="/order-quality"
-              extraParams={{ range: String(range), onTime: String(onTime) }}
+              extraParams={{ range: win.preset, onTime: String(onTime) }}
             />
-            <RangeFilter basePath="/order-quality" value={range} extraParams={{ onTime: String(onTime), source }} />
+            <FilterSelect
+              label="Period"
+              param="range"
+              value={win.preset}
+              options={RANGE_PRESETS}
+              basePath="/order-quality"
+              extraParams={{ onTime: String(onTime), source }}
+            />
           </>
         }
       />

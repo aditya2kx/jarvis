@@ -6,7 +6,8 @@ import { LineChartCard } from "@/components/charts/LineChartCard";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { DataTable } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
-import { RangeFilter, parseRange } from "@/components/filters/RangeFilter";
+import { FilterSelect } from "@/components/filters/FilterSelect";
+import { RANGE_PRESETS, resolveRange } from "@/lib/filters/range";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { LaborDailyRow } from "@/lib/bq/queries";
 
@@ -22,7 +23,7 @@ export default async function LaborPage({
 }: {
   searchParams: Promise<{ range?: string }>;
 }) {
-  const range = parseRange((await searchParams).range);
+  const win = resolveRange((await searchParams).range, "30d");
 
   let rows: LaborDailyRow[] = [];
   let goalLaborPct: number | undefined;
@@ -30,7 +31,7 @@ export default async function LaborPage({
   let error: string | undefined;
   try {
     const [labor, config, period] = await Promise.all([
-      laborDaily(range),
+      laborDaily(win),
       storeConfig(DEFAULT_STORE),
       payrollPeriod(1),
     ]);
@@ -87,7 +88,7 @@ export default async function LaborPage({
       <PageHeader
         title="Labor"
         subtitle={`Hours, labor %, and throughput · ${storeDisplayName(DEFAULT_STORE)}`}
-        right={<RangeFilter basePath="/labor" value={range} />}
+        right={<FilterSelect label="Period" param="range" value={win.preset} options={RANGE_PRESETS} basePath="/labor" />}
       />
 
       {error ? (

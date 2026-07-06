@@ -50,7 +50,7 @@ export function MobileNav() {
                     href={item.href}
                     onClick={() => setOpen(false)}
                     className={cn(
-                      "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                      "flex items-center gap-2 rounded-md px-2 py-2.5 text-sm transition-colors",
                       active
                         ? "bg-sidebar-primary text-sidebar-primary-foreground"
                         : "text-foreground hover:bg-muted",

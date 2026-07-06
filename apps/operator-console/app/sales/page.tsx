@@ -6,7 +6,8 @@ import { LineChartCard } from "@/components/charts/LineChartCard";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { DataTable } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
-import { RangeFilter, parseRange } from "@/components/filters/RangeFilter";
+import { FilterSelect } from "@/components/filters/FilterSelect";
+import { RANGE_PRESETS, resolveRange } from "@/lib/filters/range";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { LaborDailyRow } from "@/lib/bq/queries";
 
@@ -20,13 +21,13 @@ export default async function SalesPage({
 }: {
   searchParams: Promise<{ range?: string }>;
 }) {
-  const range = parseRange((await searchParams).range);
+  const win = resolveRange((await searchParams).range, "30d");
 
   let rows: LaborDailyRow[] = [];
   let goalWeekly: number | undefined;
   let error: string | undefined;
   try {
-    const [labor, config] = await Promise.all([laborDaily(range), storeConfig(DEFAULT_STORE)]);
+    const [labor, config] = await Promise.all([laborDaily(win), storeConfig(DEFAULT_STORE)]);
     rows = labor;
     const g = config.find((r) => r.key === "goal_net_sales_weekly");
     goalWeekly = g ? Number(g.value) / 7 : undefined; // daily equivalent for the daily chart
@@ -56,7 +57,7 @@ export default async function SalesPage({
       <PageHeader
         title="Sales"
         subtitle={`Net sales, orders, and items sold · ${storeDisplayName(DEFAULT_STORE)}`}
-        right={<RangeFilter basePath="/sales" value={range} />}
+        right={<FilterSelect label="Period" param="range" value={win.preset} options={RANGE_PRESETS} basePath="/sales" />}
       />
 
       {error ? (

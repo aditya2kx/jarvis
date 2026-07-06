@@ -60,7 +60,7 @@ export default async function PipelinePage() {
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm font-medium text-muted-foreground">Latest run</CardTitle>

@@ -1,5 +1,6 @@
 import "server-only";
-import { fq, intParam, q } from "./client";
+import { dateParam, fq, intParam, q } from "./client";
+import type { DateWindow } from "@/lib/filters/range";
 
 // Column names/units verified against core/migrations/005_raw_parity.sql
 // (vw_model_labor_daily) and agents/bhaga/knowledge-base/DOMAIN.md — money
@@ -24,12 +25,12 @@ export interface LaborDailyRow {
 // tables (store_config, training_shifts, inventory_*, pipeline_runs,
 // source_pulls) carry a real `store` key; do not add a WHERE store= filter
 // here until a second store's data actually lands in this table.
-export function laborDaily(days = 30): Promise<LaborDailyRow[]> {
+export function laborDaily(win: DateWindow): Promise<LaborDailyRow[]> {
   return q<LaborDailyRow>(
     `SELECT * FROM ${fq("vw_model_labor_daily")}
-     WHERE date >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL @days DAY)
+     WHERE date BETWEEN @start AND @end
      ORDER BY date DESC`,
-    { days },
+    { start: dateParam(win.start), end: dateParam(win.end) },
   );
 }
 
@@ -87,12 +88,15 @@ export interface ForecastRow {
   [key: string]: unknown;
 }
 
-export function forecast(days = 30): Promise<ForecastRow[]> {
+// Forecast rows exist for dates >= the pipeline's run date, so a past-only
+// preset (e.g. last_month) legitimately returns no rows here — the caller
+// renders an empty state rather than this silently falling back to "today".
+export function forecast(win: DateWindow): Promise<ForecastRow[]> {
   return q<ForecastRow>(
     `SELECT * FROM ${fq("vw_model_forecast")}
-     WHERE date <= DATE_ADD(CURRENT_DATE('America/Chicago'), INTERVAL @days DAY)
+     WHERE date BETWEEN @start AND @end
      ORDER BY date`,
-    { days },
+    { start: dateParam(win.start), end: dateParam(win.end) },
   );
 }
 
@@ -105,12 +109,12 @@ export interface ForecastAccuracyRow {
   [key: string]: unknown;
 }
 
-export function forecastAccuracy(days = 30): Promise<ForecastAccuracyRow[]> {
+export function forecastAccuracy(win: DateWindow): Promise<ForecastAccuracyRow[]> {
   return q<ForecastAccuracyRow>(
     `SELECT * FROM ${fq("vw_forecast_accuracy")}
-     WHERE date >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL @days DAY)
+     WHERE date BETWEEN @start AND @end
      ORDER BY date`,
-    { days },
+    { start: dateParam(win.start), end: dateParam(win.end) },
   );
 }
 
@@ -125,12 +129,12 @@ export interface OrderQualityDailyRow {
   [key: string]: unknown;
 }
 
-export function orderQualityDaily(days = 30): Promise<OrderQualityDailyRow[]> {
+export function orderQualityDaily(win: DateWindow): Promise<OrderQualityDailyRow[]> {
   return q<OrderQualityDailyRow>(
     `SELECT * FROM ${fq("vw_order_quality_daily")}
-     WHERE date >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL @days DAY)
+     WHERE date BETWEEN @start AND @end
      ORDER BY date`,
-    { days },
+    { start: dateParam(win.start), end: dateParam(win.end) },
   );
 }
 
@@ -142,12 +146,12 @@ export interface KdsBySourceRow {
   [key: string]: unknown;
 }
 
-export function kdsBySource(days = 30): Promise<KdsBySourceRow[]> {
+export function kdsBySource(win: DateWindow): Promise<KdsBySourceRow[]> {
   return q<KdsBySourceRow>(
     `SELECT * FROM ${fq("vw_kds_order_quality_by_source_daily")}
-     WHERE date >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL @days DAY)
+     WHERE date BETWEEN @start AND @end
      ORDER BY date`,
-    { days },
+    { start: dateParam(win.start), end: dateParam(win.end) },
   );
 }
 

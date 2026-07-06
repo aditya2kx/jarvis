@@ -8,6 +8,8 @@ import {
   type StoreConfigRow,
 } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
+import { isMonthLike, type DateWindow } from "@/lib/filters/range";
+import type { GoalKey } from "@/lib/bq/writes";
 
 export type GoalStatus = "on-track" | "at-risk" | "off-track" | "no-goal";
 
@@ -20,11 +22,25 @@ export interface HealthMetric {
   pace: number | null;
   formatted: string;
   goalFormatted: string;
+  /** `store_config` key an inline edit on this metric writes — see
+   *  components/kpi/HealthScorecard.tsx's pencil-edit + goal-fields.ts. */
+  goalKey: GoalKey;
+  /** Raw `store_config` string value (not the parsed `goal` number) — the
+   *  inline edit needs this to prefill in the field's own input units
+   *  (e.g. GoalsDrawer/HealthScorecard convert a percent fraction to a
+   *  whole-percent display string from this, not from `goal`). */
+  rawGoal: string | undefined;
+  /** One-line explanation shown behind the metric's info tooltip. */
+  info: string;
 }
 
 function goalValue(config: StoreConfigRow[], key: string): number | null {
   const row = config.find((r) => r.key === key);
   return row ? Number(row.value) : null;
+}
+
+function goalRaw(config: StoreConfigRow[], key: string): string | undefined {
+  return config.find((r) => r.key === key)?.value;
 }
 
 // Presentation-only comparison of already-fetched rows against a
@@ -43,17 +59,16 @@ function statusFor(pace: number | null): GoalStatus {
 }
 
 export interface HealthScorecard {
-  window: "weekly" | "monthly";
+  win: DateWindow;
   metrics: HealthMetric[];
   windowLabel: string;
 }
 
-export async function loadHealthScorecard(window: "weekly" | "monthly"): Promise<HealthScorecard> {
-  const days = window === "weekly" ? 7 : 30;
+export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorecard> {
   const [rows, config, quality, reco] = await Promise.all([
-    laborDaily(days),
+    laborDaily(win),
     storeConfig(DEFAULT_STORE),
-    orderQualityDaily(days),
+    orderQualityDaily(win),
     orderRecoCombined(),
   ]);
 
@@ -78,7 +93,8 @@ export async function loadHealthScorecard(window: "weekly" | "monthly"): Promise
     .filter((d): d is number => d != null);
   const runwayDays = runwayCandidates.length ? Math.min(...runwayCandidates) : null;
 
-  const goalNetSales = goalValue(config, window === "weekly" ? "goal_net_sales_weekly" : "goal_net_sales_monthly");
+  const netSalesGoalKey: GoalKey = isMonthLike(win.preset) ? "goal_net_sales_monthly" : "goal_net_sales_weekly";
+  const goalNetSales = goalValue(config, netSalesGoalKey);
   const goalLaborPctMax = goalValue(config, "goal_labor_pct_max");
   const goalFoodCostMax = goalValue(config, "goal_food_cost_pct_max");
   const goalOnTimeMin = goalValue(config, "goal_speed_on_time_pct_min");
@@ -99,6 +115,11 @@ export async function loadHealthScorecard(window: "weekly" | "monthly"): Promise
       pace: netSalesPace,
       formatted: fmtDollars(netSales),
       goalFormatted: fmtDollars(goalNetSales),
+      goalKey: netSalesGoalKey,
+      rawGoal: goalRaw(config, netSalesGoalKey),
+      info: isMonthLike(win.preset)
+        ? "Total net sales for the selected period vs the monthly target (goal_net_sales_monthly)."
+        : "Total net sales for the selected period vs the weekly target (goal_net_sales_weekly).",
     },
     {
       key: "labor_pct",
@@ -109,6 +130,9 @@ export async function loadHealthScorecard(window: "weekly" | "monthly"): Promise
       pace: laborPctPace,
       formatted: fmtPct(laborPct),
       goalFormatted: fmtPct(goalLaborPctMax),
+      goalKey: "goal_labor_pct_max",
+      rawGoal: goalRaw(config, "goal_labor_pct_max"),
+      info: "Total labor (hourly staff + salaried/manager) as a % of net sales — the Labor page also breaks out hourly-only %.",
     },
     {
       key: "food_cost_pct",
@@ -119,6 +143,9 @@ export async function loadHealthScorecard(window: "weekly" | "monthly"): Promise
       pace: null,
       formatted: "—",
       goalFormatted: fmtPct(goalFoodCostMax),
+      goalKey: "goal_food_cost_pct_max",
+      rawGoal: goalRaw(config, "goal_food_cost_pct_max"),
+      info: "Cost of goods as a % of net sales. No COGS data source is wired up yet — the goal can be set, but actual/status stay a placeholder.",
     },
     {
       key: "speed_on_time_pct",
@@ -129,6 +156,9 @@ export async function loadHealthScorecard(window: "weekly" | "monthly"): Promise
       pace: onTimePace,
       formatted: fmtPct(onTimePct),
       goalFormatted: fmtPct(goalOnTimeMin),
+      goalKey: "goal_speed_on_time_pct_min",
+      rawGoal: goalRaw(config, "goal_speed_on_time_pct_min"),
+      info: "Share of KDS tickets that finished within the on-time prep goal — the complement of Order Quality's % tickets late.",
     },
     {
       key: "inventory_runway_days",
@@ -139,13 +169,16 @@ export async function loadHealthScorecard(window: "weekly" | "monthly"): Promise
       pace: runwayPace,
       formatted: runwayDays == null ? "—" : `${runwayDays.toFixed(1)} d`,
       goalFormatted: goalRunwayMin == null ? "—" : `${goalRunwayMin.toFixed(0)} d`,
+      goalKey: "goal_inventory_runway_days_min",
+      rawGoal: goalRaw(config, "goal_inventory_runway_days_min"),
+      info: "Tightest (smallest) Days-Left across tracked items in the nearer registered delivery slot — same source as the Inventory screen.",
     },
   ];
 
   return {
-    window,
+    win,
     metrics,
-    windowLabel: window === "weekly" ? "This week (last 7 days)" : "This month (last 30 days)",
+    windowLabel: win.label,
   };
 }
 

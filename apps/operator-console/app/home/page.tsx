@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { loadHealthScorecard } from "@/lib/kpi/health";
+import { loadHealthScorecard, type HealthScorecard as HealthScorecardData } from "@/lib/kpi/health";
 import { loadActionItems, type ActionItem } from "@/lib/kpi/actions";
 import { pipelineRuns, storeConfig, payrollPeriod } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
@@ -10,6 +10,8 @@ import { PageHeader } from "@/components/shell/PageHeader";
 import { GoalsDrawer } from "@/components/drawers/GoalsDrawer";
 import { TrainingQuickAdd } from "@/components/drawers/TrainingQuickAdd";
 import { RecognitionDrawer } from "@/components/drawers/RecognitionDrawer";
+import { FilterSelect } from "@/components/filters/FilterSelect";
+import { RANGE_PRESETS, resolveRange } from "@/lib/filters/range";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -18,8 +20,14 @@ import type { GoalKey } from "@/lib/bq/writes";
 
 export const dynamic = "force-dynamic";
 
-export default async function HomePage() {
-  let weekly, monthly;
+export default async function HomePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ range?: string }>;
+}) {
+  const win = resolveRange((await searchParams).range, "30d");
+
+  let health: HealthScorecardData | undefined;
   let latestRunStatus: string | undefined;
   let latestRunDate: string | undefined;
   let goals: Partial<Record<GoalKey, string>> = {};
@@ -27,10 +35,7 @@ export default async function HomePage() {
   let defaultPayPeriod = "";
   let error: string | undefined;
   try {
-    [weekly, monthly] = await Promise.all([
-      loadHealthScorecard("weekly"),
-      loadHealthScorecard("monthly"),
-    ]);
+    health = await loadHealthScorecard(win);
     const [runs, config, periods, actions] = await Promise.all([
       pipelineRuns(),
       storeConfig(DEFAULT_STORE),
@@ -53,17 +58,22 @@ export default async function HomePage() {
       <PageHeader
         title="Home"
         subtitle={`Your store at a glance · ${storeDisplayName(DEFAULT_STORE)}`}
-        right={FEATURES.writeGoals ? <GoalsDrawer current={goals} /> : null}
+        right={
+          <div className="flex flex-wrap items-center gap-2">
+            <FilterSelect label="Period" param="range" value={win.preset} options={RANGE_PRESETS} basePath="/home" />
+            {FEATURES.writeGoals ? <GoalsDrawer current={goals} /> : null}
+          </div>
+        }
       />
 
-      {error || !weekly || !monthly ? (
+      {error || !health ? (
         <p className="text-sm text-muted-foreground">
           Data unavailable{error ? `: ${error}` : ""} — this is expected locally without ADC/BQ
           access; deployed behind IAP this reads live.
         </p>
       ) : (
         <>
-          <HealthScorecard weekly={weekly} monthly={monthly} />
+          <HealthScorecard data={health} />
 
           <Card>
             <CardHeader className="flex-row items-center justify-between">

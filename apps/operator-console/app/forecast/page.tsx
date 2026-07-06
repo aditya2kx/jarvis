@@ -5,8 +5,9 @@ import { storeDisplayName } from "@/lib/config/stores";
 import { LineChartCard } from "@/components/charts/LineChartCard";
 import { DataTable } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
-import { RangeFilter, parseRange } from "@/components/filters/RangeFilter";
 import { FilterPills } from "@/components/filters/FilterPills";
+import { FilterSelect } from "@/components/filters/FilterSelect";
+import { RANGE_PRESETS, resolveRange } from "@/lib/filters/range";
 import { Badge } from "@/components/ui/badge";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { ForecastRow } from "@/lib/bq/queries";
@@ -35,7 +36,12 @@ export default async function ForecastPage({
   searchParams: Promise<{ range?: string; metric?: string }>;
 }) {
   const sp = await searchParams;
-  const range = parseRange(sp.range);
+  // Forecast mixes a forward-looking "upcoming schedule" (empty on a
+  // past-only preset, since forecast rows only exist from the pipeline's
+  // run date forward) with a backward-looking accuracy view — same 6
+  // presets as every other Performance screen, just defaulted to This
+  // month since that's the more useful default for a schedule view.
+  const win = resolveRange(sp.range, "this_month");
   const metric = parseMetric(sp.metric);
   const forecastKey = metric === "orders" ? "forecast_orders" : "forecast_items";
   const priorKey = metric === "orders" ? "prior_wk_orders" : "prior_wk_items";
@@ -46,7 +52,7 @@ export default async function ForecastPage({
   let mapePct: number | undefined;
   let error: string | undefined;
   try {
-    const [fc, acc] = await Promise.all([forecast(range), forecastAccuracy(range)]);
+    const [fc, acc] = await Promise.all([forecast(win), forecastAccuracy(win)]);
     rows = fc;
     accuracyChart = [...acc]
       .sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1))
@@ -99,9 +105,16 @@ export default async function ForecastPage({
                 { value: "items", label: "Items" },
               ]}
               basePath="/forecast"
-              extraParams={{ range: String(range) }}
+              extraParams={{ range: win.preset }}
             />
-            <RangeFilter basePath="/forecast" value={range} extraParams={{ metric }} />
+            <FilterSelect
+              label="Period"
+              param="range"
+              value={win.preset}
+              options={RANGE_PRESETS}
+              basePath="/forecast"
+              extraParams={{ metric }}
+            />
             {mapePct != null ? (
               <Badge variant={mapePct <= 15 ? "default" : mapePct <= 30 ? "secondary" : "destructive"}>
                 MAPE {mapePct.toFixed(1)}%
@@ -125,7 +138,7 @@ export default async function ForecastPage({
             ]}
           />
           <LineChartCard
-            title={`Forecast accuracy (${metricLabel}) — last ${range} days`}
+            title={`Forecast accuracy (${metricLabel}) — ${win.label.toLowerCase()}`}
             data={accuracyChart}
             xKey="date"
             series={[
@@ -135,7 +148,15 @@ export default async function ForecastPage({
           />
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">Upcoming schedule</h2>
-            <DataTable columns={columns} data={rows} />
+            {rows.length ? (
+              <DataTable columns={columns} data={rows} />
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No forecast rows for {win.label.toLowerCase()} — this preset is entirely in the
+                past, and forecast rows only exist from the pipeline&apos;s run date forward. Try
+                &quot;This month&quot; or &quot;This week&quot; to see the upcoming schedule.
+              </p>
+            )}
           </div>
         </>
       )}

@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   type ColumnDef,
   type ColumnPinningState,
@@ -124,22 +124,64 @@ export function DataTable<TData>({
     onColumnPinningChange: () => {},
   });
 
+  // Multiple pinned columns each need a *cumulative* left offset — TanStack's
+  // own getStart("left") assumes the 150px default column size, but these
+  // columns are content-driven (no explicit `size`), so offsets are measured
+  // from the actually-rendered header cells instead of computed from state.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [pinOffsets, setPinOffsets] = useState<Record<string, number>>({});
+  const [atEnd, setAtEnd] = useState(true);
+
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const heads = el.querySelectorAll<HTMLElement>('thead th[data-pinned="left"]');
+      let acc = 0;
+      const next: Record<string, number> = {};
+      heads.forEach((h) => {
+        const colId = h.dataset.colId!;
+        next[colId] = acc;
+        acc += h.offsetWidth;
+      });
+      setPinOffsets(next);
+      setAtEnd(el.scrollLeft + el.clientWidth >= el.scrollWidth - 1);
+    };
+    measure();
+    el.addEventListener("scroll", measure, { passive: true });
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", measure);
+      ro.disconnect();
+    };
+  }, [columns, data]);
+
+  const lastPinnedId = pinLeft[pinLeft.length - 1];
+
   return (
-    <div className="overflow-x-auto rounded-md border border-border">
-      <Table>
+    <div className="relative overflow-hidden rounded-md border border-border">
+      <Table containerRef={containerRef}>
         <TableHeader>
           {table.getHeaderGroups().map((hg) => (
             <TableRow key={hg.id}>
-              {hg.headers.map((header) => (
-                <TableHead
-                  key={header.id}
-                  className={cn(
-                    header.column.getIsPinned() && "sticky left-0 z-10 bg-background",
-                  )}
-                >
-                  {flexRender(header.column.columnDef.header, header.getContext())}
-                </TableHead>
-              ))}
+              {hg.headers.map((header) => {
+                const pinned = header.column.getIsPinned();
+                return (
+                  <TableHead
+                    key={header.id}
+                    data-pinned={pinned || undefined}
+                    data-col-id={header.column.id}
+                    style={pinned ? { left: pinOffsets[header.column.id] ?? 0 } : undefined}
+                    className={cn(
+                      pinned && "sticky z-10 bg-background",
+                      pinned && header.column.id === lastPinnedId && "border-r border-border",
+                    )}
+                  >
+                    {flexRender(header.column.columnDef.header, header.getContext())}
+                  </TableHead>
+                );
+              })}
             </TableRow>
           ))}
         </TableHeader>
@@ -149,11 +191,14 @@ export function DataTable<TData>({
               <TableRow key={row.id}>
                 {row.getVisibleCells().map((cell) => {
                   const format = cell.column.columnDef.meta?.format;
+                  const pinned = cell.column.getIsPinned();
                   return (
                     <TableCell
                       key={cell.id}
+                      style={pinned ? { left: pinOffsets[cell.column.id] ?? 0 } : undefined}
                       className={cn(
-                        cell.column.getIsPinned() && "sticky left-0 z-10 bg-background",
+                        pinned && "sticky z-10 bg-background",
+                        pinned && cell.column.id === lastPinnedId && "border-r border-border",
                       )}
                     >
                       {format
@@ -173,6 +218,9 @@ export function DataTable<TData>({
           )}
         </TableBody>
       </Table>
+      {!atEnd ? (
+        <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-background" />
+      ) : null}
     </div>
   );
 }

@@ -113,16 +113,22 @@ export default async function PayrollPage({
         title="Payroll & People"
         subtitle={`Wages, tips, bonuses, and training · ${storeDisplayName(DEFAULT_STORE)}`}
         right={
-          <FilterPills
-            label="View"
-            param="view"
-            value={view}
-            options={[
-              { value: "reconciliation", label: "Reconciliation" },
-              { value: "detail", label: "Detail" },
-            ]}
-            basePath="/payroll"
-          />
+          <>
+            <FilterPills
+              label="View"
+              param="view"
+              value={view}
+              options={[
+                { value: "reconciliation", label: "Reconciliation" },
+                { value: "detail", label: "Detail" },
+              ]}
+              basePath="/payroll"
+            />
+            {FEATURES.writeTraining ? <TrainingQuickAdd /> : null}
+            {FEATURES.writeRecognition ? (
+              <RecognitionDrawer defaultPayPeriod={periods[0]?.period_start ?? ""} />
+            ) : null}
+          </>
         }
       />
 
@@ -130,7 +136,7 @@ export default async function PayrollPage({
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -193,24 +199,16 @@ export default async function PayrollPage({
               </div>
 
               <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-medium text-muted-foreground">
-                    Training shifts — last 30 days
-                  </h2>
-                  {FEATURES.writeTraining ? <TrainingQuickAdd /> : null}
-                </div>
+                <h2 className="text-sm font-medium text-muted-foreground">
+                  Training shifts — last 30 days
+                </h2>
                 <DataTable columns={trainingColumns} data={training} />
               </div>
 
               <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-medium text-muted-foreground">
-                    Recognition bonuses — last 2 periods
-                  </h2>
-                  {FEATURES.writeRecognition ? (
-                    <RecognitionDrawer defaultPayPeriod={periods[0]?.period_start ?? ""} />
-                  ) : null}
-                </div>
+                <h2 className="text-sm font-medium text-muted-foreground">
+                  Recognition bonuses — last 2 periods
+                </h2>
                 <DataTable columns={recognitionColumns} data={recognitions} />
               </div>
             </>

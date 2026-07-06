@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 
-const PILL = "rounded-md px-2.5 py-1 text-xs font-medium transition-colors";
+const PILL = "rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors";
 
 export interface FilterOption {
   value: string;

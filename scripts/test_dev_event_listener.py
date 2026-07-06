@@ -460,6 +460,7 @@ class TestWatchAll(unittest.TestCase):
 
         with patch.object(L, "_gh_open_jarvis_issue_numbers", return_value=[101, 102]), \
              patch.object(L, "_gh_open_pr_numbers", return_value=[115, 102]), \
+             patch.object(L, "_gh_recently_closed_pr_numbers", return_value=[]), \
              patch.object(L, "catch_up", side_effect=fake_catch_up), \
              patch("time.sleep", side_effect=KeyboardInterrupt):
             try:

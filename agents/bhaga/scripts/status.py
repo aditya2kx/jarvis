@@ -215,6 +215,11 @@ GRAFANA_VIEWS: list[Target] = [
     # write table consumed only by apps/operator-console/ (Payroll & People screen)
     # via its own typed queries.js reads — it is not a model_* table and has no
     # vw_* Grafana-facing view, so no new BQ_TARGETS/GRAFANA_VIEWS entry applies.
+    # migration 034 (Issue #132, operator console): vw_kds_per_item_min exposes
+    # raw per-ticket KDS per-item minutes at full float precision so the console
+    # can recompute weekly/monthly Order Quality percentiles from source rows
+    # (a daily percentile can't be re-aggregated). Grafana's dashboard.json does
+    # not reference this view — console-only, same as recognition_bonuses above.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

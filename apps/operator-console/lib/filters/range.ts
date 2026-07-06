@@ -5,7 +5,14 @@
 // UTC-midnight Date objects (no time-of-day component), so it is immune to
 // DST shifts — only the initial "what is today" lookup needs the timezone.
 
-export type RangePreset = "7d" | "30d" | "this_week" | "this_month" | "last_week" | "last_month";
+export type RangePreset =
+  | "7d"
+  | "30d"
+  | "this_week"
+  | "this_month"
+  | "last_week"
+  | "last_month"
+  | "custom";
 
 export const RANGE_PRESETS: { value: RangePreset; label: string }[] = [
   { value: "7d", label: "Last 7 days" },
@@ -14,9 +21,26 @@ export const RANGE_PRESETS: { value: RangePreset; label: string }[] = [
   { value: "this_month", label: "This month" },
   { value: "last_week", label: "Last week" },
   { value: "last_month", label: "Last month" },
+  { value: "custom", label: "Custom…" },
 ];
 
 const PRESET_VALUES = new Set<string>(RANGE_PRESETS.map((p) => p.value));
+
+/** "YYYY-MM-DD" shape check — cheap guard before trusting a raw search param
+ *  as a SQL date bound (still passed through `dateParam()` downstream, but
+ *  this keeps an obviously-malformed value from silently becoming "Invalid
+ *  Date" -> NaN comparisons in the resolved window). */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function isValidIsoDate(s: string | undefined): s is string {
+  if (!s || !ISO_DATE_RE.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime());
+}
+
+function firstValue(v: string | string[] | undefined): string | undefined {
+  return Array.isArray(v) ? v[0] : v;
+}
 
 export interface DateWindow {
   /** Inclusive lower bound, "YYYY-MM-DD". */
@@ -92,13 +116,30 @@ function monthBounds(y: number, m: number): { start: { y: number; m: number; d: 
 /** Resolve a `?range=` search-param value (or an invalid/missing one) into
  *  an explicit [start, end] calendar window. Unknown values fall back to
  *  `fallback` (default "30d") rather than throwing — same permissive
- *  contract as the old `parseRange`. */
+ *  contract as the old `parseRange`. `from`/`to` (both required, both valid
+ *  "YYYY-MM-DD", `from` <= `to`) are only consulted when the resolved preset
+ *  is "custom"; any other combination (missing, malformed, non-custom
+ *  preset, or `from` after `to`) falls back to `fallback` rather than
+ *  silently producing an inverted or NaN window. */
 export function resolveRange(
   value: string | string[] | undefined,
   fallback: RangePreset = "30d",
+  from?: string | string[] | undefined,
+  to?: string | string[] | undefined,
 ): DateWindow {
-  const raw = Array.isArray(value) ? value[0] : value;
-  const preset: RangePreset = raw && PRESET_VALUES.has(raw) ? (raw as RangePreset) : fallback;
+  const raw = firstValue(value);
+  let preset: RangePreset = raw && PRESET_VALUES.has(raw) ? (raw as RangePreset) : fallback;
+
+  if (preset === "custom") {
+    const f = firstValue(from);
+    const t = firstValue(to);
+    if (!isValidIsoDate(f) || !isValidIsoDate(t) || f > t) {
+      preset = fallback === "custom" ? "30d" : fallback;
+    } else {
+      return { start: f, end: t, label: "Custom", preset: "custom" };
+    }
+  }
+
   const label = RANGE_PRESETS.find((p) => p.value === preset)!.label;
   const today = chicagoToday();
 
@@ -130,4 +171,73 @@ export function resolveRange(
       return { start: fmt(start.y, start.m, start.d), end: fmt(end.y, end.m, end.d), label, preset };
     }
   }
+}
+
+// ── Aggregation grain (Issue #132 follow-up) ────────────────────────────────
+// Every Performance reader groups by this grain server-side (BigQuery
+// GROUP BY <bucketSql(grain)>), never client-side — so a "month" bucket sums
+// the exact same underlying rows a "day" bucket would show individually.
+
+export type Grain = "day" | "week" | "month";
+
+export const GRAINS: { value: Grain; label: string }[] = [
+  { value: "day", label: "Daily" },
+  { value: "week", label: "Weekly" },
+  { value: "month", label: "Monthly" },
+];
+
+const GRAIN_VALUES = new Set<string>(GRAINS.map((g) => g.value));
+
+export function parseGrain(value: string | string[] | undefined, fallback: Grain = "day"): Grain {
+  const raw = firstValue(value);
+  return raw && GRAIN_VALUES.has(raw) ? (raw as Grain) : fallback;
+}
+
+// `grain` is never string-interpolated from a request — it is parsed above
+// into one of exactly 3 literal TS union values, then this function maps
+// that closed set to one of exactly 3 hardcoded SQL fragments. There is no
+// code path from raw user input to a SQL string here (see queries.ts
+// `bucketSql` usages — always `bucketSql(grain)` on a `Grain`-typed value,
+// never a template of the raw search-param).
+export function bucketSql(grain: Grain, dateCol = "date"): string {
+  switch (grain) {
+    case "day":
+      return dateCol;
+    case "week":
+      return `DATE_TRUNC(${dateCol}, WEEK(MONDAY))`;
+    case "month":
+      return `DATE_TRUNC(${dateCol}, MONTH)`;
+  }
+}
+
+const MONTH_ABBR = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/** Render a bucketed date value the way each grain reads best: a day as
+ *  "Jun 30", a week as "Wk of Jun 30" (Monday, matching `bucketSql`'s
+ *  WEEK(MONDAY) truncation), a month as "Jan 2026".
+ *
+ *  Deliberately does NOT go through `new Date(str)` + an America/Chicago
+ *  `Intl.DateTimeFormat` (the pattern `formatDate` in lib/format.ts uses for
+ *  TIMESTAMP columns) — a bucketed DATE value has no time-of-day/timezone
+ *  component to begin with (America/Chicago is already baked in by however
+ *  the underlying `date`/`date_local` column was written), so round-tripping
+ *  it through UTC-midnight parsing + Chicago-timezone rendering silently
+ *  shifts the calendar date backward — for a month bucket like "2026-01-01"
+ *  that's not a cosmetic one-day slip, it renders the wrong MONTH entirely
+ *  ("Dec 2025"). Parsing y/m/d directly from the ISO string avoids that. */
+export function formatBucket(value: string | Date | null | undefined, grain: Grain): string {
+  if (!value) return "—";
+  const iso = typeof value === "string" ? value : value.toISOString();
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return "—";
+  const year = m[1];
+  const month = MONTH_ABBR[Number(m[2]) - 1];
+  const day = Number(m[3]);
+  if (!month) return "—";
+  if (grain === "month") return `${month} ${year}`;
+  const dayLabel = `${month} ${day}`;
+  return grain === "week" ? `Wk of ${dayLabel}` : dayLabel;
 }

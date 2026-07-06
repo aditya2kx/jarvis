@@ -1,4 +1,4 @@
-import { nextDates, orderRecoCombined, storeConfig } from "@/lib/bq/queries";
+import { nextDates, orderAssistantTable, orderRecoCombined, storeConfig } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -8,7 +8,7 @@ import { DaysOfCoverPanel } from "@/components/kpi/DaysOfCoverPanel";
 import { RestockImportDrawer } from "@/components/drawers/RestockImportDrawer";
 import { CapacityEdit } from "@/components/drawers/CapacityEdit";
 import type { ColumnDef } from "@tanstack/react-table";
-import type { OrderRecoCombinedRow } from "@/lib/bq/queries";
+import type { OrderAssistantRow, OrderRecoCombinedRow } from "@/lib/bq/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -22,16 +22,19 @@ const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-ba
 // action, converging with the /bhaga-cloud restock Slack path.
 export default async function InventoryPage() {
   let rows: OrderRecoCombinedRow[] = [];
+  let baseRows: OrderAssistantRow[] = [];
   let dates: string[] = [];
   let maxTubs: number | undefined;
   let error: string | undefined;
   try {
-    const [reco, nd, config] = await Promise.all([
+    const [reco, nd, config, base] = await Promise.all([
       orderRecoCombined(),
       nextDates(),
       storeConfig(DEFAULT_STORE),
+      orderAssistantTable(),
     ]);
     rows = reco;
+    baseRows = base;
     dates = nd.map((d) => d.delivery_date);
     const maxTubsRow = config.find((c) => c.key === "order_reco_max_tubs");
     maxTubs = maxTubsRow ? Number(maxTubsRow.value) : undefined;
@@ -65,6 +68,24 @@ export default async function InventoryPage() {
     { accessorKey: "Source 2", header: "Source", meta: { format: { kind: "source" } } },
   ];
 
+  // Base Inventory Analytics (Grafana panel 80, single-date usage/day math
+  // that vw_order_reco_combined's dual-date table builds on top of).
+  const baseColumns: ColumnDef<OrderAssistantRow>[] = [
+    { accessorKey: "Item", header: "Item" },
+    { accessorKey: "Current Qty", header: "Current Qty", meta: { format: { kind: "number", digits: 1 } } },
+    { accessorKey: "Reported", header: "Reported" },
+    { accessorKey: "Last Restock", header: "Last restock" },
+    { accessorKey: "Usage 7d", header: "Usage (7d)", meta: { format: { kind: "number", digits: 1 } } },
+    { accessorKey: "Avg per day", header: "Avg/day", meta: { format: { kind: "number", digits: 2 } } },
+    {
+      accessorKey: "Days Left",
+      header: "Days left",
+      meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
+    },
+    { accessorKey: "Days Considered", header: "Days considered" },
+    { accessorKey: "Exclusions", header: "Exclusions" },
+  ];
+
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
@@ -94,6 +115,17 @@ export default async function InventoryPage() {
             badDays={DAYS_LEFT_THRESHOLDS.bad}
           />
           <DataTable columns={columns} data={rows} pinLeft={["Item", "Current Qty", "Avg per day"]} />
+
+          <div>
+            <h2 className="mb-2 text-sm font-medium text-muted-foreground">Base inventory analytics</h2>
+            <p className="mb-2 text-xs text-muted-foreground">
+              Single-date usage/day math (reported qty, 7-day usage, avg/day, days left) that the
+              dual-date recommendation table above is built on. &quot;Days considered&quot; excludes
+              days with a restock or a reporting gap so usage isn&apos;t double-counted; excluded
+              days are listed per item under &quot;Exclusions&quot;.
+            </p>
+            <DataTable columns={baseColumns} data={baseRows} pinLeft={["Item", "Current Qty"]} />
+          </div>
         </>
       )}
     </div>

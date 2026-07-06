@@ -333,4 +333,48 @@ needed: a write from the console (goals, training shifts, restock) lands via
 the same idempotent MERGE contracts the Slack path uses (§5), so the next
 Grafana panel render and the next console page render both see it — they are
 two read clients of one warehouse, not two warehouses.
-```
+
+## 12. Date range + aggregation
+
+Every Performance screen (Sales, Labor, Forecast, Order Quality) shares one
+range/grain contract from `lib/filters/range.ts`:
+
+- **Range**: the 6 calendar presets (`7d`/`30d`/`this_week`/`this_month`/
+  `last_week`/`last_month`, Monday-start weeks, America/Chicago) plus
+  `custom`, which reads `?from=&to=` (two `<input type="date">`s in
+  `DateRangePicker`) instead of a fixed window. Invalid/missing custom bounds
+  fall back to the `30d` default — never a thrown error on a malformed URL.
+- **Grain** (`day`/`week`/`month`, `AggregationSelect`): NOT a bind param —
+  `bucketSql(grain)` returns one of three **whitelisted** SQL fragments
+  (`date`, `DATE_TRUNC(date, WEEK(MONDAY))`, `DATE_TRUNC(date, MONTH)`),
+  never string-interpolated from user input. `formatBucket(date, grain)`
+  renders the bucket label (`"Jun 30"` / `"Wk of Jun 29"` / `"Jan 2026"`) by
+  parsing the `YYYY-MM-DD` string with a regex, deliberately bypassing
+  `Date`/`Intl.DateTimeFormat` — those convert through UTC and shift the
+  displayed calendar date by up to a day (and, for month grain, sometimes
+  the wrong month) once a timezone offset is applied.
+- **Rollup correctness**: additive metrics (`net_sales`, `orders`,
+  `total_hours`, …) are `SUM()`-ed per bucket in `lib/bq/queries.ts`
+  (`laborByGrain`, `forecastByGrain`, `forecastAccuracyByGrain`); ratios
+  (`labor_pct`, `orders_vs_prior_wk`, …) are **recomputed** from the summed
+  components with `SAFE_DIVIDE`, never averaged — averaging a ratio across
+  days silently gives the wrong number the moment day-to-day volume varies.
+  `dow` (day-of-week) is `NULL` for `week`/`month` grain and the column is
+  hidden client-side rather than shown blank.
+- **Percentiles cannot be rolled up from a daily view** — `orderQualityByGrain`
+  instead re-derives `APPROX_QUANTILES` per bucket from the raw per-ticket
+  `vw_kds_per_item_min` view (migration 034), so weekly/monthly percentiles
+  are exact, not an average-of-medians approximation.
+
+## 13. Order Quality parity
+
+Grafana's "Order KDS Times" panel (`dashboard.json` panel 52) is a per-order
+investigation table filtered by date range, `order_source`, and a "Min /
+Item" threshold — this had no console equivalent before. `kdsOrderInvestigation`
+reproduces it: one row per ticket (`date_local`, `ticket_name`, `order_source`,
+start/end, item counts, `min_per_item`, and a correlated `staff_on_shift`
+lookup), filtered server-side by the same `source`/`onTime` params as the
+percentile chart above it — so the Source dropdown now drives **both** the
+aggregate percentile table and the per-order drill-down, matching Grafana's
+"one filter row governs every panel on the tab" behavior instead of the two
+diverging independently.

@@ -443,6 +443,66 @@ an edit field. `kind: "dollars"` / `"days"` goals pass through unchanged.
 Never add a second "is this already a fraction?" heuristic downstream —
 the percent/fraction boundary lives at this one conversion pair.
 
+### 5.5c Custom date range + daily/weekly/monthly aggregation (all Performance screens)
+Sales, Labor, Forecast, and Order Quality each add an `AggregationSelect`
+(`grain=day|week|month`, see `ARCHITECTURE.md` §12) and a `custom` range
+preset (`DateRangePicker`, two `<input type="date">`s -> `?range=custom&
+from=&to=`) alongside the existing 6 presets. `grain` is never bound as a
+query param — `bucketSql(grain)` is one of three hardcoded fragments — and
+`from`/`to` go through the same `dateParam()` binding as every other date.
+Additive metrics are `SUM()`-ed and ratios recomputed with `SAFE_DIVIDE` per
+bucket (never averaged); Order Quality percentiles are recomputed per bucket
+from the raw `vw_kds_per_item_min` view (migration 034) since a daily
+percentile cannot be re-aggregated into a weekly/monthly one.
+
+**Known grain limitation:** `vw_order_quality_daily`'s `% tickets late`
+column is defined only at day grain (it is itself a per-day ratio baked into
+that view) and is **dropped** from the week/month percentile table rather
+than shown as a misleadingly-averaged number. `kds_pct_items_over_goal`
+(computed fresh from raw tickets in `orderQualityByGrain`) is the correct,
+grain-safe replacement metric and is shown at every grain.
+
+Forecast's `vs prior wk` column renders as `{ kind: "pct", digits: 1 }`
+(`0.123` -> `"12.3%"`), fixing a prior bug where it rendered as a raw
+1-decimal number instead of a percent.
+
+### 5.5d Order Quality Grafana parity (Order KDS Times)
+`kdsOrderInvestigation` (over `vw_kds_order_investigation`) reproduces
+Grafana panel 52's per-order table — one row per ticket with `min_per_item`,
+`staff_on_shift` (correlated lookup), filtered by the page's `Source`
+dropdown, date window, and a `Min / Item ≥` `FilterPills` threshold (mirrors
+Grafana's slow-threshold variable). It renders below the existing percentile
+chart/table on `/order-quality`, with `date_local`/`ticket_name` pinned for
+horizontal scroll. The Source filter now drives **both** the percentile
+view and this investigation table — previously only the p95-by-source chart
+respected it.
+
+### 5.5e Forecast goal-hours, exclusions, and Labor PT/FT parity (M5)
+- **Goal hours vs scheduled** (Forecast): `goal_hours_per_item` is read from
+  `store_config` (falls back to Grafana's hardcoded `0.20` textbox default,
+  `DEFAULT_GOAL_HOURS_PER_ITEM` in `forecast/page.tsx`, if the key is unset).
+  `goal_shift_hours = forecast_items * goal_hours_per_item`,
+  `sched_vs_goal_hours = scheduled_hours - goal_shift_hours`, and the percent
+  variant are computed client-side from already-fetched forecast rows (no
+  new BQ column — same "presentation math over fetched rows" pattern as the
+  Home health scorecard). Rendered as 3 new "Upcoming schedule" columns plus
+  a "Goal total hours vs scheduled" line chart.
+- **Forecast inputs / exclusions** (Grafana panel 84): `forecastExclusions()`
+  reads `vw_forecast_exclusions` as-is (read-only — the `forecast_exclude`
+  override stays a BQ-tab edit, matching Grafana) and renders as a
+  `DataTable` below the schedule table.
+- **Labor PT/FT lines**: `vw_model_labor_daily`'s existing `fulltime_pct` /
+  `hourly_hours_per_item` / `fulltime_hours_per_item` columns (already
+  selected by `laborByGrain`) are added as extra series to the existing
+  "Labor % of net sales" chart and a new "Hours per item — total / PT / FT"
+  chart on `/labor`. No BQ change.
+- **Order Assistant base analytics** (Grafana panel 80): a second `DataTable`
+  on `/inventory`, from the pre-existing `orderAssistantTable()` reader
+  (`Item, Current Qty, Reported, Last Restock, Usage 7d, Avg per day, Days
+  Left, Days Considered, Exclusions`), plus a static methodology note
+  explaining the single-date usage/day math the dual-date reco table above
+  it is built on.
+
 ### 5.5 Env vars (`.env.example`)
 ```
 BQ_PROJECT=jarvis-bhaga-prod
@@ -467,4 +527,32 @@ BYPASS_IAP_EMAIL=        # local dev only (npm run dev) — no IAP headers exist
 - [ ] No horizontal page-overflow at 390px/768px on any of the 9 screens; pinned table columns report distinct `left` offsets after scroll (`ARCHITECTURE.md` §9).
 - [ ] Filters follow the ≤4-pills / ≥5-dropdown convention everywhere (`ARCHITECTURE.md` §10); `Period` and `Source` are dropdowns.
 - [ ] Percent goals round-trip through the UI as whole percents (`15` in -> `15.0%` shown, `0.15` stored) — no `1500%` regressions (§5.5b).
+- [ ] All 4 Performance screens (Sales, Labor, Forecast, Order Quality) support `custom` date range + daily/weekly/monthly aggregation with correct rollups (`ARCHITECTURE.md` §12, §5.5c).
+- [ ] Forecast `vs prior wk` renders as a 1-decimal percent, not a raw number.
+- [ ] Order Quality's Source filter drives the percentile chart/table AND the new per-order "Order KDS Times" investigation table (§5.5d).
+- [ ] Payroll shows period start + end dates and the selected period's Total pay / Wages / Review bonus.
+- [ ] Every Grafana parity gap below has a console equivalent (§7).
+
+## 7. Grafana panel coverage checklist
+
+Mechanical parity gate — every Grafana BHAGA Analytics panel maps to a
+console location. Re-run this table whenever a Grafana panel changes.
+
+| Grafana panel (dashboard.json) | Console location |
+|---|---|
+| Daily Net Sales / Orders / Items | `/sales` chart + detail table (all grains) |
+| Daily Wages / Net Sales % (total) | `/labor` "Labor % of net sales" chart |
+| Daily Wages / Net Sales % (PT/FT split) | `/labor` "Labor % of net sales" chart (Part-time + Full-time series, §5.5e) |
+| Hours per Item (total) | `/labor` "Hours per item" chart |
+| Hours per Item (PT/FT split) | `/labor` "Hours per item — total / part-time / full-time" chart (§5.5e) |
+| Forecast vs Actual (orders/items) | `/forecast` accuracy chart |
+| Goal Total Hours vs Scheduled Part Time (panel 71) | `/forecast` "Goal total hours vs scheduled" chart + schedule table columns (§5.5e) |
+| Forecast Inputs / Exclusions (panel 84) | `/forecast` "Forecast inputs & exclusions" table (§5.5e) |
+| Order Quality percentiles (median/p90/p95/p99) | `/order-quality` percentile chart + table (all grains) |
+| p95 by source | `/order-quality` p95-by-source chart |
+| Order KDS Times investigation (panel 52) | `/order-quality` "Order KDS times (slowest first)" table (§5.5d) |
+| Payroll period reconciliation | `/payroll` reconciliation table + period start/end + selected-period totals |
+| Base Inventory Analytics + methodology (panel 80) | `/inventory` "Base inventory analytics" table + note (§5.5e) |
+| Order Assistant dual-date reco (panel 83) | `/inventory` main dual-date table |
+| Pipeline / source freshness | `/pipeline` |
 ```

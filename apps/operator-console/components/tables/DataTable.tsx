@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { formatDate, formatDollars, formatCents, formatNumber, formatPct } from "@/lib/format";
+import { formatBucket, type Grain } from "@/lib/filters/range";
 import { cn } from "@/lib/utils";
 
 // Threshold coloring for numeric/pct/dollars columns (Figma: red/amber/green
@@ -41,6 +42,10 @@ export interface Thresholds {
 // `cell` fn, and DataTable — already a client component — owns rendering.
 export type ColumnFormat =
   | { kind: "date" }
+  // Grain-aware date bucket (Issue #132 follow-up) — a week/month bucket
+  // isn't a plain calendar day, so it needs `formatBucket`'s "Wk of …"/"Jan
+  // 2026" shapes rather than "date"'s day-of-month rendering.
+  | { kind: "bucket"; grain: Grain }
   | { kind: "dollars"; thresholds?: Thresholds }
   | { kind: "cents" }
   | { kind: "pct"; digits?: number; thresholds?: Thresholds }
@@ -75,6 +80,8 @@ function renderFormatted(format: ColumnFormat, value: unknown): ReactNode {
   switch (format.kind) {
     case "date":
       return formatDate(value as Parameters<typeof formatDate>[0]);
+    case "bucket":
+      return formatBucket(value as Parameters<typeof formatBucket>[0], format.grain);
     case "dollars": {
       const v = value as number | null | undefined;
       const cls = format.thresholds ? thresholdClass(v, format.thresholds) : undefined;

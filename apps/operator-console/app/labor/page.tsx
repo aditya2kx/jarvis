@@ -1,13 +1,15 @@
-import { laborDaily, storeConfig, payrollPeriod } from "@/lib/bq/queries";
+import { laborByGrain, storeConfig, payrollPeriod } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
-import { dateSortKey, formatDate } from "@/lib/format";
+import { dateSortKey } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { LineChartCard } from "@/components/charts/LineChartCard";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { DataTable } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { FilterSelect } from "@/components/filters/FilterSelect";
-import { RANGE_PRESETS, resolveRange } from "@/lib/filters/range";
+import { AggregationSelect } from "@/components/filters/AggregationSelect";
+import { DateRangePicker } from "@/components/filters/DateRangePicker";
+import { RANGE_PRESETS, formatBucket, parseGrain, resolveRange } from "@/lib/filters/range";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { LaborDailyRow } from "@/lib/bq/queries";
 
@@ -21,9 +23,12 @@ function goalFromConfig(rows: { key: string; value: string }[], key: string): nu
 export default async function LaborPage({
   searchParams,
 }: {
-  searchParams: Promise<{ range?: string }>;
+  searchParams: Promise<{ range?: string; from?: string; to?: string; grain?: string }>;
 }) {
-  const win = resolveRange((await searchParams).range, "30d");
+  const sp = await searchParams;
+  const win = resolveRange(sp.range, "30d", sp.from, sp.to);
+  const grain = parseGrain(sp.grain);
+  const dateParams: Record<string, string> = win.preset === "custom" ? { from: win.start, to: win.end } : {};
 
   let rows: LaborDailyRow[] = [];
   let goalLaborPct: number | undefined;
@@ -31,7 +36,7 @@ export default async function LaborPage({
   let error: string | undefined;
   try {
     const [labor, config, period] = await Promise.all([
-      laborDaily(win),
+      laborByGrain(win, grain),
       storeConfig(DEFAULT_STORE),
       payrollPeriod(1),
     ]);
@@ -49,10 +54,16 @@ export default async function LaborPage({
   const chartData = [...rows]
     .sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1))
     .map((r) => ({
-      date: formatDate(r.date),
+      date: formatBucket(r.date, grain),
       labor_pct: r.labor_pct != null ? Number((r.labor_pct * 100).toFixed(1)) : null,
       hourly_pct: r.hourly_pct != null ? Number((r.hourly_pct * 100).toFixed(1)) : null,
+      // Full-time labor cost as % of net sales (Grafana "Daily Wages/Net
+      // Sales" total/PT/FT split, panel description at dashboard.json:829) —
+      // laborByGrain already selects this straight from vw_model_labor_daily.
+      fulltime_pct: r.fulltime_pct != null ? Number((r.fulltime_pct * 100).toFixed(1)) : null,
       hours_per_item: r.hours_per_item,
+      hourly_hours_per_item: r.hourly_hours_per_item,
+      fulltime_hours_per_item: r.fulltime_hours_per_item,
       total_hours: r.total_hours,
       net_sales: r.net_sales,
       // Throughput & saturation: orders (and items) produced per labor hour —
@@ -61,20 +72,16 @@ export default async function LaborPage({
       // through today"), no new BQ column needed.
       orders_per_hour: r.total_hours ? Number((r.orders / r.total_hours).toFixed(2)) : null,
       items_per_hour: r.total_hours ? Number((r.items_sold / r.total_hours).toFixed(2)) : null,
-      // Part-time/full-time split, derived from vw_model_labor_daily's own
-      // fulltime_pct ratio — no separate PT/FT hour columns exist upstream.
-      fulltime_hours:
-        r.total_hours != null && r.fulltime_pct != null
-          ? Number((r.total_hours * r.fulltime_pct).toFixed(1))
-          : null,
-      parttime_hours:
-        r.total_hours != null && r.fulltime_pct != null
-          ? Number((r.total_hours * (1 - r.fulltime_pct)).toFixed(1))
-          : null,
+      // Part-time/full-time hour split — `laborByGrain` sums the underlying
+      // `hourly_hours`/`fulltime_hours` columns directly (NOT derived from
+      // `fulltime_pct`, which is labor-*cost*-as-%-of-net-sales, a different
+      // ratio than hours-as-fraction-of-hours).
+      fulltime_hours: r.fulltime_hours != null ? Number(Number(r.fulltime_hours).toFixed(1)) : null,
+      parttime_hours: r.hourly_hours != null ? Number(Number(r.hourly_hours).toFixed(1)) : null,
     }));
 
   const columns: ColumnDef<LaborDailyRow>[] = [
-    { accessorKey: "date", header: "Date", meta: { format: { kind: "date" } } },
+    { accessorKey: "date", header: "Date", meta: { format: { kind: "bucket", grain } } },
     { accessorKey: "net_sales", header: "Net sales", meta: { format: { kind: "dollars" } } },
     { accessorKey: "total_labor_cost", header: "Labor cost", meta: { format: { kind: "dollars" } } },
     { accessorKey: "labor_pct", header: "Labor %", meta: { format: { kind: "pct" } } },
@@ -88,7 +95,22 @@ export default async function LaborPage({
       <PageHeader
         title="Labor"
         subtitle={`Hours, labor %, and throughput · ${storeDisplayName(DEFAULT_STORE)}`}
-        right={<FilterSelect label="Period" param="range" value={win.preset} options={RANGE_PRESETS} basePath="/labor" />}
+        right={
+          <>
+            <AggregationSelect value={grain} basePath="/labor" extraParams={{ range: win.preset, ...dateParams }} />
+            <FilterSelect
+              label="Period"
+              param="range"
+              value={win.preset}
+              options={RANGE_PRESETS}
+              basePath="/labor"
+              extraParams={{ grain }}
+            />
+            {win.preset === "custom" ? (
+              <DateRangePicker basePath="/labor" from={win.start} to={win.end} extraParams={{ grain }} />
+            ) : null}
+          </>
+        }
       />
 
       {error ? (
@@ -102,16 +124,21 @@ export default async function LaborPage({
               xKey="date"
               series={[
                 { key: "labor_pct", label: "Total labor %" },
-                { key: "hourly_pct", label: "Hourly labor %" },
+                { key: "hourly_pct", label: "Part-time labor %" },
+                { key: "fulltime_pct", label: "Full-time labor %" },
               ]}
               goal={goalLaborPct != null ? goalLaborPct * 100 : undefined}
               goalLabel="Goal"
             />
             <LineChartCard
-              title="Hours per item"
+              title="Hours per item — total / part-time / full-time"
               data={chartData}
               xKey="date"
-              series={[{ key: "hours_per_item", label: "Hrs/item" }]}
+              series={[
+                { key: "hours_per_item", label: "Total" },
+                { key: "hourly_hours_per_item", label: "Part-time" },
+                { key: "fulltime_hours_per_item", label: "Full-time" },
+              ]}
             />
           </div>
 
@@ -138,7 +165,7 @@ export default async function LaborPage({
           </div>
 
           <BarChartCard
-            title="Total labor hours by day"
+            title={`Total labor hours by ${grain}`}
             data={chartData}
             xKey="date"
             series={[{ key: "total_hours", label: "Hours" }]}

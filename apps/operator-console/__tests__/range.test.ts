@@ -180,7 +180,7 @@ describe("isMonthLike", () => {
 });
 
 describe("RANGE_PRESETS", () => {
-  it("has exactly the 6 operator-facing presets in display order", () => {
+  it("has exactly the 7 operator-facing presets in display order", () => {
     expect(RANGE_PRESETS.map((p) => p.value)).toEqual([
       "7d",
       "30d",
@@ -188,6 +188,67 @@ describe("RANGE_PRESETS", () => {
       "this_month",
       "last_week",
       "last_month",
+      "custom",
     ]);
+  });
+});
+
+describe("resolveRange — custom", () => {
+  it("uses the given from/to when both are valid and from <= to", () => {
+    withNow(THURSDAY, () => {
+      expect(resolveRange("custom", "30d", "2026-05-01", "2026-05-15")).toEqual({
+        start: "2026-05-01",
+        end: "2026-05-15",
+        label: "Custom",
+        preset: "custom",
+      });
+    });
+  });
+
+  it("accepts a single-day range (from === to)", () => {
+    withNow(THURSDAY, () => {
+      expect(resolveRange("custom", "30d", "2026-05-01", "2026-05-01").preset).toBe("custom");
+    });
+  });
+
+  it("falls back when from is missing", () => {
+    withNow(THURSDAY, () => {
+      expect(resolveRange("custom", "7d", undefined, "2026-05-15").preset).toBe("7d");
+    });
+  });
+
+  it("falls back when to is missing", () => {
+    withNow(THURSDAY, () => {
+      expect(resolveRange("custom", "7d", "2026-05-01", undefined).preset).toBe("7d");
+    });
+  });
+
+  it("falls back when from is after to (inverted range)", () => {
+    withNow(THURSDAY, () => {
+      expect(resolveRange("custom", "7d", "2026-05-15", "2026-05-01").preset).toBe("7d");
+    });
+  });
+
+  it("falls back when from/to are malformed", () => {
+    withNow(THURSDAY, () => {
+      expect(resolveRange("custom", "7d", "not-a-date", "2026-05-15").preset).toBe("7d");
+    });
+  });
+
+  it("falls back to 30d if the fallback itself is custom (avoids infinite loop)", () => {
+    withNow(THURSDAY, () => {
+      expect(resolveRange("custom", "custom", undefined, undefined).preset).toBe("30d");
+    });
+  });
+
+  it("takes the first value when from/to are arrays", () => {
+    withNow(THURSDAY, () => {
+      expect(resolveRange("custom", "30d", ["2026-05-01", "x"], ["2026-05-15", "y"])).toEqual({
+        start: "2026-05-01",
+        end: "2026-05-15",
+        label: "Custom",
+        preset: "custom",
+      });
+    });
   });
 });

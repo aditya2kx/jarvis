@@ -1,5 +1,5 @@
 import { payrollPeriod, reviewBonusDetail, trainingShifts, recognitionBonuses } from "@/lib/bq/queries";
-import { formatDollars } from "@/lib/format";
+import { formatDate, formatDollars } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { DataTable } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
@@ -54,18 +54,23 @@ export default async function PayrollPage({
     error = e instanceof Error ? e.message : String(e);
   }
 
-  const totalWages = periods.reduce((s, p) => s + (p.est_gross_pay ?? 0), 0);
-  const totalBonus = periods.reduce((s, p) => s + (p.review_bonus ?? 0), 0);
-  const totalWageDiff = periods.reduce((s, p) => s + (p.wage_diff ?? 0), 0);
-
   const periodStarts = Array.from(new Set(periods.map((p) => p.period_start)));
   const selectedPeriodStart = period === "last" ? periodStarts[1] : periodStarts[0];
   const periodRows = selectedPeriodStart
     ? periods.filter((p) => p.period_start === selectedPeriodStart)
     : periods;
 
+  // Stat cards reflect the SELECTED period only (via the Current/Last
+  // toggle above), not "last 2 periods" summed together — an operator
+  // picking "Last" expects last period's numbers, not current+last.
+  const periodEnd = periodRows[0]?.period_end;
+  const totalPay = periodRows.reduce((s, p) => s + (p.est_total_pay ?? 0), 0);
+  const totalWages = periodRows.reduce((s, p) => s + (p.est_gross_pay ?? 0), 0);
+  const totalBonus = periodRows.reduce((s, p) => s + (p.review_bonus ?? 0), 0);
+
   const periodColumns: ColumnDef<PayrollPeriodRow>[] = [
-    { accessorKey: "period_start", header: "Period", meta: { format: { kind: "date" } } },
+    { accessorKey: "period_start", header: "Period start", meta: { format: { kind: "date" } } },
+    { accessorKey: "period_end", header: "Period end", meta: { format: { kind: "date" } } },
     { accessorKey: "employee", header: "Employee" },
     { accessorKey: "hours_worked", header: "Hours", meta: { format: { kind: "number", digits: 1 } } },
     { accessorKey: "est_gross_pay", header: "Est. wages", meta: { format: { kind: "dollars" } } },
@@ -115,6 +120,17 @@ export default async function PayrollPage({
         right={
           <>
             <FilterPills
+              label="Period"
+              param="period"
+              value={period}
+              options={[
+                { value: "current", label: "Current" },
+                { value: "last", label: "Last" },
+              ]}
+              basePath="/payroll"
+              extraParams={{ view }}
+            />
+            <FilterPills
               label="View"
               param="view"
               value={view}
@@ -123,6 +139,7 @@ export default async function PayrollPage({
                 { value: "detail", label: "Detail" },
               ]}
               basePath="/payroll"
+              extraParams={{ period }}
             />
             {FEATURES.writeTraining ? <TrainingQuickAdd /> : null}
             {FEATURES.writeRecognition ? (
@@ -136,57 +153,52 @@ export default async function PayrollPage({
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Est. wages (last 2 periods)
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-semibold">{formatDollars(totalWages)}</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Review bonuses
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-semibold">{formatDollars(totalBonus)}</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Wage diff vs ADP actual
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-semibold">{formatDollars(totalWageDiff)}</p>
-              </CardContent>
-            </Card>
+          <div className="flex flex-col gap-2">
+            <p className="text-xs text-muted-foreground">
+              {period === "current" ? "Current" : "Last"} pay period
+              {selectedPeriodStart && periodEnd
+                ? ` · ${formatDate(selectedPeriodStart)} – ${formatDate(periodEnd)}`
+                : ""}
+            </p>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm font-medium text-muted-foreground">
+                    Total pay
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-semibold">{formatDollars(totalPay)}</p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm font-medium text-muted-foreground">
+                    Wages
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-semibold">{formatDollars(totalWages)}</p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm font-medium text-muted-foreground">
+                    Review bonus
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-semibold">{formatDollars(totalBonus)}</p>
+                </CardContent>
+              </Card>
+            </div>
           </div>
 
           {view === "reconciliation" ? (
             <div className="flex flex-col gap-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-sm font-medium text-muted-foreground">
-                  Per-employee, per-period detail
-                </h2>
-                <FilterPills
-                  label="Period"
-                  param="period"
-                  value={period}
-                  options={[
-                    { value: "current", label: "Current" },
-                    { value: "last", label: "Last" },
-                  ]}
-                  basePath="/payroll"
-                  extraParams={{ view }}
-                />
-              </div>
+              <h2 className="text-sm font-medium text-muted-foreground">
+                Per-employee, per-period detail
+              </h2>
               <DataTable columns={periodColumns} data={periodRows} />
             </div>
           ) : (

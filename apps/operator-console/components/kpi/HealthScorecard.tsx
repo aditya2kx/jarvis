@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { GoalBar } from "./GoalBar";
 import { saveGoalAction } from "@/app/home/actions";
-import { GOAL_FIELDS, fractionToPercentInput, percentInputToFraction } from "@/lib/kpi/goal-fields";
+import { GOAL_FIELDS, fractionToPercentInput, percentInputToFraction, sanitizeDollarInput } from "@/lib/kpi/goal-fields";
 import type { HealthScorecard as HealthScorecardData, HealthMetric } from "@/lib/kpi/health";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -99,7 +99,9 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
                   type="text"
                   inputMode="decimal"
                   value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
+                  onChange={(e) =>
+                    setInputValue(field.kind === "dollars" ? sanitizeDollarInput(e.target.value) : e.target.value)
+                  }
                   className={field.kind === "percent" ? "h-7 pr-5 text-xs" : field.kind === "dollars" ? "h-7 pl-4 text-xs" : "h-7 text-xs"}
                 />
                 {field.kind === "dollars" ? (

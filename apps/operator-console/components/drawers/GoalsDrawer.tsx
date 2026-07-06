@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { saveGoalsAction } from "@/app/home/actions";
-import { GOAL_FIELDS, fractionToPercentInput, percentInputToFraction } from "@/lib/kpi/goal-fields";
+import { GOAL_FIELDS, fractionToPercentInput, percentInputToFraction, sanitizeDollarInput } from "@/lib/kpi/goal-fields";
 import type { GoalKey } from "@/lib/bq/writes";
 
 // Percent-kind goals (labor %, food-cost %, on-time %) are STORED as
@@ -88,7 +88,12 @@ export function GoalsDrawer({ current }: { current: Partial<Record<GoalKey, stri
                   inputMode="decimal"
                   placeholder={helpText}
                   value={values[key] ?? ""}
-                  onChange={(e) => setValues((prev) => ({ ...prev, [key]: e.target.value }))}
+                  onChange={(e) =>
+                    setValues((prev) => ({
+                      ...prev,
+                      [key]: kind === "dollars" ? sanitizeDollarInput(e.target.value) : e.target.value,
+                    }))
+                  }
                   className={kind === "dollars" ? "pl-6" : kind === "percent" ? "pr-6" : undefined}
                 />
                 {kind === "dollars" ? (

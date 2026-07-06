@@ -42,6 +42,16 @@ function firstValue(v: string | string[] | undefined): string | undefined {
   return Array.isArray(v) ? v[0] : v;
 }
 
+/** True as soon as the user has picked "Custom…" from the Period dropdown,
+ *  even before they've chosen valid `from`/`to` dates. Distinct from
+ *  `resolveRange(...).preset === "custom"`, which only reports "custom" once
+ *  a valid window exists — pages use this to keep the DateRangePicker (and
+ *  its underlying <input type="date"> fields) visible the moment "Custom…"
+ *  is selected, rather than only after a window has already been chosen. */
+export function wantsCustom(value: string | string[] | undefined): boolean {
+  return firstValue(value) === "custom";
+}
+
 export interface DateWindow {
   /** Inclusive lower bound, "YYYY-MM-DD". */
   start: string;

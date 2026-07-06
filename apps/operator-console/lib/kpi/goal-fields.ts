@@ -74,3 +74,17 @@ export function percentInputToFraction(input: string): string {
   if (!Number.isFinite(n)) return input;
   return trimTrailingZeros((n / 100).toFixed(6));
 }
+
+/** Caps a dollars-kind input to at most 2 decimal places as the operator
+ *  types (e.g. "50.999" -> "50.99") — dollar amounts don't have a
+ *  sub-cent unit, so the input shouldn't let one accumulate in the first
+ *  place, matching the operator feedback that amounts must not show more
+ *  precision than cents. */
+export function sanitizeDollarInput(raw: string): string {
+  const s = raw.replace(/[^0-9.]/g, "");
+  const firstDot = s.indexOf(".");
+  if (firstDot === -1) return s;
+  const whole = s.slice(0, firstDot);
+  const frac = s.slice(firstDot + 1).replace(/\./g, "").slice(0, 2);
+  return `${whole}.${frac}`;
+}

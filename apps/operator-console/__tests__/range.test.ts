@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RANGE_PRESETS, isMonthLike, resolveRange } from "@/lib/filters/range";
+import { RANGE_PRESETS, isMonthLike, resolveRange, wantsCustom } from "@/lib/filters/range";
 
 // Fixed "now" for every test: Thu 2026-07-02, 13:00 Central (18:00Z) — safely
 // mid-day so the America/Chicago "today" lookup can't straddle midnight.
@@ -250,5 +250,28 @@ describe("resolveRange — custom", () => {
         preset: "custom",
       });
     });
+  });
+});
+
+describe("wantsCustom", () => {
+  it("is true as soon as range=custom is selected, even with no from/to yet", () => {
+    // The exact scenario resolveRange's "falls back when to is missing" case
+    // above covers from the data-fetch side — this is the UI-visibility side:
+    // the DateRangePicker must still render so the operator can pick dates.
+    expect(wantsCustom("custom")).toBe(true);
+  });
+
+  it("is false for any non-custom preset", () => {
+    expect(wantsCustom("30d")).toBe(false);
+    expect(wantsCustom("this_week")).toBe(false);
+  });
+
+  it("is false when the param is missing", () => {
+    expect(wantsCustom(undefined)).toBe(false);
+  });
+
+  it("takes the first value when passed an array (mirrors resolveRange)", () => {
+    expect(wantsCustom(["custom", "30d"])).toBe(true);
+    expect(wantsCustom(["30d", "custom"])).toBe(false);
   });
 });

@@ -9,7 +9,7 @@ import { FilterPills } from "@/components/filters/FilterPills";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
-import { RANGE_PRESETS, formatBucket, parseGrain, resolveRange } from "@/lib/filters/range";
+import { RANGE_PRESETS, formatBucket, parseGrain, resolveRange, wantsCustom } from "@/lib/filters/range";
 import { Badge } from "@/components/ui/badge";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { ForecastExclusionRow, ForecastRow } from "@/lib/bq/queries";
@@ -52,6 +52,7 @@ export default async function ForecastPage({
   // month since that's the more useful default for a schedule view.
   const win = resolveRange(sp.range, "this_month", sp.from, sp.to);
   const grain = parseGrain(sp.grain);
+  const showCustomPicker = wantsCustom(sp.range);
   const dateParams: Record<string, string> = win.preset === "custom" ? { from: win.start, to: win.end } : {};
   const metric = parseMetric(sp.metric);
   const forecastKey = metric === "orders" ? "forecast_orders" : "forecast_items";
@@ -188,12 +189,12 @@ export default async function ForecastPage({
             <FilterSelect
               label="Period"
               param="range"
-              value={win.preset}
+              value={showCustomPicker ? "custom" : win.preset}
               options={RANGE_PRESETS}
               basePath="/forecast"
               extraParams={{ metric, grain }}
             />
-            {win.preset === "custom" ? (
+            {showCustomPicker ? (
               <DateRangePicker basePath="/forecast" from={win.start} to={win.end} extraParams={{ metric, grain }} />
             ) : null}
             {mapePct != null ? (

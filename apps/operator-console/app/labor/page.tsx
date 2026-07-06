@@ -9,7 +9,7 @@ import { PageHeader } from "@/components/shell/PageHeader";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
-import { RANGE_PRESETS, formatBucket, parseGrain, resolveRange } from "@/lib/filters/range";
+import { RANGE_PRESETS, formatBucket, parseGrain, resolveRange, wantsCustom } from "@/lib/filters/range";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { LaborDailyRow } from "@/lib/bq/queries";
 
@@ -28,6 +28,7 @@ export default async function LaborPage({
   const sp = await searchParams;
   const win = resolveRange(sp.range, "30d", sp.from, sp.to);
   const grain = parseGrain(sp.grain);
+  const showCustomPicker = wantsCustom(sp.range);
   const dateParams: Record<string, string> = win.preset === "custom" ? { from: win.start, to: win.end } : {};
 
   let rows: LaborDailyRow[] = [];
@@ -101,12 +102,12 @@ export default async function LaborPage({
             <FilterSelect
               label="Period"
               param="range"
-              value={win.preset}
+              value={showCustomPicker ? "custom" : win.preset}
               options={RANGE_PRESETS}
               basePath="/labor"
               extraParams={{ grain }}
             />
-            {win.preset === "custom" ? (
+            {showCustomPicker ? (
               <DateRangePicker basePath="/labor" from={win.start} to={win.end} extraParams={{ grain }} />
             ) : null}
           </>

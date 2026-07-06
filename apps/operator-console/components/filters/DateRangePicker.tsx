@@ -6,13 +6,14 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
 /**
- * Custom "from"/"to" date inputs for the "Custom…" range preset. Only
- * rendered by a page when `win.preset === "custom"` (see FilterSelect's
- * Period control) — picking "Custom…" first navigates with `range=custom`
- * and no from/to, `resolveRange` falls back to `30d` for that render, and
- * this picker then lets the operator fill in the real bounds. Submits once
- * (not per-keystroke) via a small local form, same server-driven search-param
- * contract as FilterPills/FilterSelect.
+ * Custom "from"/"to" date inputs for the "Custom…" range preset. Rendered by
+ * a page as soon as `wantsCustom(sp.range)` is true (see `lib/filters/range`)
+ * — picking "Custom…" first navigates with `range=custom` and no from/to;
+ * `resolveRange` falls back to a default window for that render (so the page
+ * still has something to query), but `wantsCustom` stays true off the raw
+ * search param, keeping this picker visible so the operator can fill in the
+ * real bounds. Submits once (not per-keystroke) via a small local form, same
+ * server-driven search-param contract as FilterPills/FilterSelect.
  */
 export function DateRangePicker({
   basePath,

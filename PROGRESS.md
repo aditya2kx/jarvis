@@ -1,5 +1,17 @@
 # Jarvis Build Progress
 
+## 2026-07-06 — Operator Console: review-deploy + 3 operator-comment fixes on PR #147 (Issue #132, branch fix/i132-create-a-website-to-replace-grafana)
+
+**Scope:** closing the evidence gap the automated review flagged (90%→ confirm migration 034 live + cross-check weekly rollups against independent BQ queries) and 3 issues the operator found reviewing the deployed console: the "Custom" date picker never appeared, dollar-goal inputs accepted more than 2 decimal places, and no table supported column sorting.
+
+**Key changes:**
+- `lib/filters/range.ts` — new `wantsCustom(sp.range)` reads the raw search param independent of `resolveRange`'s fallback. Root cause of the invisible picker: `resolveRange` falls back to the default preset the instant `range=custom` has no `from`/`to` yet (by design — the page still needs a window to query), but all 4 Performance pages gated the `DateRangePicker`'s *visibility* on that same fallback-prone `win.preset === "custom"`, so selecting "Custom…" silently reverted before the operator could type a date.
+- `lib/kpi/goal-fields.ts` — new `sanitizeDollarInput()` caps a dollars-kind goal input to 2 decimal places as-you-type; wired into `GoalsDrawer`'s and `HealthScorecard`'s inline `$` inputs (previously passed `e.target.value` through unbounded).
+- `components/tables/DataTable.tsx` — added TanStack's `getSortedRowModel` + a clickable sort-icon button per column header, applied automatically to every `DataTable` instance across all 8 screens. Per-column filtering already exists at the page level (Source/On-time/Period/Metric controls drive the same BQ query each table reads from).
+- Migration 034 (`vw_kds_per_item_min`) confirmed live in `jarvis-bhaga-prod.bhaga` (`_schema_migrations`, 7633 rows); weekly p95 rollup and weekly labor `SAFE_DIVIDE` rollup cross-checked against the live console's rendered tables — exact match both times.
+- Review-deploy: rebuilt + redeployed to the live Cloud Run service (`operator-console-00023-bl2`) for pre-merge operator review at the documented URL.
+- Evidence tier: sandbox-e2e (unit/build/lint) + live review-deploy verification (Playwright against the real IAP-authenticated session) — see PR #147 §4.
+
 ## 2026-07-05 — Operator Console: Performance aggregation, Order Quality parity, Payroll refinements (Issue #132, folded into PR #147, branch fix/i132-create-a-website-to-replace-grafana)
 
 **Scope:** operator feedback closeout on the still-open Operator Console PR — custom date ranges + daily/weekly/monthly aggregation on every Performance screen, a full Grafana panel-by-panel parity audit, and Payroll period bounds/totals. Folded into PR #147 (already the one-shot PR for the console).

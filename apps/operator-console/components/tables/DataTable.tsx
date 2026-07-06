@@ -5,10 +5,13 @@ import {
   type ColumnDef,
   type ColumnPinningState,
   type RowData,
+  type SortingState,
   flexRender,
   getCoreRowModel,
+  getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
+import { ArrowUpIcon, ArrowDownIcon, ChevronsUpDownIcon } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -122,13 +125,22 @@ export function DataTable<TData>({
   pinLeft?: string[];
 }) {
   const columnPinning: ColumnPinningState = { left: pinLeft, right: [] };
+  // Client-side sort across every column — Grafana's table panels let an
+  // operator click any header to sort; this is the console-side equivalent
+  // (per-column *filtering* already lives at the page level via the
+  // Source/On-time/Period/etc. FilterSelect controls each table's page
+  // already wires up, which drive the same underlying query rather than a
+  // client-side re-filter of already-fetched rows).
+  const [sorting, setSorting] = useState<SortingState>([]);
 
   const table = useReactTable({
     data,
     columns,
     getCoreRowModel: getCoreRowModel(),
-    state: { columnPinning },
+    getSortedRowModel: getSortedRowModel(),
+    state: { columnPinning, sorting },
     onColumnPinningChange: () => {},
+    onSortingChange: setSorting,
   });
 
   // Multiple pinned columns each need a *cumulative* left offset — TanStack's
@@ -174,6 +186,8 @@ export function DataTable<TData>({
             <TableRow key={hg.id}>
               {hg.headers.map((header) => {
                 const pinned = header.column.getIsPinned();
+                const sortable = header.column.getCanSort();
+                const sortDir = header.column.getIsSorted();
                 return (
                   <TableHead
                     key={header.id}
@@ -185,7 +199,25 @@ export function DataTable<TData>({
                       pinned && header.column.id === lastPinnedId && "border-r border-border",
                     )}
                   >
-                    {flexRender(header.column.columnDef.header, header.getContext())}
+                    {sortable ? (
+                      <button
+                        type="button"
+                        onClick={header.column.getToggleSortingHandler()}
+                        className="flex items-center gap-1 hover:text-foreground"
+                        aria-label={`Sort by ${String(header.column.columnDef.header)}`}
+                      >
+                        {flexRender(header.column.columnDef.header, header.getContext())}
+                        {sortDir === "asc" ? (
+                          <ArrowUpIcon className="size-3" />
+                        ) : sortDir === "desc" ? (
+                          <ArrowDownIcon className="size-3" />
+                        ) : (
+                          <ChevronsUpDownIcon className="size-3 text-muted-foreground/50" />
+                        )}
+                      </button>
+                    ) : (
+                      flexRender(header.column.columnDef.header, header.getContext())
+                    )}
                   </TableHead>
                 );
               })}

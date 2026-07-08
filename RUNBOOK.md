@@ -257,6 +257,7 @@ gcloud run services update bhaga-webhook \
 | `square_palmetto_oauth` | refresh job (Square API) | Square OAuth 2.0 access + refresh tokens for production Square API |
 | `google_palmetto` | refresh job (Sheets/Drive) | Google OAuth creds for the `palmetto` account |
 | `jarvis-clickup-palmetto-pat` | refresh job (`CLICKUP_PAT`) | ClickUp PAT — read review channel + closing-form inventory ingest |
+| `operator-console-gemini-token` | operator-console (`GEMINI_TOKEN`) | Gemini API key (Generative Language API), restricted to that one API — restock photo parsing (`lib/restock/gemini.ts`). Wired via `--set-secrets` in `operator-console-deploy.yml`; default compute SA holds `secretAccessor` on it. |
 
 > **Local bootstrap (all providers):** If a secret is missing from your macOS Keychain on a fresh
 > clone, use:
@@ -1642,3 +1643,102 @@ never collided with new per-group rows (`0`) under the merge key, so prod accumu
 item lines. The fix is the one-time Step 3 `--replace` rebuild above; after that, nightly MERGE is
 idempotent (re-scrapes hit identical keys) and the model self-heals via `materialize_model_bq`. No
 daily wipe. Full reasoning in `docs/POST_MERGE_BQ_CUTOVER.md` § "Why a one-time rebuild".
+
+---
+
+## 17. Operator Console (Issue #132, replaces Grafana as the primary UI)
+
+### What it is
+
+A Next.js app (`apps/operator-console/`) reading/writing the same `bhaga` BQ dataset as
+this pipeline, deployed as its own Cloud Run **service** (`operator-console`, not a job) with
+`--no-allow-unauthenticated` + Cloud Run **direct IAP** (GA, no load balancer). Operators open the
+plain `https://operator-console-…run.app` URL in a browser and sign in with Google — no terminal,
+no proxy command. The legacy `gcloud iap oauth-brands` API requires a Google Workspace
+organization and is deprecated project-wide (confirmed 2026-07-04), but a custom **"External"**
+OAuth client — provisioned once via the Cloud Console's Google Auth Platform + the Cloud Run
+Security tab's IAP checkbox — works fine without an org (reversing the earlier "no IAP" pivot; see
+`docs/operator-console/PLAN.md` decisions log, 2026-07-05). Grafana **stays live** (coexistence,
+not a replacement in v1) — the console is additive, giving the operator navigation, goal tracking,
+and write-backs Grafana never had.
+
+Full design/build docs: [`docs/operator-console/`](docs/operator-console/) (`PLAN.md` — living plan
++ decisions log + milestones; `ARCHITECTURE.md`; `EXECUTION.md` — step-by-step; `COST.md`).
+App-level dev loop: [`apps/operator-console/README.md`](apps/operator-console/README.md).
+
+### Deploy
+
+Automatic on push to `main` touching `apps/operator-console/**` via
+[`.github/workflows/operator-console-deploy.yml`](.github/workflows/operator-console-deploy.yml):
+builds the container, applies any pending `core/migrations/*.sql` (same runner as this pipeline —
+`core.datastore.ensure_schema()`), deploys `--no-allow-unauthenticated --iap`, then grants
+`roles/iap.httpsResourceAccessor` to each operator account. No manual deploy step. `--iap` is
+idempotent against the one-time Console-only provisioning below — it does not redo it.
+
+### One-time IAP provisioning (Console-only, cannot be scripted)
+
+Two Console steps, done once per project (already done for `jarvis-bhaga-prod` — see
+`docs/operator-console/PLAN.md` decisions log, 2026-07-05):
+1. **Google Auth Platform branding** — `console.cloud.google.com/auth/overview` → "Get started" →
+   App name "Palmetto Operator Console", **External** audience (Internal is greyed out — no
+   Workspace org), any contact email you're signed in as.
+2. **Enable IAP on the Cloud Run service** — service → **Security** tab → check
+   **Identity Aware Proxy (IAP)** alongside IAM → Save. Google auto-creates the OAuth client tied
+   to the branding above; no manual client creation.
+
+Both steps only need to happen again if the branding/OAuth client is ever deleted.
+
+### Accessing the console (Cloud Run direct IAP — browser sign-in)
+
+Open `https://operator-console-887772634501.us-central1.run.app` in a browser. IAP redirects to
+Google's account chooser ("Sign in to Palmetto Operator Console"), and after picking an account
+either loads the console (if authorized) or shows IAP's own "You don't have access" page with the
+denied email printed (if not). No terminal, no proxy command, no app-level allowlist — access is
+pure IAM.
+
+**Granting a new admin/operator** — one command, one layer:
+```
+gcloud iap web add-iam-policy-binding \
+  --resource-type=cloud-run --service=operator-console --region=us-central1 --project=jarvis-bhaga-prod \
+  --member=user:NEW@EMAIL --role=roles/iap.httpsResourceAccessor
+```
+Any Google account works — no domain restriction, since IAP's IAM is the sole gate. IAM changes
+can take up to a couple of minutes to propagate; if a just-granted account still sees "no access",
+visit `<service-url>?gcp-iap-mode=CLEAR_LOGIN_COOKIE` to force IAP to re-check the current session
+against the latest policy instead of a cached session decision. Revoke with
+`gcloud iap web remove-iam-policy-binding` (same flags). A Google Groups (`admin`/`operator`) model
+for `mypalmetto.co` is a documented follow-up so grants don't need per-user `gcloud` calls; per-user
+grants are the current mechanism.
+
+### Operating
+
+- **Identity:** the signed-in operator's email is available server-side via
+  `lib/auth/identity.ts::operatorEmail()`. IAP forwards the caller's email in the plain
+  `X-Goog-Authenticated-User-Email` header (trustworthy because only the IAP service agent holds
+  `run.invoker` on the Cloud Run service — end users hold `roles/iap.httpsResourceAccessor`
+  instead, never direct invoker), and additionally signs a JWT in `X-Goog-IAP-JWT-Assertion`.
+  `operatorEmail()` verifies that JWT via `google-auth-library` (`OAuth2Client.getIapPublicKeys()` +
+  `verifySignedJwtWithCertsAsync()`) against the direct-Cloud-Run-IAP audience format
+  `/projects/{PROJECT_NUMBER}/locations/{REGION}/services/{SERVICE_NAME}`, and requires the JWT's
+  `email` claim to agree with the plain header before trusting either — so a header-forwarding
+  misconfiguration can't silently downgrade this to an unverified header. Used as `updated_by` on
+  every write, same field the Slack `/bhaga-cloud` commands stamp. Local dev has no IAP headers at
+  all — `BYPASS_IAP_EMAIL` in `.env.local` stands in.
+- **Caching:** every page uses `export const dynamic = "force-dynamic"`, never `revalidate` —
+  Next's Full Route Cache would otherwise serve a cached render at the CDN edge to a new
+  unauthenticated caller regardless of Cloud Run's IAM check on *that* request (found + fixed
+  2026-07-05 while re-locking the preview after the temporary public-access review window).
+- **Write parity with Slack:** every console write in `lib/bq/writes.ts` mirrors the exact
+  MERGE/DELETE/INSERT statement `cloud/webhook/handler.py` uses for the equivalent Slack command
+  (restock, training, config/goals) — the two paths converge on identical rows, never diverge.
+- **New table (M4):** `recognition_bonuses` (migration `033_recognition_bonuses.sql`) — manual
+  per-employee bonus, separate from the automated `vw_review_bonus_detail` (migration 026).
+- **New goal keys:** `goal_net_sales_weekly`, `goal_net_sales_monthly`, `goal_labor_pct_max`,
+  `goal_food_cost_pct_max`, `goal_speed_on_time_pct_min`, `goal_inventory_runway_days_min` — all in
+  `store_config`, edited via the console's Home → "Edit goals" drawer (no Slack command for these).
+- **Troubleshooting a stuck write:** every write function in `lib/bq/writes.ts` is a plain
+  parameterized query — reproduce it directly against BQ (see `docs/operator-console/PLAN.md`
+  decisions log for two real bugs already caught this way: a row-sanitizer that corrupted any
+  column literally named `value`, and an INT64-vs-FLOAT64 TVF param mismatch).
+- **Local dev against live BQ:** `apps/operator-console/README.md` § Local development
+  (`gcloud auth application-default login`, `BYPASS_IAP_EMAIL` for local identity).

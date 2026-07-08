@@ -55,12 +55,6 @@ import sys
 import traceback
 from typing import Optional
 
-# When launched by launchd without WorkingDirectory set, our cwd is /. Move
-# off that immediately so any later relative-path operations are well-defined
-# AND so subprocess.run inherits a sane cwd. (See plist comment for the
-# Conda-Python getcwd-hang bug we're working around.)
-os.chdir("/tmp")
-
 from zoneinfo import ZoneInfo  # noqa: E402
 
 CT = ZoneInfo("America/Chicago")
@@ -268,6 +262,15 @@ def run_refresh(refresh_date: datetime.date) -> int:
 
 
 def main() -> int:
+    # When launched by launchd without WorkingDirectory set, our cwd is /.
+    # Move off that immediately so any later relative-path operations are
+    # well-defined. (See plist comment for the Conda-Python getcwd-hang bug
+    # we're working around.) Done here, not at import time, so importing
+    # this module (e.g. from a test or another script) never mutates the
+    # importing process's cwd — subprocess.run below already passes an
+    # explicit `cwd=str(PROJECT_ROOT)` and does not rely on this anyway.
+    os.chdir("/tmp")
+
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument(
         "--force", action="store_true",

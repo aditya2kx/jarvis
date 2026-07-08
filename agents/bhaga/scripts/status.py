@@ -211,6 +211,15 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 032 (Issue #137 iteration): panel 83 combines both slots into
     # one row per item with per-date Source (Estimated/Actuals) columns.
     Target("vw_order_reco_combined", "refresh_date", "refreshed_recently"),
+    # migration 033 (Issue #132, operator console): recognition_bonuses is a new
+    # write table consumed only by apps/operator-console/ (Payroll & People screen)
+    # via its own typed queries.js reads — it is not a model_* table and has no
+    # vw_* Grafana-facing view, so no new BQ_TARGETS/GRAFANA_VIEWS entry applies.
+    # migration 034 (Issue #132, operator console): vw_kds_per_item_min exposes
+    # raw per-ticket KDS per-item minutes at full float precision so the console
+    # can recompute weekly/monthly Order Quality percentiles from source rows
+    # (a daily percentile can't be re-aggregated). Grafana's dashboard.json does
+    # not reference this view — console-only, same as recognition_bonuses above.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

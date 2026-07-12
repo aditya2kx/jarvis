@@ -64,6 +64,11 @@ export function parseRestockCsv(text: string): ParseResult {
   };
 }
 
+/** Sample template CSV — one row per active base, so it always round-trips through parseRestockCsv. */
+export function buildSampleCsv(): string {
+  return ["base,quantity", ...ACTIVE_BASES.map((base) => `${base},0`)].join("\n");
+}
+
 /** Validate LLM-parsed image rows against the known bases before they're editable. */
 export function validateParsedRows(
   candidates: { item: string; quantity_tubs: number; confidence?: number }[],

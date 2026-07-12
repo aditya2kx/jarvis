@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRestockCsv, validateParsedRows } from "@/lib/restock/parse";
+import { ACTIVE_BASES, buildSampleCsv, parseRestockCsv, validateParsedRows } from "@/lib/restock/parse";
 
 // Mirrors handler.py's _parse_restock_csv test contract — same inputs, same
 // outputs, so the app upload path and the Slack path stay identical.
@@ -42,6 +42,16 @@ describe("parseRestockCsv", () => {
     const { rows, errors } = parseRestockCsv("Açaí,12\n\nMango,5\n");
     expect(errors).toEqual([]);
     expect(rows).toHaveLength(2);
+  });
+});
+
+describe("buildSampleCsv", () => {
+  it("round-trips through parseRestockCsv with zero errors, one row per active base", () => {
+    const { rows, errors } = parseRestockCsv(buildSampleCsv());
+    expect(errors).toEqual([]);
+    expect(rows).toHaveLength(ACTIVE_BASES.length);
+    expect(rows.map((r) => r.item)).toEqual([...ACTIVE_BASES]);
+    expect(rows.every((r) => r.quantityTubs === 0)).toBe(true);
   });
 });
 

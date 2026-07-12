@@ -194,6 +194,10 @@ Reused write contracts (already proven in `handler.py`):
 - **Restock actuals** → **replace-per-date**: DELETE `inventory_restock_orders`
   for (store, date), INSERT parsed rows, then `refresh_order_reco`.
 - **Reset to estimated** → DELETE actuals for (store, date), then refresh.
+- **Replace estimated date** (console-only) → DELETE schedule (+ any orphan
+  actuals) for the old Estimated date, MERGE the new date, then
+  `refresh_order_reco`. Refuses dates that already have Actuals. Slack modal
+  does not expose this action.
 - **Recognition bonus** → *new* MERGE table (mirror `training_shifts`) — no write
   path exists on `main` yet (flagged in PLAN.md).
 
@@ -233,9 +237,11 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
   `Order Weight (lbs)`, `After Restock`, `Days Left After Restock`, and a
   **Source badge** (`Estimated` vs `Actuals`).
 - **TOTAL row** per date incl. pallet weight (`Σ weight + 50·CEIL(Σtubs/40)`).
-- **Restock schedule panel** with the three operator actions from the Slack modal:
-  **Register date (estimated)**, **Add order (actuals)** (CSV/photo → §5.1),
-  **Reset to estimated**.
+- **Restock schedule panel** with the three shared operator actions from the Slack
+  modal (**Register date (estimated)**, **Add order (actuals)** (CSV/photo → §5.1),
+  **Reset to estimated**) plus a console-only **Replace estimated date** (move an
+  Estimated schedule date → new date, then refresh dual-date reco so Order tubs /
+  On hand update).
 - **Base runway table** (Issue #156, `vw_inventory_base_runway`): urgency view
   at the top of Inventory / Ordering. Columns: Base, Stock, Vel/day, Days left
   (burn-down from today, ignores future restocks), Stockout date, Next restock

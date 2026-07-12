@@ -1,18 +1,21 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { ACTIVE_BASES } from "@/lib/restock/parse";
 
 // actions.ts is a "use server" module pulling in BQ/server-only code that
 // can't load outside Next's build pipeline — stub it, this test never
-// exercises the submit path.
-vi.mock("@/app/inventory/actions", () => ({ submitRestockAction: vi.fn() }));
+// exercises the real submit path.
+const submitRestockAction = vi.fn();
+const replaceEstimatedRestockDateAction = vi.fn();
+vi.mock("@/app/inventory/actions", () => ({
+  submitRestockAction: (...args: unknown[]) => submitRestockAction(...args),
+  replaceEstimatedRestockDateAction: (...args: unknown[]) => replaceEstimatedRestockDateAction(...args),
+}));
 
 const { RestockImportDrawer } = await import("@/components/drawers/RestockImportDrawer");
 
-// The drawer never writes to BQ on this path — this only exercises the
-// client-side sample-CSV download, not submitRestockAction.
 describe("RestockImportDrawer — download sample CSV", () => {
   let createObjectURLSpy: ReturnType<typeof vi.fn<(obj: Blob) => string>>;
   let revokeObjectURLSpy: ReturnType<typeof vi.fn<(url: string) => void>>;
@@ -24,6 +27,8 @@ describe("RestockImportDrawer — download sample CSV", () => {
     URL.createObjectURL = createObjectURLSpy as unknown as typeof URL.createObjectURL;
     URL.revokeObjectURL = revokeObjectURLSpy;
     clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    submitRestockAction.mockReset();
+    replaceEstimatedRestockDateAction.mockReset();
   });
 
   afterEach(() => {
@@ -40,7 +45,7 @@ describe("RestockImportDrawer — download sample CSV", () => {
       return el;
     });
 
-    render(<RestockImportDrawer dates={["2026-07-12"]} />);
+    render(<RestockImportDrawer dates={["2026-07-12"]} estimatedDates={["2026-07-23"]} />);
     fireEvent.click(screen.getByRole("button", { name: "Restock…" }));
 
     const downloadButton = await screen.findByRole("button", { name: "Download sample CSV" });
@@ -56,5 +61,53 @@ describe("RestockImportDrawer — download sample CSV", () => {
 
     const text = await blob.text();
     expect(text.split("\n")).toEqual(["base,quantity", ...ACTIVE_BASES.map((b) => `${b},0`)]);
+  });
+});
+
+describe("RestockImportDrawer — replace estimated date", () => {
+  beforeEach(() => {
+    submitRestockAction.mockReset();
+    replaceEstimatedRestockDateAction.mockReset();
+    replaceEstimatedRestockDateAction.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("shows From/To fields and no sample CSV for replace-estimated", async () => {
+    render(
+      <RestockImportDrawer
+        dates={["2026-07-16"]}
+        estimatedDates={["2026-07-23"]}
+        defaultAction="replace-estimated"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Restock…" }));
+
+    expect(screen.queryByRole("button", { name: "Download sample CSV" })).not.toBeInTheDocument();
+    expect(await screen.findByLabelText("New delivery date")).toBeInTheDocument();
+    expect(screen.getByText("Current estimated date")).toBeInTheDocument();
+  });
+
+  it("submits replaceEstimatedRestockDateAction with from/to", async () => {
+    render(
+      <RestockImportDrawer
+        dates={["2026-07-16"]}
+        estimatedDates={["2026-07-23"]}
+        defaultAction="replace-estimated"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Restock…" }));
+
+    const toInput = await screen.findByLabelText("New delivery date");
+    fireEvent.change(toInput, { target: { value: "2026-07-25" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+    await waitFor(() => {
+      expect(replaceEstimatedRestockDateAction).toHaveBeenCalledWith("2026-07-23", "2026-07-25");
+    });
+    expect(submitRestockAction).not.toHaveBeenCalled();
   });
 });

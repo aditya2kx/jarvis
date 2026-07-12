@@ -506,6 +506,28 @@ export function nextDates(): Promise<NextDateRow[]> {
   return q<NextDateRow>(`SELECT * FROM ${fq("vw_order_reco_next_dates")} ORDER BY slot`);
 }
 
+/** Future schedule dates with no actuals (Estimated-only) — for Replace estimated date. */
+export interface EstimatedScheduleDateRow {
+  delivery_date: string;
+}
+
+export function estimatedScheduleDates(store: string): Promise<EstimatedScheduleDateRow[]> {
+  return q<EstimatedScheduleDateRow>(
+    `SELECT s.delivery_date
+     FROM ${fq("inventory_restock_schedule")} s
+     LEFT JOIN (
+       SELECT DISTINCT delivery_date
+       FROM ${fq("inventory_restock_orders")}
+       WHERE store = @store
+     ) o ON s.delivery_date = o.delivery_date
+     WHERE s.store = @store
+       AND s.delivery_date >= CURRENT_DATE('America/Chicago')
+       AND o.delivery_date IS NULL
+     ORDER BY s.delivery_date`,
+    { store },
+  );
+}
+
 // vw_inventory_base_runway (migration 035, Issue #156) — burn-down days left
 // from today, Actuals-only next restock, Risky/Fine status. Console-only.
 export interface BaseRunwayRow {

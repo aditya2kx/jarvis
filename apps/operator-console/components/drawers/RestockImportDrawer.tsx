@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { submitRestockAction } from "@/app/inventory/actions";
+import { submitRestockAction, replaceEstimatedRestockDateAction } from "@/app/inventory/actions";
 import type { RestockAction } from "@/lib/bq/writes";
 import { buildSampleCsv, type RestockRow } from "@/lib/restock/parse";
 
@@ -28,18 +28,32 @@ const ACTION_LABELS: Record<RestockAction, string> = {
   "add-order": "Add order (actuals)",
   "register-only": "Register date only (estimated)",
   "reset-to-estimated": "Reset to estimated",
+  "replace-estimated": "Replace estimated date",
 };
 
 // Nothing writes to BQ until the operator reviews the parsed rows and hits
 // Submit — mirrors the Slack restock modal's confirm step (EXECUTION.md §M3).
-export function RestockImportDrawer({ dates }: { dates: string[] }) {
+export function RestockImportDrawer({
+  dates,
+  estimatedDates = [],
+  defaultAction = "add-order",
+}: {
+  dates: string[];
+  estimatedDates?: string[];
+  /** Test/default override — production always leaves this at add-order. */
+  defaultAction?: RestockAction;
+}) {
   const [open, setOpen] = useState(false);
   const [deliveryDate, setDeliveryDate] = useState(dates[0] ?? "");
-  const [action, setAction] = useState<RestockAction>("add-order");
+  const [action, setAction] = useState<RestockAction>(defaultAction);
+  const [fromDate, setFromDate] = useState(estimatedDates[0] ?? "");
+  const [toDate, setToDate] = useState("");
   const [rows, setRows] = useState<RestockRow[]>([]);
   const [parseErrors, setParseErrors] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  const isReplace = action === "replace-estimated";
 
   async function handleFile(file: File) {
     setStatus("Parsing…");
@@ -71,6 +85,27 @@ export function RestockImportDrawer({ dates }: { dates: string[] }) {
   }
 
   function handleSubmit() {
+    if (isReplace) {
+      if (!fromDate || !toDate) {
+        setStatus("Pick both the current estimated date and the new delivery date.");
+        return;
+      }
+      if (!estimatedDates.length) {
+        setStatus("No estimated dates to replace.");
+        return;
+      }
+      startTransition(async () => {
+        try {
+          await replaceEstimatedRestockDateAction(fromDate, toDate);
+          setStatus("Submitted.");
+          setOpen(false);
+        } catch (e) {
+          setStatus(`Submit failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      });
+      return;
+    }
+
     if (!deliveryDate) {
       setStatus("Pick a delivery date first.");
       return;
@@ -94,37 +129,88 @@ export function RestockImportDrawer({ dates }: { dates: string[] }) {
         <SheetHeader>
           <SheetTitle>Restock</SheetTitle>
           <SheetDescription>
-            Register a delivery date, then optionally upload a CSV or photo of the order —
-            nothing writes until you submit.
+            Register a delivery date, replace an estimated date, or upload a CSV/photo of the
+            order — nothing writes until you submit.
           </SheetDescription>
         </SheetHeader>
 
         <div className="flex flex-col gap-4 px-4">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="delivery-date">Delivery date</Label>
-            <Input
-              id="delivery-date"
-              type="date"
-              value={deliveryDate}
-              onChange={(e) => setDeliveryDate(e.target.value)}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1.5">
             <Label>Action</Label>
-            <Select value={action} onValueChange={(v) => setAction(v as RestockAction)}>
+            <Select
+              value={action}
+              onValueChange={(v) => {
+                const next = v as RestockAction;
+                setAction(next);
+                setStatus(null);
+                if (next === "replace-estimated" && !fromDate && estimatedDates[0]) {
+                  setFromDate(estimatedDates[0]);
+                }
+              }}
+            >
               <SelectTrigger>
-                <SelectValue />
+                <SelectValue>
+                  {(value: string | null) =>
+                    value ? (ACTION_LABELS[value as RestockAction] ?? value) : "Select action"
+                  }
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {Object.entries(ACTION_LABELS).map(([value, label]) => (
-                  <SelectItem key={value} value={value}>
+                  <SelectItem
+                    key={value}
+                    value={value}
+                    disabled={value === "replace-estimated" && estimatedDates.length === 0}
+                  >
                     {label}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
+
+          {isReplace ? (
+            <>
+              <div className="flex flex-col gap-1.5">
+                <Label>Current estimated date</Label>
+                {estimatedDates.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No estimated dates to replace.</p>
+                ) : (
+                  <Select value={fromDate} onValueChange={(v) => setFromDate(v ?? "")}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select date" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {estimatedDates.map((d) => (
+                        <SelectItem key={d} value={d}>
+                          {d}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="to-date">New delivery date</Label>
+                <Input
+                  id="to-date"
+                  type="date"
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                />
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="delivery-date">Delivery date</Label>
+              <Input
+                id="delivery-date"
+                type="date"
+                value={deliveryDate}
+                onChange={(e) => setDeliveryDate(e.target.value)}
+              />
+            </div>
+          )}
 
           {action === "add-order" && (
             <div className="flex flex-col gap-1.5">
@@ -177,7 +263,7 @@ export function RestockImportDrawer({ dates }: { dates: string[] }) {
         </div>
 
         <SheetFooter>
-          <Button onClick={handleSubmit} disabled={isPending}>
+          <Button onClick={handleSubmit} disabled={isPending || (isReplace && estimatedDates.length === 0)}>
             {isPending ? "Submitting…" : "Submit"}
           </Button>
         </SheetFooter>

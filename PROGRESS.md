@@ -1,5 +1,27 @@
 # Jarvis Build Progress
 
+## 2026-07-02 — Retrospective: local event-driven dev lifecycle v2 (Issue #101, PR #115)
+
+**Scope of the merged work:** durable worktree event inbox, non-preemptive auto-dispatch queue, `PROGRESS.md` push guard, general operator-comment routing (M5), retrospective redesign to jam→plan→issues flow (M6), plus a follow-up round fixing a dead post-merge workflow (broken since #85), worktree inbox misrouting, PR↔issue auto-linking, and a phase-drift nudge (M1-M4).
+
+### Speed
+- Issue #101 created 2026-06-28T05:40; PR #115 opened 2026-06-30T20:54; merged 2026-07-02T00:35. Spec→merge ≈ 4.8 days; PR-open→merge ≈ 27.7h.
+- **8 Claude review rounds** on PR #115, including one regression (round 4 APPROVE at 04:05 → round 5 REQUEST CHANGES at 04:34 after further pushes reopened gaps) and a ~19h gap where an architecture pivot (push/webhook vs. polling) was jammed with the operator and re-scoped mid-flight.
+- Bottleneck: the evidence-confidence gate (95% floor) drove most of the round count — closing "real execution, not reconstructed" gaps for the intake path took 4 dedicated rounds (round 2 → round 5) after the core code was already correct ("no confirmed correctness bug" was the verdict from round 3 onward).
+- A second bottleneck surfaced only at merge time: PR #115's own `Closes #101` auto-closed the tracking issue before this retrospective's jam step ran — the exact anti-pattern issue #101 itself was written to prevent. Reopened and fast-followed as #130.
+
+### Cost
+- Total $12.71 (10.94M tokens), 100% build / 0% review (review cost attributed separately via GH Actions, not this ledger).
+- **Model routing did not follow the cost playbook**: 4 of 5 build sessions ran Opus 4.8 (2 at `thinking-high`), costing $12.67 of the $12.71 total. `pr_cost_ledger.py analyze` estimates the same work on Sonnet 5 medium would have cost ≈ $7.60 (~40% savings) — the architecture-pivot debugging (event-driven design, two real YAML bugs, a pagination bug in the review bot itself) plausibly justified some Opus use, but not 4 full sessions worth.
+- 91% of build tokens were cache-reads (context re-reads across a long-running single chat) — `analyze`'s standing recommendation to start a fresh chat per PR/phase to reset the cache-read counter was not followed here.
+
+### Accuracy
+- Implementation matched the §4 evidence contract, but only after real fixes were forced by live testing rather than caught in review: Test 1a (manual intake e2e) exposed 2 real intake bugs (narrow daemon enumeration, wrong `ADMIN_PAT` identity) fixed in commit `328d4e3`; a stale-base `git diff` produced 2 false-positive CI reds that needed diagnosis before dismissal; and this retrospective session found 2 more real, previously-invisible bugs: (1) `claude-review.yml`'s own required-check gates read only page 1 of PR comments (`gh api` without `--paginate`), so a **true APPROVE @ 96%** was gated as `fail` against a day-old stale verdict — fixed in `ed4bf24`/`3e10647`; (2) `pr_merged_lifecycle.py`'s `find_tracking_issue_from_gh` never matches when a tracking issue's body still says `Branch: TBD` (never overwritten once a real branch exists), hard-failing the post-merge job instead of degrading gracefully — filed as #130 rather than fixed inline (out of scope for a branch already merged).
+- Net: 4 real bugs found via live execution across the PR's lifetime that no round of AI review caught by static reading alone. Reinforces the evidence-confidence gate's core thesis (proof > description) but also shows the review bot's own infrastructure needs the same "prove it, don't assume it" bar applied to itself.
+
+### Process improvement proposed
+Add a CI/tooling self-check: any `gh api .../comments` (or `.../reviews`, `.../timeline`) call inside a **required-check workflow** must use `--paginate` (flat-NDJSON via `--jq '.[]' | jq -s`, since `--slurp` isn't combinable with `--jq`). Concretely: a `check_gh_api_pagination.py` grep-gate (mirroring `check_doc_freshness.py`'s style) that fails CI if a `gh api` call inside `.github/workflows/*.yml` fetches a collection endpoint (`/comments`, `/reviews`, `/timeline`, `/commits`) without `--paginate` in the same command. This is exactly the "mechanical gate over pure memory" pattern (user-preferences.mdc #19) — the current PR is proof a silent page-1 truncation can gate a real APPROVE as REQUEST CHANGES with no visible error, and it will keep happening as more PRs accumulate 30+ comments.
+
 ## 2026-07-12 — BHAGA: fix ADP Timecard header-mismatch failures for 7/10 and 7/11 (Issue #150, PR #152, branch fix/bhaga-runs-for-7-10-and)
 
 **Scope:** both nightly `bhaga-daily-refresh` executions (2026-07-11 02:30 UTC for `refresh_date=2026-07-10`, and 2026-07-12 02:30 UTC for `refresh_date=2026-07-11`) failed identically in `load_raw_bigquery` and fired Slack `failure_alert` DMs, leaving ADP punches/tips/model data missing for both dates.

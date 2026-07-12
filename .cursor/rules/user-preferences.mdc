@@ -67,6 +67,7 @@ Maintained by `skills/user_model/`. Source corpus (gitignored) at `skills/user_m
 | 23 | Globally: never hedge, defer, or down-scope work because of the late hour or time of day — always do the right thing (full correct implementation, including prod ops/provisioning) regardless of when it is. | 2026-06-29 (operator: dont worry about the late hour, do the right thing) |
 | 24 | Globally: when the agent asks the operator a question for a consequential or irreversible decision, never time out and proceed with the agent's own recommendation. Treat a skipped or timed-out question as keep-waiting: end the turn without taking the action and wait for the operator's answer however long it takes. Sensible defaults still apply only to trivial, reversible choices. | 2026-07-01 (operator: you should wait forever on my answers in such cases) |
 | 25 | Globally: when switching from Plan mode to Agent mode right after a plan revision discussion, verify the plan file reflects the just-agreed changes before starting implementation. | 2026-07-02 Issue #137 retro (operator caught a near-drop of just-agreed plan edits on Plan→Agent mode switch) |
+| 26 | Operator suggestions made in a PR comment should always be implemented in that same PR unless the operator explicitly says otherwise. | Issue #101 Requirement #1 (retrospective protocol backfill, 2026-07-02) |
 
 ## Domain context
 

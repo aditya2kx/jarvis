@@ -64,7 +64,8 @@ declare module "@tanstack/react-table" {
 }
 
 function statusVariant(value: string | null | undefined): "default" | "destructive" | "secondary" {
-  if (value === "success") return "default";
+  if (value === "success" || value === "Fine" || value === "Covered") return "default";
+  if (value === "Risky") return "destructive";
   if (value) return "destructive";
   return "secondary";
 }
@@ -119,10 +120,15 @@ export function DataTable<TData>({
   columns,
   data,
   pinLeft = [],
+  initialSorting = [],
+  rowHighlight,
 }: {
   columns: ColumnDef<TData>[];
   data: TData[];
   pinLeft?: string[];
+  initialSorting?: SortingState;
+  /** Serializable row tint (RSC-safe). When `row[accessorKey] === equals`, apply className. */
+  rowHighlight?: { accessorKey: string; equals: string; className: string };
 }) {
   const columnPinning: ColumnPinningState = { left: pinLeft, right: [] };
   // Client-side sort across every column — Grafana's table panels let an
@@ -131,7 +137,7 @@ export function DataTable<TData>({
   // Source/On-time/Period/etc. FilterSelect controls each table's page
   // already wires up, which drive the same underlying query rather than a
   // client-side re-filter of already-fetched rows).
-  const [sorting, setSorting] = useState<SortingState>([]);
+  const [sorting, setSorting] = useState<SortingState>(initialSorting);
 
   const table = useReactTable({
     data,
@@ -142,6 +148,12 @@ export function DataTable<TData>({
     onColumnPinningChange: () => {},
     onSortingChange: setSorting,
   });
+
+  function rowClassName(row: TData): string | undefined {
+    if (!rowHighlight) return undefined;
+    const v = (row as Record<string, unknown>)[rowHighlight.accessorKey];
+    return v === rowHighlight.equals ? rowHighlight.className : undefined;
+  }
 
   // Multiple pinned columns each need a *cumulative* left offset — TanStack's
   // own getStart("left") assumes the 150px default column size, but these
@@ -227,7 +239,7 @@ export function DataTable<TData>({
         <TableBody>
           {table.getRowModel().rows.length ? (
             table.getRowModel().rows.map((row) => (
-              <TableRow key={row.id}>
+              <TableRow key={row.id} className={rowClassName(row.original)}>
                 {row.getVisibleCells().map((cell) => {
                   const format = cell.column.columnDef.meta?.format;
                   const pinned = cell.column.getIsPinned();

@@ -506,6 +506,24 @@ export function nextDates(): Promise<NextDateRow[]> {
   return q<NextDateRow>(`SELECT * FROM ${fq("vw_order_reco_next_dates")} ORDER BY slot`);
 }
 
+// vw_inventory_base_runway (migration 035, Issue #156) — burn-down days left
+// from today, Actuals-only next restock, Risky/Fine status. Console-only.
+export interface BaseRunwayRow {
+  Base: string;
+  Stock: number;
+  "Vel per day": number;
+  "Days left": number | null;
+  "Stockout date": string | null;
+  "Next restock": string | null;
+  "Restock qty": number | null;
+  Status: "Risky" | "Fine";
+  [key: string]: unknown;
+}
+
+export function baseRunway(): Promise<BaseRunwayRow[]> {
+  return q<BaseRunwayRow>(`SELECT * FROM ${fq("vw_inventory_base_runway")}`);
+}
+
 // training_shifts (migration 011-era table, written by /bhaga-cloud
 // `training set`/`training rm` and now also the console's quick-add — M4).
 export interface TrainingShiftRow {

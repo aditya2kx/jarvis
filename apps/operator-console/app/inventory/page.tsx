@@ -1,39 +1,44 @@
-import { nextDates, orderAssistantTable, orderRecoCombined, storeConfig } from "@/lib/bq/queries";
+import { baseRunway, nextDates, orderAssistantTable, orderRecoCombined, storeConfig } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
 import { storeDisplayName } from "@/lib/config/stores";
 import { DataTable, type Thresholds } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
-import { DaysOfCoverPanel } from "@/components/kpi/DaysOfCoverPanel";
 import { RestockImportDrawer } from "@/components/drawers/RestockImportDrawer";
 import { CapacityEdit } from "@/components/drawers/CapacityEdit";
 import type { ColumnDef } from "@tanstack/react-table";
-import type { OrderAssistantRow, OrderRecoCombinedRow } from "@/lib/bq/queries";
+import type { BaseRunwayRow, OrderAssistantRow, OrderRecoCombinedRow } from "@/lib/bq/queries";
 
 export const dynamic = "force-dynamic";
 
-// Shared red(<=4)/amber(<=7)/green bands for "days left" across both the
-// DataTable cell color and the DaysOfCoverPanel bar color (mirrors Figma).
+// Shared red(<=4)/amber(<=7)/green bands for "days left" across runway +
+// dual-date reco + analytics tables.
 const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-bad" };
 
 // Dual-date Order Assistant (migration 032, Grafana panel 83) — Item/Current
 // Qty/Avg per day frozen, one "Source N" badge column pair per registered
 // delivery date. Restock writes go through the RestockImportDrawer's server
 // action, converging with the /bhaga-cloud restock Slack path.
+//
+// Base runway (migration 035, Issue #156) sits above: burn-down days left
+// from today, Actuals-only next restock, Risky/Fine status.
 export default async function InventoryPage() {
   let rows: OrderRecoCombinedRow[] = [];
+  let runwayRows: BaseRunwayRow[] = [];
   let baseRows: OrderAssistantRow[] = [];
   let dates: string[] = [];
   let maxTubs: number | undefined;
   let error: string | undefined;
   try {
-    const [reco, nd, config, base] = await Promise.all([
+    const [reco, nd, config, base, runway] = await Promise.all([
       orderRecoCombined(),
       nextDates(),
       storeConfig(DEFAULT_STORE),
       orderAssistantTable(),
+      baseRunway(),
     ]);
     rows = reco;
+    runwayRows = runway;
     baseRows = base;
     dates = nd.map((d) => d.delivery_date);
     const maxTubsRow = config.find((c) => c.key === "order_reco_max_tubs");
@@ -43,6 +48,21 @@ export default async function InventoryPage() {
   }
 
   const [date1, date2] = dates;
+
+  const runwayColumns: ColumnDef<BaseRunwayRow>[] = [
+    { accessorKey: "Base", header: "Base" },
+    { accessorKey: "Stock", header: "Stock", meta: { format: { kind: "number", digits: 1 } } },
+    { accessorKey: "Vel per day", header: "Vel/day", meta: { format: { kind: "number", digits: 2 } } },
+    {
+      accessorKey: "Days left",
+      header: "Days left",
+      meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
+    },
+    { accessorKey: "Stockout date", header: "Stockout date", meta: { format: { kind: "date" } } },
+    { accessorKey: "Next restock", header: "Next restock", meta: { format: { kind: "date" } } },
+    { accessorKey: "Restock qty", header: "Restock qty", meta: { format: { kind: "number", digits: 1 } } },
+    { accessorKey: "Status", header: "Status", meta: { format: { kind: "status" } } },
+  ];
 
   const columns: ColumnDef<OrderRecoCombinedRow>[] = [
     { accessorKey: "Item", header: "Item" },
@@ -105,15 +125,27 @@ export default async function InventoryPage() {
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
+          <div>
+            <h2 className="mb-2 text-sm font-medium text-muted-foreground">Base runway</h2>
+            <p className="mb-2 text-xs text-muted-foreground">
+              Days left and stockout date are burn-down from today (ignore future restocks).
+              Next restock / qty show uploaded Actuals only — estimated schedule dates do not
+              appear here. Status is Fine when an Actuals restock arrives on or before the
+              stockout date; otherwise Risky.
+            </p>
+            <DataTable
+              columns={runwayColumns}
+              data={runwayRows}
+              pinLeft={["Base"]}
+              initialSorting={[{ id: "Days left", desc: false }]}
+              rowHighlight={{ accessorKey: "Status", equals: "Risky", className: "bg-destructive/5" }}
+            />
+          </div>
+
           <p className="text-sm text-muted-foreground">
             {date1 ? `Next delivery: ${date1}` : "No delivery date registered yet."}
             {date2 ? ` · then ${date2}` : ""}
           </p>
-          <DaysOfCoverPanel
-            items={rows.map((r) => ({ name: r.Item, daysLeft: r["Days Left 1"] }))}
-            warnDays={DAYS_LEFT_THRESHOLDS.warn}
-            badDays={DAYS_LEFT_THRESHOLDS.bad}
-          />
           <DataTable columns={columns} data={rows} pinLeft={["Item", "Current Qty", "Avg per day"]} />
 
           <div>

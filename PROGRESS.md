@@ -1,5 +1,14 @@
 # Jarvis Build Progress
 
+## 2026-07-12 — Operator Console: Goal and Tracking + Plaid Accounting (Issue #158, PR #162)
+
+**Scope:** rework Home health scorecard into **Goal and Tracking** (dual labor %, prep p95@8, Risky bases=0) and add Accounting (Square money in / Plaid money out). Custom categorization (#160) and QuickBooks (#161) deferred.
+
+**Key changes:**
+- Home metrics: net sales, part-time labor %, total labor %, KDS p95 min, bases-at-risk count; new `store_config` goals.
+- Migration 036 `plaid_items` / `plaid_transactions` / `vw_plaid_spend_by_category_daily`; `skills/plaid_api`; `/accounting` + Link; webhook `/plaid/webhook` + `/plaid/sync`.
+- Follow-ups: #160 (management taxonomy), #161 (QBO).
+
 ## 2026-07-12 — Operator Console: Base runway table on /inventory (Issue #156, PR #157)
 
 **Scope:** replace the unhelpful Days-of-cover bar panel with a Base runway table answering urgency vs Actuals restock (burn-down days left, stockout date, Risky/Fine). Dual-date order reco + analytics tables kept. Console-only; no Grafana.

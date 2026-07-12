@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/select";
 import { submitRestockAction } from "@/app/inventory/actions";
 import type { RestockAction } from "@/lib/bq/writes";
-import type { RestockRow } from "@/lib/restock/parse";
+import { buildSampleCsv, type RestockRow } from "@/lib/restock/parse";
 
 const ACTION_LABELS: Record<RestockAction, string> = {
   "add-order": "Add order (actuals)",
@@ -54,6 +54,16 @@ export function RestockImportDrawer({ dates }: { dates: string[] }) {
     setRows(body.rows ?? []);
     setParseErrors(body.errors ?? []);
     setStatus(body.rows?.length ? `Parsed ${body.rows.length} row(s) — review below.` : "No valid rows parsed.");
+  }
+
+  function downloadSampleCsv() {
+    const blob = new Blob([buildSampleCsv()], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "restock-sample.csv";
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   function updateQty(item: string, quantityTubs: number) {
@@ -118,7 +128,12 @@ export function RestockImportDrawer({ dates }: { dates: string[] }) {
 
           {action === "add-order" && (
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="restock-file">Order CSV or photo</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="restock-file">Order CSV or photo</Label>
+                <Button type="button" variant="outline" size="sm" onClick={downloadSampleCsv}>
+                  Download sample CSV
+                </Button>
+              </div>
               <Input
                 id="restock-file"
                 type="file"

@@ -10,6 +10,12 @@ This is FAR cleaner than the alternative Time > Timecards modal which is
 single-employee-at-a-time and would require iterating ~14 employees x ~5 pay
 periods (~70 page loads) for a 2-month backfill.
 
+Column layout is NOT stable: ADP has changed it at least once (2026-07,
+inserting "Show Source" / "In Punch Source" / "Out Punch Source"). Treat the
+"Details" sheet as an unordered, superset-tolerant column set -- parse_xlsx
+validates only the columns it actually needs (_REQUIRED_DETAILS_COLUMNS) by
+name, not position, and ignores anything extra ADP adds.
+
 Architecture mirrors skills/square_tips/transactions_backend.py:
     * `build_plan()` returns a deterministic Playwright playbook the AI agent
       executes via the `user-playwright` MCP. ADP login uses the
@@ -233,6 +239,27 @@ _DETAILS_COLUMNS = [
     "Notes",
 ]
 
+# Columns parse_xlsx actually reads. ADP is free to add, remove, or reorder any
+# OTHER column (e.g. it added "Show Source" / "In Punch Source" / "Out Punch
+# Source" around 2026-07) without breaking us -- every field below is read by
+# NAME (`row.get(...)` on a name-keyed dict), never by position. "Details" and
+# "Notes" are deliberately excluded: they only feed the optional "skip Schedule
+# rows" heuristic, which is already safe when the column is absent entirely
+# (`row.get("Details")` -> None -> treated as not a schedule row; those rows
+# are still filtered out by the blank-Date check a few lines later).
+_REQUIRED_DETAILS_COLUMNS = [
+    "Employee Name",
+    "Pay Period",
+    "Date Range",
+    "Total Paid Hours",
+    "Date",
+    "Start Work",
+    "End Work",
+    "Regular",
+    "Overtime",
+    "Doubletime",
+]
+
 
 def parse_xlsx(
     xlsx_path: pathlib.Path,
@@ -281,10 +308,11 @@ def parse_xlsx(
 
     ws = wb["Details"]
     header = [c.value for c in ws[1]]
-    if header[: len(_DETAILS_COLUMNS)] != _DETAILS_COLUMNS:
+    missing = [c for c in _REQUIRED_DETAILS_COLUMNS if c not in header]
+    if missing:
         raise ValueError(
-            f"Details sheet header mismatch. Expected {_DETAILS_COLUMNS}, "
-            f"got {header[: len(_DETAILS_COLUMNS)]}. ADP may have changed the report layout."
+            f"Details sheet missing required column(s): {missing}. "
+            f"Header was: {header}. ADP may have changed the report layout."
         )
 
     records: list[dict] = []

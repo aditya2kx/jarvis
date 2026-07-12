@@ -2034,13 +2034,34 @@ def _record_pipeline_run(*, started_at_utc, exit_code, run_id, error=None) -> No
             os.environ["BHAGA_DATASTORE"] = _prev_ds
 
 
+def _build_ingest_inventory_env(run_id: str) -> dict:
+    """Env for the ingest_inventory subprocess, threading the pipeline run_id.
+
+    Extracted to a standalone, unit-testable function after the 2026-07-01
+    incident: `run_id` was previously read directly from `_run_refresh()`'s
+    enclosing scope, but `_run_refresh()` never received it as a parameter or
+    local — `main()` and `_run_refresh()` are separate functions, not nested
+    closures — so every nightly run crashed with `NameError: name 'run_id' is
+    not defined` the moment it reached this step. Because the crash was
+    unhandled, it aborted the ENTIRE nightly (not just inventory), which is
+    why Order Assistant (and everything after it) went stale starting 7/1,
+    the first night this code (Issue #113 slice A, commit 1af7608d) shipped.
+    """
+    return {
+        **os.environ,
+        "BHAGA_DATASTORE": "bigquery",
+        "BHAGA_RUN_ID": run_id,
+        "PYTHONUNBUFFERED": "1",
+    }
+
+
 def main() -> int:
     started = datetime.datetime.now(datetime.timezone.utc)
     run_id = uuid.uuid4().hex
     rc = 1
     err: str | None = None
     try:
-        rc = _run_refresh()
+        rc = _run_refresh(run_id)
         return rc
     except BaseException as exc:
         err = f"{type(exc).__name__}: {exc}"
@@ -2050,7 +2071,7 @@ def main() -> int:
                              run_id=run_id, error=err)
 
 
-def _run_refresh() -> int:
+def _run_refresh(run_id: str) -> int:
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--store", default="palmetto")
     cli.add_argument("--date", default=None,
@@ -2787,12 +2808,7 @@ def _run_refresh() -> int:
     # Non-fatal: an ingest failure must not block the tip/payroll pipeline.
     # Runs after process_reviews so it doesn't delay the critical path.
     print("\n[ingest_inventory] starting incremental inventory ingest...")
-    ingest_env = {
-        **os.environ,
-        "BHAGA_DATASTORE": "bigquery",
-        "BHAGA_RUN_ID": run_id,
-        "PYTHONUNBUFFERED": "1",
-    }
+    ingest_env = _build_ingest_inventory_env(run_id)
     ingest_cmd = [
         sys.executable, "-m", "agents.bhaga.scripts.ingest_inventory",
         "--store", args.store,
@@ -2808,6 +2824,23 @@ def _run_refresh() -> int:
     if not ok:
         # Non-fatal: record failure for summary but don't abort the run.
         print("[ingest_inventory] FAILED (non-fatal) — inventory data will be stale for today.",
+              file=sys.stderr)
+
+    # ── Order Recommendation (dual-date, materialized — Issue #137) ────────
+    # Non-fatal, mirrors ingest_inventory: a reco recompute failure must not
+    # block the tip/payroll pipeline. Runs after ingest_inventory so the
+    # water-fill reads today's freshly-ingested current_qty/avg_daily_usage.
+    print("\n[refresh_order_reco] recomputing dual-date order recommendation...")
+    os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+    from core.order_reco import refresh_order_reco  # noqa: PLC0415
+    ok, _ = run_step(
+        "refresh_order_reco",
+        lambda: refresh_order_reco(args.store),
+        refresh_date=refresh_date,
+        dry_run=args.dry_run,
+    )
+    if not ok:
+        print("[refresh_order_reco] FAILED (non-fatal) — Order Recommendation panels will be stale.",
               file=sys.stderr)
 
     runtime_s = time.monotonic() - t_start

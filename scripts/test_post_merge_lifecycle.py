@@ -44,6 +44,74 @@ class TestFindTrackingIssueFromCache(unittest.TestCase):
         self.assertIsNone(n)
 
 
+class TestFindTrackingIssueFromSlug(unittest.TestCase):
+    def _mock_gh_issue_view(self, existing_numbers):
+        def _run(cmd, **kwargs):
+            import subprocess as _sp
+            n = int(cmd[3])
+            out = json.dumps({"number": n}) if n in existing_numbers else "{}"
+            rc = 0 if n in existing_numbers else 1
+            return _sp.CompletedProcess(cmd, rc, stdout=out, stderr="")
+        return _run
+
+    def test_matches_iNNN_branch_slug(self):
+        with patch("post_merge_lifecycle.subprocess.run", side_effect=self._mock_gh_issue_view({112})):
+            n = PML.find_tracking_issue_from_slug("fix/i112-would-love-to-see-a-chart")
+        self.assertEqual(n, 112)
+
+    def test_no_slug_token_returns_none(self):
+        with patch("post_merge_lifecycle.subprocess.run", side_effect=self._mock_gh_issue_view({112})):
+            n = PML.find_tracking_issue_from_slug("fix/add-weights-in-lbs-per-row-v2")
+        self.assertIsNone(n)
+
+    def test_slug_present_but_issue_does_not_exist(self):
+        with patch("post_merge_lifecycle.subprocess.run", side_effect=self._mock_gh_issue_view(set())):
+            n = PML.find_tracking_issue_from_slug("fix/i9999-nonexistent")
+        self.assertIsNone(n)
+
+    def test_gh_unavailable_returns_none_not_raise(self):
+        with patch("post_merge_lifecycle.subprocess.run", side_effect=Exception("gh not found")):
+            n = PML.find_tracking_issue_from_slug("fix/i112-would-love-to-see-a-chart")
+        self.assertIsNone(n)
+
+
+class TestFindTrackingIssue(unittest.TestCase):
+    def test_prefers_cache_over_slug(self):
+        branch = "fix/i112-would-love-to-see-a-chart"
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = os.path.join(tmp, "metrics", "pr_cost")
+            os.makedirs(mdir)
+            slug = PML._slug(branch)
+            cache = os.path.join(mdir, f"session-{slug}-phase.json")
+            open(cache, "w").write(json.dumps({"issue": 999}))
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmp}):
+                n = PML.find_tracking_issue(branch)
+        self.assertEqual(n, 999)
+
+    def test_falls_back_to_slug_when_cache_and_body_scan_miss(self):
+        """Reproduces Issue #130: issue body still says 'Branch: TBD', so the
+        gh body-scan would miss — the slug match must recover the issue."""
+        branch = "fix/i112-would-love-to-see-a-chart"
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmp}):
+                with patch("post_merge_lifecycle.find_tracking_issue_from_gh", return_value=None):
+                    with patch.object(
+                        PML, "subprocess"
+                    ) as mock_sp:
+                        mock_sp.run.return_value.returncode = 0
+                        mock_sp.run.return_value.stdout = json.dumps({"number": 112})
+                        n = PML.find_tracking_issue(branch)
+        self.assertEqual(n, 112)
+
+    def test_malformed_branch_returns_none_not_raise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmp}):
+                with patch("post_merge_lifecycle.find_tracking_issue_from_gh", return_value=None):
+                    with patch("post_merge_lifecycle.subprocess.run", side_effect=Exception("boom")):
+                        n = PML.find_tracking_issue("")
+        self.assertIsNone(n)
+
+
 class TestParsePostMergeBlock(unittest.TestCase):
     def test_empty_body(self):
         self.assertEqual(PML.parse_post_merge_block(""), [])
@@ -315,6 +383,56 @@ class TestFindBranchForIssue(unittest.TestCase):
                     rc = PML.main(["find-branch", "--issue", "9999"])
         self.assertEqual(rc, 1)
         self.assertEqual(buf.getvalue().strip(), "none")
+
+
+class TestFindTrackingIssueWorkflowStepShell(unittest.TestCase):
+    """Regression test for the `pr-merged-lifecycle.yml` 'Find tracking issue'
+    step: the shell body is extracted from the workflow YAML and executed
+    verbatim under bash, so a regression to the old `|| echo 'none'` form
+    (which double-appended onto find-issue's own "none" + exit-1, producing
+    the literal string "nonenone") is caught even though it lives in YAML,
+    not Python, and `yaml.safe_load` alone only proves the file parses."""
+
+    STEP_NAME = "Find tracking issue"
+
+    @classmethod
+    def _step_shell(cls) -> str:
+        import yaml
+        wf_path = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "pr-merged-lifecycle.yml"
+        wf = yaml.safe_load(wf_path.read_text())
+        for step in wf["jobs"]["lifecycle"]["steps"]:
+            if step.get("name") == cls.STEP_NAME:
+                return step["run"]
+        raise AssertionError(f"step {cls.STEP_NAME!r} not found in workflow")
+
+    def _run_step(self, branch: str) -> tuple[str, int]:
+        import subprocess
+        github_output = tempfile.NamedTemporaryFile(delete=False)
+        github_output.close()
+        env = dict(os.environ, BRANCH=branch, GITHUB_OUTPUT=github_output.name)
+        proc = subprocess.run(
+            ["bash", "-e", "-c", self._step_shell()],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            env=env, capture_output=True, text=True,
+        )
+        output = Path(github_output.name).read_text()
+        os.unlink(github_output.name)
+        return output, proc.returncode
+
+    def test_unresolvable_branch_writes_exactly_none(self):
+        output, rc = self._run_step("fix/i999999-does-not-exist-anywhere")
+        self.assertEqual(rc, 0, "step must never hard-fail (the #130 bug)")
+        self.assertIn("issue_number<<EOF\nnone\nEOF\n", output,
+                      "regression: old `|| echo 'none'` form double-appends onto "
+                      "find-issue's own \"none\", writing \"nonenone\"")
+
+    def test_slug_resolvable_branch_writes_the_issue_number(self):
+        # fix/i112-... resolves via find_tracking_issue_from_slug purely from
+        # the branch string plus a live `gh issue view 112` existence check —
+        # no mocking needed since #112 is a real (open) issue in this repo.
+        output, rc = self._run_step("fix/i112-would-love-to-see-a-chart")
+        self.assertEqual(rc, 0)
+        self.assertIn("issue_number<<EOF\n112\nEOF\n", output)
 
 
 if __name__ == "__main__":

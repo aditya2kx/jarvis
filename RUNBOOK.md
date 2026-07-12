@@ -145,7 +145,8 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
   `deploy.yml`'s `gcloud run jobs update` step so it survives a recreate-from-scratch.
 - **Webhook URL:** https://bhaga-webhook-4yl5izovxq-uc.a.run.app
   - Routes: `POST /slack/events` (Events API), `POST /slack/commands` (`/bhaga refresh <date>`,
-    `/bhaga status`), `GET /health`.
+    `/bhaga status`), `POST /slack/interactions` (Slack interactivity — restock modal
+    `view_submission`, Issue #137), `GET /health`.
 
 ### `bhaga-daily-refresh` environment (no secret values shown)
 
@@ -174,6 +175,8 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
 | `AGENT_CONFIG_JSON` | see §6 |
 | `SLACK_SIGNING_SECRET` | secret → `slack-signing-secret` |
 | `SLACK_BOT_TOKEN` | secret → `slack-bot-token` |
+
+**Cold-start mitigation (`--cpu-boost`, Issue #137):** `bhaga-webhook` runs with `min-instances=0` (no idle cost), so a request after any idle period is a cold start. `init_app()` eagerly builds Firestore + BigQuery clients at import time, and Slack's slash-command/interaction ack deadline is 3s — a cold start can blow that deadline and surface to the operator as a Slack `operation_timeout` (seen 2026-07-02 on `/bhaga-cloud restock`). Fix: `deploy.yml`'s `gcloud run services update bhaga-webhook` passes `--cpu-boost`, which gives the instance 2x vCPU only during startup — **$0 extra cost**, `min-instances` stays 0. Rejected alternative: `--min-instances=1` eliminates cold starts entirely but keeps an instance warm 24/7, which is a real recurring cost the operator explicitly didn't want. `--cpu-boost` persists across a rollback (`gcloud run services update` only touches explicitly-passed flags, and the rollback step doesn't reset it). Verify: `gcloud run services describe bhaga-webhook --region us-central1 --format 'value(spec.template.metadata.annotations["run.googleapis.com/startup-cpu-boost"])'` should print `true`.
 
 ---
 
@@ -254,6 +257,7 @@ gcloud run services update bhaga-webhook \
 | `square_palmetto_oauth` | refresh job (Square API) | Square OAuth 2.0 access + refresh tokens for production Square API |
 | `google_palmetto` | refresh job (Sheets/Drive) | Google OAuth creds for the `palmetto` account |
 | `jarvis-clickup-palmetto-pat` | refresh job (`CLICKUP_PAT`) | ClickUp PAT — read review channel + closing-form inventory ingest |
+| `operator-console-gemini-token` | operator-console (`GEMINI_TOKEN`) | Gemini API key (Generative Language API), restricted to that one API — restock photo parsing (`lib/restock/gemini.ts`). Wired via `--set-secrets` in `operator-console-deploy.yml`; default compute SA holds `secretAccessor` on it. |
 
 > **Local bootstrap (all providers):** If a secret is missing from your macOS Keychain on a fresh
 > clone, use:
@@ -351,6 +355,39 @@ Both modes add `BHAGA_IGNORE_HALT=1` (operator-driven backfill includes the fix)
 Parse errors (bad date, over-cap, unknown token) are still synchronous and appear inline.
 
 The same two-phase pattern applies to every `/bhaga-cloud` command: `status`, `config get/set`, `training set/rm`, `alias set`, and `exclude set` all return an immediate ack and post their real result as an ephemeral `response_url` follow-up (operator-private).
+
+### `/bhaga-cloud restock` — register a restock delivery date + upload/reset actuals (Issue #137)
+
+```
+/bhaga-cloud restock
+```
+
+Opens a modal (`views.open`, needs a live `trigger_id` — bypasses the async response_url pattern
+used by every other command since the modal must open within Slack's 3s ack window):
+
+- **Action** — one of `Register date only (estimated)`, `Add order (actuals)`, `Reset to estimated`.
+- **Restock delivery date** — a date picker.
+- **Order CSV (base,quantity)** — a `file_input` block, required only for `Add order`. Header row is
+  optional; bases are validated against the same `ACTIVE_BASES` list the pipeline uses elsewhere
+  (case-sensitive, exact match) and quantities must be non-negative numbers.
+
+On submit, the handler always MERGEs the delivery date into `bhaga.inventory_restock_schedule`
+(idempotent — the date becomes "registered" whether or not actuals exist for it). Then:
+
+- `Register date only` — no further write; the date participates in migration 031's dual-date
+  recommendation as an *estimated* delivery.
+- `Add order` — downloads the CSV via `files:read` + the bot token, parses it, and does a
+  **replace-per-date** write to `bhaga.inventory_restock_orders` (DELETE all rows for
+  `(store, delivery_date)`, then INSERT the parsed rows) — re-uploading a corrected CSV for the same
+  date always converges rather than accumulating duplicates.
+- `Reset to estimated` — DELETEs all `inventory_restock_orders` rows for that date, reverting the
+  date back to estimated-only.
+
+Validation errors (missing date, missing CSV for `Add order`, unknown base, non-numeric or negative
+quantity) are returned inline via the modal's `response_action: errors` — this only works because the
+Slack app has **Interactivity** enabled with a request URL pointed at
+`POST /slack/interactions` (see `agents/bhaga/setup/slack-app-manifest-cloud.yaml`). Success is
+confirmed via a DM to the submitting operator, not the modal (which just closes).
 
 **OTP concurrency caveat:** if multiple full-scrape dates are enqueued concurrently, `_find_pending_portal_for_agent` picks the *newest* pending OTP. ADP's distributed scrape lock serialises browser logins; Square uses the REST API (no browser, no OTP since 2026-06-23). The only OTP portal that fires a live SMS is ADP.
 
@@ -1202,6 +1239,14 @@ and alerts.  Don't hand-investigate; run this first.
 - `scripts/check_doc_freshness.py --strict` coupling (CI hard-fails a migration or
   dashboard PR that doesn't also update `status.py`).
 
+**Rendering/verifying/comparing/screenshotting a dashboard panel does NOT need
+this `BHAGA_SECRETS_BACKEND`/`BHAGA_IMPERSONATE_SA`/ADC dance at all** — see
+`agents/bhaga/grafana/README.md` § Auth model. That tooling (`verify_panels.py`,
+`compare_panels.py`, `capture_screenshot.py`, `evidence.py`) talks to Grafana
+Cloud with a Bearer token; Grafana queries BigQuery server-side. Only applying
+schema DDL (`ensure_schema()`) needs the cloud service account. A `config.yaml
+not found` error from `status.py` is unrelated and does not block Grafana work.
+
 ### Pipeline Health row (updated to two-table design, PR feat/bhaga-dashboard-pipeline-health, 2026-06-12)
 
 The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side-by-side tables:
@@ -1335,7 +1380,9 @@ built-in `h` (and `m`) units are *durations* that auto-scale — `60` renders as
 panels. Use the custom unit `suffix: h` (and `suffix: min` for the slow-orders
 table) so the raw number is shown with a unit and no rescaling.
 
-**Verify panels return data (read-only, end-to-end):**
+**Verify panels return data (read-only, end-to-end):** full tool catalog
+(including prod-vs-branch parity and the one-command PR-evidence entrypoint)
+is `agents/bhaga/grafana/README.md` — start there.
 
 ```bash
 # Runs every panel's rawSql through Grafana /api/ds/query with the real datasource UID
@@ -1513,6 +1560,23 @@ than failing with no local files in the ephemeral Cloud Run container).
 Pipeline reads `store_config` via `core.store_config.get_config(store, key)` — BQ first, Sheet as
 fallback while the BQ table is being seeded. After seeding, Sheet config becomes display-only.
 
+> **`order_reco_max_tubs` (default `120`, Issue #137)** — the freezer capacity ceiling for the
+> dual-date Order Recommendation (Grafana panels 81/82). Change it with
+> `/bhaga-cloud config set order_reco_max_tubs <N>` — expected to change *seldomly* (only when the
+> shop's freezer capacity itself changes, e.g. a bigger freezer), never per-day. Setting it triggers
+> an immediate recompute (`cloud/webhook/handler.py::_handle_config_set` dispatches
+> `_refresh_order_reco` async). The recommendation is a MATERIALIZED table, `bhaga.inventory_order_reco`
+> — see `agents/bhaga/knowledge-base/DOMAIN.md` § migration 031 for why (BQ query-planning complexity
+> limit) and `.cursor/rules/bhaga.mdc` for the full invariant. It is recomputed by
+> `core.order_reco.refresh_order_reco()` from **three** triggers: (1) the nightly `daily_refresh.py`
+> step `refresh_order_reco` (runs after `ingest_inventory`, non-fatal), (2) the restock modal's
+> `view_submission` handler after any schedule/orders write, and (3) this config-set. If the tables
+> on the dashboard look stale, check which of the three last ran via
+> `python3 -m agents.bhaga.scripts.status --store palmetto` (nightly step) or re-trigger manually:
+> ```bash
+> BHAGA_DATASTORE=bigquery python3 -c "from core.order_reco import refresh_order_reco; refresh_order_reco('palmetto')"
+> ```
+
 > **`data_window_end` is DERIVED — never stored in `store_config`.** It is computed
 > live as `MAX(square_transactions.date_local)` via `core.store_config.resolve_data_window_end()`.
 > `set_config()` raises `ValueError` if you attempt to write this key. The review crediting
@@ -1579,3 +1643,102 @@ never collided with new per-group rows (`0`) under the merge key, so prod accumu
 item lines. The fix is the one-time Step 3 `--replace` rebuild above; after that, nightly MERGE is
 idempotent (re-scrapes hit identical keys) and the model self-heals via `materialize_model_bq`. No
 daily wipe. Full reasoning in `docs/POST_MERGE_BQ_CUTOVER.md` § "Why a one-time rebuild".
+
+---
+
+## 17. Operator Console (Issue #132, replaces Grafana as the primary UI)
+
+### What it is
+
+A Next.js app (`apps/operator-console/`) reading/writing the same `bhaga` BQ dataset as
+this pipeline, deployed as its own Cloud Run **service** (`operator-console`, not a job) with
+`--no-allow-unauthenticated` + Cloud Run **direct IAP** (GA, no load balancer). Operators open the
+plain `https://operator-console-…run.app` URL in a browser and sign in with Google — no terminal,
+no proxy command. The legacy `gcloud iap oauth-brands` API requires a Google Workspace
+organization and is deprecated project-wide (confirmed 2026-07-04), but a custom **"External"**
+OAuth client — provisioned once via the Cloud Console's Google Auth Platform + the Cloud Run
+Security tab's IAP checkbox — works fine without an org (reversing the earlier "no IAP" pivot; see
+`docs/operator-console/PLAN.md` decisions log, 2026-07-05). Grafana **stays live** (coexistence,
+not a replacement in v1) — the console is additive, giving the operator navigation, goal tracking,
+and write-backs Grafana never had.
+
+Full design/build docs: [`docs/operator-console/`](docs/operator-console/) (`PLAN.md` — living plan
++ decisions log + milestones; `ARCHITECTURE.md`; `EXECUTION.md` — step-by-step; `COST.md`).
+App-level dev loop: [`apps/operator-console/README.md`](apps/operator-console/README.md).
+
+### Deploy
+
+Automatic on push to `main` touching `apps/operator-console/**` via
+[`.github/workflows/operator-console-deploy.yml`](.github/workflows/operator-console-deploy.yml):
+builds the container, applies any pending `core/migrations/*.sql` (same runner as this pipeline —
+`core.datastore.ensure_schema()`), deploys `--no-allow-unauthenticated --iap`, then grants
+`roles/iap.httpsResourceAccessor` to each operator account. No manual deploy step. `--iap` is
+idempotent against the one-time Console-only provisioning below — it does not redo it.
+
+### One-time IAP provisioning (Console-only, cannot be scripted)
+
+Two Console steps, done once per project (already done for `jarvis-bhaga-prod` — see
+`docs/operator-console/PLAN.md` decisions log, 2026-07-05):
+1. **Google Auth Platform branding** — `console.cloud.google.com/auth/overview` → "Get started" →
+   App name "Palmetto Operator Console", **External** audience (Internal is greyed out — no
+   Workspace org), any contact email you're signed in as.
+2. **Enable IAP on the Cloud Run service** — service → **Security** tab → check
+   **Identity Aware Proxy (IAP)** alongside IAM → Save. Google auto-creates the OAuth client tied
+   to the branding above; no manual client creation.
+
+Both steps only need to happen again if the branding/OAuth client is ever deleted.
+
+### Accessing the console (Cloud Run direct IAP — browser sign-in)
+
+Open `https://operator-console-887772634501.us-central1.run.app` in a browser. IAP redirects to
+Google's account chooser ("Sign in to Palmetto Operator Console"), and after picking an account
+either loads the console (if authorized) or shows IAP's own "You don't have access" page with the
+denied email printed (if not). No terminal, no proxy command, no app-level allowlist — access is
+pure IAM.
+
+**Granting a new admin/operator** — one command, one layer:
+```
+gcloud iap web add-iam-policy-binding \
+  --resource-type=cloud-run --service=operator-console --region=us-central1 --project=jarvis-bhaga-prod \
+  --member=user:NEW@EMAIL --role=roles/iap.httpsResourceAccessor
+```
+Any Google account works — no domain restriction, since IAP's IAM is the sole gate. IAM changes
+can take up to a couple of minutes to propagate; if a just-granted account still sees "no access",
+visit `<service-url>?gcp-iap-mode=CLEAR_LOGIN_COOKIE` to force IAP to re-check the current session
+against the latest policy instead of a cached session decision. Revoke with
+`gcloud iap web remove-iam-policy-binding` (same flags). A Google Groups (`admin`/`operator`) model
+for `mypalmetto.co` is a documented follow-up so grants don't need per-user `gcloud` calls; per-user
+grants are the current mechanism.
+
+### Operating
+
+- **Identity:** the signed-in operator's email is available server-side via
+  `lib/auth/identity.ts::operatorEmail()`. IAP forwards the caller's email in the plain
+  `X-Goog-Authenticated-User-Email` header (trustworthy because only the IAP service agent holds
+  `run.invoker` on the Cloud Run service — end users hold `roles/iap.httpsResourceAccessor`
+  instead, never direct invoker), and additionally signs a JWT in `X-Goog-IAP-JWT-Assertion`.
+  `operatorEmail()` verifies that JWT via `google-auth-library` (`OAuth2Client.getIapPublicKeys()` +
+  `verifySignedJwtWithCertsAsync()`) against the direct-Cloud-Run-IAP audience format
+  `/projects/{PROJECT_NUMBER}/locations/{REGION}/services/{SERVICE_NAME}`, and requires the JWT's
+  `email` claim to agree with the plain header before trusting either — so a header-forwarding
+  misconfiguration can't silently downgrade this to an unverified header. Used as `updated_by` on
+  every write, same field the Slack `/bhaga-cloud` commands stamp. Local dev has no IAP headers at
+  all — `BYPASS_IAP_EMAIL` in `.env.local` stands in.
+- **Caching:** every page uses `export const dynamic = "force-dynamic"`, never `revalidate` —
+  Next's Full Route Cache would otherwise serve a cached render at the CDN edge to a new
+  unauthenticated caller regardless of Cloud Run's IAM check on *that* request (found + fixed
+  2026-07-05 while re-locking the preview after the temporary public-access review window).
+- **Write parity with Slack:** every console write in `lib/bq/writes.ts` mirrors the exact
+  MERGE/DELETE/INSERT statement `cloud/webhook/handler.py` uses for the equivalent Slack command
+  (restock, training, config/goals) — the two paths converge on identical rows, never diverge.
+- **New table (M4):** `recognition_bonuses` (migration `033_recognition_bonuses.sql`) — manual
+  per-employee bonus, separate from the automated `vw_review_bonus_detail` (migration 026).
+- **New goal keys:** `goal_net_sales_weekly`, `goal_net_sales_monthly`, `goal_labor_pct_max`,
+  `goal_food_cost_pct_max`, `goal_speed_on_time_pct_min`, `goal_inventory_runway_days_min` — all in
+  `store_config`, edited via the console's Home → "Edit goals" drawer (no Slack command for these).
+- **Troubleshooting a stuck write:** every write function in `lib/bq/writes.ts` is a plain
+  parameterized query — reproduce it directly against BQ (see `docs/operator-console/PLAN.md`
+  decisions log for two real bugs already caught this way: a row-sanitizer that corrupted any
+  column literally named `value`, and an INT64-vs-FLOAT64 TVF param mismatch).
+- **Local dev against live BQ:** `apps/operator-console/README.md` § Local development
+  (`gcloud auth application-default login`, `BYPASS_IAP_EMAIL` for local identity).

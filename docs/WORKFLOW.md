@@ -281,12 +281,19 @@ operator always knows where to input.
 
 ### Post-merge lifecycle (automated)
 `pr-merged-lifecycle.yml` fires on every squash-merge to `main` and:
-1. Resolves the tracking issue (phase-cache → gh issue scan).
+1. Resolves the tracking issue (phase-cache → **branch-slug `iNNN` token, confirmed via `gh issue view`** → gh issue body-scan). The `Find tracking issue` step always emits exactly one token via `|| echo 'none'` and writes `$GITHUB_OUTPUT` with the `key<<EOF` heredoc form, so it can never hard-fail the job (Issue #130 — previously failed on 100% of merges because issue bodies said `Branch: TBD`, which the body-scan alone could never match).
 2. Stamps `approved:merge` and advances `merge` (the squash-merge IS the operator approval).
 3. Posts a cross-reference comment on the issue linking the merged PR.
 4. Parses the §4 "Post-merge verification" block; runs read-only commands in CI; posts results.
 5. Advances `post-merge-verify` once verification runs (or is skipped).
 6. Posts a retrospective prompt (speed / cost / accuracy grading checklist) on the issue.
+
+**PR description gate (`check_pr_description.py`, Issue #123):** every PR body must assert
+which issue it implements via a `Closes|Fixes|Resolves #N` keyword (a bare `Refs #N` mention
+does not count). This is what lets step 1 above resolve reliably and lets GitHub itself
+auto-close the issue on merge — without it, a merged PR can silently strand its tracking
+issue open forever, as happened to Issues #101/#108/#112/#113/#118 before the one-time
+`scripts/audit_stranded_issues.py --reconcile` cleanup.
 
 The **retrospective** is always agent-driven in a follow-up chat (CI cannot read local transcripts).
 The agent reads the PR conversation + transcripts, **grades the cycle in a retro plan (Plan mode),
@@ -354,7 +361,10 @@ L3 (roadmap):
 | Local loop mirrors CI | test_verify.py::test_ci_parity | Test PASS |
 | Babysit unprompted | pr-workflow.mdc + babysit skill | Always-on rule |
 | Review replies done | check_pr_review_replies.py | Gate exit 0 |
+| Grafana stays visualization-only (no business/SQL logic in `rawSql`) | check_grafana_no_logic.py (hard gate in verify --full) + `grafana-dashboard-sync.yml` CI step | Gate exit code |
 | Whole lifecycle works end-to-end | dogfood_lifecycle.py run/resume/check | Annotated transcript in docs/dogfood/ |
+| Every PR links its tracking issue (Closes/Fixes/Resolves #N, not a bare mention) — merges can't strand issues | check_pr_description.py required-issue-link check (hard gate in verify --full, wired via `pr-description.yml`) | Gate exit code |
+| No stranded issues (open, but implementing PR already merged) | `scripts/audit_stranded_issues.py --report` | "0 stranded issues found" |
 
 ### Dogfooding the lifecycle
 `scripts/dogfood_lifecycle.py` drives a trivial dummy requirement through all 12
@@ -403,16 +413,17 @@ GH Action (check_suite / issue_comment / pr-merged-lifecycle)
 | `ci_other` | `ci_status` | `check_suite.completed` other | — |
 | `pr_merged` | `retrospective` | `pr-merged-lifecycle.yml` | Triggers retro jam flow |
 | `intake` | `intake` | `/jarvis-new-task` comment | Allowlist-gated; no debounce. The signal's `issue` field is threaded through to `new_requirement.py --issue N`, which fetches the issue's title+body (`gh issue view`) to seed the brief — a short intake comment alone (e.g. "let's work on this") is not enough context — and links the EXISTING issue instead of creating a duplicate. Branch is `fix/i{N}-<title-slug>` (issue-based, unique). |
-| `comment` | `address_comment` | Operator comment on any issue/PR | Allowlist-gated (workflow primary gate); loop-safe. **Note:** for PR comments, branch is resolved via `gh pr view --json headRefName` (no phase cache needed). For plain issue comments, branch is resolved via `find-branch` (reads laptop phase cache); absent on the Actions runner → gracefully skips with log message. |
+| `comment` | `address_comment` | Operator comment on any issue/PR, **or an inline diff/review comment on a PR** | Allowlist-gated (workflow primary gate); loop-safe. **Note:** for PR comments (`issue_comment` on a PR, `pull_request_review_comment`, or `pull_request_review`), branch is resolved via `gh pr view --json headRefName`; the signal is then posted on the branch's **tracking issue** (via `find-issue --branch`), not on the PR itself — the tracking issue stays open long after the PR merges/closes, so `watch-all`'s open-issue polling always catches it (Issue #140). Falls back to posting on the original issue/PR number if no tracking issue resolves. For plain issue comments, branch is resolved via `find-branch` (reads laptop phase cache); absent on the Actions runner → gracefully skips with log message. |
 | _(PR→issue link)_ | _(GH-side, no inbox)_ | `pull_request.opened` → `pr-issue-link` job in `jarvis-dev-signals.yml` | obs 3: comments the PR URL on the tracking issue + appends `Refs #N` to the PR body (both idempotent). Resolves the issue via `find-issue --branch` (gh scan fallback works in CI). Active once merged to `main`. |
 
 ### New scripts
 
 | Script | Role |
 |---|---|
-| `scripts/dev_event_router.py` | Parse signals, idempotency, debounce, write inbox, update phase cache. **Inbox routing (obs 4b):** the pending/processed inbox is written to the **child worktree's** `metrics/pr_cost/` (from `cache["worktree_path"]`) so the child's `drain.sh` actually sees it — the daemon-side phase cache + `delivered_signals` dedup stay in the daemon repo. Falls back to the module dir when no worktree is recorded. |
-| `scripts/dev_event_listener.py` | `catch-up`, `watch`, `dispatch`; macOS auto-open/focus worktree (osascript + `open -a Cursor` fallback; `LOCAL_EVENT_AUTO_OPEN`). GH API → `parse_signal` → `route_signal` → `pending.jsonl` write proven via non-dry-run catch-up run. |
+| `scripts/dev_event_router.py` | Parse signals, idempotency, debounce, write inbox, update phase cache. **Inbox routing (obs 4b):** the pending/processed inbox is written to the **child worktree's** `metrics/pr_cost/` (from `cache["worktree_path"]`) so the child's `drain.sh` actually sees it — the daemon-side phase cache + `delivered_signals` dedup stay in the daemon repo. Falls back to the module dir when no worktree is recorded. **Unrouted fallback (Issue #140):** when the daemon-side phase cache is missing for a branch but a sibling worktree exists on disk, `_load_cache` reads and mirrors the worktree's own cache instead of returning `unrouted`. |
+| `scripts/dev_event_listener.py` | `catch-up`, `watch`, `dispatch`, `health`; macOS auto-open/focus worktree (osascript + `open -a Cursor` fallback; `LOCAL_EVENT_AUTO_OPEN`). GH API → `parse_signal` → `route_signal` → `pending.jsonl` write proven via non-dry-run catch-up run. `watch-all` polls open issues + open PRs + **recently-closed PRs (5 min window)**, so a signal that lands on a just-merged PR is still caught (Issue #140 defense-in-depth). `health [--heal]` reports/repairs the `com.jarvis.devsignals` launchd daemon (parses both the legacy tab-separated and the modern plist-dict `launchctl list` output shapes). |
 | `scripts/check_no_main_progress_push.py` | Mechanical guard: block PROGRESS.md direct push to main |
+| `scripts/audit_stranded_issues.py` | Issue #123: `--report` (read-only) finds open issues whose implementing PR already merged, matched strictly by branch-slug `iNNN` or a `Closes/Fixes/Resolves #N` keyword (never a bare `#N`/`Refs #N` mention, to avoid false-positiving follow-up issues that merely reference their spawning PR). `--reconcile` posts a link comment + closes each stranded issue. |
 
 ### Signal format
 
@@ -459,8 +470,8 @@ Wired as a `verify.py` gate (`progress-push-guard`). Blocks pushes that target `
 
 | Workflow | Change |
 |---|---|
-| `pr-merged-lifecycle.yml` | Added `Emit pr_merged signal` step; retrospective prompt now instructs jam→plan→issues flow (no direct `PROGRESS.md` write). **Fixed (2026-07-01):** the file was invalid YAML from #85 onward (column-0 Python heredocs + a multi-line `--body` broke the `run:` block scalars) so the post-merge job silently never ran — every merge since #85 stranded its issue (no merge-advance / PR-link / post-merge-verify / retro). Re-indented the mis-authored spans into their block scalars (byte-identical content); now parses + `bash -n` + `py_compile` clean. |
-| `jarvis-dev-signals.yml` | `check_suite` → CI signals; `issue_comment` → `intake-signal` (/jarvis-new-task) + `comment-signal` (operator comments, loop-safe); `pull_request.opened` → `pr-issue-link` (obs 3: link PR↔issue, idempotent); label-gated `pull_request` → pre-merge evidence. **Note:** `issue_comment` and `check_suite` jobs only activate once the workflow lands on `main` (GitHub resolves those triggers from the default branch). `comment-signal` end-to-end proven pre-merge by temporarily setting the PR branch as default branch — run [28486518592](https://github.com/aditya2kx/jarvis/actions/runs/28486518592) ✅. |
+| `pr-merged-lifecycle.yml` | Added `Emit pr_merged signal` step; retrospective prompt now instructs jam→plan→issues flow (no direct `PROGRESS.md` write). **Fixed (2026-07-01):** the file was invalid YAML from #85 onward (column-0 Python heredocs + a multi-line `--body` broke the `run:` block scalars) so the post-merge job silently never ran — every merge since #85 stranded its issue (no merge-advance / PR-link / post-merge-verify / retro). Re-indented the mis-authored spans into their block scalars (byte-identical content); now parses + `bash -n` + `py_compile` clean. **Fixed again (Issue #130, #123):** the re-indented step still hard-failed 100% of the time because `find_tracking_issue` only checked phase-cache + a gh body-scan (issue bodies say `Branch: TBD`, never updated). Added a branch-slug (`iNNN`) resolution strategy and hardened the step to always emit one token + use the `key<<EOF` heredoc `$GITHUB_OUTPUT` form so a stray value can never throw `Invalid format`. |
+| `jarvis-dev-signals.yml` | `check_suite` → CI signals; `issue_comment` → `intake-signal` (/jarvis-new-task) + `comment-signal` (operator comments, loop-safe); `pull_request.opened` → `pr-issue-link` (obs 3: link PR↔issue, idempotent); label-gated `pull_request` → pre-merge evidence. **Note:** `issue_comment` and `check_suite` jobs only activate once the workflow lands on `main` (GitHub resolves those triggers from the default branch). `comment-signal` end-to-end proven pre-merge by temporarily setting the PR branch as default branch — run [28486518592](https://github.com/aditya2kx/jarvis/actions/runs/28486518592) ✅. **Fixed (Issue #140):** added `pull_request_review_comment.created` and `pull_request_review.submitted` triggers + a `review-comment-signal` job, since inline/diff comments and review submissions fire those events instead of `issue_comment` — the operator's queue-triggering comments were silently dropped when left this way. Both `comment-signal` and `review-comment-signal` now post on the branch's **tracking issue**, not the PR (see event-mapping table above). |
 
 ## 9. Deferred roadmap (out of scope for this PR)
 

@@ -1297,6 +1297,31 @@ class TestConfigCommands:
         assert "saturation_orders_per_labor_hour" in follow_ups[0]["text"]
         assert fake_bq.query.called
 
+    def test_config_set_max_tubs_dispatches_order_reco_refresh(self, monkeypatch):
+        """Setting order_reco_max_tubs recomputes the reco (Issue #137) so a
+        capacity change reflects on the Grafana tables promptly."""
+        dispatched = []
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: dispatched.append((fn, a)) or fn(*a))
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, "config set order_reco_max_tubs 140", user_name="bob")
+        assert resp.status_code == 200
+        assert any(fn is handler._refresh_order_reco for fn, _args in dispatched)
+
+    def test_config_set_other_key_does_not_dispatch_order_reco_refresh(self, monkeypatch):
+        """Only order_reco_max_tubs triggers the recompute — other keys must not."""
+        dispatched = []
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: dispatched.append((fn, a)) or fn(*a))
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, "config set saturation_orders_per_labor_hour 11.5", user_name="bob")
+        assert resp.status_code == 200
+        assert not any(fn is handler._refresh_order_reco for fn, _args in dispatched)
+
     def test_config_unavailable_without_bq(self, monkeypatch):
         """When BQ is unavailable, config commands post a warning via follow-up."""
         follow_ups = _sync_dispatch(monkeypatch)
@@ -1665,3 +1690,249 @@ class TestAlreadyRunningGuard:
         }
         assert names.get("REFRESH_DATE") == "2026-06-14"
         assert "BHAGA_OTP_FORCE_REQUEST" not in names
+
+
+# ---------------------------------------------------------------------------
+# Restock command + modal (Issue #137)
+# ---------------------------------------------------------------------------
+
+
+def _post_interaction(client, payload: dict, *, secret: str = "test_signing_secret_1234"):
+    from urllib.parse import urlencode
+    body = urlencode({"payload": json.dumps(payload)}).encode("utf-8")
+    timestamp = str(int(time.time()))
+    signature = _make_signature(body, timestamp, secret)
+    return client.post(
+        "/slack/interactions",
+        data=body,
+        content_type="application/x-www-form-urlencoded",
+        headers={
+            "X-Slack-Request-Timestamp": timestamp,
+            "X-Slack-Signature": signature,
+        },
+    )
+
+
+def _restock_view_submission(action: str, delivery_date: str, *, with_file: bool = False) -> dict:
+    """Build a minimal view_submission payload matching the restock modal's block IDs."""
+    csv_value: dict = {"files": [
+        {"id": "F123", "name": "restock.csv", "url_private_download": "https://files.slack.com/f123"},
+    ]} if with_file else {}
+    return {
+        "type": "view_submission",
+        "user": {"id": "U123", "username": "adi"},
+        "view": {
+            "callback_id": "restock_submit",
+            "state": {
+                "values": {
+                    "action": {"value": {"selected_option": {"value": action}}},
+                    "delivery_date": {"value": {"selected_date": delivery_date}},
+                    "csv_file": {"value": csv_value},
+                }
+            },
+        },
+    }
+
+
+class TestRestockCommand:
+    """/bhaga-cloud restock opens a modal via views.open (bot token, trigger_id)."""
+
+    def test_restock_opens_modal(self, monkeypatch):
+        fake_api = MagicMock(return_value={"ok": True})
+        monkeypatch.setattr(handler, "_slack_api", fake_api)
+        monkeypatch.setattr(handler, "SLACK_BOT_TOKEN", "xoxb-test")
+        with app.test_client() as client:
+            resp = _post_command(client, "restock", trigger_id="T123")
+        assert resp.status_code == 200
+        assert fake_api.called
+        method, payload = fake_api.call_args[0]
+        assert method == "views.open"
+        assert payload["trigger_id"] == "T123"
+        assert payload["view"]["callback_id"] == "restock_submit"
+
+    def test_restock_missing_bot_token_returns_error(self, monkeypatch):
+        monkeypatch.setattr(handler, "SLACK_BOT_TOKEN", "")
+        with app.test_client() as client:
+            resp = _post_command(client, "restock", trigger_id="T123")
+        assert resp.status_code == 200
+        assert ":x:" in resp.get_json()["text"]
+
+    def test_restock_views_open_failure_surfaced(self, monkeypatch):
+        monkeypatch.setattr(handler, "SLACK_BOT_TOKEN", "xoxb-test")
+        monkeypatch.setattr(handler, "_slack_api", MagicMock(return_value={"ok": False, "error": "expired_trigger_id"}))
+        with app.test_client() as client:
+            resp = _post_command(client, "restock", trigger_id="T123")
+        assert resp.status_code == 200
+        assert "expired_trigger_id" in resp.get_json()["text"]
+
+    def test_help_text_lists_restock_command(self):
+        with app.test_client() as client:
+            resp = _post_command(client, "unknown-command")
+        assert "restock" in resp.get_json()["text"]
+
+
+class TestRestockCsvParsing:
+    """_parse_restock_csv validates bases against ACTIVE_BASES and quantities as floats."""
+
+    def test_parses_valid_rows_no_header(self):
+        rows, errors = handler._parse_restock_csv("Açaí,12\nMango,8.5\n")
+        assert errors == []
+        assert rows == [("Açaí", 12.0), ("Mango", 8.5)]
+
+    def test_skips_header_row(self):
+        rows, errors = handler._parse_restock_csv("base,quantity\nCoconut,10\n")
+        assert errors == []
+        assert rows == [("Coconut", 10.0)]
+
+    def test_rejects_unknown_base(self):
+        rows, errors = handler._parse_restock_csv("Blade,5\n")
+        assert rows == []
+        assert any("unknown base" in e for e in errors)
+
+    def test_rejects_non_numeric_quantity(self):
+        rows, errors = handler._parse_restock_csv("Mango,abc\n")
+        assert rows == []
+        assert any("not a number" in e for e in errors)
+
+    def test_rejects_negative_quantity(self):
+        rows, errors = handler._parse_restock_csv("Mango,-1\n")
+        assert rows == []
+        assert any(">= 0" in e for e in errors)
+
+    def test_blank_lines_ignored(self):
+        rows, errors = handler._parse_restock_csv("Açaí,12\n\n\nMango,8\n")
+        assert errors == []
+        assert rows == [("Açaí", 12.0), ("Mango", 8.0)]
+
+    def test_duplicate_base_last_wins(self):
+        rows, errors = handler._parse_restock_csv("Açaí,12\nMango,5\nAçaí,20\n")
+        assert errors == []
+        assert dict(rows) == {"Açaí": 20.0, "Mango": 5.0}
+        assert len(rows) == 2
+
+
+class TestRestockSubmission:
+    """view_submission handling: schedule + orders writes, DM confirmation."""
+
+    def test_register_date_only_merges_schedule_no_orders_write(self, monkeypatch):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        fake_api = MagicMock(return_value={"ok": True})
+        monkeypatch.setattr(handler, "_slack_api", fake_api)
+        # Recompute is fire-and-forget off the request path — don't let it
+        # race with this test's exact call-count assertions on fake_bq.
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: None)
+        payload = _restock_view_submission("Register date only (estimated)", "2026-07-16")
+        with app.test_client() as client:
+            resp = _post_interaction(client, payload)
+        assert resp.status_code == 200
+        assert resp.get_json() == {"response_action": "clear"}
+        merge_calls = [c for c in fake_bq.query.call_args_list if "MERGE" in c[0][0]]
+        delete_calls = [c for c in fake_bq.query.call_args_list if "DELETE" in c[0][0]]
+        assert len(merge_calls) == 1
+        assert "inventory_restock_schedule" in merge_calls[0][0][0]
+        assert len(delete_calls) == 0
+        assert fake_api.call_args[0][0] == "chat.postMessage"
+
+    def test_add_order_requires_file(self, monkeypatch):
+        payload = _restock_view_submission("Add order (actuals)", "2026-07-16", with_file=False)
+        with app.test_client() as client:
+            resp = _post_interaction(client, payload)
+        body = resp.get_json()
+        assert body["response_action"] == "errors"
+        assert "csv_file" in body["errors"]
+
+    def test_add_order_downloads_parses_and_replaces_orders(self, monkeypatch):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        monkeypatch.setattr(handler, "_slack_api", MagicMock(return_value={"ok": True}))
+        monkeypatch.setattr(handler, "_download_slack_file", lambda url: "Açaí,12\nMango,8\n")
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: None)
+        payload = _restock_view_submission("Add order (actuals)", "2026-07-16", with_file=True)
+        with app.test_client() as client:
+            resp = _post_interaction(client, payload)
+        assert resp.get_json() == {"response_action": "clear"}
+        sqls = [c[0][0] for c in fake_bq.query.call_args_list]
+        assert any("MERGE" in s and "inventory_restock_schedule" in s for s in sqls)
+        assert any("DELETE" in s and "inventory_restock_orders" in s for s in sqls)
+        assert any("INSERT INTO" in s and "inventory_restock_orders" in s for s in sqls)
+
+    def test_add_order_bad_csv_returns_inline_errors_no_write(self, monkeypatch):
+        fake_bq = MagicMock()
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        monkeypatch.setattr(handler, "_slack_api", MagicMock(return_value={"ok": True}))
+        monkeypatch.setattr(handler, "_download_slack_file", lambda url: "Blade,5\n")
+        payload = _restock_view_submission("Add order (actuals)", "2026-07-16", with_file=True)
+        with app.test_client() as client:
+            resp = _post_interaction(client, payload)
+        body = resp.get_json()
+        assert body["response_action"] == "errors"
+        insert_calls = [c for c in fake_bq.query.call_args_list if "INSERT INTO" in c[0][0]]
+        assert len(insert_calls) == 0
+
+    def test_reset_clears_orders(self, monkeypatch):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        monkeypatch.setattr(handler, "_slack_api", MagicMock(return_value={"ok": True}))
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: None)
+        payload = _restock_view_submission("Reset to estimated", "2026-07-16")
+        with app.test_client() as client:
+            resp = _post_interaction(client, payload)
+        assert resp.get_json() == {"response_action": "clear"}
+        sqls = [c[0][0] for c in fake_bq.query.call_args_list]
+        assert any("DELETE" in s and "inventory_restock_orders" in s for s in sqls)
+
+    def test_submission_dispatches_order_reco_refresh(self, monkeypatch):
+        """Every successful submission path recomputes the reco off the request
+        path (Issue #137) — dispatched, never inline (would blow the 3s deadline).
+        """
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        monkeypatch.setattr(handler, "_slack_api", MagicMock(return_value={"ok": True}))
+        dispatched = []
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: dispatched.append((fn, a)))
+        payload = _restock_view_submission("Register date only (estimated)", "2026-07-16")
+        with app.test_client() as client:
+            _post_interaction(client, payload)
+        assert len(dispatched) == 1
+        fn, args = dispatched[0]
+        assert fn is handler._refresh_order_reco
+        assert args == ("palmetto",)
+
+    def test_missing_delivery_date_returns_error(self, monkeypatch):
+        payload = _restock_view_submission("Register date only (estimated)", "")
+        payload["view"]["state"]["values"]["delivery_date"] = {"value": {}}
+        with app.test_client() as client:
+            resp = _post_interaction(client, payload)
+        body = resp.get_json()
+        assert body["response_action"] == "errors"
+        assert "delivery_date" in body["errors"]
+
+    def test_bq_unavailable_dms_warning(self, monkeypatch):
+        monkeypatch.setattr(handler, "_bq", None)
+        fake_api = MagicMock(return_value={"ok": True})
+        monkeypatch.setattr(handler, "_slack_api", fake_api)
+        payload = _restock_view_submission("Register date only (estimated)", "2026-07-16")
+        with app.test_client() as client:
+            resp = _post_interaction(client, payload)
+        assert resp.get_json() == {"response_action": "clear"}
+        assert "not available" in fake_api.call_args[0][1]["text"].lower()
+
+    def test_interactions_rejects_bad_signature(self):
+        with app.test_client() as client:
+            resp = client.post(
+                "/slack/interactions",
+                data={"payload": json.dumps(_restock_view_submission("Reset to estimated", "2026-07-16"))},
+                headers={"X-Slack-Request-Timestamp": str(int(time.time())), "X-Slack-Signature": "v0=bad"},
+            )
+        assert resp.status_code == 403
+
+    def test_non_restock_view_submission_ignored(self):
+        payload = {"type": "view_submission", "view": {"callback_id": "some_other_view"}}
+        with app.test_client() as client:
+            resp = _post_interaction(client, payload)
+        assert resp.status_code == 200

@@ -84,7 +84,7 @@ GRAFANA_DASHBOARD_URL = "https://steadyangelfish2985.grafana.net/d/bhaga-analyti
 
 SHEET_TABS: tuple[str, ...] = ("daily", "tip_alloc_daily")
 
-CheckMode = Literal["exact", "iso_week", "period_coverage"]
+CheckMode = Literal["exact", "iso_week", "period_coverage", "date_prefix", "refreshed_recently"]
 
 
 @dataclass(frozen=True)
@@ -125,6 +125,10 @@ BQ_TARGETS: list[Target] = [
     # Team Schedule scrape); max_date is in the future, so the freshness check
     # reads as fresh. Empty until the first nightly schedule scrape runs.
     Target("adp_scheduled_daily", "date"),
+    # migration 030 (Issue #137): inventory_restock_schedule / inventory_restock_orders
+    # are operator-input tables (like store_config) intentionally NOT freshness
+    # targets — they only have rows once the operator registers a restock date via
+    # /bhaga-cloud restock, so "no rows yet" is expected and not a staleness signal.
 ]
 
 GRAFANA_VIEWS: list[Target] = [
@@ -184,13 +188,38 @@ GRAFANA_VIEWS: list[Target] = [
     # panel 78 removed in feat/i113-order-reco — replaced by reco table + text panels 80/81).
     # View still registered for freshness checks; test only enforces dashboard→registry direction.
     Target("vw_inventory_base_latest_daily", "submitted_date"),
-    # migration 028: vw_inventory_order_assistant (panel 79, 8. Order Assistant analytics table).
-    # Per-base: current qty, usage/avg/days-left over last 7 eligible reading days.
+    # migration 028: vw_inventory_order_assistant (source view — usage/avg/days-left
+    # analytics over last 7 eligible reading days; feeds both panel 79 and the
+    # tvf_order_reco table function below).
     Target("vw_inventory_order_assistant", "reported_date"),
-    # panel 81 "Order Weight (lbs)" column (2026-07-01): computed in-panel rawSql from
-    # existing order_tubs (Açaí 18 lbs/tub, others 20 lbs/tub, +50 lbs/pallet at 40
-    # tubs/pallet). No new BQ view — reads the same vw_inventory_order_assistant Target
-    # above, so no new GRAFANA_VIEWS entry needed.
+    # migration 029 (Issue #126 — Grafana=visualization-only): panel 79's
+    # analytics-table-with-TOTAL-row logic moved out of Grafana rawSql into this
+    # view. Grafana now just does `SELECT * FROM vw_order_assistant_table`.
+    # date_column is the "YYYY-MM-DD HH:MM" display string (matches panel 79's
+    # original output exactly) — date_prefix mode compares only the date part.
+    Target("vw_order_assistant_table", "Reported", "date_prefix"),
+    # migration 031 (Issue #137, Option D): dual-date Order Recommendation is
+    # MATERIALIZED into inventory_order_reco (nightly + on restock submit + on
+    # order_reco_max_tubs change -- see refresh_order_reco). tvf_order_reco (029)
+    # is superseded. slot1/slot2 are no longer read by any panel (combined
+    # into vw_order_reco_combined / panel 83, migration 032) but stay listed
+    # here -- harmless, and useful if a panel ever splits back out.
+    # refresh_date is a recompute timestamp, not a business date -- "refreshed_recently"
+    # mode checks recency against real now, not the --date argument.
+    Target("vw_order_reco_slot1", "refresh_date", "refreshed_recently"),
+    Target("vw_order_reco_slot2", "refresh_date", "refreshed_recently"),
+    # migration 032 (Issue #137 iteration): panel 83 combines both slots into
+    # one row per item with per-date Source (Estimated/Actuals) columns.
+    Target("vw_order_reco_combined", "refresh_date", "refreshed_recently"),
+    # migration 033 (Issue #132, operator console): recognition_bonuses is a new
+    # write table consumed only by apps/operator-console/ (Payroll & People screen)
+    # via its own typed queries.js reads — it is not a model_* table and has no
+    # vw_* Grafana-facing view, so no new BQ_TARGETS/GRAFANA_VIEWS entry applies.
+    # migration 034 (Issue #132, operator console): vw_kds_per_item_min exposes
+    # raw per-ticket KDS per-item minutes at full float precision so the console
+    # can recompute weekly/monthly Order Quality percentiles from source rows
+    # (a daily percentile can't be re-aggregated). Grafana's dashboard.json does
+    # not reference this view — console-only, same as recognition_bonuses above.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are
@@ -255,6 +284,30 @@ def _run_bq_target(t: Target, date: datetime.date, layer: str = "bq") -> CheckRe
             f" AND period_end >= '{date.isoformat()}'"
         )
         note = "covers date"
+    elif t.mode == "date_prefix":
+        # For a formatted-string column like "YYYY-MM-DD HH:MM" (Grafana display
+        # columns, e.g. vw_order_assistant_table.Reported) — an exact match would
+        # never hit since the time-of-day varies. Prefix match on the date part.
+        sql = (
+            f"SELECT COUNT(*) AS c, MAX({t.date_column}) AS m"
+            f" FROM {fq}"
+            f" WHERE {t.date_column} LIKE '{date.isoformat()}%'"
+        )
+        note = "prefix match"
+    elif t.mode == "refreshed_recently":
+        # For recompute-triggered tables (e.g. inventory_order_reco, refreshed
+        # nightly + on every restock submit / order_reco_max_tubs change) the
+        # date_column is a recompute timestamp, not a business date -- comparing
+        # it against `date` (yesterday, Chicago) would false-fail whenever the
+        # last recompute landed "today". Check recency against real now instead,
+        # ignoring the `date` argument entirely.
+        sql = (
+            f"SELECT COUNT(*) AS c, MAX({t.date_column}) AS m"
+            f" FROM {fq}"
+            f" WHERE TIMESTAMP({t.date_column}) >="
+            f" TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 2 DAY)"
+        )
+        note = "refreshed within 2 days"
     else:
         raise ValueError(f"Unknown CheckMode: {t.mode!r}")
 

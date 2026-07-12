@@ -1000,6 +1000,41 @@ class SinglePathRegressionTests(unittest.TestCase):
         self.assertNotIn("_bq_canonical = False", src)
 
 
+class RefreshOrderRecoStepTests(unittest.TestCase):
+    """Issue #137: [refresh_order_reco] nightly step wiring (source-inspection,
+    mirrors SinglePathRegressionTests — main() is not unit-callable, so the
+    integration contract is verified structurally rather than by invocation).
+    """
+
+    def setUp(self):
+        self.src = (daily_refresh.pathlib.Path(daily_refresh.__file__).parent / "daily_refresh.py").read_text()
+
+    def test_refresh_order_reco_step_is_wired_via_run_step(self):
+        self.assertIn('run_step(\n        "refresh_order_reco"', self.src)
+        self.assertIn("from core.order_reco import refresh_order_reco", self.src)
+        self.assertIn("lambda: refresh_order_reco(args.store)", self.src)
+
+    def test_refresh_order_reco_runs_after_ingest_inventory(self):
+        ingest_idx = self.src.index('run_step(\n        "ingest_inventory"')
+        reco_idx = self.src.index('run_step(\n        "refresh_order_reco"')
+        self.assertLess(
+            ingest_idx, reco_idx,
+            "refresh_order_reco must run after ingest_inventory so the water-fill "
+            "reads today's freshly-ingested current_qty/avg_daily_usage",
+        )
+
+    def test_refresh_order_reco_failure_is_non_fatal(self):
+        """Mirrors ingest_inventory: a failed step prints a warning and falls
+        through — it must NOT raise or abort main() (no wrong numbers,
+        stale-until-nightly-retry is the accepted degraded mode)."""
+        marker = self.src.index('run_step(\n        "refresh_order_reco"')
+        tail = self.src[marker:marker + 700]
+        self.assertIn('if not ok:', tail)
+        self.assertIn("FAILED (non-fatal)", tail)
+        self.assertNotIn("raise", tail.split("if not ok:")[1].split("\n\n")[0])
+        self.assertNotIn("return 1", tail.split("if not ok:")[1].split("\n\n")[0])
+
+
 class PrepareProjectionRecoveryTests(unittest.TestCase):
     RD = datetime.date(2026, 6, 13)
 

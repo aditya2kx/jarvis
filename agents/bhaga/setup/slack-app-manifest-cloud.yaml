@@ -1,0 +1,67 @@
+# Manifest for the SEPARATE "bhaga cloud" Slack app (bot token secret
+# slack-bot-token, already mounted on bhaga-webhook; DM channel D0B67MW6J02).
+# This is the app whose
+# Slash Command + Event Subscriptions + Interactivity Request URLs point at
+# the bhaga-webhook Cloud Run service (cloud/webhook/handler.py) — distinct
+# from agents/bhaga/setup/slack-app-manifest.yaml, which is the LOCAL
+# socket-mode "bhaga" bot (laptop-era listener, retired 2026-05-29 but kept
+# for reference).
+#
+# This file was not previously tracked in-repo (the cloud app was configured
+# directly at api.slack.com). Added as the source of truth for Issue #137's
+# restock command, which requires interactivity + files:read that didn't
+# exist before. Apply via the App Manifest editor at
+# https://api.slack.com/apps/<APP_ID>/app-manifest (paste this YAML, Save
+# Changes, then reinstall to approve the new files:read scope).
+display_information:
+  name: BHAGA Cloud
+  description: Tip allocation & payroll prep agent (cloud) — fairly apportions tips by hours worked
+  background_color: "#7B1FA2"
+features:
+  bot_user:
+    display_name: BHAGA Cloud
+    always_online: true
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  slash_commands:
+    - command: /bhaga-cloud
+      url: https://bhaga-webhook-4yl5izovxq-uc.a.run.app/slack/commands
+      description: BHAGA cloud pipeline commands (refresh, status, config, restock, ...)
+      usage_hint: "restock | refresh YYYY-MM-DD | status | config get|set ..."
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - channels:read
+      - chat:write
+      - chat:write.customize
+      - im:history
+      - im:read
+      - im:write
+      - users:read
+      - users:read.email
+      - groups:history
+      - groups:read
+      - mpim:history
+      - mpim:read
+      # Issue #137: required so the restock modal's file_input block can be
+      # downloaded via files.info / url_private_download with the bot token.
+      - files:read
+settings:
+  event_subscriptions:
+    request_url: https://bhaga-webhook-4yl5izovxq-uc.a.run.app/slack/events
+    bot_events:
+      - message.im
+  # Issue #137: enables the /bhaga-cloud restock modal (view_submission is
+  # delivered to the interactivity Request URL below, handled by
+  # cloud/webhook/handler.py's /slack/interactions route).
+  interactivity:
+    is_enabled: true
+    request_url: https://bhaga-webhook-4yl5izovxq-uc.a.run.app/slack/interactions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

@@ -167,38 +167,60 @@
         "description": "Target p95 per-order KDS prep time in minutes; drawn as a dashed baseline on the KDS Time per Item chart."
       },
       {
-        "name": "oa_ship_days",
-        "label": "Order Assistant: Shipping Lead (days)",
-        "type": "textbox",
-        "current": {
-          "value": "10"
+        "name": "oa_restock_date_1",
+        "label": "Order Assistant: Restock Date 1",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-bigquery-datasource",
+          "uid": "${ds_bigquery}"
         },
-        "options": [
-          {
-            "selected": true,
-            "text": "10",
-            "value": "10"
-          }
-        ],
-        "hide": 0,
-        "description": "Shipping lead time in days for the Order Recommendation table. Projected on-hand at arrival = current_qty - oa_ship_days * avg_per_day."
+        "definition": "SELECT CAST(delivery_date AS STRING) FROM `jarvis-bhaga-prod.bhaga.vw_order_reco_next_dates` WHERE slot = 1",
+        "query": {
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT CAST(delivery_date AS STRING) FROM `jarvis-bhaga-prod.bhaga.vw_order_reco_next_dates` WHERE slot = 1",
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "location": "US"
+        },
+        "sort": 0,
+        "refresh": 1,
+        "includeAll": false,
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 2,
+        "description": "Next future restock delivery date (slot 1), from inventory_restock_schedule. Label-only — used to title panel 81."
       },
       {
-        "name": "oa_max_tubs",
-        "label": "Order Assistant: Max Capacity (tubs)",
-        "type": "textbox",
-        "current": {
-          "value": "120"
+        "name": "oa_restock_date_2",
+        "label": "Order Assistant: Restock Date 2",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-bigquery-datasource",
+          "uid": "${ds_bigquery}"
         },
-        "options": [
-          {
-            "selected": true,
-            "text": "120",
-            "value": "120"
-          }
-        ],
-        "hide": 0,
-        "description": "Maximum tubs allowed in the shop at any time. Order quantities are capped so total stock after restock does not exceed this ceiling."
+        "definition": "SELECT CAST(delivery_date AS STRING) FROM `jarvis-bhaga-prod.bhaga.vw_order_reco_next_dates` WHERE slot = 2",
+        "query": {
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT CAST(delivery_date AS STRING) FROM `jarvis-bhaga-prod.bhaga.vw_order_reco_next_dates` WHERE slot = 2",
+          "project": "jarvis-bhaga-prod",
+          "dataset": "bhaga",
+          "location": "US"
+        },
+        "sort": 0,
+        "refresh": 1,
+        "includeAll": false,
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 2,
+        "description": "2nd future restock delivery date (slot 2), from inventory_restock_schedule. Label-only — used to title panel 82."
       },
       {
         "name": "ds_bigquery",
@@ -2767,26 +2789,26 @@
       "type": "text",
       "title": "Order Recommendation — Methodology",
       "gridPos": {
-        "h": 7,
+        "h": 5,
         "w": 24,
         "x": 0,
         "y": 210
       },
       "options": {
         "mode": "markdown",
-        "content": "**How orders are computed**\n\n- **Projection:** stock available when the order arrives = `max(0, current_qty − oa_ship_days × avg_per_day)`. Adjust the `Order Assistant: Shipping Lead` variable above.\n- **Budget:** `floor(oa_max_tubs − Σ projected_on_hand_all_bases)` whole tubs available to order. Adjust the `Order Assistant: Max Capacity` variable above.\n- **Allocation (max-min water-fill):** each tub in the budget goes to the base with the lowest post-restock days-of-coverage at that moment, maximising the shop's overall runway (the base that runs out first).\n- **Blade:** delivered directly — not ordered, but its projected on-hand counts against the capacity ceiling.\n- **Order Weight (lbs):** per-row = Order Tubs × per-tub weight (Açaí 18 lbs; Pitaya, Coconut, Mango, Tropical, Matcha, Ube, Pog = 20 lbs each; Blade = NA). TOTAL row adds pallet packaging: 40 tubs = 1 pallet, +50 lbs/pallet → TOTAL = Σ per-row weight + 50 × CEIL(total order tubs ÷ 40)."
+        "content": "**How orders are computed:** the next two FUTURE restock dates registered via `/bhaga-cloud restock` (past dates auto-drop) — Restock 1 = sooner, Restock 2 = next. Each date's projected on-hand = `max(0, current_qty − calendar_days_to_date × avg_per_day)`; Restock 2 assumes Restock 1's recommendation (estimated, or actual once uploaded) already arrived. Budget = `floor(order_reco_max_tubs − Σ projected_on_hand)` tubs (`/bhaga-cloud config set order_reco_max_tubs <N>` to change — rare). **Allocation:** max-min water-fill, one tub at a time to the lowest-coverage base. **Source** column shows Estimated (water-fill) until actuals are uploaded for that date, then Actuals verbatim (`Reset to estimated` reverts). Blade is delivered directly (counts toward capacity, never ordered/weighed). **Order Weight:** Order Tubs × per-tub weight (Açaí 18 lbs, others 20 lbs); TOTAL adds +50 lbs/pallet (40 tubs/pallet)."
       }
     },
     {
-      "id": 81,
+      "id": 83,
       "type": "table",
-      "title": "Order Recommendation — What to Order Now",
-      "description": "Per-base order recommendation for the next replenishment. Lead time and max capacity driven by the oa_ship_days / oa_max_tubs dashboard variables. Order Weight (lbs) = Order Tubs × per-tub weight (Açaí 18 lbs; all other bases 20 lbs; Blade delivered directly → NA, excluded from weight). TOTAL Order Weight adds pallet packaging: 40 tubs = 1 pallet, +50 lbs/pallet, so TOTAL = Σ per-row weight + 50 × CEIL(total order tubs ÷ 40).",
+      "title": "Order Recommendation (Restock 1 ${oa_restock_date_1} · Restock 2 ${oa_restock_date_2})",
+      "description": "Combined per-base order recommendation for both registered restock dates. Item/Current Qty/Avg per day are shown once (frozen while scrolling); each date has its own On Hand / Order Tubs / Order Weight / After Restock / Days Left / Source column group. Source = Estimated (water-fill projection) until actual order quantities are uploaded for that date via /bhaga-cloud restock, then Actuals. Restock 2 columns are blank when only one future date is registered. Order Weight (lbs) = Order Tubs × per-tub weight (Açaí 18 lbs; all other bases 20 lbs; Blade delivered directly → NA). TOTAL Order Weight adds pallet packaging: 40 tubs = 1 pallet, +50 lbs/pallet.",
       "gridPos": {
         "h": 16,
         "w": 24,
         "x": 0,
-        "y": 217
+        "y": 215
       },
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -2798,7 +2820,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "WITH oa AS (SELECT item, current_qty, COALESCE(avg_daily_usage,0) AS avg_daily_usage, GREATEST(current_qty - $oa_ship_days * COALESCE(avg_daily_usage,0), 0) AS on_hand_arrival FROM `jarvis-bhaga-prod.bhaga.vw_inventory_order_assistant` WHERE store = 'palmetto'), budget AS (SELECT GREATEST(CAST(FLOOR($oa_max_tubs - SUM(on_hand_arrival)) AS INT64), 0) AS tubs_budget FROM oa), candidates AS (SELECT o.item, (o.on_hand_arrival + k - 1) / o.avg_daily_usage AS sort_key FROM oa o CROSS JOIN UNNEST(GENERATE_ARRAY(1, GREATEST((SELECT tubs_budget FROM budget),1))) AS k WHERE o.item != 'Blade' AND o.avg_daily_usage > 0), ranked AS (SELECT item, ROW_NUMBER() OVER (ORDER BY sort_key ASC) AS rn FROM candidates), selected AS (SELECT item, COUNT(*) AS order_tubs FROM ranked WHERE rn <= (SELECT tubs_budget FROM budget) GROUP BY item), reco AS (SELECT o.item, o.current_qty, o.avg_daily_usage, ROUND(o.on_hand_arrival,2) AS on_hand_arrival, COALESCE(s.order_tubs,0) AS order_tubs, ROUND(o.on_hand_arrival + COALESCE(s.order_tubs,0),2) AS post_restock_qty, ROUND(SAFE_DIVIDE(o.on_hand_arrival + COALESCE(s.order_tubs,0), NULLIF(o.avg_daily_usage,0)),1) AS post_restock_days_left, CASE WHEN o.item = 'Blade' THEN NULL ELSE COALESCE(s.order_tubs,0) * (CASE WHEN o.item = 'Açaí' THEN 18 ELSE 20 END) END AS order_weight_lbs FROM oa o LEFT JOIN selected s USING (item)), combined AS (SELECT *, 0 AS _ord FROM reco UNION ALL SELECT 'TOTAL', ROUND(SUM(current_qty),2), ROUND(SUM(avg_daily_usage),2), ROUND(SUM(on_hand_arrival),2), SUM(order_tubs), ROUND(SUM(post_restock_qty),2), ROUND(SAFE_DIVIDE(SUM(post_restock_qty),NULLIF(SUM(avg_daily_usage),0)),1), ROUND(SUM(order_weight_lbs) + 50 * CEIL(SAFE_DIVIDE(SUM(order_tubs), 40)), 0), 1 FROM reco) SELECT item AS Item, current_qty AS `Current Qty`, avg_daily_usage AS `Avg per day`, on_hand_arrival AS `On Hand in 10d`, order_tubs AS `Order Tubs`, order_weight_lbs AS `Order Weight lbs`, post_restock_qty AS `After Restock`, post_restock_days_left AS `Days Left After Restock` FROM combined ORDER BY _ord ASC, current_qty DESC"
+          "rawSql": "SELECT * EXCEPT(_ord, refresh_date) FROM `jarvis-bhaga-prod.bhaga.vw_order_reco_combined`"
         }
       ],
       "fieldConfig": {
@@ -2814,41 +2836,132 @@
           },
           {
             "matcher": { "id": "byName", "options": "Current Qty" },
-            "properties": [{ "id": "custom.width", "value": 150 }]
+            "properties": [{ "id": "custom.width", "value": 130 }]
           },
           {
             "matcher": { "id": "byName", "options": "Avg per day" },
-            "properties": [{ "id": "custom.width", "value": 150 }]
+            "properties": [{ "id": "custom.width", "value": 130 }]
           },
           {
-            "matcher": { "id": "byName", "options": "On Hand in 10d" },
-            "properties": [{ "id": "custom.width", "value": 175 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Order Tubs" },
-            "properties": [{ "id": "custom.width", "value": 155 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Order Weight lbs" },
+            "matcher": { "id": "byName", "options": "On Hand 1" },
             "properties": [
-              { "id": "displayName", "value": "Order Weight (lbs)" },
-              { "id": "custom.width", "value": 200 },
+              { "id": "displayName", "value": "On Hand ${oa_restock_date_1}" },
+              { "id": "custom.width", "value": 155 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Order Tubs 1" },
+            "properties": [
+              { "id": "displayName", "value": "Order Tubs ${oa_restock_date_1}" },
+              { "id": "custom.width", "value": 155 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Order Weight 1" },
+            "properties": [
+              { "id": "displayName", "value": "Order Weight ${oa_restock_date_1} (lbs)" },
+              { "id": "custom.width", "value": 195 },
               { "id": "noValue", "value": "NA" }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "After Restock" },
-            "properties": [{ "id": "custom.width", "value": 155 }]
+            "matcher": { "id": "byName", "options": "After Restock 1" },
+            "properties": [
+              { "id": "displayName", "value": "After ${oa_restock_date_1}" },
+              { "id": "custom.width", "value": 145 }
+            ]
           },
           {
-            "matcher": { "id": "byName", "options": "Days Left After Restock" },
-            "properties": [{ "id": "custom.width", "value": 230 }]
+            "matcher": { "id": "byName", "options": "Days Left 1" },
+            "properties": [
+              { "id": "displayName", "value": "Days Left after ${oa_restock_date_1}" },
+              { "id": "custom.width", "value": 195 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Source 1" },
+            "properties": [
+              { "id": "displayName", "value": "Source ${oa_restock_date_1}" },
+              { "id": "custom.width", "value": 115 },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "Actuals": { "color": "green", "index": 0 },
+                      "Estimated": { "color": "text", "index": 1 }
+                    }
+                  }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "On Hand 2" },
+            "properties": [
+              { "id": "displayName", "value": "On Hand ${oa_restock_date_2}" },
+              { "id": "custom.width", "value": 155 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Order Tubs 2" },
+            "properties": [
+              { "id": "displayName", "value": "Order Tubs ${oa_restock_date_2}" },
+              { "id": "custom.width", "value": 155 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Order Weight 2" },
+            "properties": [
+              { "id": "displayName", "value": "Order Weight ${oa_restock_date_2} (lbs)" },
+              { "id": "custom.width", "value": 195 },
+              { "id": "noValue", "value": "NA" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "After Restock 2" },
+            "properties": [
+              { "id": "displayName", "value": "After ${oa_restock_date_2}" },
+              { "id": "custom.width", "value": 145 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Days Left 2" },
+            "properties": [
+              { "id": "displayName", "value": "Days Left after ${oa_restock_date_2}" },
+              { "id": "custom.width", "value": 195 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Source 2" },
+            "properties": [
+              { "id": "displayName", "value": "Source ${oa_restock_date_2}" },
+              { "id": "custom.width", "value": 115 },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "Actuals": { "color": "green", "index": 0 },
+                      "Estimated": { "color": "text", "index": 1 }
+                    }
+                  }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
           }
         ]
       },
       "options": {
         "footer": {
           "show": false
+        },
+        "frozenColumns": {
+          "left": 3
         }
       }
     },
@@ -2861,7 +2974,7 @@
         "h": 16,
         "w": 24,
         "x": 0,
-        "y": 233
+        "y": 231
       },
       "datasource": {
         "type": "grafana-bigquery-datasource",
@@ -2873,7 +2986,7 @@
           "format": 1,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "WITH b AS (SELECT item, current_qty, reported, CAST(last_restock_date AS STRING) AS last_restock, usage_7d_total, avg_daily_usage, days_left, days_considered, excluded_days FROM `jarvis-bhaga-prod.bhaga.vw_inventory_order_assistant` WHERE store = 'palmetto'), combined AS (SELECT *, 0 AS _ord FROM b UNION ALL SELECT 'TOTAL', ROUND(SUM(current_qty),2), CAST(NULL AS STRING), CAST(NULL AS STRING), ROUND(SUM(usage_7d_total),2), ROUND(SUM(usage_7d_total)/7,2), ROUND(SAFE_DIVIDE(SUM(current_qty),NULLIF(SUM(usage_7d_total)/7,0)),1), CAST(NULL AS STRING), CAST(NULL AS STRING), 1 FROM b) SELECT item AS Item, current_qty AS `Current Qty`, reported AS Reported, last_restock AS `Last Restock`, usage_7d_total AS `Usage 7d`, avg_daily_usage AS `Avg per day`, days_left AS `Days Left`, days_considered AS `Days Considered`, excluded_days AS Exclusions FROM combined ORDER BY _ord ASC, current_qty DESC"
+          "rawSql": "SELECT * FROM `jarvis-bhaga-prod.bhaga.vw_order_assistant_table`"
         }
       ],
       "fieldConfig": {

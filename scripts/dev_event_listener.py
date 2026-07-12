@@ -44,6 +44,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -191,6 +192,30 @@ def _gh_open_pr_numbers() -> list[int]:
         out = subprocess.check_output(
             ["gh", "pr", "list", "--state", "open", "--limit", "50",
              "--json", "number", "-q", "[.[].number]"],
+            text=True, stderr=subprocess.DEVNULL, timeout=30,
+        )
+        return json.loads(out or "[]")
+    except Exception:
+        return []
+
+
+_RECENTLY_CLOSED_PR_WINDOW_SEC = 300  # 5 min
+
+
+def _gh_recently_closed_pr_numbers(window_sec: int = _RECENTLY_CLOSED_PR_WINDOW_SEC) -> list[int]:
+    """Return PR numbers for PRs closed/merged within the last ``window_sec``.
+
+    Defense-in-depth for Issue #140: signals correctly route to the tracking
+    issue (which stays open) rather than the PR, but a `find-issue` miss can
+    still leave a signal posted on the PR itself — this closes the small
+    window between merge and the daemon's next poll where such a signal
+    would otherwise fall out of `watch_all`'s open-PR enumeration.
+    """
+    try:
+        out = subprocess.check_output(
+            ["gh", "pr", "list", "--state", "closed", "--limit", "30",
+             "--json", "number,updatedAt",
+             "-q", f"[.[] | select(.updatedAt > (now - {window_sec} | todate)) | .number]"],
             text=True, stderr=subprocess.DEVNULL, timeout=30,
         )
         return json.loads(out or "[]")
@@ -368,7 +393,7 @@ def watch_all(
     while True:
         try:
             issues = _gh_open_jarvis_issue_numbers()
-            prs = _gh_open_pr_numbers()
+            prs = _gh_open_pr_numbers() + _gh_recently_closed_pr_numbers()
             targets = sorted(set(issues + prs))
             total = 0
             for n in targets:
@@ -667,6 +692,85 @@ def ensure_daemon(interval: int = 30) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Daemon health self-check
+# ---------------------------------------------------------------------------
+
+def _parse_launchctl_list_output(stdout: str) -> tuple[int | None, int | None]:
+    """Parse ``pid`` and ``last_exit_status`` out of ``launchctl list <label>``.
+
+    Two output shapes are observed in the wild depending on the macOS/
+    launchd version:
+
+    1. Legacy single-line, tab-separated: ``"30632\\t0\\tcom.jarvis.devsignals"``
+       (``pid`` is ``-`` when not currently running).
+    2. Modern plist-dict, multi-line: ``'"PID" = 95723;'`` / ``'"LastExitStatus" = 0;'``
+       keys inside a ``{ ... }`` block (``PID`` key absent entirely when not running).
+    """
+    stdout = stdout or ""
+
+    pid_match = re.search(r'"PID"\s*=\s*(-?\d+);', stdout)
+    exit_match = re.search(r'"LastExitStatus"\s*=\s*(-?\d+);', stdout)
+    if pid_match or exit_match:
+        pid = int(pid_match.group(1)) if pid_match else None
+        last_exit = int(exit_match.group(1)) if exit_match else None
+        return pid, last_exit
+
+    lines = stdout.strip().splitlines()
+    if lines:
+        parts = lines[-1].split()
+        if len(parts) >= 2:
+            pid = int(parts[0]) if parts[0].lstrip("-").isdigit() and parts[0] != "-" else None
+            try:
+                last_exit = int(parts[1])
+            except ValueError:
+                last_exit = None
+            return pid, last_exit
+    return None, None
+
+
+def check_daemon_health(*, auto_heal: bool = False) -> dict:
+    """Return the watch-all launchd daemon's health status.
+
+    ``launchctl list <label>`` exits 0 when the label is loaded (PID is
+    absent/``-`` when the process isn't currently running — e.g. between
+    ``KeepAlive`` restarts), and exits nonzero with no output when the label
+    was never loaded or was unloaded/removed. See ``_parse_launchctl_list_output``
+    for the two output shapes this handles.
+
+    Returns a dict with keys: ``loaded``, ``pid``, ``last_exit_status``,
+    ``healthy``. When ``auto_heal`` is True and the daemon is unhealthy
+    (not loaded, or loaded but not currently running), calls
+    ``ensure_daemon()`` to reinstall/reload it and sets ``auto_healed: True``.
+    """
+    if sys.platform != "darwin":
+        return {"loaded": False, "pid": None, "last_exit_status": None,
+                 "healthy": False, "platform": "not_macos"}
+
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", _LAUNCHD_LABEL],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        result = None
+
+    if result is None or result.returncode != 0:
+        status = {"loaded": False, "pid": None, "last_exit_status": None, "healthy": False}
+    else:
+        pid, last_exit = _parse_launchctl_list_output(result.stdout)
+        status = {"loaded": True, "pid": pid, "last_exit_status": last_exit, "healthy": pid is not None}
+
+    if not status["healthy"] and auto_heal:
+        if status["loaded"]:
+            subprocess.run(["launchctl", "unload", "-w", str(_LAUNCHD_PLIST)],
+                            capture_output=True, timeout=10)
+        ensure_daemon()
+        status["auto_healed"] = True
+
+    return status
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -729,12 +833,24 @@ def _cmd_ensure_daemon(argv: list[str]) -> int:
     return 0 if status in ("installed", "already_running") else 1
 
 
+def _cmd_health(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(
+        description="Check (and optionally heal) the watch-all launchd daemon."
+    )
+    ap.add_argument("--heal", action="store_true", help="Reinstall/reload the daemon if unhealthy.")
+    args = ap.parse_args(argv)
+    status = check_daemon_health(auto_heal=args.heal)
+    print(json.dumps(status))
+    return 0 if status.get("healthy") or status.get("auto_healed") else 1
+
+
 _COMMANDS = {
     "catch-up": _cmd_catch_up,
     "watch": _cmd_watch,
     "watch-all": _cmd_watch_all,
     "dispatch": _cmd_dispatch,
     "ensure-daemon": _cmd_ensure_daemon,
+    "health": _cmd_health,
 }
 
 

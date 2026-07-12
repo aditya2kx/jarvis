@@ -1,5 +1,14 @@
 # Jarvis Build Progress
 
+## 2026-07-12 — Operator Console: Base runway table on /inventory (Issue #156, PR #157)
+
+**Scope:** replace the unhelpful Days-of-cover bar panel with a Base runway table answering urgency vs Actuals restock (burn-down days left, stockout date, Risky/Fine). Dual-date order reco + analytics tables kept. Console-only; no Grafana.
+
+**Key changes:**
+- Migration 035 `vw_inventory_base_runway` — Actuals-only next restock from `inventory_restock_orders`; Status Fine when restock ≤ stockout.
+- Operator Console `/inventory` — runway table at top; deleted `DaysOfCoverPanel`; fixed BQ DATE-only `formatDate` off-by-one.
+- Evidence: unit tests + hosted Playwright screenshots S1–S4 on `evidence-screenshots` release.
+
 ## 2026-07-12 — BHAGA: fix ADP Timecard header-mismatch failures for 7/10 and 7/11 (Issue #150, PR #152, branch fix/bhaga-runs-for-7-10-and)
 
 **Scope:** both nightly `bhaga-daily-refresh` executions (2026-07-11 02:30 UTC for `refresh_date=2026-07-10`, and 2026-07-12 02:30 UTC for `refresh_date=2026-07-11`) failed identically in `load_raw_bigquery` and fired Slack `failure_alert` DMs, leaving ADP punches/tips/model data missing for both dates.

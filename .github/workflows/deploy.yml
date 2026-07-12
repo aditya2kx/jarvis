@@ -94,7 +94,9 @@ jobs:
             --project ${{ env.PROJECT_ID }} \
             --no-cpu-throttling \
             --memory 512Mi \
-            --cpu-boost
+            --cpu-boost \
+            --update-env-vars PLAID_ENV=sandbox,PLAID_DEFAULT_STORE=palmetto \
+            --update-secrets PLAID_CLIENT_ID=plaid_client_id:latest,PLAID_SECRET=plaid_secret:latest
 
       # Apply pending BQ migrations from core/migrations/ before recording the
       # deploy. Idempotent — no-op when already applied. Keeps schema in sync

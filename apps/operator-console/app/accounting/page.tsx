@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/tables/DataTable";
 import { PlaidLinkButton } from "@/components/drawers/PlaidLinkButton";
 import type { ColumnDef } from "@tanstack/react-table";
-import type { PlaidSpendCategoryRow, PlaidTransactionRow } from "@/lib/bq/queries";
+import type { PlaidSpendCategoryRow } from "@/lib/bq/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -61,26 +61,27 @@ export default async function AccountingPage({
     error = e instanceof Error ? e.message : String(e);
   }
 
+  // Precompute display fields — DataTable is a client component and cannot
+  // receive accessorFn from this server page (Next RSC serialization).
+  const txnRows = txns.map((t) => ({
+    ...t,
+    merchant_display: t.merchant_name || t.name || "—",
+    pending_label: t.pending ? "yes" : "",
+  }));
+
   const catColumns: ColumnDef<PlaidSpendCategoryRow>[] = [
     { accessorKey: "pfc_primary", header: "Plaid category" },
     { accessorKey: "spend", header: "Spend", meta: { format: { kind: "dollars" } } },
     { accessorKey: "txn_count", header: "Txns", meta: { format: { kind: "number" } } },
   ];
 
-  const txnColumns: ColumnDef<PlaidTransactionRow>[] = [
+  type TxnRow = (typeof txnRows)[number];
+  const txnColumns: ColumnDef<TxnRow>[] = [
     { accessorKey: "date", header: "Date", meta: { format: { kind: "date" } } },
-    {
-      id: "merchant",
-      header: "Merchant / name",
-      accessorFn: (r) => r.merchant_name || r.name || "—",
-    },
+    { accessorKey: "merchant_display", header: "Merchant / name" },
     { accessorKey: "amount", header: "Amount", meta: { format: { kind: "dollars" } } },
     { accessorKey: "pfc_primary", header: "Category" },
-    {
-      id: "pending",
-      header: "Pending",
-      accessorFn: (r) => (r.pending ? "yes" : ""),
-    },
+    { accessorKey: "pending_label", header: "Pending" },
   ];
 
   return (
@@ -186,8 +187,8 @@ export default async function AccountingPage({
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {txns.length ? (
-            <DataTable columns={txnColumns} data={txns} />
+          {txnRows.length ? (
+            <DataTable columns={txnColumns} data={txnRows} />
           ) : (
             <p className="text-sm text-muted-foreground">No transactions in this period.</p>
           )}

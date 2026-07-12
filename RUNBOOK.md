@@ -1744,6 +1744,9 @@ grants are the current mechanism.
   + `POST /plaid/sync` (shared `PLAID_SYNC_TOKEN` / sandbox trigger token). Skill:
   `skills/plaid_api/`. Env on console + webhook: `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`,
   optional `PLAID_WEBHOOK_URL`. Access tokens: Secret Manager `plaid_access_token_<item_id>`.
+  **Current env:** `PLAID_ENV=sandbox` (sandbox secret provisioned 2026-07-12). Chase / live bank
+  Link needs Plaid **production** access (dashboard questionnaire) then flip `PLAID_ENV=production`
+  and store the production secret as `plaid_secret`.
 - **New goal keys:** `goal_net_sales_weekly`, `goal_net_sales_monthly`,
   `goal_hourly_labor_pct_max`, `goal_labor_pct_max`, `goal_kds_p95_min`,
   `goal_bases_at_risk_max` (plus legacy food-cost / on-time / runway keys kept for Slack) — all in

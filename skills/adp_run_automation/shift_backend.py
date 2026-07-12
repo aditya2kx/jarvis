@@ -10,6 +10,12 @@ This is FAR cleaner than the alternative Time > Timecards modal which is
 single-employee-at-a-time and would require iterating ~14 employees x ~5 pay
 periods (~70 page loads) for a 2-month backfill.
 
+Column layout is NOT stable: ADP has changed it at least once (2026-07,
+inserting "Show Source" / "In Punch Source" / "Out Punch Source"). Treat the
+"Details" sheet as an unordered, superset-tolerant column set -- parse_xlsx
+validates only the columns it actually needs (_REQUIRED_DETAILS_COLUMNS) by
+name, not position, and ignores anything extra ADP adds.
+
 Architecture mirrors skills/square_tips/transactions_backend.py:
     * `build_plan()` returns a deterministic Playwright playbook the AI agent
       executes via the `user-playwright` MCP. ADP login uses the

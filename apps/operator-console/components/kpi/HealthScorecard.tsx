@@ -31,7 +31,7 @@ export function HealthScorecard({ data }: { data: HealthScorecardData }) {
     <Card>
       <CardHeader>
         <CardTitle className="text-sm font-medium text-muted-foreground">
-          Operational health — {data.windowLabel}
+          Goal and Tracking — {data.windowLabel}
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col divide-y divide-border">
@@ -102,13 +102,22 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
                   onChange={(e) =>
                     setInputValue(field.kind === "dollars" ? sanitizeDollarInput(e.target.value) : e.target.value)
                   }
-                  className={field.kind === "percent" ? "h-7 pr-5 text-xs" : field.kind === "dollars" ? "h-7 pl-4 text-xs" : "h-7 text-xs"}
+                  className={
+                    field.kind === "percent" || field.kind === "minutes"
+                      ? "h-7 pr-7 text-xs"
+                      : field.kind === "dollars"
+                        ? "h-7 pl-4 text-xs"
+                        : "h-7 text-xs"
+                  }
                 />
                 {field.kind === "dollars" ? (
                   <span className="pointer-events-none absolute inset-y-0 left-1.5 flex items-center text-xs text-muted-foreground">$</span>
                 ) : null}
                 {field.kind === "percent" ? (
                   <span className="pointer-events-none absolute inset-y-0 right-1.5 flex items-center text-xs text-muted-foreground">%</span>
+                ) : null}
+                {field.kind === "minutes" ? (
+                  <span className="pointer-events-none absolute inset-y-0 right-1.5 flex items-center text-xs text-muted-foreground">min</span>
                 ) : null}
               </div>
               <Button size="icon-sm" variant="ghost" disabled={isPending} onClick={save} aria-label="Save goal">

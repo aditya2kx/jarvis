@@ -106,7 +106,7 @@ export default async function HomePage({
               ) : (
                 <p className="text-sm text-muted-foreground">
                   Nothing needs attention right now. Use &quot;Edit goals&quot; above to set
-                  weekly/monthly targets — the scorecard below tracks against them as soon as
+                  Goal and Tracking targets — the scorecard tracks against them as soon as
                   they&apos;re set.
                 </p>
               )}

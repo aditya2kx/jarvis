@@ -44,9 +44,10 @@ jobs:
 
       - name: Build webhook image
         run: |
+          # Context = repo root so Dockerfile can COPY skills/plaid_api (Issue #158).
           docker build -t ${{ env.REGISTRY }}/bhaga-webhook:${{ github.sha }} \
                        -t ${{ env.REGISTRY }}/bhaga-webhook:latest \
-                       -f cloud/webhook/Dockerfile cloud/webhook/
+                       -f cloud/webhook/Dockerfile .
 
       - name: Push images
         run: |

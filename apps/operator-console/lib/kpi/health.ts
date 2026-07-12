@@ -3,15 +3,18 @@ import {
   laborDaily,
   storeConfig,
   orderQualityDaily,
-  orderRecoCombined,
+  baseRunway,
   type LaborDailyRow,
   type StoreConfigRow,
 } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { isMonthLike, type DateWindow } from "@/lib/filters/range";
 import type { GoalKey } from "@/lib/bq/writes";
+import type { GoalStatus } from "@/lib/kpi/health-types";
+import { avgPrepP95Min, countRiskyBases, paceFor, statusFor } from "@/lib/kpi/scorecard-math";
 
-export type GoalStatus = "on-track" | "at-risk" | "off-track" | "no-goal";
+export type { GoalStatus };
+export { avgPrepP95Min, countRiskyBases, paceFor, statusFor };
 
 export interface HealthMetric {
   key: string;
@@ -43,21 +46,6 @@ function goalRaw(config: StoreConfigRow[], key: string): string | undefined {
   return config.find((r) => r.key === key)?.value;
 }
 
-// Presentation-only comparison of already-fetched rows against a
-// `store_config` goal — not a new metric (per EXECUTION.md §4 M2 step 3:
-// "computes status/pace in the component from already-fetched rows only").
-function paceFor(actual: number | null, goal: number | null, lowerIsBetter: boolean): number | null {
-  if (actual == null || goal == null || goal === 0) return null;
-  return lowerIsBetter ? goal / actual : actual / goal;
-}
-
-function statusFor(pace: number | null): GoalStatus {
-  if (pace == null) return "no-goal";
-  if (pace >= 1) return "on-track";
-  if (pace >= 0.85) return "at-risk";
-  return "off-track";
-}
-
 export interface HealthScorecard {
   win: DateWindow;
   metrics: HealthMetric[];
@@ -65,45 +53,37 @@ export interface HealthScorecard {
 }
 
 export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorecard> {
-  const [rows, config, quality, reco] = await Promise.all([
+  const [rows, config, quality, runway] = await Promise.all([
     laborDaily(win),
     storeConfig(DEFAULT_STORE),
     orderQualityDaily(win),
-    orderRecoCombined(),
+    baseRunway(),
   ]);
 
   const netSales = sum(rows, (r) => r.net_sales);
   const laborCost = sum(rows, (r) => r.total_labor_cost);
+  const hourlyLaborCost = sum(rows, (r) => Number(r.hourly_labor_cost ?? 0));
   const laborPct = netSales && laborCost != null ? laborCost / netSales : null;
+  const hourlyLaborPct =
+    netSales && hourlyLaborCost != null ? hourlyLaborCost / netSales : null;
 
-  // On-time speed = complement of the % of KDS tickets that missed the prep
-  // goal, averaged over the window — same field the Order Quality screen
-  // charts (vw_order_quality_daily.kds_pct_tickets_late).
-  const onTimePct = avg(quality, (r) =>
-    r.kds_pct_tickets_late != null ? 1 - r.kds_pct_tickets_late : null,
-  );
+  const prepP95 = avgPrepP95Min(quality);
+  const riskyCount = countRiskyBases(runway);
 
-  // Runway = the tightest (smallest) "Days Left" across tracked items in the
-  // nearer of the two registered delivery slots — vw_order_reco_combined
-  // (migration 032), the same view the Inventory screen reads. No food-cost
-  // source exists yet (no COGS table) — left null/"—", matching the design's
-  // own placeholder dash for that row rather than fabricating a number.
-  const runwayCandidates = reco
-    .map((r) => r["Days Left 1"] ?? r["Days Left 2"])
-    .filter((d): d is number => d != null);
-  const runwayDays = runwayCandidates.length ? Math.min(...runwayCandidates) : null;
-
-  const netSalesGoalKey: GoalKey = isMonthLike(win.preset) ? "goal_net_sales_monthly" : "goal_net_sales_weekly";
+  const netSalesGoalKey: GoalKey = isMonthLike(win.preset)
+    ? "goal_net_sales_monthly"
+    : "goal_net_sales_weekly";
   const goalNetSales = goalValue(config, netSalesGoalKey);
+  const goalHourlyLaborMax = goalValue(config, "goal_hourly_labor_pct_max");
   const goalLaborPctMax = goalValue(config, "goal_labor_pct_max");
-  const goalFoodCostMax = goalValue(config, "goal_food_cost_pct_max");
-  const goalOnTimeMin = goalValue(config, "goal_speed_on_time_pct_min");
-  const goalRunwayMin = goalValue(config, "goal_inventory_runway_days_min");
+  const goalPrepP95 = goalValue(config, "goal_kds_p95_min");
+  const goalRiskyMax = goalValue(config, "goal_bases_at_risk_max");
 
   const netSalesPace = paceFor(netSales, goalNetSales, false);
+  const hourlyLaborPace = paceFor(hourlyLaborPct, goalHourlyLaborMax, true);
   const laborPctPace = paceFor(laborPct, goalLaborPctMax, true);
-  const onTimePace = paceFor(onTimePct, goalOnTimeMin, false);
-  const runwayPace = paceFor(runwayDays, goalRunwayMin, false);
+  const prepPace = paceFor(prepP95, goalPrepP95, true);
+  const riskyPace = paceFor(riskyCount, goalRiskyMax, true);
 
   const metrics: HealthMetric[] = [
     {
@@ -122,8 +102,21 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
         : "Total net sales for the selected period vs the weekly target (goal_net_sales_weekly).",
     },
     {
+      key: "hourly_labor_pct",
+      label: "Labor % — part-time",
+      actual: hourlyLaborPct,
+      goal: goalHourlyLaborMax,
+      status: statusFor(hourlyLaborPace),
+      pace: hourlyLaborPace,
+      formatted: fmtPct(hourlyLaborPct),
+      goalFormatted: fmtPct(goalHourlyLaborMax),
+      goalKey: "goal_hourly_labor_pct_max",
+      rawGoal: goalRaw(config, "goal_hourly_labor_pct_max"),
+      info: "Hourly / part-time labor cost as a % of net sales — same breakout as the Labor page PT series.",
+    },
+    {
       key: "labor_pct",
-      label: "Labor % of net sales",
+      label: "Labor % — total",
       actual: laborPct,
       goal: goalLaborPctMax,
       status: statusFor(laborPctPace),
@@ -132,46 +125,33 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       goalFormatted: fmtPct(goalLaborPctMax),
       goalKey: "goal_labor_pct_max",
       rawGoal: goalRaw(config, "goal_labor_pct_max"),
-      info: "Total labor (hourly staff + salaried/manager) as a % of net sales — the Labor page also breaks out hourly-only %.",
+      info: "Total labor (hourly staff + salaried/manager) as a % of net sales.",
     },
     {
-      key: "food_cost_pct",
-      label: "Food cost %",
-      actual: null,
-      goal: goalFoodCostMax,
-      status: "no-goal",
-      pace: null,
-      formatted: "—",
-      goalFormatted: fmtPct(goalFoodCostMax),
-      goalKey: "goal_food_cost_pct_max",
-      rawGoal: goalRaw(config, "goal_food_cost_pct_max"),
-      info: "Cost of goods as a % of net sales. No COGS data source is wired up yet — the goal can be set, but actual/status stay a placeholder.",
+      key: "prep_p95_min",
+      label: "Prep time p95",
+      actual: prepP95,
+      goal: goalPrepP95,
+      status: statusFor(prepPace),
+      pace: prepPace,
+      formatted: fmtMinutes(prepP95),
+      goalFormatted: fmtMinutes(goalPrepP95),
+      goalKey: "goal_kds_p95_min",
+      rawGoal: goalRaw(config, "goal_kds_p95_min"),
+      info: "Mean daily KDS per-item p95 prep minutes over the period (vw_order_quality_daily.kds_p95_min). Goal default 8.",
     },
     {
-      key: "speed_on_time_pct",
-      label: "Speed — on-time %",
-      actual: onTimePct,
-      goal: goalOnTimeMin,
-      status: statusFor(onTimePace),
-      pace: onTimePace,
-      formatted: fmtPct(onTimePct),
-      goalFormatted: fmtPct(goalOnTimeMin),
-      goalKey: "goal_speed_on_time_pct_min",
-      rawGoal: goalRaw(config, "goal_speed_on_time_pct_min"),
-      info: "Share of KDS tickets that finished within the on-time prep goal — the complement of Order Quality's % tickets late.",
-    },
-    {
-      key: "inventory_runway_days",
-      label: "Inventory runway",
-      actual: runwayDays,
-      goal: goalRunwayMin,
-      status: statusFor(runwayPace),
-      pace: runwayPace,
-      formatted: runwayDays == null ? "—" : `${runwayDays.toFixed(1)} d`,
-      goalFormatted: goalRunwayMin == null ? "—" : `${goalRunwayMin.toFixed(0)} d`,
-      goalKey: "goal_inventory_runway_days_min",
-      rawGoal: goalRaw(config, "goal_inventory_runway_days_min"),
-      info: "Tightest (smallest) Days-Left across tracked items in the nearer registered delivery slot — same source as the Inventory screen.",
+      key: "bases_at_risk",
+      label: "Bases at risk",
+      actual: riskyCount,
+      goal: goalRiskyMax,
+      status: statusFor(riskyPace),
+      pace: riskyPace,
+      formatted: String(riskyCount),
+      goalFormatted: goalRiskyMax == null ? "—" : String(goalRiskyMax),
+      goalKey: "goal_bases_at_risk_max",
+      rawGoal: goalRaw(config, "goal_bases_at_risk_max"),
+      info: "Count of bases with Status=Risky on Inventory Base runway (stockout before next Actuals restock). Goal is usually 0.",
     },
   ];
 
@@ -187,16 +167,14 @@ function sum(rows: LaborDailyRow[], pick: (r: LaborDailyRow) => number | null | 
   return rows.reduce((s, r) => s + (pick(r) ?? 0), 0);
 }
 
-function avg<T>(rows: T[], pick: (r: T) => number | null | undefined): number | null {
-  const vals = rows.map(pick).filter((v): v is number => v != null);
-  if (!vals.length) return null;
-  return vals.reduce((s, v) => s + v, 0) / vals.length;
-}
-
 function fmtDollars(n: number | null): string {
   return n == null ? "—" : n.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
 
 function fmtPct(n: number | null): string {
   return n == null ? "—" : `${(n * 100).toFixed(1)}%`;
+}
+
+function fmtMinutes(n: number | null): string {
+  return n == null ? "—" : `${n.toFixed(1)} min`;
 }

@@ -1,6 +1,6 @@
 import type { GoalKey } from "@/lib/bq/writes";
 
-export type GoalFieldKind = "dollars" | "percent" | "days";
+export type GoalFieldKind = "dollars" | "percent" | "days" | "minutes" | "count";
 
 export interface GoalField {
   key: GoalKey;
@@ -11,10 +11,14 @@ export interface GoalField {
 
 // Single source of truth for every goal field's editing metadata (used by
 // both the bulk GoalsDrawer and Home's inline per-metric edit). `kind`
-// drives the input adornment ($/%) and which conversion function below
+// drives the input adornment ($/%/min) and which conversion function below
 // applies at the storage boundary — health.ts and the /bhaga-cloud Slack
-// `config set` path both read/write the raw fraction, so conversion only
-// happens here, never upstream.
+// `config set` path both read/write the raw fraction for percent goals, so
+// conversion only happens here, never upstream.
+//
+// Issue #158 Home scorecard fields only — legacy food-cost / on-time /
+// runway keys remain in GOAL_KEYS for Slack writes but are not in this
+// drawer list.
 export const GOAL_FIELDS: GoalField[] = [
   {
     key: "goal_net_sales_weekly",
@@ -29,28 +33,28 @@ export const GOAL_FIELDS: GoalField[] = [
     helpText: "Monthly net sales target, e.g. 75000",
   },
   {
+    key: "goal_hourly_labor_pct_max",
+    label: "Part-time labor % of net sales — max",
+    kind: "percent",
+    helpText: "Enter a whole percent, e.g. 12. Hourly / part-time labor only.",
+  },
+  {
     key: "goal_labor_pct_max",
-    label: "Labor % of net sales — max",
+    label: "Total labor % of net sales — max",
     kind: "percent",
-    helpText: "Enter a whole percent, e.g. 15 (=15%). Total labor: hourly + salaried/manager.",
+    helpText: "Enter a whole percent, e.g. 15. Total labor: hourly + salaried/manager.",
   },
   {
-    key: "goal_food_cost_pct_max",
-    label: "Food cost % — max",
-    kind: "percent",
-    helpText: "Enter a whole percent, e.g. 28. No COGS source is wired up yet, so this isn't tracked on the scorecard.",
+    key: "goal_kds_p95_min",
+    label: "Prep time p95 — max minutes",
+    kind: "minutes",
+    helpText: "KDS per-item p95 prep time goal in minutes, e.g. 8",
   },
   {
-    key: "goal_speed_on_time_pct_min",
-    label: "On-time order speed — min",
-    kind: "percent",
-    helpText: "Enter a whole percent, e.g. 90. Share of KDS tickets finishing within the on-time goal.",
-  },
-  {
-    key: "goal_inventory_runway_days_min",
-    label: "Inventory runway — min days",
-    kind: "days",
-    helpText: "Minimum days of runway across tracked items, e.g. 3",
+    key: "goal_bases_at_risk_max",
+    label: "Bases at risk — max count",
+    kind: "count",
+    helpText: "Max Risky bases (stockout before restock). Goal is usually 0.",
   },
 ];
 

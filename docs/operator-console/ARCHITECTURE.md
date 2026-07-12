@@ -160,13 +160,14 @@ flowchart TD
 
 | Screen | Reads (BQ `vw_*` / tables) | Write-backs |
 |---|---|---|
-| **Home** | labor/sales/orders (`vw_model_labor_daily`), speed (`vw_order_quality_daily`), inventory risk (`vw_inventory_order_assistant`), goals (`store_config`), freshness (Firestore + `refresh_date`) | Goals → `store_config` |
+| **Home** (Goal and Tracking) | labor/sales (`vw_model_labor_daily`), prep p95 (`vw_order_quality_daily.kds_p95_min`), bases at risk (`vw_inventory_base_runway`), goals (`store_config`) | Goals → `store_config` |
+| **Accounting** | Square net sales (`vw_model_labor_daily`), Plaid spend (`plaid_transactions`, `vw_plaid_spend_by_category_daily`), `plaid_items` | Plaid Link → Secret Manager access_token + `plaid_items` / `plaid_transactions` sync |
 | **Sales** | `vw_model_labor_daily`, `square_item_daily` | — |
 | **Labor** | `vw_model_labor_daily` / `_weekly` | — |
 | **Forecast** | `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` | — |
 | **Order Quality** | `vw_order_quality_daily`, `vw_kds_order_quality_by_source_daily` | — |
 | **Payroll & People** | `vw_model_payroll_period` (+ per-review), `training_shifts` | `training_shifts`, **recognition bonuses (new table)**, `employee_aliases` |
-| **Inventory / Ordering** | `vw_order_assistant_table`, `vw_inventory_order_assistant`, `vw_order_reco_combined`, `vw_order_reco_next_dates`, `inventory_restock_schedule/orders` | `inventory_restock_schedule`, `inventory_restock_orders` (+ trigger `refresh_order_reco`), `order_reco_max_tubs` → `store_config` |
+| **Inventory / Ordering** | `vw_order_assistant_table`, `vw_inventory_order_assistant`, `vw_order_reco_combined`, `vw_order_reco_next_dates`, `vw_inventory_base_runway`, `inventory_restock_schedule/orders` | `inventory_restock_schedule`, `inventory_restock_orders` (+ trigger `refresh_order_reco`), `order_reco_max_tubs` → `store_config` |
 | **Pipeline Health** | Firestore run state, per-view `refresh_date`, `status.py` logic | (optional) trigger refresh |
 
 ---

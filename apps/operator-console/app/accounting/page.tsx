@@ -37,7 +37,7 @@ export default async function AccountingPage({
   let netSales: number | null = null;
   let spendTotal = 0;
   let categories: PlaidSpendCategoryRow[] = [];
-  let txns: PlaidTransactionRow[] = [];
+  let txns: Awaited<ReturnType<typeof plaidTransactions>> = [];
   let linked = false;
   let institution: string | null = null;
   let lastSynced: string | null = null;

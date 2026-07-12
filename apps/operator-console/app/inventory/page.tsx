@@ -1,4 +1,4 @@
-import { baseRunway, nextDates, orderAssistantTable, orderRecoCombined, storeConfig } from "@/lib/bq/queries";
+import { baseRunway, estimatedScheduleDates, nextDates, orderAssistantTable, orderRecoCombined, storeConfig } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -18,7 +18,8 @@ const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-ba
 // Dual-date Order Assistant (migration 032, Grafana panel 83) — Item/Current
 // Qty/Avg per day frozen, one "Source N" badge column pair per registered
 // delivery date. Restock writes go through the RestockImportDrawer's server
-// action, converging with the /bhaga-cloud restock Slack path.
+// action, converging with the /bhaga-cloud restock Slack path for the three
+// shared actions; Replace estimated date is console-only.
 //
 // Base runway (migration 035, Issue #156) sits above: burn-down days left
 // from today, Actuals-only next restock, Risky/Fine status.
@@ -27,20 +28,23 @@ export default async function InventoryPage() {
   let runwayRows: BaseRunwayRow[] = [];
   let baseRows: OrderAssistantRow[] = [];
   let dates: string[] = [];
+  let estimatedDates: string[] = [];
   let maxTubs: number | undefined;
   let error: string | undefined;
   try {
-    const [reco, nd, config, base, runway] = await Promise.all([
+    const [reco, nd, config, base, runway, estimated] = await Promise.all([
       orderRecoCombined(),
       nextDates(),
       storeConfig(DEFAULT_STORE),
       orderAssistantTable(),
       baseRunway(),
+      estimatedScheduleDates(DEFAULT_STORE),
     ]);
     rows = reco;
     runwayRows = runway;
     baseRows = base;
     dates = nd.map((d) => d.delivery_date);
+    estimatedDates = estimated.map((d) => d.delivery_date);
     const maxTubsRow = config.find((c) => c.key === "order_reco_max_tubs");
     maxTubs = maxTubsRow ? Number(maxTubsRow.value) : undefined;
   } catch (e) {
@@ -115,7 +119,7 @@ export default async function InventoryPage() {
           FEATURES.writeRestock ? (
             <>
               <CapacityEdit currentMaxTubs={maxTubs} />
-              <RestockImportDrawer dates={dates} />
+              <RestockImportDrawer dates={dates} estimatedDates={estimatedDates} />
             </>
           ) : null
         }

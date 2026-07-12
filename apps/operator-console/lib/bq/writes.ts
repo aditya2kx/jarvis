@@ -31,6 +31,19 @@ export async function clearRestockOrders(store: string, deliveryDate: string): P
 }
 
 /**
+ * DELETE a registered delivery date from the schedule, then clear any actuals
+ * for that date so nothing is orphaned. Console-only "Replace estimated date"
+ * uses this; Slack has no schedule-DELETE path yet.
+ */
+export async function clearRestockSchedule(store: string, deliveryDate: string): Promise<void> {
+  await mutate(`DELETE FROM ${fq("inventory_restock_schedule")} WHERE store = @store AND delivery_date = @date`, {
+    store,
+    date: dateParam(deliveryDate),
+  });
+  await clearRestockOrders(store, deliveryDate);
+}
+
+/**
  * Replace-per-date write: DELETE then INSERT, so re-uploading a corrected
  * CSV/parse for the same date always converges rather than accumulating
  * duplicates (mirrors handler.py::_restock_replace_orders — not atomic,
@@ -93,13 +106,14 @@ export async function refreshOrderReco(store: string): Promise<void> {
   );
 }
 
-export type RestockAction = "add-order" | "register-only" | "reset-to-estimated";
+export type RestockAction = "add-order" | "register-only" | "reset-to-estimated" | "replace-estimated";
 
 /**
  * One restock submission — mirrors handler.py::_handle_restock_submission's
- * three actions. Always registers the schedule first (even before any row
- * write, same as the Slack path), then always refreshes the reco at the end
- * regardless of which action ran.
+ * three shared actions (add-order / register-only / reset-to-estimated).
+ * Always registers the schedule first (even before any row write, same as
+ * the Slack path), then always refreshes the reco at the end.
+ * "replace-estimated" is console-only — use replaceEstimatedRestockDate.
  */
 export async function submitRestock(
   store: string,
@@ -108,6 +122,9 @@ export async function submitRestock(
   rows: { item: string; quantityTubs: number }[],
   by: string,
 ): Promise<void> {
+  if (action === "replace-estimated") {
+    throw new Error("submitRestock: use replaceEstimatedRestockDate for replace-estimated");
+  }
   await setRestockSchedule(store, deliveryDate, by);
   if (action === "reset-to-estimated") {
     await clearRestockOrders(store, deliveryDate);
@@ -115,6 +132,46 @@ export async function submitRestock(
     await replaceRestockOrders(store, deliveryDate, rows, by);
   }
   // "register-only" writes nothing further — the date is now tracked.
+  await refreshOrderReco(store);
+}
+
+/**
+ * Console-only: move an Estimated schedule date (no actuals) from `fromDate`
+ * to `toDate`, then recompute dual-date order reco so Order tubs / On hand
+ * reflect the new lead days.
+ */
+export async function replaceEstimatedRestockDate(
+  store: string,
+  fromDate: string,
+  toDate: string,
+  by: string,
+): Promise<void> {
+  if (fromDate === toDate) {
+    throw new Error("replaceEstimatedRestockDate: from and to dates must differ");
+  }
+
+  const scheduled = await q<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM ${fq("inventory_restock_schedule")}
+     WHERE store = @store AND delivery_date = @date`,
+    { store, date: dateParam(fromDate) },
+  );
+  if (!scheduled.length || Number(scheduled[0].n) === 0) {
+    throw new Error(`replaceEstimatedRestockDate: ${fromDate} is not on the restock schedule`);
+  }
+
+  const actuals = await q<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM ${fq("inventory_restock_orders")}
+     WHERE store = @store AND delivery_date = @date`,
+    { store, date: dateParam(fromDate) },
+  );
+  if (actuals.length && Number(actuals[0].n) > 0) {
+    throw new Error(
+      `replaceEstimatedRestockDate: ${fromDate} has Actuals — only Estimated dates can be replaced`,
+    );
+  }
+
+  await clearRestockSchedule(store, fromDate);
+  await setRestockSchedule(store, toDate, by);
   await refreshOrderReco(store);
 }
 

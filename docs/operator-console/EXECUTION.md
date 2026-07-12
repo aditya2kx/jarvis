@@ -259,6 +259,13 @@ Steps:
    - `replaceRestockOrders(store, date, rows, by)` → DELETE then INSERT
      `inventory_restock_orders` (replace-per-date).
    - `clearRestockOrders(store, date)` → DELETE (reset to estimated).
+   - `clearRestockSchedule(store, date)` → DELETE schedule then clear orders
+     (used by Replace estimated date).
+   - `replaceEstimatedRestockDate(store, from, to, by)` → console-only: guard
+     Estimated-only, clearRestockSchedule(from), setRestockSchedule(to),
+     refreshOrderReco.
+   - `estimatedScheduleDates(store)` → future schedule dates with no actuals
+     (feeds the Replace From dropdown).
    - `setConfig(store, key, value)` → MERGE `store_config`.
    - `refreshOrderReco(store)` → run the 3 statements from
      `core/order_reco.py::refresh_order_reco` (DELETE, INSERT slot1, INSERT slot2).

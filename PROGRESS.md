@@ -1,5 +1,14 @@
 # Jarvis Build Progress
 
+## 2026-07-12 — Operator Console: Base runway table on /inventory (Issue #156, PR #157)
+
+**Scope:** replace the unhelpful Days-of-cover bar panel with a Base runway table answering urgency vs Actuals restock (burn-down days left, stockout date, Risky/Fine). Dual-date order reco + analytics tables kept. Console-only; no Grafana.
+
+**Key changes:**
+- Migration 035 `vw_inventory_base_runway` — Actuals-only next restock from `inventory_restock_orders`; Status Fine when restock ≤ stockout.
+- Operator Console `/inventory` — runway table at top; deleted `DaysOfCoverPanel`; fixed BQ DATE-only `formatDate` off-by-one.
+- Evidence: unit tests + hosted Playwright screenshots S1–S4 on `evidence-screenshots` release.
+
 ## 2026-07-02 — Retrospective: local event-driven dev lifecycle v2 (Issue #101, PR #115)
 
 **Scope of the merged work:** durable worktree event inbox, non-preemptive auto-dispatch queue, `PROGRESS.md` push guard, general operator-comment routing (M5), retrospective redesign to jam→plan→issues flow (M6), plus a follow-up round fixing a dead post-merge workflow (broken since #85), worktree inbox misrouting, PR↔issue auto-linking, and a phase-drift nudge (M1-M4).

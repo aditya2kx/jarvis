@@ -36,4 +36,8 @@ describe("formatDate", () => {
   it("renders in America/Chicago regardless of host tz", () => {
     expect(formatDate("2026-07-04T00:00:00Z")).toBe("Jul 3");
   });
+  it("renders BQ DATE-only strings without off-by-one", () => {
+    expect(formatDate("2026-07-12")).toBe("Jul 12");
+    expect(formatDate("2026-07-16")).toBe("Jul 16");
+  });
 });

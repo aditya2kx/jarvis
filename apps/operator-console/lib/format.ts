@@ -44,6 +44,13 @@ export function dateSortKey(value: string | Date | null | undefined): string {
 /** Render a BQ DATE/TIMESTAMP value as America/Chicago — never server-local tz. */
 export function formatDate(value: string | Date | null | undefined): string {
   if (!value) return "—";
+  // BQ DATE columns sanitize to "YYYY-MM-DD". Parse as a calendar date (noon
+  // UTC) so America/Chicago formatting does not shift the labeled day back
+  // when the string would otherwise be treated as UTC midnight.
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [y, m, d] = value.split("-").map(Number);
+    value = new Date(Date.UTC(y!, m! - 1, d!, 12, 0, 0));
+  }
   const d = typeof value === "string" ? new Date(value) : value;
   if (Number.isNaN(d.getTime())) return "—";
   return new Intl.DateTimeFormat("en-US", {

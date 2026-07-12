@@ -236,9 +236,15 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
 - **Restock schedule panel** with the three operator actions from the Slack modal:
   **Register date (estimated)**, **Add order (actuals)** (CSV/photo → §5.1),
   **Reset to estimated**.
+- **Base runway table** (Issue #156, `vw_inventory_base_runway`): urgency view
+  at the top of Inventory / Ordering. Columns: Base, Stock, Vel/day, Days left
+  (burn-down from today, ignores future restocks), Stockout date, Next restock
+  + Restock qty (**Actuals only** — estimated schedule dates do not appear), and
+  Status (**Fine** when an Actuals restock arrives on or before stockout date;
+  otherwise **Risky**). Default sort: Days left ascending. Dual-date reco below
+  remains the source for order tubs / weight / Estimated vs Actuals.
 - **Capacity control** bound to `order_reco_max_tubs` (default 120); editing it
   recomputes the recommendation.
-- **Days of cover** chart from `vw_inventory_order_assistant` (already designed).
 
 Freshness for the closing-form source (`inventory_closing_daily` /
 `vw_inventory_base_latest_daily`) and the restock schedule is surfaced on

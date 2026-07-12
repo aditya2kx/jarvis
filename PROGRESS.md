@@ -1,5 +1,19 @@
 # Jarvis Build Progress
 
+## 2026-07-12 — BHAGA: fix ADP Timecard header-mismatch failures for 7/10 and 7/11 (Issue #150, PR #152, branch fix/bhaga-runs-for-7-10-and)
+
+**Scope:** both nightly `bhaga-daily-refresh` executions (2026-07-11 02:30 UTC for `refresh_date=2026-07-10`, and 2026-07-12 02:30 UTC for `refresh_date=2026-07-11`) failed identically in `load_raw_bigquery` and fired Slack `failure_alert` DMs, leaving ADP punches/tips/model data missing for both dates.
+
+**Root cause:** ADP RUN inserted new columns (`Show Source`, `In Punch Source`, `Out Punch Source`) into the Timecard "Details" report export, shifting column positions. `skills/adp_run_automation/shift_backend.py::parse_xlsx` did a strict *positional* header comparison even though every field it reads is already accessed **by name** — the check itself was the only broken part.
+
+**Key changes:**
+- `skills/adp_run_automation/shift_backend.py` — replaced the positional header check with a name-based presence check over only `_REQUIRED_DETAILS_COLUMNS` (the columns `parse_xlsx` actually consumes). Extra/reordered ADP columns are ignored; a genuinely missing required column now raises a clear `ValueError` naming it, rather than crashing on the whole header or silently defaulting to 0 hours.
+- `skills/adp_run_automation/test_shift_backend.py` (new) — 4 tests: legacy header regression, new ADP layout (reordered + extra columns), missing-required-column error, missing-optional-column tolerance.
+- Live-verified pre-merge: fetched a real ADP Timecard export (`skills.adp_run_automation.runner timecard --store palmetto`) and confirmed the full untruncated header is exactly `[..., 'Show Source', ..., 'In Punch Source', ..., 'Out Punch Source', 'Regular', 'Overtime', 'Doubletime', 'Details', 'Notes']` (15 columns) — matching the test fixture. Parsed it with the fix (`shift_backend.py parse ... --rollup`): 690 rollup rows, including 7 employee-day rollups for 2026-07-10 (43.8h) and 7 for 2026-07-11 (40.7h), proving the incident is actually fixed against real data (not just synthetic fixtures).
+- PR body carries a `Retry-Dates: 2026-07-10, 2026-07-11` trailer so `deploy.yml`'s existing auto-rerun mechanism (`scripts/trigger_dated_refresh.py`) backfills both dates in BQ/Sheets automatically on merge.
+- Evidence tier: unit tests + prod ADP live verification (no ADP sandbox exists).
+- Out of scope (flagged for fast-follow): `skills/adp_run_automation/compensation_backend.py` has the identical positional-header pattern for the Earnings sheet; not triggered by this incident (`needs_earnings=False` both nights) but will break the same way whenever earnings are next fetched.
+
 ## 2026-07-06 — Operator Console: review-deploy + 3 operator-comment fixes on PR #147 (Issue #132, branch fix/i132-create-a-website-to-replace-grafana)
 
 **Scope:** closing the evidence gap the automated review flagged (90%→ confirm migration 034 live + cross-check weekly rollups against independent BQ queries) and 3 issues the operator found reviewing the deployed console: the "Custom" date picker never appeared, dollar-goal inputs accepted more than 2 decimal places, and no table supported column sorting.

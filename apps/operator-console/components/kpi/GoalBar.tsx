@@ -47,7 +47,7 @@ export function GoalBar({
         <div
           aria-hidden
           title="Goal"
-          className="absolute top-1/2 z-10 h-3 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-sm bg-foreground/80"
+          className="absolute top-1/2 z-10 h-3.5 w-1 -translate-x-1/2 -translate-y-1/2 rounded-sm border border-background bg-foreground shadow-sm"
           style={{ left: `${goalPct}%` }}
         />
       ) : null}

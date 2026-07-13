@@ -26,6 +26,22 @@ export function statusFor(pace: number | null): GoalStatus {
   return "off-track";
 }
 
+/** Worst-wins rollup for the Home hero health badge. */
+export function rollupStatus(statuses: GoalStatus[]): GoalStatus {
+  const rank: Record<GoalStatus, number> = {
+    "off-track": 0,
+    "at-risk": 1,
+    "no-goal": 2,
+    "on-track": 3,
+  };
+  let worst: GoalStatus = "on-track";
+  for (const s of statuses) {
+    if (rank[s] < rank[worst]) worst = s;
+  }
+  if (statuses.length && statuses.every((s) => s === "no-goal")) return "no-goal";
+  return worst;
+}
+
 /** Count of Risky rows in the Base runway view (Issue #158). */
 export function countRiskyBases(rows: BaseRunwayRow[]): number {
   return rows.filter((r) => r.Status === "Risky").length;

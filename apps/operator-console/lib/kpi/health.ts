@@ -17,11 +17,12 @@ import {
   countRiskyBases,
   elapsedDaysInWindow,
   paceFor,
+  rollupStatus,
   statusFor,
 } from "@/lib/kpi/scorecard-math";
 
 export type { GoalStatus };
-export { avgPrepP95Min, countRiskyBases, elapsedDaysInWindow, paceFor, statusFor };
+export { avgPrepP95Min, countRiskyBases, elapsedDaysInWindow, paceFor, rollupStatus, statusFor };
 
 export type ScorecardGroupId = "finance" | "top_line" | "cost" | "quality" | "inventory";
 
@@ -52,23 +53,6 @@ export interface HealthGroup {
   /** Detail page for this section (left-nav destination). */
   href: string;
   metrics: HealthMetric[];
-}
-
-/** Worst-wins rollup for the Home hero health badge. */
-export function rollupStatus(metrics: HealthMetric[]): GoalStatus {
-  const rank: Record<GoalStatus, number> = {
-    "off-track": 0,
-    "at-risk": 1,
-    "no-goal": 2,
-    "on-track": 3,
-  };
-  let worst: GoalStatus = "on-track";
-  for (const m of metrics) {
-    if (rank[m.status] < rank[worst]) worst = m.status;
-  }
-  // If everything is no-goal, surface that — don't pretend on-track.
-  if (metrics.length && metrics.every((m) => m.status === "no-goal")) return "no-goal";
-  return worst;
 }
 
 function deltaLabel(
@@ -340,7 +324,7 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
     metrics,
     groups,
     windowLabel: win.label,
-    overallStatus: rollupStatus(metrics.filter((m) => m.key !== "cogs")),
+    overallStatus: rollupStatus(metrics.filter((m) => m.key !== "cogs").map((m) => m.status)),
   };
 }
 

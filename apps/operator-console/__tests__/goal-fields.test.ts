@@ -10,6 +10,7 @@ import {
   countRiskyBases,
   elapsedDaysInWindow,
   paceFor,
+  rollupStatus,
   statusFor,
 } from "@/lib/kpi/scorecard-math";
 import type { BaseRunwayRow, OrderQualityDailyRow } from "@/lib/bq/queries";
@@ -81,6 +82,24 @@ describe("GOAL_FIELDS", () => {
     expect(GOAL_FIELDS.find((f) => f.key === "goal_labor_cost_weekly")?.kind).toBe("dollars");
     expect(GOAL_FIELDS.find((f) => f.key === "goal_kds_p95_min")?.kind).toBe("minutes");
     expect(GOAL_FIELDS.find((f) => f.key === "goal_bases_at_risk_max")?.kind).toBe("count");
+  });
+});
+
+describe("rollupStatus", () => {
+  it("worst-wins: mixed on-track + at-risk → at-risk", () => {
+    expect(rollupStatus(["on-track", "at-risk"])).toBe("at-risk");
+  });
+
+  it("all no-goal → no-goal (not on-track)", () => {
+    expect(rollupStatus(["no-goal", "no-goal"])).toBe("no-goal");
+  });
+
+  it("on-track + no-goal → no-goal (missing goal is worse than on-track)", () => {
+    expect(rollupStatus(["on-track", "no-goal"])).toBe("no-goal");
+  });
+
+  it("off-track beats at-risk", () => {
+    expect(rollupStatus(["at-risk", "off-track", "on-track"])).toBe("off-track");
   });
 });
 

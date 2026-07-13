@@ -12,6 +12,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { GoalBar } from "./GoalBar";
 import { saveGoalAction } from "@/app/home/actions";
 import { GOAL_FIELDS, fractionToPercentInput, percentInputToFraction, sanitizeDollarInput } from "@/lib/kpi/goal-fields";
+import { periodHref } from "@/lib/filters/range";
 import type { HealthScorecard as HealthScorecardData, HealthMetric, HealthGroup, GoalStatus } from "@/lib/kpi/health";
 
 const STATUS_LABEL: Record<GoalStatus, string> = {
@@ -68,11 +69,14 @@ export function HealthScorecard({ data }: { data: HealthScorecardData }) {
           <section key={g.id} className="flex flex-col">
             {g.label ? (
               <Link
-                href={g.href}
-                className="mb-2 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80 hover:text-foreground"
+                href={periodHref(g.href, data.win.preset)}
+                className="mb-2 flex items-center justify-between gap-2 rounded-md border border-border bg-muted/50 px-3 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-foreground/25 hover:bg-muted"
               >
-                {g.label}
-                <ChevronRightIcon className="size-3.5 opacity-70" />
+                <span>{g.label}</span>
+                <span className="flex items-center gap-0.5 text-xs font-normal text-muted-foreground">
+                  Open
+                  <ChevronRightIcon className="size-3.5" />
+                </span>
               </Link>
             ) : null}
             <div className="flex flex-col divide-y divide-border border-t border-border/60">
@@ -147,10 +151,10 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
         <span className="w-[5.5rem] shrink-0 text-base font-semibold tabular-nums sm:w-28 sm:text-lg">
           {m.formatted}
         </span>
-        <GoalBar status={m.status} pace={m.pace} />
+        <GoalBar status={m.status} pace={m.pace} actual={m.actual} goal={m.goal} />
       </div>
 
-      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
         {editable && editing && field ? (
           <div className="flex items-center gap-1">
             <div className="relative w-24">
@@ -190,6 +194,9 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
         ) : (
           <>
             <span>goal {m.goalFormatted}</span>
+            {m.deltaFormatted ? (
+              <span className="text-muted-foreground/90">· {m.deltaFormatted}</span>
+            ) : null}
             {editable ? (
               <button type="button" aria-label={`Edit ${m.label} goal`} onClick={startEdit} className="text-muted-foreground/70 hover:text-foreground">
                 <PencilIcon className="size-3" />

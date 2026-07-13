@@ -9,13 +9,19 @@ import {
   type StoreConfigRow,
 } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
-import { isMonthLike, type DateWindow } from "@/lib/filters/range";
+import { chicagoTodayIso, isMonthLike, type DateWindow } from "@/lib/filters/range";
 import type { GoalKey } from "@/lib/bq/writes";
 import type { GoalStatus } from "@/lib/kpi/health-types";
-import { avgPrepP95Min, countRiskyBases, paceFor, statusFor } from "@/lib/kpi/scorecard-math";
+import {
+  avgPrepP95Min,
+  countRiskyBases,
+  elapsedDaysInWindow,
+  paceFor,
+  statusFor,
+} from "@/lib/kpi/scorecard-math";
 
 export type { GoalStatus };
-export { avgPrepP95Min, countRiskyBases, paceFor, statusFor };
+export { avgPrepP95Min, countRiskyBases, elapsedDaysInWindow, paceFor, statusFor };
 
 export type ScorecardGroupId = "finance" | "top_line" | "cost" | "quality" | "inventory";
 
@@ -34,6 +40,10 @@ export interface HealthMetric {
   info: string;
   /** Indent under a section header (Stripe / Linear Insights style). */
   nested?: boolean;
+  /** lower-is-better for GoalBar marker math. */
+  lowerIsBetter?: boolean;
+  /** Human “how far off” string, e.g. "$1.2k under (8%)". */
+  deltaFormatted?: string;
 }
 
 export interface HealthGroup {
@@ -61,11 +71,29 @@ export function rollupStatus(metrics: HealthMetric[]): GoalStatus {
   return worst;
 }
 
-function daysInWindow(win: DateWindow): number {
-  const s = Date.parse(`${win.start}T12:00:00Z`);
-  const e = Date.parse(`${win.end}T12:00:00Z`);
-  if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return 1;
-  return Math.max(1, Math.round((e - s) / 86_400_000) + 1);
+function deltaLabel(
+  actual: number | null,
+  goal: number | null,
+  lowerIsBetter: boolean,
+  kind: "dollars" | "number" | "minutes",
+): string | undefined {
+  if (actual == null || goal == null) return undefined;
+  const diff = actual - goal;
+  if (diff === 0) return "on goal";
+  const good = lowerIsBetter ? diff <= 0 : diff >= 0;
+  const abs = Math.abs(diff);
+  const pct = goal !== 0 ? Math.abs(diff / goal) * 100 : null;
+  let mag: string;
+  if (kind === "dollars") {
+    mag = abs.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+  } else if (kind === "minutes") {
+    mag = `${abs.toFixed(1)} min`;
+  } else {
+    mag = abs.toFixed(1);
+  }
+  const pctPart = pct != null && Number.isFinite(pct) ? ` (${pct.toFixed(0)}%)` : "";
+  if (good) return lowerIsBetter ? `${mag} under${pctPart}` : `${mag} over${pctPart}`;
+  return lowerIsBetter ? `${mag} over${pctPart}` : `${mag} under${pctPart}`;
 }
 
 function goalValue(config: StoreConfigRow[], key: string): number | null {
@@ -114,7 +142,8 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
   const netSales = sum(rows, (r) => r.net_sales);
   const laborCost = sum(rows, (r) => r.total_labor_cost);
   const ordersTotal = sum(rows, (r) => r.orders);
-  const dayCount = daysInWindow(win);
+  // Cap at Chicago today so this_month does not dilute avg by future days.
+  const dayCount = elapsedDaysInWindow(win.start, win.end, chicagoTodayIso());
   const ordersPerDay =
     ordersTotal == null ? null : ordersTotal / dayCount;
   const opsCost = plaidCats.reduce((s, c) => s + (c.spend ?? 0), 0);
@@ -159,6 +188,8 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       goalFormatted: fmtDollars(gCash.value),
       goalKey: gCash.key,
       rawGoal: gCash.raw,
+      lowerIsBetter: false,
+      deltaFormatted: deltaLabel(cashFlow, gCash.value, false, "dollars"),
       info: "Square net sales minus Plaid bank outflows for the period. Needs a linked bank for the spend side.",
     }),
   ];
@@ -175,6 +206,8 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       goalFormatted: fmtDollars(gSales.value),
       goalKey: gSales.key,
       rawGoal: gSales.raw,
+      lowerIsBetter: false,
+      deltaFormatted: deltaLabel(netSales, gSales.value, false, "dollars"),
       info: isMonthLike(win.preset)
         ? "Total net sales vs goal_net_sales_monthly."
         : "Total net sales vs goal_net_sales_weekly.",
@@ -190,7 +223,9 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       goalFormatted: goalOrdersPerDay == null ? "—" : String(goalOrdersPerDay),
       goalKey: "goal_orders_per_day",
       rawGoal: goalRaw(config, "goal_orders_per_day"),
-      info: `Period order count ÷ ${dayCount} calendar days in the window (vw_model_labor_daily).`,
+      lowerIsBetter: false,
+      deltaFormatted: deltaLabel(ordersPerDay, goalOrdersPerDay, false, "number"),
+      info: `Period order count ÷ ${dayCount} elapsed days through today (America/Chicago), not full calendar month.`,
     }),
   ];
 
@@ -206,6 +241,8 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       goalFormatted: fmtDollars(gTotal.value),
       goalKey: gTotal.key,
       rawGoal: gTotal.raw,
+      lowerIsBetter: true,
+      deltaFormatted: deltaLabel(totalKnownCost, gTotal.value, true, "dollars"),
       info: "Labor $ + Plaid operations spend. Excludes COGS until food-cost / inventory COGS is instrumented.",
     }),
     metric({
@@ -219,6 +256,8 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       goalFormatted: fmtDollars(gLabor$.value),
       goalKey: gLabor$.key,
       rawGoal: gLabor$.raw,
+      lowerIsBetter: true,
+      deltaFormatted: deltaLabel(laborCost, gLabor$.value, true, "dollars"),
       info: "Total labor dollars (hourly + salaried) from vw_model_labor_daily.",
     }),
     metric({
@@ -245,6 +284,8 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       goalFormatted: fmtDollars(gOps.value),
       goalKey: gOps.key,
       rawGoal: gOps.raw,
+      lowerIsBetter: true,
+      deltaFormatted: deltaLabel(opsCost, gOps.value, true, "dollars"),
       info: "Plaid bank outflows (PFC rollup) for the period — interim stand-in for ops/other until custom taxonomy (#160).",
     }),
   ];
@@ -261,6 +302,8 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       goalFormatted: fmtMinutes(goalPrepP95),
       goalKey: "goal_kds_p95_min",
       rawGoal: goalRaw(config, "goal_kds_p95_min"),
+      lowerIsBetter: true,
+      deltaFormatted: deltaLabel(prepP95, goalPrepP95, true, "minutes"),
       info: "Mean daily KDS per-item p95 prep minutes (vw_order_quality_daily). Goal default 8.",
     }),
   ];
@@ -277,6 +320,8 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       goalFormatted: goalRiskyMax == null ? "—" : String(goalRiskyMax),
       goalKey: "goal_bases_at_risk_max",
       rawGoal: goalRaw(config, "goal_bases_at_risk_max"),
+      lowerIsBetter: true,
+      deltaFormatted: deltaLabel(riskyCount, goalRiskyMax, true, "number"),
       info: "Count of bases with Status=Risky on Inventory Base runway. Goal is usually 0.",
     }),
   ];

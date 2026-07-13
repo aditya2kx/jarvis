@@ -39,3 +39,15 @@ export function avgPrepP95Min(rows: OrderQualityDailyRow[]): number | null {
   if (!vals.length) return null;
   return vals.reduce((s, v) => s + v, 0) / vals.length;
 }
+
+/**
+ * Inclusive day count for averages — caps `end` at `todayIso` so open
+ * periods (this_month / this_week) do not dilute by future calendar days.
+ */
+export function elapsedDaysInWindow(start: string, end: string, todayIso: string): number {
+  const cappedEnd = end < todayIso ? end : todayIso;
+  const s = Date.parse(`${start}T12:00:00Z`);
+  const e = Date.parse(`${cappedEnd}T12:00:00Z`);
+  if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return 1;
+  return Math.max(1, Math.round((e - s) / 86_400_000) + 1);
+}

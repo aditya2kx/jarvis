@@ -24,6 +24,19 @@ export const RANGE_PRESETS: { value: RangePreset; label: string }[] = [
   { value: "custom", label: "Custom…" },
 ];
 
+/** Cookie keeps Period aligned across Home / Sales / Labor / Accounting / … */
+export const PERIOD_COOKIE = "oc_range";
+
+/** Build a nav href that preserves the current period preset. */
+export function periodHref(
+  basePath: string,
+  preset: RangePreset,
+  extra: Record<string, string> = {},
+): string {
+  const params = new URLSearchParams({ ...extra, range: preset });
+  return `${basePath}?${params.toString()}`;
+}
+
 const PRESET_VALUES = new Set<string>(RANGE_PRESETS.map((p) => p.value));
 
 /** "YYYY-MM-DD" shape check — cheap guard before trusting a raw search param
@@ -102,6 +115,11 @@ export function chicagoToday(): { y: number; m: number; d: number } {
   }).formatToParts(new Date());
   const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
   return { y: get("year"), m: get("month"), d: get("day") };
+}
+
+export function chicagoTodayIso(): string {
+  const t = chicagoToday();
+  return fmt(t.y, t.m, t.d);
 }
 
 /** Monday-start (ISO) week bounds for the week containing (y, m, d). */

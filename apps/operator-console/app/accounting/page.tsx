@@ -5,7 +5,8 @@ import { storeDisplayName } from "@/lib/config/stores";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
-import { RANGE_PRESETS, resolveRange, wantsCustom } from "@/lib/filters/range";
+import { RANGE_PRESETS, wantsCustom } from "@/lib/filters/range";
+import { resolvePageRange } from "@/lib/filters/period";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/tables/DataTable";
 import { PlaidLinkButton } from "@/components/drawers/PlaidLinkButton";
@@ -31,7 +32,7 @@ export default async function AccountingPage({
   }
 
   const sp = await searchParams;
-  const win = resolveRange(sp.range, "30d", sp.from, sp.to);
+  const win = await resolvePageRange(sp.range, sp.from, sp.to);
   const showCustomPicker = wantsCustom(sp.range);
 
   let netSales: number | null = null;

@@ -9,7 +9,8 @@ import { HealthScorecard } from "@/components/kpi/HealthScorecard";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { GoalsDrawer } from "@/components/drawers/GoalsDrawer";
 import { FilterSelect } from "@/components/filters/FilterSelect";
-import { RANGE_PRESETS, resolveRange } from "@/lib/filters/range";
+import { RANGE_PRESETS } from "@/lib/filters/range";
+import { resolvePageRange } from "@/lib/filters/period";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -23,8 +24,8 @@ export default async function HomePage({
 }: {
   searchParams: Promise<{ range?: string }>;
 }) {
-  // Operator preference (PR #162): default Home period to this calendar month.
-  const win = resolveRange((await searchParams).range, "this_month");
+  // Cookie + URL keep Period in lockstep with Sales/Labor/… (default this_month).
+  const win = await resolvePageRange((await searchParams).range);
 
   let health: HealthScorecardData | undefined;
   let latestRunStatus: string | undefined;

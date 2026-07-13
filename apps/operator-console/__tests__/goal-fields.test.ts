@@ -5,7 +5,13 @@ import {
   percentInputToFraction,
   sanitizeDollarInput,
 } from "@/lib/kpi/goal-fields";
-import { avgPrepP95Min, countRiskyBases, paceFor, statusFor } from "@/lib/kpi/scorecard-math";
+import {
+  avgPrepP95Min,
+  countRiskyBases,
+  elapsedDaysInWindow,
+  paceFor,
+  statusFor,
+} from "@/lib/kpi/scorecard-math";
 import type { BaseRunwayRow, OrderQualityDailyRow } from "@/lib/bq/queries";
 
 describe("fractionToPercentInput", () => {
@@ -115,5 +121,16 @@ describe("avgPrepP95Min", () => {
 
   it("returns null when no values", () => {
     expect(avgPrepP95Min([])).toBeNull();
+  });
+});
+
+describe("elapsedDaysInWindow", () => {
+  it("caps this_month end at today so future days do not dilute averages", () => {
+    // July 1–31 window, "today" = July 12 → 12 days (not 31).
+    expect(elapsedDaysInWindow("2026-07-01", "2026-07-31", "2026-07-12")).toBe(12);
+  });
+
+  it("uses full window when end is already in the past", () => {
+    expect(elapsedDaysInWindow("2026-06-01", "2026-06-30", "2026-07-12")).toBe(30);
   });
 });

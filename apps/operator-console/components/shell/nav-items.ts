@@ -29,10 +29,7 @@ export interface NavGroup {
 export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Overview",
-    items: [
-      { href: "/home", label: "Home", icon: Home },
-      { href: "/accounting", label: "Accounting", icon: Landmark },
-    ],
+    items: [{ href: "/home", label: "Home", icon: Home }],
   },
   {
     label: "Performance",
@@ -41,6 +38,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: "/labor", label: "Labor", icon: Clock },
       { href: "/forecast", label: "Forecast", icon: TrendingUp },
       { href: "/order-quality", label: "Order Quality", icon: ShieldCheck },
+      { href: "/accounting", label: "Accounting", icon: Landmark },
     ],
   },
   {

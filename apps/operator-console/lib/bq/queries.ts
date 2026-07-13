@@ -528,17 +528,21 @@ export function estimatedScheduleDates(store: string): Promise<EstimatedSchedule
   );
 }
 
-// vw_inventory_base_runway (migration 035, Issue #156) — burn-down days left
-// from today, Actuals-only next restock, Risky/Fine status. Console-only.
+// vw_inventory_base_runway (migration 036, Issue #164) — dual restock slots
+// matching Next delivery; Actuals-only Status 1/2; Stockout 2 chains via D1.
 export interface BaseRunwayRow {
   Base: string;
   Stock: number;
   "Vel per day": number;
   "Days left": number | null;
-  "Stockout date": string | null;
-  "Next restock": string | null;
-  "Restock qty": number | null;
-  Status: "Risky" | "Fine";
+  "Stockout 1": string | null;
+  "Restock 1": string | null;
+  "Qty 1": number | null;
+  "Status 1": "Risky" | "Fine";
+  "Stockout 2": string | null;
+  "Restock 2": string | null;
+  "Qty 2": number | null;
+  "Status 2": "Risky" | "Fine";
   [key: string]: unknown;
 }
 
@@ -585,7 +589,7 @@ export function recognitionBonuses(store: string, periods = 4): Promise<Recognit
   );
 }
 
-// ── Plaid Accounting (Issue #158, migration 036) ──────────────────────────
+// ── Plaid Accounting (Issue #158, migration 037) ──────────────────────────
 
 export interface PlaidItemRow {
   store: string;

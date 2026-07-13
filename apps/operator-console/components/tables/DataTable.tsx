@@ -104,7 +104,8 @@ function renderFormatted(format: ColumnFormat, value: unknown): ReactNode {
       return <span className={cls}>{formatNumber(v, format.digits)}</span>;
     }
     case "status":
-      return <Badge variant={statusVariant(value as string | null | undefined)}>{(value as string) ?? "unknown"}</Badge>;
+      if (value == null || value === "") return null; // no slot 2 yet (Status 2)
+      return <Badge variant={statusVariant(value as string)}>{value as string}</Badge>;
     case "source": {
       const v = value as "Estimated" | "Actuals" | null | undefined;
       if (!v) return null; // no second date registered yet (vw_order_reco_combined §Source 2)
@@ -127,8 +128,10 @@ export function DataTable<TData>({
   data: TData[];
   pinLeft?: string[];
   initialSorting?: SortingState;
-  /** Serializable row tint (RSC-safe). When `row[accessorKey] === equals`, apply className. */
-  rowHighlight?: { accessorKey: string; equals: string; className: string };
+  /** Serializable row tint (RSC-safe). When any rule matches `row[accessorKey] === equals`, apply that className (OR). */
+  rowHighlight?:
+    | { accessorKey: string; equals: string; className: string }
+    | { accessorKey: string; equals: string; className: string }[];
 }) {
   const columnPinning: ColumnPinningState = { left: pinLeft, right: [] };
   // Client-side sort across every column — Grafana's table panels let an
@@ -151,8 +154,12 @@ export function DataTable<TData>({
 
   function rowClassName(row: TData): string | undefined {
     if (!rowHighlight) return undefined;
-    const v = (row as Record<string, unknown>)[rowHighlight.accessorKey];
-    return v === rowHighlight.equals ? rowHighlight.className : undefined;
+    const rules = Array.isArray(rowHighlight) ? rowHighlight : [rowHighlight];
+    for (const rule of rules) {
+      const v = (row as Record<string, unknown>)[rule.accessorKey];
+      if (v === rule.equals) return rule.className;
+    }
+    return undefined;
   }
 
   // Multiple pinned columns each need a *cumulative* left offset — TanStack's

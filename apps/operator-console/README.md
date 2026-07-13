@@ -16,7 +16,7 @@ Full design/decisions/build plan: [`docs/operator-console/`](../../docs/operator
 | `/inventory` | Ordering + Base runway |
 | `/payroll` `/pipeline` | People + system |
 
-Plaid skill: [`skills/plaid_api/`](../../skills/plaid_api/README.md). Migration `036_plaid_transactions.sql`.
+Plaid skill: [`skills/plaid_api/`](../../skills/plaid_api/README.md). Migration `037_plaid_transactions.sql`.
 
 ## Local development
 

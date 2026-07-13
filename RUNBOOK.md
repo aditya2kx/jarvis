@@ -1736,7 +1736,7 @@ grants are the current mechanism.
   (restock, training, config/goals) — the two paths converge on identical rows, never diverge.
 - **New table (M4):** `recognition_bonuses` (migration `033_recognition_bonuses.sql`) — manual
   per-employee bonus, separate from the automated `vw_review_bonus_detail` (migration 026).
-- **Plaid Accounting (Issue #158):** migration `036_plaid_transactions.sql` (`plaid_items`,
+- **Plaid Accounting (Issue #158):** migration `037_plaid_transactions.sql` (`plaid_items`,
   `plaid_transactions`, `vw_plaid_spend_by_category_daily`). Home **Goal and Tracking** rows:
   net sales, part-time labor %, total labor %, prep p95 (`goal_kds_p95_min`), bases at risk
   (`goal_bases_at_risk_max`). Accounting page pairs Square net sales with Plaid outflows (PFC v2

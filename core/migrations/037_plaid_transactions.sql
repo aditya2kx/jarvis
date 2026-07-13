@@ -1,4 +1,4 @@
--- 036_plaid_transactions.sql
+-- 037_plaid_transactions.sql
 -- Issue #158: Plaid Link + /transactions/sync ledger for Operator Console
 -- Accounting (Square revenue in / Plaid cash out). Custom management
 -- categorization is a follow-up — this stores Plaid PFC v2 as interim.

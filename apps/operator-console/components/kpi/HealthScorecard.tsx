@@ -151,7 +151,13 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
         <span className="w-[5.5rem] shrink-0 text-base font-semibold tabular-nums sm:w-28 sm:text-lg">
           {m.formatted}
         </span>
-        <GoalBar status={m.status} pace={m.pace} actual={m.actual} goal={m.goal} />
+        <GoalBar
+          status={m.status}
+          pace={m.pace}
+          actual={m.actual}
+          goal={m.goal}
+          goalLabel={m.goalFormatted}
+        />
       </div>
 
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">

@@ -1,4 +1,4 @@
-"""Tests for core/migrations/036_plaid_transactions.sql (Issue #158)."""
+"""Tests for core/migrations/037_plaid_transactions.sql (Issue #158)."""
 from __future__ import annotations
 
 import pathlib
@@ -7,7 +7,7 @@ import unittest
 from core.datastore import _split_statements
 
 _MIGRATION = (
-    pathlib.Path(__file__).parent / "migrations" / "036_plaid_transactions.sql"
+    pathlib.Path(__file__).parent / "migrations" / "037_plaid_transactions.sql"
 ).read_text()
 
 

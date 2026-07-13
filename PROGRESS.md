@@ -1,12 +1,21 @@
 # Jarvis Build Progress
 
+## 2026-07-13 — Operator Console: dual-slot Base runway (Issue #164, PR #165)
+
+**Scope:** Base runway considers the same two future restock dates as Next delivery, with dual stockout dates and dual Risky/Fine status. Dual-date reco unchanged.
+
+**Key changes:**
+- Migration 036 replaces `vw_inventory_base_runway` — Restock 1/2 from `vw_order_reco_next_dates`; Qty/Status Actuals-only; Stockout 2 chains after D1 qty.
+- `/inventory` dual columns + methodology blurb; DataTable multi-rule row highlight.
+- Evidence: unit/structural tests + hosted Playwright screenshots on `evidence-screenshots`.
+
 ## 2026-07-12 — Operator Console: Goal and Tracking + Plaid Accounting (Issue #158, PR #162)
 
 **Scope:** rework Home health scorecard into **Goal and Tracking** (dual labor %, prep p95@8, Risky bases=0) and add Accounting (Square money in / Plaid money out). Custom categorization (#160) and QuickBooks (#161) deferred.
 
 **Key changes:**
 - Home metrics: net sales, part-time labor %, total labor %, KDS p95 min, bases-at-risk count; new `store_config` goals.
-- Migration 036 `plaid_items` / `plaid_transactions` / `vw_plaid_spend_by_category_daily`; `skills/plaid_api`; `/accounting` + Link; webhook `/plaid/webhook` + `/plaid/sync`.
+- Migration 037 `plaid_items` / `plaid_transactions` / `vw_plaid_spend_by_category_daily`; `skills/plaid_api`; `/accounting` + Link; webhook `/plaid/webhook` + `/plaid/sync`.
 - Follow-ups: #160 (management taxonomy), #161 (QBO).
 
 ## 2026-07-12 — Operator Console: Base runway table on /inventory (Issue #156, PR #157)

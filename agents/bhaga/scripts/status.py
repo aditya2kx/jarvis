@@ -220,12 +220,13 @@ GRAFANA_VIEWS: list[Target] = [
     # can recompute weekly/monthly Order Quality percentiles from source rows
     # (a daily percentile can't be re-aggregated). Grafana's dashboard.json does
     # not reference this view — console-only, same as recognition_bonuses above.
-    # migration 035 (Issue #156, operator console): vw_inventory_base_runway is
-    # the Base runway table on /inventory (burn-down days left, Actuals-only next
-    # restock, Risky/Fine). Console-only — no Grafana panel, so no GRAFANA_VIEWS
-    # entry. Freshness of underlying oa + restock orders is already covered by
-    # vw_inventory_order_assistant / operator restock writes above.
-    # migration 036 (Issue #158, operator console): plaid_items / plaid_transactions
+    # migration 035/036 (Issues #156/#164, operator console): vw_inventory_base_runway
+    # is the Base runway table on /inventory (burn-down days left; dual Restock 1/2
+    # from Actuals-only dates; Status Risky if restock empty or stockout < restock;
+    # Stockout 2 chains via Restock 1 qty). Console-only — no Grafana panel, so no
+    # GRAFANA_VIEWS entry. Freshness of underlying oa + restock orders is already
+    # covered by vw_inventory_order_assistant / operator restock writes above.
+    # migration 037 (Issue #158, operator console): plaid_items / plaid_transactions
     # / vw_plaid_spend_by_category_daily back Accounting (Plaid Link + sync).
     # Console-only cash ledger — not a model_* table, no Grafana panel, so no
     # BQ_TARGETS/GRAFANA_VIEWS entry (same class as recognition_bonuses / 033).

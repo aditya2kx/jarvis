@@ -127,7 +127,7 @@ describe("countRiskyBases", () => {
       { Status: "Risky" },
       { Status: "Fine" },
       { Status: "Risky" },
-    ] as BaseRunwayRow[];
+    ] as unknown as BaseRunwayRow[];
     expect(countRiskyBases(rows)).toBe(2);
   });
 });

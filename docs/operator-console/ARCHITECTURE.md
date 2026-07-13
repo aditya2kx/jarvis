@@ -243,13 +243,18 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
   **Reset to estimated**) plus a console-only **Replace estimated date** (move an
   Estimated schedule date → new date, then refresh dual-date reco so Order tubs /
   On hand update).
-- **Base runway table** (Issue #156, `vw_inventory_base_runway`): urgency view
+- **Base runway table** (Issue #164, `vw_inventory_base_runway`): urgency view
   at the top of Inventory / Ordering. Columns: Base, Stock, Vel/day, Days left
-  (burn-down from today, ignores future restocks), Stockout date, Next restock
-  + Restock qty (**Actuals only** — estimated schedule dates do not appear), and
-  Status (**Fine** when an Actuals restock arrives on or before stockout date;
-  otherwise **Risky**). Default sort: Days left ascending. Dual-date reco below
-  remains the source for order tubs / weight / Estimated vs Actuals.
+  (burn-down from today, ignores future restocks), **Stockout 1 / Restock 1 /
+  Qty 1 / Status 1** and **Stockout 2 / Restock 2 / Qty 2 / Status 2**. Restock
+  dates are **Actuals only** (up to two future `inventory_restock_orders`
+  dates per base — estimated schedule dates do not appear). Stockout 2 chains
+  after Restock 1 Actuals qty. Status is **Risky** when that slot’s restock is
+  empty or stockout is before the restock date; **Fine** when restock arrives
+  on or before stockout. Rows highlight when Status 1 or Status 2 is Risky.
+  Default sort: Days left ascending. Dual-date reco below remains the source
+  for order tubs / weight / Estimated vs Actuals (and still shows Estimated
+  schedule dates).
 - **Capacity control** bound to `order_reco_max_tubs` (default 120); editing it
   recomputes the recommendation.
 

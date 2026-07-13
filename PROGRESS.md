@@ -1,5 +1,14 @@
 # Jarvis Build Progress
 
+## 2026-07-13 — Operator Console: dual-slot Base runway (Issue #164, PR #165)
+
+**Scope:** Base runway considers the same two future restock dates as Next delivery, with dual stockout dates and dual Risky/Fine status. Dual-date reco unchanged.
+
+**Key changes:**
+- Migration 036 replaces `vw_inventory_base_runway` — Restock 1/2 from `vw_order_reco_next_dates`; Qty/Status Actuals-only; Stockout 2 chains after D1 qty.
+- `/inventory` dual columns + methodology blurb; DataTable multi-rule row highlight.
+- Evidence: unit/structural tests + hosted Playwright screenshots on `evidence-screenshots`.
+
 ## 2026-07-12 — Operator Console: Base runway table on /inventory (Issue #156, PR #157)
 
 **Scope:** replace the unhelpful Days-of-cover bar panel with a Base runway table answering urgency vs Actuals restock (burn-down days left, stockout date, Risky/Fine). Dual-date order reco + analytics tables kept. Console-only; no Grafana.

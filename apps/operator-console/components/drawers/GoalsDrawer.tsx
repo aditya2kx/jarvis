@@ -70,9 +70,9 @@ export function GoalsDrawer({ current }: { current: Partial<Record<GoalKey, stri
       <SheetTrigger render={<Button variant="outline" size="sm">Edit goals…</Button>} />
       <SheetContent className="w-full max-w-lg overflow-y-auto">
         <SheetHeader>
-          <SheetTitle>Goals</SheetTitle>
+          <SheetTitle>Goal and Tracking</SheetTitle>
           <SheetDescription>
-            Drives the on-track / at-risk / off-track status on the Home scorecard.
+            Drives the on-track / at-risk / off-track status on Home · Goal and Tracking.
             Leave a field blank to leave that goal unset.
           </SheetDescription>
         </SheetHeader>
@@ -94,7 +94,9 @@ export function GoalsDrawer({ current }: { current: Partial<Record<GoalKey, stri
                       [key]: kind === "dollars" ? sanitizeDollarInput(e.target.value) : e.target.value,
                     }))
                   }
-                  className={kind === "dollars" ? "pl-6" : kind === "percent" ? "pr-6" : undefined}
+                  className={
+                    kind === "dollars" ? "pl-6" : kind === "percent" || kind === "minutes" ? "pr-8" : undefined
+                  }
                 />
                 {kind === "dollars" ? (
                   <span className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-sm text-muted-foreground">
@@ -104,6 +106,11 @@ export function GoalsDrawer({ current }: { current: Partial<Record<GoalKey, stri
                 {kind === "percent" ? (
                   <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-sm text-muted-foreground">
                     %
+                  </span>
+                ) : null}
+                {kind === "minutes" ? (
+                  <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-sm text-muted-foreground">
+                    min
                   </span>
                 ) : null}
               </div>

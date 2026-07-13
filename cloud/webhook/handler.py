@@ -29,6 +29,8 @@ Endpoints:
   POST /slack/events       — Slack Events API
   POST /slack/commands     — Slash commands (/bhaga-cloud refresh, status, config, restock, …)
   POST /slack/interactions — Slack interactivity (restock modal view_submission, Issue #137)
+  POST /plaid/webhook      — Plaid TRANSACTIONS sync kick (Issue #158)
+  POST /plaid/sync         — Cloud Scheduler / manual Plaid sync (X-Plaid-Sync-Token)
   GET  /health             — Health check for Cloud Run
 """
 
@@ -1745,6 +1747,85 @@ def slack_interactions():
         return jsonify(result)
 
     return Response("", status=200)
+
+
+# ---------------------------------------------------------------------------
+# Plaid (Issue #158) — transactions sync webhook + scheduled kick
+# ---------------------------------------------------------------------------
+
+# Shared-secret kick for Cloud Scheduler (fail-closed when empty). Reuses the
+# sandbox trigger token pattern so we do not invent a second auth model.
+_PLAID_SYNC_TOKEN = os.environ.get("PLAID_SYNC_TOKEN", "") or _SANDBOX_TRIGGER_TOKEN
+
+
+def _plaid_sync_all_items() -> None:
+    """Background worker: sync every linked Item in plaid_items."""
+    try:
+        from skills.plaid_api.sync import list_linked_items, sync_item
+    except Exception as exc:  # noqa: BLE001
+        log.error("plaid sync import failed: %s", exc)
+        return
+    store = os.environ.get("PLAID_DEFAULT_STORE", "palmetto")
+    try:
+        items = list_linked_items(store)
+    except Exception as exc:  # noqa: BLE001
+        log.error("plaid list_linked_items failed store=%s: %s", store, exc)
+        return
+    for row in items:
+        item_id = row.get("item_id")
+        if not item_id:
+            continue
+        try:
+            result = sync_item(store, item_id)
+            log.info(
+                "plaid sync ok item=%s added=%s modified=%s removed=%s pages=%s",
+                item_id,
+                result.added,
+                result.modified,
+                result.removed,
+                result.pages,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.error("plaid sync failed item=%s: %s", item_id, exc)
+
+
+@app.route("/plaid/webhook", methods=["POST"])
+def plaid_webhook():
+    """Plaid TRANSACTIONS webhooks — ack fast, sync in background.
+
+    Production hardening (JWT verification via /webhook_verification_key/get)
+    is deferred; v1 trusts network reachability of the Cloud Run URL plus the
+    fact that sync is idempotent. Set PLAID_WEBHOOK_REQUIRE_TOKEN=1 and send
+    X-Plaid-Sync-Token to require the shared secret during early rollout.
+    """
+    require = os.environ.get("PLAID_WEBHOOK_REQUIRE_TOKEN", "") == "1"
+    token = request.headers.get("X-Plaid-Sync-Token", "")
+    if require:
+        if not _PLAID_SYNC_TOKEN or not hmac.compare_digest(token, _PLAID_SYNC_TOKEN):
+            return Response("unauthorized", status=403)
+
+    payload = request.get_json(force=True, silent=True) or {}
+    wh_type = payload.get("webhook_type")
+    wh_code = payload.get("webhook_code")
+    log.info("plaid webhook type=%s code=%s item=%s", wh_type, wh_code, payload.get("item_id"))
+    if wh_type == "TRANSACTIONS" and wh_code in (
+        "SYNC_UPDATES_AVAILABLE",
+        "DEFAULT_UPDATE",
+        "INITIAL_UPDATE",
+        "HISTORICAL_UPDATE",
+    ):
+        _dispatch_async(_plaid_sync_all_items)
+    return Response("ok", status=200)
+
+
+@app.route("/plaid/sync", methods=["POST"])
+def plaid_sync_kick():
+    """Cloud Scheduler / manual kick — requires X-Plaid-Sync-Token."""
+    token = request.headers.get("X-Plaid-Sync-Token", "")
+    if not _PLAID_SYNC_TOKEN or not hmac.compare_digest(token, _PLAID_SYNC_TOKEN):
+        return Response("unauthorized", status=403)
+    _dispatch_async(_plaid_sync_all_items)
+    return jsonify({"status": "accepted"})
 
 
 # ---------------------------------------------------------------------------

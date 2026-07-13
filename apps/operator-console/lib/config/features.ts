@@ -8,8 +8,12 @@ export const FEATURES = {
   inventory: true,
   payroll: true,
   pipeline: true,
+  /** Issue #158 — Accounting page (Square in / Plaid out). */
+  accounting: true,
   writeGoals: true,
   writeTraining: true,
   writeRecognition: true,
   writeRestock: true,
+  /** Issue #158 — Plaid Link + sync write path. */
+  writePlaidLink: true,
 } as const;

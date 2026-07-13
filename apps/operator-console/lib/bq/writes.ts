@@ -191,11 +191,25 @@ export async function setConfig(store: string, key: string, value: string, by: s
   }
 }
 
-/** Goal keys editable from the Home health scorecard's Goals drawer. */
+/** Goal keys editable from the Home Goal and Tracking scorecard / Goals drawer.
+ *  Legacy food-cost / on-time / runway keys stay writable for Slack `config set`
+ *  compatibility but are no longer shown on Home (Issue #158). */
 export const GOAL_KEYS = [
   "goal_net_sales_weekly",
   "goal_net_sales_monthly",
+  "goal_cash_flow_weekly",
+  "goal_cash_flow_monthly",
+  "goal_orders_per_day",
+  "goal_labor_cost_weekly",
+  "goal_labor_cost_monthly",
+  "goal_ops_cost_weekly",
+  "goal_ops_cost_monthly",
+  "goal_total_cost_weekly",
+  "goal_total_cost_monthly",
+  "goal_hourly_labor_pct_max",
   "goal_labor_pct_max",
+  "goal_kds_p95_min",
+  "goal_bases_at_risk_max",
   "goal_food_cost_pct_max",
   "goal_speed_on_time_pct_min",
   "goal_inventory_runway_days_min",
@@ -254,4 +268,95 @@ export async function addRecognitionBonus(
        VALUES (@store, @period, @employee, @cents, @reason, CURRENT_TIMESTAMP(), @by)`,
     { store, period: payPeriod, employee, cents: intParam(amountCents), reason, by },
   );
+}
+
+/** Upsert a linked Plaid Item metadata row (access_token stays in Secret Manager). */
+export async function upsertPlaidItem(
+  store: string,
+  itemId: string,
+  institutionName: string | null,
+  by: string,
+): Promise<void> {
+  await mutate(
+    `MERGE ${fq("plaid_items")} T
+     USING (SELECT @store AS store, @item_id AS item_id) S
+     ON T.store = S.store AND T.item_id = S.item_id
+     WHEN MATCHED THEN UPDATE SET
+       institution_name = @institution_name,
+       linked_by = @by,
+       linked_at = CURRENT_TIMESTAMP()
+     WHEN NOT MATCHED THEN INSERT
+       (store, item_id, institution_name, cursor, linked_at, linked_by, last_synced_at)
+       VALUES (@store, @item_id, @institution_name, '', CURRENT_TIMESTAMP(), @by, NULL)`,
+    { store, item_id: itemId, institution_name: institutionName, by },
+  );
+}
+
+export async function updatePlaidCursor(store: string, itemId: string, cursor: string): Promise<void> {
+  await mutate(
+    `UPDATE ${fq("plaid_items")}
+     SET cursor = @cursor, last_synced_at = CURRENT_TIMESTAMP()
+     WHERE store = @store AND item_id = @item_id`,
+    { store, item_id: itemId, cursor },
+  );
+}
+
+export interface PlaidTxnWrite {
+  transaction_id: string;
+  item_id: string;
+  account_id: string | null;
+  date: string | null;
+  name: string | null;
+  merchant_name: string | null;
+  amount: number | null;
+  iso_currency: string | null;
+  pending: boolean;
+  pfc_primary: string | null;
+  pfc_detailed: string | null;
+  raw_json: string;
+}
+
+/** Idempotent per-row MERGE for one Plaid transaction. */
+export async function upsertPlaidTransaction(row: PlaidTxnWrite): Promise<void> {
+  await mutate(
+    `MERGE ${fq("plaid_transactions")} T
+     USING (SELECT @transaction_id AS transaction_id) S
+     ON T.transaction_id = S.transaction_id
+     WHEN MATCHED THEN UPDATE SET
+       item_id = @item_id, account_id = @account_id,
+       date = SAFE.PARSE_DATE('%Y-%m-%d', @date),
+       name = @name, merchant_name = @merchant_name, amount = @amount,
+       iso_currency = @iso_currency, pending = @pending,
+       pfc_primary = @pfc_primary, pfc_detailed = @pfc_detailed,
+       raw_json = @raw_json, updated_at = CURRENT_TIMESTAMP()
+     WHEN NOT MATCHED THEN INSERT (
+       transaction_id, item_id, account_id, date, name, merchant_name,
+       amount, iso_currency, pending, pfc_primary, pfc_detailed, raw_json, updated_at
+     ) VALUES (
+       @transaction_id, @item_id, @account_id, SAFE.PARSE_DATE('%Y-%m-%d', @date),
+       @name, @merchant_name, @amount, @iso_currency, @pending,
+       @pfc_primary, @pfc_detailed, @raw_json, CURRENT_TIMESTAMP()
+     )`,
+    {
+      transaction_id: row.transaction_id,
+      item_id: row.item_id,
+      account_id: row.account_id,
+      date: row.date,
+      name: row.name,
+      merchant_name: row.merchant_name,
+      amount: row.amount,
+      iso_currency: row.iso_currency,
+      pending: row.pending,
+      pfc_primary: row.pfc_primary,
+      pfc_detailed: row.pfc_detailed,
+      raw_json: row.raw_json,
+    },
+  );
+}
+
+export async function deletePlaidTransactions(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  await mutate(`DELETE FROM ${fq("plaid_transactions")} WHERE transaction_id IN UNNEST(@ids)`, {
+    ids,
+  });
 }

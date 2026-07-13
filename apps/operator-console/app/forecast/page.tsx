@@ -9,7 +9,8 @@ import { FilterPills } from "@/components/filters/FilterPills";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
-import { RANGE_PRESETS, formatBucket, parseGrain, resolveRange, wantsCustom } from "@/lib/filters/range";
+import { RANGE_PRESETS, formatBucket, parseGrain, wantsCustom } from "@/lib/filters/range";
+import { resolvePageRange } from "@/lib/filters/period";
 import { Badge } from "@/components/ui/badge";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { ForecastExclusionRow, ForecastRow } from "@/lib/bq/queries";
@@ -48,9 +49,9 @@ export default async function ForecastPage({
   // Forecast mixes a forward-looking "upcoming schedule" (empty on a
   // past-only preset, since forecast rows only exist from the pipeline's
   // run date forward) with a backward-looking accuracy view — same 7
-  // presets as every other Performance screen, just defaulted to This
-  // month since that's the more useful default for a schedule view.
-  const win = resolveRange(sp.range, "this_month", sp.from, sp.to);
+  // presets as every other Performance screen; Period cookie keeps it
+  // aligned with Home/Sales/Labor.
+  const win = await resolvePageRange(sp.range, sp.from, sp.to);
   const grain = parseGrain(sp.grain);
   const showCustomPicker = wantsCustom(sp.range);
   const dateParams: Record<string, string> = win.preset === "custom" ? { from: win.start, to: win.end } : {};

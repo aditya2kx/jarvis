@@ -1,20 +1,13 @@
-import Link from "next/link";
 import { loadHealthScorecard, type HealthScorecard as HealthScorecardData } from "@/lib/kpi/health";
-import { loadActionItems, type ActionItem } from "@/lib/kpi/actions";
-import { pipelineRuns, storeConfig, payrollPeriod } from "@/lib/bq/queries";
+import { storeConfig } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
-import { formatDate } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { HealthScorecard } from "@/components/kpi/HealthScorecard";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { GoalsDrawer } from "@/components/drawers/GoalsDrawer";
-import { TrainingQuickAdd } from "@/components/drawers/TrainingQuickAdd";
-import { RecognitionDrawer } from "@/components/drawers/RecognitionDrawer";
 import { FilterSelect } from "@/components/filters/FilterSelect";
-import { RANGE_PRESETS, resolveRange } from "@/lib/filters/range";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { buttonVariants } from "@/components/ui/button";
+import { RANGE_PRESETS } from "@/lib/filters/range";
+import { resolvePageRange } from "@/lib/filters/period";
 import { FEATURES } from "@/lib/config/features";
 import type { GoalKey } from "@/lib/bq/writes";
 
@@ -25,30 +18,18 @@ export default async function HomePage({
 }: {
   searchParams: Promise<{ range?: string }>;
 }) {
-  const win = resolveRange((await searchParams).range, "30d");
+  // Cookie + URL keep Period in lockstep with Sales/Labor/… (default this_month).
+  const win = await resolvePageRange((await searchParams).range);
 
   let health: HealthScorecardData | undefined;
-  let latestRunStatus: string | undefined;
-  let latestRunDate: string | undefined;
   let goals: Partial<Record<GoalKey, string>> = {};
-  let actionItems: ActionItem[] = [];
-  let defaultPayPeriod = "";
   let error: string | undefined;
   try {
     health = await loadHealthScorecard(win);
-    const [runs, config, periods, actions] = await Promise.all([
-      pipelineRuns(),
-      storeConfig(DEFAULT_STORE),
-      payrollPeriod(1),
-      loadActionItems(),
-    ]);
-    latestRunStatus = runs[0]?.status;
-    latestRunDate = runs[0]?.run_date;
+    const config = await storeConfig(DEFAULT_STORE);
     goals = Object.fromEntries(
       config.filter((r) => r.key.startsWith("goal_")).map((r) => [r.key as GoalKey, r.value]),
     );
-    defaultPayPeriod = periods[0]?.period_start ?? "";
-    actionItems = actions;
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
@@ -72,69 +53,7 @@ export default async function HomePage({
           access; deployed behind IAP this reads live.
         </p>
       ) : (
-        <>
-          <HealthScorecard data={health} />
-
-          <Card>
-            <CardHeader className="flex-row items-center justify-between">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                Needs your action
-              </CardTitle>
-              {latestRunStatus && latestRunStatus !== "success" ? (
-                <Badge variant="destructive">
-                  Last pipeline run {latestRunStatus} ({latestRunDate ? formatDate(latestRunDate) : "unknown"})
-                </Badge>
-              ) : (
-                <Badge variant="default">Pipeline healthy</Badge>
-              )}
-            </CardHeader>
-            <CardContent>
-              {actionItems.length ? (
-                <ul className="flex flex-col divide-y divide-border">
-                  {actionItems.map((item) => (
-                    <li
-                      key={item.key}
-                      className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0"
-                    >
-                      <span className="text-sm">{item.text}</span>
-                      <Link href={item.href} className={buttonVariants({ variant: "outline", size: "sm" })}>
-                        {item.linkLabel} →
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  Nothing needs attention right now. Use &quot;Edit goals&quot; above to set
-                  weekly/monthly targets — the scorecard below tracks against them as soon as
-                  they&apos;re set.
-                </p>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                Quick actions
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-wrap items-center gap-2">
-              {FEATURES.writeTraining ? <TrainingQuickAdd /> : null}
-              {FEATURES.writeRecognition ? (
-                <RecognitionDrawer defaultPayPeriod={defaultPayPeriod} />
-              ) : null}
-              {FEATURES.writeRestock ? (
-                <Link href="/inventory" className={buttonVariants({ variant: "outline", size: "sm" })}>
-                  + Planned restock…
-                </Link>
-              ) : null}
-              <span className="text-xs text-muted-foreground">
-                Write-backs land in BQ via the same MERGE paths as the Slack commands.
-              </span>
-            </CardContent>
-          </Card>
-        </>
+        <HealthScorecard data={health} />
       )}
     </div>
   );

@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { GOAL_FIELDS, fractionToPercentInput, percentInputToFraction, sanitizeDollarInput } from "@/lib/kpi/goal-fields";
+import {
+  GOAL_FIELDS,
+  fractionToPercentInput,
+  percentInputToFraction,
+  sanitizeDollarInput,
+} from "@/lib/kpi/goal-fields";
+import {
+  avgPrepP95Min,
+  countRiskyBases,
+  elapsedDaysInWindow,
+  paceFor,
+  rollupStatus,
+  statusFor,
+} from "@/lib/kpi/scorecard-math";
+import type { BaseRunwayRow, OrderQualityDailyRow } from "@/lib/bq/queries";
 
 describe("fractionToPercentInput", () => {
   it("converts a store_config fraction to a whole-percent display value", () => {
@@ -57,12 +71,85 @@ describe("sanitizeDollarInput", () => {
 });
 
 describe("GOAL_FIELDS", () => {
-  it("tags every percent-kind goal that health.ts multiplies by 100 for display", () => {
+  it("Home drawer is dollars/count/minutes (no percent labor rows after hierarchy redesign)", () => {
     const percentKeys = GOAL_FIELDS.filter((f) => f.kind === "percent").map((f) => f.key);
-    expect(percentKeys).toEqual([
-      "goal_labor_pct_max",
-      "goal_food_cost_pct_max",
-      "goal_speed_on_time_pct_min",
-    ]);
+    expect(percentKeys).toEqual([]);
+  });
+
+  it("includes hierarchy goals: cash flow, orders, cost dollars, p95, bases at risk", () => {
+    expect(GOAL_FIELDS.find((f) => f.key === "goal_cash_flow_weekly")?.kind).toBe("dollars");
+    expect(GOAL_FIELDS.find((f) => f.key === "goal_orders_per_day")?.kind).toBe("count");
+    expect(GOAL_FIELDS.find((f) => f.key === "goal_labor_cost_weekly")?.kind).toBe("dollars");
+    expect(GOAL_FIELDS.find((f) => f.key === "goal_kds_p95_min")?.kind).toBe("minutes");
+    expect(GOAL_FIELDS.find((f) => f.key === "goal_bases_at_risk_max")?.kind).toBe("count");
+  });
+});
+
+describe("rollupStatus", () => {
+  it("worst-wins: mixed on-track + at-risk → at-risk", () => {
+    expect(rollupStatus(["on-track", "at-risk"])).toBe("at-risk");
+  });
+
+  it("all no-goal → no-goal (not on-track)", () => {
+    expect(rollupStatus(["no-goal", "no-goal"])).toBe("no-goal");
+  });
+
+  it("on-track + no-goal → no-goal (missing goal is worse than on-track)", () => {
+    expect(rollupStatus(["on-track", "no-goal"])).toBe("no-goal");
+  });
+
+  it("off-track beats at-risk", () => {
+    expect(rollupStatus(["at-risk", "off-track", "on-track"])).toBe("off-track");
+  });
+});
+
+describe("paceFor / statusFor (Issue #158)", () => {
+  it("treats goal=0 lower-is-better with actual=0 as on-track", () => {
+    expect(paceFor(0, 0, true)).toBe(1);
+    expect(statusFor(paceFor(0, 0, true))).toBe("on-track");
+  });
+
+  it("treats goal=0 lower-is-better with actual>0 as off-track", () => {
+    expect(paceFor(2, 0, true)).toBe(0);
+    expect(statusFor(paceFor(2, 0, true))).toBe("off-track");
+  });
+
+  it("computes lower-is-better pace for prep p95", () => {
+    expect(paceFor(8, 8, true)).toBe(1);
+    expect(paceFor(10, 8, true)).toBeCloseTo(0.8);
+    expect(statusFor(paceFor(10, 8, true))).toBe("off-track");
+  });
+});
+
+describe("countRiskyBases", () => {
+  it("counts Status=Risky rows", () => {
+    const rows = [
+      { Status: "Risky" },
+      { Status: "Fine" },
+      { Status: "Risky" },
+    ] as unknown as BaseRunwayRow[];
+    expect(countRiskyBases(rows)).toBe(2);
+  });
+});
+
+describe("avgPrepP95Min", () => {
+  it("averages kds_p95_min over the window", () => {
+    const rows = [{ kds_p95_min: 6 }, { kds_p95_min: 10 }] as OrderQualityDailyRow[];
+    expect(avgPrepP95Min(rows)).toBe(8);
+  });
+
+  it("returns null when no values", () => {
+    expect(avgPrepP95Min([])).toBeNull();
+  });
+});
+
+describe("elapsedDaysInWindow", () => {
+  it("caps this_month end at today so future days do not dilute averages", () => {
+    // July 1–31 window, "today" = July 12 → 12 days (not 31).
+    expect(elapsedDaysInWindow("2026-07-01", "2026-07-31", "2026-07-12")).toBe(12);
+  });
+
+  it("uses full window when end is already in the past", () => {
+    expect(elapsedDaysInWindow("2026-06-01", "2026-06-30", "2026-07-12")).toBe(30);
   });
 });

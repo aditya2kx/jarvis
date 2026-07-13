@@ -7,6 +7,7 @@ import {
   Wallet,
   PackageSearch,
   Activity,
+  Landmark,
   type LucideIcon,
 } from "lucide-react";
 
@@ -37,6 +38,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: "/labor", label: "Labor", icon: Clock },
       { href: "/forecast", label: "Forecast", icon: TrendingUp },
       { href: "/order-quality", label: "Order Quality", icon: ShieldCheck },
+      { href: "/accounting", label: "Accounting", icon: Landmark },
     ],
   },
   {

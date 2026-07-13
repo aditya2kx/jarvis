@@ -588,3 +588,63 @@ export function recognitionBonuses(store: string, periods = 4): Promise<Recognit
     { store, limit: intParam(periods * 20) },
   );
 }
+
+// ── Plaid Accounting (Issue #158, migration 037) ──────────────────────────
+
+export interface PlaidItemRow {
+  store: string;
+  item_id: string;
+  institution_name: string | null;
+  cursor: string | null;
+  linked_at: string | null;
+  linked_by: string | null;
+  last_synced_at: string | null;
+}
+
+export function plaidItems(store: string): Promise<PlaidItemRow[]> {
+  return q<PlaidItemRow>(
+    `SELECT store, item_id, institution_name, cursor, linked_at, linked_by, last_synced_at
+     FROM ${fq("plaid_items")} WHERE store=@store
+     ORDER BY linked_at DESC`,
+    { store },
+  );
+}
+
+export interface PlaidTransactionRow {
+  transaction_id: string;
+  date: string;
+  name: string | null;
+  merchant_name: string | null;
+  amount: number;
+  pending: boolean | null;
+  pfc_primary: string | null;
+  pfc_detailed: string | null;
+}
+
+export function plaidTransactions(win: DateWindow): Promise<PlaidTransactionRow[]> {
+  return q<PlaidTransactionRow>(
+    `SELECT transaction_id, date, name, merchant_name, amount, pending, pfc_primary, pfc_detailed
+     FROM ${fq("plaid_transactions")}
+     WHERE date BETWEEN @start AND @end
+     ORDER BY date DESC, transaction_id
+     LIMIT 2000`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+export interface PlaidSpendCategoryRow {
+  pfc_primary: string;
+  spend: number;
+  txn_count: number;
+}
+
+export function plaidSpendByCategory(win: DateWindow): Promise<PlaidSpendCategoryRow[]> {
+  return q<PlaidSpendCategoryRow>(
+    `SELECT pfc_primary, SUM(spend) AS spend, SUM(txn_count) AS txn_count
+     FROM ${fq("vw_plaid_spend_by_category_daily")}
+     WHERE date BETWEEN @start AND @end
+     GROUP BY pfc_primary
+     ORDER BY spend DESC`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}

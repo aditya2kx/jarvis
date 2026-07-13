@@ -1,6 +1,6 @@
 import type { GoalKey } from "@/lib/bq/writes";
 
-export type GoalFieldKind = "dollars" | "percent" | "days";
+export type GoalFieldKind = "dollars" | "percent" | "days" | "minutes" | "count";
 
 export interface GoalField {
   key: GoalKey;
@@ -9,13 +9,22 @@ export interface GoalField {
   helpText: string;
 }
 
-// Single source of truth for every goal field's editing metadata (used by
-// both the bulk GoalsDrawer and Home's inline per-metric edit). `kind`
-// drives the input adornment ($/%) and which conversion function below
-// applies at the storage boundary — health.ts and the /bhaga-cloud Slack
-// `config set` path both read/write the raw fraction, so conversion only
-// happens here, never upstream.
+// Home Goal and Tracking hierarchy (Issue #158 operator feedback) — Finance /
+// Top line / Cost / Quality / Inventory. Legacy food-cost / on-time / runway /
+// labor-% keys remain in GOAL_KEYS for Slack but are not in this drawer list.
 export const GOAL_FIELDS: GoalField[] = [
+  {
+    key: "goal_cash_flow_weekly",
+    label: "Cash flow — weekly target",
+    kind: "dollars",
+    helpText: "Net sales − Plaid outflows, weekly, e.g. 12000",
+  },
+  {
+    key: "goal_cash_flow_monthly",
+    label: "Cash flow — monthly target",
+    kind: "dollars",
+    helpText: "Net sales − Plaid outflows, monthly, e.g. 50000",
+  },
   {
     key: "goal_net_sales_weekly",
     label: "Net sales — weekly target",
@@ -29,28 +38,58 @@ export const GOAL_FIELDS: GoalField[] = [
     helpText: "Monthly net sales target, e.g. 75000",
   },
   {
-    key: "goal_labor_pct_max",
-    label: "Labor % of net sales — max",
-    kind: "percent",
-    helpText: "Enter a whole percent, e.g. 15 (=15%). Total labor: hourly + salaried/manager.",
+    key: "goal_orders_per_day",
+    label: "Avg orders per day — target",
+    kind: "count",
+    helpText: "Average orders/day over the selected period, e.g. 30",
   },
   {
-    key: "goal_food_cost_pct_max",
-    label: "Food cost % — max",
-    kind: "percent",
-    helpText: "Enter a whole percent, e.g. 28. No COGS source is wired up yet, so this isn't tracked on the scorecard.",
+    key: "goal_total_cost_weekly",
+    label: "Total known cost — weekly max",
+    kind: "dollars",
+    helpText: "Labor + Plaid ops (excludes COGS). Weekly max, e.g. 10000",
   },
   {
-    key: "goal_speed_on_time_pct_min",
-    label: "On-time order speed — min",
-    kind: "percent",
-    helpText: "Enter a whole percent, e.g. 90. Share of KDS tickets finishing within the on-time goal.",
+    key: "goal_total_cost_monthly",
+    label: "Total known cost — monthly max",
+    kind: "dollars",
+    helpText: "Labor + Plaid ops (excludes COGS). Monthly max, e.g. 40000",
   },
   {
-    key: "goal_inventory_runway_days_min",
-    label: "Inventory runway — min days",
-    kind: "days",
-    helpText: "Minimum days of runway across tracked items, e.g. 3",
+    key: "goal_labor_cost_weekly",
+    label: "Labor cost — weekly max",
+    kind: "dollars",
+    helpText: "Total labor $ weekly max, e.g. 4500",
+  },
+  {
+    key: "goal_labor_cost_monthly",
+    label: "Labor cost — monthly max",
+    kind: "dollars",
+    helpText: "Total labor $ monthly max, e.g. 18000",
+  },
+  {
+    key: "goal_ops_cost_weekly",
+    label: "Operations / other — weekly max",
+    kind: "dollars",
+    helpText: "Plaid outflows weekly max, e.g. 5000",
+  },
+  {
+    key: "goal_ops_cost_monthly",
+    label: "Operations / other — monthly max",
+    kind: "dollars",
+    helpText: "Plaid outflows monthly max, e.g. 20000",
+  },
+  {
+    key: "goal_kds_p95_min",
+    label: "Prep time p95 — max minutes",
+    kind: "minutes",
+    helpText: "KDS per-item p95 prep time goal in minutes, e.g. 8",
+  },
+  {
+    key: "goal_bases_at_risk_max",
+    label: "Bases at risk — max count",
+    kind: "count",
+    helpText: "Max Risky bases (stockout before restock). Goal is usually 0.",
   },
 ];
 

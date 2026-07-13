@@ -226,6 +226,10 @@ GRAFANA_VIEWS: list[Target] = [
     # Stockout 2 chains via Restock 1 qty). Console-only — no Grafana panel, so no
     # GRAFANA_VIEWS entry. Freshness of underlying oa + restock orders is already
     # covered by vw_inventory_order_assistant / operator restock writes above.
+    # migration 037 (Issue #158, operator console): plaid_items / plaid_transactions
+    # / vw_plaid_spend_by_category_daily back Accounting (Plaid Link + sync).
+    # Console-only cash ledger — not a model_* table, no Grafana panel, so no
+    # BQ_TARGETS/GRAFANA_VIEWS entry (same class as recognition_bonuses / 033).
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

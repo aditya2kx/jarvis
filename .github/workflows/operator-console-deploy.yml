@@ -73,8 +73,8 @@ jobs:
             --no-allow-unauthenticated \
             --iap \
             --memory 512Mi \
-            --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga \
-            --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest
+            --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga,PLAID_ENV=sandbox \
+            --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest,PLAID_CLIENT_ID=plaid_client_id:latest,PLAID_SECRET=plaid_secret:latest
 
       # IAP IAM (roles/iap.httpsResourceAccessor), not run.invoker — only the
       # IAP service agent invokes the Cloud Run service now. Idempotent:

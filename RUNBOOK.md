@@ -258,6 +258,9 @@ gcloud run services update bhaga-webhook \
 | `google_palmetto` | refresh job (Sheets/Drive) | Google OAuth creds for the `palmetto` account |
 | `jarvis-clickup-palmetto-pat` | refresh job (`CLICKUP_PAT`) | ClickUp PAT — read review channel + closing-form inventory ingest |
 | `operator-console-gemini-token` | operator-console (`GEMINI_TOKEN`) | Gemini API key (Generative Language API), restricted to that one API — restock photo parsing (`lib/restock/gemini.ts`). Wired via `--set-secrets` in `operator-console-deploy.yml`; default compute SA holds `secretAccessor` on it. |
+| `plaid_client_id` | operator-console + bhaga-webhook (`PLAID_CLIENT_ID`) | Plaid dashboard client_id (Issue #158 Accounting). |
+| `plaid_secret` | operator-console + bhaga-webhook (`PLAID_SECRET`) | Plaid secret (sandbox or production per `PLAID_ENV`). |
+| `plaid_access_token_<item_id>` | operator-console + bhaga-webhook (dynamic) | Per linked Item access_token after Plaid Link exchange — never stored in BQ. |
 
 > **Local bootstrap (all providers):** If a secret is missing from your macOS Keychain on a fresh
 > clone, use:
@@ -1733,9 +1736,21 @@ grants are the current mechanism.
   (restock, training, config/goals) — the two paths converge on identical rows, never diverge.
 - **New table (M4):** `recognition_bonuses` (migration `033_recognition_bonuses.sql`) — manual
   per-employee bonus, separate from the automated `vw_review_bonus_detail` (migration 026).
-- **New goal keys:** `goal_net_sales_weekly`, `goal_net_sales_monthly`, `goal_labor_pct_max`,
-  `goal_food_cost_pct_max`, `goal_speed_on_time_pct_min`, `goal_inventory_runway_days_min` — all in
-  `store_config`, edited via the console's Home → "Edit goals" drawer (no Slack command for these).
+- **Plaid Accounting (Issue #158):** migration `037_plaid_transactions.sql` (`plaid_items`,
+  `plaid_transactions`, `vw_plaid_spend_by_category_daily`). Home **Goal and Tracking** rows:
+  net sales, part-time labor %, total labor %, prep p95 (`goal_kds_p95_min`), bases at risk
+  (`goal_bases_at_risk_max`). Accounting page pairs Square net sales with Plaid outflows (PFC v2
+  interim categories). Link/sync via console; incremental via `bhaga-webhook` `POST /plaid/webhook`
+  + `POST /plaid/sync` (shared `PLAID_SYNC_TOKEN` / sandbox trigger token). Skill:
+  `skills/plaid_api/`. Env on console + webhook: `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`,
+  optional `PLAID_WEBHOOK_URL`. Access tokens: Secret Manager `plaid_access_token_<item_id>`.
+  **Current env:** `PLAID_ENV=sandbox` (sandbox secret provisioned 2026-07-12). Chase / live bank
+  Link needs Plaid **production** access (dashboard questionnaire) then flip `PLAID_ENV=production`
+  and store the production secret as `plaid_secret`.
+- **New goal keys:** `goal_net_sales_weekly`, `goal_net_sales_monthly`,
+  `goal_hourly_labor_pct_max`, `goal_labor_pct_max`, `goal_kds_p95_min`,
+  `goal_bases_at_risk_max` (plus legacy food-cost / on-time / runway keys kept for Slack) — all in
+  `store_config`, edited via Home → Goal and Tracking drawer.
 - **Troubleshooting a stuck write:** every write function in `lib/bq/writes.ts` is a plain
   parameterized query — reproduce it directly against BQ (see `docs/operator-console/PLAN.md`
   decisions log for two real bugs already caught this way: a row-sanitizer that corrupted any

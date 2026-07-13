@@ -38,16 +38,10 @@ export const GOAL_FIELDS: GoalField[] = [
     helpText: "Monthly net sales target, e.g. 75000",
   },
   {
-    key: "goal_orders_weekly",
-    label: "Orders — weekly target",
+    key: "goal_orders_per_day",
+    label: "Avg orders per day — target",
     kind: "count",
-    helpText: "Weekly order count target, e.g. 900",
-  },
-  {
-    key: "goal_orders_monthly",
-    label: "Orders — monthly target",
-    kind: "count",
-    helpText: "Monthly order count target, e.g. 3600",
+    helpText: "Average orders/day over the selected period, e.g. 30",
   },
   {
     key: "goal_total_cost_weekly",

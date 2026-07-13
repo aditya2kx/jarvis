@@ -39,7 +39,33 @@ export interface HealthMetric {
 export interface HealthGroup {
   id: ScorecardGroupId;
   label: string;
+  /** Detail page for this section (left-nav destination). */
+  href: string;
   metrics: HealthMetric[];
+}
+
+/** Worst-wins rollup for the Home hero health badge. */
+export function rollupStatus(metrics: HealthMetric[]): GoalStatus {
+  const rank: Record<GoalStatus, number> = {
+    "off-track": 0,
+    "at-risk": 1,
+    "no-goal": 2,
+    "on-track": 3,
+  };
+  let worst: GoalStatus = "on-track";
+  for (const m of metrics) {
+    if (rank[m.status] < rank[worst]) worst = m.status;
+  }
+  // If everything is no-goal, surface that — don't pretend on-track.
+  if (metrics.length && metrics.every((m) => m.status === "no-goal")) return "no-goal";
+  return worst;
+}
+
+function daysInWindow(win: DateWindow): number {
+  const s = Date.parse(`${win.start}T12:00:00Z`);
+  const e = Date.parse(`${win.end}T12:00:00Z`);
+  if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return 1;
+  return Math.max(1, Math.round((e - s) / 86_400_000) + 1);
 }
 
 function goalValue(config: StoreConfigRow[], key: string): number | null {
@@ -68,6 +94,8 @@ export interface HealthScorecard {
   /** Sectioned hierarchy for the Home UI. */
   groups: HealthGroup[];
   windowLabel: string;
+  /** Worst-wins rollup across all scored metrics. */
+  overallStatus: GoalStatus;
 }
 
 function metric(partial: HealthMetric): HealthMetric {
@@ -85,7 +113,10 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
 
   const netSales = sum(rows, (r) => r.net_sales);
   const laborCost = sum(rows, (r) => r.total_labor_cost);
-  const orders = sum(rows, (r) => r.orders);
+  const ordersTotal = sum(rows, (r) => r.orders);
+  const dayCount = daysInWindow(win);
+  const ordersPerDay =
+    ordersTotal == null ? null : ordersTotal / dayCount;
   const opsCost = plaidCats.reduce((s, c) => s + (c.spend ?? 0), 0);
   // Known costs only — COGS not instrumented (no silent fake).
   const totalKnownCost =
@@ -100,7 +131,7 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
 
   const gCash = periodGoal(config, win, "goal_cash_flow_weekly", "goal_cash_flow_monthly");
   const gSales = periodGoal(config, win, "goal_net_sales_weekly", "goal_net_sales_monthly");
-  const gOrders = periodGoal(config, win, "goal_orders_weekly", "goal_orders_monthly");
+  const goalOrdersPerDay = goalValue(config, "goal_orders_per_day");
   const gLabor$ = periodGoal(config, win, "goal_labor_cost_weekly", "goal_labor_cost_monthly");
   const gOps = periodGoal(config, win, "goal_ops_cost_weekly", "goal_ops_cost_monthly");
   const gTotal = periodGoal(config, win, "goal_total_cost_weekly", "goal_total_cost_monthly");
@@ -109,7 +140,7 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
 
   const cashPace = paceFor(cashFlow, gCash.value, false);
   const salesPace = paceFor(netSales, gSales.value, false);
-  const ordersPace = paceFor(orders, gOrders.value, false);
+  const ordersPace = paceFor(ordersPerDay, goalOrdersPerDay, false);
   const laborPace = paceFor(laborCost, gLabor$.value, true);
   const opsPace = paceFor(opsCost, gOps.value, true);
   const totalPace = paceFor(totalKnownCost, gTotal.value, true);
@@ -150,16 +181,16 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
     }),
     metric({
       key: "orders",
-      label: "# of orders",
-      actual: orders,
-      goal: gOrders.value,
+      label: "Avg orders / day",
+      actual: ordersPerDay,
+      goal: goalOrdersPerDay,
       status: statusFor(ordersPace),
       pace: ordersPace,
-      formatted: orders == null ? "—" : orders.toLocaleString("en-US"),
-      goalFormatted: gOrders.value == null ? "—" : gOrders.value.toLocaleString("en-US"),
-      goalKey: gOrders.key,
-      rawGoal: gOrders.raw,
-      info: "Sum of orders from vw_model_labor_daily over the selected period.",
+      formatted: ordersPerDay == null ? "—" : ordersPerDay.toFixed(1),
+      goalFormatted: goalOrdersPerDay == null ? "—" : String(goalOrdersPerDay),
+      goalKey: "goal_orders_per_day",
+      rawGoal: goalRaw(config, "goal_orders_per_day"),
+      info: `Period order count ÷ ${dayCount} calendar days in the window (vw_model_labor_daily).`,
     }),
   ];
 
@@ -251,18 +282,20 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
   ];
 
   const groups: HealthGroup[] = [
-    { id: "finance", label: "Finance", metrics: finance },
-    { id: "top_line", label: "Top line", metrics: topLine },
-    { id: "cost", label: "Cost (bottom line)", metrics: cost },
-    { id: "quality", label: "Quality", metrics: qualityMetrics },
-    { id: "inventory", label: "Inventory", metrics: inventoryMetrics },
+    { id: "finance", label: "Finance", href: "/accounting", metrics: finance },
+    { id: "top_line", label: "Top line", href: "/sales", metrics: topLine },
+    { id: "cost", label: "Cost (bottom line)", href: "/labor", metrics: cost },
+    { id: "quality", label: "Quality", href: "/order-quality", metrics: qualityMetrics },
+    { id: "inventory", label: "Inventory", href: "/inventory", metrics: inventoryMetrics },
   ];
 
+  const metrics = groups.flatMap((g) => g.metrics);
   return {
     win,
-    metrics: groups.flatMap((g) => g.metrics),
+    metrics,
     groups,
     windowLabel: win.label,
+    overallStatus: rollupStatus(metrics.filter((m) => m.key !== "cogs")),
   };
 }
 

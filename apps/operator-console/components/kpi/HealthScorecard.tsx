@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { InfoIcon, PencilIcon, CheckIcon, XIcon } from "lucide-react";
+import { InfoIcon, PencilIcon, CheckIcon, XIcon, ChevronRightIcon } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,37 +12,68 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { GoalBar } from "./GoalBar";
 import { saveGoalAction } from "@/app/home/actions";
 import { GOAL_FIELDS, fractionToPercentInput, percentInputToFraction, sanitizeDollarInput } from "@/lib/kpi/goal-fields";
-import type { HealthScorecard as HealthScorecardData, HealthMetric, HealthGroup } from "@/lib/kpi/health";
+import type { HealthScorecard as HealthScorecardData, HealthMetric, HealthGroup, GoalStatus } from "@/lib/kpi/health";
 
-const STATUS_LABEL: Record<string, string> = {
+const STATUS_LABEL: Record<GoalStatus, string> = {
   "on-track": "On track",
   "at-risk": "At risk",
   "off-track": "Off track",
   "no-goal": "No goal set",
 };
 
-// Hierarchical Goal and Tracking (Issue #158): section headers inspired by
-// Stripe Dashboard / Linear Insights — groups without nested card chrome.
-// Mobile: label+badge / value+bar / goal stacked (no overflow strip).
+const OVERALL_LABEL: Record<GoalStatus, string> = {
+  "on-track": "Healthy",
+  "at-risk": "At risk",
+  "off-track": "Needs attention",
+  "no-goal": "Set goals to track",
+};
+
 export function HealthScorecard({ data }: { data: HealthScorecardData }) {
   const groups: HealthGroup[] = data.groups?.length
     ? data.groups
-    : [{ id: "finance", label: "", metrics: data.metrics }];
+    : [{ id: "finance", label: "", href: "/home", metrics: data.metrics }];
+  const overall = data.overallStatus ?? "no-goal";
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          Goal and Tracking — {data.windowLabel}
-        </CardTitle>
+      <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-1">
+          <CardTitle className="text-sm font-medium text-muted-foreground">
+            Goal and Tracking — {data.windowLabel}
+          </CardTitle>
+          <p className="text-lg font-semibold tracking-tight sm:text-xl">
+            Palmetto health:{" "}
+            <span
+              className={
+                overall === "on-track"
+                  ? "text-foreground"
+                  : overall === "no-goal"
+                    ? "text-muted-foreground"
+                    : "text-destructive"
+              }
+            >
+              {OVERALL_LABEL[overall]}
+            </span>
+          </p>
+        </div>
+        <Badge
+          className="w-fit shrink-0 text-sm"
+          variant={overall === "on-track" ? "default" : overall === "no-goal" ? "secondary" : "destructive"}
+        >
+          {STATUS_LABEL[overall]}
+        </Badge>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
         {groups.map((g) => (
           <section key={g.id} className="flex flex-col">
             {g.label ? (
-              <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+              <Link
+                href={g.href}
+                className="mb-2 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80 hover:text-foreground"
+              >
                 {g.label}
-              </h3>
+                <ChevronRightIcon className="size-3.5 opacity-70" />
+              </Link>
             ) : null}
             <div className="flex flex-col divide-y divide-border border-t border-border/60">
               {g.metrics.map((m) => (

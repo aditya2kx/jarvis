@@ -246,14 +246,14 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
   at the top of Inventory / Ordering. Columns: Base, Stock, Vel/day, Days left
   (burn-down from today, ignores future restocks), **Stockout 1 / Restock 1 /
   Qty 1 / Status 1** and **Stockout 2 / Restock 2 / Qty 2 / Status 2**. Restock
-  dates match the same two global slots as Next delivery
-  (`vw_order_reco_next_dates` — Estimated or Actuals). Qty + Status use
-  **Actuals only** (Estimated dates appear but cannot make Fine alone). Stockout
-  2 chains after slot-1 Actuals qty arrives on Restock 1. Status is **Fine**
-  when that slot’s Actuals restock arrives on or before its stockout date;
-  otherwise **Risky**. Rows highlight when Status 1 or Status 2 is Risky.
+  dates are **Actuals only** (up to two future `inventory_restock_orders`
+  dates per base — estimated schedule dates do not appear). Stockout 2 chains
+  after Restock 1 Actuals qty. Status is **Risky** when that slot’s restock is
+  empty or stockout is before the restock date; **Fine** when restock arrives
+  on or before stockout. Rows highlight when Status 1 or Status 2 is Risky.
   Default sort: Days left ascending. Dual-date reco below remains the source
-  for order tubs / weight / Estimated vs Actuals.
+  for order tubs / weight / Estimated vs Actuals (and still shows Estimated
+  schedule dates).
 - **Capacity control** bound to `order_reco_max_tubs` (default 120); editing it
   recomputes the recommendation.
 

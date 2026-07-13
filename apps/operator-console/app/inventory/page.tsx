@@ -22,7 +22,8 @@ const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-ba
 // shared actions; Replace estimated date is console-only.
 //
 // Base runway (migration 036, Issue #164) sits above: burn-down days left
-// from today; Restock 1/2 match Next delivery slots; Actuals-only Status 1/2.
+// from today; Restock 1/2 = up to two future Actuals dates; Status Risky if
+// restock empty or stockout < restock.
 export default async function InventoryPage() {
   let rows: OrderRecoCombinedRow[] = [];
   let runwayRows: BaseRunwayRow[] = [];
@@ -63,11 +64,11 @@ export default async function InventoryPage() {
       meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
     },
     { accessorKey: "Stockout 1", header: "Stockout 1", meta: { format: { kind: "date" } } },
-    { accessorKey: "Restock 1", header: date1 ? `Restock 1 (${date1})` : "Restock 1", meta: { format: { kind: "date" } } },
+    { accessorKey: "Restock 1", header: "Restock 1", meta: { format: { kind: "date" } } },
     { accessorKey: "Qty 1", header: "Qty 1", meta: { format: { kind: "number", digits: 1 } } },
     { accessorKey: "Status 1", header: "Status 1", meta: { format: { kind: "status" } } },
     { accessorKey: "Stockout 2", header: "Stockout 2", meta: { format: { kind: "date" } } },
-    { accessorKey: "Restock 2", header: date2 ? `Restock 2 (${date2})` : "Restock 2", meta: { format: { kind: "date" } } },
+    { accessorKey: "Restock 2", header: "Restock 2", meta: { format: { kind: "date" } } },
     { accessorKey: "Qty 2", header: "Qty 2", meta: { format: { kind: "number", digits: 1 } } },
     { accessorKey: "Status 2", header: "Status 2", meta: { format: { kind: "status" } } },
   ];
@@ -137,11 +138,11 @@ export default async function InventoryPage() {
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">Base runway</h2>
             <p className="mb-2 text-xs text-muted-foreground">
               Days left and Stockout 1 are burn-down from today (ignore future restocks).
-              Restock 1/2 match the Next delivery dates below (schedule Estimated or Actuals).
-              Qty and Status use uploaded Actuals only — Estimated dates appear but cannot make
-              Fine alone. Stockout 2 assumes slot-1 Actuals qty arrived on Restock 1. Status is
-              Fine when that slot&apos;s Actuals restock arrives on or before its stockout date;
-              otherwise Risky. Rows highlight when Status 1 or Status 2 is Risky.
+              Restock 1/2 show uploaded Actuals only (up to two future Actuals dates per base) —
+              estimated schedule dates do not appear here. Stockout 2 assumes Restock 1 Actuals
+              qty arrived on that date. Status is Risky when that slot&apos;s restock is empty or
+              stockout is before the restock date; Fine when restock arrives on or before stockout.
+              Rows highlight when Status 1 or Status 2 is Risky.
             </p>
             <DataTable
               columns={runwayColumns}

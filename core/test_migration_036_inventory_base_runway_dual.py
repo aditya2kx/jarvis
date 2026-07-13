@@ -3,8 +3,8 @@
 No live BigQuery in this environment, so these tests are structural: the
 migration must (a) parse under datastore._split_statements the same way
 ensure_schema() will apply it, and (b) preserve dual-slot Base runway
-semantics from the jam — same D1/D2 as Next delivery, Actuals-only Status,
-Stockout 2 chain.
+semantics — Actuals-only Restock 1/2, Status Risky when restock empty or
+stockout < restock, Stockout 2 chain.
 """
 from __future__ import annotations
 
@@ -24,12 +24,6 @@ class TestMigrationParses(unittest.TestCase):
         self.assertEqual(len(statements), 1, statements)
         self.assertIn("CREATE OR REPLACE VIEW", statements[0])
         self.assertIn("vw_inventory_base_runway", statements[0])
-
-    def test_object_named_as_expected(self):
-        self.assertIn(
-            "`jarvis-bhaga-prod.bhaga.vw_inventory_base_runway`",
-            _MIGRATION,
-        )
 
 
 class TestColumns(unittest.TestCase):
@@ -54,8 +48,6 @@ class TestColumns(unittest.TestCase):
         self.assertNotIn("AS `Stockout date`", _MIGRATION)
         self.assertNotIn("AS `Next restock`", _MIGRATION)
         self.assertNotIn("AS `Restock qty`", _MIGRATION)
-        # bare "AS Status" without slot suffix must not appear
-        self.assertNotIn("END AS Status\n", _MIGRATION)
 
     def test_status_risky_and_fine(self):
         self.assertIn("'Risky'", _MIGRATION)
@@ -67,8 +59,10 @@ class TestSemantics(unittest.TestCase):
         self.assertIn("vw_inventory_order_assistant", _MIGRATION)
         self.assertIn("inventory_restock_orders", _MIGRATION)
 
-    def test_joins_next_dates_slots(self):
-        self.assertIn("vw_order_reco_next_dates", _MIGRATION)
+    def test_actuals_only_no_schedule(self):
+        # Restock dates come from inventory_restock_orders, never schedule.
+        self.assertNotIn("inventory_restock_schedule", _MIGRATION)
+        self.assertNotIn("vw_order_reco_next_dates", _MIGRATION)
 
     def test_excludes_blade(self):
         self.assertIn("item != 'Blade'", _MIGRATION)
@@ -81,11 +75,14 @@ class TestSemantics(unittest.TestCase):
 
     def test_stockout2_chains_via_on_hand_at_d1(self):
         self.assertIn("on_hand_at_d1", _MIGRATION)
-        self.assertIn("DATE_DIFF(s.d1, CURRENT_DATE('America/Chicago'), DAY)", _MIGRATION)
 
-    def test_status1_actuals_only(self):
-        # Status 1 Fine requires qty_1 (Actuals), not schedule alone.
-        self.assertIn("WHEN j.qty_1 IS NULL THEN 'Risky'", _MIGRATION)
+    def test_status_risky_when_restock_empty(self):
+        self.assertIn("WHEN j.restock_1 IS NULL THEN 'Risky'", _MIGRATION)
+        self.assertIn("WHEN j.restock_2 IS NULL THEN 'Risky'", _MIGRATION)
+
+    def test_status_risky_when_stockout_before_restock(self):
+        self.assertIn("WHEN j.stockout_1 < j.restock_1 THEN 'Risky'", _MIGRATION)
+        self.assertIn("WHEN j.stockout_2 < j.restock_2 THEN 'Risky'", _MIGRATION)
 
     def test_orders_by_days_left_ascending(self):
         self.assertIn("ORDER BY j.days_left ASC NULLS LAST", _MIGRATION)

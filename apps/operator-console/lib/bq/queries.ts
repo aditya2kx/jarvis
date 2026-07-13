@@ -542,7 +542,7 @@ export interface BaseRunwayRow {
   "Stockout 2": string | null;
   "Restock 2": string | null;
   "Qty 2": number | null;
-  "Status 2": "Risky" | "Fine" | null;
+  "Status 2": "Risky" | "Fine";
   [key: string]: unknown;
 }
 

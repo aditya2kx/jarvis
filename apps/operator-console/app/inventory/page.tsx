@@ -21,8 +21,8 @@ const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-ba
 // action, converging with the /bhaga-cloud restock Slack path for the three
 // shared actions; Replace estimated date is console-only.
 //
-// Base runway (migration 035, Issue #156) sits above: burn-down days left
-// from today, Actuals-only next restock, Risky/Fine status.
+// Base runway (migration 036, Issue #164) sits above: burn-down days left
+// from today; Restock 1/2 match Next delivery slots; Actuals-only Status 1/2.
 export default async function InventoryPage() {
   let rows: OrderRecoCombinedRow[] = [];
   let runwayRows: BaseRunwayRow[] = [];
@@ -62,10 +62,14 @@ export default async function InventoryPage() {
       header: "Days left",
       meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
     },
-    { accessorKey: "Stockout date", header: "Stockout date", meta: { format: { kind: "date" } } },
-    { accessorKey: "Next restock", header: "Next restock", meta: { format: { kind: "date" } } },
-    { accessorKey: "Restock qty", header: "Restock qty", meta: { format: { kind: "number", digits: 1 } } },
-    { accessorKey: "Status", header: "Status", meta: { format: { kind: "status" } } },
+    { accessorKey: "Stockout 1", header: "Stockout 1", meta: { format: { kind: "date" } } },
+    { accessorKey: "Restock 1", header: date1 ? `Restock 1 (${date1})` : "Restock 1", meta: { format: { kind: "date" } } },
+    { accessorKey: "Qty 1", header: "Qty 1", meta: { format: { kind: "number", digits: 1 } } },
+    { accessorKey: "Status 1", header: "Status 1", meta: { format: { kind: "status" } } },
+    { accessorKey: "Stockout 2", header: "Stockout 2", meta: { format: { kind: "date" } } },
+    { accessorKey: "Restock 2", header: date2 ? `Restock 2 (${date2})` : "Restock 2", meta: { format: { kind: "date" } } },
+    { accessorKey: "Qty 2", header: "Qty 2", meta: { format: { kind: "number", digits: 1 } } },
+    { accessorKey: "Status 2", header: "Status 2", meta: { format: { kind: "status" } } },
   ];
 
   const columns: ColumnDef<OrderRecoCombinedRow>[] = [
@@ -132,17 +136,22 @@ export default async function InventoryPage() {
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">Base runway</h2>
             <p className="mb-2 text-xs text-muted-foreground">
-              Days left and stockout date are burn-down from today (ignore future restocks).
-              Next restock / qty show uploaded Actuals only — estimated schedule dates do not
-              appear here. Status is Fine when an Actuals restock arrives on or before the
-              stockout date; otherwise Risky.
+              Days left and Stockout 1 are burn-down from today (ignore future restocks).
+              Restock 1/2 match the Next delivery dates below (schedule Estimated or Actuals).
+              Qty and Status use uploaded Actuals only — Estimated dates appear but cannot make
+              Fine alone. Stockout 2 assumes slot-1 Actuals qty arrived on Restock 1. Status is
+              Fine when that slot&apos;s Actuals restock arrives on or before its stockout date;
+              otherwise Risky. Rows highlight when Status 1 or Status 2 is Risky.
             </p>
             <DataTable
               columns={runwayColumns}
               data={runwayRows}
               pinLeft={["Base"]}
               initialSorting={[{ id: "Days left", desc: false }]}
-              rowHighlight={{ accessorKey: "Status", equals: "Risky", className: "bg-destructive/5" }}
+              rowHighlight={[
+                { accessorKey: "Status 1", equals: "Risky", className: "bg-destructive/5" },
+                { accessorKey: "Status 2", equals: "Risky", className: "bg-destructive/5" },
+              ]}
             />
           </div>
 

@@ -74,3 +74,4 @@ __pycache__/
 metrics/pr_cost/report.html
 metrics/pr_cost/PR-*.json
 metrics/pr_cost/session-*.json
+metrics/pr_cost/*-pending.jsonl

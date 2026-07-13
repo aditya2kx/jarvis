@@ -9,17 +9,22 @@ export interface GoalField {
   helpText: string;
 }
 
-// Single source of truth for every goal field's editing metadata (used by
-// both the bulk GoalsDrawer and Home's inline per-metric edit). `kind`
-// drives the input adornment ($/%/min) and which conversion function below
-// applies at the storage boundary — health.ts and the /bhaga-cloud Slack
-// `config set` path both read/write the raw fraction for percent goals, so
-// conversion only happens here, never upstream.
-//
-// Issue #158 Home scorecard fields only — legacy food-cost / on-time /
-// runway keys remain in GOAL_KEYS for Slack writes but are not in this
-// drawer list.
+// Home Goal and Tracking hierarchy (Issue #158 operator feedback) — Finance /
+// Top line / Cost / Quality / Inventory. Legacy food-cost / on-time / runway /
+// labor-% keys remain in GOAL_KEYS for Slack but are not in this drawer list.
 export const GOAL_FIELDS: GoalField[] = [
+  {
+    key: "goal_cash_flow_weekly",
+    label: "Cash flow — weekly target",
+    kind: "dollars",
+    helpText: "Net sales − Plaid outflows, weekly, e.g. 12000",
+  },
+  {
+    key: "goal_cash_flow_monthly",
+    label: "Cash flow — monthly target",
+    kind: "dollars",
+    helpText: "Net sales − Plaid outflows, monthly, e.g. 50000",
+  },
   {
     key: "goal_net_sales_weekly",
     label: "Net sales — weekly target",
@@ -33,16 +38,52 @@ export const GOAL_FIELDS: GoalField[] = [
     helpText: "Monthly net sales target, e.g. 75000",
   },
   {
-    key: "goal_hourly_labor_pct_max",
-    label: "Part-time labor % of net sales — max",
-    kind: "percent",
-    helpText: "Enter a whole percent, e.g. 12. Hourly / part-time labor only.",
+    key: "goal_orders_weekly",
+    label: "Orders — weekly target",
+    kind: "count",
+    helpText: "Weekly order count target, e.g. 900",
   },
   {
-    key: "goal_labor_pct_max",
-    label: "Total labor % of net sales — max",
-    kind: "percent",
-    helpText: "Enter a whole percent, e.g. 15. Total labor: hourly + salaried/manager.",
+    key: "goal_orders_monthly",
+    label: "Orders — monthly target",
+    kind: "count",
+    helpText: "Monthly order count target, e.g. 3600",
+  },
+  {
+    key: "goal_total_cost_weekly",
+    label: "Total known cost — weekly max",
+    kind: "dollars",
+    helpText: "Labor + Plaid ops (excludes COGS). Weekly max, e.g. 10000",
+  },
+  {
+    key: "goal_total_cost_monthly",
+    label: "Total known cost — monthly max",
+    kind: "dollars",
+    helpText: "Labor + Plaid ops (excludes COGS). Monthly max, e.g. 40000",
+  },
+  {
+    key: "goal_labor_cost_weekly",
+    label: "Labor cost — weekly max",
+    kind: "dollars",
+    helpText: "Total labor $ weekly max, e.g. 4500",
+  },
+  {
+    key: "goal_labor_cost_monthly",
+    label: "Labor cost — monthly max",
+    kind: "dollars",
+    helpText: "Total labor $ monthly max, e.g. 18000",
+  },
+  {
+    key: "goal_ops_cost_weekly",
+    label: "Operations / other — weekly max",
+    kind: "dollars",
+    helpText: "Plaid outflows weekly max, e.g. 5000",
+  },
+  {
+    key: "goal_ops_cost_monthly",
+    label: "Operations / other — monthly max",
+    kind: "dollars",
+    helpText: "Plaid outflows monthly max, e.g. 20000",
   },
   {
     key: "goal_kds_p95_min",

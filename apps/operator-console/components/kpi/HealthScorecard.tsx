@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { GoalBar } from "./GoalBar";
 import { saveGoalAction } from "@/app/home/actions";
 import { GOAL_FIELDS, fractionToPercentInput, percentInputToFraction, sanitizeDollarInput } from "@/lib/kpi/goal-fields";
-import type { HealthScorecard as HealthScorecardData, HealthMetric } from "@/lib/kpi/health";
+import type { HealthScorecard as HealthScorecardData, HealthMetric, HealthGroup } from "@/lib/kpi/health";
 
 const STATUS_LABEL: Record<string, string> = {
   "on-track": "On track",
@@ -20,10 +20,14 @@ const STATUS_LABEL: Record<string, string> = {
   "no-goal": "No goal set",
 };
 
-// Mobile-first layout (Issue #158 operator feedback): label+badge on row 1,
-// actual + bar on row 2, goal edit on row 3 — never squeeze value/bar/goal/badge
-// into one overflowing horizontal strip at ~390px.
+// Hierarchical Goal and Tracking (Issue #158): section headers inspired by
+// Stripe Dashboard / Linear Insights — groups without nested card chrome.
+// Mobile: label+badge / value+bar / goal stacked (no overflow strip).
 export function HealthScorecard({ data }: { data: HealthScorecardData }) {
+  const groups: HealthGroup[] = data.groups?.length
+    ? data.groups
+    : [{ id: "finance", label: "", metrics: data.metrics }];
+
   return (
     <Card>
       <CardHeader>
@@ -31,9 +35,20 @@ export function HealthScorecard({ data }: { data: HealthScorecardData }) {
           Goal and Tracking — {data.windowLabel}
         </CardTitle>
       </CardHeader>
-      <CardContent className="flex flex-col divide-y divide-border">
-        {data.metrics.map((m) => (
-          <MetricRow key={m.key} metric={m} />
+      <CardContent className="flex flex-col gap-5">
+        {groups.map((g) => (
+          <section key={g.id} className="flex flex-col">
+            {g.label ? (
+              <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+                {g.label}
+              </h3>
+            ) : null}
+            <div className="flex flex-col divide-y divide-border border-t border-border/60">
+              {g.metrics.map((m) => (
+                <MetricRow key={m.key} metric={m} />
+              ))}
+            </div>
+          </section>
         ))}
       </CardContent>
     </Card>
@@ -47,9 +62,11 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
   const [isPending, startTransition] = useTransition();
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const field = GOAL_FIELDS.find((f) => f.key === m.goalKey)!;
+  const field = m.goalKey ? GOAL_FIELDS.find((f) => f.key === m.goalKey) : undefined;
+  const editable = Boolean(field && m.goalKey);
 
   function startEdit() {
+    if (!field) return;
     const raw = m.rawGoal ?? "";
     setInputValue(field.kind === "percent" ? fractionToPercentInput(raw) : raw);
     setSaveError(null);
@@ -57,10 +74,11 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
   }
 
   function save() {
+    if (!field || !m.goalKey) return;
     const stored = field.kind === "percent" ? percentInputToFraction(inputValue) : inputValue;
     startTransition(async () => {
       try {
-        await saveGoalAction(m.goalKey, stored);
+        await saveGoalAction(m.goalKey!, stored);
         setEditing(false);
         router.refresh();
       } catch (e) {
@@ -70,7 +88,7 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
   }
 
   return (
-    <div className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0">
+    <div className="flex flex-col gap-2 py-3 pl-2 first:pt-3 last:pb-0 sm:pl-3">
       <div className="flex items-start justify-between gap-2">
         <span className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
           <span className="truncate">{m.label}</span>
@@ -94,14 +112,14 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
       </div>
 
       <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-        <span className="w-[4.5rem] shrink-0 text-base font-semibold tabular-nums sm:w-24 sm:text-lg">
+        <span className="w-[5.5rem] shrink-0 text-base font-semibold tabular-nums sm:w-28 sm:text-lg">
           {m.formatted}
         </span>
         <GoalBar status={m.status} pace={m.pace} />
       </div>
 
       <div className="flex items-center gap-1 text-xs text-muted-foreground">
-        {editing ? (
+        {editable && editing && field ? (
           <div className="flex items-center gap-1">
             <div className="relative w-24">
               <Input
@@ -140,9 +158,11 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
         ) : (
           <>
             <span>goal {m.goalFormatted}</span>
-            <button type="button" aria-label={`Edit ${m.label} goal`} onClick={startEdit} className="text-muted-foreground/70 hover:text-foreground">
-              <PencilIcon className="size-3" />
-            </button>
+            {editable ? (
+              <button type="button" aria-label={`Edit ${m.label} goal`} onClick={startEdit} className="text-muted-foreground/70 hover:text-foreground">
+                <PencilIcon className="size-3" />
+              </button>
+            ) : null}
           </>
         )}
       </div>

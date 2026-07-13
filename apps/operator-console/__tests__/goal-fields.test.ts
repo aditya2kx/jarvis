@@ -64,12 +64,15 @@ describe("sanitizeDollarInput", () => {
 });
 
 describe("GOAL_FIELDS", () => {
-  it("tags Home percent-kind goals that convert via fraction helpers", () => {
+  it("Home drawer is dollars/count/minutes (no percent labor rows after hierarchy redesign)", () => {
     const percentKeys = GOAL_FIELDS.filter((f) => f.kind === "percent").map((f) => f.key);
-    expect(percentKeys).toEqual(["goal_hourly_labor_pct_max", "goal_labor_pct_max"]);
+    expect(percentKeys).toEqual([]);
   });
 
-  it("includes p95 minutes and bases-at-risk count fields", () => {
+  it("includes hierarchy goals: cash flow, orders, cost dollars, p95, bases at risk", () => {
+    expect(GOAL_FIELDS.find((f) => f.key === "goal_cash_flow_weekly")?.kind).toBe("dollars");
+    expect(GOAL_FIELDS.find((f) => f.key === "goal_orders_weekly")?.kind).toBe("count");
+    expect(GOAL_FIELDS.find((f) => f.key === "goal_labor_cost_weekly")?.kind).toBe("dollars");
     expect(GOAL_FIELDS.find((f) => f.key === "goal_kds_p95_min")?.kind).toBe("minutes");
     expect(GOAL_FIELDS.find((f) => f.key === "goal_bases_at_risk_max")?.kind).toBe("count");
   });

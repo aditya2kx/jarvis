@@ -4,6 +4,7 @@ import {
   storeConfig,
   orderQualityDaily,
   baseRunway,
+  plaidSpendByCategory,
   type LaborDailyRow,
   type StoreConfigRow,
 } from "@/lib/bq/queries";
@@ -16,6 +17,8 @@ import { avgPrepP95Min, countRiskyBases, paceFor, statusFor } from "@/lib/kpi/sc
 export type { GoalStatus };
 export { avgPrepP95Min, countRiskyBases, paceFor, statusFor };
 
+export type ScorecardGroupId = "finance" | "top_line" | "cost" | "quality" | "inventory";
+
 export interface HealthMetric {
   key: string;
   label: string;
@@ -25,16 +28,18 @@ export interface HealthMetric {
   pace: number | null;
   formatted: string;
   goalFormatted: string;
-  /** `store_config` key an inline edit on this metric writes — see
-   *  components/kpi/HealthScorecard.tsx's pencil-edit + goal-fields.ts. */
-  goalKey: GoalKey;
-  /** Raw `store_config` string value (not the parsed `goal` number) — the
-   *  inline edit needs this to prefill in the field's own input units
-   *  (e.g. GoalsDrawer/HealthScorecard convert a percent fraction to a
-   *  whole-percent display string from this, not from `goal`). */
+  /** Null when the row is not editable (e.g. COGS not instrumented). */
+  goalKey: GoalKey | null;
   rawGoal: string | undefined;
-  /** One-line explanation shown behind the metric's info tooltip. */
   info: string;
+  /** Indent under a section header (Stripe / Linear Insights style). */
+  nested?: boolean;
+}
+
+export interface HealthGroup {
+  id: ScorecardGroupId;
+  label: string;
+  metrics: HealthMetric[];
 }
 
 function goalValue(config: StoreConfigRow[], key: string): number | null {
@@ -46,88 +51,175 @@ function goalRaw(config: StoreConfigRow[], key: string): string | undefined {
   return config.find((r) => r.key === key)?.value;
 }
 
+function periodGoal(
+  config: StoreConfigRow[],
+  win: DateWindow,
+  weekly: GoalKey,
+  monthly: GoalKey,
+): { key: GoalKey; value: number | null; raw: string | undefined } {
+  const key = isMonthLike(win.preset) ? monthly : weekly;
+  return { key, value: goalValue(config, key), raw: goalRaw(config, key) };
+}
+
 export interface HealthScorecard {
   win: DateWindow;
+  /** Flat list (tests / callers that don't need hierarchy). */
   metrics: HealthMetric[];
+  /** Sectioned hierarchy for the Home UI. */
+  groups: HealthGroup[];
   windowLabel: string;
 }
 
+function metric(partial: HealthMetric): HealthMetric {
+  return { nested: true, ...partial };
+}
+
 export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorecard> {
-  const [rows, config, quality, runway] = await Promise.all([
+  const [rows, config, quality, runway, plaidCats] = await Promise.all([
     laborDaily(win),
     storeConfig(DEFAULT_STORE),
     orderQualityDaily(win),
     baseRunway(),
+    plaidSpendByCategory(win).catch(() => []),
   ]);
 
   const netSales = sum(rows, (r) => r.net_sales);
   const laborCost = sum(rows, (r) => r.total_labor_cost);
-  const hourlyLaborCost = sum(rows, (r) => Number(r.hourly_labor_cost ?? 0));
-  const laborPct = netSales && laborCost != null ? laborCost / netSales : null;
-  const hourlyLaborPct =
-    netSales && hourlyLaborCost != null ? hourlyLaborCost / netSales : null;
+  const orders = sum(rows, (r) => r.orders);
+  const opsCost = plaidCats.reduce((s, c) => s + (c.spend ?? 0), 0);
+  // Known costs only — COGS not instrumented (no silent fake).
+  const totalKnownCost =
+    laborCost == null && !plaidCats.length
+      ? null
+      : (laborCost ?? 0) + opsCost;
+  const cashFlow =
+    netSales == null && !plaidCats.length ? null : (netSales ?? 0) - opsCost;
 
   const prepP95 = avgPrepP95Min(quality);
   const riskyCount = countRiskyBases(runway);
 
-  const netSalesGoalKey: GoalKey = isMonthLike(win.preset)
-    ? "goal_net_sales_monthly"
-    : "goal_net_sales_weekly";
-  const goalNetSales = goalValue(config, netSalesGoalKey);
-  const goalHourlyLaborMax = goalValue(config, "goal_hourly_labor_pct_max");
-  const goalLaborPctMax = goalValue(config, "goal_labor_pct_max");
+  const gCash = periodGoal(config, win, "goal_cash_flow_weekly", "goal_cash_flow_monthly");
+  const gSales = periodGoal(config, win, "goal_net_sales_weekly", "goal_net_sales_monthly");
+  const gOrders = periodGoal(config, win, "goal_orders_weekly", "goal_orders_monthly");
+  const gLabor$ = periodGoal(config, win, "goal_labor_cost_weekly", "goal_labor_cost_monthly");
+  const gOps = periodGoal(config, win, "goal_ops_cost_weekly", "goal_ops_cost_monthly");
+  const gTotal = periodGoal(config, win, "goal_total_cost_weekly", "goal_total_cost_monthly");
   const goalPrepP95 = goalValue(config, "goal_kds_p95_min");
   const goalRiskyMax = goalValue(config, "goal_bases_at_risk_max");
 
-  const netSalesPace = paceFor(netSales, goalNetSales, false);
-  const hourlyLaborPace = paceFor(hourlyLaborPct, goalHourlyLaborMax, true);
-  const laborPctPace = paceFor(laborPct, goalLaborPctMax, true);
+  const cashPace = paceFor(cashFlow, gCash.value, false);
+  const salesPace = paceFor(netSales, gSales.value, false);
+  const ordersPace = paceFor(orders, gOrders.value, false);
+  const laborPace = paceFor(laborCost, gLabor$.value, true);
+  const opsPace = paceFor(opsCost, gOps.value, true);
+  const totalPace = paceFor(totalKnownCost, gTotal.value, true);
   const prepPace = paceFor(prepP95, goalPrepP95, true);
   const riskyPace = paceFor(riskyCount, goalRiskyMax, true);
 
-  const metrics: HealthMetric[] = [
-    {
+  const finance: HealthMetric[] = [
+    metric({
+      key: "cash_flow",
+      label: "Cash flow",
+      actual: cashFlow,
+      goal: gCash.value,
+      status: statusFor(cashPace),
+      pace: cashPace,
+      formatted: fmtDollars(cashFlow),
+      goalFormatted: fmtDollars(gCash.value),
+      goalKey: gCash.key,
+      rawGoal: gCash.raw,
+      info: "Square net sales minus Plaid bank outflows for the period. Needs a linked bank for the spend side.",
+    }),
+  ];
+
+  const topLine: HealthMetric[] = [
+    metric({
       key: "net_sales",
       label: "Net sales",
       actual: netSales,
-      goal: goalNetSales,
-      status: statusFor(netSalesPace),
-      pace: netSalesPace,
+      goal: gSales.value,
+      status: statusFor(salesPace),
+      pace: salesPace,
       formatted: fmtDollars(netSales),
-      goalFormatted: fmtDollars(goalNetSales),
-      goalKey: netSalesGoalKey,
-      rawGoal: goalRaw(config, netSalesGoalKey),
+      goalFormatted: fmtDollars(gSales.value),
+      goalKey: gSales.key,
+      rawGoal: gSales.raw,
       info: isMonthLike(win.preset)
-        ? "Total net sales for the selected period vs the monthly target (goal_net_sales_monthly)."
-        : "Total net sales for the selected period vs the weekly target (goal_net_sales_weekly).",
-    },
-    {
-      key: "hourly_labor_pct",
-      label: "Labor % — part-time",
-      actual: hourlyLaborPct,
-      goal: goalHourlyLaborMax,
-      status: statusFor(hourlyLaborPace),
-      pace: hourlyLaborPace,
-      formatted: fmtPct(hourlyLaborPct),
-      goalFormatted: fmtPct(goalHourlyLaborMax),
-      goalKey: "goal_hourly_labor_pct_max",
-      rawGoal: goalRaw(config, "goal_hourly_labor_pct_max"),
-      info: "Hourly / part-time labor cost as a % of net sales — same breakout as the Labor page PT series.",
-    },
-    {
-      key: "labor_pct",
-      label: "Labor % — total",
-      actual: laborPct,
-      goal: goalLaborPctMax,
-      status: statusFor(laborPctPace),
-      pace: laborPctPace,
-      formatted: fmtPct(laborPct),
-      goalFormatted: fmtPct(goalLaborPctMax),
-      goalKey: "goal_labor_pct_max",
-      rawGoal: goalRaw(config, "goal_labor_pct_max"),
-      info: "Total labor (hourly staff + salaried/manager) as a % of net sales.",
-    },
-    {
+        ? "Total net sales vs goal_net_sales_monthly."
+        : "Total net sales vs goal_net_sales_weekly.",
+    }),
+    metric({
+      key: "orders",
+      label: "# of orders",
+      actual: orders,
+      goal: gOrders.value,
+      status: statusFor(ordersPace),
+      pace: ordersPace,
+      formatted: orders == null ? "—" : orders.toLocaleString("en-US"),
+      goalFormatted: gOrders.value == null ? "—" : gOrders.value.toLocaleString("en-US"),
+      goalKey: gOrders.key,
+      rawGoal: gOrders.raw,
+      info: "Sum of orders from vw_model_labor_daily over the selected period.",
+    }),
+  ];
+
+  const cost: HealthMetric[] = [
+    metric({
+      key: "total_cost",
+      label: "Total cost (known)",
+      actual: totalKnownCost,
+      goal: gTotal.value,
+      status: statusFor(totalPace),
+      pace: totalPace,
+      formatted: fmtDollars(totalKnownCost),
+      goalFormatted: fmtDollars(gTotal.value),
+      goalKey: gTotal.key,
+      rawGoal: gTotal.raw,
+      info: "Labor $ + Plaid operations spend. Excludes COGS until food-cost / inventory COGS is instrumented.",
+    }),
+    metric({
+      key: "labor_cost",
+      label: "Labor cost",
+      actual: laborCost,
+      goal: gLabor$.value,
+      status: statusFor(laborPace),
+      pace: laborPace,
+      formatted: fmtDollars(laborCost),
+      goalFormatted: fmtDollars(gLabor$.value),
+      goalKey: gLabor$.key,
+      rawGoal: gLabor$.raw,
+      info: "Total labor dollars (hourly + salaried) from vw_model_labor_daily.",
+    }),
+    metric({
+      key: "cogs",
+      label: "Cost of goods",
+      actual: null,
+      goal: null,
+      status: "no-goal",
+      pace: null,
+      formatted: "—",
+      goalFormatted: "—",
+      goalKey: null,
+      rawGoal: undefined,
+      info: "Not instrumented yet — no silent placeholder. Follow-up when consumed COGS / food-cost lands.",
+    }),
+    metric({
+      key: "ops_cost",
+      label: "Operations / other",
+      actual: opsCost,
+      goal: gOps.value,
+      status: statusFor(opsPace),
+      pace: opsPace,
+      formatted: fmtDollars(opsCost),
+      goalFormatted: fmtDollars(gOps.value),
+      goalKey: gOps.key,
+      rawGoal: gOps.raw,
+      info: "Plaid bank outflows (PFC rollup) for the period — interim stand-in for ops/other until custom taxonomy (#160).",
+    }),
+  ];
+
+  const qualityMetrics: HealthMetric[] = [
+    metric({
       key: "prep_p95_min",
       label: "Prep time p95",
       actual: prepP95,
@@ -138,9 +230,12 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       goalFormatted: fmtMinutes(goalPrepP95),
       goalKey: "goal_kds_p95_min",
       rawGoal: goalRaw(config, "goal_kds_p95_min"),
-      info: "Mean daily KDS per-item p95 prep minutes over the period (vw_order_quality_daily.kds_p95_min). Goal default 8.",
-    },
-    {
+      info: "Mean daily KDS per-item p95 prep minutes (vw_order_quality_daily). Goal default 8.",
+    }),
+  ];
+
+  const inventoryMetrics: HealthMetric[] = [
+    metric({
       key: "bases_at_risk",
       label: "Bases at risk",
       actual: riskyCount,
@@ -151,13 +246,22 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       goalFormatted: goalRiskyMax == null ? "—" : String(goalRiskyMax),
       goalKey: "goal_bases_at_risk_max",
       rawGoal: goalRaw(config, "goal_bases_at_risk_max"),
-      info: "Count of bases with Status=Risky on Inventory Base runway (stockout before next Actuals restock). Goal is usually 0.",
-    },
+      info: "Count of bases with Status=Risky on Inventory Base runway. Goal is usually 0.",
+    }),
+  ];
+
+  const groups: HealthGroup[] = [
+    { id: "finance", label: "Finance", metrics: finance },
+    { id: "top_line", label: "Top line", metrics: topLine },
+    { id: "cost", label: "Cost (bottom line)", metrics: cost },
+    { id: "quality", label: "Quality", metrics: qualityMetrics },
+    { id: "inventory", label: "Inventory", metrics: inventoryMetrics },
   ];
 
   return {
     win,
-    metrics,
+    metrics: groups.flatMap((g) => g.metrics),
+    groups,
     windowLabel: win.label,
   };
 }
@@ -169,10 +273,6 @@ function sum(rows: LaborDailyRow[], pick: (r: LaborDailyRow) => number | null | 
 
 function fmtDollars(n: number | null): string {
   return n == null ? "—" : n.toLocaleString("en-US", { style: "currency", currency: "USD" });
-}
-
-function fmtPct(n: number | null): string {
-  return n == null ? "—" : `${(n * 100).toFixed(1)}%`;
 }
 
 function fmtMinutes(n: number | null): string {

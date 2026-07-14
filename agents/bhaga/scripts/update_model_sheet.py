@@ -617,13 +617,13 @@ def _read_training_excluded_from_sheet(
 
 def _read_training_shifts_from_sheet(
     *, spreadsheet_id: str, store: str
-) -> set[tuple[str, str]]:
-    """Read training shifts from BQ training_shifts table (BQ-canonical).
+) -> dict[tuple[str, str], dict[str, str | None]]:
+    """Read tip exemptions from BQ training_shifts (BQ-canonical).
 
     The ``spreadsheet_id`` parameter is kept for call-site compatibility but
     is no longer used — reads come from BQ via model_inputs.read_training_shifts.
 
-    Returns set of (canonical_name, 'YYYY-MM-DD').
+    Returns {(canonical_name, 'YYYY-MM-DD'): {exempt_start, exempt_end, note}}.
     """
     from agents.bhaga.scripts import model_inputs
     return model_inputs.read_training_shifts(store)
@@ -763,24 +763,85 @@ def _is_excluded(
     *,
     permanent: set[str],
     training_through: dict[str, datetime.date],
-    training_shifts: set[tuple[str, str]] | None = None,
+    training_shifts: (
+        set[tuple[str, str]] | dict[tuple[str, str], dict] | None
+    ) = None,
 ) -> bool:
-    """Single-source exclusion check used by every tab builder.
+    """Whole-day tip exclusion check (permanent / through-date / whole-shift).
 
     - Permanent: always excluded (manager, etc.)
     - Training (bulk): excluded on or before their `last_training_date`.
-    - Training (per-shift): the exact `(employee, date)` is marked in the
-      `training_shifts` overlay tab — the precise complement to the bulk
-      through-date (e.g. a new hire's first 1-2 worked days).
+    - Tip exemption (per-shift): whole-day marks only. Partial time windows
+      are handled by `_eligible_tip_hours_for_shift` (Issue #167) — they do
+      NOT flip this bool to True (employee still tips on non-exempt hours).
+
+    ``training_shifts`` may be a legacy ``set[(name, date)]`` (all whole-day)
+    or the dict shape from ``read_training_shifts``.
     """
     if employee_name in permanent:
         return True
     last = training_through.get(employee_name)
     if last is not None and date_iso <= last.isoformat():
         return True
-    if training_shifts and (employee_name, date_iso) in training_shifts:
-        return True
-    return False
+    if not training_shifts:
+        return False
+    key = (employee_name, date_iso)
+    if isinstance(training_shifts, set):
+        return key in training_shifts
+    meta = training_shifts.get(key)
+    if meta is None:
+        return False
+    start = meta.get("exempt_start") if isinstance(meta, dict) else None
+    end = meta.get("exempt_end") if isinstance(meta, dict) else None
+    if isinstance(start, str):
+        start = start.strip() or None
+    if isinstance(end, str):
+        end = end.strip() or None
+    return start is None and end is None
+
+
+def _eligible_tip_hours_for_shift(
+    shift: dict,
+    *,
+    permanent: set[str],
+    training_through: dict[str, datetime.date],
+    training_shifts: (
+        set[tuple[str, str]] | dict[tuple[str, str], dict] | None
+    ) = None,
+) -> float:
+    """Tip-eligible hours for one ADP shift after permanent/through/window marks."""
+    emp = shift["employee_name"]
+    date_iso = shift["date"]
+    total = float(shift.get("total_hours") or 0.0)
+    if _is_excluded(
+        emp, date_iso,
+        permanent=permanent, training_through=training_through,
+        training_shifts=None,  # permanent/through only here; overlay below
+    ):
+        return 0.0
+    if not training_shifts:
+        return total
+    key = (emp, date_iso)
+    if isinstance(training_shifts, set):
+        return 0.0 if key in training_shifts else total
+    meta = training_shifts.get(key)
+    if meta is None:
+        return total
+    start = meta.get("exempt_start")
+    end = meta.get("exempt_end")
+    if isinstance(start, str):
+        start = start.strip() or None
+    if isinstance(end, str):
+        end = end.strip() or None
+    whole = start is None and end is None
+    return _tip_hours_after_exemption(
+        total,
+        shift.get("in_time") or "",
+        shift.get("out_time") or "",
+        whole_day=whole,
+        exempt_start=start,
+        exempt_end=end,
+    )
 
 
 def _period_length_days(pay_frequency: str) -> int:
@@ -1273,7 +1334,9 @@ def build_daily_rows(
     shifts: list[dict],
     excluded: set[str],
     training_through: dict[str, datetime.date] | None = None,
-    training_shifts: set[tuple[str, str]] | None = None,
+    training_shifts: (
+        set[tuple[str, str]] | dict[tuple[str, str], dict] | None
+    ) = None,
     now_ct: datetime.datetime | None = None,
 ) -> tuple[list[list], dict[str, dict]]:
     training_through = training_through or {}
@@ -1283,11 +1346,15 @@ def build_daily_rows(
     for s in shifts:
         d = s["date"]
         daily_hours_all[d] = daily_hours_all.get(d, 0.0) + s.get("total_hours", 0.0)
-        if _is_excluded(s["employee_name"], d,
-                        permanent=excluded, training_through=training_through,
-                        training_shifts=training_shifts):
+        eligible = _eligible_tip_hours_for_shift(
+            s,
+            permanent=excluded,
+            training_through=training_through,
+            training_shifts=training_shifts,
+        )
+        if eligible <= 0:
             continue
-        daily_hours_excl[d] = daily_hours_excl.get(d, 0.0) + s.get("total_hours", 0.0)
+        daily_hours_excl[d] = daily_hours_excl.get(d, 0.0) + eligible
 
     all_dates = sorted(set(sales.keys()) | set(daily_hours_all.keys()))
     # Same in-progress filter as build_labor_daily_rows — see that function's
@@ -1334,6 +1401,69 @@ def build_daily_rows(
             "txn_count": s["transaction_count"],
         }
     return rows, summary
+
+
+def _parse_hhmm_to_minutes(raw: str) -> int | None:
+    """Parse 'HH:MM' (or 'H:MM') to minutes since midnight; None if malformed."""
+    try:
+        parts = (raw or "").strip().split(":")
+        if len(parts) < 2:
+            return None
+        h, m = int(parts[0]), int(parts[1])
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            return None
+        return h * 60 + m
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _overlap_hours(
+    in_time: str, out_time: str, exempt_start: str, exempt_end: str,
+) -> float:
+    """Hours of [exempt_start, exempt_end) overlapping [in_time, out_time).
+
+    Malformed / inverted / empty → 0.0. No overnight wrap (same contract as
+    `_spread_shift_minutes_by_hour`). Used for partial tip-exemption windows
+    (Issue #167).
+    """
+    shift_start = _parse_hhmm_to_minutes(in_time)
+    shift_end = _parse_hhmm_to_minutes(out_time)
+    win_start = _parse_hhmm_to_minutes(exempt_start)
+    win_end = _parse_hhmm_to_minutes(exempt_end)
+    if None in (shift_start, shift_end, win_start, win_end):
+        return 0.0
+    if shift_end <= shift_start or win_end <= win_start:
+        return 0.0
+    overlap_start = max(shift_start, win_start)
+    overlap_end = min(shift_end, win_end)
+    if overlap_end <= overlap_start:
+        return 0.0
+    return (overlap_end - overlap_start) / 60.0
+
+
+def _tip_hours_after_exemption(
+    total_hours: float,
+    in_time: str,
+    out_time: str,
+    *,
+    whole_day: bool,
+    exempt_start: str | None,
+    exempt_end: str | None,
+) -> float:
+    """Tip-eligible hours after applying a tip-exemption mark.
+
+    whole_day=True → 0 tip hours (legacy training_shifts row).
+    Window with both times → total_hours minus overlap (floor at 0).
+    Missing window times (and not whole_day) → unchanged total_hours.
+    """
+    if whole_day:
+        return 0.0
+    if not exempt_start or not exempt_end:
+        return float(total_hours)
+    return max(
+        0.0,
+        float(total_hours) - _overlap_hours(in_time, out_time, exempt_start, exempt_end),
+    )
 
 
 def _spread_shift_minutes_by_hour(in_time: str, out_time: str) -> dict[int, float]:
@@ -2377,10 +2507,12 @@ def build_period_results(
     excluded: set[str],
     square_data_start: str,
     training_through: dict[str, datetime.date] | None = None,
-    training_shifts: set[tuple[str, str]] | None = None,
+    training_shifts: (
+        set[tuple[str, str]] | dict[tuple[str, str], dict] | None
+    ) = None,
 ) -> list[dict]:
-    training_through = training_through or {}
     """Run the allocator for each period; return list of period result dicts."""
+    training_through = training_through or {}
     out: list[dict] = []
     for p in periods:
         start, end = p["start"], p["end"]
@@ -2395,12 +2527,16 @@ def build_period_results(
         for s in shifts:
             if not (start <= s["date"] <= end):
                 continue
-            if _is_excluded(s["employee_name"], s["date"],
-                            permanent=excluded, training_through=training_through,
-                            training_shifts=training_shifts):
+            eligible = _eligible_tip_hours_for_shift(
+                s,
+                permanent=excluded,
+                training_through=training_through,
+                training_shifts=training_shifts,
+            )
+            if eligible <= 0:
                 continue
             k = (s["employee_name"], s["date"])
-            daily_hours[k] = daily_hours.get(k, 0.0) + s.get("total_hours", 0.0)
+            daily_hours[k] = daily_hours.get(k, 0.0) + eligible
 
         daily_tips_cents: dict[str, int] = {}
         for t in txns:
@@ -2634,16 +2770,18 @@ def main() -> int:
         for n, d in sorted(training_through.items()):
             print(f"    {n}: {d.isoformat()}")
 
-    # Per-shift training overlay (config-free; human-owned `training_shifts` tab).
-    # Precise complement to the bulk through-date above — marks individual
-    # (employee, date) shifts as training (tips-only, redistribute).
+    # Per-shift tip exemptions (BQ training_shifts; whole-day or time window).
     training_shifts = _read_training_shifts_from_sheet(
         spreadsheet_id=model_sid, store=args.store
     )
     if training_shifts:
-        print("# per-shift training exclusions in effect (canonical_name, date):")
-        for n, d in sorted(training_shifts):
-            print(f"    {n}: {d}")
+        print("# tip exemptions in effect (canonical_name, date → window|whole):")
+        for (n, d), meta in sorted(training_shifts.items()):
+            start, end = meta.get("exempt_start"), meta.get("exempt_end")
+            if start and end:
+                print(f"    {n}: {d} window {start}-{end}")
+            else:
+                print(f"    {n}: {d} whole-day")
 
     # ARCHITECTURE: model sheet reads canonical data from RAW SHEETS only
     # (default) OR from BigQuery when --data-source=bigquery.

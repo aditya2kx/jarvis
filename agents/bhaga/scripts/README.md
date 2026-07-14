@@ -318,24 +318,27 @@ pattern:
 > Rule of thumb: if a model tab can exceed ~1–2k rows or grows unbounded with history, use Recipe D
 > (incremental upsert + gap-scoped recompute), not the default clear-and-write of Recipe B.
 
-### Recipe E — exempt an employee/shift from the tip pool
+### Recipe E — tip exemptions (whole shift or time window)
 
-All exclusions funnel through **one chokepoint**, `_is_excluded(employee, date, ...)` in
-`update_model_sheet.py`. An excluded `(employee, date)` is dropped from that day's **tip hours
-denominator only** (labor% is unaffected), so the full pool redistributes to the other tipped staff.
-There are three sources, all sheet-driven (no code change to add an exemption):
+Tip eligibility is reduced via `_eligible_tip_hours_for_shift` / `_is_excluded` in
+`update_model_sheet.py`. Permanent / through-date exclusions drop the whole day from the tip
+denominator; per-shift rows in `bhaga.training_shifts` may be **whole-day** (`exempt_start` /
+`exempt_end` NULL) or a **partial window** (both HH:MM set) — only the overlap with the ADP
+shift clock is subtracted (Issue #167). Labor% is unaffected either way.
 
 | Source | Where | Granularity | Use for |
 |---|---|---|---|
 | `excluded_from_tip_pool` | `bhaga.store_config` (BQ) | permanent | managers/owners who never tip-pool |
 | `training_excluded:<name>` | `bhaga.store_config` (BQ) | through a date (inclusive) | bulk "all shifts up to date X were training" |
-| `training_shifts` BQ table | `bhaga.training_shifts` | one `(store, employee, date)` | precise per-shift training marks |
+| `training_shifts` BQ table | `bhaga.training_shifts` | one `(store, employee, date)` ± optional window | tip exemptions (training, meetings, …) |
 
-**BQ-canonical (post-2026-06-15 Sheets exit):** read by `model_inputs.read_training_shifts()` (returns
-`set[(canonical_name, date_iso)]`). All human inputs live in BigQuery; operators edit via
-`/bhaga-cloud` Slack commands. No Sheet editing needed.
+**BQ-canonical:** `model_inputs.read_training_shifts()` returns
+`{(canonical_name, date_iso): {exempt_start, exempt_end, note}}`. Operators edit via the
+**Operator Console → Payroll → Detail → Tip Exemptions** editor (open pay period only; batch
+Update + Cloud Run recompute). Slack `/bhaga-cloud training set/rm` still writes whole-day rows
+(NULL times). Orphan windows (no ADP shift yet) are stored and apply when the shift lands.
 
-**Ingesting new training-shift rows from the Sheet (one-time / backfill):** use
+**Ingesting historical rows from a Sheet (one-time / backfill):** use
 `migrate_inputs_to_bq.py`.  By default (`open_period_only=True`) the script only ingests rows whose
 date falls in the **current open pay period** and skips closed/paid-period rows with a clear
 `[migrate] SKIP closed-period:` breadcrumb.  To ingest historical rows into a closed period (explicit

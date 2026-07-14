@@ -265,6 +265,8 @@ class TestSeedSandboxTrainingShiftsFromProd(unittest.TestCase):
             mock.patch.object(e2e, "refresh_access_token", lambda account=None: "tok"),
             mock.patch.object(e2e, "_load_production_sheet_ids", lambda: {"PROD_MODEL"}),
             mock.patch.object(e2e, "resolve_sheet_id", lambda key, prof: sandbox_sid),
+            # Keep unit tests Sheet-only; BQ fallback is covered by CI sandbox e2e.
+            mock.patch.object(e2e, "_training_shifts_bq_window", lambda **kwargs: []),
         ]
 
     def test_mirrors_in_window_rows_to_sandbox(self):
@@ -456,6 +458,26 @@ class TestExemptionsApplied(unittest.TestCase):
         self.assertEqual(res["exempt_days_redistributed"], ["2026-05-23"])
         self.assertEqual(res["period_our_calc_cents"], 18000)
         self.assertEqual(res["period_pool_cents"], 18000)
+
+    def test_partial_window_keeps_share(self):
+        # Emely works 5/23 with a 0.5h window remaining 7.5 tip hours — still tipped.
+        daily = [self.DHEADER,
+                 self._d("2026-05-23", "Urrutia, Emely", "100.00", "50.00"),
+                 self._d("2026-05-23", "Bob", "100.00", "50.00")]
+        period = [self.PHEADER,
+                  self._p("Urrutia, Emely", "7.5", "50.00"),
+                  self._p("Bob", "8", "50.00")]
+        exempt = {("Urrutia, Emely", "2026-05-23")}
+        worked = {
+            ("Urrutia, Emely", "2026-05-23"): 8.0,
+            ("Bob", "2026-05-23"): 8.0,
+        }
+        res = e2e.assert_exemptions_applied(
+            daily, period, exempt, worked,
+            window_eligible_hours={("Urrutia, Emely", "2026-05-23"): 7.5},
+        )
+        self.assertEqual(res["partial_exempt"], ["Urrutia, Emely"])
+        self.assertEqual(res["worked_exempt_shifts_dropped"], 0)
 
     def test_exempt_shift_with_nonzero_share_raises(self):
         daily, period, exempt, worked = self._scenario()
@@ -1068,13 +1090,17 @@ class TestRetroExclusion(unittest.TestCase):
         }
 
         # Simulate what materialize() does: normalize training_shifts names
-        raw_training_shifts = {("Wilingham, Brooke", "2026-06-19")}
-        normalized: set[tuple[str, str]] = set()
+        raw_training_shifts = {
+            ("Wilingham, Brooke", "2026-06-19"): {
+                "exempt_start": None, "exempt_end": None, "note": None,
+            },
+        }
+        normalized: dict[tuple[str, str], dict] = {}
         with mock.patch.object(mi, "read_aliases", return_value=aliases):
-            for raw_name, date_iso in raw_training_shifts:
+            for (raw_name, date_iso), meta in raw_training_shifts.items():
                 canon = aliases.get(raw_name.strip())
                 if canon:
-                    normalized.add((canon, date_iso))
+                    normalized[(canon, date_iso)] = meta
 
         self.assertIn(
             ("Willingham, Brooke", "2026-06-19"), normalized,

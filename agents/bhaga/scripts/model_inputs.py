@@ -20,26 +20,46 @@ import datetime
 import pathlib
 
 
-def read_training_shifts(store: str = "palmetto") -> set[tuple[str, str]]:
-    """Return {(canonical_name, 'YYYY-MM-DD')} from BQ training_shifts.
+def read_training_shifts(
+    store: str = "palmetto",
+) -> dict[tuple[str, str], dict[str, str | None]]:
+    """Return {(canonical_name, 'YYYY-MM-DD'): {exempt_start, exempt_end, note}}.
+
+    Missing/NULL ``exempt_start`` and ``exempt_end`` ⇒ whole-day tip exemption
+    (legacy training_shifts rows). Both set (HH:MM) ⇒ partial window (Issue #167).
 
     Replaces update_model_sheet._read_training_shifts_from_sheet().
     """
     try:
         from core.datastore import read_query, fq
         rows = read_query(
-            f"SELECT employee_name, CAST(date AS STRING) AS d"
+            f"SELECT employee_name, CAST(date AS STRING) AS d,"
+            f" exempt_start, exempt_end, note"
             f" FROM {fq('training_shifts')}"
             f" WHERE store = '{store}'"
         )
-        return {
-            (r["employee_name"].strip(), r["d"])
-            for r in rows
-            if r.get("employee_name") and r.get("d")
-        }
+        out: dict[tuple[str, str], dict[str, str | None]] = {}
+        for r in rows:
+            name = (r.get("employee_name") or "").strip()
+            d = r.get("d")
+            if not name or not d:
+                continue
+            start = r.get("exempt_start")
+            end = r.get("exempt_end")
+            if isinstance(start, str):
+                start = start.strip() or None
+            if isinstance(end, str):
+                end = end.strip() or None
+            note = r.get("note")
+            out[(name, d)] = {
+                "exempt_start": start,
+                "exempt_end": end,
+                "note": (note.strip() if isinstance(note, str) else note),
+            }
+        return out
     except Exception as exc:  # noqa: BLE001
         print(f"  [model_inputs] WARN: read_training_shifts failed: {exc}")
-        return set()
+        return {}
 
 
 def read_training_excluded(store: str = "palmetto") -> dict[str, datetime.date]:

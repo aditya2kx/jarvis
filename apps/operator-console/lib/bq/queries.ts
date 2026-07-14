@@ -550,11 +550,12 @@ export function baseRunway(): Promise<BaseRunwayRow[]> {
   return q<BaseRunwayRow>(`SELECT * FROM ${fq("vw_inventory_base_runway")}`);
 }
 
-// training_shifts (migration 011-era table, written by /bhaga-cloud
-// `training set`/`training rm` and now also the console's quick-add — M4).
+// training_shifts / tip exemptions (migration 020 + 038 windows — Issue #167).
 export interface TrainingShiftRow {
   employee_name: string;
   date: string;
+  exempt_start: string | null;
+  exempt_end: string | null;
   note: string | null;
   updated_by: string | null;
   updated_at: string | null;
@@ -562,11 +563,100 @@ export interface TrainingShiftRow {
 
 export function trainingShifts(store: string, days: number): Promise<TrainingShiftRow[]> {
   return q<TrainingShiftRow>(
-    `SELECT employee_name, date, note, updated_by, updated_at FROM ${fq("training_shifts")}
+    `SELECT employee_name, date, exempt_start, exempt_end, note, updated_by, updated_at
+     FROM ${fq("training_shifts")}
      WHERE store=@store AND date >= DATE_SUB(CURRENT_DATE("America/Chicago"), INTERVAL @days DAY)
      ORDER BY date DESC`,
     { store, days },
   );
+}
+
+export interface AdpShiftRow {
+  employee_name: string;
+  date: string;
+  in_time: string;
+  out_time: string;
+  total_hours: number;
+}
+
+/** Closed-out ADP shifts for a pay-period window (tip-exemption editor). */
+export function adpShiftsForPeriod(
+  store: string,
+  start: string,
+  end: string,
+): Promise<AdpShiftRow[]> {
+  return q<AdpShiftRow>(
+    `SELECT canonical_name AS employee_name, CAST(date AS STRING) AS date,
+            in_time, out_time, total_hours
+     FROM ${fq("adp_shifts")}
+     WHERE date BETWEEN @start AND @end
+       AND canonical_name IS NOT NULL AND canonical_name != ""
+     ORDER BY date, canonical_name`,
+    { start: dateParam(start), end: dateParam(end) },
+  );
+}
+
+export interface TipExemptionRow {
+  employee_name: string;
+  date: string;
+  exempt_start: string | null;
+  exempt_end: string | null;
+  note: string | null;
+  updated_by: string | null;
+  updated_at: string | null;
+  has_shift: boolean;
+}
+
+/** Tip exemptions for a period, with orphan flag when no ADP shift exists. */
+export function tipExemptions(
+  store: string,
+  start: string,
+  end: string,
+): Promise<TipExemptionRow[]> {
+  return q<TipExemptionRow>(
+    `SELECT t.employee_name, CAST(t.date AS STRING) AS date,
+            t.exempt_start, t.exempt_end, t.note, t.updated_by,
+            CAST(t.updated_at AS STRING) AS updated_at,
+            EXISTS(
+              SELECT 1 FROM ${fq("adp_shifts")} s
+              WHERE s.date = t.date AND s.canonical_name = t.employee_name
+            ) AS has_shift
+     FROM ${fq("training_shifts")} t
+     WHERE t.store=@store AND t.date BETWEEN @start AND @end
+     ORDER BY t.date DESC, t.employee_name`,
+    { store, start: dateParam(start), end: dateParam(end) },
+  );
+}
+
+/** Canonical employee names for orphan-exemption picker. */
+export function listCanonicalEmployees(_store: string): Promise<{ employee_name: string }[]> {
+  return q<{ employee_name: string }>(
+    `SELECT DISTINCT canonical_name AS employee_name
+     FROM ${fq("adp_shifts")}
+     WHERE canonical_name IS NOT NULL AND canonical_name != ""
+       AND date >= DATE_SUB(CURRENT_DATE("America/Chicago"), INTERVAL 90 DAY)
+     ORDER BY canonical_name`,
+  );
+}
+
+/**
+ * Open pay period bounds for tip-exemption write guard.
+ * Prefer `is_open=TRUE` from the model view; fall back to the store pay-period
+ * calendar when the open window has no materialized rows yet (Issue #167).
+ */
+export async function openPayPeriodBounds(): Promise<{ start: string; end: string } | null> {
+  const rows = await q<{ period_start: string; period_end: string }>(
+    `SELECT DISTINCT CAST(period_start AS STRING) AS period_start,
+            CAST(period_end AS STRING) AS period_end
+     FROM ${fq("vw_model_payroll_period")}
+     WHERE is_open = TRUE
+     LIMIT 1`,
+  );
+  if (rows.length) {
+    return { start: rows[0].period_start, end: rows[0].period_end };
+  }
+  const { calendarOpenPayPeriod } = await import("@/lib/payroll/openPeriod");
+  return calendarOpenPayPeriod();
 }
 
 // recognition_bonuses (migration 033) — manual per-employee bonus, distinct

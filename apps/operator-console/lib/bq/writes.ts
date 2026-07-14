@@ -227,6 +227,7 @@ export async function upsertGoal(store: string, key: GoalKey, value: string, by:
  * Slack `training set` command converge on the same rows. `name` must
  * already be the canonical employee name (the console has no alias
  * resolution — pick from the known-employee list, don't free-type).
+ * Whole-day: clears exempt_start/exempt_end (Issue #167).
  */
 export async function addTrainingShift(
   store: string,
@@ -239,11 +240,99 @@ export async function addTrainingShift(
     `MERGE ${fq("training_shifts")} T
      USING (SELECT @store AS store, @name AS employee_name, @date AS date) S
      ON T.store = S.store AND T.employee_name = S.employee_name AND T.date = S.date
-     WHEN MATCHED THEN UPDATE SET note = @note, updated_at = CURRENT_TIMESTAMP(), updated_by = @by
-     WHEN NOT MATCHED THEN INSERT (store, employee_name, date, note, updated_at, updated_by)
-       VALUES (@store, @name, @date, @note, CURRENT_TIMESTAMP(), @by)`,
+     WHEN MATCHED THEN UPDATE SET note = @note, exempt_start = NULL, exempt_end = NULL,
+       updated_at = CURRENT_TIMESTAMP(), updated_by = @by
+     WHEN NOT MATCHED THEN INSERT
+       (store, employee_name, date, note, exempt_start, exempt_end, updated_at, updated_by)
+       VALUES (@store, @name, @date, @note, NULL, NULL, CURRENT_TIMESTAMP(), @by)`,
     { store, name: employeeName, date: dateParam(date), note, by },
   );
+}
+
+export type TipExemptionDraft = {
+  employeeName: string;
+  date: string;
+  mode: "clear" | "whole" | "window";
+  exemptStart?: string;
+  exemptEnd?: string;
+  note?: string;
+};
+
+function assertHhmm(label: string, raw: string): string {
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(raw.trim());
+  if (!m) throw new Error(`${label} must be HH:MM (got ${JSON.stringify(raw)})`);
+  const h = m[1].padStart(2, "0");
+  return `${h}:${m[2]}`;
+}
+
+/**
+ * Batch tip-exemption writes for the open pay period only (Issue #167).
+ * Rejects any draft date outside the current open period.
+ */
+export async function applyTipExemptions(
+  store: string,
+  drafts: TipExemptionDraft[],
+  by: string,
+): Promise<void> {
+  const { openPayPeriodBounds } = await import("@/lib/bq/queries");
+  const open = await openPayPeriodBounds();
+  if (!open) {
+    throw new Error("No open pay period found — tip exemptions cannot be edited.");
+  }
+  for (const d of drafts) {
+    if (d.date < open.start || d.date > open.end) {
+      throw new Error(
+        `Tip exemptions are editable only for the current open pay period ` +
+          `(${open.start}..${open.end}); refused ${d.employeeName} on ${d.date}`,
+      );
+    }
+  }
+
+  for (const d of drafts) {
+    if (d.mode === "clear") {
+      await mutate(
+        `DELETE FROM ${fq("training_shifts")}
+         WHERE store=@store AND employee_name=@name AND date=@date`,
+        { store, name: d.employeeName, date: dateParam(d.date) },
+      );
+      continue;
+    }
+    let start: string | null = null;
+    let end: string | null = null;
+    if (d.mode === "window") {
+      if (!d.exemptStart || !d.exemptEnd) {
+        throw new Error(`Window exemption for ${d.employeeName} on ${d.date} needs start and end`);
+      }
+      start = assertHhmm("exemptStart", d.exemptStart);
+      end = assertHhmm("exemptEnd", d.exemptEnd);
+      const [sh, sm] = start.split(":").map(Number);
+      const [eh, em] = end.split(":").map(Number);
+      if (eh * 60 + em <= sh * 60 + sm) {
+        throw new Error(`exempt end must be after start for ${d.employeeName} on ${d.date}`);
+      }
+    }
+    const note = d.note ?? "";
+    await mutate(
+      `MERGE ${fq("training_shifts")} T
+       USING (SELECT @store AS store, @name AS employee_name, @date AS date) S
+       ON T.store = S.store AND T.employee_name = S.employee_name AND T.date = S.date
+       WHEN MATCHED THEN UPDATE SET
+         note = @note, exempt_start = @start, exempt_end = @end,
+         updated_at = CURRENT_TIMESTAMP(), updated_by = @by
+       WHEN NOT MATCHED THEN INSERT
+         (store, employee_name, date, note, exempt_start, exempt_end, updated_at, updated_by)
+         VALUES (@store, @name, @date, @note, @start, @end, CURRENT_TIMESTAMP(), @by)`,
+      {
+        store,
+        name: d.employeeName,
+        date: dateParam(d.date),
+        note,
+        start,
+        end,
+        by,
+      },
+    );
+  }
 }
 
 /**

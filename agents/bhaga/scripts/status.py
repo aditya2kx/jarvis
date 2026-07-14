@@ -180,6 +180,8 @@ GRAFANA_VIEWS: list[Target] = [
     Target("vw_source_pulls", "run_date"),
     # migration 020: vw_training_shifts (panel 62, 6. Payroll — Training Shifts table).
     # PR2 (Sheets exit): Sheet projection panels removed; vw_training_shifts remains.
+    # migration 038 (Issue #167): adds exempt_start/exempt_end on training_shifts + view —
+    # same Target; column add only (NULL/NULL = legacy whole-day).
     Target("vw_training_shifts", "date"),
     # migration 026: vw_review_bonus_detail (panel 76, 6. Payroll — per-review payroll table).
     # Filters google_reviews to total_bonus > 0; per_employee_bonus = total_bonus / member_count.

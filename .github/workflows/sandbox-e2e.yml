@@ -34,6 +34,7 @@ jobs:
     env:
       BHAGA_SECRETS_BACKEND: gcp      # use ADC (the WIF service account) for Google APIs
       BHAGA_STATE_BACKEND: firestore   # slot leases only (sandbox_slots collection)
+      BHAGA_DATASTORE: bigquery        # BQ-primary seed fallback when Sheets projections are empty
     steps:
       # Require the 'run-sandbox-e2e' label when triggered by a PR event.
       # (workflow_dispatch bypasses this check — the dispatcher chose to run it.)

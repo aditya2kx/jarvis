@@ -20,39 +20,48 @@ import agents.bhaga.scripts.model_inputs as mi
 
 
 class TestReadTrainingShifts(unittest.TestCase):
-    def test_returns_set_of_tuples(self):
+    def test_returns_dict_of_meta(self):
         fake_rows = [
-            {"employee_name": "Flores, Juan", "d": "2026-06-01"},
-            {"employee_name": "Smith, Alice", "d": "2026-05-28"},
+            {
+                "employee_name": "Flores, Juan", "d": "2026-06-01",
+                "exempt_start": None, "exempt_end": None, "note": "training",
+            },
+            {
+                "employee_name": "Smith, Alice", "d": "2026-05-28",
+                "exempt_start": "18:00", "exempt_end": "18:30", "note": "Meeting",
+            },
         ]
         with mock.patch("core.datastore.read_query", return_value=fake_rows), \
              mock.patch("core.datastore.fq", side_effect=lambda t: f"`proj.ds.{t}`"):
             result = mi.read_training_shifts("palmetto")
-        self.assertIsInstance(result, set)
+        self.assertIsInstance(result, dict)
         self.assertIn(("Flores, Juan", "2026-06-01"), result)
         self.assertIn(("Smith, Alice", "2026-05-28"), result)
+        self.assertEqual(result[("Smith, Alice", "2026-05-28")]["exempt_end"], "18:30")
 
     def test_empty_when_no_rows(self):
         with mock.patch("core.datastore.read_query", return_value=[]), \
              mock.patch("core.datastore.fq", side_effect=lambda t: f"`proj.ds.{t}`"):
             result = mi.read_training_shifts()
-        self.assertEqual(result, set())
+        self.assertEqual(result, {})
 
     def test_skips_rows_with_missing_name(self):
         fake_rows = [
-            {"employee_name": "", "d": "2026-06-01"},
-            {"employee_name": "Flores, Juan", "d": "2026-06-02"},
+            {"employee_name": "", "d": "2026-06-01",
+             "exempt_start": None, "exempt_end": None, "note": None},
+            {"employee_name": "Flores, Juan", "d": "2026-06-02",
+             "exempt_start": None, "exempt_end": None, "note": None},
         ]
         with mock.patch("core.datastore.read_query", return_value=fake_rows), \
              mock.patch("core.datastore.fq", side_effect=lambda t: f"`proj.ds.{t}`"):
             result = mi.read_training_shifts()
-        self.assertEqual(result, {("Flores, Juan", "2026-06-02")})
+        self.assertEqual(set(result.keys()), {("Flores, Juan", "2026-06-02")})
 
     def test_degrades_on_exception(self):
         with mock.patch("core.datastore.read_query", side_effect=Exception("BQ down")), \
              mock.patch("core.datastore.fq", side_effect=lambda t: f"`proj.ds.{t}`"):
             result = mi.read_training_shifts()
-        self.assertEqual(result, set())
+        self.assertEqual(result, {})
 
 
 class TestReadTrainingExcluded(unittest.TestCase):

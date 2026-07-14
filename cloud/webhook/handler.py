@@ -964,9 +964,11 @@ def _handle_training_set(name: str, date_str: str, note: str, form: dict, respon
             f"MERGE {fq} T"
             f" USING (SELECT @store AS store, @name AS employee_name, @date AS date) S"
             f" ON T.store=S.store AND T.employee_name=S.employee_name AND T.date=S.date"
-            f" WHEN MATCHED THEN UPDATE SET note=@note, updated_at=CURRENT_TIMESTAMP(), updated_by=@by"
-            f" WHEN NOT MATCHED THEN INSERT (store,employee_name,date,note,updated_at,updated_by)"
-            f"   VALUES (@store,@name,@date,@note,CURRENT_TIMESTAMP(),@by)",
+            f" WHEN MATCHED THEN UPDATE SET note=@note, exempt_start=NULL, exempt_end=NULL,"
+            f"   updated_at=CURRENT_TIMESTAMP(), updated_by=@by"
+            f" WHEN NOT MATCHED THEN INSERT"
+            f"   (store,employee_name,date,note,exempt_start,exempt_end,updated_at,updated_by)"
+            f"   VALUES (@store,@name,@date,@note,NULL,NULL,CURRENT_TIMESTAMP(),@by)",
             job_config=_bq_param_config([
                 ("store", "STRING", store),
                 ("name", "STRING", name),

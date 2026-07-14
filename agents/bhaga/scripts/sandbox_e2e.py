@@ -275,6 +275,50 @@ def _run_backfill(store: str, start: datetime.date, end: datetime.date) -> int:
     )
 
 
+def _bq_fallback_rows(reader_attr: str) -> list[dict] | None:
+    """When prod raw Sheets are empty (BQ-primary era), seed from BigQuery.
+
+    Returns None if datastore is not BQ or no reader mapping exists for this
+    source (caller keeps the Sheets result, possibly empty).
+    """
+    import os
+
+    if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":
+        return None
+    from core import datastore_reader as bqr
+    from core.datastore import read_table
+
+    def _daily_rollup() -> list[dict]:
+        rows = read_table("square_daily_rollup") or []
+        out: list[dict] = []
+        for r in rows:
+            d = r.get("date_local")
+            out.append({
+                "date_local": d.isoformat() if hasattr(d, "isoformat") else str(d or ""),
+                "txn_count": int(r.get("txn_count") or 0),
+                "gross_sales_cents": int(r.get("gross_sales_cents") or 0),
+                "tip_cents": int(r.get("tip_cents") or 0),
+                "net_sales_cents": int(r.get("net_sales_cents") or 0),
+                "refund_cents": int(r.get("refund_cents") or 0),
+                "order_count": int(r.get("order_count") or 0),
+                "scraped_at_utc": str(r.get("scraped_at_utc") or ""),
+            })
+        return out
+
+    mapping = {
+        "read_raw_adp_shifts": bqr.read_shifts_bq,
+        "read_raw_adp_rates": bqr.read_wage_rates_bq,
+        "read_raw_square_transactions": bqr.read_transactions_bq,
+        "read_raw_square_daily_rollup": _daily_rollup,
+        "read_raw_square_item_daily_rollup": bqr.read_item_daily_bq,
+        "read_raw_kds_daily": bqr.read_kds_daily_bq,
+    }
+    fn = mapping.get(reader_attr)
+    if fn is None:
+        return None
+    return fn()
+
+
 def seed_sandbox_raw_from_prod(
     *, profile: dict, account: str, start: datetime.date, end: datetime.date,
 ) -> dict[str, int]:
@@ -284,6 +328,10 @@ def seed_sandbox_raw_from_prod(
     downloads, it reads the already-scraped PROD raw sheets directly and writes
     the windowed rows to the staging-resolved sandbox sheets, so the model build
     runs over real prod data with zero scrape/login.
+
+    When a Sheets window is empty under ``BHAGA_DATASTORE=bigquery``, falls back
+    to the matching BQ table (Issue #167 / BQ-primary) so CI is not blocked by
+    stale Sheet projections.
 
     Isolation contract (hard-asserted per source): READS use the prod sid inside
     an explicit `allow_production_read()` scope (reading prod is sanctioned) and
@@ -311,6 +359,16 @@ def seed_sandbox_raw_from_prod(
         with allow_production_read():
             rows = getattr(raw_reader, reader_attr)(prod_sid, account=account)
         windowed = filter_rows_to_window(rows, date_field, start, end)
+        if not windowed:
+            bq_rows = _bq_fallback_rows(reader_attr)
+            if bq_rows is not None:
+                windowed = filter_rows_to_window(bq_rows, date_field, start, end)
+                if windowed:
+                    print(
+                        f"# seed: Sheets empty for {reader_attr}; "
+                        f"BQ fallback → {len(windowed)} row(s) in window",
+                        flush=True,
+                    )
         if windowed:
             # write_raw_* upserts (preserves non-matching keys), but determinism
             # is safe: provision() -> clear_slot() _batch_clears every tab in the
@@ -319,6 +377,30 @@ def seed_sandbox_raw_from_prod(
             getattr(raw_writer, writer_attr)(sandbox_sid, windowed, account=account)
         seeded[reader_attr.replace("read_raw_", "")] = len(windowed)
     return seeded
+
+
+def _training_shifts_bq_window(
+    *, start: datetime.date, end: datetime.date, store: str = "palmetto",
+) -> list[dict]:
+    """Read tip-exemption overlay from BQ for [start, end]. Empty if not BQ mode."""
+    import os
+
+    if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":
+        return []
+    from agents.bhaga.scripts import model_inputs
+
+    lo, hi = start.isoformat(), end.isoformat()
+    overlay = model_inputs.read_training_shifts(store=store)
+    out: list[dict] = []
+    for (name, date), meta in overlay.items():
+        if not (lo <= date <= hi):
+            continue
+        out.append({
+            "employee_name": name,
+            "date": date,
+            "note": (meta or {}).get("note") or "",
+        })
+    return out
 
 
 def seed_sandbox_training_shifts_from_prod(
@@ -340,6 +422,9 @@ def seed_sandbox_training_shifts_from_prod(
     [start, end] are mirrored so the sandbox overlay matches exactly the period
     under test. Returns the list of mirrored ``{employee_name, date, note}``
     records (so the caller can derive the exempt set for verification).
+
+    When the Sheet tab is empty under ``BHAGA_DATASTORE=bigquery``, falls back to
+    ``bhaga.training_shifts`` (Issue #167).
     """
     prod_ids = _load_production_sheet_ids()
     prod_sid = profile["google_sheets"]["bhaga_model"]["spreadsheet_id"]
@@ -355,12 +440,11 @@ def seed_sandbox_training_shifts_from_prod(
             f"{sandbox_sid!r} — sandbox isolation violated"
         )
     token = refresh_access_token(account=account)
-    # The overlay is operator-curated (fixed columns: employee_name|date|note),
-    # so read it as a raw grid rather than through a schema reader.
-    with allow_production_read():
-        grid = raw_writer._read_tab(prod_sid, "training_shifts", token)
     lo, hi = start.isoformat(), end.isoformat()
     records: list[dict] = []
+
+    with allow_production_read():
+        grid = raw_writer._read_tab(prod_sid, "training_shifts", token)
     for r in (grid[1:] if grid else []):
         if not r or not str(r[0]).strip():
             continue
@@ -370,6 +454,14 @@ def seed_sandbox_training_shifts_from_prod(
         if not date or not (lo <= date <= hi):
             continue
         records.append({"employee_name": name, "date": date, "note": note})
+    if not records:
+        records = _training_shifts_bq_window(start=start, end=end)
+        if records:
+            print(
+                f"# seed: training_shifts Sheet empty; "
+                f"BQ fallback → {len(records)} row(s) in window",
+                flush=True,
+            )
     if records:
         raw_writer.write_training_shifts(sandbox_sid, records, account=account)
     return records
@@ -444,6 +536,8 @@ def assert_exemptions_applied(
     tip_alloc_period_values: list[list],
     exempt_shifts: set[tuple[str, str]],
     worked_hours: dict[tuple[str, str], float],
+    *,
+    window_eligible_hours: dict[tuple[str, str], float] | None = None,
 ) -> dict:
     """Prove the per-shift training overlay dropped tips + redistributed + conserved.
 
@@ -452,24 +546,15 @@ def assert_exemptions_applied(
     for the period; ``worked_hours`` maps every ``(employee, date)`` that has a
     real worked shift (from the sandbox ADP raw, total_hours>0) to its hours.
 
-    The model OMITS an exempt shift from ``tip_alloc_daily`` entirely (its hours
-    leave that day's denominator and the pool redistributes to the rest), so the
-    proof is "worked the shift, yet received no tip share". Asserts:
-
-      1. each exempt (employee, date) that was actually WORKED receives no tip
-         share (absent from tip_alloc_daily, or present with our_share == 0), and
-         at least one such worked-and-exempt shift exists (the overlay bites);
-      2. on each exempt DAY the day's pool is still fully distributed to the
-         remaining staff cent-exact (redistribution, no leak);
-      3. WHOLE-period-exempt employees (every worked day exempt) get $0 over the
-         period (absent from tip_alloc_period, or our_calc == 0); PARTIALLY-exempt
-         employees keep a positive ``our_calc`` AND their period ``hours_worked``
-         equals the sum of their NON-exempt worked hours (exempt hours dropped);
-      4. period-level conservation: sum of period ``our_calc`` == sum of the
-         distinct per-date ``day_pool`` (cent-exact).
+    Whole-day exempt shifts are OMITTED from ``tip_alloc_daily`` (or share==0).
+    Optional ``window_eligible_hours`` maps partial-window exemptions to the
+    tip-eligible hours that MUST remain in the period hours_worked for that
+    employee (Issue #167). Those keys are excluded from the whole-day drop proof.
 
     Returns a summary dict; raises RuntimeError on any violation.
     """
+    window_eligible_hours = window_eligible_hours or {}
+    whole_day_exempt = {k for k in exempt_shifts if k not in window_eligible_hours}
     if not tip_alloc_daily_values or len(tip_alloc_daily_values) < 2:
         raise RuntimeError("exemption check: tip_alloc_daily is empty")
     if not tip_alloc_period_values or len(tip_alloc_period_values) < 2:
@@ -493,9 +578,9 @@ def assert_exemptions_applied(
         pool_by_date.setdefault(date, _to_cents(row[di_pool]))
         share_sum_by_date[date] = share_sum_by_date.get(date, 0) + share
 
-    # (1) exempt shift took no tip share; prove on at least one WORKED shift.
+    # (1) whole-day exempt shift took no tip share; prove on at least one WORKED shift.
     verified_worked_exempt = 0
-    for (emp, date) in sorted(exempt_shifts):
+    for (emp, date) in sorted(whole_day_exempt):
         share = share_by.get((emp, date))
         if share is not None and share != 0:
             raise RuntimeError(
@@ -504,12 +589,30 @@ def assert_exemptions_applied(
             )
         if worked_hours.get((emp, date), 0) > 0 and not share:
             verified_worked_exempt += 1
-    if exempt_shifts and verified_worked_exempt == 0:
+    if whole_day_exempt and verified_worked_exempt == 0:
         raise RuntimeError(
             "exemption check: no exempt (employee,date) pair matched a real worked "
             "shift that was dropped from tips — the overlay had no provable effect "
             "(sandbox mirror or ADP seed broken?)"
         )
+
+    # (1b) partial windows: employee must retain tip-eligible hours (period total).
+    for (emp, date), expected_h in sorted(window_eligible_hours.items()):
+        if worked_hours.get((emp, date), 0) <= 0:
+            continue
+        # Period hours for emp must include this day's eligible remainder somewhere;
+        # we verify the employee still has a nonzero share on that date when expected_h > 0.
+        share = share_by.get((emp, date))
+        if expected_h > 0 and (share is None or share == 0):
+            raise RuntimeError(
+                f"exemption check: {emp} on {date} has partial window "
+                f"(eligible={expected_h}h) but tip_alloc_daily share is missing/0"
+            )
+        if expected_h <= 0 and share:
+            raise RuntimeError(
+                f"exemption check: {emp} on {date} partial window left 0 eligible "
+                f"hours but received our_share={share}c"
+            )
 
     # (2) redistribution: each exempt day's pool fully distributed, no leak.
     exempt_dates = {d for (_e, d) in exempt_shifts if d in pool_by_date}
@@ -521,7 +624,7 @@ def assert_exemptions_applied(
                 f"(redistribution leak on an exempt day)"
             )
 
-    # (3) classify each exempt employee by their WORKED vs EXEMPT days.
+    # (3) classify each exempt employee by their WORKED vs WHOLE-DAY-EXEMPT days.
     pcol = _header_resolver(tip_alloc_period_values[0], "exemption check (period)")
     pi_emp = pcol("employee", "employee_name")
     pi_calc = pcol("our_calc", "our_total")
@@ -547,8 +650,10 @@ def assert_exemptions_applied(
     partial_exempt: list[str] = []
     for emp in sorted(exempt_emps):
         worked = {d for (e, d) in worked_hours if e == emp}
-        ex = {d for (e, d) in exempt_shifts if e == emp}
-        non_exempt_worked = worked - ex
+        ex = {d for (e, d) in whole_day_exempt if e == emp}
+        # Window days still count as worked tip days (partial hours).
+        window_days = {d for (e, d) in window_eligible_hours if e == emp}
+        non_exempt_worked = (worked - ex) | window_days
         if not non_exempt_worked:
             whole_period_exempt.append(emp)
             if our_calc_by_emp.get(emp, 0) != 0:
@@ -563,7 +668,15 @@ def assert_exemptions_applied(
                     f"exemption check: {emp} worked non-exempt days too but "
                     f"tip_alloc_period.our_calc={our_calc_by_emp.get(emp, 0)}c (expected > 0)"
                 )
-            expected_hours = sum(worked_hours[(emp, d)] for d in non_exempt_worked)
+            expected_hours = 0.0
+            for d in worked:
+                key = (emp, d)
+                if key in window_eligible_hours:
+                    expected_hours += window_eligible_hours[key]
+                elif key in whole_day_exempt:
+                    continue
+                else:
+                    expected_hours += worked_hours[key]
             got_hours = hours_by_emp.get(emp)
             if got_hours is not None and abs(got_hours - expected_hours) > 0.1:
                 raise RuntimeError(

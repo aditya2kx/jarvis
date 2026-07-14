@@ -762,27 +762,25 @@ tab from raw; **Recipe C**: capture a new field source→raw; **Recipe D**: a hi
 upserts incrementally instead of clear-and-write, like `item_operations`). Schema-backed tabs
 auto-migrate **additive** header changes; reordering/removing does not.
 
-### Exempt an employee/shift from the tip pool (training shifts)
+### Tip exemptions (training / meeting windows)
 
-Tip-pool exclusions drop a `(employee, date)`'s hours from that day's **tip** denominator only
-(labor% unaffected), so the pool redistributes to everyone else. All three sources funnel through the
-single `_is_excluded` chokepoint in `update_model_sheet.py` — **no code change is needed to add an
-exemption**, only a BQ command, then a model rebuild.
+Tip-pool exclusions reduce tip-eligible hours (labor% unaffected). Permanent / through-date sources
+still use `/bhaga-cloud exclude set`. Per-shift and partial-window exemptions live in
+`bhaga.training_shifts` (`exempt_start`/`exempt_end` nullable HH:MM; both NULL = whole day).
 
-**BQ-canonical (post-2026-06-15 Sheets exit):** all human inputs live in BQ, edited via `/bhaga-cloud` Slack commands — no Sheet editing. Quick reference:
+**Preferred (open pay period):** Operator Console → **Payroll → Detail → Tip Exemptions**.
+Edit drafts on the shifts table and/or add orphan windows, then **Update** once. The console MERGEs
+BQ and triggers `bhaga-daily-refresh` **recompute-only** for each touched date
+(`BHAGA_FORCE_MODEL_RECOMPUTE=1`). Historical / closed periods are view-only.
 
-- **Permanent** (manager/owner): `/bhaga-cloud exclude set "Last, First"` — appends to
-  `store_config.excluded_from_tip_pool` in BQ. Alternatively set via
-  `/bhaga-cloud config set excluded_from_tip_pool "Name1;Name2"`.
-- **Through a date** (bulk "all shifts were training up to X"):
-  `/bhaga-cloud exclude set "Last, First" YYYY-MM-DD` — sets `store_config.training_excluded:Last, First`.
-- **One specific shift**: `/bhaga-cloud training set "Last, First" YYYY-MM-DD [note]` — MERGEs into
-  `bhaga.training_shifts` BQ table. The Grafana `6. Payroll → Training Shifts (current)` panel shows
-  all active marks immediately. Remove with `/bhaga-cloud training rm "Last, First" YYYY-MM-DD`.
+**IAM:** the operator-console Cloud Run runtime SA needs `roles/run.developer` on the
+`bhaga-daily-refresh` job so Update can invoke recompute (same project as console deploy).
 
-After editing, the nightly job picks up the change automatically. For an immediate rebuild trigger:
-`/bhaga-cloud refresh YYYY-MM-DD`. Verify in Grafana: confirm `tip_alloc_period` shows $0 for the
-exempted shift and the pool total is conserved.
+**Slack (whole-day only):** `/bhaga-cloud training set "Last, First" YYYY-MM-DD [note]` /
+`training rm …`. For an immediate rebuild without the console: `/bhaga-cloud refresh YYYY-MM-DD`.
+
+Verify in Grafana / console: exempted tip hours drop (or go to $0 for whole-day) and the daily
+pool total is conserved.
 
 ### Run the sandbox e2e (prod-like, zero-OTP) — opt-in
 

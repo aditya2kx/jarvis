@@ -305,19 +305,21 @@ the denominator.
 **Tip-pool exclusions (who is dropped from the denominator).** A `(employee, date)` ruled excluded has
 its hours removed from that day's tip denominator only — **labor% is unaffected** — so the pool
 redistributes to everyone else. Three BQ-canonical sources, all funnelling through the single
-`_is_excluded` chokepoint:
+`_is_excluded` / `_eligible_tip_hours_for_shift` chokepoint:
 
 | Source | Lives in | Granularity | Meaning |
 |---|---|---|---|
 | `excluded_from_tip_pool` | `bhaga.store_config` (BQ) | permanent | manager/owner — never in the pool |
 | `training_excluded:<name>` | `bhaga.store_config` (BQ) | through that date (inclusive) | bulk "all shifts up to date X were training" |
-| **`training_shifts`** | `bhaga.training_shifts` BQ table | one `(store, employee, date)` row | precise per-shift training mark |
+| **`training_shifts`** | `bhaga.training_shifts` BQ table | one `(store, employee, date)` ± optional window | tip exemption (whole day or HH:MM window) |
 
-**BQ-canonical (post-2026-06-15 Sheets exit):** all sources live in BigQuery; no Sheet editing.
-Operators use `/bhaga-cloud` Slack commands (see RUNBOOK § Exempt an employee/shift).
-`training_shifts` BQ columns: `store`, `employee_name` (canonical `Last, First`), `date` (DATE),
-`note`, `updated_at`, `updated_by`. View: `vw_training_shifts` (Grafana `6. Payroll` panel).
-Read by the pipeline via `agents/bhaga/scripts/model_inputs.read_training_shifts()`.
+**BQ-canonical:** operators edit tip exemptions in the **Operator Console → Payroll → Detail**
+(open period only; batch Update + recompute). Slack `/bhaga-cloud training set/rm` still supports
+whole-day marks. Columns: `store`, `employee_name` (canonical `Last, First`), `date` (DATE),
+`exempt_start` / `exempt_end` (nullable HH:MM America/Chicago; both NULL = whole-day),
+`note`, `updated_at`, `updated_by`. View: `vw_training_shifts`.
+Read via `agents/bhaga/scripts/model_inputs.read_training_shifts()` → dict of window metadata.
+Partial windows subtract only the overlap minutes from tip-eligible hours (labor% unchanged).
 
 `employee_aliases` BQ table (`store, raw_name, canonical_name`) replaces the Sheet `employees` tab.
 The through-date shorthand and the per-shift table **coexist** — use whichever is clearer.

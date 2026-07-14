@@ -23,6 +23,11 @@ export interface LaborForwardRaw {
   avgFtCostPerOpenDay: number | null;
   /** Fraction, e.g. 0.13 for 13%. 0 / null → all-in off. */
   laborBurdenPct: number;
+  /**
+   * When set (>0), use this as forward PT $ instead of
+   * `fwdScheduledHours × avgPtWage` (per-employee schedule × wage join).
+   */
+  fwdPtCostFromEmployees?: number | null;
 }
 
 export interface LaborForwardSummary {
@@ -75,8 +80,21 @@ export function computeLaborForwardSummary(raw: LaborForwardRaw): LaborForwardSu
     completedPt == null && completedFt == null ? null : (completedPt ?? 0) + (completedFt ?? 0);
   const completedSales = hasCompleted ? raw.completedNetSales : null;
 
+  const fwdPtFromEmp =
+    hasForward &&
+    raw.fwdPtCostFromEmployees != null &&
+    Number.isFinite(raw.fwdPtCostFromEmployees) &&
+    raw.fwdPtCostFromEmployees > 0
+      ? raw.fwdPtCostFromEmployees
+      : null;
   const fwdPt =
-    hasForward && raw.avgPtWage != null ? raw.fwdScheduledHours * raw.avgPtWage : hasForward ? 0 : null;
+    fwdPtFromEmp != null
+      ? fwdPtFromEmp
+      : hasForward && raw.avgPtWage != null
+        ? raw.fwdScheduledHours * raw.avgPtWage
+        : hasForward
+          ? 0
+          : null;
   const fwdFt =
     hasForward && raw.avgFtCostPerOpenDay != null
       ? raw.avgFtCostPerOpenDay * raw.fwdDays

@@ -126,6 +126,7 @@ export async function laborForwardSummary(
     aov: number | null;
     avg_ft_cost_per_open_day: number | null;
     labor_burden_pct: number | null;
+    fwd_pt_cost_from_employees: number | null;
   };
   const rows = await q<Row>(
     `WITH completed AS (
@@ -146,10 +147,20 @@ export async function laborForwardSummary(
        FROM ${fq("vw_model_forecast")}
        WHERE date BETWEEN @start AND @end
          AND date >= CURRENT_DATE('America/Chicago')
-         -- Only days with ADP schedule hours — no invented hours and no
-         -- forecast-only days diluting the projected labor% denominator.
          AND scheduled_hours IS NOT NULL
          AND scheduled_hours > 0
+     ),
+     fwd_emp AS (
+       SELECT COALESCE(SUM(s.scheduled_hours * w.wage_rate_dollars), 0) AS fwd_pt_cost_from_employees
+       FROM ${fq("adp_scheduled_shifts")} s
+       INNER JOIN ${fq("adp_wage_rates")} w
+         ON w.employee_id = s.employee_id
+       WHERE s.date BETWEEN @start AND @end
+         AND s.date >= CURRENT_DATE('America/Chicago')
+         AND s.scheduled_hours > 0
+         AND w.wage_rate_dollars IS NOT NULL
+         AND NOT IFNULL(w.is_salaried, FALSE)
+         AND NOT IFNULL(w.excluded_from_labor_pct, FALSE)
      ),
      wage AS (
        SELECT AVG(wage_rate_dollars) AS avg_pt_wage
@@ -185,9 +196,11 @@ export async function laborForwardSummary(
        wage.avg_pt_wage,
        trail.aov,
        trail.avg_ft_cost_per_open_day,
-       burden.labor_burden_pct
+       burden.labor_burden_pct,
+       fwd_emp.fwd_pt_cost_from_employees
      FROM completed
      CROSS JOIN fwd
+     CROSS JOIN fwd_emp
      CROSS JOIN wage
      CROSS JOIN trail
      LEFT JOIN burden ON TRUE`,
@@ -207,6 +220,7 @@ export async function laborForwardSummary(
       aov: null,
       avgFtCostPerOpenDay: null,
       laborBurdenPct: 0,
+      fwdPtCostFromEmployees: null,
     });
   }
   return computeLaborForwardSummary({
@@ -219,9 +233,74 @@ export async function laborForwardSummary(
     fwdDays: Number(r.fwd_days) || 0,
     avgPtWage: r.avg_pt_wage != null ? Number(r.avg_pt_wage) : null,
     aov: r.aov != null ? Number(r.aov) : null,
-    avgFtCostPerOpenDay: r.avg_ft_cost_per_open_day != null ? Number(r.avg_ft_cost_per_open_day) : null,
+    avgFtCostPerOpenDay:
+      r.avg_ft_cost_per_open_day != null ? Number(r.avg_ft_cost_per_open_day) : null,
     laborBurdenPct: r.labor_burden_pct != null ? Number(r.labor_burden_pct) : 0,
+    fwdPtCostFromEmployees:
+      r.fwd_pt_cost_from_employees != null ? Number(r.fwd_pt_cost_from_employees) : null,
   });
+}
+
+/** Per-employee scheduled hours in the Period (forward days with ADP shifts). */
+export async function scheduledHoursPerPerson(
+  win: DateWindow,
+): Promise<{ employee: string; hours: number; cost: number | null }[]> {
+  type Row = { employee: string; hours: number; cost: number | null };
+  return q<Row>(
+    `SELECT
+       s.employee_name AS employee,
+       SUM(s.scheduled_hours) AS hours,
+       SUM(s.scheduled_hours * w.wage_rate_dollars) AS cost
+     FROM ${fq("adp_scheduled_shifts")} s
+     LEFT JOIN ${fq("adp_wage_rates")} w
+       ON w.employee_id = s.employee_id
+     WHERE s.date BETWEEN @start AND @end
+       AND s.date >= CURRENT_DATE('America/Chicago')
+       AND s.scheduled_hours > 0
+     GROUP BY s.employee_name
+     ORDER BY hours DESC`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+/** Daily projected PT labor % for forward scheduled days (chart dashed series). */
+export async function laborProjectedByDay(
+  win: DateWindow,
+): Promise<{ date: string; projected_pt_pct: number | null }[]> {
+  type Row = { date: string; projected_pt_pct: number | null };
+  return q<Row>(
+    `WITH day_cost AS (
+       SELECT
+         s.date,
+         SUM(s.scheduled_hours * w.wage_rate_dollars) AS pt_cost
+       FROM ${fq("adp_scheduled_shifts")} s
+       INNER JOIN ${fq("adp_wage_rates")} w ON w.employee_id = s.employee_id
+       WHERE s.date BETWEEN @start AND @end
+         AND s.date >= CURRENT_DATE('America/Chicago')
+         AND s.scheduled_hours > 0
+         AND w.wage_rate_dollars IS NOT NULL
+         AND NOT IFNULL(w.is_salaried, FALSE)
+         AND NOT IFNULL(w.excluded_from_labor_pct, FALSE)
+       GROUP BY s.date
+     ),
+     aov AS (
+       SELECT SAFE_DIVIDE(SUM(net_sales), NULLIF(SUM(orders), 0)) AS aov
+       FROM ${fq("vw_model_labor_daily")}
+       WHERE date BETWEEN DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 28 DAY)
+         AND DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 1 DAY)
+     )
+     SELECT
+       CAST(f.date AS STRING) AS date,
+       SAFE_DIVIDE(d.pt_cost, NULLIF(f.forecast_orders * aov.aov, 0)) AS projected_pt_pct
+     FROM ${fq("vw_model_forecast")} f
+     INNER JOIN day_cost d ON d.date = f.date
+     CROSS JOIN aov
+     WHERE f.date BETWEEN @start AND @end
+       AND f.date >= CURRENT_DATE('America/Chicago')
+       AND f.scheduled_hours IS NOT NULL AND f.scheduled_hours > 0
+     ORDER BY f.date`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
 }
 
 export interface ItemDailyRow {

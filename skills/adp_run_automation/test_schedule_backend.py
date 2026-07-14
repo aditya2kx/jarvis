@@ -17,17 +17,34 @@ from skills.adp_run_automation import schedule_backend as sb
 
 
 @pytest.mark.parametrize("raw,expected", [
-    ("46:45", 46.75),
-    ("40:15", 40.25),   # NOT 40.15 — minutes, not decimal
-    ("0:00", 0.0),
-    ("291:30", 291.5),
-    ("7 Employees 46:45 Hrs", 46.75),  # search picks the H:MM token
+    ("1:30 PM - 8:30 PM", 7.0),
+    ("6:30 AM - 1:30 PM", 7.0),
+    ("9:00 AM - 3:00 PM", 6.0),
+    ("11:00 AM - 5:00 PM", 6.0),
     ("", 0.0),
     (None, 0.0),
-    ("garbage", 0.0),
 ])
-def test_parse_hhmm_hours(raw, expected):
-    assert sb.parse_hhmm_hours(raw) == pytest.approx(expected)
+def test_parse_shift_range_hours(raw, expected):
+    assert sb.parse_shift_range_hours(raw) == pytest.approx(expected)
+
+
+def test_build_employee_schedule_records_maps_header_index_to_date():
+    weeks = [{
+        "week_label": "Week of Jul 13, 2026 - Jul 19, 2026",
+        "employee_rows": [{
+            "name": "Garcia, Jacob",
+            "days": [
+                {"header_index": 0, "ranges": ["1:30 PM - 8:30 PM"]},
+                {"header_index": 5, "ranges": ["9:00 AM - 3:00 PM", "bad"]},
+            ],
+        }],
+    }]
+    recs = sb.build_employee_schedule_records(weeks)
+    assert [(r["date"], r["scheduled_hours"]) for r in recs] == [
+        ("2026-07-13", 7.0),
+        ("2026-07-18", 6.0),
+    ]
+    assert recs[0]["employee_id"] == "Garcia, Jacob"
 
 
 @pytest.mark.parametrize("raw,expected", [

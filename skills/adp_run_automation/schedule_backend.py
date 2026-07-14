@@ -77,6 +77,60 @@ SCHEDULE_EXTRACT_JS = r"""
 }
 """
 
+# Per-employee day cells. Empty days often omit <team-schedule-calendar-day>,
+# so we align each cell to weekday headers by bounding-box X (not ordinal index).
+# See docs/operator-console/adp-forward-labor-spike.md.
+SCHEDULE_EMPLOYEE_EXTRACT_JS = r"""
+() => {
+  const norm = e => (el => (el.innerText || '').replace(/\s+/g, ' ').trim())(e);
+  const headers = [...document.querySelectorAll('.day-cell.column-header')]
+    .map((el) => {
+      const r = el.getBoundingClientRect();
+      return { text: norm(el), x: r.x + r.width / 2 };
+    })
+    .filter(h => h.text && !/Last Name/i.test(h.text))
+    .map((h, i) => ({ ...h, i }));  // Mon=0 .. Sun=6
+
+  // Prefer walking .worker-name nodes — CDK row wrappers are sparse
+  // (often only Open Shifts + one aggregated row), but each employee has
+  // a .worker-name and a nearby tree of team-schedule-calendar-day cells.
+  const employees = [];
+  for (const nameEl of document.querySelectorAll('.worker-name')) {
+    const name = norm(nameEl);
+    if (!name || /Open Shifts/i.test(name)) continue;
+    // Climb until we find a subtree with day cells (employee row container).
+    let row = nameEl.parentElement;
+    for (let i = 0; i < 8 && row; i++) {
+      if (row.querySelectorAll('team-schedule-calendar-day').length > 0) break;
+      row = row.parentElement;
+    }
+    if (!row) continue;
+    const weekTotalEl = row.querySelector('team-schedule-total');
+    const week_total_text = weekTotalEl ? norm(weekTotalEl) : null;
+    const days = [];
+    for (const cell of row.querySelectorAll('team-schedule-calendar-day')) {
+      const r = cell.getBoundingClientRect();
+      const cx = r.x + r.width / 2;
+      let best = null, bestDist = 1e9;
+      for (const h of headers) {
+        const d = Math.abs(h.x - cx);
+        if (d < bestDist) { bestDist = d; best = h; }
+      }
+      const ranges = [...cell.querySelectorAll('schedule-shift-range')]
+        .map(norm).filter(Boolean);
+      days.push({
+        header_index: best ? best.i : null,
+        header_text: best ? best.text : null,
+        ranges,
+        cell_text: norm(cell).slice(0, 120),
+      });
+    }
+    employees.push({ name, week_total_text, days });
+  }
+  return { headers: headers.map(h => h.text), employees };
+}
+"""
+
 # Selector constants the runner uses to navigate (documented here so the flow
 # is codified alongside the parser).
 TEAM_SCHEDULE_ANCHOR_ID = "TEMPUS_WEEKLY_SCHEDULE"  # home-page quick-action <a>
@@ -194,6 +248,102 @@ def build_schedule_records(weeks: list[dict]) -> list[dict]:
                 "week_start": week_start.isoformat(),
             }
     return [by_date[d] for d in sorted(by_date)]
+
+
+_SHIFT_RANGE_RE = re.compile(
+    r"(\d{1,2}):(\d{2})\s*(AM|PM)\s*-\s*(\d{1,2}):(\d{2})\s*(AM|PM)",
+    re.IGNORECASE,
+)
+
+
+def _to_minutes(h: int, m: int, ampm: str) -> int:
+    hh = h % 12
+    if ampm.upper() == "PM":
+        hh += 12
+    return hh * 60 + m
+
+
+def parse_shift_range_hours(s: Optional[str]) -> float:
+    """'1:30 PM - 8:30 PM' -> 7.0. Unparseable -> 0.0."""
+    if not s:
+        return 0.0
+    m = _SHIFT_RANGE_RE.search(str(s))
+    if not m:
+        return 0.0
+    start = _to_minutes(int(m.group(1)), int(m.group(2)), m.group(3))
+    end = _to_minutes(int(m.group(4)), int(m.group(5)), m.group(6))
+    if end < start:
+        end += 24 * 60  # overnight
+    return round((end - start) / 60.0, 2)
+
+
+def build_employee_schedule_records(weeks: list[dict]) -> list[dict]:
+    """Per-(date, employee) scheduled hours from employee_rows payloads.
+
+    Week payload (from runner + SCHEDULE_EMPLOYEE_EXTRACT_JS)::
+
+        {
+          "week_label": "Week of Jul 13, 2026 - Jul 19, 2026",
+          "employee_rows": [
+            {
+              "name": "Garcia, Jacob",
+              "week_total_text": "38:45 Hrs",
+              "days": [
+                {"header_index": 0, "ranges": ["1:30 PM - 8:30 PM"], ...},
+                ...
+              ],
+            },
+            ...
+          ],
+        }
+
+    ``header_index`` is the Mon=0..Sun=6 column from bounding-box alignment.
+    Hours = sum of parsed shift ranges for that day (not the week total).
+    """
+    from skills.adp_run_automation.employee_aliases import derive_canonical
+
+    by_key: dict[tuple[str, str], dict] = {}
+    for wk in weeks:
+        week_start = parse_week_start(wk.get("week_label"))
+        if week_start is None:
+            continue
+        for emp in wk.get("employee_rows") or []:
+            raw_name = (emp.get("name") or "").strip()
+            if not raw_name:
+                continue
+            canonical = derive_canonical(raw_name)
+            for day in emp.get("days") or []:
+                idx = day.get("header_index")
+                if idx is None:
+                    continue
+                try:
+                    idx_i = int(idx)
+                except (TypeError, ValueError):
+                    continue
+                if idx_i < 0 or idx_i > 6:
+                    continue
+                ranges = day.get("ranges") or []
+                hours = round(sum(parse_shift_range_hours(r) for r in ranges), 2)
+                if hours <= 0:
+                    continue
+                d = (week_start + datetime.timedelta(days=idx_i)).isoformat()
+                key = (d, canonical)
+                prev = by_key.get(key)
+                if prev:
+                    prev["scheduled_hours"] = round(prev["scheduled_hours"] + hours, 2)
+                    prev_ranges = json.loads(prev.get("shift_ranges_json") or "[]")
+                    prev_ranges.extend(ranges)
+                    prev["shift_ranges_json"] = json.dumps(prev_ranges)
+                else:
+                    by_key[key] = {
+                        "date": d,
+                        "employee_id": canonical,
+                        "employee_name": canonical,
+                        "scheduled_hours": hours,
+                        "shift_ranges_json": json.dumps(list(ranges)),
+                        "week_start": week_start.isoformat(),
+                    }
+    return [by_key[k] for k in sorted(by_key)]
 
 
 # ── Public entry ──────────────────────────────────────────────────

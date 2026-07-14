@@ -1,0 +1,921 @@
+{
+  "captured_at_utc": "2026-07-14T15:12:58.081785Z",
+  "source": "ADP RUN Team Schedule Manage Schedules grid (timePartnerFrame)",
+  "notes": "Names redacted. ranges are shift start-end text from schedule-shift-range. Hours are HH:MM not decimal.",
+  "weeks": [
+    {
+      "week_index": 0,
+      "week_label": null,
+      "footer": {
+        "grand": "14 Employees 247:00 Hrs",
+        "days": [
+          "4 Employees 26:00 Hrs",
+          "5 Employees 31:30 Hrs",
+          "4 Employees 25:30 Hrs",
+          "5 Employees 31:00 Hrs",
+          "5 Employees 33:30 Hrs",
+          "8 Employees 52:45 Hrs",
+          "7 Employees 46:45 Hrs"
+        ]
+      },
+      "dayHeaders": [
+        "Mon 13",
+        "Tue 14",
+        "Wed 15",
+        "Thu 16",
+        "Fri 17",
+        "Sat 18",
+        "Sun 19"
+      ],
+      "employeeCount": 14,
+      "footerTotals": [
+        "14 Employees 247:00 Hrs",
+        "4 Employees 26:00 Hrs",
+        "5 Employees 31:30 Hrs",
+        "4 Employees 25:30 Hrs",
+        "5 Employees 31:00 Hrs",
+        "5 Employees 33:30 Hrs",
+        "8 Employees 52:45 Hrs",
+        "7 Employees 46:45 Hrs"
+      ],
+      "employeeRows_redacted": [
+        {
+          "name": "Employee489, Xcc2",
+          "weekTotalText": "19:00 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "1:30 PM - 8:30 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:30 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "1:30 PM - 8:30 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:30 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "9:00 AM - 3:00 PM"
+              ],
+              "extras": [],
+              "cellText": "9:00 AM - 3:00 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employeeeb1, X68c",
+          "weekTotalText": "20:30 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "6:30 AM - 1:30 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 1:30 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employee1b0, X2a5",
+          "weekTotalText": "19:00 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "1:30 PM - 8:30 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:30 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "1:30 PM - 8:30 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:30 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "12:00 PM - 6:00 PM"
+              ],
+              "extras": [],
+              "cellText": "12:00 PM - 6:00 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employeecda, Xf49",
+          "weekTotalText": "38:45 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "1:30 PM - 8:30 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:30 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "1:30 PM - 8:30 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:30 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "1:30 PM - 8:30 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:30 PM"
+            },
+            {
+              "dayIndex": 3,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 4,
+              "ranges": [
+                "8:00 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "8:00 AM - 2:00 PM"
+            },
+            {
+              "dayIndex": 5,
+              "ranges": [
+                "11:00 AM - 6:00 PM"
+              ],
+              "extras": [],
+              "cellText": "11:00 AM - 6:00 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employeede5, X24e",
+          "weekTotalText": "25:15 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "10:00 AM - 3:00 PM"
+              ],
+              "extras": [],
+              "cellText": "10:00 AM - 3:00 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 3,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employeeb56, X00a",
+          "weekTotalText": "28:00 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "6:30 AM - 1:30 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 1:30 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "6:30 AM - 1:30 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 1:30 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "6:30 AM - 1:30 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 1:30 PM"
+            },
+            {
+              "dayIndex": 3,
+              "ranges": [
+                "6:30 AM - 2:00 PM",
+                "2:00 PM - 3:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM 2:00 PM - 3:00 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employee2fe, Xca4",
+          "weekTotalText": "6:30 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "6:30 AM - 1:30 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 1:30 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employee5ab, X8a6",
+          "weekTotalText": "0:00 Hrs",
+          "days": []
+        },
+        {
+          "name": "Employee44f, Xd07",
+          "weekTotalText": "0:00 Hrs",
+          "days": []
+        },
+        {
+          "name": "Employee8e3, X047",
+          "weekTotalText": "12:30 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "3:00 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "3:00 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employeeb38, Xca7",
+          "weekTotalText": "32:30 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "6:30 AM - 1:30 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 1:30 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "12:00 PM - 6:00 PM"
+              ],
+              "extras": [],
+              "cellText": "12:00 PM - 6:00 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            },
+            {
+              "dayIndex": 3,
+              "ranges": [
+                "11:00 AM - 5:00 PM"
+              ],
+              "extras": [],
+              "cellText": "11:00 AM - 5:00 PM"
+            },
+            {
+              "dayIndex": 4,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employee69d, Xddc",
+          "weekTotalText": "12:00 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "7:30 AM - 1:30 PM"
+              ],
+              "extras": [],
+              "cellText": "7:30 AM - 1:30 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "7:30 AM - 1:30 PM"
+              ],
+              "extras": [],
+              "cellText": "7:30 AM - 1:30 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employee312, X98d",
+          "weekTotalText": "13:30 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employeebd2, X4f4",
+          "weekTotalText": "19:30 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "1:30 PM - 8:30 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:30 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "9:00 AM - 3:00 PM"
+              ],
+              "extras": [],
+              "cellText": "9:00 AM - 3:00 PM"
+            }
+          ]
+        }
+      ],
+      "structure_sample": [
+        {
+          "name": "Employee489, Xcc2",
+          "weekTotalText": "19:00 Hrs",
+          "day_count": 3,
+          "days_with_shifts": 3,
+          "first_shift_day": {
+            "dayIndex": 0,
+            "ranges": [
+              "1:30 PM - 8:30 PM"
+            ],
+            "extras": [],
+            "cellText": "1:30 PM - 8:30 PM"
+          }
+        },
+        {
+          "name": "Employeeeb1, X68c",
+          "weekTotalText": "20:30 Hrs",
+          "day_count": 3,
+          "days_with_shifts": 3,
+          "first_shift_day": {
+            "dayIndex": 0,
+            "ranges": [
+              "6:30 AM - 1:30 PM"
+            ],
+            "extras": [],
+            "cellText": "6:30 AM - 1:30 PM"
+          }
+        },
+        {
+          "name": "Employee1b0, X2a5",
+          "weekTotalText": "19:00 Hrs",
+          "day_count": 3,
+          "days_with_shifts": 3,
+          "first_shift_day": {
+            "dayIndex": 0,
+            "ranges": [
+              "1:30 PM - 8:30 PM"
+            ],
+            "extras": [],
+            "cellText": "1:30 PM - 8:30 PM"
+          }
+        }
+      ]
+    },
+    {
+      "week_index": 1,
+      "week_label": null,
+      "footer": {
+        "grand": "14 Employees 228:30 Hrs",
+        "days": [
+          "4 Employees 26:30 Hrs",
+          "4 Employees 26:30 Hrs",
+          "4 Employees 27:30 Hrs",
+          "5 Employees 34:00 Hrs",
+          "6 Employees 37:15 Hrs",
+          "6 Employees 37:15 Hrs",
+          "6 Employees 39:30 Hrs"
+        ]
+      },
+      "dayHeaders": [
+        "Mon 20",
+        "Tue 21",
+        "Wed 22",
+        "Thu 23",
+        "Fri 24",
+        "Sat 25",
+        "Sun 26"
+      ],
+      "employeeCount": 14,
+      "footerTotals": [
+        "14 Employees 228:30 Hrs",
+        "4 Employees 26:30 Hrs",
+        "4 Employees 26:30 Hrs",
+        "4 Employees 27:30 Hrs",
+        "5 Employees 34:00 Hrs",
+        "6 Employees 37:15 Hrs",
+        "6 Employees 37:15 Hrs",
+        "6 Employees 39:30 Hrs"
+      ],
+      "employeeRows_redacted": [
+        {
+          "name": "Employee489, Xcc2",
+          "weekTotalText": "12:45 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "11:00 AM - 5:00 PM"
+              ],
+              "extras": [],
+              "cellText": "11:00 AM - 5:00 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employeeeb1, X68c",
+          "weekTotalText": "20:30 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "6:30 AM - 1:30 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 1:30 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employee1b0, X2a5",
+          "weekTotalText": "13:30 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employeecda, Xf49",
+          "weekTotalText": "33:00 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 3,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 4,
+              "ranges": [
+                "8:00 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "8:00 AM - 2:00 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employeede5, X24e",
+          "weekTotalText": "20:15 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employeeb56, X00a",
+          "weekTotalText": "27:00 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            },
+            {
+              "dayIndex": 3,
+              "ranges": [
+                "11:00 AM - 5:00 PM"
+              ],
+              "extras": [],
+              "cellText": "11:00 AM - 5:00 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employee2fe, Xca4",
+          "weekTotalText": "14:00 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "11:00 AM - 6:00 PM"
+              ],
+              "extras": [],
+              "cellText": "11:00 AM - 6:00 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "5:00 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "5:00 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "5:00 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "5:00 PM - 8:45 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employee5ab, X8a6",
+          "weekTotalText": "0:00 Hrs",
+          "days": []
+        },
+        {
+          "name": "Employee44f, Xd07",
+          "weekTotalText": "14:00 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employee8e3, X047",
+          "weekTotalText": "6:45 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employeeb38, Xca7",
+          "weekTotalText": "26:30 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "6:30 AM - 1:30 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 1:30 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "7:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "7:30 AM - 2:00 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            },
+            {
+              "dayIndex": 3,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employee69d, Xddc",
+          "weekTotalText": "14:00 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "6:30 AM - 2:00 PM"
+              ],
+              "extras": [],
+              "cellText": "6:30 AM - 2:00 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employee312, X98d",
+          "weekTotalText": "6:45 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            }
+          ]
+        },
+        {
+          "name": "Employeebd2, X4f4",
+          "weekTotalText": "19:30 Hrs",
+          "days": [
+            {
+              "dayIndex": 0,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 1,
+              "ranges": [
+                "1:30 PM - 8:45 PM"
+              ],
+              "extras": [],
+              "cellText": "1:30 PM - 8:45 PM"
+            },
+            {
+              "dayIndex": 2,
+              "ranges": [
+                "11:00 AM - 5:00 PM"
+              ],
+              "extras": [],
+              "cellText": "11:00 AM - 5:00 PM"
+            }
+          ]
+        }
+      ],
+      "structure_sample": [
+        {
+          "name": "Employee489, Xcc2",
+          "weekTotalText": "12:45 Hrs",
+          "day_count": 2,
+          "days_with_shifts": 2,
+          "first_shift_day": {
+            "dayIndex": 0,
+            "ranges": [
+              "1:30 PM - 8:45 PM"
+            ],
+            "extras": [],
+            "cellText": "1:30 PM - 8:45 PM"
+          }
+        },
+        {
+          "name": "Employeeeb1, X68c",
+          "weekTotalText": "20:30 Hrs",
+          "day_count": 3,
+          "days_with_shifts": 3,
+          "first_shift_day": {
+            "dayIndex": 0,
+            "ranges": [
+              "6:30 AM - 1:30 PM"
+            ],
+            "extras": [],
+            "cellText": "6:30 AM - 1:30 PM"
+          }
+        },
+        {
+          "name": "Employee1b0, X2a5",
+          "weekTotalText": "13:30 Hrs",
+          "day_count": 2,
+          "days_with_shifts": 2,
+          "first_shift_day": {
+            "dayIndex": 0,
+            "ranges": [
+              "1:30 PM - 8:45 PM"
+            ],
+            "extras": [],
+            "cellText": "1:30 PM - 8:45 PM"
+          }
+        }
+      ]
+    }
+  ]
+}

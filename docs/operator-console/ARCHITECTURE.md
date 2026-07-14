@@ -411,5 +411,7 @@ Home's **Labor** group and the Labor page summary card share
 
 - Goals: `goal_hourly_labor_pct_max` default **20%**, `goal_labor_pct_max` default **25%** (of net sales).
 - Schedule hours are **part-time oriented** (ADP Team Schedule scrape → `adp_scheduled_daily`); FT is approximated from trailing actuals because the schedule excludes the salaried manager.
-- Wage basis is **wage-only** (hours × rate). Optional **all-in** = wage × `(1 + labor_burden_pct)` when `store_config.labor_burden_pct` is set (>0). Default unset/`0` hides all-in lines. Recommended starting value from research: **`0.13`** (≈ employer FICA 7.65% + FUTA/SUTA + workers' comp ballpark) — set via `/bhaga-cloud config set labor_burden_pct 0.13`, not auto-written by the console.
+- Wage basis is **wage-only** (hours × rate). Optional **all-in** = wage × `(1 + labor_burden_pct)` when `store_config.labor_burden_pct` is set (>0). Default unset/`0` hides all-in lines. Seeded from ADP Payroll Liability measurement: **`0.10`** (see `docs/operator-console/adp-forward-labor-spike.md`).
+- Forward PT $ prefers `Σ(adp_scheduled_shifts.hours × adp_wage_rates.rate)` when employee schedule rows exist; falls back to aggregate `scheduled_hours × avg PT wage`.
+- `/labor` shows **Scheduled hours per person — forward (ADP)** and a dashed projected PT % series on the labor-% chart.
 - `bhaga.adp_earnings` has employee pay lines only (Regular, OT, tips, bonus…); no employer-tax scrape exists. A dedicated ADP tax/burden pull is a follow-up if RUN's Tax Center numbers must replace the multiplier.

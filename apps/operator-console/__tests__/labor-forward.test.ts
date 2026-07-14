@@ -90,6 +90,14 @@ describe("computeLaborForwardSummary", () => {
     expect(s.avgPtWage).toBeNull();
   });
 
+  it("prefers per-employee forward PT cost over hours × avg wage", () => {
+    const s = computeLaborForwardSummary(
+      base({ fwdPtCostFromEmployees: 900, avgPtWage: 15 }),
+    );
+    // completed 1000 + emp forward 900 (not 50×15=750)
+    expect(s.projectedPtCost).toBeCloseTo(1900);
+  });
+
   it("returns null ratios when sales denominator is zero", () => {
     const s = computeLaborForwardSummary(
       base({

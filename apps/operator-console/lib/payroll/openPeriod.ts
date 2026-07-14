@@ -4,8 +4,8 @@
  *
  * Tip Exemptions editability follows **unpaid** ADP status (adp_total_paid /
  * CC-tip earnings), not model `is_open` (calendar-incomplete). After period_end
- * the unpaid biweek stays editable until ADP pays it — do not jump to the next
- * calendar biweek.
+ * the unpaid biweek stays editable until ADP pays it — and the in-progress
+ * calendar biweek is also unpaid/editable.
  */
 
 /** Palmetto store-profile: pay_periods_anchor_end_date / Biweekly. */
@@ -65,9 +65,9 @@ export function calendarOpenPayPeriod(
 }
 
 /**
- * Editable Tip Exemptions window = unpaid current pay period.
- * If the most-recent closed biweek is still unpaid, keep it; otherwise advance
- * to the next calendar biweek.
+ * Just-ended biweek stays editable while unpaid; once paid, advance to the
+ * next calendar biweek. (Primary unpaid window — current in-progress is also
+ * unpaid and listed separately in the period dropdown.)
  */
 export function unpaidCurrentPayPeriod(
   todayIso: string,
@@ -81,4 +81,12 @@ export function unpaidCurrentPayPeriod(
 /** True when ADP has not paid tips for the period (null/undefined total). */
 export function isPeriodUnpaid(adpTotalPaid: number | null | undefined): boolean {
   return adpTotalPaid == null;
+}
+
+/** True if `dateIso` falls in any unpaid window (inclusive). */
+export function dateInUnpaidWindows(
+  dateIso: string,
+  windows: { start: string; end: string }[],
+): boolean {
+  return windows.some((w) => dateIso >= w.start && dateIso <= w.end);
 }

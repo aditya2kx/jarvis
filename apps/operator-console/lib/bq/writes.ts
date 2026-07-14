@@ -266,24 +266,27 @@ function assertHhmm(label: string, raw: string): string {
 }
 
 /**
- * Batch tip-exemption writes for the unpaid current pay period only (Issue #170).
- * Rejects any draft date outside the unpaid ADP window.
+ * Batch tip-exemption writes for any unpaid ADP pay period (Issue #170).
+ * Rejects drafts whose date falls outside every unpaid window (just-ended
+ * unpaid biweek and/or in-progress calendar biweek).
  */
 export async function applyTipExemptions(
   store: string,
   drafts: TipExemptionDraft[],
   by: string,
 ): Promise<void> {
-  const { openPayPeriodBounds } = await import("@/lib/bq/queries");
-  const open = await openPayPeriodBounds();
-  if (!open) {
+  const { unpaidPayPeriodWindows } = await import("@/lib/bq/queries");
+  const { dateInUnpaidWindows } = await import("@/lib/payroll/openPeriod");
+  const windows = await unpaidPayPeriodWindows();
+  if (!windows.length) {
     throw new Error("No unpaid pay period found — tip exemptions cannot be edited.");
   }
+  const windowLabel = windows.map((w) => `${w.start}..${w.end}`).join(" | ");
   for (const d of drafts) {
-    if (d.date < open.start || d.date > open.end) {
+    if (!dateInUnpaidWindows(d.date, windows)) {
       throw new Error(
-        `Tip exemptions are editable only for the unpaid current pay period ` +
-          `(${open.start}..${open.end}); refused ${d.employeeName} on ${d.date}`,
+        `Tip exemptions are editable only for unpaid pay periods ` +
+          `(${windowLabel}); refused ${d.employeeName} on ${d.date}`,
       );
     }
   }

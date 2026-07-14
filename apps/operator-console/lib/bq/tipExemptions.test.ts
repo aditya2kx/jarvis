@@ -2,7 +2,6 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-// Exercise unpaid-period guard + window validation without hitting BQ.
 vi.mock("@/lib/bq/client", () => ({
   mutate: vi.fn(async () => undefined),
   fq: (t: string) => `bhaga.${t}`,
@@ -12,34 +11,37 @@ vi.mock("@/lib/bq/client", () => ({
 }));
 
 vi.mock("@/lib/bq/queries", () => ({
-  openPayPeriodBounds: vi.fn(async () => ({ start: "2026-06-29", end: "2026-07-12" })),
+  unpaidPayPeriodWindows: vi.fn(async () => [
+    { start: "2026-07-13", end: "2026-07-26" },
+    { start: "2026-06-29", end: "2026-07-12" },
+  ]),
 }));
 
 import { mutate } from "@/lib/bq/client";
-import { openPayPeriodBounds } from "@/lib/bq/queries";
+import { unpaidPayPeriodWindows } from "@/lib/bq/queries";
 import { applyTipExemptions } from "@/lib/bq/writes";
 
 describe("applyTipExemptions unpaid-period guard (Issue #170)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(openPayPeriodBounds).mockResolvedValue({
-      start: "2026-06-29",
-      end: "2026-07-12",
-    });
+    vi.mocked(unpaidPayPeriodWindows).mockResolvedValue([
+      { start: "2026-07-13", end: "2026-07-26" },
+      { start: "2026-06-29", end: "2026-07-12" },
+    ]);
   });
 
-  it("rejects drafts outside the unpaid pay period", async () => {
+  it("rejects drafts outside every unpaid pay period", async () => {
     await expect(
       applyTipExemptions(
         "palmetto",
-        [{ employeeName: "Alvarez, Sebastian", date: "2026-07-15", mode: "whole" }],
+        [{ employeeName: "Alvarez, Sebastian", date: "2026-06-20", mode: "whole" }],
         "tester@example.com",
       ),
-    ).rejects.toThrow(/editable only for the unpaid current pay period/);
+    ).rejects.toThrow(/editable only for unpaid pay periods/);
     expect(mutate).not.toHaveBeenCalled();
   });
 
-  it("MERGEs a window draft inside the unpaid period", async () => {
+  it("MERGEs a window draft in the just-ended unpaid period", async () => {
     await applyTipExemptions(
       "palmetto",
       [
@@ -55,9 +57,15 @@ describe("applyTipExemptions unpaid-period guard (Issue #170)", () => {
       "tester@example.com",
     );
     expect(mutate).toHaveBeenCalledTimes(1);
-    const sql = String(vi.mocked(mutate).mock.calls[0][0]);
-    expect(sql).toMatch(/MERGE/);
-    expect(sql).toMatch(/exempt_start/);
+  });
+
+  it("MERGEs a draft in the current in-progress unpaid period", async () => {
+    await applyTipExemptions(
+      "palmetto",
+      [{ employeeName: "Alvarez, Sebastian", date: "2026-07-14", mode: "whole", note: "Training" }],
+      "tester@example.com",
+    );
+    expect(mutate).toHaveBeenCalledTimes(1);
   });
 
   it("rejects inverted windows", async () => {

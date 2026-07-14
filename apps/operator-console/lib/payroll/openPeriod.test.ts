@@ -4,6 +4,7 @@ import {
   mostRecentClosedPeriod,
   unpaidCurrentPayPeriod,
   isPeriodUnpaid,
+  dateInUnpaidWindows,
 } from "@/lib/payroll/openPeriod";
 
 describe("openPeriod calendar (parity with update_model_sheet)", () => {
@@ -58,5 +59,15 @@ describe("unpaidCurrentPayPeriod (Issue #170)", () => {
     expect(isPeriodUnpaid(undefined)).toBe(true);
     expect(isPeriodUnpaid(0)).toBe(false);
     expect(isPeriodUnpaid(1527.1)).toBe(false);
+  });
+
+  it("dateInUnpaidWindows covers both current and just-ended unpaid", () => {
+    const windows = [
+      { start: "2026-07-13", end: "2026-07-26" },
+      { start: "2026-06-29", end: "2026-07-12" },
+    ];
+    expect(dateInUnpaidWindows("2026-07-14", windows)).toBe(true);
+    expect(dateInUnpaidWindows("2026-07-10", windows)).toBe(true);
+    expect(dateInUnpaidWindows("2026-06-20", windows)).toBe(false);
   });
 });

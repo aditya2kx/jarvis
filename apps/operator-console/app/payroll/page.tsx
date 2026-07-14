@@ -5,14 +5,13 @@ import {
   adpShiftsForPeriod,
   tipExemptions,
   listCanonicalEmployees,
-  openPayPeriodBounds,
   listPayPeriodsWithPaidStatus,
 } from "@/lib/bq/queries";
 import { formatDate, formatDollars } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { DataTable } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
-import { FilterPills } from "@/components/filters/FilterPills";
+import { FilterSelect } from "@/components/filters/FilterSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TrainingQuickAdd } from "@/components/drawers/TrainingQuickAdd";
 import { RecognitionDrawer } from "@/components/drawers/RecognitionDrawer";
@@ -34,16 +33,14 @@ export const dynamic = "force-dynamic";
 function parsePeriodStart(
   value: string | string[] | undefined,
   options: PayPeriodOption[],
-  unpaidBounds: { start: string; end: string } | null,
 ): string | null {
   const raw = Array.isArray(value) ? value[0] : value;
   if (raw && options.some((o) => o.period_start === raw)) return raw;
-  const defaultUnpaid = options.find((o) => o.unpaid);
-  if (defaultUnpaid) return defaultUnpaid.period_start;
-  if (unpaidBounds && options.some((o) => o.period_start === unpaidBounds.start)) {
-    return unpaidBounds.start;
-  }
-  return options[0]?.period_start ?? null;
+  // Default: current in-progress unpaid, else latest unpaid closed.
+  const current = options.find((o) => o.is_current && o.unpaid);
+  if (current) return current.period_start;
+  const unpaid = options.find((o) => o.unpaid);
+  return unpaid?.period_start ?? options[0]?.period_start ?? null;
 }
 
 export default async function PayrollPage({
@@ -60,24 +57,21 @@ export default async function PayrollPage({
   let shifts: AdpShiftRow[] = [];
   let exemptions: TipExemptionRow[] = [];
   let employees: string[] = [];
-  let unpaidBounds: { start: string; end: string } | null = null;
   let error: string | undefined;
   try {
     const settled = await Promise.all([
       listPayPeriodsWithPaidStatus(6),
       reviewBonusDetail(30),
       recognitionBonuses(DEFAULT_STORE, 2),
-      FEATURES.writeTipExemptions ? openPayPeriodBounds() : Promise.resolve(null),
     ]);
     periodOptions = settled[0];
     reviews = settled[1];
     recognitions = settled[2];
-    unpaidBounds = settled[3];
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
 
-  const selectedPeriodStart = parsePeriodStart(sp.period, periodOptions, unpaidBounds);
+  const selectedPeriodStart = parsePeriodStart(sp.period, periodOptions);
   const selectedOpt = periodOptions.find((o) => o.period_start === selectedPeriodStart);
   const periodEnd = selectedOpt?.period_end;
   const selectedUnpaid = Boolean(selectedOpt?.unpaid);
@@ -97,10 +91,7 @@ export default async function PayrollPage({
 
   const tipStart = selectedPeriodStart;
   const tipEnd = periodEnd;
-  const editable =
-    FEATURES.writeTipExemptions && selectedUnpaid && Boolean(unpaidBounds) &&
-    tipStart === unpaidBounds?.start &&
-    tipEnd === unpaidBounds?.end;
+  const editable = FEATURES.writeTipExemptions && selectedUnpaid;
 
   if (!error && tipStart && tipEnd) {
     try {
@@ -171,11 +162,11 @@ export default async function PayrollPage({
     { accessorKey: "reason", header: "Reason" },
   ];
 
-  const periodPillOptions = periodOptions.map((o) => ({
+  const periodSelectOptions = periodOptions.map((o) => ({
     value: o.period_start,
     label: `${formatDate(o.period_start)} – ${formatDate(o.period_end)} · ${
-      o.unpaid ? "Unpaid" : "Paid (ADP)"
-    }`,
+      o.is_current ? "Current · " : ""
+    }${o.unpaid ? "Unpaid" : "Paid (ADP)"}`,
   }));
 
   return (
@@ -185,12 +176,12 @@ export default async function PayrollPage({
         subtitle={`Wages, tips, bonuses, and tip exemptions · ${storeDisplayName(DEFAULT_STORE)}`}
         right={
           <>
-            {periodPillOptions.length ? (
-              <FilterPills
+            {periodSelectOptions.length ? (
+              <FilterSelect
                 label="Period"
                 param="period"
-                value={selectedPeriodStart ?? periodPillOptions[0].value}
-                options={periodPillOptions}
+                value={selectedPeriodStart ?? periodSelectOptions[0].value}
+                options={periodSelectOptions}
                 basePath="/payroll"
               />
             ) : null}
@@ -209,6 +200,7 @@ export default async function PayrollPage({
           <div className="flex flex-col gap-2">
             <p className="text-xs text-muted-foreground">
               Pay period {periodLabel}
+              {selectedOpt?.is_current ? " · Current" : ""}
               {selectedUnpaid ? " · Unpaid (ADP)" : " · Paid (ADP)"}
               {editable ? " · tip exemptions editable" : ""}
             </p>

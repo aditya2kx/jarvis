@@ -644,15 +644,31 @@ export interface PayPeriodOption {
   period_end: string;
   /** True when ADP has not paid tips for this biweek (adp_total_paid IS NULL). */
   unpaid: boolean;
+  /** In-progress calendar biweek (after last closed end). */
+  is_current: boolean;
 }
 
 /**
- * Full biweekly pay periods for the Payroll period picker (Issue #170).
- * Skips synthetic 1-day / partial stubs (DATE_DIFF < 13).
+ * Pay periods for the Payroll dropdown (Issue #170).
+ * Full biweeks from period_summary plus the in-progress calendar open window
+ * (e.g. Jul 13–26) even when the model only has a 1-day stub.
  */
 export async function listPayPeriodsWithPaidStatus(
   limit = 6,
 ): Promise<PayPeriodOption[]> {
+  const {
+    calendarOpenPayPeriod,
+    isPeriodUnpaid,
+  } = await import("@/lib/payroll/openPeriod");
+
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Chicago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const current = calendarOpenPayPeriod(today);
+
   const rows = await q<{
     period_start: string;
     period_end: string;
@@ -667,18 +683,41 @@ export async function listPayPeriodsWithPaidStatus(
      LIMIT @limit`,
     { limit: intParam(limit) },
   );
-  const { isPeriodUnpaid } = await import("@/lib/payroll/openPeriod");
-  return rows.map((r) => ({
-    period_start: r.period_start,
-    period_end: r.period_end,
-    unpaid: isPeriodUnpaid(r.adp_total_paid),
+
+  const out: PayPeriodOption[] = [
+    {
+      period_start: current.start,
+      period_end: current.end,
+      unpaid: true,
+      is_current: true,
+    },
+  ];
+  for (const r of rows) {
+    if (r.period_start === current.start) continue;
+    out.push({
+      period_start: r.period_start,
+      period_end: r.period_end,
+      unpaid: isPeriodUnpaid(r.adp_total_paid),
+      is_current: false,
+    });
+  }
+  return out;
+}
+
+/** All unpaid windows (current calendar + unpaid closed biweeks) for write guard. */
+export async function unpaidPayPeriodWindows(): Promise<
+  { start: string; end: string }[]
+> {
+  const periods = await listPayPeriodsWithPaidStatus(8);
+  return periods.filter((p) => p.unpaid).map((p) => ({
+    start: p.period_start,
+    end: p.period_end,
   }));
 }
 
 /**
- * Tip-exemption write-guard bounds = unpaid current pay period (Issue #170).
- * Keeps the just-ended biweek editable until ADP tip payout lands; does not
- * prefer model ``is_open`` (calendar stub) or the next calendar biweek.
+ * Primary unpaid bounds for default selection (just-ended unpaid biweek, else
+ * calendar open). Write guard uses ``unpaidPayPeriodWindows`` (all unpaid).
  */
 export async function openPayPeriodBounds(): Promise<{ start: string; end: string } | null> {
   const {

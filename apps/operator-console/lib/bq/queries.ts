@@ -151,16 +151,26 @@ export async function laborForwardSummary(
          AND scheduled_hours > 0
      ),
      fwd_emp AS (
-       SELECT COALESCE(SUM(s.scheduled_hours * w.wage_rate_dollars), 0) AS fwd_pt_cost_from_employees
+       SELECT COALESCE(SUM(
+         CASE
+           WHEN IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE)
+             THEN 0
+           WHEN w.wage_rate_dollars IS NOT NULL
+             THEN s.scheduled_hours * w.wage_rate_dollars
+           ELSE s.scheduled_hours * (
+             SELECT AVG(wage_rate_dollars) FROM ${fq("adp_wage_rates")}
+             WHERE wage_rate_dollars IS NOT NULL
+               AND NOT IFNULL(is_salaried, FALSE)
+               AND NOT IFNULL(excluded_from_labor_pct, FALSE)
+           )
+         END
+       ), 0) AS fwd_pt_cost_from_employees
        FROM ${fq("adp_scheduled_shifts")} s
-       INNER JOIN ${fq("adp_wage_rates")} w
+       LEFT JOIN ${fq("adp_wage_rates")} w
          ON w.employee_id = s.employee_id
        WHERE s.date BETWEEN @start AND @end
          AND s.date >= CURRENT_DATE('America/Chicago')
          AND s.scheduled_hours > 0
-         AND w.wage_rate_dollars IS NOT NULL
-         AND NOT IFNULL(w.is_salaried, FALSE)
-         AND NOT IFNULL(w.excluded_from_labor_pct, FALSE)
      ),
      wage AS (
        SELECT AVG(wage_rate_dollars) AS avg_pt_wage

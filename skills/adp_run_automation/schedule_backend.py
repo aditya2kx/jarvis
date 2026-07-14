@@ -93,7 +93,8 @@ SCHEDULE_EMPLOYEE_EXTRACT_JS = r"""
 
   // Prefer walking .worker-name nodes. Scope day cells to the nearest
   // `.calendar-row` (exactly one worker-name). Never climb into the shared
-  // SECTION — that attributed every shift to Tina/Ximena (13× week_total).
+  // SECTION — that attributed every mid-list employee's shifts to each name
+  // (13× week_total). Scope extract to `.calendar-row` with exactly one name.
   // Mid-list rows are often virtualized empty until scrolled into view; the
   // runner scrolls each calendar-row before this evaluate runs.
   const employees = [];
@@ -334,9 +335,9 @@ def cap_days_to_week_total(days: list[dict], week_total_hours: float) -> list[di
     """Drop over-attributed day cells when sum(ranges) >> ADP week total.
 
     Live bug (2026-07-14): climbing past the per-employee row into the shared
-    grid root attached every shift to Tina/Ximena. True shifts appear first;
-    keep prefix until ≈ week_total. No-op when week_total unknown or already
-    within 20%.
+    grid root attached every shift to mid-list names (13× week_total). True
+    shifts appear first; keep prefix until ≈ week_total. No-op when week_total
+    unknown or already within 20%.
     """
     if not days or not (week_total_hours > 0):
         return days

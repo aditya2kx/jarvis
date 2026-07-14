@@ -27,7 +27,7 @@ Date assignment must match each cell’s X center to the nearest column header, 
 
 ### Pitfalls (fixed 2026-07-14)
 - **Shared-grid over-attribution:** climbing past `.calendar-row` into the SECTION
-  attaches every employee’s shifts to mid-list names (Tina/Ximena showed 13×
+  attaches every employee’s shifts to mid-list names (showed 13×
   `week_total`). Scope extract to `.calendar-row` with exactly one `.worker-name`.
 - **Virtualization:** mid-list rows hydrate day cells only when scrolled into view
   (`days=0` until then). Runner scrolls each row, extracts one-at-a-time, then

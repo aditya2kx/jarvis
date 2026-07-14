@@ -415,5 +415,34 @@ class TestScopeClearMetaGuard(unittest.TestCase):
                 )
 
 
+class TestEvictWholeDayExemptTipAlloc(unittest.TestCase):
+    def test_dry_run_counts_only_whole_day_marks(self):
+        m = _load_module()
+        n = m._evict_whole_day_exempt_tip_alloc(
+            "palmetto",
+            {
+                ("Garcia, Jacob", "2026-07-06"): {
+                    "exempt_start": None,
+                    "exempt_end": None,
+                    "note": "Prep",
+                },
+                ("Alvarez, Sebastian", "2026-07-06"): {
+                    "exempt_start": "10:00",
+                    "exempt_end": "10:30",
+                    "note": "Prep",
+                },
+            },
+            dry_run=True,
+        )
+        self.assertEqual(n, 1)
+
+    def test_empty_training_shifts_is_noop(self):
+        m = _load_module()
+        self.assertEqual(
+            m._evict_whole_day_exempt_tip_alloc("palmetto", {}, dry_run=True),
+            0,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

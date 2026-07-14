@@ -287,6 +287,49 @@ def load_model_rows(
     return _load(table, dicts, materialized_at, dry_run)
 
 
+def _evict_whole_day_exempt_tip_alloc(
+    store: str,
+    training_shifts: dict[tuple[str, str], dict],
+    *,
+    dry_run: bool,
+) -> int:
+    """DELETE tip_alloc_daily rows for whole-day tip exemptions (0 eligible hours).
+
+    Whole-day marks (null exempt_start/end) correctly drop out of
+    ``build_period_results``; without this eviction, raced concurrent
+    materializes can leave ghost rows that break tip-pool conservation
+    (alloc > pool by exactly those shares).
+    """
+    whole_day = [
+        (name, date_iso)
+        for (name, date_iso), meta in training_shifts.items()
+        if not (meta.get("exempt_start") and meta.get("exempt_end"))
+    ]
+    if not whole_day:
+        return 0
+    if dry_run:
+        print(f"  [DRY-RUN] would evict {len(whole_day)} whole-day tip_alloc rows")
+        return len(whole_day)
+    from core.datastore import read_query, _PROJECT_ID, _DATASET, _assert_sandbox_write_isolation
+
+    _assert_sandbox_write_isolation()
+    # Pairwise delete via UNNEST structs — small N (operator tip exemptions).
+    pairs_sql = ", ".join(
+        f"STRUCT('{name.replace(chr(39), chr(39)+chr(39))}' AS employee, DATE('{date_iso}') AS d)"
+        for name, date_iso in whole_day
+    )
+    sql = (
+        f"DELETE FROM `{_PROJECT_ID}.{_DATASET}.model_tip_alloc_daily` T "
+        f"WHERE EXISTS ("
+        f"  SELECT 1 FROM UNNEST([{pairs_sql}]) P "
+        f"  WHERE P.employee = T.employee AND P.d = T.date"
+        f")"
+    )
+    read_query(sql)
+    print(f"  model_tip_alloc_daily: evicted {len(whole_day)} whole-day exempt ghost row(s)")
+    return len(whole_day)
+
+
 def _assert_conservation(period_results: list[dict]) -> None:
     """Verify tip-pool conservation for every period: allocated == pool.
 
@@ -507,6 +550,11 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     load_model_rows("model_labor_period", labor_period_rows, dry_run=dry_run, materialized_at=materialized_at)
     load_model_rows("model_tip_alloc_period", period_rows, dry_run=dry_run, materialized_at=materialized_at, replace_scope=True)
     load_model_rows("model_tip_alloc_daily", day_alloc_rows, dry_run=dry_run, materialized_at=materialized_at, replace_scope=True)
+    # Whole-day tip exemptions drop to 0 eligible hours and disappear from
+    # day_alloc_rows. replace_scope clears by date then MERGEs survivors — but
+    # a concurrent raced materialize can re-insert pre-exemption ghost rows for
+    # those employees. Evict explicitly from training_shifts whole-day marks.
+    _evict_whole_day_exempt_tip_alloc(store, training_shifts, dry_run=dry_run)
     load_model_rows("model_period_summary", summary_rows, dry_run=dry_run, materialized_at=materialized_at)
 
     # ── Load forecast (future window + gap-fill backfill; non-fatal) ─────────

@@ -639,24 +639,71 @@ export function listCanonicalEmployees(_store: string): Promise<{ employee_name:
   );
 }
 
+export interface PayPeriodOption {
+  period_start: string;
+  period_end: string;
+  /** True when ADP has not paid tips for this biweek (adp_total_paid IS NULL). */
+  unpaid: boolean;
+}
+
 /**
- * Open pay period bounds for tip-exemption write guard.
- * Prefer `is_open=TRUE` from the model view; fall back to the store pay-period
- * calendar when the open window has no materialized rows yet (Issue #167).
+ * Full biweekly pay periods for the Payroll period picker (Issue #170).
+ * Skips synthetic 1-day / partial stubs (DATE_DIFF < 13).
+ */
+export async function listPayPeriodsWithPaidStatus(
+  limit = 6,
+): Promise<PayPeriodOption[]> {
+  const rows = await q<{
+    period_start: string;
+    period_end: string;
+    adp_total_paid: number | null;
+  }>(
+    `SELECT CAST(period_start AS STRING) AS period_start,
+            CAST(period_end AS STRING) AS period_end,
+            adp_total_paid
+     FROM ${fq("vw_model_period_summary")}
+     WHERE DATE_DIFF(period_end, period_start, DAY) >= 13
+     ORDER BY period_start DESC
+     LIMIT @limit`,
+    { limit: intParam(limit) },
+  );
+  const { isPeriodUnpaid } = await import("@/lib/payroll/openPeriod");
+  return rows.map((r) => ({
+    period_start: r.period_start,
+    period_end: r.period_end,
+    unpaid: isPeriodUnpaid(r.adp_total_paid),
+  }));
+}
+
+/**
+ * Tip-exemption write-guard bounds = unpaid current pay period (Issue #170).
+ * Keeps the just-ended biweek editable until ADP tip payout lands; does not
+ * prefer model ``is_open`` (calendar stub) or the next calendar biweek.
  */
 export async function openPayPeriodBounds(): Promise<{ start: string; end: string } | null> {
-  const rows = await q<{ period_start: string; period_end: string }>(
-    `SELECT DISTINCT CAST(period_start AS STRING) AS period_start,
-            CAST(period_end AS STRING) AS period_end
-     FROM ${fq("vw_model_payroll_period")}
-     WHERE is_open = TRUE
+  const {
+    mostRecentClosedPeriod,
+    unpaidCurrentPayPeriod,
+    isPeriodUnpaid,
+  } = await import("@/lib/payroll/openPeriod");
+
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Chicago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+
+  const closed = mostRecentClosedPeriod(today);
+  const rows = await q<{ adp_total_paid: number | null }>(
+    `SELECT adp_total_paid
+     FROM ${fq("vw_model_period_summary")}
+     WHERE period_start = @start AND period_end = @end
      LIMIT 1`,
+    { start: dateParam(closed.start), end: dateParam(closed.end) },
   );
-  if (rows.length) {
-    return { start: rows[0].period_start, end: rows[0].period_end };
-  }
-  const { calendarOpenPayPeriod } = await import("@/lib/payroll/openPeriod");
-  return calendarOpenPayPeriod();
+  const closedPaid = rows.length > 0 && !isPeriodUnpaid(rows[0].adp_total_paid);
+  return unpaidCurrentPayPeriod(today, closedPaid);
 }
 
 // recognition_bonuses (migration 033) — manual per-employee bonus, distinct

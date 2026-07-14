@@ -266,8 +266,8 @@ function assertHhmm(label: string, raw: string): string {
 }
 
 /**
- * Batch tip-exemption writes for the open pay period only (Issue #167).
- * Rejects any draft date outside the current open period.
+ * Batch tip-exemption writes for the unpaid current pay period only (Issue #170).
+ * Rejects any draft date outside the unpaid ADP window.
  */
 export async function applyTipExemptions(
   store: string,
@@ -277,7 +277,7 @@ export async function applyTipExemptions(
   const { openPayPeriodBounds } = await import("@/lib/bq/queries");
   const open = await openPayPeriodBounds();
   if (!open) {
-    throw new Error("No open pay period found — tip exemptions cannot be edited.");
+    throw new Error("No unpaid pay period found — tip exemptions cannot be edited.");
   }
   for (const d of drafts) {
     if (d.date < open.start || d.date > open.end) {

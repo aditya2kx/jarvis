@@ -292,7 +292,9 @@ the denominator.
     period: earnings exist but carry no CC-tip lines — this is the normal pay cadence, not a defect).
   - **`diff` / `diff_pct`** — `our_calc − adp_paid`.
   - **`likely_reason`** — heuristic explanation when they diverge (open period, partial coverage, etc.).
-  - **`coverage`** — how complete the period's source data is; **`is_open`** — period not yet closed/paid.
+  - **`coverage`** — how complete the period's source data is; **`is_open`** — calendar window still
+    incomplete (synthetic open stub through `last_data_date`). This is **not** the same as unpaid:
+    a fully-elapsed biweek can be `is_open=false` while ADP has not paid tips yet.
   - `period_summary.check_dates` is likewise re-derived from the parsed Earnings `check_date` values
     (was always empty after the same migration).
 - **Semantic guards** (`agents/bhaga/scripts/model_semantics.py`) assert these columns stay meaningful:
@@ -313,8 +315,10 @@ redistributes to everyone else. Three BQ-canonical sources, all funnelling throu
 | `training_excluded:<name>` | `bhaga.store_config` (BQ) | through that date (inclusive) | bulk "all shifts up to date X were training" |
 | **`training_shifts`** | `bhaga.training_shifts` BQ table | one `(store, employee, date)` ± optional window | tip exemption (whole day or HH:MM window) |
 
-**BQ-canonical:** operators edit tip exemptions in the **Operator Console → Payroll → Detail**
-(open period only; batch Update + recompute). Slack `/bhaga-cloud training set/rm` still supports
+**BQ-canonical:** operators edit tip exemptions in the **Operator Console → Payroll** page
+(period picker by start–end with Unpaid / Paid (ADP); editable only for the unpaid current
+pay period — stays on the just-ended biweek until ADP tip payout lands; batch Update + recompute).
+Slack `/bhaga-cloud training set/rm` still supports
 whole-day marks. Columns: `store`, `employee_name` (canonical `Last, First`), `date` (DATE),
 `exempt_start` / `exempt_end` (nullable HH:MM America/Chicago; both NULL = whole-day),
 `note`, `updated_at`, `updated_by`. View: `vw_training_shifts`.

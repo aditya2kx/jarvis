@@ -40,6 +40,19 @@ python3 agents/bhaga/grafana/capture_screenshot.py --panel 76 --label my-change
 python3 agents/bhaga/grafana/verify_panels.py
 ```
 
+## Operator Console evidence gate (G5)
+
+When application code under `apps/operator-console/{app,components,lib}/` changes (excluding
+`*.test.*`), `check_evidence_readiness.py` requires `§4` to contain a viewable `https://`
+screenshot URL of a **working scenario**. `Evidence tier: unit-only` **cannot** waive this.
+
+```bash
+# Local console (BYPASS_IAP_EMAIL set) then:
+python3 apps/operator-console/scripts/capture_evidence.py \
+  --path /payroll --label payroll-unpaid-default \
+  --path '/payroll?period=2026-06-15' --label payroll-paid-viewonly
+```
+
 ## Fetching the latest bot comment (pagination)
 
 All three gates that read `claude[bot]` comments — bootstrap `has_prior`, the

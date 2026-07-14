@@ -1,5 +1,8 @@
 import "server-only";
 import { GoogleAuth } from "google-auth-library";
+import { pickRecomputeAnchorDate } from "@/lib/bhaga/recomputeAnchor";
+
+export { pickRecomputeAnchorDate } from "@/lib/bhaga/recomputeAnchor";
 
 const PROJECT = process.env.BQ_PROJECT ?? "jarvis-bhaga-prod";
 const REGION = process.env.BHAGA_REGION ?? "us-central1";
@@ -19,12 +22,14 @@ function recomputeEnv(date: string): { name: string; value: string }[] {
 }
 
 /**
- * Trigger bhaga-daily-refresh recompute-only for each distinct date.
+ * Trigger one bhaga-daily-refresh recompute-only execution for a batch of dates.
  * Requires the operator-console runtime SA to hold run.developer on the job.
  */
-export async function triggerModelRecompute(dates: string[]): Promise<void> {
-  const unique = [...new Set(dates.filter(Boolean))].sort();
-  if (!unique.length) return;
+export async function triggerModelRecompute(dates: string[]): Promise<string[]> {
+  const anchor = pickRecomputeAnchorDate(dates);
+  if (!anchor) return [];
+
+  const touched = [...new Set(dates.filter(Boolean))].sort();
 
   const auth = new GoogleAuth({
     scopes: ["https://www.googleapis.com/auth/cloud-platform"],
@@ -35,27 +40,26 @@ export async function triggerModelRecompute(dates: string[]): Promise<void> {
     throw new Error("triggerModelRecompute: failed to obtain ADC access token");
   }
 
-  for (const date of unique) {
-    const url = `https://run.googleapis.com/v2/${JOB_RESOURCE}:run`;
-    const body = {
-      overrides: {
-        containerOverrides: [{ env: recomputeEnv(date) }],
-      },
-    };
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(
-        `triggerModelRecompute: Cloud Run job run failed for ${date}: ` +
-          `HTTP ${res.status} ${text.slice(0, 400)}`,
-      );
-    }
+  const url = `https://run.googleapis.com/v2/${JOB_RESOURCE}:run`;
+  const body = {
+    overrides: {
+      containerOverrides: [{ env: recomputeEnv(anchor) }],
+    },
+  };
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token.token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `triggerModelRecompute: Cloud Run job run failed for anchor ${anchor} ` +
+        `(touched ${touched.join(",")}): HTTP ${res.status} ${text.slice(0, 400)}`,
+    );
   }
+  return touched;
 }

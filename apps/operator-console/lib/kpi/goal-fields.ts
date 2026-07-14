@@ -9,9 +9,10 @@ export interface GoalField {
   helpText: string;
 }
 
-// Home Goal and Tracking hierarchy (Issue #158 operator feedback) — Finance /
-// Top line / Cost / Quality / Inventory. Legacy food-cost / on-time / runway /
-// labor-% keys remain in GOAL_KEYS for Slack but are not in this drawer list.
+// Home Goal and Tracking hierarchy (Issue #158; labor % goals restored in
+// Issue #166) — Finance / Top line / Cost / Labor / Quality / Inventory.
+// Legacy food-cost / on-time / runway keys remain in GOAL_KEYS for Slack but
+// are not in this drawer list.
 export const GOAL_FIELDS: GoalField[] = [
   {
     key: "goal_cash_flow_weekly",
@@ -66,6 +67,18 @@ export const GOAL_FIELDS: GoalField[] = [
     label: "Labor cost — monthly max",
     kind: "dollars",
     helpText: "Total labor $ monthly max, e.g. 18000",
+  },
+  {
+    key: "goal_hourly_labor_pct_max",
+    label: "Part-time labor % — max",
+    kind: "percent",
+    helpText: "Max part-time (hourly) labor as % of net sales, e.g. 25",
+  },
+  {
+    key: "goal_labor_pct_max",
+    label: "Total labor % — max",
+    kind: "percent",
+    helpText: "Max total labor (PT + FT) as % of net sales, e.g. 30",
   },
   {
     key: "goal_ops_cost_weekly",

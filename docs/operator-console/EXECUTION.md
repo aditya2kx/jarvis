@@ -72,6 +72,12 @@ Read these; never guess a name. Grain/columns are in
 | Employee aliases (write) | `employee_aliases` | 020 |
 | Pipeline runs | `vw_pipeline_runs` | 019 |
 | Source freshness | `vw_source_pulls` | 018 |
+| ADP scheduled hours (forward labor) | `adp_scheduled_daily` / via `vw_model_forecast.scheduled_hours` | 013 / 015 |
+| ADP wage rates (avg PT wage) | `adp_wage_rates` | (raw load) |
+
+**Forward labor (Issue #166):** `lib/bq/queries.ts::laborForwardSummary` joins the objects
+above (no new migration). Optional all-in overlay reads `store_config.labor_burden_pct`
+(fraction; recommended start `0.13`). See `ARCHITECTURE.md` §14.
 
 `store_config` keys already used: `order_reco_max_tubs` (capacity, default 120).
 New goal keys (this project): `goal_net_sales_weekly`, `goal_net_sales_monthly`,

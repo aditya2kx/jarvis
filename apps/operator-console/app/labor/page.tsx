@@ -1,4 +1,4 @@
-import { laborByGrain, storeConfig, payrollPeriod } from "@/lib/bq/queries";
+import { laborByGrain, laborForwardSummary, storeConfig, payrollPeriod } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -9,10 +9,11 @@ import { PageHeader } from "@/components/shell/PageHeader";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
+import { LaborForwardSummaryCard } from "@/components/kpi/LaborForwardSummary";
 import { RANGE_PRESETS, formatBucket, parseGrain, wantsCustom } from "@/lib/filters/range";
 import { resolvePageRange } from "@/lib/filters/period";
 import type { ColumnDef } from "@tanstack/react-table";
-import type { LaborDailyRow } from "@/lib/bq/queries";
+import type { LaborDailyRow, LaborForwardSummary } from "@/lib/bq/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -35,14 +36,17 @@ export default async function LaborPage({
   let rows: LaborDailyRow[] = [];
   let goalLaborPct: number | undefined;
   let hoursPerPerson: { employee: string; hours: number }[] = [];
+  let forward: LaborForwardSummary | undefined;
   let error: string | undefined;
   try {
-    const [labor, config, period] = await Promise.all([
+    const [labor, config, period, fwd] = await Promise.all([
       laborByGrain(win, grain),
       storeConfig(DEFAULT_STORE),
       payrollPeriod(1),
+      laborForwardSummary(win, DEFAULT_STORE),
     ]);
     rows = labor;
+    forward = fwd;
     goalLaborPct = goalFromConfig(config, "goal_labor_pct_max");
     const openPeriod = period.find((p) => p.is_open) ?? period[0];
     hoursPerPerson = period
@@ -119,6 +123,7 @@ export default async function LaborPage({
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
+          {forward ? <LaborForwardSummaryCard data={forward} /> : null}
           <div className="grid gap-4 md:grid-cols-2">
             <LineChartCard
               title="Labor % of net sales"

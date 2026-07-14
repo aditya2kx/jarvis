@@ -160,10 +160,10 @@ flowchart TD
 
 | Screen | Reads (BQ `vw_*` / tables) | Write-backs |
 |---|---|---|
-| **Home** (Goal and Tracking) | labor/sales (`vw_model_labor_daily`), prep p95 (`vw_order_quality_daily.kds_p95_min`), bases at risk (`vw_inventory_base_runway`), goals (`store_config`) | Goals → `store_config` |
+| **Home** (Goal and Tracking) | labor/sales (`vw_model_labor_daily`), **Labor group** via `laborForwardSummary` (completed + projected PT/total % from schedule/forecast/wages), prep p95 (`vw_order_quality_daily.kds_p95_min`), bases at risk (`vw_inventory_base_runway`), goals (`store_config`) | Goals → `store_config` |
 | **Accounting** | Square net sales (`vw_model_labor_daily`), Plaid spend (`plaid_transactions`, `vw_plaid_spend_by_category_daily`), `plaid_items` | Plaid Link → Secret Manager access_token + `plaid_items` / `plaid_transactions` sync |
 | **Sales** | `vw_model_labor_daily`, `square_item_daily` | — |
-| **Labor** | `vw_model_labor_daily` / `_weekly` | — |
+| **Labor** | `vw_model_labor_daily` / `_weekly`, **`laborForwardSummary`** (completed vs projected card; optional all-in via `labor_burden_pct`) | — |
 | **Forecast** | `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` | — |
 | **Order Quality** | `vw_order_quality_daily`, `vw_kds_order_quality_by_source_daily` | — |
 | **Payroll & People** | `vw_model_payroll_period` (+ per-review), `training_shifts` (tip exemptions), `adp_shifts` | `training_shifts` (batch tip exemptions + recompute), **recognition bonuses (new table)**, `employee_aliases` |
@@ -398,3 +398,17 @@ percentile chart above it — so the Source dropdown now drives **both** the
 aggregate percentile table and the per-order drill-down, matching Grafana's
 "one filter row governs every panel on the tab" behavior instead of the two
 diverging independently.
+
+## 14. Forward-looking labor cost (Issue #166)
+
+Home's **Labor** group and the Labor page summary card share
+`lib/bq/queries.ts::laborForwardSummary` → `lib/kpi/labor-forward.ts::computeLaborForwardSummary`.
+
+| Mode | Cost numerator | Sales denominator |
+|---|---|---|
+| **Completed** | `hourly_labor_cost` / `total_labor_cost` from `vw_model_labor_daily` for dates in the Period that are **strictly before** Chicago today | `net_sales` over those same days |
+| **Projected (incl. scheduled)** | completed + (`scheduled_hours` × avg PT wage from `adp_wage_rates`) + (trailing-28d avg FT $/open-day × #forward days) | completed sales + (`forecast_orders` × trailing-28d AOV) from `vw_model_forecast` for dates ≥ Chicago today in the Period |
+
+- Schedule hours are **part-time oriented** (ADP Team Schedule scrape → `adp_scheduled_daily`); FT is approximated from trailing actuals because the schedule excludes the salaried manager.
+- Wage basis is **wage-only** (hours × rate). Optional **all-in** = wage × `(1 + labor_burden_pct)` when `store_config.labor_burden_pct` is set (>0). Default unset/`0` hides all-in lines. Recommended starting value from research: **`0.13`** (≈ employer FICA 7.65% + FUTA/SUTA + workers' comp ballpark) — set via `/bhaga-cloud config set labor_burden_pct 0.13`, not auto-written by the console.
+- `bhaga.adp_earnings` has employee pay lines only (Regular, OT, tips, bonus…); no employer-tax scrape exists. A dedicated ADP tax/burden pull is a follow-up if RUN's Tax Center numbers must replace the multiplier.

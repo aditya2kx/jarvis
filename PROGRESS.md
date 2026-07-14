@@ -1,5 +1,15 @@
 # Jarvis Build Progress
 
+## 2026-07-14 — Operator Console: forward labor cost (Issue #166)
+
+**Scope:** Home + Labor show **completed** vs **projected (incl. scheduled)** labor %, split part-time / total; optional wage-only vs all-in via `labor_burden_pct`.
+
+**Key changes:**
+- `laborForwardSummary` + `computeLaborForwardSummary` — completed punches + ADP schedule × avg PT wage + trailing FT $/day over forecast sales × AOV.
+- Home new **Labor** group (PT/total completed + projected %); Goals drawer gains `goal_hourly_labor_pct_max` / `goal_labor_pct_max`.
+- Labor page `LaborForwardSummaryCard` 2×2; all-in lines when `store_config.labor_burden_pct > 0` (recommended start 0.13; not auto-written).
+- Docs: ARCHITECTURE §14, DOMAIN projected labor %, EXECUTION BQ notes. ADP earnings remain wage-only (no employer-tax scrape); Tax Center burden pull deferred to follow-up if needed.
+
 ## 2026-07-13 — Tip Exemptions on Operator Console (Issue #167)
 
 **Scope:** Evolve Payroll training marks into Tip Exemptions — whole-day or HH:MM windows, batch Update, Cloud Run recompute-only; orphans allowed.

@@ -1,6 +1,7 @@
 import "server-only";
 import {
   laborDaily,
+  laborForwardSummary,
   storeConfig,
   orderQualityDaily,
   baseRunway,
@@ -24,7 +25,7 @@ import {
 export type { GoalStatus };
 export { avgPrepP95Min, countRiskyBases, elapsedDaysInWindow, paceFor, rollupStatus, statusFor };
 
-export type ScorecardGroupId = "finance" | "top_line" | "cost" | "quality" | "inventory";
+export type ScorecardGroupId = "finance" | "top_line" | "cost" | "labor" | "quality" | "inventory";
 
 export interface HealthMetric {
   key: string;
@@ -115,12 +116,13 @@ function metric(partial: HealthMetric): HealthMetric {
 }
 
 export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorecard> {
-  const [rows, config, quality, runway, plaidCats] = await Promise.all([
+  const [rows, config, quality, runway, plaidCats, laborFwd] = await Promise.all([
     laborDaily(win),
     storeConfig(DEFAULT_STORE),
     orderQualityDaily(win),
     baseRunway(),
     plaidSpendByCategory(win).catch(() => []),
+    laborForwardSummary(win, DEFAULT_STORE).catch(() => null),
   ]);
 
   const netSales = sum(rows, (r) => r.net_sales);
@@ -148,6 +150,8 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
   const gLabor$ = periodGoal(config, win, "goal_labor_cost_weekly", "goal_labor_cost_monthly");
   const gOps = periodGoal(config, win, "goal_ops_cost_weekly", "goal_ops_cost_monthly");
   const gTotal = periodGoal(config, win, "goal_total_cost_weekly", "goal_total_cost_monthly");
+  const goalPtLaborPct = goalValue(config, "goal_hourly_labor_pct_max");
+  const goalTotalLaborPct = goalValue(config, "goal_labor_pct_max");
   const goalPrepP95 = goalValue(config, "goal_kds_p95_min");
   const goalRiskyMax = goalValue(config, "goal_bases_at_risk_max");
 
@@ -157,6 +161,14 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
   const laborPace = paceFor(laborCost, gLabor$.value, true);
   const opsPace = paceFor(opsCost, gOps.value, true);
   const totalPace = paceFor(totalKnownCost, gTotal.value, true);
+  const completedPtPct = laborFwd?.hasCompleted ? laborFwd.completedPtPct : null;
+  const completedTotalPct = laborFwd?.hasCompleted ? laborFwd.completedTotalPct : null;
+  const projectedPtPct = laborFwd?.hasForward ? laborFwd.projectedPtPct : null;
+  const projectedTotalPct = laborFwd?.hasForward ? laborFwd.projectedTotalPct : null;
+  const ptLaborPace = paceFor(completedPtPct, goalPtLaborPct, true);
+  const totalLaborPctPace = paceFor(completedTotalPct, goalTotalLaborPct, true);
+  const projectedPtPace = paceFor(projectedPtPct, goalPtLaborPct, true);
+  const projectedTotalPace = paceFor(projectedTotalPct, goalTotalLaborPct, true);
   const prepPace = paceFor(prepP95, goalPrepP95, true);
   const riskyPace = paceFor(riskyCount, goalRiskyMax, true);
 
@@ -274,6 +286,76 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
     }),
   ];
 
+  const laborMethod =
+    laborFwd != null
+      ? `Projected uses ADP scheduled PT hrs × avg PT wage ($${laborFwd.avgPtWage?.toFixed(2) ?? "—"}) + trailing FT $/day, over forecast orders × AOV ($${laborFwd.aov?.toFixed(2) ?? "—"}).`
+      : "Projected labor unavailable.";
+
+  const laborMetrics: HealthMetric[] = [
+    metric({
+      key: "pt_labor_pct",
+      label: "Part-time labor %",
+      actual: completedPtPct,
+      goal: goalPtLaborPct,
+      status: statusFor(ptLaborPace),
+      pace: ptLaborPace,
+      formatted: fmtPct(completedPtPct),
+      goalFormatted: fmtPct(goalPtLaborPct),
+      goalKey: "goal_hourly_labor_pct_max",
+      rawGoal: goalRaw(config, "goal_hourly_labor_pct_max"),
+      lowerIsBetter: true,
+      deltaFormatted: deltaLabelPct(completedPtPct, goalPtLaborPct),
+      info: "Completed days only: hourly labor $ ÷ net sales (vw_model_labor_daily).",
+    }),
+    metric({
+      key: "total_labor_pct",
+      label: "Total labor %",
+      actual: completedTotalPct,
+      goal: goalTotalLaborPct,
+      status: statusFor(totalLaborPctPace),
+      pace: totalLaborPctPace,
+      formatted: fmtPct(completedTotalPct),
+      goalFormatted: fmtPct(goalTotalLaborPct),
+      goalKey: "goal_labor_pct_max",
+      rawGoal: goalRaw(config, "goal_labor_pct_max"),
+      lowerIsBetter: true,
+      deltaFormatted: deltaLabelPct(completedTotalPct, goalTotalLaborPct),
+      info: "Completed days only: (hourly + full-time) labor $ ÷ net sales.",
+    }),
+    metric({
+      key: "projected_pt_labor_pct",
+      label: "Projected PT % (incl. scheduled)",
+      actual: projectedPtPct,
+      goal: goalPtLaborPct,
+      status: laborFwd?.hasForward ? statusFor(projectedPtPace) : "no-goal",
+      pace: laborFwd?.hasForward ? projectedPtPace : null,
+      formatted: laborFwd?.hasForward ? fmtPct(projectedPtPct) : "—",
+      goalFormatted: fmtPct(goalPtLaborPct),
+      goalKey: null,
+      rawGoal: undefined,
+      lowerIsBetter: true,
+      deltaFormatted: laborFwd?.hasForward ? deltaLabelPct(projectedPtPct, goalPtLaborPct) : undefined,
+      info: `Completed PT + remaining scheduled PT hrs × avg wage, over completed + forecast sales. ${laborMethod}`,
+    }),
+    metric({
+      key: "projected_total_labor_pct",
+      label: "Projected total % (incl. scheduled)",
+      actual: projectedTotalPct,
+      goal: goalTotalLaborPct,
+      status: laborFwd?.hasForward ? statusFor(projectedTotalPace) : "no-goal",
+      pace: laborFwd?.hasForward ? projectedTotalPace : null,
+      formatted: laborFwd?.hasForward ? fmtPct(projectedTotalPct) : "—",
+      goalFormatted: fmtPct(goalTotalLaborPct),
+      goalKey: null,
+      rawGoal: undefined,
+      lowerIsBetter: true,
+      deltaFormatted: laborFwd?.hasForward
+        ? deltaLabelPct(projectedTotalPct, goalTotalLaborPct)
+        : undefined,
+      info: `Completed total + scheduled PT + trailing FT $/day × forward days. ${laborMethod}`,
+    }),
+  ];
+
   const qualityMetrics: HealthMetric[] = [
     metric({
       key: "prep_p95_min",
@@ -314,6 +396,7 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
     { id: "finance", label: "Finance", href: "/accounting", metrics: finance },
     { id: "top_line", label: "Top line", href: "/sales", metrics: topLine },
     { id: "cost", label: "Cost (bottom line)", href: "/labor", metrics: cost },
+    { id: "labor", label: "Labor", href: "/labor", metrics: laborMetrics },
     { id: "quality", label: "Quality", href: "/order-quality", metrics: qualityMetrics },
     { id: "inventory", label: "Inventory", href: "/inventory", metrics: inventoryMetrics },
   ];
@@ -335,6 +418,19 @@ function sum(rows: LaborDailyRow[], pick: (r: LaborDailyRow) => number | null | 
 
 function fmtDollars(n: number | null): string {
   return n == null ? "—" : n.toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+/** Fraction 0–1 → whole-percent display (matches GoalsDrawer percent fields). */
+function fmtPct(n: number | null): string {
+  return n == null || !Number.isFinite(n) ? "—" : `${(n * 100).toFixed(1)}%`;
+}
+
+function deltaLabelPct(actual: number | null, goal: number | null): string | undefined {
+  if (actual == null || goal == null) return undefined;
+  const diffPp = (actual - goal) * 100;
+  if (diffPp === 0) return "on goal";
+  const mag = `${Math.abs(diffPp).toFixed(1)} pp`;
+  return diffPp <= 0 ? `${mag} under` : `${mag} over`;
 }
 
 function fmtMinutes(n: number | null): string {

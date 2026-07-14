@@ -1,6 +1,12 @@
 import "server-only";
 import { dateParam, fq, intParam, q } from "./client";
 import { bucketSql, type DateWindow, type Grain } from "@/lib/filters/range";
+import {
+  computeLaborForwardSummary,
+  type LaborForwardSummary,
+} from "@/lib/kpi/labor-forward";
+
+export type { LaborForwardSummary };
 
 // Column names/units verified against core/migrations/005_raw_parity.sql
 // (vw_model_labor_daily) and agents/bhaga/knowledge-base/DOMAIN.md — money
@@ -92,6 +98,126 @@ export function laborWeekly(weeks = 12): Promise<LaborWeeklyRow[]> {
      ORDER BY week_start DESC LIMIT @weeks`,
     { weeks },
   );
+}
+
+/**
+ * Completed + projected (incl. scheduled) labor cost summary for a Period
+ * window (Issue #166). Presentation math lives in
+ * `lib/kpi/labor-forward.ts::computeLaborForwardSummary`; this query only
+ * gathers the inputs (completed punches, ADP schedule, avg PT wage, AOV,
+ * trailing FT $/day, optional `labor_burden_pct`).
+ *
+ * Completed = dates in [start, end] that are strictly before Chicago today.
+ * Forward = dates in [start, end] on/after Chicago today from vw_model_forecast.
+ */
+export async function laborForwardSummary(
+  win: DateWindow,
+  store = "palmetto",
+): Promise<LaborForwardSummary> {
+  type Row = {
+    completed_pt_cost: number;
+    completed_ft_cost: number;
+    completed_net_sales: number;
+    completed_day_count: number;
+    fwd_scheduled_hours: number;
+    fwd_forecast_orders: number;
+    fwd_days: number;
+    avg_pt_wage: number | null;
+    aov: number | null;
+    avg_ft_cost_per_open_day: number | null;
+    labor_burden_pct: number | null;
+  };
+  const rows = await q<Row>(
+    `WITH completed AS (
+       SELECT
+         COALESCE(SUM(hourly_labor_cost), 0) AS completed_pt_cost,
+         COALESCE(SUM(fulltime_labor_cost), 0) AS completed_ft_cost,
+         COALESCE(SUM(net_sales), 0) AS completed_net_sales,
+         COUNT(*) AS completed_day_count
+       FROM ${fq("vw_model_labor_daily")}
+       WHERE date BETWEEN @start AND @end
+         AND date < CURRENT_DATE('America/Chicago')
+     ),
+     fwd AS (
+       SELECT
+         COALESCE(SUM(scheduled_hours), 0) AS fwd_scheduled_hours,
+         COALESCE(SUM(forecast_orders), 0) AS fwd_forecast_orders,
+         COUNT(*) AS fwd_days
+       FROM ${fq("vw_model_forecast")}
+       WHERE date BETWEEN @start AND @end
+         AND date >= CURRENT_DATE('America/Chicago')
+     ),
+     wage AS (
+       SELECT AVG(wage_rate_dollars) AS avg_pt_wage
+       FROM ${fq("adp_wage_rates")}
+       WHERE wage_rate_dollars IS NOT NULL
+         AND NOT IFNULL(is_salaried, FALSE)
+         AND NOT IFNULL(excluded_from_labor_pct, FALSE)
+     ),
+     trail AS (
+       SELECT
+         SAFE_DIVIDE(SUM(net_sales), NULLIF(SUM(orders), 0)) AS aov,
+         SAFE_DIVIDE(
+           SUM(fulltime_labor_cost),
+           NULLIF(COUNTIF(orders > 0 OR hourly_hours > 0 OR fulltime_hours > 0), 0)
+         ) AS avg_ft_cost_per_open_day
+       FROM ${fq("vw_model_labor_daily")}
+       WHERE date BETWEEN DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 28 DAY)
+         AND DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 1 DAY)
+     ),
+     burden AS (
+       SELECT SAFE_CAST(value AS FLOAT64) AS labor_burden_pct
+       FROM ${fq("store_config")}
+       WHERE store = @store AND key = 'labor_burden_pct'
+     )
+     SELECT
+       completed.completed_pt_cost,
+       completed.completed_ft_cost,
+       completed.completed_net_sales,
+       completed.completed_day_count,
+       fwd.fwd_scheduled_hours,
+       fwd.fwd_forecast_orders,
+       fwd.fwd_days,
+       wage.avg_pt_wage,
+       trail.aov,
+       trail.avg_ft_cost_per_open_day,
+       burden.labor_burden_pct
+     FROM completed
+     CROSS JOIN fwd
+     CROSS JOIN wage
+     CROSS JOIN trail
+     LEFT JOIN burden ON TRUE`,
+    { start: dateParam(win.start), end: dateParam(win.end), store },
+  );
+  const r = rows[0];
+  if (!r) {
+    return computeLaborForwardSummary({
+      completedPtCost: 0,
+      completedFtCost: 0,
+      completedNetSales: 0,
+      completedDayCount: 0,
+      fwdScheduledHours: 0,
+      fwdForecastOrders: 0,
+      fwdDays: 0,
+      avgPtWage: null,
+      aov: null,
+      avgFtCostPerOpenDay: null,
+      laborBurdenPct: 0,
+    });
+  }
+  return computeLaborForwardSummary({
+    completedPtCost: Number(r.completed_pt_cost) || 0,
+    completedFtCost: Number(r.completed_ft_cost) || 0,
+    completedNetSales: Number(r.completed_net_sales) || 0,
+    completedDayCount: Number(r.completed_day_count) || 0,
+    fwdScheduledHours: Number(r.fwd_scheduled_hours) || 0,
+    fwdForecastOrders: Number(r.fwd_forecast_orders) || 0,
+    fwdDays: Number(r.fwd_days) || 0,
+    avgPtWage: r.avg_pt_wage != null ? Number(r.avg_pt_wage) : null,
+    aov: r.aov != null ? Number(r.aov) : null,
+    avgFtCostPerOpenDay: r.avg_ft_cost_per_open_day != null ? Number(r.avg_ft_cost_per_open_day) : null,
+    laborBurdenPct: r.labor_burden_pct != null ? Number(r.labor_burden_pct) : 0,
+  });
 }
 
 export interface ItemDailyRow {

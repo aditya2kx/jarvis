@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""capture_evidence.py — Playwright full-page screenshots of Operator Console for PR §4.
+"""capture_evidence.py — Playwright screenshots of Operator Console for PR §4.
 
 Uploads PNGs to the ``evidence-screenshots`` GitHub release (same staging bucket as
 ``agents/bhaga/grafana/capture_screenshot.py``) and prints viewable https URLs.
 
 Usage:
-    # Local next.dev with IAP bypass (recommended for evidence):
     BYPASS_IAP_EMAIL=operator@mypalmetto.co npm run dev &
     python3 apps/operator-console/scripts/capture_evidence.py \\
-        --path '/payroll' --label payroll-unpaid-default \\
-        --path '/payroll?period=2026-06-15' --label payroll-paid-viewonly
+        --path '/payroll?period=2026-06-29' --label payroll-unpaid-closed \\
+        --scroll-to '[data-testid=tip-exemptions-editor]'
 
-    CONSOLE_BASE_URL=http://127.0.0.1:3000  # default
-    --skip-upload  # save locally only
+    # Element screenshot (avoids missing below-the-fold sections):
+    --scroll-to SELECTOR scrolls into view then screenshots that node.
 
 Exit non-zero if any capture or upload fails.
 """
@@ -35,8 +34,15 @@ from agents.bhaga.grafana.capture_screenshot import (  # noqa: E402
 )
 
 
-def _capture_png(base_url: str, path: str, width: int, height: int, wait_ms: int) -> bytes:
-    """Navigate and return full-page PNG bytes via Playwright sync API."""
+def _capture_png(
+    base_url: str,
+    path: str,
+    width: int,
+    height: int,
+    wait_ms: int,
+    scroll_to: str | None,
+) -> bytes:
+    """Navigate; optionally scroll to selector; return PNG bytes."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as e:
@@ -54,6 +60,13 @@ def _capture_png(base_url: str, path: str, width: int, height: int, wait_ms: int
             page.goto(url, wait_until="networkidle", timeout=60_000)
             if wait_ms > 0:
                 page.wait_for_timeout(wait_ms)
+            if scroll_to:
+                loc = page.locator(scroll_to).first
+                loc.wait_for(state="visible", timeout=30_000)
+                loc.scroll_into_view_if_needed()
+                page.wait_for_timeout(400)
+                return loc.screenshot(type="png")
+            # Prefer true document height — some layouts clip full_page.
             return page.screenshot(full_page=True, type="png")
         finally:
             browser.close()
@@ -79,8 +92,10 @@ def main() -> None:
     )
     ap.add_argument(
         "--base-url",
-        default=os.environ.get("CONSOLE_BASE_URL", "http://127.0.0.1:3000"),
-        help="Console origin (default CONSOLE_BASE_URL or http://127.0.0.1:3000)",
+        # localhost — not 127.0.0.1: Next.js 16 blocks cross-origin /_next from 127.0.0.1
+        # (SSR HTML without hydration → Tip Exemptions Update never enables).
+        default=os.environ.get("CONSOLE_BASE_URL", "http://localhost:3000"),
+        help="Console origin (default CONSOLE_BASE_URL or http://localhost:3000)",
     )
     ap.add_argument("--width", type=int, default=1440)
     ap.add_argument("--height", type=int, default=900)
@@ -89,6 +104,12 @@ def main() -> None:
         type=int,
         default=1500,
         help="Extra settle time after networkidle (default 1500)",
+    )
+    ap.add_argument(
+        "--scroll-to",
+        default=None,
+        help="CSS selector to scroll into view and screenshot (element clip). "
+        "Use for Tip Exemptions: [data-testid=tip-exemptions-editor]",
     )
     ap.add_argument(
         "--skip-upload",
@@ -110,7 +131,11 @@ def main() -> None:
 
     for path, label in zip(args.paths, labels):
         print(f"[capture] {label}: {args.base_url}{path}", file=sys.stderr)
-        png = _capture_png(args.base_url, path, args.width, args.height, args.wait_ms)
+        if args.scroll_to:
+            print(f"[capture]   scroll-to {args.scroll_to}", file=sys.stderr)
+        png = _capture_png(
+            args.base_url, path, args.width, args.height, args.wait_ms, args.scroll_to,
+        )
         print(f"[capture]   → {len(png)} bytes", file=sys.stderr)
 
         if args.skip_upload:

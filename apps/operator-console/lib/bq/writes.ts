@@ -315,6 +315,8 @@ export async function applyTipExemptions(
       }
     }
     const note = d.note ?? "";
+    // whole-day mode binds start/end as null — Node BQ client needs explicit
+    // STRING types for null params (window mode still passes the same types).
     await mutate(
       `MERGE ${fq("training_shifts")} T
        USING (SELECT @store AS store, @name AS employee_name, @date AS date) S
@@ -334,6 +336,7 @@ export async function applyTipExemptions(
         end,
         by,
       },
+      { start: "STRING", end: "STRING" },
     );
   }
 }

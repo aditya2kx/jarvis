@@ -66,6 +66,12 @@ describe("applyTipExemptions unpaid-period guard (Issue #170)", () => {
       "tester@example.com",
     );
     expect(mutate).toHaveBeenCalledTimes(1);
+    // whole-day null start/end must declare STRING types for the Node BQ client
+    expect(mutate).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ start: null, end: null, note: "Training" }),
+      { start: "STRING", end: "STRING" },
+    );
   });
 
   it("rejects inverted windows", async () => {

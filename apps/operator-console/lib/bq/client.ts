@@ -83,7 +83,14 @@ export function intParam(value: number) {
  * (dates must use `dateParam`) but returns nothing — every caller in
  * lib/bq/writes.ts goes through this, mirroring the exact statements
  * `cloud/webhook/handler.py` uses so app writes converge with the Slack path.
+ *
+ * Pass ``types`` when any param is null — the Node BQ client cannot infer
+ * types for nulls (Error: "Parameter types must be provided for null values").
  */
-export async function mutate(sql: string, params?: Record<string, unknown>): Promise<void> {
-  await bq().query({ query: sql, params, location: "US" });
+export async function mutate(
+  sql: string,
+  params?: Record<string, unknown>,
+  types?: Record<string, string>,
+): Promise<void> {
+  await bq().query({ query: sql, params, types, location: "US" });
 }

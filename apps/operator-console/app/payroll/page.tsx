@@ -1,4 +1,12 @@
-import { payrollPeriod, reviewBonusDetail, trainingShifts, recognitionBonuses } from "@/lib/bq/queries";
+import {
+  payrollPeriod,
+  reviewBonusDetail,
+  recognitionBonuses,
+  adpShiftsForPeriod,
+  tipExemptions,
+  listCanonicalEmployees,
+  openPayPeriodBounds,
+} from "@/lib/bq/queries";
 import { formatDate, formatDollars } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { DataTable } from "@/components/tables/DataTable";
@@ -7,14 +15,16 @@ import { FilterPills } from "@/components/filters/FilterPills";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TrainingQuickAdd } from "@/components/drawers/TrainingQuickAdd";
 import { RecognitionDrawer } from "@/components/drawers/RecognitionDrawer";
+import { TipExemptionsEditor } from "@/components/drawers/TipExemptionsEditor";
 import { FEATURES } from "@/lib/config/features";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import type { ColumnDef } from "@tanstack/react-table";
 import type {
   PayrollPeriodRow,
   ReviewBonusDetailRow,
-  TrainingShiftRow,
   RecognitionBonusRow,
+  AdpShiftRow,
+  TipExemptionRow,
 } from "@/lib/bq/queries";
 
 export const dynamic = "force-dynamic";
@@ -40,14 +50,15 @@ export default async function PayrollPage({
 
   let periods: PayrollPeriodRow[] = [];
   let reviews: ReviewBonusDetailRow[] = [];
-  let training: TrainingShiftRow[] = [];
   let recognitions: RecognitionBonusRow[] = [];
+  let shifts: AdpShiftRow[] = [];
+  let exemptions: TipExemptionRow[] = [];
+  let employees: string[] = [];
   let error: string | undefined;
   try {
-    [periods, reviews, training, recognitions] = await Promise.all([
+    [periods, reviews, recognitions] = await Promise.all([
       payrollPeriod(2),
       reviewBonusDetail(30),
-      trainingShifts(DEFAULT_STORE, 30),
       recognitionBonuses(DEFAULT_STORE, 2),
     ]);
   } catch (e) {
@@ -60,13 +71,51 @@ export default async function PayrollPage({
     ? periods.filter((p) => p.period_start === selectedPeriodStart)
     : periods;
 
-  // Stat cards reflect the SELECTED period only (via the Current/Last
-  // toggle above), not "last 2 periods" summed together — an operator
-  // picking "Last" expects last period's numbers, not current+last.
   const periodEnd = periodRows[0]?.period_end;
+  const modelIsOpen = periodRows.some((p) => p.is_open);
+
+  // Tip-exemption edit window: BQ is_open rows, or calendar open period when
+  // the model has not materialized an open window yet (day-after close / orphans).
+  let openBounds: { start: string; end: string } | null = null;
+  if (!error && FEATURES.writeTipExemptions) {
+    try {
+      openBounds = await openPayPeriodBounds();
+    } catch {
+      openBounds = null;
+    }
+  }
+  const tipStart =
+    period === "current" && openBounds ? openBounds.start : selectedPeriodStart;
+  const tipEnd = period === "current" && openBounds ? openBounds.end : periodEnd;
+  const editable =
+    FEATURES.writeTipExemptions && period === "current" && Boolean(openBounds);
+  const isOpen = modelIsOpen || (period === "current" && Boolean(openBounds));
+
+  if (!error && tipStart && tipEnd) {
+    try {
+      const [s, e, empRows] = await Promise.all([
+        adpShiftsForPeriod(DEFAULT_STORE, tipStart, tipEnd),
+        tipExemptions(DEFAULT_STORE, tipStart, tipEnd),
+        listCanonicalEmployees(DEFAULT_STORE),
+      ]);
+      shifts = s;
+      exemptions = e;
+      employees = empRows.map((r) => r.employee_name);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   const totalPay = periodRows.reduce((s, p) => s + (p.est_total_pay ?? 0), 0);
   const totalWages = periodRows.reduce((s, p) => s + (p.est_gross_pay ?? 0), 0);
   const totalBonus = periodRows.reduce((s, p) => s + (p.review_bonus ?? 0), 0);
+
+  const periodLabel =
+    selectedPeriodStart && periodEnd
+      ? `${formatDate(selectedPeriodStart)} – ${formatDate(periodEnd)}`
+      : "—";
+  const tipPeriodLabel =
+    tipStart && tipEnd ? `${formatDate(tipStart)} – ${formatDate(tipEnd)}` : periodLabel;
 
   const periodColumns: ColumnDef<PayrollPeriodRow>[] = [
     { accessorKey: "period_start", header: "Period start", meta: { format: { kind: "date" } } },
@@ -80,8 +129,6 @@ export default async function PayrollPage({
     {
       accessorKey: "wage_diff",
       header: "Wage diff (est-ADP)",
-      // Either direction of a large gap is the reconciliation problem, not
-      // just under- or over-paying — compare |diff| against the bands.
       meta: {
         format: {
           kind: "dollars",
@@ -99,12 +146,6 @@ export default async function PayrollPage({
     { accessorKey: "employees_considered", header: "Employees" },
   ];
 
-  const trainingColumns: ColumnDef<TrainingShiftRow>[] = [
-    { accessorKey: "date", header: "Date", meta: { format: { kind: "date" } } },
-    { accessorKey: "employee_name", header: "Employee" },
-    { accessorKey: "note", header: "Note" },
-  ];
-
   const recognitionColumns: ColumnDef<RecognitionBonusRow>[] = [
     { accessorKey: "pay_period", header: "Pay period" },
     { accessorKey: "employee", header: "Employee" },
@@ -116,7 +157,7 @@ export default async function PayrollPage({
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Payroll & People"
-        subtitle={`Wages, tips, bonuses, and training · ${storeDisplayName(DEFAULT_STORE)}`}
+        subtitle={`Wages, tips, bonuses, and tip exemptions · ${storeDisplayName(DEFAULT_STORE)}`}
         right={
           <>
             <FilterPills
@@ -156,9 +197,12 @@ export default async function PayrollPage({
           <div className="flex flex-col gap-2">
             <p className="text-xs text-muted-foreground">
               {period === "current" ? "Current" : "Last"} pay period
-              {selectedPeriodStart && periodEnd
-                ? ` · ${formatDate(selectedPeriodStart)} – ${formatDate(periodEnd)}`
-                : ""}
+              {selectedPeriodStart && periodEnd ? ` · ${periodLabel}` : ""}
+              {modelIsOpen
+                ? " · open"
+                : period === "current" && openBounds
+                  ? ` · tip exemptions ${tipPeriodLabel}`
+                  : " · closed"}
             </p>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
               <Card>
@@ -210,12 +254,15 @@ export default async function PayrollPage({
                 <DataTable columns={reviewColumns} data={reviews} />
               </div>
 
-              <div className="flex flex-col gap-2">
-                <h2 className="text-sm font-medium text-muted-foreground">
-                  Training shifts — last 30 days
-                </h2>
-                <DataTable columns={trainingColumns} data={training} />
-              </div>
+              {FEATURES.writeTipExemptions || shifts.length || exemptions.length ? (
+                <TipExemptionsEditor
+                  shifts={shifts}
+                  exemptions={exemptions}
+                  employees={employees}
+                  editable={editable}
+                  periodLabel={tipPeriodLabel}
+                />
+              ) : null}
 
               <div className="flex flex-col gap-2">
                 <h2 className="text-sm font-medium text-muted-foreground">

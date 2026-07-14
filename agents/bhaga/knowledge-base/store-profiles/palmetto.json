@@ -58,7 +58,7 @@
         "item_operations"
       ],
       "_doc_labor_daily_forecast_retired": "The labor_daily_forecast tab was retired 2026-06-09. Forecast data is now BQ-authoritative via model_forecast_daily + forecast_bq.py. Grafana is the review surface.",
-      "_doc_training_shifts": "HUMAN-OWNED, read-only to the pipeline (like the employees tab). Columns: employee_name (canonical 'Last, First') | date (YYYY-MM-DD) | note. Each row marks one shift as training -> that (employee, date) gets NO tip share and its hours leave that day's tip denominator (redistributed to other tipped staff); labor% is unaffected. Precise per-shift complement to config's `training_excluded:<name>` bulk through-date. update_model_sheet._read_training_shifts_from_sheet reads it and degrades to a no-op if the tab is absent."
+      "_doc_training_shifts": "HUMAN-OWNED tip exemptions (table name retained). Columns: employee_name (canonical 'Last, First') | date (YYYY-MM-DD) | exempt_start/exempt_end (nullable HH:MM America/Chicago; both NULL = whole-day exemption) | note. Whole-day or window subtracts tip-eligible hours only (labor% unaffected). Orphan windows (no ADP shift yet) are stored and apply when the shift appears. Primary edit path: Operator Console Payroll Tip Exemptions (open period). Slack training set/rm writes whole-day NULL times."
     },
     "bhaga_review_raw": {
       "spreadsheet_id": "16pkNefCOEcEUlhIU6zH03nEcg5PXmBpJhkHy3aUa-k4",

@@ -11,7 +11,9 @@ export const FEATURES = {
   /** Issue #158 — Accounting page (Square in / Plaid out). */
   accounting: true,
   writeGoals: true,
-  writeTraining: true,
+  /** Legacy single-row training quick-add — superseded by Tip Exemptions editor (Issue #167). */
+  writeTraining: false,
+  writeTipExemptions: true,
   writeRecognition: true,
   writeRestock: true,
   /** Issue #158 — Plaid Link + sync write path. */

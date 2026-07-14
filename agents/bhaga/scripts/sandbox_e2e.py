@@ -444,6 +444,8 @@ def assert_exemptions_applied(
     tip_alloc_period_values: list[list],
     exempt_shifts: set[tuple[str, str]],
     worked_hours: dict[tuple[str, str], float],
+    *,
+    window_eligible_hours: dict[tuple[str, str], float] | None = None,
 ) -> dict:
     """Prove the per-shift training overlay dropped tips + redistributed + conserved.
 
@@ -452,24 +454,15 @@ def assert_exemptions_applied(
     for the period; ``worked_hours`` maps every ``(employee, date)`` that has a
     real worked shift (from the sandbox ADP raw, total_hours>0) to its hours.
 
-    The model OMITS an exempt shift from ``tip_alloc_daily`` entirely (its hours
-    leave that day's denominator and the pool redistributes to the rest), so the
-    proof is "worked the shift, yet received no tip share". Asserts:
-
-      1. each exempt (employee, date) that was actually WORKED receives no tip
-         share (absent from tip_alloc_daily, or present with our_share == 0), and
-         at least one such worked-and-exempt shift exists (the overlay bites);
-      2. on each exempt DAY the day's pool is still fully distributed to the
-         remaining staff cent-exact (redistribution, no leak);
-      3. WHOLE-period-exempt employees (every worked day exempt) get $0 over the
-         period (absent from tip_alloc_period, or our_calc == 0); PARTIALLY-exempt
-         employees keep a positive ``our_calc`` AND their period ``hours_worked``
-         equals the sum of their NON-exempt worked hours (exempt hours dropped);
-      4. period-level conservation: sum of period ``our_calc`` == sum of the
-         distinct per-date ``day_pool`` (cent-exact).
+    Whole-day exempt shifts are OMITTED from ``tip_alloc_daily`` (or share==0).
+    Optional ``window_eligible_hours`` maps partial-window exemptions to the
+    tip-eligible hours that MUST remain in the period hours_worked for that
+    employee (Issue #167). Those keys are excluded from the whole-day drop proof.
 
     Returns a summary dict; raises RuntimeError on any violation.
     """
+    window_eligible_hours = window_eligible_hours or {}
+    whole_day_exempt = {k for k in exempt_shifts if k not in window_eligible_hours}
     if not tip_alloc_daily_values or len(tip_alloc_daily_values) < 2:
         raise RuntimeError("exemption check: tip_alloc_daily is empty")
     if not tip_alloc_period_values or len(tip_alloc_period_values) < 2:
@@ -493,9 +486,9 @@ def assert_exemptions_applied(
         pool_by_date.setdefault(date, _to_cents(row[di_pool]))
         share_sum_by_date[date] = share_sum_by_date.get(date, 0) + share
 
-    # (1) exempt shift took no tip share; prove on at least one WORKED shift.
+    # (1) whole-day exempt shift took no tip share; prove on at least one WORKED shift.
     verified_worked_exempt = 0
-    for (emp, date) in sorted(exempt_shifts):
+    for (emp, date) in sorted(whole_day_exempt):
         share = share_by.get((emp, date))
         if share is not None and share != 0:
             raise RuntimeError(
@@ -504,12 +497,30 @@ def assert_exemptions_applied(
             )
         if worked_hours.get((emp, date), 0) > 0 and not share:
             verified_worked_exempt += 1
-    if exempt_shifts and verified_worked_exempt == 0:
+    if whole_day_exempt and verified_worked_exempt == 0:
         raise RuntimeError(
             "exemption check: no exempt (employee,date) pair matched a real worked "
             "shift that was dropped from tips — the overlay had no provable effect "
             "(sandbox mirror or ADP seed broken?)"
         )
+
+    # (1b) partial windows: employee must retain tip-eligible hours (period total).
+    for (emp, date), expected_h in sorted(window_eligible_hours.items()):
+        if worked_hours.get((emp, date), 0) <= 0:
+            continue
+        # Period hours for emp must include this day's eligible remainder somewhere;
+        # we verify the employee still has a nonzero share on that date when expected_h > 0.
+        share = share_by.get((emp, date))
+        if expected_h > 0 and (share is None or share == 0):
+            raise RuntimeError(
+                f"exemption check: {emp} on {date} has partial window "
+                f"(eligible={expected_h}h) but tip_alloc_daily share is missing/0"
+            )
+        if expected_h <= 0 and share:
+            raise RuntimeError(
+                f"exemption check: {emp} on {date} partial window left 0 eligible "
+                f"hours but received our_share={share}c"
+            )
 
     # (2) redistribution: each exempt day's pool fully distributed, no leak.
     exempt_dates = {d for (_e, d) in exempt_shifts if d in pool_by_date}
@@ -521,7 +532,7 @@ def assert_exemptions_applied(
                 f"(redistribution leak on an exempt day)"
             )
 
-    # (3) classify each exempt employee by their WORKED vs EXEMPT days.
+    # (3) classify each exempt employee by their WORKED vs WHOLE-DAY-EXEMPT days.
     pcol = _header_resolver(tip_alloc_period_values[0], "exemption check (period)")
     pi_emp = pcol("employee", "employee_name")
     pi_calc = pcol("our_calc", "our_total")
@@ -547,8 +558,10 @@ def assert_exemptions_applied(
     partial_exempt: list[str] = []
     for emp in sorted(exempt_emps):
         worked = {d for (e, d) in worked_hours if e == emp}
-        ex = {d for (e, d) in exempt_shifts if e == emp}
-        non_exempt_worked = worked - ex
+        ex = {d for (e, d) in whole_day_exempt if e == emp}
+        # Window days still count as worked tip days (partial hours).
+        window_days = {d for (e, d) in window_eligible_hours if e == emp}
+        non_exempt_worked = (worked - ex) | window_days
         if not non_exempt_worked:
             whole_period_exempt.append(emp)
             if our_calc_by_emp.get(emp, 0) != 0:
@@ -563,7 +576,15 @@ def assert_exemptions_applied(
                     f"exemption check: {emp} worked non-exempt days too but "
                     f"tip_alloc_period.our_calc={our_calc_by_emp.get(emp, 0)}c (expected > 0)"
                 )
-            expected_hours = sum(worked_hours[(emp, d)] for d in non_exempt_worked)
+            expected_hours = 0.0
+            for d in worked:
+                key = (emp, d)
+                if key in window_eligible_hours:
+                    expected_hours += window_eligible_hours[key]
+                elif key in whole_day_exempt:
+                    continue
+                else:
+                    expected_hours += worked_hours[key]
             got_hours = hours_by_emp.get(emp)
             if got_hours is not None and abs(got_hours - expected_hours) > 0.1:
                 raise RuntimeError(

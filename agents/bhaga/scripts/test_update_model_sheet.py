@@ -1402,7 +1402,14 @@ class TestReadTrainingShiftsFromSheet(unittest.TestCase):
         from unittest import mock
         from agents.bhaga.scripts import update_model_sheet as ums
 
-        expected = {("Padron, Lisette", "2026-05-20"), ("Ortiz, Ximena", "2026-06-02")}
+        expected = {
+            ("Padron, Lisette", "2026-05-20"): {
+                "exempt_start": None, "exempt_end": None, "note": None,
+            },
+            ("Ortiz, Ximena", "2026-06-02"): {
+                "exempt_start": None, "exempt_end": None, "note": None,
+            },
+        }
         with mock.patch(
             "agents.bhaga.scripts.model_inputs.read_training_shifts",
             return_value=expected,
@@ -1416,10 +1423,10 @@ class TestReadTrainingShiftsFromSheet(unittest.TestCase):
 
         with mock.patch(
             "agents.bhaga.scripts.model_inputs.read_training_shifts",
-            return_value=set(),
+            return_value={},
         ):
             out = ums._read_training_shifts_from_sheet(spreadsheet_id="sid", store="palmetto")
-        self.assertEqual(out, set())
+        self.assertEqual(out, {})
 
 
 class TestMostRecentClosedPeriod(unittest.TestCase):

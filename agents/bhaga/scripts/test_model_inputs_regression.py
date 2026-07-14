@@ -18,39 +18,39 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 
 class TestReadTrainingShiftsShape(unittest.TestCase):
-    """read_training_shifts returns the same shape as _read_training_shifts_from_sheet."""
+    """read_training_shifts returns dict keyed by (name, date) with exemption meta."""
 
     FIXTURE_ROWS = [
-        {"employee_name": "Flores, Juan", "d": "2026-05-18"},
-        {"employee_name": "Padron, Lisette", "d": "2026-05-23"},
+        {"employee_name": "Flores, Juan", "d": "2026-05-18",
+         "exempt_start": None, "exempt_end": None, "note": None},
+        {"employee_name": "Padron, Lisette", "d": "2026-05-23",
+         "exempt_start": "10:00", "exempt_end": "10:30", "note": "Meeting"},
     ]
 
-    def _sheet_reader_shape(self) -> type:
-        """Shape expected by materialize_model_bq: set of (str, str) tuples."""
-        return set
-
-    def test_returns_set_of_name_date_tuples(self):
+    def test_returns_dict_of_name_date_keys(self):
         from agents.bhaga.scripts import model_inputs as mi
         with mock.patch("core.datastore.read_query", return_value=self.FIXTURE_ROWS), \
              mock.patch("core.datastore.fq", side_effect=lambda t: f"`p.d.{t}`"):
             result = mi.read_training_shifts("palmetto")
 
-        self.assertIsInstance(result, set)
-        # Every element must be a 2-tuple of strings.
-        for item in result:
-            self.assertIsInstance(item, tuple, f"Expected tuple, got {type(item)}: {item!r}")
-            self.assertEqual(len(item), 2, f"Expected 2-tuple, got {len(item)}-tuple")
-            self.assertIsInstance(item[0], str)
-            self.assertIsInstance(item[1], str)
+        self.assertIsInstance(result, dict)
+        for key, meta in result.items():
+            self.assertIsInstance(key, tuple)
+            self.assertEqual(len(key), 2)
+            self.assertIsInstance(key[0], str)
+            self.assertIsInstance(key[1], str)
+            self.assertIsInstance(meta, dict)
+            self.assertIn("exempt_start", meta)
+            self.assertIn("exempt_end", meta)
 
     def test_date_format_is_iso(self):
         from agents.bhaga.scripts import model_inputs as mi
         with mock.patch("core.datastore.read_query", return_value=self.FIXTURE_ROWS), \
              mock.patch("core.datastore.fq", side_effect=lambda t: f"`p.d.{t}`"):
             result = mi.read_training_shifts("palmetto")
-
-        for name, date_str in result:
-            datetime.date.fromisoformat(date_str)  # raises ValueError if format wrong
+        for (_name, d) in result:
+            self.assertRegex(d, r"^\d{4}-\d{2}-\d{2}$")
+            datetime.date.fromisoformat(d)  # raises ValueError if format wrong
 
 
 class TestReadTrainingExcludedShape(unittest.TestCase):

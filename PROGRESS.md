@@ -1,5 +1,15 @@
 # Jarvis Build Progress
 
+## 2026-07-13 — Tip Exemptions on Operator Console (Issue #167)
+
+**Scope:** Evolve Payroll training marks into Tip Exemptions — whole-day or HH:MM windows, batch Update, Cloud Run recompute-only; orphans allowed.
+
+**Key changes:**
+- Migration `038_tip_exemption_windows.sql` (`exempt_start`/`exempt_end`); NULL/NULL = legacy whole-day.
+- Pipeline: `_overlap_hours` / `_tip_hours_after_exemption`; `read_training_shifts` → dict metadata.
+- Console: `TipExemptionsEditor`, open-period guard, `triggerModelRecompute`.
+- IAM: console compute SA → `roles/run.developer` on `bhaga-daily-refresh`.
+
 ## 2026-07-13 — Operator Console: dual-slot Base runway (Issue #164, PR #165)
 
 **Scope:** Base runway considers the same two future restock dates as Next delivery, with dual stockout dates and dual Risky/Fine status. Dual-date reco unchanged.

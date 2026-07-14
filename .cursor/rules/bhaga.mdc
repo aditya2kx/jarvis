@@ -201,7 +201,9 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 - **Cloud reads from BQ, never laptop files.** `extracted/downloads/` is laptop-only and is NOT a source
   of truth. The laptop is retired for BHAGA; all prod data flows through BQ.
 - **All human inputs live in BQ (post-2026-06-15 Sheets exit).** `bhaga.store_config` (tunables +
-  exclusions), `bhaga.training_shifts` (per-shift marks), `bhaga.employee_aliases` (name mappings).
+  exclusions), `bhaga.training_shifts` (per-shift tip exemptions: whole-day or HH:MM window —
+  overlap minutes only leave the tip denominator; labor% unchanged), `bhaga.employee_aliases`
+  (name mappings).
   Edit via `/bhaga-cloud` Slack commands. Google Sheets are fully deprecated for BHAGA — do not read
   or write Sheet tabs for any human-input data; BQ is the sole source of truth.
 - **Coverage-aware scraping.** `bq_coverage.missing_ranges` determines what to scrape; a fully-covered

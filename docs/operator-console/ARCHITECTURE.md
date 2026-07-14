@@ -166,7 +166,7 @@ flowchart TD
 | **Labor** | `vw_model_labor_daily` / `_weekly` | — |
 | **Forecast** | `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` | — |
 | **Order Quality** | `vw_order_quality_daily`, `vw_kds_order_quality_by_source_daily` | — |
-| **Payroll & People** | `vw_model_payroll_period` (+ per-review), `training_shifts` | `training_shifts`, **recognition bonuses (new table)**, `employee_aliases` |
+| **Payroll & People** | `vw_model_payroll_period` (+ per-review), `training_shifts` (tip exemptions), `adp_shifts` | `training_shifts` (batch tip exemptions + recompute), **recognition bonuses (new table)**, `employee_aliases` |
 | **Inventory / Ordering** | `vw_order_assistant_table`, `vw_inventory_order_assistant`, `vw_order_reco_combined`, `vw_order_reco_next_dates`, `vw_inventory_base_runway`, `inventory_restock_schedule/orders` | `inventory_restock_schedule`, `inventory_restock_orders` (+ trigger `refresh_order_reco`), `order_reco_max_tubs` → `store_config` |
 | **Pipeline Health** | Firestore run state, per-view `refresh_date`, `status.py` logic | (optional) trigger refresh |
 
@@ -188,7 +188,9 @@ flowchart LR
 
 Reused write contracts (already proven in `handler.py`):
 
-- **Training shift** → MERGE into `training_shifts` (key: store, employee, date).
+- **Tip exemption** → batch MERGE/DELETE into `training_shifts` (key: store, employee, date;
+  optional `exempt_start`/`exempt_end` HH:MM window) via Payroll Detail **Update**, then
+  Cloud Run Jobs recompute-only for touched dates. Editable only for the open pay period.
 - **Goals / capacity** → MERGE into `store_config` (key: store, key). Capacity =
   `order_reco_max_tubs`; changing it re-runs `refresh_order_reco`.
 - **Restock schedule** → MERGE into `inventory_restock_schedule` (key: store, date).

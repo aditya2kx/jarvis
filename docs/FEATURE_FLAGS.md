@@ -19,6 +19,7 @@ Deployment-env config variables (e.g. `BHAGA_SECRETS_BACKEND`, `BHAGA_STATE_BACK
 | **Local event auto-dispatch** | `LOCAL_EVENT_AUTO_DISPATCH=0` to disable | 2026-06 (PR #101) | on | When on (default), after the window opens the listener seeds a prompt and starts the agent on actionable agent-zone events (babysit on `ci_failed`, retrospective draft). Operator gates (jam/define-evidence/merge) still require human approval. Set `=0` for notify-only. The queue is non-preemptive: events that arrive mid-turn sit in the FIFO inbox and drain at each turn boundary via the `stop`-hook follow-up loop. | Keep — autonomous dev loop is the intended steady state. | — |
 | **Local event webhook** | `LOCAL_EVENT_WEBHOOK=1` | 2026-06 (PR #101) | off | Enables `dev_event_listener serve` HTTP push endpoint (Tailscale/smee). When unset (default), delivery is catch-up/`--watch` poll only. | Remove flag when webhook transport graduates from v2.1 experiment to default. | follow-up |
 | **Operator Console Accounting** | `FEATURES.accounting` / `FEATURES.writePlaidLink` in `apps/operator-console/lib/config/features.ts` | 2026-07 (Issue #158) | **on** | Gates Accounting nav/page and Plaid Link+sync writes. Code-level flags (not env). Turn off to hide cash ledger UI without undeploying. Runtime `PLAID_ENV=sandbox` until Plaid production access is approved (then flip env + `plaid_secret`). | Remove once Accounting+Plaid have run stably in prod ≥ 14 days with successful sync screenshots. | follow-up |
+| **Operator Console Tip Exemptions** | `FEATURES.writeTipExemptions` (and `writeTraining=false`) in `features.ts` | 2026-07 (Issue #167) | **on** | Gates Payroll Tip Exemptions batch Update. Additive BQ columns (`exempt_start`/`exempt_end`); NULL/NULL remains whole-day bit-identical — no pipeline feature flag. | Fold into permanent Payroll UX once stable ≥ 14 days; then drop the unused `writeTraining` quick-add path. | follow-up |
 
 **Removed flags:**
 
@@ -36,6 +37,9 @@ Some changes are safe to apply directly without a flag because they are additive
 - New Grafana dashboard panels — always additive
 
 These are noted here so future reviewers understand the policy: flags gate **cutover** risk, not additive additions.
+
+**Tip exemption windows (Issue #167 / migration 038):** additive `exempt_start`/`exempt_end` on
+`bhaga.training_shifts`. NULL/NULL keeps legacy whole-day exclusion — no pipeline env flag.
 
 Migration 005 raw-parity tables, the 5-section Grafana dashboard redesign, and the **BQ-primary raw layer** (PR #33) fall into this category — all changes are additive and idempotent:
 

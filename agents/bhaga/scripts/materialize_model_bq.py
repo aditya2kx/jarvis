@@ -422,15 +422,15 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     )
 
     # ── Normalize training input names through the alias map ─────────────────
-    # training_shifts is {(raw_name, date_iso)}; training_through is {raw_name: date}.
-    # Normalize so a typo'd Sheet name still matches the canonical roster entry.
+    # training_shifts is {(raw_name, date_iso): meta}; training_through is {raw_name: date}.
+    # Normalize so a typo'd name still matches the canonical roster entry.
     # Unresolved names are dropped with a warning — they would produce a silent no-op
     # in the allocator, so skipping them here is the safer failure mode.
-    normalized_shifts: set[tuple[str, str]] = set()
-    for raw_name, date_iso in training_shifts:
+    normalized_shifts: dict[tuple[str, str], dict] = {}
+    for (raw_name, date_iso), meta in training_shifts.items():
         canon = aliases.get(raw_name.strip())
         if canon:
-            normalized_shifts.add((canon, date_iso))
+            normalized_shifts[(canon, date_iso)] = meta
         else:
             print(
                 f"  [materialize] WARN: training_shifts name {raw_name!r} not in aliases — skipped"

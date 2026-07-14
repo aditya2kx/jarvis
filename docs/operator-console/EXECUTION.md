@@ -68,7 +68,7 @@ Read these; never guess a name. Grain/columns are in
 | Reco materialized table | `inventory_order_reco` | 031 |
 | Item volume | `square_item_daily` | 001 |
 | Store config (goals/capacity, write) | `store_config` | 007 |
-| Training shifts (write) | `training_shifts` | 020 |
+| Tip exemptions (write) | `training_shifts` (+ exempt_start/end) | 020 / 038 |
 | Employee aliases (write) | `employee_aliases` | 020 |
 | Pipeline runs | `vw_pipeline_runs` | 019 |
 | Source freshness | `vw_source_pulls` | 018 |
@@ -105,7 +105,7 @@ apps/operator-console/
     charts/{LineChartCard,BarChartCard,GoalLine}.tsx
     tables/DataTable.tsx       # TanStack wrapper w/ column pinning
     kpi/{HealthScorecard,KpiStat,GoalBar}.tsx
-    drawers/{GoalsDrawer,TrainingQuickAdd,RecognitionDrawer,RestockImportDrawer}.tsx
+    drawers/{GoalsDrawer,TrainingQuickAdd,TipExemptionsEditor,RecognitionDrawer,RestockImportDrawer}.tsx
   lib/
     bq/client.ts               # BigQuery singleton
     bq/queries.ts              # one typed fn per view (SELECT * FROM vw_*)

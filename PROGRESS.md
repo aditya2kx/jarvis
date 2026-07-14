@@ -1,5 +1,10 @@
 # Jarvis Build Progress
 
+
+## 2026-07-14 — Tip exemption batch Update: one recompute + tip_alloc ghost eviction
+
+Batch Update of N tip exemptions fired concurrent `bhaga-daily-refresh` jobs and left ghost `model_tip_alloc_daily` shares for whole-day Prep Meeting exemptions (Slack tip-pool failures). Fix (PR #173 / #174): coalesce to one FORCE_MODEL recompute per Update; evict whole-day exempt ghosts after materialize. Prod Prep Meeting rows kept; residuals Jul 6/8/9 healed to 0. Evidence: Cloud Run `bhaga-daily-refresh-bqgp7` one-shot FORCE_MODEL + sandbox EVICTED_COUNT=6 composed eviction.
+
 ## 2026-07-13 — Tip Exemptions on Operator Console (Issue #167)
 
 **Scope:** Evolve Payroll training marks into Tip Exemptions — whole-day or HH:MM windows, batch Update, Cloud Run recompute-only; orphans allowed.

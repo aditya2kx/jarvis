@@ -1,6 +1,5 @@
 # Jarvis Build Progress
 
-<<<<<<< HEAD
 ## 2026-07-14 — Operator Console: forward labor cost (Issue #166)
 
 **Scope:** Home + Labor show **completed** vs **projected (incl. scheduled)** labor %, split part-time / total; optional wage-only vs all-in via `labor_burden_pct`.
@@ -10,12 +9,10 @@
 - Home new **Labor** group (PT/total completed + projected %); Goals drawer gains `goal_hourly_labor_pct_max` / `goal_labor_pct_max`.
 - Labor page `LaborForwardSummaryCard` 2×2; all-in lines when `store_config.labor_burden_pct > 0` (recommended start 0.13; not auto-written).
 - Docs: ARCHITECTURE §14, DOMAIN projected labor %, EXECUTION BQ notes. ADP earnings remain wage-only (no employer-tax scrape); Tax Center burden pull deferred to follow-up if needed.
-=======
 
 ## 2026-07-14 — Tip exemption batch Update: one recompute + tip_alloc ghost eviction
 
 Batch Update of N tip exemptions fired concurrent `bhaga-daily-refresh` jobs and left ghost `model_tip_alloc_daily` shares for whole-day Prep Meeting exemptions (Slack tip-pool failures). Fix (PR #173 / #174): coalesce to one FORCE_MODEL recompute per Update; evict whole-day exempt ghosts after materialize. Prod Prep Meeting rows kept; residuals Jul 6/8/9 healed to 0. Evidence: Cloud Run `bhaga-daily-refresh-bqgp7` one-shot FORCE_MODEL + sandbox EVICTED_COUNT=6 composed eviction.
->>>>>>> origin/main
 
 ## 2026-07-13 — Tip Exemptions on Operator Console (Issue #167)
 

@@ -294,7 +294,7 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
   const laborMetrics: HealthMetric[] = [
     metric({
       key: "pt_labor_pct",
-      label: "Part-time labor %",
+      label: "Part-time labor % of net sales",
       actual: completedPtPct,
       goal: goalPtLaborPct,
       status: statusFor(ptLaborPace),
@@ -305,11 +305,11 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       rawGoal: goalRaw(config, "goal_hourly_labor_pct_max"),
       lowerIsBetter: true,
       deltaFormatted: deltaLabelPct(completedPtPct, goalPtLaborPct),
-      info: "Completed days only: hourly labor $ ÷ net sales (vw_model_labor_daily).",
+      info: "Completed days only: hourly labor $ ÷ net sales (vw_model_labor_daily). Goal default 20%.",
     }),
     metric({
       key: "total_labor_pct",
-      label: "Total labor %",
+      label: "Total labor % of net sales",
       actual: completedTotalPct,
       goal: goalTotalLaborPct,
       status: statusFor(totalLaborPctPace),
@@ -320,11 +320,11 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       rawGoal: goalRaw(config, "goal_labor_pct_max"),
       lowerIsBetter: true,
       deltaFormatted: deltaLabelPct(completedTotalPct, goalTotalLaborPct),
-      info: "Completed days only: (hourly + full-time) labor $ ÷ net sales.",
+      info: "Completed days only: (hourly + full-time) labor $ ÷ net sales. Goal default 25%.",
     }),
     metric({
       key: "projected_pt_labor_pct",
-      label: "Projected PT % (incl. scheduled)",
+      label: "Projected PT % of net sales (incl. scheduled)",
       actual: projectedPtPct,
       goal: goalPtLaborPct,
       status: laborFwd?.hasForward ? statusFor(projectedPtPace) : "no-goal",
@@ -335,11 +335,11 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       rawGoal: undefined,
       lowerIsBetter: true,
       deltaFormatted: laborFwd?.hasForward ? deltaLabelPct(projectedPtPct, goalPtLaborPct) : undefined,
-      info: `Completed PT + remaining scheduled PT hrs × avg wage, over completed + forecast sales. ${laborMethod}`,
+      info: `Completed PT + remaining days with ADP scheduled hours × avg wage, over completed + forecast sales for those same scheduled days. ${laborMethod}`,
     }),
     metric({
       key: "projected_total_labor_pct",
-      label: "Projected total % (incl. scheduled)",
+      label: "Projected total % of net sales (incl. scheduled)",
       actual: projectedTotalPct,
       goal: goalTotalLaborPct,
       status: laborFwd?.hasForward ? statusFor(projectedTotalPace) : "no-goal",
@@ -352,7 +352,7 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
       deltaFormatted: laborFwd?.hasForward
         ? deltaLabelPct(projectedTotalPct, goalTotalLaborPct)
         : undefined,
-      info: `Completed total + scheduled PT + trailing FT $/day × forward days. ${laborMethod}`,
+      info: `Completed total + scheduled PT + trailing FT $/day × scheduled forward days. ${laborMethod}`,
     }),
   ];
 

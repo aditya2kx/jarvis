@@ -70,15 +70,15 @@ export const GOAL_FIELDS: GoalField[] = [
   },
   {
     key: "goal_hourly_labor_pct_max",
-    label: "Part-time labor % — max",
+    label: "Part-time labor % of net sales — max",
     kind: "percent",
-    helpText: "Max part-time (hourly) labor as % of net sales, e.g. 25",
+    helpText: "Max part-time (hourly) labor as % of net sales, e.g. 20",
   },
   {
     key: "goal_labor_pct_max",
-    label: "Total labor % — max",
+    label: "Total labor % of net sales — max",
     kind: "percent",
-    helpText: "Max total labor (PT + FT) as % of net sales, e.g. 30",
+    helpText: "Max total labor (PT + FT) as % of net sales, e.g. 25",
   },
   {
     key: "goal_ops_cost_weekly",

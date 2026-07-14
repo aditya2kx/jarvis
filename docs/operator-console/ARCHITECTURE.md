@@ -407,8 +407,9 @@ Home's **Labor** group and the Labor page summary card share
 | Mode | Cost numerator | Sales denominator |
 |---|---|---|
 | **Completed** | `hourly_labor_cost` / `total_labor_cost` from `vw_model_labor_daily` for dates in the Period that are **strictly before** Chicago today | `net_sales` over those same days |
-| **Projected (incl. scheduled)** | completed + (`scheduled_hours` × avg PT wage from `adp_wage_rates`) + (trailing-28d avg FT $/open-day × #forward days) | completed sales + (`forecast_orders` × trailing-28d AOV) from `vw_model_forecast` for dates ≥ Chicago today in the Period |
+| **Projected (incl. scheduled)** | completed + (`scheduled_hours` × avg PT wage from `adp_wage_rates`) + (trailing-28d avg FT $/open-day × #scheduled forward days) | completed sales + (`forecast_orders` × trailing-28d AOV) from `vw_model_forecast` for dates ≥ Chicago today in the Period **with `scheduled_hours > 0` only** (no forecast-only dilution; Period filter respected; today not double-counted) |
 
+- Goals: `goal_hourly_labor_pct_max` default **20%**, `goal_labor_pct_max` default **25%** (of net sales).
 - Schedule hours are **part-time oriented** (ADP Team Schedule scrape → `adp_scheduled_daily`); FT is approximated from trailing actuals because the schedule excludes the salaried manager.
 - Wage basis is **wage-only** (hours × rate). Optional **all-in** = wage × `(1 + labor_burden_pct)` when `store_config.labor_burden_pct` is set (>0). Default unset/`0` hides all-in lines. Recommended starting value from research: **`0.13`** (≈ employer FICA 7.65% + FUTA/SUTA + workers' comp ballpark) — set via `/bhaga-cloud config set labor_burden_pct 0.13`, not auto-written by the console.
 - `bhaga.adp_earnings` has employee pay lines only (Regular, OT, tips, bonus…); no employer-tax scrape exists. A dedicated ADP tax/burden pull is a follow-up if RUN's Tax Center numbers must replace the multiplier.

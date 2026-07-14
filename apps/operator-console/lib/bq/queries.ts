@@ -146,6 +146,10 @@ export async function laborForwardSummary(
        FROM ${fq("vw_model_forecast")}
        WHERE date BETWEEN @start AND @end
          AND date >= CURRENT_DATE('America/Chicago')
+         -- Only days with ADP schedule hours — no invented hours and no
+         -- forecast-only days diluting the projected labor% denominator.
+         AND scheduled_hours IS NOT NULL
+         AND scheduled_hours > 0
      ),
      wage AS (
        SELECT AVG(wage_rate_dollars) AS avg_pt_wage

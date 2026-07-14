@@ -57,7 +57,7 @@ export function LaborForwardSummaryCard({ data }: { data: Summary }) {
       <CardHeader className="gap-1">
         <div className="flex items-center gap-1.5">
           <CardTitle className="text-sm font-medium text-muted-foreground">
-            Labor cost — completed vs projected
+            Labor % of net sales — completed vs projected
           </CardTitle>
           <Tooltip>
             <TooltipTrigger
@@ -72,10 +72,12 @@ export function LaborForwardSummaryCard({ data }: { data: Summary }) {
               }
             />
             <TooltipContent className="max-w-xs">
-              Completed = punches × wage rates through yesterday (America/Chicago). Projected adds
-              remaining ADP scheduled PT hours × avg PT wage and trailing FT $/open-day, over
-              completed sales + forecast orders × trailing AOV. All-in multiplies wage cost by
-              (1 + labor_burden_pct) when that store_config key is set.
+              Percentages are labor $ ÷ net sales. Completed = punches × wage rates through
+              yesterday (America/Chicago). Projected adds only remaining Period days that have
+              ADP scheduled hours (× avg PT wage) plus trailing FT $/open-day, over completed
+              sales + forecast orders × AOV for those same scheduled days — no double-count of
+              today, no forecast-only days. All-in multiplies wage cost by (1 + labor_burden_pct)
+              when that store_config key is set.
             </TooltipContent>
           </Tooltip>
         </div>

@@ -266,24 +266,27 @@ function assertHhmm(label: string, raw: string): string {
 }
 
 /**
- * Batch tip-exemption writes for the open pay period only (Issue #167).
- * Rejects any draft date outside the current open period.
+ * Batch tip-exemption writes for any unpaid ADP pay period (Issue #170).
+ * Rejects drafts whose date falls outside every unpaid window (just-ended
+ * unpaid biweek and/or in-progress calendar biweek).
  */
 export async function applyTipExemptions(
   store: string,
   drafts: TipExemptionDraft[],
   by: string,
 ): Promise<void> {
-  const { openPayPeriodBounds } = await import("@/lib/bq/queries");
-  const open = await openPayPeriodBounds();
-  if (!open) {
-    throw new Error("No open pay period found — tip exemptions cannot be edited.");
+  const { unpaidPayPeriodWindows } = await import("@/lib/bq/queries");
+  const { dateInUnpaidWindows } = await import("@/lib/payroll/openPeriod");
+  const windows = await unpaidPayPeriodWindows();
+  if (!windows.length) {
+    throw new Error("No unpaid pay period found — tip exemptions cannot be edited.");
   }
+  const windowLabel = windows.map((w) => `${w.start}..${w.end}`).join(" | ");
   for (const d of drafts) {
-    if (d.date < open.start || d.date > open.end) {
+    if (!dateInUnpaidWindows(d.date, windows)) {
       throw new Error(
-        `Tip exemptions are editable only for the current open pay period ` +
-          `(${open.start}..${open.end}); refused ${d.employeeName} on ${d.date}`,
+        `Tip exemptions are editable only for unpaid pay periods ` +
+          `(${windowLabel}); refused ${d.employeeName} on ${d.date}`,
       );
     }
   }
@@ -312,6 +315,8 @@ export async function applyTipExemptions(
       }
     }
     const note = d.note ?? "";
+    // whole-day mode binds start/end as null — Node BQ client needs explicit
+    // STRING types for null params (window mode still passes the same types).
     await mutate(
       `MERGE ${fq("training_shifts")} T
        USING (SELECT @store AS store, @name AS employee_name, @date AS date) S
@@ -331,6 +336,7 @@ export async function applyTipExemptions(
         end,
         by,
       },
+      { start: "STRING", end: "STRING" },
     );
   }
 }

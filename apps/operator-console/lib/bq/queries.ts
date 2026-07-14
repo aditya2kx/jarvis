@@ -639,24 +639,110 @@ export function listCanonicalEmployees(_store: string): Promise<{ employee_name:
   );
 }
 
+export interface PayPeriodOption {
+  period_start: string;
+  period_end: string;
+  /** True when ADP has not paid tips for this biweek (adp_total_paid IS NULL). */
+  unpaid: boolean;
+  /** In-progress calendar biweek (after last closed end). */
+  is_current: boolean;
+}
+
 /**
- * Open pay period bounds for tip-exemption write guard.
- * Prefer `is_open=TRUE` from the model view; fall back to the store pay-period
- * calendar when the open window has no materialized rows yet (Issue #167).
+ * Pay periods for the Payroll dropdown (Issue #170).
+ * Full biweeks from period_summary plus the in-progress calendar open window
+ * (e.g. Jul 13–26) even when the model only has a 1-day stub.
+ */
+export async function listPayPeriodsWithPaidStatus(
+  limit = 6,
+): Promise<PayPeriodOption[]> {
+  const {
+    calendarOpenPayPeriod,
+    isPeriodUnpaid,
+  } = await import("@/lib/payroll/openPeriod");
+
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Chicago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const current = calendarOpenPayPeriod(today);
+
+  const rows = await q<{
+    period_start: string;
+    period_end: string;
+    adp_total_paid: number | null;
+  }>(
+    `SELECT CAST(period_start AS STRING) AS period_start,
+            CAST(period_end AS STRING) AS period_end,
+            adp_total_paid
+     FROM ${fq("vw_model_period_summary")}
+     WHERE DATE_DIFF(period_end, period_start, DAY) >= 13
+     ORDER BY period_start DESC
+     LIMIT @limit`,
+    { limit: intParam(limit) },
+  );
+
+  const out: PayPeriodOption[] = [
+    {
+      period_start: current.start,
+      period_end: current.end,
+      unpaid: true,
+      is_current: true,
+    },
+  ];
+  for (const r of rows) {
+    if (r.period_start === current.start) continue;
+    out.push({
+      period_start: r.period_start,
+      period_end: r.period_end,
+      unpaid: isPeriodUnpaid(r.adp_total_paid),
+      is_current: false,
+    });
+  }
+  return out;
+}
+
+/** All unpaid windows (current calendar + unpaid closed biweeks) for write guard. */
+export async function unpaidPayPeriodWindows(): Promise<
+  { start: string; end: string }[]
+> {
+  const periods = await listPayPeriodsWithPaidStatus(8);
+  return periods.filter((p) => p.unpaid).map((p) => ({
+    start: p.period_start,
+    end: p.period_end,
+  }));
+}
+
+/**
+ * Primary unpaid bounds for default selection (just-ended unpaid biweek, else
+ * calendar open). Write guard uses ``unpaidPayPeriodWindows`` (all unpaid).
  */
 export async function openPayPeriodBounds(): Promise<{ start: string; end: string } | null> {
-  const rows = await q<{ period_start: string; period_end: string }>(
-    `SELECT DISTINCT CAST(period_start AS STRING) AS period_start,
-            CAST(period_end AS STRING) AS period_end
-     FROM ${fq("vw_model_payroll_period")}
-     WHERE is_open = TRUE
+  const {
+    mostRecentClosedPeriod,
+    unpaidCurrentPayPeriod,
+    isPeriodUnpaid,
+  } = await import("@/lib/payroll/openPeriod");
+
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Chicago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+
+  const closed = mostRecentClosedPeriod(today);
+  const rows = await q<{ adp_total_paid: number | null }>(
+    `SELECT adp_total_paid
+     FROM ${fq("vw_model_period_summary")}
+     WHERE period_start = @start AND period_end = @end
      LIMIT 1`,
+    { start: dateParam(closed.start), end: dateParam(closed.end) },
   );
-  if (rows.length) {
-    return { start: rows[0].period_start, end: rows[0].period_end };
-  }
-  const { calendarOpenPayPeriod } = await import("@/lib/payroll/openPeriod");
-  return calendarOpenPayPeriod();
+  const closedPaid = rows.length > 0 && !isPeriodUnpaid(rows[0].adp_total_paid);
+  return unpaidCurrentPayPeriod(today, closedPaid);
 }
 
 // recognition_bonuses (migration 033) — manual per-employee bonus, distinct

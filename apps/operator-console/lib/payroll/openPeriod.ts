@@ -2,9 +2,10 @@
  * Pay-period calendar helpers matching agents/bhaga/scripts/update_model_sheet.py
  * `most_recent_closed_period` / open-window math (America/Chicago date).
  *
- * Used when `vw_model_payroll_period` has no `is_open=TRUE` rows yet (e.g. the
- * day after a period closes, before ADP shifts land and the model materializes
- * an open row). Tip exemptions still need an editable window for orphans.
+ * Tip Exemptions editability follows **unpaid** ADP status (adp_total_paid /
+ * CC-tip earnings), not model `is_open` (calendar-incomplete). After period_end
+ * the unpaid biweek stays editable until ADP pays it — and the in-progress
+ * calendar biweek is also unpaid/editable.
  */
 
 /** Palmetto store-profile: pay_periods_anchor_end_date / Biweekly. */
@@ -61,4 +62,31 @@ export function calendarOpenPayPeriod(
   const start = toIso(addDays(parseIso(closed.end), 1));
   const end = toIso(addDays(parseIso(closed.end), PALMETTO_PERIOD_DAYS));
   return { start, end };
+}
+
+/**
+ * Just-ended biweek stays editable while unpaid; once paid, advance to the
+ * next calendar biweek. (Primary unpaid window — current in-progress is also
+ * unpaid and listed separately in the period dropdown.)
+ */
+export function unpaidCurrentPayPeriod(
+  todayIso: string,
+  closedPeriodPaid: boolean,
+): { start: string; end: string } {
+  const closed = mostRecentClosedPeriod(todayIso);
+  if (!closedPeriodPaid) return closed;
+  return calendarOpenPayPeriod(todayIso);
+}
+
+/** True when ADP has not paid tips for the period (null/undefined total). */
+export function isPeriodUnpaid(adpTotalPaid: number | null | undefined): boolean {
+  return adpTotalPaid == null;
+}
+
+/** True if `dateIso` falls in any unpaid window (inclusive). */
+export function dateInUnpaidWindows(
+  dateIso: string,
+  windows: { start: string; end: string }[],
+): boolean {
+  return windows.some((w) => dateIso >= w.start && dateIso <= w.end);
 }

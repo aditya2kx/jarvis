@@ -5,13 +5,13 @@ import {
   adpShiftsForPeriod,
   tipExemptions,
   listCanonicalEmployees,
-  openPayPeriodBounds,
+  listPayPeriodsWithPaidStatus,
 } from "@/lib/bq/queries";
 import { formatDate, formatDollars } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { DataTable } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
-import { FilterPills } from "@/components/filters/FilterPills";
+import { FilterSelect } from "@/components/filters/FilterSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TrainingQuickAdd } from "@/components/drawers/TrainingQuickAdd";
 import { RecognitionDrawer } from "@/components/drawers/RecognitionDrawer";
@@ -25,30 +25,33 @@ import type {
   RecognitionBonusRow,
   AdpShiftRow,
   TipExemptionRow,
+  PayPeriodOption,
 } from "@/lib/bq/queries";
 
 export const dynamic = "force-dynamic";
 
-type View = "reconciliation" | "detail";
-
-function parseView(value: string | string[] | undefined): View {
-  return (Array.isArray(value) ? value[0] : value) === "detail" ? "detail" : "reconciliation";
-}
-
-function parsePeriod(value: string | string[] | undefined): "current" | "last" {
-  return (Array.isArray(value) ? value[0] : value) === "last" ? "last" : "current";
+function parsePeriodStart(
+  value: string | string[] | undefined,
+  options: PayPeriodOption[],
+): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw && options.some((o) => o.period_start === raw)) return raw;
+  // Default: current in-progress unpaid, else latest unpaid closed.
+  const current = options.find((o) => o.is_current && o.unpaid);
+  if (current) return current.period_start;
+  const unpaid = options.find((o) => o.unpaid);
+  return unpaid?.period_start ?? options[0]?.period_start ?? null;
 }
 
 export default async function PayrollPage({
   searchParams,
 }: {
-  searchParams: Promise<{ view?: string; period?: string }>;
+  searchParams: Promise<{ period?: string }>;
 }) {
   const sp = await searchParams;
-  const view = parseView(sp.view);
-  const period = parsePeriod(sp.period);
 
   let periods: PayrollPeriodRow[] = [];
+  let periodOptions: PayPeriodOption[] = [];
   let reviews: ReviewBonusDetailRow[] = [];
   let recognitions: RecognitionBonusRow[] = [];
   let shifts: AdpShiftRow[] = [];
@@ -56,40 +59,39 @@ export default async function PayrollPage({
   let employees: string[] = [];
   let error: string | undefined;
   try {
-    [periods, reviews, recognitions] = await Promise.all([
-      payrollPeriod(2),
+    const settled = await Promise.all([
+      listPayPeriodsWithPaidStatus(6),
       reviewBonusDetail(30),
       recognitionBonuses(DEFAULT_STORE, 2),
     ]);
+    periodOptions = settled[0];
+    reviews = settled[1];
+    recognitions = settled[2];
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
 
-  const periodStarts = Array.from(new Set(periods.map((p) => p.period_start)));
-  const selectedPeriodStart = period === "last" ? periodStarts[1] : periodStarts[0];
-  const periodRows = selectedPeriodStart
-    ? periods.filter((p) => p.period_start === selectedPeriodStart)
-    : periods;
+  const selectedPeriodStart = parsePeriodStart(sp.period, periodOptions);
+  const selectedOpt = periodOptions.find((o) => o.period_start === selectedPeriodStart);
+  const periodEnd = selectedOpt?.period_end;
+  const selectedUnpaid = Boolean(selectedOpt?.unpaid);
 
-  const periodEnd = periodRows[0]?.period_end;
-  const modelIsOpen = periodRows.some((p) => p.is_open);
-
-  // Tip-exemption edit window: BQ is_open rows, or calendar open period when
-  // the model has not materialized an open window yet (day-after close / orphans).
-  let openBounds: { start: string; end: string } | null = null;
-  if (!error && FEATURES.writeTipExemptions) {
+  if (!error && selectedPeriodStart && periodEnd) {
     try {
-      openBounds = await openPayPeriodBounds();
-    } catch {
-      openBounds = null;
+      periods = await payrollPeriod(6);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
-  const tipStart =
-    period === "current" && openBounds ? openBounds.start : selectedPeriodStart;
-  const tipEnd = period === "current" && openBounds ? openBounds.end : periodEnd;
-  const editable =
-    FEATURES.writeTipExemptions && period === "current" && Boolean(openBounds);
-  const isOpen = modelIsOpen || (period === "current" && Boolean(openBounds));
+
+  const periodRows =
+    selectedPeriodStart && periods.length
+      ? periods.filter((p) => p.period_start === selectedPeriodStart)
+      : [];
+
+  const tipStart = selectedPeriodStart;
+  const tipEnd = periodEnd;
+  const editable = FEATURES.writeTipExemptions && selectedUnpaid;
 
   if (!error && tipStart && tipEnd) {
     try {
@@ -114,8 +116,6 @@ export default async function PayrollPage({
     selectedPeriodStart && periodEnd
       ? `${formatDate(selectedPeriodStart)} – ${formatDate(periodEnd)}`
       : "—";
-  const tipPeriodLabel =
-    tipStart && tipEnd ? `${formatDate(tipStart)} – ${formatDate(tipEnd)}` : periodLabel;
 
   const periodColumns: ColumnDef<PayrollPeriodRow>[] = [
     { accessorKey: "period_start", header: "Period start", meta: { format: { kind: "date" } } },
@@ -126,16 +126,25 @@ export default async function PayrollPage({
     { accessorKey: "tips_allocated", header: "Tips", meta: { format: { kind: "dollars" } } },
     { accessorKey: "review_bonus", header: "Review bonus", meta: { format: { kind: "dollars" } } },
     { accessorKey: "est_total_pay", header: "Est. total", meta: { format: { kind: "dollars" } } },
-    {
-      accessorKey: "wage_diff",
-      header: "Wage diff (est-ADP)",
-      meta: {
-        format: {
-          kind: "dollars",
-          thresholds: { warn: 50, bad: 150, direction: "higher-bad", useAbs: true },
-        },
-      },
-    },
+    ...(selectedUnpaid
+      ? []
+      : [
+          {
+            accessorKey: "wage_diff",
+            header: "Wage diff (est-ADP)",
+            meta: {
+              format: {
+                kind: "dollars" as const,
+                thresholds: {
+                  warn: 50,
+                  bad: 150,
+                  direction: "higher-bad" as const,
+                  useAbs: true,
+                },
+              },
+            },
+          } satisfies ColumnDef<PayrollPeriodRow>,
+        ]),
   ];
 
   const reviewColumns: ColumnDef<ReviewBonusDetailRow>[] = [
@@ -153,6 +162,13 @@ export default async function PayrollPage({
     { accessorKey: "reason", header: "Reason" },
   ];
 
+  const periodSelectOptions = periodOptions.map((o) => ({
+    value: o.period_start,
+    label: `${formatDate(o.period_start)} – ${formatDate(o.period_end)} · ${
+      o.is_current ? "Current · " : ""
+    }${o.unpaid ? "Unpaid" : "Paid (ADP)"}`,
+  }));
+
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
@@ -160,31 +176,18 @@ export default async function PayrollPage({
         subtitle={`Wages, tips, bonuses, and tip exemptions · ${storeDisplayName(DEFAULT_STORE)}`}
         right={
           <>
-            <FilterPills
-              label="Period"
-              param="period"
-              value={period}
-              options={[
-                { value: "current", label: "Current" },
-                { value: "last", label: "Last" },
-              ]}
-              basePath="/payroll"
-              extraParams={{ view }}
-            />
-            <FilterPills
-              label="View"
-              param="view"
-              value={view}
-              options={[
-                { value: "reconciliation", label: "Reconciliation" },
-                { value: "detail", label: "Detail" },
-              ]}
-              basePath="/payroll"
-              extraParams={{ period }}
-            />
+            {periodSelectOptions.length ? (
+              <FilterSelect
+                label="Period"
+                param="period"
+                value={selectedPeriodStart ?? periodSelectOptions[0].value}
+                options={periodSelectOptions}
+                basePath="/payroll"
+              />
+            ) : null}
             {FEATURES.writeTraining ? <TrainingQuickAdd /> : null}
             {FEATURES.writeRecognition ? (
-              <RecognitionDrawer defaultPayPeriod={periods[0]?.period_start ?? ""} />
+              <RecognitionDrawer defaultPayPeriod={selectedPeriodStart ?? ""} />
             ) : null}
           </>
         }
@@ -196,13 +199,10 @@ export default async function PayrollPage({
         <>
           <div className="flex flex-col gap-2">
             <p className="text-xs text-muted-foreground">
-              {period === "current" ? "Current" : "Last"} pay period
-              {selectedPeriodStart && periodEnd ? ` · ${periodLabel}` : ""}
-              {modelIsOpen
-                ? " · open"
-                : period === "current" && openBounds
-                  ? ` · tip exemptions ${tipPeriodLabel}`
-                  : " · closed"}
+              Pay period {periodLabel}
+              {selectedOpt?.is_current ? " · Current" : ""}
+              {selectedUnpaid ? " · Unpaid (ADP)" : " · Paid (ADP)"}
+              {editable ? " · tip exemptions editable" : ""}
             </p>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
               <Card>
@@ -238,40 +238,36 @@ export default async function PayrollPage({
             </div>
           </div>
 
-          {view === "reconciliation" ? (
-            <div className="flex flex-col gap-2">
-              <h2 className="text-sm font-medium text-muted-foreground">
-                Per-employee, per-period detail
-              </h2>
-              <DataTable columns={periodColumns} data={periodRows} />
-            </div>
-          ) : (
-            <>
-              <div>
-                <h2 className="mb-2 text-sm font-medium text-muted-foreground">
-                  Google review bonuses — last 30 days
-                </h2>
-                <DataTable columns={reviewColumns} data={reviews} />
-              </div>
+          <div className="flex flex-col gap-2">
+            <h2 className="text-sm font-medium text-muted-foreground">
+              Per-employee, per-period
+            </h2>
+            <DataTable columns={periodColumns} data={periodRows} />
+          </div>
 
-              {FEATURES.writeTipExemptions || shifts.length || exemptions.length ? (
-                <TipExemptionsEditor
-                  shifts={shifts}
-                  exemptions={exemptions}
-                  employees={employees}
-                  editable={editable}
-                  periodLabel={tipPeriodLabel}
-                />
-              ) : null}
+          {FEATURES.writeTipExemptions || shifts.length || exemptions.length ? (
+            <TipExemptionsEditor
+              shifts={shifts}
+              exemptions={exemptions}
+              employees={employees}
+              editable={editable}
+              periodLabel={periodLabel}
+            />
+          ) : null}
 
-              <div className="flex flex-col gap-2">
-                <h2 className="text-sm font-medium text-muted-foreground">
-                  Recognition bonuses — last 2 periods
-                </h2>
-                <DataTable columns={recognitionColumns} data={recognitions} />
-              </div>
-            </>
-          )}
+          <div>
+            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
+              Google review bonuses — last 30 days
+            </h2>
+            <DataTable columns={reviewColumns} data={reviews} />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <h2 className="text-sm font-medium text-muted-foreground">
+              Recognition bonuses — last 2 periods
+            </h2>
+            <DataTable columns={recognitionColumns} data={recognitions} />
+          </div>
         </>
       )}
     </div>

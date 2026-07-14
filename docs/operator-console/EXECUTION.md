@@ -517,6 +517,21 @@ BQ_DATASET=bhaga
 GEMINI_TOKEN=            # from Secret Manager at runtime, not committed
 IAP_AUDIENCE=            # optional override; defaults to /projects/{N}/locations/{R}/services/operator-console
 BYPASS_IAP_EMAIL=        # local dev only (npm run dev) — no IAP headers exist off Cloud Run
+
+### PR §4 console screenshots
+
+Operator Console portal PRs must include hosted https screenshots of working scenarios
+(G5 — `check_evidence_readiness.py`). Capture locally:
+
+```bash
+BYPASS_IAP_EMAIL=operator@mypalmetto.co npm run dev &
+python3 apps/operator-console/scripts/capture_evidence.py \
+  --path /payroll --label payroll-unpaid-default \
+  --path '/payroll?period=YYYY-MM-DD' --label payroll-paid-viewonly
+```
+
+Uploads to the `evidence-screenshots` GitHub release (same bucket as Grafana
+`capture_screenshot.py`) and prints `label: https://...` lines for PR §4.
 ```
 
 ---

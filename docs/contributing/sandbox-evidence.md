@@ -22,6 +22,10 @@ enforces this at plan-creation time, before any code is written.
 - `sandbox-live` triggers `.github/workflows/sandbox-live-run.yml` (add `sandbox-live` label).
 - `unit-only` is only appropriate for docs/scripts-only changes where no runtime or infra path is
   modified. Add `waiver: <one-sentence reason>` on the same or adjacent line.
+- **Operator Console portal** (`apps/operator-console/app|components|lib`): §4 must include
+  hosted https screenshots of working scenarios. `unit-only` **cannot** waive this (G5 in
+  `check_evidence_readiness.py`). Capture with:
+  `python3 apps/operator-console/scripts/capture_evidence.py --path /payroll --label <label>`.
 - Choosing the wrong tier is caught at plan-creation time, **not** after a multi-commit CI cycle.
 
 The local predictor `scripts/check_evidence_readiness.py --pr N` mirrors the Claude rubric D2a

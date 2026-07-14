@@ -62,7 +62,7 @@ function draftToAction(
 /**
  * Tip Exemptions editor (Issue #167).
  * Local draft state — nothing writes until Update (RestockImportDrawer pattern).
- * Editable only when `editable` (open current pay period).
+ * Editable only when `editable` (unpaid current pay period).
  */
 export function TipExemptionsEditor({
   shifts,
@@ -166,10 +166,10 @@ export function TipExemptionsEditor({
   const dirtyCount = Object.values(drafts).filter((d) => d.dirty).length;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4" data-testid="tip-exemptions-editor">
       {!editable ? (
         <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          Historical — view only. Tip exemptions are editable only for the current open pay period
+          Historical — view only. Tip exemptions are editable only for unpaid pay periods
           ({periodLabel}).
         </p>
       ) : null}
@@ -268,7 +268,7 @@ export function TipExemptionsEditor({
         </table>
       </div>
 
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2" data-testid="tip-exemptions-result">
         <h2 className="text-sm font-medium text-muted-foreground">Exemptions table</h2>
         <div className="overflow-x-auto rounded-md border">
           <table className="w-full text-sm">

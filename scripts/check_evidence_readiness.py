@@ -117,18 +117,45 @@ def _diff_touches(prefix: str) -> bool:
         return False
 
 
-_GRAFANA_SCREENSHOT_RE = re.compile(
+_SCREENSHOT_URL_RE = re.compile(
     r"https?://[^\s)\"']+\.(?:png|jpg|jpeg|gif|webp)\b", re.IGNORECASE
 )
+# Back-compat alias used by older tests / callers
+_GRAFANA_SCREENSHOT_RE = _SCREENSHOT_URL_RE
 _VERIFY_PANELS_RE = re.compile(r"verify_panels|/api/ds/query", re.IGNORECASE)
 
 # Grafana dashboard directories to watch (either contains dashboard.json files)
 _GRAFANA_DIRS = ("agents/bhaga/grafana/", "grafana/")
 
+# Operator Console portal paths that require working-scenario screenshots in §4.
+# Pure tests under these trees do not trigger G5.
+_CONSOLE_APP_PREFIXES = (
+    "apps/operator-console/app/",
+    "apps/operator-console/components/",
+    "apps/operator-console/lib/",
+)
+
 
 def _diff_touches_grafana() -> bool:
     """True when the current branch diff touches any grafana dashboard directory."""
     return any(_diff_touches(d) for d in _GRAFANA_DIRS)
+
+
+def _diff_touches_console_portal() -> bool:
+    """True when the diff changes Operator Console application code (not *.test.*)."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "origin/main"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return False
+    for line in result.stdout.splitlines():
+        if ".test." in line or line.endswith(".test.ts") or line.endswith(".test.tsx"):
+            continue
+        if any(line.startswith(p) for p in _CONSOLE_APP_PREFIXES):
+            return True
+    return False
 
 
 def _changed_panel_ids() -> set[int]:
@@ -169,7 +196,7 @@ def predict(body: str) -> tuple[bool, str]:
     # (avoids false positives on short bodies in tests and on PRs still being drafted).
     if _diff_touches_grafana() and _extract_section4(body) != body:
         section4 = _extract_section4(body)
-        has_screenshot = bool(_GRAFANA_SCREENSHOT_RE.search(section4))
+        has_screenshot = bool(_SCREENSHOT_URL_RE.search(section4))
         # Match "verify_panels" as a standalone word/token, not embedded in e.g.
         # prose like "No verify_panels output" — require numeric result or run marker.
         has_verify_panels = bool(
@@ -203,6 +230,24 @@ def predict(body: str) -> tuple[bool, str]:
                 + " AND ".join(missing)
                 + ". Run: python3 agents/bhaga/grafana/capture_screenshot.py --panel <id> "
                 "--label <label> && python3 agents/bhaga/grafana/verify_panels.py"
+            )
+
+    # G5: Operator Console portal changes require working-scenario https screenshots
+    # in §4. unit-only waivers cannot bypass this (same spirit as Grafana G3).
+    if _diff_touches_console_portal() and _extract_section4(body) != body:
+        section4 = _extract_section4(body)
+        if _WAIVER_PATTERN.search(body):
+            return False, (
+                "operator-console portal diffs cannot use Evidence tier: unit-only — "
+                "provide working-scenario https screenshots in §4. "
+                "Run: python3 apps/operator-console/scripts/capture_evidence.py "
+                "--path /payroll --label <label>"
+            )
+        if not _SCREENSHOT_URL_RE.search(section4):
+            return False, (
+                "operator-console change → §4 must include a viewable https screenshot URL "
+                "(working scenario). Run: python3 apps/operator-console/scripts/capture_evidence.py "
+                "--path /payroll --label <label>"
             )
 
     # G4: Backtick-wrapped evidence tier defeats waiver detection in both this script

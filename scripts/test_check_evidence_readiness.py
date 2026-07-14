@@ -14,8 +14,9 @@ from scripts.check_evidence_readiness import predict
 
 
 def _predict_no_grafana_diff(body: str) -> tuple[bool, str]:
-    """Call predict() with _diff_touches forced False (non-grafana-diff context)."""
-    with patch.object(cer, "_diff_touches", return_value=False):
+    """Call predict() with path-aware gates forced off (non-grafana / non-console)."""
+    with patch.object(cer, "_diff_touches", return_value=False), \
+         patch.object(cer, "_diff_touches_console_portal", return_value=False):
         return predict(body)
 
 
@@ -95,13 +96,15 @@ class TestG3GrafanaPathAwareCheck(unittest.TestCase):
     def _predict_with_grafana_diff(self, body: str) -> tuple[bool, str]:
         from unittest.mock import patch
         import scripts.check_evidence_readiness as cer
-        with patch.object(cer, "_diff_touches", return_value=True):
+        with patch.object(cer, "_diff_touches", return_value=True), \
+             patch.object(cer, "_diff_touches_console_portal", return_value=False):
             return predict(body)
 
     def _predict_without_grafana_diff(self, body: str) -> tuple[bool, str]:
         from unittest.mock import patch
         import scripts.check_evidence_readiness as cer
-        with patch.object(cer, "_diff_touches", return_value=False):
+        with patch.object(cer, "_diff_touches", return_value=False), \
+             patch.object(cer, "_diff_touches_console_portal", return_value=False):
             return predict(body)
 
     def test_grafana_diff_without_screenshot_fails(self):
@@ -169,6 +172,7 @@ class TestG3ChangedPanelIdGate(unittest.TestCase):
     def _predict(self, body: str, changed_ids: set[int]) -> tuple[bool, str]:
         """Run predict with grafana diff active and the given changed panel ids."""
         with patch.object(cer, "_diff_touches", return_value=True), \
+             patch.object(cer, "_diff_touches_console_portal", return_value=False), \
              patch.object(cer, "_changed_panel_ids", return_value=changed_ids):
             return predict(body)
 
@@ -222,6 +226,7 @@ class TestG3ChangedPanelIdGate(unittest.TestCase):
         body = self._good_body("panel 55 OK")
         # Simulate that only grafana/ (not agents/bhaga/grafana/) changed
         with patch.object(cer, "_diff_touches", return_value=True), \
+             patch.object(cer, "_diff_touches_console_portal", return_value=False), \
              patch.object(cer, "_changed_panel_ids", return_value={55}):
             ok, reason = predict(body)
         self.assertTrue(ok, f"grafana/ dir changed panel with OK should pass: {reason}")
@@ -234,6 +239,7 @@ class TestG3ChangedPanelIdGate(unittest.TestCase):
             "HELD-BACK: 0\n"
         )
         with patch.object(cer, "_diff_touches", return_value=False), \
+             patch.object(cer, "_diff_touches_console_portal", return_value=False), \
              patch.object(cer, "_changed_panel_ids", return_value={99}):
             ok, _ = predict(body)
         self.assertTrue(ok, "non-grafana PR must not be blocked by panel id check")
@@ -243,7 +249,8 @@ class TestBacktickTierDetection(unittest.TestCase):
     """G4: backtick-wrapped Evidence tier must be caught as an error."""
 
     def _predict(self, body):
-        with patch.object(cer, "_diff_touches", return_value=False):
+        with patch.object(cer, "_diff_touches", return_value=False), \
+             patch.object(cer, "_diff_touches_console_portal", return_value=False):
             return predict(body)
 
     def test_backtick_wrapped_unit_only_waiver_fails(self):
@@ -271,6 +278,65 @@ class TestBacktickTierDetection(unittest.TestCase):
         _, reason = self._predict(body)
         self.assertIn("backtick", reason.lower())
         self.assertIn("Evidence tier:", reason)
+
+
+class TestG5ConsolePortalScreenshotGate(unittest.TestCase):
+    """G5: operator-console portal diffs require https screenshots; unit-only cannot waive."""
+
+    def _predict_console(self, body: str) -> tuple[bool, str]:
+        with patch.object(cer, "_diff_touches_grafana", return_value=False), \
+             patch.object(cer, "_diff_touches_console_portal", return_value=True):
+            return predict(body)
+
+    def _predict_no_console(self, body: str) -> tuple[bool, str]:
+        with patch.object(cer, "_diff_touches_grafana", return_value=False), \
+             patch.object(cer, "_diff_touches_console_portal", return_value=False):
+            return predict(body)
+
+    def test_console_diff_without_screenshot_fails(self):
+        body = (
+            "Evidence tier: sandbox-e2e\n"
+            "## §4 Evidence\n"
+            "<details><summary>Evidence</summary>\n"
+            "vitest 12 passed\n"
+            "</details>\n"
+        )
+        ok, reason = self._predict_console(body)
+        self.assertFalse(ok)
+        self.assertIn("operator-console", reason.lower())
+        self.assertIn("screenshot", reason.lower())
+
+    def test_console_diff_with_screenshot_passes(self):
+        body = (
+            "Evidence tier: sandbox-e2e\n"
+            "## §4 Evidence\n"
+            "<details><summary>Evidence</summary>\n"
+            "![payroll](https://github.com/owner/repo/releases/download/evidence-screenshots/payroll.png)\n"
+            "</details>\n"
+        )
+        ok, reason = self._predict_console(body)
+        self.assertTrue(ok, f"should pass with screenshot: {reason}")
+
+    def test_console_diff_unit_only_waiver_fails(self):
+        body = (
+            "Evidence tier: unit-only (waiver: console bounds are pure TS)\n"
+            "## §4 Evidence\n"
+            "<details><summary>Evidence</summary>\n"
+            "12 passed\n"
+            "</details>\n"
+        )
+        ok, reason = self._predict_console(body)
+        self.assertFalse(ok)
+        self.assertIn("unit-only", reason.lower())
+
+    def test_no_console_diff_skips_g5(self):
+        body = (
+            "Evidence tier: unit-only (waiver: docs only)\n"
+            "## §4 Evidence\n"
+            "n/a\n"
+        )
+        ok, reason = self._predict_no_console(body)
+        self.assertTrue(ok, f"non-console unit-only should still pass: {reason}")
 
 
 if __name__ == "__main__":

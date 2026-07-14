@@ -265,6 +265,8 @@ class TestSeedSandboxTrainingShiftsFromProd(unittest.TestCase):
             mock.patch.object(e2e, "refresh_access_token", lambda account=None: "tok"),
             mock.patch.object(e2e, "_load_production_sheet_ids", lambda: {"PROD_MODEL"}),
             mock.patch.object(e2e, "resolve_sheet_id", lambda key, prof: sandbox_sid),
+            # Keep unit tests Sheet-only; BQ fallback is covered by CI sandbox e2e.
+            mock.patch.object(e2e, "_training_shifts_bq_window", lambda **kwargs: []),
         ]
 
     def test_mirrors_in_window_rows_to_sandbox(self):

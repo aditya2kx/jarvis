@@ -275,6 +275,50 @@ def _run_backfill(store: str, start: datetime.date, end: datetime.date) -> int:
     )
 
 
+def _bq_fallback_rows(reader_attr: str) -> list[dict] | None:
+    """When prod raw Sheets are empty (BQ-primary era), seed from BigQuery.
+
+    Returns None if datastore is not BQ or no reader mapping exists for this
+    source (caller keeps the Sheets result, possibly empty).
+    """
+    import os
+
+    if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":
+        return None
+    from core import datastore_reader as bqr
+    from core.datastore import read_table
+
+    def _daily_rollup() -> list[dict]:
+        rows = read_table("square_daily_rollup") or []
+        out: list[dict] = []
+        for r in rows:
+            d = r.get("date_local")
+            out.append({
+                "date_local": d.isoformat() if hasattr(d, "isoformat") else str(d or ""),
+                "txn_count": int(r.get("txn_count") or 0),
+                "gross_sales_cents": int(r.get("gross_sales_cents") or 0),
+                "tip_cents": int(r.get("tip_cents") or 0),
+                "net_sales_cents": int(r.get("net_sales_cents") or 0),
+                "refund_cents": int(r.get("refund_cents") or 0),
+                "order_count": int(r.get("order_count") or 0),
+                "scraped_at_utc": str(r.get("scraped_at_utc") or ""),
+            })
+        return out
+
+    mapping = {
+        "read_raw_adp_shifts": bqr.read_shifts_bq,
+        "read_raw_adp_rates": bqr.read_wage_rates_bq,
+        "read_raw_square_transactions": bqr.read_transactions_bq,
+        "read_raw_square_daily_rollup": _daily_rollup,
+        "read_raw_square_item_daily_rollup": bqr.read_item_daily_bq,
+        "read_raw_kds_daily": bqr.read_kds_daily_bq,
+    }
+    fn = mapping.get(reader_attr)
+    if fn is None:
+        return None
+    return fn()
+
+
 def seed_sandbox_raw_from_prod(
     *, profile: dict, account: str, start: datetime.date, end: datetime.date,
 ) -> dict[str, int]:
@@ -284,6 +328,10 @@ def seed_sandbox_raw_from_prod(
     downloads, it reads the already-scraped PROD raw sheets directly and writes
     the windowed rows to the staging-resolved sandbox sheets, so the model build
     runs over real prod data with zero scrape/login.
+
+    When a Sheets window is empty under ``BHAGA_DATASTORE=bigquery``, falls back
+    to the matching BQ table (Issue #167 / BQ-primary) so CI is not blocked by
+    stale Sheet projections.
 
     Isolation contract (hard-asserted per source): READS use the prod sid inside
     an explicit `allow_production_read()` scope (reading prod is sanctioned) and
@@ -311,6 +359,16 @@ def seed_sandbox_raw_from_prod(
         with allow_production_read():
             rows = getattr(raw_reader, reader_attr)(prod_sid, account=account)
         windowed = filter_rows_to_window(rows, date_field, start, end)
+        if not windowed:
+            bq_rows = _bq_fallback_rows(reader_attr)
+            if bq_rows is not None:
+                windowed = filter_rows_to_window(bq_rows, date_field, start, end)
+                if windowed:
+                    print(
+                        f"# seed: Sheets empty for {reader_attr}; "
+                        f"BQ fallback → {len(windowed)} row(s) in window",
+                        flush=True,
+                    )
         if windowed:
             # write_raw_* upserts (preserves non-matching keys), but determinism
             # is safe: provision() -> clear_slot() _batch_clears every tab in the
@@ -319,6 +377,30 @@ def seed_sandbox_raw_from_prod(
             getattr(raw_writer, writer_attr)(sandbox_sid, windowed, account=account)
         seeded[reader_attr.replace("read_raw_", "")] = len(windowed)
     return seeded
+
+
+def _training_shifts_bq_window(
+    *, start: datetime.date, end: datetime.date, store: str = "palmetto",
+) -> list[dict]:
+    """Read tip-exemption overlay from BQ for [start, end]. Empty if not BQ mode."""
+    import os
+
+    if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":
+        return []
+    from agents.bhaga.scripts import model_inputs
+
+    lo, hi = start.isoformat(), end.isoformat()
+    overlay = model_inputs.read_training_shifts(store=store)
+    out: list[dict] = []
+    for (name, date), meta in overlay.items():
+        if not (lo <= date <= hi):
+            continue
+        out.append({
+            "employee_name": name,
+            "date": date,
+            "note": (meta or {}).get("note") or "",
+        })
+    return out
 
 
 def seed_sandbox_training_shifts_from_prod(
@@ -340,6 +422,9 @@ def seed_sandbox_training_shifts_from_prod(
     [start, end] are mirrored so the sandbox overlay matches exactly the period
     under test. Returns the list of mirrored ``{employee_name, date, note}``
     records (so the caller can derive the exempt set for verification).
+
+    When the Sheet tab is empty under ``BHAGA_DATASTORE=bigquery``, falls back to
+    ``bhaga.training_shifts`` (Issue #167).
     """
     prod_ids = _load_production_sheet_ids()
     prod_sid = profile["google_sheets"]["bhaga_model"]["spreadsheet_id"]
@@ -355,12 +440,11 @@ def seed_sandbox_training_shifts_from_prod(
             f"{sandbox_sid!r} — sandbox isolation violated"
         )
     token = refresh_access_token(account=account)
-    # The overlay is operator-curated (fixed columns: employee_name|date|note),
-    # so read it as a raw grid rather than through a schema reader.
-    with allow_production_read():
-        grid = raw_writer._read_tab(prod_sid, "training_shifts", token)
     lo, hi = start.isoformat(), end.isoformat()
     records: list[dict] = []
+
+    with allow_production_read():
+        grid = raw_writer._read_tab(prod_sid, "training_shifts", token)
     for r in (grid[1:] if grid else []):
         if not r or not str(r[0]).strip():
             continue
@@ -370,6 +454,14 @@ def seed_sandbox_training_shifts_from_prod(
         if not date or not (lo <= date <= hi):
             continue
         records.append({"employee_name": name, "date": date, "note": note})
+    if not records:
+        records = _training_shifts_bq_window(start=start, end=end)
+        if records:
+            print(
+                f"# seed: training_shifts Sheet empty; "
+                f"BQ fallback → {len(records)} row(s) in window",
+                flush=True,
+            )
     if records:
         raw_writer.write_training_shifts(sandbox_sid, records, account=account)
     return records

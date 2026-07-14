@@ -282,7 +282,7 @@ export async function applyTipExemptions(
   for (const d of drafts) {
     if (d.date < open.start || d.date > open.end) {
       throw new Error(
-        `Tip exemptions are editable only for the current open pay period ` +
+        `Tip exemptions are editable only for the unpaid current pay period ` +
           `(${open.start}..${open.end}); refused ${d.employeeName} on ${d.date}`,
       );
     }

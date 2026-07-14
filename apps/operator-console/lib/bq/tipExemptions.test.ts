@@ -35,7 +35,7 @@ describe("applyTipExemptions unpaid-period guard (Issue #170)", () => {
         [{ employeeName: "Alvarez, Sebastian", date: "2026-07-15", mode: "whole" }],
         "tester@example.com",
       ),
-    ).rejects.toThrow(/editable only for the current open pay period/);
+    ).rejects.toThrow(/editable only for the unpaid current pay period/);
     expect(mutate).not.toHaveBeenCalled();
   });
 

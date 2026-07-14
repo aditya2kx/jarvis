@@ -6,7 +6,7 @@ Uploads PNGs to the ``evidence-screenshots`` GitHub release (same staging bucket
 
 Usage:
     # Local next.dev with IAP bypass (recommended for evidence):
-    BYPASS_IAP_EMAIL=adi@mypalmetto.co npm run dev &
+    BYPASS_IAP_EMAIL=operator@mypalmetto.co npm run dev &
     python3 apps/operator-console/scripts/capture_evidence.py \\
         --path '/payroll' --label payroll-unpaid-default \\
         --path '/payroll?period=2026-06-15' --label payroll-paid-viewonly

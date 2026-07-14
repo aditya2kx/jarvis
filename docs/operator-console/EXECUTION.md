@@ -524,7 +524,7 @@ Operator Console portal PRs must include hosted https screenshots of working sce
 (G5 — `check_evidence_readiness.py`). Capture locally:
 
 ```bash
-BYPASS_IAP_EMAIL=adi@mypalmetto.co npm run dev &
+BYPASS_IAP_EMAIL=operator@mypalmetto.co npm run dev &
 python3 apps/operator-console/scripts/capture_evidence.py \
   --path /payroll --label payroll-unpaid-default \
   --path '/payroll?period=YYYY-MM-DD' --label payroll-paid-viewonly

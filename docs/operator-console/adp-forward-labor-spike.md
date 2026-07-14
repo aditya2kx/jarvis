@@ -25,6 +25,16 @@ Empty days often lack a `team-schedule-calendar-day` node, so **ordinal dayIndex
 Date assignment must match each cell’s X center to the nearest column header, then
 `week_start + weekday_offset`.
 
+### Pitfalls (fixed 2026-07-14)
+- **Shared-grid over-attribution:** climbing past `.calendar-row` into the SECTION
+  attaches every employee’s shifts to mid-list names (Tina/Ximena showed 13×
+  `week_total`). Scope extract to `.calendar-row` with exactly one `.worker-name`.
+- **Virtualization:** mid-list rows hydrate day cells only when scrolled into view
+  (`days=0` until then). Runner scrolls each row, extracts one-at-a-time, then
+  resets scroll before next-week chevron click.
+- **Safety net:** `cap_days_to_week_total` trims day cells when
+  `sum(ranges) > 1.2 × week_total` (true shifts appear first).
+
 ### Feasibility
 **GO.** Extend existing schedule scrape in the same nightly bundle. Backfill = the
 2 weeks ADP shows now (no older history in UI). Incremental = nightly MERGE upsert

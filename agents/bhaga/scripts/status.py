@@ -125,6 +125,12 @@ BQ_TARGETS: list[Target] = [
     # Team Schedule scrape); max_date is in the future, so the freshness check
     # reads as fresh. Empty until the first nightly schedule scrape runs.
     Target("adp_scheduled_daily", "date"),
+    # migration 039 (Issue #166): per-employee schedule grain (same forward horizon).
+    Target("adp_scheduled_shifts", "date"),
+    # migration 040 (Issue #166): adp_payroll_liability is a sparse paycheck
+    # calibration snapshot (check_date), not a nightly freshness signal —
+    # intentionally NOT a BQ_TARGETS entry (same class as store_config /
+    # recognition_bonuses). Seeds store_config.labor_burden_pct for the console.
     # migration 030 (Issue #137): inventory_restock_schedule / inventory_restock_orders
     # are operator-input tables (like store_config) intentionally NOT freshness
     # targets — they only have rows once the operator registers a restock date via

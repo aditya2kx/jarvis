@@ -47,6 +47,40 @@ def test_build_employee_schedule_records_maps_header_index_to_date():
     assert recs[0]["employee_id"] == "Garcia, Jacob"
 
 
+def test_cap_days_to_week_total_trims_grid_over_attribution():
+    """Tina/Ximena bug: shared-grid climb attached every shift; week total is truth."""
+    days = [
+        {"header_index": 0, "ranges": ["1:30 PM - 8:30 PM"]},  # 7
+        {"header_index": 2, "ranges": ["1:30 PM - 8:30 PM"]},  # 7
+        {"header_index": 5, "ranges": ["9:00 AM - 3:00 PM"]},  # 6 → 20 ≈ 19:00
+        {"header_index": 0, "ranges": ["6:30 AM - 1:30 PM"]},  # pollution
+        {"header_index": 1, "ranges": ["1:30 PM - 8:30 PM"]},
+    ]
+    kept = sb.cap_days_to_week_total(days, week_total_hours=19.0)
+    assert len(kept) == 3
+    assert [d["header_index"] for d in kept] == [0, 2, 5]
+
+
+def test_build_employee_schedule_records_caps_over_attributed_payload():
+    weeks = [{
+        "week_label": "Week of Jul 13, 2026 - Jul 19, 2026",
+        "employee_rows": [{
+            "name": "Majdinasab, Tina",
+            "week_total_text": "19:00 Hrs",
+            "days": [
+                {"header_index": 0, "ranges": ["1:30 PM - 8:30 PM"]},
+                {"header_index": 2, "ranges": ["1:30 PM - 8:30 PM"]},
+                {"header_index": 5, "ranges": ["9:00 AM - 3:00 PM"]},
+                {"header_index": 0, "ranges": ["6:30 AM - 1:30 PM"]},
+                {"header_index": 1, "ranges": ["1:30 PM - 8:30 PM"]},
+            ],
+        }],
+    }]
+    recs = sb.build_employee_schedule_records(weeks)
+    assert sum(r["scheduled_hours"] for r in recs) == pytest.approx(20.0)
+    assert len(recs) == 3
+
+
 @pytest.mark.parametrize("raw,expected", [
     ("7 Employees 46:45 Hrs", 7),
     ("13 Employees 291:30 Hrs", 13),

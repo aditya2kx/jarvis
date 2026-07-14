@@ -1454,7 +1454,7 @@ def _scrape_one_week(page, frame) -> dict:
         .first.inner_text(timeout=10_000)
     )
     ext = frame.evaluate(sb.SCHEDULE_EXTRACT_JS)
-    emp = {"employees": []}
+    emp = {"employees": [], "headers": []}
     try:
         # Wait for employee rows to paint (footer totals appear first).
         deadline = time.monotonic() + 15.0
@@ -1465,7 +1465,43 @@ def _scrape_one_week(page, frame) -> dict:
             if n and n > 0:
                 break
             page.wait_for_timeout(400)
-        emp = frame.evaluate(sb.SCHEDULE_EMPLOYEE_EXTRACT_JS)
+        # Virtualized mid-list rows hydrate day cells only when scrolled into
+        # view. Extract one calendar-row at a time, then reset scroll so the
+        # next-week chevron click geometry stays stable.
+        n_rows = frame.evaluate(
+            "() => document.querySelectorAll('.calendar-row').length"
+        ) or 0
+        frame.evaluate("() => { window.__adpEmpExtract = { headers: null, employees: [] }; }")
+        for i in range(int(n_rows)):
+            frame.evaluate(
+                """(i) => {
+                  const rows = document.querySelectorAll('.calendar-row');
+                  if (rows[i]) rows[i].scrollIntoView({ block: 'center' });
+                }""",
+                i,
+            )
+            page.wait_for_timeout(150)
+            frame.evaluate(sb.SCHEDULE_EMPLOYEE_EXTRACT_ONE_JS, i)
+        emp = frame.evaluate(
+            """() => {
+              const e = window.__adpEmpExtract || { headers: [], employees: [] };
+              const headers = (e.headers || []).map(h =>
+                (typeof h === 'string' ? h : (h && h.text)) || null
+              ).filter(Boolean);
+              return { headers, employees: e.employees || [] };
+            }"""
+        )
+        frame.evaluate(
+            """() => {
+              const scroller = document.querySelector('.calendar-view')
+                || document.querySelector('.team-work-schedules-list');
+              if (scroller) scroller.scrollTop = 0;
+              const h = document.querySelector('.header-row')
+                || document.querySelector('.day-cell.column-header');
+              if (h) h.scrollIntoView({ block: 'start' });
+            }"""
+        )
+        page.wait_for_timeout(300)
     except Exception as exc:  # noqa: BLE001 — employee grain is additive
         print(f"[adp_schedule] WARN: employee extract failed: {exc!r}")
     print(
@@ -1505,7 +1541,17 @@ def _goto_next_week(page, frame) -> None:
     box = label.bounding_box()
     if not box:
         raise RuntimeError("Could not locate the week-selector label to navigate weeks.")
-    page.mouse.click(box["x"] + box["width"] + 16, box["y"] + box["height"] / 2)
+    # Click the › chevron just to the right of the week label. Prefer a
+    # locator-relative click (stable after employee-row hydrate scroll);
+    # fall back to page mouse coords.
+    try:
+        label.click(
+            position={"x": box["width"] + 18, "y": max(box["height"] / 2, 8)},
+            force=True,
+            timeout=5_000,
+        )
+    except Exception:  # noqa: BLE001
+        page.mouse.click(box["x"] + box["width"] + 16, box["y"] + box["height"] / 2)
 
     # Phase 1: label must change (confirms the nav fired).
     deadline = time.monotonic() + 12.0

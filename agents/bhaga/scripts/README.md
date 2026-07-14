@@ -335,7 +335,9 @@ shift clock is subtracted (Issue #167). Labor% is unaffected either way.
 **BQ-canonical:** `model_inputs.read_training_shifts()` returns
 `{(canonical_name, date_iso): {exempt_start, exempt_end, note}}`. Operators edit via the
 **Operator Console → Payroll → Tip Exemptions** editor (unpaid ADP pay period only —
-period picker by start–end with Unpaid/Paid; batch Update + Cloud Run recompute). Slack
+period picker by start–end with Unpaid/Paid; batch Update + **one** Cloud Run
+recompute job per Update — `materialize_model_bq` rebuilds tip alloc globally, so
+N concurrent jobs per touched date race and trip tip-pool conservation). Slack
 `/bhaga-cloud training set/rm` still writes whole-day rows
 (NULL times). Orphan windows (no ADP shift yet) are stored and apply when the shift lands.
 

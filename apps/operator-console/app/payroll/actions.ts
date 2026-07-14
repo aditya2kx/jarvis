@@ -39,8 +39,9 @@ export async function applyTipExemptionsAction(drafts: TipExemptionDraft[]) {
   if (!drafts.length) return { recomputed: [] as string[] };
   const by = await operatorEmail();
   await applyTipExemptions(DEFAULT_STORE, drafts, by);
-  const dates = [...new Set(drafts.map((d) => d.date))];
-  await triggerModelRecompute(dates);
+  // One FORCE_MODEL job rematerializes tip alloc for all touched dates —
+  // do not fire N concurrent jobs (races + Slack tip-pool failure spam).
+  const recomputed = await triggerModelRecompute(drafts.map((d) => d.date));
   revalidatePath("/payroll");
-  return { recomputed: dates };
+  return { recomputed };
 }

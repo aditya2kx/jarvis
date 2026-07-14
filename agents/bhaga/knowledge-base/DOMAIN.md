@@ -324,7 +324,8 @@ redistributes to everyone else. Three BQ-canonical sources, all funnelling throu
 
 **BQ-canonical:** operators edit tip exemptions in the **Operator Console → Payroll** page
 (period picker by start–end with Unpaid / Paid (ADP); editable only for the unpaid current
-pay period — stays on the just-ended biweek until ADP tip payout lands; batch Update + recompute).
+pay period — stays on the just-ended biweek until ADP tip payout lands; batch Update +
+**one** Cloud Run model recompute per Update — not one job per touched date).
 Slack `/bhaga-cloud training set/rm` still supports
 whole-day marks. Columns: `store`, `employee_name` (canonical `Last, First`), `date` (DATE),
 `exempt_start` / `exempt_end` (nullable HH:MM America/Chicago; both NULL = whole-day),

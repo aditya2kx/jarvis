@@ -13,6 +13,7 @@ import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { chicagoTodayIso, isMonthLike, type DateWindow } from "@/lib/filters/range";
 import type { GoalKey } from "@/lib/bq/writes";
 import type { GoalStatus } from "@/lib/kpi/health-types";
+import { viewForLaborLens, type LaborLens } from "@/lib/kpi/labor-lens";
 import {
   avgPrepP95Min,
   countRiskyBases,
@@ -115,7 +116,11 @@ function metric(partial: HealthMetric): HealthMetric {
   return { nested: true, ...partial };
 }
 
-export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorecard> {
+export async function loadHealthScorecard(
+  win: DateWindow,
+  opts: { laborLens?: LaborLens } = {},
+): Promise<HealthScorecard> {
+  const laborLens: LaborLens = opts.laborLens ?? "wage";
   const [rows, config, quality, runway, plaidCats, laborFwd] = await Promise.all([
     laborDaily(win),
     storeConfig(DEFAULT_STORE),
@@ -161,14 +166,14 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
   const laborPace = paceFor(laborCost, gLabor$.value, true);
   const opsPace = paceFor(opsCost, gOps.value, true);
   const totalPace = paceFor(totalKnownCost, gTotal.value, true);
-  const completedPtPct = laborFwd?.hasCompleted ? laborFwd.completedPtPct : null;
-  const completedTotalPct = laborFwd?.hasCompleted ? laborFwd.completedTotalPct : null;
-  const projectedPtPct = laborFwd?.hasForward ? laborFwd.projectedPtPct : null;
-  const projectedTotalPct = laborFwd?.hasForward ? laborFwd.projectedTotalPct : null;
-  const ptLaborPace = paceFor(completedPtPct, goalPtLaborPct, true);
-  const totalLaborPctPace = paceFor(completedTotalPct, goalTotalLaborPct, true);
-  const projectedPtPace = paceFor(projectedPtPct, goalPtLaborPct, true);
-  const projectedTotalPace = paceFor(projectedTotalPct, goalTotalLaborPct, true);
+  const lensView =
+    laborFwd != null
+      ? viewForLaborLens(laborFwd, laborLens)
+      : null;
+  const lensPtPct = lensView?.paidUnavailable ? null : (lensView?.ptPct ?? null);
+  const lensTotalPct = lensView?.paidUnavailable ? null : (lensView?.totalPct ?? null);
+  const ptLaborPace = paceFor(lensPtPct, goalPtLaborPct, true);
+  const totalLaborPctPace = paceFor(lensTotalPct, goalTotalLaborPct, true);
   const prepPace = paceFor(prepP95, goalPrepP95, true);
   const riskyPace = paceFor(riskyCount, goalRiskyMax, true);
 
@@ -286,73 +291,40 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
     }),
   ];
 
-  const laborMethod =
-    laborFwd != null
-      ? `Projected uses ADP scheduled PT hrs × avg PT wage ($${laborFwd.avgPtWage?.toFixed(2) ?? "—"}) + trailing FT $/day, over forecast orders × AOV ($${laborFwd.aov?.toFixed(2) ?? "—"}).`
-      : "Projected labor unavailable.";
-
+  const laborInfo =
+    lensView?.description ??
+    "Labor % unavailable — check vw_model_labor_daily / ADP schedule ingest.";
   const laborMetrics: HealthMetric[] = [
     metric({
-      key: "pt_labor_pct",
-      label: "Part-time labor % of net sales",
-      actual: completedPtPct,
+      key: `pt_labor_pct_${laborLens}`,
+      label: `Part-time — ${lensView?.title ?? "Wage"}`,
+      actual: lensPtPct,
       goal: goalPtLaborPct,
-      status: statusFor(ptLaborPace),
-      pace: ptLaborPace,
-      formatted: fmtPct(completedPtPct),
+      status: lensPtPct != null ? statusFor(ptLaborPace) : "no-goal",
+      pace: lensPtPct != null ? ptLaborPace : null,
+      formatted: fmtPct(lensPtPct),
       goalFormatted: fmtPct(goalPtLaborPct),
-      goalKey: "goal_hourly_labor_pct_max",
-      rawGoal: goalRaw(config, "goal_hourly_labor_pct_max"),
+      goalKey: laborLens === "wage" ? "goal_hourly_labor_pct_max" : null,
+      rawGoal: laborLens === "wage" ? goalRaw(config, "goal_hourly_labor_pct_max") : undefined,
       lowerIsBetter: true,
-      deltaFormatted: deltaLabelPct(completedPtPct, goalPtLaborPct),
-      info: "Completed days only: hourly labor $ ÷ net sales (vw_model_labor_daily). Goal default 20%.",
+      deltaFormatted: lensPtPct != null ? deltaLabelPct(lensPtPct, goalPtLaborPct) : undefined,
+      info: laborInfo,
     }),
     metric({
-      key: "total_labor_pct",
-      label: "Total labor % of net sales",
-      actual: completedTotalPct,
+      key: `total_labor_pct_${laborLens}`,
+      label: `Total (PT + FT) — ${lensView?.title ?? "Wage"}`,
+      actual: lensTotalPct,
       goal: goalTotalLaborPct,
-      status: statusFor(totalLaborPctPace),
-      pace: totalLaborPctPace,
-      formatted: fmtPct(completedTotalPct),
+      status: lensTotalPct != null ? statusFor(totalLaborPctPace) : "no-goal",
+      pace: lensTotalPct != null ? totalLaborPctPace : null,
+      formatted: fmtPct(lensTotalPct),
       goalFormatted: fmtPct(goalTotalLaborPct),
-      goalKey: "goal_labor_pct_max",
-      rawGoal: goalRaw(config, "goal_labor_pct_max"),
+      goalKey: laborLens === "wage" ? "goal_labor_pct_max" : null,
+      rawGoal: laborLens === "wage" ? goalRaw(config, "goal_labor_pct_max") : undefined,
       lowerIsBetter: true,
-      deltaFormatted: deltaLabelPct(completedTotalPct, goalTotalLaborPct),
-      info: "Completed days only: (hourly + full-time) labor $ ÷ net sales. Goal default 25%.",
-    }),
-    metric({
-      key: "projected_pt_labor_pct",
-      label: "Projected PT % of net sales (incl. scheduled)",
-      actual: projectedPtPct,
-      goal: goalPtLaborPct,
-      status: laborFwd?.hasForward ? statusFor(projectedPtPace) : "no-goal",
-      pace: laborFwd?.hasForward ? projectedPtPace : null,
-      formatted: laborFwd?.hasForward ? fmtPct(projectedPtPct) : "—",
-      goalFormatted: fmtPct(goalPtLaborPct),
-      goalKey: null,
-      rawGoal: undefined,
-      lowerIsBetter: true,
-      deltaFormatted: laborFwd?.hasForward ? deltaLabelPct(projectedPtPct, goalPtLaborPct) : undefined,
-      info: `Completed PT + remaining days with ADP scheduled hours × avg wage, over completed + forecast sales for those same scheduled days. ${laborMethod}`,
-    }),
-    metric({
-      key: "projected_total_labor_pct",
-      label: "Projected total % of net sales (incl. scheduled)",
-      actual: projectedTotalPct,
-      goal: goalTotalLaborPct,
-      status: laborFwd?.hasForward ? statusFor(projectedTotalPace) : "no-goal",
-      pace: laborFwd?.hasForward ? projectedTotalPace : null,
-      formatted: laborFwd?.hasForward ? fmtPct(projectedTotalPct) : "—",
-      goalFormatted: fmtPct(goalTotalLaborPct),
-      goalKey: null,
-      rawGoal: undefined,
-      lowerIsBetter: true,
-      deltaFormatted: laborFwd?.hasForward
-        ? deltaLabelPct(projectedTotalPct, goalTotalLaborPct)
-        : undefined,
-      info: `Completed total + scheduled PT + trailing FT $/day × scheduled forward days. ${laborMethod}`,
+      deltaFormatted:
+        lensTotalPct != null ? deltaLabelPct(lensTotalPct, goalTotalLaborPct) : undefined,
+      info: laborInfo,
     }),
   ];
 

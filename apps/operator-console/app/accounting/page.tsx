@@ -109,7 +109,7 @@ export default async function AccountingPage({
       {error ? (
         <p className="text-sm text-muted-foreground">
           Data unavailable{error ? `: ${error}` : ""} — expected locally without ADC/BQ; deployed
-          behind IAP this reads live. Plaid tables need migration 036 applied.
+          behind IAP this reads live. Plaid tables need migration 037 applied.
         </p>
       ) : null}
 

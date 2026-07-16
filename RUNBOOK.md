@@ -1742,9 +1742,13 @@ grants are the current mechanism.
   + `POST /plaid/sync` (shared `PLAID_SYNC_TOKEN` / sandbox trigger token). Skill:
   `skills/plaid_api/`. Env on console + webhook: `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`,
   optional `PLAID_WEBHOOK_URL`. Access tokens: Secret Manager `plaid_access_token_<item_id>`.
-  **Current env:** `PLAID_ENV=sandbox` (sandbox secret provisioned 2026-07-12). Chase / live bank
-  Link needs Plaid **production** access (dashboard questionnaire) then flip `PLAID_ENV=production`
-  and store the production secret as `plaid_secret`.
+  **Current env:** `PLAID_ENV=production` (cutover Issue #168). Production `plaid_secret`
+  in Secret Manager; sandbox Platypus Item/txns purged before Chase Link. Ops:
+  (1) rotate `plaid_secret` to the dashboard Production secret,
+  (2) ensure both `operator-console` and `bhaga-webhook` have `PLAID_ENV=production`,
+  (3) `purge_item(store, item_id, dry_run=False)` for any leftover sandbox Item,
+  (4) operator Links Chase once on `/accounting`, then Sync.
+  Retire a sandbox Item: `BHAGA_DATASTORE=bigquery python3 -c "from skills.plaid_api.sync import purge_item; print(purge_item('palmetto', '<item_id>', dry_run=False))"`.
 - **New goal keys:** `goal_net_sales_weekly`, `goal_net_sales_monthly`,
   `goal_hourly_labor_pct_max`, `goal_labor_pct_max`, `goal_kds_p95_min`,
   `goal_bases_at_risk_max` (plus legacy food-cost / on-time / runway keys kept for Slack) — all in

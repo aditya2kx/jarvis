@@ -24,8 +24,8 @@ Plaid skill: [`skills/plaid_api/`](../../skills/plaid_api/README.md). Migration 
 cd apps/operator-console
 npm install
 cp .env.example .env.local   # set BYPASS_IAP_EMAIL for local auth
-# Optional Plaid (sandbox):
-# PLAID_CLIENT_ID=... PLAID_SECRET=... PLAID_ENV=sandbox
+# Optional Plaid (Cloud Run uses PLAID_ENV=production after Issue #168):
+# PLAID_CLIENT_ID=... PLAID_SECRET=... PLAID_ENV=production
 npm run dev
 ```
 

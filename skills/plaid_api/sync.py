@@ -233,3 +233,68 @@ def list_linked_items(store: str) -> list[dict]:
         ),
     ).result()
     return [dict(r) for r in rows]
+
+
+def purge_item(store: str, item_id: str, *, dry_run: bool = True) -> dict:
+    """Delete all plaid_transactions for item_id, then the plaid_items row.
+
+    Used to retire sandbox Platypus evidence before production Chase Link
+    (Issue #168). Does not call Plaid ``/item/remove`` (sandbox Item is
+    disposable). Access-token SM cleanup is a separate ops step.
+    """
+    from google.cloud import bigquery
+
+    bq = _bq_client()
+    count_rows = list(
+        bq.query(
+            f"SELECT COUNT(*) AS n FROM {_fq('plaid_transactions')} WHERE item_id=@item_id",
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("item_id", "STRING", item_id),
+                ]
+            ),
+        ).result()
+    )
+    txn_n = int(count_rows[0].n) if count_rows else 0
+    item_rows = list(
+        bq.query(
+            f"SELECT COUNT(*) AS n FROM {_fq('plaid_items')} "
+            f"WHERE store=@store AND item_id=@item_id",
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("store", "STRING", store),
+                    bigquery.ScalarQueryParameter("item_id", "STRING", item_id),
+                ]
+            ),
+        ).result()
+    )
+    item_exists = bool(item_rows and int(item_rows[0].n) > 0)
+    if dry_run:
+        return {
+            "transactions_deleted": txn_n,
+            "item_deleted": item_exists,
+            "dry_run": True,
+        }
+
+    bq.query(
+        f"DELETE FROM {_fq('plaid_transactions')} WHERE item_id=@item_id",
+        job_config=bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("item_id", "STRING", item_id),
+            ]
+        ),
+    ).result()
+    bq.query(
+        f"DELETE FROM {_fq('plaid_items')} WHERE store=@store AND item_id=@item_id",
+        job_config=bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("store", "STRING", store),
+                bigquery.ScalarQueryParameter("item_id", "STRING", item_id),
+            ]
+        ),
+    ).result()
+    return {
+        "transactions_deleted": txn_n,
+        "item_deleted": item_exists,
+        "dry_run": False,
+    }

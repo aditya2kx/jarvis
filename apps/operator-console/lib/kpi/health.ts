@@ -1,6 +1,7 @@
 import "server-only";
 import {
   laborDaily,
+  laborForwardSummary,
   storeConfig,
   orderQualityDaily,
   baseRunway,
@@ -12,6 +13,7 @@ import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { chicagoTodayIso, isMonthLike, type DateWindow } from "@/lib/filters/range";
 import type { GoalKey } from "@/lib/bq/writes";
 import type { GoalStatus } from "@/lib/kpi/health-types";
+import { viewForLaborLens, periodDayCount, type LaborLens } from "@/lib/kpi/labor-lens";
 import {
   avgPrepP95Min,
   countRiskyBases,
@@ -24,7 +26,7 @@ import {
 export type { GoalStatus };
 export { avgPrepP95Min, countRiskyBases, elapsedDaysInWindow, paceFor, rollupStatus, statusFor };
 
-export type ScorecardGroupId = "finance" | "top_line" | "cost" | "quality" | "inventory";
+export type ScorecardGroupId = "finance" | "top_line" | "cost" | "labor" | "quality" | "inventory";
 
 export interface HealthMetric {
   key: string;
@@ -114,13 +116,18 @@ function metric(partial: HealthMetric): HealthMetric {
   return { nested: true, ...partial };
 }
 
-export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorecard> {
-  const [rows, config, quality, runway, plaidCats] = await Promise.all([
+export async function loadHealthScorecard(
+  win: DateWindow,
+  opts: { laborLens?: LaborLens } = {},
+): Promise<HealthScorecard> {
+  const laborLens: LaborLens = opts.laborLens ?? "wage";
+  const [rows, config, quality, runway, plaidCats, laborFwd] = await Promise.all([
     laborDaily(win),
     storeConfig(DEFAULT_STORE),
     orderQualityDaily(win),
     baseRunway(),
     plaidSpendByCategory(win).catch(() => []),
+    laborForwardSummary(win, DEFAULT_STORE).catch(() => null),
   ]);
 
   const netSales = sum(rows, (r) => r.net_sales);
@@ -148,6 +155,8 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
   const gLabor$ = periodGoal(config, win, "goal_labor_cost_weekly", "goal_labor_cost_monthly");
   const gOps = periodGoal(config, win, "goal_ops_cost_weekly", "goal_ops_cost_monthly");
   const gTotal = periodGoal(config, win, "goal_total_cost_weekly", "goal_total_cost_monthly");
+  const goalPtLaborPct = goalValue(config, "goal_hourly_labor_pct_max");
+  const goalTotalLaborPct = goalValue(config, "goal_labor_pct_max");
   const goalPrepP95 = goalValue(config, "goal_kds_p95_min");
   const goalRiskyMax = goalValue(config, "goal_bases_at_risk_max");
 
@@ -157,6 +166,21 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
   const laborPace = paceFor(laborCost, gLabor$.value, true);
   const opsPace = paceFor(opsCost, gOps.value, true);
   const totalPace = paceFor(totalKnownCost, gTotal.value, true);
+  const periodDays = periodDayCount(win.start, win.end);
+  // Home always shows completed (wage or paid via lens) + blended — four numbers.
+  const completedBasis: LaborLens = laborLens === "paid" ? "paid" : "wage";
+  const completedView =
+    laborFwd != null ? viewForLaborLens(laborFwd, completedBasis, periodDays) : null;
+  const blendedView =
+    laborFwd != null ? viewForLaborLens(laborFwd, "blended", periodDays) : null;
+  const completedPtPct = completedView?.ptPct ?? null;
+  const completedTotalPct = completedView?.totalPct ?? null;
+  const blendedPtPct = blendedView?.ptPct ?? null;
+  const blendedTotalPct = blendedView?.totalPct ?? null;
+  const ptLaborPace = paceFor(completedPtPct, goalPtLaborPct, true);
+  const totalLaborPctPace = paceFor(completedTotalPct, goalTotalLaborPct, true);
+  const blendedPtPace = paceFor(blendedPtPct, goalPtLaborPct, true);
+  const blendedTotalPace = paceFor(blendedTotalPct, goalTotalLaborPct, true);
   const prepPace = paceFor(prepP95, goalPrepP95, true);
   const riskyPace = paceFor(riskyCount, goalRiskyMax, true);
 
@@ -274,6 +298,86 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
     }),
   ];
 
+  const completedInfo =
+    completedView?.description ??
+    "Completed labor % unavailable — check vw_model_labor_daily.";
+  const blendedInfo =
+    blendedView?.description ??
+    "Blended labor % unavailable — check ADP schedule ingest.";
+  const completedDayTag =
+    laborFwd != null && laborFwd.hasCompleted
+      ? ` · ${laborFwd.completedDayCount} day${laborFwd.completedDayCount === 1 ? "" : "s"}`
+      : "";
+  const blendedDayTag =
+    laborFwd != null
+      ? ` · ${laborFwd.hasCompleted ? laborFwd.completedDayCount : 0}+${laborFwd.hasForward ? laborFwd.fwdDays : 0} days`
+      : "";
+  const laborMetrics: HealthMetric[] = [
+    metric({
+      key: `pt_labor_pct_${completedBasis}`,
+      label: `Part-time — completed${completedBasis === "paid" ? " (paid)" : ""}${completedDayTag}`,
+      actual: completedPtPct,
+      goal: goalPtLaborPct,
+      status: completedPtPct != null ? statusFor(ptLaborPace) : "no-goal",
+      pace: completedPtPct != null ? ptLaborPace : null,
+      formatted: fmtPct(completedPtPct),
+      goalFormatted: fmtPct(goalPtLaborPct),
+      goalKey: completedBasis === "wage" ? "goal_hourly_labor_pct_max" : null,
+      rawGoal: completedBasis === "wage" ? goalRaw(config, "goal_hourly_labor_pct_max") : undefined,
+      lowerIsBetter: true,
+      deltaFormatted:
+        completedPtPct != null ? deltaLabelPct(completedPtPct, goalPtLaborPct) : undefined,
+      info: completedInfo,
+    }),
+    metric({
+      key: `total_labor_pct_${completedBasis}`,
+      label: `Total (PT + FT) — completed${completedBasis === "paid" ? " (paid)" : ""}${completedDayTag}`,
+      actual: completedTotalPct,
+      goal: goalTotalLaborPct,
+      status: completedTotalPct != null ? statusFor(totalLaborPctPace) : "no-goal",
+      pace: completedTotalPct != null ? totalLaborPctPace : null,
+      formatted: fmtPct(completedTotalPct),
+      goalFormatted: fmtPct(goalTotalLaborPct),
+      goalKey: completedBasis === "wage" ? "goal_labor_pct_max" : null,
+      rawGoal: completedBasis === "wage" ? goalRaw(config, "goal_labor_pct_max") : undefined,
+      lowerIsBetter: true,
+      deltaFormatted:
+        completedTotalPct != null ? deltaLabelPct(completedTotalPct, goalTotalLaborPct) : undefined,
+      info: completedInfo,
+    }),
+    metric({
+      key: "pt_labor_pct_blended",
+      label: `Part-time — blended (schedule)${blendedDayTag}`,
+      actual: blendedPtPct,
+      goal: goalPtLaborPct,
+      status: blendedPtPct != null ? statusFor(blendedPtPace) : "no-goal",
+      pace: blendedPtPct != null ? blendedPtPace : null,
+      formatted: fmtPct(blendedPtPct),
+      goalFormatted: fmtPct(goalPtLaborPct),
+      goalKey: null,
+      rawGoal: undefined,
+      lowerIsBetter: true,
+      deltaFormatted: blendedPtPct != null ? deltaLabelPct(blendedPtPct, goalPtLaborPct) : undefined,
+      info: blendedInfo,
+    }),
+    metric({
+      key: "total_labor_pct_blended",
+      label: `Total (PT + FT) — blended (schedule)${blendedDayTag}`,
+      actual: blendedTotalPct,
+      goal: goalTotalLaborPct,
+      status: blendedTotalPct != null ? statusFor(blendedTotalPace) : "no-goal",
+      pace: blendedTotalPct != null ? blendedTotalPace : null,
+      formatted: fmtPct(blendedTotalPct),
+      goalFormatted: fmtPct(goalTotalLaborPct),
+      goalKey: null,
+      rawGoal: undefined,
+      lowerIsBetter: true,
+      deltaFormatted:
+        blendedTotalPct != null ? deltaLabelPct(blendedTotalPct, goalTotalLaborPct) : undefined,
+      info: blendedInfo,
+    }),
+  ];
+
   const qualityMetrics: HealthMetric[] = [
     metric({
       key: "prep_p95_min",
@@ -314,6 +418,7 @@ export async function loadHealthScorecard(win: DateWindow): Promise<HealthScorec
     { id: "finance", label: "Finance", href: "/accounting", metrics: finance },
     { id: "top_line", label: "Top line", href: "/sales", metrics: topLine },
     { id: "cost", label: "Cost (bottom line)", href: "/labor", metrics: cost },
+    { id: "labor", label: "Labor", href: "/labor", metrics: laborMetrics },
     { id: "quality", label: "Quality", href: "/order-quality", metrics: qualityMetrics },
     { id: "inventory", label: "Inventory", href: "/inventory", metrics: inventoryMetrics },
   ];
@@ -335,6 +440,19 @@ function sum(rows: LaborDailyRow[], pick: (r: LaborDailyRow) => number | null | 
 
 function fmtDollars(n: number | null): string {
   return n == null ? "—" : n.toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+/** Fraction 0–1 → whole-percent display (matches GoalsDrawer percent fields). */
+function fmtPct(n: number | null): string {
+  return n == null || !Number.isFinite(n) ? "—" : `${(n * 100).toFixed(1)}%`;
+}
+
+function deltaLabelPct(actual: number | null, goal: number | null): string | undefined {
+  if (actual == null || goal == null) return undefined;
+  const diffPp = (actual - goal) * 100;
+  if (diffPp === 0) return "on goal";
+  const mag = `${Math.abs(diffPp).toFixed(1)} pp`;
+  return diffPp <= 0 ? `${mag} under` : `${mag} over`;
 }
 
 function fmtMinutes(n: number | null): string {

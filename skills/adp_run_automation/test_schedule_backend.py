@@ -17,17 +17,69 @@ from skills.adp_run_automation import schedule_backend as sb
 
 
 @pytest.mark.parametrize("raw,expected", [
-    ("46:45", 46.75),
-    ("40:15", 40.25),   # NOT 40.15 — minutes, not decimal
-    ("0:00", 0.0),
-    ("291:30", 291.5),
-    ("7 Employees 46:45 Hrs", 46.75),  # search picks the H:MM token
+    ("1:30 PM - 8:30 PM", 7.0),
+    ("6:30 AM - 1:30 PM", 7.0),
+    ("9:00 AM - 3:00 PM", 6.0),
+    ("11:00 AM - 5:00 PM", 6.0),
     ("", 0.0),
     (None, 0.0),
-    ("garbage", 0.0),
 ])
-def test_parse_hhmm_hours(raw, expected):
-    assert sb.parse_hhmm_hours(raw) == pytest.approx(expected)
+def test_parse_shift_range_hours(raw, expected):
+    assert sb.parse_shift_range_hours(raw) == pytest.approx(expected)
+
+
+def test_build_employee_schedule_records_maps_header_index_to_date():
+    weeks = [{
+        "week_label": "Week of Jul 13, 2026 - Jul 19, 2026",
+        "employee_rows": [{
+            "name": "Employee489, Xcc2",
+            "days": [
+                {"header_index": 0, "ranges": ["1:30 PM - 8:30 PM"]},
+                {"header_index": 5, "ranges": ["9:00 AM - 3:00 PM", "bad"]},
+            ],
+        }],
+    }]
+    recs = sb.build_employee_schedule_records(weeks)
+    assert [(r["date"], r["scheduled_hours"]) for r in recs] == [
+        ("2026-07-13", 7.0),
+        ("2026-07-18", 6.0),
+    ]
+    assert recs[0]["employee_id"] == "Employee489, Xcc2"
+
+
+def test_cap_days_to_week_total_trims_grid_over_attribution():
+    """Shared-grid climb attached every shift to mid-list names; week total is truth."""
+    days = [
+        {"header_index": 0, "ranges": ["1:30 PM - 8:30 PM"]},  # 7
+        {"header_index": 2, "ranges": ["1:30 PM - 8:30 PM"]},  # 7
+        {"header_index": 5, "ranges": ["9:00 AM - 3:00 PM"]},  # 6 → 20 ≈ 19:00
+        {"header_index": 0, "ranges": ["6:30 AM - 1:30 PM"]},  # pollution
+        {"header_index": 1, "ranges": ["1:30 PM - 8:30 PM"]},
+    ]
+    kept = sb.cap_days_to_week_total(days, week_total_hours=19.0)
+    assert len(kept) == 3
+    assert [d["header_index"] for d in kept] == [0, 2, 5]
+
+
+def test_build_employee_schedule_records_caps_over_attributed_payload():
+    weeks = [{
+        "week_label": "Week of Jul 13, 2026 - Jul 19, 2026",
+        "employee_rows": [{
+            "name": "Employee489, Xcc2",
+            "week_total_text": "19:00 Hrs",
+            "days": [
+                {"header_index": 0, "ranges": ["1:30 PM - 8:30 PM"]},
+                {"header_index": 2, "ranges": ["1:30 PM - 8:30 PM"]},
+                {"header_index": 5, "ranges": ["9:00 AM - 3:00 PM"]},
+                {"header_index": 0, "ranges": ["6:30 AM - 1:30 PM"]},
+                {"header_index": 1, "ranges": ["1:30 PM - 8:30 PM"]},
+            ],
+        }],
+    }]
+    recs = sb.build_employee_schedule_records(weeks)
+    assert sum(r["scheduled_hours"] for r in recs) == pytest.approx(20.0)
+    assert len(recs) == 3
+    assert recs[0]["employee_id"] == "Employee489, Xcc2"
 
 
 @pytest.mark.parametrize("raw,expected", [

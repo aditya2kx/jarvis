@@ -242,6 +242,9 @@ translation.
 - **`total_labor_cost`** — `hourly + fulltime`.
 - Per-shift cost = `regular_hours × rate + ot_hours × (ot_rate or rate×1.5) + doubletime_hours ×
   rate × 2`. Employees missing a wage row (new hires) fall back to the **median hourly rate**.
+  This is **wage-only** employer cost (no FICA/FUTA/SUTA/workers' comp). Operator Console
+  Issue #166 optionally overlays an **all-in** view via `store_config.labor_burden_pct`
+  (fraction; recommended start `0.13`) without changing the warehouse columns.
 
 **Labor % (two denominators × three scopes)**
 - `hourly_pct_of_net_sales`, `hourly_pct_of_net_sales_plus_tips`
@@ -249,6 +252,12 @@ translation.
 - `total_labor_pct_of_net_sales`, `total_labor_pct_of_net_sales_plus_tips`
 - `tips_pct_of_net_sales` — tip pool as a share of net sales.
 - `all_in_cost_pct_of_net_sales_plus_tips` — labor + tips vs total revenue.
+
+**Projected labor % (Operator Console, Issue #166 — presentation only, not a BQ column)**
+- **Completed** PT/total % = sum of completed-day costs ÷ net sales for dates `<` Chicago today in the selected Period.
+- **Wage (completed)** = hourly / total labor $ ÷ net sales for completed days in the Period.
+- **Paid payroll (completed)** = wage × `(1 + labor_burden_pct)` when configured (ER burden overlay; not full ADP paycheck lines).
+- **Blended (schedule)** = (completed wage + `Σ scheduled_hours × avg_PT_wage` + trailing FT $/open-day × forward scheduled days) ÷ (completed sales + `Σ forecast_orders × trailing AOV` for days with schedule only). Labeled estimate via console `?lens=`; not written back to `model_labor_daily`.
 
 **Throughput / saturation** (denominator is **hourly** labor only — managers don't add bar throughput)
 - **`*_labor_per_order`** — $ labor per order, by bucket and total.

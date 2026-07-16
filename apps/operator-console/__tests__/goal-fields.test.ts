@@ -71,15 +71,17 @@ describe("sanitizeDollarInput", () => {
 });
 
 describe("GOAL_FIELDS", () => {
-  it("Home drawer is dollars/count/minutes (no percent labor rows after hierarchy redesign)", () => {
+  it("includes part-time and total labor % goals (Issue #166)", () => {
     const percentKeys = GOAL_FIELDS.filter((f) => f.kind === "percent").map((f) => f.key);
-    expect(percentKeys).toEqual([]);
+    expect(percentKeys).toEqual(["goal_hourly_labor_pct_max", "goal_labor_pct_max"]);
   });
 
-  it("includes hierarchy goals: cash flow, orders, cost dollars, p95, bases at risk", () => {
+  it("includes hierarchy goals: cash flow, orders, cost dollars, labor %, p95, bases at risk", () => {
     expect(GOAL_FIELDS.find((f) => f.key === "goal_cash_flow_weekly")?.kind).toBe("dollars");
     expect(GOAL_FIELDS.find((f) => f.key === "goal_orders_per_day")?.kind).toBe("count");
     expect(GOAL_FIELDS.find((f) => f.key === "goal_labor_cost_weekly")?.kind).toBe("dollars");
+    expect(GOAL_FIELDS.find((f) => f.key === "goal_hourly_labor_pct_max")?.kind).toBe("percent");
+    expect(GOAL_FIELDS.find((f) => f.key === "goal_labor_pct_max")?.kind).toBe("percent");
     expect(GOAL_FIELDS.find((f) => f.key === "goal_kds_p95_min")?.kind).toBe("minutes");
     expect(GOAL_FIELDS.find((f) => f.key === "goal_bases_at_risk_max")?.kind).toBe("count");
   });

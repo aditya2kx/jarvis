@@ -77,6 +77,110 @@ SCHEDULE_EXTRACT_JS = r"""
 }
 """
 
+# Per-employee day cells. Empty days often omit <team-schedule-calendar-day>,
+# so we align each cell to weekday headers by bounding-box X (not ordinal index).
+# See docs/operator-console/adp-forward-labor-spike.md.
+SCHEDULE_EMPLOYEE_EXTRACT_JS = r"""
+() => {
+  const norm = e => (el => (el.innerText || '').replace(/\s+/g, ' ').trim())(e);
+  const headers = [...document.querySelectorAll('.day-cell.column-header')]
+    .map((el) => {
+      const r = el.getBoundingClientRect();
+      return { text: norm(el), x: r.x + r.width / 2 };
+    })
+    .filter(h => h.text && !/Last Name/i.test(h.text))
+    .map((h, i) => ({ ...h, i }));  // Mon=0 .. Sun=6
+
+  // Prefer walking .worker-name nodes. Scope day cells to the nearest
+  // `.calendar-row` (exactly one worker-name). Never climb into the shared
+  // SECTION — that attributed every mid-list employee's shifts to each name
+  // (13× week_total). Scope extract to `.calendar-row` with exactly one name.
+  // Mid-list rows are often virtualized empty until scrolled into view; the
+  // runner scrolls each calendar-row before this evaluate runs.
+  const employees = [];
+  for (const nameEl of document.querySelectorAll('.worker-name')) {
+    const name = norm(nameEl);
+    if (!name || /Open Shifts/i.test(name)) continue;
+    const row = nameEl.closest('.calendar-row');
+    if (!row) continue;
+    if (row.querySelectorAll('.worker-name').length !== 1) continue;
+    const weekTotalEl = row.querySelector('team-schedule-total');
+    const week_total_text = weekTotalEl ? norm(weekTotalEl) : null;
+    const days = [];
+    for (const cell of row.querySelectorAll('team-schedule-calendar-day')) {
+      const r = cell.getBoundingClientRect();
+      const cx = r.x + r.width / 2;
+      let best = null, bestDist = 1e9;
+      for (const h of headers) {
+        const d = Math.abs(h.x - cx);
+        if (d < bestDist) { bestDist = d; best = h; }
+      }
+      const ranges = [...cell.querySelectorAll('schedule-shift-range')]
+        .map(norm).filter(Boolean);
+      days.push({
+        header_index: best ? best.i : null,
+        header_text: best ? best.text : null,
+        ranges,
+        cell_text: norm(cell).slice(0, 120),
+      });
+    }
+    employees.push({ name, week_total_text, days });
+  }
+  return { headers: headers.map(h => h.text), employees };
+}
+"""
+
+# Append one `.calendar-row` (by index) into window.__adpEmpExtract after the
+# runner has scrolled that row into view (virtualized day-cell hydrate).
+SCHEDULE_EMPLOYEE_EXTRACT_ONE_JS = r"""
+(rowIndex) => {
+  const norm = e => (el => (el.innerText || '').replace(/\s+/g, ' ').trim())(e);
+  if (!window.__adpEmpExtract) {
+    window.__adpEmpExtract = { headers: null, employees: [] };
+  }
+  if (!window.__adpEmpExtract.headers) {
+    window.__adpEmpExtract.headers = [...document.querySelectorAll('.day-cell.column-header')]
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        return { text: norm(el), x: r.x + r.width / 2 };
+      })
+      .filter(h => h.text && !/Last Name/i.test(h.text))
+      .map((h, i) => ({ ...h, i }));
+  }
+  const headers = window.__adpEmpExtract.headers;
+  const row = document.querySelectorAll('.calendar-row')[rowIndex];
+  if (!row) return;
+  const nameEl = row.querySelector('.worker-name');
+  if (!nameEl) return;
+  const name = norm(nameEl);
+  if (!name || /Open Shifts/i.test(name)) return;
+  if (row.querySelectorAll('.worker-name').length !== 1) return;
+  // Dedup if virtualization recycled the same name already captured.
+  if (window.__adpEmpExtract.employees.some(e => e.name === name)) return;
+  const weekTotalEl = row.querySelector('team-schedule-total');
+  const week_total_text = weekTotalEl ? norm(weekTotalEl) : null;
+  const days = [];
+  for (const cell of row.querySelectorAll('team-schedule-calendar-day')) {
+    const r = cell.getBoundingClientRect();
+    const cx = r.x + r.width / 2;
+    let best = null, bestDist = 1e9;
+    for (const h of headers) {
+      const d = Math.abs(h.x - cx);
+      if (d < bestDist) { bestDist = d; best = h; }
+    }
+    const ranges = [...cell.querySelectorAll('schedule-shift-range')]
+      .map(norm).filter(Boolean);
+    days.push({
+      header_index: best ? best.i : null,
+      header_text: best ? best.text : null,
+      ranges,
+      cell_text: norm(cell).slice(0, 120),
+    });
+  }
+  window.__adpEmpExtract.employees.push({ name, week_total_text, days });
+}
+"""
+
 # Selector constants the runner uses to navigate (documented here so the flow
 # is codified alongside the parser).
 TEAM_SCHEDULE_ANCHOR_ID = "TEMPUS_WEEKLY_SCHEDULE"  # home-page quick-action <a>
@@ -194,6 +298,136 @@ def build_schedule_records(weeks: list[dict]) -> list[dict]:
                 "week_start": week_start.isoformat(),
             }
     return [by_date[d] for d in sorted(by_date)]
+
+
+_SHIFT_RANGE_RE = re.compile(
+    r"(\d{1,2}):(\d{2})\s*(AM|PM)\s*-\s*(\d{1,2}):(\d{2})\s*(AM|PM)",
+    re.IGNORECASE,
+)
+
+
+def _to_minutes(h: int, m: int, ampm: str) -> int:
+    hh = h % 12
+    if ampm.upper() == "PM":
+        hh += 12
+    return hh * 60 + m
+
+
+def parse_shift_range_hours(s: Optional[str]) -> float:
+    """'1:30 PM - 8:30 PM' -> 7.0. Unparseable -> 0.0."""
+    if not s:
+        return 0.0
+    m = _SHIFT_RANGE_RE.search(str(s))
+    if not m:
+        return 0.0
+    start = _to_minutes(int(m.group(1)), int(m.group(2)), m.group(3))
+    end = _to_minutes(int(m.group(4)), int(m.group(5)), m.group(6))
+    if end < start:
+        end += 24 * 60  # overnight
+    return round((end - start) / 60.0, 2)
+
+
+def _day_range_hours(day: dict) -> float:
+    return round(sum(parse_shift_range_hours(r) for r in (day.get("ranges") or [])), 2)
+
+
+def cap_days_to_week_total(days: list[dict], week_total_hours: float) -> list[dict]:
+    """Drop over-attributed day cells when sum(ranges) >> ADP week total.
+
+    Live bug (2026-07-14): climbing past the per-employee row into the shared
+    grid root attached every shift to mid-list names (13× week_total). True
+    shifts appear first; keep prefix until ≈ week_total. No-op when week_total
+    unknown or already within 20%.
+    """
+    if not days or not (week_total_hours > 0):
+        return days
+    total = sum(_day_range_hours(d) for d in days)
+    if total <= week_total_hours * 1.20:
+        return days
+    kept: list[dict] = []
+    acc = 0.0
+    for day in days:
+        h = _day_range_hours(day)
+        if h <= 0:
+            continue
+        if acc >= week_total_hours * 0.95:
+            break
+        if acc + h > week_total_hours * 1.15 and acc >= week_total_hours * 0.85:
+            break
+        kept.append(day)
+        acc += h
+    return kept
+
+
+def build_employee_schedule_records(weeks: list[dict]) -> list[dict]:
+    """Per-(date, employee) scheduled hours from employee_rows payloads.
+
+    Week payload (from runner + SCHEDULE_EMPLOYEE_EXTRACT_JS)::
+
+        {
+          "week_label": "Week of Jul 13, 2026 - Jul 19, 2026",
+          "employee_rows": [
+            {
+              "name": "Garcia, Jacob",
+              "week_total_text": "38:45 Hrs",
+              "days": [
+                {"header_index": 0, "ranges": ["1:30 PM - 8:30 PM"], ...},
+                ...
+              ],
+            },
+            ...
+          ],
+        }
+
+    ``header_index`` is the Mon=0..Sun=6 column from bounding-box alignment.
+    Hours = sum of parsed shift ranges for that day (not the week total).
+    """
+    from skills.adp_run_automation.employee_aliases import derive_canonical
+
+    by_key: dict[tuple[str, str], dict] = {}
+    for wk in weeks:
+        week_start = parse_week_start(wk.get("week_label"))
+        if week_start is None:
+            continue
+        for emp in wk.get("employee_rows") or []:
+            raw_name = (emp.get("name") or "").strip()
+            if not raw_name:
+                continue
+            canonical = derive_canonical(raw_name)
+            week_total = parse_hhmm_hours(emp.get("week_total_text"))
+            days = cap_days_to_week_total(list(emp.get("days") or []), week_total)
+            for day in days:
+                idx = day.get("header_index")
+                if idx is None:
+                    continue
+                try:
+                    idx_i = int(idx)
+                except (TypeError, ValueError):
+                    continue
+                if idx_i < 0 or idx_i > 6:
+                    continue
+                ranges = day.get("ranges") or []
+                hours = round(sum(parse_shift_range_hours(r) for r in ranges), 2)
+                if hours <= 0:
+                    continue
+                d = (week_start + datetime.timedelta(days=idx_i)).isoformat()
+                key = (d, canonical)
+                prev = by_key.get(key)
+                if prev:
+                    prev["scheduled_hours"] = round(prev["scheduled_hours"] + hours, 2)
+                    prev_ranges = json.loads(prev.get("shift_ranges_json") or "[]")
+                    prev_ranges.extend(ranges)
+                    prev["shift_ranges_json"] = json.dumps(prev_ranges)
+                else:
+                    by_key[key] = {
+                        "date": d,
+                        "employee_id": canonical,
+                        "employee_name": canonical,
+                        "scheduled_hours": hours,
+                        "shift_ranges_json": json.dumps(list(ranges)),
+                        "week_start": week_start.isoformat(),
+                    }
+    return [by_key[k] for k in sorted(by_key)]
 
 
 # ── Public entry ──────────────────────────────────────────────────

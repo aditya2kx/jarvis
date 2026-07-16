@@ -1392,6 +1392,24 @@ def _open_team_schedule(page, *, timeout_ms: int = 30_000):
 
     if _grid_frame() is None:
         print(f"[adp_schedule] step=open-team-schedule (#{sb.TEAM_SCHEDULE_ANCHOR_ID})")
+        # TEMPUS anchors hydrate after Time / home widgets; nudge Time first.
+        page.evaluate(
+            """() => {
+              const t = document.querySelector('[data-test-id="Time-btn"]')
+                || [...document.querySelectorAll('button,a')].find(
+                     e => (e.getAttribute('aria-label')||'') === 'Time'
+                        || /^(Time)$/i.test((e.innerText||'').trim()));
+              if (t) t.click();
+            }"""
+        )
+        # TEMPUS anchors hydrate a beat after Time / home widgets.
+        deadline_ids = time.monotonic() + 20.0
+        while time.monotonic() < deadline_ids:
+            page.wait_for_timeout(500)
+            if page.evaluate(
+                "(id) => !!document.getElementById(id)", sb.TEAM_SCHEDULE_ANCHOR_ID
+            ):
+                break
         clicked = page.evaluate(
             "(id) => { const a=document.getElementById(id); if(a){a.click(); return true;} return false; }",
             sb.TEAM_SCHEDULE_ANCHOR_ID,
@@ -1426,7 +1444,7 @@ def _open_team_schedule(page, *, timeout_ms: int = 30_000):
 
 
 def _scrape_one_week(page, frame) -> dict:
-    """Read the current week's label + per-day footer totals from the grid frame."""
+    """Read the current week's label + footer totals + per-employee day cells."""
     import re as _re
 
     from skills.adp_run_automation import schedule_backend as sb
@@ -1436,7 +1454,67 @@ def _scrape_one_week(page, frame) -> dict:
         .first.inner_text(timeout=10_000)
     )
     ext = frame.evaluate(sb.SCHEDULE_EXTRACT_JS)
-    return {"week_label": week_label.strip(), "days": ext.get("days") or [], "grand": ext.get("grand")}
+    emp = {"employees": [], "headers": []}
+    try:
+        # Wait for employee rows to paint (footer totals appear first).
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            n = frame.evaluate(
+                "() => document.querySelectorAll('.worker-name').length"
+            )
+            if n and n > 0:
+                break
+            page.wait_for_timeout(400)
+        # Virtualized mid-list rows hydrate day cells only when scrolled into
+        # view. Extract one calendar-row at a time, then reset scroll so the
+        # next-week chevron click geometry stays stable.
+        n_rows = frame.evaluate(
+            "() => document.querySelectorAll('.calendar-row').length"
+        ) or 0
+        frame.evaluate("() => { window.__adpEmpExtract = { headers: null, employees: [] }; }")
+        for i in range(int(n_rows)):
+            frame.evaluate(
+                """(i) => {
+                  const rows = document.querySelectorAll('.calendar-row');
+                  if (rows[i]) rows[i].scrollIntoView({ block: 'center' });
+                }""",
+                i,
+            )
+            page.wait_for_timeout(150)
+            frame.evaluate(sb.SCHEDULE_EMPLOYEE_EXTRACT_ONE_JS, i)
+        emp = frame.evaluate(
+            """() => {
+              const e = window.__adpEmpExtract || { headers: [], employees: [] };
+              const headers = (e.headers || []).map(h =>
+                (typeof h === 'string' ? h : (h && h.text)) || null
+              ).filter(Boolean);
+              return { headers, employees: e.employees || [] };
+            }"""
+        )
+        frame.evaluate(
+            """() => {
+              const scroller = document.querySelector('.calendar-view')
+                || document.querySelector('.team-work-schedules-list');
+              if (scroller) scroller.scrollTop = 0;
+              const h = document.querySelector('.header-row')
+                || document.querySelector('.day-cell.column-header');
+              if (h) h.scrollIntoView({ block: 'start' });
+            }"""
+        )
+        page.wait_for_timeout(300)
+    except Exception as exc:  # noqa: BLE001 — employee grain is additive
+        print(f"[adp_schedule] WARN: employee extract failed: {exc!r}")
+    print(
+        f"[adp_schedule] employee_rows={len(emp.get('employees') or [])} "
+        f"headers={emp.get('headers')}"
+    )
+    return {
+        "week_label": week_label.strip(),
+        "days": ext.get("days") or [],
+        "grand": ext.get("grand"),
+        "employee_rows": emp.get("employees") or [],
+        "day_headers": emp.get("headers") or [],
+    }
 
 
 def _goto_next_week(page, frame) -> None:
@@ -1463,7 +1541,17 @@ def _goto_next_week(page, frame) -> None:
     box = label.bounding_box()
     if not box:
         raise RuntimeError("Could not locate the week-selector label to navigate weeks.")
-    page.mouse.click(box["x"] + box["width"] + 16, box["y"] + box["height"] / 2)
+    # Click the › chevron just to the right of the week label. Prefer a
+    # locator-relative click (stable after employee-row hydrate scroll);
+    # fall back to page mouse coords.
+    try:
+        label.click(
+            position={"x": box["width"] + 18, "y": max(box["height"] / 2, 8)},
+            force=True,
+            timeout=5_000,
+        )
+    except Exception:  # noqa: BLE001
+        page.mouse.click(box["x"] + box["width"] + 16, box["y"] + box["height"] / 2)
 
     # Phase 1: label must change (confirms the nav fired).
     deadline = time.monotonic() + 12.0
@@ -1569,6 +1657,67 @@ def download_schedule(
         _ensure_logged_in(page, store=store)
         payloads = _schedule_within_session(page, weeks=weeks)
         return _write_schedule_json(payloads, store=store)
+
+
+def download_payroll_liability(
+    *,
+    store: str = "palmetto",
+    headed: bool = True,
+    slow_mo_ms: int = 0,
+    keep_open_on_error: bool = False,
+) -> pathlib.Path:
+    """Open Taxes → Tax reports → Payroll Liability; write JSON for BQ load.
+
+    Best-effort channel — caller should not fail the nightly on liability errors.
+    """
+    out = DOWNLOADS_DIR / f"PayrollLiability-{datetime.date.today().isoformat()}.json"
+    if is_fresh_download(out, min_bytes=100):
+        print(f"[adp_liability] SKIP browser — fresh file: {out}")
+        return out
+
+    with launch_persistent(
+        portal="adp",
+        headed=headed,
+        slow_mo_ms=slow_mo_ms,
+        keep_open_on_error=keep_open_on_error,
+    ) as (ctx, page):
+        _ensure_logged_in(page, store=store)
+        page.wait_for_timeout(2000)
+        page.evaluate(
+            """() => {
+              const b = document.querySelector('[data-test-id="Taxes-btn"]');
+              if (b) b.click();
+            }"""
+        )
+        page.wait_for_timeout(2500)
+        page.evaluate(
+            """() => {
+              const el = [...document.querySelectorAll('a,button,div')].find(
+                e => /^Tax reports$/i.test((e.innerText || '').trim()));
+              if (el) el.click();
+            }"""
+        )
+        page.wait_for_timeout(3000)
+        page.evaluate(
+            """() => {
+              const el = [...document.querySelectorAll('a,button')].find(
+                e => /Payroll Liability/i.test((e.innerText || '').trim()));
+              if (el) el.click();
+            }"""
+        )
+        page.wait_for_timeout(4000)
+        text = page.evaluate(
+            "() => (document.body && document.body.innerText || '').replace(/\\s+/g, ' ').trim()"
+        )
+        payload = {
+            "scraped_at_utc": datetime.datetime.utcnow().isoformat() + "Z",
+            "store": store,
+            "text": text,
+            "reports": [text],
+        }
+        out.write_text(json.dumps(payload, indent=2))
+        print(f"[adp_liability] wrote {out} ({len(text)} chars)")
+        return out
 
 
 # ── Bundle: one browser session, one login, both scrapes ───────────
@@ -1831,6 +1980,50 @@ def download_adp_bundle(
                     )
                 except Exception:  # noqa: BLE001
                     pass
+
+        # Employer burden (Payroll Liability) — best-effort, non-fatal.
+        try:
+            print(f"[adp_bundle] step=payroll-liability url={page.url}")
+            page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
+            page.wait_for_timeout(2000)
+            page.evaluate(
+                """() => {
+                  const b = document.querySelector('[data-test-id="Taxes-btn"]');
+                  if (b) b.click();
+                }"""
+            )
+            page.wait_for_timeout(2500)
+            page.evaluate(
+                """() => {
+                  const el = [...document.querySelectorAll('a,button,div')].find(
+                    e => /^Tax reports$/i.test((e.innerText || '').trim()));
+                  if (el) el.click();
+                }"""
+            )
+            page.wait_for_timeout(3000)
+            page.evaluate(
+                """() => {
+                  const el = [...document.querySelectorAll('a,button')].find(
+                    e => /Payroll Liability/i.test((e.innerText || '').trim()));
+                  if (el) el.click();
+                }"""
+            )
+            page.wait_for_timeout(4000)
+            text = page.evaluate(
+                "() => (document.body && document.body.innerText || '').replace(/\\s+/g, ' ').trim()"
+            )
+            liab_path = DOWNLOADS_DIR / f"PayrollLiability-{datetime.date.today().isoformat()}.json"
+            liab_path.write_text(json.dumps({
+                "scraped_at_utc": datetime.datetime.utcnow().isoformat() + "Z",
+                "store": store,
+                "text": text,
+                "reports": [text],
+            }, indent=2))
+            result["liability_json"] = liab_path
+            print(f"[adp_bundle] liability OK → {liab_path} ({len(text)} chars)")
+        except Exception as exc:  # noqa: BLE001
+            result["errors"]["adp_liability"] = f"{type(exc).__name__}: {exc}"
+            print(f"[adp_bundle] liability FAILED: {type(exc).__name__}: {exc}")
 
         return result
 

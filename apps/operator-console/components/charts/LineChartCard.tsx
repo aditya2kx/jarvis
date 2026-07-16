@@ -16,6 +16,7 @@ export interface Series {
   key: string;
   label: string;
   color?: string;
+  dashed?: boolean;
 }
 
 // Dashed goal line: the only "computed" thing here is a visual comparison of
@@ -65,7 +66,9 @@ export function LineChartCard({
                 name={s.label}
                 stroke={s.color ?? `var(--chart-${(i % 5) + 1})`}
                 strokeWidth={2}
+                strokeDasharray={s.dashed ? "6 4" : undefined}
                 dot={false}
+                connectNulls
               />
             ))}
             {goal != null ? (

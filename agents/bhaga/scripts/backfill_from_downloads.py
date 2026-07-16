@@ -126,7 +126,7 @@ def main() -> int:
     cli.add_argument("--end", default=None)
     cli.add_argument(
         "--skip", default=[], action="append",
-        choices=["square", "adp_shifts", "adp_punches", "adp_rates", "adp_schedule", "square_rollup"],
+        choices=["square", "adp_shifts", "adp_punches", "adp_rates", "adp_schedule", "adp_liability", "square_rollup"],
         help="Skip a specific write. Can pass multiple times.",
     )
     cli.add_argument("--dry-run", action="store_true",
@@ -267,6 +267,78 @@ def main() -> int:
                 )
                 print(f"  adp_scheduled_daily (BQ): {n} rows upserted")
                 summaries.append({"table": "adp_scheduled_daily", "rows": n})
+
+            # Per-employee forward shifts (Issue #166 follow-through)
+            emp_records = schedule_backend.build_employee_schedule_records(
+                payload.get("weeks", [])
+            )
+            emp_bq = [
+                {
+                    "date": r["date"],
+                    "employee_id": r["employee_id"],
+                    "employee_name": r["employee_name"],
+                    "scheduled_hours": r["scheduled_hours"],
+                    "shift_ranges_json": r.get("shift_ranges_json"),
+                    "week_start": r["week_start"],
+                    "scraped_at_utc": scraped_at,
+                    "materialized_at_utc": now_utc,
+                }
+                for r in emp_records
+            ]
+            print(f"  parsed: {len(emp_bq)} scheduled employee-days")
+            if args.dry_run:
+                print(f"  DRY: would load {len(emp_bq)} scheduled-shift rows into BQ")
+            elif emp_bq:
+                n = load_rows(
+                    "adp_scheduled_shifts", emp_bq,
+                    merge_keys=["date", "employee_id"],
+                    column_bq_types={
+                        "date": "DATE", "week_start": "DATE",
+                        "scraped_at_utc": "TIMESTAMP",
+                        "materialized_at_utc": "TIMESTAMP",
+                    },
+                )
+                print(f"  adp_scheduled_shifts (BQ): {n} rows upserted")
+                summaries.append({"table": "adp_scheduled_shifts", "rows": n})
+
+    # ── ADP Payroll Liability (employer burden calibration) ───────
+    if "adp_liability" not in args.skip:
+        liability_json = _newest("PayrollLiability-*.json")
+        if not liability_json:
+            print("WARN: no PayrollLiability-*.json — skipping employer burden load")
+        else:
+            from skills.adp_run_automation import payroll_liability_backend as plb
+            print(f"# parsing ADP payroll liability: {liability_json.name}")
+            payload = json.loads(liability_json.read_text())
+            scraped_at = payload.get("scraped_at_utc")
+            now_utc = datetime.datetime.utcnow().isoformat() + "Z"
+            texts = payload.get("reports") or (
+                [payload["text"]] if payload.get("text") else []
+            )
+            bq_rows = []
+            for text in texts:
+                try:
+                    rec = plb.parse_payroll_liability_text(text)
+                except ValueError as exc:
+                    print(f"  WARN: skip liability parse: {exc}")
+                    continue
+                rec["scraped_at_utc"] = scraped_at
+                rec["materialized_at_utc"] = now_utc
+                bq_rows.append(rec)
+            if args.dry_run:
+                print(f"  DRY: would load {len(bq_rows)} liability rows into BQ")
+            elif bq_rows:
+                n = load_rows(
+                    "adp_payroll_liability", bq_rows,
+                    merge_keys=["check_date", "payroll_label"],
+                    column_bq_types={
+                        "check_date": "DATE",
+                        "scraped_at_utc": "TIMESTAMP",
+                        "materialized_at_utc": "TIMESTAMP",
+                    },
+                )
+                print(f"  adp_payroll_liability (BQ): {n} rows upserted")
+                summaries.append({"table": "adp_payroll_liability", "rows": n})
 
     # ── ADP wage rates + per-line earnings ───────────────────────
     if "adp_rates" not in args.skip:

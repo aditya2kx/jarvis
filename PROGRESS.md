@@ -1,5 +1,24 @@
 # Jarvis Build Progress
 
+## 2026-07-14 — ADP per-employee schedule + Payroll Liability burden (Issue #166 follow-through)
+
+**Scope:** Live ADP spike → scrape per-employee forward shifts + employer tax from Payroll Liability; Operator Console uses emp×wage projected math.
+
+**Key changes:**
+- `adp_scheduled_shifts` (migration 039) + `SCHEDULE_EMPLOYEE_EXTRACT_JS` (bbox day alignment); nightly Schedule JSON includes `employee_rows`.
+- `adp_payroll_liability` (migration 040) + parser; bundle best-effort scrape; `labor_burden_pct` seeded **0.10** (measured ≈10.2%).
+- Console: `/labor` scheduled-hours-per-person table, dashed projected PT % series, `laborForwardSummary` prefers emp×wage.
+- Spike memo: `docs/operator-console/adp-forward-labor-spike.md`.
+
+## 2026-07-14 — Operator Console: forward labor cost (Issue #166)
+
+**Scope:** Home + Labor show **completed** vs **projected (incl. scheduled)** labor %, split part-time / total; optional wage-only vs all-in via `labor_burden_pct`.
+
+**Key changes:**
+- `laborForwardSummary` + `computeLaborForwardSummary` — completed punches + ADP schedule × avg PT wage + trailing FT $/day over forecast sales × AOV.
+- Home new **Labor** group (PT/total completed + projected %); Goals drawer gains `goal_hourly_labor_pct_max` / `goal_labor_pct_max`.
+- Labor page `LaborForwardSummaryCard` 2×2; all-in lines when `store_config.labor_burden_pct > 0` (recommended start 0.13; not auto-written).
+- Docs: ARCHITECTURE §14, DOMAIN projected labor %, EXECUTION BQ notes. ADP earnings remain wage-only (no employer-tax scrape); Tax Center burden pull deferred to follow-up if needed.
 
 ## 2026-07-14 — Tip exemption batch Update: one recompute + tip_alloc ghost eviction
 

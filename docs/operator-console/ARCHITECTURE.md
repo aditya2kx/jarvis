@@ -160,10 +160,10 @@ flowchart TD
 
 | Screen | Reads (BQ `vw_*` / tables) | Write-backs |
 |---|---|---|
-| **Home** (Goal and Tracking) | labor/sales (`vw_model_labor_daily`), prep p95 (`vw_order_quality_daily.kds_p95_min`), bases at risk (`vw_inventory_base_runway`), goals (`store_config`) | Goals → `store_config` |
+| **Home** (Goal and Tracking) | labor/sales (`vw_model_labor_daily`), **Labor group** via `laborForwardSummary` (completed + projected PT/total % from schedule/forecast/wages), prep p95 (`vw_order_quality_daily.kds_p95_min`), bases at risk (`vw_inventory_base_runway`), goals (`store_config`) | Goals → `store_config` |
 | **Accounting** | Square net sales (`vw_model_labor_daily`), Plaid spend (`plaid_transactions`, `vw_plaid_spend_by_category_daily`), `plaid_items` | Plaid Link → Secret Manager access_token + `plaid_items` / `plaid_transactions` sync |
 | **Sales** | `vw_model_labor_daily`, `square_item_daily` | — |
-| **Labor** | `vw_model_labor_daily` / `_weekly` | — |
+| **Labor** | `vw_model_labor_daily` / `_weekly`, **`laborForwardSummary`** + **`?lens=wage\|paid\|blended`** (Wage / Paid payroll / Blended schedule) | — |
 | **Forecast** | `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` | — |
 | **Order Quality** | `vw_order_quality_daily`, `vw_kds_order_quality_by_source_daily` | — |
 | **Payroll & People** | `vw_model_payroll_period` (+ per-review), `training_shifts` (tip exemptions), `adp_shifts` | `training_shifts` (batch tip exemptions + recompute), **recognition bonuses (new table)**, `employee_aliases` |
@@ -398,3 +398,23 @@ percentile chart above it — so the Source dropdown now drives **both** the
 aggregate percentile table and the per-order drill-down, matching Grafana's
 "one filter row governs every panel on the tab" behavior instead of the two
 diverging independently.
+
+## 14. Forward-looking labor cost (Issue #166)
+
+Home's **Labor** group and the Labor page summary card share
+`lib/bq/queries.ts::laborForwardSummary` → `lib/kpi/labor-forward.ts::computeLaborForwardSummary`,
+selected via mutually exclusive **lenses** (`?lens=wage|paid|blended`, default `wage`)
+in `lib/kpi/labor-lens.ts::viewForLaborLens`.
+
+| Lens | Scope | Cost numerator | Sales denominator |
+|---|---|---|---|
+| **Wage** | Completed days only | `hourly_labor_cost` / `total_labor_cost` from `vw_model_labor_daily` for dates in the Period **strictly before** Chicago today | `net_sales` over those same days |
+| **Paid payroll** | Completed days only | Wage × `(1 + labor_burden_pct)` (~10% ER burden) | same as Wage |
+| **Blended (schedule)** | Completed + remaining scheduled days | completed wage + (`scheduled_hours` × avg PT wage) + (trailing-28d avg FT $/open-day × #scheduled forward days); **no burden** | completed sales + (`forecast_orders` × AOV) for dates ≥ Chicago today in the Period **with `scheduled_hours > 0` only** (unscheduled forward days omitted from both cost and sales) |
+
+- Goals: `goal_hourly_labor_pct_max` default **20%**, `goal_labor_pct_max` default **25%** (of net sales); editable on Home for the Wage lens.
+- Schedule hours are **part-time oriented** (ADP Team Schedule scrape → `adp_scheduled_daily` / `adp_scheduled_shifts`); FT is approximated from trailing actuals because the schedule excludes the salaried manager.
+- Wage basis is **wage-only** (hours × rate). **Paid** = wage × `(1 + labor_burden_pct)` when `store_config.labor_burden_pct` is set (>0). Seeded from ADP Payroll Liability: **`0.10`** (see `docs/operator-console/adp-forward-labor-spike.md`). Unset/`0` → Paid lens shows unavailable.
+- Forward PT $ prefers `Σ(adp_scheduled_shifts.hours × adp_wage_rates.rate)` when employee schedule rows exist; falls back to aggregate `scheduled_hours × avg PT wage`.
+- `/labor` under Blended shows **Scheduled hours per person — forward (ADP)** and a dashed blended PT % series on the labor-% chart.
+- `bhaga.adp_earnings` has employee pay lines only (Regular, OT, tips, bonus…); no employer-tax scrape exists. A dedicated ADP tax/burden pull is a follow-up if RUN's Tax Center numbers must replace the multiplier.

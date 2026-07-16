@@ -1,5 +1,6 @@
 "use server";
 
+import { createHash } from "crypto";
 import { revalidatePath } from "next/cache";
 import { operatorEmail, DEFAULT_STORE } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
@@ -18,6 +19,11 @@ import {
   type PlaidTxnWrite,
 } from "@/lib/bq/writes";
 import { plaidItems } from "@/lib/bq/queries";
+
+/** Production Plaid rejects emails in user.client_user_id (INVALID_FIELD). */
+function plaidClientUserId(email: string): string {
+  return createHash("sha256").update(`palmetto:${email}`).digest("hex").slice(0, 32);
+}
 
 function txnToWrite(txn: Record<string, unknown>, itemId: string): PlaidTxnWrite {
   const pfc = (txn.personal_finance_category || {}) as Record<string, unknown>;
@@ -76,7 +82,7 @@ export async function createPlaidLinkTokenAction(): Promise<string> {
   if (!FEATURES.writePlaidLink) throw new Error("Plaid Link is disabled (FEATURES.writePlaidLink)");
   const email = await operatorEmail();
   const webhook = process.env.PLAID_WEBHOOK_URL?.trim() || undefined;
-  return createLinkToken(email, webhook);
+  return createLinkToken(plaidClientUserId(email), webhook);
 }
 
 export async function exchangePlaidPublicTokenAction(publicToken: string): Promise<{

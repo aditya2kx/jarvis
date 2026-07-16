@@ -255,7 +255,9 @@ translation.
 
 **Projected labor % (Operator Console, Issue #166 — presentation only, not a BQ column)**
 - **Completed** PT/total % = sum of completed-day costs ÷ net sales for dates `<` Chicago today in the selected Period.
-- **Projected (incl. scheduled)** = (completed cost + `Σ scheduled_hours × avg_PT_wage` + trailing FT $/open-day × forward days) ÷ (completed sales + `Σ forecast_orders × trailing AOV`), using `vw_model_forecast` / `adp_scheduled_daily` / `adp_wage_rates`. Labeled estimate; not written back to `model_labor_daily`.
+- **Wage (completed)** = hourly / total labor $ ÷ net sales for completed days in the Period.
+- **Paid payroll (completed)** = wage × `(1 + labor_burden_pct)` when configured (ER burden overlay; not full ADP paycheck lines).
+- **Blended (schedule)** = (completed wage + `Σ scheduled_hours × avg_PT_wage` + trailing FT $/open-day × forward scheduled days) ÷ (completed sales + `Σ forecast_orders × trailing AOV` for days with schedule only). Labeled estimate via console `?lens=`; not written back to `model_labor_daily`.
 
 **Throughput / saturation** (denominator is **hourly** labor only — managers don't add bar throughput)
 - **`*_labor_per_order`** — $ labor per order, by bucket and total.

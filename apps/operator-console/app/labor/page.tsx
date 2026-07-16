@@ -70,7 +70,22 @@ export default async function LaborPage({
     ]),
   );
 
-  const chartData = [...rows]
+  const chartData: {
+    date: string;
+    labor_pct: number | null;
+    hourly_pct: number | null;
+    fulltime_pct: number | null;
+    projected_pt_pct: number | null;
+    hours_per_item: number | null;
+    hourly_hours_per_item: number | null;
+    fulltime_hours_per_item: number | null;
+    total_hours: number | null;
+    net_sales: number | null;
+    orders_per_hour: number | null;
+    items_per_hour: number | null;
+    fulltime_hours: number | null;
+    parttime_hours: number | null;
+  }[] = [...rows]
     .sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1))
     .map((r) => {
       const bucket = formatBucket(r.date, grain);
@@ -80,11 +95,13 @@ export default async function LaborPage({
         hourly_pct: r.hourly_pct != null ? Number((r.hourly_pct * 100).toFixed(1)) : null,
         fulltime_pct: r.fulltime_pct != null ? Number((r.fulltime_pct * 100).toFixed(1)) : null,
         projected_pt_pct: projMap.get(bucket) ?? null,
-        hours_per_item: r.hours_per_item,
-        hourly_hours_per_item: r.hourly_hours_per_item,
-        fulltime_hours_per_item: r.fulltime_hours_per_item,
-        total_hours: r.total_hours,
-        net_sales: r.net_sales,
+        hours_per_item: r.hours_per_item != null ? Number(r.hours_per_item) : null,
+        hourly_hours_per_item:
+          r.hourly_hours_per_item != null ? Number(r.hourly_hours_per_item) : null,
+        fulltime_hours_per_item:
+          r.fulltime_hours_per_item != null ? Number(r.fulltime_hours_per_item) : null,
+        total_hours: r.total_hours != null ? Number(r.total_hours) : null,
+        net_sales: r.net_sales != null ? Number(r.net_sales) : null,
         orders_per_hour: r.total_hours ? Number((r.orders / r.total_hours).toFixed(2)) : null,
         items_per_hour: r.total_hours ? Number((r.items_sold / r.total_hours).toFixed(2)) : null,
         fulltime_hours: r.fulltime_hours != null ? Number(Number(r.fulltime_hours).toFixed(1)) : null,

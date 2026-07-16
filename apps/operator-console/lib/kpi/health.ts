@@ -170,8 +170,8 @@ export async function loadHealthScorecard(
     laborFwd != null
       ? viewForLaborLens(laborFwd, laborLens)
       : null;
-  const lensPtPct = lensView?.paidUnavailable ? null : (lensView?.ptPct ?? null);
-  const lensTotalPct = lensView?.paidUnavailable ? null : (lensView?.totalPct ?? null);
+  const lensPtPct = lensView?.ptPct ?? null;
+  const lensTotalPct = lensView?.totalPct ?? null;
   const ptLaborPace = paceFor(lensPtPct, goalPtLaborPct, true);
   const totalLaborPctPace = paceFor(lensTotalPct, goalTotalLaborPct, true);
   const prepPace = paceFor(prepP95, goalPrepP95, true);

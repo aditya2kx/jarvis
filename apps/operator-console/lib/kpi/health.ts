@@ -13,7 +13,7 @@ import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { chicagoTodayIso, isMonthLike, type DateWindow } from "@/lib/filters/range";
 import type { GoalKey } from "@/lib/bq/writes";
 import type { GoalStatus } from "@/lib/kpi/health-types";
-import { viewForLaborLens, type LaborLens } from "@/lib/kpi/labor-lens";
+import { viewForLaborLens, periodDayCount, type LaborLens } from "@/lib/kpi/labor-lens";
 import {
   avgPrepP95Min,
   countRiskyBases,
@@ -166,14 +166,21 @@ export async function loadHealthScorecard(
   const laborPace = paceFor(laborCost, gLabor$.value, true);
   const opsPace = paceFor(opsCost, gOps.value, true);
   const totalPace = paceFor(totalKnownCost, gTotal.value, true);
-  const lensView =
-    laborFwd != null
-      ? viewForLaborLens(laborFwd, laborLens)
-      : null;
-  const lensPtPct = lensView?.ptPct ?? null;
-  const lensTotalPct = lensView?.totalPct ?? null;
-  const ptLaborPace = paceFor(lensPtPct, goalPtLaborPct, true);
-  const totalLaborPctPace = paceFor(lensTotalPct, goalTotalLaborPct, true);
+  const periodDays = periodDayCount(win.start, win.end);
+  // Home always shows completed (wage or paid via lens) + blended — four numbers.
+  const completedBasis: LaborLens = laborLens === "paid" ? "paid" : "wage";
+  const completedView =
+    laborFwd != null ? viewForLaborLens(laborFwd, completedBasis, periodDays) : null;
+  const blendedView =
+    laborFwd != null ? viewForLaborLens(laborFwd, "blended", periodDays) : null;
+  const completedPtPct = completedView?.ptPct ?? null;
+  const completedTotalPct = completedView?.totalPct ?? null;
+  const blendedPtPct = blendedView?.ptPct ?? null;
+  const blendedTotalPct = blendedView?.totalPct ?? null;
+  const ptLaborPace = paceFor(completedPtPct, goalPtLaborPct, true);
+  const totalLaborPctPace = paceFor(completedTotalPct, goalTotalLaborPct, true);
+  const blendedPtPace = paceFor(blendedPtPct, goalPtLaborPct, true);
+  const blendedTotalPace = paceFor(blendedTotalPct, goalTotalLaborPct, true);
   const prepPace = paceFor(prepP95, goalPrepP95, true);
   const riskyPace = paceFor(riskyCount, goalRiskyMax, true);
 
@@ -291,40 +298,83 @@ export async function loadHealthScorecard(
     }),
   ];
 
-  const laborInfo =
-    lensView?.description ??
-    "Labor % unavailable — check vw_model_labor_daily / ADP schedule ingest.";
+  const completedInfo =
+    completedView?.description ??
+    "Completed labor % unavailable — check vw_model_labor_daily.";
+  const blendedInfo =
+    blendedView?.description ??
+    "Blended labor % unavailable — check ADP schedule ingest.";
+  const completedDayTag =
+    laborFwd != null && laborFwd.hasCompleted
+      ? ` · ${laborFwd.completedDayCount} day${laborFwd.completedDayCount === 1 ? "" : "s"}`
+      : "";
+  const blendedDayTag =
+    laborFwd != null
+      ? ` · ${laborFwd.hasCompleted ? laborFwd.completedDayCount : 0}+${laborFwd.hasForward ? laborFwd.fwdDays : 0} days`
+      : "";
   const laborMetrics: HealthMetric[] = [
     metric({
-      key: `pt_labor_pct_${laborLens}`,
-      label: `Part-time — ${lensView?.title ?? "Wage"}`,
-      actual: lensPtPct,
+      key: `pt_labor_pct_${completedBasis}`,
+      label: `Part-time — completed${completedBasis === "paid" ? " (paid)" : ""}${completedDayTag}`,
+      actual: completedPtPct,
       goal: goalPtLaborPct,
-      status: lensPtPct != null ? statusFor(ptLaborPace) : "no-goal",
-      pace: lensPtPct != null ? ptLaborPace : null,
-      formatted: fmtPct(lensPtPct),
+      status: completedPtPct != null ? statusFor(ptLaborPace) : "no-goal",
+      pace: completedPtPct != null ? ptLaborPace : null,
+      formatted: fmtPct(completedPtPct),
       goalFormatted: fmtPct(goalPtLaborPct),
-      goalKey: laborLens === "wage" ? "goal_hourly_labor_pct_max" : null,
-      rawGoal: laborLens === "wage" ? goalRaw(config, "goal_hourly_labor_pct_max") : undefined,
-      lowerIsBetter: true,
-      deltaFormatted: lensPtPct != null ? deltaLabelPct(lensPtPct, goalPtLaborPct) : undefined,
-      info: laborInfo,
-    }),
-    metric({
-      key: `total_labor_pct_${laborLens}`,
-      label: `Total (PT + FT) — ${lensView?.title ?? "Wage"}`,
-      actual: lensTotalPct,
-      goal: goalTotalLaborPct,
-      status: lensTotalPct != null ? statusFor(totalLaborPctPace) : "no-goal",
-      pace: lensTotalPct != null ? totalLaborPctPace : null,
-      formatted: fmtPct(lensTotalPct),
-      goalFormatted: fmtPct(goalTotalLaborPct),
-      goalKey: laborLens === "wage" ? "goal_labor_pct_max" : null,
-      rawGoal: laborLens === "wage" ? goalRaw(config, "goal_labor_pct_max") : undefined,
+      goalKey: completedBasis === "wage" ? "goal_hourly_labor_pct_max" : null,
+      rawGoal: completedBasis === "wage" ? goalRaw(config, "goal_hourly_labor_pct_max") : undefined,
       lowerIsBetter: true,
       deltaFormatted:
-        lensTotalPct != null ? deltaLabelPct(lensTotalPct, goalTotalLaborPct) : undefined,
-      info: laborInfo,
+        completedPtPct != null ? deltaLabelPct(completedPtPct, goalPtLaborPct) : undefined,
+      info: completedInfo,
+    }),
+    metric({
+      key: `total_labor_pct_${completedBasis}`,
+      label: `Total (PT + FT) — completed${completedBasis === "paid" ? " (paid)" : ""}${completedDayTag}`,
+      actual: completedTotalPct,
+      goal: goalTotalLaborPct,
+      status: completedTotalPct != null ? statusFor(totalLaborPctPace) : "no-goal",
+      pace: completedTotalPct != null ? totalLaborPctPace : null,
+      formatted: fmtPct(completedTotalPct),
+      goalFormatted: fmtPct(goalTotalLaborPct),
+      goalKey: completedBasis === "wage" ? "goal_labor_pct_max" : null,
+      rawGoal: completedBasis === "wage" ? goalRaw(config, "goal_labor_pct_max") : undefined,
+      lowerIsBetter: true,
+      deltaFormatted:
+        completedTotalPct != null ? deltaLabelPct(completedTotalPct, goalTotalLaborPct) : undefined,
+      info: completedInfo,
+    }),
+    metric({
+      key: "pt_labor_pct_blended",
+      label: `Part-time — blended (schedule)${blendedDayTag}`,
+      actual: blendedPtPct,
+      goal: goalPtLaborPct,
+      status: blendedPtPct != null ? statusFor(blendedPtPace) : "no-goal",
+      pace: blendedPtPct != null ? blendedPtPace : null,
+      formatted: fmtPct(blendedPtPct),
+      goalFormatted: fmtPct(goalPtLaborPct),
+      goalKey: null,
+      rawGoal: undefined,
+      lowerIsBetter: true,
+      deltaFormatted: blendedPtPct != null ? deltaLabelPct(blendedPtPct, goalPtLaborPct) : undefined,
+      info: blendedInfo,
+    }),
+    metric({
+      key: "total_labor_pct_blended",
+      label: `Total (PT + FT) — blended (schedule)${blendedDayTag}`,
+      actual: blendedTotalPct,
+      goal: goalTotalLaborPct,
+      status: blendedTotalPct != null ? statusFor(blendedTotalPace) : "no-goal",
+      pace: blendedTotalPct != null ? blendedTotalPace : null,
+      formatted: fmtPct(blendedTotalPct),
+      goalFormatted: fmtPct(goalTotalLaborPct),
+      goalKey: null,
+      rawGoal: undefined,
+      lowerIsBetter: true,
+      deltaFormatted:
+        blendedTotalPct != null ? deltaLabelPct(blendedTotalPct, goalTotalLaborPct) : undefined,
+      info: blendedInfo,
     }),
   ];
 

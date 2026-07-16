@@ -19,11 +19,13 @@ function Cell({
   pct,
   dollars,
   unit,
+  coverage,
 }: {
   label: string;
   pct: number | null;
   dollars: number | null;
   unit: string;
+  coverage: string;
 }) {
   return (
     <div className="flex flex-col gap-0.5 rounded-md border border-border/60 bg-muted/30 px-3 py-2.5">
@@ -32,6 +34,7 @@ function Cell({
       <span className="text-xs tabular-nums text-muted-foreground">
         {fmtDollars(dollars)} {unit}
       </span>
+      <span className="text-[11px] leading-snug text-muted-foreground/90">{coverage}</span>
     </div>
   );
 }
@@ -40,11 +43,14 @@ function Cell({
 export function LaborForwardSummaryCard({
   data,
   lens,
+  periodDays = 0,
 }: {
   data: Summary;
   lens: LaborLens;
+  /** Inclusive calendar days in the selected Period (for coverage %). */
+  periodDays?: number;
 }) {
-  const view = viewForLaborLens(data, lens);
+  const view = viewForLaborLens(data, lens, periodDays);
   const unit = lens === "paid" ? "paid" : "wage";
 
   return (
@@ -79,6 +85,9 @@ export function LaborForwardSummaryCard({
                   at wage (no burden; unscheduled days omitted from both cost and sales).
                 </li>
               </ul>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Dollar amounts always show how many days (and % of Period) they cover.
+              </p>
             </TooltipContent>
           </Tooltip>
         </div>
@@ -89,12 +98,19 @@ export function LaborForwardSummaryCard({
           <p className="text-sm text-muted-foreground">{view.description}</p>
         ) : (
           <div className="grid grid-cols-2 gap-2">
-            <Cell label={view.ptLabel} pct={view.ptPct} dollars={view.ptDollars} unit={unit} />
+            <Cell
+              label={view.ptLabel}
+              pct={view.ptPct}
+              dollars={view.ptDollars}
+              unit={unit}
+              coverage={view.coverage}
+            />
             <Cell
               label={view.totalLabel}
               pct={view.totalPct}
               dollars={view.totalDollars}
               unit={unit}
+              coverage={view.coverage}
             />
           </div>
         )}

@@ -37,6 +37,8 @@ export interface LaborForwardSummary {
   /** Fraction 0–1 (same unit as store_config labor-% goals). */
   completedPtPct: number | null;
   completedTotalPct: number | null;
+  /** Open days with punches in the Period strictly before Chicago today. */
+  completedDayCount: number;
   projectedPtCost: number | null;
   projectedTotalCost: number | null;
   projectedNetSales: number | null;
@@ -52,6 +54,7 @@ export interface LaborForwardSummary {
   projectedTotalPctAllIn: number | null;
   avgPtWage: number | null;
   aov: number | null;
+  /** Forward days in Period with ADP scheduled_hours > 0. */
   fwdDays: number;
   fwdScheduledHours: number;
   laborBurdenPct: number;
@@ -133,6 +136,7 @@ export function computeLaborForwardSummary(raw: LaborForwardRaw): LaborForwardSu
     completedNetSales: completedSales,
     completedPtPct,
     completedTotalPct,
+    completedDayCount: Math.max(0, Math.floor(raw.completedDayCount) || 0),
     projectedPtCost: projectedPt,
     projectedTotalCost: projectedTotal,
     projectedNetSales: projectedSales,

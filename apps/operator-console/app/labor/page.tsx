@@ -13,7 +13,7 @@ import { DateRangePicker } from "@/components/filters/DateRangePicker";
 import { LaborForwardSummaryCard } from "@/components/kpi/LaborForwardSummary";
 import { RANGE_PRESETS, formatBucket, parseGrain, wantsCustom } from "@/lib/filters/range";
 import { resolvePageRange } from "@/lib/filters/period";
-import { LABOR_LENS_OPTIONS, parseLaborLens } from "@/lib/kpi/labor-lens";
+import { LABOR_LENS_OPTIONS, parseLaborLens, periodDayCount } from "@/lib/kpi/labor-lens";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { LaborDailyRow, LaborForwardSummary } from "@/lib/bq/queries";
 
@@ -35,6 +35,7 @@ export default async function LaborPage({
   const lens = parseLaborLens(sp.lens);
   const showCustomPicker = wantsCustom(sp.range);
   const dateParams: Record<string, string> = win.preset === "custom" ? { from: win.start, to: win.end } : {};
+  const periodDays = periodDayCount(win.start, win.end);
 
   let rows: LaborDailyRow[] = [];
   let goalLaborPct: number | undefined;
@@ -221,7 +222,9 @@ export default async function LaborPage({
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
-          {forward ? <LaborForwardSummaryCard data={forward} lens={lens} /> : null}
+          {forward ? (
+            <LaborForwardSummaryCard data={forward} lens={lens} periodDays={periodDays} />
+          ) : null}
           <div className="grid gap-4 md:grid-cols-2">
             <LineChartCard
               title={

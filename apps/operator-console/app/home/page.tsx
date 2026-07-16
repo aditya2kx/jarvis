@@ -66,7 +66,10 @@ export default async function HomePage({
         basePath="/home"
         extraParams={{ range: win.preset }}
       />
-
+      <p className="text-xs text-muted-foreground">
+        Home Labor always shows completed + blended. Paid lens switches the completed pair to
+        wage + ER burden.
+      </p>
       {error || !health ? (
         <p className="text-sm text-muted-foreground">
           Data unavailable{error ? `: ${error}` : ""} — this is expected locally without ADC/BQ

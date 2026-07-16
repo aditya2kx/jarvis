@@ -10,6 +10,8 @@ import {
   syncPlaidNowAction,
 } from "@/app/accounting/actions";
 
+const LINK_TOKEN_KEY = "plaid_link_token";
+
 export function PlaidLinkButton({ linked }: { linked: boolean }) {
   const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
@@ -21,6 +23,8 @@ export function PlaidLinkButton({ linked }: { linked: boolean }) {
     (publicToken: string) => {
       startTransition(async () => {
         try {
+          sessionStorage.removeItem(LINK_TOKEN_KEY);
+          setMessage("Linked — syncing Chase transactions (can take a minute)…");
           const result = await exchangePlaidPublicTokenAction(publicToken);
           setMessage(
             `Linked ${result.itemId.slice(0, 8)}… — synced +${result.sync.added} / ~${result.sync.modified} / -${result.sync.removed}`,
@@ -36,9 +40,22 @@ export function PlaidLinkButton({ linked }: { linked: boolean }) {
     [router],
   );
 
+  const onEvent = useCallback((eventName: string) => {
+    // Chase opens an OAuth popup/tab — if the browser blocks it, Link looks stuck.
+    if (eventName === "OPEN_OAUTH") {
+      setMessage(
+        "Chase login should open in a popup or new tab — allow popups for this site if nothing appears.",
+      );
+    }
+    if (eventName === "EXIT" || eventName === "HANDOFF") {
+      // leave message as-is; EXIT often fires when popup closes mid-flow
+    }
+  }, []);
+
   const { open, ready } = usePlaidLink({
     token,
     onSuccess,
+    onEvent,
   });
 
   useEffect(() => {
@@ -51,8 +68,11 @@ export function PlaidLinkButton({ linked }: { linked: boolean }) {
   function startLink() {
     startTransition(async () => {
       try {
-        setMessage(null);
+        setMessage(
+          "Starting Link… After you pick Chase, a login popup/tab should open — allow popups if blocked.",
+        );
         const t = await createPlaidLinkTokenAction();
+        sessionStorage.setItem(LINK_TOKEN_KEY, t);
         setToken(t);
         setWantOpen(true);
       } catch (e) {

@@ -56,7 +56,11 @@ async function plaidPost(path: string, body: Record<string, unknown>): Promise<R
   return json;
 }
 
-export async function createLinkToken(clientUserId: string, webhookUrl?: string): Promise<string> {
+export async function createLinkToken(
+  clientUserId: string,
+  webhookUrl?: string,
+  redirectUri?: string,
+): Promise<string> {
   const body: Record<string, unknown> = {
     user: { client_user_id: clientUserId },
     client_name: "Palmetto Operator Console",
@@ -66,6 +70,8 @@ export async function createLinkToken(clientUserId: string, webhookUrl?: string)
     transactions: { days_requested: 730 },
   };
   if (webhookUrl) body.webhook = webhookUrl;
+  // Required for Chase (and other OAuth banks) so the bank can return to Link.
+  if (redirectUri) body.redirect_uri = redirectUri;
   const data = await plaidPost("/link/token/create", body);
   const token = data.link_token;
   if (typeof token !== "string") throw new Error("Plaid link_token missing");

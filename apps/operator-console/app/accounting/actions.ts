@@ -82,7 +82,11 @@ export async function createPlaidLinkTokenAction(): Promise<string> {
   if (!FEATURES.writePlaidLink) throw new Error("Plaid Link is disabled (FEATURES.writePlaidLink)");
   const email = await operatorEmail();
   const webhook = process.env.PLAID_WEBHOOK_URL?.trim() || undefined;
-  return createLinkToken(plaidClientUserId(email), webhook);
+  // Must match an Allowed redirect URI in the Plaid dashboard (Chase OAuth).
+  const redirectUri =
+    process.env.PLAID_REDIRECT_URI?.trim() ||
+    "https://operator-console-887772634501.us-central1.run.app/accounting/oauth";
+  return createLinkToken(plaidClientUserId(email), webhook, redirectUri);
 }
 
 export async function exchangePlaidPublicTokenAction(publicToken: string): Promise<{

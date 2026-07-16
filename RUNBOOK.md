@@ -1750,7 +1750,10 @@ grants are the current mechanism.
   (4) operator Links Chase once on `/accounting`, then Sync.
   Retire a sandbox Item: `BHAGA_DATASTORE=bigquery python3 -c "from skills.plaid_api.sync import purge_item; print(purge_item('palmetto', '<item_id>', dry_run=False))"`.
   **Link note:** production Plaid rejects emails in `user.client_user_id` — console passes a
-  SHA-256 opaque id derived from the operator email (sandbox was permissive).
+  SHA-256 opaque id derived from the operator email (sandbox was permissive). Chase (and other
+  OAuth banks) need `redirect_uri` on `/link/token/create` plus the same URI on the Plaid
+  dashboard **Allowed redirect URIs**; return path is `/accounting/oauth`. Desktop Link opens
+  Chase login in a **popup** — if the browser blocks popups, Link looks stuck after picking the bank.
 - **New goal keys:** `goal_net_sales_weekly`, `goal_net_sales_monthly`,
   `goal_hourly_labor_pct_max`, `goal_labor_pct_max`, `goal_kds_p95_min`,
   `goal_bases_at_risk_max` (plus legacy food-cost / on-time / runway keys kept for Slack) — all in

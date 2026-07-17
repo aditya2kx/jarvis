@@ -1327,20 +1327,31 @@ def _refresh_order_reco(store: str) -> None:
         max_tubs = int(rows[0]["value"]) if rows else _ORDER_RECO_DEFAULT_MAX_TUBS
 
         fq_reco = f"`{_BQ_ORDER_RECO_TABLE}`"
+        # Explicit columns — migration 041 added delivery_date; t.* + ts would mis-map.
+        _cols = (
+            "store, Slot, Item, `Current Qty`, `Avg per day`, `On Hand at Restock`, "
+            "`Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock`, "
+            "_ord, refreshed_at, delivery_date"
+        )
+        _sel = (
+            "Item, `Current Qty`, `Avg per day`, `On Hand at Restock`, "
+            "`Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock`, "
+            "_ord, CURRENT_TIMESTAMP(), delivery_date"
+        )
         _bq.query(  # type: ignore[union-attr]
             f"DELETE FROM {fq_reco} WHERE store = @store",
             job_config=_bq_param_config([("store", "STRING", store)]),
         ).result()
         _bq.query(  # type: ignore[union-attr]
-            f"INSERT INTO {fq_reco} SELECT @store, 1, t.*, CURRENT_TIMESTAMP()"
-            f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot1`(@mt) t",
+            f"INSERT INTO {fq_reco} ({_cols}) SELECT @store, 1, {_sel}"
+            f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot1`(@mt)",
             job_config=_bq_param_config([("store", "STRING", store), ("mt", "INT64", max_tubs)]),
         ).result()
         # Slot 2 must run AFTER slot 1's INSERT lands — its TVF reads slot 1's
         # row back from inventory_order_reco (see migration 031).
         _bq.query(  # type: ignore[union-attr]
-            f"INSERT INTO {fq_reco} SELECT @store, 2, t.*, CURRENT_TIMESTAMP()"
-            f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot2`(@mt) t",
+            f"INSERT INTO {fq_reco} ({_cols}) SELECT @store, 2, {_sel}"
+            f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot2`(@mt)",
             job_config=_bq_param_config([("store", "STRING", store), ("mt", "INT64", max_tubs)]),
         ).result()
         log.info("refresh_order_reco: recomputed store=%s max_tubs=%d", store, max_tubs)

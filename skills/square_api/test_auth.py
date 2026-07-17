@@ -132,7 +132,6 @@ class TestSaveOauthSecret(unittest.TestCase):
         from skills.square_api import auth as auth_mod
         data = json.loads(_VALID_SECRET)
         mock_client = MagicMock()
-        mock_client.get_secret.return_value = MagicMock()
 
         # Patch the SecretManagerServiceClient directly inside the google.cloud.secretmanager
         # module (which is already loaded) so the `from google.cloud import secretmanager`
@@ -144,6 +143,23 @@ class TestSaveOauthSecret(unittest.TestCase):
         ):
             auth_mod.save_oauth_secret("palmetto", data)
         mock_client.add_secret_version.assert_called_once()
+        mock_client.get_secret.assert_not_called()
+        mock_client.create_secret.assert_not_called()
+
+    def test_gcp_backend_raises_on_add_failure(self):
+        from skills.square_api import auth as auth_mod
+        data = json.loads(_VALID_SECRET)
+        mock_client = MagicMock()
+        mock_client.add_secret_version.side_effect = RuntimeError("denied")
+        import google.cloud.secretmanager as gcm
+        with (
+            patch.dict(os.environ, {"BHAGA_SECRETS_BACKEND": "gcp"}),
+            patch.object(gcm, "SecretManagerServiceClient", return_value=mock_client),
+        ):
+            with self.assertRaises(auth_mod.SquareAuthError) as ctx:
+                auth_mod.save_oauth_secret("palmetto", data)
+        self.assertIn("secretVersionAdder", str(ctx.exception))
+        mock_client.create_secret.assert_not_called()
 
 
 if __name__ == "__main__":

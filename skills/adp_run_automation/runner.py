@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import math
 import os
 import pathlib
 import re
@@ -66,11 +67,175 @@ POST_LOGIN_URL_RE = re.compile(r"runpayrollmain\.adp\.com/.*/v2/")
 # Match ADP's "Current Pay Period" / "Current" / "This Pay Period" dropdown
 # entry that covers the IN-FLIGHT payroll window. Closed pay-period entries
 # render as date ranges ("05/05/2026 - 05/18/2026") and don't intersect.
+# Allow a trailing parenthetical/date suffix (ADP sometimes appends the open
+# window). Do NOT match "Current Tax Period" / "Last Pay Period".
 # Module-level so unit tests can import without launching Playwright.
 _CURRENT_PAY_PERIOD_RE = re.compile(
-    r"^(current\s+pay\s+period|current|this\s+pay\s+period)$", re.I
+    r"^(?:current\s+pay\s+period|this\s+pay\s+period)(?:\s*[(\[].*)?$|^current$",
+    re.I,
 )
+# Date-range text inside a Pay Period option label.
+_PAY_PERIOD_DATE_RANGE_RE = re.compile(
+    r"(\d{1,2})/(\d{1,2})/(\d{4})\s*-\s*(\d{1,2})/(\d{1,2})/(\d{4})"
+)
+# Timecard Excel export can be slow when Select All is the only remaining
+# fallback (full history). Single-period exports finish well under this.
+_TIMECARD_DOWNLOAD_TIMEOUT_MS = 180_000
 KEYCHAIN_SERVICE_TEMPLATE = "jarvis-adp-{store}"
+
+
+def _biweekly_period_bounds(
+    target: datetime.date,
+    *,
+    anchor_end: datetime.date,
+    period_len: int = 14,
+) -> tuple[datetime.date, datetime.date]:
+    """Return the biweekly [start, end] containing ``target``.
+
+    Same cadence as ``update_model_sheet.discover_periods``: a period ENDS
+    on ``anchor_end`` and every ±period_len days from there; each period
+    spans ``[end - (period_len - 1), end]`` inclusive.
+
+    Uses ceil so an in-flight day after the latest closed end (e.g. 2026-07-15
+    when the closed end is 2026-07-12) maps to the open window ending
+    ``anchor + k*period_len`` that still contains ``target``.
+    """
+    if period_len < 1:
+        raise ValueError(f"period_len must be >= 1, got {period_len}")
+    k = math.ceil((target - anchor_end).days / period_len)
+    end = anchor_end + datetime.timedelta(days=period_len * k)
+    start = end - datetime.timedelta(days=period_len - 1)
+    return start, end
+
+
+def _period_len_from_frequency(pay_frequency: str) -> int:
+    freq = (pay_frequency or "").strip().lower()
+    if freq == "biweekly":
+        return 14
+    raise ValueError(
+        f"unsupported pay_frequency {pay_frequency!r}; only 'Biweekly' is implemented"
+    )
+
+
+def _format_pay_period_label(start: datetime.date, end: datetime.date, *, padded: bool) -> str:
+    if padded:
+        return f"{start.month:02d}/{start.day:02d}/{start.year} - {end.month:02d}/{end.day:02d}/{end.year}"
+    return f"{start.month}/{start.day}/{start.year} - {end.month}/{end.day}/{end.year}"
+
+
+def _parse_pay_period_range(text: str) -> Optional[tuple[datetime.date, datetime.date]]:
+    m = _PAY_PERIOD_DATE_RANGE_RE.search(text or "")
+    if not m:
+        return None
+    start = datetime.date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
+    end = datetime.date(int(m.group(6)), int(m.group(4)), int(m.group(5)))
+    return start, end
+
+
+def _is_current_pay_period_label(text: str) -> bool:
+    return bool(_CURRENT_PAY_PERIOD_RE.match((text or "").strip()))
+
+
+def _enumerate_pay_period_options(frame) -> list[tuple[object, str]]:
+    """Return [(locator, accessible_name), ...] for every Pay Period option."""
+    opts = frame.get_by_role("option")
+    try:
+        n = opts.count()
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[tuple[object, str]] = []
+    for i in range(n):
+        opt = opts.nth(i)
+        try:
+            name = (opt.get_attribute("aria-label") or opt.inner_text() or "").strip()
+        except Exception:  # noqa: BLE001
+            name = ""
+        out.append((opt, name))
+    return out
+
+
+def _select_pay_period_for_target(
+    frame,
+    page,
+    *,
+    target_date: datetime.date,
+    store: str,
+) -> None:
+    """Click the single Pay Period option that covers ``target_date``.
+
+    Enumerates options in Python (Playwright ``name=`` filters miss ADP's
+    custom accessible names). Falls back to Select All only as last resort,
+    logging the option names seen for diagnosis.
+    """
+    options = _enumerate_pay_period_options(frame)
+    names = [n for _, n in options if n]
+
+    # 1) Any option whose embedded date range contains target_date.
+    for opt, name in options:
+        bounds = _parse_pay_period_range(name)
+        if not bounds:
+            continue
+        start, end = bounds
+        if start <= target_date <= end:
+            opt.click()
+            print(
+                f"[adp_timecard] selected pay period "
+                f"{start.isoformat()} → {end.isoformat()} "
+                f"(contains target_date={target_date.isoformat()})"
+            )
+            return
+
+    # 2) Click by store-profile-derived biweekly bounds (unpadded + padded).
+    try:
+        profile = _load_store_profile(store)
+        adp = profile.get("adp_run") or {}
+        anchor = datetime.date.fromisoformat(adp["pay_periods_anchor_end_date"])
+        period_len = _period_len_from_frequency(adp.get("pay_frequency", "Biweekly"))
+        want_start, want_end = _biweekly_period_bounds(
+            target_date, anchor_end=anchor, period_len=period_len
+        )
+        needles = {
+            _format_pay_period_label(want_start, want_end, padded=False),
+            _format_pay_period_label(want_start, want_end, padded=True),
+        }
+        for opt, name in options:
+            if any(needle in name for needle in needles):
+                opt.click()
+                print(
+                    f"[adp_timecard] selected pay period via profile bounds "
+                    f"{want_start.isoformat()} → {want_end.isoformat()} "
+                    f"(target_date={target_date.isoformat()})"
+                )
+                return
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_timecard] WARN: profile period bounds failed: {exc}")
+
+    # 3) "Current Pay Period" (in-flight), including labels with a date suffix.
+    for opt, name in options:
+        if _is_current_pay_period_label(name):
+            opt.click()
+            print(
+                f"[adp_timecard] no closed pay period contains "
+                f"{target_date.isoformat()}; selected current-period option "
+                f"{name!r}"
+            )
+            return
+
+    # 4) Select All last — large export; download timeout is raised to match.
+    print(
+        f"[adp_timecard] WARN: no closed/current pay period for "
+        f"{target_date.isoformat()}; falling back to Select All. "
+        f"options_seen={names!r}"
+    )
+    try:
+        frame.get_by_role("option", name=re.compile(r"^Select All$", re.I)).first.click()
+    except Exception:  # noqa: BLE001
+        for opt, name in options:
+            if re.search(r"^Select All$", name or "", re.I):
+                opt.click()
+                break
+        else:
+            print("[adp_timecard] WARN: Select All option not clickable")
 
 
 # ── Credentials ────────────────────────────────────────────────────
@@ -795,13 +960,20 @@ def download_timecard(
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
         _ensure_logged_in(page, store=store)
-        path = _timecard_within_session(page, target_date=target_date)
+        path = _timecard_within_session(page, target_date=target_date, store=store)
         _write_target_meta(path, target_date)
         return path
 
 
+def _load_store_profile(store: str) -> dict:
+    return json.loads((STORE_PROFILES / f"{store}.json").read_text())
+
+
 def _timecard_within_session(
-    page, *, target_date: Optional[datetime.date] = None
+    page,
+    *,
+    target_date: Optional[datetime.date] = None,
+    store: str = "palmetto",
 ) -> pathlib.Path:
     """Run the Timecard scrape on an already-authenticated ADP dashboard page.
 
@@ -848,67 +1020,10 @@ def _timecard_within_session(
     page.wait_for_timeout(800)
 
     if target_date is not None:
-        # Nightly-incremental mode: pick exactly the one pay period whose
-        # date range contains target_date. Cuts XLSX size by ~26x and skips
-        # re-pulling already-mirrored periods.
-        date_range_re = re.compile(
-            r"(\d{1,2})/(\d{1,2})/(\d{4})\s*-\s*(\d{1,2})/(\d{1,2})/(\d{4})"
+        # Nightly-incremental: one period covering target_date (not Select All).
+        _select_pay_period_for_target(
+            frame, page, target_date=target_date, store=store
         )
-        opts = frame.get_by_role("option", name=date_range_re)
-        try:
-            n = opts.count()
-        except Exception:  # noqa: BLE001
-            n = 0
-        matched = False
-        for i in range(n):
-            opt = opts.nth(i)
-            try:
-                name = opt.get_attribute("aria-label") or opt.inner_text()
-            except Exception:  # noqa: BLE001
-                name = ""
-            m = date_range_re.search(name or "")
-            if not m:
-                continue
-            start = datetime.date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
-            end = datetime.date(int(m.group(6)), int(m.group(4)), int(m.group(5)))
-            if start <= target_date <= end:
-                opt.click()
-                matched = True
-                print(f"[adp_timecard] selected pay period "
-                      f"{start.isoformat()} → {end.isoformat()} "
-                      f"(contains target_date={target_date.isoformat()})")
-                break
-        if not matched:
-            # No closed pay period covers target_date — usually because
-            # target_date is inside the IN-FLIGHT current payroll. ADP
-            # exposes a "Current Pay Period" option for exactly this case
-            # which is much cheaper than Select All (one period vs every
-            # period in the dropdown). Try it first; only fall back to
-            # Select All if "Current Pay Period" isn't exposed either.
-            try:
-                current_opt = frame.get_by_role(
-                    "option", name=_CURRENT_PAY_PERIOD_RE
-                ).first
-                current_opt.wait_for(state="visible", timeout=2_000)
-                current_opt.click()
-                matched = True
-                print(
-                    f"[adp_timecard] no closed pay period contains "
-                    f"{target_date.isoformat()}; selected 'Current Pay Period' "
-                    "(in-flight)"
-                )
-            except Exception:  # noqa: BLE001
-                print(
-                    f"[adp_timecard] WARN: no closed pay period AND no "
-                    f"'Current Pay Period' option found for "
-                    f"{target_date.isoformat()}; falling back to Select All"
-                )
-                try:
-                    frame.get_by_role(
-                        "option", name=re.compile(r"^Select All$", re.I)
-                    ).first.click()
-                except Exception:  # noqa: BLE001
-                    pass
     else:
         # Backfill / default mode: select every pay period exposed in the
         # dropdown. The multi-select listbox has a "Select All" checkbox at
@@ -921,7 +1036,7 @@ def _timecard_within_session(
             select_all.click()
         except Exception:
             opts = frame.get_by_role(
-                "option", name=re.compile(r"\d{1,2}/\d{1,2}/\d{4}\s*-\s*\d{1,2}/\d{1,2}/\d{4}", re.I)
+                "option", name=_PAY_PERIOD_DATE_RANGE_RE
             )
             n = opts.count()
             for i in range(n):
@@ -962,16 +1077,12 @@ def _timecard_within_session(
         page,
         trigger=lambda: frame.locator(excel_btn_selector).first.click(),
         rename_to=rename,
-        timeout_ms=60_000,
+        timeout_ms=_TIMECARD_DOWNLOAD_TIMEOUT_MS,
     )
     return path
 
 
 # ── Earnings scrape ────────────────────────────────────────────────
-
-
-def _load_store_profile(store: str) -> dict:
-    return json.loads((STORE_PROFILES / f"{store}.json").read_text())
 
 
 def download_earnings(
@@ -1856,7 +1967,9 @@ def download_adp_bundle(
 
         if needs_timecard:
             try:
-                path = _timecard_within_session(page, target_date=target_date)
+                path = _timecard_within_session(
+                    page, target_date=target_date, store=store
+                )
                 _write_target_meta(path, target_date)
                 result["timecard_xlsx"] = path
                 _mark_run_step_done(

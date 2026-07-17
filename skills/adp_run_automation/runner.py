@@ -75,8 +75,13 @@ _CURRENT_PAY_PERIOD_RE = re.compile(
     re.I,
 )
 # Date-range text inside a Pay Period option label.
+# Live ADP (2026-07-17 sandbox) exposes ISO ranges: "2026-07-13 - 2026-07-26".
+# Older UI / some labels still use US slash form: "7/13/2026 - 7/26/2026".
 _PAY_PERIOD_DATE_RANGE_RE = re.compile(
     r"(\d{1,2})/(\d{1,2})/(\d{4})\s*-\s*(\d{1,2})/(\d{1,2})/(\d{4})"
+)
+_PAY_PERIOD_ISO_RANGE_RE = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})\s*-\s*(\d{4})-(\d{2})-(\d{2})"
 )
 # Timecard Excel export can be slow when Select All is the only remaining
 # fallback (full history). Single-period exports finish well under this.
@@ -117,14 +122,32 @@ def _period_len_from_frequency(pay_frequency: str) -> int:
     )
 
 
-def _format_pay_period_label(start: datetime.date, end: datetime.date, *, padded: bool) -> str:
-    if padded:
-        return f"{start.month:02d}/{start.day:02d}/{start.year} - {end.month:02d}/{end.day:02d}/{end.year}"
+def _format_pay_period_label(
+    start: datetime.date, end: datetime.date, *, style: str = "slash_unpadded"
+) -> str:
+    """Format a period label matching ADP option text variants.
+
+    ``style``: ``slash_unpadded`` (7/13/2026), ``slash_padded`` (07/13/2026),
+    or ``iso`` (2026-07-13) — the live ADP dropdown uses ISO.
+    """
+    if style == "iso":
+        return f"{start.isoformat()} - {end.isoformat()}"
+    if style == "slash_padded":
+        return (
+            f"{start.month:02d}/{start.day:02d}/{start.year} - "
+            f"{end.month:02d}/{end.day:02d}/{end.year}"
+        )
     return f"{start.month}/{start.day}/{start.year} - {end.month}/{end.day}/{end.year}"
 
 
 def _parse_pay_period_range(text: str) -> Optional[tuple[datetime.date, datetime.date]]:
-    m = _PAY_PERIOD_DATE_RANGE_RE.search(text or "")
+    raw = text or ""
+    m = _PAY_PERIOD_ISO_RANGE_RE.search(raw)
+    if m:
+        start = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        end = datetime.date(int(m.group(4)), int(m.group(5)), int(m.group(6)))
+        return start, end
+    m = _PAY_PERIOD_DATE_RANGE_RE.search(raw)
     if not m:
         return None
     start = datetime.date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
@@ -195,8 +218,9 @@ def _select_pay_period_for_target(
             target_date, anchor_end=anchor, period_len=period_len
         )
         needles = {
-            _format_pay_period_label(want_start, want_end, padded=False),
-            _format_pay_period_label(want_start, want_end, padded=True),
+            _format_pay_period_label(want_start, want_end, style="slash_unpadded"),
+            _format_pay_period_label(want_start, want_end, style="slash_padded"),
+            _format_pay_period_label(want_start, want_end, style="iso"),
         }
         for opt, name in options:
             if any(needle in name for needle in needles):

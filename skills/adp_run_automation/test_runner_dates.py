@@ -109,6 +109,14 @@ class BiweeklyPeriodBoundsTests(unittest.TestCase):
         bounds = _parse_pay_period_range("Pay Period 07/13/2026 - 07/26/2026")
         self.assertEqual(bounds, (datetime.date(2026, 7, 13), datetime.date(2026, 7, 26)))
 
+    def test_parse_iso_pay_period_range_live_adp(self):
+        # Exact option text from 2026-07-17 sandbox-live ADP dropdown.
+        bounds = _parse_pay_period_range("2026-07-13 - 2026-07-26")
+        self.assertEqual(bounds, (datetime.date(2026, 7, 13), datetime.date(2026, 7, 26)))
+        self.assertTrue(
+            bounds[0] <= datetime.date(2026, 7, 15) <= bounds[1]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

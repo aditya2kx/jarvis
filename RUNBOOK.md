@@ -1113,7 +1113,8 @@ correctly selects **full scrape** (not recompute-only) on a `Retry-Dates` rerun.
 **ADP Timecard pay-period selection (2026-07-17).** Nightly mode must select the **single**
 pay period that contains `target_date` — not Select All. The runner enumerates Pay Period
 dropdown options in Python (Playwright `name=` filters miss ADP's custom accessible names),
-matches an embedded `M/D/YYYY - M/D/YYYY` range, then falls back to store-profile biweekly
+matches an embedded date range (`YYYY-MM-DD - YYYY-MM-DD` as live ADP exposes, or
+`M/D/YYYY - M/D/YYYY`), then falls back to store-profile biweekly
 bounds (`adp_run.pay_periods_anchor_end_date`), then a "Current Pay Period" label (including
 date-suffixed forms), and only then Select All. Select All of full history can exceed a 60s
 download wait (Slack `failure_alert` on 2026-07-15/16); the Timecard export timeout is 180s

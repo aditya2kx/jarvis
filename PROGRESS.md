@@ -1,5 +1,17 @@
 # Jarvis Build Progress
 
+## 2026-07-17 — BHAGA 7/15–7/16 Slack failures: ADP period select + Square OAuth save (Issue #178)
+
+**Symptom:** Nightlies for 2026-07-15/16 posted Slack `failure_alert`s; ADP labor charts empty (punches/shifts gap); Square missing for 7/16.
+
+**Root causes + fix (PR #179):**
+- ADP Timecard fell through to Select All (option `name=` filters unreliable) → 60s download timeout. Now enumerates options, matches date range / profile biweekly bounds / Current Pay Period, Select All last, 180s timeout.
+- Live ADP dropdown uses ISO ranges (`2026-07-13 - 2026-07-26`); slash-only parse still Select-All'd — ISO parse added. Sandbox-live proof: `[adp_timecard] selected pay period 2026-07-13 → 2026-07-26 (contains target_date=2026-07-15)`.
+- Square `save_oauth_secret` treated `secrets.get` PermissionDenied as missing → `create_secret` 403. Now `add_secret_version` only.
+- `replace_scope` DELETE double-quoted sheet apostrophe dates (`''2026-…'`). Strip via `_clean_str`.
+
+**Backfill:** `Retry-Dates: 2026-07-15, 2026-07-16` on merge.
+
 ## 2026-07-14 — ADP per-employee schedule + Payroll Liability burden (Issue #166 follow-through)
 
 **Scope:** Live ADP spike → scrape per-employee forward shifts + employer tax from Payroll Liability; Operator Console uses emp×wage projected math.

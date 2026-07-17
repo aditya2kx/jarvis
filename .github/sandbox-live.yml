@@ -1,8 +1,8 @@
-# Sandbox live run config — PR #111: ADP throttle resilience + ADP-aware retry-dates.
+# Sandbox live run config — Issue #178: ADP timecard period selection + Square OAuth save.
 #
-# full-live: exercises the refactored _wait_for_login_form against real ADP (happy path:
-# step=uid-box-visible log line proves goto-based recovery still lands on the login SPA).
-# Evidence needed to lift Claude review confidence from 88% to ≥95%.
+# full-live: exercises the fixed Pay Period enumeration against real ADP for a date
+# in the open biweekly window (2026-07-15 had Select-All download timeout in prod).
+# Evidence needed to lift Claude review confidence to ≥95%.
 scenarios:
   - name: full-live
-    date: "2026-06-28"
+    date: "2026-07-15"

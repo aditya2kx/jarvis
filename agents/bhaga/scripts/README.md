@@ -25,7 +25,9 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    (`skills/square_api/ingest.py` + `skills/square_api/kds_reporting.py`) — no browser, no
    CSV files, no OTP. Data flows: Square API → in-memory rows → `map_square_*` → BQ.
 3. **Scrape ADP** timecards / earnings / **team schedule** for overlapping pay periods
-   (`skills/adp_run_automation/`). 2FA, if challenged, goes through the **OTP gate** (see below).
+   (`skills/adp_run_automation/`). Timecard nightly mode enumerates Pay Period options and
+   picks the single period covering `target_date` (profile-anchor fallback; Select All last,
+   180s download timeout). 2FA, if challenged, goes through the **OTP gate** (see below).
    The schedule scrape (forward scheduled hours, current + next week) is **best-effort** — a
    failure is non-fatal to the nightly run (see `daily_refresh._adp_bundle_then_raise`).
 4. **Load ADP → BigQuery (primary)** (`backfill_from_downloads.py --skip square`, requires

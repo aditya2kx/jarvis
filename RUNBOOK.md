@@ -1110,6 +1110,17 @@ same pattern as an OTP-wait timeout. The next nightly or `Retry-Dates` rerun re-
 A date where ADP was skipped has Square in BQ but missing `adp_shifts` → `trigger_dated_refresh.py`
 correctly selects **full scrape** (not recompute-only) on a `Retry-Dates` rerun.
 
+**ADP Timecard pay-period selection (2026-07-17).** Nightly mode must select the **single**
+pay period that contains `target_date` — not Select All. The runner enumerates Pay Period
+dropdown options in Python (Playwright `name=` filters miss ADP's custom accessible names),
+matches an embedded date range (`YYYY-MM-DD - YYYY-MM-DD` as live ADP exposes, or
+`M/D/YYYY - M/D/YYYY`), then falls back to store-profile biweekly
+bounds (`adp_run.pay_periods_anchor_end_date`), then a "Current Pay Period" label (including
+date-suffixed forms), and only then Select All. Select All of full history can exceed a 60s
+download wait (Slack `failure_alert` on 2026-07-15/16); the Timecard export timeout is 180s
+as a safety net. If punches/shifts are missing for dates, add
+`Retry-Dates: YYYY-MM-DD[, …]` to the fix PR so deploy full-scrapes the gap.
+
 **Post-login maintenance interstitial (RUN maintenance window) + smart retry.** ADP also serves
 a maintenance/throttle interstitial **after** a valid login during scheduled RUN maintenance.
 It uses **two distinct URLs** (`_is_maintenance_interstitial` matches both):

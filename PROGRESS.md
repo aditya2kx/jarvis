@@ -9,6 +9,7 @@
 - Live ADP dropdown uses ISO ranges (`2026-07-13 - 2026-07-26`); slash-only parse still Select-All'd — ISO parse added. Sandbox-live proof: `[adp_timecard] selected pay period 2026-07-13 → 2026-07-26 (contains target_date=2026-07-15)`.
 - Square `save_oauth_secret` treated `secrets.get` PermissionDenied as missing → `create_secret` 403. Now `add_secret_version` only.
 - `replace_scope` DELETE double-quoted sheet apostrophe dates (`''2026-…'`). Strip via `_clean_str`.
+- **Operator Console `/inventory` wrong numbers after Jul 16 restock:** live next-date headers labeled onto stale Slot 1/2 materialization (TOTAL On hand “Jul 23” = 120, Order tubs = Jul 16’s 111). Migration 041 binds `delivery_date`, next dates `> today CT`, console/deploy self-heal refresh. Evidence: before/after screenshots on `evidence-screenshots` release.
 
 **Backfill:** `Retry-Dates: 2026-07-15, 2026-07-16` on merge.
 

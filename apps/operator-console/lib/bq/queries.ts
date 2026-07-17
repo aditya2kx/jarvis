@@ -740,7 +740,7 @@ export function estimatedScheduleDates(store: string): Promise<EstimatedSchedule
        WHERE store = @store
      ) o ON s.delivery_date = o.delivery_date
      WHERE s.store = @store
-       AND s.delivery_date >= CURRENT_DATE('America/Chicago')
+       AND s.delivery_date > CURRENT_DATE('America/Chicago')
        AND o.delivery_date IS NULL
      ORDER BY s.delivery_date`,
     { store },

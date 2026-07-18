@@ -1,4 +1,5 @@
 import { baseRunway, estimatedScheduleDates, nextDates, orderAssistantTable, orderRecoCombined, storeConfig } from "@/lib/bq/queries";
+import { ensureOrderRecoFresh } from "@/lib/bq/writes";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -15,7 +16,7 @@ export const dynamic = "force-dynamic";
 // dual-date reco + analytics tables.
 const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-bad" };
 
-// Dual-date Order Assistant (migration 032, Grafana panel 83) — Item/Current
+// Dual-date Order Assistant (migration 032/041, Grafana panel 83) — Item/Current
 // Qty/Avg per day frozen, one "Source N" badge column pair per registered
 // delivery date. Restock writes go through the RestockImportDrawer's server
 // action, converging with the /bhaga-cloud restock Slack path for the three
@@ -24,6 +25,10 @@ const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-ba
 // Base runway (migration 036, Issue #164) sits above: burn-down days left
 // from today; Restock 1/2 = up to two future Actuals dates; Status Risky if
 // restock empty or stockout < restock.
+//
+// ensureOrderRecoFresh: if materialized delivery_date rows ≠ live next dates
+// (or refreshed_at CT day is stale), recompute before read so column headers
+// and quantities cannot desync across Chicago midnight.
 export default async function InventoryPage() {
   let rows: OrderRecoCombinedRow[] = [];
   let runwayRows: BaseRunwayRow[] = [];
@@ -33,6 +38,7 @@ export default async function InventoryPage() {
   let maxTubs: number | undefined;
   let error: string | undefined;
   try {
+    await ensureOrderRecoFresh(DEFAULT_STORE);
     const [reco, nd, config, base, runway, estimated] = await Promise.all([
       orderRecoCombined(),
       nextDates(),

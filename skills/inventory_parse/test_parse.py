@@ -27,6 +27,8 @@ from skills.inventory_parse.parse import parse_qty, FIELD_REGISTRY, ACTIVE_BASES
     ("15+98^",          15.98),
     # Comma-separated (second value is pct)
     ("3 boxes, 75% cambro",  3.75),
+    ("3 cases",              3.0),
+    ("9 boxes",              9.0),
     # Multi-part additive
     ("3 + 1 bag + 70%", 4.70),
     # Multiple fractional parts

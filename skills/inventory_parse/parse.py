@@ -84,7 +84,7 @@ def parse_qty(raw: str | None) -> float | None:
     # Unit-word tokens (bag, box, cambro, …) are WHOLE-UNIT tokens even when
     # they appear after a '+'.  akshaya.mdc: "bag ≈ box (1:1). Multi-part additive."
     _UNIT_WORDS = re.compile(
-        r"\b(?:bag|box|boxes|bags|cambro|jug|container|bucket|stack|stacks)\b",
+        r"\b(?:bag|box|boxes|bags|case|cases|cambro|jug|container|bucket|stack|stacks)\b",
         re.IGNORECASE,
     )
 

@@ -1,23 +1,35 @@
 "use server";
 
+import { createHash } from "crypto";
 import { revalidatePath } from "next/cache";
 import { operatorEmail, DEFAULT_STORE } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
 import {
   createLinkToken,
   exchangePublicToken,
+  fetchAccounts,
+  fetchInstitutionName,
   loadAccessTokenSecret,
   saveAccessTokenSecret,
   transactionsSync,
 } from "@/lib/plaid/client";
 import {
   deletePlaidTransactions,
+  markPlaidTransactionsInternal,
+  setPlaidTransactionInternal,
   updatePlaidCursor,
+  upsertPlaidAccount,
   upsertPlaidItem,
   upsertPlaidTransaction,
   type PlaidTxnWrite,
 } from "@/lib/bq/writes";
-import { plaidItems } from "@/lib/bq/queries";
+import { plaidAccountsForItem, plaidItems, plaidTxnHintsForItem } from "@/lib/bq/queries";
+import { suggestInternal } from "@/lib/plaid/internal";
+
+/** Production Plaid rejects emails in user.client_user_id (INVALID_FIELD). */
+function plaidClientUserId(email: string): string {
+  return createHash("sha256").update(`palmetto:${email}`).digest("hex").slice(0, 32);
+}
 
 function txnToWrite(txn: Record<string, unknown>, itemId: string): PlaidTxnWrite {
   const pfc = (txn.personal_finance_category || {}) as Record<string, unknown>;
@@ -69,6 +81,56 @@ async function drainSync(itemId: string, accessToken: string, startCursor: strin
     if (!page.has_more) break;
   }
   await updatePlaidCursor(DEFAULT_STORE, itemId, cursor);
+  try {
+    const accounts = await fetchAccounts(accessToken);
+    for (const a of accounts) {
+      await upsertPlaidAccount({ ...a, item_id: itemId });
+    }
+  } catch (e) {
+    console.error(
+      `plaid accounts upsert failed item=${itemId}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  // Auto-flag checking↔own-card legs among linked accounts. Never clears an
+  // operator un-mark (UPDATE only where is_internal is not already true).
+  try {
+    const linked = await plaidAccountsForItem(itemId);
+    const peers = await plaidTxnHintsForItem(itemId);
+    const ids = peers
+      .filter((t) => !t.is_internal)
+      .filter((t) =>
+        suggestInternal(
+          {
+            transaction_id: t.transaction_id,
+            account_id: t.account_id,
+            name: t.name,
+            merchant_name: t.merchant_name,
+            amount: Number(t.amount ?? 0),
+            date: t.date,
+            pfc_primary: t.pfc_primary,
+            pfc_detailed: t.pfc_detailed,
+          },
+          linked,
+          peers.map((p) => ({
+            transaction_id: p.transaction_id,
+            account_id: p.account_id,
+            name: p.name,
+            merchant_name: p.merchant_name,
+            amount: Number(p.amount ?? 0),
+            date: p.date,
+            pfc_primary: p.pfc_primary,
+            pfc_detailed: p.pfc_detailed,
+          })),
+        ),
+      )
+      .map((t) => t.transaction_id);
+    const n = await markPlaidTransactionsInternal(ids);
+    if (n) console.info(`plaid suggestInternal marked=${n} item=${itemId}`);
+  } catch (e) {
+    console.error(
+      `plaid suggestInternal failed item=${itemId}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
   return { added, modified, removed, cursor };
 }
 
@@ -76,7 +138,13 @@ export async function createPlaidLinkTokenAction(): Promise<string> {
   if (!FEATURES.writePlaidLink) throw new Error("Plaid Link is disabled (FEATURES.writePlaidLink)");
   const email = await operatorEmail();
   const webhook = process.env.PLAID_WEBHOOK_URL?.trim() || undefined;
-  return createLinkToken(email, webhook);
+  // Desktop Link opens Chase OAuth in a popup and returns via postMessage to the
+  // opener — do NOT set redirect_uri while the console is behind Cloud Run IAP.
+  // A redirect_uri to /accounting/oauth never reaches the app (IAP intercepts),
+  // and Plaid surfaces that as Link INTERNAL_SERVER_ERROR / "Something went wrong".
+  // Set PLAID_REDIRECT_URI only if the return path is reachable without IAP.
+  const redirectUri = process.env.PLAID_REDIRECT_URI?.trim() || undefined;
+  return createLinkToken(plaidClientUserId(email), webhook, redirectUri);
 }
 
 export async function exchangePlaidPublicTokenAction(publicToken: string): Promise<{
@@ -87,7 +155,8 @@ export async function exchangePlaidPublicTokenAction(publicToken: string): Promi
   const by = await operatorEmail();
   const { access_token, item_id } = await exchangePublicToken(publicToken);
   await saveAccessTokenSecret(item_id, access_token);
-  await upsertPlaidItem(DEFAULT_STORE, item_id, null, by);
+  const institutionName = await fetchInstitutionName(access_token);
+  await upsertPlaidItem(DEFAULT_STORE, item_id, institutionName, by);
   const sync = await drainSync(item_id, access_token, "");
   revalidatePath("/accounting");
   return { itemId: item_id, sync };
@@ -106,4 +175,14 @@ export async function syncPlaidNowAction(): Promise<{
   const sync = await drainSync(item.item_id, accessToken, item.cursor || "");
   revalidatePath("/accounting");
   return { itemId: item.item_id, sync };
+}
+
+export async function setPlaidInternalAction(
+  transactionId: string,
+  isInternal: boolean,
+): Promise<void> {
+  if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
+  await operatorEmail();
+  await setPlaidTransactionInternal(transactionId, isInternal);
+  revalidatePath("/accounting");
 }

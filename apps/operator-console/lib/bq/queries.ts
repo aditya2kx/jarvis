@@ -1005,6 +1005,44 @@ export function plaidItems(store: string): Promise<PlaidItemRow[]> {
   );
 }
 
+export interface PlaidAccountRow {
+  account_id: string;
+  mask: string | null;
+  type: string | null;
+}
+
+export function plaidAccountsForItem(itemId: string): Promise<PlaidAccountRow[]> {
+  return q<PlaidAccountRow>(
+    `SELECT account_id, mask, type FROM ${fq("plaid_accounts")} WHERE item_id=@item_id`,
+    { item_id: itemId },
+  );
+}
+
+/** Rows needed to auto-flag checking↔own-card transfers after sync. */
+export function plaidTxnHintsForItem(itemId: string): Promise<
+  {
+    transaction_id: string;
+    account_id: string | null;
+    name: string | null;
+    merchant_name: string | null;
+    amount: number;
+    date: string;
+    pfc_primary: string | null;
+    pfc_detailed: string | null;
+    is_internal: boolean | null;
+  }[]
+> {
+  return q(
+    `SELECT
+       transaction_id, account_id, name, merchant_name, amount,
+       CAST(date AS STRING) AS date, pfc_primary, pfc_detailed,
+       IFNULL(is_internal, FALSE) AS is_internal
+     FROM ${fq("plaid_transactions")}
+     WHERE item_id=@item_id`,
+    { item_id: itemId },
+  );
+}
+
 export interface PlaidTransactionRow {
   transaction_id: string;
   date: string;
@@ -1014,15 +1052,36 @@ export interface PlaidTransactionRow {
   pending: boolean | null;
   pfc_primary: string | null;
   pfc_detailed: string | null;
+  account_id: string | null;
+  account_name: string | null;
+  account_mask: string | null;
+  account_type: string | null;
+  payment_channel: string | null;
+  is_internal: boolean | null;
 }
 
 export function plaidTransactions(win: DateWindow): Promise<PlaidTransactionRow[]> {
   return q<PlaidTransactionRow>(
-    `SELECT transaction_id, date, name, merchant_name, amount, pending, pfc_primary, pfc_detailed
-     FROM ${fq("plaid_transactions")}
-     WHERE date BETWEEN @start AND @end
-     ORDER BY date DESC, transaction_id
-     LIMIT 2000`,
+    `SELECT
+       t.transaction_id,
+       t.date,
+       t.name,
+       t.merchant_name,
+       t.amount,
+       t.pending,
+       t.pfc_primary,
+       t.pfc_detailed,
+       t.account_id,
+       a.name AS account_name,
+       a.mask AS account_mask,
+       a.type AS account_type,
+       JSON_VALUE(t.raw_json, '$.payment_channel') AS payment_channel,
+       IFNULL(t.is_internal, FALSE) AS is_internal
+     FROM ${fq("plaid_transactions")} t
+     LEFT JOIN ${fq("plaid_accounts")} a ON a.account_id = t.account_id
+     WHERE t.date BETWEEN @start AND @end
+     ORDER BY t.date DESC, t.transaction_id
+     LIMIT 5000`,
     { start: dateParam(win.start), end: dateParam(win.end) },
   );
 }

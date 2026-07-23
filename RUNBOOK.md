@@ -1763,9 +1763,37 @@ grants are the current mechanism.
   + `POST /plaid/sync` (shared `PLAID_SYNC_TOKEN` / sandbox trigger token). Skill:
   `skills/plaid_api/`. Env on console + webhook: `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`,
   optional `PLAID_WEBHOOK_URL`. Access tokens: Secret Manager `plaid_access_token_<item_id>`.
-  **Current env:** `PLAID_ENV=sandbox` (sandbox secret provisioned 2026-07-12). Chase / live bank
-  Link needs Plaid **production** access (dashboard questionnaire) then flip `PLAID_ENV=production`
-  and store the production secret as `plaid_secret`.
+  **Current env:** `PLAID_ENV=production` (cutover Issue #168). Production `plaid_secret`
+  in Secret Manager; sandbox Platypus Item/txns purged before Chase Link. Ops:
+  (1) rotate `plaid_secret` to the dashboard Production secret,
+  (2) ensure both `operator-console` and `bhaga-webhook` have `PLAID_ENV=production`,
+  (3) `purge_item(store, item_id, dry_run=False)` for any leftover sandbox Item,
+  (4) operator Links Chase once on `/accounting`, then Sync.
+  Retire a sandbox Item: `BHAGA_DATASTORE=bigquery python3 -c "from skills.plaid_api.sync import purge_item; print(purge_item('palmetto', '<item_id>', dry_run=False))"`.
+  **Link note:** production Plaid rejects emails in `user.client_user_id` — console passes a
+  SHA-256 opaque id derived from the operator email (sandbox was permissive). Desktop Link uses
+  Chase OAuth via **popup → opener** (do not set `PLAID_REDIRECT_URI` while the console is behind
+  Cloud Run IAP — a redirect to `/accounting/oauth` never reaches the app). Allow popups; keep the
+  Accounting tab open. Prefer **Continue without phone number** on the Plaid phone pane (phone OTP
+  is optional returning-user UX, not Chase auth). Optional later: a non-IAP return URL +
+  `PLAID_REDIRECT_URI` for mobile webviews.
+  **Preflight before asking the operator to Link (dashboard + API):** (1) Link Customization →
+  Data Transparency has ≥1 published use case (empty use cases → Link `INTERNAL_SERVER_ERROR` /
+  "Something went wrong"); (2) OAuth institutions shows Chase **Enabled**;
+  (3) `PLAID_ENV=production` + production secret on console; (4) `/link/token/create` → 200;
+  (5) agent smoke on `/accounting`: Link → skip phone → Chase → "Continue to login" opens
+  `secure.chase.com` popup (stop before bank credentials).
+  **Gotcha:** Node BigQuery client requires explicit `types` for null query params — without
+  them, post-Link `upsertPlaidItem(institution_name=null)` throws and the UI shows a generic
+  Server Components digest (access token may already be in Secret Manager; recover via
+  `skills.plaid_api.sync.sync_item` after inserting `plaid_items`). After creating
+  `plaid_access_token_<item_id>`, grant `secretAccessor` to the console compute SA +
+  `bhaga-orchestrator` (code does this on create; Sync now 403s without it).
+  **Accounting Phase A (#168):** migration `044_plaid_internal_flag.sql` adds `is_internal` on
+  `plaid_transactions` and excludes internals from `vw_plaid_spend_by_category_daily`. Console
+  Money out / Plaid earned + category rollup follow table column filters and skip internals
+  (checking↔own card payments auto-flagged; operator can Mark/unmark). Click PFC category for
+  a short definition sheet. Custom taxonomy / rule engine remains Issue #160.
 - **New goal keys:** `goal_net_sales_weekly`, `goal_net_sales_monthly`,
   `goal_hourly_labor_pct_max`, `goal_labor_pct_max`, `goal_kds_p95_min`,
   `goal_bases_at_risk_max` (plus legacy food-cost / on-time / runway keys kept for Slack) — all in

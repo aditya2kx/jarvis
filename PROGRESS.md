@@ -14,6 +14,16 @@
 
 **Backfill:** `Retry-Dates: 2026-07-15, 2026-07-16` on merge.
 
+## 2026-07-16 — Plaid production cutover + Accounting Phase A (Issue #168)
+
+**Scope:** Flip Operator Console + bhaga-webhook from `PLAID_ENV=sandbox` to `production`; purge sandbox Platypus Item/txns; Link Chase so Home cash/ops + Accounting use live bank outflows. Phase A Accounting UX: filter-driven Plaid KPIs, PFC click-to-explain, internal-transfer exclusion.
+
+**Key changes:**
+- Deploy workflows set `PLAID_ENV=production`; `skills/plaid_api.sync.purge_item` for sandbox retirement.
+- Ops: rotate SM `plaid_secret` to dashboard Production secret; operator one-time Chase Link on `/accounting`.
+- Migrations `043_plaid_accounts` + `044_plaid_internal_flag`; AccountingLedger with Hide internal / Mark; KPIs follow table filters.
+- Docs: RUNBOOK / FEATURE_FLAGS / plaid README updated. #160 taxonomy and #161 QBO still deferred.
+
 ## 2026-07-14 — ADP per-employee schedule + Payroll Liability burden (Issue #166 follow-through)
 
 **Scope:** Live ADP spike → scrape per-employee forward shifts + employer tax from Payroll Liability; Operator Console uses emp×wage projected math.

@@ -103,3 +103,6 @@ class PlaidClient:
 
     def item_get(self, access_token: str) -> dict:
         return self._post("/item/get", {"access_token": access_token})
+
+    def accounts_get(self, access_token: str) -> dict:
+        return self._post("/accounts/get", {"access_token": access_token})

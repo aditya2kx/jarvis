@@ -10,7 +10,7 @@ Console Accounting page and `bhaga-webhook` `/plaid/webhook` + `/plaid/sync`.
 | `plaid_client_id` / env `PLAID_CLIENT_ID` | Secret Manager or Cloud Run env | Dashboard |
 | `plaid_secret` / env `PLAID_SECRET` | Secret Manager or Cloud Run env | sandbox or production |
 | `plaid_access_token_<item_id>` | Secret Manager / Keychain | Per linked Item; never in BQ |
-| `PLAID_ENV` | env | `sandbox` \| `development` \| `production` |
+| `PLAID_ENV` | env | `sandbox` \| `development` \| `production` (Cloud Run uses `production` after Issue #168) |
 
 ```bash
 # Laptop hydrate example (after creating SM secrets):
@@ -36,10 +36,20 @@ print(sync_item('palmetto', '<item_id>'))
 "
 ```
 
+## Purge Item (sandbox retirement)
+
+```bash
+BHAGA_DATASTORE=bigquery python3 -c "
+from skills.plaid_api.sync import purge_item
+print(purge_item('palmetto', '<item_id>', dry_run=True))   # counts only
+print(purge_item('palmetto', '<item_id>', dry_run=False))  # DELETE txns then item
+"
+```
+
 ## Files
 
 | File | Role |
 |------|------|
 | `auth.py` | client_id/secret + per-item access_token |
 | `client.py` | link/token, exchange, transactions/sync |
-| `sync.py` | cursor drain → BQ MERGE/DELETE |
+| `sync.py` | cursor drain → BQ MERGE/DELETE; `purge_item` for sandbox retirement |

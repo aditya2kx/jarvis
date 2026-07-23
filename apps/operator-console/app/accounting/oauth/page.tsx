@@ -3,6 +3,11 @@
 /**
  * Plaid OAuth return page (Chase and other OAuth banks).
  *
+ * Retained for optional non-IAP deployments that set `PLAID_REDIRECT_URI`.
+ * Current Cloud Run prod intentionally leaves that unset (IAP blocks the
+ * redirect), so desktop Chase OAuth uses popup → opener only and this route
+ * is not on the live Link path.
+ *
  * After bank login/OTP, Plaid redirects the *popup* here with ?oauth_state_id=….
  * Link token must live in localStorage (sessionStorage is per-window and empty
  * in the popup). We reinitialize Link with receivedRedirectUri, exchange the

@@ -1,13 +1,23 @@
 "use client";
 
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import {
   type ColumnDef,
+  type ColumnFiltersState,
   type ColumnPinningState,
   type RowData,
   type SortingState,
   flexRender,
   getCoreRowModel,
+  getFilteredRowModel,
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
@@ -21,6 +31,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { formatDate, formatDollars, formatCents, formatNumber, formatPct } from "@/lib/format";
 import { formatBucket, type Grain } from "@/lib/filters/range";
 import { cn } from "@/lib/utils";
@@ -60,7 +71,26 @@ declare module "@tanstack/react-table" {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface ColumnMeta<TData extends RowData, TValue> {
     format?: ColumnFormat;
+    /** When DataTable `enableColumnFilters`, show a text filter under the header. */
+    filterable?: boolean;
+    /** Allow multi-line cell text (overrides table `whitespace-nowrap`). */
+    wrap?: boolean;
+    /** Cap column width in px (use with `wrap` for long ACH/description strings). */
+    maxWidth?: number;
+    /** Preferred column width in px (`table-layout: fixed`). */
+    width?: number;
   }
+}
+
+function columnLayoutStyle(meta: { maxWidth?: number; width?: number } | undefined): CSSProperties {
+  if (!meta) return {};
+  const style: CSSProperties = {};
+  if (meta.width != null) style.width = meta.width;
+  if (meta.maxWidth != null) {
+    style.maxWidth = meta.maxWidth;
+    style.minWidth = Math.min(meta.width ?? 96, meta.maxWidth);
+  }
+  return style;
 }
 
 function statusVariant(value: string | null | undefined): "default" | "destructive" | "secondary" {
@@ -114,6 +144,20 @@ function renderFormatted(format: ColumnFormat, value: unknown): ReactNode {
   }
 }
 
+function filterIncludesString(
+  row: { getValue: (columnId: string) => unknown },
+  columnId: string,
+  filterValue: unknown,
+): boolean {
+  const needle = String(filterValue ?? "")
+    .trim()
+    .toLowerCase();
+  if (!needle) return true;
+  const rowValue = row.getValue(columnId);
+  if (rowValue == null || rowValue === "") return false;
+  return String(rowValue).toLowerCase().includes(needle);
+}
+
 // Thin TanStack wrapper. `pinLeft` mirrors Grafana panel 83's
 // `options.frozenColumns.left` — used by the M3 dual-date reco table to keep
 // Item/Current Qty/Avg per day visible while scrolling the date groups.
@@ -123,6 +167,8 @@ export function DataTable<TData>({
   pinLeft = [],
   initialSorting = [],
   rowHighlight,
+  enableColumnFilters = false,
+  onFilteredRowsChange,
 }: {
   columns: ColumnDef<TData>[];
   data: TData[];
@@ -132,25 +178,61 @@ export function DataTable<TData>({
   rowHighlight?:
     | { accessorKey: string; equals: string; className: string }
     | { accessorKey: string; equals: string; className: string }[];
+  /** Per-column text filters under headers (Accounting transactions, etc.). */
+  enableColumnFilters?: boolean;
+  /** Fired when the filtered (visible) row set changes — used by Accounting KPIs. */
+  onFilteredRowsChange?: (rows: TData[]) => void;
 }) {
   const columnPinning: ColumnPinningState = { left: pinLeft, right: [] };
   // Client-side sort across every column — Grafana's table panels let an
-  // operator click any header to sort; this is the console-side equivalent
-  // (per-column *filtering* already lives at the page level via the
-  // Source/On-time/Period/etc. FilterSelect controls each table's page
-  // already wires up, which drive the same underlying query rather than a
-  // client-side re-filter of already-fetched rows).
+  // operator click any header to sort; this is the console-side equivalent.
+  // Optional `enableColumnFilters` adds per-column text filters for dense
+  // ledgers (Accounting) without replacing page-level FilterSelect controls.
   const [sorting, setSorting] = useState<SortingState>(initialSorting);
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
 
   const table = useReactTable({
     data,
     columns,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
-    state: { columnPinning, sorting },
+    getFilteredRowModel: enableColumnFilters ? getFilteredRowModel() : undefined,
+    state: { columnPinning, sorting, columnFilters },
     onColumnPinningChange: () => {},
     onSortingChange: setSorting,
+    onColumnFiltersChange: setColumnFilters,
+    enableColumnFilters,
+    defaultColumn: {
+      filterFn: filterIncludesString,
+      enableColumnFilter: enableColumnFilters,
+    },
   });
+
+  const filteredRows = useMemo(
+    () => table.getFilteredRowModel().rows.map((r) => r.original),
+    // columnFilters + data drive the filtered model; table identity is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional deps
+    [table, columnFilters, data, enableColumnFilters],
+  );
+  const filteredCount = filteredRows.length;
+  const filterActive = enableColumnFilters && columnFilters.some((f) => String(f.value ?? "").trim());
+
+  useEffect(() => {
+    onFilteredRowsChange?.(filteredRows);
+  }, [filteredRows, onFilteredRowsChange]);
+
+  const filteredSpendEarned = useMemo(() => {
+    if (!enableColumnFilters) return null;
+    let spend = 0;
+    let earned = 0;
+    for (const r of filteredRows as Record<string, unknown>[]) {
+      const s = r.spend;
+      const e = r.earned;
+      if (typeof s === "number" && !Number.isNaN(s)) spend += s;
+      if (typeof e === "number" && !Number.isNaN(e)) earned += e;
+    }
+    return { spend, earned };
+  }, [enableColumnFilters, filteredRows]);
 
   function rowClassName(row: TData): string | undefined {
     if (!rowHighlight) return undefined;
@@ -193,92 +275,145 @@ export function DataTable<TData>({
       el.removeEventListener("scroll", measure);
       ro.disconnect();
     };
-  }, [columns, data]);
+  }, [columns, data, columnFilters]);
 
   const lastPinnedId = pinLeft[pinLeft.length - 1];
+  const useFixedLayout = columns.some((c) => {
+    const meta = c.meta as { wrap?: boolean; maxWidth?: number; width?: number } | undefined;
+    return Boolean(meta?.wrap || meta?.maxWidth != null || meta?.width != null);
+  });
 
   return (
-    <div className="relative overflow-hidden rounded-md border border-border">
-      <Table containerRef={containerRef}>
-        <TableHeader>
-          {table.getHeaderGroups().map((hg) => (
-            <TableRow key={hg.id}>
-              {hg.headers.map((header) => {
-                const pinned = header.column.getIsPinned();
-                const sortable = header.column.getCanSort();
-                const sortDir = header.column.getIsSorted();
-                return (
-                  <TableHead
-                    key={header.id}
-                    data-pinned={pinned || undefined}
-                    data-col-id={header.column.id}
-                    style={pinned ? { left: pinOffsets[header.column.id] ?? 0 } : undefined}
-                    className={cn(
-                      pinned && "sticky z-10 bg-background",
-                      pinned && header.column.id === lastPinnedId && "border-r border-border",
-                    )}
-                  >
-                    {sortable ? (
-                      <button
-                        type="button"
-                        onClick={header.column.getToggleSortingHandler()}
-                        className="flex items-center gap-1 hover:text-foreground"
-                        aria-label={`Sort by ${String(header.column.columnDef.header)}`}
-                      >
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                        {sortDir === "asc" ? (
-                          <ArrowUpIcon className="size-3" />
-                        ) : sortDir === "desc" ? (
-                          <ArrowDownIcon className="size-3" />
-                        ) : (
-                          <ChevronsUpDownIcon className="size-3 text-muted-foreground/50" />
-                        )}
-                      </button>
-                    ) : (
-                      flexRender(header.column.columnDef.header, header.getContext())
-                    )}
-                  </TableHead>
-                );
-              })}
-            </TableRow>
-          ))}
-        </TableHeader>
-        <TableBody>
-          {table.getRowModel().rows.length ? (
-            table.getRowModel().rows.map((row) => (
-              <TableRow key={row.id} className={rowClassName(row.original)}>
-                {row.getVisibleCells().map((cell) => {
-                  const format = cell.column.columnDef.meta?.format;
-                  const pinned = cell.column.getIsPinned();
+    <div className="flex flex-col gap-2">
+      {enableColumnFilters ? (
+        <p className="text-xs text-muted-foreground">
+          Showing {filteredCount.toLocaleString()} of {data.length.toLocaleString()} transactions
+          {filterActive ? " (filtered)" : ""}
+          {filteredSpendEarned
+            ? ` · spend ${formatDollars(filteredSpendEarned.spend)} · earned ${formatDollars(filteredSpendEarned.earned)}`
+            : null}
+          {filterActive ? (
+            <button
+              type="button"
+              className="ml-2 underline hover:text-foreground"
+              onClick={() => setColumnFilters([])}
+            >
+              Clear filters
+            </button>
+          ) : null}
+        </p>
+      ) : null}
+      <div className="relative overflow-hidden rounded-md border border-border">
+        <Table containerRef={containerRef} className={cn(useFixedLayout && "table-fixed")}>
+          <TableHeader>
+            {table.getHeaderGroups().map((hg) => (
+              <TableRow key={hg.id}>
+                {hg.headers.map((header) => {
+                  const pinned = header.column.getIsPinned();
+                  const sortable = header.column.getCanSort();
+                  const sortDir = header.column.getIsSorted();
+                  const meta = header.column.columnDef.meta;
+                  const showFilter =
+                    enableColumnFilters &&
+                    header.column.getCanFilter() &&
+                    meta?.filterable !== false;
                   return (
-                    <TableCell
-                      key={cell.id}
-                      style={pinned ? { left: pinOffsets[cell.column.id] ?? 0 } : undefined}
+                    <TableHead
+                      key={header.id}
+                      data-pinned={pinned || undefined}
+                      data-col-id={header.column.id}
+                      style={{
+                        ...(pinned ? { left: pinOffsets[header.column.id] ?? 0 } : {}),
+                        ...columnLayoutStyle(meta),
+                      }}
                       className={cn(
+                        "align-top",
+                        meta?.wrap && "whitespace-normal",
                         pinned && "sticky z-10 bg-background",
-                        pinned && cell.column.id === lastPinnedId && "border-r border-border",
+                        pinned && header.column.id === lastPinnedId && "border-r border-border",
                       )}
                     >
-                      {format
-                        ? renderFormatted(format, cell.getValue())
-                        : flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </TableCell>
+                      <div className="flex flex-col gap-1.5">
+                        {sortable ? (
+                          <button
+                            type="button"
+                            onClick={header.column.getToggleSortingHandler()}
+                            className="flex items-center gap-1 hover:text-foreground"
+                            aria-label={`Sort by ${String(header.column.columnDef.header)}`}
+                          >
+                            {flexRender(header.column.columnDef.header, header.getContext())}
+                            {sortDir === "asc" ? (
+                              <ArrowUpIcon className="size-3" />
+                            ) : sortDir === "desc" ? (
+                              <ArrowDownIcon className="size-3" />
+                            ) : (
+                              <ChevronsUpDownIcon className="size-3 text-muted-foreground/50" />
+                            )}
+                          </button>
+                        ) : (
+                          flexRender(header.column.columnDef.header, header.getContext())
+                        )}
+                        {showFilter ? (
+                          <Input
+                            value={String(header.column.getFilterValue() ?? "")}
+                            onChange={(e) => header.column.setFilterValue(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            placeholder="Filter…"
+                            className="h-7 w-full min-w-0 px-2 text-xs font-normal"
+                            aria-label={`Filter ${String(header.column.columnDef.header)}`}
+                          />
+                        ) : null}
+                      </div>
+                    </TableHead>
                   );
                 })}
               </TableRow>
-            ))
-          ) : (
-            <TableRow>
-              <TableCell colSpan={columns.length} className="text-center text-muted-foreground">
-                No rows.
-              </TableCell>
-            </TableRow>
-          )}
-        </TableBody>
-      </Table>
-      {!atEnd ? (
-        <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-background" />
-      ) : null}
+            ))}
+          </TableHeader>
+          <TableBody>
+            {table.getRowModel().rows.length ? (
+              table.getRowModel().rows.map((row) => (
+                <TableRow key={row.id} className={rowClassName(row.original)}>
+                  {row.getVisibleCells().map((cell) => {
+                    const format = cell.column.columnDef.meta?.format;
+                    const meta = cell.column.columnDef.meta;
+                    const pinned = cell.column.getIsPinned();
+                    return (
+                      <TableCell
+                        key={cell.id}
+                        style={{
+                          ...(pinned ? { left: pinOffsets[cell.column.id] ?? 0 } : {}),
+                          ...columnLayoutStyle(meta),
+                        }}
+                        className={cn(
+                          meta?.wrap
+                            ? "whitespace-normal break-words align-top"
+                            : undefined,
+                          pinned && "sticky z-10 bg-background",
+                          pinned && cell.column.id === lastPinnedId && "border-r border-border",
+                        )}
+                      >
+                        {format
+                          ? renderFormatted(format, cell.getValue())
+                          : flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </TableCell>
+                    );
+                  })}
+                </TableRow>
+              ))
+            ) : (
+              <TableRow>
+                <TableCell colSpan={columns.length} className="text-center text-muted-foreground">
+                  No rows.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+        {!atEnd ? (
+          <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-background" />
+        ) : null}
+      </div>
     </div>
   );
 }

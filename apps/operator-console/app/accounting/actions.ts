@@ -7,13 +7,17 @@ import { FEATURES } from "@/lib/config/features";
 import {
   createLinkToken,
   exchangePublicToken,
+  fetchAccounts,
+  fetchInstitutionName,
   loadAccessTokenSecret,
   saveAccessTokenSecret,
   transactionsSync,
 } from "@/lib/plaid/client";
 import {
   deletePlaidTransactions,
+  setPlaidTransactionInternal,
   updatePlaidCursor,
+  upsertPlaidAccount,
   upsertPlaidItem,
   upsertPlaidTransaction,
   type PlaidTxnWrite,
@@ -75,6 +79,16 @@ async function drainSync(itemId: string, accessToken: string, startCursor: strin
     if (!page.has_more) break;
   }
   await updatePlaidCursor(DEFAULT_STORE, itemId, cursor);
+  try {
+    const accounts = await fetchAccounts(accessToken);
+    for (const a of accounts) {
+      await upsertPlaidAccount({ ...a, item_id: itemId });
+    }
+  } catch (e) {
+    console.error(
+      `plaid accounts upsert failed item=${itemId}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
   return { added, modified, removed, cursor };
 }
 
@@ -99,7 +113,8 @@ export async function exchangePlaidPublicTokenAction(publicToken: string): Promi
   const by = await operatorEmail();
   const { access_token, item_id } = await exchangePublicToken(publicToken);
   await saveAccessTokenSecret(item_id, access_token);
-  await upsertPlaidItem(DEFAULT_STORE, item_id, null, by);
+  const institutionName = await fetchInstitutionName(access_token);
+  await upsertPlaidItem(DEFAULT_STORE, item_id, institutionName, by);
   const sync = await drainSync(item_id, access_token, "");
   revalidatePath("/accounting");
   return { itemId: item_id, sync };
@@ -118,4 +133,14 @@ export async function syncPlaidNowAction(): Promise<{
   const sync = await drainSync(item.item_id, accessToken, item.cursor || "");
   revalidatePath("/accounting");
   return { itemId: item.item_id, sync };
+}
+
+export async function setPlaidInternalAction(
+  transactionId: string,
+  isInternal: boolean,
+): Promise<void> {
+  if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
+  await operatorEmail();
+  await setPlaidTransactionInternal(transactionId, isInternal);
+  revalidatePath("/accounting");
 }

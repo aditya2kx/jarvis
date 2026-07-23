@@ -65,10 +65,8 @@ export function PlaidLinkButton({ linked }: { linked: boolean }) {
   const { open, ready } = usePlaidLink({
     token,
     onSuccess,
-    // Cast: react-plaid-link's OnEvent metadata is a wide structural type.
-    onEvent: onEvent as Parameters<NonNullable<Parameters<typeof usePlaidLink>[0]["onEvent"]>> extends never
-      ? never
-      : typeof onEvent,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PlaidLinkOnEvent metadata is a wide SDK type
+    onEvent: onEvent as any,
     onExit: (err) => {
       if (!err) return;
       setMessage(

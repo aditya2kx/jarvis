@@ -1,4 +1,4 @@
-import { laborDaily, plaidItems, plaidSpendByCategory, plaidTransactions } from "@/lib/bq/queries";
+import { laborDaily, plaidItems, plaidTransactions } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -8,10 +8,11 @@ import { DateRangePicker } from "@/components/filters/DateRangePicker";
 import { RANGE_PRESETS, wantsCustom } from "@/lib/filters/range";
 import { resolvePageRange } from "@/lib/filters/period";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { DataTable } from "@/components/tables/DataTable";
 import { PlaidLinkButton } from "@/components/drawers/PlaidLinkButton";
-import type { ColumnDef } from "@tanstack/react-table";
-import type { PlaidSpendCategoryRow } from "@/lib/bq/queries";
+import {
+  AccountingLedger,
+  type AccountingTxnRow,
+} from "@/components/accounting/AccountingLedger";
 
 export const dynamic = "force-dynamic";
 
@@ -36,8 +37,6 @@ export default async function AccountingPage({
   const showCustomPicker = wantsCustom(sp.range);
 
   let netSales: number | null = null;
-  let spendTotal = 0;
-  let categories: PlaidSpendCategoryRow[] = [];
   let txns: Awaited<ReturnType<typeof plaidTransactions>> = [];
   let linked = false;
   let institution: string | null = null;
@@ -45,15 +44,12 @@ export default async function AccountingPage({
   let error: string | undefined;
 
   try {
-    const [labor, items, cats, transactions] = await Promise.all([
+    const [labor, items, transactions] = await Promise.all([
       laborDaily(win),
       plaidItems(DEFAULT_STORE),
-      plaidSpendByCategory(win),
       plaidTransactions(win),
     ]);
     netSales = labor.length ? labor.reduce((s, r) => s + (r.net_sales ?? 0), 0) : null;
-    categories = cats;
-    spendTotal = cats.reduce((s, c) => s + (c.spend ?? 0), 0);
     txns = transactions;
     linked = items.length > 0;
     institution = items[0]?.institution_name ?? null;
@@ -62,28 +58,38 @@ export default async function AccountingPage({
     error = e instanceof Error ? e.message : String(e);
   }
 
-  // Precompute display fields — DataTable is a client component and cannot
-  // receive accessorFn from this server page (Next RSC serialization).
-  const txnRows = txns.map((t) => ({
-    ...t,
-    merchant_display: t.merchant_name || t.name || "—",
-    pending_label: t.pending ? "yes" : "",
-  }));
-
-  const catColumns: ColumnDef<PlaidSpendCategoryRow>[] = [
-    { accessorKey: "pfc_primary", header: "Plaid category" },
-    { accessorKey: "spend", header: "Spend", meta: { format: { kind: "dollars" } } },
-    { accessorKey: "txn_count", header: "Txns", meta: { format: { kind: "number" } } },
-  ];
-
-  type TxnRow = (typeof txnRows)[number];
-  const txnColumns: ColumnDef<TxnRow>[] = [
-    { accessorKey: "date", header: "Date", meta: { format: { kind: "date" } } },
-    { accessorKey: "merchant_display", header: "Merchant / name" },
-    { accessorKey: "amount", header: "Amount", meta: { format: { kind: "dollars" } } },
-    { accessorKey: "pfc_primary", header: "Category" },
-    { accessorKey: "pending_label", header: "Pending" },
-  ];
+  // Precompute display fields — DataTable/ledger is a client component and
+  // cannot receive accessorFn from this server page (Next RSC serialization).
+  // Plaid amount: positive = money out (spend), negative = money in (earned).
+  const txnRows: AccountingTxnRow[] = txns.map((t) => {
+    const amount = t.amount ?? 0;
+    const mask = t.account_mask?.trim() || "";
+    const kind =
+      t.account_type === "credit"
+        ? "Card"
+        : t.account_type === "depository"
+          ? "Bank"
+          : t.account_type || "";
+    const accountLast4 = mask
+      ? `${kind ? `${kind} ` : ""}•••• ${mask}`
+      : "—";
+    const isInternal = Boolean(t.is_internal);
+    return {
+      transaction_id: t.transaction_id,
+      date: t.date,
+      transaction_name: t.merchant_name || t.name || "—",
+      account_last4: accountLast4,
+      spend: amount > 0 ? amount : null,
+      earned: amount < 0 ? Math.abs(amount) : null,
+      category: t.pfc_primary || "—",
+      category_detail: t.pfc_detailed || "—",
+      channel: t.payment_channel || "—",
+      pending_label: t.pending ? "yes" : "no",
+      amount,
+      is_internal: isInternal,
+      internal_label: isInternal ? "yes" : "no",
+    };
+  });
 
   return (
     <div className="flex flex-col gap-4">
@@ -109,7 +115,7 @@ export default async function AccountingPage({
       {error ? (
         <p className="text-sm text-muted-foreground">
           Data unavailable{error ? `: ${error}` : ""} — expected locally without ADC/BQ; deployed
-          behind IAP this reads live. Plaid tables need migration 037 applied.
+          behind IAP this reads live. Plaid tables need migration 037+ applied.
         </p>
       ) : null}
 
@@ -130,71 +136,19 @@ export default async function AccountingPage({
             <p className="text-sm text-muted-foreground">Plaid Link writes disabled.</p>
           )}
           <p className="mt-2 text-xs text-muted-foreground">
-            Categories are Plaid PFC v2 (interim). Management taxonomy + overrides are a follow-up.
+            Categories are Plaid PFC v2 (interim). Click a category for the definition. Mark
+            checking↔card payments as Internal so Money out is not double-counted. Filter any
+            column — Plaid KPI cards follow the table.
           </p>
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Money in (Square net sales)
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-semibold">
-              {netSales == null
-                ? "—"
-                : netSales.toLocaleString("en-US", { style: "currency", currency: "USD" })}
-            </p>
-            <p className="text-xs text-muted-foreground">{win.label}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Money out (Plaid spend)
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-semibold">
-              {spendTotal.toLocaleString("en-US", { style: "currency", currency: "USD" })}
-            </p>
-            <p className="text-xs text-muted-foreground">Outflows only · {win.label}</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium text-muted-foreground">
-            Spend by Plaid category
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {categories.length ? (
-            <DataTable columns={catColumns} data={categories} />
-          ) : (
-            <p className="text-sm text-muted-foreground">No Plaid spend in this period.</p>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium text-muted-foreground">
-            Transactions
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {txnRows.length ? (
-            <DataTable columns={txnColumns} data={txnRows} />
-          ) : (
-            <p className="text-sm text-muted-foreground">No transactions in this period.</p>
-          )}
-        </CardContent>
-      </Card>
+      <AccountingLedger
+        netSales={netSales}
+        periodLabel={win.label}
+        rows={txnRows}
+        canWrite={FEATURES.writePlaidLink}
+      />
     </div>
   );
 }

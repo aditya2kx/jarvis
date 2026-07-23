@@ -1014,15 +1014,36 @@ export interface PlaidTransactionRow {
   pending: boolean | null;
   pfc_primary: string | null;
   pfc_detailed: string | null;
+  account_id: string | null;
+  account_name: string | null;
+  account_mask: string | null;
+  account_type: string | null;
+  payment_channel: string | null;
+  is_internal: boolean | null;
 }
 
 export function plaidTransactions(win: DateWindow): Promise<PlaidTransactionRow[]> {
   return q<PlaidTransactionRow>(
-    `SELECT transaction_id, date, name, merchant_name, amount, pending, pfc_primary, pfc_detailed
-     FROM ${fq("plaid_transactions")}
-     WHERE date BETWEEN @start AND @end
-     ORDER BY date DESC, transaction_id
-     LIMIT 2000`,
+    `SELECT
+       t.transaction_id,
+       t.date,
+       t.name,
+       t.merchant_name,
+       t.amount,
+       t.pending,
+       t.pfc_primary,
+       t.pfc_detailed,
+       t.account_id,
+       a.name AS account_name,
+       a.mask AS account_mask,
+       a.type AS account_type,
+       JSON_VALUE(t.raw_json, '$.payment_channel') AS payment_channel,
+       IFNULL(t.is_internal, FALSE) AS is_internal
+     FROM ${fq("plaid_transactions")} t
+     LEFT JOIN ${fq("plaid_accounts")} a ON a.account_id = t.account_id
+     WHERE t.date BETWEEN @start AND @end
+     ORDER BY t.date DESC, t.transaction_id
+     LIMIT 5000`,
     { start: dateParam(win.start), end: dateParam(win.end) },
   );
 }

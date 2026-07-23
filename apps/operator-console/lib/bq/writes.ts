@@ -372,6 +372,8 @@ export async function upsertPlaidItem(
   institutionName: string | null,
   by: string,
 ): Promise<void> {
+  // institution_name is often null at Link time — Node BQ client needs an
+  // explicit STRING type for null params (same pattern as tip exemptions).
   await mutate(
     `MERGE ${fq("plaid_items")} T
      USING (SELECT @store AS store, @item_id AS item_id) S
@@ -384,6 +386,7 @@ export async function upsertPlaidItem(
        (store, item_id, institution_name, cursor, linked_at, linked_by, last_synced_at)
        VALUES (@store, @item_id, @institution_name, '', CURRENT_TIMESTAMP(), @by, NULL)`,
     { store, item_id: itemId, institution_name: institutionName, by },
+    { institution_name: "STRING" },
   );
 }
 
@@ -413,6 +416,8 @@ export interface PlaidTxnWrite {
 
 /** Idempotent per-row MERGE for one Plaid transaction. */
 export async function upsertPlaidTransaction(row: PlaidTxnWrite): Promise<void> {
+  // Several Plaid fields are routinely null — declare types so the Node BQ
+  // client can bind them (avoids "Parameter types must be provided for null").
   await mutate(
     `MERGE ${fq("plaid_transactions")} T
      USING (SELECT @transaction_id AS transaction_id) S
@@ -446,6 +451,16 @@ export async function upsertPlaidTransaction(row: PlaidTxnWrite): Promise<void> 
       pfc_detailed: row.pfc_detailed,
       raw_json: row.raw_json,
     },
+    {
+      account_id: "STRING",
+      date: "STRING",
+      name: "STRING",
+      merchant_name: "STRING",
+      amount: "FLOAT64",
+      iso_currency: "STRING",
+      pfc_primary: "STRING",
+      pfc_detailed: "STRING",
+    },
   );
 }
 
@@ -454,4 +469,58 @@ export async function deletePlaidTransactions(ids: string[]): Promise<void> {
   await mutate(`DELETE FROM ${fq("plaid_transactions")} WHERE transaction_id IN UNNEST(@ids)`, {
     ids,
   });
+}
+
+/** Operator toggle: exclude (or include) a txn from Money out / category rollups. */
+export async function setPlaidTransactionInternal(
+  transactionId: string,
+  isInternal: boolean,
+): Promise<void> {
+  await mutate(
+    `UPDATE ${fq("plaid_transactions")}
+     SET is_internal = @is_internal, updated_at = CURRENT_TIMESTAMP()
+     WHERE transaction_id = @transaction_id`,
+    { transaction_id: transactionId, is_internal: isInternal },
+    { is_internal: "BOOL" },
+  );
+}
+
+export interface PlaidAccountWrite {
+  account_id: string;
+  item_id: string;
+  name: string | null;
+  mask: string | null;
+  type: string | null;
+  subtype: string | null;
+}
+
+/** Upsert one Plaid account (mask = last-4 digits for console display). */
+export async function upsertPlaidAccount(row: PlaidAccountWrite): Promise<void> {
+  await mutate(
+    `MERGE ${fq("plaid_accounts")} T
+     USING (SELECT @account_id AS account_id) S
+     ON T.account_id = S.account_id
+     WHEN MATCHED THEN UPDATE SET
+       item_id = @item_id, name = @name, mask = @mask,
+       type = @type, subtype = @subtype, updated_at = CURRENT_TIMESTAMP()
+     WHEN NOT MATCHED THEN INSERT (
+       account_id, item_id, name, mask, type, subtype, updated_at
+     ) VALUES (
+       @account_id, @item_id, @name, @mask, @type, @subtype, CURRENT_TIMESTAMP()
+     )`,
+    {
+      account_id: row.account_id,
+      item_id: row.item_id,
+      name: row.name,
+      mask: row.mask,
+      type: row.type,
+      subtype: row.subtype,
+    },
+    {
+      name: "STRING",
+      mask: "STRING",
+      type: "STRING",
+      subtype: "STRING",
+    },
+  );
 }

@@ -91,6 +91,24 @@ export async function exchangePublicToken(publicToken: string): Promise<{
   return { access_token, item_id };
 }
 
+/** Best-effort institution display name for plaid_items (null if lookup fails). */
+export async function fetchInstitutionName(accessToken: string): Promise<string | null> {
+  try {
+    const itemData = await plaidPost("/item/get", { access_token: accessToken });
+    const item = (itemData.item || {}) as Record<string, unknown>;
+    const institutionId = item.institution_id;
+    if (typeof institutionId !== "string" || !institutionId) return null;
+    const inst = await plaidPost("/institutions/get_by_id", {
+      institution_id: institutionId,
+      country_codes: ["US"],
+    });
+    const name = (inst.institution as Record<string, unknown> | undefined)?.name;
+    return typeof name === "string" ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface PlaidSyncPage {
   added: Record<string, unknown>[];
   modified: Record<string, unknown>[];
@@ -119,6 +137,28 @@ export async function transactionsSync(
   };
 }
 
+export interface PlaidAccountInfo {
+  account_id: string;
+  name: string | null;
+  mask: string | null;
+  type: string | null;
+  subtype: string | null;
+}
+
+export async function fetchAccounts(accessToken: string): Promise<PlaidAccountInfo[]> {
+  const data = await plaidPost("/accounts/get", { access_token: accessToken });
+  const accounts = (data.accounts as Record<string, unknown>[]) || [];
+  return accounts
+    .filter((a) => typeof a.account_id === "string")
+    .map((a) => ({
+      account_id: String(a.account_id),
+      name: a.name != null ? String(a.name) : null,
+      mask: a.mask != null ? String(a.mask) : null,
+      type: a.type != null ? String(a.type) : null,
+      subtype: a.subtype != null ? String(a.subtype) : null,
+    }));
+}
+
 export function accessTokenSecretId(itemId: string): string {
   const safe = itemId.replace(/[^a-zA-Z0-9_-]/g, "_");
   return `plaid_access_token_${safe}`;
@@ -131,6 +171,7 @@ export async function saveAccessTokenSecret(itemId: string, accessToken: string)
   const secretId = accessTokenSecretId(itemId);
   const parent = `projects/${project}`;
   const name = `${parent}/secrets/${secretId}`;
+  let created = false;
   try {
     await client.getSecret({ name });
   } catch {
@@ -139,11 +180,42 @@ export async function saveAccessTokenSecret(itemId: string, accessToken: string)
       secretId,
       secret: { replication: { automatic: {} } },
     });
+    created = true;
   }
   await client.addSecretVersion({
     parent: name,
     payload: { data: Buffer.from(accessToken, "utf8") },
   });
+  // Newly created secrets need an explicit secretAccessor binding for the
+  // console + webhook runtime SAs (project Editor alone is not enough for
+  // versions.access on secrets created at runtime — Sync now 403'd otherwise).
+  if (created) {
+    const consoleSa =
+      process.env.OPERATOR_CONSOLE_RUNTIME_SA?.trim() ||
+      "887772634501-compute@developer.gserviceaccount.com";
+    const accessors = [
+      `serviceAccount:${consoleSa}`,
+      "serviceAccount:bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com",
+    ];
+    try {
+      const [policy] = await client.getIamPolicy({ resource: name });
+      const bindings = policy.bindings || [];
+      let accessor = bindings.find((b) => b.role === "roles/secretmanager.secretAccessor");
+      if (!accessor) {
+        accessor = { role: "roles/secretmanager.secretAccessor", members: [] };
+        bindings.push(accessor);
+      }
+      const set = new Set(accessor.members || []);
+      for (const m of accessors) set.add(m);
+      accessor.members = [...set];
+      policy.bindings = bindings;
+      await client.setIamPolicy({ resource: name, policy });
+    } catch (e) {
+      console.error(
+        `plaid_access_token IAM bind failed for ${secretId}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
 }
 
 export async function loadAccessTokenSecret(itemId: string): Promise<string> {

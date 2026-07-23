@@ -218,7 +218,75 @@ def sync_item(store: str, item_id: str, *, cursor: str | None = None) -> SyncRes
 
     result.cursor = next_cursor
     _save_cursor(bq, store, item_id, next_cursor)
+    try:
+        upsert_accounts(item_id, access_token)
+    except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"accounts_upsert: {exc}")
     return result
+
+
+def upsert_accounts(item_id: str, access_token: str | None = None) -> int:
+    """Persist /accounts/get rows (mask = last-4) for console display."""
+    from google.cloud import bigquery
+
+    client = PlaidClient()
+    token = access_token or get_access_token(item_id)
+    data = client.accounts_get(token)
+    accounts = data.get("accounts") or []
+    rows = []
+    for a in accounts:
+        if not isinstance(a, dict) or not a.get("account_id"):
+            continue
+        rows.append(
+            {
+                "account_id": a["account_id"],
+                "item_id": item_id,
+                "name": a.get("name"),
+                "mask": a.get("mask"),
+                "type": a.get("type"),
+                "subtype": a.get("subtype"),
+            }
+        )
+    if not rows:
+        return 0
+    bq = _bq_client()
+    table_id = f"{_PROJECT}.{_DATASET}._plaid_acct_staging"
+    job = bq.load_table_from_json(
+        rows,
+        table_id,
+        job_config=bigquery.LoadJobConfig(
+            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+            schema=[
+                bigquery.SchemaField("account_id", "STRING"),
+                bigquery.SchemaField("item_id", "STRING"),
+                bigquery.SchemaField("name", "STRING"),
+                bigquery.SchemaField("mask", "STRING"),
+                bigquery.SchemaField("type", "STRING"),
+                bigquery.SchemaField("subtype", "STRING"),
+            ],
+        ),
+    )
+    job.result()
+    bq.query(
+        f"""
+        MERGE {_fq("plaid_accounts")} T
+        USING `{table_id}` S
+        ON T.account_id = S.account_id
+        WHEN MATCHED THEN UPDATE SET
+          item_id = S.item_id,
+          name = S.name,
+          mask = S.mask,
+          type = S.type,
+          subtype = S.subtype,
+          updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN INSERT (
+          account_id, item_id, name, mask, type, subtype, updated_at
+        ) VALUES (
+          S.account_id, S.item_id, S.name, S.mask, S.type, S.subtype, CURRENT_TIMESTAMP()
+        )
+        """
+    ).result()
+    return len(rows)
 
 
 def list_linked_items(store: str) -> list[dict]:

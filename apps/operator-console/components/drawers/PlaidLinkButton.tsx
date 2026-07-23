@@ -42,15 +42,15 @@ export function PlaidLinkButton({ linked }: { linked: boolean }) {
     [router],
   );
 
-  const onEvent = useCallback((eventName: string, metadata?: { error_code?: string; error_message?: string }) => {
+  const onEvent = useCallback((eventName: string, metadata: Record<string, unknown>) => {
     if (eventName === "OPEN_OAUTH") {
       setMessage(
         "Chase login opened in a popup — complete phone/code there, then return to this tab (keep it open).",
       );
     }
     if (eventName === "ERROR") {
-      const code = metadata?.error_code || "unknown";
-      const msg = metadata?.error_message || "Link error";
+      const code = String(metadata?.error_code || "unknown");
+      const msg = String(metadata?.error_message || "Link error");
       setMessage(`Plaid error (${code}): ${msg}`);
     }
     if (eventName === "EXIT") {
@@ -62,18 +62,19 @@ export function PlaidLinkButton({ linked }: { linked: boolean }) {
     }
   }, []);
 
-  const onExit = useCallback((err: null | { error_code?: string; error_message?: string; display_message?: string | null }) => {
-    if (!err) return;
-    setMessage(
-      `Link exited: ${err.error_code || "error"} — ${err.display_message || err.error_message || "try again"}`,
-    );
-  }, []);
-
   const { open, ready } = usePlaidLink({
     token,
     onSuccess,
-    onEvent,
-    onExit,
+    // Cast: react-plaid-link's OnEvent metadata is a wide structural type.
+    onEvent: onEvent as Parameters<NonNullable<Parameters<typeof usePlaidLink>[0]["onEvent"]>> extends never
+      ? never
+      : typeof onEvent,
+    onExit: (err) => {
+      if (!err) return;
+      setMessage(
+        `Link exited: ${err.error_code || "error"} — ${err.display_message || err.error_message || "try again"}`,
+      );
+    },
   });
 
   useEffect(() => {

@@ -2,8 +2,11 @@
 
 /**
  * Plaid OAuth return page (Chase and other OAuth banks).
- * After bank login, Plaid redirects here with ?oauth_state_id=…;
- * we reinitialize Link with receivedRedirectUri so the flow can finish.
+ *
+ * After bank login/OTP, Plaid redirects the *popup* here with ?oauth_state_id=….
+ * Link token must live in localStorage (sessionStorage is per-window and empty
+ * in the popup). We reinitialize Link with receivedRedirectUri, exchange the
+ * public_token, then close the popup or send the opener back to Accounting.
  */
 
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
@@ -16,7 +19,7 @@ const LINK_TOKEN_KEY = "plaid_link_token";
 export default function PlaidOAuthReturnPage() {
   const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
-  const [status, setStatus] = useState("Resuming Chase / bank login…");
+  const [status, setStatus] = useState("Resuming bank login…");
   const [isPending, startTransition] = useTransition();
 
   const receivedRedirectUri = useMemo(() => {
@@ -25,38 +28,64 @@ export default function PlaidOAuthReturnPage() {
   }, []);
 
   useEffect(() => {
-    const t = sessionStorage.getItem(LINK_TOKEN_KEY);
+    const t = localStorage.getItem(LINK_TOKEN_KEY);
     if (!t) {
-      setStatus("Missing Link session — go back to Accounting and click Link bank again.");
+      setStatus(
+        "Missing Link session in this window. Close this tab, keep Accounting open, and click Link bank again.",
+      );
       return;
     }
     setToken(t);
   }, []);
+
+  const finish = useCallback(
+    (msg: string) => {
+      setStatus(msg);
+      // Prefer closing the OAuth popup and refreshing the opener.
+      try {
+        if (window.opener && !window.opener.closed) {
+          window.opener.location.href = "/accounting";
+          window.close();
+          return;
+        }
+      } catch {
+        // cross-origin opener access can throw — fall through
+      }
+      router.replace("/accounting");
+      router.refresh();
+    },
+    [router],
+  );
 
   const onSuccess = useCallback(
     (publicToken: string) => {
       startTransition(async () => {
         try {
           setStatus("Linked — syncing transactions (can take a minute)…");
-          sessionStorage.removeItem(LINK_TOKEN_KEY);
+          localStorage.removeItem(LINK_TOKEN_KEY);
           const result = await exchangePlaidPublicTokenAction(publicToken);
-          setStatus(
-            `Done — synced +${result.sync.added}. Redirecting to Accounting…`,
-          );
-          router.replace("/accounting");
-          router.refresh();
+          finish(`Done — synced +${result.sync.added}. Returning to Accounting…`);
         } catch (e) {
           setStatus(`Link failed: ${e instanceof Error ? e.message : String(e)}`);
         }
       });
     },
-    [router],
+    [finish],
   );
+
+  const onExit = useCallback(() => {
+    setStatus((s) =>
+      s.startsWith("Linked") || s.startsWith("Done")
+        ? s
+        : "Link exited before finishing — close this window and try Link bank again from Accounting.",
+    );
+  }, []);
 
   const { open, ready } = usePlaidLink({
     token,
     receivedRedirectUri,
     onSuccess,
+    onExit,
   });
 
   useEffect(() => {

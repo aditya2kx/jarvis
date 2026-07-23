@@ -10,6 +10,8 @@ import {
   syncPlaidNowAction,
 } from "@/app/accounting/actions";
 
+/** localStorage (not sessionStorage) — OAuth popup is a separate window and
+ *  does not share sessionStorage with the opener. */
 const LINK_TOKEN_KEY = "plaid_link_token";
 
 export function PlaidLinkButton({ linked }: { linked: boolean }) {
@@ -23,7 +25,7 @@ export function PlaidLinkButton({ linked }: { linked: boolean }) {
     (publicToken: string) => {
       startTransition(async () => {
         try {
-          sessionStorage.removeItem(LINK_TOKEN_KEY);
+          localStorage.removeItem(LINK_TOKEN_KEY);
           setMessage("Linked — syncing Chase transactions (can take a minute)…");
           const result = await exchangePlaidPublicTokenAction(publicToken);
           setMessage(
@@ -41,14 +43,17 @@ export function PlaidLinkButton({ linked }: { linked: boolean }) {
   );
 
   const onEvent = useCallback((eventName: string) => {
-    // Chase opens an OAuth popup/tab — if the browser blocks it, Link looks stuck.
     if (eventName === "OPEN_OAUTH") {
       setMessage(
-        "Chase login should open in a popup or new tab — allow popups for this site if nothing appears.",
+        "Chase login opened in a popup — complete phone/code there. When it finishes you should return here automatically.",
       );
     }
-    if (eventName === "EXIT" || eventName === "HANDOFF") {
-      // leave message as-is; EXIT often fires when popup closes mid-flow
+    if (eventName === "EXIT") {
+      setMessage((prev) =>
+        prev?.includes("syncing") || prev?.includes("Linked ")
+          ? prev
+          : "Link closed before finishing — try Link bank again (allow popups).",
+      );
     }
   }, []);
 
@@ -69,10 +74,10 @@ export function PlaidLinkButton({ linked }: { linked: boolean }) {
     startTransition(async () => {
       try {
         setMessage(
-          "Starting Link… After you pick Chase, a login popup/tab should open — allow popups if blocked.",
+          "Starting Link… Chase will open a popup for phone/login — keep this tab open until sync finishes.",
         );
         const t = await createPlaidLinkTokenAction();
-        sessionStorage.setItem(LINK_TOKEN_KEY, t);
+        localStorage.setItem(LINK_TOKEN_KEY, t);
         setToken(t);
         setWantOpen(true);
       } catch (e) {

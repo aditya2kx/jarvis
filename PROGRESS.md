@@ -1,12 +1,27 @@
 # Jarvis Build Progress
 
-## 2026-07-16 — Plaid production cutover (Issue #168)
+## 2026-07-17 — BHAGA 7/15–7/16 Slack failures: ADP period select + Square OAuth save (Issue #178)
 
-**Scope:** Flip Operator Console + bhaga-webhook from `PLAID_ENV=sandbox` to `production`; purge sandbox Platypus Item/txns; Link Chase so Home cash/ops + Accounting use live bank outflows.
+**Symptom:** Nightlies for 2026-07-15/16 posted Slack `failure_alert`s; ADP labor charts empty (punches/shifts gap); Square missing for 7/16.
+
+**Root causes + fix (PR #179):**
+- ADP Timecard fell through to Select All (option `name=` filters unreliable) → 60s download timeout. Now enumerates options, matches date range / profile biweekly bounds / Current Pay Period, Select All last, 180s timeout.
+- Live ADP dropdown uses ISO ranges (`2026-07-13 - 2026-07-26`); slash-only parse still Select-All'd — ISO parse added. Sandbox-live proof: `[adp_timecard] selected pay period 2026-07-13 → 2026-07-26 (contains target_date=2026-07-15)`.
+- Square `save_oauth_secret` treated `secrets.get` PermissionDenied as missing → `create_secret` 403. Now `add_secret_version` only.
+- `replace_scope` DELETE double-quoted sheet apostrophe dates (`''2026-…'`). Strip via `_clean_str`.
+- **Operator Console `/inventory` wrong numbers after Jul 16 restock:** live next-date headers labeled onto stale Slot 1/2 materialization (TOTAL On hand “Jul 23” = 120, Order tubs = Jul 16’s 111). Migration 041 binds `delivery_date`, next dates `> today CT`, console/deploy self-heal refresh. Evidence: before/after screenshots on `evidence-screenshots` release.
+- **Operator Console Current Qty wrong for Mango (Jul 16/17):** ClickUp has two "Mango" fields (tubs `16` vs packaging `9 boxes` / `3 cases`). Views collapsed nondeterministically to packaging. Migration 042 prefers non-box/case `raw_text` when deduping.
+
+**Backfill:** `Retry-Dates: 2026-07-15, 2026-07-16` on merge.
+
+## 2026-07-16 — Plaid production cutover + Accounting Phase A (Issue #168)
+
+**Scope:** Flip Operator Console + bhaga-webhook from `PLAID_ENV=sandbox` to `production`; purge sandbox Platypus Item/txns; Link Chase so Home cash/ops + Accounting use live bank outflows. Phase A Accounting UX: filter-driven Plaid KPIs, PFC click-to-explain, internal-transfer exclusion.
 
 **Key changes:**
 - Deploy workflows set `PLAID_ENV=production`; `skills/plaid_api.sync.purge_item` for sandbox retirement.
 - Ops: rotate SM `plaid_secret` to dashboard Production secret; operator one-time Chase Link on `/accounting`.
+- Migrations `043_plaid_accounts` + `044_plaid_internal_flag`; AccountingLedger with Hide internal / Mark; KPIs follow table filters.
 - Docs: RUNBOOK / FEATURE_FLAGS / plaid README updated. #160 taxonomy and #161 QBO still deferred.
 
 ## 2026-07-14 — ADP per-employee schedule + Payroll Liability burden (Issue #166 follow-through)

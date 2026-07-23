@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
-"""Unit tests for skills.adp_run_automation.runner — date-related regexes.
+"""Unit tests for skills.adp_run_automation.runner — date-related helpers.
 
 Run:
     python3 skills/adp_run_automation/test_runner_dates.py
 
-Covers Layer D of the seamless_bhaga_refresh fix: the
-``_CURRENT_PAY_PERIOD_RE`` regex used to find ADP's "Current Pay
-Period" dropdown option when no closed pay period contains
-``target_date`` (in-flight payroll case).
-
-We only test the regex match contract; the Playwright click landing
-correctly on the option is verified by tonight's live cron run.
+Covers:
+- ``_CURRENT_PAY_PERIOD_RE`` / ``_is_current_pay_period_label`` for ADP's
+  in-flight payroll dropdown option (including date-suffixed labels).
+- ``_biweekly_period_bounds`` cadence matching store-profile anchor math.
 """
 
 from __future__ import annotations
 
+import datetime
 import os
 import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
-from skills.adp_run_automation.runner import _CURRENT_PAY_PERIOD_RE
+from skills.adp_run_automation.runner import (
+    _CURRENT_PAY_PERIOD_RE,
+    _biweekly_period_bounds,
+    _is_current_pay_period_label,
+    _parse_pay_period_range,
+)
 
 
 def _matches(text: str) -> bool:
@@ -53,6 +56,18 @@ class CurrentPayPeriodRegexPositiveTests(unittest.TestCase):
         # before testing the regex.
         self.assertTrue(_matches("  CURRENT  "))
 
+    def test_current_with_date_suffix(self):
+        self.assertTrue(
+            _is_current_pay_period_label(
+                "Current Pay Period (07/13/2026 - 07/26/2026)"
+            )
+        )
+
+    def test_current_with_bracket_suffix(self):
+        self.assertTrue(
+            _is_current_pay_period_label("Current Pay Period [in progress]")
+        )
+
 
 class CurrentPayPeriodRegexNegativeTests(unittest.TestCase):
     def test_closed_date_range(self):
@@ -69,6 +84,38 @@ class CurrentPayPeriodRegexNegativeTests(unittest.TestCase):
         # Tax period is a different ADP concept; the prefix shouldn't drag
         # us into matching it.
         self.assertFalse(_matches("Current Tax Period"))
+        self.assertFalse(_is_current_pay_period_label("Current Tax Period"))
+
+
+class BiweeklyPeriodBoundsTests(unittest.TestCase):
+    def test_july_15_open_period(self):
+        # Anchor end 2026-05-17 → period containing 2026-07-15 is 7/13–7/26.
+        start, end = _biweekly_period_bounds(
+            datetime.date(2026, 7, 15),
+            anchor_end=datetime.date(2026, 5, 17),
+        )
+        self.assertEqual(start, datetime.date(2026, 7, 13))
+        self.assertEqual(end, datetime.date(2026, 7, 26))
+
+    def test_closed_period_end_on_anchor(self):
+        start, end = _biweekly_period_bounds(
+            datetime.date(2026, 5, 17),
+            anchor_end=datetime.date(2026, 5, 17),
+        )
+        self.assertEqual(start, datetime.date(2026, 5, 4))
+        self.assertEqual(end, datetime.date(2026, 5, 17))
+
+    def test_parse_pay_period_range(self):
+        bounds = _parse_pay_period_range("Pay Period 07/13/2026 - 07/26/2026")
+        self.assertEqual(bounds, (datetime.date(2026, 7, 13), datetime.date(2026, 7, 26)))
+
+    def test_parse_iso_pay_period_range_live_adp(self):
+        # Exact option text from 2026-07-17 sandbox-live ADP dropdown.
+        bounds = _parse_pay_period_range("2026-07-13 - 2026-07-26")
+        self.assertEqual(bounds, (datetime.date(2026, 7, 13), datetime.date(2026, 7, 26)))
+        self.assertTrue(
+            bounds[0] <= datetime.date(2026, 7, 15) <= bounds[1]
+        )
 
 
 if __name__ == "__main__":

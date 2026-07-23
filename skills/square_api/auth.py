@@ -118,6 +118,12 @@ def save_oauth_secret(store: str, data: dict) -> None:
 
     Used after a refresh. Requires secretVersionAdder on the secret. On
     keychain backend this updates the Keychain item in place.
+
+    GCP path calls ``add_secret_version`` only — the orchestrator SA has
+    ``roles/secretmanager.secretVersionAdder`` on the existing secret but
+    NOT ``secrets.get`` / ``secrets.create``. Treating get-denied as
+    "missing secret" and calling create_secret is what broke the 2026-07-16
+    nightly (PermissionDenied on create).
     """
     name = _secret_name(store)
     payload = json.dumps(data, sort_keys=True)
@@ -134,18 +140,19 @@ def save_oauth_secret(store: str, data: dict) -> None:
         client = secretmanager.SecretManagerServiceClient()
         secret_path = f"projects/{_GCP_PROJECT}/secrets/{name}"
         try:
-            client.get_secret(request={"name": secret_path})
-        except Exception:  # noqa: BLE001
-            client.create_secret(
+            client.add_secret_version(
                 request={
-                    "parent": f"projects/{_GCP_PROJECT}",
-                    "secret_id": name,
-                    "secret": {"replication": {"automatic": {}}},
+                    "parent": secret_path,
+                    "payload": {"data": payload.encode("utf-8")},
                 }
             )
-        client.add_secret_version(
-            request={"parent": secret_path, "payload": {"data": payload.encode("utf-8")}}
-        )
+        except Exception as exc:  # noqa: BLE001
+            raise SquareAuthError(
+                f"Could not add a new version of Square OAuth secret {name!r}: "
+                f"{exc}. Grant roles/secretmanager.secretVersionAdder on "
+                f"projects/{_GCP_PROJECT}/secrets/{name} to the caller SA "
+                f"(do not require secrets.create — the secret must already exist)."
+            ) from exc
         return
 
     # Keychain backend (laptop): store under a stable service/account.

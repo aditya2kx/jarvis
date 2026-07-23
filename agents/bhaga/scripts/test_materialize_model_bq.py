@@ -299,6 +299,15 @@ class TestReplaceScopeMode(unittest.TestCase):
     def test_scope_clear_tip_alloc_daily(self):
         self._run_scope_clear("model_tip_alloc_daily", "date", "2026-06-19")
 
+    def test_scope_clear_strips_sheet_apostrophe_prefix(self):
+        """Sheet text-force prefix must not double-quote the DELETE IN list."""
+        delete_sql, _ = self._run_scope_clear(
+            "model_tip_alloc_daily", "date", "'2026-06-19"
+        )
+        sql = delete_sql[0]
+        self.assertIn("'2026-06-19'", sql)
+        self.assertNotIn("''2026", sql)
+
     def test_scope_clear_tip_alloc_period(self):
         self._run_scope_clear("model_tip_alloc_period", "period_start", "2026-06-09")
 

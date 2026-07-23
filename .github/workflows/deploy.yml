@@ -108,6 +108,16 @@ jobs:
           BHAGA_DATASTORE=bigquery python3 -c \
             "from core.datastore import ensure_schema; applied = ensure_schema(); print('applied:', applied or 'none')"
 
+      # Recompute dual-date order reco after schema so Operator Console
+      # /inventory shows correct date-bound columns immediately (not next nightly).
+      - name: Refresh order reco (prod inventory)
+        if: ${{ !inputs.rollback_sha }}
+        run: |
+          pip install --quiet google-cloud-bigquery google-auth
+          BHAGA_DATASTORE=bigquery python3 -c \
+            "from core.order_reco import refresh_order_reco; refresh_order_reco('palmetto'); print('refresh_order_reco: ok store=palmetto')" \
+            || echo "::warning::refresh_order_reco failed (non-fatal) — Operator Console /inventory may stay stale until nightly or page self-heal"
+
       # Auto-rerun the nightly for any dates the merged PR declares it fixes, via
       # a "Retry-Dates: YYYY-MM-DD[, ...]" trailer in the PR body. Each date runs
       # SMART (scripts/trigger_dated_refresh.py): already-covered dates are

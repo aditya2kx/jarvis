@@ -238,6 +238,13 @@ GRAFANA_VIEWS: list[Target] = [
     # / vw_plaid_spend_by_category_daily back Accounting (Plaid Link + sync).
     # Console-only cash ledger — not a model_* table, no Grafana panel, so no
     # BQ_TARGETS/GRAFANA_VIEWS entry (same class as recognition_bonuses / 033).
+    # migration 041 (Issue #178 follow-up / PR #180): inventory_order_reco gains
+    # delivery_date; vw_order_reco_{slot1,slot2,combined} + tvf_order_reco_* join
+    # and filter by delivery_date (> today CT). No new BQ_TARGETS/GRAFANA_VIEWS —
+    # same views already registered above (031/032); freshness still via refresh_date.
+    # migration 042: vw_inventory_base_latest_daily + vw_inventory_order_assistant
+    # prefer tub raw_text over box/case packaging when collapsing duplicate
+    # display-name fields (two ClickUp "Mango" fields). Same views — no new targets.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

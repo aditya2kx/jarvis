@@ -1110,6 +1110,17 @@ same pattern as an OTP-wait timeout. The next nightly or `Retry-Dates` rerun re-
 A date where ADP was skipped has Square in BQ but missing `adp_shifts` → `trigger_dated_refresh.py`
 correctly selects **full scrape** (not recompute-only) on a `Retry-Dates` rerun.
 
+**ADP Timecard pay-period selection (2026-07-17).** Nightly mode must select the **single**
+pay period that contains `target_date` — not Select All. The runner enumerates Pay Period
+dropdown options in Python (Playwright `name=` filters miss ADP's custom accessible names),
+matches an embedded date range (`YYYY-MM-DD - YYYY-MM-DD` as live ADP exposes, or
+`M/D/YYYY - M/D/YYYY`), then falls back to store-profile biweekly
+bounds (`adp_run.pay_periods_anchor_end_date`), then a "Current Pay Period" label (including
+date-suffixed forms), and only then Select All. Select All of full history can exceed a 60s
+download wait (Slack `failure_alert` on 2026-07-15/16); the Timecard export timeout is 180s
+as a safety net. If punches/shifts are missing for dates, add
+`Retry-Dates: YYYY-MM-DD[, …]` to the fix PR so deploy full-scrapes the gap.
+
 **Post-login maintenance interstitial (RUN maintenance window) + smart retry.** ADP also serves
 a maintenance/throttle interstitial **after** a valid login during scheduled RUN maintenance.
 It uses **two distinct URLs** (`_is_maintenance_interstitial` matches both):
@@ -1569,14 +1580,24 @@ fallback while the BQ table is being seeded. After seeding, Sheet config becomes
 > `_refresh_order_reco` async). The recommendation is a MATERIALIZED table, `bhaga.inventory_order_reco`
 > — see `agents/bhaga/knowledge-base/DOMAIN.md` § migration 031 for why (BQ query-planning complexity
 > limit) and `.cursor/rules/bhaga.mdc` for the full invariant. It is recomputed by
-> `core.order_reco.refresh_order_reco()` from **three** triggers: (1) the nightly `daily_refresh.py`
+> `core.order_reco.refresh_order_reco()` from **five** triggers: (1) the nightly `daily_refresh.py`
 > step `refresh_order_reco` (runs after `ingest_inventory`, non-fatal), (2) the restock modal's
-> `view_submission` handler after any schedule/orders write, and (3) this config-set. If the tables
-> on the dashboard look stale, check which of the three last ran via
+> `view_submission` handler after any schedule/orders write, (3) this config-set, (4) Operator
+> Console `/inventory` page load when materialized `delivery_date`s ≠ live next dates or
+> `refreshed_at` CT day is stale (`ensureOrderRecoFresh`), and (5) post-merge deploy after
+> `ensure_schema` (`deploy.yml` + `operator-console-deploy.yml`). If the tables
+> on the dashboard look stale, check which trigger last ran via
 > `python3 -m agents.bhaga.scripts.status --store palmetto` (nightly step) or re-trigger manually:
 > ```bash
 > BHAGA_DATASTORE=bigquery python3 -c "from core.order_reco import refresh_order_reco; refresh_order_reco('palmetto')"
 > ```
+>
+> **Troubleshooting: /inventory On hand / Order tubs look like the wrong delivery date.**
+> Fixed in migration 041: live next-date headers were painted onto stale Slot 1/2 rows
+> (e.g. TOTAL On hand labeled Jul 23 = 120 with Order tubs = prior restock actuals).
+> Each reco row now stores `delivery_date`; combined view joins by date; next dates are
+> strictly `> today CT` (avoids delivery-day double-count after closing includes received tubs).
+> Deploy refreshes reco after schema so prod Operator Console updates on merge.
 
 > **`data_window_end` is DERIVED — never stored in `store_config`.** It is computed
 > live as `MAX(square_transactions.date_local)` via `core.store_config.resolve_data_window_end()`.

@@ -54,6 +54,15 @@ jobs:
           BHAGA_DATASTORE=bigquery python3 -c \
             "from core.datastore import ensure_schema; applied = ensure_schema(); print('applied:', applied or 'none')"
 
+      # Recompute dual-date order reco so /inventory numbers update on this
+      # revision (migration 041 delivery_date bind) — do not wait for nightly.
+      - name: Refresh order reco (prod inventory)
+        run: |
+          pip install --quiet google-cloud-bigquery google-auth
+          BHAGA_DATASTORE=bigquery python3 -c \
+            "from core.order_reco import refresh_order_reco; refresh_order_reco('palmetto'); print('refresh_order_reco: ok store=palmetto')" \
+            || echo "::warning::refresh_order_reco failed (non-fatal) — /inventory may stay stale until nightly or page self-heal"
+
       # Cloud Run direct IAP (GA, no load balancer) fronts this service — a
       # custom "External" OAuth client + branding works fine without a Google
       # Workspace organization (reversing the 2026-07-04 "no IAP" pivot; see

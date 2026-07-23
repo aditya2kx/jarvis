@@ -91,19 +91,73 @@ export async function refreshOrderReco(store: string): Promise<void> {
   );
   const maxTubs = intParam(cfgRows.length ? Number(cfgRows[0].value) : DEFAULT_MAX_TUBS);
 
+  // Explicit columns — migration 041 added delivery_date; t.* + ts would mis-map.
+  const cols =
+    "store, Slot, Item, `Current Qty`, `Avg per day`, `On Hand at Restock`, " +
+    "`Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock`, " +
+    "_ord, refreshed_at, delivery_date";
+  const sel =
+    "Item, `Current Qty`, `Avg per day`, `On Hand at Restock`, " +
+    "`Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock`, " +
+    "_ord, CURRENT_TIMESTAMP(), delivery_date";
+
   await mutate(`DELETE FROM ${fq("inventory_order_reco")} WHERE store = @store`, { store });
   await mutate(
-    `INSERT INTO ${fq("inventory_order_reco")}
-     SELECT @store, 1, t.*, CURRENT_TIMESTAMP() FROM ${fq("tvf_order_reco_slot1")}(@maxTubs) t`,
+    `INSERT INTO ${fq("inventory_order_reco")} (${cols})
+     SELECT @store, 1, ${sel} FROM ${fq("tvf_order_reco_slot1")}(@maxTubs)`,
     { store, maxTubs },
   );
   // Slot 2 must run AFTER slot 1's INSERT lands — its TVF reads slot 1's row
   // back from inventory_order_reco (migration 031).
   await mutate(
-    `INSERT INTO ${fq("inventory_order_reco")}
-     SELECT @store, 2, t.*, CURRENT_TIMESTAMP() FROM ${fq("tvf_order_reco_slot2")}(@maxTubs) t`,
+    `INSERT INTO ${fq("inventory_order_reco")} (${cols})
+     SELECT @store, 2, ${sel} FROM ${fq("tvf_order_reco_slot2")}(@maxTubs)`,
     { store, maxTubs },
   );
+}
+
+/**
+ * Self-heal when live next-delivery dates and materialized reco rows diverge
+ * (e.g. Chicago midnight rolled Slot 1 to a new calendar date but nightly
+ * refresh has not run yet). Also refreshes when refreshed_at's CT date is
+ * before today. Idempotent — no-op when already aligned.
+ */
+export async function ensureOrderRecoFresh(store: string): Promise<boolean> {
+  const [next, mat, todayRows, refreshedRows] = await Promise.all([
+    q<{ delivery_date: string }>(
+      `SELECT CAST(delivery_date AS STRING) AS delivery_date
+       FROM ${fq("vw_order_reco_next_dates")} ORDER BY slot`,
+    ),
+    q<{ delivery_date: string | null }>(
+      `SELECT DISTINCT CAST(delivery_date AS STRING) AS delivery_date
+       FROM ${fq("inventory_order_reco")}
+       WHERE store = @store AND Item = 'TOTAL'`,
+      { store },
+    ),
+    q<{ today: string }>(`SELECT CAST(CURRENT_DATE('America/Chicago') AS STRING) AS today`),
+    q<{ refreshed_ct: string | null }>(
+      `SELECT CAST(DATE(MAX(refreshed_at), 'America/Chicago') AS STRING) AS refreshed_ct
+       FROM ${fq("inventory_order_reco")} WHERE store = @store`,
+      { store },
+    ),
+  ]);
+
+  const live = new Set(next.map((d) => d.delivery_date.slice(0, 10)));
+  const have = new Set(
+    mat
+      .map((r) => (r.delivery_date == null ? "" : r.delivery_date.slice(0, 10)))
+      .filter(Boolean),
+  );
+  const today = todayRows[0]?.today ?? "";
+  const refreshedCt = refreshedRows[0]?.refreshed_ct ?? "";
+  const datesMatch = live.size === have.size && [...live].every((d) => have.has(d));
+  const staleDay = Boolean(today && refreshedCt && refreshedCt < today);
+
+  if (!datesMatch || staleDay || live.size === 0 && have.size > 0) {
+    await refreshOrderReco(store);
+    return true;
+  }
+  return false;
 }
 
 export type RestockAction = "add-order" | "register-only" | "reset-to-estimated" | "replace-estimated";

@@ -278,7 +278,7 @@ def load_model_rows(
         )
         _assert_sandbox_write_isolation()
         col = _SCOPE_CLEAR_COL[table]
-        vals = sorted({str(d[col]) for d in dicts if d.get(col) is not None})
+        vals = sorted({_clean_str(d[col]) for d in dicts if d.get(col) is not None})
         if vals:
             in_list = ", ".join(f"'{v}'" for v in vals)
             read_query(

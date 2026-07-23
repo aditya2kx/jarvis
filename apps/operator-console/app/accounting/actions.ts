@@ -15,6 +15,7 @@ import {
 } from "@/lib/plaid/client";
 import {
   deletePlaidTransactions,
+  markPlaidTransactionsInternal,
   setPlaidTransactionInternal,
   updatePlaidCursor,
   upsertPlaidAccount,
@@ -22,7 +23,8 @@ import {
   upsertPlaidTransaction,
   type PlaidTxnWrite,
 } from "@/lib/bq/writes";
-import { plaidItems } from "@/lib/bq/queries";
+import { plaidAccountsForItem, plaidItems, plaidTxnHintsForItem } from "@/lib/bq/queries";
+import { suggestInternal } from "@/lib/plaid/internal";
 
 /** Production Plaid rejects emails in user.client_user_id (INVALID_FIELD). */
 function plaidClientUserId(email: string): string {
@@ -87,6 +89,46 @@ async function drainSync(itemId: string, accessToken: string, startCursor: strin
   } catch (e) {
     console.error(
       `plaid accounts upsert failed item=${itemId}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  // Auto-flag checking↔own-card legs among linked accounts. Never clears an
+  // operator un-mark (UPDATE only where is_internal is not already true).
+  try {
+    const linked = await plaidAccountsForItem(itemId);
+    const peers = await plaidTxnHintsForItem(itemId);
+    const ids = peers
+      .filter((t) => !t.is_internal)
+      .filter((t) =>
+        suggestInternal(
+          {
+            transaction_id: t.transaction_id,
+            account_id: t.account_id,
+            name: t.name,
+            merchant_name: t.merchant_name,
+            amount: Number(t.amount ?? 0),
+            date: t.date,
+            pfc_primary: t.pfc_primary,
+            pfc_detailed: t.pfc_detailed,
+          },
+          linked,
+          peers.map((p) => ({
+            transaction_id: p.transaction_id,
+            account_id: p.account_id,
+            name: p.name,
+            merchant_name: p.merchant_name,
+            amount: Number(p.amount ?? 0),
+            date: p.date,
+            pfc_primary: p.pfc_primary,
+            pfc_detailed: p.pfc_detailed,
+          })),
+        ),
+      )
+      .map((t) => t.transaction_id);
+    const n = await markPlaidTransactionsInternal(ids);
+    if (n) console.info(`plaid suggestInternal marked=${n} item=${itemId}`);
+  } catch (e) {
+    console.error(
+      `plaid suggestInternal failed item=${itemId}: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
   return { added, modified, removed, cursor };

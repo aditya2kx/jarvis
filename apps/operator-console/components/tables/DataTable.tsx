@@ -226,6 +226,8 @@ export function DataTable<TData>({
     let spend = 0;
     let earned = 0;
     for (const r of filteredRows as Record<string, unknown>[]) {
+      // Align caption with Accounting KPIs: skip internal transfers.
+      if (r.is_internal === true || r.internal_label === "yes") continue;
       const s = r.spend;
       const e = r.earned;
       if (typeof s === "number" && !Number.isNaN(s)) spend += s;

@@ -539,6 +539,19 @@ export async function setPlaidTransactionInternal(
   );
 }
 
+/** Batch-set is_internal=TRUE for heuristic matches (never clears an operator un-mark). */
+export async function markPlaidTransactionsInternal(ids: string[]): Promise<number> {
+  if (!ids.length) return 0;
+  await mutate(
+    `UPDATE ${fq("plaid_transactions")}
+     SET is_internal = TRUE, updated_at = CURRENT_TIMESTAMP()
+     WHERE transaction_id IN UNNEST(@ids)
+       AND IFNULL(is_internal, FALSE) IS NOT TRUE`,
+    { ids },
+  );
+  return ids.length;
+}
+
 export interface PlaidAccountWrite {
   account_id: string;
   item_id: string;

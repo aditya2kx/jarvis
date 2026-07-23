@@ -1005,6 +1005,44 @@ export function plaidItems(store: string): Promise<PlaidItemRow[]> {
   );
 }
 
+export interface PlaidAccountRow {
+  account_id: string;
+  mask: string | null;
+  type: string | null;
+}
+
+export function plaidAccountsForItem(itemId: string): Promise<PlaidAccountRow[]> {
+  return q<PlaidAccountRow>(
+    `SELECT account_id, mask, type FROM ${fq("plaid_accounts")} WHERE item_id=@item_id`,
+    { item_id: itemId },
+  );
+}
+
+/** Rows needed to auto-flag checking↔own-card transfers after sync. */
+export function plaidTxnHintsForItem(itemId: string): Promise<
+  {
+    transaction_id: string;
+    account_id: string | null;
+    name: string | null;
+    merchant_name: string | null;
+    amount: number;
+    date: string;
+    pfc_primary: string | null;
+    pfc_detailed: string | null;
+    is_internal: boolean | null;
+  }[]
+> {
+  return q(
+    `SELECT
+       transaction_id, account_id, name, merchant_name, amount,
+       CAST(date AS STRING) AS date, pfc_primary, pfc_detailed,
+       IFNULL(is_internal, FALSE) AS is_internal
+     FROM ${fq("plaid_transactions")}
+     WHERE item_id=@item_id`,
+    { item_id: itemId },
+  );
+}
+
 export interface PlaidTransactionRow {
   transaction_id: string;
   date: string;

@@ -222,7 +222,122 @@ def sync_item(store: str, item_id: str, *, cursor: str | None = None) -> SyncRes
         upsert_accounts(item_id, access_token)
     except Exception as exc:  # noqa: BLE001
         result.errors.append(f"accounts_upsert: {exc}")
+    try:
+        n = _mark_suggested_internals(bq, item_id)
+        if n:
+            print(f"[plaid_api.sync] suggestInternal marked={n} item={item_id}")
+    except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"suggest_internal: {exc}")
     return result
+
+
+def _mark_suggested_internals(bq, item_id: str) -> int:
+    """Flag checking↔own-card legs. Never clears an operator un-mark."""
+    import re
+    from datetime import datetime
+    from google.cloud import bigquery
+
+    linked = [
+        dict(r)
+        for r in bq.query(
+            f"SELECT account_id, mask, type FROM {_fq('plaid_accounts')} WHERE item_id=@item_id",
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("item_id", "STRING", item_id)]
+            ),
+        ).result()
+    ]
+    txns = [
+        dict(r)
+        for r in bq.query(
+            f"""
+            SELECT transaction_id, account_id, name, merchant_name, amount,
+                   CAST(date AS STRING) AS date, pfc_primary, pfc_detailed,
+                   IFNULL(is_internal, FALSE) AS is_internal
+            FROM {_fq("plaid_transactions")} WHERE item_id=@item_id
+            """,
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("item_id", "STRING", item_id)]
+            ),
+        ).result()
+    ]
+    masks = {(a.get("mask") or "").strip() for a in linked if (a.get("mask") or "").strip()}
+    by_id = {a["account_id"]: a for a in linked}
+    linked_ids = set(by_id)
+    card_ending = re.compile(r"card ending in\s*(\d{4})", re.I)
+    thank_you = re.compile(r"payment thank you", re.I)
+    automatic = re.compile(r"automatic payment\s*-?\s*thank", re.I)
+
+    def day_diff(a: str, b: str) -> int:
+        return abs(
+            (datetime.strptime(a, "%Y-%m-%d") - datetime.strptime(b, "%Y-%m-%d")).days
+        )
+
+    def has_opposite(txn, require_peer_type=None) -> bool:
+        target = abs(float(txn.get("amount") or 0))
+        if target <= 0 or not txn.get("account_id"):
+            return False
+        for p in txns:
+            if p["transaction_id"] == txn["transaction_id"]:
+                continue
+            if not p.get("account_id") or p["account_id"] == txn["account_id"]:
+                continue
+            if p["account_id"] not in linked_ids:
+                continue
+            if require_peer_type and by_id[p["account_id"]].get("type") != require_peer_type:
+                continue
+            if abs(abs(float(p.get("amount") or 0)) - target) > 0.01:
+                continue
+            if float(txn.get("amount") or 0) != 0 and (float(p.get("amount") or 0) > 0) == (
+                float(txn.get("amount") or 0) > 0
+            ):
+                continue
+            if day_diff(txn["date"], p["date"]) <= 1:
+                return True
+        return False
+
+    ids: list[str] = []
+    for txn in txns:
+        if txn.get("is_internal"):
+            continue
+        acct = by_id.get(txn.get("account_id") or "")
+        text = f"{txn.get('name') or ''} {txn.get('merchant_name') or ''}"
+        m = card_ending.search(text)
+        ok = False
+        if m and m.group(1) in masks:
+            ok = True
+        elif (
+            acct
+            and acct.get("type") == "credit"
+            and (thank_you.search(text) or automatic.search(text))
+            and float(txn.get("amount") or 0) < 0
+        ):
+            ok = True
+        elif (
+            txn.get("pfc_detailed") == "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"
+            and acct
+            and acct.get("type") == "depository"
+            and float(txn.get("amount") or 0) > 0
+            and has_opposite(txn, "credit")
+        ):
+            ok = True
+        elif txn.get("pfc_primary") in ("TRANSFER_OUT", "TRANSFER_IN") and has_opposite(txn):
+            ok = True
+        if ok:
+            ids.append(txn["transaction_id"])
+    if not ids:
+        return 0
+    bq.query(
+        f"""
+        UPDATE {_fq("plaid_transactions")}
+        SET is_internal = TRUE, updated_at = CURRENT_TIMESTAMP()
+        WHERE transaction_id IN UNNEST(@ids)
+          AND IFNULL(is_internal, FALSE) IS NOT TRUE
+        """,
+        job_config=bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ArrayQueryParameter("ids", "STRING", ids)]
+        ),
+    ).result()
+    return len(ids)
 
 
 def upsert_accounts(item_id: str, access_token: str | None = None) -> int:

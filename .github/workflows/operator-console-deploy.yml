@@ -73,7 +73,7 @@ jobs:
             --no-allow-unauthenticated \
             --iap \
             --memory 512Mi \
-            --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga,PLAID_ENV=production,PLAID_REDIRECT_URI=https://operator-console-887772634501.us-central1.run.app/accounting/oauth \
+            --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga,PLAID_ENV=production \
             --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest,PLAID_CLIENT_ID=plaid_client_id:latest,PLAID_SECRET=plaid_secret:latest
 
       # IAP IAM (roles/iap.httpsResourceAccessor), not run.invoker — only the

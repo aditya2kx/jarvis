@@ -82,10 +82,12 @@ export async function createPlaidLinkTokenAction(): Promise<string> {
   if (!FEATURES.writePlaidLink) throw new Error("Plaid Link is disabled (FEATURES.writePlaidLink)");
   const email = await operatorEmail();
   const webhook = process.env.PLAID_WEBHOOK_URL?.trim() || undefined;
-  // Must match an Allowed redirect URI in the Plaid dashboard (Chase OAuth).
-  const redirectUri =
-    process.env.PLAID_REDIRECT_URI?.trim() ||
-    "https://operator-console-887772634501.us-central1.run.app/accounting/oauth";
+  // Desktop Link opens Chase OAuth in a popup and returns via postMessage to the
+  // opener — do NOT set redirect_uri while the console is behind Cloud Run IAP.
+  // A redirect_uri to /accounting/oauth never reaches the app (IAP intercepts),
+  // and Plaid surfaces that as Link INTERNAL_SERVER_ERROR / "Something went wrong".
+  // Set PLAID_REDIRECT_URI only if the return path is reachable without IAP.
+  const redirectUri = process.env.PLAID_REDIRECT_URI?.trim() || undefined;
   return createLinkToken(plaidClientUserId(email), webhook, redirectUri);
 }
 

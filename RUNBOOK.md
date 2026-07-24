@@ -1758,8 +1758,9 @@ grants are the current mechanism.
 - **Plaid Accounting (Issue #158):** migration `037_plaid_transactions.sql` (`plaid_items`,
   `plaid_transactions`, `vw_plaid_spend_by_category_daily`). Home **Goal and Tracking** rows:
   net sales, part-time labor %, total labor %, prep p95 (`goal_kds_p95_min`), bases at risk
-  (`goal_bases_at_risk_max`). Accounting page pairs Square net sales with Plaid outflows (PFC v2
-  interim categories). Link/sync via console; incremental via `bhaga-webhook` `POST /plaid/webhook`
+  (`goal_bases_at_risk_max`). Accounting page is linked-bank feed only (money in / out / cash
+  flow + Palmetto taxonomy #160); Square net sales are not mixed on that tab. Link/sync via
+  console; incremental via `bhaga-webhook` `POST /plaid/webhook`
   + `POST /plaid/sync` (shared `PLAID_SYNC_TOKEN` / sandbox trigger token). Skill:
   `skills/plaid_api/`. Env on console + webhook: `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`,
   optional `PLAID_WEBHOOK_URL`. Access tokens: Secret Manager `plaid_access_token_<item_id>`.
@@ -1791,7 +1792,15 @@ grants are the current mechanism.
   `bhaga-orchestrator` (code does this on create; Sync now 403s without it).
   **Accounting Phase A (#168):** migration `044_plaid_internal_flag.sql` adds `is_internal` on
   `plaid_transactions` and excludes internals from `vw_plaid_spend_by_category_daily`. Console
-  Money out / Plaid earned + category rollup follow table column filters and skip internals
+  Money out / Plaid earned + category rollup follow table column filters and skip internals.
+  **Accounting Phase B (#160):** migrations `045_plaid_taxonomy_rules` + `046_plaid_spend_view_effective`
+  — Palmetto taxonomy nodes, Copilot-style `plaid_category_rules`, effective category columns on
+  txns (`category_id` / overrides). Operator-facing Category/Subcategory replace PFC (PFC columns
+  remain for debug). Seed: `apps/operator-console/lib/plaid/taxonomy/seed/` +
+  `python3 -c "from skills.plaid_api.taxonomy_seed import seed_taxonomy, extend_corpus_rules; …"`.
+  Reapply: `from skills.plaid_api.categorize import reapply_categories` or console **Reapply rules**.
+  Incremental sync (console Sync + webhook `sync_item`) categorizes upserted rows without clearing
+  overrides. View groups by effective category label (alias `pfc_primary` kept for Home sum).
   (checking↔own card payments auto-flagged; operator can Mark/unmark). Click PFC category for
   a short definition sheet. Custom taxonomy / rule engine remains Issue #160.
 - **New goal keys:** `goal_net_sales_weekly`, `goal_net_sales_monthly`,

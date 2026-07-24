@@ -1,0 +1,9 @@
+topic,note
+Rule priority,Evaluate lower priority number first. Specific vendors before broad patterns like Amazon.
+Amount sign,Use sign as part of matching: positive = outflow/expense in this sheet; negative = inflow/refund/credit.
+Confidence,High confidence can auto-categorize; medium/low should surface review suggestions.
+Override model,Store user overrides at merchant-pattern + account + amount-range level so future suggestions improve.
+Run-rate treatment,"Track one-off, occasional campaign, shipment-based, recurring, and review separately."
+Payroll warning,ADP Tax may mix employer taxes and employee withholding; use ADP payroll reports for clean P&L split.
+Inventory warning,"Amazon is classified as inventory by user preference, but receipts should allow override."
+Sales ratio KPIs,"For P&L dashboard, compute category amount / net sales excluding tips."

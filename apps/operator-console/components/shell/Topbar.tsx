@@ -1,5 +1,6 @@
 import { StoreFilter } from "./StoreFilter";
 import { MobileNav } from "./MobileNav";
+import { ThemeToggle } from "./ThemeToggle";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { pipelineRuns } from "@/lib/bq/queries";
 import { cn } from "@/lib/utils";
@@ -32,6 +33,7 @@ export function Topbar({ operatorEmail }: { operatorEmail?: string }) {
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-3 text-sm text-muted-foreground">
+        <ThemeToggle />
         <StoreFilter store={DEFAULT_STORE} />
         {operatorEmail ? <span className="hidden sm:inline">{operatorEmail}</span> : null}
       </div>

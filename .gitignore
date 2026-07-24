@@ -46,6 +46,8 @@ skills/user_model/data/
 *.mp4
 *.xlsx
 *.eml
+# Palmetto Plaid taxonomy/rule seeds (#160) — committed fixtures, not operator exports
+!apps/operator-console/lib/plaid/taxonomy/seed/*.csv
 
 # Per-PR cost handoff scaffolding (local session briefs; ledgers + report.html stay tracked)
 metrics/pr_cost/*-brief.md

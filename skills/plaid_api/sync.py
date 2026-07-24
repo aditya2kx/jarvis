@@ -186,6 +186,7 @@ def sync_item(store: str, item_id: str, *, cursor: str | None = None) -> SyncRes
         cursor = (rows[0].cursor if rows else "") or ""
 
     next_cursor = cursor or ""
+    categorized_ids: list[str] = []
     # Preserve start cursor for pagination mutation restart.
     while True:
         page_cursor = next_cursor
@@ -211,6 +212,9 @@ def sync_item(store: str, item_id: str, *, cursor: str | None = None) -> SyncRes
 
         upsert_rows = [_row_from_txn(t, item_id) for t in added + modified]
         _upsert_transactions(bq, upsert_rows)
+        categorized_ids.extend(
+            r["transaction_id"] for r in upsert_rows if r.get("transaction_id")
+        )
         _delete_transactions(bq, [r["transaction_id"] for r in removed if r.get("transaction_id")])
 
         if not data.get("has_more"):
@@ -228,6 +232,18 @@ def sync_item(store: str, item_id: str, *, cursor: str | None = None) -> SyncRes
             print(f"[plaid_api.sync] suggestInternal marked={n} item={item_id}")
     except Exception as exc:  # noqa: BLE001
         result.errors.append(f"suggest_internal: {exc}")
+    # Palmetto taxonomy (#160): categorize upserted rows (never clears overrides).
+    try:
+        from skills.plaid_api.categorize import categorize_upserted
+
+        cat = categorize_upserted(bq, categorized_ids)
+        if cat.get("updated"):
+            print(
+                f"[plaid_api.sync] categorize updated={cat['updated']} "
+                f"unchanged={cat['unchanged']} item={item_id}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"categorize: {exc}")
     return result
 
 

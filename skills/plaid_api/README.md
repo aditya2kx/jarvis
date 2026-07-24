@@ -51,8 +51,11 @@ print(reapply_categories(bigquery.Client(project='jarvis-bhaga-prod')))
 "
 ```
 
-Seed CSVs live under `apps/operator-console/lib/plaid/taxonomy/seed/`.
+Live merchant/brand seed CSVs are **not in git** — set `PLAID_TAXONOMY_SEED_DIR`
+(or use gitignored `local/plaid-taxonomy-seed/`). See
+`apps/operator-console/lib/plaid/taxonomy/seed/README.md`.
 `sync_item` categorizes upserted rows after suggestInternal (never clears overrides).
+
 
 ## Purge Item (sandbox retirement)
 

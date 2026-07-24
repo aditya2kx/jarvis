@@ -1,19 +1,31 @@
-# Palmetto June Transaction Rule Seed
+# Accounting category taxonomy seed (private)
 
-This rule seed is based on the June 2026 Austin Palmetto transaction analysis discussed in chat. It is intended as a starting taxonomy for a co-pilot budgeting/accounting app that fetches transactions and suggests categories/subcategories from transaction-name/account patterns.
+**Do not commit merchant, brand, store, or personal match patterns.**
 
-## Files
+Live seed CSVs (taxonomy + ordered rules) live outside git:
 
-- `palmetto_transaction_rule_seed.csv`: main rule table for pattern matching.
-- `palmetto_category_taxonomy.csv`: category/subcategory taxonomy and accounting treatment.
-- `palmetto_rule_implementation_notes.csv`: design notes for rule precedence, confidence, overrides, and P&L caveats.
-- `palmetto_transaction_rules_workbook.xlsx`: all three tables in one workbook.
+1. Preferred: set `PLAID_TAXONOMY_SEED_DIR` to an ops-managed directory
+2. Or: worktree-local `local/plaid-taxonomy-seed/` (gitignored via repo `local/`)
 
-## Suggested app behavior
+Required files in that directory:
 
-1. Match by `priority` ascending.
-2. Use `match_field`, `match_operator`, `match_pattern`, and `amount_sign`.
-3. Create a suggested category/subcategory/accounting line.
-4. Surface medium/low confidence suggestions for review.
-5. Allow user override in UI and save the override as a more specific future rule.
-6. Keep cash-flow categorization separate from P&L treatment, especially for payroll taxes/withholding and unpaid invoices.
+| File | Role |
+|---|---|
+| `category_taxonomy.csv` | Category / subcategory labels + P&L treatment |
+| `transaction_rule_seed.csv` | Ordered match rules (`match_pattern`, amount sign, …) |
+| `extension_rules.csv` | Optional corpus extensions (same columns as rules) |
+
+Load into BQ (idempotent MERGE):
+
+```bash
+export PLAID_TAXONOMY_SEED_DIR="$HOME/path/to/private-seed"   # or rely on local/
+BHAGA_DATASTORE=bigquery python3 -c "
+from skills.plaid_api.taxonomy_seed import seed_taxonomy, extend_corpus_rules
+print(seed_taxonomy(dry_run=False))
+print(extend_corpus_rules(dry_run=False))
+"
+```
+
+Runtime categorization reads **only from BigQuery** (`plaid_taxonomy_nodes`,
+`plaid_category_rules`). The Operator Console Rules drawer edits BQ directly.
+Unit tests use synthetic fixture patterns — never copy production seed CSVs here.

@@ -31,12 +31,12 @@ Derived from jam + §4 approved 2026-07-23 (Cursor chat; labels `approved:jam`, 
 
 | Decision | Choice |
 |---|---|
-| Seed taxonomy | Copilot June CSV tree + 44 rules; portal CRUD after |
-| Amazon | `Inventory / food / supplies` → `Amazon purchases` |
-| Money-in | In scope (Square / DoorDash / Uber / Zelle / Amazon refund) |
-| Palmetto Superfoods | Inventory (ambiguous `… D` → Review) |
-| Webstaurant / Uline / FFE | Logistics (supplies / freight), not Inventory |
-| Non-June high $ | Extend seeds: BOA, rent/Nineteen Hundred, Qualifrac, Homebase, capital inflows |
+| Seed taxonomy | Private CSV tree + ordered rules (not in git); portal CRUD after |
+| Marketplace purchases | `Inventory / food / supplies` → purchases subcategory |
+| Money-in | In scope (POS / delivery / P2P / refund patterns) |
+| Franchise inventory brand | Inventory (ambiguous suffix → Review) |
+| Supplies / freight vendors | Logistics (supplies / freight), not Inventory |
+| Non-seed high $ | Extend via private `extension_rules.csv`: transfers, rent, capital inflows |
 | Override v1 | Per-txn only; “save as rule” deferred |
 | Feature flag | **No new flag** — cutover behind existing `FEATURES.accounting` ([features.ts:12](apps/operator-console/lib/config/features.ts)); mitigate wrong Home numbers via §4 coverage + reapply evidence |
 | PFC | Keep columns; never primary display |
@@ -137,10 +137,7 @@ Structural test: [`core/test_migration_045_plaid_taxonomy_rules.py`](core/test_m
 
 Copy from Desktop Copilot build into:
 
-- [`apps/operator-console/lib/plaid/taxonomy/seed/palmetto_category_taxonomy.csv`](apps/operator-console/lib/plaid/taxonomy/seed/palmetto_category_taxonomy.csv)
-- [`apps/operator-console/lib/plaid/taxonomy/seed/palmetto_transaction_rule_seed.csv`](apps/operator-console/lib/plaid/taxonomy/seed/palmetto_transaction_rule_seed.csv)
-- [`apps/operator-console/lib/plaid/taxonomy/seed/palmetto_rule_implementation_notes.csv`](apps/operator-console/lib/plaid/taxonomy/seed/palmetto_rule_implementation_notes.csv)
-- Short [`.../seed/README.md`](apps/operator-console/lib/plaid/taxonomy/seed/README.md) pointing at June analysis provenance.
+- Private seed dir (never commit merchant/brand CSVs): `PLAID_TAXONOMY_SEED_DIR` or gitignored `local/plaid-taxonomy-seed/` — see [`.../seed/README.md`](apps/operator-console/lib/plaid/taxonomy/seed/README.md).
 
 Loader (Python, one-shot + idempotent MERGE):
 
@@ -225,14 +222,14 @@ Python twin: [`skills/plaid_api/category_rules.py`](skills/plaid_api/category_ru
 - `amount_sign`: `positive` ⇒ `amount > 0`; `negative` ⇒ `amount < 0`; else any.
 - Field `name_or_merchant`: concatenate with space (used when seed says `name` but merchants exist — seed `match_field=name` searches **both** `name` and `merchant_name` via `name_or_merchant` when loading seed, to catch Plaid merchant fills).
 
-**Priority gotcha (F1):** ADP rules (100–130) must stay before any Palmetto/AK Juicy inventory rules; seed already orders this — unit-test ADP ACH blob containing `AK JUICY BOWLS LLC` → payroll.
+**Priority gotcha (F1):** Payroll rules must stay before entity-name inventory rules; unit-test a payroll ACH blob that also contains an entity string → payroll wins.
 
 Unit tests:
 
 - [`apps/operator-console/__tests__/plaid-category-rules.test.ts`](apps/operator-console/__tests__/plaid-category-rules.test.ts)
 - [`skills/plaid_api/test_category_rules_unit.py`](skills/plaid_api/test_category_rules_unit.py)
 
-Cases: priority order, amount_sign, Amazon refund vs purchase, ADP vs AK Juicy, contains_any Webstaurant, override beats rule, disabled rule skipped.
+Cases: priority order, amount_sign, marketplace refund vs purchase, payroll vs entity blob, contains_any supply patterns, override beats rule, disabled rule skipped.
 
 **Verify (copy-paste):**
 
@@ -242,7 +239,7 @@ cd apps/operator-console && npx vitest run __tests__/plaid-category-rules.test.t
 python3 scripts/check_doc_freshness.py
 ```
 
-**Pass criterion:** migration test green; ≥8 unit cases including F1/F2; seed files present under `lib/plaid/taxonomy/seed/`.
+**Pass criterion:** migration test green; ≥8 unit cases including F1/F2; private seed loader documented; no live merchant CSVs in git.
 
 ---
 
@@ -460,7 +457,7 @@ Babysit per `pr-workflow.mdc`; never self-merge; all GitHub as `jarvis-agent-bot
 | # | Scenario | Pass criterion |
 |---|---|---|
 | H1 | Seed load | ≥40 rules + taxonomy nodes in BQ; June parents present |
-| H2 | Reapply | ADP WAGE→Payroll/ADP wage; Brothers→Produce; Square neg→Square deposits; Amazon pos→Amazon purchases |
+| H2 | Reapply | Payroll pattern→Payroll; produce vendor→Produce; POS deposit neg→deposits; marketplace pos→purchases |
 | H3 | Accounting UI | Palmetto Category/Subcategory; not PFC codes as primary |
 | H4 | Explain | Definition + matched rule_id/pattern |
 | H5 | Override | Set persists; clear restores rule |
@@ -474,7 +471,7 @@ Babysit per `pr-workflow.mdc`; never self-merge; all GitHub as `jarvis-agent-bot
 
 | # | Scenario | Pass criterion |
 |---|---|---|
-| F1 | ADP + AK Juicy blob | Still Payroll |
+| F1 | Payroll + entity blob in IND NAME | Still Payroll |
 | F2 | Amazon refund | Contra/refund, not Revenue |
 | F3 | Bad rule | Invalid regex skipped; no category wipe |
 | F4 | Reapply×2 | Second updates 0 non-override rows |
@@ -517,7 +514,7 @@ WHERE REGEXP_CONTAINS(UPPER(IFNULL(t.name,\"\")), r\"ADP WAGE\")
 - One coherent PR → `gh pr create --base main`; `Refs #160` / `Closes #160`
 - GitHub as `jarvis-agent-bot328`; never self-merge; babysit; reply every review thread
 - Cost: `bind-pr` + `sync` after PR exists; `validate --require-build`
-- Do not commit Desktop path; only repo `seed/` copies
+- Never commit live merchant/brand/person seed CSVs; use `PLAID_TAXONOMY_SEED_DIR` / gitignored `local/`
 - No secrets / full account numbers in §4
 
 ---

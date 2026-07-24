@@ -1796,7 +1796,8 @@ grants are the current mechanism.
   **Accounting Phase B (#160):** migrations `045_plaid_taxonomy_rules` + `046_plaid_spend_view_effective`
   — Palmetto taxonomy nodes, Copilot-style `plaid_category_rules`, effective category columns on
   txns (`category_id` / overrides). Operator-facing Category/Subcategory replace PFC (PFC columns
-  remain for debug). Seed: `apps/operator-console/lib/plaid/taxonomy/seed/` +
+  remain for debug). Live seeds are **not in git** — `PLAID_TAXONOMY_SEED_DIR` or
+  gitignored `local/plaid-taxonomy-seed/` +
   `python3 -c "from skills.plaid_api.taxonomy_seed import seed_taxonomy, extend_corpus_rules; …"`.
   Reapply: `from skills.plaid_api.categorize import reapply_categories` or console **Reapply rules**.
   Incremental sync (console Sync + webhook `sync_item`) categorizes upserted rows without clearing

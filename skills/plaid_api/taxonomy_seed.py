@@ -1,11 +1,20 @@
-"""Load Copilot June taxonomy + rules into BQ (Issue #160).
+"""Load taxonomy + category rules into BQ from a *private* seed directory (Issue #160).
 
-Idempotent MERGE on node/rule id. Also installs corpus-extension rules for
-non-June high-dollar patterns (BOA, rent, Qualifrac, Homebase, capital).
+Real merchant / brand match patterns MUST NOT live in git. Point
+``PLAID_TAXONOMY_SEED_DIR`` at a local (gitignored) or ops-managed folder that
+contains:
+
+  - category_taxonomy.csv
+  - transaction_rule_seed.csv
+  - extension_rules.csv   (optional corpus extensions)
+
+Idempotent MERGE on node/rule id. Prod already has live rules in BQ; this module
+is for bootstrap / re-seed only.
 """
 from __future__ import annotations
 
 import csv
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,27 +23,9 @@ from typing import Any
 _PROJECT = "jarvis-bhaga-prod"
 _DATASET = "bhaga"
 
-# Prefer console seed path; fall back to skills-local copy if present.
-_SEED_DIRS = [
-    Path(__file__).resolve().parents[2]
-    / "apps"
-    / "operator-console"
-    / "lib"
-    / "plaid"
-    / "taxonomy"
-    / "seed",
-    Path(__file__).resolve().parent / "taxonomy" / "seed",
-]
-
-
-def _seed_dir() -> Path:
-    for d in _SEED_DIRS:
-        if (d / "palmetto_category_taxonomy.csv").exists():
-            return d
-    raise FileNotFoundError(
-        "palmetto_category_taxonomy.csv not found under "
-        + ", ".join(str(d) for d in _SEED_DIRS)
-    )
+_TAXONOMY_NAME = "category_taxonomy.csv"
+_RULES_NAME = "transaction_rule_seed.csv"
+_EXTENSIONS_NAME = "extension_rules.csv"
 
 
 def _slug(label: str) -> str:
@@ -53,18 +44,37 @@ def _bq():
     return bigquery.Client(project=_PROJECT)
 
 
-def _read_taxonomy(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+def _seed_dir() -> Path:
+    """Resolve private seed dir — never a tracked repo path with live brands."""
+    env = (os.environ.get("PLAID_TAXONOMY_SEED_DIR") or "").strip()
+    if env:
+        d = Path(env).expanduser().resolve()
+        if (d / _TAXONOMY_NAME).is_file():
+            return d
+        raise FileNotFoundError(
+            f"PLAID_TAXONOMY_SEED_DIR={d} missing {_TAXONOMY_NAME}"
+        )
+    # Dev convenience: worktree-local gitignored folder (see .gitignore `local/`)
+    repo_local = (
+        Path(__file__).resolve().parents[2] / "local" / "plaid-taxonomy-seed"
+    )
+    if (repo_local / _TAXONOMY_NAME).is_file():
+        return repo_local
+    raise FileNotFoundError(
+        "Private taxonomy seed not found. Set PLAID_TAXONOMY_SEED_DIR to a "
+        f"directory containing {_TAXONOMY_NAME} + {_RULES_NAME} "
+        "(live merchant patterns must not be committed). "
+        f"Optional default: {repo_local}"
+    )
 
 
-def _read_rules(path: Path) -> list[dict[str, str]]:
+def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
 def _build_nodes(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
-    """Build parent + child taxonomy nodes from taxonomy CSV + rule-only subs."""
+    """Build parent + child taxonomy nodes from taxonomy CSV only (no brand extras)."""
     now = datetime.now(timezone.utc).isoformat()
     parents: dict[str, dict[str, Any]] = {}
     children: list[dict[str, Any]] = []
@@ -105,78 +115,6 @@ def _build_nodes(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
                     "updated_at": now,
                 }
             )
-    # Extra parents/subs referenced by rules but missing from taxonomy CSV
-    extras = [
-        ("Payroll / labor", "ADP payroll fees"),
-        ("Payroll / labor", "ADP 401k / benefits"),
-        ("Inventory / food / supplies", "Palmetto ACH purchase"),
-        ("Inventory / food / supplies", "Unpaid Palmetto bases invoice"),
-        ("Inventory / food / supplies", "Terrasoul wholesale"),
-        ("Inventory / food / supplies", "HEB / Favor grocery"),
-        ("Inventory / food / supplies", "HEB grocery"),
-        ("Logistics / facilities / store ops", "Echo freight"),
-        ("Logistics / facilities / store ops", "Restaurant supplies"),
-        ("Logistics / facilities / store ops", "Uline supplies"),
-        ("Logistics / facilities / store ops", "Vehicle / auto finance"),
-        ("Logistics / facilities / store ops", "Tesla charging / vehicle"),
-        ("Logistics / facilities / store ops", "Tolls"),
-        ("Logistics / facilities / store ops", "Plumbing repair"),
-        ("Logistics / facilities / store ops", "Junk removal"),
-        ("Logistics / facilities / store ops", "Internet / utility"),
-        ("Logistics / facilities / store ops", "SWC misc store ops"),
-        ("Logistics / facilities / store ops", "Bank service charge"),
-        ("Logistics / facilities / store ops", "Rent / landlord"),
-        ("Marketing + software tools", "Paid digital ads"),
-        ("Marketing + software tools", "Wainscot local magazine"),
-        ("Marketing + software tools", "Digital signage"),
-        ("Marketing + software tools", "Cursor"),
-        ("Marketing + software tools", "ClickUp"),
-        ("Marketing + software tools", "Anthropic"),
-        ("Marketing + software tools", "MarketMan"),
-        ("Marketing + software tools", "Betterteam"),
-        ("Marketing + software tools", "Lovable"),
-        ("Marketing + software tools", "Adobe"),
-        ("Logistics / facilities / store ops", "Franchise / filing tax"),
-        ("Marketing + software tools", "Professional services"),
-        ("One-off / review", "Gift card / promo / misc"),
-        ("Other inflow / owner transfer", "Zelle / reimbursement"),
-        ("Other inflow / owner transfer", "BOA owner transfer"),
-        ("Other inflow / owner transfer", "Owner capital inflow"),
-        ("Contra expense / refund", "Amazon refund"),
-        ("Review / possible owner purchase", "Palmetto store purchase"),
-    ]
-    existing_ids = {n["id"] for n in list(parents.values()) + children}
-    for cat, sub in extras:
-        pid = _slug(cat)
-        if pid not in parents:
-            sort_p += 10
-            parents[pid] = {
-                "id": pid,
-                "parent_id": None,
-                "slug": pid,
-                "label": cat,
-                "definition": None,
-                "default_pnl_treatment": None,
-                "sort_order": sort_p,
-                "enabled": True,
-                "updated_at": now,
-            }
-        sid = f"{pid}__{_slug(sub)}"
-        if sid not in existing_ids:
-            children.append(
-                {
-                    "id": sid,
-                    "parent_id": pid,
-                    "slug": _slug(sub),
-                    "label": sub,
-                    "definition": None,
-                    "default_pnl_treatment": None,
-                    "sort_order": len(children) + 1,
-                    "enabled": True,
-                    "updated_at": now,
-                }
-            )
-            existing_ids.add(sid)
     return list(parents.values()) + children
 
 
@@ -184,17 +122,51 @@ def _resolve_ids(
     category: str, subcategory: str, nodes: list[dict[str, Any]]
 ) -> tuple[str, str | None]:
     pid = _slug(category)
-    if not any(n["id"] == pid for n in nodes):
-        # create on the fly
-        pass
     sid = f"{pid}__{_slug(subcategory)}" if subcategory else None
     if sid and not any(n["id"] == sid for n in nodes):
-        # fuzzy: find child under parent with matching label slug
         for n in nodes:
             if n.get("parent_id") == pid and n.get("slug") == _slug(subcategory):
                 sid = n["id"]
                 break
     return pid, sid
+
+
+def _ensure_nodes(
+    category: str,
+    subcategory: str,
+    nodes: list[dict[str, Any]],
+    now: str,
+) -> tuple[str, str | None]:
+    cid, sid = _resolve_ids(category, subcategory, nodes)
+    if not any(n["id"] == cid for n in nodes):
+        nodes.append(
+            {
+                "id": cid,
+                "parent_id": None,
+                "slug": cid,
+                "label": category,
+                "definition": None,
+                "default_pnl_treatment": None,
+                "sort_order": 999,
+                "enabled": True,
+                "updated_at": now,
+            }
+        )
+    if sid and not any(n["id"] == sid for n in nodes):
+        nodes.append(
+            {
+                "id": sid,
+                "parent_id": cid,
+                "slug": _slug(subcategory),
+                "label": subcategory,
+                "definition": None,
+                "default_pnl_treatment": None,
+                "sort_order": 999,
+                "enabled": True,
+                "updated_at": now,
+            }
+        )
+    return cid, sid
 
 
 def _build_rules(
@@ -207,42 +179,22 @@ def _build_rules(
         sub = (r.get("subcategory") or "").strip()
         if not cat:
             continue
-        cid, sid = _resolve_ids(cat, sub, nodes)
-        # Ensure parent/child exist
-        if not any(n["id"] == cid for n in nodes):
-            nodes.append(
-                {
-                    "id": cid,
-                    "parent_id": None,
-                    "slug": cid,
-                    "label": cat,
-                    "definition": None,
-                    "default_pnl_treatment": None,
-                    "sort_order": 999,
-                    "enabled": True,
-                    "updated_at": now,
-                }
+        cid, sid = _ensure_nodes(cat, sub, nodes, now)
+        field = (r.get("match_field") or "name").strip()
+        if field in ("name", "merchant_name", "name_or_merchant"):
+            match_field = (
+                "name_or_merchant" if field == "name" else field
             )
-        if sid and not any(n["id"] == sid for n in nodes):
-            nodes.append(
-                {
-                    "id": sid,
-                    "parent_id": cid,
-                    "slug": _slug(sub),
-                    "label": sub,
-                    "definition": None,
-                    "default_pnl_treatment": None,
-                    "sort_order": 999,
-                    "enabled": True,
-                    "updated_at": now,
-                }
-            )
+        else:
+            match_field = "name_or_merchant"
         op = (r.get("match_operator") or "contains").strip()
+        # Prefer rule_note only — never june_context (may carry PII / amounts).
+        notes = (r.get("rule_note") or "").strip() or None
         out.append(
             {
                 "id": (r.get("rule_id") or "").strip(),
                 "priority": int(r.get("priority") or 9999),
-                "match_field": "name_or_merchant",
+                "match_field": match_field,
                 "match_operator": op,
                 "match_pattern": (r.get("match_pattern") or "").strip(),
                 "amount_sign": (r.get("amount_sign") or "any").strip() or "any",
@@ -250,105 +202,11 @@ def _build_rules(
                 "subcategory_id": sid,
                 "confidence": (r.get("confidence") or "medium").strip(),
                 "enabled": True,
-                "notes": (r.get("rule_note") or r.get("june_context") or "").strip()
-                or None,
+                "notes": notes,
                 "updated_at": now,
             }
         )
     return [r for r in out if r["id"]]
-
-
-def _extension_rules(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Non-June high-dollar patterns from jam corpus analysis."""
-    now = datetime.now(timezone.utc).isoformat()
-    specs = [
-        (15, "income_capital_allianz", "Allianz Life", "negative",
-         "Other inflow / owner transfer", "Owner capital inflow", "high", "contains", "name_or_merchant"),
-        (16, "income_capital_nwlife", "NW Life", "negative",
-         "Other inflow / owner transfer", "Owner capital inflow", "high", "contains", "name_or_merchant"),
-        (17, "income_capital_etrade", "E*TRADE", "negative",
-         "Other inflow / owner transfer", "Owner capital inflow", "high", "contains", "name_or_merchant"),
-        (18, "income_capital_manual_cr", "MANUAL CR-BKRG", "negative",
-         "Other inflow / owner transfer", "Owner capital inflow", "high", "contains", "name_or_merchant"),
-        (19, "income_capital_mspbna", "MSPBNA", "negative",
-         "Other inflow / owner transfer", "Owner capital inflow", "medium", "contains", "name_or_merchant"),
-        (45, "transfer_boa_out", "Bank of America", "positive",
-         "Other inflow / owner transfer", "BOA owner transfer", "high", "contains", "name_or_merchant"),
-        (46, "transfer_boa_in", "Bank of America", "negative",
-         "Other inflow / owner transfer", "BOA owner transfer", "high", "contains", "name_or_merchant"),
-        (47, "transfer_zelle_out", "Zelle", "positive",
-         "Other inflow / owner transfer", "Zelle / reimbursement", "medium", "contains", "name_or_merchant"),
-        (115, "payroll_homebase", "PAYROLL-HOMEBASE", "positive",
-         "Payroll / labor", "ADP wage pay", "high", "contains", "name_or_merchant"),
-        (116, "payroll_basic_online", "BASIC ONLINE PAYROLL", "positive",
-         "Payroll / labor", "ADP wage pay", "high", "contains", "name_or_merchant"),
-        (205, "opex_qualifrac", "Qualifrac", "positive",
-         "Marketing + software tools", "Professional services", "high", "contains", "name_or_merchant"),
-        (206, "opex_bend_law", "Bend Law", "positive",
-         "Marketing + software tools", "Professional services", "high", "contains", "name_or_merchant"),
-        (211, "inventory_palmetto_super_foods", "Palmetto Super Foods", "positive",
-         "Inventory / food / supplies", "Palmetto ACH purchase", "high", "contains", "name_or_merchant"),
-        (212, "inventory_ak_juicy_merchant", "Ak Juicy Bowls", "positive",
-         "Inventory / food / supplies", "Palmetto inventory purchases", "medium", "contains", "merchant_name"),
-        (305, "occupancy_nineteen_hundred", "Nineteen Hundred", "positive",
-         "Logistics / facilities / store ops", "Rent / landlord", "high", "contains", "name_or_merchant"),
-        (306, "occupancy_nineteenhundred", "Nineteenhundred", "positive",
-         "Logistics / facilities / store ops", "Rent / landlord", "high", "contains", "name_or_merchant"),
-        (307, "occupancy_houston_landlord", "Houston Palmetto Landlord", "positive",
-         "Logistics / facilities / store ops", "Rent / landlord", "high", "contains", "name_or_merchant"),
-        (308, "occupancy_prepaid_rent", "PREPAID RENT", "positive",
-         "Logistics / facilities / store ops", "Rent / landlord", "high", "contains", "name_or_merchant"),
-        (501, "tax_webfile", "WEBFILE", "positive",
-         "Logistics / facilities / store ops", "Franchise / filing tax", "high", "contains", "name_or_merchant"),
-    ]
-    out: list[dict[str, Any]] = []
-    for pri, rid, pattern, sign, cat, sub, conf, op, field in specs:
-        cid, sid = _resolve_ids(cat, sub, nodes)
-        if not any(n["id"] == cid for n in nodes):
-            nodes.append(
-                {
-                    "id": cid,
-                    "parent_id": None,
-                    "slug": cid,
-                    "label": cat,
-                    "definition": None,
-                    "default_pnl_treatment": None,
-                    "sort_order": 999,
-                    "enabled": True,
-                    "updated_at": now,
-                }
-            )
-        if sid and not any(n["id"] == sid for n in nodes):
-            nodes.append(
-                {
-                    "id": sid,
-                    "parent_id": cid,
-                    "slug": _slug(sub),
-                    "label": sub,
-                    "definition": None,
-                    "default_pnl_treatment": None,
-                    "sort_order": 999,
-                    "enabled": True,
-                    "updated_at": now,
-                }
-            )
-        out.append(
-            {
-                "id": rid,
-                "priority": pri,
-                "match_field": field,
-                "match_operator": op,
-                "match_pattern": pattern,
-                "amount_sign": sign,
-                "category_id": cid,
-                "subcategory_id": sid,
-                "confidence": conf,
-                "enabled": True,
-                "notes": "Corpus extension (jam #160)",
-                "updated_at": now,
-            }
-        )
-    return out
 
 
 def _merge_nodes(bq, rows: list[dict[str, Any]], *, dry_run: bool) -> int:
@@ -426,19 +284,22 @@ def _merge_rules(bq, rows: list[dict[str, Any]], *, dry_run: bool) -> int:
 
 def seed_taxonomy(*, dry_run: bool = True) -> dict[str, Any]:
     seed = _seed_dir()
-    tax_rows = _read_taxonomy(seed / "palmetto_category_taxonomy.csv")
-    rule_rows = _read_rules(seed / "palmetto_transaction_rule_seed.csv")
+    tax_rows = _read_csv(seed / _TAXONOMY_NAME)
+    rule_rows = _read_csv(seed / _RULES_NAME)
     nodes = _build_nodes(tax_rows)
     rules = _build_rules(rule_rows, nodes)
-    # rebuild rules after nodes mutated
-    rules = _build_rules(rule_rows, nodes)
     bq = None if dry_run else _bq()
-    n_nodes = _merge_nodes(bq, nodes, dry_run=dry_run) if bq or dry_run else 0
-    n_rules = _merge_rules(bq, rules, dry_run=dry_run) if bq or dry_run else 0
     if dry_run:
-        n_nodes, n_rules = len(nodes), len(rules)
+        return {
+            "dry_run": True,
+            "seed_dir": str(seed),
+            "nodes": len(nodes),
+            "rules": len(rules),
+        }
+    n_nodes = _merge_nodes(bq, nodes, dry_run=False)
+    n_rules = _merge_rules(bq, rules, dry_run=False)
     return {
-        "dry_run": dry_run,
+        "dry_run": False,
         "seed_dir": str(seed),
         "nodes": n_nodes,
         "rules": n_rules,
@@ -446,16 +307,30 @@ def seed_taxonomy(*, dry_run: bool = True) -> dict[str, Any]:
 
 
 def extend_corpus_rules(*, dry_run: bool = True) -> dict[str, Any]:
+    """Load optional extension_rules.csv from the private seed dir (no hardcoded brands)."""
     seed = _seed_dir()
-    tax_rows = _read_taxonomy(seed / "palmetto_category_taxonomy.csv")
+    tax_rows = _read_csv(seed / _TAXONOMY_NAME)
     nodes = _build_nodes(tax_rows)
-    # Also include rule-derived nodes
-    rule_rows = _read_rules(seed / "palmetto_transaction_rule_seed.csv")
-    _build_rules(rule_rows, nodes)
-    ext = _extension_rules(nodes)
-    bq = None if dry_run else _bq()
-    n_nodes = _merge_nodes(bq, nodes, dry_run=dry_run) if bq or dry_run else len(nodes)
-    n_rules = _merge_rules(bq, ext, dry_run=dry_run) if bq or dry_run else len(ext)
+    # Ensure rule-derived nodes exist before extensions
+    rule_path = seed / _RULES_NAME
+    if rule_path.is_file():
+        _build_rules(_read_csv(rule_path), nodes)
+    ext_path = seed / _EXTENSIONS_NAME
+    if not ext_path.is_file():
+        return {
+            "dry_run": dry_run,
+            "nodes": len(nodes),
+            "extension_rules": 0,
+            "skipped": f"missing {_EXTENSIONS_NAME}",
+        }
+    ext = _build_rules(_read_csv(ext_path), nodes)
     if dry_run:
-        n_nodes, n_rules = len(nodes), len(ext)
-    return {"dry_run": dry_run, "nodes": n_nodes, "extension_rules": n_rules}
+        return {
+            "dry_run": True,
+            "nodes": len(nodes),
+            "extension_rules": len(ext),
+        }
+    bq = _bq()
+    n_nodes = _merge_nodes(bq, nodes, dry_run=False)
+    n_rules = _merge_rules(bq, ext, dry_run=False)
+    return {"dry_run": False, "nodes": n_nodes, "extension_rules": n_rules}

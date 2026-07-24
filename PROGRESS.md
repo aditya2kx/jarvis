@@ -5,9 +5,10 @@
 **Scope:** Replace PFC as operator-facing category with Palmetto taxonomy + ordered Copilot-style rules; bank-only Accounting KPIs/charts.
 
 **Key changes (PR #188):**
-- Migrations `045`/`046`: `plaid_taxonomy_nodes`, `plaid_category_rules`, effective spend view; seed CSVs + TS/Python eval; categorize on sync + reapply.
+- Migrations `045`/`046`: `plaid_taxonomy_nodes`, `plaid_category_rules`, effective spend view; TS/Python eval; categorize on sync + reapply.
+- Live merchant/brand rule seeds stay **out of git** (`PLAID_TAXONOMY_SEED_DIR` / gitignored `local/`); runtime reads BQ only.
 - Accounting UI: Category/Subcategory, Explain, override, Rules drawer; bank-only money in/out (Square as `% of net sales` denominator only); day/week/month charts; Mark Internal rollup fix; theme + date picker UX.
-- Prod seed: 62 rules / 63 taxonomy nodes; non-internal categorized spend ≈90.8%. No new feature flag — cutover behind `FEATURES.accounting`.
+- Prod BQ: 62 rules / 63 taxonomy nodes; non-internal categorized spend ≈90.8%. No new feature flag — cutover behind `FEATURES.accounting`.
 
 ## 2026-07-17 — BHAGA 7/15–7/16 Slack failures: ADP period select + Square OAuth save (Issue #178)
 

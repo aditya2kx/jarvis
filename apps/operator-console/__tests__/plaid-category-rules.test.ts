@@ -5,6 +5,7 @@ import {
   type CategoryRule,
 } from "@/lib/plaid/category-rules";
 
+/** Synthetic merchants only — never real store / brand / personal names. */
 function r(partial: Partial<CategoryRule> & Pick<CategoryRule, "id" | "match_pattern">): CategoryRule {
   return {
     priority: 100,
@@ -19,21 +20,21 @@ function r(partial: Partial<CategoryRule> & Pick<CategoryRule, "id" | "match_pat
 }
 
 describe("evaluateRules", () => {
-  it("prefers lower priority (ADP over Amazon in same string)", () => {
+  it("prefers lower priority (payroll over marketplace in same string)", () => {
     const match = evaluateRules(
-      { name: "ADP WAGE PAY Amazon", merchant_name: null, amount: 100 },
+      { name: "PAYCO WAGE PAY MarketCo", merchant_name: null, amount: 100 },
       [
-        r({ id: "amazon", priority: 270, match_pattern: "Amazon", category_id: "inv" }),
-        r({ id: "adp", priority: 100, match_pattern: "Adp Wage", category_id: "pay" }),
+        r({ id: "market", priority: 270, match_pattern: "MarketCo", category_id: "inv" }),
+        r({ id: "payroll", priority: 100, match_pattern: "PayCo Wage", category_id: "pay" }),
       ],
     );
-    expect(match?.rule_id).toBe("adp");
+    expect(match?.rule_id).toBe("payroll");
   });
 
-  it("ADP beats AK Juicy blob in IND NAME", () => {
+  it("payroll beats entity blob in IND NAME", () => {
     const match = evaluateRules(
       {
-        name: "ORIG CO NAME:ADP WAGE PAY IND NAME:AK JUICY BOWLS LLC PAL",
+        name: "ORIG CO NAME:PAYCO WAGE PAY IND NAME:ACME ENTITY LLC PAL",
         merchant_name: null,
         amount: 5000,
       },
@@ -41,52 +42,52 @@ describe("evaluateRules", () => {
         r({
           id: "inv",
           priority: 200,
-          match_pattern: "AK Juicy Bowls",
+          match_pattern: "Acme Entity Llc",
           category_id: "inv",
         }),
         r({
-          id: "payroll_adp_wages",
+          id: "payroll_wages",
           priority: 100,
-          match_pattern: "Adp Wage Pay",
+          match_pattern: "Payco Wage Pay",
           category_id: "payroll_labor",
           amount_sign: "positive",
         }),
       ],
     );
-    expect(match?.rule_id).toBe("payroll_adp_wages");
+    expect(match?.rule_id).toBe("payroll_wages");
   });
 
-  it("Amazon refund uses negative rule", () => {
+  it("refund uses negative amount rule", () => {
     const match = evaluateRules(
-      { name: "AMAZON", merchant_name: "Amazon", amount: -12 },
+      { name: "MARKETCO", merchant_name: "MarketCo", amount: -12 },
       [
         r({
-          id: "refund_amazon",
+          id: "refund_market",
           priority: 50,
-          match_pattern: "Amazon",
+          match_pattern: "MarketCo",
           amount_sign: "negative",
           category_id: "contra",
         }),
         r({
-          id: "inventory_amazon",
+          id: "inventory_market",
           priority: 270,
-          match_pattern: "Amazon",
+          match_pattern: "MarketCo",
           amount_sign: "positive",
           category_id: "inv",
         }),
       ],
     );
-    expect(match?.rule_id).toBe("refund_amazon");
+    expect(match?.rule_id).toBe("refund_market");
   });
 
   it("override beats rule", () => {
     const match = evaluateRules(
-      { name: "Amazon", merchant_name: null, amount: 10 },
-      [r({ id: "a", priority: 1, match_pattern: "Amazon", category_id: "inv" })],
+      { name: "MarketCo", merchant_name: null, amount: 10 },
+      [r({ id: "a", priority: 1, match_pattern: "MarketCo", category_id: "inv" })],
     );
     const eff = effectiveCategory(
       {
-        name: "Amazon",
+        name: "MarketCo",
         merchant_name: null,
         amount: 10,
         override_category_id: "opex",

@@ -243,6 +243,10 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 044 (Issue #168 Phase A): plaid_transactions.is_internal + view exclude
     # for checking↔own-card transfers. Same vw_plaid_spend_by_category_daily — no new
     # BQ_TARGETS/GRAFANA_VIEWS entry.
+    # migration 045/046 (Issue #160): plaid_taxonomy_nodes + plaid_category_rules +
+    # vw_plaid_spend_by_category_daily effective-category rewrite (override > rule >
+    # null). Console Accounting taxonomy/rules — not model_* / no Grafana panel;
+    # no new BQ_TARGETS/GRAFANA_VIEWS (same class as 037/043/044).
     # migration 041 (Issue #178 follow-up / PR #180): inventory_order_reco gains
     # delivery_date; vw_order_reco_{slot1,slot2,combined} + tvf_order_reco_* join
     # and filter by delivery_date (> today CT). No new BQ_TARGETS/GRAFANA_VIEWS —

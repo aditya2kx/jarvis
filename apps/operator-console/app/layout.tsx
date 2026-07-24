@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Palmetto, Texas — Operator Console",
-  description: "Operator console for Palmetto Superfoods — replaces the Grafana dashboard.",
+  description: "Operator console — replaces the Grafana dashboard.",
 };
 
 export default function RootLayout({

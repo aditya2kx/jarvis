@@ -2,7 +2,7 @@
 """Homebase (payroll) navigation module — structured config for tax documents.
 
 joinhomebase.com payroll / tax documents. The `verified` block reflects a real
-session (Palmetto Superfoods); password lives in macOS keychain
+session (the store business entity); password lives in macOS keychain
 (`jarvis-homebase`), not in this file.
 """
 
@@ -26,7 +26,7 @@ PORTAL_CONFIG = {
         ],
         "quirks": [
             "Login path is /accounts/sign_in (underscore), not sign-in",
-            "May redirect to business selection if user has multiple locations — select Palmetto Superfoods",
+            "May redirect to business selection if user has multiple locations — select the store business entity",
         ],
         "fields": {
             "username": {"hint": "Email address input", "context": "main page"},
@@ -52,9 +52,9 @@ PORTAL_CONFIG = {
     },
 
     "verified_context": {
-        "business_entity": "Palmetto Superfoods",
-        "login_email": "adi@mypalmetto.co",
-        "login_email_source": "Palmetto Chrome Passwords CSV — business email, not personal",
+        "business_entity": "the store business entity",
+        "login_email": "",  # resolve from Keychain / Secret Manager — never commit
+        "login_email_source": "operator browser password export — business email, not personal",
     },
 
     "documents": [
@@ -105,7 +105,7 @@ PORTAL_CONFIG = {
     "account_selector": {
         "exists": True,
         "hint": "Business/location selector if multiple locations exist",
-        "note": "Select Palmetto Superfoods (verified entity) or each location as needed for tax docs",
+        "note": "Select the store business entity (verified entity) or each location as needed for tax docs",
         "wait_after_switch": 3,
     },
 

@@ -1,15 +1,15 @@
 {
-  "excluded_from_tip_pool": ["Krause, Lindsay"],
+  "excluded_from_tip_pool": ["Example, Manager"],
   "wage_rates": [
-    {"employee_name": "Krause, Lindsay", "is_salaried": false, "excluded_from_labor_pct": true},
-    {"employee_name": "Alvarez, Sebastian", "is_salaried": false, "excluded_from_labor_pct": false},
-    {"employee_name": "Guerrero, Amy", "is_salaried": false, "excluded_from_labor_pct": false}
+    {"employee_name": "Example, Manager", "is_salaried": false, "excluded_from_labor_pct": true},
+    {"employee_name": "Staff, C", "is_salaried": false, "excluded_from_labor_pct": false},
+    {"employee_name": "Staff, A", "is_salaried": false, "excluded_from_labor_pct": false}
   ],
   "punches": [
-    {"date": "2026-05-26", "employee_name": "Krause, Lindsay", "in_time": "06:00", "out_time": "07:00"},
-    {"date": "2026-05-26", "employee_name": "Krause, Lindsay", "in_time": "08:00", "out_time": "14:00"},
-    {"date": "2026-05-26", "employee_name": "Alvarez, Sebastian", "in_time": "08:00", "out_time": "14:00"},
-    {"date": "2026-05-26", "employee_name": "Guerrero, Amy", "in_time": "08:00", "out_time": "14:00"}
+    {"date": "2026-05-26", "employee_name": "Example, Manager", "in_time": "06:00", "out_time": "07:00"},
+    {"date": "2026-05-26", "employee_name": "Example, Manager", "in_time": "08:00", "out_time": "14:00"},
+    {"date": "2026-05-26", "employee_name": "Staff, C", "in_time": "08:00", "out_time": "14:00"},
+    {"date": "2026-05-26", "employee_name": "Staff, A", "in_time": "08:00", "out_time": "14:00"}
   ],
   "item_lines": [
     {

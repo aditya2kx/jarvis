@@ -1,8 +1,8 @@
 {
-  "_doc": "Source-of-truth profile for the Palmetto Superfoods Austin store. Single point of configuration consumed by BHAGA's orchestrator (M3 daily_refresh.py) and all skills it calls. See agents/bhaga/knowledge-base/store-profiles/README.md (TODO) for the schema reference.",
+  "_doc": "Bootstrap pointer for store_id=palmetto (Austin). Legal entity, display name, and employee roster live in BQ / gitignored config — not in git. Consumed by BHAGA orchestrator and skills.",
   "store_id": "palmetto",
-  "display_name": "Palmetto Superfoods (Austin)",
-  "legal_entity": "AK JUICY BOWLS LLC",
+  "display_name": "Austin",
+  "legal_entity": "",
   "google_account_key": "palmetto",
   "_doc_google_account_key": "Matches the key in core/config.yaml accounts.{key}. Determines which Google credentials refresh_access_token() uses.",
   "timezone": {
@@ -87,7 +87,7 @@
     "application_id": "sq0idp-Hcto2eTRUUFBAyhRtxCSGg",
     "location_id": "L9DDZF3CQS8AK",
     "_doc_location_id": "Square location ID for the Austin Mueller Lake store (confirmed 2026-06-23 via GET /v2/locations).",
-    "_doc": "OAuth access via Square REST API. Tokens stored in Secret Manager secret square_palmetto_oauth (JSON: application_id, application_secret, access_token, refresh_token, expires_at, merchant_id). Account: adi@mypalmetto.co. Migrated from browser-automation login (square_palmetto_login) 2026-06-23."
+    "_doc": "OAuth access via Square REST API. Tokens in Secret Manager secret square_palmetto_oauth. Operator account email is not stored in git."
   },
   "adp_run": {
     "credential_handle": "adp_palmetto_login",
@@ -99,66 +99,28 @@
     "_doc": "wage_rate_report_name is the saved custom report under Reports > My saved custom reports. compensation_backend uses this to find the right report row to click."
   },
   "employees": {
-    "_doc": "Aliases map raw_name (as it appears in EITHER Timecard XLSX or Earnings XLSX) -> canonical_name. We use the comma form 'LastName, FirstName' as the canonical because it's the form ADP uses everywhere except the time-tracking module. Every employee MUST have entries for both forms to ensure the model-sheet join works.",
-    "aliases": {
-      "Alvarez Sebastian": "Alvarez, Sebastian",
-      "Alvarez, Sebastian": "Alvarez, Sebastian",
-      "Browning Skyler": "Browning, Skyler",
-      "Browning, Skyler": "Browning, Skyler",
-      "Garcia Jacob": "Garcia, Jacob",
-      "Garcia, Jacob": "Garcia, Jacob",
-      "Guerrero Amy": "Guerrero, Amy",
-      "Guerrero, Amy": "Guerrero, Amy",
-      "Johnson Dolce": "Johnson, Dolce",
-      "Johnson Dolce J": "Johnson, Dolce",
-      "Johnson, Dolce": "Johnson, Dolce",
-      "Johnson, Dolce J": "Johnson, Dolce",
-      "Krause Lindsay": "Krause, Lindsay",
-      "Krause, Lindsay": "Krause, Lindsay",
-      "Latham Aubree N": "Latham, Aubree N",
-      "Latham, Aubree N": "Latham, Aubree N",
-      "Majdinasab Tina": "Majdinasab, Tina",
-      "Majdinasab, Tina": "Majdinasab, Tina",
-      "Padron Lisette": "Padron, Lisette",
-      "Padron, Lisette": "Padron, Lisette",
-      "Pascone Kayah A": "Pascone, Kayah A",
-      "Pascone, Kayah A": "Pascone, Kayah A",
-      "Saldana Daniel": "Saldana, Daniel",
-      "Saldana, Daniel": "Saldana, Daniel",
-      "Steele Isabel": "Steele, Isabel",
-      "Steele, Isabel": "Steele, Isabel",
-      "Urrutia Emely": "Urrutia, Emely",
-      "Urrutia, Emely": "Urrutia, Emely",
-      "Flores Juan": "Flores, Juan",
-      "Flores, Juan": "Flores, Juan",
-      "Miles": "Guerrero, Amy",
-      "Myles": "Guerrero, Amy"
-    },
-    "excluded_from_tip_pool_and_labor_pct": [
-      "Krause, Lindsay"
-    ],
-    "_doc_exclusions": "Lindsay is the store manager. She IS paid hourly ($25/hr) per ADP, but is excluded from labor% (we don't count manager cost against store sales) and from the tip pool (managers don't take from tips per policy). Exclusion is by canonical name, NOT by salaried flag."
+    "_doc": "Roster, aliases, and tip/labor exclusions live in BQ (employee_aliases, store_config). Do not commit real names here — kept empty as bootstrap only.",
+    "aliases": {},
+    "excluded_from_tip_pool_and_labor_pct": [],
+    "_doc_exclusions": "Permanent tip/labor exclusions are configured in BQ store_config, not in this JSON."
   },
   "forecast_horizon_days": 30,
   "labor_config": {
     "saturation_orders_per_labor_hour": 4,
     "forecast_target_completion_time_per_item_sec": 420,
-    "_doc": "Store-specific seed default. Palmetto's throughput wall is ~4 orders/hourly-labor-hour (one order every 15 labor-minutes per barista). The code default of 10 is for a generic fast-paced shop; Palmetto's specialty drinks take longer. Operator can still override in-sheet; subsequent refreshes preserve the in-sheet value.",
-    "_doc_forecast_target_completion_time_per_item_sec": "Flat, configurable staffing-solver target (seconds per item) \u2014 420 = 7 min/item. Drives forecast efficiency_hours and the operational kds_pct_items_over_goal threshold. Editable in-sheet (config tab) AND per forecast row (labor_daily_forecast.target_time_per_item_sec). NOT derived from observed KDS \u2014 observed KDS time is purely operational/observational and never feeds the solver."
+    "_doc": "Store-specific seed default (~4 orders/hourly-labor-hour). Operator can override in-sheet; subsequent refreshes preserve the in-sheet value.",
+    "_doc_forecast_target_completion_time_per_item_sec": "Flat, configurable staffing-solver target (seconds per item) — 420 = 7 min/item. Drives forecast efficiency_hours and the operational kds_pct_items_over_goal threshold. Editable in-sheet (config tab) AND per forecast row (labor_daily_forecast.target_time_per_item_sec). NOT derived from observed KDS — observed KDS time is purely operational/observational and never feeds the solver."
   },
   "calibration": {
     "last_verified_utc": "2026-05-16T17:10:00Z",
-    "verified_by": "Cursor AI agent (Opus 4.7) via user-playwright MCP + Google API direct.",
+    "verified_by": "Cursor AI agent via user-playwright MCP + Google API direct.",
     "first_data_window": {
       "start": "2026-03-22",
       "end": "2026-05-15",
       "_doc": "Initial historical backfill window. After this is loaded and validated, the orchestrator switches to T-1 daily increments."
     },
     "notes": [
-      "Square Transactions report scraping calibrated against app.squareup.com/dashboard/sales/transactions. 2956 txns / $47,946.77 collected / $2,527.21 tips over the backfill window.",
-      "ADP Timecard report scraping calibrated against Reports > Time reports > Timecard. 606 punch rows / 14 employees / 5 pay periods (Mar 9 - May 16, 2026; selected period over-covers the data window).",
-      "ADP Earnings and Hours V1 (custom saved report) calibrated. 116 earning lines / 12 employees in the data window. 11 staff @ $15.25/hr; Lindsay Krause @ $25/hr (hourly, not salaried).",
-      "Google Sheets workbooks created at My Drive root > BHAGA folder. All 3 workbooks seeded with headers + notes. Ready for tip_ledger_writer (M1 task remaining) to land data."
+      "Square / ADP / Sheets calibration completed 2026-05-16. Per-employee and wage details are not recorded in git — see BQ / private ops notes."
     ]
   }
 }

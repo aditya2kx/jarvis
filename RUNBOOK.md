@@ -6,7 +6,7 @@ GitHub + GCP access** — no dependency on the old laptop, its Keychain, or its 
 
 - **GCP project:** `jarvis-bhaga-prod`
 - **Region:** `us-central1`
-- **Store:** `palmetto` (Palmetto Superfoods, Austin) — `AK JUICY BOWLS LLC`
+- **Store:** `palmetto` (Austin)
 - **Repo:** `https://github.com/aditya2kx/jarvis` (branch `main`; agent pushes via `jarvis-agent-bot328` HTTPS, PAT in Keychain — see §7 bot-PAT auth model)
 
 ---
@@ -68,7 +68,7 @@ Cloud Run Service  bhaga-webhook  (image: bhaga-webhook)
 ## 2. Sheet topology
 
 All sheets live under the **`BHAGA`** Google Drive folder
-(`1ko9yx78RPQvp0chaYfKOGNk2xF0vhjfP`) on the **`palmetto`** Google account (`adi@mypalmetto.co`).
+(`1ko9yx78RPQvp0chaYfKOGNk2xF0vhjfP`) on the **`palmetto`** Google account (operator business Gmail — not recorded in git).
 The Cloud Run service account is shared on every active sheet (see
 `agents/bhaga/scripts/share_sheets_with_sa.py`).
 

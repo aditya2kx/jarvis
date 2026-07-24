@@ -44,7 +44,7 @@ Critical gotchas (see selectors/timecards.json for full notes):
       every pay period whose end >= window_start and start <= window_end.
       Over-coverage at the edges is filtered out in `daily_shifts()`.
 
-Status (2026-05-16): proven from-scratch end-to-end on Palmetto Superfoods
+Status (2026-05-16): proven from-scratch end-to-end on the store ADP account
 account. 5 pay periods (Mar 9 - May 16, 2026), 14 employees, 606 punches.
 """
 

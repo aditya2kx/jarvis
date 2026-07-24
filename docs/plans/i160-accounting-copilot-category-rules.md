@@ -148,9 +148,10 @@ def seed_taxonomy(*, dry_run: bool = True) -> dict:
     ...
 
 def extend_corpus_rules(*, dry_run: bool = True) -> dict:
-    """Add jam-agreed non-June rules: BOA transfer, rent/Nineteen Hundred,
-    Qualifrac, Homebase payroll, Allianz/E*TRADE/MANUAL CR capital — using
-    existing parents + new subcategories under Logistics / Other inflow."""
+    """Merge optional private extension_rules.csv (transfers, occupancy, capital).
+
+    Live merchant patterns are never hardcoded here — see seed README.
+    """
     ...
 ```
 

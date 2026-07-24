@@ -36,7 +36,7 @@ This module is the PURE, unit-testable half (mirrors shift_backend.py):
     * ``daily_schedule``        — public entry: read the newest Schedule-*.json
       the runner wrote to extracted/downloads/ and return records in a window.
 
-Calibration (2026-06-10, Palmetto Superfoods): this week (Jun 8-14) totalled
+Calibration (2026-06-10, store ADP): this week (Jun 8-14) totalled
 291:30 Hrs across 13 employees; next week (Jun 15-21) 286:00 — confirming both
 the current and next week are planned, which is exactly the forward horizon we
 diff against goal hours.

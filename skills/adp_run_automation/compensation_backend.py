@@ -30,11 +30,10 @@ Critical gotchas (see selectors/compensation.json for full notes):
     * Earnings report uses 'LastName, FirstName' format whereas the
       Timecard report uses 'LastName FirstName' (no comma). The aliases
       map must handle both forms for cross-backend joins.
-    * Lindsay Krause is paid HOURLY at $25/hr (not salaried). Exclusion
-      from labor% / tip pool is by NAME via the store profile, not by
-      the is_salaried flag.
+    * Tip/labor exclusions are by canonical name via BQ store_config,
+      not by the is_salaried flag (excluded staff may still be hourly).
 
-Status (2026-05-16): proven from-scratch end-to-end on Palmetto Superfoods.
+Status (2026-05-16): proven from-scratch end-to-end on the store ADP account.
 Date range Mar 22 - May 15 2026, 12 employees, 116 data rows.
 """
 

@@ -21,3 +21,8 @@ Jobs (Option B); they must never block the click path via daemon threads.
 
 Canonical machine-readable list: [`registry.ts`](./registry.ts).
 Gate: `python3 scripts/check_operator_console_actions.py`.
+
+## Live evidence (PR #193)
+
+- Console review-deploy: `operator-console-00068-bkf`, minScale=1
+- Job: `bhaga-daily-refresh-dbr7z` logged `[order-reco-only] store=palmetto — skipping scrape/model` exit 0

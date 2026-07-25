@@ -2171,9 +2171,9 @@ def _run_refresh(run_id: str) -> int:
     _RUN_SUMMARY.update(refresh_date=refresh_date, store=args.store, dry_run=args.dry_run)
 
     # Console Option B (Issue #175): enqueue order-reco-only via Cloud Run Jobs
-    # without running scrape/model. Env BHAGA_STORE overrides --store default.
-    args.store = os.environ.get("BHAGA_STORE") or args.store
+    # without running scrape/model. BHAGA_STORE override is scoped to this path only.
     if _env_skip("BHAGA_ORDER_RECO_ONLY"):
+        args.store = os.environ.get("BHAGA_STORE") or args.store
         print(f"[order-reco-only] store={args.store} — skipping scrape/model")
         os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
         from core.order_reco import refresh_order_reco  # noqa: PLC0415

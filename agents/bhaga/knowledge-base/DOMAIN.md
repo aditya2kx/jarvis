@@ -141,6 +141,16 @@ functions of `update_model_sheet.py` / `forecast.py` for the labor / tip-alloc /
 `qty_sold`, money in cents, `event_type` (Payment and Refund lines are both kept), `transaction_id`,
 `payment_id`, `location`, `channel`, `line_seq` (0-based row index in the source CSV).
 Square's per-line `employee` field is **not** stored — staffing uses ADP punches instead.
+Docstring / fixture examples in `transactions_backend.py` use **synthetic** staff names only
+(never commit real employee or legal-entity strings — those live in BQ / Secret Manager).
+
+### B2. Operator Console Accounting (Plaid bank feed — Issue #160)
+
+Bank cash ledger lives in BQ `plaid_transactions` (+ taxonomy/rules tables). Operator-facing
+Category/Subcategory come from `plaid_taxonomy_nodes` / `plaid_category_rules` (effective =
+override → rule → none). Money-in/out KPIs on `/accounting` sum **Plaid only** (exclude
+`is_internal`); Square net sales is a separate denominator for optional `%` chart mode — never
+mixed into bank money-in/out. PFC columns remain for debug only.
 
 **`kds_daily`** — one row per **day**, kitchen efficiency. Key: `(date_local,)`. Source:
 `transactions_backend.aggregate_daily_kds_stats`.

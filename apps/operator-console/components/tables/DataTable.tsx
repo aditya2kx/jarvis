@@ -408,21 +408,63 @@ export function DataTable<TData>({
   const multiOptionsByCol = useMemo(() => {
     const map = new Map<string, string[]>();
     if (!enableColumnFilters) return map;
+    const rows = data as Record<string, unknown>[];
     for (const col of columns) {
-      const id = (col as { accessorKey?: string; id?: string }).accessorKey
-        || (col as { id?: string }).id;
+      const id =
+        (col as { accessorKey?: string; id?: string }).accessorKey ||
+        (col as { id?: string }).id;
       if (!id) continue;
       const meta = col.meta as { filterVariant?: string } | undefined;
       if (meta?.filterVariant !== "multi") continue;
+
+      // Faceted options: values present after applying every OTHER column filter.
       const vals = new Set<string>();
-      for (const row of data as Record<string, unknown>[]) {
+      for (const row of rows) {
+        let ok = true;
+        for (const f of columnFilters) {
+          if (f.id === id) continue;
+          if (!filterTextOrMulti(row[f.id], f.value)) {
+            ok = false;
+            break;
+          }
+        }
+        if (!ok) continue;
         const v = row[id];
         vals.add(v == null || v === "" ? "" : String(v));
+      }
+      // Keep currently selected values visible even if they temporarily drop out.
+      const selected = columnFilters.find((f) => f.id === id)?.value;
+      if (Array.isArray(selected)) {
+        for (const s of selected) vals.add(String(s));
       }
       map.set(id, [...vals].sort((a, b) => a.localeCompare(b)));
     }
     return map;
-  }, [columns, data, enableColumnFilters]);
+  }, [columns, data, enableColumnFilters, columnFilters]);
+
+  // Drop multi-select choices that no longer appear in the faceted option set
+  // (e.g. subcategory after narrowing Category).
+  useEffect(() => {
+    if (!enableColumnFilters || multiOptionsByCol.size === 0) return;
+    let changed = false;
+    const next: ColumnFiltersState = [];
+    for (const f of columnFilters) {
+      const opts = multiOptionsByCol.get(f.id);
+      if (!opts || !Array.isArray(f.value)) {
+        next.push(f);
+        continue;
+      }
+      const allow = new Set(opts);
+      const pruned = (f.value as string[]).filter((v) => allow.has(String(v)));
+      if (pruned.length !== (f.value as string[]).length) {
+        changed = true;
+        if (pruned.length) next.push({ ...f, value: pruned });
+        continue;
+      }
+      next.push(f);
+    }
+    if (changed) setColumnFilters(next);
+  }, [columnFilters, enableColumnFilters, multiOptionsByCol]);
   function rowClassName(row: TData): string | undefined {
     if (!rowHighlight) return undefined;
     const rules = Array.isArray(rowHighlight) ? rowHighlight : [rowHighlight];

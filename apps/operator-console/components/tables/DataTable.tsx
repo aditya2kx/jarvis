@@ -21,7 +21,14 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import { ArrowUpIcon, ArrowDownIcon, ChevronsUpDownIcon } from "lucide-react";
+import {
+  ArrowUpIcon,
+  ArrowDownIcon,
+  ChevronsUpDownIcon,
+  ChevronDownIcon,
+  CheckIcon,
+} from "lucide-react";
+import { Popover } from "@base-ui/react/popover";
 import {
   Table,
   TableBody,
@@ -155,6 +162,7 @@ function filterIncludesString(
   return filterTextOrMulti(row.getValue(columnId), filterValue);
 }
 
+/** Compact trigger + floating checklist (Linear / Airtable faceted filter). */
 function MultiSelectFilter({
   columnId,
   label,
@@ -168,39 +176,142 @@ function MultiSelectFilter({
   value: string[];
   onChange: (next: string[]) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const selected = new Set(value);
+  const active = selected.size > 0;
+  const displayLabel = (() => {
+    if (!active) return "All";
+    if (selected.size === 1) {
+      const only = [...selected][0];
+      return only === "" ? "(blank)" : only;
+    }
+    return `${selected.size} selected`;
+  })();
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((opt) =>
+      (opt || "(blank)").toLowerCase().includes(q),
+    );
+  }, [options, query]);
+  const showSearch = options.length > 6;
+
+  function toggle(opt: string) {
+    const next = new Set(selected);
+    if (next.has(opt)) next.delete(opt);
+    else next.add(opt);
+    onChange([...next]);
+  }
+
   return (
-    <div
-      className="max-h-28 overflow-y-auto rounded border border-border bg-background p-1 text-xs font-normal"
-      onClick={(e) => e.stopPropagation()}
+    <Popover.Root
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setQuery("");
+      }}
     >
-      <label className="mb-0.5 flex items-center gap-1 px-0.5">
-        <input
-          type="checkbox"
-          checked={options.length > 0 && selected.size === options.length}
-          onChange={() =>
-            onChange(selected.size === options.length ? [] : [...options])
-          }
-          aria-label={`Select all ${label}`}
-        />
-        <span className="text-muted-foreground">All</span>
-      </label>
-      {options.map((opt) => (
-        <label key={`${columnId}-${opt || "(blank)"}`} className="flex items-center gap-1 px-0.5">
-          <input
-            type="checkbox"
-            checked={selected.has(opt)}
-            onChange={() => {
-              const next = new Set(selected);
-              if (next.has(opt)) next.delete(opt);
-              else next.add(opt);
-              onChange([...next]);
-            }}
-          />
-          <span className="truncate">{opt || "(blank)"}</span>
-        </label>
-      ))}
-    </div>
+      <Popover.Trigger
+        nativeButton
+        type="button"
+        onClick={(e) => e.stopPropagation()}
+        aria-label={`Filter ${label}`}
+        className={cn(
+          "flex h-7 w-full min-w-0 items-center justify-between gap-1 rounded-md border px-2 text-left text-xs font-normal outline-none transition-colors",
+          "focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40",
+          active
+            ? "border-primary/50 bg-primary/10 text-foreground"
+            : "border-border bg-background text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+        )}
+      >
+        <span className="truncate">{displayLabel}</span>
+        <ChevronDownIcon className="size-3.5 shrink-0 opacity-60" />
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner side="bottom" align="start" sideOffset={4} className="z-50">
+          <Popover.Popup
+            className={cn(
+              "flex w-72 max-w-[min(18rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg outline-none",
+              "origin-[var(--transform-origin)] transition-[transform,scale,opacity] data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0",
+            )}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-border px-2.5 py-2">
+              <span className="text-xs font-medium text-muted-foreground">{label}</span>
+              <div className="flex items-center gap-2 text-[11px]">
+                <button
+                  type="button"
+                  className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  onClick={() => onChange([...options])}
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-40"
+                  disabled={!active}
+                  onClick={() => onChange([])}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            {showSearch ? (
+              <div className="border-b border-border p-2">
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={`Search ${label.toLowerCase()}…`}
+                  className="h-8 px-2 text-xs"
+                  aria-label={`Search ${label}`}
+                  autoFocus
+                />
+              </div>
+            ) : null}
+            <ul className="max-h-64 overflow-y-auto p-1" role="listbox" aria-multiselectable>
+              {filtered.length === 0 ? (
+                <li className="px-2 py-3 text-center text-xs text-muted-foreground">No matches</li>
+              ) : (
+                filtered.map((opt) => {
+                  const checked = selected.has(opt);
+                  const text = opt || "(blank)";
+                  return (
+                    <li key={`${columnId}-${opt || "(blank)"}`}>
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={checked}
+                        className={cn(
+                          "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
+                          checked && "bg-muted/70",
+                        )}
+                        onClick={() => toggle(opt)}
+                      >
+                        <span
+                          className={cn(
+                            "mt-0.5 flex size-3.5 shrink-0 items-center justify-center rounded-sm border",
+                            checked
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "border-border",
+                          )}
+                          aria-hidden
+                        >
+                          {checked ? <CheckIcon className="size-2.5" strokeWidth={3} /> : null}
+                        </span>
+                        <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">
+                          {text}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })
+              )}
+            </ul>
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 

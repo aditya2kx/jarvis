@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import {
   Sheet,
   SheetContent,
@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { saveGoalsAction } from "@/app/home/actions";
 import { GOAL_FIELDS, fractionToPercentInput, percentInputToFraction, sanitizeDollarInput } from "@/lib/kpi/goal-fields";
 import type { GoalKey } from "@/lib/bq/writes";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 
 // Percent-kind goals (labor %, food-cost %, on-time %) are STORED as
 // fractions (0.15) — same unit health.ts/the Slack `/bhaga-cloud config set`
@@ -47,23 +48,20 @@ export function GoalsDrawer({ current }: { current: Partial<Record<GoalKey, stri
       GOAL_FIELDS.map(({ key }) => [key, toInputValue(key, current[key])]),
     ) as Partial<Record<GoalKey, string>>,
   );
-  const [status, setStatus] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const { isPending, stage, error, run } = useConsoleAction();
 
-  function handleSave() {
+  async function handleSave() {
     const stored = Object.fromEntries(
       GOAL_FIELDS.map(({ key }) => [key, values[key] ? toStoredValue(key, values[key]!) : values[key]]),
     ) as Partial<Record<GoalKey, string>>;
-    startTransition(async () => {
-      try {
-        await saveGoalsAction(stored);
-        setStatus("Saved.");
-        setOpen(false);
-      } catch (e) {
-        setStatus(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
+    const ack = await run(() => saveGoalsAction(stored), {
+      saving: "Saving…",
+      done: "Saved.",
     });
+    if (ack.ok) setOpen(false);
   }
+
+  const feedback = stage || error;
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -118,11 +116,15 @@ export function GoalsDrawer({ current }: { current: Partial<Record<GoalKey, stri
             </div>
           ))}
 
-          {status ? <p className="text-sm text-muted-foreground">{status}</p> : null}
+          {feedback ? (
+            <p className={`text-sm ${error ? "text-destructive" : "text-muted-foreground"}`}>
+              {feedback}
+            </p>
+          ) : null}
         </div>
 
         <SheetFooter>
-          <Button onClick={handleSave} disabled={isPending}>
+          <Button onClick={() => void handleSave()} disabled={isPending}>
             {isPending ? "Saving…" : "Save goals"}
           </Button>
         </SheetFooter>

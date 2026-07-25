@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { InfoIcon, PencilIcon, CheckIcon, XIcon, ChevronRightIcon } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +14,7 @@ import { saveGoalAction } from "@/app/home/actions";
 import { GOAL_FIELDS, fractionToPercentInput, percentInputToFraction, sanitizeDollarInput } from "@/lib/kpi/goal-fields";
 import { periodHref } from "@/lib/filters/range";
 import type { HealthScorecard as HealthScorecardData, HealthMetric, HealthGroup, GoalStatus } from "@/lib/kpi/health";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 
 const STATUS_LABEL: Record<GoalStatus, string> = {
   "on-track": "On track",
@@ -95,8 +96,7 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [inputValue, setInputValue] = useState("");
-  const [isPending, startTransition] = useTransition();
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const { isPending, error, run, setError } = useConsoleAction();
 
   const field = m.goalKey ? GOAL_FIELDS.find((f) => f.key === m.goalKey) : undefined;
   const editable = Boolean(field && m.goalKey);
@@ -105,20 +105,17 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
     if (!field) return;
     const raw = m.rawGoal ?? "";
     setInputValue(field.kind === "percent" ? fractionToPercentInput(raw) : raw);
-    setSaveError(null);
+    setError(null);
     setEditing(true);
   }
 
   function save() {
     if (!field || !m.goalKey) return;
     const stored = field.kind === "percent" ? percentInputToFraction(inputValue) : inputValue;
-    startTransition(async () => {
-      try {
-        await saveGoalAction(m.goalKey!, stored);
+    void run(() => saveGoalAction(m.goalKey!, stored), { saving: "Saving…" }).then((ack) => {
+      if (ack.ok) {
         setEditing(false);
         router.refresh();
-      } catch (e) {
-        setSaveError(e instanceof Error ? e.message : String(e));
       }
     });
   }
@@ -211,7 +208,7 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
           </>
         )}
       </div>
-      {saveError ? <p className="text-xs text-destructive">Save failed: {saveError}</p> : null}
+      {error ? <p className="text-xs text-destructive">Save failed: {error}</p> : null}
     </div>
   );
 }

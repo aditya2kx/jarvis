@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { setCapacityAction } from "@/app/inventory/actions";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 
 // Inline quick-edit for order_reco_max_tubs (store_config) — a single
 // frequent numeric edit, so an inline input fits better than a drawer (see
@@ -11,8 +12,7 @@ import { setCapacityAction } from "@/app/inventory/actions";
 export function CapacityEdit({ currentMaxTubs }: { currentMaxTubs?: number }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(String(currentMaxTubs ?? 120));
-  const [isPending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
+  const { isPending, stage, error, run, setError } = useConsoleAction();
 
   if (!editing) {
     return (
@@ -34,25 +34,27 @@ export function CapacityEdit({ currentMaxTubs }: { currentMaxTubs?: number }) {
       <Button
         size="sm"
         disabled={isPending}
-        onClick={() =>
-          startTransition(async () => {
-            const n = Number(value);
-            if (Number.isNaN(n) || n < 0) {
-              setError("Enter a non-negative number.");
-              return;
-            }
-            setError(null);
-            await setCapacityAction(n);
-            setEditing(false);
-          })
-        }
+        onClick={() => {
+          const n = Number(value);
+          if (Number.isNaN(n) || n < 0) {
+            setError("Enter a non-negative number.");
+            return;
+          }
+          void run(() => setCapacityAction(n), { saving: "Saving…" }).then((ack) => {
+            if (ack.ok) setEditing(false);
+          });
+        }}
       >
-        Save
+        {isPending ? "Saving…" : "Save"}
       </Button>
       <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
         Cancel
       </Button>
-      {error ? <span className="text-xs text-destructive">{error}</span> : null}
+      {stage || error ? (
+        <span className={`text-xs ${error ? "text-destructive" : "text-muted-foreground"}`}>
+          {stage || error}
+        </span>
+      ) : null}
     </div>
   );
 }

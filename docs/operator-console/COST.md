@@ -22,7 +22,7 @@ services have generous free tiers.
 
 | Resource | Est. / month | Basis |
 |---|---|---|
-| **Cloud Run** (console container) | $0–2 | Scales to zero; only bills on request CPU/mem. Low operator traffic → often within free tier (180k vCPU-s, 360k GiB-s, 2M requests). |
+| **Cloud Run** (console container) | $2–5 | Issue #175: `--min-instances=1` keeps one warm instance (avoids cold-start “is it up?”). Still low traffic; cpu-boost on startup. Scale-to-zero was cheaper but hurt mobile/first-open latency. |
 | **BigQuery** (query on demand) | $0–1 | On-demand $6.25/TiB. Screens `SELECT * FROM vw_*` (small, capped rows) + short-TTL caching → well under 1 TiB/mo free tier. |
 | **Identity-Aware Proxy (IAP)** | $0 | No charge for IAP itself. |
 | **Secret Manager** | ~$0.06 | $0.06 per active secret version/mo + $0.03/10k accesses. A few secrets → pennies. |

@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { applyTipExemptionsAction } from "@/app/payroll/actions";
 import type { TipExemptionDraft } from "@/lib/bq/writes";
 import type { AdpShiftRow, TipExemptionRow } from "@/lib/bq/queries";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 
 type DraftKey = string; // `${date}|${employee}`
 
@@ -102,7 +103,7 @@ export function TipExemptionsEditor({
   const [orphanEnd, setOrphanEnd] = useState("");
   const [orphanNote, setOrphanNote] = useState("Meeting");
   const [status, setStatus] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const { isPending, stage, error, run } = useConsoleAction();
 
   function patch(k: DraftKey, partial: Partial<RowDraft>) {
     setDrafts((prev) => ({
@@ -132,7 +133,7 @@ export function TipExemptionsEditor({
     setStatus(`Queued orphan exemption for ${orphanEmp} on ${orphanDate}.`);
   }
 
-  function handleUpdate() {
+  async function handleUpdate() {
     const actions: TipExemptionDraft[] = [];
     for (const [k, d] of Object.entries(drafts)) {
       const [date, employeeName] = k.split("|");
@@ -143,27 +144,23 @@ export function TipExemptionsEditor({
       setStatus("No changes to apply.");
       return;
     }
-    startTransition(async () => {
-      try {
-        const res = await applyTipExemptionsAction(actions);
-        setStatus(
-          `Updated ${actions.length} exemption(s); recomputing ${res.recomputed.join(", ") || "—"}.`,
-        );
-        setDrafts((prev) => {
-          const next = { ...prev };
-          for (const k of Object.keys(next)) {
-            next[k] = { ...next[k], dirty: false };
-          }
-          return next;
-        });
-      } catch (e) {
-        setStatus(`Update failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
+    const ack = await run(() => applyTipExemptionsAction(actions), {
+      saving: "Updating…",
     });
+    if (ack.ok) {
+      setDrafts((prev) => {
+        const next = { ...prev };
+        for (const k of Object.keys(next)) {
+          next[k] = { ...next[k], dirty: false };
+        }
+        return next;
+      });
+    }
   }
 
   const orphanRows = exemptions.filter((e) => !e.has_shift);
   const dirtyCount = Object.values(drafts).filter((d) => d.dirty).length;
+  const feedback = stage || error || status;
 
   return (
     <div className="flex flex-col gap-4" data-testid="tip-exemptions-editor">
@@ -179,7 +176,7 @@ export function TipExemptionsEditor({
           Shifts · tip exemptions · {periodLabel}
         </h2>
         {editable ? (
-          <Button size="sm" disabled={isPending || dirtyCount === 0} onClick={handleUpdate}>
+          <Button size="sm" disabled={isPending || dirtyCount === 0} onClick={() => void handleUpdate()}>
             {isPending ? "Updating…" : `Update${dirtyCount ? ` (${dirtyCount})` : ""}`}
           </Button>
         ) : null}
@@ -383,7 +380,11 @@ export function TipExemptionsEditor({
         </div>
       ) : null}
 
-      {status ? <p className="text-xs text-muted-foreground">{status}</p> : null}
+      {feedback ? (
+        <p className={`text-xs ${error ? "text-destructive" : "text-muted-foreground"}`}>
+          {feedback}
+        </p>
+      ) : null}
     </div>
   );
 }

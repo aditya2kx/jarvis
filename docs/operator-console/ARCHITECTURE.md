@@ -176,14 +176,20 @@ flowchart TD
 
 Writes are **server actions** that call the same idempotent contracts as
 `cloud/webhook/handler.py`. Nothing is written to BQ until the operator confirms.
+Issue **#175 (Option B):** every mutating control uses the shared
+`useConsoleAction` shell (`lib/actions/`); heavy follow-ups enqueue Cloud Run
+Jobs (`bhaga-daily-refresh`) instead of blocking the click path. Audit + gate:
+`lib/actions/MUTATING_ACTIONS.md`, `scripts/check_operator_console_actions.py`.
 
 ```mermaid
 flowchart LR
-  UI[Drawer / form] --> SA[Server Action]
+  UI[Drawer / form + useConsoleAction] --> SA[Server Action ActionAck]
   SA --> AU{IAP-verified identity\n= updated_by}
   AU --> M[BQ MERGE / replace-per-key]
   M --> OK[revalidate screen]
-  SA -. restock/config .-> RR[refresh_order_reco]
+  SA -. restock/capacity/self-heal .-> Job[Cloud Run Job\nBHAGA_ORDER_RECO_ONLY]
+  SA -. tip exemptions .-> Job2[Cloud Run Job\nFORCE_MODEL_RECOMPUTE]
+  Job --> RR[refresh_order_reco]
 ```
 
 Reused write contracts (already proven in `handler.py`):
@@ -192,14 +198,14 @@ Reused write contracts (already proven in `handler.py`):
   optional `exempt_start`/`exempt_end` HH:MM window) via Payroll Detail **Update**, then
   Cloud Run Jobs recompute-only for touched dates. Editable only for the open pay period.
 - **Goals / capacity** → MERGE into `store_config` (key: store, key). Capacity =
-  `order_reco_max_tubs`; changing it re-runs `refresh_order_reco`.
+  `order_reco_max_tubs`; changing it enqueues order-reco refresh (`FEATURES.asyncOrderReco`).
 - **Restock schedule** → MERGE into `inventory_restock_schedule` (key: store, date).
 - **Restock actuals** → **replace-per-date**: DELETE `inventory_restock_orders`
-  for (store, date), INSERT parsed rows, then `refresh_order_reco`.
-- **Reset to estimated** → DELETE actuals for (store, date), then refresh.
+  for (store, date), INSERT parsed rows, then enqueue `refresh_order_reco`.
+- **Reset to estimated** → DELETE actuals for (store, date), then enqueue refresh.
 - **Replace estimated date** (console-only) → DELETE schedule (+ any orphan
   actuals) for the old Estimated date, MERGE the new date, then
-  `refresh_order_reco`. Refuses dates that already have Actuals. Slack modal
+  enqueue `refresh_order_reco`. Refuses dates that already have Actuals. Slack modal
   does not expose this action.
 - **Recognition bonus** → *new* MERGE table (mirror `training_shifts`) — no write
   path exists on `main` yet (flagged in PLAN.md).

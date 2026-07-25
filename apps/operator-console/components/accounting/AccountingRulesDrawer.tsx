@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -19,6 +19,8 @@ import {
 } from "@/app/accounting/actions";
 import type { TaxonomyOption } from "@/components/accounting/AccountingLedger";
 import { effectiveExclude } from "@/lib/plaid/exclude-accounting";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
+import { okAck } from "@/lib/actions/types";
 
 export interface RuleListItem {
   id: string;
@@ -41,7 +43,7 @@ export function AccountingRulesDrawer({
   rules: RuleListItem[];
 }) {
   const [open, setOpen] = useState(false);
-  const [pending, startTransition] = useTransition();
+  const { isPending: pending, stage, error, run } = useConsoleAction();
   const [msg, setMsg] = useState<string | null>(null);
   const [newLabel, setNewLabel] = useState("");
   const [parentId, setParentId] = useState("");
@@ -58,21 +60,19 @@ export function AccountingRulesDrawer({
       .replace(/[^a-z0-9]+/g, "_")
       .replace(/^_|_$/g, "");
     const id = `${parentId}__${slug}`;
-    startTransition(async () => {
-      try {
-        await upsertTaxonomyNodeAction({
-          id,
-          parent_id: parentId,
-          slug,
-          label: newLabel.trim(),
-          enabled: true,
-          exclude_from_accounting: null,
-        });
-        setMsg(`Added subcategory ${newLabel.trim()}`);
-        setNewLabel("");
-      } catch (e) {
-        setMsg(e instanceof Error ? e.message : String(e));
-      }
+    void run(async () => {
+      const ack = await upsertTaxonomyNodeAction({
+        id,
+        parent_id: parentId,
+        slug,
+        label: newLabel.trim(),
+        enabled: true,
+        exclude_from_accounting: null,
+      });
+      if (!ack.ok) return ack;
+      setMsg(`Added subcategory ${newLabel.trim()}`);
+      setNewLabel("");
+      return okAck({ message: `Added subcategory ${newLabel.trim()}` });
     });
   }
 
@@ -83,68 +83,63 @@ export function AccountingRulesDrawer({
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "_")
       .replace(/^_|_$/g, "");
-    startTransition(async () => {
-      try {
-        await upsertTaxonomyNodeAction({
-          id: slug,
-          parent_id: null,
-          slug,
-          label: newParentLabel.trim(),
-          enabled: true,
-          exclude_from_accounting: newParentExclude ? true : false,
-        });
-        setMsg(`Added category ${newParentLabel.trim()}`);
-        setNewParentLabel("");
-        setNewParentExclude(false);
-      } catch (e) {
-        setMsg(e instanceof Error ? e.message : String(e));
-      }
+    void run(async () => {
+      const ack = await upsertTaxonomyNodeAction({
+        id: slug,
+        parent_id: null,
+        slug,
+        label: newParentLabel.trim(),
+        enabled: true,
+        exclude_from_accounting: newParentExclude ? true : false,
+      });
+      if (!ack.ok) return ack;
+      setMsg(`Added category ${newParentLabel.trim()}`);
+      setNewParentLabel("");
+      setNewParentExclude(false);
+      return okAck({ message: `Added category ${newParentLabel.trim()}` });
     });
   }
 
   function softDisable(id: string) {
-    startTransition(async () => {
-      try {
-        await setTaxonomyNodeEnabledAction(id, false);
-        setMsg(`Disabled ${id}`);
-      } catch (e) {
-        setMsg(e instanceof Error ? e.message : String(e));
-      }
+    void run(async () => {
+      const ack = await setTaxonomyNodeEnabledAction(id, false);
+      if (!ack.ok) return ack;
+      setMsg(`Disabled ${id}`);
+      return okAck({ message: `Disabled ${id}` });
     });
   }
 
   function setExclude(id: string, value: boolean | null) {
-    startTransition(async () => {
-      try {
-        await setTaxonomyExcludeAction(id, value);
-        setMsg(`Exclude ${id}: ${value === null ? "inherit" : value ? "yes" : "no"}`);
-      } catch (e) {
-        setMsg(e instanceof Error ? e.message : String(e));
-      }
+    void run(async () => {
+      const ack = await setTaxonomyExcludeAction(id, value);
+      if (!ack.ok) return ack;
+      setMsg(`Exclude ${id}: ${value === null ? "inherit" : value ? "yes" : "no"}`);
+      return okAck({
+        message: `Exclude ${id}: ${value === null ? "inherit" : value ? "yes" : "no"}`,
+      });
     });
   }
 
   function toggleRule(id: string, enabled: boolean) {
-    startTransition(async () => {
-      try {
-        await setCategoryRuleEnabledAction(id, enabled);
-        setMsg(`${enabled ? "Enabled" : "Disabled"} rule ${id}`);
-      } catch (e) {
-        setMsg(e instanceof Error ? e.message : String(e));
-      }
+    void run(async () => {
+      const ack = await setCategoryRuleEnabledAction(id, enabled);
+      if (!ack.ok) return ack;
+      setMsg(`${enabled ? "Enabled" : "Disabled"} rule ${id}`);
+      return okAck({ message: `${enabled ? "Enabled" : "Disabled"} rule ${id}` });
     });
   }
 
   function dryRun(id: string) {
-    startTransition(async () => {
-      try {
-        const n = await dryRunRuleAction(id);
-        setMsg(`Dry-run ${id}: ${n} matching txns`);
-      } catch (e) {
-        setMsg(e instanceof Error ? e.message : String(e));
-      }
+    void run(async () => {
+      const ack = await dryRunRuleAction(id);
+      if (!ack.ok) return ack;
+      const n = ack.data!;
+      setMsg(`Dry-run ${id}: ${n} matching txns`);
+      return okAck({ message: `Dry-run ${id}: ${n} matching txns` });
     });
   }
+
+  const feedback = error || stage || msg;
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -164,7 +159,11 @@ export function AccountingRulesDrawer({
           </SheetDescription>
         </SheetHeader>
         <div className="flex flex-col gap-4 px-4 pb-6">
-          {msg ? <p className="text-xs text-muted-foreground">{msg}</p> : null}
+          {feedback ? (
+            <p className={`text-xs ${error ? "text-destructive" : "text-muted-foreground"}`}>
+              {feedback}
+            </p>
+          ) : null}
 
           <section className="flex flex-col gap-2">
             <h3 className="text-sm font-medium">Add parent category</h3>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, useTransition } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { usePlaidLink } from "react-plaid-link";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,8 @@ import {
   exchangePlaidPublicTokenAction,
   syncPlaidNowAction,
 } from "@/app/accounting/actions";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
+import { okAck } from "@/lib/actions/types";
 
 /** localStorage (not sessionStorage) — OAuth popup is a separate window and
  *  does not share sessionStorage with the opener. */
@@ -19,27 +21,28 @@ export function PlaidLinkButton({ linked }: { linked: boolean }) {
   const [token, setToken] = useState<string | null>(null);
   const [wantOpen, setWantOpen] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const { isPending, stage, error, run } = useConsoleAction();
 
   const onSuccess = useCallback(
     (publicToken: string) => {
-      startTransition(async () => {
-        try {
-          localStorage.removeItem(LINK_TOKEN_KEY);
-          setMessage("Linked — syncing Chase transactions (can take a minute)…");
-          const result = await exchangePlaidPublicTokenAction(publicToken);
-          setMessage(
-            `Linked ${result.itemId.slice(0, 8)}… — synced +${result.sync.added} / ~${result.sync.modified} / -${result.sync.removed}`,
-          );
-          setToken(null);
-          setWantOpen(false);
-          router.refresh();
-        } catch (e) {
-          setMessage(`Link failed: ${e instanceof Error ? e.message : String(e)}`);
-        }
+      void run(async () => {
+        localStorage.removeItem(LINK_TOKEN_KEY);
+        setMessage("Linked — syncing Chase transactions (can take a minute)…");
+        const ack = await exchangePlaidPublicTokenAction(publicToken);
+        if (!ack.ok) return ack;
+        const result = ack.data!;
+        setMessage(
+          `Linked ${result.itemId.slice(0, 8)}… — synced +${result.sync.added} / ~${result.sync.modified} / -${result.sync.removed}`,
+        );
+        setToken(null);
+        setWantOpen(false);
+        router.refresh();
+        return okAck({
+          message: `Linked — synced +${result.sync.added} / ~${result.sync.modified} / -${result.sync.removed}`,
+        });
       });
     },
-    [router],
+    [router, run],
   );
 
   const onEvent = useCallback((eventName: string, metadata: Record<string, unknown>) => {
@@ -83,34 +86,36 @@ export function PlaidLinkButton({ linked }: { linked: boolean }) {
   }, [wantOpen, ready, token, open]);
 
   function startLink() {
-    startTransition(async () => {
-      try {
-        setMessage(
-          "Starting Link… Chase will open a popup for phone/login — keep this tab open until sync finishes.",
-        );
-        const t = await createPlaidLinkTokenAction();
-        localStorage.setItem(LINK_TOKEN_KEY, t);
-        setToken(t);
-        setWantOpen(true);
-      } catch (e) {
-        setMessage(`Could not start Link: ${e instanceof Error ? e.message : String(e)}`);
-      }
+    void run(async () => {
+      setMessage(
+        "Starting Link… Chase will open a popup for phone/login — keep this tab open until sync finishes.",
+      );
+      const ack = await createPlaidLinkTokenAction();
+      if (!ack.ok) return ack;
+      const t = ack.data!;
+      localStorage.setItem(LINK_TOKEN_KEY, t);
+      setToken(t);
+      setWantOpen(true);
+      return okAck({ message: "Link ready — complete bank login in the popup." });
     });
   }
 
   function syncNow() {
-    startTransition(async () => {
-      try {
-        const result = await syncPlaidNowAction();
-        setMessage(
-          `Sync ok — +${result.sync.added} / ~${result.sync.modified} / -${result.sync.removed}`,
-        );
-        router.refresh();
-      } catch (e) {
-        setMessage(`Sync failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
+    void run(async () => {
+      const ack = await syncPlaidNowAction();
+      if (!ack.ok) return ack;
+      const result = ack.data!;
+      setMessage(
+        `Sync ok — +${result.sync.added} / ~${result.sync.modified} / -${result.sync.removed}`,
+      );
+      router.refresh();
+      return okAck({
+        message: `Sync ok — +${result.sync.added} / ~${result.sync.modified} / -${result.sync.removed}`,
+      });
     });
   }
+
+  const feedback = error || stage || message;
 
   return (
     <div className="flex flex-col gap-2">
@@ -130,7 +135,11 @@ export function PlaidLinkButton({ linked }: { linked: boolean }) {
           </>
         )}
       </div>
-      {message ? <p className="text-xs text-muted-foreground">{message}</p> : null}
+      {feedback ? (
+        <p className={`text-xs ${error ? "text-destructive" : "text-muted-foreground"}`}>
+          {feedback}
+        </p>
+      ) : null}
     </div>
   );
 }

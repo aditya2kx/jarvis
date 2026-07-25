@@ -3,6 +3,7 @@ import { ensureOrderRecoFresh } from "@/lib/bq/writes";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
 import { storeDisplayName } from "@/lib/config/stores";
+import { triggerOrderRecoRefresh } from "@/lib/bhaga/recompute";
 import { DataTable, type Thresholds } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { RestockImportDrawer } from "@/components/drawers/RestockImportDrawer";
@@ -28,7 +29,8 @@ const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-ba
 //
 // ensureOrderRecoFresh: if materialized delivery_date rows ≠ live next dates
 // (or refreshed_at CT day is stale), recompute before read so column headers
-// and quantities cannot desync across Chicago midnight.
+// and quantities cannot desync across Chicago midnight. Issue #175: when
+// FEATURES.asyncOrderReco, enqueue a Cloud Run Job instead of blocking paint.
 export default async function InventoryPage() {
   let rows: OrderRecoCombinedRow[] = [];
   let runwayRows: BaseRunwayRow[] = [];
@@ -37,8 +39,15 @@ export default async function InventoryPage() {
   let estimatedDates: string[] = [];
   let maxTubs: number | undefined;
   let error: string | undefined;
+  let recoQueued = false;
   try {
-    await ensureOrderRecoFresh(DEFAULT_STORE);
+    const ensure = await ensureOrderRecoFresh(
+      DEFAULT_STORE,
+      FEATURES.asyncOrderReco
+        ? { enqueue: () => triggerOrderRecoRefresh(DEFAULT_STORE) }
+        : {},
+    );
+    recoQueued = ensure.status === "queued";
     const [reco, nd, config, base, runway, estimated] = await Promise.all([
       orderRecoCombined(),
       nextDates(),
@@ -140,6 +149,12 @@ export default async function InventoryPage() {
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
+          {recoQueued ? (
+            <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+              Order recommendation refreshing in the background — numbers may update on the next
+              reload.
+            </p>
+          ) : null}
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">Base runway</h2>
             <p className="mb-2 text-xs text-muted-foreground">

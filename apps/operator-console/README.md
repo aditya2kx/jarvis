@@ -46,5 +46,8 @@ Requires Application Default Credentials for BigQuery reads
 Pushes to `main` touching this directory trigger
 [`.github/workflows/operator-console-deploy.yml`](../../.github/workflows/operator-console-deploy.yml)
 — builds the container, applies pending BQ migrations, and deploys to Cloud
-Run behind direct IAP (`@mypalmetto.co` only). See `docs/operator-console/COST.md`
-for the cost model and `RUNBOOK.md` for operating the deployed console.
+Run behind direct IAP with `--min-instances=1` (Issue #175). See `docs/operator-console/COST.md`
+for the cost model and `RUNBOOK.md` §17 for operating the deployed console.
+
+Mutating UI: every write goes through `lib/actions/useConsoleAction` + `ActionAck`
+(see `lib/actions/MUTATING_ACTIONS.md`). Heavy recomputes enqueue Cloud Run Jobs.

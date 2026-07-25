@@ -68,7 +68,7 @@ describe("RestockImportDrawer — replace estimated date", () => {
   beforeEach(() => {
     submitRestockAction.mockReset();
     replaceEstimatedRestockDateAction.mockReset();
-    replaceEstimatedRestockDateAction.mockResolvedValue(undefined);
+    replaceEstimatedRestockDateAction.mockResolvedValue({ ok: true });
   });
 
   afterEach(() => {

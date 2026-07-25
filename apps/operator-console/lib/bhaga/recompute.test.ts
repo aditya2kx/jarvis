@@ -9,7 +9,11 @@ vi.mock("google-auth-library", () => ({
   },
 }));
 
-import { pickRecomputeAnchorDate, triggerModelRecompute } from "@/lib/bhaga/recompute";
+import {
+  pickRecomputeAnchorDate,
+  triggerModelRecompute,
+  triggerOrderRecoRefresh,
+} from "@/lib/bhaga/recompute";
 
 describe("pickRecomputeAnchorDate", () => {
   it("returns null for empty input", () => {
@@ -59,5 +63,26 @@ describe("triggerModelRecompute", () => {
   it("returns [] without calling Cloud Run when dates are empty", async () => {
     expect(await triggerModelRecompute([])).toEqual([]);
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("triggerOrderRecoRefresh", () => {
+  beforeEach(() => {
+    getAccessToken.mockReset();
+    getAccessToken.mockResolvedValue({ token: "test-token" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, text: async () => "" }),
+    );
+  });
+
+  it("POSTs :run with BHAGA_ORDER_RECO_ONLY", async () => {
+    await triggerOrderRecoRefresh("palmetto");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
+    const body = JSON.parse(String(init?.body));
+    const env = body.overrides.containerOverrides[0].env as { name: string; value: string }[];
+    expect(env.find((e) => e.name === "BHAGA_ORDER_RECO_ONLY")?.value).toBe("1");
+    expect(env.find((e) => e.name === "BHAGA_STORE")?.value).toBe("palmetto");
   });
 });

@@ -116,13 +116,24 @@ export async function refreshOrderReco(store: string): Promise<void> {
   );
 }
 
+export type EnsureOrderRecoResult =
+  | { status: "fresh" }
+  | { status: "refreshed" }
+  | { status: "queued" };
+
 /**
  * Self-heal when live next-delivery dates and materialized reco rows diverge
  * (e.g. Chicago midnight rolled Slot 1 to a new calendar date but nightly
  * refresh has not run yet). Also refreshes when refreshed_at's CT date is
  * before today. Idempotent — no-op when already aligned.
+ *
+ * When `enqueue` is provided and the reco is stale, calls enqueue instead of
+ * blocking the RSC on inline TVFs (Issue #175 Option B).
  */
-export async function ensureOrderRecoFresh(store: string): Promise<boolean> {
+export async function ensureOrderRecoFresh(
+  store: string,
+  opts: { enqueue?: () => Promise<void> } = {},
+): Promise<EnsureOrderRecoResult> {
   const [next, mat, todayRows, refreshedRows] = await Promise.all([
     q<{ delivery_date: string }>(
       `SELECT CAST(delivery_date AS STRING) AS delivery_date
@@ -153,11 +164,15 @@ export async function ensureOrderRecoFresh(store: string): Promise<boolean> {
   const datesMatch = live.size === have.size && [...live].every((d) => have.has(d));
   const staleDay = Boolean(today && refreshedCt && refreshedCt < today);
 
-  if (!datesMatch || staleDay || live.size === 0 && have.size > 0) {
+  if (!datesMatch || staleDay || (live.size === 0 && have.size > 0)) {
+    if (opts.enqueue) {
+      await opts.enqueue();
+      return { status: "queued" };
+    }
     await refreshOrderReco(store);
-    return true;
+    return { status: "refreshed" };
   }
-  return false;
+  return { status: "fresh" };
 }
 
 export type RestockAction = "add-order" | "register-only" | "reset-to-estimated" | "replace-estimated";
@@ -169,12 +184,18 @@ export type RestockAction = "add-order" | "register-only" | "reset-to-estimated"
  * the Slack path), then always refreshes the reco at the end.
  * "replace-estimated" is console-only — use replaceEstimatedRestockDate.
  */
+export type RecoRefreshOpts = {
+  /** When true, caller enqueues durable order-reco refresh (Issue #175 Option B). */
+  skipRefresh?: boolean;
+};
+
 export async function submitRestock(
   store: string,
   deliveryDate: string,
   action: RestockAction,
   rows: { item: string; quantityTubs: number }[],
   by: string,
+  opts: RecoRefreshOpts = {},
 ): Promise<void> {
   if (action === "replace-estimated") {
     throw new Error("submitRestock: use replaceEstimatedRestockDate for replace-estimated");
@@ -186,7 +207,7 @@ export async function submitRestock(
     await replaceRestockOrders(store, deliveryDate, rows, by);
   }
   // "register-only" writes nothing further — the date is now tracked.
-  await refreshOrderReco(store);
+  if (!opts.skipRefresh) await refreshOrderReco(store);
 }
 
 /**
@@ -199,6 +220,7 @@ export async function replaceEstimatedRestockDate(
   fromDate: string,
   toDate: string,
   by: string,
+  opts: RecoRefreshOpts = {},
 ): Promise<void> {
   if (fromDate === toDate) {
     throw new Error("replaceEstimatedRestockDate: from and to dates must differ");
@@ -226,11 +248,17 @@ export async function replaceEstimatedRestockDate(
 
   await clearRestockSchedule(store, fromDate);
   await setRestockSchedule(store, toDate, by);
-  await refreshOrderReco(store);
+  if (!opts.skipRefresh) await refreshOrderReco(store);
 }
 
 /** MERGE a store_config key (goals, capacity) — shared by M3 capacity edits and M4 goals. */
-export async function setConfig(store: string, key: string, value: string, by: string): Promise<void> {
+export async function setConfig(
+  store: string,
+  key: string,
+  value: string,
+  by: string,
+  opts: RecoRefreshOpts = {},
+): Promise<void> {
   await mutate(
     `MERGE ${fq("store_config")} T
      USING (SELECT @store AS store, @key AS key) S
@@ -240,7 +268,7 @@ export async function setConfig(store: string, key: string, value: string, by: s
        VALUES (@store, @key, @value, CURRENT_TIMESTAMP(), @by)`,
     { store, key, value, by },
   );
-  if (key === "order_reco_max_tubs") {
+  if (key === "order_reco_max_tubs" && !opts.skipRefresh) {
     await refreshOrderReco(store);
   }
 }

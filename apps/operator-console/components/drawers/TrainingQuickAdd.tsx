@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { addTrainingShiftAction } from "@/app/payroll/actions";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 
 // Inline quick-add, not a drawer — a training mark is a single frequent
 // entry (name + date), matching the hybrid write-UX pattern in PLAN.md.
@@ -16,7 +17,7 @@ export function TrainingQuickAdd() {
   const [date, setDate] = useState("");
   const [note, setNote] = useState("");
   const [status, setStatus] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const { isPending, stage, error, run } = useConsoleAction();
 
   if (!open) {
     return (
@@ -25,6 +26,8 @@ export function TrainingQuickAdd() {
       </Button>
     );
   }
+
+  const feedback = stage || error || status;
 
   return (
     <div className="flex flex-wrap items-end gap-2 rounded-md border p-3">
@@ -53,16 +56,15 @@ export function TrainingQuickAdd() {
             setStatus("Employee and date are required.");
             return;
           }
-          startTransition(async () => {
-            try {
-              await addTrainingShiftAction(employee.trim(), date, note.trim());
-              setStatus("Added.");
+          void run(
+            () => addTrainingShiftAction(employee.trim(), date, note.trim()),
+            { saving: "Adding…", done: "Added." },
+          ).then((ack) => {
+            if (ack.ok) {
               setEmployee("");
               setDate("");
               setNote("");
               setOpen(false);
-            } catch (e) {
-              setStatus(`Failed: ${e instanceof Error ? e.message : String(e)}`);
             }
           });
         }}
@@ -72,7 +74,11 @@ export function TrainingQuickAdd() {
       <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
         Cancel
       </Button>
-      {status ? <span className="text-xs text-muted-foreground">{status}</span> : null}
+      {feedback ? (
+        <span className={`text-xs ${error ? "text-destructive" : "text-muted-foreground"}`}>
+          {feedback}
+        </span>
+      ) : null}
     </div>
   );
 }

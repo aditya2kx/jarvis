@@ -123,12 +123,44 @@ def _save_phase(branch: str, data: dict) -> None:
 # GH API helpers
 # ---------------------------------------------------------------------------
 
+# launchd WorkingDirectory is $HOME (TCC-safe). `gh` then cannot infer the
+# repo from cwd — every call must pass --repo explicitly (issue #186 / #175).
+_DEFAULT_GH_REPO = "aditya2kx/jarvis"
+
+
+def _gh_repo() -> str:
+    """Return ``owner/repo`` for gh CLI calls.
+
+    Order: ``GH_REPO`` / ``GITHUB_REPOSITORY`` env → ``git -C REPO_ROOT remote``
+    → hard-coded default. Never relies on process cwd.
+    """
+    env = (os.environ.get("GH_REPO") or os.environ.get("GITHUB_REPOSITORY") or "").strip()
+    if env:
+        return env
+    try:
+        url = subprocess.check_output(
+            ["git", "-C", str(REPO_ROOT), "remote", "get-url", "origin"],
+            text=True, stderr=subprocess.DEVNULL, timeout=5,
+        ).strip()
+    except Exception:
+        return _DEFAULT_GH_REPO
+    if "github.com" not in url:
+        return _DEFAULT_GH_REPO
+    tail = url.split("github.com", 1)[1].lstrip(":/").rstrip("/")
+    return tail[:-4] if tail.endswith(".git") else tail
+
+
+def _gh_argv(*args: str) -> list[str]:
+    """Build a ``gh`` argv list that always includes ``--repo``."""
+    return ["gh", "--repo", _gh_repo(), *args]
+
+
 def _gh_issue_comments(issue: int) -> list[dict]:
     """Fetch all comments for a GH issue as a list of dicts (body + created_at)."""
     try:
         out = subprocess.check_output(
-            ["gh", "issue", "view", str(issue),
-             "--json", "comments", "-q", ".comments"],
+            _gh_argv("issue", "view", str(issue),
+                     "--json", "comments", "-q", ".comments"),
             text=True, stderr=subprocess.DEVNULL, timeout=30,
         )
         return json.loads(out or "[]")
@@ -153,9 +185,9 @@ def _gh_open_jarvis_issue_numbers() -> list[int]:
     # Source 1: labelled jarvis-work
     try:
         out = subprocess.check_output(
-            ["gh", "issue", "list", "--label", "jarvis-work",
-             "--state", "open", "--limit", "50",
-             "--json", "number", "-q", "[.[].number]"],
+            _gh_argv("issue", "list", "--label", "jarvis-work",
+                     "--state", "open", "--limit", "50",
+                     "--json", "number", "-q", "[.[].number]"),
             text=True, stderr=subprocess.DEVNULL, timeout=30,
         )
         numbers.extend(json.loads(out or "[]"))
@@ -167,9 +199,9 @@ def _gh_open_jarvis_issue_numbers() -> list[int]:
     # can't push a still-unlabelled one out of the enumerated window.
     try:
         out = subprocess.check_output(
-            ["gh", "issue", "list", "--state", "open", "--limit", "50",
-             "--json", "number,updatedAt",
-             "-q", "[.[] | select(.updatedAt > (now - 300 | todate)) | .number]"],
+            _gh_argv("issue", "list", "--state", "open", "--limit", "50",
+                     "--json", "number,updatedAt",
+                     "-q", "[.[] | select(.updatedAt > (now - 300 | todate)) | .number]"),
             text=True, stderr=subprocess.DEVNULL, timeout=30,
         )
         numbers.extend(json.loads(out or "[]"))
@@ -190,8 +222,8 @@ def _gh_open_pr_numbers() -> list[int]:
     """Return PR numbers for all open PRs in the repo."""
     try:
         out = subprocess.check_output(
-            ["gh", "pr", "list", "--state", "open", "--limit", "50",
-             "--json", "number", "-q", "[.[].number]"],
+            _gh_argv("pr", "list", "--state", "open", "--limit", "50",
+                     "--json", "number", "-q", "[.[].number]"),
             text=True, stderr=subprocess.DEVNULL, timeout=30,
         )
         return json.loads(out or "[]")
@@ -213,9 +245,9 @@ def _gh_recently_closed_pr_numbers(window_sec: int = _RECENTLY_CLOSED_PR_WINDOW_
     """
     try:
         out = subprocess.check_output(
-            ["gh", "pr", "list", "--state", "closed", "--limit", "30",
-             "--json", "number,updatedAt",
-             "-q", f"[.[] | select(.updatedAt > (now - {window_sec} | todate)) | .number]"],
+            _gh_argv("pr", "list", "--state", "closed", "--limit", "30",
+                     "--json", "number,updatedAt",
+                     "-q", f"[.[] | select(.updatedAt > (now - {window_sec} | todate)) | .number]"),
             text=True, stderr=subprocess.DEVNULL, timeout=30,
         )
         return json.loads(out or "[]")
@@ -395,6 +427,14 @@ def watch_all(
             issues = _gh_open_jarvis_issue_numbers()
             prs = _gh_open_pr_numbers() + _gh_recently_closed_pr_numbers()
             targets = sorted(set(issues + prs))
+            if not targets:
+                # Greppable: empty poll usually means gh couldn't resolve the repo
+                # (WorkingDirectory=$HOME without --repo) — never silent-idle.
+                print(
+                    f"watch-all: 0 targets repo={_gh_repo()!r} "
+                    f"(gh --repo missing or no open jarvis-work issues)",
+                    flush=True,
+                )
             total = 0
             for n in targets:
                 try:
@@ -459,7 +499,8 @@ def _open_or_focus_worktree(
             if issue:
                 cmd += ["--issue", str(issue)]
             cmd += ["--requirement", requirement or ""]
-            subprocess.run(cmd, check=False)
+            # cwd must be the git repo — launchd WorkingDirectory is $HOME.
+            subprocess.run(cmd, check=False, cwd=str(REPO_ROOT))
         return
     _cursor_open(path)
 
@@ -591,23 +632,62 @@ def _dispatch(branch: str, event: dict) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+def _stable_python_bin() -> str:
+    """Prefer pyenv 3.12 over CLT ``/Library/Developer/CommandLineTools/...``.
+
+    ``health --heal`` / ``ensure-daemon`` rewrites the plist from
+    ``sys.executable``; if that happens to be the CLT python the agent can
+    break on missing stdlib bits. Prefer a known-good pyenv 3.12 when present.
+    """
+    pyenv_versions = Path.home() / ".pyenv" / "versions"
+    if pyenv_versions.is_dir():
+        candidates = sorted(pyenv_versions.glob("3.12.*/bin/python3"), reverse=True)
+        if candidates:
+            return str(candidates[0])
+    exe = sys.executable
+    if "CommandLineTools" in exe:
+        which = shutil.which("python3")
+        if which and "CommandLineTools" not in which:
+            return which
+    return exe
+
+
+def _daemon_install_root() -> Path:
+    """Repo root whose ``scripts/dev_event_listener.py`` launchd should exec.
+
+    When ``ensure-daemon`` is run from a worktree, still install the agent
+    against the primary ``…/jarvis`` checkout so the intake seen-file and
+    phase caches stay in one place (not a disposable worktree metrics dir).
+    """
+    if "-wt-" in REPO_ROOT.name:
+        primary = REPO_ROOT.parent / "jarvis"
+        if (primary / "scripts" / "dev_event_listener.py").exists():
+            return primary
+    return REPO_ROOT
+
+
 def ensure_daemon(interval: int = 30) -> str:
     """Idempotently install and load the launchd LaunchAgent that runs watch-all.
 
     Writes ~/Library/LaunchAgents/com.jarvis.devsignals.plist and loads it
-    with launchctl. Safe to call repeatedly — no-op if the agent is already
-    loaded. Returns 'installed' | 'already_running' | 'load_failed' | 'not_macos'.
+    with launchctl. Rewrites + reloads when the desired plist content drifts
+    (so a manual TCC-safe fix is not clobbered back to Documents paths on the
+    next heal). Returns 'installed' | 'already_running' | 'load_failed' | 'not_macos'.
     """
     if sys.platform != "darwin":
         print("ensure-daemon: not macOS — skipping launchd install", file=sys.stderr)
         return "not_macos"
 
-    python_bin = sys.executable
-    listener_script = str(Path(__file__).resolve())
-    log_dir = REPO_ROOT / "logs"
+    python_bin = _stable_python_bin()
+    install_root = _daemon_install_root()
+    listener_script = str(install_root / "scripts" / "dev_event_listener.py")
+    # Logs MUST stay outside ~/Documents — launchd cannot open Documents paths
+    # without Full Disk Access and fails with exit 78 / EX_CONFIG before exec.
+    log_dir = Path.home() / "Library" / "Logs" / "jarvis"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_out = str(log_dir / "dev-daemon.log")
     log_err = str(log_dir / "dev-daemon-err.log")
+    repo = _gh_repo()
 
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -629,6 +709,8 @@ def ensure_daemon(interval: int = 30) -> str:
   <dict>
     <key>HOME</key>
     <string>{Path.home()}</string>
+    <key>GH_REPO</key>
+    <string>{repo}</string>
     <key>LOCAL_EVENT_AUTO_OPEN</key>
     <string>1</string>
     <key>LOCAL_EVENT_AUTO_DISPATCH</key>
@@ -638,7 +720,7 @@ def ensure_daemon(interval: int = 30) -> str:
     <key>PATH</key>
     <string>{Path.home() / ".local" / "bin"}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:{Path(python_bin).parent}</string>
     <key>PYTHONPATH</key>
-    <string>{str(REPO_ROOT / "scripts")}</string>
+    <string>{str(install_root / "scripts")}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -649,31 +731,39 @@ def ensure_daemon(interval: int = 30) -> str:
   <key>StandardErrorPath</key>
   <string>{log_err}</string>
   <key>WorkingDirectory</key>
-  <string>{str(REPO_ROOT)}</string>
+  <string>{Path.home()}</string>
   <key>ThrottleInterval</key>
   <integer>10</integer>
 </dict>
 </plist>
 """
 
-    # Check if already running
+    loaded = False
     try:
         result = subprocess.run(
             ["launchctl", "list", _LAUNCHD_LABEL],
             capture_output=True, timeout=5,
         )
-        if result.returncode == 0:
-            print(f"ensure-daemon: {_LAUNCHD_LABEL} already loaded.")
-            return "already_running"
+        loaded = result.returncode == 0
     except Exception:
-        pass
+        loaded = False
 
-    # Write plist
+    existing = _LAUNCHD_PLIST.read_text() if _LAUNCHD_PLIST.exists() else ""
+    if loaded and existing == plist_content:
+        print(f"ensure-daemon: {_LAUNCHD_LABEL} already loaded.")
+        return "already_running"
+
+    # Write (or rewrite) plist
     _LAUNCHD_PLIST.parent.mkdir(parents=True, exist_ok=True)
     _LAUNCHD_PLIST.write_text(plist_content)
     print(f"ensure-daemon: wrote {_LAUNCHD_PLIST}")
 
-    # Load
+    if loaded:
+        subprocess.run(
+            ["launchctl", "unload", "-w", str(_LAUNCHD_PLIST)],
+            capture_output=True, timeout=10,
+        )
+
     try:
         result = subprocess.run(
             ["launchctl", "load", "-w", str(_LAUNCHD_PLIST)],
@@ -759,6 +849,31 @@ def check_daemon_health(*, auto_heal: bool = False) -> dict:
     else:
         pid, last_exit = _parse_launchctl_list_output(result.stdout)
         status = {"loaded": True, "pid": pid, "last_exit_status": last_exit, "healthy": pid is not None}
+
+    # Exit 78 / EX_CONFIG + Documents *log* paths: launchd failed before exec
+    # because TCC blocked opening files under ~/Documents (issue #186).
+    # Only StandardOut/Err matter — ProgramArguments may legitimately point at
+    # a script under Documents/build-workspace/.
+    if status.get("last_exit_status") == 78:
+        status["healthy"] = False
+        status["reason"] = (
+            "last_exit_status=78 (EX_CONFIG) — usually StandardOutPath under "
+            "~/Documents blocked by TCC; logs must be ~/Library/Logs/jarvis/"
+        )
+    if _LAUNCHD_PLIST.exists():
+        try:
+            plist_text = _LAUNCHD_PLIST.read_text()
+        except Exception:
+            plist_text = ""
+        if re.search(
+            r"<key>Standard(?:Out|Error)Path</key>\s*<string>[^<]*/Documents/[^<]*</string>",
+            plist_text,
+        ):
+            status["healthy"] = False
+            status["reason"] = (
+                "plist StandardOut/Err under ~/Documents (TCC/exit-78 risk); "
+                "run ensure-daemon to rewrite to ~/Library/Logs/jarvis/"
+            )
 
     if not status["healthy"] and auto_heal:
         if status["loaded"]:

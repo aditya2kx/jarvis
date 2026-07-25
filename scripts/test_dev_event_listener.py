@@ -2,6 +2,7 @@
 """Unit tests for dev_event_listener.py — gh CLI + cursor/osascript mocked."""
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -530,16 +531,32 @@ class TestRecentlyClosedPrNumbers(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestEnsureDaemon(unittest.TestCase):
-    def test_already_running_is_noop(self):
-        """If launchctl list succeeds, ensure_daemon returns already_running."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-            result = L.ensure_daemon()
-        self.assertEqual(result, "already_running")
-        # launchctl load should NOT have been called
-        load_calls = [c for c in mock_run.call_args_list
-                      if "load" in str(c)]
-        self.assertEqual(len(load_calls), 0)
+    def test_already_running_is_noop_when_plist_matches(self):
+        """If launchctl list succeeds AND plist content matches, no reload."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_dir = Path(tmp) / "LaunchAgents"
+            fake_dir.mkdir()
+            fake_plist = fake_dir / "com.jarvis.devsignals.plist"
+            with patch.object(L, "_LAUNCHD_PLIST", fake_plist), \
+                 patch.object(L, "_stable_python_bin", return_value="/usr/bin/python3"), \
+                 patch.object(L, "_gh_repo", return_value="aditya2kx/jarvis"), \
+                 patch("subprocess.run") as mock_run:
+                # First call builds desired content by running ensure once with
+                # not-loaded, then we re-run with matching content + loaded.
+                mock_run.side_effect = [
+                    MagicMock(returncode=1),  # list → not loaded
+                    MagicMock(returncode=0),  # load → ok
+                ]
+                self.assertEqual(L.ensure_daemon(), "installed")
+                matching = fake_plist.read_text()
+                mock_run.reset_mock()
+                mock_run.side_effect = None
+                mock_run.return_value = MagicMock(returncode=0)  # list → loaded
+                result = L.ensure_daemon()
+            self.assertEqual(result, "already_running")
+            self.assertEqual(fake_plist.read_text(), matching)
+            load_calls = [c for c in mock_run.call_args_list if "load" in str(c)]
+            self.assertEqual(len(load_calls), 0)
 
     def test_not_macos_returns_not_macos(self):
         """On non-macOS platforms, ensure_daemon returns not_macos."""
@@ -555,6 +572,8 @@ class TestEnsureDaemon(unittest.TestCase):
             fake_dir.mkdir()
             fake_plist = fake_dir / "com.jarvis.devsignals.plist"
             with patch.object(L, "_LAUNCHD_PLIST", fake_plist), \
+                 patch.object(L, "_stable_python_bin", return_value="/usr/bin/python3"), \
+                 patch.object(L, "_gh_repo", return_value="aditya2kx/jarvis"), \
                  patch("subprocess.run") as mock_run:
                 # First call (launchctl list) returns non-zero → not loaded
                 # Second call (launchctl load) returns 0 → success
@@ -569,6 +588,44 @@ class TestEnsureDaemon(unittest.TestCase):
             plist_text = fake_plist.read_text()
             self.assertIn("watch-all", plist_text)
             self.assertIn("com.jarvis.devsignals", plist_text)
+            self.assertIn("Library/Logs/jarvis", plist_text)
+            self.assertIn("GH_REPO", plist_text)
+            self.assertIn(f"<string>{Path.home()}</string>", plist_text)
+            # Log paths must not be under Documents (script path may be).
+            self.assertNotRegex(
+                plist_text,
+                r"<key>Standard(?:Out|Error)Path</key>\s*<string>[^<]*/Documents/",
+            )
+            self.assertRegex(
+                plist_text,
+                r"<key>WorkingDirectory</key>\s*<string>" + re.escape(str(Path.home())),
+            )
+
+
+class TestGhRepoArgv(unittest.TestCase):
+    def test_gh_argv_includes_repo(self):
+        with patch.object(L, "_gh_repo", return_value="aditya2kx/jarvis"):
+            argv = L._gh_argv("issue", "list", "--state", "open")
+        self.assertEqual(argv[:4], ["gh", "--repo", "aditya2kx/jarvis", "issue"])
+
+    def test_gh_repo_prefers_env(self):
+        with patch.dict(os.environ, {"GH_REPO": "acme/widget"}, clear=False):
+            self.assertEqual(L._gh_repo(), "acme/widget")
+
+    def test_open_jarvis_issues_passes_repo(self):
+        calls: list[list[str]] = []
+
+        def fake_check_output(cmd, **kwargs):
+            calls.append(list(cmd))
+            return "[]"
+
+        with patch.object(L, "_gh_repo", return_value="aditya2kx/jarvis"), \
+             patch("subprocess.check_output", side_effect=fake_check_output):
+            L._gh_open_jarvis_issue_numbers()
+        self.assertTrue(calls)
+        for cmd in calls:
+            self.assertIn("--repo", cmd)
+            self.assertEqual(cmd[cmd.index("--repo") + 1], "aditya2kx/jarvis")
 
 
 # ---------------------------------------------------------------------------

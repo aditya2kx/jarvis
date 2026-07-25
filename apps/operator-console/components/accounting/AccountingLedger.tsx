@@ -18,6 +18,8 @@ import {
   previewRuleMatchesAction,
   commitRuleFromTxnAction,
   revertRuleEvidenceAction,
+  setTaxonomyExcludeAction,
+  upsertTaxonomyNodeAction,
   type RuleMatchPreview,
 } from "@/app/accounting/actions";
 import { formatDollars } from "@/lib/format";
@@ -25,6 +27,7 @@ import { formatBucket, truncateToGrain, type Grain } from "@/lib/filters/range";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { ACCOUNTING_COLORS, expenseCategoryColor } from "@/lib/charts/palette";
 import { cn } from "@/lib/utils";
+import { effectiveExclude } from "@/lib/plaid/exclude-accounting";
 import {
   AccountingRulesDrawer,
   type RuleListItem,
@@ -201,6 +204,7 @@ export function AccountingLedger({
 }) {
   const [rows, setRows] = useState(initialRows);
   const [filtered, setFiltered] = useState<AccountingTxnRow[]>(initialRows);
+  const [taxonomyState, setTaxonomy] = useState(taxonomy);
   const [explain, setExplain] = useState<AccountingTxnRow | null>(null);
   const [pending, startTransition] = useTransition();
   const [reapplyMsg, setReapplyMsg] = useState<string | null>(null);
@@ -219,6 +223,10 @@ export function AccountingLedger({
     setRows(initialRows);
     setFiltered(initialRows);
   }, [initialRows]);
+
+  useEffect(() => {
+    setTaxonomy(taxonomy);
+  }, [taxonomy]);
 
   const tableData = rows;
 
@@ -301,11 +309,11 @@ export function AccountingLedger({
   );
 
   const parents = useMemo(
-    () => taxonomy.filter((t) => !t.parent_id),
-    [taxonomy],
+    () => taxonomyState.filter((t) => !t.parent_id),
+    [taxonomyState],
   );
 
-  function openExplain(row: AccountingTxnRow) {
+  const openExplain = useCallback((row: AccountingTxnRow) => {
     const reset = resetRuleState(row);
     setExplain(row);
     setRulePattern(reset.pattern);
@@ -316,14 +324,44 @@ export function AccountingLedger({
     setCommittedRuleId(reset.committedRuleId);
     setRuleMsg(reset.msg);
     setApplyFuture(reset.applyFuture);
+  }, []);
+
+  function resolveExcludedWith(
+    nodes: TaxonomyOption[],
+    categoryId: string | null,
+    subcategoryId: string | null,
+  ): boolean {
+    const leafId = subcategoryId || categoryId;
+    if (!leafId) return false;
+    const leaf = nodes.find((t) => t.id === leafId);
+    const parent = leaf?.parent_id
+      ? nodes.find((t) => t.id === leaf.parent_id)
+      : undefined;
+    return effectiveExclude(
+      leaf
+        ? {
+            id: leaf.id,
+            parent_id: leaf.parent_id,
+            exclude_from_accounting: leaf.exclude_from_accounting,
+          }
+        : null,
+      parent
+        ? {
+            id: parent.id,
+            parent_id: parent.parent_id,
+            exclude_from_accounting: parent.exclude_from_accounting,
+          }
+        : null,
+    );
   }
 
   function applyOverride(txnId: string, categoryId: string | null, subcategoryId: string | null) {
     startTransition(async () => {
       try {
         await setTxnCategoryOverrideAction(txnId, categoryId, subcategoryId);
-        const parent = taxonomy.find((t) => t.id === categoryId);
-        const child = taxonomy.find((t) => t.id === subcategoryId);
+        const parent = taxonomyState.find((t) => t.id === categoryId);
+        const child = taxonomyState.find((t) => t.id === subcategoryId);
+        const excluded = resolveExcludedWith(taxonomyState, categoryId, subcategoryId);
         setRows((prev) =>
           prev.map((r) =>
             r.transaction_id === txnId
@@ -336,6 +374,8 @@ export function AccountingLedger({
                   is_override: !!categoryId,
                   rule_id: categoryId ? null : r.rule_id,
                   rule_summary: categoryId ? null : r.rule_summary,
+                  excluded,
+                  excluded_label: excluded ? "yes" : "no",
                 }
               : r,
           ),
@@ -346,14 +386,133 @@ export function AccountingLedger({
                 ...prev,
                 category_id: categoryId,
                 subcategory_id: subcategoryId,
-                category: parent?.label || prev.category,
+                category: parent?.label || (categoryId ? prev.category : "Uncategorized"),
                 category_detail: child?.label || "—",
                 is_override: !!categoryId,
+                excluded,
+                excluded_label: excluded ? "yes" : "no",
               }
             : prev,
         );
       } catch (e) {
         console.error(e);
+      }
+    });
+  }
+
+  function setCategoryExcluded(exclude: boolean) {
+    if (!explain?.category_id) return;
+    const catId = explain.category_id;
+    startTransition(async () => {
+      try {
+        await setTaxonomyExcludeAction(catId, exclude);
+        const nextTax = taxonomyState.map((t) =>
+          t.id === catId ? { ...t, exclude_from_accounting: exclude } : t,
+        );
+        setTaxonomy(nextTax);
+        setRows((prev) =>
+          prev.map((r) => {
+            const nextExcluded = resolveExcludedWith(nextTax, r.category_id, r.subcategory_id);
+            if (r.excluded === nextExcluded) return r;
+            return {
+              ...r,
+              excluded: nextExcluded,
+              excluded_label: nextExcluded ? "yes" : "no",
+            };
+          }),
+        );
+        setExplain((prev) => {
+          if (!prev) return prev;
+          const nextExcluded = resolveExcludedWith(
+            nextTax,
+            prev.category_id,
+            prev.subcategory_id,
+          );
+          return {
+            ...prev,
+            excluded: nextExcluded,
+            excluded_label: nextExcluded ? "yes" : "no",
+          };
+        });
+        setRuleMsg(
+          exclude
+            ? "Category excluded from accounting rollups"
+            : "Category included in accounting rollups",
+        );
+      } catch (e) {
+        setRuleMsg(e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
+
+  function ensurePersonalAndAssign() {
+    if (!explain) return;
+    const txnId = explain.transaction_id;
+    startTransition(async () => {
+      try {
+        const id = "personal";
+        await upsertTaxonomyNodeAction({
+          id,
+          parent_id: null,
+          slug: "personal",
+          label: "Personal",
+          enabled: true,
+          exclude_from_accounting: true,
+        });
+        setTaxonomy((prev) => {
+          if (prev.some((t) => t.id === id)) {
+            return prev.map((t) =>
+              t.id === id
+                ? { ...t, exclude_from_accounting: true, label: "Personal" }
+                : t,
+            );
+          }
+          return [
+            ...prev,
+            {
+              id,
+              parent_id: null,
+              label: "Personal",
+              exclude_from_accounting: true,
+            },
+          ];
+        });
+        await setTxnCategoryOverrideAction(txnId, id, null);
+        setRows((prev) =>
+          prev.map((r) =>
+            r.transaction_id === txnId
+              ? {
+                  ...r,
+                  category_id: id,
+                  subcategory_id: null,
+                  category: "Personal",
+                  category_detail: "—",
+                  is_override: true,
+                  rule_id: null,
+                  rule_summary: null,
+                  excluded: true,
+                  excluded_label: "yes",
+                }
+              : r,
+          ),
+        );
+        setExplain((prev) =>
+          prev && prev.transaction_id === txnId
+            ? {
+                ...prev,
+                category_id: id,
+                subcategory_id: null,
+                category: "Personal",
+                category_detail: "—",
+                is_override: true,
+                excluded: true,
+                excluded_label: "yes",
+              }
+            : prev,
+        );
+        setRuleMsg("Assigned to Personal (excluded from accounting)");
+      } catch (e) {
+        setRuleMsg(e instanceof Error ? e.message : String(e));
       }
     });
   }
@@ -485,8 +644,12 @@ export function AccountingLedger({
           const party = row.original.counterparty;
           const showParty = party && party !== title && (!memo || !memo.includes(party));
           return (
-            <div className="flex flex-col gap-0.5 py-0.5">
-              <span>{title}</span>
+            <button
+              type="button"
+              className="flex w-full flex-col gap-0.5 py-0.5 text-left hover:text-foreground"
+              onClick={() => openExplain(row.original)}
+            >
+              <span className="underline decoration-dotted underline-offset-2">{title}</span>
               {showParty ? (
                 <span className="text-xs text-muted-foreground">Counterparty: {party}</span>
               ) : null}
@@ -495,7 +658,7 @@ export function AccountingLedger({
                   {memo}
                 </span>
               ) : null}
-            </div>
+            </button>
           );
         },
       },
@@ -505,14 +668,14 @@ export function AccountingLedger({
         meta: { filterable: true, filterVariant: "multi", wrap: true, maxWidth: 180, width: 160 },
         cell: ({ row }) => {
           const code = row.original.category;
-          if (!code || code === "—") return "Uncategorized";
+          const label = !code || code === "—" ? "Uncategorized" : code;
           return (
             <button
               type="button"
               className="text-left underline decoration-dotted underline-offset-2 hover:text-foreground"
               onClick={() => openExplain(row.original)}
             >
-              {code}
+              {label}
               {row.original.is_override ? " *" : ""}
             </button>
           );
@@ -524,14 +687,14 @@ export function AccountingLedger({
         meta: { filterable: true, filterVariant: "multi", wrap: true, maxWidth: 180, width: 160 },
         cell: ({ row }) => {
           const code = row.original.category_detail;
-          if (!code || code === "—") return "—";
+          const label = !code || code === "—" ? "—" : code;
           return (
             <button
               type="button"
               className="text-left underline decoration-dotted underline-offset-2 hover:text-foreground"
               onClick={() => openExplain(row.original)}
             >
-              {code}
+              {label}
             </button>
           );
         },
@@ -552,7 +715,7 @@ export function AccountingLedger({
         meta: { filterable: true, filterVariant: "multi", width: 80 },
       },
     ],
-    [],
+    [openExplain],
   );
 
   return (
@@ -648,12 +811,12 @@ export function AccountingLedger({
           <div className="flex flex-wrap items-center gap-2">
             {canWrite ? (
               <>
-                <AccountingRulesDrawer
-                  canWrite={canWrite}
-                  ruleCount={rules.length}
-                  taxonomy={taxonomy}
-                  rules={rules}
-                />
+                  <AccountingRulesDrawer
+                    canWrite={canWrite}
+                    ruleCount={rules.length}
+                    taxonomy={taxonomyState}
+                    rules={rules}
+                  />
                 <Button
                   type="button"
                   size="sm"
@@ -697,11 +860,13 @@ export function AccountingLedger({
           if (!open) setExplain(null);
         }}
       >
-        <SheetContent side="right" className="sm:max-w-md">
+        <SheetContent side="right" className="sm:max-w-md overflow-y-auto">
           <SheetHeader>
-            <SheetTitle>{explain?.category || "Category"}</SheetTitle>
+            <SheetTitle>
+              {explain?.transaction_name || explain?.category || "Transaction"}
+            </SheetTitle>
             <SheetDescription>
-              Palmetto management taxonomy
+              Change category, exclude from accounting, or propose a rule to backfill matches
               {explain?.is_override ? " · operator override" : ""}
             </SheetDescription>
           </SheetHeader>
@@ -720,20 +885,19 @@ export function AccountingLedger({
                     {explain.bank_description}
                   </p>
                 ) : null}
+                <p className="mt-2 text-xs">
+                  Currently:{" "}
+                  <span className="font-medium">{explain.category || "Uncategorized"}</span>
+                  {explain.category_detail && explain.category_detail !== "—"
+                    ? ` · ${explain.category_detail}`
+                    : ""}
+                  {explain.excluded ? " · excluded from rollups" : ""}
+                </p>
               </div>
-            ) : null}
-            {explain?.category_detail && explain.category_detail !== "—" ? (
-              <p className="text-sm">
-                Subcategory: <span className="font-medium">{explain.category_detail}</span>
-              </p>
             ) : null}
             {explain?.category_definition ? (
               <p className="text-sm text-muted-foreground">{explain.category_definition}</p>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No definition yet — edit taxonomy in Rules admin.
-              </p>
-            )}
+            ) : null}
             {explain?.rule_summary ? (
               <p className="text-sm">
                 Matched rule: <span className="font-mono text-xs">{explain.rule_summary}</span>
@@ -745,7 +909,7 @@ export function AccountingLedger({
             )}
             {canWrite && explain ? (
               <div className="flex flex-col gap-2 border-t pt-3">
-                <p className="text-xs font-medium text-muted-foreground">Override category</p>
+                <p className="text-xs font-medium text-muted-foreground">Category</p>
                 <select
                   className="rounded border bg-background px-2 py-1.5 text-sm"
                   value={explain.category_id || ""}
@@ -753,7 +917,7 @@ export function AccountingLedger({
                   onChange={(e) => {
                     const catId = e.target.value || null;
                     const firstChild =
-                      taxonomy.find((t) => t.parent_id === catId)?.id ?? null;
+                      taxonomyState.find((t) => t.parent_id === catId)?.id ?? null;
                     applyOverride(explain.transaction_id, catId, firstChild);
                   }}
                 >
@@ -761,6 +925,7 @@ export function AccountingLedger({
                   {parents.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.label}
+                      {p.exclude_from_accounting === true ? " (excluded)" : ""}
                     </option>
                   ))}
                 </select>
@@ -778,7 +943,7 @@ export function AccountingLedger({
                     }}
                   >
                     <option value="">(no subcategory)</option>
-                    {taxonomy
+                    {taxonomyState
                       .filter((t) => t.parent_id === explain.category_id)
                       .map((t) => (
                         <option key={t.id} value={t.id}>
@@ -787,6 +952,29 @@ export function AccountingLedger({
                       ))}
                   </select>
                 ) : null}
+                {explain.category_id ? (
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={
+                        taxonomyState.find((t) => t.id === explain.category_id)
+                          ?.exclude_from_accounting === true
+                      }
+                      disabled={pending}
+                      onChange={(e) => setCategoryExcluded(e.target.checked)}
+                    />
+                    Exclude this category from accounting rollups
+                  </label>
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={ensurePersonalAndAssign}
+                >
+                  Mark as Personal (excluded)
+                </Button>
                 {explain.is_override ? (
                   <Button
                     type="button"

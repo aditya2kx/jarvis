@@ -14,8 +14,11 @@ import {
 } from "@/components/ui/sheet";
 import {
   reapplyPlaidCategoriesAction,
-  setPlaidInternalAction,
   setTxnCategoryOverrideAction,
+  previewRuleMatchesAction,
+  commitRuleFromTxnAction,
+  revertRuleEvidenceAction,
+  type RuleMatchPreview,
 } from "@/app/accounting/actions";
 import { formatDollars } from "@/lib/format";
 import { formatBucket, truncateToGrain, type Grain } from "@/lib/filters/range";
@@ -42,6 +45,8 @@ export interface AccountingTxnRow {
   channel: string;
   pending_label: string;
   amount: number;
+  excluded: boolean;
+  excluded_label: string;
   is_internal: boolean;
   internal_label: string;
   category_id: string | null;
@@ -56,6 +61,7 @@ export interface TaxonomyOption {
   id: string;
   parent_id: string | null;
   label: string;
+  exclude_from_accounting: boolean | null;
 }
 
 const TOP_CATEGORY_SERIES = 8;
@@ -66,7 +72,7 @@ function moneyTotals(rows: AccountingTxnRow[]): { spend: number; earned: number 
   let spend = 0;
   let earned = 0;
   for (const r of rows) {
-    if (r.is_internal) continue;
+    if (r.excluded) continue;
     if (typeof r.spend === "number") spend += r.spend;
     if (typeof r.earned === "number") earned += r.earned;
   }
@@ -84,7 +90,7 @@ function cashFlowByGrain(
 ): { iso: string; date: string; money_in: number; money_out: number; cash_flow: number }[] {
   const map = new Map<string, { money_in: number; money_out: number }>();
   for (const r of rows) {
-    if (r.is_internal) continue;
+    if (r.excluded) continue;
     const key = truncateToGrain(r.date, grain);
     const cur = map.get(key) || { money_in: 0, money_out: 0 };
     if (typeof r.earned === "number") cur.money_in += r.earned;
@@ -113,7 +119,7 @@ function spendByCategoryGrain(
   const byBucket = new Map<string, Map<string, number>>();
 
   for (const r of rows) {
-    if (r.is_internal) continue;
+    if (r.excluded) continue;
     if (!(typeof r.spend === "number" && r.spend > 0)) continue;
     const cat = r.category || "Uncategorized";
     totals.set(cat, (totals.get(cat) || 0) + r.spend);
@@ -153,6 +159,25 @@ function spendByCategoryGrain(
   return { data, series };
 }
 
+function maskFromAccountLast4(accountLast4: string): string {
+  const digits = accountLast4.replace(/\D/g, "");
+  return digits.length >= 4 ? digits.slice(-4) : digits;
+}
+
+function resetRuleState(row: AccountingTxnRow) {
+  return {
+    pattern:
+      row.transaction_name && row.transaction_name !== "—" ? row.transaction_name : "",
+    amountSign: row.amount > 0 ? "positive" : "negative",
+    accountMask: maskFromAccountLast4(row.account_last4),
+    matches: [] as RuleMatchPreview[],
+    selectedIds: new Set<string>(),
+    committedRuleId: null as string | null,
+    msg: null as string | null,
+    applyFuture: true,
+  };
+}
+
 export function AccountingLedger({
   periodLabel,
   grain,
@@ -175,42 +200,43 @@ export function AccountingLedger({
   squareNetSalesByIso: Record<string, number>;
 }) {
   const [rows, setRows] = useState(initialRows);
-  const [hideInternal, setHideInternal] = useState(true);
   const [filtered, setFiltered] = useState<AccountingTxnRow[]>(initialRows);
   const [explain, setExplain] = useState<AccountingTxnRow | null>(null);
   const [pending, startTransition] = useTransition();
   const [reapplyMsg, setReapplyMsg] = useState<string | null>(null);
   const [chartUnit, setChartUnit] = useState<ChartUnit>("dollars");
 
+  const [rulePattern, setRulePattern] = useState("");
+  const [ruleAmountSign, setRuleAmountSign] = useState("positive");
+  const [ruleAccountMask, setRuleAccountMask] = useState("");
+  const [ruleMatches, setRuleMatches] = useState<RuleMatchPreview[]>([]);
+  const [selectedTxnIds, setSelectedTxnIds] = useState<Set<string>>(new Set());
+  const [applyFuture, setApplyFuture] = useState(true);
+  const [committedRuleId, setCommittedRuleId] = useState<string | null>(null);
+  const [ruleMsg, setRuleMsg] = useState<string | null>(null);
+
   useEffect(() => {
     setRows(initialRows);
     setFiltered(initialRows);
   }, [initialRows]);
 
-  const tableData = useMemo(
-    () => (hideInternal ? rows.filter((r) => !r.is_internal) : rows),
-    [rows, hideInternal],
-  );
+  const tableData = rows;
 
   const onFilteredRowsChange = useCallback((next: AccountingTxnRow[]) => {
     setFiltered(next);
   }, []);
 
-  // Charts/totals must read `is_internal` from `rows` (optimistic + post-revalidate
-  // source of truth). `filtered` alone can lag with a stale copy after Mark Internal,
-  // so KPIs kept counting the transfer. Gate by filtered txn ids so column filters
-  // still apply; always drop internals from rollups.
-  const rollupRows = useMemo(() => {
+  const chartRows = useMemo(() => {
     const visibleIds = new Set(filtered.map((r) => r.transaction_id));
-    return rows.filter((r) => !r.is_internal && visibleIds.has(r.transaction_id));
+    return rows.filter((r) => !r.excluded && visibleIds.has(r.transaction_id));
   }, [rows, filtered]);
 
-  const kpis = useMemo(() => moneyTotals(rollupRows), [rollupRows]);
+  const kpis = useMemo(() => moneyTotals(chartRows), [chartRows]);
   const cashFlow = kpis.earned - kpis.spend;
-  const cashChartBase = useMemo(() => cashFlowByGrain(rollupRows, grain), [rollupRows, grain]);
+  const cashChartBase = useMemo(() => cashFlowByGrain(chartRows, grain), [chartRows, grain]);
   const categoryChartBase = useMemo(
-    () => spendByCategoryGrain(rollupRows, grain),
-    [rollupRows, grain],
+    () => spendByCategoryGrain(chartRows, grain),
+    [chartRows, grain],
   );
   const asPct = chartUnit === "pct_net_sales";
 
@@ -249,7 +275,6 @@ export function AccountingLedger({
   }, [categoryChartBase, squareNetSalesByIso, asPct]);
 
   const grainLabel = grain === "day" ? "day" : grain === "week" ? "week" : "month";
-  const internalHidden = rows.filter((r) => r.is_internal).length;
   const unitToggle = (
     <div className="flex items-center gap-1 rounded-md bg-secondary p-0.5">
       {(
@@ -280,37 +305,18 @@ export function AccountingLedger({
     [taxonomy],
   );
 
-  function toggleInternal(txnId: string, next: boolean) {
-    const patch = (r: AccountingTxnRow): AccountingTxnRow =>
-      r.transaction_id === txnId
-        ? { ...r, is_internal: next, internal_label: next ? "yes" : "no" }
-        : r;
-
-    setRows((prev) => prev.map(patch));
-    // Keep filtered in sync so rollups don't wait on DataTable's next emit.
-    setFiltered((prev) => {
-      if (next && hideInternal) {
-        return prev.filter((r) => r.transaction_id !== txnId);
-      }
-      return prev.map(patch);
-    });
-
-    startTransition(async () => {
-      try {
-        await setPlaidInternalAction(txnId, next);
-      } catch (e) {
-        const revert = (r: AccountingTxnRow): AccountingTxnRow =>
-          r.transaction_id === txnId
-            ? { ...r, is_internal: !next, internal_label: !next ? "yes" : "no" }
-            : r;
-        setRows((prev) => prev.map(revert));
-        setFiltered((prev) => prev.map(revert));
-        console.error(e);
-      }
-    });
+  function openExplain(row: AccountingTxnRow) {
+    const reset = resetRuleState(row);
+    setExplain(row);
+    setRulePattern(reset.pattern);
+    setRuleAmountSign(reset.amountSign);
+    setRuleAccountMask(reset.accountMask);
+    setRuleMatches(reset.matches);
+    setSelectedTxnIds(reset.selectedIds);
+    setCommittedRuleId(reset.committedRuleId);
+    setRuleMsg(reset.msg);
+    setApplyFuture(reset.applyFuture);
   }
-
-  const toggleInternalCb = useCallback(toggleInternal, [hideInternal]);
 
   function applyOverride(txnId: string, categoryId: string | null, subcategoryId: string | null) {
     startTransition(async () => {
@@ -338,6 +344,8 @@ export function AccountingLedger({
           prev && prev.transaction_id === txnId
             ? {
                 ...prev,
+                category_id: categoryId,
+                subcategory_id: subcategoryId,
                 category: parent?.label || prev.category,
                 category_detail: child?.label || "—",
                 is_override: !!categoryId,
@@ -361,6 +369,89 @@ export function AccountingLedger({
     });
   }
 
+  function findRuleMatches() {
+    if (!explain?.category_id) {
+      setRuleMsg("Select a category first");
+      return;
+    }
+    startTransition(async () => {
+      try {
+        const matches = await previewRuleMatchesAction({
+          match_pattern: rulePattern,
+          amount_sign: ruleAmountSign,
+          account_mask: ruleAccountMask || null,
+          category_id: explain.category_id!,
+          subcategory_id: explain.subcategory_id,
+        });
+        setRuleMatches(matches);
+        setSelectedTxnIds(
+          new Set(matches.filter((m) => !m.has_override).map((m) => m.transaction_id)),
+        );
+        setRuleMsg(matches.length ? `${matches.length} match(es)` : "No matches");
+        setCommittedRuleId(null);
+      } catch (e) {
+        setRuleMsg(e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
+
+  function toggleMatch(txnId: string, checked: boolean) {
+    setSelectedTxnIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(txnId);
+      else next.delete(txnId);
+      return next;
+    });
+  }
+
+  function selectAllMatches() {
+    setSelectedTxnIds(
+      new Set(ruleMatches.filter((m) => !m.has_override).map((m) => m.transaction_id)),
+    );
+  }
+
+  function commitRule() {
+    if (!explain?.category_id) return;
+    startTransition(async () => {
+      try {
+        const result = await commitRuleFromTxnAction({
+          draft: {
+            match_pattern: rulePattern,
+            amount_sign: ruleAmountSign,
+            account_mask: ruleAccountMask || null,
+            category_id: explain.category_id!,
+            subcategory_id: explain.subcategory_id,
+          },
+          selectedTxnIds: [...selectedTxnIds],
+          applyFuture,
+        });
+        setCommittedRuleId(result.ruleId);
+        setRuleMsg(
+          `Rule ${result.ruleId}: applied ${result.applied}, skipped override ${result.skipped_override}`,
+        );
+      } catch (e) {
+        setRuleMsg(e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
+
+  function revertRule() {
+    if (!committedRuleId) return;
+    startTransition(async () => {
+      try {
+        const result = await revertRuleEvidenceAction(committedRuleId);
+        setRuleMsg(
+          `Reverted ${committedRuleId}: reapply updated ${result.reapply.updated}, unchanged ${result.reapply.unchanged}`,
+        );
+        setCommittedRuleId(null);
+      } catch (e) {
+        setRuleMsg(e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
+
+  const selectableMatchCount = ruleMatches.filter((m) => !m.has_override).length;
+
   const columns: ColumnDef<AccountingTxnRow>[] = useMemo(
     () => [
       {
@@ -371,7 +462,7 @@ export function AccountingLedger({
       {
         accessorKey: "account_last4",
         header: "Account",
-        meta: { filterable: true, wrap: true, maxWidth: 200, width: 160 },
+        meta: { filterable: true, filterVariant: "multi", wrap: true, maxWidth: 200, width: 160 },
       },
       {
         accessorKey: "spend",
@@ -411,7 +502,7 @@ export function AccountingLedger({
       {
         accessorKey: "category",
         header: "Category",
-        meta: { filterable: true, wrap: true, maxWidth: 180, width: 160 },
+        meta: { filterable: true, filterVariant: "multi", wrap: true, maxWidth: 180, width: 160 },
         cell: ({ row }) => {
           const code = row.original.category;
           if (!code || code === "—") return "Uncategorized";
@@ -419,7 +510,7 @@ export function AccountingLedger({
             <button
               type="button"
               className="text-left underline decoration-dotted underline-offset-2 hover:text-foreground"
-              onClick={() => setExplain(row.original)}
+              onClick={() => openExplain(row.original)}
             >
               {code}
               {row.original.is_override ? " *" : ""}
@@ -430,7 +521,7 @@ export function AccountingLedger({
       {
         accessorKey: "category_detail",
         header: "Subcategory",
-        meta: { filterable: true, wrap: true, maxWidth: 180, width: 160 },
+        meta: { filterable: true, filterVariant: "multi", wrap: true, maxWidth: 180, width: 160 },
         cell: ({ row }) => {
           const code = row.original.category_detail;
           if (!code || code === "—") return "—";
@@ -438,7 +529,7 @@ export function AccountingLedger({
             <button
               type="button"
               className="text-left underline decoration-dotted underline-offset-2 hover:text-foreground"
-              onClick={() => setExplain(row.original)}
+              onClick={() => openExplain(row.original)}
             >
               {code}
             </button>
@@ -448,36 +539,20 @@ export function AccountingLedger({
       {
         accessorKey: "channel",
         header: "Channel",
-        meta: { filterable: true, width: 88 },
+        meta: { filterable: true, filterVariant: "multi", width: 88 },
       },
       {
         accessorKey: "pending_label",
         header: "Pending",
-        meta: { filterable: true, width: 80 },
+        meta: { filterable: true, filterVariant: "multi", width: 80 },
       },
       {
-        accessorKey: "internal_label",
-        header: "Internal",
-        meta: { filterable: true, width: 100 },
-        cell: ({ row }) => {
-          const on = row.original.is_internal;
-          if (!canWrite) return on ? "yes" : "no";
-          return (
-            <Button
-              type="button"
-              size="sm"
-              variant={on ? "secondary" : "outline"}
-              className="h-7 px-2 text-xs"
-              disabled={pending}
-              onClick={() => toggleInternalCb(row.original.transaction_id, !on)}
-            >
-              {on ? "Internal" : "Mark"}
-            </Button>
-          );
-        },
+        accessorKey: "excluded_label",
+        header: "Excluded",
+        meta: { filterable: true, filterVariant: "multi", width: 80 },
       },
     ],
-    [canWrite, pending, toggleInternalCb],
+    [],
   );
 
   return (
@@ -503,7 +578,7 @@ export function AccountingLedger({
             </span>
           </span>
           <span className="text-xs text-muted-foreground self-center">
-            Bank totals exclude internal · {periodLabel}
+            Bank totals exclude excluded categories · {periodLabel}
           </span>
         </div>
         {unitToggle}
@@ -515,7 +590,7 @@ export function AccountingLedger({
           subtitle={
             asPct
               ? `Bank money in / out / cash flow as % of Square net sales for the same ${grainLabel} · green=in, red=out, sky/fuchsia=net`
-              : "Green = money in · red = money out · sky/fuchsia = cash flow (by sign) · excludes internal"
+              : "Green = money in · red = money out · sky/fuchsia = cash flow (by sign) · excludes excluded categories"
           }
           data={cashChart}
           xKey="date"
@@ -554,7 +629,7 @@ export function AccountingLedger({
           subtitle={
             asPct
               ? `Each spend category as % of Square net sales for the same ${grainLabel} · warm colors = money leaving (can sum over 100%)`
-              : "Spend categories (warm palette = money leaving) · follows table filters · excludes internal"
+              : "Spend categories (warm palette = money leaving) · follows table filters · excludes excluded categories"
           }
           data={categoryChart.data}
           xKey="date"
@@ -590,15 +665,6 @@ export function AccountingLedger({
                 </Button>
               </>
             ) : null}
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={hideInternal}
-                onChange={(e) => setHideInternal(e.target.checked)}
-              />
-              Hide internal
-              {internalHidden ? ` (${internalHidden})` : ""}
-            </label>
           </div>
         </CardHeader>
         <CardContent>
@@ -614,7 +680,7 @@ export function AccountingLedger({
               initialSorting={[{ id: "date", desc: true }]}
               pinLeft={["date", "account_last4", "spend", "earned"]}
               rowHighlight={{
-                accessorKey: "internal_label",
+                accessorKey: "excluded_label",
                 equals: "yes",
                 className: "opacity-60",
               }}
@@ -625,7 +691,12 @@ export function AccountingLedger({
         </CardContent>
       </Card>
 
-      <Sheet open={!!explain} onOpenChange={(open) => !open && setExplain(null)}>
+      <Sheet
+        open={!!explain}
+        onOpenChange={(open) => {
+          if (!open) setExplain(null);
+        }}
+      >
         <SheetContent side="right" className="sm:max-w-md">
           <SheetHeader>
             <SheetTitle>{explain?.category || "Category"}</SheetTitle>
@@ -726,6 +797,137 @@ export function AccountingLedger({
                   >
                     Clear override
                   </Button>
+                ) : null}
+              </div>
+            ) : null}
+            {canWrite && explain ? (
+              <div className="flex flex-col gap-2 border-t pt-3">
+                <p className="text-xs font-medium text-muted-foreground">Propose rule</p>
+                <input
+                  type="text"
+                  className="rounded border bg-background px-2 py-1.5 text-sm"
+                  placeholder="Match pattern"
+                  value={rulePattern}
+                  disabled={pending || committedRuleId != null}
+                  onChange={(e) => setRulePattern(e.target.value)}
+                />
+                <div className="flex gap-2">
+                  <select
+                    className="rounded border bg-background px-2 py-1.5 text-sm"
+                    value={ruleAmountSign}
+                    disabled={pending || committedRuleId != null}
+                    onChange={(e) => setRuleAmountSign(e.target.value)}
+                  >
+                    <option value="any">Any sign</option>
+                    <option value="positive">Positive</option>
+                    <option value="negative">Negative</option>
+                  </select>
+                  <input
+                    type="text"
+                    className="rounded border bg-background px-2 py-1.5 text-sm w-24"
+                    placeholder="Acct last4"
+                    value={ruleAccountMask}
+                    disabled={pending || committedRuleId != null}
+                    onChange={(e) => setRuleAccountMask(e.target.value)}
+                  />
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={pending || !rulePattern.trim() || committedRuleId != null}
+                  onClick={findRuleMatches}
+                >
+                  Find matches
+                </Button>
+                {ruleMatches.length ? (
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-muted-foreground">
+                        {ruleMatches.length} match(es) · {selectedTxnIds.size} selected
+                      </p>
+                      {selectableMatchCount ? (
+                        <button
+                          type="button"
+                          className="text-xs text-muted-foreground underline"
+                          disabled={pending || committedRuleId != null}
+                          onClick={selectAllMatches}
+                        >
+                          Select all
+                        </button>
+                      ) : null}
+                    </div>
+                    <ul className="max-h-48 overflow-y-auto rounded border text-xs">
+                      {ruleMatches.map((m) => {
+                        const checked = selectedTxnIds.has(m.transaction_id);
+                        return (
+                          <li
+                            key={m.transaction_id}
+                            className={cn(
+                              "flex items-start gap-2 border-b px-2 py-1.5 last:border-0",
+                              m.has_override && "opacity-50",
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              className="mt-0.5"
+                              checked={checked}
+                              disabled={pending || m.has_override || committedRuleId != null}
+                              onChange={(e) => toggleMatch(m.transaction_id, e.target.checked)}
+                            />
+                            <span className="flex-1">
+                              <span className="font-medium">{m.date}</span>
+                              {" · "}
+                              {m.name || "—"}
+                              {" · "}
+                              {formatDollars(m.amount)}
+                              {m.has_override ? " · override" : ""}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ) : null}
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={applyFuture}
+                    disabled={pending || committedRuleId != null}
+                    onChange={(e) => setApplyFuture(e.target.checked)}
+                  />
+                  Apply to future transactions
+                </label>
+                {committedRuleId ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-mono">{committedRuleId}</span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={pending}
+                      onClick={revertRule}
+                    >
+                      Revert
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={
+                      pending ||
+                      !explain.category_id ||
+                      !rulePattern.trim() ||
+                      selectedTxnIds.size === 0
+                    }
+                    onClick={commitRule}
+                  >
+                    Commit rule
+                  </Button>
+                )}
+                {ruleMsg ? (
+                  <p className="text-xs text-muted-foreground">{ruleMsg}</p>
                 ) : null}
               </div>
             ) : null}

@@ -25,6 +25,7 @@ class CategoryRule:
     category_id: str
     subcategory_id: Optional[str]
     enabled: bool = True
+    account_mask: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -81,10 +82,20 @@ def _field_matches(text: str, operator: str, pattern: str) -> bool:
     return False
 
 
+def _account_mask_ok(txn_mask: Any, rule_mask: Optional[str]) -> bool:
+    want = "".join(c for c in (rule_mask or "") if c.isdigit())[-4:]
+    if not want:
+        return True
+    got = "".join(c for c in str(txn_mask or "") if c.isdigit())[-4:]
+    return len(got) == 4 and got == want
+
+
 def rule_matches(txn: dict[str, Any], rule: CategoryRule) -> bool:
     if not rule.enabled:
         return False
     if not _amount_ok(txn.get("amount"), rule.amount_sign):
+        return False
+    if not _account_mask_ok(txn.get("account_mask"), rule.account_mask):
         return False
     field = rule.match_field or "name_or_merchant"
     # Seed CSV uses match_field=name but merchants often hold the clean string —

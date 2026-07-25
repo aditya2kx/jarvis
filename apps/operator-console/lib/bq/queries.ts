@@ -1118,6 +1118,8 @@ export function plaidTransactions(win: DateWindow): Promise<PlaidTransactionRow[
 export interface PlaidSpendCategoryRow {
   pfc_primary: string;
   category_label?: string;
+  category_id?: string | null;
+  category_slug?: string | null;
   spend: number;
   txn_count: number;
 }
@@ -1127,14 +1129,25 @@ export function plaidSpendByCategory(win: DateWindow): Promise<PlaidSpendCategor
     `SELECT
        COALESCE(category_label, pfc_primary, 'Uncategorized') AS pfc_primary,
        COALESCE(category_label, pfc_primary, 'Uncategorized') AS category_label,
+       category_id,
+       category_slug,
        SUM(spend) AS spend,
        SUM(txn_count) AS txn_count
      FROM ${fq("vw_plaid_spend_by_category_daily")}
      WHERE date BETWEEN @start AND @end
-     GROUP BY 1, 2
+     GROUP BY 1, 2, 3, 4
      ORDER BY spend DESC`,
     { start: dateParam(win.start), end: dateParam(win.end) },
   );
+}
+
+export function plaidMoneyInTotal(win: DateWindow): Promise<number> {
+  return q<{ money_in: number }>(
+    `SELECT COALESCE(SUM(money_in), 0) AS money_in
+     FROM ${fq("vw_plaid_money_in_daily")}
+     WHERE date BETWEEN @start AND @end`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  ).then((rows) => Number(rows[0]?.money_in ?? 0));
 }
 
 export interface TaxonomyNodeRow {
@@ -1145,11 +1158,13 @@ export interface TaxonomyNodeRow {
   definition: string | null;
   enabled: boolean | null;
   sort_order: number | null;
+  exclude_from_accounting: boolean | null;
 }
 
 export function plaidTaxonomyNodes(): Promise<TaxonomyNodeRow[]> {
   return q<TaxonomyNodeRow>(
-    `SELECT id, parent_id, slug, label, definition, enabled, sort_order
+    `SELECT id, parent_id, slug, label, definition, enabled, sort_order,
+            exclude_from_accounting
      FROM ${fq("plaid_taxonomy_nodes")}
      WHERE IFNULL(enabled, TRUE) IS TRUE
      ORDER BY sort_order, label`,

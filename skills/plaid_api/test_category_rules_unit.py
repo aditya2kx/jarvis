@@ -138,6 +138,26 @@ class TestEvaluateRules(unittest.TestCase):
         self.assertEqual(eff["source"], "override")
         self.assertEqual(eff["category_id"], "opex")
 
+    def test_account_mask(self):
+        rules = [
+            _r(
+                id="card_only",
+                priority=10,
+                match_pattern="TollCo",
+                category_id="personal",
+                account_mask="1234",
+            )
+        ]
+        self.assertIsNone(
+            evaluate_rules(
+                {"name": "TollCo", "amount": 5, "account_mask": "9999"}, rules
+            )
+        )
+        m = evaluate_rules(
+            {"name": "TollCo", "amount": 5, "account_mask": "1234"}, rules
+        )
+        self.assertEqual(m.rule_id if m else None, "card_only")
+
 
 if __name__ == "__main__":
     unittest.main()

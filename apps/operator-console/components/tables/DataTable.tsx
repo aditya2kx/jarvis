@@ -71,8 +71,10 @@ declare module "@tanstack/react-table" {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface ColumnMeta<TData extends RowData, TValue> {
     format?: ColumnFormat;
-    /** When DataTable `enableColumnFilters`, show a text filter under the header. */
+    /** When DataTable `enableColumnFilters`, show a filter under the header. */
     filterable?: boolean;
+    /** text (default) or multi-select checkboxes for categorical columns. */
+    filterVariant?: "text" | "multi";
     /** Allow multi-line cell text (overrides table `whitespace-nowrap`). */
     wrap?: boolean;
     /** Cap column width in px (use with `wrap` for long ACH/description strings). */
@@ -149,6 +151,12 @@ function filterIncludesString(
   columnId: string,
   filterValue: unknown,
 ): boolean {
+  if (Array.isArray(filterValue)) {
+    if (!filterValue.length) return true;
+    const rowValue = row.getValue(columnId);
+    const cell = rowValue == null || rowValue === "" ? "" : String(rowValue);
+    return filterValue.map(String).includes(cell);
+  }
   const needle = String(filterValue ?? "")
     .trim()
     .toLowerCase();
@@ -156,6 +164,55 @@ function filterIncludesString(
   const rowValue = row.getValue(columnId);
   if (rowValue == null || rowValue === "") return false;
   return String(rowValue).toLowerCase().includes(needle);
+}
+
+function MultiSelectFilter({
+  columnId,
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  columnId: string;
+  label: string;
+  options: string[];
+  value: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const selected = new Set(value);
+  return (
+    <div
+      className="max-h-28 overflow-y-auto rounded border border-border bg-background p-1 text-xs font-normal"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <label className="mb-0.5 flex items-center gap-1 px-0.5">
+        <input
+          type="checkbox"
+          checked={options.length > 0 && selected.size === options.length}
+          onChange={() =>
+            onChange(selected.size === options.length ? [] : [...options])
+          }
+          aria-label={`Select all ${label}`}
+        />
+        <span className="text-muted-foreground">All</span>
+      </label>
+      {options.map((opt) => (
+        <label key={`${columnId}-${opt || "(blank)"}`} className="flex items-center gap-1 px-0.5">
+          <input
+            type="checkbox"
+            checked={selected.has(opt)}
+            onChange={() => {
+              const next = new Set(selected);
+              if (next.has(opt)) next.delete(opt);
+              else next.add(opt);
+              onChange([...next]);
+            }}
+          />
+          <span className="truncate">{opt || "(blank)"}</span>
+        </label>
+      ))}
+    </div>
+  );
 }
 
 // Thin TanStack wrapper. `pinLeft` mirrors Grafana panel 83's
@@ -215,7 +272,12 @@ export function DataTable<TData>({
     [table, columnFilters, data, enableColumnFilters],
   );
   const filteredCount = filteredRows.length;
-  const filterActive = enableColumnFilters && columnFilters.some((f) => String(f.value ?? "").trim());
+  const filterActive =
+    enableColumnFilters &&
+    columnFilters.some((f) => {
+      if (Array.isArray(f.value)) return f.value.length > 0;
+      return String(f.value ?? "").trim().length > 0;
+    });
 
   useEffect(() => {
     onFilteredRowsChange?.(filteredRows);
@@ -226,8 +288,15 @@ export function DataTable<TData>({
     let spend = 0;
     let earned = 0;
     for (const r of filteredRows as Record<string, unknown>[]) {
-      // Align caption with Accounting KPIs: skip internal transfers.
-      if (r.is_internal === true || r.internal_label === "yes") continue;
+      // S1: business-only strip — skip excluded / legacy internal even if rows visible.
+      if (
+        r.excluded === true ||
+        r.excluded_label === "yes" ||
+        r.is_internal === true ||
+        r.internal_label === "yes"
+      ) {
+        continue;
+      }
       const s = r.spend;
       const e = r.earned;
       if (typeof s === "number" && !Number.isNaN(s)) spend += s;
@@ -236,6 +305,24 @@ export function DataTable<TData>({
     return { spend, earned };
   }, [enableColumnFilters, filteredRows]);
 
+  const multiOptionsByCol = useMemo(() => {
+    const map = new Map<string, string[]>();
+    if (!enableColumnFilters) return map;
+    for (const col of columns) {
+      const id = (col as { accessorKey?: string; id?: string }).accessorKey
+        || (col as { id?: string }).id;
+      if (!id) continue;
+      const meta = col.meta as { filterVariant?: string } | undefined;
+      if (meta?.filterVariant !== "multi") continue;
+      const vals = new Set<string>();
+      for (const row of data as Record<string, unknown>[]) {
+        const v = row[id];
+        vals.add(v == null || v === "" ? "" : String(v));
+      }
+      map.set(id, [...vals].sort((a, b) => a.localeCompare(b)));
+    }
+    return map;
+  }, [columns, data, enableColumnFilters]);
   function rowClassName(row: TData): string | undefined {
     if (!rowHighlight) return undefined;
     const rules = Array.isArray(rowHighlight) ? rowHighlight : [rowHighlight];
@@ -356,14 +443,30 @@ export function DataTable<TData>({
                           flexRender(header.column.columnDef.header, header.getContext())
                         )}
                         {showFilter ? (
-                          <Input
-                            value={String(header.column.getFilterValue() ?? "")}
-                            onChange={(e) => header.column.setFilterValue(e.target.value)}
-                            onClick={(e) => e.stopPropagation()}
-                            placeholder="Filter…"
-                            className="h-7 w-full min-w-0 px-2 text-xs font-normal"
-                            aria-label={`Filter ${String(header.column.columnDef.header)}`}
-                          />
+                          meta?.filterVariant === "multi" ? (
+                            <MultiSelectFilter
+                              columnId={header.column.id}
+                              label={String(header.column.columnDef.header)}
+                              options={multiOptionsByCol.get(header.column.id) || []}
+                              value={
+                                Array.isArray(header.column.getFilterValue())
+                                  ? (header.column.getFilterValue() as string[])
+                                  : []
+                              }
+                              onChange={(next) =>
+                                header.column.setFilterValue(next.length ? next : undefined)
+                              }
+                            />
+                          ) : (
+                            <Input
+                              value={String(header.column.getFilterValue() ?? "")}
+                              onChange={(e) => header.column.setFilterValue(e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              placeholder="Filter…"
+                              className="h-7 w-full min-w-0 px-2 text-xs font-normal"
+                              aria-label={`Filter ${String(header.column.columnDef.header)}`}
+                            />
+                          )
                         ) : null}
                       </div>
                     </TableHead>

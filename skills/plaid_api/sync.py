@@ -345,9 +345,18 @@ def _mark_suggested_internals(bq, item_id: str) -> int:
     bq.query(
         f"""
         UPDATE {_fq("plaid_transactions")}
-        SET is_internal = TRUE, updated_at = CURRENT_TIMESTAMP()
+        SET is_internal = TRUE,
+            category_id = 'internal_transfers',
+            subcategory_id = NULL,
+            rule_id = NULL,
+            categorized_at = CURRENT_TIMESTAMP(),
+            updated_at = CURRENT_TIMESTAMP()
         WHERE transaction_id IN UNNEST(@ids)
-          AND IFNULL(is_internal, FALSE) IS NOT TRUE
+          AND override_category_id IS NULL
+          AND (
+            IFNULL(is_internal, FALSE) IS NOT TRUE
+            OR IFNULL(category_id, '') != 'internal_transfers'
+          )
         """,
         job_config=bigquery.QueryJobConfig(
             query_parameters=[bigquery.ArrayQueryParameter("ids", "STRING", ids)]

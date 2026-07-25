@@ -1,11 +1,11 @@
 import "server-only";
 import {
   laborDaily,
-  laborForwardSummary,
   storeConfig,
   orderQualityDaily,
   baseRunway,
   plaidSpendByCategory,
+  plaidMoneyInTotal,
   type LaborDailyRow,
   type StoreConfigRow,
 } from "@/lib/bq/queries";
@@ -13,7 +13,8 @@ import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { chicagoTodayIso, isMonthLike, type DateWindow } from "@/lib/filters/range";
 import type { GoalKey } from "@/lib/bq/writes";
 import type { GoalStatus } from "@/lib/kpi/health-types";
-import { viewForLaborLens, periodDayCount, type LaborLens } from "@/lib/kpi/labor-lens";
+import type { LaborLens } from "@/lib/kpi/labor-lens";
+import { PAYROLL_LABOR_CATEGORY_ID } from "@/lib/plaid/exclude-accounting";
 import {
   avgPrepP95Min,
   countRiskyBases,
@@ -118,33 +119,39 @@ function metric(partial: HealthMetric): HealthMetric {
 
 export async function loadHealthScorecard(
   win: DateWindow,
-  opts: { laborLens?: LaborLens } = {},
+  _opts: { laborLens?: LaborLens } = {},
 ): Promise<HealthScorecard> {
-  const laborLens: LaborLens = opts.laborLens ?? "wage";
-  const [rows, config, quality, runway, plaidCats, laborFwd] = await Promise.all([
+  // laborLens retained for API compat; Home no longer shows schedule/blended (#189).
+  const [rows, config, quality, runway, plaidCats, moneyIn] = await Promise.all([
     laborDaily(win),
     storeConfig(DEFAULT_STORE),
     orderQualityDaily(win),
     baseRunway(),
     plaidSpendByCategory(win).catch(() => []),
-    laborForwardSummary(win, DEFAULT_STORE).catch(() => null),
+    plaidMoneyInTotal(win).catch(() => 0),
   ]);
 
   const netSales = sum(rows, (r) => r.net_sales);
-  const laborCost = sum(rows, (r) => r.total_labor_cost);
+  const ptLabor$ = sum(rows, (r) => Number(r.hourly_labor_cost ?? 0));
+  const ftLabor$ = sum(rows, (r) => Number(r.fulltime_labor_cost ?? 0));
+  const totalRatesLabor$ = sum(rows, (r) => r.total_labor_cost);
   const ordersTotal = sum(rows, (r) => r.orders);
-  // Cap at Chicago today so this_month does not dilute avg by future days.
   const dayCount = elapsedDaysInWindow(win.start, win.end, chicagoTodayIso());
   const ordersPerDay =
     ordersTotal == null ? null : ordersTotal / dayCount;
-  const opsCost = plaidCats.reduce((s, c) => s + (c.spend ?? 0), 0);
-  // Known costs only — COGS not instrumented (no silent fake).
-  const totalKnownCost =
-    laborCost == null && !plaidCats.length
-      ? null
-      : (laborCost ?? 0) + opsCost;
-  const cashFlow =
-    netSales == null && !plaidCats.length ? null : (netSales ?? 0) - opsCost;
+
+  const moneyOut = plaidCats.reduce((s, c) => s + (c.spend ?? 0), 0);
+  const bankCashFlow =
+    !plaidCats.length && moneyIn === 0 ? null : moneyIn - moneyOut;
+  const totalBankCost = plaidCats.length ? moneyOut : null;
+
+  const payrollCat = plaidCats.find(
+    (c) =>
+      c.category_id === PAYROLL_LABOR_CATEGORY_ID ||
+      c.category_slug === PAYROLL_LABOR_CATEGORY_ID ||
+      (c.category_label || "").toLowerCase().includes("payroll"),
+  );
+  const bankLabor$ = payrollCat?.spend ?? 0;
 
   const prepP95 = avgPrepP95Min(quality);
   const riskyCount = countRiskyBases(runway);
@@ -153,59 +160,74 @@ export async function loadHealthScorecard(
   const gSales = periodGoal(config, win, "goal_net_sales_weekly", "goal_net_sales_monthly");
   const goalOrdersPerDay = goalValue(config, "goal_orders_per_day");
   const gLabor$ = periodGoal(config, win, "goal_labor_cost_weekly", "goal_labor_cost_monthly");
-  const gOps = periodGoal(config, win, "goal_ops_cost_weekly", "goal_ops_cost_monthly");
   const gTotal = periodGoal(config, win, "goal_total_cost_weekly", "goal_total_cost_monthly");
   const goalPtLaborPct = goalValue(config, "goal_hourly_labor_pct_max");
   const goalTotalLaborPct = goalValue(config, "goal_labor_pct_max");
   const goalPrepP95 = goalValue(config, "goal_kds_p95_min");
   const goalRiskyMax = goalValue(config, "goal_bases_at_risk_max");
 
-  const cashPace = paceFor(cashFlow, gCash.value, false);
+  const pctOfSales = (n: number | null): number | null => {
+    if (n == null || netSales == null || !netSales) return null;
+    return n / netSales;
+  };
+
+  const cashPace = paceFor(bankCashFlow, gCash.value, false);
   const salesPace = paceFor(netSales, gSales.value, false);
   const ordersPace = paceFor(ordersPerDay, goalOrdersPerDay, false);
-  const laborPace = paceFor(laborCost, gLabor$.value, true);
-  const opsPace = paceFor(opsCost, gOps.value, true);
-  const totalPace = paceFor(totalKnownCost, gTotal.value, true);
-  const periodDays = periodDayCount(win.start, win.end);
-  // Home always shows completed (wage or paid via lens) + blended — four numbers.
-  const completedBasis: LaborLens = laborLens === "paid" ? "paid" : "wage";
-  const completedView =
-    laborFwd != null ? viewForLaborLens(laborFwd, completedBasis, periodDays) : null;
-  const blendedView =
-    laborFwd != null ? viewForLaborLens(laborFwd, "blended", periodDays) : null;
-  const completedPtPct = completedView?.ptPct ?? null;
-  const completedTotalPct = completedView?.totalPct ?? null;
-  const blendedPtPct = blendedView?.ptPct ?? null;
-  const blendedTotalPct = blendedView?.totalPct ?? null;
-  const ptLaborPace = paceFor(completedPtPct, goalPtLaborPct, true);
-  const totalLaborPctPace = paceFor(completedTotalPct, goalTotalLaborPct, true);
-  const blendedPtPace = paceFor(blendedPtPct, goalPtLaborPct, true);
-  const blendedTotalPace = paceFor(blendedTotalPct, goalTotalLaborPct, true);
+  const totalPace = paceFor(totalBankCost, gTotal.value, true);
   const prepPace = paceFor(prepP95, goalPrepP95, true);
   const riskyPace = paceFor(riskyCount, goalRiskyMax, true);
 
   const finance: HealthMetric[] = [
     metric({
+      key: "money_in_bank",
+      label: "Money in (bank)",
+      actual: moneyIn,
+      goal: null,
+      status: "no-goal",
+      pace: null,
+      formatted: fmtDollars(moneyIn),
+      goalFormatted: "—",
+      goalKey: null,
+      rawGoal: undefined,
+      lowerIsBetter: false,
+      info: "Plaid bank inflows for the period (excludes categories marked exclude-from-accounting). Matches Accounting money in.",
+    }),
+    metric({
+      key: "money_out_bank",
+      label: "Money out (bank)",
+      actual: moneyOut,
+      goal: null,
+      status: "no-goal",
+      pace: null,
+      formatted: fmtDollars(moneyOut),
+      goalFormatted: "—",
+      goalKey: null,
+      rawGoal: undefined,
+      lowerIsBetter: true,
+      info: "Plaid business outflows (exclude-from-accounting applied). Matches Accounting money out.",
+    }),
+    metric({
       key: "cash_flow",
-      label: "Cash flow",
-      actual: cashFlow,
+      label: "Cash flow (bank)",
+      actual: bankCashFlow,
       goal: gCash.value,
       status: statusFor(cashPace),
       pace: cashPace,
-      formatted: fmtDollars(cashFlow),
+      formatted: fmtDollars(bankCashFlow),
       goalFormatted: fmtDollars(gCash.value),
       goalKey: gCash.key,
       rawGoal: gCash.raw,
       lowerIsBetter: false,
-      deltaFormatted: deltaLabel(cashFlow, gCash.value, false, "dollars"),
-      info: "Square net sales minus Plaid bank outflows for the period. Needs a linked bank for the spend side.",
+      deltaFormatted: deltaLabel(bankCashFlow, gCash.value, false, "dollars"),
+      info: "Bank money in − business money out. Same definition as Accounting cash flow.",
     }),
   ];
 
   const topLine: HealthMetric[] = [
     metric({
       key: "net_sales",
-      label: "Net sales",
+      label: "Net sales (Square)",
       actual: netSales,
       goal: gSales.value,
       status: statusFor(salesPace),
@@ -217,8 +239,8 @@ export async function loadHealthScorecard(
       lowerIsBetter: false,
       deltaFormatted: deltaLabel(netSales, gSales.value, false, "dollars"),
       info: isMonthLike(win.preset)
-        ? "Total net sales vs goal_net_sales_monthly."
-        : "Total net sales vs goal_net_sales_weekly.",
+        ? "Square POS net sales vs goal_net_sales_monthly."
+        : "Square POS net sales vs goal_net_sales_weekly.",
     }),
     metric({
       key: "orders",
@@ -240,141 +262,109 @@ export async function loadHealthScorecard(
   const cost: HealthMetric[] = [
     metric({
       key: "total_cost",
-      label: "Total cost (known)",
-      actual: totalKnownCost,
+      label: "Total cost (bank)",
+      actual: totalBankCost,
       goal: gTotal.value,
       status: statusFor(totalPace),
       pace: totalPace,
-      formatted: fmtDollars(totalKnownCost),
+      formatted: fmtDollars(totalBankCost),
       goalFormatted: fmtDollars(gTotal.value),
       goalKey: gTotal.key,
       rawGoal: gTotal.raw,
       lowerIsBetter: true,
-      deltaFormatted: deltaLabel(totalKnownCost, gTotal.value, true, "dollars"),
-      info: "Labor $ + Plaid operations spend. Excludes COGS until food-cost / inventory COGS is instrumented.",
+      deltaFormatted: deltaLabel(totalBankCost, gTotal.value, true, "dollars"),
+      info: "Sum of business bank outflows by taxonomy parent (same as Accounting). % of Square net sales shown on parent rows.",
+    }),
+    ...plaidCats
+      .filter((c) => (c.spend ?? 0) > 0)
+      .map((c) => {
+        const label = c.category_label || c.pfc_primary || "Uncategorized";
+        const spend = c.spend ?? 0;
+        const pct = pctOfSales(spend);
+        const slug = c.category_slug || c.category_id || label;
+        return metric({
+          key: `cost_cat_${slug}`,
+          label: `${label} · ${fmtPct(pct)} of sales`,
+          actual: spend,
+          goal: null,
+          status: "no-goal",
+          pace: null,
+          formatted: fmtDollars(spend),
+          goalFormatted: "—",
+          goalKey: null,
+          rawGoal: undefined,
+          lowerIsBetter: true,
+          info: `Bank spend in taxonomy parent "${label}". Matches Accounting filter for this category.`,
+        });
+      }),
+  ];
+
+  const ptPct = pctOfSales(ptLabor$);
+  const ftPct = pctOfSales(ftLabor$);
+  const totalRatesPct = pctOfSales(totalRatesLabor$);
+  const bankLaborPct = pctOfSales(bankLabor$);
+  const ptPace = paceFor(ptPct, goalPtLaborPct, true);
+  const totalRatesPace = paceFor(totalRatesPct, goalTotalLaborPct, true);
+  const bankLaborPace = paceFor(bankLabor$, gLabor$.value, true);
+
+  const laborMetrics: HealthMetric[] = [
+    metric({
+      key: "labor_pt_rates",
+      label: `Part-time (rates) · ${fmtPct(ptPct)}`,
+      actual: ptLabor$,
+      goal: null,
+      status: ptPct != null ? statusFor(ptPace) : "no-goal",
+      pace: ptPct != null ? ptPace : null,
+      formatted: fmtDollars(ptLabor$),
+      goalFormatted: "—",
+      goalKey: "goal_hourly_labor_pct_max",
+      rawGoal: goalRaw(config, "goal_hourly_labor_pct_max"),
+      lowerIsBetter: true,
+      deltaFormatted: ptPct != null ? deltaLabelPct(ptPct, goalPtLaborPct) : undefined,
+      info: "Hourly (part-time) labor $ from ADP rates × hours (vw_model_labor_daily.hourly_labor_cost).",
     }),
     metric({
-      key: "labor_cost",
-      label: "Labor cost",
-      actual: laborCost,
+      key: "labor_ft_rates",
+      label: `Full-time (rates) · ${fmtPct(ftPct)}`,
+      actual: ftLabor$,
+      goal: null,
+      status: "no-goal",
+      pace: null,
+      formatted: fmtDollars(ftLabor$),
+      goalFormatted: "—",
+      goalKey: null,
+      rawGoal: undefined,
+      lowerIsBetter: true,
+      info: "Full-time / salaried labor $ from rates (vw_model_labor_daily.fulltime_labor_cost).",
+    }),
+    metric({
+      key: "labor_total_rates",
+      label: `Total rates (PT+FT) · ${fmtPct(totalRatesPct)}`,
+      actual: totalRatesLabor$,
       goal: gLabor$.value,
-      status: statusFor(laborPace),
-      pace: laborPace,
-      formatted: fmtDollars(laborCost),
+      status: totalRatesPct != null ? statusFor(totalRatesPace) : "no-goal",
+      pace: totalRatesPct != null ? totalRatesPace : null,
+      formatted: fmtDollars(totalRatesLabor$),
       goalFormatted: fmtDollars(gLabor$.value),
       goalKey: gLabor$.key,
       rawGoal: gLabor$.raw,
       lowerIsBetter: true,
-      deltaFormatted: deltaLabel(laborCost, gLabor$.value, true, "dollars"),
-      info: "Total labor dollars (hourly + salaried) from vw_model_labor_daily.",
+      deltaFormatted: deltaLabel(totalRatesLabor$, gLabor$.value, true, "dollars"),
+      info: "PT + FT wage cost from ADP rates. Not the same as bank payroll cash.",
     }),
     metric({
-      key: "cogs",
-      label: "Cost of goods",
-      actual: null,
+      key: "labor_bank",
+      label: `Labor (bank) · ${fmtPct(bankLaborPct)}`,
+      actual: bankLabor$,
       goal: null,
-      status: "no-goal",
-      pace: null,
-      formatted: "—",
+      status: statusFor(bankLaborPace),
+      pace: bankLaborPace,
+      formatted: fmtDollars(bankLabor$),
       goalFormatted: "—",
       goalKey: null,
       rawGoal: undefined,
-      info: "Not instrumented yet — no silent placeholder. Follow-up when consumed COGS / food-cost lands.",
-    }),
-    metric({
-      key: "ops_cost",
-      label: "Operations / other",
-      actual: opsCost,
-      goal: gOps.value,
-      status: statusFor(opsPace),
-      pace: opsPace,
-      formatted: fmtDollars(opsCost),
-      goalFormatted: fmtDollars(gOps.value),
-      goalKey: gOps.key,
-      rawGoal: gOps.raw,
       lowerIsBetter: true,
-      deltaFormatted: deltaLabel(opsCost, gOps.value, true, "dollars"),
-      info: "Plaid bank outflows (PFC rollup) for the period — interim stand-in for ops/other until custom taxonomy (#160).",
-    }),
-  ];
-
-  const completedInfo =
-    completedView?.description ??
-    "Completed labor % unavailable — check vw_model_labor_daily.";
-  const blendedInfo =
-    blendedView?.description ??
-    "Blended labor % unavailable — check ADP schedule ingest.";
-  const completedDayTag =
-    laborFwd != null && laborFwd.hasCompleted
-      ? ` · ${laborFwd.completedDayCount} day${laborFwd.completedDayCount === 1 ? "" : "s"}`
-      : "";
-  const blendedDayTag =
-    laborFwd != null
-      ? ` · ${laborFwd.hasCompleted ? laborFwd.completedDayCount : 0}+${laborFwd.hasForward ? laborFwd.fwdDays : 0} days`
-      : "";
-  const laborMetrics: HealthMetric[] = [
-    metric({
-      key: `pt_labor_pct_${completedBasis}`,
-      label: `Part-time — completed${completedBasis === "paid" ? " (paid)" : ""}${completedDayTag}`,
-      actual: completedPtPct,
-      goal: goalPtLaborPct,
-      status: completedPtPct != null ? statusFor(ptLaborPace) : "no-goal",
-      pace: completedPtPct != null ? ptLaborPace : null,
-      formatted: fmtPct(completedPtPct),
-      goalFormatted: fmtPct(goalPtLaborPct),
-      goalKey: completedBasis === "wage" ? "goal_hourly_labor_pct_max" : null,
-      rawGoal: completedBasis === "wage" ? goalRaw(config, "goal_hourly_labor_pct_max") : undefined,
-      lowerIsBetter: true,
-      deltaFormatted:
-        completedPtPct != null ? deltaLabelPct(completedPtPct, goalPtLaborPct) : undefined,
-      info: completedInfo,
-    }),
-    metric({
-      key: `total_labor_pct_${completedBasis}`,
-      label: `Total (PT + FT) — completed${completedBasis === "paid" ? " (paid)" : ""}${completedDayTag}`,
-      actual: completedTotalPct,
-      goal: goalTotalLaborPct,
-      status: completedTotalPct != null ? statusFor(totalLaborPctPace) : "no-goal",
-      pace: completedTotalPct != null ? totalLaborPctPace : null,
-      formatted: fmtPct(completedTotalPct),
-      goalFormatted: fmtPct(goalTotalLaborPct),
-      goalKey: completedBasis === "wage" ? "goal_labor_pct_max" : null,
-      rawGoal: completedBasis === "wage" ? goalRaw(config, "goal_labor_pct_max") : undefined,
-      lowerIsBetter: true,
-      deltaFormatted:
-        completedTotalPct != null ? deltaLabelPct(completedTotalPct, goalTotalLaborPct) : undefined,
-      info: completedInfo,
-    }),
-    metric({
-      key: "pt_labor_pct_blended",
-      label: `Part-time — blended (schedule)${blendedDayTag}`,
-      actual: blendedPtPct,
-      goal: goalPtLaborPct,
-      status: blendedPtPct != null ? statusFor(blendedPtPace) : "no-goal",
-      pace: blendedPtPct != null ? blendedPtPace : null,
-      formatted: fmtPct(blendedPtPct),
-      goalFormatted: fmtPct(goalPtLaborPct),
-      goalKey: null,
-      rawGoal: undefined,
-      lowerIsBetter: true,
-      deltaFormatted: blendedPtPct != null ? deltaLabelPct(blendedPtPct, goalPtLaborPct) : undefined,
-      info: blendedInfo,
-    }),
-    metric({
-      key: "total_labor_pct_blended",
-      label: `Total (PT + FT) — blended (schedule)${blendedDayTag}`,
-      actual: blendedTotalPct,
-      goal: goalTotalLaborPct,
-      status: blendedTotalPct != null ? statusFor(blendedTotalPace) : "no-goal",
-      pace: blendedTotalPct != null ? blendedTotalPace : null,
-      formatted: fmtPct(blendedTotalPct),
-      goalFormatted: fmtPct(goalTotalLaborPct),
-      goalKey: null,
-      rawGoal: undefined,
-      lowerIsBetter: true,
-      deltaFormatted:
-        blendedTotalPct != null ? deltaLabelPct(blendedTotalPct, goalTotalLaborPct) : undefined,
-      info: blendedInfo,
+      info: "Bank payroll category spend — matches Cost / Accounting payroll parent for this period.",
     }),
   ];
 
@@ -415,9 +405,9 @@ export async function loadHealthScorecard(
   ];
 
   const groups: HealthGroup[] = [
-    { id: "finance", label: "Finance", href: "/accounting", metrics: finance },
-    { id: "top_line", label: "Top line", href: "/sales", metrics: topLine },
-    { id: "cost", label: "Cost (bottom line)", href: "/labor", metrics: cost },
+    { id: "finance", label: "Finance (bank)", href: "/accounting", metrics: finance },
+    { id: "top_line", label: "Sales (Square)", href: "/sales", metrics: topLine },
+    { id: "cost", label: "Cost (bank)", href: "/accounting", metrics: cost },
     { id: "labor", label: "Labor", href: "/labor", metrics: laborMetrics },
     { id: "quality", label: "Quality", href: "/order-quality", metrics: qualityMetrics },
     { id: "inventory", label: "Inventory", href: "/inventory", metrics: inventoryMetrics },
@@ -429,7 +419,9 @@ export async function loadHealthScorecard(
     metrics,
     groups,
     windowLabel: win.label,
-    overallStatus: rollupStatus(metrics.filter((m) => m.key !== "cogs").map((m) => m.status)),
+    overallStatus: rollupStatus(
+      metrics.filter((m) => m.status !== "no-goal").map((m) => m.status),
+    ),
   };
 }
 

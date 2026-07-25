@@ -160,10 +160,10 @@ flowchart TD
 
 | Screen | Reads (BQ `vw_*` / tables) | Write-backs |
 |---|---|---|
-| **Home** (Goal and Tracking) | labor/sales (`vw_model_labor_daily`), **Labor group** via `laborForwardSummary` (completed + projected PT/total % from schedule/forecast/wages), prep p95 (`vw_order_quality_daily.kds_p95_min`), bases at risk (`vw_inventory_base_runway`), goals (`store_config`) | Goals → `store_config` |
-| **Accounting** | Square net sales (`vw_model_labor_daily`), Plaid spend (`plaid_transactions`, `vw_plaid_spend_by_category_daily`), `plaid_items` | Plaid Link → Secret Manager access_token + `plaid_items` / `plaid_transactions` sync |
+| **Home** (Goal and Tracking) | labor/sales (`vw_model_labor_daily`), **Finance** bank in/out/cash flow (`vw_plaid_money_in_daily` + spend view, exclude-from-accounting), **Cost** taxonomy parents, **Labor** PT/FT/Total rates + bank payroll twin; prep p95; bases at risk; goals | Goals → `store_config` |
+| **Accounting** | Square net sales (`vw_model_labor_daily`), Plaid spend/in (`plaid_transactions`, spend + money-in views), `plaid_items`, taxonomy exclude | Plaid Link; category override; propose-rule; taxonomy exclude toggles |
 | **Sales** | `vw_model_labor_daily`, `square_item_daily` | — |
-| **Labor** | `vw_model_labor_daily` / `_weekly`, **`laborForwardSummary`** + **`?lens=wage\|paid\|blended`** (Wage / Paid payroll / Blended schedule) | — |
+| **Labor** | `vw_model_labor_daily` / `_weekly`, **`laborForwardSummary`** + **`?lens=wage\|paid\|blended`** (Home no longer uses lenses — #189; `/labor` page still does) | — |
 | **Forecast** | `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` | — |
 | **Order Quality** | `vw_order_quality_daily`, `vw_kds_order_quality_by_source_daily` | — |
 | **Payroll & People** | `vw_model_payroll_period` (+ per-review), `training_shifts` (tip exemptions), `adp_shifts` | `training_shifts` (batch tip exemptions + recompute), **recognition bonuses (new table)**, `employee_aliases` |

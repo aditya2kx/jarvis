@@ -42,7 +42,10 @@ import { Input } from "@/components/ui/input";
 import { formatDate, formatDollars, formatCents, formatNumber, formatPct } from "@/lib/format";
 import { formatBucket, type Grain } from "@/lib/filters/range";
 import { cn } from "@/lib/utils";
-import { filterTextOrMulti } from "@/lib/tables/column-filter";
+import {
+  facetedMultiOptions,
+  filterTextOrMulti,
+} from "@/lib/tables/column-filter";
 
 // Threshold coloring for numeric/pct/dollars columns (Figma: red/amber/green
 // on p95, % late, Days-left, wage-diff). `warn`/`bad` are in the same unit as
@@ -417,27 +420,8 @@ export function DataTable<TData>({
       const meta = col.meta as { filterVariant?: string } | undefined;
       if (meta?.filterVariant !== "multi") continue;
 
-      // Faceted options: values present after applying every OTHER column filter.
-      const vals = new Set<string>();
-      for (const row of rows) {
-        let ok = true;
-        for (const f of columnFilters) {
-          if (f.id === id) continue;
-          if (!filterTextOrMulti(row[f.id], f.value)) {
-            ok = false;
-            break;
-          }
-        }
-        if (!ok) continue;
-        const v = row[id];
-        vals.add(v == null || v === "" ? "" : String(v));
-      }
-      // Keep currently selected values visible even if they temporarily drop out.
       const selected = columnFilters.find((f) => f.id === id)?.value;
-      if (Array.isArray(selected)) {
-        for (const s of selected) vals.add(String(s));
-      }
-      map.set(id, [...vals].sort((a, b) => a.localeCompare(b)));
+      map.set(id, facetedMultiOptions(rows, id, columnFilters, selected));
     }
     return map;
   }, [columns, data, enableColumnFilters, columnFilters]);

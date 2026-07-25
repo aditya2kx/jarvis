@@ -198,6 +198,7 @@ export default async function OrderQualityPage({
                 basePath="/order-quality"
                 from={win.start}
                 to={win.end}
+                committed={win.preset === "custom"}
                 extraParams={{ onTime: String(onTime), source, grain, minPerItem: String(minPerItem) }}
               />
             ) : null}

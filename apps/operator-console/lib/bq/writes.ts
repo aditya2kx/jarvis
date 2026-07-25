@@ -552,6 +552,59 @@ export async function markPlaidTransactionsInternal(ids: string[]): Promise<numb
   return ids.length;
 }
 
+/** Operator override — null,null clears override (rule result restored on next reapply). */
+export async function setPlaidTransactionOverride(
+  transactionId: string,
+  overrideCategoryId: string | null,
+  overrideSubcategoryId: string | null,
+): Promise<void> {
+  await mutate(
+    `UPDATE ${fq("plaid_transactions")}
+     SET override_category_id = @override_category_id,
+         override_subcategory_id = @override_subcategory_id,
+         updated_at = CURRENT_TIMESTAMP()
+     WHERE transaction_id = @transaction_id`,
+    {
+      transaction_id: transactionId,
+      override_category_id: overrideCategoryId,
+      override_subcategory_id: overrideSubcategoryId,
+    },
+    {
+      override_category_id: "STRING",
+      override_subcategory_id: "STRING",
+    },
+  );
+}
+
+export async function setPlaidTransactionCategory(row: {
+  transaction_id: string;
+  category_id: string | null;
+  subcategory_id: string | null;
+  rule_id: string | null;
+}): Promise<void> {
+  await mutate(
+    `UPDATE ${fq("plaid_transactions")}
+     SET category_id = @category_id,
+         subcategory_id = @subcategory_id,
+         rule_id = @rule_id,
+         categorized_at = CURRENT_TIMESTAMP(),
+         updated_at = CURRENT_TIMESTAMP()
+     WHERE transaction_id = @transaction_id
+       AND override_category_id IS NULL`,
+    {
+      transaction_id: row.transaction_id,
+      category_id: row.category_id,
+      subcategory_id: row.subcategory_id,
+      rule_id: row.rule_id,
+    },
+    {
+      category_id: "STRING",
+      subcategory_id: "STRING",
+      rule_id: "STRING",
+    },
+  );
+}
+
 export interface PlaidAccountWrite {
   account_id: string;
   item_id: string;

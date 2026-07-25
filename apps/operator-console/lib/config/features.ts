@@ -8,7 +8,7 @@ export const FEATURES = {
   inventory: true,
   payroll: true,
   pipeline: true,
-  /** Issue #158 — Accounting page (Square in / Plaid out). */
+  /** Issue #158/#160 — Accounting page (linked bank feed only). */
   accounting: true,
   writeGoals: true,
   /** Legacy single-row training quick-add — superseded by Tip Exemptions editor (Issue #167). */

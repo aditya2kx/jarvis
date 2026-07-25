@@ -27,7 +27,7 @@ Calibration & known quirks (see also selectors/transactions.json):
       the trailing date is end_date + 1 (exclusive end). Don't infer the
       actual range from the filename; use the data inside.
 
-Status (2026-05-16): proven end-to-end with the Palmetto Superfoods account,
+Status (2026-05-16): proven end-to-end with the store Square account,
 55-day backfill (Mar 22 - May 15, 2026). 2,956 transactions parsed; sum of
 Total Collected matches the on-page summary exactly ($47,946.77).
 """
@@ -506,7 +506,7 @@ def parse_item_sales_csv(
             "payment_id": "zZq3pU...",
             "event_type": "Payment",
             "location": "Austin Mueller Lake",
-            "employee": "Lindsay Krause",
+            "employee": "Example, Staff",
             "channel": "Austin Mueller Lake",
             "line_seq": 0,                     # 0-based within natural-key group
         }

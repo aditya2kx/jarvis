@@ -11,7 +11,7 @@ Full design/decisions/build plan: [`docs/operator-console/`](../../docs/operator
 | Route | Purpose |
 |---|---|
 | `/home` | **Goal and Tracking** — net sales, PT + total labor %, prep p95, bases at risk |
-| `/accounting` | Square money in + Plaid money out (PFC categories interim) + Link/sync |
+| `/accounting` | Linked bank feed (money in/out/cash flow + Palmetto categories) with Square net sales context and $ / % toggle |
 | `/sales` `/labor` `/forecast` `/order-quality` | Performance drill-downs |
 | `/inventory` | Ordering + Base runway |
 | `/payroll` `/pipeline` | People + system |

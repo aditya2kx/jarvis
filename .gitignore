@@ -46,6 +46,10 @@ skills/user_model/data/
 *.mp4
 *.xlsx
 *.eml
+# Live Plaid taxonomy/rule seeds (#160) — merchant/brand patterns stay out of git.
+# Use PLAID_TAXONOMY_SEED_DIR or worktree-local path below (never commit CSVs).
+local/
+apps/operator-console/lib/plaid/taxonomy/seed/*.csv
 
 # Per-PR cost handoff scaffolding (local session briefs; ledgers + report.html stay tracked)
 metrics/pr_cost/*-brief.md

@@ -1,7 +1,7 @@
 {
   "_doc": "Calibrated selectors for skills/adp_run_automation/compensation_backend.py against ADP RUN's Reports > My saved custom reports > 'Earnings and Hours V1' report. Produces an .xlsx with one row per paycheck-earning-line, from which we infer current wage rate per employee.",
   "last_verified": "2026-05-16",
-  "verified_by": "Cursor AI agent driving user-playwright MCP, fresh from-scratch flow against Palmetto Superfoods account.",
+  "verified_by": "Cursor AI agent driving user-playwright MCP, fresh from-scratch flow against store ADP account.",
   "discovery_path": [
     "Originally planned to scrape Employees > Compensation (per-employee detail page). Would have required iterating ~12-14 employees x 1 page each.",
     "User redirected: Reports > scroll to 'My saved custom reports' > 'Earnings and Hours V1' custom report.",
@@ -56,7 +56,10 @@
       },
       "people_in_report_radio": {
         "radiogroup_name": "People in this report",
-        "options": ["All", "Let me select"],
+        "options": [
+          "All",
+          "Let me select"
+        ],
         "default": "All",
         "notes": "Always 'All' for BHAGA -- we want every employee's current rate."
       }
@@ -107,13 +110,15 @@
     "filename_pattern": "Earnings and Hours V1.xlsx (or the saved-report name verbatim)",
     "browser_mcp_renames_to": "Earnings-and-Hours-V1.xlsx (spaces replaced with -)",
     "save_directory": "extracted/downloads/",
-    "sheets": ["Sheet"],
+    "sheets": [
+      "Sheet"
+    ],
     "metadata_rows": {
       "row_count": 5,
       "shape": "Rows 1-5 are metadata (Report title, Company, IID, DateRange, Generated timestamp). Row 6 is the column header. Rows 7+ are data.",
       "rows": [
         "Row 1: Report title (e.g. 'Earnings and Hours V1')",
-        "Row 2: 'Company: {LEGAL ENTITY NAME}' (e.g. AK JUICY BOWLS LLC for Palmetto)",
+        "Row 2: 'Company: {LEGAL ENTITY NAME}' (legal name from store profile / BQ \u2014 never hardcode in git)",
         "Row 3: 'IID: {ADP_INSTANCE_ID}'",
         "Row 4: 'DateRange : M/D/YYYY to M/D/YYYY' (note the space-colon-space before the range)",
         "Row 5: 'Report Generated On: MM/DD/YYYY HH:MM'"
@@ -149,37 +154,19 @@
     "step1_filter_to_hourly_rows": "Keep rows where Description in {'Regular', 'Overtime'} AND Hours > 0 AND Hourly Earning Rate > 0.",
     "step2_separate_overtime_rate": "Overtime rate is typically 1.5x Regular. We track BOTH but the canonical wage_rate_dollars uses Regular only.",
     "step3_pick_most_recent": "Sort by Payroll Check Date desc. Use the rate from the most recent Regular row.",
-    "step4_flag_multi_rate": "If multiple DISTINCT Regular rates seen for the same employee in the window, set multi_rate=True so the orchestrator can alert. (Calibrated 2026-05-16 on Palmetto: zero multi-rate cases across all 12 employees.)",
-    "step5_salaried_handling": "If an employee has ZERO Regular rows with hours>0 across the entire 2-month window AND has non-zero amounts under other Descriptions, mark is_salaried=True with wage_rate_dollars=null. The orchestrator/labor-cost calc must exclude these employees from labor% (and they're typically also in store_profile.excluded_from_tip_pool_and_labor_pct).",
-    "step6_palmetto_specifics": "Lindsay Krause IS paid hourly at $25/hr in this account (not salaried), so is_salaried=False for her too. Exclusion from labor% is by NAME via the store profile's excluded_from_tip_pool_and_labor_pct list, NOT by the salaried flag."
+    "step4_flag_multi_rate": "If multiple DISTINCT Regular rates seen for the same employee in the window, set multi_rate=True so the orchestrator can alert.",
+    "step5_salaried_handling": "If an employee has ZERO Regular rows with hours>0 across the entire 2-month window AND has non-zero amounts under other Descriptions, mark is_salaried=True with wage_rate_dollars=null. Tip/labor exclusions use BQ store_config excluded_from_tip_pool.",
+    "step6_exclusion_note": "Some staff are tip/labor-excluded by canonical name in BQ store_config (excluded_from_tip_pool), NOT by the salaried flag \u2014 even when paid hourly."
   },
   "employee_roster_calibration_sample": {
-    "_doc": "Snapshot of roster on 2026-05-16. NOT a stable list -- use as parser sanity check only. Production should NOT hardcode names.",
-    "employees_with_rates": {
-      "Alvarez, Sebastian": 15.25,
-      "Browning, Skyler": 15.25,
-      "Garcia, Jacob": 15.25,
-      "Guerrero, Amy": 15.25,
-      "Johnson, Dolce": 15.25,
-      "Krause, Lindsay": 25.00,
-      "Latham, Aubree N": 15.25,
-      "Majdinasab, Tina": 15.25,
-      "Pascone, Kayah A": 15.25,
-      "Saldana, Daniel": 15.25,
-      "Steele, Isabel": 15.25,
-      "Urrutia, Emely": 15.25
-    },
+    "_doc": "Do not commit real employee names or wages. Production roster/rates live in BQ.",
+    "employees_with_rates": {},
     "notes": [
-      "Earnings report uses 'LastName, FirstName' format (comma-separated) whereas the Timecard report uses 'LastName FirstName' (space-separated). The two backends produce DIFFERENT raw_name spellings for the same person.",
-      "When joining wages with shift hours in the model sheet, normalize via skills/adp_run_automation/name_utils.canonicalize_adp_name() (TODO: create this helper, or apply the same employee_aliases map to both forms).",
-      "Active roster is 12 here vs 14 in the Timecard export. The Timecard export over-covers (selected pay periods reach back to Mar 9 which is before some employees' first paycheck in the wages window). Don't assume row count parity."
+      "Earnings report uses 'LastName, FirstName'; Timecard uses 'LastName FirstName'.",
+      "Normalize via BQ employee_aliases when joining wages with shift hours."
     ]
   },
   "calibration_session_notes": [
-    "2026-05-16 12:30 ET: Live navigation, Cursor AI driving user-playwright. ADP recognized prior session cookies (Keychain-resolved password).",
-    "2026-05-16 12:32 ET: User intervened with better navigation -- went straight to Reports > My saved custom reports > Earnings and Hours V1 (we were about to start clicking through the Employees module instead).",
-    "2026-05-16 12:33 ET: Set date range 03/22/2026 to 05/15/2026 (BHAGA M1 backfill window). Clicked Preview report; saw the 8-column report shape and confirmed it has everything we need.",
-    "2026-05-16 12:35 ET: Downloaded Excel via Download > Excel (.xlsx) > confirmation dialog > Download report. File: Earnings-and-Hours-V1.xlsx, 10516 bytes, 122 rows (5 metadata + 1 header + 116 data).",
-    "2026-05-16 12:36 ET: Parsed XLSX with openpyxl. 12 employees, descriptions = {Regular: 57, CC Tips Owed: 25, Cash tips: 16, Misc reimbursement: 12, Overtime: 5, Bonus: 1}. All 11 line-staff @ $15.25/hr; Lindsay Krause @ $25/hr (hourly, not salaried)."
+    "2026-05-16: Live Earnings and Hours V1 calibration completed. Per-employee names/wages omitted from git \u2014 see BQ."
   ]
 }

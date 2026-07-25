@@ -18,7 +18,7 @@ What this catches:
 
 Assumes Palmetto-style setup:
     * Store does not take cash → ALL Square tips are card tips.
-    * Manager (Lindsay Krause) is excluded from the tip pool.
+    * Configured tip-pool exclusions (BQ excluded_from_tip_pool) apply.
     * Pay periods are biweekly. The script discovers actual period bounds
       from the data; it does not hardcode the schedule.
 

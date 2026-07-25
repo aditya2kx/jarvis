@@ -139,7 +139,7 @@
     "scraped_at": "Wall-clock UTC ISO timestamp when the orchestrator ran."
   },
   "calibration_session_notes": [
-    "2026-05-16: Calibrated against Palmetto Superfoods Square account. Logged in with adi@mypalmetto.co (Keychain: jarvis-square-palmetto).",
+    "2026-05-16: Calibrated against store Square account (operator Keychain credential).",
     "2026-05-16: Validated end-to-end with 55-day backfill (Mar 22 - May 15, 2026): 2,956 transactions, $47,946.77 Total Collected, $2,527.21 in tips, 6 refunds. CSV totals match on-page summary exactly.",
     "2026-05-16: Account display TZ is ET but shop is in Austin (CT). All downstream date logic MUST convert to America/Chicago before bucketing by day."
   ]

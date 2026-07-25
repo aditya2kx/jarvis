@@ -202,6 +202,7 @@ export default async function LaborPage({
                 basePath="/labor"
                 from={win.start}
                 to={win.end}
+                committed={win.preset === "custom"}
                 extraParams={{ grain, lens }}
               />
             ) : null}

@@ -17,6 +17,8 @@ export interface Series {
   label: string;
   color?: string;
   dashed?: boolean;
+  /** When set, overrides BarChartCard `stacked` for this series (Recharts stackId). */
+  stackId?: string;
 }
 
 // Dashed goal line: the only "computed" thing here is a visual comparison of

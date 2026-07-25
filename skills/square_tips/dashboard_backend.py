@@ -12,7 +12,7 @@ that returns a deterministic step-by-step playbook for the AI agent driving the
 functions that work standalone (for testing + post-Playwright work).
 
 Status (2026-04-19): proven from-scratch end-to-end on app.squareup.com Sales
-Summary Beta with the Palmetto Superfoods corporate account. See
+Summary Beta with the store Square corporate account. See
 `skills/square_tips/selectors/dashboard.json` for calibrated selectors with
 last_verified date.
 

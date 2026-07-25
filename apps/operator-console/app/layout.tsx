@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Palmetto, Texas — Operator Console",
-  description: "Operator console for Palmetto Superfoods — replaces the Grafana dashboard.",
+  description: "Operator console — replaces the Grafana dashboard.",
 };
 
 export default function RootLayout({
@@ -28,8 +28,17 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        {/* Apply saved theme before paint to avoid a light flash (default = dark). */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem('oc_theme');if(t==='light')document.documentElement.classList.remove('dark');else document.documentElement.classList.add('dark');}catch(e){document.documentElement.classList.add('dark');}})();`,
+          }}
+        />
+      </head>
       <body className="min-h-full">
         <TooltipProvider>
           <div className="flex h-screen overflow-hidden">

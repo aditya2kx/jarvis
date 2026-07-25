@@ -401,7 +401,7 @@ server's local tz.
   → build container → push to Artifact Registry → `gcloud run deploy operator-console
   --image … --region … --no-allow-unauthenticated --iap` → `gcloud iap web
   add-iam-policy-binding --resource-type=cloud-run --service=operator-console
-  --member=user:adi@mypalmetto.co --role=roles/iap.httpsResourceAccessor` (repeated per
+  --member=user:<operator-workspace-email> --role=roles/iap.httpsResourceAccessor` (repeated per
   operator account).
 - **Cloud Run direct IAP, reversing the 2026-07-04 "no IAP" pivot.** That pivot hit the
   Google-managed/internal OAuth brand flow (`gcloud iap oauth-brands`), which needs a Workspace

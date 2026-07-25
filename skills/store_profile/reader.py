@@ -17,16 +17,16 @@ palmetto.json shape closely so callers can migrate field-by-field:
 
   {
     "store_id":             "palmetto",
-    "display_name":         "Palmetto Superfoods (Austin)",
-    "legal_entity":         "AK JUICY BOWLS LLC",
+    "display_name":         "Austin",
+    "legal_entity":         "",  # from BQ store_config / private config — never commit real LLC
     "google_account_key":   "palmetto",
     "timezone":             {"shop_tz": "America/Chicago", ...},
     "google_sheets":        {<bhaga_model spreadsheet ids>},
     "employees": {
       "aliases":            {"raw_name": "canonical_name", ...},
       "roster":             [{"canonical_name": ..., "aliases": [...], "notes": ...}, ...],
-      "excluded_from_tip_pool_and_labor_pct": ["Krause, Lindsay"],
-      "training_excluded":  {"Flores, Juan": "2026-05-16", ...},
+      "excluded_from_tip_pool_and_labor_pct": ["Example, Manager"],
+      "training_excluded":  {"Example, Staff": "2026-05-16", ...},
     },
     ...
   }
@@ -212,8 +212,8 @@ def load_exclusions(store: str = "palmetto") -> dict:
     """Return the active exclusion state from BQ / store_config (BQ-canonical).
 
     {
-      "permanent": ["Krause, Lindsay", ...],
-      "training":  {"Flores, Juan": "2026-05-16", ...},
+      "permanent": ["Example, Manager", ...],
+      "training":  {"Example, Staff": "2026-05-16", ...},
     }
 
     Reads from BQ via model_inputs.read_exclusions (store_config keys).

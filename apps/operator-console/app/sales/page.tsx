@@ -76,7 +76,13 @@ export default async function SalesPage({
               extraParams={{ grain }}
             />
             {showCustomPicker ? (
-              <DateRangePicker basePath="/sales" from={win.start} to={win.end} extraParams={{ grain }} />
+              <DateRangePicker
+                basePath="/sales"
+                from={win.start}
+                to={win.end}
+                committed={win.preset === "custom"}
+                extraParams={{ grain }}
+              />
             ) : null}
           </>
         }

@@ -1057,7 +1057,19 @@ export interface PlaidTransactionRow {
   account_mask: string | null;
   account_type: string | null;
   payment_channel: string | null;
+  counterparty_name: string | null;
   is_internal: boolean | null;
+  category_id: string | null;
+  subcategory_id: string | null;
+  rule_id: string | null;
+  override_category_id: string | null;
+  override_subcategory_id: string | null;
+  category_label: string | null;
+  subcategory_label: string | null;
+  category_definition: string | null;
+  rule_pattern: string | null;
+  rule_operator: string | null;
+  rule_priority: number | null;
 }
 
 export function plaidTransactions(win: DateWindow): Promise<PlaidTransactionRow[]> {
@@ -1076,9 +1088,26 @@ export function plaidTransactions(win: DateWindow): Promise<PlaidTransactionRow[
        a.mask AS account_mask,
        a.type AS account_type,
        JSON_VALUE(t.raw_json, '$.payment_channel') AS payment_channel,
-       IFNULL(t.is_internal, FALSE) AS is_internal
+       JSON_VALUE(t.raw_json, '$.counterparties[0].name') AS counterparty_name,
+       IFNULL(t.is_internal, FALSE) AS is_internal,
+       t.category_id,
+       t.subcategory_id,
+       t.rule_id,
+       t.override_category_id,
+       t.override_subcategory_id,
+       COALESCE(oc.label, c.label) AS category_label,
+       COALESCE(os.label, s.label) AS subcategory_label,
+       COALESCE(oc.definition, c.definition) AS category_definition,
+       r.match_pattern AS rule_pattern,
+       r.match_operator AS rule_operator,
+       r.priority AS rule_priority
      FROM ${fq("plaid_transactions")} t
      LEFT JOIN ${fq("plaid_accounts")} a ON a.account_id = t.account_id
+     LEFT JOIN ${fq("plaid_taxonomy_nodes")} c ON c.id = t.category_id
+     LEFT JOIN ${fq("plaid_taxonomy_nodes")} s ON s.id = t.subcategory_id
+     LEFT JOIN ${fq("plaid_taxonomy_nodes")} oc ON oc.id = t.override_category_id
+     LEFT JOIN ${fq("plaid_taxonomy_nodes")} os ON os.id = t.override_subcategory_id
+     LEFT JOIN ${fq("plaid_category_rules")} r ON r.id = t.rule_id
      WHERE t.date BETWEEN @start AND @end
      ORDER BY t.date DESC, t.transaction_id
      LIMIT 5000`,
@@ -1088,17 +1117,64 @@ export function plaidTransactions(win: DateWindow): Promise<PlaidTransactionRow[
 
 export interface PlaidSpendCategoryRow {
   pfc_primary: string;
+  category_label?: string;
   spend: number;
   txn_count: number;
 }
 
 export function plaidSpendByCategory(win: DateWindow): Promise<PlaidSpendCategoryRow[]> {
   return q<PlaidSpendCategoryRow>(
-    `SELECT pfc_primary, SUM(spend) AS spend, SUM(txn_count) AS txn_count
+    `SELECT
+       COALESCE(category_label, pfc_primary, 'Uncategorized') AS pfc_primary,
+       COALESCE(category_label, pfc_primary, 'Uncategorized') AS category_label,
+       SUM(spend) AS spend,
+       SUM(txn_count) AS txn_count
      FROM ${fq("vw_plaid_spend_by_category_daily")}
      WHERE date BETWEEN @start AND @end
-     GROUP BY pfc_primary
+     GROUP BY 1, 2
      ORDER BY spend DESC`,
     { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+export interface TaxonomyNodeRow {
+  id: string;
+  parent_id: string | null;
+  slug: string;
+  label: string;
+  definition: string | null;
+  enabled: boolean | null;
+  sort_order: number | null;
+}
+
+export function plaidTaxonomyNodes(): Promise<TaxonomyNodeRow[]> {
+  return q<TaxonomyNodeRow>(
+    `SELECT id, parent_id, slug, label, definition, enabled, sort_order
+     FROM ${fq("plaid_taxonomy_nodes")}
+     WHERE IFNULL(enabled, TRUE) IS TRUE
+     ORDER BY sort_order, label`,
+  );
+}
+
+export interface CategoryRuleRow {
+  id: string;
+  priority: number;
+  match_field: string;
+  match_operator: string;
+  match_pattern: string;
+  amount_sign: string | null;
+  category_id: string;
+  subcategory_id: string | null;
+  confidence: string | null;
+  enabled: boolean | null;
+  notes: string | null;
+}
+
+export function plaidCategoryRules(): Promise<CategoryRuleRow[]> {
+  return q<CategoryRuleRow>(
+    `SELECT id, priority, match_field, match_operator, match_pattern,
+            amount_sign, category_id, subcategory_id, confidence, enabled, notes
+     FROM ${fq("plaid_category_rules")}
+     ORDER BY priority, id`,
   );
 }

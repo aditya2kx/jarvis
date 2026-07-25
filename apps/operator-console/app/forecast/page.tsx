@@ -196,7 +196,13 @@ export default async function ForecastPage({
               extraParams={{ metric, grain }}
             />
             {showCustomPicker ? (
-              <DateRangePicker basePath="/forecast" from={win.start} to={win.end} extraParams={{ metric, grain }} />
+              <DateRangePicker
+                basePath="/forecast"
+                from={win.start}
+                to={win.end}
+                committed={win.preset === "custom"}
+                extraParams={{ metric, grain }}
+              />
             ) : null}
             {mapePct != null ? (
               <Badge variant={mapePct <= 15 ? "default" : mapePct <= 30 ? "secondary" : "destructive"}>

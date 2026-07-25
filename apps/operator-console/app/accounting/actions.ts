@@ -17,6 +17,7 @@ import {
   deletePlaidTransactions,
   markPlaidTransactionsInternal,
   setPlaidTransactionInternal,
+  setPlaidTransactionOverride,
   updatePlaidCursor,
   upsertPlaidAccount,
   upsertPlaidItem,
@@ -25,6 +26,8 @@ import {
 } from "@/lib/bq/writes";
 import { plaidAccountsForItem, plaidItems, plaidTxnHintsForItem } from "@/lib/bq/queries";
 import { suggestInternal } from "@/lib/plaid/internal";
+import { reapplyPlaidCategories } from "@/lib/plaid/reapply-categories";
+import { mutate } from "@/lib/bq/client";
 
 /** Production Plaid rejects emails in user.client_user_id (INVALID_FIELD). */
 function plaidClientUserId(email: string): string {
@@ -64,14 +67,19 @@ async function drainSync(itemId: string, accessToken: string, startCursor: strin
   let added = 0;
   let modified = 0;
   let removed = 0;
+  const touchedIds: string[] = [];
   for (;;) {
     const page = await transactionsSync(accessToken, cursor || null);
     for (const t of page.added) {
-      await upsertPlaidTransaction(txnToWrite(t, itemId));
+      const row = txnToWrite(t, itemId);
+      await upsertPlaidTransaction(row);
+      touchedIds.push(row.transaction_id);
       added += 1;
     }
     for (const t of page.modified) {
-      await upsertPlaidTransaction(txnToWrite(t, itemId));
+      const row = txnToWrite(t, itemId);
+      await upsertPlaidTransaction(row);
+      touchedIds.push(row.transaction_id);
       modified += 1;
     }
     const ids = page.removed.map((r) => r.transaction_id).filter((id): id is string => !!id);
@@ -131,6 +139,22 @@ async function drainSync(itemId: string, accessToken: string, startCursor: strin
       `plaid suggestInternal failed item=${itemId}: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
+  // Palmetto taxonomy (#160) — categorize touched rows (never clears overrides).
+  try {
+    const cat = await reapplyPlaidCategories({
+      itemId,
+      transactionIds: touchedIds.length ? touchedIds : undefined,
+    });
+    if (cat.updated) {
+      console.info(
+        `plaid categorize updated=${cat.updated} unchanged=${cat.unchanged} item=${itemId}`,
+      );
+    }
+  } catch (e) {
+    console.error(
+      `plaid categorize failed item=${itemId}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
   return { added, modified, removed, cursor };
 }
 
@@ -185,4 +209,144 @@ export async function setPlaidInternalAction(
   await operatorEmail();
   await setPlaidTransactionInternal(transactionId, isInternal);
   revalidatePath("/accounting");
+}
+
+export async function reapplyPlaidCategoriesAction(): Promise<{
+  updated: number;
+  unchanged: number;
+  skipped_override: number;
+}> {
+  if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
+  await operatorEmail();
+  const result = await reapplyPlaidCategories();
+  revalidatePath("/accounting");
+  revalidatePath("/home");
+  return result;
+}
+
+export async function setTxnCategoryOverrideAction(
+  transactionId: string,
+  categoryId: string | null,
+  subcategoryId: string | null,
+): Promise<void> {
+  if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
+  await operatorEmail();
+  await setPlaidTransactionOverride(transactionId, categoryId, subcategoryId);
+  // If clearing override, restore rule result immediately.
+  if (!categoryId) {
+    await reapplyPlaidCategories({ transactionIds: [transactionId] });
+  } else {
+    // Mirror override into display columns for immediate UI consistency.
+    await mutate(
+      `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_transactions\`
+       SET category_id = @category_id,
+           subcategory_id = @subcategory_id,
+           rule_id = NULL,
+           categorized_at = CURRENT_TIMESTAMP(),
+           updated_at = CURRENT_TIMESTAMP()
+       WHERE transaction_id = @transaction_id`,
+      {
+        transaction_id: transactionId,
+        category_id: categoryId,
+        subcategory_id: subcategoryId,
+      },
+      { category_id: "STRING", subcategory_id: "STRING" },
+    );
+  }
+  revalidatePath("/accounting");
+}
+
+export async function upsertTaxonomyNodeAction(node: {
+  id: string;
+  parent_id: string | null;
+  slug: string;
+  label: string;
+  definition?: string | null;
+  enabled?: boolean;
+}): Promise<void> {
+  if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
+  await operatorEmail();
+  await mutate(
+    `MERGE \`jarvis-bhaga-prod.bhaga.plaid_taxonomy_nodes\` T
+     USING (SELECT @id AS id) S
+     ON T.id = S.id
+     WHEN MATCHED THEN UPDATE SET
+       parent_id = @parent_id, slug = @slug, label = @label,
+       definition = @definition, enabled = @enabled, updated_at = CURRENT_TIMESTAMP()
+     WHEN NOT MATCHED THEN INSERT (
+       id, parent_id, slug, label, definition, enabled, sort_order, updated_at
+     ) VALUES (
+       @id, @parent_id, @slug, @label, @definition, @enabled, 999, CURRENT_TIMESTAMP()
+     )`,
+    {
+      id: node.id,
+      parent_id: node.parent_id,
+      slug: node.slug,
+      label: node.label,
+      definition: node.definition ?? null,
+      enabled: node.enabled !== false,
+    },
+    {
+      parent_id: "STRING",
+      definition: "STRING",
+      enabled: "BOOL",
+    },
+  );
+  revalidatePath("/accounting");
+}
+
+export async function setTaxonomyNodeEnabledAction(
+  id: string,
+  enabled: boolean,
+): Promise<void> {
+  if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
+  await operatorEmail();
+  await mutate(
+    `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_taxonomy_nodes\`
+     SET enabled = @enabled, updated_at = CURRENT_TIMESTAMP()
+     WHERE id = @id`,
+    { id, enabled },
+    { enabled: "BOOL" },
+  );
+  revalidatePath("/accounting");
+}
+
+export async function setCategoryRuleEnabledAction(
+  id: string,
+  enabled: boolean,
+): Promise<void> {
+  if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
+  await operatorEmail();
+  await mutate(
+    `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_category_rules\`
+     SET enabled = @enabled, updated_at = CURRENT_TIMESTAMP()
+     WHERE id = @id`,
+    { id, enabled },
+    { enabled: "BOOL" },
+  );
+  revalidatePath("/accounting");
+}
+
+export async function dryRunRuleAction(ruleId: string): Promise<number> {
+  await operatorEmail();
+  const rows = await (
+    await import("@/lib/bq/client")
+  ).q<{ n: number }>(
+    `WITH r AS (
+       SELECT match_pattern, match_operator, amount_sign
+       FROM \`jarvis-bhaga-prod.bhaga.plaid_category_rules\`
+       WHERE id = @id
+     )
+     SELECT COUNT(*) AS n
+     FROM \`jarvis-bhaga-prod.bhaga.plaid_transactions\` t, r
+     WHERE STRPOS(LOWER(CONCAT(IFNULL(t.name,''),' ',IFNULL(t.merchant_name,''))),
+                  LOWER(r.match_pattern)) > 0
+       AND (
+         r.amount_sign IS NULL OR r.amount_sign = 'any'
+         OR (r.amount_sign = 'positive' AND t.amount > 0)
+         OR (r.amount_sign = 'negative' AND t.amount < 0)
+       )`,
+    { id: ruleId },
+  );
+  return Number(rows[0]?.n ?? 0);
 }

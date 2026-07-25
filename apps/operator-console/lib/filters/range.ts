@@ -269,3 +269,18 @@ export function formatBucket(value: string | Date | null | undefined, grain: Gra
   const dayLabel = `${month} ${day}`;
   return grain === "week" ? `Wk of ${dayLabel}` : dayLabel;
 }
+
+/** Client-side mirror of `bucketSql` — ISO date truncated to day / week(Mon) / month. */
+export function truncateToGrain(isoDate: string, grain: Grain): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(isoDate));
+  if (!m) return String(isoDate).slice(0, 10);
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (grain === "day") return `${m[1]}-${m[2]}-${m[3]}`;
+  if (grain === "month") return `${m[1]}-${m[2]}-01`;
+  const utc = new Date(Date.UTC(y, mo - 1, d));
+  const daysSinceMonday = (utc.getUTCDay() + 6) % 7;
+  utc.setUTCDate(utc.getUTCDate() - daysSinceMonday);
+  return utc.toISOString().slice(0, 10);
+}

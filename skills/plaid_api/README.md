@@ -36,6 +36,27 @@ print(sync_item('palmetto', '<item_id>'))
 "
 ```
 
+## Taxonomy seed + reapply (Issue #160)
+
+```bash
+BHAGA_DATASTORE=bigquery python3 -c "
+from skills.plaid_api.taxonomy_seed import seed_taxonomy, extend_corpus_rules
+print(seed_taxonomy(dry_run=False))
+print(extend_corpus_rules(dry_run=False))
+"
+BHAGA_DATASTORE=bigquery python3 -c "
+from google.cloud import bigquery
+from skills.plaid_api.categorize import reapply_categories
+print(reapply_categories(bigquery.Client(project='jarvis-bhaga-prod')))
+"
+```
+
+Live merchant/brand seed CSVs are **not in git** — set `PLAID_TAXONOMY_SEED_DIR`
+(or use gitignored `local/plaid-taxonomy-seed/`). See
+`apps/operator-console/lib/plaid/taxonomy/seed/README.md`.
+`sync_item` categorizes upserted rows after suggestInternal (never clears overrides).
+
+
 ## Purge Item (sandbox retirement)
 
 ```bash
@@ -52,4 +73,7 @@ print(purge_item('palmetto', '<item_id>', dry_run=False))  # DELETE txns then it
 |------|------|
 | `auth.py` | client_id/secret + per-item access_token |
 | `client.py` | link/token, exchange, transactions/sync |
-| `sync.py` | cursor drain → BQ MERGE/DELETE; `purge_item` for sandbox retirement |
+| `sync.py` | cursor drain → BQ MERGE/DELETE; categorize upserts; `purge_item` |
+| `category_rules.py` | Pure rule match (priority / amount_sign) |
+| `categorize.py` | Load rules from BQ + reapply to txns |
+| `taxonomy_seed.py` | Copilot CSV → taxonomy nodes + rules |

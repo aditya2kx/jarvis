@@ -1,7 +1,7 @@
 {
   "_doc": "Calibrated selectors for skills/adp_run_automation/shift_backend.py against ADP RUN's Reports > Time reports > Timecard report. Produces an .xlsx export with one row per punch (split-shift aware), covering all employees across selected pay periods.",
   "last_verified": "2026-05-16",
-  "verified_by": "Cursor AI agent driving user-playwright MCP, fresh from-scratch flow against Palmetto Superfoods account.",
+  "verified_by": "Cursor AI agent driving user-playwright MCP, fresh from-scratch flow against store ADP account.",
   "discovery_path": [
     "Initially navigated to Time > Timecards (modal opens with per-employee, per-pay-period UI). Single-employee-at-a-time, would have required iterating ~14 employees x N pay periods.",
     "User redirected: opened Reports > Single reports modal > expanded 'Time reports' category.",
@@ -77,7 +77,10 @@
       },
       "format": {
         "combobox_aria_pattern": "Format {Page break after each timecard|Continuous}",
-        "options": ["Page break after each timecard", "Continuous"],
+        "options": [
+          "Page break after each timecard",
+          "Continuous"
+        ],
         "recommended": "Continuous",
         "notes": "Format affects HTML rendering for print. Does NOT affect the Excel export (both options export the same Details sheet shape). Choose Continuous so the inline HTML render is simpler if you ever need to fall back to DOM scraping."
       }
@@ -101,7 +104,10 @@
     "filename_pattern": "Timecard .xlsx  (NOTE: has a trailing space in the original filename!)",
     "browser_mcp_renames_to": "Timecard-.xlsx  (trailing space replaced with -)",
     "save_directory": "extracted/downloads/",
-    "sheets": ["Summary", "Details"],
+    "sheets": [
+      "Summary",
+      "Details"
+    ],
     "summary_sheet": {
       "shape": "Repeating blocks. Each block: row of column headers ('Employee Name', 'Pay Period', 'Date Range', 'Total Paid Hours') + 1 data row, then row of punch column headers ('Date', 'Start Work', 'End Work', 'Regular', 'Overtime', 'Doubletime', 'Details', 'Notes') + N punch rows, then a blank separator row. One block per (employee, pay_period) combination.",
       "notes": "Harder to parse than Details sheet. Skip it -- parse Details only."
@@ -128,34 +134,18 @@
       "hours_format": "'H:MM' notation (HOURS:MINUTES, NOT decimal). E.g. '4:09' means 4 hours 9 minutes = 4.15 decimal hours.",
       "empty_cells": "Blank string '' or None. Overtime/Doubletime/Details/Notes are empty for the vast majority of rows.",
       "pay_period_format": "'YYYY-MM-DD to YYYY-MM-DD'  (date_range column appears unused, always empty).",
-      "open_shift_handling": "Open shifts (employee currently clocked in, no End Work) are EXCLUDED from the Excel export. Confirmed 2026-05-16: a Sebastian Alvarez open punch at 10:01 AM visible in the Timecards UI did NOT appear in the exported Details sheet. Implication: schedule daily refresh AFTER all employees have clocked out. T-1 daily refresh is safe.",
+      "open_shift_handling": "Open shifts (employee currently clocked in, no End Work) are EXCLUDED from the Excel export. Confirmed 2026-05-16: an open punch visible in the Timecards UI did NOT appear in the exported Details sheet. Implication: schedule daily refresh AFTER all employees have clocked out. T-1 daily refresh is safe.",
       "timezone": "All times are in the shop's local timezone (no TZ stored in the file). For Palmetto Austin this is America/Chicago. Unlike Square (which exports in account TZ regardless of shop), ADP times match the punch device's TZ which IS the shop TZ.",
       "row_count_calibration": "Calibration sample (5 pay periods, 14 employees, Mar 9 - May 16 2026): 606 data rows. Roughly 10-15 punches per employee per pay period."
     }
   },
   "employee_roster_calibration_sample": {
-    "_doc": "Snapshot of roster on 2026-05-16. NOT a stable list -- people join/leave. Used only to spot-check the parser; production code should NOT hardcode names.",
-    "employees": [
-      "Krause Lindsay",
-      "Pascone Kayah A",
-      "Garcia Jacob",
-      "Johnson Dolce",
-      "Saldana Daniel",
-      "Alvarez Sebastian",
-      "Browning Skyler",
-      "Guerrero Amy",
-      "Majdinasab Tina",
-      "Johnson Dolce J",
-      "Steele Isabel",
-      "Urrutia Emely",
-      "Flores Juan",
-      "Latham Aubree N"
-    ],
+    "_doc": "Do not commit real employee names. Production roster lives in BQ employee_aliases.",
+    "employees": [],
     "known_aliases": {
-      "_doc": "Some employees appear under multiple name spellings as ADP records were edited mid-period. The parser should normalize via this map. SOURCE OF TRUTH for production should be agents/bhaga/knowledge-base/store-profiles/austin.json (employee_aliases section).",
-      "Johnson Dolce J": "Johnson Dolce"
+      "_doc": "Aliases live in BQ \u2014 not in git."
     },
-    "excluded_from_tip_pool_and_labor_pct": ["Krause Lindsay"]
+    "excluded_from_tip_pool_and_labor_pct": []
   },
   "calibration_session_notes": [
     "2026-05-16 11:43 ET: Live navigation, Cursor AI driving user-playwright. ADP recognized prior session cookies, asked only for password (Keychain-resolved).",

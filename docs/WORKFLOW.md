@@ -327,7 +327,7 @@ L0 (before this PR):
 
 L1 (this PR — delivered):
   Agent self-sequences phases once requirement + evidence agreed.
-  Local verify harness (verify.py) mirrors CI.
+  Local verify harness (verify.py) mirrors CI. Issue #175 adds `operator-console-actions` (`scripts/check_operator_console_actions.py`) to the local gate set.
   Phase tracked in GitHub Issues (stage:* labels + status block).
   Operator only inputs at 3 gates + final merge.
 

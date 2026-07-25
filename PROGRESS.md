@@ -1,3 +1,12 @@
+## 2026-07-25 — Operator Console responsive actions + cold-start (Issue #175)
+
+**Scope:** Option B fast-ack for every mutating console control; durable Cloud Run Jobs for order-reco; `min-instances=1`.
+
+**Key changes (PR #193):**
+- Shared `useConsoleAction` / `ActionAck` + toast; registry + `check_operator_console_actions.py` gate.
+- `BHAGA_ORDER_RECO_ONLY` early-exit in `daily_refresh.py`; console enqueues via `triggerOrderRecoRefresh` (`FEATURES.asyncOrderReco`).
+- Deploy: `--min-instances=1`. Review-deploy `operator-console-00068-bkf` for operator poke.
+
 ## 2026-07-25 — Accounting Copilot UX: exclude-from-accounting + Home bank Finance (Issue #189)
 
 **Scope:** Money Copilot-style propose-rule, taxonomy exclude flag, faceted multi-filters, Home Finance/Sales/Cost/Labor scorecard synced with Accounting.

@@ -427,12 +427,16 @@ def watch_all(
             issues = _gh_open_jarvis_issue_numbers()
             prs = _gh_open_pr_numbers() + _gh_recently_closed_pr_numbers()
             targets = sorted(set(issues + prs))
+            print(
+                f"watch-all: tick targets={len(targets)} repo={_gh_repo()!r}",
+                flush=True,
+            )
             if not targets:
                 # Greppable: empty poll usually means gh couldn't resolve the repo
                 # (WorkingDirectory=$HOME without --repo) — never silent-idle.
                 print(
-                    f"watch-all: 0 targets repo={_gh_repo()!r} "
-                    f"(gh --repo missing or no open jarvis-work issues)",
+                    "watch-all: 0 targets "
+                    "(gh --repo missing or no open jarvis-work issues)",
                     flush=True,
                 )
             total = 0

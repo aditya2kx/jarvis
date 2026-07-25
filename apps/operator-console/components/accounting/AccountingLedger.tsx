@@ -14,14 +14,20 @@ import {
 } from "@/components/ui/sheet";
 import {
   reapplyPlaidCategoriesAction,
-  setPlaidInternalAction,
   setTxnCategoryOverrideAction,
+  previewRuleMatchesAction,
+  commitRuleFromTxnAction,
+  revertRuleEvidenceAction,
+  setTaxonomyExcludeAction,
+  upsertTaxonomyNodeAction,
+  type RuleMatchPreview,
 } from "@/app/accounting/actions";
 import { formatDollars } from "@/lib/format";
 import { formatBucket, truncateToGrain, type Grain } from "@/lib/filters/range";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { ACCOUNTING_COLORS, expenseCategoryColor } from "@/lib/charts/palette";
 import { cn } from "@/lib/utils";
+import { effectiveExclude } from "@/lib/plaid/exclude-accounting";
 import {
   AccountingRulesDrawer,
   type RuleListItem,
@@ -42,6 +48,8 @@ export interface AccountingTxnRow {
   channel: string;
   pending_label: string;
   amount: number;
+  excluded: boolean;
+  excluded_label: string;
   is_internal: boolean;
   internal_label: string;
   category_id: string | null;
@@ -56,6 +64,7 @@ export interface TaxonomyOption {
   id: string;
   parent_id: string | null;
   label: string;
+  exclude_from_accounting: boolean | null;
 }
 
 const TOP_CATEGORY_SERIES = 8;
@@ -66,7 +75,7 @@ function moneyTotals(rows: AccountingTxnRow[]): { spend: number; earned: number 
   let spend = 0;
   let earned = 0;
   for (const r of rows) {
-    if (r.is_internal) continue;
+    if (r.excluded) continue;
     if (typeof r.spend === "number") spend += r.spend;
     if (typeof r.earned === "number") earned += r.earned;
   }
@@ -84,7 +93,7 @@ function cashFlowByGrain(
 ): { iso: string; date: string; money_in: number; money_out: number; cash_flow: number }[] {
   const map = new Map<string, { money_in: number; money_out: number }>();
   for (const r of rows) {
-    if (r.is_internal) continue;
+    if (r.excluded) continue;
     const key = truncateToGrain(r.date, grain);
     const cur = map.get(key) || { money_in: 0, money_out: 0 };
     if (typeof r.earned === "number") cur.money_in += r.earned;
@@ -102,9 +111,20 @@ function cashFlowByGrain(
     }));
 }
 
+type SpendChartGrain = "category" | "subcategory";
+
+function spendSeriesLabel(row: AccountingTxnRow, grain: SpendChartGrain): string {
+  const cat = row.category || "Uncategorized";
+  if (grain === "category") return cat;
+  const sub = row.category_detail;
+  if (!sub || sub === "—") return `${cat} · (no subcategory)`;
+  return `${cat} · ${sub}`;
+}
+
 function spendByCategoryGrain(
   rows: AccountingTxnRow[],
   grain: Grain,
+  seriesGrain: SpendChartGrain = "category",
 ): {
   data: { iso: string; date: string; values: Record<string, number> }[];
   series: { key: string; label: string; color: string }[];
@@ -113,9 +133,9 @@ function spendByCategoryGrain(
   const byBucket = new Map<string, Map<string, number>>();
 
   for (const r of rows) {
-    if (r.is_internal) continue;
+    if (r.excluded) continue;
     if (!(typeof r.spend === "number" && r.spend > 0)) continue;
-    const cat = r.category || "Uncategorized";
+    const cat = spendSeriesLabel(r, seriesGrain);
     totals.set(cat, (totals.get(cat) || 0) + r.spend);
     const bucket = truncateToGrain(r.date, grain);
     let cats = byBucket.get(bucket);
@@ -153,6 +173,25 @@ function spendByCategoryGrain(
   return { data, series };
 }
 
+function maskFromAccountLast4(accountLast4: string): string {
+  const digits = accountLast4.replace(/\D/g, "");
+  return digits.length >= 4 ? digits.slice(-4) : digits;
+}
+
+function resetRuleState(row: AccountingTxnRow) {
+  return {
+    pattern:
+      row.transaction_name && row.transaction_name !== "—" ? row.transaction_name : "",
+    amountSign: row.amount > 0 ? "positive" : "negative",
+    accountMask: maskFromAccountLast4(row.account_last4),
+    matches: [] as RuleMatchPreview[],
+    selectedIds: new Set<string>(),
+    committedRuleId: null as string | null,
+    msg: null as string | null,
+    applyFuture: true,
+  };
+}
+
 export function AccountingLedger({
   periodLabel,
   grain,
@@ -175,42 +214,49 @@ export function AccountingLedger({
   squareNetSalesByIso: Record<string, number>;
 }) {
   const [rows, setRows] = useState(initialRows);
-  const [hideInternal, setHideInternal] = useState(true);
   const [filtered, setFiltered] = useState<AccountingTxnRow[]>(initialRows);
+  const [taxonomyState, setTaxonomy] = useState(taxonomy);
   const [explain, setExplain] = useState<AccountingTxnRow | null>(null);
   const [pending, startTransition] = useTransition();
   const [reapplyMsg, setReapplyMsg] = useState<string | null>(null);
   const [chartUnit, setChartUnit] = useState<ChartUnit>("dollars");
+  const [spendChartGrain, setSpendChartGrain] = useState<SpendChartGrain>("category");
+
+  const [rulePattern, setRulePattern] = useState("");
+  const [ruleAmountSign, setRuleAmountSign] = useState("positive");
+  const [ruleAccountMask, setRuleAccountMask] = useState("");
+  const [ruleMatches, setRuleMatches] = useState<RuleMatchPreview[]>([]);
+  const [selectedTxnIds, setSelectedTxnIds] = useState<Set<string>>(new Set());
+  const [applyFuture, setApplyFuture] = useState(true);
+  const [committedRuleId, setCommittedRuleId] = useState<string | null>(null);
+  const [ruleMsg, setRuleMsg] = useState<string | null>(null);
 
   useEffect(() => {
     setRows(initialRows);
     setFiltered(initialRows);
   }, [initialRows]);
 
-  const tableData = useMemo(
-    () => (hideInternal ? rows.filter((r) => !r.is_internal) : rows),
-    [rows, hideInternal],
-  );
+  useEffect(() => {
+    setTaxonomy(taxonomy);
+  }, [taxonomy]);
+
+  const tableData = rows;
 
   const onFilteredRowsChange = useCallback((next: AccountingTxnRow[]) => {
     setFiltered(next);
   }, []);
 
-  // Charts/totals must read `is_internal` from `rows` (optimistic + post-revalidate
-  // source of truth). `filtered` alone can lag with a stale copy after Mark Internal,
-  // so KPIs kept counting the transfer. Gate by filtered txn ids so column filters
-  // still apply; always drop internals from rollups.
-  const rollupRows = useMemo(() => {
+  const chartRows = useMemo(() => {
     const visibleIds = new Set(filtered.map((r) => r.transaction_id));
-    return rows.filter((r) => !r.is_internal && visibleIds.has(r.transaction_id));
+    return rows.filter((r) => !r.excluded && visibleIds.has(r.transaction_id));
   }, [rows, filtered]);
 
-  const kpis = useMemo(() => moneyTotals(rollupRows), [rollupRows]);
+  const kpis = useMemo(() => moneyTotals(chartRows), [chartRows]);
   const cashFlow = kpis.earned - kpis.spend;
-  const cashChartBase = useMemo(() => cashFlowByGrain(rollupRows, grain), [rollupRows, grain]);
+  const cashChartBase = useMemo(() => cashFlowByGrain(chartRows, grain), [chartRows, grain]);
   const categoryChartBase = useMemo(
-    () => spendByCategoryGrain(rollupRows, grain),
-    [rollupRows, grain],
+    () => spendByCategoryGrain(chartRows, grain, spendChartGrain),
+    [chartRows, grain, spendChartGrain],
   );
   const asPct = chartUnit === "pct_net_sales";
 
@@ -249,7 +295,6 @@ export function AccountingLedger({
   }, [categoryChartBase, squareNetSalesByIso, asPct]);
 
   const grainLabel = grain === "day" ? "day" : grain === "week" ? "week" : "month";
-  const internalHidden = rows.filter((r) => r.is_internal).length;
   const unitToggle = (
     <div className="flex items-center gap-1 rounded-md bg-secondary p-0.5">
       {(
@@ -276,48 +321,59 @@ export function AccountingLedger({
   );
 
   const parents = useMemo(
-    () => taxonomy.filter((t) => !t.parent_id),
-    [taxonomy],
+    () => taxonomyState.filter((t) => !t.parent_id),
+    [taxonomyState],
   );
 
-  function toggleInternal(txnId: string, next: boolean) {
-    const patch = (r: AccountingTxnRow): AccountingTxnRow =>
-      r.transaction_id === txnId
-        ? { ...r, is_internal: next, internal_label: next ? "yes" : "no" }
-        : r;
+  const openExplain = useCallback((row: AccountingTxnRow) => {
+    const reset = resetRuleState(row);
+    setExplain(row);
+    setRulePattern(reset.pattern);
+    setRuleAmountSign(reset.amountSign);
+    setRuleAccountMask(reset.accountMask);
+    setRuleMatches(reset.matches);
+    setSelectedTxnIds(reset.selectedIds);
+    setCommittedRuleId(reset.committedRuleId);
+    setRuleMsg(reset.msg);
+    setApplyFuture(reset.applyFuture);
+  }, []);
 
-    setRows((prev) => prev.map(patch));
-    // Keep filtered in sync so rollups don't wait on DataTable's next emit.
-    setFiltered((prev) => {
-      if (next && hideInternal) {
-        return prev.filter((r) => r.transaction_id !== txnId);
-      }
-      return prev.map(patch);
-    });
-
-    startTransition(async () => {
-      try {
-        await setPlaidInternalAction(txnId, next);
-      } catch (e) {
-        const revert = (r: AccountingTxnRow): AccountingTxnRow =>
-          r.transaction_id === txnId
-            ? { ...r, is_internal: !next, internal_label: !next ? "yes" : "no" }
-            : r;
-        setRows((prev) => prev.map(revert));
-        setFiltered((prev) => prev.map(revert));
-        console.error(e);
-      }
-    });
+  function resolveExcludedWith(
+    nodes: TaxonomyOption[],
+    categoryId: string | null,
+    subcategoryId: string | null,
+  ): boolean {
+    const leafId = subcategoryId || categoryId;
+    if (!leafId) return false;
+    const leaf = nodes.find((t) => t.id === leafId);
+    const parent = leaf?.parent_id
+      ? nodes.find((t) => t.id === leaf.parent_id)
+      : undefined;
+    return effectiveExclude(
+      leaf
+        ? {
+            id: leaf.id,
+            parent_id: leaf.parent_id,
+            exclude_from_accounting: leaf.exclude_from_accounting,
+          }
+        : null,
+      parent
+        ? {
+            id: parent.id,
+            parent_id: parent.parent_id,
+            exclude_from_accounting: parent.exclude_from_accounting,
+          }
+        : null,
+    );
   }
-
-  const toggleInternalCb = useCallback(toggleInternal, [hideInternal]);
 
   function applyOverride(txnId: string, categoryId: string | null, subcategoryId: string | null) {
     startTransition(async () => {
       try {
         await setTxnCategoryOverrideAction(txnId, categoryId, subcategoryId);
-        const parent = taxonomy.find((t) => t.id === categoryId);
-        const child = taxonomy.find((t) => t.id === subcategoryId);
+        const parent = taxonomyState.find((t) => t.id === categoryId);
+        const child = taxonomyState.find((t) => t.id === subcategoryId);
+        const excluded = resolveExcludedWith(taxonomyState, categoryId, subcategoryId);
         setRows((prev) =>
           prev.map((r) =>
             r.transaction_id === txnId
@@ -330,6 +386,8 @@ export function AccountingLedger({
                   is_override: !!categoryId,
                   rule_id: categoryId ? null : r.rule_id,
                   rule_summary: categoryId ? null : r.rule_summary,
+                  excluded,
+                  excluded_label: excluded ? "yes" : "no",
                 }
               : r,
           ),
@@ -338,14 +396,135 @@ export function AccountingLedger({
           prev && prev.transaction_id === txnId
             ? {
                 ...prev,
-                category: parent?.label || prev.category,
+                category_id: categoryId,
+                subcategory_id: subcategoryId,
+                category: parent?.label || (categoryId ? prev.category : "Uncategorized"),
                 category_detail: child?.label || "—",
                 is_override: !!categoryId,
+                excluded,
+                excluded_label: excluded ? "yes" : "no",
               }
             : prev,
         );
       } catch (e) {
         console.error(e);
+      }
+    });
+  }
+
+  function setCategoryExcluded(exclude: boolean) {
+    if (!explain?.category_id) return;
+    const catId = explain.category_id;
+    startTransition(async () => {
+      try {
+        await setTaxonomyExcludeAction(catId, exclude);
+        const nextTax = taxonomyState.map((t) =>
+          t.id === catId ? { ...t, exclude_from_accounting: exclude } : t,
+        );
+        setTaxonomy(nextTax);
+        setRows((prev) =>
+          prev.map((r) => {
+            const nextExcluded = resolveExcludedWith(nextTax, r.category_id, r.subcategory_id);
+            if (r.excluded === nextExcluded) return r;
+            return {
+              ...r,
+              excluded: nextExcluded,
+              excluded_label: nextExcluded ? "yes" : "no",
+            };
+          }),
+        );
+        setExplain((prev) => {
+          if (!prev) return prev;
+          const nextExcluded = resolveExcludedWith(
+            nextTax,
+            prev.category_id,
+            prev.subcategory_id,
+          );
+          return {
+            ...prev,
+            excluded: nextExcluded,
+            excluded_label: nextExcluded ? "yes" : "no",
+          };
+        });
+        setRuleMsg(
+          exclude
+            ? "Category excluded from accounting rollups"
+            : "Category included in accounting rollups",
+        );
+      } catch (e) {
+        setRuleMsg(e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
+
+  function ensurePersonalAndAssign() {
+    if (!explain) return;
+    const txnId = explain.transaction_id;
+    startTransition(async () => {
+      try {
+        const id = "personal";
+        await upsertTaxonomyNodeAction({
+          id,
+          parent_id: null,
+          slug: "personal",
+          label: "Personal",
+          enabled: true,
+          exclude_from_accounting: true,
+        });
+        setTaxonomy((prev) => {
+          if (prev.some((t) => t.id === id)) {
+            return prev.map((t) =>
+              t.id === id
+                ? { ...t, exclude_from_accounting: true, label: "Personal" }
+                : t,
+            );
+          }
+          return [
+            ...prev,
+            {
+              id,
+              parent_id: null,
+              label: "Personal",
+              exclude_from_accounting: true,
+            },
+          ];
+        });
+        await setTxnCategoryOverrideAction(txnId, id, null);
+        setRows((prev) =>
+          prev.map((r) =>
+            r.transaction_id === txnId
+              ? {
+                  ...r,
+                  category_id: id,
+                  subcategory_id: null,
+                  category: "Personal",
+                  category_detail: "—",
+                  is_override: true,
+                  rule_id: null,
+                  rule_summary: null,
+                  excluded: true,
+                  excluded_label: "yes",
+                }
+              : r,
+          ),
+        );
+        setExplain((prev) =>
+          prev && prev.transaction_id === txnId
+            ? {
+                ...prev,
+                category_id: id,
+                subcategory_id: null,
+                category: "Personal",
+                category_detail: "—",
+                is_override: true,
+                excluded: true,
+                excluded_label: "yes",
+              }
+            : prev,
+        );
+        setRuleMsg("Assigned to Personal (excluded from accounting)");
+      } catch (e) {
+        setRuleMsg(e instanceof Error ? e.message : String(e));
       }
     });
   }
@@ -361,6 +540,89 @@ export function AccountingLedger({
     });
   }
 
+  function findRuleMatches() {
+    if (!explain?.category_id) {
+      setRuleMsg("Select a category first");
+      return;
+    }
+    startTransition(async () => {
+      try {
+        const matches = await previewRuleMatchesAction({
+          match_pattern: rulePattern,
+          amount_sign: ruleAmountSign,
+          account_mask: ruleAccountMask || null,
+          category_id: explain.category_id!,
+          subcategory_id: explain.subcategory_id,
+        });
+        setRuleMatches(matches);
+        setSelectedTxnIds(
+          new Set(matches.filter((m) => !m.has_override).map((m) => m.transaction_id)),
+        );
+        setRuleMsg(matches.length ? `${matches.length} match(es)` : "No matches");
+        setCommittedRuleId(null);
+      } catch (e) {
+        setRuleMsg(e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
+
+  function toggleMatch(txnId: string, checked: boolean) {
+    setSelectedTxnIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(txnId);
+      else next.delete(txnId);
+      return next;
+    });
+  }
+
+  function selectAllMatches() {
+    setSelectedTxnIds(
+      new Set(ruleMatches.filter((m) => !m.has_override).map((m) => m.transaction_id)),
+    );
+  }
+
+  function commitRule() {
+    if (!explain?.category_id) return;
+    startTransition(async () => {
+      try {
+        const result = await commitRuleFromTxnAction({
+          draft: {
+            match_pattern: rulePattern,
+            amount_sign: ruleAmountSign,
+            account_mask: ruleAccountMask || null,
+            category_id: explain.category_id!,
+            subcategory_id: explain.subcategory_id,
+          },
+          selectedTxnIds: [...selectedTxnIds],
+          applyFuture,
+        });
+        setCommittedRuleId(result.ruleId);
+        setRuleMsg(
+          `Rule ${result.ruleId}: applied ${result.applied}, skipped override ${result.skipped_override}`,
+        );
+      } catch (e) {
+        setRuleMsg(e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
+
+  function revertRule() {
+    if (!committedRuleId) return;
+    startTransition(async () => {
+      try {
+        const result = await revertRuleEvidenceAction(committedRuleId);
+        setRuleMsg(
+          `Reverted ${committedRuleId}: reapply updated ${result.reapply.updated}, unchanged ${result.reapply.unchanged}`,
+        );
+        setCommittedRuleId(null);
+      } catch (e) {
+        setRuleMsg(e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
+
+  const selectableMatchCount = ruleMatches.filter((m) => !m.has_override).length;
+
   const columns: ColumnDef<AccountingTxnRow>[] = useMemo(
     () => [
       {
@@ -371,7 +633,7 @@ export function AccountingLedger({
       {
         accessorKey: "account_last4",
         header: "Account",
-        meta: { filterable: true, wrap: true, maxWidth: 200, width: 160 },
+        meta: { filterable: true, filterVariant: "multi", wrap: true, maxWidth: 200, width: 160 },
       },
       {
         accessorKey: "spend",
@@ -394,8 +656,12 @@ export function AccountingLedger({
           const party = row.original.counterparty;
           const showParty = party && party !== title && (!memo || !memo.includes(party));
           return (
-            <div className="flex flex-col gap-0.5 py-0.5">
-              <span>{title}</span>
+            <button
+              type="button"
+              className="flex w-full flex-col gap-0.5 py-0.5 text-left hover:text-foreground"
+              onClick={() => openExplain(row.original)}
+            >
+              <span className="underline decoration-dotted underline-offset-2">{title}</span>
               {showParty ? (
                 <span className="text-xs text-muted-foreground">Counterparty: {party}</span>
               ) : null}
@@ -404,24 +670,24 @@ export function AccountingLedger({
                   {memo}
                 </span>
               ) : null}
-            </div>
+            </button>
           );
         },
       },
       {
         accessorKey: "category",
         header: "Category",
-        meta: { filterable: true, wrap: true, maxWidth: 180, width: 160 },
+        meta: { filterable: true, filterVariant: "multi", wrap: true, maxWidth: 180, width: 160 },
         cell: ({ row }) => {
           const code = row.original.category;
-          if (!code || code === "—") return "Uncategorized";
+          const label = !code || code === "—" ? "Uncategorized" : code;
           return (
             <button
               type="button"
               className="text-left underline decoration-dotted underline-offset-2 hover:text-foreground"
-              onClick={() => setExplain(row.original)}
+              onClick={() => openExplain(row.original)}
             >
-              {code}
+              {label}
               {row.original.is_override ? " *" : ""}
             </button>
           );
@@ -430,17 +696,17 @@ export function AccountingLedger({
       {
         accessorKey: "category_detail",
         header: "Subcategory",
-        meta: { filterable: true, wrap: true, maxWidth: 180, width: 160 },
+        meta: { filterable: true, filterVariant: "multi", wrap: true, maxWidth: 180, width: 160 },
         cell: ({ row }) => {
           const code = row.original.category_detail;
-          if (!code || code === "—") return "—";
+          const label = !code || code === "—" ? "—" : code;
           return (
             <button
               type="button"
               className="text-left underline decoration-dotted underline-offset-2 hover:text-foreground"
-              onClick={() => setExplain(row.original)}
+              onClick={() => openExplain(row.original)}
             >
-              {code}
+              {label}
             </button>
           );
         },
@@ -448,36 +714,20 @@ export function AccountingLedger({
       {
         accessorKey: "channel",
         header: "Channel",
-        meta: { filterable: true, width: 88 },
+        meta: { filterable: true, filterVariant: "multi", width: 88 },
       },
       {
         accessorKey: "pending_label",
         header: "Pending",
-        meta: { filterable: true, width: 80 },
+        meta: { filterable: true, filterVariant: "multi", width: 80 },
       },
       {
-        accessorKey: "internal_label",
-        header: "Internal",
-        meta: { filterable: true, width: 100 },
-        cell: ({ row }) => {
-          const on = row.original.is_internal;
-          if (!canWrite) return on ? "yes" : "no";
-          return (
-            <Button
-              type="button"
-              size="sm"
-              variant={on ? "secondary" : "outline"}
-              className="h-7 px-2 text-xs"
-              disabled={pending}
-              onClick={() => toggleInternalCb(row.original.transaction_id, !on)}
-            >
-              {on ? "Internal" : "Mark"}
-            </Button>
-          );
-        },
+        accessorKey: "excluded_label",
+        header: "Excluded",
+        meta: { filterable: true, filterVariant: "multi", width: 80 },
       },
     ],
-    [canWrite, pending, toggleInternalCb],
+    [openExplain],
   );
 
   return (
@@ -503,7 +753,7 @@ export function AccountingLedger({
             </span>
           </span>
           <span className="text-xs text-muted-foreground self-center">
-            Bank totals exclude internal · {periodLabel}
+            Bank totals exclude excluded categories · {periodLabel}
           </span>
         </div>
         {unitToggle}
@@ -515,7 +765,7 @@ export function AccountingLedger({
           subtitle={
             asPct
               ? `Bank money in / out / cash flow as % of Square net sales for the same ${grainLabel} · green=in, red=out, sky/fuchsia=net`
-              : "Green = money in · red = money out · sky/fuchsia = cash flow (by sign) · excludes internal"
+              : "Green = money in · red = money out · sky/fuchsia = cash flow (by sign) · excludes excluded categories"
           }
           data={cashChart}
           xKey="date"
@@ -549,20 +799,50 @@ export function AccountingLedger({
       ) : null}
 
       {categoryChart.data.length && categoryChart.series.length ? (
-        <BarChartCard
-          title={`Spend by category by ${grainLabel}`}
-          subtitle={
-            asPct
-              ? `Each spend category as % of Square net sales for the same ${grainLabel} · warm colors = money leaving (can sum over 100%)`
-              : "Spend categories (warm palette = money leaving) · follows table filters · excludes internal"
-          }
-          data={categoryChart.data}
-          xKey="date"
-          stacked
-          height={300}
-          valueFormat={asPct ? "percent" : "dollars"}
-          series={categoryChart.series}
-        />
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium text-muted-foreground">
+              Spend by {spendChartGrain === "subcategory" ? "subcategory" : "category"} · follows
+              table filters
+            </p>
+            <div className="flex items-center gap-1 rounded-md bg-secondary p-0.5">
+              {(
+                [
+                  { value: "category" as const, label: "Categories" },
+                  { value: "subcategory" as const, label: "Subcategories" },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  className={cn(
+                    "rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+                    spendChartGrain === opt.value
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => setSpendChartGrain(opt.value)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <BarChartCard
+            title={`Spend by ${spendChartGrain === "subcategory" ? "subcategory" : "category"} by ${grainLabel}`}
+            subtitle={
+              asPct
+                ? `Each ${spendChartGrain === "subcategory" ? "subcategory" : "category"} as % of Square net sales for the same ${grainLabel} · follows ledger filters · warm = money leaving`
+                : `Stacked spend · follows ledger filters · excludes excluded categories · top ${TOP_CATEGORY_SERIES} + Other`
+            }
+            data={categoryChart.data}
+            xKey="date"
+            stacked
+            height={300}
+            valueFormat={asPct ? "percent" : "dollars"}
+            series={categoryChart.series}
+          />
+        </div>
       ) : null}
 
       <Card>
@@ -573,12 +853,12 @@ export function AccountingLedger({
           <div className="flex flex-wrap items-center gap-2">
             {canWrite ? (
               <>
-                <AccountingRulesDrawer
-                  canWrite={canWrite}
-                  ruleCount={rules.length}
-                  taxonomy={taxonomy}
-                  rules={rules}
-                />
+                  <AccountingRulesDrawer
+                    canWrite={canWrite}
+                    ruleCount={rules.length}
+                    taxonomy={taxonomyState}
+                    rules={rules}
+                  />
                 <Button
                   type="button"
                   size="sm"
@@ -590,15 +870,6 @@ export function AccountingLedger({
                 </Button>
               </>
             ) : null}
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={hideInternal}
-                onChange={(e) => setHideInternal(e.target.checked)}
-              />
-              Hide internal
-              {internalHidden ? ` (${internalHidden})` : ""}
-            </label>
           </div>
         </CardHeader>
         <CardContent>
@@ -614,7 +885,7 @@ export function AccountingLedger({
               initialSorting={[{ id: "date", desc: true }]}
               pinLeft={["date", "account_last4", "spend", "earned"]}
               rowHighlight={{
-                accessorKey: "internal_label",
+                accessorKey: "excluded_label",
                 equals: "yes",
                 className: "opacity-60",
               }}
@@ -625,12 +896,19 @@ export function AccountingLedger({
         </CardContent>
       </Card>
 
-      <Sheet open={!!explain} onOpenChange={(open) => !open && setExplain(null)}>
-        <SheetContent side="right" className="sm:max-w-md">
+      <Sheet
+        open={!!explain}
+        onOpenChange={(open) => {
+          if (!open) setExplain(null);
+        }}
+      >
+        <SheetContent side="right" className="sm:max-w-md overflow-y-auto">
           <SheetHeader>
-            <SheetTitle>{explain?.category || "Category"}</SheetTitle>
+            <SheetTitle>
+              {explain?.transaction_name || explain?.category || "Transaction"}
+            </SheetTitle>
             <SheetDescription>
-              Palmetto management taxonomy
+              Change category, exclude from accounting, or propose a rule to backfill matches
               {explain?.is_override ? " · operator override" : ""}
             </SheetDescription>
           </SheetHeader>
@@ -649,20 +927,19 @@ export function AccountingLedger({
                     {explain.bank_description}
                   </p>
                 ) : null}
+                <p className="mt-2 text-xs">
+                  Currently:{" "}
+                  <span className="font-medium">{explain.category || "Uncategorized"}</span>
+                  {explain.category_detail && explain.category_detail !== "—"
+                    ? ` · ${explain.category_detail}`
+                    : ""}
+                  {explain.excluded ? " · excluded from rollups" : ""}
+                </p>
               </div>
-            ) : null}
-            {explain?.category_detail && explain.category_detail !== "—" ? (
-              <p className="text-sm">
-                Subcategory: <span className="font-medium">{explain.category_detail}</span>
-              </p>
             ) : null}
             {explain?.category_definition ? (
               <p className="text-sm text-muted-foreground">{explain.category_definition}</p>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No definition yet — edit taxonomy in Rules admin.
-              </p>
-            )}
+            ) : null}
             {explain?.rule_summary ? (
               <p className="text-sm">
                 Matched rule: <span className="font-mono text-xs">{explain.rule_summary}</span>
@@ -674,7 +951,7 @@ export function AccountingLedger({
             )}
             {canWrite && explain ? (
               <div className="flex flex-col gap-2 border-t pt-3">
-                <p className="text-xs font-medium text-muted-foreground">Override category</p>
+                <p className="text-xs font-medium text-muted-foreground">Category</p>
                 <select
                   className="rounded border bg-background px-2 py-1.5 text-sm"
                   value={explain.category_id || ""}
@@ -682,7 +959,7 @@ export function AccountingLedger({
                   onChange={(e) => {
                     const catId = e.target.value || null;
                     const firstChild =
-                      taxonomy.find((t) => t.parent_id === catId)?.id ?? null;
+                      taxonomyState.find((t) => t.parent_id === catId)?.id ?? null;
                     applyOverride(explain.transaction_id, catId, firstChild);
                   }}
                 >
@@ -690,6 +967,7 @@ export function AccountingLedger({
                   {parents.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.label}
+                      {p.exclude_from_accounting === true ? " (excluded)" : ""}
                     </option>
                   ))}
                 </select>
@@ -707,7 +985,7 @@ export function AccountingLedger({
                     }}
                   >
                     <option value="">(no subcategory)</option>
-                    {taxonomy
+                    {taxonomyState
                       .filter((t) => t.parent_id === explain.category_id)
                       .map((t) => (
                         <option key={t.id} value={t.id}>
@@ -716,6 +994,29 @@ export function AccountingLedger({
                       ))}
                   </select>
                 ) : null}
+                {explain.category_id ? (
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={
+                        taxonomyState.find((t) => t.id === explain.category_id)
+                          ?.exclude_from_accounting === true
+                      }
+                      disabled={pending}
+                      onChange={(e) => setCategoryExcluded(e.target.checked)}
+                    />
+                    Exclude this category from accounting rollups
+                  </label>
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={ensurePersonalAndAssign}
+                >
+                  Mark as Personal (excluded)
+                </Button>
                 {explain.is_override ? (
                   <Button
                     type="button"
@@ -726,6 +1027,137 @@ export function AccountingLedger({
                   >
                     Clear override
                   </Button>
+                ) : null}
+              </div>
+            ) : null}
+            {canWrite && explain ? (
+              <div className="flex flex-col gap-2 border-t pt-3">
+                <p className="text-xs font-medium text-muted-foreground">Propose rule</p>
+                <input
+                  type="text"
+                  className="rounded border bg-background px-2 py-1.5 text-sm"
+                  placeholder="Match pattern"
+                  value={rulePattern}
+                  disabled={pending || committedRuleId != null}
+                  onChange={(e) => setRulePattern(e.target.value)}
+                />
+                <div className="flex gap-2">
+                  <select
+                    className="rounded border bg-background px-2 py-1.5 text-sm"
+                    value={ruleAmountSign}
+                    disabled={pending || committedRuleId != null}
+                    onChange={(e) => setRuleAmountSign(e.target.value)}
+                  >
+                    <option value="any">Any sign</option>
+                    <option value="positive">Positive</option>
+                    <option value="negative">Negative</option>
+                  </select>
+                  <input
+                    type="text"
+                    className="rounded border bg-background px-2 py-1.5 text-sm w-24"
+                    placeholder="Acct last4"
+                    value={ruleAccountMask}
+                    disabled={pending || committedRuleId != null}
+                    onChange={(e) => setRuleAccountMask(e.target.value)}
+                  />
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={pending || !rulePattern.trim() || committedRuleId != null}
+                  onClick={findRuleMatches}
+                >
+                  Find matches
+                </Button>
+                {ruleMatches.length ? (
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-muted-foreground">
+                        {ruleMatches.length} match(es) · {selectedTxnIds.size} selected
+                      </p>
+                      {selectableMatchCount ? (
+                        <button
+                          type="button"
+                          className="text-xs text-muted-foreground underline"
+                          disabled={pending || committedRuleId != null}
+                          onClick={selectAllMatches}
+                        >
+                          Select all
+                        </button>
+                      ) : null}
+                    </div>
+                    <ul className="max-h-48 overflow-y-auto rounded border text-xs">
+                      {ruleMatches.map((m) => {
+                        const checked = selectedTxnIds.has(m.transaction_id);
+                        return (
+                          <li
+                            key={m.transaction_id}
+                            className={cn(
+                              "flex items-start gap-2 border-b px-2 py-1.5 last:border-0",
+                              m.has_override && "opacity-50",
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              className="mt-0.5"
+                              checked={checked}
+                              disabled={pending || m.has_override || committedRuleId != null}
+                              onChange={(e) => toggleMatch(m.transaction_id, e.target.checked)}
+                            />
+                            <span className="flex-1">
+                              <span className="font-medium">{m.date}</span>
+                              {" · "}
+                              {m.name || "—"}
+                              {" · "}
+                              {formatDollars(m.amount)}
+                              {m.has_override ? " · override" : ""}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ) : null}
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={applyFuture}
+                    disabled={pending || committedRuleId != null}
+                    onChange={(e) => setApplyFuture(e.target.checked)}
+                  />
+                  Apply to future transactions
+                </label>
+                {committedRuleId ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-mono">{committedRuleId}</span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={pending}
+                      onClick={revertRule}
+                    >
+                      Revert
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={
+                      pending ||
+                      !explain.category_id ||
+                      !rulePattern.trim() ||
+                      selectedTxnIds.size === 0
+                    }
+                    onClick={commitRule}
+                  >
+                    Commit rule
+                  </Button>
+                )}
+                {ruleMsg ? (
+                  <p className="text-xs text-muted-foreground">{ruleMsg}</p>
                 ) : null}
               </div>
             ) : null}

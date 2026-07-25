@@ -263,6 +263,7 @@ export async function upsertTaxonomyNodeAction(node: {
   label: string;
   definition?: string | null;
   enabled?: boolean;
+  exclude_from_accounting?: boolean | null;
 }): Promise<void> {
   if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
   await operatorEmail();
@@ -272,11 +273,15 @@ export async function upsertTaxonomyNodeAction(node: {
      ON T.id = S.id
      WHEN MATCHED THEN UPDATE SET
        parent_id = @parent_id, slug = @slug, label = @label,
-       definition = @definition, enabled = @enabled, updated_at = CURRENT_TIMESTAMP()
+       definition = @definition, enabled = @enabled,
+       exclude_from_accounting = @exclude_from_accounting,
+       updated_at = CURRENT_TIMESTAMP()
      WHEN NOT MATCHED THEN INSERT (
-       id, parent_id, slug, label, definition, enabled, sort_order, updated_at
+       id, parent_id, slug, label, definition, enabled,
+       exclude_from_accounting, sort_order, updated_at
      ) VALUES (
-       @id, @parent_id, @slug, @label, @definition, @enabled, 999, CURRENT_TIMESTAMP()
+       @id, @parent_id, @slug, @label, @definition, @enabled,
+       @exclude_from_accounting, 999, CURRENT_TIMESTAMP()
      )`,
     {
       id: node.id,
@@ -285,14 +290,17 @@ export async function upsertTaxonomyNodeAction(node: {
       label: node.label,
       definition: node.definition ?? null,
       enabled: node.enabled !== false,
+      exclude_from_accounting: node.exclude_from_accounting ?? null,
     },
     {
       parent_id: "STRING",
       definition: "STRING",
       enabled: "BOOL",
+      exclude_from_accounting: "BOOL",
     },
   );
   revalidatePath("/accounting");
+  revalidatePath("/home");
 }
 
 export async function setTaxonomyNodeEnabledAction(
@@ -333,20 +341,242 @@ export async function dryRunRuleAction(ruleId: string): Promise<number> {
     await import("@/lib/bq/client")
   ).q<{ n: number }>(
     `WITH r AS (
-       SELECT match_pattern, match_operator, amount_sign
+       SELECT match_pattern, match_operator, amount_sign, account_mask
        FROM \`jarvis-bhaga-prod.bhaga.plaid_category_rules\`
        WHERE id = @id
      )
      SELECT COUNT(*) AS n
-     FROM \`jarvis-bhaga-prod.bhaga.plaid_transactions\` t, r
+     FROM \`jarvis-bhaga-prod.bhaga.plaid_transactions\` t
+     LEFT JOIN \`jarvis-bhaga-prod.bhaga.plaid_accounts\` a ON a.account_id = t.account_id
+     , r
      WHERE STRPOS(LOWER(CONCAT(IFNULL(t.name,''),' ',IFNULL(t.merchant_name,''))),
                   LOWER(r.match_pattern)) > 0
        AND (
          r.amount_sign IS NULL OR r.amount_sign = 'any'
          OR (r.amount_sign = 'positive' AND t.amount > 0)
          OR (r.amount_sign = 'negative' AND t.amount < 0)
+       )
+       AND (
+         r.account_mask IS NULL OR r.account_mask = ''
+         OR RIGHT(REGEXP_REPLACE(IFNULL(a.mask,''), r'[^0-9]', ''), 4)
+            = RIGHT(REGEXP_REPLACE(r.account_mask, r'[^0-9]', ''), 4)
        )`,
     { id: ruleId },
   );
   return Number(rows[0]?.n ?? 0);
+}
+
+export type RuleDraft = {
+  match_pattern: string;
+  match_operator?: string;
+  amount_sign?: string | null;
+  account_mask?: string | null;
+  category_id: string;
+  subcategory_id?: string | null;
+};
+
+export type RuleMatchPreview = {
+  transaction_id: string;
+  date: string;
+  name: string | null;
+  amount: number;
+  has_override: boolean;
+};
+
+export async function previewRuleMatchesAction(
+  draft: RuleDraft,
+): Promise<RuleMatchPreview[]> {
+  await operatorEmail();
+  const pattern = (draft.match_pattern || "").trim();
+  if (!pattern || !draft.category_id) return [];
+  const amountSign = draft.amount_sign || "any";
+  const accountMask = (draft.account_mask || "").replace(/\D/g, "").slice(-4) || null;
+  const rows = await (
+    await import("@/lib/bq/client")
+  ).q<{
+    transaction_id: string;
+    date: string;
+    name: string | null;
+    amount: number;
+    has_override: boolean;
+  }>(
+    `SELECT
+       t.transaction_id,
+       CAST(t.date AS STRING) AS date,
+       t.name,
+       t.amount,
+       t.override_category_id IS NOT NULL AS has_override
+     FROM \`jarvis-bhaga-prod.bhaga.plaid_transactions\` t
+     LEFT JOIN \`jarvis-bhaga-prod.bhaga.plaid_accounts\` a ON a.account_id = t.account_id
+     WHERE STRPOS(LOWER(CONCAT(IFNULL(t.name,''),' ',IFNULL(t.merchant_name,''))),
+                  LOWER(@pattern)) > 0
+       AND (
+         @amount_sign = 'any'
+         OR (@amount_sign = 'positive' AND t.amount > 0)
+         OR (@amount_sign = 'negative' AND t.amount < 0)
+       )
+       AND (
+         @account_mask = ''
+         OR RIGHT(REGEXP_REPLACE(IFNULL(a.mask,''), r'[^0-9]', ''), 4) = @account_mask
+       )
+     ORDER BY t.date DESC
+     LIMIT 500`,
+    {
+      pattern,
+      amount_sign: amountSign,
+      account_mask: accountMask ?? "",
+    },
+  );
+  return rows.map((r) => ({
+    transaction_id: r.transaction_id,
+    date: r.date,
+    name: r.name,
+    amount: Number(r.amount),
+    has_override: Boolean(r.has_override),
+  }));
+}
+
+export async function commitRuleFromTxnAction(input: {
+  draft: RuleDraft;
+  selectedTxnIds: string[];
+  applyFuture: boolean;
+}): Promise<{ ruleId: string; applied: number; skipped_override: number }> {
+  if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
+  await operatorEmail();
+  const pattern = (input.draft.match_pattern || "").trim();
+  if (!pattern || !input.draft.category_id) {
+    throw new Error("pattern and category_id required");
+  }
+  const slug = pattern
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "")
+    .slice(0, 40);
+  const ruleId = `op_${slug || "rule"}_${Date.now().toString(36)}`;
+  const accountMask =
+    (input.draft.account_mask || "").replace(/\D/g, "").slice(-4) || null;
+  const amountSign = input.draft.amount_sign || "any";
+
+  // Priority: after seeded rules — use max+10
+  const priRows = await (
+    await import("@/lib/bq/client")
+  ).q<{ p: number }>(
+    `SELECT IFNULL(MAX(priority), 0) + 10 AS p
+     FROM \`jarvis-bhaga-prod.bhaga.plaid_category_rules\``,
+  );
+  const priority = Number(priRows[0]?.p ?? 500);
+
+  await mutate(
+    `INSERT INTO \`jarvis-bhaga-prod.bhaga.plaid_category_rules\` (
+       id, priority, match_field, match_operator, match_pattern, amount_sign,
+       account_mask, category_id, subcategory_id, confidence, enabled, notes, updated_at
+     ) VALUES (
+       @id, @priority, 'name_or_merchant', @match_operator, @match_pattern, @amount_sign,
+       @account_mask, @category_id, @subcategory_id, 'medium', @enabled,
+       'Created from Accounting propose-rule', CURRENT_TIMESTAMP()
+     )`,
+    {
+      id: ruleId,
+      priority,
+      match_operator: input.draft.match_operator || "contains",
+      match_pattern: pattern,
+      amount_sign: amountSign,
+      account_mask: accountMask,
+      category_id: input.draft.category_id,
+      subcategory_id: input.draft.subcategory_id ?? null,
+      enabled: input.applyFuture !== false,
+    },
+    {
+      account_mask: "STRING",
+      subcategory_id: "STRING",
+      enabled: "BOOL",
+    },
+  );
+
+  let applied = 0;
+  let skipped_override = 0;
+  for (const txnId of input.selectedTxnIds) {
+    const check = await (
+      await import("@/lib/bq/client")
+    ).q<{ ov: string | null }>(
+      `SELECT override_category_id AS ov
+       FROM \`jarvis-bhaga-prod.bhaga.plaid_transactions\`
+       WHERE transaction_id = @id`,
+      { id: txnId },
+    );
+    if (check[0]?.ov) {
+      skipped_override += 1;
+      continue;
+    }
+    await mutate(
+      `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_transactions\`
+       SET category_id = @category_id,
+           subcategory_id = @subcategory_id,
+           rule_id = @rule_id,
+           is_internal = IF(@category_id = 'internal_transfers', TRUE, is_internal),
+           categorized_at = CURRENT_TIMESTAMP(),
+           updated_at = CURRENT_TIMESTAMP()
+       WHERE transaction_id = @transaction_id
+         AND override_category_id IS NULL`,
+      {
+        transaction_id: txnId,
+        category_id: input.draft.category_id,
+        subcategory_id: input.draft.subcategory_id ?? null,
+        rule_id: ruleId,
+      },
+      {
+        category_id: "STRING",
+        subcategory_id: "STRING",
+        rule_id: "STRING",
+      },
+    );
+    applied += 1;
+  }
+
+  revalidatePath("/accounting");
+  revalidatePath("/home");
+  return { ruleId, applied, skipped_override };
+}
+
+/** Disable a rule and reapply categories (evidence revert / undo). */
+export async function revertRuleEvidenceAction(
+  ruleId: string,
+): Promise<{ disabled: boolean; reapply: { updated: number; unchanged: number; skipped_override: number } }> {
+  if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
+  await operatorEmail();
+  await mutate(
+    `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_category_rules\`
+     SET enabled = FALSE, updated_at = CURRENT_TIMESTAMP()
+     WHERE id = @id`,
+    { id: ruleId },
+  );
+  // Clear rule_id on txns that still point at this rule, then reapply.
+  await mutate(
+    `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_transactions\`
+     SET rule_id = NULL, updated_at = CURRENT_TIMESTAMP()
+     WHERE rule_id = @id AND override_category_id IS NULL`,
+    { id: ruleId },
+  );
+  const reapply = await reapplyPlaidCategories();
+  revalidatePath("/accounting");
+  revalidatePath("/home");
+  return { disabled: true, reapply };
+}
+
+export async function setTaxonomyExcludeAction(
+  id: string,
+  excludeFromAccounting: boolean | null,
+): Promise<void> {
+  if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
+  await operatorEmail();
+  await mutate(
+    `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_taxonomy_nodes\`
+     SET exclude_from_accounting = @exclude_from_accounting,
+         updated_at = CURRENT_TIMESTAMP()
+     WHERE id = @id`,
+    { id, exclude_from_accounting: excludeFromAccounting },
+    { exclude_from_accounting: "BOOL" },
+  );
+  revalidatePath("/accounting");
+  revalidatePath("/home");
 }

@@ -223,6 +223,8 @@ Sheets is the **source of truth**; BigQuery is a **parallel read-only mirror** u
 
 ## Extending the model
 
+> **Operator Console Accounting (migrations 037–047):** Plaid ledger tables/views (`plaid_*`, `vw_plaid_spend_by_category_daily`, `vw_plaid_money_in_daily`) are console-only — not model_* / Grafana. Migration **047** (`exclude_from_accounting`, Internal transfers seed, rule `account_mask`) is registered as a no-new-target note in `status.py` (same class as 037–046). Skill-side: `skills/plaid_api/category_rules.py` + `sync.py` assign `internal_transfers` on transfer heuristics.
+
 Three supported ways to add information. Recipes A & B keep the raw → model contract intact (read raw
 sheets, write derived tabs); Recipe C is for when the data isn't scraped yet. For what each field
 *means*, see the domain data dictionary [`../knowledge-base/DOMAIN.md`](../knowledge-base/DOMAIN.md)

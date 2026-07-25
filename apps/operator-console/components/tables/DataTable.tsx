@@ -21,7 +21,14 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import { ArrowUpIcon, ArrowDownIcon, ChevronsUpDownIcon } from "lucide-react";
+import {
+  ArrowUpIcon,
+  ArrowDownIcon,
+  ChevronsUpDownIcon,
+  ChevronDownIcon,
+  CheckIcon,
+} from "lucide-react";
+import { Popover } from "@base-ui/react/popover";
 import {
   Table,
   TableBody,
@@ -35,6 +42,10 @@ import { Input } from "@/components/ui/input";
 import { formatDate, formatDollars, formatCents, formatNumber, formatPct } from "@/lib/format";
 import { formatBucket, type Grain } from "@/lib/filters/range";
 import { cn } from "@/lib/utils";
+import {
+  facetedMultiOptions,
+  filterTextOrMulti,
+} from "@/lib/tables/column-filter";
 
 // Threshold coloring for numeric/pct/dollars columns (Figma: red/amber/green
 // on p95, % late, Days-left, wage-diff). `warn`/`bad` are in the same unit as
@@ -71,8 +82,10 @@ declare module "@tanstack/react-table" {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface ColumnMeta<TData extends RowData, TValue> {
     format?: ColumnFormat;
-    /** When DataTable `enableColumnFilters`, show a text filter under the header. */
+    /** When DataTable `enableColumnFilters`, show a filter under the header. */
     filterable?: boolean;
+    /** text (default) or multi-select checkboxes for categorical columns. */
+    filterVariant?: "text" | "multi";
     /** Allow multi-line cell text (overrides table `whitespace-nowrap`). */
     wrap?: boolean;
     /** Cap column width in px (use with `wrap` for long ACH/description strings). */
@@ -149,13 +162,160 @@ function filterIncludesString(
   columnId: string,
   filterValue: unknown,
 ): boolean {
-  const needle = String(filterValue ?? "")
-    .trim()
-    .toLowerCase();
-  if (!needle) return true;
-  const rowValue = row.getValue(columnId);
-  if (rowValue == null || rowValue === "") return false;
-  return String(rowValue).toLowerCase().includes(needle);
+  return filterTextOrMulti(row.getValue(columnId), filterValue);
+}
+
+/** Compact trigger + floating checklist (Linear / Airtable faceted filter). */
+function MultiSelectFilter({
+  columnId,
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  columnId: string;
+  label: string;
+  options: string[];
+  value: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const selected = new Set(value);
+  const active = selected.size > 0;
+  const displayLabel = (() => {
+    if (!active) return "All";
+    if (selected.size === 1) {
+      const only = [...selected][0];
+      return only === "" ? "(blank)" : only;
+    }
+    return `${selected.size} selected`;
+  })();
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((opt) =>
+      (opt || "(blank)").toLowerCase().includes(q),
+    );
+  }, [options, query]);
+  const showSearch = options.length > 6;
+
+  function toggle(opt: string) {
+    const next = new Set(selected);
+    if (next.has(opt)) next.delete(opt);
+    else next.add(opt);
+    onChange([...next]);
+  }
+
+  return (
+    <Popover.Root
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setQuery("");
+      }}
+    >
+      <Popover.Trigger
+        nativeButton
+        type="button"
+        onClick={(e) => e.stopPropagation()}
+        aria-label={`Filter ${label}`}
+        className={cn(
+          "flex h-7 w-full min-w-0 items-center justify-between gap-1 rounded-md border px-2 text-left text-xs font-normal outline-none transition-colors",
+          "focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40",
+          active
+            ? "border-primary/50 bg-primary/10 text-foreground"
+            : "border-border bg-background text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+        )}
+      >
+        <span className="truncate">{displayLabel}</span>
+        <ChevronDownIcon className="size-3.5 shrink-0 opacity-60" />
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner side="bottom" align="start" sideOffset={4} className="z-50">
+          <Popover.Popup
+            className={cn(
+              "flex w-72 max-w-[min(18rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg outline-none",
+              "origin-[var(--transform-origin)] transition-[transform,scale,opacity] data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0",
+            )}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-border px-2.5 py-2">
+              <span className="text-xs font-medium text-muted-foreground">{label}</span>
+              <div className="flex items-center gap-2 text-[11px]">
+                <button
+                  type="button"
+                  className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  onClick={() => onChange([...options])}
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-40"
+                  disabled={!active}
+                  onClick={() => onChange([])}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            {showSearch ? (
+              <div className="border-b border-border p-2">
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={`Search ${label.toLowerCase()}…`}
+                  className="h-8 px-2 text-xs"
+                  aria-label={`Search ${label}`}
+                  autoFocus
+                />
+              </div>
+            ) : null}
+            <ul className="max-h-64 overflow-y-auto p-1" role="listbox" aria-multiselectable>
+              {filtered.length === 0 ? (
+                <li className="px-2 py-3 text-center text-xs text-muted-foreground">No matches</li>
+              ) : (
+                filtered.map((opt) => {
+                  const checked = selected.has(opt);
+                  const text = opt || "(blank)";
+                  return (
+                    <li key={`${columnId}-${opt || "(blank)"}`}>
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={checked}
+                        className={cn(
+                          "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
+                          checked && "bg-muted/70",
+                        )}
+                        onClick={() => toggle(opt)}
+                      >
+                        <span
+                          className={cn(
+                            "mt-0.5 flex size-3.5 shrink-0 items-center justify-center rounded-sm border",
+                            checked
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "border-border",
+                          )}
+                          aria-hidden
+                        >
+                          {checked ? <CheckIcon className="size-2.5" strokeWidth={3} /> : null}
+                        </span>
+                        <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">
+                          {text}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })
+              )}
+            </ul>
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
+  );
 }
 
 // Thin TanStack wrapper. `pinLeft` mirrors Grafana panel 83's
@@ -215,7 +375,12 @@ export function DataTable<TData>({
     [table, columnFilters, data, enableColumnFilters],
   );
   const filteredCount = filteredRows.length;
-  const filterActive = enableColumnFilters && columnFilters.some((f) => String(f.value ?? "").trim());
+  const filterActive =
+    enableColumnFilters &&
+    columnFilters.some((f) => {
+      if (Array.isArray(f.value)) return f.value.length > 0;
+      return String(f.value ?? "").trim().length > 0;
+    });
 
   useEffect(() => {
     onFilteredRowsChange?.(filteredRows);
@@ -226,8 +391,15 @@ export function DataTable<TData>({
     let spend = 0;
     let earned = 0;
     for (const r of filteredRows as Record<string, unknown>[]) {
-      // Align caption with Accounting KPIs: skip internal transfers.
-      if (r.is_internal === true || r.internal_label === "yes") continue;
+      // S1: business-only strip — skip excluded / legacy internal even if rows visible.
+      if (
+        r.excluded === true ||
+        r.excluded_label === "yes" ||
+        r.is_internal === true ||
+        r.internal_label === "yes"
+      ) {
+        continue;
+      }
       const s = r.spend;
       const e = r.earned;
       if (typeof s === "number" && !Number.isNaN(s)) spend += s;
@@ -236,6 +408,47 @@ export function DataTable<TData>({
     return { spend, earned };
   }, [enableColumnFilters, filteredRows]);
 
+  const multiOptionsByCol = useMemo(() => {
+    const map = new Map<string, string[]>();
+    if (!enableColumnFilters) return map;
+    const rows = data as Record<string, unknown>[];
+    for (const col of columns) {
+      const id =
+        (col as { accessorKey?: string; id?: string }).accessorKey ||
+        (col as { id?: string }).id;
+      if (!id) continue;
+      const meta = col.meta as { filterVariant?: string } | undefined;
+      if (meta?.filterVariant !== "multi") continue;
+
+      const selected = columnFilters.find((f) => f.id === id)?.value;
+      map.set(id, facetedMultiOptions(rows, id, columnFilters, selected));
+    }
+    return map;
+  }, [columns, data, enableColumnFilters, columnFilters]);
+
+  // Drop multi-select choices that no longer appear in the faceted option set
+  // (e.g. subcategory after narrowing Category).
+  useEffect(() => {
+    if (!enableColumnFilters || multiOptionsByCol.size === 0) return;
+    let changed = false;
+    const next: ColumnFiltersState = [];
+    for (const f of columnFilters) {
+      const opts = multiOptionsByCol.get(f.id);
+      if (!opts || !Array.isArray(f.value)) {
+        next.push(f);
+        continue;
+      }
+      const allow = new Set(opts);
+      const pruned = (f.value as string[]).filter((v) => allow.has(String(v)));
+      if (pruned.length !== (f.value as string[]).length) {
+        changed = true;
+        if (pruned.length) next.push({ ...f, value: pruned });
+        continue;
+      }
+      next.push(f);
+    }
+    if (changed) setColumnFilters(next);
+  }, [columnFilters, enableColumnFilters, multiOptionsByCol]);
   function rowClassName(row: TData): string | undefined {
     if (!rowHighlight) return undefined;
     const rules = Array.isArray(rowHighlight) ? rowHighlight : [rowHighlight];
@@ -356,14 +569,30 @@ export function DataTable<TData>({
                           flexRender(header.column.columnDef.header, header.getContext())
                         )}
                         {showFilter ? (
-                          <Input
-                            value={String(header.column.getFilterValue() ?? "")}
-                            onChange={(e) => header.column.setFilterValue(e.target.value)}
-                            onClick={(e) => e.stopPropagation()}
-                            placeholder="Filter…"
-                            className="h-7 w-full min-w-0 px-2 text-xs font-normal"
-                            aria-label={`Filter ${String(header.column.columnDef.header)}`}
-                          />
+                          meta?.filterVariant === "multi" ? (
+                            <MultiSelectFilter
+                              columnId={header.column.id}
+                              label={String(header.column.columnDef.header)}
+                              options={multiOptionsByCol.get(header.column.id) || []}
+                              value={
+                                Array.isArray(header.column.getFilterValue())
+                                  ? (header.column.getFilterValue() as string[])
+                                  : []
+                              }
+                              onChange={(next) =>
+                                header.column.setFilterValue(next.length ? next : undefined)
+                              }
+                            />
+                          ) : (
+                            <Input
+                              value={String(header.column.getFilterValue() ?? "")}
+                              onChange={(e) => header.column.setFilterValue(e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              placeholder="Filter…"
+                              className="h-7 w-full min-w-0 px-2 text-xs font-normal"
+                              aria-label={`Filter ${String(header.column.columnDef.header)}`}
+                            />
+                          )
                         ) : null}
                       </div>
                     </TableHead>

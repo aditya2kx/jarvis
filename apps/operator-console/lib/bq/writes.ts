@@ -539,14 +539,23 @@ export async function setPlaidTransactionInternal(
   );
 }
 
-/** Batch-set is_internal=TRUE for heuristic matches (never clears an operator un-mark). */
+/** Batch-flag transfer legs: mirror is_internal + assign Internal transfers category. */
 export async function markPlaidTransactionsInternal(ids: string[]): Promise<number> {
   if (!ids.length) return 0;
   await mutate(
     `UPDATE ${fq("plaid_transactions")}
-     SET is_internal = TRUE, updated_at = CURRENT_TIMESTAMP()
+     SET is_internal = TRUE,
+         category_id = 'internal_transfers',
+         subcategory_id = NULL,
+         rule_id = NULL,
+         categorized_at = CURRENT_TIMESTAMP(),
+         updated_at = CURRENT_TIMESTAMP()
      WHERE transaction_id IN UNNEST(@ids)
-       AND IFNULL(is_internal, FALSE) IS NOT TRUE`,
+       AND override_category_id IS NULL
+       AND (
+         IFNULL(is_internal, FALSE) IS NOT TRUE
+         OR IFNULL(category_id, '') != 'internal_transfers'
+       )`,
     { ids },
   );
   return ids.length;

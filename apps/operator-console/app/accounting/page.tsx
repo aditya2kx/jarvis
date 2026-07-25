@@ -21,6 +21,7 @@ import {
   type AccountingTxnRow,
 } from "@/components/accounting/AccountingLedger";
 import { dateSortKey, formatDollars } from "@/lib/format";
+import { effectiveExcludeFromMap } from "@/lib/plaid/exclude-accounting";
 
 export const dynamic = "force-dynamic";
 
@@ -83,6 +84,12 @@ export default async function AccountingPage({
     error = e instanceof Error ? e.message : String(e);
   }
 
+  const taxNodes = taxonomy.map((n) => ({
+    id: n.id,
+    parent_id: n.parent_id,
+    exclude_from_accounting: n.exclude_from_accounting ?? null,
+  }));
+
   const txnRows: AccountingTxnRow[] = txns.map((t) => {
     const amount = t.amount ?? 0;
     const mask = t.account_mask?.trim() || "";
@@ -111,6 +118,14 @@ export default async function AccountingPage({
         : t.rule_id
           ? t.rule_id
           : null;
+    const leafId =
+      t.override_subcategory_id ||
+      t.subcategory_id ||
+      t.override_category_id ||
+      t.category_id;
+    const excluded =
+      effectiveExcludeFromMap(leafId, taxNodes) ||
+      (isInternal && (!leafId || leafId === "internal_transfers"));
     return {
       transaction_id: t.transaction_id,
       date: t.date,
@@ -125,6 +140,8 @@ export default async function AccountingPage({
       channel: t.payment_channel || "—",
       pending_label: t.pending ? "yes" : "no",
       amount,
+      excluded,
+      excluded_label: excluded ? "yes" : "no",
       is_internal: isInternal,
       internal_label: isInternal ? "yes" : "no",
       category_id: t.override_category_id || t.category_id,
@@ -140,6 +157,7 @@ export default async function AccountingPage({
     id: n.id,
     parent_id: n.parent_id,
     label: n.label,
+    exclude_from_accounting: n.exclude_from_accounting ?? null,
   }));
 
   const ruleList = rules.map((r) => ({
@@ -229,9 +247,9 @@ export default async function AccountingPage({
           )}
           <p className="mt-2 text-xs text-muted-foreground">
             Categories are Palmetto taxonomy (Copilot rules). Click a category for definition +
-            matched rule. Override per row in the explain sheet. Sync / Reapply keeps historical
-            + new txns categorized. Mark checking↔card payments as Internal so Money out is not
-            double-counted.
+            matched rule; Propose rule from the sheet to backfill history. Sync / Reapply keeps
+            historical + new txns categorized. Put transfers / Personal under a category with
+            Exclude from accounting so Money out is not inflated.
           </p>
         </CardContent>
       </Card>

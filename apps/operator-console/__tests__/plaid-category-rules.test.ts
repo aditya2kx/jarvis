@@ -98,4 +98,28 @@ describe("evaluateRules", () => {
     expect(eff.source).toBe("override");
     expect(eff.category_id).toBe("opex");
   });
+
+  it("account_mask constrains match", () => {
+    const rules = [
+      r({
+        id: "card_only",
+        priority: 10,
+        match_pattern: "TollCo",
+        category_id: "personal",
+        account_mask: "1234",
+      }),
+    ];
+    expect(
+      evaluateRules(
+        { name: "TollCo", merchant_name: null, amount: 5, account_mask: "9999" },
+        rules,
+      ),
+    ).toBeNull();
+    expect(
+      evaluateRules(
+        { name: "TollCo", merchant_name: null, amount: 5, account_mask: "1234" },
+        rules,
+      )?.rule_id,
+    ).toBe("card_only");
+  });
 });

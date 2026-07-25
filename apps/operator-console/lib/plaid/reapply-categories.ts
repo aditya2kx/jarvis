@@ -18,6 +18,7 @@ interface RuleRow {
   category_id: string;
   subcategory_id: string | null;
   enabled: boolean | null;
+  account_mask: string | null;
 }
 
 interface TxnRow {
@@ -25,6 +26,7 @@ interface TxnRow {
   name: string | null;
   merchant_name: string | null;
   amount: number;
+  account_mask: string | null;
   category_id: string | null;
   subcategory_id: string | null;
   rule_id: string | null;
@@ -37,7 +39,7 @@ export async function reapplyPlaidCategories(opts?: {
 }): Promise<{ updated: number; unchanged: number; skipped_override: number }> {
   const ruleRows = await q<RuleRow>(
     `SELECT id, priority, match_field, match_operator, match_pattern,
-            amount_sign, category_id, subcategory_id, enabled
+            amount_sign, category_id, subcategory_id, enabled, account_mask
      FROM \`jarvis-bhaga-prod.bhaga.plaid_category_rules\`
      WHERE IFNULL(enabled, TRUE) IS TRUE
      ORDER BY priority, id`,
@@ -52,19 +54,23 @@ export async function reapplyPlaidCategories(opts?: {
     category_id: r.category_id,
     subcategory_id: r.subcategory_id,
     enabled: r.enabled !== false,
+    account_mask: r.account_mask,
   }));
 
-  let sql = `SELECT transaction_id, name, merchant_name, amount,
-                    category_id, subcategory_id, rule_id, override_category_id
-             FROM \`jarvis-bhaga-prod.bhaga.plaid_transactions\`
+  let sql = `SELECT t.transaction_id, t.name, t.merchant_name, t.amount,
+                    a.mask AS account_mask,
+                    t.category_id, t.subcategory_id, t.rule_id, t.override_category_id
+             FROM \`jarvis-bhaga-prod.bhaga.plaid_transactions\` t
+             LEFT JOIN \`jarvis-bhaga-prod.bhaga.plaid_accounts\` a
+               ON a.account_id = t.account_id
              WHERE 1=1`;
   const params: Record<string, unknown> = {};
   if (opts?.itemId) {
-    sql += ` AND item_id = @item_id`;
+    sql += ` AND t.item_id = @item_id`;
     params.item_id = opts.itemId;
   }
   if (opts?.transactionIds?.length) {
-    sql += ` AND transaction_id IN UNNEST(@ids)`;
+    sql += ` AND t.transaction_id IN UNNEST(@ids)`;
     params.ids = opts.transactionIds;
   }
 
@@ -80,7 +86,12 @@ export async function reapplyPlaidCategories(opts?: {
       continue;
     }
     const match = evaluateRules(
-      { name: t.name, merchant_name: t.merchant_name, amount: t.amount },
+      {
+        name: t.name,
+        merchant_name: t.merchant_name,
+        amount: t.amount,
+        account_mask: t.account_mask,
+      },
       rules,
     );
     const newCat = match?.category_id ?? null;

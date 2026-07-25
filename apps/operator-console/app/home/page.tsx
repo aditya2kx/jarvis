@@ -6,10 +6,8 @@ import { HealthScorecard } from "@/components/kpi/HealthScorecard";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { GoalsDrawer } from "@/components/drawers/GoalsDrawer";
 import { FilterSelect } from "@/components/filters/FilterSelect";
-import { FilterPills } from "@/components/filters/FilterPills";
 import { RANGE_PRESETS } from "@/lib/filters/range";
 import { resolvePageRange } from "@/lib/filters/period";
-import { LABOR_LENS_OPTIONS, parseLaborLens } from "@/lib/kpi/labor-lens";
 import { FEATURES } from "@/lib/config/features";
 import type { GoalKey } from "@/lib/bq/writes";
 
@@ -18,18 +16,16 @@ export const dynamic = "force-dynamic";
 export default async function HomePage({
   searchParams,
 }: {
-  searchParams: Promise<{ range?: string; lens?: string }>;
+  searchParams: Promise<{ range?: string }>;
 }) {
   const sp = await searchParams;
-  // Cookie + URL keep Period in lockstep with Sales/Labor/… (default this_month).
   const win = await resolvePageRange(sp.range);
-  const lens = parseLaborLens(sp.lens);
 
   let health: HealthScorecardData | undefined;
   let goals: Partial<Record<GoalKey, string>> = {};
   let error: string | undefined;
   try {
-    health = await loadHealthScorecard(win, { laborLens: lens });
+    health = await loadHealthScorecard(win);
     const config = await storeConfig(DEFAULT_STORE);
     goals = Object.fromEntries(
       config.filter((r) => r.key.startsWith("goal_")).map((r) => [r.key as GoalKey, r.value]),
@@ -51,24 +47,16 @@ export default async function HomePage({
               value={win.preset}
               options={RANGE_PRESETS}
               basePath="/home"
-              extraParams={{ lens }}
             />
             {FEATURES.writeGoals ? <GoalsDrawer current={goals} /> : null}
           </div>
         }
       />
 
-      <FilterPills
-        label="Labor lens"
-        param="lens"
-        value={lens}
-        options={LABOR_LENS_OPTIONS}
-        basePath="/home"
-        extraParams={{ range: win.preset }}
-      />
       <p className="text-xs text-muted-foreground">
-        Home Labor always shows completed + blended. Paid lens switches the completed pair to
-        wage + ER burden.
+        Finance and Cost are bank (Plaid) numbers; Sales is Square. Labor shows ADP rate-based PT/FT/Total
+        plus bank payroll (matches Cost). Categories marked exclude-from-accounting are omitted from bank
+        totals.
       </p>
       {error || !health ? (
         <p className="text-sm text-muted-foreground">

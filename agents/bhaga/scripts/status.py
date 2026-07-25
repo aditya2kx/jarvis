@@ -247,6 +247,10 @@ GRAFANA_VIEWS: list[Target] = [
     # vw_plaid_spend_by_category_daily effective-category rewrite (override > rule >
     # null). Console Accounting taxonomy/rules — not model_* / no Grafana panel;
     # no new BQ_TARGETS/GRAFANA_VIEWS (same class as 037/043/044).
+    # migration 047 (Issue #189): exclude_from_accounting on taxonomy; Internal
+    # transfers seed; account_mask on rules; rewrite spend view + add
+    # vw_plaid_money_in_daily. Console-only Home/Accounting — no Grafana panel;
+    # no new BQ_TARGETS/GRAFANA_VIEWS (same class as 037–046).
     # migration 041 (Issue #178 follow-up / PR #180): inventory_order_reco gains
     # delivery_date; vw_order_reco_{slot1,slot2,combined} + tvf_order_reco_* join
     # and filter by delivery_date (> today CT). No new BQ_TARGETS/GRAFANA_VIEWS —

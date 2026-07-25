@@ -21,12 +21,15 @@ export interface CategoryRule {
   category_id: string;
   subcategory_id: string | null;
   enabled: boolean;
+  /** Optional account last-4 / mask constraint (Issue #189). */
+  account_mask?: string | null;
 }
 
 export interface TxnForRules {
   name: string | null;
   merchant_name: string | null;
   amount: number | null;
+  account_mask?: string | null;
   override_category_id?: string | null;
   override_subcategory_id?: string | null;
 }
@@ -83,9 +86,20 @@ function fieldMatches(text: string, operator: MatchOperator, pattern: string): b
   return false;
 }
 
+function accountMaskOk(
+  txnMask: string | null | undefined,
+  ruleMask: string | null | undefined,
+): boolean {
+  const want = (ruleMask || "").replace(/\D/g, "").slice(-4);
+  if (!want) return true;
+  const got = (txnMask || "").replace(/\D/g, "").slice(-4);
+  return got.length === 4 && got === want;
+}
+
 export function ruleMatches(txn: TxnForRules, rule: CategoryRule): boolean {
   if (!rule.enabled) return false;
   if (!amountOk(txn.amount, rule.amount_sign)) return false;
+  if (!accountMaskOk(txn.account_mask, rule.account_mask)) return false;
   const text = haystack(txn, rule.match_field);
   return fieldMatches(text, rule.match_operator, rule.match_pattern);
 }

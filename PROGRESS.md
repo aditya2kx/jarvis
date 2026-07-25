@@ -1,3 +1,12 @@
+## 2026-07-25 — Accounting Copilot UX: exclude-from-accounting + Home bank Finance (Issue #189)
+
+**Scope:** Money Copilot-style propose-rule, taxonomy exclude flag, faceted multi-filters, Home Finance/Sales/Cost/Labor scorecard synced with Accounting.
+
+**Key changes (PR #191):**
+- Migration `047`: `exclude_from_accounting` on taxonomy; seed Internal transfers; `account_mask` on rules; rewrite spend view + `vw_plaid_money_in_daily`; migrate `is_internal` → category.
+- Accounting: Propose rule (preview/select/apply-future/commit/revert); Rules drawer exclude Inherit/Exclude/Include + create parent; Excluded column; no Mark Internal; DataTable multi-select; charts/$ strip business-only (S1).
+- Home: Finance = bank in/out/cash flow; Sales = Square; Cost = dynamic parents; Labor = PT/FT/Total rates + bank payroll twin. Follow-up `/labor` page: #190.
+
 # Jarvis Build Progress
 
 ## 2026-07-24 — Accounting Copilot-style category rules + Palmetto taxonomy (Issue #160)

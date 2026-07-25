@@ -111,9 +111,20 @@ function cashFlowByGrain(
     }));
 }
 
+type SpendChartGrain = "category" | "subcategory";
+
+function spendSeriesLabel(row: AccountingTxnRow, grain: SpendChartGrain): string {
+  const cat = row.category || "Uncategorized";
+  if (grain === "category") return cat;
+  const sub = row.category_detail;
+  if (!sub || sub === "—") return `${cat} · (no subcategory)`;
+  return `${cat} · ${sub}`;
+}
+
 function spendByCategoryGrain(
   rows: AccountingTxnRow[],
   grain: Grain,
+  seriesGrain: SpendChartGrain = "category",
 ): {
   data: { iso: string; date: string; values: Record<string, number> }[];
   series: { key: string; label: string; color: string }[];
@@ -124,7 +135,7 @@ function spendByCategoryGrain(
   for (const r of rows) {
     if (r.excluded) continue;
     if (!(typeof r.spend === "number" && r.spend > 0)) continue;
-    const cat = r.category || "Uncategorized";
+    const cat = spendSeriesLabel(r, seriesGrain);
     totals.set(cat, (totals.get(cat) || 0) + r.spend);
     const bucket = truncateToGrain(r.date, grain);
     let cats = byBucket.get(bucket);
@@ -209,6 +220,7 @@ export function AccountingLedger({
   const [pending, startTransition] = useTransition();
   const [reapplyMsg, setReapplyMsg] = useState<string | null>(null);
   const [chartUnit, setChartUnit] = useState<ChartUnit>("dollars");
+  const [spendChartGrain, setSpendChartGrain] = useState<SpendChartGrain>("category");
 
   const [rulePattern, setRulePattern] = useState("");
   const [ruleAmountSign, setRuleAmountSign] = useState("positive");
@@ -243,8 +255,8 @@ export function AccountingLedger({
   const cashFlow = kpis.earned - kpis.spend;
   const cashChartBase = useMemo(() => cashFlowByGrain(chartRows, grain), [chartRows, grain]);
   const categoryChartBase = useMemo(
-    () => spendByCategoryGrain(chartRows, grain),
-    [chartRows, grain],
+    () => spendByCategoryGrain(chartRows, grain, spendChartGrain),
+    [chartRows, grain, spendChartGrain],
   );
   const asPct = chartUnit === "pct_net_sales";
 
@@ -787,20 +799,50 @@ export function AccountingLedger({
       ) : null}
 
       {categoryChart.data.length && categoryChart.series.length ? (
-        <BarChartCard
-          title={`Spend by category by ${grainLabel}`}
-          subtitle={
-            asPct
-              ? `Each spend category as % of Square net sales for the same ${grainLabel} · warm colors = money leaving (can sum over 100%)`
-              : "Spend categories (warm palette = money leaving) · follows table filters · excludes excluded categories"
-          }
-          data={categoryChart.data}
-          xKey="date"
-          stacked
-          height={300}
-          valueFormat={asPct ? "percent" : "dollars"}
-          series={categoryChart.series}
-        />
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium text-muted-foreground">
+              Spend by {spendChartGrain === "subcategory" ? "subcategory" : "category"} · follows
+              table filters
+            </p>
+            <div className="flex items-center gap-1 rounded-md bg-secondary p-0.5">
+              {(
+                [
+                  { value: "category" as const, label: "Categories" },
+                  { value: "subcategory" as const, label: "Subcategories" },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  className={cn(
+                    "rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+                    spendChartGrain === opt.value
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => setSpendChartGrain(opt.value)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <BarChartCard
+            title={`Spend by ${spendChartGrain === "subcategory" ? "subcategory" : "category"} by ${grainLabel}`}
+            subtitle={
+              asPct
+                ? `Each ${spendChartGrain === "subcategory" ? "subcategory" : "category"} as % of Square net sales for the same ${grainLabel} · follows ledger filters · warm = money leaving`
+                : `Stacked spend · follows ledger filters · excludes excluded categories · top ${TOP_CATEGORY_SERIES} + Other`
+            }
+            data={categoryChart.data}
+            xKey="date"
+            stacked
+            height={300}
+            valueFormat={asPct ? "percent" : "dollars"}
+            series={categoryChart.series}
+          />
+        </div>
       ) : null}
 
       <Card>

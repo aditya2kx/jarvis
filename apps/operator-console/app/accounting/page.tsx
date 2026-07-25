@@ -248,8 +248,8 @@ export default async function AccountingPage({
           <p className="mt-2 text-xs text-muted-foreground">
             Categories are Palmetto taxonomy (Copilot rules). Click a category for definition +
             matched rule; Propose rule from the sheet to backfill history. Sync / Reapply keeps
-            historical + new txns categorized. Mark Internal transfers (or Personal) via category
-            with Exclude from accounting so Money out is not inflated.
+            historical + new txns categorized. Put transfers / Personal under a category with
+            Exclude from accounting so Money out is not inflated.
           </p>
         </CardContent>
       </Card>

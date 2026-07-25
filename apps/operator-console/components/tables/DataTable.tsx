@@ -35,6 +35,7 @@ import { Input } from "@/components/ui/input";
 import { formatDate, formatDollars, formatCents, formatNumber, formatPct } from "@/lib/format";
 import { formatBucket, type Grain } from "@/lib/filters/range";
 import { cn } from "@/lib/utils";
+import { filterTextOrMulti } from "@/lib/tables/column-filter";
 
 // Threshold coloring for numeric/pct/dollars columns (Figma: red/amber/green
 // on p95, % late, Days-left, wage-diff). `warn`/`bad` are in the same unit as
@@ -151,19 +152,7 @@ function filterIncludesString(
   columnId: string,
   filterValue: unknown,
 ): boolean {
-  if (Array.isArray(filterValue)) {
-    if (!filterValue.length) return true;
-    const rowValue = row.getValue(columnId);
-    const cell = rowValue == null || rowValue === "" ? "" : String(rowValue);
-    return filterValue.map(String).includes(cell);
-  }
-  const needle = String(filterValue ?? "")
-    .trim()
-    .toLowerCase();
-  if (!needle) return true;
-  const rowValue = row.getValue(columnId);
-  if (rowValue == null || rowValue === "") return false;
-  return String(rowValue).toLowerCase().includes(needle);
+  return filterTextOrMulti(row.getValue(columnId), filterValue);
 }
 
 function MultiSelectFilter({

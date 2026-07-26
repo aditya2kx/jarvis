@@ -139,12 +139,29 @@ describe("mergePriorSeries", () => {
       false,
       "Net sales",
     );
-    const merged = mergePriorSeries(current, prior, "net_sales");
+    const merged = mergePriorSeries(current, prior, "net_sales", "Prior period", [
+      "Wk of Jul 3",
+      "Wk of Jul 4",
+    ]);
     expect(merged.series.map((s) => s.key)).toEqual(["net_sales", "prior_net_sales"]);
     expect(merged.series[1]?.dashed).toBe(true);
     expect(merged.data).toEqual([
-      { date: "Jul 10", net_sales: 100, prior_net_sales: 80 },
-      { date: "Jul 11", net_sales: 200, prior_net_sales: 90 },
+      { date: "Jul 10", net_sales: 100, prior_net_sales: 80, prior_bucket: "Wk of Jul 3" },
+      { date: "Jul 11", net_sales: 200, prior_net_sales: 90, prior_bucket: "Wk of Jul 4" },
     ]);
+  });
+
+  it("keeps null prior buckets as gaps (not fake zeros)", () => {
+    const current = {
+      data: [{ date: "A", net_sales: 10 }, { date: "B", net_sales: 20 }],
+      series: [{ key: "net_sales", label: "Net sales" }],
+    };
+    const prior = {
+      data: [{ date: "pA", net_sales: null }, { date: "pB", net_sales: 5 }],
+      series: [{ key: "net_sales", label: "Net sales" }],
+    };
+    const merged = mergePriorSeries(current, prior, "net_sales");
+    expect(merged.data[0]?.prior_net_sales).toBeNull();
+    expect(merged.data[1]?.prior_net_sales).toBe(5);
   });
 });

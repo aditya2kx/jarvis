@@ -21,9 +21,15 @@ export function pivotSalesChart(
   metricLabel: string,
 ): { data: Record<string, unknown>[]; series: Series[] } {
   if (!breakdown) {
-    const byDate = new Map<string, number>();
+    const byDate = new Map<string, number | null>();
     for (const r of rows) {
-      byDate.set(r.date, (byDate.get(r.date) ?? 0) + Number(r[metric] ?? 0));
+      const raw = r[metric] as number | null | undefined;
+      if (raw == null) {
+        if (!byDate.has(r.date)) byDate.set(r.date, null);
+        continue;
+      }
+      const prev = byDate.get(r.date);
+      byDate.set(r.date, (prev == null ? 0 : prev) + Number(raw));
     }
     const data = Array.from(byDate.entries()).map(([date, value]) => ({
       date,
@@ -48,12 +54,15 @@ export function pivotSalesChart(
 }
 
 /**
- * Zero-fill missing grain buckets so sparse BQ rows still align for Compare.
- * `rows` may use raw ISO `date` values; returned dates stay ISO (caller formats).
+ * Fill missing grain buckets so sparse BQ rows still align for Compare.
+ * `missing: "zero"` (default) writes 0s — use for the current window.
+ * `missing: "null"` leaves metric fields null so charts gap instead of faking $0
+ * for weeks that never had transactions (e.g. pre-store history).
  */
 export function fillSalesSpine(
   rows: SalesPivotRow[],
   bucketStarts: string[],
+  missing: "zero" | "null" = "zero",
 ): SalesPivotRow[] {
   const byDate = new Map<string, SalesPivotRow>();
   for (const r of rows) {
@@ -68,9 +77,7 @@ export function fillSalesSpine(
         items_sold: Number(r.items_sold) || 0,
       });
     } else {
-      // Aggregate mode may already be one row per date; breakdown keeps source.
       if (r.source && cur.source && r.source !== cur.source) {
-        // Leave breakdown rows as-is — spine fill only for aggregate compare.
         continue;
       }
       cur.net_sales += Number(r.net_sales) || 0;
@@ -78,35 +85,53 @@ export function fillSalesSpine(
       cur.items_sold += Number(r.items_sold) || 0;
     }
   }
-  return bucketStarts.map(
-    (date) =>
-      byDate.get(date) ?? {
+  return bucketStarts.map((date) => {
+    const hit = byDate.get(date);
+    if (hit) return hit;
+    if (missing === "null") {
+      return {
         date,
         source: null,
-        net_sales: 0,
-        orders: 0,
-        items_sold: 0,
-      },
-  );
+        net_sales: null as unknown as number,
+        orders: null as unknown as number,
+        items_sold: null as unknown as number,
+      };
+    }
+    return {
+      date,
+      source: null,
+      net_sales: 0,
+      orders: 0,
+      items_sold: 0,
+    };
+  });
 }
 
 /**
  * Align prior-period aggregate pivot onto current bucket labels by index
  * (same grain length after priorWindow(win, grain) + spine fill). Prior values
  * land under `prior_<metricKey>` with a dashed series — used by Trend + Compare.
+ * Null prior values stay null (gap); optional `priorBucketLabels` drive tooltips.
  */
 export function mergePriorSeries(
   current: { data: Record<string, unknown>[]; series: Series[] },
   prior: { data: Record<string, unknown>[]; series: Series[] },
   metricKey: string,
   priorLabel = "Prior period",
+  priorBucketLabels?: string[],
 ): { data: Record<string, unknown>[]; series: Series[] } {
   const priorKey = `prior_${metricKey}`;
-  const priorByIndex = prior.data.map((row) => Number(row[metricKey] ?? 0));
-  const data = current.data.map((row, i) => ({
-    ...row,
-    [priorKey]: i < priorByIndex.length ? priorByIndex[i]! : null,
-  }));
+  const data = current.data.map((row, i) => {
+    const raw = i < prior.data.length ? prior.data[i]![metricKey] : null;
+    const priorVal = raw == null || Number.isNaN(Number(raw)) ? null : Number(raw);
+    return {
+      ...row,
+      [priorKey]: priorVal,
+      ...(priorBucketLabels?.[i] != null
+        ? { prior_bucket: priorBucketLabels[i] }
+        : {}),
+    };
+  });
   const series: Series[] = [
     ...current.series,
     { key: priorKey, label: priorLabel, dashed: true },

@@ -27,6 +27,7 @@ export interface Series {
 // as a prop since Recharts ReferenceLine needs no extra component).
 export function LineChartCard({
   title,
+  subtitle,
   data,
   xKey,
   series,
@@ -35,6 +36,8 @@ export function LineChartCard({
   height = 260,
 }: {
   title: string;
+  /** Optional second line under the title (e.g. prior window dates). */
+  subtitle?: string;
   data: Record<string, unknown>[];
   xKey: string;
   series: Series[];
@@ -44,8 +47,11 @@ export function LineChartCard({
 }) {
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="gap-1">
         <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        {subtitle ? (
+          <p className="text-xs text-muted-foreground/80">{subtitle}</p>
+        ) : null}
       </CardHeader>
       <CardContent>
         <ResponsiveContainer width="100%" height={height}>
@@ -59,6 +65,19 @@ export function LineChartCard({
                 border: "1px solid var(--border)",
                 fontSize: 12,
               }}
+              labelFormatter={(label, payload) => {
+                const priorBucket = payload?.[0]?.payload?.prior_bucket;
+                if (typeof priorBucket === "string" && priorBucket) {
+                  return `${label}  ·  prior ${priorBucket}`;
+                }
+                return String(label);
+              }}
+              formatter={(value, name) => {
+                if (value == null || value === "") return ["—", name];
+                const n = typeof value === "number" ? value : Number(value);
+                if (Number.isNaN(n)) return ["—", name];
+                return [n.toLocaleString(undefined, { maximumFractionDigits: 2 }), name];
+              }}
             />
             {series.map((s, i) => (
               <Line
@@ -70,7 +89,8 @@ export function LineChartCard({
                 strokeWidth={2}
                 strokeDasharray={s.dashed ? "6 4" : undefined}
                 dot={false}
-                connectNulls
+                // Gaps (null) must not draw a fake flat $0 line across empty history.
+                connectNulls={false}
               />
             ))}
             {goal != null ? (

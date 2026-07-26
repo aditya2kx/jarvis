@@ -109,18 +109,35 @@ export default async function SalesPage({
   let itemsChart = pivotSalesChart(chartRows, "items_sold", breakdown, "Items sold");
 
   if (compare && prior) {
-    const priorFilled = fillSalesSpine(priorRows, enumerateBucketStarts(prior, grain));
+    const priorBuckets = enumerateBucketStarts(prior, grain);
+    const priorFilled = fillSalesSpine(priorRows, priorBuckets, "null");
     const priorChartRows = priorFilled.map((r) => ({
       ...r,
       date: formatBucket(r.date, grain),
     }));
+    const priorLabels = priorBuckets.map((iso) => formatBucket(iso, grain));
     const priorNet = pivotSalesChart(priorChartRows, "net_sales", false, "Net sales");
     const priorOrders = pivotSalesChart(priorChartRows, "orders", false, "Orders");
     const priorItems = pivotSalesChart(priorChartRows, "items_sold", false, "Items sold");
-    netChart = mergePriorSeries(netChart, priorNet, "net_sales");
-    ordersChart = mergePriorSeries(ordersChart, priorOrders, "orders");
-    itemsChart = mergePriorSeries(itemsChart, priorItems, "items_sold");
+    netChart = mergePriorSeries(netChart, priorNet, "net_sales", "Prior period", priorLabels);
+    ordersChart = mergePriorSeries(
+      ordersChart,
+      priorOrders,
+      "orders",
+      "Prior period",
+      priorLabels,
+    );
+    itemsChart = mergePriorSeries(
+      itemsChart,
+      priorItems,
+      "items_sold",
+      "Prior period",
+      priorLabels,
+    );
   }
+
+  const priorSubtitle =
+    compare && prior ? `Prior window ${prior.start} → ${prior.end} (aligned by ${grain})` : undefined;
 
   // Detail table is always aggregated (one row per bucket) even when charts
   // break down by source — keeps the table readable; charts carry the split.
@@ -339,18 +356,21 @@ export default async function SalesPage({
         <>
           <LineChartCard
             title={`Net sales by ${grain}${compare ? " vs prior" : ""}`}
+            subtitle={priorSubtitle}
             data={netChart.data}
             xKey="date"
             series={netChart.series}
           />
           <LineChartCard
             title={`Orders by ${grain}${compare ? " vs prior" : ""}`}
+            subtitle={priorSubtitle}
             data={ordersChart.data}
             xKey="date"
             series={ordersChart.series}
           />
           <LineChartCard
             title={`Items sold by ${grain}${compare ? " vs prior" : ""}`}
+            subtitle={priorSubtitle}
             data={itemsChart.data}
             xKey="date"
             series={itemsChart.series}

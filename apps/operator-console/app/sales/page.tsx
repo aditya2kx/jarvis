@@ -2,8 +2,9 @@ import { salesByGrain, salesSourceOptions, storeConfig } from "@/lib/bq/queries"
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
-import { pivotSalesChart } from "@/lib/charts/sales-pivot";
+import { mergePriorSeries, pivotSalesChart } from "@/lib/charts/sales-pivot";
 import { BarChartCard } from "@/components/charts/BarChartCard";
+import { LineChartCard } from "@/components/charts/LineChartCard";
 import { DataTable } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { FilterSelect } from "@/components/filters/FilterSelect";
@@ -11,9 +12,19 @@ import { FilterMultiSelect } from "@/components/filters/FilterMultiSelect";
 import { FilterPills } from "@/components/filters/FilterPills";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
-import { RANGE_PRESETS, formatBucket, parseGrain, wantsCustom } from "@/lib/filters/range";
+import {
+  RANGE_PRESETS,
+  formatBucket,
+  priorWindow,
+  wantsCustom,
+} from "@/lib/filters/range";
+import {
+  assertModeFilterCoherence,
+  parseChartMode,
+  parseCompare,
+} from "@/lib/filters/chart-mode";
 import { parseBreakdown, parseSources, serializeSources } from "@/lib/filters/sources";
-import { resolvePageRange } from "@/lib/filters/period";
+import { resolvePageGrain, resolvePageRange } from "@/lib/filters/period";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { SalesBySourceRow } from "@/lib/bq/queries";
 
@@ -22,6 +33,7 @@ export const dynamic = "force-dynamic";
 // Net sales, orders, and items by Square source — reads square_transactions
 // (+ item_lines) so the Source multi-select and breakdown toggle work.
 // Home/Labor still use vw_model_labor_daily (no source dimension).
+// Composition = bars (+ optional by-source stacks); Trend = lines (+ optional prior).
 export default async function SalesPage({
   searchParams,
 }: {
@@ -32,30 +44,46 @@ export default async function SalesPage({
     grain?: string;
     sources?: string;
     breakdown?: string;
+    mode?: string;
+    compare?: string;
   }>;
 }) {
   const sp = await searchParams;
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
-  const grain = parseGrain(sp.grain);
+  const grain = await resolvePageGrain(sp.grain);
   const sources = parseSources(sp.sources);
-  const breakdown = parseBreakdown(sp.breakdown);
-  const showCustomPicker = wantsCustom(sp.range);
-  const dateParams: Record<string, string> = win.preset === "custom" ? { from: win.start, to: win.end } : {};
+  const modeRaw = parseChartMode(sp.mode);
+  const coherent = assertModeFilterCoherence(
+    modeRaw,
+    parseBreakdown(sp.breakdown),
+    parseCompare(sp.compare),
+  );
+  const { mode, breakdown, compare } = coherent;
+  const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
+  const dateParams: Record<string, string> =
+    win.preset === "custom" ? { from: win.start, to: win.end } : {};
   const sourcesParam = serializeSources(sources);
   const breakdownParam = breakdown ? "1" : "0";
+  const compareParam = compare ? "1" : "0";
+  const modeParam = mode;
 
   let rows: SalesBySourceRow[] = [];
+  let priorRows: SalesBySourceRow[] = [];
   let sourceOptions: string[] = [];
   let goalWeekly: number | undefined;
   let error: string | undefined;
   try {
-    const [sales, opts, config] = await Promise.all([
-      // Always fetch by-source when breakdown is on; otherwise aggregate.
+    const prior = compare ? priorWindow(win) : null;
+    const [sales, opts, config, priorSales] = await Promise.all([
       salesByGrain(win, grain, sources, breakdown),
       salesSourceOptions(win),
       storeConfig(DEFAULT_STORE),
+      prior
+        ? salesByGrain(prior, grain, sources, false)
+        : Promise.resolve([] as SalesBySourceRow[]),
     ]);
     rows = sales;
+    priorRows = priorSales;
     sourceOptions = opts.map((r) => r.source);
     const g = config.find((r) => r.key === "goal_net_sales_weekly");
     goalWeekly = g ? Number(g.value) / 7 : undefined;
@@ -68,10 +96,26 @@ export default async function SalesPage({
     ...r,
     date: formatBucket(r.date, grain),
   }));
+  const priorSorted = [...priorRows].sort((a, b) =>
+    dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1,
+  );
+  const priorChartRows = priorSorted.map((r) => ({
+    ...r,
+    date: formatBucket(r.date, grain),
+  }));
 
-  const netChart = pivotSalesChart(chartRows, "net_sales", breakdown, "Net sales");
-  const ordersChart = pivotSalesChart(chartRows, "orders", breakdown, "Orders");
-  const itemsChart = pivotSalesChart(chartRows, "items_sold", breakdown, "Items sold");
+  let netChart = pivotSalesChart(chartRows, "net_sales", breakdown, "Net sales");
+  let ordersChart = pivotSalesChart(chartRows, "orders", breakdown, "Orders");
+  let itemsChart = pivotSalesChart(chartRows, "items_sold", breakdown, "Items sold");
+
+  if (compare) {
+    const priorNet = pivotSalesChart(priorChartRows, "net_sales", false, "Net sales");
+    const priorOrders = pivotSalesChart(priorChartRows, "orders", false, "Orders");
+    const priorItems = pivotSalesChart(priorChartRows, "items_sold", false, "Items sold");
+    netChart = mergePriorSeries(netChart, priorNet, "net_sales");
+    ordersChart = mergePriorSeries(ordersChart, priorOrders, "orders");
+    itemsChart = mergePriorSeries(itemsChart, priorItems, "items_sold");
+  }
 
   // Detail table is always aggregated (one row per bucket) even when charts
   // break down by source — keeps the table readable; charts carry the split.
@@ -109,13 +153,9 @@ export default async function SalesPage({
     { accessorKey: "avg_order_price", header: "AOV", meta: { format: { kind: "dollars" } } },
   ];
 
-  const showGoal = grain === "day" && sources == null && !breakdown;
-  const breakdownExtras: Record<string, string> = {
-    range: win.preset,
-    grain,
-    ...dateParams,
-    ...(sourcesParam ? { sources: sourcesParam } : {}),
-  };
+  const showGoal =
+    mode === "composition" && grain === "day" && sources == null && !breakdown;
+
   const noneSelected = sources != null && sources.length === 0;
   const detailSuffix =
     sources == null
@@ -131,6 +171,23 @@ export default async function SalesPage({
         subtitle={`Net sales, orders, and items sold · ${storeDisplayName(DEFAULT_STORE)}`}
         right={
           <>
+            <FilterPills
+              label="Chart"
+              param="mode"
+              value={modeParam}
+              options={[
+                { value: "composition", label: "Composition" },
+                { value: "trend", label: "Trend" },
+              ]}
+              basePath="/sales"
+              extraParams={{
+                range: win.preset,
+                grain,
+                ...dateParams,
+                ...(sourcesParam ? { sources: sourcesParam } : {}),
+                // Mode switch clears the gated control of the other mode.
+              }}
+            />
             <FilterMultiSelect
               label="Source"
               param="sources"
@@ -140,29 +197,61 @@ export default async function SalesPage({
               extraParams={{
                 range: win.preset,
                 grain,
-                breakdown: breakdownParam,
+                mode: modeParam,
+                ...(mode === "composition"
+                  ? { breakdown: breakdownParam }
+                  : { compare: compareParam }),
                 ...dateParams,
               }}
             />
-            <FilterPills
-              label="View"
-              param="breakdown"
-              value={breakdownParam}
-              options={[
-                { value: "0", label: "Aggregate" },
-                { value: "1", label: "By source" },
-              ]}
-              basePath="/sales"
-              extraParams={breakdownExtras}
-            />
+            {mode === "composition" ? (
+              <FilterPills
+                label="View"
+                param="breakdown"
+                value={breakdownParam}
+                options={[
+                  { value: "0", label: "Aggregate" },
+                  { value: "1", label: "By source" },
+                ]}
+                basePath="/sales"
+                extraParams={{
+                  range: win.preset,
+                  grain,
+                  mode: modeParam,
+                  ...dateParams,
+                  ...(sourcesParam ? { sources: sourcesParam } : {}),
+                }}
+              />
+            ) : (
+              <FilterPills
+                label="Compare"
+                param="compare"
+                value={compareParam}
+                options={[
+                  { value: "0", label: "Off" },
+                  { value: "1", label: "Prior period" },
+                ]}
+                basePath="/sales"
+                extraParams={{
+                  range: win.preset,
+                  grain,
+                  mode: modeParam,
+                  ...dateParams,
+                  ...(sourcesParam ? { sources: sourcesParam } : {}),
+                }}
+              />
+            )}
             <AggregationSelect
               value={grain}
               basePath="/sales"
               extraParams={{
                 range: win.preset,
-                breakdown: breakdownParam,
+                mode: modeParam,
                 ...dateParams,
                 ...(sourcesParam ? { sources: sourcesParam } : {}),
+                ...(mode === "composition"
+                  ? { breakdown: breakdownParam }
+                  : { compare: compareParam }),
               }}
             />
             <FilterSelect
@@ -173,8 +262,11 @@ export default async function SalesPage({
               basePath="/sales"
               extraParams={{
                 grain,
-                breakdown: breakdownParam,
+                mode: modeParam,
                 ...(sourcesParam ? { sources: sourcesParam } : {}),
+                ...(mode === "composition"
+                  ? { breakdown: breakdownParam }
+                  : { compare: compareParam }),
               }}
             />
             {showCustomPicker ? (
@@ -185,8 +277,11 @@ export default async function SalesPage({
                 committed={win.preset === "custom"}
                 extraParams={{
                   grain,
-                  breakdown: breakdownParam,
+                  mode: modeParam,
                   ...(sourcesParam ? { sources: sourcesParam } : {}),
+                  ...(mode === "composition"
+                    ? { breakdown: breakdownParam }
+                    : { compare: compareParam }),
                 }}
               />
             ) : null}
@@ -200,7 +295,7 @@ export default async function SalesPage({
         <p className="text-sm text-muted-foreground">
           No sources selected — pick one or more in Source, or Select all.
         </p>
-      ) : (
+      ) : mode === "composition" ? (
         <>
           <BarChartCard
             title={`Net sales by ${grain}`}
@@ -226,6 +321,34 @@ export default async function SalesPage({
             series={itemsChart.series}
             stacked={breakdown && itemsChart.series.length > 1}
             valueFormat="number"
+          />
+          <div>
+            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
+              {grain === "day" ? "Daily" : grain === "week" ? "Weekly" : "Monthly"} detail
+              {detailSuffix}
+            </h2>
+            <DataTable columns={columns} data={tableRows} />
+          </div>
+        </>
+      ) : (
+        <>
+          <LineChartCard
+            title={`Net sales by ${grain}${compare ? " vs prior" : ""}`}
+            data={netChart.data}
+            xKey="date"
+            series={netChart.series}
+          />
+          <LineChartCard
+            title={`Orders by ${grain}${compare ? " vs prior" : ""}`}
+            data={ordersChart.data}
+            xKey="date"
+            series={ordersChart.series}
+          />
+          <LineChartCard
+            title={`Items sold by ${grain}${compare ? " vs prior" : ""}`}
+            data={itemsChart.data}
+            xKey="date"
+            series={itemsChart.series}
           />
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">

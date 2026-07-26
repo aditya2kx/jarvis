@@ -9,8 +9,8 @@ import { FilterPills } from "@/components/filters/FilterPills";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
-import { RANGE_PRESETS, formatBucket, parseGrain, wantsCustom } from "@/lib/filters/range";
-import { resolvePageRange } from "@/lib/filters/period";
+import { RANGE_PRESETS, formatBucket, wantsCustom } from "@/lib/filters/range";
+import { resolvePageGrain, resolvePageRange } from "@/lib/filters/period";
 import { Badge } from "@/components/ui/badge";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { ForecastExclusionRow, ForecastRow } from "@/lib/bq/queries";
@@ -52,8 +52,8 @@ export default async function ForecastPage({
   // presets as every other Performance screen; Period cookie keeps it
   // aligned with Home/Sales/Labor.
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
-  const grain = parseGrain(sp.grain);
-  const showCustomPicker = wantsCustom(sp.range);
+  const grain = await resolvePageGrain(sp.grain);
+  const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
   const dateParams: Record<string, string> = win.preset === "custom" ? { from: win.start, to: win.end } : {};
   const metric = parseMetric(sp.metric);
   const forecastKey = metric === "orders" ? "forecast_orders" : "forecast_items";

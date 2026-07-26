@@ -26,6 +26,19 @@ export const RANGE_PRESETS: { value: RangePreset; label: string }[] = [
 
 /** Cookie keeps Period aligned across Home / Sales / Labor / Accounting / … */
 export const PERIOD_COOKIE = "oc_range";
+/** Aggregation grain shared across Performance pages that expose Aggregation. */
+export const GRAIN_COOKIE = "oc_grain";
+/** Custom Period bounds — used when PERIOD_COOKIE is `custom`. */
+export const FROM_COOKIE = "oc_from";
+export const TO_COOKIE = "oc_to";
+
+const COOKIE_MAX_AGE = 31536000; // 1y
+
+/** Client-side cookie write used by Period / Aggregation / custom Apply. */
+export function writeFilterCookie(name: string, value: string): void {
+  if (typeof document === "undefined") return;
+  document.cookie = `${name}=${encodeURIComponent(value)};path=/;max-age=${COOKIE_MAX_AGE};SameSite=Lax`;
+}
 
 /** Build a nav href that preserves the current period preset. */
 export function periodHref(
@@ -219,6 +232,32 @@ const GRAIN_VALUES = new Set<string>(GRAINS.map((g) => g.value));
 export function parseGrain(value: string | string[] | undefined, fallback: Grain = "day"): Grain {
   const raw = firstValue(value);
   return raw && GRAIN_VALUES.has(raw) ? (raw as Grain) : fallback;
+}
+
+/**
+ * Prior window of equal inclusive length ending the day before `win.start`.
+ * Preset becomes `custom` (shifted calendar windows are not named presets).
+ */
+export function priorWindow(win: DateWindow): DateWindow {
+  const startParts = win.start.split("-").map(Number);
+  const endParts = win.end.split("-").map(Number);
+  const sy = startParts[0]!;
+  const sm = startParts[1]!;
+  const sd = startParts[2]!;
+  const ey = endParts[0]!;
+  const em = endParts[1]!;
+  const ed = endParts[2]!;
+  const startUtc = toUTC(sy, sm, sd);
+  const endUtc = toUTC(ey, em, ed);
+  const spanDays = Math.round((endUtc.getTime() - startUtc.getTime()) / 86_400_000) + 1;
+  const priorEnd = addDays(sy, sm, sd, -1);
+  const priorStart = addDays(priorEnd.y, priorEnd.m, priorEnd.d, -(spanDays - 1));
+  return {
+    start: fmt(priorStart.y, priorStart.m, priorStart.d),
+    end: fmt(priorEnd.y, priorEnd.m, priorEnd.d),
+    label: "Prior period",
+    preset: "custom",
+  };
 }
 
 // `grain` is never string-interpolated from a request — it is parsed above

@@ -9,8 +9,8 @@ import { FilterPills } from "@/components/filters/FilterPills";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
-import { RANGE_PRESETS, formatBucket, parseGrain, wantsCustom } from "@/lib/filters/range";
-import { resolvePageRange } from "@/lib/filters/period";
+import { RANGE_PRESETS, formatBucket, wantsCustom } from "@/lib/filters/range";
+import { resolvePageGrain, resolvePageRange } from "@/lib/filters/period";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { KdsOrderInvestigationRow, OrderQualityDailyRow } from "@/lib/bq/queries";
 
@@ -54,8 +54,8 @@ export default async function OrderQualityPage({
 }) {
   const sp = await searchParams;
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
-  const grain = parseGrain(sp.grain);
-  const showCustomPicker = wantsCustom(sp.range);
+  const grain = await resolvePageGrain(sp.grain);
+  const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
   const dateParams: Record<string, string> = win.preset === "custom" ? { from: win.start, to: win.end } : {};
   const onTime = parseOnTime(sp.onTime);
   const source = parseSource(sp.source);

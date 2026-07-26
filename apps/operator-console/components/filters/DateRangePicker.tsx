@@ -4,6 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import {
+  FROM_COOKIE,
+  PERIOD_COOKIE,
+  TO_COOKIE,
+  writeFilterCookie,
+} from "@/lib/filters/range";
 
 /**
  * Custom "from"/"to" date inputs for the "Custom…" range preset. Rendered by
@@ -68,6 +74,9 @@ export function DateRangePicker({
 
   function apply() {
     if (!canApply) return;
+    writeFilterCookie(PERIOD_COOKIE, "custom");
+    writeFilterCookie(FROM_COOKIE, draftFrom);
+    writeFilterCookie(TO_COOKIE, draftTo);
     const params = new URLSearchParams({
       ...extraParams,
       range: "custom",

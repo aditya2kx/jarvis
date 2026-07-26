@@ -46,3 +46,27 @@ export function pivotSalesChart(
     .map((k) => ({ key: k, label: k }));
   return { data: Array.from(byDate.values()), series };
 }
+
+/**
+ * Align prior-period aggregate pivot onto current bucket labels by index
+ * (same grain length). Prior values land under `prior_<metricKey>` with a
+ * dashed series — used by Trend + Compare prior.
+ */
+export function mergePriorSeries(
+  current: { data: Record<string, unknown>[]; series: Series[] },
+  prior: { data: Record<string, unknown>[]; series: Series[] },
+  metricKey: string,
+  priorLabel = "Prior period",
+): { data: Record<string, unknown>[]; series: Series[] } {
+  const priorKey = `prior_${metricKey}`;
+  const priorByIndex = prior.data.map((row) => Number(row[metricKey] ?? 0));
+  const data = current.data.map((row, i) => ({
+    ...row,
+    [priorKey]: priorByIndex[i] ?? null,
+  }));
+  const series: Series[] = [
+    ...current.series,
+    { key: priorKey, label: priorLabel, dashed: true },
+  ];
+  return { data, series };
+}

@@ -8,7 +8,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { PERIOD_COOKIE } from "@/lib/filters/range";
+import {
+  GRAIN_COOKIE,
+  PERIOD_COOKIE,
+  writeFilterCookie,
+} from "@/lib/filters/range";
 import type { FilterOption } from "./FilterPills";
 
 /**
@@ -38,9 +42,11 @@ export function FilterSelect({
 
   function onChange(next: string | null) {
     if (next == null) return;
-    // Keep Period in lockstep across nav pages (Home / Sales / Labor / …).
-    if (param === "range" && next !== "custom") {
-      document.cookie = `${PERIOD_COOKIE}=${encodeURIComponent(next)};path=/;max-age=31536000;SameSite=Lax`;
+    // Keep Period / Aggregation in lockstep across nav pages.
+    if (param === "range") {
+      writeFilterCookie(PERIOD_COOKIE, next);
+    } else if (param === "grain") {
+      writeFilterCookie(GRAIN_COOKIE, next);
     }
     const params = new URLSearchParams({ ...extraParams, [param]: next });
     router.push(`${basePath}?${params.toString()}`);

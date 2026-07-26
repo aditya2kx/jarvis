@@ -162,7 +162,7 @@ flowchart TD
 |---|---|---|
 | **Home** (Goal and Tracking) | labor/sales (`vw_model_labor_daily`), **Finance** bank in/out/cash flow (`vw_plaid_money_in_daily` + spend view, exclude-from-accounting), **Cost** taxonomy parents, **Labor** PT/FT/Total rates + bank payroll twin; prep p95; bases at risk; goals | Goals → `store_config` |
 | **Accounting** | Square net sales (`vw_model_labor_daily`), Plaid spend/in (`plaid_transactions`, spend + money-in views), `plaid_items`, taxonomy exclude | Plaid Link; category override; propose-rule; taxonomy exclude toggles |
-| **Sales** | `square_transactions` + `square_item_lines` via `salesByGrain` (multi-select `source` filter + Aggregate/By-source stacked breakdown; unfiltered totals match `vw_model_labor_daily`) | — |
+| **Sales** | `square_transactions` + `square_item_lines` via `salesByGrain` (Source multi-select; **Composition** bars with Aggregate/By-source stacks, or **Trend** lines with optional prior-period compare; unfiltered Composition totals match `vw_model_labor_daily`) | — |
 | **Labor** | `vw_model_labor_daily` / `_weekly`, **`laborForwardSummary`** + **`?lens=wage\|paid\|blended`** (Home no longer uses lenses — #189; `/labor` page still does) | — |
 | **Forecast** | `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` | — |
 | **Order Quality** | `vw_order_quality_daily`, `vw_kds_order_quality_by_source_daily` | — |
@@ -363,13 +363,19 @@ two read clients of one warehouse, not two warehouses.
 ## 12. Date range + aggregation
 
 Every Performance screen (Sales, Labor, Forecast, Order Quality) shares one
-range/grain contract from `lib/filters/range.ts`:
+range/grain contract from `lib/filters/range.ts` + `lib/filters/period.ts`:
 
+- **Cross-page persistence**: Period is stored in cookie `oc_range` (and
+  `oc_from`/`oc_to` when custom). Aggregation is stored in `oc_grain`.
+  `resolvePageRange` / `resolvePageGrain` prefer URL params, then cookies,
+  then defaults (`this_month` / `day`). Home exposes Period only; Performance
+  pages that show Aggregation inherit the shared grain cookie when the URL
+  omits `?grain=`.
 - **Range**: the 6 calendar presets (`7d`/`30d`/`this_week`/`this_month`/
   `last_week`/`last_month`, Monday-start weeks, America/Chicago) plus
   `custom`, which reads `?from=&to=` (two `<input type="date">`s in
   `DateRangePicker`) instead of a fixed window. Invalid/missing custom bounds
-  fall back to the `30d` default — never a thrown error on a malformed URL.
+  fall back to the page default — never a thrown error on a malformed URL.
 - **Grain** (`day`/`week`/`month`, `AggregationSelect`): NOT a bind param —
   `bucketSql(grain)` returns one of three **whitelisted** SQL fragments
   (`date`, `DATE_TRUNC(date, WEEK(MONDAY))`, `DATE_TRUNC(date, MONTH)`),
@@ -379,6 +385,12 @@ range/grain contract from `lib/filters/range.ts`:
   `Date`/`Intl.DateTimeFormat` — those convert through UTC and shift the
   displayed calendar date by up to a day (and, for month grain, sometimes
   the wrong month) once a timezone offset is applied.
+- **Sales chart modes** (`mode=composition|trend`): Composition uses bar
+  charts and may stack by Source (`breakdown=1`). Trend uses line charts and
+  may overlay a prior-period series (`compare=1`, equal-length window ending
+  the day before the current start). Breakdown and Compare are mutually
+  exclusive (mode switch clears the other). Goal line only in Composition
+  at day grain with all sources and no breakdown.
 - **Rollup correctness**: additive metrics (`net_sales`, `orders`,
   `total_hours`, …) are `SUM()`-ed per bucket in `lib/bq/queries.ts`
   (`laborByGrain`, `forecastByGrain`, `forecastAccuracyByGrain`); ratios

@@ -39,8 +39,9 @@ function seedChoice(row: UsageDayAuditRow): OverrideDraftChoice {
 }
 
 /**
- * Right-side editor for one closing date — draft locally, write only on Apply
- * (same confirm pattern as Restock / Tip Exemptions).
+ * Right-side editor for one closing date — same Sheet pattern as Restock /
+ * Goals (mount only while open so closed state never reserves layout).
+ * Draft locally; write only on Apply.
  */
 export function UsageDayOverrideDrawer({
   open,
@@ -92,11 +93,21 @@ export function UsageDayOverrideDrawer({
     if (ack.ok) onOpenChange(false);
   }
 
+  // Critical: do not keep Sheet/Portal mounted when closed — Base UI can leave
+  // a right-side panel / overlay that steals viewport width (Issue #194).
+  if (!open || !date) return null;
+
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="flex w-full max-w-md flex-col overflow-hidden sm:max-w-lg">
+    <Sheet
+      open
+      onOpenChange={(next) => {
+        onOpenChange(next);
+      }}
+    >
+      {/* Match RestockImportDrawer / GoalsDrawer SheetContent classes. */}
+      <SheetContent className="w-full max-w-lg overflow-y-auto">
         <SheetHeader>
-          <SheetTitle>Usage overrides · {date ?? "—"}</SheetTitle>
+          <SheetTitle>Usage overrides · {date}</SheetTitle>
           <SheetDescription>
             Nothing writes until Apply. Force include adds this day to the usage
             baseline (median / low / high bars); force exclude removes it. Preview
@@ -104,7 +115,7 @@ export function UsageDayOverrideDrawer({
           </SheetDescription>
         </SheetHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 pb-2">
+        <div className="flex flex-col gap-4 px-4 pb-2">
           {!dayRows.length ? (
             <p className="text-sm text-muted-foreground">No readings for this date.</p>
           ) : (
@@ -143,7 +154,7 @@ export function UsageDayOverrideDrawer({
                           }));
                         }}
                       >
-                        <SelectTrigger className="h-9">
+                        <SelectTrigger className="h-9 w-full">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -169,7 +180,7 @@ export function UsageDayOverrideDrawer({
           )}
         </div>
 
-        <SheetFooter className="gap-2 border-t border-border pt-3">
+        <SheetFooter className="gap-2">
           {(stage || error) && (
             <p
               className={`mr-auto text-xs ${error ? "text-destructive" : "text-muted-foreground"}`}
@@ -177,17 +188,19 @@ export function UsageDayOverrideDrawer({
               {error || stage}
             </p>
           )}
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
-            Cancel
-          </Button>
-          {writable ? (
-            <Button
-              onClick={() => void handleApply()}
-              disabled={isPending || dirty.length === 0}
-            >
-              {isPending ? "Applying…" : dirty.length ? `Apply (${dirty.length})` : "Apply"}
+          <div className="flex w-full justify-end gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
+              Cancel
             </Button>
-          ) : null}
+            {writable ? (
+              <Button
+                onClick={() => void handleApply()}
+                disabled={isPending || dirty.length === 0}
+              >
+                {isPending ? "Applying…" : dirty.length ? `Apply (${dirty.length})` : "Apply"}
+              </Button>
+            ) : null}
+          </div>
         </SheetFooter>
       </SheetContent>
     </Sheet>

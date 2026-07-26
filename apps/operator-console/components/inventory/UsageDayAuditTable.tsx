@@ -53,7 +53,7 @@ export function UsageDayAuditTable({
   return (
     <>
       <div
-        className={`overflow-auto rounded-lg border border-border ${TABLE_MAX_H}`}
+        className={`max-w-full min-w-0 overflow-auto rounded-lg border border-border ${TABLE_MAX_H}`}
         data-testid="usage-day-audit"
       >
         <table className="w-max min-w-full border-collapse text-left text-sm">

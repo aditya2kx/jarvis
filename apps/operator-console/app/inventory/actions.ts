@@ -6,7 +6,11 @@ import {
   submitRestock,
   setConfig,
   replaceEstimatedRestockDate,
+  setUsageDayOverride,
+  clearUsageDayOverride,
+  readUsageDayAuditRow,
   type RestockAction,
+  type UsageDayOverrideMode,
 } from "@/lib/bq/writes";
 import type { RestockRow } from "@/lib/restock/parse";
 import { okAck, failAck, type ActionAck } from "@/lib/actions/types";
@@ -72,6 +76,55 @@ export async function setCapacityAction(maxTubs: number): Promise<ActionAck> {
     return okAck({
       message: queued ? "Capacity saved — recommendation refreshing…" : "Capacity saved.",
       queued,
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+export async function setUsageDayOverrideAction(
+  item: string,
+  submittedDate: string,
+  mode: UsageDayOverrideMode,
+): Promise<ActionAck> {
+  if (!FEATURES.writeInventoryDayOverrides) {
+    return failAck(new Error("Usage day overrides are disabled"));
+  }
+  try {
+    const by = await operatorEmail();
+    await setUsageDayOverride(DEFAULT_STORE, item, submittedDate, mode, by);
+    const queued = await maybeQueueOrderReco();
+    const preview = await readUsageDayAuditRow(DEFAULT_STORE, item, submittedDate);
+    revalidatePath("/inventory");
+    return okAck({
+      message: queued
+        ? `Override ${mode} saved — recommendation refreshing…`
+        : `Override ${mode} saved.`,
+      queued,
+      data: preview,
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+export async function clearUsageDayOverrideAction(
+  item: string,
+  submittedDate: string,
+): Promise<ActionAck> {
+  if (!FEATURES.writeInventoryDayOverrides) {
+    return failAck(new Error("Usage day overrides are disabled"));
+  }
+  try {
+    await operatorEmail();
+    await clearUsageDayOverride(DEFAULT_STORE, item, submittedDate);
+    const queued = await maybeQueueOrderReco();
+    const preview = await readUsageDayAuditRow(DEFAULT_STORE, item, submittedDate);
+    revalidatePath("/inventory");
+    return okAck({
+      message: queued ? "Override cleared — recommendation refreshing…" : "Override cleared.",
+      queued,
+      data: preview,
     });
   } catch (e) {
     return failAck(e);

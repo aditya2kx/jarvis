@@ -12,6 +12,8 @@ export const MUTATING_ACTIONS = [
   { name: "submitRestockAction", page: "inventory", heavy: "order-reco" },
   { name: "replaceEstimatedRestockDateAction", page: "inventory", heavy: "order-reco" },
   { name: "setCapacityAction", page: "inventory", heavy: "order-reco" },
+  { name: "setUsageDayOverrideAction", page: "inventory", heavy: "order-reco" },
+  { name: "clearUsageDayOverrideAction", page: "inventory", heavy: "order-reco" },
   // Payroll
   { name: "addTrainingShiftAction", page: "payroll", heavy: null },
   { name: "addRecognitionBonusAction", page: "payroll", heavy: null },

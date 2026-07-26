@@ -1,4 +1,14 @@
-import { baseRunway, estimatedScheduleDates, nextDates, orderAssistantTable, orderRecoCombined, storeConfig } from "@/lib/bq/queries";
+import {
+  baseRunway,
+  estimatedScheduleDates,
+  nextDates,
+  orderRecoCombined,
+  storeConfig,
+  usageDayAudit,
+  type BaseRunwayRow,
+  type OrderRecoCombinedRow,
+  type UsageDayAuditRow,
+} from "@/lib/bq/queries";
 import { ensureOrderRecoFresh } from "@/lib/bq/writes";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
@@ -8,33 +18,17 @@ import { DataTable, type Thresholds } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { RestockImportDrawer } from "@/components/drawers/RestockImportDrawer";
 import { CapacityEdit } from "@/components/drawers/CapacityEdit";
+import { UsageDayAuditTable } from "@/components/inventory/UsageDayAuditTable";
 import type { ColumnDef } from "@tanstack/react-table";
-import type { BaseRunwayRow, OrderAssistantRow, OrderRecoCombinedRow } from "@/lib/bq/queries";
 
 export const dynamic = "force-dynamic";
 
-// Shared red(<=4)/amber(<=7)/green bands for "days left" across runway +
-// dual-date reco + analytics tables.
 const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-bad" };
 
-// Dual-date Order Assistant (migration 032/041, Grafana panel 83) — Item/Current
-// Qty/Avg per day frozen, one "Source N" badge column pair per registered
-// delivery date. Restock writes go through the RestockImportDrawer's server
-// action, converging with the /bhaga-cloud restock Slack path for the three
-// shared actions; Replace estimated date is console-only.
-//
-// Base runway (migration 036, Issue #164) sits above: burn-down days left
-// from today; Restock 1/2 = up to two future Actuals dates; Status Risky if
-// restock empty or stockout < restock.
-//
-// ensureOrderRecoFresh: if materialized delivery_date rows ≠ live next dates
-// (or refreshed_at CT day is stale), recompute before read so column headers
-// and quantities cannot desync across Chicago midnight. Issue #175: when
-// FEATURES.asyncOrderReco, enqueue a Cloud Run Job instead of blocking paint.
 export default async function InventoryPage() {
   let rows: OrderRecoCombinedRow[] = [];
   let runwayRows: BaseRunwayRow[] = [];
-  let baseRows: OrderAssistantRow[] = [];
+  let auditRows: UsageDayAuditRow[] = [];
   let dates: string[] = [];
   let estimatedDates: string[] = [];
   let maxTubs: number | undefined;
@@ -48,17 +42,17 @@ export default async function InventoryPage() {
         : {},
     );
     recoQueued = ensure.status === "queued";
-    const [reco, nd, config, base, runway, estimated] = await Promise.all([
+    const [reco, nd, config, runway, estimated, audit] = await Promise.all([
       orderRecoCombined(),
       nextDates(),
       storeConfig(DEFAULT_STORE),
-      orderAssistantTable(),
       baseRunway(),
       estimatedScheduleDates(DEFAULT_STORE),
+      usageDayAudit(DEFAULT_STORE),
     ]);
     rows = reco;
     runwayRows = runway;
-    baseRows = base;
+    auditRows = audit;
     dates = nd.map((d) => d.delivery_date);
     estimatedDates = estimated.map((d) => d.delivery_date);
     const maxTubsRow = config.find((c) => c.key === "order_reco_max_tubs");
@@ -110,24 +104,6 @@ export default async function InventoryPage() {
       meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
     },
     { accessorKey: "Source 2", header: "Source", meta: { format: { kind: "source" } } },
-  ];
-
-  // Base Inventory Analytics (Grafana panel 80, single-date usage/day math
-  // that vw_order_reco_combined's dual-date table builds on top of).
-  const baseColumns: ColumnDef<OrderAssistantRow>[] = [
-    { accessorKey: "Item", header: "Item" },
-    { accessorKey: "Current Qty", header: "Current Qty", meta: { format: { kind: "number", digits: 1 } } },
-    { accessorKey: "Reported", header: "Reported" },
-    { accessorKey: "Last Restock", header: "Last restock" },
-    { accessorKey: "Usage 7d", header: "Usage (7d)", meta: { format: { kind: "number", digits: 1 } } },
-    { accessorKey: "Avg per day", header: "Avg/day", meta: { format: { kind: "number", digits: 2 } } },
-    {
-      accessorKey: "Days Left",
-      header: "Days left",
-      meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
-    },
-    { accessorKey: "Days Considered", header: "Days considered" },
-    { accessorKey: "Exclusions", header: "Exclusions" },
   ];
 
   return (
@@ -184,14 +160,20 @@ export default async function InventoryPage() {
           <DataTable columns={columns} data={rows} pinLeft={["Item", "Current Qty", "Avg per day"]} />
 
           <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">Base inventory analytics</h2>
+            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
+              Base usage by day (last 30 days)
+            </h2>
             <p className="mb-2 text-xs text-muted-foreground">
-              Single-date usage/day math (reported qty, 7-day usage, avg/day, days left) that the
-              dual-date recommendation table above is built on. &quot;Days considered&quot; excludes
-              days with a restock or a reporting gap so usage isn&apos;t double-counted; excluded
-              days are listed per item under &quot;Exclusions&quot;.
+              One row per closing date. Included chips are in the usage average; excluded show why
+              (restock, gap, zero usage, outlier, …). Tap a chip to force include/exclude that
+              (base, day) — sticky until cleared; force-include also feeds the outlier bar so
+              similar days may auto-pass later. Preview shows whether tomorrow&apos;s similar Δ
+              would still need an override. Changes recompute order recommendations.
             </p>
-            <DataTable columns={baseColumns} data={baseRows} pinLeft={["Item", "Current Qty"]} />
+            <UsageDayAuditTable
+              rows={auditRows}
+              writable={FEATURES.writeInventoryDayOverrides}
+            />
           </div>
         </>
       )}

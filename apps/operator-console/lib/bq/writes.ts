@@ -681,3 +681,96 @@ export async function upsertPlaidAccount(row: PlaidAccountWrite): Promise<void> 
     },
   );
 }
+
+export type UsageDayOverrideMode = "force_include" | "force_exclude";
+
+export type UsageDayOverridePreview = {
+  item: string;
+  date: string;
+  mode: UsageDayOverrideMode | null;
+  high_bar: number | null;
+  similar_tomorrow_passes: boolean | null;
+  status: string | null;
+  reason: string | null;
+  delta: number | null;
+};
+
+/** MERGE sticky per-day override (Issue #194). */
+export async function setUsageDayOverride(
+  store: string,
+  item: string,
+  submittedDate: string,
+  mode: UsageDayOverrideMode,
+  by: string,
+  note?: string,
+): Promise<void> {
+  await mutate(
+    `MERGE ${fq("inventory_usage_day_overrides")} T
+     USING (SELECT @store AS store, @item AS item, @date AS submitted_date) S
+     ON T.store = S.store AND T.item = S.item AND T.submitted_date = S.submitted_date
+     WHEN MATCHED THEN UPDATE SET
+       mode = @mode, note = @note, updated_by = @by, updated_at = CURRENT_TIMESTAMP()
+     WHEN NOT MATCHED THEN INSERT
+       (store, item, submitted_date, mode, note, updated_by, updated_at)
+       VALUES (@store, @item, @date, @mode, @note, @by, CURRENT_TIMESTAMP())`,
+    {
+      store,
+      item,
+      date: dateParam(submittedDate),
+      mode,
+      note: note ?? null,
+      by,
+    },
+    { note: "STRING" },
+  );
+}
+
+/** Clear override → rule-only eligibility (Issue #194). */
+export async function clearUsageDayOverride(
+  store: string,
+  item: string,
+  submittedDate: string,
+): Promise<void> {
+  await mutate(
+    `DELETE FROM ${fq("inventory_usage_day_overrides")}
+     WHERE store = @store AND item = @item AND submitted_date = @date`,
+    { store, item, date: dateParam(submittedDate) },
+  );
+}
+
+/** Read one audit row after override for threshold preview. */
+export async function readUsageDayAuditRow(
+  store: string,
+  item: string,
+  submittedDate: string,
+): Promise<UsageDayOverridePreview | null> {
+  const rows = await q<{
+    item: string;
+    submitted_date: string;
+    override_mode: string | null;
+    high_bar: number | null;
+    similar_tomorrow_passes: boolean | null;
+    status: string | null;
+    reason: string | null;
+    delta: number | null;
+  }>(
+    `SELECT item, CAST(submitted_date AS STRING) AS submitted_date,
+       override_mode, high_bar, similar_tomorrow_passes, status, reason, delta
+     FROM ${fq("vw_inventory_usage_day_audit")}
+     WHERE store = @store AND item = @item AND submitted_date = @date
+     LIMIT 1`,
+    { store, item, date: dateParam(submittedDate) },
+  );
+  if (!rows.length) return null;
+  const r = rows[0];
+  return {
+    item: r.item,
+    date: r.submitted_date,
+    mode: (r.override_mode as UsageDayOverrideMode | null) ?? null,
+    high_bar: r.high_bar,
+    similar_tomorrow_passes: r.similar_tomorrow_passes,
+    status: r.status,
+    reason: r.reason,
+    delta: r.delta,
+  };
+}

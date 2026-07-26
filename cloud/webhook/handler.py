@@ -31,6 +31,7 @@ Endpoints:
   POST /slack/interactions — Slack interactivity (restock modal view_submission, Issue #137)
   POST /plaid/webhook      — Plaid TRANSACTIONS sync kick (Issue #158)
   POST /plaid/sync         — Cloud Scheduler / manual Plaid sync (X-Plaid-Sync-Token)
+  POST /diag/console-iap   — Public rate-limited IAP fail beacon (Issue #194)
   GET  /health             — Health check for Cloud Run
 """
 
@@ -1839,6 +1840,110 @@ def plaid_sync_kick():
         return Response("unauthorized", status=403)
     _dispatch_async(_plaid_sync_all_items)
     return jsonify({"status": "accepted"})
+
+
+# ---------------------------------------------------------------------------
+# Operator Console IAP fail beacon (Issue #194)
+# ---------------------------------------------------------------------------
+
+_IAP_DIAG_BUCKET: dict[str, list[float]] = {}
+_IAP_DIAG_LOCK = threading.Lock()
+_IAP_DIAG_LIMIT = 20  # requests
+_IAP_DIAG_WINDOW_S = 60.0
+
+
+def _iap_diag_rate_ok(key: str) -> bool:
+    now = time.time()
+    with _IAP_DIAG_LOCK:
+        hits = [t for t in _IAP_DIAG_BUCKET.get(key, []) if now - t < _IAP_DIAG_WINDOW_S]
+        if len(hits) >= _IAP_DIAG_LIMIT:
+            _IAP_DIAG_BUCKET[key] = hits
+            return False
+        hits.append(now)
+        _IAP_DIAG_BUCKET[key] = hits
+        return True
+
+
+def _insert_console_iap_event(row: dict) -> None:
+    """Best-effort insert into jarvis_dev.console_iap_events."""
+    try:
+        from google.cloud import bigquery  # type: ignore[import]
+
+        client = bigquery.Client(project=_BQ_PROJECT)
+        table = f"{_BQ_PROJECT}.jarvis_dev.console_iap_events"
+        client.query(
+            f"""CREATE TABLE IF NOT EXISTS `{table}` (
+              ts TIMESTAMP NOT NULL,
+              event STRING NOT NULL,
+              host STRING,
+              ua STRING,
+              referrer STRING,
+              path STRING,
+              url STRING,
+              note STRING,
+              dual_host BOOL,
+              email_hash STRING
+            )"""
+        ).result()
+        errors = client.insert_rows_json(table, [row])
+        if errors:
+            log.error("console_iap_events insert errors: %s", errors)
+    except Exception as exc:  # noqa: BLE001
+        log.error("console_iap_events insert failed: %s", exc)
+
+
+@app.route("/diag/console-iap", methods=["POST"])
+def diag_console_iap():
+    """Public fail beacon for mobile IAP/Google login errors (Issue #194).
+
+    Optional shared secret: set CONSOLE_IAP_DIAG_TOKEN and send
+    X-Console-Iap-Diag-Token. Rate-limited by IP+UA. Strict body schema —
+    no secrets; url/host/ua/note only.
+    """
+    expected = os.environ.get("CONSOLE_IAP_DIAG_TOKEN", "")
+    if expected:
+        got = request.headers.get("X-Console-Iap-Diag-Token", "")
+        if not hmac.compare_digest(got, expected):
+            return Response("unauthorized", status=403)
+
+    ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "unknown").split(",")[0].strip()
+    ua = (request.headers.get("User-Agent") or "")[:200]
+    if not _iap_diag_rate_ok(f"{ip}|{ua[:80]}"):
+        return Response("rate_limited", status=429)
+
+    payload = request.get_json(force=True, silent=True) or {}
+    if not isinstance(payload, dict):
+        return Response("bad_request", status=400)
+
+    url = payload.get("url")
+    host = payload.get("host")
+    note = payload.get("note")
+    body_ua = payload.get("ua")
+    if url is not None and not isinstance(url, str):
+        return Response("bad_request", status=400)
+    if host is not None and not isinstance(host, str):
+        return Response("bad_request", status=400)
+    if note is not None and not isinstance(note, str):
+        return Response("bad_request", status=400)
+    if body_ua is not None and not isinstance(body_ua, str):
+        return Response("bad_request", status=400)
+
+    import datetime as _dt
+
+    row = {
+        "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "event": "login_fail_report",
+        "host": (host or "")[:200] or None,
+        "ua": (body_ua or ua)[:500] or None,
+        "referrer": None,
+        "path": None,
+        "url": (url or "")[:1000] or None,
+        "note": (note or "")[:500] or None,
+        "dual_host": None,
+        "email_hash": None,
+    }
+    _dispatch_async(_insert_console_iap_event, row)
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------

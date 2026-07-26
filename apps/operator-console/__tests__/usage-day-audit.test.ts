@@ -4,6 +4,7 @@ import {
   formatDelta,
   formatQty,
   groupUsageDayAudit,
+  matrixStatusTag,
   pivotUsageDayAudit,
   previewLine,
   statusTag,
@@ -62,12 +63,12 @@ describe("formatQty / formatDelta / statusTag / previewLine", () => {
     expect(formatDelta(1.5)).toBe("+1.5");
   });
 
-  it("status tags prefer short reason / override", () => {
-    expect(statusTag(row({ item: "A", submitted_date: "2026-07-25", status: "included" }))).toBe(
+  it("matrix tags stay calm; drawer tags may name override", () => {
+    expect(matrixStatusTag(row({ item: "A", submitted_date: "2026-07-25", status: "included" }))).toBe(
       "in avg",
     );
     expect(
-      statusTag(
+      matrixStatusTag(
         row({
           item: "A",
           submitted_date: "2026-07-25",
@@ -76,6 +77,28 @@ describe("formatQty / formatDelta / statusTag / previewLine", () => {
         }),
       ),
     ).toBe("zero usage");
+    expect(
+      matrixStatusTag(
+        row({
+          item: "A",
+          submitted_date: "2026-07-25",
+          status: "excluded",
+          override_mode: "force_exclude",
+          reason: "force_exclude",
+        }),
+      ),
+    ).toBe("excluded");
+    expect(
+      matrixStatusTag(
+        row({
+          item: "A",
+          submitted_date: "2026-07-25",
+          status: "included",
+          override_mode: "force_include",
+          reason: "included",
+        }),
+      ),
+    ).toBe("in avg");
     expect(
       statusTag(
         row({
@@ -86,7 +109,7 @@ describe("formatQty / formatDelta / statusTag / previewLine", () => {
           reason: "force_exclude",
         }),
       ),
-    ).toBe("force out");
+    ).toBe("force exclude");
   });
 
   it("builds threshold preview copy", () => {

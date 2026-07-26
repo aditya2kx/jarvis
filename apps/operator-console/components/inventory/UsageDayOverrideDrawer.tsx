@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/select";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import type { UsageDayAuditRow } from "@/lib/bq/queries";
-import { formatDelta, formatQty, statusTag } from "@/lib/inventory/usageDayAudit";
+import { formatDelta, formatQty, matrixChipVariant, matrixStatusTag } from "@/lib/inventory/usageDayAudit";
 import { applyUsageDayOverridesAction } from "@/app/inventory/actions";
 import type { UsageDayOverrideMode } from "@/lib/bq/writes";
 
@@ -31,15 +31,6 @@ function seedChoice(row: UsageDayAuditRow): OverrideDraftChoice {
   if (row.override_mode === "force_include") return "force_include";
   if (row.override_mode === "force_exclude") return "force_exclude";
   return "rule";
-}
-
-function chipVariant(
-  row: UsageDayAuditRow,
-): "default" | "secondary" | "destructive" | "outline" {
-  if (row.override_mode === "force_include") return "default";
-  if (row.override_mode === "force_exclude") return "destructive";
-  if (row.status === "included") return "secondary";
-  return "outline";
 }
 
 /**
@@ -126,8 +117,8 @@ export function UsageDayOverrideDrawer({
                         {r.delta != null ? ` · Δ ${formatDelta(r.delta)}` : ""}
                       </p>
                     </div>
-                    <Badge variant={chipVariant(r)} className="shrink-0 text-[10px]">
-                      {statusTag(r)}
+                    <Badge variant={matrixChipVariant(r)} className="shrink-0 text-[10px] font-normal">
+                      {matrixStatusTag(r)}
                     </Badge>
                   </div>
                   {writable ? (

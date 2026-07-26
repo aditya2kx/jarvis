@@ -6,22 +6,14 @@ import type { UsageDayAuditRow } from "@/lib/bq/queries";
 import {
   cellKey,
   formatQty,
+  matrixChipVariant,
+  matrixStatusTag,
   pivotUsageDayAudit,
-  statusTag,
 } from "@/lib/inventory/usageDayAudit";
 import { UsageDayOverrideDrawer } from "@/components/inventory/UsageDayOverrideDrawer";
 
 /** ~10 body rows visible; header sticky inside the scrollport. */
 const TABLE_MAX_H = "max-h-[min(36rem,70vh)]";
-
-function chipVariant(
-  row: UsageDayAuditRow,
-): "default" | "secondary" | "destructive" | "outline" {
-  if (row.override_mode === "force_include") return "default";
-  if (row.override_mode === "force_exclude") return "destructive";
-  if (row.status === "included") return "secondary";
-  return "outline";
-}
 
 function BaseCell({ row }: { row: UsageDayAuditRow | undefined }) {
   if (!row) {
@@ -30,8 +22,11 @@ function BaseCell({ row }: { row: UsageDayAuditRow | undefined }) {
   return (
     <div className="flex min-h-10 min-w-[6.5rem] flex-col items-start gap-0.5 px-1.5 py-1">
       <span className="text-sm font-medium tabular-nums">{formatQty(row.qty)}</span>
-      <Badge variant={chipVariant(row)} className="max-w-full truncate text-[10px] leading-tight">
-        {statusTag(row)}
+      <Badge
+        variant={matrixChipVariant(row)}
+        className="max-w-full truncate text-[10px] leading-tight font-normal"
+      >
+        {matrixStatusTag(row)}
       </Badge>
     </div>
   );

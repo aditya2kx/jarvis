@@ -65,15 +65,33 @@ export function formatDelta(delta: number | null | undefined): string {
   return `${sign}${n.toFixed(1)}`;
 }
 
-/** Short status tag for a matrix cell. */
-export function statusTag(row: UsageDayAuditRow): string {
-  if (row.override_mode === "force_include") return "force in";
-  if (row.override_mode === "force_exclude") return "force out";
+/** Calm tag for the matrix only — never "force in/out" (that lives in the drawer). */
+export function matrixStatusTag(row: UsageDayAuditRow): string {
   if (row.status === "included") return "in avg";
   const reason = (row.reason ?? "excluded").trim();
-  // Drop redundant "excluded" prefix from SQL notes when present.
-  if (reason === "included") return "in avg";
+  if (
+    reason === "included" ||
+    reason === "force_include" ||
+    reason === "force_exclude" ||
+    reason === "operator force_exclude" ||
+    reason.startsWith("force_")
+  ) {
+    return "excluded";
+  }
   return reason.length > 18 ? `${reason.slice(0, 16)}…` : reason;
+}
+
+/** Drawer / detail label — may mention sticky override. */
+export function statusTag(row: UsageDayAuditRow): string {
+  if (row.override_mode === "force_include") return "force include";
+  if (row.override_mode === "force_exclude") return "force exclude";
+  return matrixStatusTag(row);
+}
+
+export function matrixChipVariant(
+  row: UsageDayAuditRow,
+): "secondary" | "outline" {
+  return row.status === "included" ? "secondary" : "outline";
 }
 
 export function previewLine(opts: {

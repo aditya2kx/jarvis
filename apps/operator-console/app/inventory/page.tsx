@@ -164,13 +164,9 @@ export default async function InventoryPage() {
               Base usage by day (last 30 days)
             </h2>
             <p className="mb-2 text-xs text-muted-foreground">
-              One row per closing date; one column per base. Each cell shows closing qty that day
-              plus a tag: in avg, or a short exclude reason (zero usage, restock, outlier, …).
-              Compare qty on adjacent dates to sanity-check zero-usage / restock. Date column stays
-              frozen while you scroll bases. Tap a cell to force include/exclude that (base, day)
-              — sticky until cleared; force-include feeds the outlier bar. Preview shows whether
-              tomorrow&apos;s similar Δ would still need an override. Changes recompute order
-              recommendations.
+              One row per closing date; one column per base (qty + in-avg / exclude tag). Table
+              scrolls (~10 rows tall); Date stays frozen. Click a row to open the day editor —
+              set force include/exclude per base, then Apply (nothing writes until then).
             </p>
             <UsageDayAuditTable
               rows={auditRows}

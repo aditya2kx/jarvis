@@ -130,3 +130,42 @@ export async function clearUsageDayOverrideAction(
     return failAck(e);
   }
 }
+
+export type UsageDayOverrideDraft = {
+  item: string;
+  /** `rule` clears any sticky override. */
+  mode: UsageDayOverrideMode | "rule";
+};
+
+/** Batch apply drafts for one date — single reco refresh (Issue #194 drawer). */
+export async function applyUsageDayOverridesAction(
+  submittedDate: string,
+  changes: UsageDayOverrideDraft[],
+): Promise<ActionAck> {
+  if (!FEATURES.writeInventoryDayOverrides) {
+    return failAck(new Error("Usage day overrides are disabled"));
+  }
+  if (!changes.length) {
+    return okAck({ message: "No changes." });
+  }
+  try {
+    const by = await operatorEmail();
+    for (const c of changes) {
+      if (c.mode === "rule") {
+        await clearUsageDayOverride(DEFAULT_STORE, c.item, submittedDate);
+      } else {
+        await setUsageDayOverride(DEFAULT_STORE, c.item, submittedDate, c.mode, by);
+      }
+    }
+    const queued = await maybeQueueOrderReco();
+    revalidatePath("/inventory");
+    return okAck({
+      message: queued
+        ? `Saved ${changes.length} override(s) — averages updating…`
+        : `Saved ${changes.length} override(s).`,
+      queued,
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}

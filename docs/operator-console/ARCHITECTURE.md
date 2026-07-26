@@ -162,7 +162,7 @@ flowchart TD
 |---|---|---|
 | **Home** (Goal and Tracking) | labor/sales (`vw_model_labor_daily`), **Finance** bank in/out/cash flow (`vw_plaid_money_in_daily` + spend view, exclude-from-accounting), **Cost** taxonomy parents, **Labor** PT/FT/Total rates + bank payroll twin; prep p95; bases at risk; goals | Goals → `store_config` |
 | **Accounting** | Square net sales (`vw_model_labor_daily`), Plaid spend/in (`plaid_transactions`, spend + money-in views), `plaid_items`, taxonomy exclude | Plaid Link; category override; propose-rule; taxonomy exclude toggles |
-| **Sales** | `vw_model_labor_daily`, `square_item_daily` | — |
+| **Sales** | `square_transactions` + `square_item_lines` via `salesByGrain` (multi-select `source` filter + Aggregate/By-source stacked breakdown; unfiltered totals match `vw_model_labor_daily`) | — |
 | **Labor** | `vw_model_labor_daily` / `_weekly`, **`laborForwardSummary`** + **`?lens=wage\|paid\|blended`** (Home no longer uses lenses — #189; `/labor` page still does) | — |
 | **Forecast** | `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` | — |
 | **Order Quality** | `vw_order_quality_daily`, `vw_kds_order_quality_by_source_daily` | — |

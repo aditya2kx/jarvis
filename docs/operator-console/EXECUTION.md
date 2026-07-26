@@ -568,7 +568,7 @@ console location. Re-run this table whenever a Grafana panel changes.
 
 | Grafana panel (dashboard.json) | Console location |
 |---|---|
-| Daily Net Sales / Orders / Items | `/sales` chart + detail table (all grains) |
+| Daily Net Sales / Orders / Items | `/sales` bar charts + detail table (all grains); Source multi-select + Aggregate/By-source toggle (#198) |
 | Daily Wages / Net Sales % (total) | `/labor` "Labor % of net sales" chart |
 | Daily Wages / Net Sales % (PT/FT split) | `/labor` "Labor % of net sales" chart (Part-time + Full-time series, §5.5e) |
 | Hours per Item (total) | `/labor` "Hours per item" chart |

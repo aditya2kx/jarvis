@@ -116,7 +116,13 @@ export default async function SalesPage({
     ...dateParams,
     ...(sourcesParam ? { sources: sourcesParam } : {}),
   };
-  const selectedForUi = sources ?? [];
+  const noneSelected = sources != null && sources.length === 0;
+  const detailSuffix =
+    sources == null
+      ? ""
+      : noneSelected
+        ? " · no sources selected"
+        : ` · ${sources.length} source${sources.length === 1 ? "" : "s"}`;
 
   return (
     <div className="flex flex-col gap-4">
@@ -128,7 +134,7 @@ export default async function SalesPage({
             <FilterMultiSelect
               label="Source"
               param="sources"
-              selected={selectedForUi}
+              selected={sources}
               options={sourceOptions}
               basePath="/sales"
               extraParams={{
@@ -190,6 +196,10 @@ export default async function SalesPage({
 
       {error ? (
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
+      ) : noneSelected ? (
+        <p className="text-sm text-muted-foreground">
+          No sources selected — pick one or more in Source, or Select all.
+        </p>
       ) : (
         <>
           <BarChartCard
@@ -220,7 +230,7 @@ export default async function SalesPage({
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">
               {grain === "day" ? "Daily" : grain === "week" ? "Weekly" : "Monthly"} detail
-              {sources ? ` · ${sources.length} source${sources.length === 1 ? "" : "s"}` : ""}
+              {detailSuffix}
             </h2>
             <DataTable columns={columns} data={tableRows} />
           </div>

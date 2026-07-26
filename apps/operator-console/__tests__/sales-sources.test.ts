@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  SOURCES_NONE,
   normalizeSourceSelection,
   parseBreakdown,
   parseSources,
@@ -15,6 +16,10 @@ describe("parseSources", () => {
     expect(parseSources("   ")).toBeNull();
   });
 
+  it("treats __none__ as none selected ([])", () => {
+    expect(parseSources(SOURCES_NONE)).toEqual([]);
+  });
+
   it("splits comma-separated sources and dedupes/sorts", () => {
     expect(parseSources("Uber Eats,DoorDash")).toEqual(["DoorDash", "Uber Eats"]);
     expect(parseSources("DoorDash,DoorDash")).toEqual(["DoorDash"]);
@@ -26,9 +31,12 @@ describe("parseSources", () => {
 });
 
 describe("serializeSources", () => {
-  it("returns empty string for all/null/empty", () => {
+  it("omits the param for all (null)", () => {
     expect(serializeSources(null)).toBe("");
-    expect(serializeSources([])).toBe("");
+  });
+
+  it("encodes none as __none__", () => {
+    expect(serializeSources([])).toBe(SOURCES_NONE);
   });
 
   it("joins selected sources", () => {
@@ -48,8 +56,11 @@ describe("parseBreakdown", () => {
 describe("normalizeSourceSelection", () => {
   const opts = ["Register", "DoorDash", "Uber Eats"];
 
-  it("collapses empty and full selection to all (null)", () => {
-    expect(normalizeSourceSelection([], opts)).toBeNull();
+  it("Clear → none ([]), not all", () => {
+    expect(normalizeSourceSelection([], opts)).toEqual([]);
+  });
+
+  it("Select all → all (null)", () => {
     expect(normalizeSourceSelection([...opts], opts)).toBeNull();
   });
 
@@ -61,10 +72,7 @@ describe("normalizeSourceSelection", () => {
   });
 });
 
-describe("select-all URL contract", () => {
-  // Select All → normalize → null → omit sources param → salesByGrain(allSources).
-  // Empty ARRAY params crash the Node BQ client; the query layer must use a
-  // non-empty sentinel when allSources (covered by the live page smoke).
+describe("select-all / clear URL contract", () => {
   it("Select All serializes to an omitted sources param", () => {
     const normalized = normalizeSourceSelection(
       ["Register", "DoorDash", "Uber Eats"],
@@ -72,6 +80,10 @@ describe("select-all URL contract", () => {
     );
     expect(normalized).toBeNull();
     expect(serializeSources(normalized)).toBe("");
+  });
+
+  it("Clear serializes to sources=__none__", () => {
+    expect(serializeSources(normalizeSourceSelection([], ["Register"]))).toBe(SOURCES_NONE);
   });
 });
 

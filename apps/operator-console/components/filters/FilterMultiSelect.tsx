@@ -13,8 +13,12 @@ import {
 
 /**
  * Page-level multi-select filter driven by URL search params (same contract
- * as FilterSelect / FilterPills). Empty selection or all options selected
- * collapses to "all" (param omitted) so unfiltered totals stay the default.
+ * as FilterSelect / FilterPills).
+ *
+ * Selection model:
+ * - `null` — all sources (default; every checkbox checked)
+ * - `[]` — none (Clear; every checkbox unchecked so the operator can pick a few)
+ * - `string[]` — partial filter
  */
 export function FilterMultiSelect({
   label,
@@ -26,8 +30,8 @@ export function FilterMultiSelect({
 }: {
   label: string;
   param: string;
-  /** Currently selected values; empty array means "all". */
-  selected: string[];
+  /** `null` = all, `[]` = none, otherwise the selected values. */
+  selected: string[] | null;
   options: string[];
   basePath: string;
   extraParams?: Record<string, string>;
@@ -35,12 +39,14 @@ export function FilterMultiSelect({
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const selectedSet = new Set(selected);
-  const active = selected.length > 0;
+  const isAll = selected == null;
+  const isNone = selected != null && selected.length === 0;
+  const selectedSet = new Set(selected ?? []);
   const displayLabel = (() => {
-    if (!active) return "All";
-    if (selected.length === 1) return selected[0];
-    return `${selected.length} selected`;
+    if (isAll) return "All";
+    if (isNone) return "None";
+    if (selected!.length === 1) return selected![0];
+    return `${selected!.length} selected`;
   })();
 
   const filtered = useMemo(() => {
@@ -60,7 +66,7 @@ export function FilterMultiSelect({
     router.push(qs ? `${basePath}?${qs}` : basePath);
   }
 
-  function toggle(opt: string) {
+  function togglePartial(opt: string) {
     const next = new Set(selectedSet);
     if (next.has(opt)) next.delete(opt);
     else next.add(opt);
@@ -84,7 +90,7 @@ export function FilterMultiSelect({
           className={cn(
             "flex h-8 min-w-32 max-w-56 items-center justify-between gap-1 rounded-md border px-2 text-left text-xs font-normal outline-none transition-colors",
             "focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40",
-            active
+            !isAll
               ? "border-primary/50 bg-primary/10 text-foreground"
               : "border-border bg-background text-muted-foreground hover:bg-muted/60 hover:text-foreground",
           )}
@@ -105,7 +111,8 @@ export function FilterMultiSelect({
                 <div className="flex items-center gap-2 text-[11px]">
                   <button
                     type="button"
-                    className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                    className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-40"
+                    disabled={isAll}
                     onClick={() => push([...options])}
                   >
                     Select all
@@ -113,7 +120,7 @@ export function FilterMultiSelect({
                   <button
                     type="button"
                     className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-40"
-                    disabled={!active}
+                    disabled={isNone}
                     onClick={() => push([])}
                   >
                     Clear
@@ -137,7 +144,7 @@ export function FilterMultiSelect({
                   <li className="px-2 py-3 text-center text-xs text-muted-foreground">No matches</li>
                 ) : (
                   filtered.map((opt) => {
-                    const checked = !active || selectedSet.has(opt);
+                    const checked = isAll || selectedSet.has(opt);
                     return (
                       <li key={opt}>
                         <button
@@ -149,13 +156,16 @@ export function FilterMultiSelect({
                             checked && "bg-muted/70",
                           )}
                           onClick={() => {
-                            if (!active) {
-                              // Currently "all" — first click narrows to everything except this
-                              // would be surprising. Instead: start from all, toggle off this one.
+                            if (isAll) {
+                              // Uncheck this one → all others remain selected.
                               push(options.filter((o) => o !== opt));
                               return;
                             }
-                            toggle(opt);
+                            if (isNone) {
+                              push([opt]);
+                              return;
+                            }
+                            togglePartial(opt);
                           }}
                         >
                           <span

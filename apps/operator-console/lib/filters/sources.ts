@@ -1,28 +1,40 @@
 /** Square `square_transactions.source` multi-select + chart breakdown URL params. */
 
+/** URL token for "no sources selected" (distinct from omit/All). */
+export const SOURCES_NONE = "__none__";
+
 function firstValue(v: string | string[] | undefined): string | undefined {
   if (Array.isArray(v)) return v[0];
   return v;
 }
 
 /**
- * Parse `sources` search param. `null` means all sources (no filter).
- * Empty / missing / "All" → null. Comma-separated list → selected set (sorted unique).
+ * Parse `sources` search param.
+ * - `null` — all sources (param missing / "All")
+ * - `[]` — none selected (`sources=__none__`) so Clear can uncheck everything
+ * - `string[]` — filtered set
  */
 export function parseSources(value: string | string[] | undefined): string[] | null {
   const raw = firstValue(value)?.trim();
-  if (!raw || raw === "All") return null;
+  if (raw === undefined || raw === "" || raw === "All") return null;
+  if (raw === SOURCES_NONE) return [];
   const parts = raw
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  if (parts.length === 0) return null;
+  if (parts.length === 0) return [];
   return Array.from(new Set(parts)).sort((a, b) => a.localeCompare(b));
 }
 
-/** Serialize selected sources for the URL. Empty string when all (caller omits param). */
+/**
+ * Serialize for the URL.
+ * - all (`null`) → `""` (caller omits the param)
+ * - none (`[]`) → `__none__`
+ * - partial → comma-joined names
+ */
 export function serializeSources(sources: string[] | null): string {
-  if (sources == null || sources.length === 0) return "";
+  if (sources == null) return "";
+  if (sources.length === 0) return SOURCES_NONE;
   return sources.join(",");
 }
 
@@ -34,14 +46,15 @@ export function parseBreakdown(value: string | string[] | undefined): boolean {
 
 /**
  * Normalize a multi-select choice against the known option list.
- * Selecting none or every option collapses to "all" (null) so the URL stays clean
- * and unfiltered totals match the model rollup.
+ * - empty → none (`[]`) — Clear unchecks everything so the operator can pick a few
+ * - every option → all (`null`) — Select All collapses to the default full-store view
+ * - otherwise → sorted unique partial list
  */
 export function normalizeSourceSelection(
   selected: string[],
   options: string[],
 ): string[] | null {
-  if (selected.length === 0) return null;
+  if (selected.length === 0) return [];
   if (options.length > 0 && selected.length >= options.length) {
     const optSet = new Set(options);
     if (selected.every((s) => optSet.has(s)) && options.every((o) => selected.includes(o))) {

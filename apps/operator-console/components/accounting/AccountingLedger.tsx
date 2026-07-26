@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/tables/DataTable";
@@ -32,6 +32,8 @@ import {
   AccountingRulesDrawer,
   type RuleListItem,
 } from "@/components/accounting/AccountingRulesDrawer";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
+import { okAck } from "@/lib/actions/types";
 
 export interface AccountingTxnRow {
   transaction_id: string;
@@ -217,7 +219,7 @@ export function AccountingLedger({
   const [filtered, setFiltered] = useState<AccountingTxnRow[]>(initialRows);
   const [taxonomyState, setTaxonomy] = useState(taxonomy);
   const [explain, setExplain] = useState<AccountingTxnRow | null>(null);
-  const [pending, startTransition] = useTransition();
+  const { isPending: pending, stage, error, run } = useConsoleAction();
   const [reapplyMsg, setReapplyMsg] = useState<string | null>(null);
   const [chartUnit, setChartUnit] = useState<ChartUnit>("dollars");
   const [spendChartGrain, setSpendChartGrain] = useState<SpendChartGrain>("category");
@@ -368,175 +370,170 @@ export function AccountingLedger({
   }
 
   function applyOverride(txnId: string, categoryId: string | null, subcategoryId: string | null) {
-    startTransition(async () => {
-      try {
-        await setTxnCategoryOverrideAction(txnId, categoryId, subcategoryId);
-        const parent = taxonomyState.find((t) => t.id === categoryId);
-        const child = taxonomyState.find((t) => t.id === subcategoryId);
-        const excluded = resolveExcludedWith(taxonomyState, categoryId, subcategoryId);
-        setRows((prev) =>
-          prev.map((r) =>
-            r.transaction_id === txnId
-              ? {
-                  ...r,
-                  category_id: categoryId,
-                  subcategory_id: subcategoryId,
-                  category: parent?.label || (categoryId ? r.category : "Uncategorized"),
-                  category_detail: child?.label || "—",
-                  is_override: !!categoryId,
-                  rule_id: categoryId ? null : r.rule_id,
-                  rule_summary: categoryId ? null : r.rule_summary,
-                  excluded,
-                  excluded_label: excluded ? "yes" : "no",
-                }
-              : r,
-          ),
-        );
-        setExplain((prev) =>
-          prev && prev.transaction_id === txnId
+    void run(async () => {
+      const ack = await setTxnCategoryOverrideAction(txnId, categoryId, subcategoryId);
+      if (!ack.ok) return ack;
+      const parent = taxonomyState.find((t) => t.id === categoryId);
+      const child = taxonomyState.find((t) => t.id === subcategoryId);
+      const excluded = resolveExcludedWith(taxonomyState, categoryId, subcategoryId);
+      setRows((prev) =>
+        prev.map((r) =>
+          r.transaction_id === txnId
             ? {
-                ...prev,
+                ...r,
                 category_id: categoryId,
                 subcategory_id: subcategoryId,
-                category: parent?.label || (categoryId ? prev.category : "Uncategorized"),
+                category: parent?.label || (categoryId ? r.category : "Uncategorized"),
                 category_detail: child?.label || "—",
                 is_override: !!categoryId,
+                rule_id: categoryId ? null : r.rule_id,
+                rule_summary: categoryId ? null : r.rule_summary,
                 excluded,
                 excluded_label: excluded ? "yes" : "no",
               }
-            : prev,
-        );
-      } catch (e) {
-        console.error(e);
-      }
+            : r,
+        ),
+      );
+      setExplain((prev) =>
+        prev && prev.transaction_id === txnId
+          ? {
+              ...prev,
+              category_id: categoryId,
+              subcategory_id: subcategoryId,
+              category: parent?.label || (categoryId ? prev.category : "Uncategorized"),
+              category_detail: child?.label || "—",
+              is_override: !!categoryId,
+              excluded,
+              excluded_label: excluded ? "yes" : "no",
+            }
+          : prev,
+      );
+      return okAck({ message: "Category updated." });
     });
   }
 
   function setCategoryExcluded(exclude: boolean) {
     if (!explain?.category_id) return;
     const catId = explain.category_id;
-    startTransition(async () => {
-      try {
-        await setTaxonomyExcludeAction(catId, exclude);
-        const nextTax = taxonomyState.map((t) =>
-          t.id === catId ? { ...t, exclude_from_accounting: exclude } : t,
-        );
-        setTaxonomy(nextTax);
-        setRows((prev) =>
-          prev.map((r) => {
-            const nextExcluded = resolveExcludedWith(nextTax, r.category_id, r.subcategory_id);
-            if (r.excluded === nextExcluded) return r;
-            return {
-              ...r,
-              excluded: nextExcluded,
-              excluded_label: nextExcluded ? "yes" : "no",
-            };
-          }),
-        );
-        setExplain((prev) => {
-          if (!prev) return prev;
-          const nextExcluded = resolveExcludedWith(
-            nextTax,
-            prev.category_id,
-            prev.subcategory_id,
-          );
+    void run(async () => {
+      const ack = await setTaxonomyExcludeAction(catId, exclude);
+      if (!ack.ok) return ack;
+      const nextTax = taxonomyState.map((t) =>
+        t.id === catId ? { ...t, exclude_from_accounting: exclude } : t,
+      );
+      setTaxonomy(nextTax);
+      setRows((prev) =>
+        prev.map((r) => {
+          const nextExcluded = resolveExcludedWith(nextTax, r.category_id, r.subcategory_id);
+          if (r.excluded === nextExcluded) return r;
           return {
-            ...prev,
+            ...r,
             excluded: nextExcluded,
             excluded_label: nextExcluded ? "yes" : "no",
           };
-        });
-        setRuleMsg(
-          exclude
-            ? "Category excluded from accounting rollups"
-            : "Category included in accounting rollups",
+        }),
+      );
+      setExplain((prev) => {
+        if (!prev) return prev;
+        const nextExcluded = resolveExcludedWith(
+          nextTax,
+          prev.category_id,
+          prev.subcategory_id,
         );
-      } catch (e) {
-        setRuleMsg(e instanceof Error ? e.message : String(e));
-      }
+        return {
+          ...prev,
+          excluded: nextExcluded,
+          excluded_label: nextExcluded ? "yes" : "no",
+        };
+      });
+      const message = exclude
+        ? "Category excluded from accounting rollups"
+        : "Category included in accounting rollups";
+      setRuleMsg(message);
+      return okAck({ message });
     });
   }
 
   function ensurePersonalAndAssign() {
     if (!explain) return;
     const txnId = explain.transaction_id;
-    startTransition(async () => {
-      try {
-        const id = "personal";
-        await upsertTaxonomyNodeAction({
-          id,
-          parent_id: null,
-          slug: "personal",
-          label: "Personal",
-          enabled: true,
-          exclude_from_accounting: true,
-        });
-        setTaxonomy((prev) => {
-          if (prev.some((t) => t.id === id)) {
-            return prev.map((t) =>
-              t.id === id
-                ? { ...t, exclude_from_accounting: true, label: "Personal" }
-                : t,
-            );
-          }
-          return [
-            ...prev,
-            {
-              id,
-              parent_id: null,
-              label: "Personal",
-              exclude_from_accounting: true,
-            },
-          ];
-        });
-        await setTxnCategoryOverrideAction(txnId, id, null);
-        setRows((prev) =>
-          prev.map((r) =>
-            r.transaction_id === txnId
-              ? {
-                  ...r,
-                  category_id: id,
-                  subcategory_id: null,
-                  category: "Personal",
-                  category_detail: "—",
-                  is_override: true,
-                  rule_id: null,
-                  rule_summary: null,
-                  excluded: true,
-                  excluded_label: "yes",
-                }
-              : r,
-          ),
-        );
-        setExplain((prev) =>
-          prev && prev.transaction_id === txnId
+    void run(async () => {
+      const id = "personal";
+      const upsertAck = await upsertTaxonomyNodeAction({
+        id,
+        parent_id: null,
+        slug: "personal",
+        label: "Personal",
+        enabled: true,
+        exclude_from_accounting: true,
+      });
+      if (!upsertAck.ok) return upsertAck;
+      setTaxonomy((prev) => {
+        if (prev.some((t) => t.id === id)) {
+          return prev.map((t) =>
+            t.id === id
+              ? { ...t, exclude_from_accounting: true, label: "Personal" }
+              : t,
+          );
+        }
+        return [
+          ...prev,
+          {
+            id,
+            parent_id: null,
+            label: "Personal",
+            exclude_from_accounting: true,
+          },
+        ];
+      });
+      const overrideAck = await setTxnCategoryOverrideAction(txnId, id, null);
+      if (!overrideAck.ok) return overrideAck;
+      setRows((prev) =>
+        prev.map((r) =>
+          r.transaction_id === txnId
             ? {
-                ...prev,
+                ...r,
                 category_id: id,
                 subcategory_id: null,
                 category: "Personal",
                 category_detail: "—",
                 is_override: true,
+                rule_id: null,
+                rule_summary: null,
                 excluded: true,
                 excluded_label: "yes",
               }
-            : prev,
-        );
-        setRuleMsg("Assigned to Personal (excluded from accounting)");
-      } catch (e) {
-        setRuleMsg(e instanceof Error ? e.message : String(e));
-      }
+            : r,
+        ),
+      );
+      setExplain((prev) =>
+        prev && prev.transaction_id === txnId
+          ? {
+              ...prev,
+              category_id: id,
+              subcategory_id: null,
+              category: "Personal",
+              category_detail: "—",
+              is_override: true,
+              excluded: true,
+              excluded_label: "yes",
+            }
+          : prev,
+      );
+      setRuleMsg("Assigned to Personal (excluded from accounting)");
+      return okAck({ message: "Assigned to Personal (excluded from accounting)" });
     });
   }
 
   function runReapply() {
-    startTransition(async () => {
-      try {
-        const r = await reapplyPlaidCategoriesAction();
-        setReapplyMsg(`Reapplied: updated ${r.updated}, unchanged ${r.unchanged}`);
-      } catch (e) {
-        setReapplyMsg(e instanceof Error ? e.message : String(e));
-      }
+    void run(async () => {
+      const ack = await reapplyPlaidCategoriesAction();
+      if (!ack.ok) return ack;
+      const r = ack.data!;
+      setReapplyMsg(`Reapplied: updated ${r.updated}, unchanged ${r.unchanged}`);
+      return okAck({
+        message: `Reapplied: updated ${r.updated}, unchanged ${r.unchanged}`,
+      });
     });
   }
 
@@ -545,24 +542,24 @@ export function AccountingLedger({
       setRuleMsg("Select a category first");
       return;
     }
-    startTransition(async () => {
-      try {
-        const matches = await previewRuleMatchesAction({
-          match_pattern: rulePattern,
-          amount_sign: ruleAmountSign,
-          account_mask: ruleAccountMask || null,
-          category_id: explain.category_id!,
-          subcategory_id: explain.subcategory_id,
-        });
-        setRuleMatches(matches);
-        setSelectedTxnIds(
-          new Set(matches.filter((m) => !m.has_override).map((m) => m.transaction_id)),
-        );
-        setRuleMsg(matches.length ? `${matches.length} match(es)` : "No matches");
-        setCommittedRuleId(null);
-      } catch (e) {
-        setRuleMsg(e instanceof Error ? e.message : String(e));
-      }
+    void run(async () => {
+      const ack = await previewRuleMatchesAction({
+        match_pattern: rulePattern,
+        amount_sign: ruleAmountSign,
+        account_mask: ruleAccountMask || null,
+        category_id: explain.category_id!,
+        subcategory_id: explain.subcategory_id,
+      });
+      if (!ack.ok) return ack;
+      const matches = ack.data!;
+      setRuleMatches(matches);
+      setSelectedTxnIds(
+        new Set(matches.filter((m) => !m.has_override).map((m) => m.transaction_id)),
+      );
+      const message = matches.length ? `${matches.length} match(es)` : "No matches";
+      setRuleMsg(message);
+      setCommittedRuleId(null);
+      return okAck({ message });
     });
   }
 
@@ -583,41 +580,37 @@ export function AccountingLedger({
 
   function commitRule() {
     if (!explain?.category_id) return;
-    startTransition(async () => {
-      try {
-        const result = await commitRuleFromTxnAction({
-          draft: {
-            match_pattern: rulePattern,
-            amount_sign: ruleAmountSign,
-            account_mask: ruleAccountMask || null,
-            category_id: explain.category_id!,
-            subcategory_id: explain.subcategory_id,
-          },
-          selectedTxnIds: [...selectedTxnIds],
-          applyFuture,
-        });
-        setCommittedRuleId(result.ruleId);
-        setRuleMsg(
-          `Rule ${result.ruleId}: applied ${result.applied}, skipped override ${result.skipped_override}`,
-        );
-      } catch (e) {
-        setRuleMsg(e instanceof Error ? e.message : String(e));
-      }
+    void run(async () => {
+      const ack = await commitRuleFromTxnAction({
+        draft: {
+          match_pattern: rulePattern,
+          amount_sign: ruleAmountSign,
+          account_mask: ruleAccountMask || null,
+          category_id: explain.category_id!,
+          subcategory_id: explain.subcategory_id,
+        },
+        selectedTxnIds: [...selectedTxnIds],
+        applyFuture,
+      });
+      if (!ack.ok) return ack;
+      const result = ack.data!;
+      setCommittedRuleId(result.ruleId);
+      const message = `Rule ${result.ruleId}: applied ${result.applied}, skipped override ${result.skipped_override}`;
+      setRuleMsg(message);
+      return okAck({ message });
     });
   }
 
   function revertRule() {
     if (!committedRuleId) return;
-    startTransition(async () => {
-      try {
-        const result = await revertRuleEvidenceAction(committedRuleId);
-        setRuleMsg(
-          `Reverted ${committedRuleId}: reapply updated ${result.reapply.updated}, unchanged ${result.reapply.unchanged}`,
-        );
-        setCommittedRuleId(null);
-      } catch (e) {
-        setRuleMsg(e instanceof Error ? e.message : String(e));
-      }
+    void run(async () => {
+      const ack = await revertRuleEvidenceAction(committedRuleId);
+      if (!ack.ok) return ack;
+      const result = ack.data!;
+      const message = `Reverted ${committedRuleId}: reapply updated ${result.reapply.updated}, unchanged ${result.reapply.unchanged}`;
+      setRuleMsg(message);
+      setCommittedRuleId(null);
+      return okAck({ message });
     });
   }
 
@@ -873,8 +866,10 @@ export function AccountingLedger({
           </div>
         </CardHeader>
         <CardContent>
-          {reapplyMsg ? (
-            <p className="mb-2 text-xs text-muted-foreground">{reapplyMsg}</p>
+          {error || reapplyMsg || stage ? (
+            <p className={`mb-2 text-xs ${error ? "text-destructive" : "text-muted-foreground"}`}>
+              {error || reapplyMsg || stage}
+            </p>
           ) : null}
           {tableData.length ? (
             <DataTable
@@ -1156,8 +1151,10 @@ export function AccountingLedger({
                     Commit rule
                   </Button>
                 )}
-                {ruleMsg ? (
-                  <p className="text-xs text-muted-foreground">{ruleMsg}</p>
+                {error || ruleMsg ? (
+                  <p className={`text-xs ${error ? "text-destructive" : "text-muted-foreground"}`}>
+                    {error || ruleMsg}
+                  </p>
                 ) : null}
               </div>
             ) : null}

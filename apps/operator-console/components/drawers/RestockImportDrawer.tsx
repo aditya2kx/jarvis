@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import {
   Sheet,
   SheetContent,
@@ -23,6 +23,7 @@ import {
 import { submitRestockAction, replaceEstimatedRestockDateAction } from "@/app/inventory/actions";
 import type { RestockAction } from "@/lib/bq/writes";
 import { buildSampleCsv, type RestockRow } from "@/lib/restock/parse";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 
 const ACTION_LABELS: Record<RestockAction, string> = {
   "add-order": "Add order (actuals)",
@@ -51,7 +52,7 @@ export function RestockImportDrawer({
   const [rows, setRows] = useState<RestockRow[]>([]);
   const [parseErrors, setParseErrors] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const { isPending, stage, error, run } = useConsoleAction();
 
   const isReplace = action === "replace-estimated";
 
@@ -84,7 +85,7 @@ export function RestockImportDrawer({
     setRows((prev) => prev.map((r) => (r.item === item ? { ...r, quantityTubs } : r)));
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (isReplace) {
       if (!fromDate || !toDate) {
         setStatus("Pick both the current estimated date and the new delivery date.");
@@ -94,15 +95,11 @@ export function RestockImportDrawer({
         setStatus("No estimated dates to replace.");
         return;
       }
-      startTransition(async () => {
-        try {
-          await replaceEstimatedRestockDateAction(fromDate, toDate);
-          setStatus("Submitted.");
-          setOpen(false);
-        } catch (e) {
-          setStatus(`Submit failed: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      });
+      const ack = await run(
+        () => replaceEstimatedRestockDateAction(fromDate, toDate),
+        { saving: "Submitting…", done: "Submitted." },
+      );
+      if (ack.ok) setOpen(false);
       return;
     }
 
@@ -110,17 +107,17 @@ export function RestockImportDrawer({
       setStatus("Pick a delivery date first.");
       return;
     }
-    startTransition(async () => {
-      try {
-        await submitRestockAction(deliveryDate, action, rows);
-        setStatus("Submitted.");
-        setOpen(false);
-        setRows([]);
-      } catch (e) {
-        setStatus(`Submit failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
+    const ack = await run(
+      () => submitRestockAction(deliveryDate, action, rows),
+      { saving: "Submitting…", done: "Submitted." },
+    );
+    if (ack.ok) {
+      setOpen(false);
+      setRows([]);
+    }
   }
+
+  const feedback = stage || error || status;
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -232,7 +229,11 @@ export function RestockImportDrawer({
             </div>
           )}
 
-          {status ? <p className="text-sm text-muted-foreground">{status}</p> : null}
+          {feedback ? (
+            <p className={`text-sm ${error ? "text-destructive" : "text-muted-foreground"}`}>
+              {feedback}
+            </p>
+          ) : null}
 
           {parseErrors.length ? (
             <ul className="list-disc pl-4 text-sm text-destructive">
@@ -263,7 +264,7 @@ export function RestockImportDrawer({
         </div>
 
         <SheetFooter>
-          <Button onClick={handleSubmit} disabled={isPending || (isReplace && estimatedDates.length === 0)}>
+          <Button onClick={() => void handleSubmit()} disabled={isPending || (isReplace && estimatedDates.length === 0)}>
             {isPending ? "Submitting…" : "Submit"}
           </Button>
         </SheetFooter>

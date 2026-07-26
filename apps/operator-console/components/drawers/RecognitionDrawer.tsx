@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import {
   Sheet,
   SheetContent,
@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { addRecognitionBonusAction } from "@/app/payroll/actions";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 
 // A recognition bonus is a richer, less-frequent write (period + employee +
 // dollar amount + reason) — drawer, not inline, per the write-UX hybrid
@@ -26,27 +27,27 @@ export function RecognitionDrawer({ defaultPayPeriod }: { defaultPayPeriod: stri
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
   const [status, setStatus] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const { isPending, stage, error, run } = useConsoleAction();
 
-  function handleSubmit() {
+  async function handleSubmit() {
     const n = Number(amount);
     if (!employee.trim() || !payPeriod.trim() || Number.isNaN(n) || n <= 0) {
       setStatus("Employee, pay period, and a positive amount are required.");
       return;
     }
-    startTransition(async () => {
-      try {
-        await addRecognitionBonusAction(payPeriod.trim(), employee.trim(), n, reason.trim());
-        setStatus("Added.");
-        setOpen(false);
-        setEmployee("");
-        setAmount("");
-        setReason("");
-      } catch (e) {
-        setStatus(`Failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
+    const ack = await run(
+      () => addRecognitionBonusAction(payPeriod.trim(), employee.trim(), n, reason.trim()),
+      { saving: "Adding…", done: "Added." },
+    );
+    if (ack.ok) {
+      setOpen(false);
+      setEmployee("");
+      setAmount("");
+      setReason("");
+    }
   }
+
+  const feedback = stage || error || status;
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -95,11 +96,15 @@ export function RecognitionDrawer({ defaultPayPeriod }: { defaultPayPeriod: stri
             <Input id="rec-reason" value={reason} onChange={(e) => setReason(e.target.value)} />
           </div>
 
-          {status ? <p className="text-sm text-muted-foreground">{status}</p> : null}
+          {feedback ? (
+            <p className={`text-sm ${error ? "text-destructive" : "text-muted-foreground"}`}>
+              {feedback}
+            </p>
+          ) : null}
         </div>
 
         <SheetFooter>
-          <Button onClick={handleSubmit} disabled={isPending}>
+          <Button onClick={() => void handleSubmit()} disabled={isPending}>
             {isPending ? "Adding…" : "Add bonus"}
           </Button>
         </SheetFooter>

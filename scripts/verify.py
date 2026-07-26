@@ -122,6 +122,12 @@ GATES: list[Gate] = [
         modes={"fast", "full"},
     ),
     Gate(
+        name="operator-console-actions",
+        argv=["python3", "scripts/check_operator_console_actions.py"],
+        hard=True,
+        modes={"fast", "full"},
+    ),
+    Gate(
         name="progress-push-guard",
         argv=["python3", "scripts/check_no_main_progress_push.py", "--gate"],
         hard=True,

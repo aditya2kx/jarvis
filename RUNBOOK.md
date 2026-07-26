@@ -1693,9 +1693,14 @@ App-level dev loop: [`apps/operator-console/README.md`](apps/operator-console/RE
 Automatic on push to `main` touching `apps/operator-console/**` via
 [`.github/workflows/operator-console-deploy.yml`](.github/workflows/operator-console-deploy.yml):
 builds the container, applies any pending `core/migrations/*.sql` (same runner as this pipeline —
-`core.datastore.ensure_schema()`), deploys `--no-allow-unauthenticated --iap`, then grants
+`core.datastore.ensure_schema()`), deploys `--no-allow-unauthenticated --iap --min-instances=1`
+(Issue #175 cold-start mitigation), then grants
 `roles/iap.httpsResourceAccessor` to each operator account. No manual deploy step. `--iap` is
 idempotent against the one-time Console-only provisioning below — it does not redo it.
+
+**Pre-merge review-deploy** (no PR preview hostname): build/push the branch image and
+`gcloud run deploy operator-console … --min-instances=1` onto the same service URL below;
+hard-refresh after deploy. Next `main` push restores the merged SHA.
 
 ### One-time IAP provisioning (Console-only, cannot be scripted)
 
@@ -1717,6 +1722,10 @@ Google's account chooser ("Sign in to Palmetto Operator Console"), and after pic
 either loads the console (if authorized) or shows IAP's own "You don't have access" page with the
 denied email printed (if not). No terminal, no proxy command, no app-level allowlist — access is
 pure IAM.
+
+Mutating controls (restock, tip exemptions, goals, accounting writes, …) use the shared
+`useConsoleAction` feedback shell; order-reco refresh after restock/capacity is enqueued as a
+Cloud Run Job (`BHAGA_ORDER_RECO_ONLY=1`) so the click path stays responsive (Issue #175).
 
 **Granting a new admin/operator** — one command, one layer:
 ```

@@ -14,10 +14,12 @@
  * public_token, then close the popup or send the opener back to Accounting.
  */
 
-import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { usePlaidLink } from "react-plaid-link";
 import { exchangePlaidPublicTokenAction } from "@/app/accounting/actions";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
+import { okAck } from "@/lib/actions/types";
 
 const LINK_TOKEN_KEY = "plaid_link_token";
 
@@ -25,7 +27,7 @@ export default function PlaidOAuthReturnPage() {
   const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
   const [status, setStatus] = useState("Resuming bank login…");
-  const [isPending, startTransition] = useTransition();
+  const { isPending, stage, error, run } = useConsoleAction();
 
   const receivedRedirectUri = useMemo(() => {
     if (typeof window === "undefined") return undefined;
@@ -64,18 +66,19 @@ export default function PlaidOAuthReturnPage() {
 
   const onSuccess = useCallback(
     (publicToken: string) => {
-      startTransition(async () => {
-        try {
-          setStatus("Linked — syncing transactions (can take a minute)…");
-          localStorage.removeItem(LINK_TOKEN_KEY);
-          const result = await exchangePlaidPublicTokenAction(publicToken);
-          finish(`Done — synced +${result.sync.added}. Returning to Accounting…`);
-        } catch (e) {
-          setStatus(`Link failed: ${e instanceof Error ? e.message : String(e)}`);
-        }
+      void run(async () => {
+        setStatus("Linked — syncing transactions (can take a minute)…");
+        localStorage.removeItem(LINK_TOKEN_KEY);
+        const ack = await exchangePlaidPublicTokenAction(publicToken);
+        if (!ack.ok) return ack;
+        const result = ack.data!;
+        finish(`Done — synced +${result.sync.added}. Returning to Accounting…`);
+        return okAck({
+          message: `Done — synced +${result.sync.added}.`,
+        });
       });
     },
-    [finish],
+    [finish, run],
   );
 
   const onExit = useCallback(() => {
@@ -99,9 +102,13 @@ export default function PlaidOAuthReturnPage() {
     }
   }, [ready, token, receivedRedirectUri, open]);
 
+  const feedback = error || stage || status;
+
   return (
     <div className="flex min-h-[40vh] flex-col items-center justify-center gap-3 p-6">
-      <p className="text-sm text-muted-foreground">{status}</p>
+      <p className={`text-sm ${error ? "text-destructive" : "text-muted-foreground"}`}>
+        {feedback}
+      </p>
       {isPending ? <p className="text-xs text-muted-foreground">Working…</p> : null}
       <a href="/accounting" className="text-xs underline">
         Back to Accounting

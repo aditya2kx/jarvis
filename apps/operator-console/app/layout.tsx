@@ -4,6 +4,7 @@ import "./globals.css";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { Topbar } from "@/components/shell/Topbar";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ActionToastProvider } from "@/lib/actions/ActionToast";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -41,13 +42,15 @@ export default function RootLayout({
       </head>
       <body className="min-h-full">
         <TooltipProvider>
-          <div className="flex h-screen overflow-hidden">
-            <Sidebar />
-            <div className="flex flex-1 flex-col overflow-hidden">
-              <Topbar />
-              <main className="flex-1 overflow-y-auto p-4 md:p-6">{children}</main>
+          <ActionToastProvider>
+            <div className="flex h-screen overflow-hidden">
+              <Sidebar />
+              <div className="flex flex-1 flex-col overflow-hidden">
+                <Topbar />
+                <main className="flex-1 overflow-y-auto p-4 md:p-6">{children}</main>
+              </div>
             </div>
-          </div>
+          </ActionToastProvider>
         </TooltipProvider>
       </body>
     </html>

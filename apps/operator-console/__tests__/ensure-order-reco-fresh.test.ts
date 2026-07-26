@@ -61,7 +61,7 @@ describe("ensureOrderRecoFresh", () => {
   it("no-ops when delivery_dates match and refreshed_at CT day is today", async () => {
     const { ensureOrderRecoFresh } = await load();
     const did = await ensureOrderRecoFresh("palmetto");
-    expect(did).toBe(false);
+    expect(did).toEqual({ status: "fresh" });
     expect(mutate).not.toHaveBeenCalled();
   });
 
@@ -75,7 +75,7 @@ describe("ensureOrderRecoFresh", () => {
     });
     const { ensureOrderRecoFresh } = await load();
     const did = await ensureOrderRecoFresh("palmetto");
-    expect(did).toBe(true);
+    expect(did).toEqual({ status: "refreshed" });
     const sqls = mutate.mock.calls.map((c) => String(c[0]));
     expect(sqls.some((s) => s.includes("DELETE FROM") && s.includes("inventory_order_reco"))).toBe(
       true,
@@ -93,7 +93,22 @@ describe("ensureOrderRecoFresh", () => {
     });
     const { ensureOrderRecoFresh } = await load();
     const did = await ensureOrderRecoFresh("palmetto");
-    expect(did).toBe(true);
+    expect(did).toEqual({ status: "refreshed" });
     expect(mutate).toHaveBeenCalled();
+  });
+
+  it("enqueues instead of inline refresh when enqueue callback provided", async () => {
+    q.mockImplementation(async (sql: string) => {
+      if (sql.includes("MAX(refreshed_at)")) {
+        return [{ refreshed_ct: "2026-07-16" }];
+      }
+      return routeQ(sql);
+    });
+    const enqueue = vi.fn().mockResolvedValue(undefined);
+    const { ensureOrderRecoFresh } = await load();
+    const did = await ensureOrderRecoFresh("palmetto", { enqueue });
+    expect(did).toEqual({ status: "queued" });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(mutate).not.toHaveBeenCalled();
   });
 });

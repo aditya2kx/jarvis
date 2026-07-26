@@ -61,6 +61,20 @@ describe("normalizeSourceSelection", () => {
   });
 });
 
+describe("select-all URL contract", () => {
+  // Select All → normalize → null → omit sources param → salesByGrain(allSources).
+  // Empty ARRAY params crash the Node BQ client; the query layer must use a
+  // non-empty sentinel when allSources (covered by the live page smoke).
+  it("Select All serializes to an omitted sources param", () => {
+    const normalized = normalizeSourceSelection(
+      ["Register", "DoorDash", "Uber Eats"],
+      ["Register", "DoorDash", "Uber Eats"],
+    );
+    expect(normalized).toBeNull();
+    expect(serializeSources(normalized)).toBe("");
+  });
+});
+
 describe("pivotSalesChart", () => {
   const rows = [
     { date: "Jun 1", source: "DoorDash", net_sales: 100, orders: 4, items_sold: 8 },

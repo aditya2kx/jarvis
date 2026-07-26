@@ -104,6 +104,12 @@ export function salesByGrain(
   const sourceSelect = bySource ? "source" : "CAST(NULL AS STRING)";
   const groupBy = bySource ? "date, source" : "date";
   const allSources = sources == null || sources.length === 0;
+  // Node BQ client cannot infer types for empty arrays ("Parameter types must
+  // be provided for empty arrays…"). When @all_sources is true the UNNEST arm
+  // is never evaluated, so a one-element sentinel is enough to bind STRING[].
+  // Select-all / clear both normalize to allSources=true — that path must not
+  // pass sources:[].
+  const sourcesParam = allSources ? ["__all__"] : sources!;
   return q<SalesBySourceRow>(
     `WITH txn AS (
        SELECT
@@ -154,7 +160,7 @@ export function salesByGrain(
       start: dateParam(win.start),
       end: dateParam(win.end),
       all_sources: allSources,
-      sources: allSources ? ([] as string[]) : sources,
+      sources: sourcesParam,
     },
   );
 }

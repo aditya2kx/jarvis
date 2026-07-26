@@ -5,9 +5,11 @@ import { Badge } from "@/components/ui/badge";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import type { UsageDayAuditRow } from "@/lib/bq/queries";
 import {
-  formatDelta,
-  groupUsageDayAudit,
+  cellKey,
+  formatQty,
+  pivotUsageDayAudit,
   previewLine,
+  statusTag,
 } from "@/lib/inventory/usageDayAudit";
 import {
   clearUsageDayOverrideAction,
@@ -34,21 +36,26 @@ function nextMode(row: UsageDayAuditRow): UsageDayOverrideMode | "clear" {
   return "clear";
 }
 
-function Chip({
+function BaseCell({
   row,
   writable,
   onDone,
 }: {
-  row: UsageDayAuditRow;
+  row: UsageDayAuditRow | undefined;
   writable: boolean;
   onDone: (msg: string) => void;
 }) {
   const { run, isPending } = useConsoleAction();
-  const label = `${row.item} ${formatDelta(row.delta)}`;
-  const reason = row.reason && row.status !== "included" ? ` · ${row.reason}` : "";
+
+  if (!row) {
+    return <span className="text-xs text-muted-foreground">—</span>;
+  }
+
+  const qty = formatQty(row.qty);
+  const tag = statusTag(row);
   const title = writable
-    ? `Tap to cycle override (${row.override_mode ?? "rule"}). ${row.reason ?? ""}`
-    : `${row.reason ?? row.status}`;
+    ? `Qty ${qty}. ${tag}. Tap to cycle override (${row.override_mode ?? "rule"}).`
+    : `Qty ${qty}. ${tag}`;
 
   return (
     <button
@@ -82,13 +89,11 @@ function Chip({
           }
         });
       }}
-      className="min-h-11 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+      className="flex min-h-11 w-full min-w-[6.5rem] flex-col items-start gap-0.5 rounded-md px-1.5 py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
     >
-      <Badge variant={chipVariant(row)} className="max-w-full truncate text-left">
-        {label}
-        {reason ? (
-          <span className="ml-1 font-normal opacity-80">{reason}</span>
-        ) : null}
+      <span className="text-sm font-medium tabular-nums">{qty}</span>
+      <Badge variant={chipVariant(row)} className="max-w-full truncate text-[10px] leading-tight">
+        {tag}
       </Badge>
     </button>
   );
@@ -101,11 +106,11 @@ export function UsageDayAuditTable({
   rows: UsageDayAuditRow[];
   writable: boolean;
 }) {
-  const groups = useMemo(() => groupUsageDayAudit(rows), [rows]);
+  const matrix = useMemo(() => pivotUsageDayAudit(rows), [rows]);
   const [previewByDate, setPreviewByDate] = useState<Record<string, string>>({});
   const [, startTransition] = useTransition();
 
-  if (!groups.length) {
+  if (!matrix.dates.length) {
     return (
       <p className="text-sm text-muted-foreground">
         No closing readings in the last 30 days.
@@ -115,65 +120,43 @@ export function UsageDayAuditTable({
 
   return (
     <div className="overflow-x-auto rounded-lg border border-border" data-testid="usage-day-audit">
-      <table className="w-full min-w-[36rem] text-left text-sm">
+      <table className="w-max min-w-full border-collapse text-left text-sm">
         <thead className="border-b border-border bg-muted/40">
           <tr>
-            <th className="sticky left-0 z-10 bg-muted/40 px-3 py-2 font-medium">Date</th>
-            <th className="px-3 py-2 font-medium">Included (Δ)</th>
-            <th className="px-3 py-2 font-medium">Excluded (Δ · why)</th>
+            <th className="sticky left-0 z-20 bg-muted/40 px-3 py-2 font-medium shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]">
+              Date
+            </th>
+            {matrix.bases.map((base) => (
+              <th key={base} className="px-2 py-2 font-medium whitespace-nowrap">
+                {base}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {groups.map((g) => (
-            <tr key={g.date} className="border-b border-border/60 align-top">
-              <td className="sticky left-0 z-10 bg-background px-3 py-3 font-medium whitespace-nowrap">
-                {g.date}
-                {previewByDate[g.date] ? (
-                  <p className="mt-1 max-w-[10rem] text-xs font-normal text-muted-foreground">
-                    {previewByDate[g.date]}
+          {matrix.dates.map((date) => (
+            <tr key={date} className="border-b border-border/60 align-top">
+              <td className="sticky left-0 z-10 bg-background px-3 py-2 font-medium whitespace-nowrap shadow-[2px_0_4px_-2px_rgba(0,0,0,0.12)]">
+                {date}
+                {previewByDate[date] ? (
+                  <p className="mt-1 max-w-[9rem] text-xs font-normal text-muted-foreground whitespace-normal">
+                    {previewByDate[date]}
                   </p>
                 ) : null}
               </td>
-              <td className="px-3 py-3">
-                <div className="flex flex-wrap gap-1.5">
-                  {g.included.length ? (
-                    g.included.map((r) => (
-                      <Chip
-                        key={`${r.item}-${r.submitted_date}`}
-                        row={r}
-                        writable={writable}
-                        onDone={(msg) =>
-                          startTransition(() =>
-                            setPreviewByDate((prev) => ({ ...prev, [g.date]: msg })),
-                          )
-                        }
-                      />
-                    ))
-                  ) : (
-                    <span className="text-xs text-muted-foreground">—</span>
-                  )}
-                </div>
-              </td>
-              <td className="px-3 py-3">
-                <div className="flex flex-wrap gap-1.5">
-                  {g.excluded.length ? (
-                    g.excluded.map((r) => (
-                      <Chip
-                        key={`${r.item}-${r.submitted_date}`}
-                        row={r}
-                        writable={writable}
-                        onDone={(msg) =>
-                          startTransition(() =>
-                            setPreviewByDate((prev) => ({ ...prev, [g.date]: msg })),
-                          )
-                        }
-                      />
-                    ))
-                  ) : (
-                    <span className="text-xs text-muted-foreground">—</span>
-                  )}
-                </div>
-              </td>
+              {matrix.bases.map((base) => (
+                <td key={base} className="px-1 py-1">
+                  <BaseCell
+                    row={matrix.cells.get(cellKey(date, base))}
+                    writable={writable}
+                    onDone={(msg) =>
+                      startTransition(() =>
+                        setPreviewByDate((prev) => ({ ...prev, [date]: msg })),
+                      )
+                    }
+                  />
+                </td>
+              ))}
             </tr>
           ))}
         </tbody>

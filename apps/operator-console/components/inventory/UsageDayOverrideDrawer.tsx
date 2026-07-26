@@ -21,11 +21,16 @@ import {
 } from "@/components/ui/select";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import type { UsageDayAuditRow } from "@/lib/bq/queries";
-import { formatDelta, formatQty, matrixChipVariant, matrixStatusTag } from "@/lib/inventory/usageDayAudit";
+import {
+  formatDelta,
+  formatQty,
+  formatThresholdImpact,
+  matrixChipVariant,
+  matrixStatusTag,
+  thresholdImpactForDraft,
+  type OverrideDraftChoice,
+} from "@/lib/inventory/usageDayAudit";
 import { applyUsageDayOverridesAction } from "@/app/inventory/actions";
-import type { UsageDayOverrideMode } from "@/lib/bq/writes";
-
-export type OverrideDraftChoice = "rule" | UsageDayOverrideMode;
 
 function seedChoice(row: UsageDayAuditRow): OverrideDraftChoice {
   if (row.override_mode === "force_include") return "force_include";
@@ -93,8 +98,9 @@ export function UsageDayOverrideDrawer({
         <SheetHeader>
           <SheetTitle>Usage overrides · {date ?? "—"}</SheetTitle>
           <SheetDescription>
-            Review each base for this closing date. Nothing writes until you Apply.
-            Force include feeds the average; force exclude keeps it out.
+            Nothing writes until Apply. Force include adds this day to the usage
+            baseline (median / low / high bars); force exclude removes it. Preview
+            below updates as you change the dropdown.
           </SheetDescription>
         </SheetHeader>
 
@@ -104,6 +110,9 @@ export function UsageDayOverrideDrawer({
           ) : (
             dayRows.map((r) => {
               const choice = choices[r.item] ?? seedChoice(r);
+              const itemRows = rows.filter((x) => x.item === r.item);
+              const impact = thresholdImpactForDraft(itemRows, r.submitted_date, choice);
+              const dirtyChoice = choice !== seedChoice(r);
               return (
                 <div
                   key={r.item}
@@ -147,6 +156,13 @@ export function UsageDayOverrideDrawer({
                   ) : (
                     <p className="text-xs text-muted-foreground">Read-only (flag off).</p>
                   )}
+                  <pre
+                    className={`mt-2 whitespace-pre-wrap font-sans text-[11px] leading-snug text-muted-foreground ${
+                      dirtyChoice ? "text-foreground/80" : ""
+                    }`}
+                  >
+                    {formatThresholdImpact(impact)}
+                  </pre>
                 </div>
               );
             })

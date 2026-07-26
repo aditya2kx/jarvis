@@ -112,3 +112,161 @@ export function previewLine(opts: {
         : "still excluded";
   return `High bar ${before}→${after} · similar Δ tomorrow: ${tomorrow}`;
 }
+
+/** Consumption units for the outlier pool (stock drop); restock Δ → 0. */
+export function usageUnitsFromDelta(delta: number | null | undefined): number | null {
+  if (delta == null || Number.isNaN(Number(delta))) return null;
+  return Math.max(-Number(delta), 0);
+}
+
+function median(nums: number[]): number | null {
+  if (!nums.length) return null;
+  const s = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 1 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
+}
+
+function madAbout(nums: number[], med: number): number {
+  return median(nums.map((n) => Math.abs(n - med))) ?? 0;
+}
+
+/** Low = 0.20×median(nonzero); high = median(survivors)+2.5×1.4826×MAD — mirrors OA SQL. */
+export function computeLowHighBars(poolUsages: number[]): {
+  low: number | null;
+  high: number | null;
+  medianNonzero: number | null;
+} {
+  const nonzero = poolUsages.filter((u) => u > 0);
+  const medianNonzero = median(nonzero);
+  const low = medianNonzero == null ? null : 0.2 * medianNonzero;
+  const survivors = poolUsages.filter((u) => {
+    if (u <= 0) return false;
+    if (low != null && u < low) return false;
+    return true;
+  });
+  const forHigh = survivors.length ? survivors : nonzero;
+  const medSurv = median(forHigh);
+  if (medSurv == null) return { low, high: null, medianNonzero };
+  const mad = madAbout(forHigh, medSurv);
+  const high = mad > 0 ? medSurv + 2.5 * 1.4826 * mad : null;
+  return { low, high, medianNonzero };
+}
+
+export type OverrideDraftChoice = "rule" | "force_include" | "force_exclude";
+
+export type ThresholdImpact = {
+  usage: number | null;
+  lowBefore: number | null;
+  highBefore: number | null;
+  lowAfter: number | null;
+  highAfter: number | null;
+  passesHighBefore: boolean | null;
+  passesHighAfter: boolean | null;
+  inPoolBefore: boolean;
+  inPoolAfter: boolean;
+};
+
+/**
+ * Approximate low/high bars before vs after a draft override for one (item, date).
+ * Pool ≈ days currently in the avg (`in_avg` / included); draft force_include adds
+ * this day’s usage, force_exclude removes it. Unique-weekday / gap rules stay server-side.
+ */
+export function thresholdImpactForDraft(
+  itemRows: UsageDayAuditRow[],
+  draftDate: string,
+  draft: OverrideDraftChoice,
+): ThresholdImpact {
+  const focus = itemRows.find((r) => r.submitted_date === draftDate);
+  const usage = usageUnitsFromDelta(focus?.delta ?? null);
+
+  const beforeUsages: number[] = [];
+  for (const r of itemRows) {
+    const u = usageUnitsFromDelta(r.delta);
+    if (u == null) continue;
+    const inPool = r.in_avg === true || r.status === "included";
+    if (inPool) beforeUsages.push(u);
+  }
+
+  const afterUsages = [...beforeUsages];
+  const inPoolBefore =
+    focus != null && (focus.in_avg === true || focus.status === "included");
+  let inPoolAfter = inPoolBefore;
+  if (draft === "force_include" && usage != null) {
+    if (!inPoolBefore) {
+      afterUsages.push(usage);
+      inPoolAfter = true;
+    }
+  } else if (draft === "force_exclude" && inPoolBefore && usage != null) {
+    const idx = afterUsages.indexOf(usage);
+    if (idx >= 0) afterUsages.splice(idx, 1);
+    inPoolAfter = false;
+  } else if (draft === "rule" && focus) {
+    // Revert sticky override toward rule: if currently force_include but rule would exclude
+    if (focus.override_mode === "force_include" && focus.rule_eligible === false && inPoolBefore) {
+      const idx = afterUsages.indexOf(usage ?? -1);
+      if (idx >= 0 && usage != null) afterUsages.splice(idx, 1);
+      inPoolAfter = false;
+    } else if (focus.override_mode === "force_exclude" && focus.rule_eligible === true && usage != null) {
+      if (!inPoolBefore) {
+        afterUsages.push(usage);
+        inPoolAfter = true;
+      }
+    }
+  }
+
+  const before = computeLowHighBars(beforeUsages);
+  const after = computeLowHighBars(afterUsages);
+
+  // Prefer live BQ high_bar when draft matches current (more accurate than client pool).
+  const highBefore =
+    focus?.high_bar != null && seedMatchesCurrent(focus, draft)
+      ? focus.high_bar
+      : before.high;
+  const highAfter = after.high;
+  const lowBefore = before.low;
+  const lowAfter = after.low;
+
+  const passes = (high: number | null): boolean | null => {
+    if (usage == null) return null;
+    if (high == null) return true;
+    return usage <= high;
+  };
+
+  return {
+    usage,
+    lowBefore,
+    highBefore,
+    lowAfter,
+    highAfter,
+    passesHighBefore: passes(highBefore),
+    passesHighAfter: passes(highAfter),
+    inPoolBefore,
+    inPoolAfter,
+  };
+}
+
+function seedMatchesCurrent(row: UsageDayAuditRow, draft: OverrideDraftChoice): boolean {
+  if (draft === "force_include") return row.override_mode === "force_include";
+  if (draft === "force_exclude") return row.override_mode === "force_exclude";
+  return !row.override_mode;
+}
+
+export function formatThresholdImpact(impact: ThresholdImpact): string {
+  const n = (v: number | null) => (v == null ? "—" : v.toFixed(2));
+  const yn = (v: boolean | null) =>
+    v == null ? "?" : v ? "yes (auto-include)" : "no (still needs override)";
+  const pool =
+    impact.inPoolBefore === impact.inPoolAfter
+      ? impact.inPoolAfter
+        ? "stays in avg pool"
+        : "stays out of avg pool"
+      : impact.inPoolAfter
+        ? "joins avg pool (feeds baseline)"
+        : "leaves avg pool";
+  return [
+    `Usage Δ ${n(impact.usage)} tubs · ${pool}`,
+    `Low bar (20% of median): ${n(impact.lowBefore)} → ${n(impact.lowAfter)}`,
+    `High bar (median+2.5·MAD): ${n(impact.highBefore)} → ${n(impact.highAfter)}`,
+    `Similar usage tomorrow auto-included? ${yn(impact.passesHighBefore)} → ${yn(impact.passesHighAfter)}`,
+  ].join("\n");
+}

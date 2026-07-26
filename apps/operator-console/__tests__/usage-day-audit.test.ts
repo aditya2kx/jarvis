@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   cellKey,
+  computeLowHighBars,
   formatDelta,
   formatQty,
+  formatThresholdImpact,
   groupUsageDayAudit,
   matrixStatusTag,
   pivotUsageDayAudit,
   previewLine,
   statusTag,
+  thresholdImpactForDraft,
+  usageUnitsFromDelta,
 } from "@/lib/inventory/usageDayAudit";
 import type { UsageDayAuditRow } from "@/lib/bq/queries";
 
@@ -121,5 +125,40 @@ describe("formatQty / formatDelta / statusTag / previewLine", () => {
         delta: 4,
       }),
     ).toContain("still excluded");
+  });
+
+  it("computeLowHighBars mirrors 20% low and median+2.5·MAD high", () => {
+    const bars = computeLowHighBars([1, 2, 2, 2, 10]);
+    expect(bars.medianNonzero).toBe(2);
+    expect(bars.low).toBeCloseTo(0.4, 5);
+    // survivors exclude low (<0.4) and keep 1,2,2,2,10 — med 2, mad 0 → high null when mad=0
+    // with mad=0 SQL sets high_bar NULL; we match
+    expect(bars.high).toBeNull();
+  });
+
+  it("force_include preview shows joining pool and bar shift", () => {
+    const pool = [
+      row({ item: "Açaí", submitted_date: "2026-07-20", status: "included", in_avg: true, delta: -2 }),
+      row({ item: "Açaí", submitted_date: "2026-07-21", status: "included", in_avg: true, delta: -2 }),
+      row({
+        item: "Açaí",
+        submitted_date: "2026-07-25",
+        status: "excluded",
+        in_avg: false,
+        reason: "high outlier",
+        delta: -5,
+        high_bar: 3,
+      }),
+    ];
+    expect(usageUnitsFromDelta(-5)).toBe(5);
+    const impact = thresholdImpactForDraft(pool, "2026-07-25", "force_include");
+    expect(impact.inPoolBefore).toBe(false);
+    expect(impact.inPoolAfter).toBe(true);
+    expect(impact.usage).toBe(5);
+    expect(impact.lowAfter).not.toBeNull();
+    const text = formatThresholdImpact(impact);
+    expect(text).toContain("joins avg pool");
+    expect(text).toContain("Low bar");
+    expect(text).toContain("High bar");
   });
 });

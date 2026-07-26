@@ -109,9 +109,8 @@ export function UsageDayOverrideDrawer({
         <SheetHeader>
           <SheetTitle>Usage overrides · {date}</SheetTitle>
           <SheetDescription>
-            Nothing writes until Apply. Force include adds this day to the usage
-            baseline (median / low / high bars); force exclude removes it. Preview
-            below updates as you change the dropdown.
+            Nothing saves until Apply. Use the dropdown to count a day in (or keep
+            it out of) the usage average — the preview updates as you change it.
           </SheetDescription>
         </SheetHeader>
 
@@ -158,9 +157,9 @@ export function UsageDayOverrideDrawer({
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="rule">Follow rule (default)</SelectItem>
-                          <SelectItem value="force_include">Force include in avg</SelectItem>
-                          <SelectItem value="force_exclude">Force exclude from avg</SelectItem>
+                          <SelectItem value="rule">Follow automatic rule</SelectItem>
+                          <SelectItem value="force_include">Count this day in the average</SelectItem>
+                          <SelectItem value="force_exclude">Keep this day out of the average</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>

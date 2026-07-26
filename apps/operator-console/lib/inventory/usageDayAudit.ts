@@ -251,22 +251,61 @@ function seedMatchesCurrent(row: UsageDayAuditRow, draft: OverrideDraftChoice): 
   return !row.override_mode;
 }
 
+function fmtTubs(v: number | null): string {
+  if (v == null) return "—";
+  const n = Number(v);
+  // One decimal is enough for operators; drop trailing .0.
+  return Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, "");
+}
+
+function fmtRange(low: number | null, high: number | null): string {
+  if (low == null && high == null) return "unknown";
+  if (high == null) return low == null ? "unknown" : `${fmtTubs(low)}+ tubs`;
+  if (low == null) return `up to ${fmtTubs(high)} tubs`;
+  return `${fmtTubs(low)}–${fmtTubs(high)} tubs`;
+}
+
+/** Plain-language preview for operators (no median/MAD jargon). */
 export function formatThresholdImpact(impact: ThresholdImpact): string {
-  const n = (v: number | null) => (v == null ? "—" : v.toFixed(2));
-  const yn = (v: boolean | null) =>
-    v == null ? "?" : v ? "yes (auto-include)" : "no (still needs override)";
-  const pool =
+  const used =
+    impact.usage == null ? "Usage unknown" : `Used ~${fmtTubs(impact.usage)} tubs that day`;
+
+  const avg =
     impact.inPoolBefore === impact.inPoolAfter
       ? impact.inPoolAfter
-        ? "stays in avg pool"
-        : "stays out of avg pool"
+        ? "Already in the average"
+        : "Not in the average"
       : impact.inPoolAfter
-        ? "joins avg pool (feeds baseline)"
-        : "leaves avg pool";
-  return [
-    `Usage Δ ${n(impact.usage)} tubs · ${pool}`,
-    `Low bar (20% of median): ${n(impact.lowBefore)} → ${n(impact.lowAfter)}`,
-    `High bar (median+2.5·MAD): ${n(impact.highBefore)} → ${n(impact.highAfter)}`,
-    `Similar usage tomorrow auto-included? ${yn(impact.passesHighBefore)} → ${yn(impact.passesHighAfter)}`,
-  ].join("\n");
+        ? "Will add to the average"
+        : "Will remove from the average";
+
+  // When avg membership doesn't change, show the live "before" band only —
+  // client after-high can be null (MAD=0) while BQ high_bar is set, which
+  // looked like a scary "3.11 → —" with no real change.
+  let range: string;
+  if (impact.inPoolBefore === impact.inPoolAfter) {
+    range = `Typical day: ${fmtRange(impact.lowBefore, impact.highBefore)}`;
+  } else {
+    const before = fmtRange(impact.lowBefore, impact.highBefore);
+    const after = fmtRange(impact.lowAfter, impact.highAfter);
+    range =
+      before === after
+        ? `Typical day: ${before}`
+        : `Typical day: ${before} → ${after}`;
+  }
+
+  let tomorrow: string;
+  if (impact.passesHighBefore == null || impact.passesHighAfter == null) {
+    tomorrow = "Similar day tomorrow: unclear";
+  } else if (impact.passesHighBefore === impact.passesHighAfter) {
+    tomorrow = impact.passesHighAfter
+      ? "Similar day tomorrow: still counts on its own"
+      : "Similar day tomorrow: still needs an override";
+  } else if (impact.passesHighAfter) {
+    tomorrow = "Similar day tomorrow: would start counting on its own";
+  } else {
+    tomorrow = "Similar day tomorrow: would need an override";
+  }
+
+  return [used + " · " + avg, range, tomorrow].join("\n");
 }

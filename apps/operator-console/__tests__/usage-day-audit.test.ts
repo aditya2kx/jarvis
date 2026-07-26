@@ -157,8 +157,11 @@ describe("formatQty / formatDelta / statusTag / previewLine", () => {
     expect(impact.usage).toBe(5);
     expect(impact.lowAfter).not.toBeNull();
     const text = formatThresholdImpact(impact);
-    expect(text).toContain("joins avg pool");
-    expect(text).toContain("Low bar");
-    expect(text).toContain("High bar");
+    expect(text).toContain("Will add to the average");
+    expect(text).toContain("Used ~5 tubs");
+    expect(text).toContain("Typical day:");
+    expect(text).toContain("Similar day tomorrow:");
+    expect(text).not.toContain("MAD");
+    expect(text).not.toContain("avg pool");
   });
 });

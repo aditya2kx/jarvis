@@ -130,3 +130,30 @@ Add `salesByGrain` / `salesSourceOptions` in `queries.ts`. Rewrite `sales/page.t
 Update ARCHITECTURE/EXECUTION. Capture E2–E4 screenshots. Assemble PR §4. `verify.py --full`.
 
 **Verify:** `check_doc_freshness.py` clean; hosted https screenshot URLs in PR body.
+
+## Collected evidence (2026-07-26)
+
+### Filtered DoorDash (control = direct txn GROUP BY)
+
+```
+| date       | net    | orders | items |
+| 2026-07-22 | 208.29 |     10 |    14 |
+| 2026-07-23 | 148.34 |      8 |    11 |
+| 2026-07-24 | 182.95 |      7 |    13 |
+```
+
+### Breakdown sum == aggregate (DoorDash+Uber Eats)
+
+```
+| date       | agg_net | brk_net | net_match | orders_match |
+| 2026-07-22 |  312.78 |  312.78 | true      | true         |
+| 2026-07-23 |  259.82 |  259.82 | true      | true         |
+| 2026-07-24 |  361.09 |  361.09 | true      | true         |
+```
+
+### Week grain == sum of day grain (2026-07-20 week)
+
+```
+| week       | week_net | days_sum_net | week_orders | days_sum_orders | match |
+| 2026-07-20 |  9624.32 |      9624.32 |         609 |             609 | true  |
+```

@@ -4,7 +4,11 @@ import {
   parseChartMode,
   parseCompare,
 } from "@/lib/filters/chart-mode";
-import { priorWindow, type DateWindow } from "@/lib/filters/range";
+import {
+  enumerateBucketStarts,
+  priorWindow,
+  type DateWindow,
+} from "@/lib/filters/range";
 import { mergePriorSeries, pivotSalesChart } from "@/lib/charts/sales-pivot";
 
 describe("parseChartMode", () => {
@@ -56,14 +60,14 @@ describe("assertModeFilterCoherence", () => {
 });
 
 describe("priorWindow", () => {
-  it("shifts an equal-length window ending the day before start", () => {
+  it("shifts an equal-length day window ending the day before start", () => {
     const win: DateWindow = {
       start: "2026-07-10",
       end: "2026-07-16",
       label: "Last 7 days",
       preset: "7d",
     };
-    expect(priorWindow(win)).toEqual({
+    expect(priorWindow(win, "day")).toEqual({
       start: "2026-07-03",
       end: "2026-07-09",
       label: "Prior period",
@@ -78,12 +82,40 @@ describe("priorWindow", () => {
       label: "Custom",
       preset: "custom",
     };
-    expect(priorWindow(win)).toEqual({
+    expect(priorWindow(win, "day")).toEqual({
       start: "2026-07-14",
       end: "2026-07-14",
       label: "Prior period",
       preset: "custom",
     });
+  });
+
+  it("keeps equal week-bucket count (this_month-style 4 weeks → prior 4 weeks)", () => {
+    // Jul 2026 through Jul 26: weeks Jun29, Jul6, Jul13, Jul20 (4)
+    const win: DateWindow = {
+      start: "2026-07-01",
+      end: "2026-07-26",
+      label: "This month",
+      preset: "this_month",
+    };
+    const prior = priorWindow(win, "week");
+    const curBuckets = enumerateBucketStarts(win, "week");
+    const priorBuckets = enumerateBucketStarts(prior, "week");
+    expect(curBuckets).toEqual([
+      "2026-06-29",
+      "2026-07-06",
+      "2026-07-13",
+      "2026-07-20",
+    ]);
+    expect(prior.end).toBe("2026-06-30");
+    expect(priorBuckets.length).toBe(curBuckets.length);
+    // Prior last truncated week is Jun 29; three weeks earlier → Jun 8
+    expect(priorBuckets).toEqual([
+      "2026-06-08",
+      "2026-06-15",
+      "2026-06-22",
+      "2026-06-29",
+    ]);
   });
 });
 

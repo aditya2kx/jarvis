@@ -2,7 +2,7 @@ import { salesByGrain, salesSourceOptions, storeConfig } from "@/lib/bq/queries"
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
-import { mergePriorSeries, pivotSalesChart } from "@/lib/charts/sales-pivot";
+import { fillSalesSpine, mergePriorSeries, pivotSalesChart } from "@/lib/charts/sales-pivot";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { LineChartCard } from "@/components/charts/LineChartCard";
 import { DataTable } from "@/components/tables/DataTable";
@@ -14,6 +14,7 @@ import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
 import {
   RANGE_PRESETS,
+  enumerateBucketStarts,
   formatBucket,
   priorWindow,
   wantsCustom,
@@ -72,8 +73,8 @@ export default async function SalesPage({
   let sourceOptions: string[] = [];
   let goalWeekly: number | undefined;
   let error: string | undefined;
+  const prior = compare ? priorWindow(win, grain) : null;
   try {
-    const prior = compare ? priorWindow(win) : null;
     const [sales, opts, config, priorSales] = await Promise.all([
       salesByGrain(win, grain, sources, breakdown),
       salesSourceOptions(win),
@@ -92,14 +93,13 @@ export default async function SalesPage({
   }
 
   const sorted = [...rows].sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1));
-  const chartRows = sorted.map((r) => ({
-    ...r,
-    date: formatBucket(r.date, grain),
-  }));
-  const priorSorted = [...priorRows].sort((a, b) =>
-    dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1,
-  );
-  const priorChartRows = priorSorted.map((r) => ({
+
+  // For Trend+Compare: zero-fill both spines so bucket counts match priorWindow(grain).
+  const chartSourceRows = (() => {
+    if (!compare || breakdown) return sorted;
+    return fillSalesSpine(sorted, enumerateBucketStarts(win, grain));
+  })();
+  const chartRows = chartSourceRows.map((r) => ({
     ...r,
     date: formatBucket(r.date, grain),
   }));
@@ -108,7 +108,12 @@ export default async function SalesPage({
   let ordersChart = pivotSalesChart(chartRows, "orders", breakdown, "Orders");
   let itemsChart = pivotSalesChart(chartRows, "items_sold", breakdown, "Items sold");
 
-  if (compare) {
+  if (compare && prior) {
+    const priorFilled = fillSalesSpine(priorRows, enumerateBucketStarts(prior, grain));
+    const priorChartRows = priorFilled.map((r) => ({
+      ...r,
+      date: formatBucket(r.date, grain),
+    }));
     const priorNet = pivotSalesChart(priorChartRows, "net_sales", false, "Net sales");
     const priorOrders = pivotSalesChart(priorChartRows, "orders", false, "Orders");
     const priorItems = pivotSalesChart(priorChartRows, "items_sold", false, "Items sold");

@@ -235,29 +235,79 @@ export function parseGrain(value: string | string[] | undefined, fallback: Grain
 }
 
 /**
- * Prior window of equal inclusive length ending the day before `win.start`.
- * Preset becomes `custom` (shifted calendar windows are not named presets).
+ * Prior window with the same number of grain buckets as `win`, ending the day
+ * before `win.start`. Day grain keeps equal inclusive day length; week/month
+ * shift by bucket count so Compare prior never index-mismatches (e.g. this_month
+ * can be 4 weeks while an equal-day prior spans 5 Mondays).
  */
-export function priorWindow(win: DateWindow): DateWindow {
+export function priorWindow(win: DateWindow, grain: Grain = "day"): DateWindow {
   const startParts = win.start.split("-").map(Number);
-  const endParts = win.end.split("-").map(Number);
   const sy = startParts[0]!;
   const sm = startParts[1]!;
   const sd = startParts[2]!;
-  const ey = endParts[0]!;
-  const em = endParts[1]!;
-  const ed = endParts[2]!;
-  const startUtc = toUTC(sy, sm, sd);
-  const endUtc = toUTC(ey, em, ed);
-  const spanDays = Math.round((endUtc.getTime() - startUtc.getTime()) / 86_400_000) + 1;
   const priorEnd = addDays(sy, sm, sd, -1);
-  const priorStart = addDays(priorEnd.y, priorEnd.m, priorEnd.d, -(spanDays - 1));
+  const priorEndIso = fmt(priorEnd.y, priorEnd.m, priorEnd.d);
+
+  if (grain === "day") {
+    const endParts = win.end.split("-").map(Number);
+    const ey = endParts[0]!;
+    const em = endParts[1]!;
+    const ed = endParts[2]!;
+    const startUtc = toUTC(sy, sm, sd);
+    const endUtc = toUTC(ey, em, ed);
+    const spanDays = Math.round((endUtc.getTime() - startUtc.getTime()) / 86_400_000) + 1;
+    const priorStart = addDays(priorEnd.y, priorEnd.m, priorEnd.d, -(spanDays - 1));
+    return {
+      start: fmt(priorStart.y, priorStart.m, priorStart.d),
+      end: priorEndIso,
+      label: "Prior period",
+      preset: "custom",
+    };
+  }
+
+  const buckets = enumerateBucketStarts(win, grain);
+  const n = Math.max(buckets.length, 1);
+  const priorLast = truncateToGrain(priorEndIso, grain);
+  const priorFirst = addGrain(priorLast, grain, -(n - 1));
   return {
-    start: fmt(priorStart.y, priorStart.m, priorStart.d),
-    end: fmt(priorEnd.y, priorEnd.m, priorEnd.d),
+    start: priorFirst,
+    end: priorEndIso,
     label: "Prior period",
     preset: "custom",
   };
+}
+
+/** Inclusive list of truncated bucket ISO starts covering `win` at `grain`. */
+export function enumerateBucketStarts(win: DateWindow, grain: Grain): string[] {
+  const out: string[] = [];
+  let cur = truncateToGrain(win.start, grain);
+  const end = win.end;
+  // Safety cap — a year of days is plenty for console ranges.
+  for (let i = 0; i < 400 && cur <= end; i++) {
+    out.push(cur);
+    cur = addGrain(cur, grain, 1);
+  }
+  return out;
+}
+
+/** Advance (or rewind) a truncated bucket ISO by `delta` grain steps. */
+export function addGrain(isoDate: string, grain: Grain, delta: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDate);
+  if (!m) return isoDate;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (grain === "day") {
+    const next = addDays(y, mo, d, delta);
+    return fmt(next.y, next.m, next.d);
+  }
+  if (grain === "week") {
+    const next = addDays(y, mo, d, delta * 7);
+    return truncateToGrain(fmt(next.y, next.m, next.d), "week");
+  }
+  // month
+  const dt = toUTC(y, mo + delta, 1);
+  return fmt(dt.getUTCFullYear(), dt.getUTCMonth() + 1, 1);
 }
 
 // `grain` is never string-interpolated from a request — it is parsed above

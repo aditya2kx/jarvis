@@ -48,9 +48,52 @@ export function pivotSalesChart(
 }
 
 /**
+ * Zero-fill missing grain buckets so sparse BQ rows still align for Compare.
+ * `rows` may use raw ISO `date` values; returned dates stay ISO (caller formats).
+ */
+export function fillSalesSpine(
+  rows: SalesPivotRow[],
+  bucketStarts: string[],
+): SalesPivotRow[] {
+  const byDate = new Map<string, SalesPivotRow>();
+  for (const r of rows) {
+    const key = String(r.date).slice(0, 10);
+    const cur = byDate.get(key);
+    if (!cur) {
+      byDate.set(key, {
+        date: key,
+        source: r.source,
+        net_sales: Number(r.net_sales) || 0,
+        orders: Number(r.orders) || 0,
+        items_sold: Number(r.items_sold) || 0,
+      });
+    } else {
+      // Aggregate mode may already be one row per date; breakdown keeps source.
+      if (r.source && cur.source && r.source !== cur.source) {
+        // Leave breakdown rows as-is — spine fill only for aggregate compare.
+        continue;
+      }
+      cur.net_sales += Number(r.net_sales) || 0;
+      cur.orders += Number(r.orders) || 0;
+      cur.items_sold += Number(r.items_sold) || 0;
+    }
+  }
+  return bucketStarts.map(
+    (date) =>
+      byDate.get(date) ?? {
+        date,
+        source: null,
+        net_sales: 0,
+        orders: 0,
+        items_sold: 0,
+      },
+  );
+}
+
+/**
  * Align prior-period aggregate pivot onto current bucket labels by index
- * (same grain length). Prior values land under `prior_<metricKey>` with a
- * dashed series — used by Trend + Compare prior.
+ * (same grain length after priorWindow(win, grain) + spine fill). Prior values
+ * land under `prior_<metricKey>` with a dashed series — used by Trend + Compare.
  */
 export function mergePriorSeries(
   current: { data: Record<string, unknown>[]; series: Series[] },
@@ -62,7 +105,7 @@ export function mergePriorSeries(
   const priorByIndex = prior.data.map((row) => Number(row[metricKey] ?? 0));
   const data = current.data.map((row, i) => ({
     ...row,
-    [priorKey]: priorByIndex[i] ?? null,
+    [priorKey]: i < priorByIndex.length ? priorByIndex[i]! : null,
   }));
   const series: Series[] = [
     ...current.series,

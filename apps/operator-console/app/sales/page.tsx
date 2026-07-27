@@ -358,7 +358,7 @@ export default async function SalesPage({
               {grain === "day" ? "Daily" : grain === "week" ? "Weekly" : "Monthly"} detail
               {detailSuffix}
             </h2>
-            <DataTable columns={columns} data={tableRows} />
+            <DataTable<SalesBySourceRow> columns={columns} data={tableRows} />
           </div>
         </>
       ) : (
@@ -389,7 +389,7 @@ export default async function SalesPage({
               {grain === "day" ? "Daily" : grain === "week" ? "Weekly" : "Monthly"} detail
               {detailSuffix}
             </h2>
-            <DataTable columns={columns} data={tableRows} />
+            <DataTable<SalesBySourceRow> columns={columns} data={tableRows} />
           </div>
         </>
       )}

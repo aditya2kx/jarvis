@@ -164,4 +164,21 @@ describe("formatQty / formatDelta / statusTag / previewLine", () => {
     expect(text).not.toContain("MAD");
     expect(text).not.toContain("avg pool");
   });
+
+  it("formatThresholdImpact: unchanged membership shows Typical day without →", () => {
+    const text = formatThresholdImpact({
+      usage: 2,
+      lowBefore: 0.4,
+      highBefore: 3.11,
+      lowAfter: 0.4,
+      highAfter: null,
+      passesHighBefore: true,
+      passesHighAfter: true,
+      inPoolBefore: false,
+      inPoolAfter: false,
+    });
+    expect(text).toContain("Not in the average");
+    expect(text).toContain("Typical day: 0.4–3.1 tubs");
+    expect(text).not.toMatch(/Typical day:.*→/);
+  });
 });

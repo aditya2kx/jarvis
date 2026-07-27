@@ -1,4 +1,9 @@
-import { forecastByGrain, forecastAccuracyByGrain, forecastExclusions, storeConfig } from "@/lib/bq/queries";
+import {
+  forecastForwardByGrain,
+  forecastAccuracyByGrain,
+  forecastExclusions,
+  storeConfig,
+} from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -46,11 +51,10 @@ export default async function ForecastPage({
   searchParams: Promise<{ range?: string; metric?: string; from?: string; to?: string; grain?: string }>;
 }) {
   const sp = await searchParams;
-  // Forecast mixes a forward-looking "upcoming schedule" (empty on a
-  // past-only preset, since forecast rows only exist from the pipeline's
-  // run date forward) with a backward-looking accuracy view — same 7
-  // presets as every other Performance screen; Period cookie keeps it
-  // aligned with Home/Sales/Labor.
+  // Forecast splits windows: forward widgets (upcoming schedule + forecast/
+  // goal charts) always use Chicago today → pipeline horizon and ignore
+  // Period (Issue #202). Accuracy chart + MAPE stay Period-scoped so the
+  // shared Performance Period cookie still drives historical comparison.
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
   const grain = await resolvePageGrain(sp.grain);
   const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
@@ -68,7 +72,7 @@ export default async function ForecastPage({
   let error: string | undefined;
   try {
     const [fc, acc, excl, config] = await Promise.all([
-      forecastByGrain(win, grain),
+      forecastForwardByGrain(grain),
       forecastAccuracyByGrain(win, grain),
       forecastExclusions(),
       storeConfig(DEFAULT_STORE),
@@ -126,7 +130,7 @@ export default async function ForecastPage({
     { accessorKey: "date", header: "Date", meta: { format: { kind: "bucket", grain } } },
     // "Day" only means anything at day grain — a week/month bucket spans
     // multiple days of week, so the column is omitted rather than shown
-    // blank (dow is queried as NULL for those grains — see forecastByGrain).
+    // blank (dow is queried as NULL for those grains — see forecastForwardByGrain).
     ...(grain === "day" ? [{ accessorKey: "dow", header: "Day" } as ColumnDef<(typeof scheduleRows)[number]>] : []),
     { accessorKey: forecastKey, header: `Fcst ${metricLabel}`, meta: { format: { kind: "number" } } },
     { accessorKey: priorKey, header: "Prior wk", meta: { format: { kind: "number" } } },
@@ -250,9 +254,8 @@ export default async function ForecastPage({
               <DataTable columns={columns} data={scheduleRows} />
             ) : (
               <p className="text-sm text-muted-foreground">
-                No forecast rows for {win.label.toLowerCase()} — this preset is entirely in the
-                past, and forecast rows only exist from the pipeline&apos;s run date forward. Try
-                &quot;This month&quot; or &quot;This week&quot; to see the upcoming schedule.
+                No upcoming forecast rows — the pipeline has not written today→horizon rows to
+                the forecast view yet. Period only filters the accuracy chart above.
               </p>
             )}
           </div>

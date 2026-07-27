@@ -431,14 +431,14 @@ filter `WHERE <datecol> BETWEEN @start AND @end` instead of `INTERVAL @days
 DAY`, so the six presets are exact calendar windows, not rolling day counts.
 
 - `this_week` / `this_month` end on the calendar boundary, which can be in the
-  future — that's expected for the **Forecast** screen (§4 M3), which uses the
-  *same* control as every other Performance screen: the historical-accuracy
-  half of the page always has data for the elapsed portion of the window; the
-  upcoming/forecast half renders its normal empty-state copy when a
-  **past-only** preset (`last_week`, `last_month`) is selected, since no
-  forecast rows exist before the pipeline's run date. Forecast defaults to
-  **This month**; every other Performance screen + Home default to
-  **Last 30 days**.
+  future — that's expected for screens that apply Period to a mixed past+future
+  window (e.g. Labor). On **Forecast**, Period scopes only the **accuracy**
+  chart + MAPE; the upcoming schedule and forward charts always read Chicago
+  today → pipeline horizon via `forecastForwardByGrain` and ignore Period
+  (Issue #202) so a late-month "This month" no longer clips the ~30-day look-
+  ahead. Past-only presets still show a full forward table. Forecast defaults
+  to **This month** (for accuracy); every other Performance screen + Home
+  default to **Last 30 days**.
 - Net-sales goal picks weekly vs. monthly `store_config` key by
   `isMonthLike(win.preset)` (`30d` / `this_month` / `last_month` -> monthly;
   else weekly) — the same window drives both the query and which goal it's

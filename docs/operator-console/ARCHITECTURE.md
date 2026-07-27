@@ -405,7 +405,7 @@ range/grain contract from `lib/filters/range.ts` + `lib/filters/period.ts`:
   and no breakdown.
 - **Rollup correctness**: additive metrics (`net_sales`, `orders`,
   `total_hours`, …) are `SUM()`-ed per bucket in `lib/bq/queries.ts`
-  (`laborByGrain`, `forecastByGrain`, `forecastAccuracyByGrain`); ratios
+  (`laborByGrain`, `forecastByGrain`, `forecastForwardByGrain`, `forecastAccuracyByGrain`); ratios
   (`labor_pct`, `orders_vs_prior_wk`, …) are **recomputed** from the summed
   components with `SAFE_DIVIDE`, never averaged — averaging a ratio across
   days silently gives the wrong number the moment day-to-day volume varies.

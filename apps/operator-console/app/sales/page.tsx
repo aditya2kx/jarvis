@@ -65,6 +65,8 @@ export default async function SalesPage({
     win.preset === "custom" ? { from: win.start, to: win.end } : {};
   const sourcesParam = serializeSources(sources);
   const breakdownParam = breakdown ? "1" : "0";
+  const compareParam = compare ? "1" : "0";
+  const modeParam = mode;
   const compareLabel =
     grain === "week" ? "Previous week" : grain === "month" ? "Previous month" : "Previous day";
   const priorSeriesLabel = compareLabel;

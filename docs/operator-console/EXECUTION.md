@@ -471,8 +471,8 @@ from the raw `vw_kds_per_item_min` view (migration 034) since a daily
 percentile cannot be re-aggregated into a weekly/monthly one.
 
 **Sales chart modes (#198):** Composition (bars + Aggregate/By source) vs
-Trend (lines + optional Compare prior). Breakdown and Compare are mutually
-exclusive; see `ARCHITECTURE.md` §12.
+Trend (lines + Compare = previous day/week/month lag-1 by Aggregation).
+Breakdown and Compare are mutually exclusive; see `ARCHITECTURE.md` §12.
 
 **Known grain limitation:** `vw_order_quality_daily`'s `% tickets late`
 column is defined only at day grain (it is itself a per-day ratio baked into

@@ -60,7 +60,7 @@ describe("assertModeFilterCoherence", () => {
 });
 
 describe("priorWindow", () => {
-  it("shifts an equal-length day window ending the day before start", () => {
+  it("day grain: each point vs previous day (window shifted by 1 day of buckets)", () => {
     const win: DateWindow = {
       start: "2026-07-10",
       end: "2026-07-16",
@@ -68,14 +68,14 @@ describe("priorWindow", () => {
       preset: "7d",
     };
     expect(priorWindow(win, "day")).toEqual({
-      start: "2026-07-03",
-      end: "2026-07-09",
+      start: "2026-07-09",
+      end: "2026-07-15",
       label: "Prior period",
       preset: "custom",
     });
   });
 
-  it("handles a single-day window", () => {
+  it("handles a single-day window → previous day", () => {
     const win: DateWindow = {
       start: "2026-07-15",
       end: "2026-07-15",
@@ -90,32 +90,37 @@ describe("priorWindow", () => {
     });
   });
 
-  it("keeps equal week-bucket count (this_month-style 4 weeks → prior 4 weeks)", () => {
-    // Jul 2026 through Jul 26: weeks Jun29, Jul6, Jul13, Jul20 (4)
+  it("week grain: prior buckets are exactly current buckets − 1 week", () => {
+    // Last-30d style window through Jul 26
     const win: DateWindow = {
-      start: "2026-07-01",
+      start: "2026-06-27",
       end: "2026-07-26",
-      label: "This month",
-      preset: "this_month",
+      label: "Last 30 days",
+      preset: "30d",
     };
     const prior = priorWindow(win, "week");
     const curBuckets = enumerateBucketStarts(win, "week");
     const priorBuckets = enumerateBucketStarts(prior, "week");
     expect(curBuckets).toEqual([
+      "2026-06-22",
       "2026-06-29",
       "2026-07-06",
       "2026-07-13",
       "2026-07-20",
     ]);
-    expect(prior.end).toBe("2026-06-30");
-    expect(priorBuckets.length).toBe(curBuckets.length);
-    // Prior last truncated week is Jun 29; three weeks earlier → Jun 8
     expect(priorBuckets).toEqual([
-      "2026-06-08",
       "2026-06-15",
       "2026-06-22",
       "2026-06-29",
+      "2026-07-06",
+      "2026-07-13",
     ]);
+    expect(prior).toEqual({
+      start: "2026-06-15",
+      end: "2026-07-19", // end of Wk of Jul 13
+      label: "Prior period",
+      preset: "custom",
+    });
   });
 });
 

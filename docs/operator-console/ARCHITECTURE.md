@@ -387,10 +387,10 @@ range/grain contract from `lib/filters/range.ts` + `lib/filters/period.ts`:
   the wrong month) once a timezone offset is applied.
 - **Sales chart modes** (`mode=composition|trend`): Composition uses bar
   charts and may stack by Source (`breakdown=1`). Trend uses line charts and
-  may overlay a prior-period series (`compare=1`, equal-length window ending
-  the day before the current start). Breakdown and Compare are mutually
-  exclusive (mode switch clears the other). Goal line only in Composition
-  at day grain with all sources and no breakdown.
+  may overlay a lag-1 prior series (`compare=1`): each bucket vs the previous
+  day/week/month (not the fully preceding equal-length calendar period).
+  Breakdown and Compare are mutually exclusive (mode switch clears the other).
+  Goal line only in Composition at day grain with all sources and no breakdown.
 - **Rollup correctness**: additive metrics (`net_sales`, `orders`,
   `total_hours`, …) are `SUM()`-ed per bucket in `lib/bq/queries.ts`
   (`laborByGrain`, `forecastByGrain`, `forecastAccuracyByGrain`); ratios

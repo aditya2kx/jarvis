@@ -7,7 +7,7 @@ Evidence tier: sandbox-e2e
 
 - Multi-select filter on raw `square_transactions.source` values on `/sales`.
 - **Composition** mode: bar charts; View Aggregate / By source (`breakdown`).
-- **Trend** mode: line charts; Compare prior off/on (`compare`); prior = same grain-bucket count ending the day before current start (`priorWindow(win, grain)`).
+- **Trend** mode: line charts; Compare = lag-1 by Aggregation (`priorWindow(win, grain)` — each point vs previous day/week/month).
 - Mutual exclusion: Breakdown only in Composition; Compare only in Trend; mode switch clears the other.
 - Shared time filters: Period (`oc_range` + custom `oc_from`/`oc_to`) and Aggregation (`oc_grain`) persist across Home + Performance pages that expose them.
 - Data: `square_transactions` + `square_item_lines` join for items; leave `vw_model_labor_daily` for Home/Labor.

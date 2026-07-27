@@ -65,8 +65,9 @@ export default async function SalesPage({
     win.preset === "custom" ? { from: win.start, to: win.end } : {};
   const sourcesParam = serializeSources(sources);
   const breakdownParam = breakdown ? "1" : "0";
-  const compareParam = compare ? "1" : "0";
-  const modeParam = mode;
+  const compareLabel =
+    grain === "week" ? "Previous week" : grain === "month" ? "Previous month" : "Previous day";
+  const priorSeriesLabel = compareLabel;
 
   let rows: SalesBySourceRow[] = [];
   let priorRows: SalesBySourceRow[] = [];
@@ -119,25 +120,27 @@ export default async function SalesPage({
     const priorNet = pivotSalesChart(priorChartRows, "net_sales", false, "Net sales");
     const priorOrders = pivotSalesChart(priorChartRows, "orders", false, "Orders");
     const priorItems = pivotSalesChart(priorChartRows, "items_sold", false, "Items sold");
-    netChart = mergePriorSeries(netChart, priorNet, "net_sales", "Prior period", priorLabels);
+    netChart = mergePriorSeries(netChart, priorNet, "net_sales", priorSeriesLabel, priorLabels);
     ordersChart = mergePriorSeries(
       ordersChart,
       priorOrders,
       "orders",
-      "Prior period",
+      priorSeriesLabel,
       priorLabels,
     );
     itemsChart = mergePriorSeries(
       itemsChart,
       priorItems,
       "items_sold",
-      "Prior period",
+      priorSeriesLabel,
       priorLabels,
     );
   }
 
   const priorSubtitle =
-    compare && prior ? `Prior window ${prior.start} → ${prior.end} (aligned by ${grain})` : undefined;
+    compare && prior
+      ? `Each point vs previous ${grain} · prior data ${prior.start} → ${prior.end}`
+      : undefined;
 
   // Detail table is always aggregated (one row per bucket) even when charts
   // break down by source — keeps the table readable; charts carry the split.
@@ -251,7 +254,7 @@ export default async function SalesPage({
                 value={compareParam}
                 options={[
                   { value: "0", label: "Off" },
-                  { value: "1", label: "Prior period" },
+                  { value: "1", label: compareLabel },
                 ]}
                 basePath="/sales"
                 extraParams={{

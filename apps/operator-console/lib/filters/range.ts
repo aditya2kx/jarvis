@@ -235,46 +235,66 @@ export function parseGrain(value: string | string[] | undefined, fallback: Grain
 }
 
 /**
- * Prior window with the same number of grain buckets as `win`, ending the day
- * before `win.start`. Day grain keeps equal inclusive day length; week/month
- * shift by bucket count so Compare prior never index-mismatches (e.g. this_month
- * can be 4 weeks while an equal-day prior spans 5 Mondays).
+ * Compare-prior window: the same grain buckets as `win`, each shifted back by
+ * exactly one aggregation step (previous day / week / month). Used so Trend
+ * "Compare" overlays last-week's path under this week's labels (not the fully
+ * preceding equal-length calendar period).
  */
 export function priorWindow(win: DateWindow, grain: Grain = "day"): DateWindow {
-  const startParts = win.start.split("-").map(Number);
-  const sy = startParts[0]!;
-  const sm = startParts[1]!;
-  const sd = startParts[2]!;
-  const priorEnd = addDays(sy, sm, sd, -1);
-  const priorEndIso = fmt(priorEnd.y, priorEnd.m, priorEnd.d);
-
-  if (grain === "day") {
-    const endParts = win.end.split("-").map(Number);
-    const ey = endParts[0]!;
-    const em = endParts[1]!;
-    const ed = endParts[2]!;
-    const startUtc = toUTC(sy, sm, sd);
-    const endUtc = toUTC(ey, em, ed);
-    const spanDays = Math.round((endUtc.getTime() - startUtc.getTime()) / 86_400_000) + 1;
-    const priorStart = addDays(priorEnd.y, priorEnd.m, priorEnd.d, -(spanDays - 1));
+  const curBuckets = enumerateBucketStarts(win, grain);
+  if (curBuckets.length === 0) {
     return {
-      start: fmt(priorStart.y, priorStart.m, priorStart.d),
-      end: priorEndIso,
+      start: shiftCalendarDate(win.start, grain, -1),
+      end: shiftCalendarDate(win.end, grain, -1),
       label: "Prior period",
       preset: "custom",
     };
   }
-
-  const buckets = enumerateBucketStarts(win, grain);
-  const n = Math.max(buckets.length, 1);
-  const priorLast = truncateToGrain(priorEndIso, grain);
-  const priorFirst = addGrain(priorLast, grain, -(n - 1));
+  const priorBuckets = curBuckets.map((b) => addGrain(b, grain, -1));
   return {
-    start: priorFirst,
-    end: priorEndIso,
+    start: priorBuckets[0]!,
+    end: grainEndInclusive(priorBuckets[priorBuckets.length - 1]!, grain),
     label: "Prior period",
     preset: "custom",
   };
+}
+
+/** Inclusive last calendar day of a truncated grain bucket. */
+export function grainEndInclusive(bucketStart: string, grain: Grain): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(bucketStart);
+  if (!m) return bucketStart;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (grain === "day") return bucketStart;
+  if (grain === "week") {
+    const end = addDays(y, mo, d, 6);
+    return fmt(end.y, end.m, end.d);
+  }
+  const end = fromUTC(toUTC(y, mo + 1, 0));
+  return fmt(end.y, end.m, end.d);
+}
+
+/** Shift a calendar YYYY-MM-DD by one or more grain steps (not truncated first). */
+export function shiftCalendarDate(isoDate: string, grain: Grain, delta: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDate);
+  if (!m) return isoDate;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (grain === "day") {
+    const next = addDays(y, mo, d, delta);
+    return fmt(next.y, next.m, next.d);
+  }
+  if (grain === "week") {
+    const next = addDays(y, mo, d, delta * 7);
+    return fmt(next.y, next.m, next.d);
+  }
+  // month — clamp day to last day of target month (Mar 31 - 1mo → Feb 28/29)
+  const last = fromUTC(toUTC(y, mo + delta + 1, 0));
+  const day = Math.min(d, last.d);
+  const next = fromUTC(toUTC(y, mo + delta, day));
+  return fmt(next.y, next.m, next.d);
 }
 
 /** Inclusive list of truncated bucket ISO starts covering `win` at `grain`. */

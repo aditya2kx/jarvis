@@ -22,7 +22,8 @@ Evidence tier: sandbox-e2e
 - `apps/operator-console/lib/filters/chart-mode.ts` — `parseChartMode` / `parseCompare` / `assertModeFilterCoherence`
 - `apps/operator-console/lib/filters/period.ts` — `resolvePageRange` / `resolvePageGrain` cookies
 - `apps/operator-console/lib/filters/range.ts` — `GRAIN_COOKIE` / `FROM_COOKIE` / `TO_COOKIE` / `priorWindow`
-- `apps/operator-console/lib/charts/sales-pivot.ts` — `pivotSalesChart` / `mergePriorSeries`
+- `apps/operator-console/lib/charts/compare-series.ts` — `pctChange` / `mergePriorSeries` / `compareGrainLabel` (shared stack)
+- `apps/operator-console/lib/charts/sales-pivot.ts` — `pivotSalesChart` / re-exports
 - `apps/operator-console/lib/bq/queries.ts` — `salesByGrain` / `salesSourceOptions`
 - `apps/operator-console/components/filters/FilterSelect.tsx` — Period + grain cookie writes
 - `apps/operator-console/components/filters/DateRangePicker.tsx` — custom from/to cookie writes
@@ -44,6 +45,7 @@ Happy path + failure/recovery covered below (pass criterion: each scenario verif
 10. **E10 Trend + compare:** screenshot `mode=trend&compare=1` (lines + dashed prior).
 11. **E11 Failure/recovery — mutual exclusion:** illegal URL with both gated flags coerces; UI never shows both View and Compare; empty Source shows recovery empty-state (not a BQ error).
 12. **E12 Unit:** chart-mode / priorWindow / period-grain cookie tests; `verify.py --full` green.
+13. **E13 Trend+Compare dual-axis + lag-1 BQ:** day + week screenshots (`% change` right axis; tooltip abs + signed %); BQ reconcile vs `priorWindow(win, grain)`.
 
 ```ts
 // lib/filters/chart-mode.ts
@@ -58,7 +60,7 @@ export function assertModeFilterCoherence(
 export const GRAIN_COOKIE = "oc_grain"
 export const FROM_COOKIE = "oc_from"
 export const TO_COOKIE = "oc_to"
-export function priorWindow(win: DateWindow): DateWindow
+export function priorWindow(win: DateWindow, grain: Grain): DateWindow
 
 // lib/filters/period.ts
 export async function resolvePageRange(...): Promise<DateWindow>
@@ -123,9 +125,9 @@ Cookies `oc_grain` / `oc_from` / `oc_to`; `resolvePageGrain`; FilterSelect + Dat
 
 **Verify:** `npm test -- sales-chart-mode sales-sources`.
 
-## Milestone 3 — Docs + evidence (in progress)
+## Milestone 3 — Docs + evidence (done)
 
-Update ARCHITECTURE/EXECUTION + this plan. Capture E9–E10 screenshots. Refresh PR §4. `verify.py --full`.
+Update ARCHITECTURE/EXECUTION + this plan. Capture E9–E13 screenshots + lag-1 BQ. Refresh PR §4. `verify.py --full`.
 
 **Verify:** `check_doc_freshness.py` clean; hosted https screenshot URLs in PR body.
 
@@ -155,3 +157,34 @@ Update ARCHITECTURE/EXECUTION + this plan. Capture E9–E10 screenshots. Refresh
 | week       | week_net | days_sum_net | week_orders | days_sum_orders | match |
 | 2026-07-20 |  9624.32 |      9624.32 |         609 |             609 | true  |
 ```
+
+### E13 — lag-1 Compare vs BQ (`priorWindow(win, grain)`, range=30d as of 2026-07-26)
+
+`priorWindow(30d, day)` → 2026-06-26..2026-07-25; `priorWindow(30d, week)` → 2026-06-15..2026-07-19.
+
+Day sample (current day vs prior day = date−1):
+
+```
+| current_day | prior_day  | current_net | prior_net | pct_change |
+| 2026-07-10  | 2026-07-09 |    1391.53 |   1511.85 |       -8.0 |
+| 2026-07-15  | 2026-07-14 |     750.98 |    939.69 |      -20.1 |
+| 2026-07-20  | 2026-07-19 |    1626.93 |   2228.44 |      -27.0 |
+| 2026-07-25  | 2026-07-24 |    2106.15 |   1869.74 |       12.6 |
+| 2026-07-26  | 2026-07-25 |    2665.29 |   2106.15 |       26.5 |
+```
+
+Week lag-1 (Mon weeks; each current week vs previous week):
+
+```
+| current_week | prior_week | current_net | prior_net | pct_change |
+| 2026-06-22   | 2026-06-15 |     6592.85 |  13499.73 |      -51.2 |
+| 2026-06-29   | 2026-06-22 |    13429.95 |  13490.66 |       -0.5 |
+| 2026-07-06   | 2026-06-29 |    11160.56 |  13429.95 |      -16.9 |
+| 2026-07-13   | 2026-07-06 |    10257.95 |  11160.56 |       -8.1 |
+| 2026-07-20   | 2026-07-13 |    12289.61 |  10257.95 |       19.8 |
+```
+
+Screenshots (dual Y-axis: abs left, % change right):
+
+- day: https://github.com/aditya2kx/jarvis/releases/download/evidence-screenshots/sales-trend-compare-day-pct-20260726-233653.png
+- week: https://github.com/aditya2kx/jarvis/releases/download/evidence-screenshots/sales-trend-compare-week-pct-20260726-233658.png

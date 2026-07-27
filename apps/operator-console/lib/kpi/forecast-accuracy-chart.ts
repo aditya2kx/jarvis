@@ -52,8 +52,11 @@ export function mergeForecastAccuracyChart(
     const prev = map.get(key);
     const forecast = Number(r[forecastKey]);
     if (prev) {
-      // Prefer live forward row when Period overlaps today.
-      prev.forecast = forecast;
+      // Day grain: same calendar day — prefer live forward (avoid double-count).
+      // Week/month grain: accuracy only has completed days with actuals; forward
+      // has today→; buckets overlap on the current period so SUM the halves.
+      prev.forecast =
+        grain === "day" ? forecast : Number(prev.forecast ?? 0) + forecast;
     } else {
       map.set(key, { date: key, forecast, actual: null });
     }
@@ -101,8 +104,10 @@ export function mergeGoalHoursChart(
     const goal = Number((items * goalHoursPerItem).toFixed(1));
     const prev = map.get(key);
     if (prev) {
-      prev.goal_shift_hours = goal;
-      // Keep Period scheduled on overlap; forward schedule stays on Upcoming table.
+      // Period query already covers all Period days in this bucket (including
+      // future days still inside the Period). Replacing with forward would
+      // drop elapsed days at week/month grain; summing would double-count.
+      // Keep Period goal; only append buckets beyond the Period window.
     } else {
       map.set(key, {
         date: key,

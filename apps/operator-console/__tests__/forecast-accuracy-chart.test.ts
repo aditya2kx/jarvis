@@ -64,6 +64,25 @@ describe("mergeForecastAccuracyChart", () => {
     expect(chart).toEqual([{ date: "Jul 27", forecast: 120, actual: 95 }]);
   });
 
+  it("sums elapsed + forward forecast on overlapping week bucket", () => {
+    // Accuracy week bucket = Mon→yesterday; forward = today→ within same week.
+    const chart = mergeForecastAccuracyChart(
+      [
+        {
+          date: "2026-07-20",
+          forecast_orders: 700,
+          actual_orders: 710,
+          forecast_items: 1,
+          actual_items: 1,
+        },
+      ],
+      [{ date: "2026-07-20", forecast_orders: 300, forecast_items: 2 }],
+      { forecastKey: "forecast_orders", actualKey: "actual_orders", grain: "week" },
+    );
+
+    expect(chart).toEqual([{ date: "Wk of Jul 20", forecast: 1000, actual: 710 }]);
+  });
+
   it("formats week grain buckets for both series", () => {
     const chart = mergeForecastAccuracyChart(
       [
@@ -108,5 +127,15 @@ describe("mergeGoalHoursChart", () => {
       { date: "Jul 27", goal_shift_hours: 24, scheduled_hours: null },
       { date: "Aug 5", goal_shift_hours: 26, scheduled_hours: null },
     ]);
+  });
+
+  it("keeps Period goal on overlapping bucket (no replace / no double-count)", () => {
+    const chart = mergeGoalHoursChart(
+      [{ date: "2026-07-20", forecast_items: 500, scheduled_hours: 40 }],
+      [{ date: "2026-07-20", forecast_orders: 0, forecast_items: 200 }],
+      { goalHoursPerItem: 0.2, grain: "week" },
+    );
+
+    expect(chart).toEqual([{ date: "Wk of Jul 20", goal_shift_hours: 100, scheduled_hours: 40 }]);
   });
 });

@@ -4,6 +4,7 @@ import {
   forecastExclusions,
   storeConfig,
 } from "@/lib/bq/queries";
+import { mergeForecastAccuracyChart } from "@/lib/kpi/forecast-accuracy-chart";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -51,10 +52,11 @@ export default async function ForecastPage({
   searchParams: Promise<{ range?: string; metric?: string; from?: string; to?: string; grain?: string }>;
 }) {
   const sp = await searchParams;
-  // Forecast splits windows: forward widgets (upcoming schedule + forecast/
-  // goal charts) always use Chicago today → pipeline horizon and ignore
-  // Period (Issue #202). Accuracy chart + MAPE stay Period-scoped so the
-  // shared Performance Period cookie still drives historical comparison.
+  // Forecast splits windows (Issue #202):
+  // - Upcoming schedule + forward-only charts: Chicago today → horizon.
+  // - Accuracy chart: actuals respect Period (look-back); forecast series
+  //   covers that history and continues into the forward horizon. Grain
+  //   applies to both series. MAPE stays Period-only (dates with actuals).
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
   const grain = await resolvePageGrain(sp.grain);
   const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
@@ -81,13 +83,7 @@ export default async function ForecastPage({
     exclusions = excl;
     const goalRow = config.find((r) => r.key === "goal_hours_per_item");
     if (goalRow) goalHoursPerItem = Number(goalRow.value);
-    accuracyChart = [...acc]
-      .sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1))
-      .map((r) => ({
-        date: formatBucket(r.date, grain),
-        forecast: r[forecastKey] as number,
-        actual: r[actualKey] as number,
-      }));
+    accuracyChart = mergeForecastAccuracyChart(acc, fc, { forecastKey, actualKey, grain });
     mapePct = mape(acc.map((r) => ({ forecast: r[forecastKey] as number, actual: r[actualKey] as number })));
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
@@ -231,7 +227,7 @@ export default async function ForecastPage({
             ]}
           />
           <LineChartCard
-            title={`Forecast accuracy (${metricLabel}) — ${win.label.toLowerCase()}`}
+            title={`Forecast accuracy (${metricLabel}) — actuals ${win.label.toLowerCase()}; forecast extends ahead`}
             data={accuracyChart}
             xKey="date"
             series={[
@@ -255,7 +251,7 @@ export default async function ForecastPage({
             ) : (
               <p className="text-sm text-muted-foreground">
                 No upcoming forecast rows — the pipeline has not written today→horizon rows to
-                the forecast view yet. Period only filters the accuracy chart above.
+                the forecast view yet. Period scopes actuals on the accuracy chart above.
               </p>
             )}
           </div>

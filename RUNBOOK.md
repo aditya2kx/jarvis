@@ -1704,16 +1704,24 @@ hard-refresh after deploy. Next `main` push restores the merged SHA.
 
 ### One-time IAP provisioning (Console-only, cannot be scripted)
 
-Two Console steps, done once per project (already done for `jarvis-bhaga-prod` — see
-`docs/operator-console/PLAN.md` decisions log, 2026-07-05):
+Three Console steps, done once per project (already done for `jarvis-bhaga-prod` — see
+`docs/operator-console/PLAN.md` decisions log, 2026-07-05 + 2026-07-26):
 1. **Google Auth Platform branding** — `console.cloud.google.com/auth/overview` → "Get started" →
    App name "Palmetto Operator Console", **External** audience (Internal is greyed out — no
    Workspace org), any contact email you're signed in as.
 2. **Enable IAP on the Cloud Run service** — service → **Security** tab → check
    **Identity Aware Proxy (IAP)** alongside IAM → Save. Google auto-creates the OAuth client tied
    to the branding above; no manual client creation.
+3. **Publish Audience to In production** — `console.cloud.google.com/auth/audience` →
+   **Publish app** → Confirm. Leave publishing status at **In production** (not Testing).
+   Testing-mode External apps force short-lived grants and frequent re-consent; on iPhone
+   Chrome that re-consent leg (`accounts.google.com/.../signin/oauth/consent`) has been
+   observed to 500 after idle, requiring a manual refresh. Production status removes that
+   churn. No Google verification is required while Data Access stays on non-sensitive
+   scopes only (IAP's openid/email/profile). Do **not** click "Back to testing".
 
-Both steps only need to happen again if the branding/OAuth client is ever deleted.
+Steps 1–2 only need to happen again if the branding/OAuth client is ever deleted. Step 3
+is a one-click publish; re-check it if login starts failing after idle again.
 
 ### Accessing the console (Cloud Run direct IAP — browser sign-in)
 

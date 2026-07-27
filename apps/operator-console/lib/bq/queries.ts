@@ -79,6 +79,107 @@ export function laborByGrain(win: DateWindow, grain: Grain): Promise<LaborDailyR
   );
 }
 
+// Sales page source filter (#198). Reads square_transactions (+ item_lines for
+// items_sold) so we can filter/group by Square `source`. Unfiltered totals
+// reconcile to vw_model_labor_daily. `sources === null` means all sources;
+// bound via @all_sources / UNNEST(@sources) — never interpolated.
+export interface SalesBySourceRow {
+  date: string;
+  source: string | null;
+  net_sales: number;
+  orders: number;
+  items_sold: number;
+  avg_order_price: number;
+  [key: string]: unknown;
+}
+
+export function salesByGrain(
+  win: DateWindow,
+  grain: Grain,
+  sources: string[] | null,
+  bySource: boolean,
+): Promise<SalesBySourceRow[]> {
+  const bucket = bucketSql(grain, "date_local");
+  // bucketSql emits DATE_TRUNC(date_local, …) or the bare column for day grain.
+  const sourceSelect = bySource ? "source" : "CAST(NULL AS STRING)";
+  const groupBy = bySource ? "date, source" : "date";
+  const allSources = sources == null;
+  // None selected (Clear) — skip BQ; charts render empty until the operator
+  // picks one or more sources.
+  if (!allSources && sources.length === 0) {
+    return Promise.resolve([]);
+  }
+  // Node BQ client cannot infer types for empty arrays ("Parameter types must
+  // be provided for empty arrays…"). When @all_sources is true the UNNEST arm
+  // is never evaluated, so a one-element sentinel is enough to bind STRING[].
+  const sourcesParam = allSources ? ["__all__"] : sources;
+  return q<SalesBySourceRow>(
+    `WITH txn AS (
+       SELECT
+         date_local,
+         source,
+         SUM(net_sales_cents) AS net_sales_cents,
+         COUNTIF(event_type = 'Payment') AS orders
+       FROM ${fq("square_transactions")}
+       WHERE date_local BETWEEN @start AND @end
+         AND (@all_sources OR source IN UNNEST(@sources))
+       GROUP BY date_local, source
+     ),
+     items AS (
+       SELECT
+         t.date_local,
+         t.source,
+         COUNT(*) AS items_sold
+       FROM ${fq("square_item_lines")} i
+       INNER JOIN ${fq("square_transactions")} t
+         ON t.transaction_id = i.transaction_id
+       WHERE t.date_local BETWEEN @start AND @end
+         AND i.event_type = 'Payment'
+         AND (@all_sources OR t.source IN UNNEST(@sources))
+       GROUP BY t.date_local, t.source
+     ),
+     joined AS (
+       SELECT
+         COALESCE(txn.date_local, items.date_local) AS date_local,
+         COALESCE(txn.source, items.source) AS source,
+         COALESCE(txn.net_sales_cents, 0) AS net_sales_cents,
+         COALESCE(txn.orders, 0) AS orders,
+         COALESCE(items.items_sold, 0) AS items_sold
+       FROM txn
+       FULL OUTER JOIN items
+         USING (date_local, source)
+     )
+     SELECT
+       ${bucket} AS date,
+       ${sourceSelect} AS source,
+       SUM(net_sales_cents) / 100.0 AS net_sales,
+       SUM(orders) AS orders,
+       SUM(items_sold) AS items_sold,
+       SAFE_DIVIDE(SUM(net_sales_cents) / 100.0, SUM(orders)) AS avg_order_price
+     FROM joined
+     GROUP BY ${groupBy}
+     ORDER BY date DESC`,
+    {
+      start: dateParam(win.start),
+      end: dateParam(win.end),
+      all_sources: allSources,
+      sources: sourcesParam,
+    },
+  );
+}
+
+export function salesSourceOptions(win: DateWindow): Promise<{ source: string }[]> {
+  return q<{ source: string }>(
+    `SELECT DISTINCT source
+     FROM ${fq("square_transactions")}
+     WHERE date_local BETWEEN @start AND @end
+       AND source IS NOT NULL
+       AND source != ''
+     ORDER BY source`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
 export interface LaborWeeklyRow {
   iso_week: string;
   week_start: string;

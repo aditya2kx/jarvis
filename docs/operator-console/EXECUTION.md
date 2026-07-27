@@ -460,13 +460,21 @@ the percent/fraction boundary lives at this one conversion pair.
 Sales, Labor, Forecast, and Order Quality each add an `AggregationSelect`
 (`grain=day|week|month`, see `ARCHITECTURE.md` §12) and a `custom` range
 preset (`DateRangePicker`, two `<input type="date">`s -> `?range=custom&
-from=&to=`) alongside the existing 6 presets. `grain` is never bound as a
-query param — `bucketSql(grain)` is one of three hardcoded fragments — and
-`from`/`to` go through the same `dateParam()` binding as every other date.
+from=&to=`) alongside the existing 6 presets. Period + grain persist across
+pages via cookies `oc_range` / `oc_grain` (custom also `oc_from`/`oc_to`);
+URL params still win when present. `grain` is never bound as a SQL string —
+`bucketSql(grain)` is one of three hardcoded fragments — and `from`/`to` go
+through the same `dateParam()` binding as every other date.
 Additive metrics are `SUM()`-ed and ratios recomputed with `SAFE_DIVIDE` per
 bucket (never averaged); Order Quality percentiles are recomputed per bucket
 from the raw `vw_kds_per_item_min` view (migration 034) since a daily
 percentile cannot be re-aggregated into a weekly/monthly one.
+
+**Composition / Trend (#198, shared pattern):** Composition (bars + Aggregate/By
+source on Sales) vs Trend (lines + Compare = lag-1 previous day/week/month,
+tooltip abs + `%`, right-axis `% change`). Reuse `chart-mode.ts`,
+`compare-series.ts`, `priorWindow`, and `LineChartCard` dual-axis — see
+`ARCHITECTURE.md` §12. Breakdown and Compare are mutually exclusive.
 
 **Known grain limitation:** `vw_order_quality_daily`'s `% tickets late`
 column is defined only at day grain (it is itself a per-day ratio baked into
@@ -568,7 +576,7 @@ console location. Re-run this table whenever a Grafana panel changes.
 
 | Grafana panel (dashboard.json) | Console location |
 |---|---|
-| Daily Net Sales / Orders / Items | `/sales` chart + detail table (all grains) |
+| Daily Net Sales / Orders / Items | `/sales` Composition bars or Trend lines + detail table; Source multi-select; Aggregate/By-source (Composition) or Compare prior (Trend) (#198) |
 | Daily Wages / Net Sales % (total) | `/labor` "Labor % of net sales" chart |
 | Daily Wages / Net Sales % (PT/FT split) | `/labor` "Labor % of net sales" chart (Part-time + Full-time series, §5.5e) |
 | Hours per Item (total) | `/labor` "Hours per item" chart |

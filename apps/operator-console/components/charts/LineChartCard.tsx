@@ -19,6 +19,24 @@ export interface Series {
   dashed?: boolean;
   /** When set, overrides BarChartCard `stacked` for this series (Recharts stackId). */
   stackId?: string;
+  /** Dual-axis: absolute series stay on left; % change uses right. */
+  yAxisId?: "left" | "right";
+}
+
+function formatAbs(value: unknown): string {
+  if (value == null || value === "") return "—";
+  const n = typeof value === "number" ? value : Number(value);
+  if (Number.isNaN(n)) return "—";
+  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function formatPct(value: unknown): string {
+  if (value == null || value === "") return "—";
+  const n = typeof value === "number" ? value : Number(value);
+  if (Number.isNaN(n)) return "—";
+  const rounded = Math.round(n * 10) / 10;
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${rounded.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
 }
 
 // Dashed goal line: the only "computed" thing here is a visual comparison of
@@ -27,6 +45,7 @@ export interface Series {
 // as a prop since Recharts ReferenceLine needs no extra component).
 export function LineChartCard({
   title,
+  subtitle,
   data,
   xKey,
   series,
@@ -35,6 +54,8 @@ export function LineChartCard({
   height = 260,
 }: {
   title: string;
+  /** Optional second line under the title (e.g. prior window dates). */
+  subtitle?: string;
   data: Record<string, unknown>[];
   xKey: string;
   series: Series[];
@@ -42,39 +63,73 @@ export function LineChartCard({
   goalLabel?: string;
   height?: number;
 }) {
+  const hasRight = series.some((s) => s.yAxisId === "right");
+
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="gap-1">
         <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        {subtitle ? (
+          <p className="text-xs text-muted-foreground/80">{subtitle}</p>
+        ) : null}
       </CardHeader>
       <CardContent>
         <ResponsiveContainer width="100%" height={height}>
-          <LineChart data={data} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
+          <LineChart
+            data={data}
+            margin={{ top: 8, right: hasRight ? 8 : 12, left: -12, bottom: 0 }}
+          >
             <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
             <XAxis dataKey={xKey} tick={{ fontSize: 12 }} />
-            <YAxis tick={{ fontSize: 12 }} />
+            <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
+            {hasRight ? (
+              <YAxis
+                yAxisId="right"
+                orientation="right"
+                tick={{ fontSize: 12 }}
+                tickFormatter={(v) => `${v}%`}
+                width={48}
+              />
+            ) : null}
             <Tooltip
               contentStyle={{
                 background: "var(--popover)",
                 border: "1px solid var(--border)",
                 fontSize: 12,
               }}
+              labelFormatter={(label, payload) => {
+                const priorBucket = payload?.[0]?.payload?.prior_bucket;
+                if (typeof priorBucket === "string" && priorBucket) {
+                  return `${label}  ·  vs ${priorBucket}`;
+                }
+                return String(label);
+              }}
+              formatter={(value, name, item) => {
+                const key = String(item?.dataKey ?? "");
+                if (key.startsWith("pct_") || String(name).includes("%")) {
+                  return [formatPct(value), name];
+                }
+                return [formatAbs(value), name];
+              }}
             />
             {series.map((s, i) => (
               <Line
                 key={s.key}
+                yAxisId={s.yAxisId ?? "left"}
                 type="monotone"
                 dataKey={s.key}
                 name={s.label}
                 stroke={s.color ?? `var(--chart-${(i % 5) + 1})`}
-                strokeWidth={2}
+                strokeWidth={s.yAxisId === "right" ? 1.5 : 2}
                 strokeDasharray={s.dashed ? "6 4" : undefined}
                 dot={false}
-                connectNulls
+                // Gaps (null) must not draw a fake flat $0 line across empty history.
+                connectNulls={false}
               />
             ))}
             {goal != null ? (
               <ReferenceLine
+                yAxisId="left"
                 y={goal}
                 stroke="var(--destructive)"
                 strokeDasharray="4 4"

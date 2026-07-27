@@ -26,6 +26,19 @@ export const RANGE_PRESETS: { value: RangePreset; label: string }[] = [
 
 /** Cookie keeps Period aligned across Home / Sales / Labor / Accounting / … */
 export const PERIOD_COOKIE = "oc_range";
+/** Aggregation grain shared across Performance pages that expose Aggregation. */
+export const GRAIN_COOKIE = "oc_grain";
+/** Custom Period bounds — used when PERIOD_COOKIE is `custom`. */
+export const FROM_COOKIE = "oc_from";
+export const TO_COOKIE = "oc_to";
+
+const COOKIE_MAX_AGE = 31536000; // 1y
+
+/** Client-side cookie write used by Period / Aggregation / custom Apply. */
+export function writeFilterCookie(name: string, value: string): void {
+  if (typeof document === "undefined") return;
+  document.cookie = `${name}=${encodeURIComponent(value)};path=/;max-age=${COOKIE_MAX_AGE};SameSite=Lax`;
+}
 
 /** Build a nav href that preserves the current period preset. */
 export function periodHref(
@@ -219,6 +232,102 @@ const GRAIN_VALUES = new Set<string>(GRAINS.map((g) => g.value));
 export function parseGrain(value: string | string[] | undefined, fallback: Grain = "day"): Grain {
   const raw = firstValue(value);
   return raw && GRAIN_VALUES.has(raw) ? (raw as Grain) : fallback;
+}
+
+/**
+ * Compare-prior window: the same grain buckets as `win`, each shifted back by
+ * exactly one aggregation step (previous day / week / month). Used so Trend
+ * "Compare" overlays last-week's path under this week's labels (not the fully
+ * preceding equal-length calendar period).
+ */
+export function priorWindow(win: DateWindow, grain: Grain = "day"): DateWindow {
+  const curBuckets = enumerateBucketStarts(win, grain);
+  if (curBuckets.length === 0) {
+    return {
+      start: shiftCalendarDate(win.start, grain, -1),
+      end: shiftCalendarDate(win.end, grain, -1),
+      label: "Prior period",
+      preset: "custom",
+    };
+  }
+  const priorBuckets = curBuckets.map((b) => addGrain(b, grain, -1));
+  return {
+    start: priorBuckets[0]!,
+    end: grainEndInclusive(priorBuckets[priorBuckets.length - 1]!, grain),
+    label: "Prior period",
+    preset: "custom",
+  };
+}
+
+/** Inclusive last calendar day of a truncated grain bucket. */
+export function grainEndInclusive(bucketStart: string, grain: Grain): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(bucketStart);
+  if (!m) return bucketStart;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (grain === "day") return bucketStart;
+  if (grain === "week") {
+    const end = addDays(y, mo, d, 6);
+    return fmt(end.y, end.m, end.d);
+  }
+  const end = fromUTC(toUTC(y, mo + 1, 0));
+  return fmt(end.y, end.m, end.d);
+}
+
+/** Shift a calendar YYYY-MM-DD by one or more grain steps (not truncated first). */
+export function shiftCalendarDate(isoDate: string, grain: Grain, delta: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDate);
+  if (!m) return isoDate;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (grain === "day") {
+    const next = addDays(y, mo, d, delta);
+    return fmt(next.y, next.m, next.d);
+  }
+  if (grain === "week") {
+    const next = addDays(y, mo, d, delta * 7);
+    return fmt(next.y, next.m, next.d);
+  }
+  // month — clamp day to last day of target month (Mar 31 - 1mo → Feb 28/29)
+  const last = fromUTC(toUTC(y, mo + delta + 1, 0));
+  const day = Math.min(d, last.d);
+  const next = fromUTC(toUTC(y, mo + delta, day));
+  return fmt(next.y, next.m, next.d);
+}
+
+/** Inclusive list of truncated bucket ISO starts covering `win` at `grain`. */
+export function enumerateBucketStarts(win: DateWindow, grain: Grain): string[] {
+  const out: string[] = [];
+  let cur = truncateToGrain(win.start, grain);
+  const end = win.end;
+  // Safety cap — a year of days is plenty for console ranges.
+  for (let i = 0; i < 400 && cur <= end; i++) {
+    out.push(cur);
+    cur = addGrain(cur, grain, 1);
+  }
+  return out;
+}
+
+/** Advance (or rewind) a truncated bucket ISO by `delta` grain steps. */
+export function addGrain(isoDate: string, grain: Grain, delta: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDate);
+  if (!m) return isoDate;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (grain === "day") {
+    const next = addDays(y, mo, d, delta);
+    return fmt(next.y, next.m, next.d);
+  }
+  if (grain === "week") {
+    const next = addDays(y, mo, d, delta * 7);
+    return truncateToGrain(fmt(next.y, next.m, next.d), "week");
+  }
+  // month
+  const dt = toUTC(y, mo + delta, 1);
+  return fmt(dt.getUTCFullYear(), dt.getUTCMonth() + 1, 1);
 }
 
 // `grain` is never string-interpolated from a request — it is parsed above

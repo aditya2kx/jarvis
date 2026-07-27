@@ -17,7 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { Series } from "./LineChartCard";
 import { chartColorAt } from "@/lib/charts/palette";
 
-export type BarValueFormat = "dollars" | "percent";
+export type BarValueFormat = "dollars" | "percent" | "number";
 
 type TooltipRow = {
   dataKey?: string | number;
@@ -39,6 +39,11 @@ function formatTick(value: number, format: BarValueFormat): string {
   if (format === "percent") {
     return `${Number(value).toFixed(0)}%`;
   }
+  if (format === "number") {
+    const n = Number(value);
+    if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
+    return `${Math.round(n)}`;
+  }
   const n = Number(value);
   if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
   return `$${n.toFixed(0)}`;
@@ -48,6 +53,7 @@ function formatTooltipValue(value: unknown, format: BarValueFormat): string {
   const n = typeof value === "number" ? value : Number(value);
   if (Number.isNaN(n)) return "—";
   if (format === "percent") return `${n.toFixed(1)}%`;
+  if (format === "number") return n.toLocaleString("en-US");
   return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
 

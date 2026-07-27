@@ -11,8 +11,8 @@ import { FilterPills } from "@/components/filters/FilterPills";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
 import { LaborForwardSummaryCard } from "@/components/kpi/LaborForwardSummary";
-import { RANGE_PRESETS, formatBucket, parseGrain, wantsCustom } from "@/lib/filters/range";
-import { resolvePageRange } from "@/lib/filters/period";
+import { RANGE_PRESETS, formatBucket, wantsCustom } from "@/lib/filters/range";
+import { resolvePageGrain, resolvePageRange } from "@/lib/filters/period";
 import { LABOR_LENS_OPTIONS, parseLaborLens, periodDayCount } from "@/lib/kpi/labor-lens";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { LaborDailyRow, LaborForwardSummary } from "@/lib/bq/queries";
@@ -31,9 +31,9 @@ export default async function LaborPage({
 }) {
   const sp = await searchParams;
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
-  const grain = parseGrain(sp.grain);
+  const grain = await resolvePageGrain(sp.grain);
   const lens = parseLaborLens(sp.lens);
-  const showCustomPicker = wantsCustom(sp.range);
+  const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
   const dateParams: Record<string, string> = win.preset === "custom" ? { from: win.start, to: win.end } : {};
   const periodDays = periodDayCount(win.start, win.end);
 

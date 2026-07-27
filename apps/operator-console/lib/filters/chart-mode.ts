@@ -1,4 +1,8 @@
-/** Sales chart mode + compare-prior URL params (Composition bars vs Trend lines). */
+/**
+ * Composition | Trend mode + Compare URL params.
+ * Shared across Performance screens (Sales first; Labor/Forecast/etc. reuse).
+ * Pair with `lib/charts/compare-series.ts` + `priorWindow` in `lib/filters/range.ts`.
+ */
 
 export type ChartMode = "composition" | "trend";
 

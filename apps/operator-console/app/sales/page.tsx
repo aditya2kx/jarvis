@@ -2,7 +2,12 @@ import { salesByGrain, salesSourceOptions, storeConfig } from "@/lib/bq/queries"
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
-import { fillSalesSpine, mergePriorSeries, pivotSalesChart } from "@/lib/charts/sales-pivot";
+import {
+  compareGrainLabel,
+  fillSalesSpine,
+  mergePriorSeries,
+  pivotSalesChart,
+} from "@/lib/charts/sales-pivot";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { LineChartCard } from "@/components/charts/LineChartCard";
 import { DataTable } from "@/components/tables/DataTable";
@@ -67,8 +72,7 @@ export default async function SalesPage({
   const breakdownParam = breakdown ? "1" : "0";
   const compareParam = compare ? "1" : "0";
   const modeParam = mode;
-  const compareLabel =
-    grain === "week" ? "Previous week" : grain === "month" ? "Previous month" : "Previous day";
+  const compareLabel = compareGrainLabel(grain);
   const priorSeriesLabel = compareLabel;
 
   let rows: SalesBySourceRow[] = [];
@@ -141,7 +145,7 @@ export default async function SalesPage({
 
   const priorSubtitle =
     compare && prior
-      ? `Each point vs previous ${grain} · prior data ${prior.start} → ${prior.end}`
+      ? `Each point vs previous ${grain} · hover for abs + % · right axis = % change`
       : undefined;
 
   // Detail table is always aggregated (one row per bucket) even when charts

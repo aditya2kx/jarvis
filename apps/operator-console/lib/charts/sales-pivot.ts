@@ -10,6 +10,15 @@ export interface SalesPivotRow {
   items_sold: number;
 }
 
+// Re-export shared Trend/Compare helpers so existing sales imports keep working.
+// New screens should import from `@/lib/charts/compare-series` directly.
+export {
+  compareGrainLabel,
+  mergePriorSeries,
+  pctChange,
+  type PivotChart,
+} from "@/lib/charts/compare-series";
+
 /**
  * Pivot long sales rows into Recharts-friendly wide rows.
  * Aggregate mode: one series key = metric. Breakdown: one series per source.
@@ -58,6 +67,9 @@ export function pivotSalesChart(
  * `missing: "zero"` (default) writes 0s — use for the current window.
  * `missing: "null"` leaves metric fields null so charts gap instead of faking $0
  * for weeks that never had transactions (e.g. pre-store history).
+ *
+ * Sales-shaped rows; other screens should add a domain-specific spine filler
+ * (or a thin adapter into `{ date, value }`) rather than forking mergePriorSeries.
  */
 export function fillSalesSpine(
   rows: SalesPivotRow[],
@@ -105,36 +117,4 @@ export function fillSalesSpine(
       items_sold: 0,
     };
   });
-}
-
-/**
- * Align prior-period aggregate pivot onto current bucket labels by index
- * (same grain length after priorWindow(win, grain) + spine fill). Prior values
- * land under `prior_<metricKey>` with a dashed series — used by Trend + Compare.
- * Null prior values stay null (gap); optional `priorBucketLabels` drive tooltips.
- */
-export function mergePriorSeries(
-  current: { data: Record<string, unknown>[]; series: Series[] },
-  prior: { data: Record<string, unknown>[]; series: Series[] },
-  metricKey: string,
-  priorLabel = "Prior period",
-  priorBucketLabels?: string[],
-): { data: Record<string, unknown>[]; series: Series[] } {
-  const priorKey = `prior_${metricKey}`;
-  const data = current.data.map((row, i) => {
-    const raw = i < prior.data.length ? prior.data[i]![metricKey] : null;
-    const priorVal = raw == null || Number.isNaN(Number(raw)) ? null : Number(raw);
-    return {
-      ...row,
-      [priorKey]: priorVal,
-      ...(priorBucketLabels?.[i] != null
-        ? { prior_bucket: priorBucketLabels[i] }
-        : {}),
-    };
-  });
-  const series: Series[] = [
-    ...current.series,
-    { key: priorKey, label: priorLabel, dashed: true },
-  ];
-  return { data, series };
 }

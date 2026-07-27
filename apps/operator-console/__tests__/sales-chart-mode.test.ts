@@ -9,7 +9,8 @@ import {
   priorWindow,
   type DateWindow,
 } from "@/lib/filters/range";
-import { mergePriorSeries, pivotSalesChart } from "@/lib/charts/sales-pivot";
+import { compareGrainLabel, mergePriorSeries, pctChange } from "@/lib/charts/compare-series";
+import { pivotSalesChart } from "@/lib/charts/sales-pivot";
 
 describe("parseChartMode", () => {
   it("defaults to composition", () => {
@@ -124,8 +125,29 @@ describe("priorWindow", () => {
   });
 });
 
+describe("compareGrainLabel", () => {
+  it("names the lag-1 compare control by aggregation", () => {
+    expect(compareGrainLabel("day")).toBe("Previous day");
+    expect(compareGrainLabel("week")).toBe("Previous week");
+    expect(compareGrainLabel("month")).toBe("Previous month");
+  });
+});
+
+describe("pctChange", () => {
+  it("computes signed percent change", () => {
+    expect(pctChange(120, 100)).toBe(20);
+    expect(pctChange(80, 100)).toBe(-20);
+  });
+
+  it("returns null when prior is missing or zero", () => {
+    expect(pctChange(10, null)).toBeNull();
+    expect(pctChange(null, 10)).toBeNull();
+    expect(pctChange(10, 0)).toBeNull();
+  });
+});
+
 describe("mergePriorSeries", () => {
-  it("aligns prior values by index onto current labels", () => {
+  it("aligns prior values by index onto current labels and adds % change", () => {
     const current = pivotSalesChart(
       [
         { date: "Jul 10", source: null, net_sales: 100, orders: 1, items_sold: 1 },
@@ -148,11 +170,28 @@ describe("mergePriorSeries", () => {
       "Wk of Jul 3",
       "Wk of Jul 4",
     ]);
-    expect(merged.series.map((s) => s.key)).toEqual(["net_sales", "prior_net_sales"]);
+    expect(merged.series.map((s) => s.key)).toEqual([
+      "net_sales",
+      "prior_net_sales",
+      "pct_net_sales",
+    ]);
     expect(merged.series[1]?.dashed).toBe(true);
+    expect(merged.series[2]?.yAxisId).toBe("right");
     expect(merged.data).toEqual([
-      { date: "Jul 10", net_sales: 100, prior_net_sales: 80, prior_bucket: "Wk of Jul 3" },
-      { date: "Jul 11", net_sales: 200, prior_net_sales: 90, prior_bucket: "Wk of Jul 4" },
+      {
+        date: "Jul 10",
+        net_sales: 100,
+        prior_net_sales: 80,
+        pct_net_sales: 25,
+        prior_bucket: "Wk of Jul 3",
+      },
+      {
+        date: "Jul 11",
+        net_sales: 200,
+        prior_net_sales: 90,
+        pct_net_sales: expect.closeTo((200 - 90) / 90 * 100),
+        prior_bucket: "Wk of Jul 4",
+      },
     ]);
   });
 
@@ -167,6 +206,8 @@ describe("mergePriorSeries", () => {
     };
     const merged = mergePriorSeries(current, prior, "net_sales");
     expect(merged.data[0]?.prior_net_sales).toBeNull();
+    expect(merged.data[0]?.pct_net_sales).toBeNull();
     expect(merged.data[1]?.prior_net_sales).toBe(5);
+    expect(merged.data[1]?.pct_net_sales).toBe(300);
   });
 });

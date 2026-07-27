@@ -385,12 +385,24 @@ range/grain contract from `lib/filters/range.ts` + `lib/filters/period.ts`:
   `Date`/`Intl.DateTimeFormat` — those convert through UTC and shift the
   displayed calendar date by up to a day (and, for month grain, sometimes
   the wrong month) once a timezone offset is applied.
-- **Sales chart modes** (`mode=composition|trend`): Composition uses bar
-  charts and may stack by Source (`breakdown=1`). Trend uses line charts and
-  may overlay a lag-1 prior series (`compare=1`): each bucket vs the previous
-  day/week/month (not the fully preceding equal-length calendar period).
-  Breakdown and Compare are mutually exclusive (mode switch clears the other).
-  Goal line only in Composition at day grain with all sources and no breakdown.
+- **Composition / Trend chart modes** (Sales first; reuse on other screens):
+  Shared stack — do **not** fork per page:
+  - Mode gating: `lib/filters/chart-mode.ts` (`parseChartMode`, `parseCompare`,
+    `assertModeFilterCoherence` — Breakdown only in Composition; Compare only
+    in Trend).
+  - Lag-1 prior window: `priorWindow(win, grain)` + `enumerateBucketStarts` in
+    `lib/filters/range.ts` (previous day/week/month, not a fully preceding
+    equal-length calendar period).
+  - Overlay + `% change`: `lib/charts/compare-series.ts` (`mergePriorSeries`,
+    `pctChange`, `compareGrainLabel`) — left Y-axis = absolute current + prior;
+    right Y-axis = `% change`; tooltip shows abs + signed percent.
+  - Rendering: `LineChartCard` (dual axis when any series has `yAxisId: "right"`)
+    and `BarChartCard` for Composition.
+  - Domain spine fillers stay page-local (e.g. Sales `fillSalesSpine`); merge
+    helpers stay shared.
+  Sales today: Composition may stack by Source (`breakdown=1`); Trend Compare
+  uses `compare=1`. Goal line only in Composition at day grain with all sources
+  and no breakdown.
 - **Rollup correctness**: additive metrics (`net_sales`, `orders`,
   `total_hours`, …) are `SUM()`-ed per bucket in `lib/bq/queries.ts`
   (`laborByGrain`, `forecastByGrain`, `forecastAccuracyByGrain`); ratios

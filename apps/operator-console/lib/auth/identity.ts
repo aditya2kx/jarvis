@@ -56,6 +56,34 @@ async function verifyIapJwt(jwt: string): Promise<string | null> {
  * (misconfiguration, or IAP disabled) and `BYPASS_IAP_EMAIL` is unset for
  * local dev — never fabricate an identity.
  */
+function iapAuthBreadcrumb(
+  outcome: "ok" | "jwt_fail" | "missing",
+  h: Headers,
+  extra: Record<string, unknown> = {},
+): void {
+  // Cookie *names* only — never values. Greppable: event=iap_auth
+  const cookieHeader = h.get("cookie") ?? "";
+  const cookieNames = cookieHeader
+    .split(";")
+    .map((p) => p.trim().split("=")[0])
+    .filter(Boolean)
+    .filter((n) => /iap|gcp|ga|gid/i.test(n))
+    .slice(0, 20);
+  console.info(
+    JSON.stringify({
+      event: "iap_auth",
+      outcome,
+      host: h.get("host"),
+      ua: h.get("user-agent")?.slice(0, 200) ?? null,
+      referer: h.get("referer")?.slice(0, 300) ?? null,
+      jwt_present: Boolean(h.get(IAP_JWT_HEADER)),
+      email_header_present: Boolean(h.get(IAP_EMAIL_HEADER)),
+      cookie_names: cookieNames,
+      ...extra,
+    }),
+  );
+}
+
 export async function operatorEmail(): Promise<string> {
   const h = await headers();
   const headerEmail = h.get(IAP_EMAIL_HEADER)?.replace(/^accounts\.google\.com:/, "");
@@ -64,8 +92,10 @@ export async function operatorEmail(): Promise<string> {
   if (headerEmail && jwt) {
     const verifiedEmail = await verifyIapJwt(jwt);
     if (!verifiedEmail || verifiedEmail.toLowerCase() !== headerEmail.toLowerCase()) {
+      iapAuthBreadcrumb("jwt_fail", h);
       throw new Error("operatorEmail: IAP JWT assertion failed verification or email mismatch");
     }
+    iapAuthBreadcrumb("ok", h);
     return headerEmail;
   }
 
@@ -76,5 +106,6 @@ export async function operatorEmail(): Promise<string> {
   if (process.env.DEBUG_AUTH_HEADERS) {
     console.error("DEBUG_AUTH_HEADERS:", JSON.stringify([...h.entries()]));
   }
+  iapAuthBreadcrumb("missing", h);
   throw new Error("operatorEmail: no IAP header/JWT present and BYPASS_IAP_EMAIL unset");
 }

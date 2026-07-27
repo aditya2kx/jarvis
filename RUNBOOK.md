@@ -1704,27 +1704,56 @@ hard-refresh after deploy. Next `main` push restores the merged SHA.
 
 ### One-time IAP provisioning (Console-only, cannot be scripted)
 
-Two Console steps, done once per project (already done for `jarvis-bhaga-prod` — see
-`docs/operator-console/PLAN.md` decisions log, 2026-07-05):
+Three Console steps, done once per project (already done for `jarvis-bhaga-prod` — see
+`docs/operator-console/PLAN.md` decisions log, 2026-07-05 + 2026-07-26):
 1. **Google Auth Platform branding** — `console.cloud.google.com/auth/overview` → "Get started" →
    App name "Palmetto Operator Console", **External** audience (Internal is greyed out — no
    Workspace org), any contact email you're signed in as.
 2. **Enable IAP on the Cloud Run service** — service → **Security** tab → check
    **Identity Aware Proxy (IAP)** alongside IAM → Save. Google auto-creates the OAuth client tied
    to the branding above; no manual client creation.
+3. **Publish Audience to In production** — `console.cloud.google.com/auth/audience` →
+   **Publish app** → Confirm. Leave publishing status at **In production** (not Testing).
+   Testing-mode External apps force short-lived grants and frequent re-consent; on iPhone
+   Chrome that re-consent leg (`accounts.google.com/.../signin/oauth/consent`) has been
+   observed to 500 after idle, requiring a manual refresh. Production status removes that
+   churn. No Google verification is required while Data Access stays on non-sensitive
+   scopes only (IAP's openid/email/profile). Do **not** click "Back to testing".
 
-Both steps only need to happen again if the branding/OAuth client is ever deleted.
+Steps 1–2 only need to happen again if the branding/OAuth client is ever deleted. Step 3
+is a one-click publish; re-check it if login starts failing after idle again.
 
 ### Accessing the console (Cloud Run direct IAP — browser sign-in)
 
-Open `https://operator-console-887772634501.us-central1.run.app` in a browser. IAP redirects to
+Open `https://operator-console-887772634501.us-central1.run.app` in a browser (**canonical
+host** — prefer this over the hash form `operator-console-4yl5izovxq-uc.a.run.app`; the app
+302-redirects hash → canonical after IAP so cookies stay on one host). IAP redirects to
 Google's account chooser ("Sign in to Palmetto Operator Console"), and after picking an account
 either loads the console (if authorized) or shows IAP's own "You don't have access" page with the
 denied email printed (if not). No terminal, no proxy command, no app-level allowlist — access is
 pure IAM.
 
-Mutating controls (restock, tip exemptions, goals, accounting writes, …) use the shared
-`useConsoleAction` feedback shell; order-reco refresh after restock/capacity is enqueued as a
+**IAP login diagnostics (Issue #194)** — failures on Google/IAP often never reach Cloud Run:
+
+1. **Data Access audit logs** for `iap.googleapis.com` (project IAM auditConfigs) — enable once:
+   ```
+   gcloud projects get-iam-policy jarvis-bhaga-prod --format=json > /tmp/policy.json
+   # merge auditConfigs for iap.googleapis.com DATA_READ + DATA_WRITE, then:
+   gcloud projects set-iam-policy jarvis-bhaga-prod /tmp/policy.json
+   ```
+2. **Cloud Logging** greppable `event=iap_auth` / `iap_canonical_redirect` from the console service.
+3. **BQ** `jarvis_dev.console_iap_events` — success beacon after sign-in; fail reports via:
+   ```
+   curl -sS -X POST https://bhaga-webhook-4yl5izovxq-uc.a.run.app/diag/console-iap \
+     -H 'content-type: application/json' \
+     -d '{"url":"<failing URL>","host":"accounts.google.com","ua":"<UA>","note":"mobile 400"}'
+   ```
+   Optional shared secret: set `CONSOLE_IAP_DIAG_TOKEN` on the webhook and send
+   `X-Console-Iap-Diag-Token`. Rate-limited by IP+UA.
+4. iOS Shortcut / bookmark: POST the same JSON when you see a Google 400/500 on account pick.
+
+Mutating controls (restock, tip exemptions, goals, accounting writes, usage-day overrides, …) use the shared
+`useConsoleAction` feedback shell; order-reco refresh after restock/capacity/usage overrides is enqueued as a
 Cloud Run Job (`BHAGA_ORDER_RECO_ONLY=1`) so the click path stays responsive (Issue #175).
 
 **Granting a new admin/operator** — one command, one layer:

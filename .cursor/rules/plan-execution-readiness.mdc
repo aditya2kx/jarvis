@@ -18,5 +18,6 @@ A plan is execution-ready when a Sonnet/Composer model could implement it withou
 8. Docs lock-step targets are listed (RUNBOOK/README/DOMAIN/bhaga.mdc/PROGRESS) + `check_doc_freshness.py`.
 9. Branch/PR mechanics noted (one branch = one coherent change; `--no-verify` push; bot account; never self-merge; reply-to-every-comment gate).
 10. Model routing per milestone (Composer/Sonnet/Opus) per the cost playbook; one chat per PR.
+11. **UX polish when UI is in scope** (user-preferences Design #27; `docs/contributing/ui-polish.md`): any new operator-facing UI cites existing design-system components/tokens (e.g. Operator Console shadcn `Badge`/`DataTable`/muted text), specifies interaction states (hover/focus/pending/mobile tap), and treats visual polish as an acceptance/evidence bar — never “temporary” or prototype-looking UI in a ship plan.
 
 Output: the edited plan. If a requirement cannot be made concrete without a decision, ask the operator ONE focused question rather than guessing.

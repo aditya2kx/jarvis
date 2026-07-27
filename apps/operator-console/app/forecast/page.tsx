@@ -1,10 +1,11 @@
 import {
   forecastForwardByGrain,
   forecastAccuracyByGrain,
+  forecastGoalScheduleByGrain,
   forecastExclusions,
   storeConfig,
 } from "@/lib/bq/queries";
-import { mergeForecastAccuracyChart } from "@/lib/kpi/forecast-accuracy-chart";
+import { mergeForecastAccuracyChart, mergeGoalHoursChart } from "@/lib/kpi/forecast-accuracy-chart";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -53,10 +54,10 @@ export default async function ForecastPage({
 }) {
   const sp = await searchParams;
   // Forecast splits windows (Issue #202):
-  // - Upcoming schedule + forward-only charts: Chicago today → horizon.
-  // - Accuracy chart: actuals respect Period (look-back); forecast series
-  //   covers that history and continues into the forward horizon. Grain
-  //   applies to both series. MAPE stays Period-only (dates with actuals).
+  // - Upcoming schedule + forecast-vs-prior-week: Chicago today → horizon.
+  // - Accuracy chart: actuals Period-scoped; forecast extends ahead.
+  // - Goal vs scheduled: scheduled Period-scoped (like actuals); goal extends ahead.
+  // Grain applies to all series. MAPE stays Period-only (dates with actuals).
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
   const grain = await resolvePageGrain(sp.grain);
   const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
@@ -68,14 +69,16 @@ export default async function ForecastPage({
 
   let rows: ForecastRow[] = [];
   let accuracyChart: Record<string, unknown>[] = [];
+  let goalHoursChart: Record<string, unknown>[] = [];
   let exclusions: ForecastExclusionRow[] = [];
   let mapePct: number | undefined;
   let goalHoursPerItem = DEFAULT_GOAL_HOURS_PER_ITEM;
   let error: string | undefined;
   try {
-    const [fc, acc, excl, config] = await Promise.all([
+    const [fc, acc, goalSched, excl, config] = await Promise.all([
       forecastForwardByGrain(grain),
       forecastAccuracyByGrain(win, grain),
+      forecastGoalScheduleByGrain(win, grain),
       forecastExclusions(),
       storeConfig(DEFAULT_STORE),
     ]);
@@ -84,15 +87,16 @@ export default async function ForecastPage({
     const goalRow = config.find((r) => r.key === "goal_hours_per_item");
     if (goalRow) goalHoursPerItem = Number(goalRow.value);
     accuracyChart = mergeForecastAccuracyChart(acc, fc, { forecastKey, actualKey, grain });
+    goalHoursChart = mergeGoalHoursChart(goalSched, fc, { goalHoursPerItem, grain });
     mapePct = mape(acc.map((r) => ({ forecast: r[forecastKey] as number, actual: r[actualKey] as number })));
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
 
   // Goal Total Hours vs Scheduled Part Time (Grafana panels 71/id-2230) —
-  // computed client-side from already-fetched forecast rows (forecast_items
-  // × goal hrs/item), never a new BQ column, same "presentation math over
-  // fetched rows" pattern lib/kpi/health.ts uses for Home's pace/status.
+  // presentation math over fetched rows (forecast_items × goal hrs/item).
+  // Upcoming schedule table stays forward-only; the goal chart uses
+  // goalHoursChart (Period scheduled + forward-extending goal) above.
   const scheduleRows = rows.map((r) => {
     const goalShiftHours = Number((r.forecast_items * goalHoursPerItem).toFixed(1));
     const schedVsGoalHours =
@@ -110,14 +114,6 @@ export default async function ForecastPage({
       date: formatBucket(r.date, grain),
       forecast: r[forecastKey] as number,
       prior_wk: r[priorKey] as number,
-    }));
-
-  const goalHoursChart = [...scheduleRows]
-    .sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1))
-    .map((r) => ({
-      date: formatBucket(r.date, grain),
-      goal_shift_hours: r.goal_shift_hours,
-      scheduled_hours: r.scheduled_hours,
     }));
 
   const metricLabel = metric === "orders" ? "orders" : "items";
@@ -218,7 +214,7 @@ export default async function ForecastPage({
       ) : (
         <>
           <LineChartCard
-            title={`Forecast ${metricLabel} vs prior week`}
+            title={`Forecast ${metricLabel} vs prior week (look-ahead — not actuals)`}
             data={scheduleChart}
             xKey="date"
             series={[
@@ -236,7 +232,7 @@ export default async function ForecastPage({
             ]}
           />
           <LineChartCard
-            title={`Goal total hours vs scheduled (${goalHoursPerItem.toFixed(2)} hrs/item goal)`}
+            title={`Goal total hours vs scheduled (${goalHoursPerItem.toFixed(2)} hrs/item) — scheduled ${win.label.toLowerCase()}; goal extends ahead`}
             data={goalHoursChart}
             xKey="date"
             series={[

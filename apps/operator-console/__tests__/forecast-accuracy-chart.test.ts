@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { mergeForecastAccuracyChart } from "@/lib/kpi/forecast-accuracy-chart";
+import {
+  mergeForecastAccuracyChart,
+  mergeGoalHoursChart,
+} from "@/lib/kpi/forecast-accuracy-chart";
 
 describe("mergeForecastAccuracyChart", () => {
   it("keeps Period actuals and extends forecast into the forward horizon", () => {
@@ -82,5 +85,28 @@ describe("mergeForecastAccuracyChart", () => {
     expect(chart[1]?.actual).toBeNull();
     expect(chart[1]?.forecast).toBe(800);
     expect(chart[1]?.date).toBe("Wk of Jul 27");
+  });
+});
+
+describe("mergeGoalHoursChart", () => {
+  it("keeps Period scheduled and extends goal into the forward horizon", () => {
+    const chart = mergeGoalHoursChart(
+      [
+        { date: "2026-07-25", forecast_items: 100, scheduled_hours: 20 },
+        { date: "2026-07-26", forecast_items: 110, scheduled_hours: 22 },
+      ],
+      [
+        { date: "2026-07-27", forecast_orders: 0, forecast_items: 120 },
+        { date: "2026-08-05", forecast_orders: 0, forecast_items: 130 },
+      ],
+      { goalHoursPerItem: 0.2, grain: "day" },
+    );
+
+    expect(chart).toEqual([
+      { date: "Jul 25", goal_shift_hours: 20, scheduled_hours: 20 },
+      { date: "Jul 26", goal_shift_hours: 22, scheduled_hours: 22 },
+      { date: "Jul 27", goal_shift_hours: 24, scheduled_hours: null },
+      { date: "Aug 5", goal_shift_hours: 26, scheduled_hours: null },
+    ]);
   });
 });

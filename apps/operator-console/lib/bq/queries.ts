@@ -564,6 +564,43 @@ export function forecastAccuracyByGrain(win: DateWindow, grain: Grain): Promise<
   );
 }
 
+export interface ForecastGoalScheduleRow {
+  date: string;
+  forecast_items: number;
+  scheduled_hours: number | null;
+  [key: string]: unknown;
+}
+
+// Period-scoped goal/schedule inputs for the Goal vs Scheduled chart
+ // (Issue #202). Reads the underlying tables — not `vw_model_forecast` —
+ // because that view is forward-only (`date >= CURRENT_DATE`). Scheduled
+ // hours act like "actuals" and must look back across the Period window.
+export function forecastGoalScheduleByGrain(
+  win: DateWindow,
+  grain: Grain,
+): Promise<ForecastGoalScheduleRow[]> {
+  const bucket = bucketSql(grain, "d.date");
+  return q<ForecastGoalScheduleRow>(
+    `WITH days AS (
+       SELECT date FROM ${fq("model_forecast_daily")}
+       WHERE date BETWEEN @start AND @end
+       UNION DISTINCT
+       SELECT date FROM ${fq("adp_scheduled_daily")}
+       WHERE date BETWEEN @start AND @end
+     )
+     SELECT
+       ${bucket} AS date,
+       SUM(f.forecast_items) AS forecast_items,
+       SUM(s.scheduled_hours) AS scheduled_hours
+     FROM days d
+     LEFT JOIN ${fq("model_forecast_daily")} f ON f.date = d.date
+     LEFT JOIN ${fq("adp_scheduled_daily")} s ON s.date = d.date
+     GROUP BY date
+     ORDER BY date`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
 export interface OrderQualityDailyRow {
   date: string;
   kds_median_min: number;

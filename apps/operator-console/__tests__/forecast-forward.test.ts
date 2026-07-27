@@ -68,4 +68,23 @@ describe("forecast forward vs Period accuracy (Issue #202)", () => {
       end: { __date: "2026-06-30" },
     });
   });
+
+  it("forecastGoalScheduleByGrain Period-scopes scheduled via underlying tables", async () => {
+    const { forecastGoalScheduleByGrain } = await import("@/lib/bq/queries");
+    await forecastGoalScheduleByGrain(
+      { start: "2026-07-01", end: "2026-07-31", label: "This month", preset: "this_month" },
+      "day",
+    );
+
+    expect(q).toHaveBeenCalledTimes(1);
+    const [sql, params] = q.mock.calls[0] as [string, Record<string, unknown>];
+    expect(sql).toContain("model_forecast_daily");
+    expect(sql).toContain("adp_scheduled_daily");
+    expect(sql).not.toContain("vw_model_forecast");
+    expect(sql).toMatch(/BETWEEN @start AND @end/);
+    expect(params).toEqual({
+      start: { __date: "2026-07-01" },
+      end: { __date: "2026-07-31" },
+    });
+  });
 });

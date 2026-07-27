@@ -13,6 +13,13 @@ export type ForwardPoint = {
   date: string;
   forecast_orders: number;
   forecast_items: number;
+  scheduled_hours?: number | null;
+};
+
+export type GoalSchedulePoint = {
+  date: string;
+  forecast_items: number;
+  scheduled_hours: number | null;
 };
 
 /**
@@ -58,5 +65,58 @@ export function mergeForecastAccuracyChart(
       date: formatBucket(r.date, grain),
       forecast: r.forecast,
       actual: r.actual,
+    }));
+}
+
+/**
+ * Goal total hours vs scheduled chart (Issue #202):
+ * - Scheduled hours are Period-scoped (like actuals — look-back).
+ * - Goal hours (= forecast_items × goal rate) cover Period history and
+ *   continue into the forward horizon.
+ */
+export function mergeGoalHoursChart(
+  period: GoalSchedulePoint[],
+  fwd: ForwardPoint[],
+  opts: { goalHoursPerItem: number; grain: Grain },
+): Record<string, unknown>[] {
+  const { goalHoursPerItem, grain } = opts;
+  const map = new Map<
+    string,
+    { date: string; goal_shift_hours: number | null; scheduled_hours: number | null }
+  >();
+
+  for (const r of period) {
+    const key = String(r.date);
+    const items = Number(r.forecast_items) || 0;
+    map.set(key, {
+      date: key,
+      goal_shift_hours: Number((items * goalHoursPerItem).toFixed(1)),
+      scheduled_hours: r.scheduled_hours == null ? null : Number(r.scheduled_hours),
+    });
+  }
+
+  for (const r of fwd) {
+    const key = String(r.date);
+    const items = Number(r.forecast_items) || 0;
+    const goal = Number((items * goalHoursPerItem).toFixed(1));
+    const prev = map.get(key);
+    if (prev) {
+      prev.goal_shift_hours = goal;
+      // Keep Period scheduled on overlap; forward schedule stays on Upcoming table.
+    } else {
+      map.set(key, {
+        date: key,
+        goal_shift_hours: goal,
+        scheduled_hours: null,
+      });
+    }
+  }
+
+  return [...map.values()]
+    .sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1))
+    .map((r) => ({
+      date: formatBucket(r.date, grain),
+      goal_shift_hours: r.goal_shift_hours,
+      scheduled_hours: r.scheduled_hours,
     }));
 }

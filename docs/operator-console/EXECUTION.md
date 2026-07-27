@@ -433,15 +433,20 @@ DAY`, so the six presets are exact calendar windows, not rolling day counts.
 - `this_week` / `this_month` end on the calendar boundary, which can be in the
   future — that's expected for screens that apply Period to a mixed past+future
   window (e.g. Labor). On **Forecast** (Issue #202):
-  - **Upcoming schedule** + forward-only charts (`forecastForwardByGrain`):
+  - **Upcoming schedule** + forecast-vs-prior-week chart (`forecastForwardByGrain`):
     Chicago today → pipeline horizon; Period does not clip the look-ahead.
+    Chart 1 compares forecast to **prior week**, not actuals.
   - **Accuracy chart** (forecast vs actual): actuals respect Period (look-back);
     the forecast series covers that history and continues into the forward
     horizon (`mergeForecastAccuracyChart`). Aggregation grain applies to both
     series. MAPE stays Period-only (dates with actuals).
-  - Past-only presets still show a full forward table/charts. Forecast defaults
-    to **This month** (for accuracy actuals); every other Performance screen +
-    Home default to **Last 30 days**.
+  - **Goal vs scheduled chart**: scheduled hours respect Period (like actuals);
+    goal hours (= forecast_items × rate) extend ahead (`mergeGoalHoursChart` +
+    `forecastGoalScheduleByGrain` on underlying tables, not the forward-only
+    view). Forward scheduled hours remain on the Upcoming schedule table.
+  - Past-only presets still show a full forward upcoming table. Forecast defaults
+    to **This month** (for accuracy/scheduled look-back); every other Performance
+    screen + Home default to **Last 30 days**.
 - Net-sales goal picks weekly vs. monthly `store_config` key by
   `isMonthLike(win.preset)` (`30d` / `this_month` / `last_month` -> monthly;
   else weekly) — the same window drives both the query and which goal it's

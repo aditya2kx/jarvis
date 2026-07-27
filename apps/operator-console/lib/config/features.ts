@@ -16,6 +16,11 @@ export const FEATURES = {
   writeTipExemptions: true,
   writeRecognition: true,
   writeRestock: true,
+  /**
+   * Issue #194 — per-day force include/exclude on Base usage audit table.
+   * Changes avg/day + order reco; flag-off = read-only chips.
+   */
+  writeInventoryDayOverrides: true,
   /** Issue #158 — Plaid Link + sync write path. */
   writePlaidLink: true,
   /**

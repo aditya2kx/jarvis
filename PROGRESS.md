@@ -1,3 +1,12 @@
+## 2026-07-26 — IAP login diagnostics + inventory day overrides (Issue #194)
+
+**Scope:** Observability for mobile Google/IAP login flakes; Base usage-by-day audit table with sticky force include/exclude overrides on prod BQ.
+
+**Key changes (PR #197):**
+- IAP: Data Access audit logs; `iap_auth` breadcrumbs; success/fail beacons → `jarvis_dev.console_iap_events`; canonical-host redirect; RUNBOOK §17.
+- Migration `048`: `inventory_usage_day_overrides` + OA join + `vw_inventory_usage_day_audit` (NULL-safe eligible).
+- Console `/inventory`: layout A chips (`UsageDayAuditTable`), `FEATURES.writeInventoryDayOverrides`, Design #27 / `docs/contributing/ui-polish.md`.
+
 ## 2026-07-25 — Operator Console responsive actions + cold-start (Issue #175)
 
 **Scope:** Option B fast-ack for every mutating console control; durable Cloud Run Jobs for order-reco; `min-instances=1`.

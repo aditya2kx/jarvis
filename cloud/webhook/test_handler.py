@@ -1936,3 +1936,76 @@ class TestRestockSubmission:
         with app.test_client() as client:
             resp = _post_interaction(client, payload)
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# POST /diag/console-iap — public IAP fail beacon (Issue #194)
+# ---------------------------------------------------------------------------
+
+
+class TestDiagConsoleIap:
+    @pytest.fixture(autouse=True)
+    def _reset_rate_bucket(self, monkeypatch):
+        monkeypatch.setattr(handler, "_IAP_DIAG_BUCKET", {})
+        monkeypatch.delenv("CONSOLE_IAP_DIAG_TOKEN", raising=False)
+
+    def test_happy_path_dispatches_insert(self, monkeypatch):
+        dispatched: list[tuple] = []
+
+        def _capture(fn, *args):
+            dispatched.append((fn, args))
+
+        monkeypatch.setattr(handler, "_dispatch_async", _capture)
+        with app.test_client() as client:
+            resp = client.post(
+                "/diag/console-iap",
+                json={
+                    "url": "https://accounts.google.com/error",
+                    "host": "accounts.google.com",
+                    "ua": "unit-test-ua",
+                    "note": "unit happy",
+                },
+                headers={"User-Agent": "pytest-ua"},
+            )
+        assert resp.status_code == 200
+        assert resp.get_json() == {"ok": True}
+        assert len(dispatched) == 1
+        fn, args = dispatched[0]
+        assert fn is handler._insert_console_iap_event
+        row = args[0]
+        assert row["event"] == "login_fail_report"
+        assert row["host"] == "accounts.google.com"
+        assert row["ua"] == "unit-test-ua"
+        assert row["note"] == "unit happy"
+
+    def test_bad_token_returns_403(self, monkeypatch):
+        monkeypatch.setenv("CONSOLE_IAP_DIAG_TOKEN", "secret-token")
+        with app.test_client() as client:
+            resp = client.post(
+                "/diag/console-iap",
+                json={"host": "accounts.google.com"},
+                headers={"X-Console-Iap-Diag-Token": "wrong"},
+            )
+        assert resp.status_code == 403
+        assert resp.data == b"unauthorized"
+
+    def test_bad_body_type_returns_400(self, monkeypatch):
+        monkeypatch.setattr(handler, "_dispatch_async", lambda *a, **k: None)
+        with app.test_client() as client:
+            resp = client.post(
+                "/diag/console-iap",
+                json={"url": 123},  # must be str
+            )
+        assert resp.status_code == 400
+        assert resp.data == b"bad_request"
+
+    def test_rate_limit_returns_429(self, monkeypatch):
+        monkeypatch.setattr(handler, "_IAP_DIAG_LIMIT", 2)
+        monkeypatch.setattr(handler, "_dispatch_async", lambda *a, **k: None)
+        with app.test_client() as client:
+            headers = {"User-Agent": "rate-limit-ua", "X-Forwarded-For": "203.0.113.9"}
+            assert client.post("/diag/console-iap", json={"note": "1"}, headers=headers).status_code == 200
+            assert client.post("/diag/console-iap", json={"note": "2"}, headers=headers).status_code == 200
+            resp = client.post("/diag/console-iap", json={"note": "3"}, headers=headers)
+        assert resp.status_code == 429
+        assert resp.data == b"rate_limited"

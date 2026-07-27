@@ -787,6 +787,35 @@ export function orderAssistantTable(): Promise<OrderAssistantRow[]> {
   return q<OrderAssistantRow>(`SELECT * FROM ${fq("vw_order_assistant_table")}`);
 }
 
+/** Issue #194 — day-grain usage include/exclude audit (last 30 CT days). */
+export interface UsageDayAuditRow {
+  store: string;
+  item: string;
+  submitted_date: string; // DATE as YYYY-MM-DD
+  qty: number | null;
+  delta: number | null;
+  rule_eligible: boolean | null;
+  in_avg: boolean | null;
+  status: "included" | "excluded" | string;
+  reason: string | null;
+  override_mode: "force_include" | "force_exclude" | string | null;
+  high_bar: number | null;
+  similar_tomorrow_passes: boolean | null;
+}
+
+export function usageDayAudit(store = "palmetto"): Promise<UsageDayAuditRow[]> {
+  return q<UsageDayAuditRow>(
+    `SELECT store, item,
+       CAST(submitted_date AS STRING) AS submitted_date,
+       qty, delta, rule_eligible, in_avg, status, reason, override_mode,
+       high_bar, similar_tomorrow_passes
+     FROM ${fq("vw_inventory_usage_day_audit")}
+     WHERE store = @store
+     ORDER BY submitted_date DESC, item`,
+    { store },
+  );
+}
+
 // vw_order_reco_combined (migration 032) — one row per Item, date-qualified
 // "N" suffix columns for slot 1/2. Hardcoded to store='palmetto' inside the
 // view itself (Issue #137, single-store today); no store param here to match.

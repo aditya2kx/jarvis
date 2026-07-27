@@ -318,8 +318,16 @@ flowchart LR
 
 The console is used on operator phones as much as the office desktop, so every
 screen must render without horizontal page-overflow at **390px** (mobile) and
-**768px** (tablet); the sidebar collapses to a `Sheet`-based `MobileNav` below
-the `md` breakpoint (unchanged).
+**768px** (tablet).
+
+- **`< md` (768px):** sidebar is hidden; navigation is the `Sheet`-based
+  `MobileNav` hamburger in the topbar (unchanged).
+- **`md+`:** docked left sidebar with an **icon-rail collapse** toggle
+  (`components/shell/Sidebar.tsx` + `useSidebarCollapsed.ts`). Expanded =
+  `w-60` with group labels + icon + text; collapsed = `~w-14` icons only
+  (still navigable, tooltips on hover). Preference persists in
+  `localStorage` key `oc_sidebar_collapsed`. When unset, viewports below
+  **`lg` (1024px)** default to collapsed.
 
 - **Dense tables keep horizontal scroll, not a stacked-card redesign.** Pinned
   identity columns (`DataTable` `pinLeft`) stay `sticky`, but their `left`

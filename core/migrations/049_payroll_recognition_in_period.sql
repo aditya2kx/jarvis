@@ -4,8 +4,22 @@
 -- recognition (wage_diff stays wages-only). Console Payroll & People reads this
 -- view; no new Grafana target (same view name already in GRAFANA_VIEWS).
 --
--- recognition_bonuses.pay_period is 'YYYY-MM-DD..YYYY-MM-DD' (migration 033).
--- Aggregate SUM(amount_cents)/100 + STRING_AGG(reason) per period+employee.
+-- recognition_bonuses.pay_period is canonically 'YYYY-MM-DD..YYYY-MM-DD'
+-- (migration 033). Pre-#206 console writes sometimes stored only the start
+-- date — join on parsed period_start (+ employee) so both shapes match.
+-- Also normalize legacy bare-start rows to start..end when period_end is known.
+
+-- Normalize legacy pay_period = 'YYYY-MM-DD' → 'YYYY-MM-DD..YYYY-MM-DD'
+UPDATE `jarvis-bhaga-prod.bhaga.recognition_bonuses` r
+SET pay_period = CONCAT(
+  r.pay_period, '..', FORMAT_DATE('%Y-%m-%d', p.period_end)
+)
+FROM (
+  SELECT DISTINCT period_start, period_end
+  FROM `jarvis-bhaga-prod.bhaga.model_tip_alloc_period`
+) p
+WHERE r.pay_period NOT LIKE '%..%'
+  AND SAFE.PARSE_DATE('%Y-%m-%d', r.pay_period) = p.period_start;
 
 CREATE OR REPLACE VIEW `jarvis-bhaga-prod.bhaga.vw_model_payroll_period` AS
 WITH earn AS (
@@ -27,8 +41,10 @@ WITH earn AS (
 ),
 rec AS (
   SELECT
-    SAFE.PARSE_DATE('%Y-%m-%d', SPLIT(pay_period, '..')[SAFE_OFFSET(0)]) AS period_start,
-    SAFE.PARSE_DATE('%Y-%m-%d', SPLIT(pay_period, '..')[SAFE_OFFSET(1)]) AS period_end,
+    COALESCE(
+      SAFE.PARSE_DATE('%Y-%m-%d', SPLIT(pay_period, '..')[SAFE_OFFSET(0)]),
+      SAFE.PARSE_DATE('%Y-%m-%d', pay_period)
+    ) AS period_start,
     employee,
     ROUND(SUM(amount_cents) / 100.0, 2) AS recognition_bonus,
     STRING_AGG(
@@ -37,9 +53,11 @@ rec AS (
       ORDER BY updated_at
     ) AS recognition_reason
   FROM `jarvis-bhaga-prod.bhaga.recognition_bonuses`
-  WHERE SAFE.PARSE_DATE('%Y-%m-%d', SPLIT(pay_period, '..')[SAFE_OFFSET(0)]) IS NOT NULL
-    AND SAFE.PARSE_DATE('%Y-%m-%d', SPLIT(pay_period, '..')[SAFE_OFFSET(1)]) IS NOT NULL
-  GROUP BY period_start, period_end, employee
+  WHERE COALESCE(
+      SAFE.PARSE_DATE('%Y-%m-%d', SPLIT(pay_period, '..')[SAFE_OFFSET(0)]),
+      SAFE.PARSE_DATE('%Y-%m-%d', pay_period)
+    ) IS NOT NULL
+  GROUP BY period_start, employee
 )
 SELECT
   t.period_start,
@@ -72,7 +90,7 @@ FROM `jarvis-bhaga-prod.bhaga.model_tip_alloc_period` t
 LEFT JOIN `jarvis-bhaga-prod.bhaga.model_review_bonus_period` r
   USING (period_start, period_end, employee)
 LEFT JOIN rec
-  USING (period_start, period_end, employee)
+  ON t.period_start = rec.period_start AND t.employee = rec.employee
 LEFT JOIN `jarvis-bhaga-prod.bhaga.adp_wage_rates` w
   ON t.employee = w.canonical_name
 LEFT JOIN earn e

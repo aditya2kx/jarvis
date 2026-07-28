@@ -1725,15 +1725,20 @@ is a one-click publish; re-check it if login starts failing after idle again.
 
 ### Accessing the console (Cloud Run direct IAP — browser sign-in)
 
-Open `https://operator-console-887772634501.us-central1.run.app` in a browser (**canonical
-host** — prefer this over the hash form `operator-console-4yl5izovxq-uc.a.run.app`; the app
-302-redirects hash → canonical after IAP so cookies stay on one host). IAP redirects to
-Google's account chooser ("Sign in to Palmetto Operator Console"), and after picking an account
-either loads the console (if authorized) or shows IAP's own "You don't have access" page with the
-denied email printed (if not). No terminal, no proxy command, no app-level allowlist — access is
-pure IAM.
+**Sole operator URL (Issue #208):**
+`https://operator-console-887772634501.us-central1.run.app`
 
-**IAP login diagnostics (Issue #194)** — failures on Google/IAP often never reach Cloud Run:
+Expected behavior every time: if you already have a valid IAP session, the console loads; if
+not, Google shows available accounts → tap an allowlisted account → console. Access is pure
+IAM (`roles/iap.httpsResourceAccessor`) — no app-level allowlist, no terminal, no proxy.
+
+Do **not** use the Cloud Run hash host (`operator-console-4yl5izovxq-uc.a.run.app`) and do
+**not** mix the two hosts across visits. IAP session cookies are host-scoped (`__Host-GCP_IAP_*`);
+crossing hosts mid-login forces a second OAuth and is the root of mobile account-picker /
+Error-code-9 loops. The app intentionally does **not** 302 between hosts after IAP (that bounce
+was removed in Issue #208).
+
+**IAP login diagnostics (Issue #194 / #208)** — failures on Google/IAP often never reach Cloud Run:
 
 1. **Data Access audit logs** for `iap.googleapis.com` (project IAM auditConfigs) — enable once:
    ```
@@ -1741,7 +1746,8 @@ pure IAM.
    # merge auditConfigs for iap.googleapis.com DATA_READ + DATA_WRITE, then:
    gcloud projects set-iam-policy jarvis-bhaga-prod /tmp/policy.json
    ```
-2. **Cloud Logging** greppable `event=iap_auth` / `iap_canonical_redirect` from the console service.
+2. **Cloud Logging** greppable `event=iap_auth` / `iap_hash_host_hit` from the console service
+   (hash hits are logged only — not redirected).
 3. **BQ** `jarvis_dev.console_iap_events` — success beacon after sign-in; fail reports via:
    ```
    curl -sS -X POST https://bhaga-webhook-4yl5izovxq-uc.a.run.app/diag/console-iap \
@@ -1750,7 +1756,8 @@ pure IAM.
    ```
    Optional shared secret: set `CONSOLE_IAP_DIAG_TOKEN` on the webhook and send
    `X-Console-Iap-Diag-Token`. Rate-limited by IP+UA.
-4. iOS Shortcut / bookmark: POST the same JSON when you see a Google 400/500 on account pick.
+4. Idle-sim evidence harness: `python3 apps/operator-console/scripts/iap_idle_sim.py --email …`
+   (clears IAP cookies, keeps Google session, asserts chooser → allowlisted tap → console).
 
 Mutating controls (restock, tip exemptions, goals, accounting writes, usage-day overrides, …) use the shared
 `useConsoleAction` feedback shell; order-reco refresh after restock/capacity/usage overrides is enqueued as a

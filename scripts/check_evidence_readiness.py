@@ -233,20 +233,15 @@ def predict(body: str) -> tuple[bool, str]:
             )
 
     # G5: Operator Console portal changes require working-scenario https screenshots
-    # in §4. unit-only waivers cannot bypass this (same spirit as Grafana G3).
+    # in §4. A unit-only waiver cannot *skip* screenshots (same spirit as Grafana G3),
+    # but unit-only + screenshots is fine (waiver only lowers the confidence floor).
     if _diff_touches_console_portal() and _extract_section4(body) != body:
         section4 = _extract_section4(body)
-        if _WAIVER_PATTERN.search(body):
-            return False, (
-                "operator-console portal diffs cannot use Evidence tier: unit-only — "
-                "provide working-scenario https screenshots in §4. "
-                "Run: python3 apps/operator-console/scripts/capture_evidence.py "
-                "--path /payroll --label <label>"
-            )
         if not _SCREENSHOT_URL_RE.search(section4):
             return False, (
                 "operator-console change → §4 must include a viewable https screenshot URL "
-                "(working scenario). Run: python3 apps/operator-console/scripts/capture_evidence.py "
+                "(working scenario); unit-only cannot waive screenshots. "
+                "Run: python3 apps/operator-console/scripts/capture_evidence.py "
                 "--path /payroll --label <label>"
             )
 

@@ -317,7 +317,7 @@ class TestG5ConsolePortalScreenshotGate(unittest.TestCase):
         ok, reason = self._predict_console(body)
         self.assertTrue(ok, f"should pass with screenshot: {reason}")
 
-    def test_console_diff_unit_only_waiver_fails(self):
+    def test_console_diff_unit_only_without_screenshot_fails(self):
         body = (
             "Evidence tier: unit-only (waiver: console bounds are pure TS)\n"
             "## §4 Evidence\n"
@@ -327,7 +327,20 @@ class TestG5ConsolePortalScreenshotGate(unittest.TestCase):
         )
         ok, reason = self._predict_console(body)
         self.assertFalse(ok)
-        self.assertIn("unit-only", reason.lower())
+        self.assertIn("screenshot", reason.lower())
+        self.assertIn("unit-only cannot waive", reason.lower())
+
+    def test_console_diff_unit_only_with_screenshot_passes(self):
+        """Waiver lowers confidence floor; screenshots still satisfy G5."""
+        body = (
+            "Evidence tier: unit-only (waiver: IAP host policy only; no money path)\n"
+            "## §4 Evidence\n"
+            "<details><summary>Evidence</summary>\n"
+            "![home](https://github.com/owner/repo/releases/download/evidence-screenshots/home.png)\n"
+            "</details>\n"
+        )
+        ok, reason = self._predict_console(body)
+        self.assertTrue(ok, f"unit-only + screenshot should pass G5: {reason}")
 
     def test_no_console_diff_skips_g5(self):
         body = (

@@ -1,29 +1,24 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { CANONICAL_CONSOLE_HOST, HASH_CONSOLE_HOST } from "@/lib/iap/hosts";
+import { HASH_CONSOLE_HOST } from "@/lib/iap/hosts";
 
 /**
- * After IAP auth, bounce hash-host bookmarks onto the canonical hostname so
- * GCP_IAP_* cookies and OAuth state stay on one host (Issue #194).
+ * Issue #208 — do NOT redirect hash ↔ canonical after IAP.
+ * Cross-host 302 forces a second OAuth onto a host with no __Host-GCP_IAP_*
+ * cookies (Error code 9 / account-picker loops on mobile). Operators use the
+ * canonical host only; hash hits are logged, not bounced.
  */
 export function middleware(request: NextRequest) {
   const host = request.headers.get("host")?.split(":")[0] ?? "";
-  if (host !== HASH_CONSOLE_HOST) {
-    return NextResponse.next();
+  if (host === HASH_CONSOLE_HOST) {
+    console.info(
+      JSON.stringify({
+        event: "iap_hash_host_hit",
+        path: request.nextUrl.pathname,
+      }),
+    );
   }
-  const url = request.nextUrl.clone();
-  url.host = CANONICAL_CONSOLE_HOST;
-  url.protocol = "https:";
-  url.port = "";
-  console.info(
-    JSON.stringify({
-      event: "iap_canonical_redirect",
-      from_host: host,
-      to_host: CANONICAL_CONSOLE_HOST,
-      path: request.nextUrl.pathname,
-    }),
-  );
-  return NextResponse.redirect(url, 302);
+  return NextResponse.next();
 }
 
 export const config = {

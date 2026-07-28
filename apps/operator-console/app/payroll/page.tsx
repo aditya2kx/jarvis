@@ -18,6 +18,7 @@ import { RecognitionDrawer } from "@/components/drawers/RecognitionDrawer";
 import { TipExemptionsEditor } from "@/components/drawers/TipExemptionsEditor";
 import { FEATURES } from "@/lib/config/features";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
+import { payPeriodKey } from "@/lib/payroll/periodKey";
 import type { ColumnDef } from "@tanstack/react-table";
 import type {
   PayrollPeriodRow,
@@ -111,11 +112,20 @@ export default async function PayrollPage({
   const totalPay = periodRows.reduce((s, p) => s + (p.est_total_pay ?? 0), 0);
   const totalWages = periodRows.reduce((s, p) => s + (p.est_gross_pay ?? 0), 0);
   const totalBonus = periodRows.reduce((s, p) => s + (p.review_bonus ?? 0), 0);
+  const totalRecognition = periodRows.reduce(
+    (s, p) => s + (Number(p.recognition_bonus) || 0),
+    0,
+  );
 
   const periodLabel =
     selectedPeriodStart && periodEnd
       ? `${formatDate(selectedPeriodStart)} – ${formatDate(periodEnd)}`
       : "—";
+
+  const recognitionPayPeriod =
+    selectedPeriodStart && periodEnd
+      ? payPeriodKey(selectedPeriodStart, periodEnd)
+      : "";
 
   const periodColumns: ColumnDef<PayrollPeriodRow>[] = [
     { accessorKey: "period_start", header: "Period start", meta: { format: { kind: "date" } } },
@@ -125,6 +135,12 @@ export default async function PayrollPage({
     { accessorKey: "est_gross_pay", header: "Est. wages", meta: { format: { kind: "dollars" } } },
     { accessorKey: "tips_allocated", header: "Tips", meta: { format: { kind: "dollars" } } },
     { accessorKey: "review_bonus", header: "Review bonus", meta: { format: { kind: "dollars" } } },
+    {
+      accessorKey: "recognition_bonus",
+      header: "Recognition bonus",
+      meta: { format: { kind: "dollars" } },
+    },
+    { accessorKey: "recognition_reason", header: "Bonus reason" },
     { accessorKey: "est_total_pay", header: "Est. total", meta: { format: { kind: "dollars" } } },
     ...(selectedUnpaid
       ? []
@@ -138,6 +154,21 @@ export default async function PayrollPage({
                 thresholds: {
                   warn: 50,
                   bad: 150,
+                  direction: "higher-bad" as const,
+                  useAbs: true,
+                },
+              },
+            },
+          } satisfies ColumnDef<PayrollPeriodRow>,
+          {
+            accessorKey: "bonus_diff",
+            header: "Bonus diff (est-ADP)",
+            meta: {
+              format: {
+                kind: "dollars" as const,
+                thresholds: {
+                  warn: 25,
+                  bad: 75,
                   direction: "higher-bad" as const,
                   useAbs: true,
                 },
@@ -187,7 +218,10 @@ export default async function PayrollPage({
             ) : null}
             {FEATURES.writeTraining ? <TrainingQuickAdd /> : null}
             {FEATURES.writeRecognition ? (
-              <RecognitionDrawer defaultPayPeriod={selectedPeriodStart ?? ""} />
+              <RecognitionDrawer
+                defaultPayPeriod={recognitionPayPeriod}
+                employees={employees}
+              />
             ) : null}
           </>
         }
@@ -204,7 +238,7 @@ export default async function PayrollPage({
               {selectedUnpaid ? " · Unpaid (ADP)" : " · Paid (ADP)"}
               {editable ? " · tip exemptions editable" : ""}
             </p>
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               <Card>
                 <CardHeader>
                   <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -233,6 +267,16 @@ export default async function PayrollPage({
                 </CardHeader>
                 <CardContent>
                   <p className="text-2xl font-semibold">{formatDollars(totalBonus)}</p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm font-medium text-muted-foreground">
+                    Recognition
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-semibold">{formatDollars(totalRecognition)}</p>
                 </CardContent>
               </Card>
             </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Sheet,
   SheetContent,
@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { EmployeeCombobox } from "@/components/filters/EmployeeCombobox";
 import { addRecognitionBonusAction } from "@/app/payroll/actions";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 
@@ -20,7 +21,14 @@ import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 // dollar amount + reason) — drawer, not inline, per the write-UX hybrid
 // pattern. Amount is entered in dollars and converted to integer cents in
 // the server action (migration 033's amount_cents invariant).
-export function RecognitionDrawer({ defaultPayPeriod }: { defaultPayPeriod: string }) {
+export function RecognitionDrawer({
+  defaultPayPeriod,
+  employees,
+}: {
+  /** `YYYY-MM-DD..YYYY-MM-DD` from the page Period selector. */
+  defaultPayPeriod: string;
+  employees: string[];
+}) {
   const [open, setOpen] = useState(false);
   const [payPeriod, setPayPeriod] = useState(defaultPayPeriod);
   const [employee, setEmployee] = useState("");
@@ -28,6 +36,10 @@ export function RecognitionDrawer({ defaultPayPeriod }: { defaultPayPeriod: stri
   const [reason, setReason] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const { isPending, stage, error, run } = useConsoleAction();
+
+  useEffect(() => {
+    if (open) setPayPeriod(defaultPayPeriod);
+  }, [defaultPayPeriod, open]);
 
   async function handleSubmit() {
     const n = Number(amount);
@@ -44,6 +56,7 @@ export function RecognitionDrawer({ defaultPayPeriod }: { defaultPayPeriod: stri
       setEmployee("");
       setAmount("");
       setReason("");
+      setStatus(null);
     }
   }
 
@@ -66,18 +79,20 @@ export function RecognitionDrawer({ defaultPayPeriod }: { defaultPayPeriod: stri
             <Label htmlFor="rec-period">Pay period</Label>
             <Input
               id="rec-period"
-              placeholder="2026-07-01..2026-07-15"
+              placeholder="2026-07-13..2026-07-26"
               value={payPeriod}
               onChange={(e) => setPayPeriod(e.target.value)}
+              readOnly
+              className="bg-muted/40"
             />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="rec-employee">Employee</Label>
-            <Input
+            <EmployeeCombobox
               id="rec-employee"
-              placeholder="Last, First"
               value={employee}
-              onChange={(e) => setEmployee(e.target.value)}
+              options={employees}
+              onChange={setEmployee}
             />
           </div>
           <div className="flex flex-col gap-1.5">

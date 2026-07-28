@@ -1,3 +1,12 @@
+## 2026-07-27 — Payroll recognition in period view + Lindsay IAP (Issue #206)
+
+**Scope:** Operator Console Payroll & People: recognition in period totals, drawer UX, tip-exemption sticky/filters, Lindsay console access.
+
+**Key changes (PR #207):**
+- Migration `049`: `vw_model_payroll_period` joins `recognition_bonuses`; `est_total_pay` / `bonus_diff` include recognition; legacy bare-start `pay_period` keys normalized.
+- Console: recognition columns + headline; drawer period `start..end` + employee combobox; tip-exemption sticky headers + Date/Employee multi-filters.
+- IAP: `lindsay@mypalmetto.co` in deploy loop (+ live grant).
+
 ## 2026-07-26 — IAP login diagnostics + inventory day overrides (Issue #194)
 
 **Scope:** Observability for mobile Google/IAP login flakes; Base usage-by-day audit table with sticky force include/exclude overrides on prod BQ.

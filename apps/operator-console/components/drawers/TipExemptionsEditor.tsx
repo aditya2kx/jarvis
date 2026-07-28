@@ -3,10 +3,21 @@
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { LocalMultiSelect } from "@/components/filters/LocalMultiSelect";
 import { applyTipExemptionsAction } from "@/app/payroll/actions";
 import type { TipExemptionDraft } from "@/lib/bq/writes";
 import type { AdpShiftRow, TipExemptionRow } from "@/lib/bq/queries";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
+import {
+  facetedOptions,
+  rowMatchesLocalFilters,
+  type LocalMultiSelection,
+} from "@/lib/tables/localMultiFilter";
+
+/** ~10+ body rows; header sticky inside the scrollport (UsageDayAuditTable). */
+const TABLE_MAX_H = "max-h-[min(36rem,70vh)]";
+const THEAD =
+  "sticky top-0 z-30 border-b border-border bg-muted/95 text-left text-xs text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-muted/80";
 
 type DraftKey = string; // `${date}|${employee}`
 
@@ -103,7 +114,38 @@ export function TipExemptionsEditor({
   const [orphanEnd, setOrphanEnd] = useState("");
   const [orphanNote, setOrphanNote] = useState("Meeting");
   const [status, setStatus] = useState<string | null>(null);
+  const [dateFilter, setDateFilter] = useState<LocalMultiSelection>(null);
+  const [employeeFilter, setEmployeeFilter] = useState<LocalMultiSelection>(null);
   const { isPending, stage, error, run } = useConsoleAction();
+
+  const dateOptions = useMemo(
+    () => facetedOptions(shifts.map((s) => s.date)),
+    [shifts],
+  );
+  const employeeOptions = useMemo(
+    () => facetedOptions(shifts.map((s) => s.employee_name)),
+    [shifts],
+  );
+  const filteredShifts = useMemo(
+    () =>
+      shifts.filter((s) =>
+        rowMatchesLocalFilters(
+          { date: s.date, employee: s.employee_name },
+          { date: dateFilter, employee: employeeFilter },
+        ),
+      ),
+    [shifts, dateFilter, employeeFilter],
+  );
+  const filteredExemptions = useMemo(
+    () =>
+      exemptions.filter((e) =>
+        rowMatchesLocalFilters(
+          { date: e.date, employee: e.employee_name },
+          { date: dateFilter, employee: employeeFilter },
+        ),
+      ),
+    [exemptions, dateFilter, employeeFilter],
+  );
 
   function patch(k: DraftKey, partial: Partial<RowDraft>) {
     setDrafts((prev) => ({
@@ -171,7 +213,7 @@ export function TipExemptionsEditor({
         </p>
       ) : null}
 
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-medium text-muted-foreground">
           Shifts · tip exemptions · {periodLabel}
         </h2>
@@ -182,9 +224,24 @@ export function TipExemptionsEditor({
         ) : null}
       </div>
 
-      <div className="overflow-x-auto rounded-md border">
+      <div className="flex flex-wrap items-center gap-3" data-testid="tip-exemptions-filters">
+        <LocalMultiSelect
+          label="Date"
+          selected={dateFilter}
+          options={dateOptions}
+          onChange={setDateFilter}
+        />
+        <LocalMultiSelect
+          label="Employee"
+          selected={employeeFilter}
+          options={employeeOptions}
+          onChange={setEmployeeFilter}
+        />
+      </div>
+
+      <div className={`overflow-auto rounded-md border ${TABLE_MAX_H}`}>
         <table className="w-full text-sm">
-          <thead className="bg-muted/40 text-left text-xs text-muted-foreground">
+          <thead className={THEAD}>
             <tr>
               <th className="p-2">Date</th>
               <th className="p-2">Employee</th>
@@ -199,7 +256,7 @@ export function TipExemptionsEditor({
             </tr>
           </thead>
           <tbody>
-            {shifts.map((s) => {
+            {filteredShifts.map((s) => {
               const k = keyOf(s.date, s.employee_name);
               const d = drafts[k] ?? seedFromExemption(exemptionByKey.get(k));
               return (
@@ -260,6 +317,12 @@ export function TipExemptionsEditor({
                   No ADP shifts in this period.
                 </td>
               </tr>
+            ) : filteredShifts.length === 0 ? (
+              <tr>
+                <td colSpan={10} className="p-3 text-muted-foreground">
+                  No shifts match the Date / Employee filters.
+                </td>
+              </tr>
             ) : null}
           </tbody>
         </table>
@@ -267,9 +330,9 @@ export function TipExemptionsEditor({
 
       <div className="flex flex-col gap-2" data-testid="tip-exemptions-result">
         <h2 className="text-sm font-medium text-muted-foreground">Exemptions table</h2>
-        <div className="overflow-x-auto rounded-md border">
+        <div className={`overflow-auto rounded-md border ${TABLE_MAX_H}`}>
           <table className="w-full text-sm">
-            <thead className="bg-muted/40 text-left text-xs text-muted-foreground">
+            <thead className={THEAD}>
               <tr>
                 <th className="p-2">Date</th>
                 <th className="p-2">Employee</th>
@@ -280,7 +343,7 @@ export function TipExemptionsEditor({
               </tr>
             </thead>
             <tbody>
-              {exemptions.map((e) => {
+              {filteredExemptions.map((e) => {
                 const k = keyOf(e.date, e.employee_name);
                 const draft = drafts[k];
                 const start = draft?.dirty ? draft.start : e.exempt_start;
@@ -309,6 +372,12 @@ export function TipExemptionsEditor({
                 <tr>
                   <td colSpan={6} className="p-3 text-muted-foreground">
                     No tip exemptions recorded for this period.
+                  </td>
+                </tr>
+              ) : filteredExemptions.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="p-3 text-muted-foreground">
+                    No exemptions match the Date / Employee filters.
                   </td>
                 </tr>
               ) : null}

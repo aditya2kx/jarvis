@@ -256,6 +256,9 @@ GRAFANA_VIEWS: list[Target] = [
     # Console /inventory day-grain audit — not model_* / no Grafana panel;
     # no new BQ_TARGETS/GRAFANA_VIEWS (same class as 037–047). Freshness of OA
     # still covered by existing vw_inventory_order_assistant target above.
+    # migration 049 (Issue #206): vw_model_payroll_period adds recognition_bonus
+    # + recognition_reason and folds recognition into est_total_pay / bonus_diff.
+    # Same view already in GRAFANA_VIEWS — no new target.
     # migration 041 (Issue #178 follow-up / PR #180): inventory_order_reco gains
     # delivery_date; vw_order_reco_{slot1,slot2,combined} + tvf_order_reco_* join
     # and filter by delivery_date (> today CT). No new BQ_TARGETS/GRAFANA_VIEWS —

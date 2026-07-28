@@ -93,7 +93,7 @@ jobs:
       # follow-up — see RUNBOOK.md §17.
       - name: Grant operator IAP access
         run: |
-          for member in "user:adi@mypalmetto.co" "user:aditya.2ky@gmail.com"; do
+          for member in "user:adi@mypalmetto.co" "user:aditya.2ky@gmail.com" "user:lindsay@mypalmetto.co"; do
             gcloud iap web add-iam-policy-binding \
               --resource-type=cloud-run --service=${{ env.SERVICE }} \
               --region ${{ env.REGION }} --project ${{ env.PROJECT_ID }} \

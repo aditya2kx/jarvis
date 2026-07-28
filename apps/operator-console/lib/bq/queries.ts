@@ -679,6 +679,9 @@ export interface PayrollPeriodRow {
   est_gross_pay: number;
   tips_allocated: number;
   review_bonus: number;
+  /** Manual recognition bonus dollars (migration 049). */
+  recognition_bonus: number;
+  recognition_reason: string | null;
   est_total_pay: number;
   adp_wages_paid: number;
   adp_tips_paid: number;

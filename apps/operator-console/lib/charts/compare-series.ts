@@ -4,8 +4,8 @@
  *
  * Contract:
  * - `priorWindow(win, displayGrain, compareGrain)` in `lib/filters/range.ts`
- * - `mergePriorSeries` overlays prior abs on left axis + `% change` on right
- * - `LineChartCard` renders dual Y-axis when any series has `yAxisId: "right"`
+ * - `mergePriorSeries` overlays prior abs as a second left-axis line; `% change`
+ *   stays in row data for tooltip (no third line / no right axis)
  * - Mode gating (`composition` vs `trend`) lives in `lib/filters/chart-mode.ts`
  */
 import type { Series } from "@/components/charts/LineChartCard";
@@ -43,7 +43,7 @@ export type PivotChart = {
  * Align prior aggregate pivot onto current bucket labels by index (after
  * `priorWindow` + spine fill). Adds:
  * - `prior_<metricKey>` — dashed, left Y-axis (absolute)
- * - `pct_<metricKey>` — solid, right Y-axis (% change)
+ * - `pct_<metricKey>` — tooltip-only (not drawn as a line)
  * - `prior_bucket` — tooltip label for the paired prior grain
  */
 export function mergePriorSeries(
@@ -73,12 +73,6 @@ export function mergePriorSeries(
   const series: Series[] = [
     ...current.series.map((s) => ({ ...s, yAxisId: s.yAxisId ?? ("left" as const) })),
     { key: priorKey, label: priorLabel, dashed: true, yAxisId: "left" },
-    {
-      key: pctKey,
-      label: "% change",
-      yAxisId: "right",
-      color: "var(--chart-3)",
-    },
   ];
   return { data, series };
 }

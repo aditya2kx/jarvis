@@ -186,7 +186,7 @@ describe("pctChange", () => {
 });
 
 describe("mergePriorSeries", () => {
-  it("aligns prior values by index onto current labels and adds % change", () => {
+  it("aligns prior values by index onto current labels; % change is tooltip-only", () => {
     const current = pivotSalesChart(
       [
         { date: "Jul 10", source: null, net_sales: 100, orders: 1, items_sold: 1 },
@@ -212,10 +212,8 @@ describe("mergePriorSeries", () => {
     expect(merged.series.map((s) => s.key)).toEqual([
       "net_sales",
       "prior_net_sales",
-      "pct_net_sales",
     ]);
-    expect(merged.series[1]?.dashed).toBe(true);
-    expect(merged.series[2]?.yAxisId).toBe("right");
+    expect(merged.series.some((s) => s.yAxisId === "right")).toBe(false);
     expect(merged.data).toEqual([
       {
         date: "Jul 10",

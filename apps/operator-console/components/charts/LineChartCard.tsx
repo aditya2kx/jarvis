@@ -92,24 +92,47 @@ export function LineChartCard({
               />
             ) : null}
             <Tooltip
-              contentStyle={{
-                background: "var(--popover)",
-                border: "1px solid var(--border)",
-                fontSize: 12,
-              }}
-              labelFormatter={(label, payload) => {
-                const priorBucket = payload?.[0]?.payload?.prior_bucket;
-                if (typeof priorBucket === "string" && priorBucket) {
-                  return `${label}  ·  vs ${priorBucket}`;
-                }
-                return String(label);
-              }}
-              formatter={(value, name, item) => {
-                const key = String(item?.dataKey ?? "");
-                if (key.startsWith("pct_") || String(name).includes("%")) {
-                  return [formatPct(value), name];
-                }
-                return [formatAbs(value), name];
+              // Compare keeps % change in row data (pct_*) without a third line;
+              // append it to the tooltip under the current/prior absolute values.
+              content={(props) => {
+                const { active, payload, label } = props;
+                if (!active || !payload?.length) return null;
+                const row = payload[0]?.payload as Record<string, unknown> | undefined;
+                const priorBucket = row?.prior_bucket;
+                const pctEntry = row
+                  ? Object.entries(row).find(([k, v]) => k.startsWith("pct_") && v != null)
+                  : undefined;
+                const header =
+                  typeof priorBucket === "string" && priorBucket
+                    ? `${label}  ·  vs ${priorBucket}`
+                    : String(label ?? "");
+                return (
+                  <div
+                    style={{
+                      background: "var(--popover)",
+                      border: "1px solid var(--border)",
+                      fontSize: 12,
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                    }}
+                  >
+                    <div style={{ marginBottom: 4, fontWeight: 500 }}>{header}</div>
+                    {payload.map((item) => {
+                      const key = String(item.dataKey ?? "");
+                      if (key.startsWith("pct_")) return null;
+                      return (
+                        <div key={key} style={{ color: item.color }}>
+                          {String(item.name)}: {formatAbs(item.value)}
+                        </div>
+                      );
+                    })}
+                    {pctEntry ? (
+                      <div style={{ marginTop: 4, color: "var(--muted-foreground)" }}>
+                        % change: {formatPct(pctEntry[1])}
+                      </div>
+                    ) : null}
+                  </div>
+                );
               }}
             />
             {series.map((s, i) => (

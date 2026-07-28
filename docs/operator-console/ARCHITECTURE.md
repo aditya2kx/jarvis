@@ -402,9 +402,9 @@ range/grain contract from `lib/filters/range.ts` + `lib/filters/period.ts`:
     in `lib/filters/range.ts` (Compare lag independent of Aggregation; e.g. day
     grain + previous week = each day vs same weekday last week).
   - Overlay + `% change`: `lib/charts/compare-series.ts` (`mergePriorSeries`,
-    `pctChange`, `compareGrainLabel`) — left Y-axis = absolute current + prior;
-    right Y-axis = `% change`; tooltip shows abs + signed percent.
-  - Rendering: `LineChartCard` (dual axis when any series has `yAxisId: "right"`)
+    `pctChange`, `compareGrainLabel`) — two lines only (current + dashed prior);
+    `% change` is tooltip-only (no third line / no right axis).
+  - Rendering: `LineChartCard` (tooltip shows abs + `% change` when Compare is on)
     and `BarChartCard` for Composition.
   - Domain spine fillers stay page-local (e.g. Sales `fillSalesSpine`); merge
     helpers stay shared.

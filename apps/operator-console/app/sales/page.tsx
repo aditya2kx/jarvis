@@ -147,7 +147,7 @@ export default async function SalesPage({
 
   const priorSubtitle =
     compareOn && prior
-      ? `Each point vs ${compareLabel.toLowerCase()} · hover for abs + % · right axis = % change`
+      ? `Each point vs ${compareLabel.toLowerCase()} · hover for abs + % change`
       : undefined;
 
   // Detail table is always aggregated (one row per bucket) even when charts

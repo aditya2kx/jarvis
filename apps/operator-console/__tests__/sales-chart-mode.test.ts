@@ -26,36 +26,44 @@ describe("parseChartMode", () => {
 });
 
 describe("parseCompare", () => {
-  it("is true only for 1/true", () => {
-    expect(parseCompare("1")).toBe(true);
-    expect(parseCompare("true")).toBe(true);
-    expect(parseCompare("0")).toBe(false);
-    expect(parseCompare(undefined)).toBe(false);
+  it("parses off / day / week / month", () => {
+    expect(parseCompare(undefined)).toBe("off");
+    expect(parseCompare("0")).toBe("off");
+    expect(parseCompare("off")).toBe("off");
+    expect(parseCompare("day")).toBe("day");
+    expect(parseCompare("week")).toBe("week");
+    expect(parseCompare("month")).toBe("month");
+  });
+
+  it("maps legacy 1/true to Aggregation grain", () => {
+    expect(parseCompare("1", "day")).toBe("day");
+    expect(parseCompare("true", "week")).toBe("week");
+    expect(parseCompare("1", "month")).toBe("month");
   });
 });
 
 describe("assertModeFilterCoherence", () => {
   it("clears compare in composition", () => {
-    expect(assertModeFilterCoherence("composition", true, true)).toEqual({
+    expect(assertModeFilterCoherence("composition", true, "week")).toEqual({
       mode: "composition",
       breakdown: true,
-      compare: false,
+      compare: "off",
     });
   });
 
   it("clears breakdown in trend", () => {
-    expect(assertModeFilterCoherence("trend", true, true)).toEqual({
+    expect(assertModeFilterCoherence("trend", true, "day")).toEqual({
       mode: "trend",
       breakdown: false,
-      compare: true,
+      compare: "day",
     });
   });
 
   it("allows compare off in trend", () => {
-    expect(assertModeFilterCoherence("trend", false, false)).toEqual({
+    expect(assertModeFilterCoherence("trend", false, "off")).toEqual({
       mode: "trend",
       breakdown: false,
-      compare: false,
+      compare: "off",
     });
   });
 });
@@ -123,10 +131,41 @@ describe("priorWindow", () => {
       preset: "custom",
     });
   });
+
+  it("day display + week compare: each day vs same weekday previous week", () => {
+    const win: DateWindow = {
+      start: "2026-07-13", // Mon
+      end: "2026-07-19", // Sun
+      label: "This week",
+      preset: "this_week",
+    };
+    expect(priorWindow(win, "day", "week")).toEqual({
+      start: "2026-07-06",
+      end: "2026-07-12",
+      label: "Prior period",
+      preset: "custom",
+    });
+  });
+
+  it("day display + month compare: each day vs ~same calendar day previous month", () => {
+    const win: DateWindow = {
+      start: "2026-07-10",
+      end: "2026-07-12",
+      label: "Custom",
+      preset: "custom",
+    };
+    expect(priorWindow(win, "day", "month")).toEqual({
+      start: "2026-06-10",
+      end: "2026-06-12",
+      label: "Prior period",
+      preset: "custom",
+    });
+  });
 });
 
 describe("compareGrainLabel", () => {
-  it("names the lag-1 compare control by aggregation", () => {
+  it("names the Compare dropdown option", () => {
+    expect(compareGrainLabel("off")).toBe("Off");
     expect(compareGrainLabel("day")).toBe("Previous day");
     expect(compareGrainLabel("week")).toBe("Previous week");
     expect(compareGrainLabel("month")).toBe("Previous month");
@@ -147,7 +186,7 @@ describe("pctChange", () => {
 });
 
 describe("mergePriorSeries", () => {
-  it("aligns prior values by index onto current labels and adds % change", () => {
+  it("aligns prior values by index onto current labels; % change is tooltip-only", () => {
     const current = pivotSalesChart(
       [
         { date: "Jul 10", source: null, net_sales: 100, orders: 1, items_sold: 1 },
@@ -173,10 +212,8 @@ describe("mergePriorSeries", () => {
     expect(merged.series.map((s) => s.key)).toEqual([
       "net_sales",
       "prior_net_sales",
-      "pct_net_sales",
     ]);
-    expect(merged.series[1]?.dashed).toBe(true);
-    expect(merged.series[2]?.yAxisId).toBe("right");
+    expect(merged.series.some((s) => s.yAxisId === "right")).toBe(false);
     expect(merged.data).toEqual([
       {
         date: "Jul 10",

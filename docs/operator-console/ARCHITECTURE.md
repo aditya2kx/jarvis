@@ -396,24 +396,24 @@ range/grain contract from `lib/filters/range.ts` + `lib/filters/period.ts`:
 - **Composition / Trend chart modes** (Sales first; reuse on other screens):
   Shared stack — do **not** fork per page:
   - Mode gating: `lib/filters/chart-mode.ts` (`parseChartMode`, `parseCompare`,
-    `assertModeFilterCoherence` — Breakdown only in Composition; Compare only
-    in Trend).
-  - Lag-1 prior window: `priorWindow(win, grain)` + `enumerateBucketStarts` in
-    `lib/filters/range.ts` (previous day/week/month, not a fully preceding
-    equal-length calendar period).
+    `COMPARE_OPTIONS`, `assertModeFilterCoherence` — Breakdown only in Composition;
+    Compare only in Trend as Off / Previous day / week / month dropdown).
+  - Prior window: `priorWindow(win, displayGrain, compareGrain)` + `enumerateBucketStarts`
+    in `lib/filters/range.ts` (Compare lag independent of Aggregation; e.g. day
+    grain + previous week = each day vs same weekday last week).
   - Overlay + `% change`: `lib/charts/compare-series.ts` (`mergePriorSeries`,
-    `pctChange`, `compareGrainLabel`) — left Y-axis = absolute current + prior;
-    right Y-axis = `% change`; tooltip shows abs + signed percent.
-  - Rendering: `LineChartCard` (dual axis when any series has `yAxisId: "right"`)
+    `pctChange`, `compareGrainLabel`) — two lines only (current + dashed prior);
+    `% change` is tooltip-only (no third line / no right axis).
+  - Rendering: `LineChartCard` (tooltip shows abs + `% change` when Compare is on)
     and `BarChartCard` for Composition.
   - Domain spine fillers stay page-local (e.g. Sales `fillSalesSpine`); merge
     helpers stay shared.
   Sales today: Composition may stack by Source (`breakdown=1`); Trend Compare
-  uses `compare=1`. Goal line only in Composition at day grain with all sources
+  uses `compare=day|week|month` (legacy `compare=1` = lag-1 Aggregation). Goal line only in Composition at day grain with all sources
   and no breakdown.
 - **Rollup correctness**: additive metrics (`net_sales`, `orders`,
   `total_hours`, …) are `SUM()`-ed per bucket in `lib/bq/queries.ts`
-  (`laborByGrain`, `forecastByGrain`, `forecastAccuracyByGrain`); ratios
+  (`laborByGrain`, `forecastByGrain`, `forecastForwardByGrain`, `forecastAccuracyByGrain`); ratios
   (`labor_pct`, `orders_vs_prior_wk`, …) are **recomputed** from the summed
   components with `SAFE_DIVIDE`, never averaged — averaging a ratio across
   days silently gives the wrong number the moment day-to-day volume varies.

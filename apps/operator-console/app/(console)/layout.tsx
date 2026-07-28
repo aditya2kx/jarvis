@@ -1,12 +1,19 @@
+import { auth } from "@/auth";
+import { redirect } from "next/navigation";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { Topbar } from "@/components/shell/Topbar";
 import { IapLoginBeacon } from "@/components/shell/IapLoginBeacon";
 
-export default function ConsoleLayout({
+export default async function ConsoleLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const session = await auth();
+  if (!session?.user?.email) {
+    redirect("/login");
+  }
+
   return (
     <>
       <IapLoginBeacon />

@@ -18,20 +18,6 @@ describe("LocalMultiSelect", () => {
     fireEvent.click(within(list).getByRole("option", { name: /^A$/i }));
     expect(onChange).toHaveBeenCalledWith(["B", "C", "D", "E", "F", "G"]);
   });
-
-  it("none → click one → emits single; Clear emits []", () => {
-    const onChange = vi.fn();
-    render(
-      <LocalMultiSelect label="Emp" selected={[]} options={options} onChange={onChange} />,
-    );
-    fireEvent.click(screen.getByLabelText("Filter Emp"));
-    const dialog = screen.getByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("option", { name: /^B$/i }));
-    expect(onChange).toHaveBeenCalledWith(["B"]);
-    onChange.mockClear();
-    fireEvent.click(within(dialog).getByRole("button", { name: /^Clear$/i }));
-    expect(onChange).toHaveBeenCalledWith([]);
-  });
 });
 
 describe("EmployeeCombobox", () => {

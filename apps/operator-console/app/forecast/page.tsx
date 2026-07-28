@@ -5,7 +5,7 @@ import {
   forecastExclusions,
   storeConfig,
 } from "@/lib/bq/queries";
-import { mergeForecastAccuracyChart, mergeGoalHoursChart } from "@/lib/kpi/forecast-accuracy-chart";
+import { mergeForecastAccuracyChart, mergeGoalHoursChart, mapeForecastAccuracy } from "@/lib/kpi/forecast-accuracy-chart";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { storeDisplayName } from "@/lib/config/stores";
 import { LineChartCard } from "@/components/charts/LineChartCard";
@@ -35,15 +35,6 @@ const DEFAULT_GOAL_HOURS_PER_ITEM = 0.2;
 function parseMetric(value: string | string[] | undefined): Metric {
   const v = Array.isArray(value) ? value[0] : value;
   return v === "items" ? "items" : "orders";
-}
-
-// Mean absolute percentage error over forecastAccuracy rows for the selected
-// metric — skips days with no actual (can't divide by zero, not "0% error").
-function mape(rows: { forecast: number; actual: number }[]): number | undefined {
-  const usable = rows.filter((r) => r.actual);
-  if (!usable.length) return undefined;
-  const sum = usable.reduce((s, r) => s + Math.abs(r.actual - r.forecast) / r.actual, 0);
-  return (sum / usable.length) * 100;
 }
 
 export default async function ForecastPage({
@@ -87,7 +78,9 @@ export default async function ForecastPage({
     if (goalRow) goalHoursPerItem = Number(goalRow.value);
     accuracyChart = mergeForecastAccuracyChart(acc, fc, { forecastKey, actualKey, grain });
     goalHoursChart = mergeGoalHoursChart(goalSched, fc, { goalHoursPerItem, grain });
-    mapePct = mape(acc.map((r) => ({ forecast: r[forecastKey] as number, actual: r[actualKey] as number })));
+    mapePct = mapeForecastAccuracy(
+      acc.map((r) => ({ forecast: r[forecastKey] as number, actual: r[actualKey] as number })),
+    );
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }

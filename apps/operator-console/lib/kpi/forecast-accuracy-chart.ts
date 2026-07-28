@@ -125,3 +125,17 @@ export function mergeGoalHoursChart(
       scheduled_hours: r.scheduled_hours,
     }));
 }
+
+/**
+ * Mean absolute percentage error over forecast-vs-actual rows.
+ * Skips rows with no actual (forward-only points) — cannot divide by zero
+ * and must not dilute MAPE with Period-independent look-ahead.
+ */
+export function mapeForecastAccuracy(
+  rows: { forecast: number; actual: number }[],
+): number | undefined {
+  const usable = rows.filter((r) => r.actual);
+  if (!usable.length) return undefined;
+  const sum = usable.reduce((s, r) => s + Math.abs(r.actual - r.forecast) / r.actual, 0);
+  return (sum / usable.length) * 100;
+}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   mergeForecastAccuracyChart,
   mergeGoalHoursChart,
+  mapeForecastAccuracy,
 } from "@/lib/kpi/forecast-accuracy-chart";
 
 describe("mergeForecastAccuracyChart", () => {
@@ -137,5 +138,22 @@ describe("mergeGoalHoursChart", () => {
     );
 
     expect(chart).toEqual([{ date: "Wk of Jul 20", goal_shift_hours: 100, scheduled_hours: 40 }]);
+  });
+});
+
+describe("mapeForecastAccuracy", () => {
+  it("ignores forward-only points (actual 0 / missing) and uses Period actuals only", () => {
+    const mape = mapeForecastAccuracy([
+      { forecast: 100, actual: 110 },
+      { forecast: 200, actual: 0 }, // no actual — skipped
+      { forecast: 120, actual: 100 },
+    ]);
+    // (|110-100|/110 + |100-120|/100) / 2 * 100
+    expect(mape).toBeCloseTo(((10 / 110) + (20 / 100)) / 2 * 100);
+  });
+
+  it("returns undefined when no usable actuals", () => {
+    expect(mapeForecastAccuracy([{ forecast: 10, actual: 0 }])).toBeUndefined();
+    expect(mapeForecastAccuracy([])).toBeUndefined();
   });
 });

@@ -1,3 +1,12 @@
+## 2026-07-28 — Operator Console one-URL IAP login (Issue #208)
+
+**Scope:** Stop post-IAP hash→canonical bounce so the canonical console URL either loads the session or completes Google account pick → IAM allowlist → console on first try ($0 infra).
+
+**Key changes:**
+- Middleware: log `iap_hash_host_hit` only — no cross-host 302 (Issue #194 bounce removed).
+- RUNBOOK §17: sole operator URL = project-number host; hash unsupported.
+- `iap_idle_sim.py` seeded E2 harness (clear IAP cookies, keep Google, assert chooser→tap→console).
+
 ## 2026-07-27 — Payroll recognition in period view + Lindsay IAP (Issue #206)
 
 **Scope:** Operator Console Payroll & People: recognition in period totals, drawer UX, tip-exemption sticky/filters, Lindsay console access.

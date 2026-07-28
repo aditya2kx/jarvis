@@ -1,4 +1,4 @@
-# Build and Deploy Operator Console
+name: Build and Deploy Operator Console
 
 on:
   push:

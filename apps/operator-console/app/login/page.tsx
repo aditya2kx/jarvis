@@ -11,10 +11,9 @@ export default async function LoginPage({
   searchParams: Promise<{ error?: string }>;
 }) {
   const params = await searchParams;
-  const denied =
-    params.error === "AccessDenied" ||
-    params.error === "Configuration" ||
-    Boolean(params.error);
+  const error = params.error;
+  const denied = error === "AccessDenied";
+  const otherError = Boolean(error) && !denied;
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-background px-6">
@@ -26,6 +25,11 @@ export default async function LoginPage({
         {denied ? (
           <p className="text-sm text-destructive" role="alert">
             That Google account is not allowed. Use an allowlisted work account.
+          </p>
+        ) : null}
+        {otherError ? (
+          <p className="text-sm text-destructive" role="alert">
+            Sign-in failed ({error}). Try again, or check Cloud Run auth secrets if this persists.
           </p>
         ) : null}
         <form

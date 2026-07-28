@@ -1674,15 +1674,13 @@ daily wipe. Full reasoning in `docs/POST_MERGE_BQ_CUTOVER.md` § "Why a one-time
 
 A Next.js app (`apps/operator-console/`) reading/writing the same `bhaga` BQ dataset as
 this pipeline, deployed as its own Cloud Run **service** (`operator-console`, not a job) with
-`--no-allow-unauthenticated` + Cloud Run **direct IAP** (GA, no load balancer). Operators open the
-plain `https://operator-console-…run.app` URL in a browser and sign in with Google — no terminal,
-no proxy command. The legacy `gcloud iap oauth-brands` API requires a Google Workspace
-organization and is deprecated project-wide (confirmed 2026-07-04), but a custom **"External"**
-OAuth client — provisioned once via the Cloud Console's Google Auth Platform + the Cloud Run
-Security tab's IAP checkbox — works fine without an org (reversing the earlier "no IAP" pivot; see
-`docs/operator-console/PLAN.md` decisions log, 2026-07-05). Grafana **stays live** (coexistence,
-not a replacement in v1) — the console is additive, giving the operator navigation, goal tracking,
-and write-backs Grafana never had.
+`--allow-unauthenticated` and **app-owned Google OAuth** via Auth.js (`next-auth`) + an
+`ALLOWED_EMAILS` allowlist (Issue #210 — replaces Cloud Run browser IAP, which drove iOS
+`signin/oauth/consent` / `rapt=` 401s outside our control). Operators open the plain
+`https://operator-console-…run.app` URL → Sign in with Google → allowlisted account → console.
+`$0` extra infra (no LB / custom domain). Grafana **stays live** (coexistence, not a replacement
+in v1) — the console is additive, giving the operator navigation, goal tracking, and write-backs
+Grafana never had.
 
 Full design/build docs: [`docs/operator-console/`](docs/operator-console/) (`PLAN.md` — living plan
 + decisions log + milestones; `ARCHITECTURE.md`; `EXECUTION.md` — step-by-step; `COST.md`).
@@ -1693,106 +1691,76 @@ App-level dev loop: [`apps/operator-console/README.md`](apps/operator-console/RE
 Automatic on push to `main` touching `apps/operator-console/**` via
 [`.github/workflows/operator-console-deploy.yml`](.github/workflows/operator-console-deploy.yml):
 builds the container, applies any pending `core/migrations/*.sql` (same runner as this pipeline —
-`core.datastore.ensure_schema()`), deploys `--no-allow-unauthenticated --iap --min-instances=1`
-(Issue #175 cold-start mitigation), then grants
-`roles/iap.httpsResourceAccessor` to each operator account. No manual deploy step. `--iap` is
-idempotent against the one-time Console-only provisioning below — it does not redo it.
+`core.datastore.ensure_schema()`), deploys `--allow-unauthenticated --no-iap --min-instances=1`
+(Issue #175 cold-start + Issue #210 Auth.js), mounting `AUTH_SECRET`, `AUTH_GOOGLE_ID`,
+`AUTH_GOOGLE_SECRET`, `ALLOWED_EMAILS` from Secret Manager. No manual deploy step.
 
 **Pre-merge review-deploy** (no PR preview hostname): build/push the branch image and
 `gcloud run deploy operator-console … --min-instances=1` onto the same service URL below;
 hard-refresh after deploy. Next `main` push restores the merged SHA.
 
-### One-time IAP provisioning (Console-only, cannot be scripted)
+### One-time Auth.js Google OAuth client (done for #210)
 
-Three Console steps, done once per project (already done for `jarvis-bhaga-prod` — see
-`docs/operator-console/PLAN.md` decisions log, 2026-07-05 + 2026-07-26):
-1. **Google Auth Platform branding** — `console.cloud.google.com/auth/overview` → "Get started" →
-   App name "Palmetto Operator Console", **External** audience (Internal is greyed out — no
-   Workspace org), any contact email you're signed in as.
-2. **Enable IAP on the Cloud Run service** — service → **Security** tab → check
-   **Identity Aware Proxy (IAP)** alongside IAM → Save. Google auto-creates the OAuth client tied
-   to the branding above; no manual client creation.
-3. **Publish Audience to In production** — `console.cloud.google.com/auth/audience` →
-   **Publish app** → Confirm. Leave publishing status at **In production** (not Testing).
-   Testing-mode External apps force short-lived grants and frequent re-consent; on iPhone
-   Chrome that re-consent leg (`accounts.google.com/.../signin/oauth/consent`) has been
-   observed to 500 after idle, requiring a manual refresh. Production status removes that
-   churn. No Google verification is required while Data Access stays on non-sensitive
-   scopes only (IAP's openid/email/profile). Do **not** click "Back to testing".
+1. **Google Auth Platform branding** — App name "Palmetto Operator Console", **External**
+   audience, **In production** (keep Data Access on non-sensitive scopes only).
+2. **Web OAuth client** — `Operator Console Auth.js` with redirect URI
+   `https://operator-console-887772634501.us-central1.run.app/api/auth/callback/google`
+   (+ `http://localhost:3000/api/auth/callback/google` for local). Client id/secret → SM
+   `operator-console-google-client-id` / `operator-console-google-client-secret`.
+3. **Secrets** — also `operator-console-auth-secret` (random), `operator-console-allowed-emails`
+   (comma-separated). Runtime SA (`…-compute@developer.gserviceaccount.com`) has
+   `secretAccessor` on each.
 
-Steps 1–2 only need to happen again if the branding/OAuth client is ever deleted. Step 3
-is a one-click publish; re-check it if login starts failing after idle again.
+Do **not** re-enable Cloud Run IAP on this service — that path caused the iOS consent 401.
 
-### Accessing the console (Cloud Run direct IAP — browser sign-in)
+### Accessing the console (Auth.js Google sign-in)
 
-**Sole operator URL (Issue #208):**
+**Sole operator URL (Issue #208 / #210):**
 `https://operator-console-887772634501.us-central1.run.app`
 
-Expected behavior every time: if you already have a valid IAP session, the console loads; if
-not, Google shows available accounts → tap an allowlisted account → console. Access is pure
-IAM (`roles/iap.httpsResourceAccessor`) — no app-level allowlist, no terminal, no proxy.
+Expected behavior every time: if you already have a valid Auth.js session cookie, the console
+loads; if not, `/login` → Sign in with Google → choose an allowlisted account → `/home`.
+Access gate = `ALLOWED_EMAILS` in Auth.js `signIn` callback (not IAP IAM).
 
-Do **not** use the Cloud Run hash host (`operator-console-4yl5izovxq-uc.a.run.app`) and do
-**not** mix the two hosts across visits. IAP session cookies are host-scoped (`__Host-GCP_IAP_*`);
-crossing hosts mid-login forces a second OAuth and is the root of mobile account-picker /
-Error-code-9 loops. The app intentionally does **not** 302 between hosts after IAP (that bounce
-was removed in Issue #208).
+Do **not** use the Cloud Run hash host (`operator-console-4yl5izovxq-uc.a.run.app`) as a
+bookmark (dual-host confusion from the IAP era). The app logs `iap_hash_host_hit` only — no
+cross-host bounce.
 
-**IAP login diagnostics (Issue #194 / #208)** — failures on Google/IAP often never reach Cloud Run:
+**Login diagnostics (Issue #194 / #210):**
 
-1. **Data Access audit logs** for `iap.googleapis.com` (project IAM auditConfigs) — enable once:
-   ```
-   gcloud projects get-iam-policy jarvis-bhaga-prod --format=json > /tmp/policy.json
-   # merge auditConfigs for iap.googleapis.com DATA_READ + DATA_WRITE, then:
-   gcloud projects set-iam-policy jarvis-bhaga-prod /tmp/policy.json
-   ```
-2. **Cloud Logging** greppable `event=iap_auth` / `iap_hash_host_hit` from the console service
-   (hash hits are logged only — not redirected).
-3. **BQ** `jarvis_dev.console_iap_events` — success beacon after sign-in; fail reports via:
+1. **Cloud Logging** greppable `event=authjs_identity` / `iap_hash_host_hit` from the console
+   service.
+2. **BQ** `jarvis_dev.console_iap_events` — optional success beacon after shell load; fail
+   reports via:
    ```
    curl -sS -X POST https://bhaga-webhook-4yl5izovxq-uc.a.run.app/diag/console-iap \
      -H 'content-type: application/json' \
      -d '{"url":"<failing URL>","host":"accounts.google.com","ua":"<UA>","note":"mobile 400"}'
    ```
-   Optional shared secret: set `CONSOLE_IAP_DIAG_TOKEN` on the webhook and send
-   `X-Console-Iap-Diag-Token`. Rate-limited by IP+UA.
-4. Idle-sim evidence harness: `python3 apps/operator-console/scripts/iap_idle_sim.py --email …`
-   (clears IAP cookies, keeps Google session, asserts chooser → allowlisted tap → console).
+3. Idle-sim evidence harness: `python3 apps/operator-console/scripts/iap_idle_sim.py --email …`
+   (clears Auth.js session cookies on the console host, keeps Google session, asserts
+   login → Google → allowlisted tap → console).
 
 Mutating controls (restock, tip exemptions, goals, accounting writes, usage-day overrides, …) use the shared
 `useConsoleAction` feedback shell; order-reco refresh after restock/capacity/usage overrides is enqueued as a
 Cloud Run Job (`BHAGA_ORDER_RECO_ONLY=1`) so the click path stays responsive (Issue #175).
 
-**Granting a new admin/operator** — one command, one layer:
+**Granting a new admin/operator** — update Secret Manager (no IAP IAM):
 ```
-gcloud iap web add-iam-policy-binding \
-  --resource-type=cloud-run --service=operator-console --region=us-central1 --project=jarvis-bhaga-prod \
-  --member=user:NEW@EMAIL --role=roles/iap.httpsResourceAccessor
+printf '%s' 'adi@mypalmetto.co,aditya.2ky@gmail.com,lindsay@mypalmetto.co,NEW@EMAIL' | \
+  gcloud secrets versions add operator-console-allowed-emails --project=jarvis-bhaga-prod --data-file=-
 ```
-Deploy also re-asserts members from `.github/workflows/operator-console-deploy.yml`
-(`adi@mypalmetto.co`, `aditya.2ky@gmail.com`, `lindsay@mypalmetto.co` as of Issue #206).
-Any Google account works — no domain restriction, since IAP's IAM is the sole gate. IAM changes
-can take up to a couple of minutes to propagate; if a just-granted account still sees "no access",
-visit `<service-url>?gcp-iap-mode=CLEAR_LOGIN_COOKIE` to force IAP to re-check the current session
-against the latest policy instead of a cached session decision. Revoke with
-`gcloud iap web remove-iam-policy-binding` (same flags). A Google Groups (`admin`/`operator`) model
-for `mypalmetto.co` is a documented follow-up so grants don't need per-user `gcloud` calls; per-user
-grants are the current mechanism.
+Then redeploy or wait for the next console deploy so the new secret version is mounted
+(`:latest`). Current allowlist matches prior IAP members (`adi@`, `aditya.2ky@`, `lindsay@`).
 
 ### Operating
 
 - **Identity:** the signed-in operator's email is available server-side via
-  `lib/auth/identity.ts::operatorEmail()`. IAP forwards the caller's email in the plain
-  `X-Goog-Authenticated-User-Email` header (trustworthy because only the IAP service agent holds
-  `run.invoker` on the Cloud Run service — end users hold `roles/iap.httpsResourceAccessor`
-  instead, never direct invoker), and additionally signs a JWT in `X-Goog-IAP-JWT-Assertion`.
-  `operatorEmail()` verifies that JWT via `google-auth-library` (`OAuth2Client.getIapPublicKeys()` +
-  `verifySignedJwtWithCertsAsync()`) against the direct-Cloud-Run-IAP audience format
-  `/projects/{PROJECT_NUMBER}/locations/{REGION}/services/{SERVICE_NAME}`, and requires the JWT's
-  `email` claim to agree with the plain header before trusting either — so a header-forwarding
-  misconfiguration can't silently downgrade this to an unverified header. Used as `updated_by` on
-  every write, same field the Slack `/bhaga-cloud` commands stamp. Local dev has no IAP headers at
-  all — `BYPASS_IAP_EMAIL` in `.env.local` stands in.
+  `lib/auth/identity.ts::operatorEmail()`, which reads the Auth.js session (`auth()`). Access is
+  gated in middleware + `signIn` allowlist (`lib/auth/allowlist.ts` / `ALLOWED_EMAILS`). Used as
+  `updated_by` on every write, same field the Slack `/bhaga-cloud` commands stamp. Local dev —
+  `BYPASS_IAP_EMAIL` in `.env.local` stands in when no session is present (name kept for
+  compatibility).
 - **Caching:** every page uses `export const dynamic = "force-dynamic"`, never `revalidate` —
   Next's Full Route Cache would otherwise serve a cached render at the CDN edge to a new
   unauthenticated caller regardless of Cloud Run's IAM check on *that* request (found + fixed
@@ -1820,11 +1788,10 @@ grants are the current mechanism.
   Retire a sandbox Item: `BHAGA_DATASTORE=bigquery python3 -c "from skills.plaid_api.sync import purge_item; print(purge_item('palmetto', '<item_id>', dry_run=False))"`.
   **Link note:** production Plaid rejects emails in `user.client_user_id` — console passes a
   SHA-256 opaque id derived from the operator email (sandbox was permissive). Desktop Link uses
-  Chase OAuth via **popup → opener** (do not set `PLAID_REDIRECT_URI` while the console is behind
-  Cloud Run IAP — a redirect to `/accounting/oauth` never reaches the app). Allow popups; keep the
-  Accounting tab open. Prefer **Continue without phone number** on the Plaid phone pane (phone OTP
-  is optional returning-user UX, not Chase auth). Optional later: a non-IAP return URL +
-  `PLAID_REDIRECT_URI` for mobile webviews.
+  Chase OAuth via **popup → opener** (preferred). Allow popups; keep the Accounting tab open.
+  Prefer **Continue without phone number** on the Plaid phone pane (phone OTP is optional
+  returning-user UX, not Chase auth). Optional later: `PLAID_REDIRECT_URI` for mobile webviews
+  (Auth.js no longer blocks `/accounting/oauth` the way IAP did).
   **Preflight before asking the operator to Link (dashboard + API):** (1) Link Customization →
   Data Transparency has ≥1 published use case (empty use cases → Link `INTERNAL_SERVER_ERROR` /
   "Something went wrong"); (2) OAuth institutions shows Chase **Enabled**;

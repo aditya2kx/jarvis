@@ -1,3 +1,12 @@
+## 2026-07-28 — Operator Console Auth.js replaces IAP (Issue #210)
+
+**Scope:** Fix iOS Chrome Google consent 401 by removing Cloud Run browser IAP; app-owned Auth.js Google OAuth + allowlist on the same URL ($0 infra).
+
+**Key changes:**
+- `next-auth` Google provider; `/login`; middleware session gate; `ALLOWED_EMAILS` Secret Manager.
+- Deploy: `--allow-unauthenticated --no-iap`; drop IAP IAM loop.
+- RUNBOOK §17 + PLAN decision log updated.
+
 ## 2026-07-28 — Operator Console one-URL IAP login (Issue #208)
 
 **Scope:** Stop post-IAP hash→canonical bounce so the canonical console URL either loads the session or completes Google account pick → IAM allowlist → console on first try ($0 infra).

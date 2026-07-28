@@ -7,7 +7,6 @@ import {
 } from "@/lib/bq/queries";
 import { mergeForecastAccuracyChart, mergeGoalHoursChart } from "@/lib/kpi/forecast-accuracy-chart";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
-import { dateSortKey } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { LineChartCard } from "@/components/charts/LineChartCard";
 import { DataTable } from "@/components/tables/DataTable";
@@ -16,7 +15,7 @@ import { FilterPills } from "@/components/filters/FilterPills";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
-import { RANGE_PRESETS, formatBucket, wantsCustom } from "@/lib/filters/range";
+import { RANGE_PRESETS, wantsCustom } from "@/lib/filters/range";
 import { resolvePageGrain, resolvePageRange } from "@/lib/filters/period";
 import { Badge } from "@/components/ui/badge";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -54,7 +53,7 @@ export default async function ForecastPage({
 }) {
   const sp = await searchParams;
   // Forecast splits windows (Issue #202):
-  // - Upcoming schedule + forecast-vs-prior-week: Chicago today → horizon.
+  // - Upcoming schedule: Chicago today → horizon.
   // - Accuracy chart: actuals Period-scoped; forecast extends ahead.
   // - Goal vs scheduled: scheduled Period-scoped (like actuals); goal extends ahead.
   // Grain applies to all series. MAPE stays Period-only (dates with actuals).
@@ -108,14 +107,6 @@ export default async function ForecastPage({
     return { ...r, goal_shift_hours: goalShiftHours, sched_vs_goal_hours: schedVsGoalHours, sched_vs_goal_pct: schedVsGoalPct };
   });
 
-  const scheduleChart = [...rows]
-    .sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1))
-    .map((r) => ({
-      date: formatBucket(r.date, grain),
-      forecast: r[forecastKey] as number,
-      prior_wk: r[priorKey] as number,
-    }));
-
   const metricLabel = metric === "orders" ? "orders" : "items";
 
   const columns: ColumnDef<(typeof scheduleRows)[number]>[] = [
@@ -164,7 +155,7 @@ export default async function ForecastPage({
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Forecast"
-        subtitle={`Forecast vs prior week and accuracy · ${storeDisplayName(DEFAULT_STORE)}`}
+        subtitle={`Forecast accuracy and upcoming schedule · ${storeDisplayName(DEFAULT_STORE)}`}
         right={
           <>
             <FilterPills
@@ -213,15 +204,6 @@ export default async function ForecastPage({
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
-          <LineChartCard
-            title={`Forecast ${metricLabel} vs prior week (look-ahead — not actuals)`}
-            data={scheduleChart}
-            xKey="date"
-            series={[
-              { key: "forecast", label: "Forecast" },
-              { key: "prior_wk", label: "Prior week" },
-            ]}
-          />
           <LineChartCard
             title={`Forecast accuracy (${metricLabel}) — actuals ${win.label.toLowerCase()}; forecast extends ahead`}
             data={accuracyChart}

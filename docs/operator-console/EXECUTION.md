@@ -433,9 +433,8 @@ DAY`, so the six presets are exact calendar windows, not rolling day counts.
 - `this_week` / `this_month` end on the calendar boundary, which can be in the
   future — that's expected for screens that apply Period to a mixed past+future
   window (e.g. Labor). On **Forecast** (Issue #202):
-  - **Upcoming schedule** + forecast-vs-prior-week chart (`forecastForwardByGrain`):
-    Chicago today → pipeline horizon; Period does not clip the look-ahead.
-    Chart 1 compares forecast to **prior week**, not actuals.
+  - **Upcoming schedule** (`forecastForwardByGrain`): Chicago today → pipeline
+    horizon; Period does not clip the look-ahead.
   - **Accuracy chart** (forecast vs actual): actuals respect Period (look-back);
     the forecast series covers that history and continues into the forward
     horizon (`mergeForecastAccuracyChart`). Aggregation grain applies to both

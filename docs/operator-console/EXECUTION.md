@@ -431,14 +431,21 @@ filter `WHERE <datecol> BETWEEN @start AND @end` instead of `INTERVAL @days
 DAY`, so the six presets are exact calendar windows, not rolling day counts.
 
 - `this_week` / `this_month` end on the calendar boundary, which can be in the
-  future — that's expected for the **Forecast** screen (§4 M3), which uses the
-  *same* control as every other Performance screen: the historical-accuracy
-  half of the page always has data for the elapsed portion of the window; the
-  upcoming/forecast half renders its normal empty-state copy when a
-  **past-only** preset (`last_week`, `last_month`) is selected, since no
-  forecast rows exist before the pipeline's run date. Forecast defaults to
-  **This month**; every other Performance screen + Home default to
-  **Last 30 days**.
+  future — that's expected for screens that apply Period to a mixed past+future
+  window (e.g. Labor). On **Forecast** (Issue #202):
+  - **Upcoming schedule** (`forecastForwardByGrain`): Chicago today → pipeline
+    horizon; Period does not clip the look-ahead.
+  - **Accuracy chart** (forecast vs actual): actuals respect Period (look-back);
+    the forecast series covers that history and continues into the forward
+    horizon (`mergeForecastAccuracyChart`). Aggregation grain applies to both
+    series. MAPE stays Period-only (dates with actuals).
+  - **Goal vs scheduled chart**: scheduled hours respect Period (like actuals);
+    goal hours (= forecast_items × rate) extend ahead (`mergeGoalHoursChart` +
+    `forecastGoalScheduleByGrain` on underlying tables, not the forward-only
+    view). Forward scheduled hours remain on the Upcoming schedule table.
+  - Past-only presets still show a full forward upcoming table. Forecast defaults
+    to **This month** (for accuracy/scheduled look-back); every other Performance
+    screen + Home default to **Last 30 days**.
 - Net-sales goal picks weekly vs. monthly `store_config` key by
   `isMonthLike(win.preset)` (`30d` / `this_month` / `last_month` -> monthly;
   else weekly) — the same window drives both the query and which goal it's
@@ -470,11 +477,12 @@ bucket (never averaged); Order Quality percentiles are recomputed per bucket
 from the raw `vw_kds_per_item_min` view (migration 034) since a daily
 percentile cannot be re-aggregated into a weekly/monthly one.
 
-**Composition / Trend (#198, shared pattern):** Composition (bars + Aggregate/By
-source on Sales) vs Trend (lines + Compare = lag-1 previous day/week/month,
-tooltip abs + `%`, right-axis `% change`). Reuse `chart-mode.ts`,
-`compare-series.ts`, `priorWindow`, and `LineChartCard` dual-axis — see
-`ARCHITECTURE.md` §12. Breakdown and Compare are mutually exclusive.
+**Composition / Trend (#198, shared pattern; Compare dropdown #202):** Composition (bars + Aggregate/By
+source on Sales) vs Trend (lines + Compare dropdown = Off / Previous day / week / month,
+independent of Aggregation — e.g. day grain + previous week overlays Mon→Mon). Reuse `chart-mode.ts`,
+`compare-series.ts`, `priorWindow(win, displayGrain, compareGrain)`, and `LineChartCard` dual-axis — see
+`ARCHITECTURE.md` §12. Breakdown and Compare are mutually exclusive. Legacy `compare=1` maps to
+lag-1 matching Aggregation.
 
 **Known grain limitation:** `vw_order_quality_daily`'s `% tickets late`
 column is defined only at day grain (it is itself a per-day ratio baked into

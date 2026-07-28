@@ -1,6 +1,12 @@
-import { forecastByGrain, forecastAccuracyByGrain, forecastExclusions, storeConfig } from "@/lib/bq/queries";
+import {
+  forecastForwardByGrain,
+  forecastAccuracyByGrain,
+  forecastGoalScheduleByGrain,
+  forecastExclusions,
+  storeConfig,
+} from "@/lib/bq/queries";
+import { mergeForecastAccuracyChart, mergeGoalHoursChart, mapeForecastAccuracy } from "@/lib/kpi/forecast-accuracy-chart";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
-import { dateSortKey } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { LineChartCard } from "@/components/charts/LineChartCard";
 import { DataTable } from "@/components/tables/DataTable";
@@ -9,7 +15,7 @@ import { FilterPills } from "@/components/filters/FilterPills";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
-import { RANGE_PRESETS, formatBucket, wantsCustom } from "@/lib/filters/range";
+import { RANGE_PRESETS, wantsCustom } from "@/lib/filters/range";
 import { resolvePageGrain, resolvePageRange } from "@/lib/filters/period";
 import { Badge } from "@/components/ui/badge";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -31,26 +37,17 @@ function parseMetric(value: string | string[] | undefined): Metric {
   return v === "items" ? "items" : "orders";
 }
 
-// Mean absolute percentage error over forecastAccuracy rows for the selected
-// metric — skips days with no actual (can't divide by zero, not "0% error").
-function mape(rows: { forecast: number; actual: number }[]): number | undefined {
-  const usable = rows.filter((r) => r.actual);
-  if (!usable.length) return undefined;
-  const sum = usable.reduce((s, r) => s + Math.abs(r.actual - r.forecast) / r.actual, 0);
-  return (sum / usable.length) * 100;
-}
-
 export default async function ForecastPage({
   searchParams,
 }: {
   searchParams: Promise<{ range?: string; metric?: string; from?: string; to?: string; grain?: string }>;
 }) {
   const sp = await searchParams;
-  // Forecast mixes a forward-looking "upcoming schedule" (empty on a
-  // past-only preset, since forecast rows only exist from the pipeline's
-  // run date forward) with a backward-looking accuracy view — same 7
-  // presets as every other Performance screen; Period cookie keeps it
-  // aligned with Home/Sales/Labor.
+  // Forecast splits windows (Issue #202):
+  // - Upcoming schedule: Chicago today → horizon.
+  // - Accuracy chart: actuals Period-scoped; forecast extends ahead.
+  // - Goal vs scheduled: scheduled Period-scoped (like actuals); goal extends ahead.
+  // Grain applies to all series. MAPE stays Period-only (dates with actuals).
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
   const grain = await resolvePageGrain(sp.grain);
   const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
@@ -62,14 +59,16 @@ export default async function ForecastPage({
 
   let rows: ForecastRow[] = [];
   let accuracyChart: Record<string, unknown>[] = [];
+  let goalHoursChart: Record<string, unknown>[] = [];
   let exclusions: ForecastExclusionRow[] = [];
   let mapePct: number | undefined;
   let goalHoursPerItem = DEFAULT_GOAL_HOURS_PER_ITEM;
   let error: string | undefined;
   try {
-    const [fc, acc, excl, config] = await Promise.all([
-      forecastByGrain(win, grain),
+    const [fc, acc, goalSched, excl, config] = await Promise.all([
+      forecastForwardByGrain(grain),
       forecastAccuracyByGrain(win, grain),
+      forecastGoalScheduleByGrain(win, grain),
       forecastExclusions(),
       storeConfig(DEFAULT_STORE),
     ]);
@@ -77,22 +76,19 @@ export default async function ForecastPage({
     exclusions = excl;
     const goalRow = config.find((r) => r.key === "goal_hours_per_item");
     if (goalRow) goalHoursPerItem = Number(goalRow.value);
-    accuracyChart = [...acc]
-      .sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1))
-      .map((r) => ({
-        date: formatBucket(r.date, grain),
-        forecast: r[forecastKey] as number,
-        actual: r[actualKey] as number,
-      }));
-    mapePct = mape(acc.map((r) => ({ forecast: r[forecastKey] as number, actual: r[actualKey] as number })));
+    accuracyChart = mergeForecastAccuracyChart(acc, fc, { forecastKey, actualKey, grain });
+    goalHoursChart = mergeGoalHoursChart(goalSched, fc, { goalHoursPerItem, grain });
+    mapePct = mapeForecastAccuracy(
+      acc.map((r) => ({ forecast: r[forecastKey] as number, actual: r[actualKey] as number })),
+    );
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
 
   // Goal Total Hours vs Scheduled Part Time (Grafana panels 71/id-2230) —
-  // computed client-side from already-fetched forecast rows (forecast_items
-  // × goal hrs/item), never a new BQ column, same "presentation math over
-  // fetched rows" pattern lib/kpi/health.ts uses for Home's pace/status.
+  // presentation math over fetched rows (forecast_items × goal hrs/item).
+  // Upcoming schedule table stays forward-only; the goal chart uses
+  // goalHoursChart (Period scheduled + forward-extending goal) above.
   const scheduleRows = rows.map((r) => {
     const goalShiftHours = Number((r.forecast_items * goalHoursPerItem).toFixed(1));
     const schedVsGoalHours =
@@ -104,29 +100,13 @@ export default async function ForecastPage({
     return { ...r, goal_shift_hours: goalShiftHours, sched_vs_goal_hours: schedVsGoalHours, sched_vs_goal_pct: schedVsGoalPct };
   });
 
-  const scheduleChart = [...rows]
-    .sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1))
-    .map((r) => ({
-      date: formatBucket(r.date, grain),
-      forecast: r[forecastKey] as number,
-      prior_wk: r[priorKey] as number,
-    }));
-
-  const goalHoursChart = [...scheduleRows]
-    .sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1))
-    .map((r) => ({
-      date: formatBucket(r.date, grain),
-      goal_shift_hours: r.goal_shift_hours,
-      scheduled_hours: r.scheduled_hours,
-    }));
-
   const metricLabel = metric === "orders" ? "orders" : "items";
 
   const columns: ColumnDef<(typeof scheduleRows)[number]>[] = [
     { accessorKey: "date", header: "Date", meta: { format: { kind: "bucket", grain } } },
     // "Day" only means anything at day grain — a week/month bucket spans
     // multiple days of week, so the column is omitted rather than shown
-    // blank (dow is queried as NULL for those grains — see forecastByGrain).
+    // blank (dow is queried as NULL for those grains — see forecastForwardByGrain).
     ...(grain === "day" ? [{ accessorKey: "dow", header: "Day" } as ColumnDef<(typeof scheduleRows)[number]>] : []),
     { accessorKey: forecastKey, header: `Fcst ${metricLabel}`, meta: { format: { kind: "number" } } },
     { accessorKey: priorKey, header: "Prior wk", meta: { format: { kind: "number" } } },
@@ -168,7 +148,7 @@ export default async function ForecastPage({
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Forecast"
-        subtitle={`Forecast vs prior week and accuracy · ${storeDisplayName(DEFAULT_STORE)}`}
+        subtitle={`Forecast accuracy and upcoming schedule · ${storeDisplayName(DEFAULT_STORE)}`}
         right={
           <>
             <FilterPills
@@ -218,16 +198,7 @@ export default async function ForecastPage({
       ) : (
         <>
           <LineChartCard
-            title={`Forecast ${metricLabel} vs prior week`}
-            data={scheduleChart}
-            xKey="date"
-            series={[
-              { key: "forecast", label: "Forecast" },
-              { key: "prior_wk", label: "Prior week" },
-            ]}
-          />
-          <LineChartCard
-            title={`Forecast accuracy (${metricLabel}) — ${win.label.toLowerCase()}`}
+            title={`Forecast accuracy (${metricLabel}) — actuals ${win.label.toLowerCase()}; forecast extends ahead`}
             data={accuracyChart}
             xKey="date"
             series={[
@@ -236,7 +207,7 @@ export default async function ForecastPage({
             ]}
           />
           <LineChartCard
-            title={`Goal total hours vs scheduled (${goalHoursPerItem.toFixed(2)} hrs/item goal)`}
+            title={`Goal total hours vs scheduled (${goalHoursPerItem.toFixed(2)} hrs/item) — scheduled ${win.label.toLowerCase()}; goal extends ahead`}
             data={goalHoursChart}
             xKey="date"
             series={[
@@ -250,9 +221,8 @@ export default async function ForecastPage({
               <DataTable columns={columns} data={scheduleRows} />
             ) : (
               <p className="text-sm text-muted-foreground">
-                No forecast rows for {win.label.toLowerCase()} — this preset is entirely in the
-                past, and forecast rows only exist from the pipeline&apos;s run date forward. Try
-                &quot;This month&quot; or &quot;This week&quot; to see the upcoming schedule.
+                No upcoming forecast rows — the pipeline has not written today→horizon rows to
+                the forecast view yet. Period scopes actuals on the accuracy chart above.
               </p>
             )}
           </div>

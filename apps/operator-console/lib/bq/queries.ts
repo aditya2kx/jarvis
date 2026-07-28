@@ -447,20 +447,14 @@ export interface ForecastRow {
   [key: string]: unknown;
 }
 
-// Forecast rows exist for dates >= the pipeline's run date, so a past-only
-// preset (e.g. last_month) legitimately returns no rows here — the caller
-// renders an empty state rather than this silently falling back to "today".
-//
-// Grain-aware version (Issue #132 follow-up): sums the volume columns, then
-// *recomputes* `orders_vs_prior_wk`/`items_vs_prior_wk` from the summed
-// forecast/prior-week totals — never averages the daily ratios, which would
-// misweight low-volume days the same way `laborByGrain` avoids for labor%.
-// `dow` is day-grain-only, same rationale as `laborByGrain`.
-export function forecastByGrain(win: DateWindow, grain: Grain): Promise<ForecastRow[]> {
+// Grain-aware forecast SELECT body (Issue #132 follow-on): sums volume
+ // columns, then *recomputes* `orders_vs_prior_wk`/`items_vs_prior_wk` from
+ // the summed totals — never averages daily ratios (same anti-pattern
+ // `laborByGrain` avoids). `dow` is day-grain-only.
+function forecastGrainSelectSql(grain: Grain): string {
   const bucket = bucketSql(grain);
   const dow = grain === "day" ? "ANY_VALUE(dow)" : "CAST(NULL AS STRING)";
-  return q<ForecastRow>(
-    `SELECT
+  return `SELECT
        ${bucket} AS date,
        ${dow} AS dow,
        SUM(forecast_orders) AS forecast_orders,
@@ -470,11 +464,34 @@ export function forecastByGrain(win: DateWindow, grain: Grain): Promise<Forecast
        SAFE_DIVIDE(SUM(forecast_orders) - SUM(prior_wk_orders), NULLIF(SUM(prior_wk_orders), 0)) AS orders_vs_prior_wk,
        SAFE_DIVIDE(SUM(forecast_items) - SUM(prior_wk_items), NULLIF(SUM(prior_wk_items), 0)) AS items_vs_prior_wk,
        SUM(scheduled_hours) AS scheduled_hours
-     FROM ${fq("vw_model_forecast")}
+     FROM ${fq("vw_model_forecast")}`;
+}
+
+// Period-scoped forecast reader — kept for callers that intentionally clip
+ // to a DateWindow. Prefer `forecastForwardByGrain` for the /forecast
+ // upcoming-schedule / forward charts (Issue #202).
+export function forecastByGrain(win: DateWindow, grain: Grain): Promise<ForecastRow[]> {
+  return q<ForecastRow>(
+    `${forecastGrainSelectSql(grain)}
      WHERE date BETWEEN @start AND @end
      GROUP BY date
      ORDER BY date`,
     { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+// Forward-looking forecast rows: Chicago today → pipeline horizon
+ // (`forecast_horizon_days`, typically 30). Ignores the Performance Period
+ // control so "This month" near month-end does not clip the upcoming
+ // schedule / forward charts (Issue #202). `vw_model_forecast` already
+ // filters `date >= CURRENT_DATE('America/Chicago')`; the explicit predicate
+ // here documents the contract and stays correct if the view ever widens.
+export function forecastForwardByGrain(grain: Grain): Promise<ForecastRow[]> {
+  return q<ForecastRow>(
+    `${forecastGrainSelectSql(grain)}
+     WHERE date >= CURRENT_DATE('America/Chicago')
+     GROUP BY date
+     ORDER BY date`,
   );
 }
 
@@ -541,6 +558,43 @@ export function forecastAccuracyByGrain(win: DateWindow, grain: Grain): Promise<
        SUM(actual_items) AS actual_items
      FROM ${fq("vw_forecast_accuracy")}
      WHERE date BETWEEN @start AND @end
+     GROUP BY date
+     ORDER BY date`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+export interface ForecastGoalScheduleRow {
+  date: string;
+  forecast_items: number;
+  scheduled_hours: number | null;
+  [key: string]: unknown;
+}
+
+// Period-scoped goal/schedule inputs for the Goal vs Scheduled chart
+ // (Issue #202). Reads the underlying tables — not `vw_model_forecast` —
+ // because that view is forward-only (`date >= CURRENT_DATE`). Scheduled
+ // hours act like "actuals" and must look back across the Period window.
+export function forecastGoalScheduleByGrain(
+  win: DateWindow,
+  grain: Grain,
+): Promise<ForecastGoalScheduleRow[]> {
+  const bucket = bucketSql(grain, "d.date");
+  return q<ForecastGoalScheduleRow>(
+    `WITH days AS (
+       SELECT date FROM ${fq("model_forecast_daily")}
+       WHERE date BETWEEN @start AND @end
+       UNION DISTINCT
+       SELECT date FROM ${fq("adp_scheduled_daily")}
+       WHERE date BETWEEN @start AND @end
+     )
+     SELECT
+       ${bucket} AS date,
+       SUM(f.forecast_items) AS forecast_items,
+       SUM(s.scheduled_hours) AS scheduled_hours
+     FROM days d
+     LEFT JOIN ${fq("model_forecast_daily")} f ON f.date = d.date
+     LEFT JOIN ${fq("adp_scheduled_daily")} s ON s.date = d.date
      GROUP BY date
      ORDER BY date`,
     { start: dateParam(win.start), end: dateParam(win.end) },

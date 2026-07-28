@@ -1,35 +1,49 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
-import { middleware } from "@/middleware";
 import { CANONICAL_CONSOLE_HOST, HASH_CONSOLE_HOST } from "@/lib/iap/hosts";
 
-describe("middleware host policy (Issue #208 — no cross-host bounce)", () => {
-  it("does not redirect hash host (keeps IAP cookie jar on that host)", () => {
-    const req = new NextRequest(`https://${HASH_CONSOLE_HOST}/inventory?x=1`, {
-      headers: { host: HASH_CONSOLE_HOST },
-    });
-    const res = middleware(req);
-    expect(res.headers.get("location")).toBeNull();
+vi.mock("@/auth", () => {
+  return {
+    auth: (handler: (req: NextRequest & { auth: unknown }) => unknown) => {
+      return (req: NextRequest) =>
+        handler(Object.assign(req, { auth: null }));
+    },
+  };
+});
+
+describe("proxy/middleware host + auth gate (Issue #210)", () => {
+  beforeEach(() => {
+    vi.resetModules();
   });
 
-  it("leaves the canonical host alone", () => {
-    const req = new NextRequest(`https://${CANONICAL_CONSOLE_HOST}/inventory`, {
+  it("redirects unauthenticated requests to /login", async () => {
+    const { default: middleware } = await import("@/proxy");
+    const req = new NextRequest(`https://${CANONICAL_CONSOLE_HOST}/home`, {
       headers: { host: CANONICAL_CONSOLE_HOST },
     });
-    const res = middleware(req);
-    expect(res.headers.get("location")).toBeNull();
+    const res = await middleware(req as never, {} as never);
+    expect(res?.headers.get("location")).toContain("/login");
   });
 
-  it("logs iap_hash_host_hit when request host is the hash form", () => {
+  it("does not redirect /login when unauthenticated", async () => {
+    const { default: middleware } = await import("@/proxy");
+    const req = new NextRequest(`https://${CANONICAL_CONSOLE_HOST}/login`, {
+      headers: { host: CANONICAL_CONSOLE_HOST },
+    });
+    const res = await middleware(req as never, {} as never);
+    expect(res?.headers.get("location")).toBeNull();
+  });
+
+  it("logs iap_hash_host_hit on hash host (still redirects to login)", async () => {
     const spy = vi.spyOn(console, "info").mockImplementation(() => {});
+    const { default: middleware } = await import("@/proxy");
     const req = new NextRequest(`https://${HASH_CONSOLE_HOST}/`, {
       headers: { host: HASH_CONSOLE_HOST },
     });
-    middleware(req);
+    await middleware(req as never, {} as never);
     expect(spy).toHaveBeenCalled();
     const payload = JSON.parse(String(spy.mock.calls[0]![0]));
     expect(payload.event).toBe("iap_hash_host_hit");
-    expect(payload.path).toBe("/");
     spy.mockRestore();
   });
 });

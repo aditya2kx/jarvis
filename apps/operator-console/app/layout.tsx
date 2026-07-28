@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { Sidebar } from "@/components/shell/Sidebar";
-import { Topbar } from "@/components/shell/Topbar";
-import { IapLoginBeacon } from "@/components/shell/IapLoginBeacon";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ActionToastProvider } from "@/lib/actions/ActionToast";
 
@@ -43,16 +40,7 @@ export default function RootLayout({
       </head>
       <body className="min-h-full">
         <TooltipProvider>
-          <ActionToastProvider>
-            <IapLoginBeacon />
-            <div className="flex h-screen overflow-hidden">
-              <Sidebar />
-              <div className="flex flex-1 flex-col overflow-hidden">
-                <Topbar />
-                <main className="flex-1 overflow-y-auto p-4 md:p-6">{children}</main>
-              </div>
-            </div>
-          </ActionToastProvider>
+          <ActionToastProvider>{children}</ActionToastProvider>
         </TooltipProvider>
       </body>
     </html>

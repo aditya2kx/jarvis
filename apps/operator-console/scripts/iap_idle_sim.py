@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""iap_idle_sim.py — Issue #208 §4 E2 idle-sim for Operator Console IAP.
+"""iap_idle_sim.py — Issue #210 §4 E2 idle-sim for Operator Console Auth.js.
 
 Simulates "return after idle" without waiting hours:
   1. Keep Google session cookies
-  2. Wipe IAP cookies on the canonical console host
+  2. Wipe Auth.js (+ leftover IAP) cookies on the canonical console host
   3. Open the canonical URL
-  4. If Google account chooser appears, click --email
+  4. Click Sign in with Google if on /login; if Google chooser, click --email
   5. Assert we land on the Operator Console
 
 Usage (needs a Chromium profile that is already signed into Google):
@@ -34,7 +34,12 @@ CANONICAL_ORIGIN = f"https://{CANONICAL_HOST}"
 
 
 def _is_console(url: str) -> bool:
-    return CANONICAL_HOST in url and "accounts.google.com" not in url
+    return (
+        CANONICAL_HOST in url
+        and "accounts.google.com" not in url
+        and "/login" not in url
+        and "/api/auth" not in url
+    )
 
 
 def _is_chooser(url: str) -> bool:
@@ -44,7 +49,7 @@ def _is_chooser(url: str) -> bool:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="IAP idle-sim (Issue #208 E2)")
+    ap = argparse.ArgumentParser(description="Auth.js idle-sim (Issue #210 E2)")
     ap.add_argument("--email", required=True, help="Allowlisted Google account to click")
     ap.add_argument("--base-url", default=CANONICAL_ORIGIN)
     ap.add_argument("--storage-state", default=None, help="Playwright storage state JSON")
@@ -83,11 +88,15 @@ def main() -> int:
             page = context.new_page()
 
         try:
-            # Wipe IAP cookies on canonical (idle) — keep Google cookies.
+            # Wipe console Auth.js (+ leftover IAP) cookies — keep Google cookies.
             remaining = []
             for c in context.cookies():
-                if "operator-console" in c.get("domain", "") or re.search(
-                    r"GCP_IAP|__Host-GCP_IAP", c.get("name", ""), re.I
+                name = c.get("name", "")
+                domain = c.get("domain", "")
+                if "operator-console" in domain or re.search(
+                    r"GCP_IAP|__Host-GCP_IAP|authjs\.|next-auth\.|__Secure-authjs",
+                    name,
+                    re.I,
                 ):
                     continue
                 remaining.append(c)
@@ -99,26 +108,34 @@ def main() -> int:
             page.wait_for_timeout(1500)
             url = page.url
 
-            if _is_console(url):
+            if _is_console(url) and "/login" not in url:
                 title = page.title()
                 ok = "Operator Console" in title or "Palmetto" in title
                 print(f"PASS: already admitted after idle wipe → {url} title={title!r}")
                 return 0 if ok else 1
 
-            if not _is_chooser(url):
+            # Auth.js login page → start Google OAuth
+            if "/login" in url or page.get_by_role("button", name=re.compile(r"Sign in with Google", re.I)).count():
+                btn = page.get_by_role("button", name=re.compile(r"Sign in with Google", re.I))
+                if btn.count():
+                    btn.first.click(timeout=15_000)
+                    page.wait_for_timeout(1500)
+                    url = page.url
+
+            if not _is_chooser(url) and not _is_console(url):
                 body = page.locator("body").inner_text()[:400]
-                print(f"FAIL: expected chooser or console, got {url}\n{body}", file=sys.stderr)
+                print(f"FAIL: expected chooser, login→Google, or console, got {url}\n{body}", file=sys.stderr)
                 return 1
 
-            # Click allowlisted account
-            acct = page.get_by_role("link", name=re.compile(re.escape(args.email), re.I))
-            if acct.count() == 0:
-                # Fallback: any element containing the email
-                acct = page.locator(f"text={args.email}")
-            if acct.count() == 0:
-                print(f"FAIL: account {args.email!r} not visible on chooser", file=sys.stderr)
-                return 1
-            acct.first.click(timeout=15_000)
+            if _is_chooser(url):
+                # Click allowlisted account
+                acct = page.get_by_role("link", name=re.compile(re.escape(args.email), re.I))
+                if acct.count() == 0:
+                    acct = page.locator(f"text={args.email}")
+                if acct.count() == 0:
+                    print(f"FAIL: account {args.email!r} not visible on chooser", file=sys.stderr)
+                    return 1
+                acct.first.click(timeout=15_000)
 
             # Wait for console (or IAP error)
             deadline = time.time() + args.timeout_ms / 1000.0

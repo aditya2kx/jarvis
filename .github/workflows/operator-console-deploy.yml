@@ -12,6 +12,7 @@ env:
   REGION: us-central1
   REGISTRY: us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images
   SERVICE: operator-console
+  AUTH_URL: https://operator-console-887772634501.us-central1.run.app
 
 jobs:
   build-and-deploy:
@@ -63,42 +64,20 @@ jobs:
             "from core.order_reco import refresh_order_reco; refresh_order_reco('palmetto'); print('refresh_order_reco: ok store=palmetto')" \
             || echo "::warning::refresh_order_reco failed (non-fatal) — /inventory may stay stale until nightly or page self-heal"
 
-      # Cloud Run direct IAP (GA, no load balancer) fronts this service — a
-      # custom "External" OAuth client + branding works fine without a Google
-      # Workspace organization (reversing the 2026-07-04 "no IAP" pivot; see
-      # docs/operator-console/PLAN.md decision log 2026-07-05). --iap is
-      # idempotent against the one-time Console-driven consent-screen +
-      # OAuth-client provisioning already done for this service (Console-only
-      # step, cannot be scripted — see RUNBOOK.md §17). The app verifies the
-      # IAP-forwarded identity in lib/auth/identity.ts. Least-privilege
-      # runtime SA (BQ dataUser/jobUser on `bhaga`, Secret Manager accessor)
-      # is provisioned once, not here.
+      # Issue #210 — Auth.js Google OAuth + ALLOWED_EMAILS (no Cloud Run IAP).
+      # Public ingress; app session cookie is the gate. Secrets live in SM.
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${{ env.SERVICE }} \
             --image ${{ env.REGISTRY }}/operator-console:${{ github.sha }} \
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT_ID }} \
-            --no-allow-unauthenticated \
-            --iap \
+            --allow-unauthenticated \
+            --no-iap \
             --memory 512Mi \
             --min-instances 1 \
-            --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga,PLAID_ENV=production \
-            --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest,PLAID_CLIENT_ID=plaid_client_id:latest,PLAID_SECRET=plaid_secret:latest
-
-      # IAP IAM (roles/iap.httpsResourceAccessor), not run.invoker — only the
-      # IAP service agent invokes the Cloud Run service now. Idempotent:
-      # re-adding an existing binding is a no-op, not an error. Per-user grants
-      # for now; a Google Groups (admin/operator) model is a documented
-      # follow-up — see RUNBOOK.md §17.
-      - name: Grant operator IAP access
-        run: |
-          for member in "user:adi@mypalmetto.co" "user:aditya.2ky@gmail.com" "user:lindsay@mypalmetto.co"; do
-            gcloud iap web add-iam-policy-binding \
-              --resource-type=cloud-run --service=${{ env.SERVICE }} \
-              --region ${{ env.REGION }} --project ${{ env.PROJECT_ID }} \
-              --member="$member" --role="roles/iap.httpsResourceAccessor"
-          done
+            --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga,PLAID_ENV=production,AUTH_URL=${{ env.AUTH_URL }},AUTH_TRUST_HOST=true \
+            --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest,PLAID_CLIENT_ID=plaid_client_id:latest,PLAID_SECRET=plaid_secret:latest,AUTH_SECRET=operator-console-auth-secret:latest,AUTH_GOOGLE_ID=operator-console-google-client-id:latest,AUTH_GOOGLE_SECRET=operator-console-google-client-secret:latest,ALLOWED_EMAILS=operator-console-allowed-emails:latest
 
       - name: Record deploy event (BQ)
         run: |

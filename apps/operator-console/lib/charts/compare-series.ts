@@ -3,18 +3,20 @@
  * should reuse these (not copy) when they add Composition | Trend modes.
  *
  * Contract:
- * - `priorWindow(win, grain)` in `lib/filters/range.ts` = lag-1 by Aggregation
+ * - `priorWindow(win, displayGrain, compareGrain)` in `lib/filters/range.ts`
  * - `mergePriorSeries` overlays prior abs on left axis + `% change` on right
  * - `LineChartCard` renders dual Y-axis when any series has `yAxisId: "right"`
  * - Mode gating (`composition` vs `trend`) lives in `lib/filters/chart-mode.ts`
  */
 import type { Series } from "@/components/charts/LineChartCard";
 import type { Grain } from "@/lib/filters/range";
+import type { CompareMode } from "@/lib/filters/chart-mode";
 
-/** Operator-facing Compare pill / series label for the active Aggregation. */
-export function compareGrainLabel(grain: Grain): string {
-  if (grain === "week") return "Previous week";
-  if (grain === "month") return "Previous month";
+/** Operator-facing Compare dropdown / series label for the selected lag. */
+export function compareGrainLabel(compare: Grain | CompareMode): string {
+  if (compare === "off") return "Off";
+  if (compare === "week") return "Previous week";
+  if (compare === "month") return "Previous month";
   return "Previous day";
 }
 

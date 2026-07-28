@@ -478,11 +478,12 @@ bucket (never averaged); Order Quality percentiles are recomputed per bucket
 from the raw `vw_kds_per_item_min` view (migration 034) since a daily
 percentile cannot be re-aggregated into a weekly/monthly one.
 
-**Composition / Trend (#198, shared pattern):** Composition (bars + Aggregate/By
-source on Sales) vs Trend (lines + Compare = lag-1 previous day/week/month,
-tooltip abs + `%`, right-axis `% change`). Reuse `chart-mode.ts`,
-`compare-series.ts`, `priorWindow`, and `LineChartCard` dual-axis — see
-`ARCHITECTURE.md` §12. Breakdown and Compare are mutually exclusive.
+**Composition / Trend (#198, shared pattern; Compare dropdown #202):** Composition (bars + Aggregate/By
+source on Sales) vs Trend (lines + Compare dropdown = Off / Previous day / week / month,
+independent of Aggregation — e.g. day grain + previous week overlays Mon→Mon). Reuse `chart-mode.ts`,
+`compare-series.ts`, `priorWindow(win, displayGrain, compareGrain)`, and `LineChartCard` dual-axis — see
+`ARCHITECTURE.md` §12. Breakdown and Compare are mutually exclusive. Legacy `compare=1` maps to
+lag-1 matching Aggregation.
 
 **Known grain limitation:** `vw_order_quality_daily`'s `% tickets late`
 column is defined only at day grain (it is itself a per-day ratio baked into

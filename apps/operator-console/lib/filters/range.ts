@@ -235,25 +235,33 @@ export function parseGrain(value: string | string[] | undefined, fallback: Grain
 }
 
 /**
- * Compare-prior window: the same grain buckets as `win`, each shifted back by
- * exactly one aggregation step (previous day / week / month). Used so Trend
- * "Compare" overlays last-week's path under this week's labels (not the fully
- * preceding equal-length calendar period).
+ * Compare-prior window: each Aggregation bucket in `win` shifted back by one
+ * `compareGrain` step (previous day / week / month). Display Aggregation and
+ * Compare lag are independent — e.g. day grain + previous week overlays each
+ * day against the same weekday last week (Issue #202 follow-on).
+ *
+ * When `compareGrain` is omitted it defaults to `displayGrain` (legacy lag-1).
  */
-export function priorWindow(win: DateWindow, grain: Grain = "day"): DateWindow {
-  const curBuckets = enumerateBucketStarts(win, grain);
+export function priorWindow(
+  win: DateWindow,
+  displayGrain: Grain = "day",
+  compareGrain: Grain = displayGrain,
+): DateWindow {
+  const curBuckets = enumerateBucketStarts(win, displayGrain);
   if (curBuckets.length === 0) {
     return {
-      start: shiftCalendarDate(win.start, grain, -1),
-      end: shiftCalendarDate(win.end, grain, -1),
+      start: shiftCalendarDate(win.start, compareGrain, -1),
+      end: shiftCalendarDate(win.end, compareGrain, -1),
       label: "Prior period",
       preset: "custom",
     };
   }
-  const priorBuckets = curBuckets.map((b) => addGrain(b, grain, -1));
+  const priorBuckets = curBuckets.map((b) =>
+    truncateToGrain(shiftCalendarDate(b, compareGrain, -1), displayGrain),
+  );
   return {
     start: priorBuckets[0]!,
-    end: grainEndInclusive(priorBuckets[priorBuckets.length - 1]!, grain),
+    end: grainEndInclusive(priorBuckets[priorBuckets.length - 1]!, displayGrain),
     label: "Prior period",
     preset: "custom",
   };

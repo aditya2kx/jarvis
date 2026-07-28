@@ -26,6 +26,7 @@ import {
 } from "@/lib/filters/range";
 import {
   assertModeFilterCoherence,
+  COMPARE_OPTIONS,
   parseChartMode,
   parseCompare,
 } from "@/lib/filters/chart-mode";
@@ -62,7 +63,7 @@ export default async function SalesPage({
   const coherent = assertModeFilterCoherence(
     modeRaw,
     parseBreakdown(sp.breakdown),
-    parseCompare(sp.compare),
+    parseCompare(sp.compare, grain),
   );
   const { mode, breakdown, compare } = coherent;
   const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
@@ -70,9 +71,10 @@ export default async function SalesPage({
     win.preset === "custom" ? { from: win.start, to: win.end } : {};
   const sourcesParam = serializeSources(sources);
   const breakdownParam = breakdown ? "1" : "0";
-  const compareParam = compare ? "1" : "0";
+  const compareParam = compare;
   const modeParam = mode;
-  const compareLabel = compareGrainLabel(grain);
+  const compareOn = compare !== "off";
+  const compareLabel = compareGrainLabel(compare);
   const priorSeriesLabel = compareLabel;
 
   let rows: SalesBySourceRow[] = [];
@@ -80,7 +82,7 @@ export default async function SalesPage({
   let sourceOptions: string[] = [];
   let goalWeekly: number | undefined;
   let error: string | undefined;
-  const prior = compare ? priorWindow(win, grain) : null;
+  const prior = compareOn ? priorWindow(win, grain, compare) : null;
   try {
     const [sales, opts, config, priorSales] = await Promise.all([
       salesByGrain(win, grain, sources, breakdown),
@@ -101,9 +103,9 @@ export default async function SalesPage({
 
   const sorted = [...rows].sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1));
 
-  // For Trend+Compare: zero-fill both spines so bucket counts match priorWindow(grain).
+  // For Trend+Compare: zero-fill both spines so bucket counts match priorWindow.
   const chartSourceRows = (() => {
-    if (!compare || breakdown) return sorted;
+    if (!compareOn || breakdown) return sorted;
     return fillSalesSpine(sorted, enumerateBucketStarts(win, grain));
   })();
   const chartRows = chartSourceRows.map((r) => ({
@@ -115,7 +117,7 @@ export default async function SalesPage({
   let ordersChart = pivotSalesChart(chartRows, "orders", breakdown, "Orders");
   let itemsChart = pivotSalesChart(chartRows, "items_sold", breakdown, "Items sold");
 
-  if (compare && prior) {
+  if (compareOn && prior) {
     const priorBuckets = enumerateBucketStarts(prior, grain);
     const priorFilled = fillSalesSpine(priorRows, priorBuckets, "null");
     const priorChartRows = priorFilled.map((r) => ({
@@ -144,8 +146,8 @@ export default async function SalesPage({
   }
 
   const priorSubtitle =
-    compare && prior
-      ? `Each point vs previous ${grain} · hover for abs + % · right axis = % change`
+    compareOn && prior
+      ? `Each point vs ${compareLabel.toLowerCase()} · hover for abs + % · right axis = % change`
       : undefined;
 
   // Detail table is always aggregated (one row per bucket) even when charts
@@ -254,14 +256,11 @@ export default async function SalesPage({
                 }}
               />
             ) : (
-              <FilterPills
+              <FilterSelect
                 label="Compare"
                 param="compare"
                 value={compareParam}
-                options={[
-                  { value: "0", label: "Off" },
-                  { value: "1", label: compareLabel },
-                ]}
+                options={COMPARE_OPTIONS}
                 basePath="/sales"
                 extraParams={{
                   range: win.preset,
@@ -364,21 +363,21 @@ export default async function SalesPage({
       ) : (
         <>
           <LineChartCard
-            title={`Net sales by ${grain}${compare ? " vs prior" : ""}`}
+            title={`Net sales by ${grain}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
             subtitle={priorSubtitle}
             data={netChart.data}
             xKey="date"
             series={netChart.series}
           />
           <LineChartCard
-            title={`Orders by ${grain}${compare ? " vs prior" : ""}`}
+            title={`Orders by ${grain}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
             subtitle={priorSubtitle}
             data={ordersChart.data}
             xKey="date"
             series={ordersChart.series}
           />
           <LineChartCard
-            title={`Items sold by ${grain}${compare ? " vs prior" : ""}`}
+            title={`Items sold by ${grain}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
             subtitle={priorSubtitle}
             data={itemsChart.data}
             xKey="date"

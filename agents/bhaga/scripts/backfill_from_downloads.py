@@ -375,6 +375,7 @@ def main() -> int:
                         "ot_rate_history": [],
                         "excluded_from_labor_pct": canonical in excluded_set,
                         "raw_employee_names": [],
+                        "rate_source": "roster_stub",
                     })
                     roster_stubs += 1
             if roster_stubs:
@@ -419,6 +420,32 @@ def main() -> int:
                 )
                 print(f"  adp_earnings (BQ): {n} rows upserted")
                 summaries.append({"table": "adp_earnings", "rows": n})
+
+    # ── ADP Payroll-info gap-fill rates (Issue #213) ───────────────
+    if "adp_rates" not in args.skip:
+        pay_info_json = _newest("PayInfoRates*.json")
+        if pay_info_json:
+            print(f"# loading ADP pay_info rates: {pay_info_json.name}")
+            try:
+                from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415
+                    write_pay_info_rates_bq,
+                )
+                payload = json.loads(pay_info_json.read_text())
+                rates = payload.get("rates") or []
+                if args.dry_run:
+                    print(f"  DRY: would MERGE {len(rates)} pay_info rate rows")
+                else:
+                    n = write_pay_info_rates_bq(rates, dry_run=False)
+                    summaries.append({"table": "adp_wage_rates_pay_info", "rows": n})
+                    try:
+                        from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415
+                            assert_no_missing_puncher_rates,
+                        )
+                        assert_no_missing_puncher_rates(days=60)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"WARN: wage gap assert failed: {type(exc).__name__}: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"WARN: pay_info rate load failed: {type(exc).__name__}: {exc}")
 
     # ── Square transactions + daily rollup ────────────────────────
     if "square" not in args.skip:

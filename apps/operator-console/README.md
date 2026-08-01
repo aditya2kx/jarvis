@@ -12,7 +12,7 @@ Full design/decisions/build plan: [`docs/operator-console/`](../../docs/operator
 |---|---|
 | `/home` | **Goal and Tracking** — net sales, PT + total labor %, prep p95, bases at risk |
 | `/accounting` | Linked bank feed (money in/out/cash flow + Palmetto categories) with Square net sales context and $ / % toggle |
-| `/sales` `/labor` `/forecast` `/order-quality` | Performance drill-downs |
+| `/sales` `/labor` `/order-quality` | Performance drill-downs (Forecast console page removed — Issue #213) |
 | `/inventory` | Ordering + Base runway |
 | `/payroll` `/pipeline` | People + system |
 

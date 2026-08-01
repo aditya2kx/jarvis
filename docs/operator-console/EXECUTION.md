@@ -589,9 +589,9 @@ console location. Re-run this table whenever a Grafana panel changes.
 | Daily Wages / Net Sales % (PT/FT split) | `/labor` "Labor % of net sales" chart (Part-time + Full-time series, §5.5e) |
 | Hours per Item (total) | `/labor` "Hours per item" chart |
 | Hours per Item (PT/FT split) | `/labor` "Hours per item — total / part-time / full-time" chart (§5.5e) |
-| Forecast vs Actual (orders/items) | `/forecast` accuracy chart |
-| Goal Total Hours vs Scheduled Part Time (panel 71) | `/forecast` "Goal total hours vs scheduled" chart + schedule table columns (§5.5e) |
-| Forecast Inputs / Exclusions (panel 84) | `/forecast` "Forecast inputs & exclusions" table (§5.5e) |
+| Forecast vs Actual (orders/items) | Grafana only (console `/forecast` removed — Issue #213) |
+| Goal Total Hours vs Scheduled Part Time (panel 71) | Grafana only (console Forecast page removed — Issue #213) |
+| Forecast Inputs / Exclusions (panel 84) | Grafana only (console Forecast page removed — Issue #213) |
 | Order Quality percentiles (median/p90/p95/p99) | `/order-quality` percentile chart + table (all grains) |
 | p95 by source | `/order-quality` p95-by-source chart |
 | Order KDS Times investigation (panel 52) | `/order-quality` "Order KDS times (slowest first)" table (§5.5d) |

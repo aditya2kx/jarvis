@@ -437,22 +437,16 @@ aggregate percentile table and the per-order drill-down, matching Grafana's
 "one filter row governs every panel on the tab" behavior instead of the two
 diverging independently.
 
-## 14. Forward-looking labor cost (Issue #166)
+## 14. Labor page (Issue #213)
 
-Home's **Labor** group and the Labor page summary card share
-`lib/bq/queries.ts::laborForwardSummary` → `lib/kpi/labor-forward.ts::computeLaborForwardSummary`,
-selected via mutually exclusive **lenses** (`?lens=wage|paid|blended`, default `wage`)
-in `lib/kpi/labor-lens.ts::viewForLaborLens`.
+`/labor` shows historical ADP hours only (no forecast-model numbers):
 
-| Lens | Scope | Cost numerator | Sales denominator |
-|---|---|---|---|
-| **Wage** | Completed days only | `hourly_labor_cost` / `total_labor_cost` from `vw_model_labor_daily` for dates in the Period **strictly before** Chicago today | `net_sales` over those same days |
-| **Paid payroll** | Completed days only | Wage × `(1 + labor_burden_pct)` (~10% ER burden) | same as Wage |
-| **Blended (schedule)** | Completed + remaining scheduled days | completed wage + (`scheduled_hours` × avg PT wage) + (trailing-28d avg FT $/open-day × #scheduled forward days); **no burden** | completed sales + (`forecast_orders` × AOV) for dates ≥ Chicago today in the Period **with `scheduled_hours > 0` only** (unscheduled forward days omitted from both cost and sales) |
+- **L1** one bar chart: Period + Aggregation; View Aggregate | PT/FT;
+  client toggle Hours | % of Square net sales (`labor $ / net_sales`).
+- **L3** hours-per-person bar for the same Period (`adp_shifts`).
+- Forecast nav/page removed from Operator Console; BQ/Grafana forecast pipeline kept.
+- Forward Wage/Paid/Blended lenses and `laborForwardSummary` are no longer
+  surfaced on the Labor page (scheduled-shifts UI deferred).
 
-- Goals: `goal_hourly_labor_pct_max` default **20%**, `goal_labor_pct_max` default **25%** (of net sales); editable on Home for the Wage lens.
-- Schedule hours are **part-time oriented** (ADP Team Schedule scrape → `adp_scheduled_daily` / `adp_scheduled_shifts`); FT is approximated from trailing actuals because the schedule excludes the salaried manager.
-- Wage basis is **wage-only** (hours × rate). **Paid** = wage × `(1 + labor_burden_pct)` when `store_config.labor_burden_pct` is set (>0). Seeded from ADP Payroll Liability: **`0.10`** (see `docs/operator-console/adp-forward-labor-spike.md`). Unset/`0` → Paid lens shows unavailable.
-- Forward PT $ prefers `Σ(adp_scheduled_shifts.hours × adp_wage_rates.rate)` when employee schedule rows exist; falls back to aggregate `scheduled_hours × avg PT wage`.
-- `/labor` under Blended shows **Scheduled hours per person — forward (ADP)** and a dashed blended PT % series on the labor-% chart.
-- `bhaga.adp_earnings` has employee pay lines only (Regular, OT, tips, bonus…); no employer-tax scrape exists. A dedicated ADP tax/burden pull is a follow-up if RUN's Tax Center numbers must replace the multiplier.
+Legacy spike notes for ADP schedule / burden: `docs/operator-console/adp-forward-labor-spike.md`.
+

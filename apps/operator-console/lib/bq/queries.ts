@@ -79,6 +79,27 @@ export function laborByGrain(win: DateWindow, grain: Grain): Promise<LaborDailyR
   );
 }
 
+/** Hours worked per person over the console Period (ADP shifts; Issue #213 L3). */
+export interface LaborHoursPerPersonRow {
+  employee: string;
+  hours: number;
+  [key: string]: unknown;
+}
+
+export function laborHoursPerPerson(win: DateWindow): Promise<LaborHoursPerPersonRow[]> {
+  return q<LaborHoursPerPersonRow>(
+    `SELECT
+       COALESCE(NULLIF(TRIM(canonical_name), ''), employee_id) AS employee,
+       SUM(total_hours) AS hours
+     FROM ${fq("adp_shifts")}
+     WHERE date BETWEEN @start AND @end
+     GROUP BY employee
+     HAVING hours > 0
+     ORDER BY hours DESC`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
 // Sales page source filter (#198). Reads square_transactions (+ item_lines for
 // items_sold) so we can filter/group by Square `source`. Unfiltered totals
 // reconcile to vw_model_labor_daily. `sources === null` means all sources;

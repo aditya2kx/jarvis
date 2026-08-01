@@ -12,6 +12,12 @@ All three run in **one browser session / one login / one OTP** via
 | `download_timecard` | Reports → Time → Timecard | `Timecard-<date>.xlsx` (per-punch) | `shift_backend.py` |
 | `download_earnings` | Reports → saved "Earnings and Hours V1" | `Earnings-…-<date>.xlsx` (wage rates + CC-tips) | `compensation_backend.py` |
 | `download_schedule` | Home → **Team Schedule** ("Manage Schedules") | `Schedule-<date>.json` (per-day scheduled hours, current + next week) | `schedule_backend.py` |
+| pay_info gap-fill (in bundle) | People → Payroll info → Hourly pay rate | `PayInfoRates-<date>.json` | `pay_info_backend.py` |
+
+**Wage-rate dual source (Issue #213):** Earnings Regular is authoritative after
+payroll. Punchers missing `adp_wage_rates.wage_rate_dollars` are gap-filled from
+Payroll info in the same ADP session (every night gaps exist, not Mon/Tue-only).
+CLI: `python3 -m skills.adp_run_automation.pay_info_backend --from-bq-gaps --write-bq`.
 
 **Team Schedule scrape** (added 2026-06-10): ADP exposes NO structured export
 for the schedule (Actions → "Print schedule" only opens the browser's native

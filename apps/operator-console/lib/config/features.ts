@@ -3,7 +3,8 @@
 export const FEATURES = {
   sales: true,
   labor: true,
-  forecast: true,
+  /** Issue #213 — Forecast stripped from Operator Console (BQ/Grafana pipeline kept). */
+  forecast: false,
   orderQuality: true,
   inventory: true,
   payroll: true,

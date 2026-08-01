@@ -353,33 +353,37 @@ def main() -> int:
 
             # Roster stubs: ensure employees absent from current ADP download
             # still have a wage_rates row (covers former employees whose
-            # historical shifts are in the data window).
-            from skills.store_profile import load_employee_roster
-            roster = load_employee_roster(args.store)
-            rate_names = {r["employee_name"] for r in rates}
-            existing_rates = read_raw_adp_rates(adp_raw_sid, account=google_account)
-            existing_ids = {r["employee_id"] for r in existing_rates}
-            excluded_set = set(excluded)
-            roster_stubs = 0
-            for rec in roster:
-                canonical = rec["canonical_name"]
-                if canonical not in rate_names and canonical not in existing_ids:
-                    rates.append({
-                        "employee_id": canonical,
-                        "employee_name": canonical,
-                        "wage_rate_dollars": None,
-                        "ot_rate_dollars": None,
-                        "is_salaried": False,
-                        "multi_rate": False,
-                        "rate_history": [],
-                        "ot_rate_history": [],
-                        "excluded_from_labor_pct": canonical in excluded_set,
-                        "raw_employee_names": [],
-                        "rate_source": "roster_stub",
-                    })
-                    roster_stubs += 1
-            if roster_stubs:
-                print(f"  added {roster_stubs} roster stub(s)")
+            # historical shifts are in the data window). Soft-fail when Sheets
+            # roster/config is unavailable (CI / laptop without config.yaml).
+            try:
+                from skills.store_profile import load_employee_roster
+                roster = load_employee_roster(args.store)
+                rate_names = {r["employee_name"] for r in rates}
+                existing_rates = read_raw_adp_rates(adp_raw_sid, account=google_account)
+                existing_ids = {r["employee_id"] for r in existing_rates}
+                excluded_set = set(excluded)
+                roster_stubs = 0
+                for rec in roster:
+                    canonical = rec["canonical_name"]
+                    if canonical not in rate_names and canonical not in existing_ids:
+                        rates.append({
+                            "employee_id": canonical,
+                            "employee_name": canonical,
+                            "wage_rate_dollars": None,
+                            "ot_rate_dollars": None,
+                            "is_salaried": False,
+                            "multi_rate": False,
+                            "rate_history": [],
+                            "ot_rate_history": [],
+                            "excluded_from_labor_pct": canonical in excluded_set,
+                            "raw_employee_names": [],
+                            "rate_source": "roster_stub",
+                        })
+                        roster_stubs += 1
+                if roster_stubs:
+                    print(f"  added {roster_stubs} roster stub(s)")
+            except Exception as exc:  # noqa: BLE001
+                print(f"WARN: roster stubs skipped: {type(exc).__name__}: {exc}")
 
             bq_rows = [map_adp_wage_rate(r, profile) for r in rates]
             if args.dry_run:

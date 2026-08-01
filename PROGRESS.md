@@ -1,3 +1,12 @@
+## 2026-08-01 — Labor console simplify + dual-source wage rates (Issue #213)
+
+**Scope:** Strip Forecast from Operator Console; rebuild `/labor` to historical ADP hours; gap-fill missing wage rates from ADP People → Payroll info.
+
+**Key changes (PR #214):**
+- Console: Forecast nav/page removed; Labor L1 Aggregate|PT/FT + Hours|% net sales; L3 hours-per-person for Period; drop forward/lenses/hrs-item/throughput/detail.
+- Migration `050`: `adp_wage_rates.rate_source`; `pay_info_backend` + nightly bundle gap-fill; earnings Regular still wins.
+- Backfill: Brooke Willingham `$15.25` `pay_info` in BQ; labor rematerialized (Elizabeth still gap — scrape selector follow-up).
+
 ## 2026-07-28 — Operator Console one-URL IAP login (Issue #208)
 
 **Scope:** Stop post-IAP hash→canonical bounce so the canonical console URL either loads the session or completes Google account pick → IAM allowlist → console on first try ($0 infra).

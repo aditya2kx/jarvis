@@ -8,6 +8,7 @@ import {
 } from "@/app/labor/actions";
 import { Button } from "@/components/ui/button";
 import { useActionToast } from "@/lib/actions/ActionToast";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { cn } from "@/lib/utils";
 
 function formatScraped(iso: string | null): string | null {
@@ -36,6 +37,7 @@ export function SyncScheduledShiftsButton({
 }) {
   const router = useRouter();
   const toast = useActionToast();
+  const { run, setError } = useConsoleAction();
   const [phase, setPhase] = useState<SyncPhase>("idle");
   const [statusText, setStatusText] = useState<string | null>(null);
   const [scrapedAt, setScrapedAt] = useState<string | null>(lastScrapedAt);
@@ -61,6 +63,7 @@ export function SyncScheduledShiftsButton({
     (newScraped: string | null) => {
       stopPolling();
       setPhase("done");
+      setError(null);
       setScrapedAt(newScraped);
       setStatusText(
         `Synced ${formatScraped(newScraped) ?? "just now"} CT — refreshing charts…`,
@@ -72,17 +75,18 @@ export function SyncScheduledShiftsButton({
         setStatusText(null);
       }, 8000);
     },
-    [router, stopPolling, toast],
+    [router, setError, stopPolling, toast],
   );
 
   const finishErr = useCallback(
     (msg: string) => {
       stopPolling();
       setPhase("error");
+      setError(msg);
       setStatusText(msg);
       toast.push(msg, "error");
     },
-    [stopPolling, toast],
+    [setError, stopPolling, toast],
   );
 
   const pollOnce = useCallback(async () => {
@@ -92,6 +96,7 @@ export function SyncScheduledShiftsButton({
       );
       return;
     }
+    // Poll stays outside `run()` so we don't toast every 4s.
     const ack = await pollScheduledShiftsSyncAction({
       baselineScrapedAt: baselineRef.current,
       executionName: executionRef.current,
@@ -114,7 +119,6 @@ export function SyncScheduledShiftsButton({
       return;
     }
     if (execution?.done && execution.succeeded && !advanced) {
-      // Job succeeded but BQ timestamp didn't move — treat as soft failure.
       finishErr(
         "Job finished but schedule data did not update — check ADP scrape logs.",
       );
@@ -132,9 +136,14 @@ export function SyncScheduledShiftsButton({
     stopPolling();
     setPhase("starting");
     setStatusText("Starting sync…");
-    const ack = await syncScheduledShiftsAction();
+    const ack = await run(() => syncScheduledShiftsAction(), {
+      saving: "Starting sync…",
+      queued: "Schedule sync queued in the background",
+      done: "Schedule sync started in the background",
+    });
     if (!ack.ok) {
-      finishErr(ack.error);
+      setPhase("error");
+      setStatusText(ack.error);
       return;
     }
     const data = ack.data;
@@ -143,18 +152,11 @@ export function SyncScheduledShiftsButton({
     startedAtRef.current = Date.now();
     setPhase("running");
     setStatusText(data?.message ?? "Syncing…");
-    toast.push(
-      data?.mode === "local"
-        ? "Schedule sync started in the background"
-        : "Schedule sync queued in the background",
-      "info",
-    );
-    // Immediate poll + interval — page stays interactive.
     void pollOnce();
     pollTimerRef.current = setInterval(() => {
       void pollOnce();
     }, POLL_MS);
-  }, [finishErr, phase, pollOnce, scrapedAt, stopPolling, toast]);
+  }, [phase, pollOnce, run, scrapedAt, stopPolling]);
 
   const scrapedLabel = formatScraped(scrapedAt);
   const busy = phase === "starting" || phase === "running";

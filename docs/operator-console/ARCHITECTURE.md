@@ -439,7 +439,10 @@ diverging independently.
 
 ## 14. Labor page (Issue #213)
 
-`/labor` shows historical ADP hours only (no forecast-model numbers):
+`/labor` shows historical ADP hours plus forward ADP Team Schedule (no forecast-model numbers):
+
+- **Scheduled vs actual** cut at yesterday CT; Sync scheduled shifts runs `BHAGA_ADP_SCHEDULE_ONLY` (local or Cloud Run) → purge-before-upsert into `adp_scheduled_shifts`.
+- **Avg concurrent** uses per-bucket first→last span (one FT ≈ 1); schedule concurrent from wall-clock ranges.
 
 - **L1** one bar chart: Period + Aggregation; View Aggregate | PT/FT;
   client toggle Hours | % of Square net sales (`labor $ / net_sales`).

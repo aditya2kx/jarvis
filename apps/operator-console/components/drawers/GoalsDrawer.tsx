@@ -93,7 +93,11 @@ export function GoalsDrawer({ current }: { current: Partial<Record<GoalKey, stri
                     }))
                   }
                   className={
-                    kind === "dollars" ? "pl-6" : kind === "percent" || kind === "minutes" ? "pr-8" : undefined
+                    kind === "dollars"
+                      ? "pl-6"
+                      : kind === "percent" || kind === "minutes" || kind === "hours"
+                        ? "pr-8"
+                        : undefined
                   }
                 />
                 {kind === "dollars" ? (
@@ -109,6 +113,11 @@ export function GoalsDrawer({ current }: { current: Partial<Record<GoalKey, stri
                 {kind === "minutes" ? (
                   <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-sm text-muted-foreground">
                     min
+                  </span>
+                ) : null}
+                {kind === "hours" ? (
+                  <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-sm text-muted-foreground">
+                    hrs
                   </span>
                 ) : null}
               </div>

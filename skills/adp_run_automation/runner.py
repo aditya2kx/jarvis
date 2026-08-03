@@ -1769,17 +1769,22 @@ def download_schedule(
     headed: bool = True,
     slow_mo_ms: int = 50,
     keep_open_on_error: bool = False,
+    force: bool = False,
 ) -> pathlib.Path:
     """Log in, open Team Schedule, scrape `weeks` of per-day totals, write JSON.
 
     Idempotency: if today's Schedule JSON is already on disk, skip the browser
     and return the cached path (avoids a duplicate ADP 2FA SMS on cron retries).
+    Pass ``force=True`` to always re-scrape (console Sync scheduled shifts).
     """
     from skills.adp_run_automation import schedule_backend as sb
 
     weeks = weeks or sb.DEFAULT_WEEKS
     expected = sb.DOWNLOADS_DIR / f"Schedule-{datetime.date.today().isoformat()}.json"
-    if is_fresh_download(expected, min_bytes=50):
+    if force and expected.exists():
+        expected.unlink()
+        print(f"[adp_schedule] force=True — removed cached {expected.name}")
+    if not force and is_fresh_download(expected, min_bytes=50):
         print(f"[adp_schedule] SKIP browser — fresh Schedule JSON already on disk: {expected}")
         return expected
 
@@ -2237,6 +2242,8 @@ def main() -> int:
                      help="Run without a visible browser window.")
     cli.add_argument("--keep-open", action="store_true",
                      help="On error, leave browser open for manual inspection.")
+    cli.add_argument("--force", action="store_true",
+                     help="(schedule) Re-scrape even if today's Schedule JSON is fresh.")
     cli.add_argument("--start", default=None,
                      help="(earnings only) Start date YYYY-MM-DD. Default: 90 days ago.")
     cli.add_argument("--end", default=None,
@@ -2254,6 +2261,7 @@ def main() -> int:
             store=args.store,
             headed=not args.headless,
             keep_open_on_error=args.keep_open,
+            force=args.force,
         )
     else:
         path = download_earnings(

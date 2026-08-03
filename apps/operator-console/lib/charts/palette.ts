@@ -36,6 +36,17 @@ export function chartColorAt(index: number): string {
   return palette[index % palette.length]!;
 }
 
+/** Labor hours / concurrent — actual vs scheduled (Issue #213). */
+export const LABOR_CHART_COLORS = {
+  parttimeActual: chartColorAt(0),
+  fulltimeActual: chartColorAt(1),
+  /** Distinct slate family so future schedule never looks like clocked hours. */
+  parttimeScheduled: "#64748b", // slate-500
+  fulltimeScheduled: "#94a3b8", // slate-400
+  /** Goal reference line — gold, not red (PT bars already use rose). */
+  goalLine: "#eab308", // yellow-500
+} as const;
+
 export function expenseCategoryColor(index: number, isOther = false): string {
   const palette = ACCOUNTING_COLORS.expenseCategories;
   if (isOther) return palette[palette.length - 1]!;

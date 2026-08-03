@@ -1,6 +1,6 @@
 import type { GoalKey } from "@/lib/bq/writes";
 
-export type GoalFieldKind = "dollars" | "percent" | "days" | "minutes" | "count";
+export type GoalFieldKind = "dollars" | "percent" | "days" | "minutes" | "count" | "hours";
 
 export interface GoalField {
   key: GoalKey;
@@ -67,6 +67,12 @@ export const GOAL_FIELDS: GoalField[] = [
     label: "Labor cost — monthly max",
     kind: "dollars",
     helpText: "Total labor $ monthly max, e.g. 18000",
+  },
+  {
+    key: "goal_labor_hours_week",
+    label: "Labor hours — weekly max",
+    kind: "hours",
+    helpText: "Absolute ADP clocked hours per week, e.g. 230. Labor page scales day÷7 / month×(days/7).",
   },
   {
     key: "goal_hourly_labor_pct_max",

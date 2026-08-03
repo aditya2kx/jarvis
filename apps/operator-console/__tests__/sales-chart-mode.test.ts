@@ -39,6 +39,7 @@ describe("parseCompare", () => {
     expect(parseCompare("1", "day")).toBe("day");
     expect(parseCompare("true", "week")).toBe("week");
     expect(parseCompare("1", "month")).toBe("month");
+    expect(parseCompare("1", "weekday")).toBe("week");
   });
 });
 

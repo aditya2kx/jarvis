@@ -331,6 +331,39 @@ def _day_range_hours(day: dict) -> float:
     return round(sum(parse_shift_range_hours(r) for r in (day.get("ranges") or [])), 2)
 
 
+def scale_hours_to_week_total(
+    day_hours: list[float],
+    week_total_hours: float,
+) -> list[float]:
+    """Scale wall-clock day hours down to ADP paid week total when needed.
+
+    ADP shift ranges are in/out wall clock (include unpaid meal). Per-employee
+    ``team-schedule-total`` is paid Regular after meal. Lindsay 5×8.5 wall = 42.5
+    vs ADP 40 → scale down.
+
+    Never scale *up*. If scraped days sum below the week total (incomplete
+    virtualization — e.g. only Mon–Tue of a 5-day week), inflating invents
+    20h days and blows up concurrent (hours÷span). Keep wall-clock instead.
+    """
+    if not day_hours:
+        return day_hours
+    wall = sum(day_hours)
+    if not (week_total_hours > 0) or wall <= 0:
+        return day_hours
+    if abs(wall - week_total_hours) < 0.02:
+        return [round(h, 2) for h in day_hours]
+    if wall < week_total_hours:
+        # Incomplete day set vs paid week total — do not invent hours.
+        return [round(h, 2) for h in day_hours]
+    scale = week_total_hours / wall
+    scaled = [round(h * scale, 2) for h in day_hours]
+    drift = round(week_total_hours - sum(scaled), 2)
+    if drift != 0 and scaled:
+        i = max(range(len(scaled)), key=lambda j: scaled[j])
+        scaled[i] = round(scaled[i] + drift, 2)
+    return scaled
+
+
 def cap_days_to_week_total(days: list[dict], week_total_hours: float) -> list[dict]:
     """Drop over-attributed day cells when sum(ranges) >> ADP week total.
 
@@ -380,7 +413,9 @@ def build_employee_schedule_records(weeks: list[dict]) -> list[dict]:
         }
 
     ``header_index`` is the Mon=0..Sun=6 column from bounding-box alignment.
-    Hours = sum of parsed shift ranges for that day (not the week total).
+    Hours start as wall-clock range spans, then scale to ADP paid
+    ``week_total_text`` (unpaid meal removed). Ranges stay wall-clock for
+    coverage swimlanes.
     """
     from skills.adp_run_automation.employee_aliases import derive_canonical
 
@@ -396,6 +431,8 @@ def build_employee_schedule_records(weeks: list[dict]) -> list[dict]:
             canonical = derive_canonical(raw_name)
             week_total = parse_hhmm_hours(emp.get("week_total_text"))
             days = cap_days_to_week_total(list(emp.get("days") or []), week_total)
+            # Collect parseable day slots first, then scale as a group.
+            pending: list[tuple[int, list, float]] = []
             for day in days:
                 idx = day.get("header_index")
                 if idx is None:
@@ -408,6 +445,19 @@ def build_employee_schedule_records(weeks: list[dict]) -> list[dict]:
                     continue
                 ranges = day.get("ranges") or []
                 hours = round(sum(parse_shift_range_hours(r) for r in ranges), 2)
+                if hours <= 0:
+                    continue
+                pending.append((idx_i, list(ranges), hours))
+            if not pending:
+                continue
+            scaled = scale_hours_to_week_total(
+                [h for _, _, h in pending],
+                week_total,
+            )
+            for (idx_i, ranges, wall), hours in zip(pending, scaled):
+                # Hard cap: never store paid hours above wall-clock for the day
+                # (defends concurrent + hours charts if scale logic regresses).
+                hours = round(min(hours, wall), 2) if wall > 0 else hours
                 if hours <= 0:
                     continue
                 d = (week_start + datetime.timedelta(days=idx_i)).isoformat()

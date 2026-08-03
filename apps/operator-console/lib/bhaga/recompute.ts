@@ -9,7 +9,10 @@ const REGION = process.env.BHAGA_REGION ?? "us-central1";
 const JOB = process.env.CLOUD_RUN_JOB_NAME_SHORT ?? "bhaga-daily-refresh";
 const JOB_RESOURCE = `projects/${PROJECT}/locations/${REGION}/jobs/${JOB}`;
 
-async function runJob(env: { name: string; value: string }[], label: string): Promise<void> {
+async function runJob(
+  env: { name: string; value: string }[],
+  label: string,
+): Promise<{ executionName: string }> {
   const auth = new GoogleAuth({
     scopes: ["https://www.googleapis.com/auth/cloud-platform"],
   });
@@ -37,6 +40,24 @@ async function runJob(env: { name: string; value: string }[], label: string): Pr
     const text = await res.text();
     throw new Error(`${label}: Cloud Run job run failed: HTTP ${res.status} ${text.slice(0, 400)}`);
   }
+  const json = (await res.json()) as {
+    name?: string;
+    metadata?: { name?: string; "@type"?: string };
+  };
+  // jobs.run returns an LRO; execution resource is in metadata.name.
+  const executionName =
+    (json.metadata?.name && json.metadata.name.includes("/executions/")
+      ? json.metadata.name
+      : null) ??
+    (json.name?.includes("/executions/") ? json.name : null) ??
+    "";
+  if (!executionName) {
+    // Fall back to operation name — caller may still poll scraped_at only.
+    console.warn(
+      `${label}: no execution name in run response; keys=${Object.keys(json).join(",")}`,
+    );
+  }
+  return { executionName: executionName || json.name || "" };
 }
 
 /** Env overrides matching scripts/trigger_dated_refresh.py recompute-only mode. */
@@ -87,4 +108,79 @@ export async function triggerModelRecompute(dates: string[]): Promise<string[]> 
 export async function triggerOrderRecoRefresh(store: string): Promise<void> {
   if (!store) throw new Error("triggerOrderRecoRefresh: store is required");
   await runJob(orderRecoOnlyEnv(store), `triggerOrderRecoRefresh(store=${store})`);
+}
+
+function adpScheduleOnlyEnv(store: string): { name: string; value: string }[] {
+  return [
+    { name: "BHAGA_ADP_SCHEDULE_ONLY", value: "1" },
+    { name: "BHAGA_IGNORE_HALT", value: "1" },
+    { name: "BHAGA_SKIP_SQUARE", value: "1" },
+    { name: "BHAGA_SKIP_KDS", value: "1" },
+    { name: "BHAGA_STORE", value: store },
+  ];
+}
+
+/**
+ * Enqueue ADP Team Schedule scrape + BQ upsert only (Issue #213).
+ * Job short-circuits via BHAGA_ADP_SCHEDULE_ONLY in daily_refresh.py.
+ * Returns the Cloud Run execution resource name for status polling.
+ */
+export async function triggerAdpScheduleSync(
+  store: string,
+): Promise<{ executionName: string }> {
+  if (!store) throw new Error("triggerAdpScheduleSync: store is required");
+  return runJob(adpScheduleOnlyEnv(store), `triggerAdpScheduleSync(store=${store})`);
+}
+
+export type CloudRunExecutionStatus = {
+  done: boolean;
+  succeeded: boolean | null;
+  failed: boolean;
+  message: string | null;
+};
+
+/** Poll a Cloud Run Job execution by full resource name. */
+export async function getCloudRunExecutionStatus(
+  executionName: string,
+): Promise<CloudRunExecutionStatus> {
+  if (!executionName || !executionName.includes("/executions/")) {
+    return { done: false, succeeded: null, failed: false, message: null };
+  }
+  const auth = new GoogleAuth({
+    scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+  });
+  const client = await auth.getClient();
+  const token = await client.getAccessToken();
+  if (!token.token) {
+    throw new Error("getCloudRunExecutionStatus: failed to obtain ADC access token");
+  }
+  const url = `https://run.googleapis.com/v2/${executionName}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token.token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `getCloudRunExecutionStatus: HTTP ${res.status} ${text.slice(0, 300)}`,
+    );
+  }
+  const json = (await res.json()) as {
+    completionTime?: string;
+    conditions?: { type?: string; state?: string; message?: string }[];
+    succeededCount?: number;
+    failedCount?: number;
+  };
+  const failedCount = Number(json.failedCount ?? 0);
+  const succeededCount = Number(json.succeededCount ?? 0);
+  const cond = (json.conditions ?? []).find((c) => c.type === "Completed");
+  const condFailed = (json.conditions ?? []).some(
+    (c) => c.type === "Completed" && (c.state === "CONDITION_FAILED" || c.state === "False"),
+  );
+  const done = Boolean(json.completionTime) || succeededCount > 0 || failedCount > 0 || condFailed;
+  const failed = failedCount > 0 || condFailed;
+  const succeeded = done && !failed && succeededCount > 0;
+  const message =
+    cond?.message ??
+    (failed ? "Cloud Run execution failed" : null);
+  return { done, succeeded, failed, message };
 }

@@ -21,6 +21,7 @@ import {
   RANGE_PRESETS,
   enumerateBucketStarts,
   formatBucket,
+  grainTitleLabel,
   priorWindow,
   wantsCustom,
 } from "@/lib/filters/range";
@@ -354,7 +355,7 @@ export default async function SalesPage({
           />
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">
-              {grain === "day" ? "Daily" : grain === "week" ? "Weekly" : "Monthly"} detail
+              {grainTitleLabel(grain)} detail
               {detailSuffix}
             </h2>
             <DataTable<SalesBySourceRow> columns={columns} data={tableRows} />
@@ -385,7 +386,7 @@ export default async function SalesPage({
           />
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">
-              {grain === "day" ? "Daily" : grain === "week" ? "Weekly" : "Monthly"} detail
+              {grainTitleLabel(grain)} detail
               {detailSuffix}
             </h2>
             <DataTable<SalesBySourceRow> columns={columns} data={tableRows} />

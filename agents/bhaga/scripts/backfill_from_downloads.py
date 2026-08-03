@@ -289,6 +289,23 @@ def main() -> int:
             if args.dry_run:
                 print(f"  DRY: would load {len(emp_bq)} scheduled-shift rows into BQ")
             elif emp_bq:
+                # MERGE alone leaves stale (date, employee) rows when someone is
+                # removed from a day (Lindsay Aug 6 → Aug 7). Purge every date
+                # covered by this scrape, then upsert the authoritative set.
+                from core.datastore import fq, get_client  # noqa: PLC0415
+                dates = sorted({r["date"] for r in emp_bq})
+                client = get_client()
+                if client is not None and dates:
+                    date_list = ", ".join(f"DATE '{d}'" for d in dates)
+                    del_job = client.query(
+                        f"DELETE FROM {fq('adp_scheduled_shifts')} "
+                        f"WHERE date IN ({date_list})"
+                    )
+                    del_job.result()
+                    print(
+                        f"  purged adp_scheduled_shifts for {len(dates)} dates "
+                        f"({dates[0]}→{dates[-1]}) before upsert"
+                    )
                 n = load_rows(
                     "adp_scheduled_shifts", emp_bq,
                     merge_keys=["date", "employee_id"],

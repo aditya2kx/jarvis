@@ -2180,6 +2180,57 @@ def _run_refresh(run_id: str) -> int:
         refresh_order_reco(args.store)
         return 0
 
+    # Console Labor "Sync scheduled shifts" (Issue #213): Team Schedule scrape
+    # + BQ load only — no timecard/earnings/model. Runs before completeness gate
+    # so it works mid-day. Forces a fresh Schedule JSON (deletes today's cache).
+    if _env_skip("BHAGA_ADP_SCHEDULE_ONLY"):
+        args.store = os.environ.get("BHAGA_STORE") or args.store
+        print(f"[adp-schedule-only] store={args.store} — schedule scrape + BQ only")
+        os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+        from skills.adp_run_automation.runner import download_schedule  # noqa: PLC0415
+        from skills.adp_run_automation import schedule_backend as _sb  # noqa: PLC0415
+        today_json = _sb.DOWNLOADS_DIR / f"Schedule-{_today_ct().isoformat()}.json"
+        if today_json.exists():
+            today_json.unlink()
+            print(f"[adp-schedule-only] removed cached {today_json.name} (force re-scrape)")
+        # Console / Cloud sync must never pop a Playwright window. Opt into a
+        # visible browser only for interactive debugging: BHAGA_ADP_HEADED=1.
+        headed = _env_skip("BHAGA_ADP_HEADED")
+        print(f"[adp-schedule-only] headed={headed} "
+              f"(set BHAGA_ADP_HEADED=1 for a visible browser)")
+        path = download_schedule(store=args.store, headed=headed, force=True)
+        print(f"[adp-schedule-only] wrote {path}")
+        # Same loader as nightly: schedule_backend.build_employee_schedule_records
+        # (paid hours scale-down only; never inflate sparse weeks — keeps avg
+        # concurrent ≈ headcount). Console concurrent uses wall-clock ranges.
+        bq_env = {**os.environ, "BHAGA_DATASTORE": "bigquery", "PYTHONUNBUFFERED": "1"}
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agents.bhaga.scripts.backfill_from_downloads",
+                "--store",
+                args.store,
+                "--skip",
+                "square",
+                "--skip",
+                "adp_shifts",
+                "--skip",
+                "adp_punches",
+                "--skip",
+                "adp_rates",
+                "--skip",
+                "adp_liability",
+                "--skip",
+                "square_rollup",
+            ],
+            cwd=str(PROJECT_ROOT),
+            check=True,
+            env=bq_env,
+        )
+        print("[adp-schedule-only] BQ upsert complete")
+        return 0
+
     # Self-clean any one-shot maintenance smart-retry scheduler for this date. The
     # run it triggered (or any stale one for the same date) is removed here so the
     # scheduler never re-fires. Cloud-only + best-effort (never blocks the run);

@@ -1769,17 +1769,22 @@ def download_schedule(
     headed: bool = True,
     slow_mo_ms: int = 50,
     keep_open_on_error: bool = False,
+    force: bool = False,
 ) -> pathlib.Path:
     """Log in, open Team Schedule, scrape `weeks` of per-day totals, write JSON.
 
     Idempotency: if today's Schedule JSON is already on disk, skip the browser
     and return the cached path (avoids a duplicate ADP 2FA SMS on cron retries).
+    Pass ``force=True`` to always re-scrape (console Sync scheduled shifts).
     """
     from skills.adp_run_automation import schedule_backend as sb
 
     weeks = weeks or sb.DEFAULT_WEEKS
     expected = sb.DOWNLOADS_DIR / f"Schedule-{datetime.date.today().isoformat()}.json"
-    if is_fresh_download(expected, min_bytes=50):
+    if force and expected.exists():
+        expected.unlink()
+        print(f"[adp_schedule] force=True — removed cached {expected.name}")
+    if not force and is_fresh_download(expected, min_bytes=50):
         print(f"[adp_schedule] SKIP browser — fresh Schedule JSON already on disk: {expected}")
         return expected
 
@@ -2162,6 +2167,66 @@ def download_adp_bundle(
             result["errors"]["adp_liability"] = f"{type(exc).__name__}: {exc}"
             print(f"[adp_bundle] liability FAILED: {type(exc).__name__}: {exc}")
 
+        # Wage-rate gap-fill via People → Payroll info (Issue #213). Runs every
+        # night there are punchers without a rate — not Mon/Tue-only. Soft-fail.
+        try:
+            from skills.adp_run_automation import pay_info_backend as pib  # noqa: PLC0415
+            from skills.store_profile import load_aliases, load_exclusions  # noqa: PLC0415
+
+            aliases = load_aliases(store)
+            excluded = load_exclusions(store).get("permanent") or []
+
+            tc_path = result.get("timecard_xlsx") or (
+                tc_expected if tc_fresh else None
+            )
+            er_path = result.get("earnings_xlsx") or (
+                er_expected if (include_earnings and er_fresh) else None
+            )
+            gap_names = pib.gap_names_from_session_files(
+                timecard_xlsx=tc_path,
+                earnings_xlsx=er_path,
+                employee_aliases=aliases,
+                excluded_employees=excluded,
+            )
+            # Also include lingering BQ gaps (e.g. not on tonight's timecard file).
+            try:
+                os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+                for n in pib.gap_names_from_bq(days=60):
+                    if n not in gap_names:
+                        gap_names.append(n)
+                gap_names = sorted(set(gap_names))
+            except Exception as exc:  # noqa: BLE001
+                print(f"[adp_bundle] pay_info BQ gap union skipped: {exc}")
+
+            if gap_names:
+                print(f"[adp_bundle] pay_info gap-fill for {len(gap_names)}: {gap_names}")
+                page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
+                page.wait_for_timeout(1500)
+                rates = pib.scrape_pay_info_rates(
+                    page, gap_names, dashboard_url=dashboard_url,
+                    excluded=set(excluded),
+                )
+                if rates:
+                    path = pib.write_pay_info_json(rates, store=store)
+                    result["pay_info_json"] = path
+                    print(f"[adp_bundle] pay_info OK → {path}")
+                else:
+                    print("[adp_bundle] pay_info: no rates scraped")
+            else:
+                print("[adp_bundle] pay_info: no wage-rate gaps")
+        except Exception as exc:  # noqa: BLE001
+            result["errors"]["adp_pay_info"] = f"{type(exc).__name__}: {exc}"
+            print(f"[adp_bundle] pay_info FAILED: {type(exc).__name__}: {exc}")
+            try:
+                ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                page.screenshot(
+                    path=str(pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
+                             / f"adp-bundle-pay-info-fail-{ts}.png"),
+                    full_page=True,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
         return result
 
 
@@ -2177,6 +2242,8 @@ def main() -> int:
                      help="Run without a visible browser window.")
     cli.add_argument("--keep-open", action="store_true",
                      help="On error, leave browser open for manual inspection.")
+    cli.add_argument("--force", action="store_true",
+                     help="(schedule) Re-scrape even if today's Schedule JSON is fresh.")
     cli.add_argument("--start", default=None,
                      help="(earnings only) Start date YYYY-MM-DD. Default: 90 days ago.")
     cli.add_argument("--end", default=None,
@@ -2194,6 +2261,7 @@ def main() -> int:
             store=args.store,
             headed=not args.headless,
             keep_open_on_error=args.keep_open,
+            force=args.force,
         )
     else:
         path = download_earnings(

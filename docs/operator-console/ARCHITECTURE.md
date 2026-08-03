@@ -163,8 +163,7 @@ flowchart TD
 | **Home** (Goal and Tracking) | labor/sales (`vw_model_labor_daily`), **Finance** bank in/out/cash flow (`vw_plaid_money_in_daily` + spend view, exclude-from-accounting), **Cost** taxonomy parents, **Labor** PT/FT/Total rates + bank payroll twin; prep p95; bases at risk; goals | Goals → `store_config` |
 | **Accounting** | Square net sales (`vw_model_labor_daily`), Plaid spend/in (`plaid_transactions`, spend + money-in views), `plaid_items`, taxonomy exclude | Plaid Link; category override; propose-rule; taxonomy exclude toggles |
 | **Sales** | `square_transactions` + `square_item_lines` via `salesByGrain` (Source multi-select; **Composition** bars with Aggregate/By-source stacks, or **Trend** lines with optional prior-period compare; unfiltered Composition totals match `vw_model_labor_daily`) | — |
-| **Labor** | `vw_model_labor_daily` / `_weekly`, **`laborForwardSummary`** + **`?lens=wage\|paid\|blended`** (Home no longer uses lenses — #189; `/labor` page still does) | — |
-| **Forecast** | `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions` | — |
+| **Labor** | `vw_model_labor_daily` / `_weekly`, `adp_shifts` + `adp_scheduled_shifts` (actual vs schedule, concurrent, coverage); Sync → `BHAGA_ADP_SCHEDULE_ONLY` | Sync scheduled shifts |
 | **Order Quality** | `vw_order_quality_daily`, `vw_kds_order_quality_by_source_daily` | — |
 | **Payroll & People** | `vw_model_payroll_period` (+ per-review), `training_shifts` (tip exemptions), `adp_shifts` | `training_shifts` (batch tip exemptions + recompute), **recognition bonuses (new table)**, `employee_aliases` |
 | **Inventory / Ordering** | `vw_order_assistant_table`, `vw_inventory_order_assistant`, `vw_order_reco_combined`, `vw_order_reco_next_dates`, `vw_inventory_base_runway`, `inventory_restock_schedule/orders` | `inventory_restock_schedule`, `inventory_restock_orders` (+ trigger `refresh_order_reco`), `order_reco_max_tubs` → `store_config` |
@@ -370,7 +369,7 @@ two read clients of one warehouse, not two warehouses.
 
 ## 12. Date range + aggregation
 
-Every Performance screen (Sales, Labor, Forecast, Order Quality) shares one
+Every Performance screen (Sales, Labor, Order Quality) shares one
 range/grain contract from `lib/filters/range.ts` + `lib/filters/period.ts`:
 
 - **Cross-page persistence**: Period is stored in cookie `oc_range` (and
@@ -437,22 +436,19 @@ aggregate percentile table and the per-order drill-down, matching Grafana's
 "one filter row governs every panel on the tab" behavior instead of the two
 diverging independently.
 
-## 14. Forward-looking labor cost (Issue #166)
+## 14. Labor page (Issue #213)
 
-Home's **Labor** group and the Labor page summary card share
-`lib/bq/queries.ts::laborForwardSummary` → `lib/kpi/labor-forward.ts::computeLaborForwardSummary`,
-selected via mutually exclusive **lenses** (`?lens=wage|paid|blended`, default `wage`)
-in `lib/kpi/labor-lens.ts::viewForLaborLens`.
+`/labor` shows historical ADP hours plus forward ADP Team Schedule (no forecast-model numbers):
 
-| Lens | Scope | Cost numerator | Sales denominator |
-|---|---|---|---|
-| **Wage** | Completed days only | `hourly_labor_cost` / `total_labor_cost` from `vw_model_labor_daily` for dates in the Period **strictly before** Chicago today | `net_sales` over those same days |
-| **Paid payroll** | Completed days only | Wage × `(1 + labor_burden_pct)` (~10% ER burden) | same as Wage |
-| **Blended (schedule)** | Completed + remaining scheduled days | completed wage + (`scheduled_hours` × avg PT wage) + (trailing-28d avg FT $/open-day × #scheduled forward days); **no burden** | completed sales + (`forecast_orders` × AOV) for dates ≥ Chicago today in the Period **with `scheduled_hours > 0` only** (unscheduled forward days omitted from both cost and sales) |
+- **Scheduled vs actual** cut at yesterday CT; Sync scheduled shifts runs `BHAGA_ADP_SCHEDULE_ONLY` (local or Cloud Run) → purge-before-upsert into `adp_scheduled_shifts`.
+- **Avg concurrent** uses per-bucket first→last span (one FT ≈ 1); schedule concurrent from wall-clock ranges.
 
-- Goals: `goal_hourly_labor_pct_max` default **20%**, `goal_labor_pct_max` default **25%** (of net sales); editable on Home for the Wage lens.
-- Schedule hours are **part-time oriented** (ADP Team Schedule scrape → `adp_scheduled_daily` / `adp_scheduled_shifts`); FT is approximated from trailing actuals because the schedule excludes the salaried manager.
-- Wage basis is **wage-only** (hours × rate). **Paid** = wage × `(1 + labor_burden_pct)` when `store_config.labor_burden_pct` is set (>0). Seeded from ADP Payroll Liability: **`0.10`** (see `docs/operator-console/adp-forward-labor-spike.md`). Unset/`0` → Paid lens shows unavailable.
-- Forward PT $ prefers `Σ(adp_scheduled_shifts.hours × adp_wage_rates.rate)` when employee schedule rows exist; falls back to aggregate `scheduled_hours × avg PT wage`.
-- `/labor` under Blended shows **Scheduled hours per person — forward (ADP)** and a dashed blended PT % series on the labor-% chart.
-- `bhaga.adp_earnings` has employee pay lines only (Regular, OT, tips, bonus…); no employer-tax scrape exists. A dedicated ADP tax/burden pull is a follow-up if RUN's Tax Center numbers must replace the multiplier.
+- **L1** one bar chart: Period + Aggregation; View Aggregate | PT/FT;
+  client toggle Hours | % of Square net sales (`labor $ / net_sales`).
+- **L3** hours-per-person bar for the same Period (`adp_shifts`).
+- Forecast nav/page removed from Operator Console; BQ/Grafana forecast pipeline kept.
+- Forward Wage/Paid/Blended lenses and `laborForwardSummary` are no longer
+  surfaced on the Labor page (scheduled-shifts UI deferred).
+
+Legacy spike notes for ADP schedule / burden: `docs/operator-console/adp-forward-labor-spike.md`.
+

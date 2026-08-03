@@ -19,6 +19,9 @@ export const MUTATING_ACTIONS = [
   { name: "addTrainingShiftAction", page: "payroll", heavy: null },
   { name: "addRecognitionBonusAction", page: "payroll", heavy: null },
   { name: "applyTipExemptionsAction", page: "payroll", heavy: "model-recompute" },
+  // Labor
+  { name: "syncScheduledShiftsAction", page: "labor", heavy: "adp-schedule" },
+  { name: "pollScheduledShiftsSyncAction", page: "labor", heavy: null },
   // Accounting
   { name: "createPlaidLinkTokenAction", page: "accounting", heavy: null },
   { name: "exchangePlaidPublicTokenAction", page: "accounting", heavy: "plaid-sync" },

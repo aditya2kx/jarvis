@@ -34,6 +34,8 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    `BHAGA_DATASTORE=bigquery`): maps ADP parse-output dicts through `map_*` functions and calls
    `load_rows` (MERGE upsert). Square data is written directly by step 2 (no download file). BQ is
    the **single source of truth**. Handles: `adp_shifts`, `adp_punches`, `adp_wage_rates`,
+   (dual-source Issue #213: Earnings Regular + People→Payroll-info gap-fill via
+   `skills/adp_run_automation/pay_info_backend.py`),
    `adp_earnings`, `adp_scheduled_daily` (per-day scheduled hours, parsed from `Schedule-*.json`
    Team Schedule footer), `adp_scheduled_shifts` (per-employee day shifts from the same JSON
    `employee_rows`), `adp_payroll_liability` (employer tax from Payroll Liability report),

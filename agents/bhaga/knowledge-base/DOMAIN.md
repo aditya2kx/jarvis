@@ -91,17 +91,24 @@ functions of `update_model_sheet.py` / `forecast.py` for the labor / tip-alloc /
 `(date, employee_id, punch_idx_in_day)`. Source: `shift_backend.raw_punches`. Same columns as
 `shifts` minus totals, plus `punch_idx_in_day` (0-based punch order within the day).
 
-**`wage_rates`** — one row per **employee**. Key: `(employee_id,)`. Source:
-`compensation_backend.compensation` (from the "Earnings and Hours V1" ADP report).
+**`wage_rates`** — one row per **employee**. Key: `(employee_id,)`. Dual source
+(Issue #213):
+
+1. **Primary:** `compensation_backend.infer_wage_rates` from Earnings & Hours V1
+   Regular lines (`rate_source=earnings`) — available after payroll.
+2. **Gap-fill:** People → Payroll info → Hourly pay rate via
+   `pay_info_backend` (`rate_source=pay_info`) for punchers missing a rate
+   before their first paycheck. Earnings Regular always overwrites pay_info.
 
 | Field | Meaning |
 |---|---|
-| `wage_rate_dollars` | most recent Regular hourly rate |
+| `wage_rate_dollars` | most recent hourly rate (earnings Regular or pay_info) |
 | `ot_rate_dollars` | overtime rate (usually 1.5×) |
 | `is_salaried` | salaried flag (→ fulltime bucket). Nobody today. |
 | `multi_rate` | employee has >1 active rate |
 | `excluded_from_labor_pct` | explicit fulltime-bucket override from store profile (the manager) |
-| `rate_history_json` | full rate-change audit trail |
+| `rate_source` | `earnings` \| `pay_info` \| `roster_stub` |
+| `rate_history_json` / `earnings_json` | full rate-change audit trail |
 | `raw_employee_names_json` | every ADP spelling seen for this person |
 
 ### B. `bhaga_square_raw` — sales & operations source of truth (from Square)
@@ -251,7 +258,8 @@ translation.
 - **`fulltime_hours` / `fulltime_labor_cost`** — manager/salaried hours and cost.
 - **`total_labor_cost`** — `hourly + fulltime`.
 - Per-shift cost = `regular_hours × rate + ot_hours × (ot_rate or rate×1.5) + doubletime_hours ×
-  rate × 2`. Employees missing a wage row (new hires) fall back to the **median hourly rate**.
+  rate × 2`. Employees missing a wage row (new hires) fall back to the **median hourly rate**
+  until `pay_info` gap-fill lands a rate (Issue #213); median remains last resort.
   This is **wage-only** employer cost (no FICA/FUTA/SUTA/workers' comp). Operator Console
   Issue #166 optionally overlays an **all-in** view via `store_config.labor_burden_pct`
   (fraction; recommended start `0.13`) without changing the warehouse columns.

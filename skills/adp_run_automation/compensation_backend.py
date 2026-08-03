@@ -347,6 +347,7 @@ def infer_wage_rates(
         bucket["rate_history"] = rh
         bucket["ot_rate_history"] = oh
         bucket["raw_employee_names"] = sorted(bucket["raw_employee_names"])
+        bucket["rate_source"] = "earnings" if rh else ("roster_stub" if not bucket.get("_has_any_earnings") else "earnings")
         bucket.pop("_has_any_earnings", None)
         out.append(bucket)
 

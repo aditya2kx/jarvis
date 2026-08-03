@@ -250,6 +250,7 @@ def map_adp_wage_rate(rec: dict, profile: dict) -> dict:
         "raw_employee_names_json": raw_names,
         "earnings_json": earnings,
         "scraped_at_utc": _parse_timestamp(rec.get("scraped_at_utc")),
+        "rate_source": str(rec.get("rate_source") or "earnings"),
     }
 
 

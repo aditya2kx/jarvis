@@ -289,6 +289,23 @@ def main() -> int:
             if args.dry_run:
                 print(f"  DRY: would load {len(emp_bq)} scheduled-shift rows into BQ")
             elif emp_bq:
+                # MERGE alone leaves stale (date, employee) rows when someone is
+                # removed from a day (Lindsay Aug 6 → Aug 7). Purge every date
+                # covered by this scrape, then upsert the authoritative set.
+                from core.datastore import fq, get_client  # noqa: PLC0415
+                dates = sorted({r["date"] for r in emp_bq})
+                client = get_client()
+                if client is not None and dates:
+                    date_list = ", ".join(f"DATE '{d}'" for d in dates)
+                    del_job = client.query(
+                        f"DELETE FROM {fq('adp_scheduled_shifts')} "
+                        f"WHERE date IN ({date_list})"
+                    )
+                    del_job.result()
+                    print(
+                        f"  purged adp_scheduled_shifts for {len(dates)} dates "
+                        f"({dates[0]}→{dates[-1]}) before upsert"
+                    )
                 n = load_rows(
                     "adp_scheduled_shifts", emp_bq,
                     merge_keys=["date", "employee_id"],
@@ -353,32 +370,37 @@ def main() -> int:
 
             # Roster stubs: ensure employees absent from current ADP download
             # still have a wage_rates row (covers former employees whose
-            # historical shifts are in the data window).
-            from skills.store_profile import load_employee_roster
-            roster = load_employee_roster(args.store)
-            rate_names = {r["employee_name"] for r in rates}
-            existing_rates = read_raw_adp_rates(adp_raw_sid, account=google_account)
-            existing_ids = {r["employee_id"] for r in existing_rates}
-            excluded_set = set(excluded)
-            roster_stubs = 0
-            for rec in roster:
-                canonical = rec["canonical_name"]
-                if canonical not in rate_names and canonical not in existing_ids:
-                    rates.append({
-                        "employee_id": canonical,
-                        "employee_name": canonical,
-                        "wage_rate_dollars": None,
-                        "ot_rate_dollars": None,
-                        "is_salaried": False,
-                        "multi_rate": False,
-                        "rate_history": [],
-                        "ot_rate_history": [],
-                        "excluded_from_labor_pct": canonical in excluded_set,
-                        "raw_employee_names": [],
-                    })
-                    roster_stubs += 1
-            if roster_stubs:
-                print(f"  added {roster_stubs} roster stub(s)")
+            # historical shifts are in the data window). Soft-fail when Sheets
+            # roster/config is unavailable (CI / laptop without config.yaml).
+            try:
+                from skills.store_profile import load_employee_roster
+                roster = load_employee_roster(args.store)
+                rate_names = {r["employee_name"] for r in rates}
+                existing_rates = read_raw_adp_rates(adp_raw_sid, account=google_account)
+                existing_ids = {r["employee_id"] for r in existing_rates}
+                excluded_set = set(excluded)
+                roster_stubs = 0
+                for rec in roster:
+                    canonical = rec["canonical_name"]
+                    if canonical not in rate_names and canonical not in existing_ids:
+                        rates.append({
+                            "employee_id": canonical,
+                            "employee_name": canonical,
+                            "wage_rate_dollars": None,
+                            "ot_rate_dollars": None,
+                            "is_salaried": False,
+                            "multi_rate": False,
+                            "rate_history": [],
+                            "ot_rate_history": [],
+                            "excluded_from_labor_pct": canonical in excluded_set,
+                            "raw_employee_names": [],
+                            "rate_source": "roster_stub",
+                        })
+                        roster_stubs += 1
+                if roster_stubs:
+                    print(f"  added {roster_stubs} roster stub(s)")
+            except Exception as exc:  # noqa: BLE001
+                print(f"WARN: roster stubs skipped: {type(exc).__name__}: {exc}")
 
             bq_rows = [map_adp_wage_rate(r, profile) for r in rates]
             if args.dry_run:
@@ -419,6 +441,32 @@ def main() -> int:
                 )
                 print(f"  adp_earnings (BQ): {n} rows upserted")
                 summaries.append({"table": "adp_earnings", "rows": n})
+
+    # ── ADP Payroll-info gap-fill rates (Issue #213) ───────────────
+    if "adp_rates" not in args.skip:
+        pay_info_json = _newest("PayInfoRates*.json")
+        if pay_info_json:
+            print(f"# loading ADP pay_info rates: {pay_info_json.name}")
+            try:
+                from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415
+                    write_pay_info_rates_bq,
+                )
+                payload = json.loads(pay_info_json.read_text())
+                rates = payload.get("rates") or []
+                if args.dry_run:
+                    print(f"  DRY: would MERGE {len(rates)} pay_info rate rows")
+                else:
+                    n = write_pay_info_rates_bq(rates, dry_run=False)
+                    summaries.append({"table": "adp_wage_rates_pay_info", "rows": n})
+                    try:
+                        from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415
+                            assert_no_missing_puncher_rates,
+                        )
+                        assert_no_missing_puncher_rates(days=60)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"WARN: wage gap assert failed: {type(exc).__name__}: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"WARN: pay_info rate load failed: {type(exc).__name__}: {exc}")
 
     # ── Square transactions + daily rollup ────────────────────────
     if "square" not in args.skip:

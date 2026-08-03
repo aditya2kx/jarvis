@@ -79,6 +79,250 @@ export function laborByGrain(win: DateWindow, grain: Grain): Promise<LaborDailyR
   );
 }
 
+/** Hours worked per person over the console Period (ADP shifts; Issue #213 L3). */
+export interface LaborHoursPerPersonRow {
+  employee: string;
+  hours: number;
+  [key: string]: unknown;
+}
+
+export function laborHoursPerPerson(win: DateWindow): Promise<LaborHoursPerPersonRow[]> {
+  return q<LaborHoursPerPersonRow>(
+    `SELECT
+       COALESCE(NULLIF(TRIM(canonical_name), ''), employee_id) AS employee,
+       SUM(total_hours) AS hours
+     FROM ${fq("adp_shifts")}
+     WHERE date BETWEEN @start AND @end
+     GROUP BY employee
+     HAVING hours > 0
+     ORDER BY hours DESC`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+/**
+ * Average concurrent staff on each day (Issue #213).
+ *
+ * Per bucket (PT / FT): Σ hours ÷ (first in → last out) **within that bucket**
+ * so one full-timer ≈ 1.0, not diluted by a longer store-open span from PT.
+ * Total still uses the all-staff span. Week/month = AVG of daily values.
+ * Matches scheduled concurrent (`aggregateScheduledDays` wall-clock ranges).
+ */
+export interface LaborConcurrentRow {
+  date: string;
+  parttime_concurrent: number;
+  fulltime_concurrent: number;
+  total_concurrent: number;
+  [key: string]: unknown;
+}
+
+export function laborConcurrentByGrain(
+  win: DateWindow,
+  grain: Grain,
+): Promise<LaborConcurrentRow[]> {
+  const bucket = bucketSql(grain, "date");
+  return q<LaborConcurrentRow>(
+    `WITH shifts AS (
+       SELECT
+         s.date,
+         s.total_hours,
+         SAFE.PARSE_TIME('%H:%M', s.in_time) AS tin,
+         SAFE.PARSE_TIME('%H:%M', s.out_time) AS tout,
+         IF(
+           IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
+           'fulltime',
+           'parttime'
+         ) AS labor_bucket
+       FROM ${fq("adp_shifts")} s
+       LEFT JOIN ${fq("adp_wage_rates")} w
+         ON w.employee_id = s.employee_id
+       WHERE s.date BETWEEN @start AND @end
+         AND IFNULL(s.total_hours, 0) > 0
+     ),
+     daily AS (
+       SELECT
+         date,
+         SUM(IF(labor_bucket = 'parttime', total_hours, 0)) AS pt_hours,
+         SUM(IF(labor_bucket = 'fulltime', total_hours, 0)) AS ft_hours,
+         SAFE_DIVIDE(
+           TIME_DIFF(
+             MAX(IF(labor_bucket = 'parttime', tout, NULL)),
+             MIN(IF(labor_bucket = 'parttime', tin, NULL)),
+             SECOND
+           ),
+           3600.0
+         ) AS pt_span,
+         SAFE_DIVIDE(
+           TIME_DIFF(
+             MAX(IF(labor_bucket = 'fulltime', tout, NULL)),
+             MIN(IF(labor_bucket = 'fulltime', tin, NULL)),
+             SECOND
+           ),
+           3600.0
+         ) AS ft_span,
+         SAFE_DIVIDE(TIME_DIFF(MAX(tout), MIN(tin), SECOND), 3600.0) AS all_span
+       FROM shifts
+       WHERE tin IS NOT NULL AND tout IS NOT NULL AND tout > tin
+       GROUP BY date
+     ),
+     daily_avg AS (
+       SELECT
+         date,
+         SAFE_DIVIDE(pt_hours, pt_span) AS parttime_concurrent,
+         SAFE_DIVIDE(ft_hours, ft_span) AS fulltime_concurrent,
+         SAFE_DIVIDE(pt_hours + ft_hours, all_span) AS total_concurrent
+       FROM daily
+       WHERE all_span > 0
+     )
+     SELECT
+       ${bucket} AS date,
+       AVG(parttime_concurrent) AS parttime_concurrent,
+       AVG(fulltime_concurrent) AS fulltime_concurrent,
+       AVG(total_concurrent) AS total_concurrent
+     FROM daily_avg
+     GROUP BY date
+     ORDER BY date`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+/**
+ * Scheduled hours by Aggregation grain for today+ (ADP Team Schedule).
+ * PT/FT from adp_wage_rates (salaried / excluded_from_labor_pct → FT).
+ * No net sales / labor % — callers must not invent %.
+ */
+export interface LaborScheduledHoursRow {
+  date: string;
+  parttime_hours: number;
+  fulltime_hours: number;
+  total_hours: number;
+  [key: string]: unknown;
+}
+
+export function laborScheduledHoursByGrain(
+  win: DateWindow,
+  grain: Grain,
+): Promise<LaborScheduledHoursRow[]> {
+  const bucket = bucketSql(grain, "s.date");
+  return q<LaborScheduledHoursRow>(
+    `SELECT
+       ${bucket} AS date,
+       SUM(IF(
+         IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
+         0,
+         s.scheduled_hours
+       )) AS parttime_hours,
+       SUM(IF(
+         IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
+         s.scheduled_hours,
+         0
+       )) AS fulltime_hours,
+       SUM(s.scheduled_hours) AS total_hours
+     FROM ${fq("adp_scheduled_shifts")} s
+     LEFT JOIN ${fq("adp_wage_rates")} w
+       ON w.employee_id = s.employee_id
+     WHERE s.date BETWEEN @start AND @end
+       AND s.date >= CURRENT_DATE('America/Chicago')
+       AND IFNULL(s.scheduled_hours, 0) > 0
+     GROUP BY date
+     ORDER BY date`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+/** Day-level scheduled rows for concurrent + coverage swimlanes (ranges in TS). */
+export interface LaborScheduledShiftDayRow {
+  date: string;
+  employee: string;
+  labor_bucket: string;
+  scheduled_hours: number;
+  shift_ranges_json: string | null;
+  [key: string]: unknown;
+}
+
+export function laborScheduledShiftDays(
+  win: DateWindow,
+): Promise<LaborScheduledShiftDayRow[]> {
+  return q<LaborScheduledShiftDayRow>(
+    `SELECT
+       CAST(s.date AS STRING) AS date,
+       COALESCE(NULLIF(TRIM(s.employee_name), ''), s.employee_id) AS employee,
+       IF(
+         IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
+         'fulltime',
+         'parttime'
+       ) AS labor_bucket,
+       s.scheduled_hours,
+       s.shift_ranges_json
+     FROM ${fq("adp_scheduled_shifts")} s
+     LEFT JOIN ${fq("adp_wage_rates")} w
+       ON w.employee_id = s.employee_id
+     WHERE s.date BETWEEN @start AND @end
+       AND s.date >= CURRENT_DATE('America/Chicago')
+       AND IFNULL(s.scheduled_hours, 0) > 0
+     ORDER BY date, employee`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+/** Day-level clocked shifts for coverage swimlanes (Issue #213). */
+export interface LaborActualShiftDayRow {
+  date: string;
+  employee: string;
+  labor_bucket: string;
+  in_time: string | null;
+  out_time: string | null;
+  total_hours: number;
+  [key: string]: unknown;
+}
+
+export function laborActualShiftDays(
+  win: DateWindow,
+): Promise<LaborActualShiftDayRow[]> {
+  return q<LaborActualShiftDayRow>(
+    `SELECT
+       CAST(s.date AS STRING) AS date,
+       COALESCE(NULLIF(TRIM(s.canonical_name), ''), s.employee_id) AS employee,
+       IF(
+         IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
+         'fulltime',
+         'parttime'
+       ) AS labor_bucket,
+       s.in_time,
+       s.out_time,
+       s.total_hours
+     FROM ${fq("adp_shifts")} s
+     LEFT JOIN ${fq("adp_wage_rates")} w
+       ON w.employee_id = s.employee_id
+     WHERE s.date BETWEEN @start AND @end
+       AND s.date < CURRENT_DATE('America/Chicago')
+       AND IFNULL(s.total_hours, 0) > 0
+     ORDER BY date, employee`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+/** Max scraped_at for schedule tables (Sync button freshness). */
+export function adpScheduleScrapedAt(): Promise<string | null> {
+  return q<{ scraped: string | null }>(
+    `SELECT CAST(MAX(scraped_at_utc) AS STRING) AS scraped
+     FROM ${fq("adp_scheduled_shifts")}`,
+  ).then((rows) => rows[0]?.scraped ?? null);
+}
+
+/** Latest calendar date with scheduled hours (today+), for chart horizon. */
+export function adpScheduleHorizonEnd(): Promise<string | null> {
+  return q<{ horizon: string | null }>(
+    `SELECT CAST(MAX(date) AS STRING) AS horizon
+     FROM ${fq("adp_scheduled_shifts")}
+     WHERE date >= CURRENT_DATE('America/Chicago')
+       AND IFNULL(scheduled_hours, 0) > 0`,
+  ).then((rows) => {
+    const h = rows[0]?.horizon;
+    return h ? String(h).slice(0, 10) : null;
+  });
+}
+
 // Sales page source filter (#198). Reads square_transactions (+ item_lines for
 // items_sold) so we can filter/group by Square `source`. Unfiltered totals
 // reconcile to vw_model_labor_daily. `sources === null` means all sources;

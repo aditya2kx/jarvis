@@ -290,6 +290,7 @@ export const GOAL_KEYS = [
   "goal_total_cost_monthly",
   "goal_hourly_labor_pct_max",
   "goal_labor_pct_max",
+  "goal_labor_hours_week",
   "goal_kds_p95_min",
   "goal_bases_at_risk_max",
   "goal_food_cost_pct_max",

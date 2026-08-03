@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS `jarvis-bhaga-prod.bhaga.adp_scheduled_shifts` (
   date                DATE NOT NULL,
   employee_id         STRING NOT NULL,  -- canonical name key (alias map)
   employee_name       STRING,
-  scheduled_hours     FLOAT64,          -- decimal, from shift ranges
+  scheduled_hours     FLOAT64,          -- ADP paid hours (week total scaled; not wall-clock)
   shift_ranges_json   STRING,           -- optional audit ["1:30 PM - 8:30 PM"]
   week_start          DATE,
   scraped_at_utc      TIMESTAMP,

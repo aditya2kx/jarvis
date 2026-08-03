@@ -2,7 +2,6 @@ import {
   Home,
   LineChart,
   Clock,
-  TrendingUp,
   ShieldCheck,
   Wallet,
   PackageSearch,
@@ -36,7 +35,6 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/sales", label: "Sales", icon: LineChart },
       { href: "/labor", label: "Labor", icon: Clock },
-      { href: "/forecast", label: "Forecast", icon: TrendingUp },
       { href: "/order-quality", label: "Order Quality", icon: ShieldCheck },
       { href: "/accounting", label: "Accounting", icon: Landmark },
     ],

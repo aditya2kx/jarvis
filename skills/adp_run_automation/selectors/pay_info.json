@@ -1,0 +1,18 @@
+{
+  "description": "ADP RUN People → Payroll info → Hourly pay rate (Issue #213 gap-fill)",
+  "nav": {
+    "people_btn": "[data-test-id=\"People-btn\"]",
+    "payroll_tab": "#EMPLOYEE_PAYROLL",
+    "manage_pay_info_text": "Manage pay info",
+    "payroll_info_text": "Payroll info"
+  },
+  "parse": {
+    "hourly_pay_rate": "Hourly pay rate $N.NNNN",
+    "added_on": "Added on MM/DD/YYYY"
+  },
+  "notes": [
+    "Earnings & Hours is authoritative after paycheck (rate_source=earnings).",
+    "Payroll info fills punchers with NULL rates before first check (rate_source=pay_info).",
+    "Directory search expects 'Last, First'; Timecard may use 'Last First' — convert via directory_search_name."
+  ]
+}

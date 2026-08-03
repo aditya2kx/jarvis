@@ -1,21 +1,57 @@
-import { laborByGrain, laborForwardSummary, laborProjectedByDay, scheduledHoursPerPerson, storeConfig, payrollPeriod } from "@/lib/bq/queries";
+import {
+  adpScheduleHorizonEnd,
+  adpScheduleScrapedAt,
+  laborActualShiftDays,
+  laborByGrain,
+  laborConcurrentByGrain,
+  laborHoursPerPerson,
+  laborScheduledHoursByGrain,
+  laborScheduledShiftDays,
+  storeConfig,
+} from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
-import { LineChartCard } from "@/components/charts/LineChartCard";
 import { BarChartCard } from "@/components/charts/BarChartCard";
-import { DataTable } from "@/components/tables/DataTable";
+import { LaborHoursChart } from "@/components/labor/LaborHoursChart";
+import { LaborConcurrentChart } from "@/components/labor/LaborConcurrentChart";
+import { LaborCoveragePanel } from "@/components/labor/LaborCoveragePanel";
+import { SyncScheduledShiftsButton } from "@/components/labor/SyncScheduledShiftsButton";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { FilterSelect } from "@/components/filters/FilterSelect";
-import { FilterPills } from "@/components/filters/FilterPills";
+import { FilterMultiSelect } from "@/components/filters/FilterMultiSelect";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
-import { LaborForwardSummaryCard } from "@/components/kpi/LaborForwardSummary";
-import { RANGE_PRESETS, formatBucket, wantsCustom } from "@/lib/filters/range";
+import {
+  RANGE_PRESETS,
+  chicagoTodayIso,
+  enumerateBucketStarts,
+  formatBucket,
+  wantsCustom,
+} from "@/lib/filters/range";
 import { resolvePageGrain, resolvePageRange } from "@/lib/filters/period";
-import { LABOR_LENS_OPTIONS, parseLaborLens, periodDayCount } from "@/lib/kpi/labor-lens";
-import type { ColumnDef } from "@tanstack/react-table";
-import type { LaborDailyRow, LaborForwardSummary } from "@/lib/bq/queries";
+import {
+  LABOR_TYPE_OPTIONS,
+  parseLaborTypes,
+  serializeLaborTypes,
+} from "@/lib/filters/labor-type";
+import {
+  actualPunchWindow,
+  laborChartWindow,
+  periodIncludesToday,
+  scheduledShiftWindow,
+} from "@/lib/labor/actual-schedule-windows";
+import {
+  aggregateScheduledDays,
+  rollConcurrentToGrain,
+} from "@/lib/labor/schedule-aggregate";
+import type {
+  LaborActualShiftDayRow,
+  LaborConcurrentRow,
+  LaborDailyRow,
+  LaborScheduledHoursRow,
+  LaborScheduledShiftDayRow,
+} from "@/lib/bq/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -24,170 +60,216 @@ function goalFromConfig(rows: { key: string; value: string }[], key: string): nu
   return row ? Number(row.value) : undefined;
 }
 
+function isoKey(d: string | Date): string {
+  return typeof d === "string" ? d.slice(0, 10) : dateSortKey(d).slice(0, 10);
+}
+
 export default async function LaborPage({
   searchParams,
 }: {
-  searchParams: Promise<{ range?: string; from?: string; to?: string; grain?: string; lens?: string }>;
+  searchParams: Promise<{
+    range?: string;
+    from?: string;
+    to?: string;
+    grain?: string;
+    labor_type?: string;
+    day?: string;
+  }>;
 }) {
   const sp = await searchParams;
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
   const grain = await resolvePageGrain(sp.grain);
-  const lens = parseLaborLens(sp.lens);
+  const laborTypes = parseLaborTypes(sp.labor_type);
   const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
-  const dateParams: Record<string, string> = win.preset === "custom" ? { from: win.start, to: win.end } : {};
-  const periodDays = periodDayCount(win.start, win.end);
+  const dateParams: Record<string, string> =
+    win.preset === "custom" ? { from: win.start, to: win.end } : {};
+  const laborTypeParam = serializeLaborTypes(laborTypes);
+  const laborTypeExtra: Record<string, string> = laborTypeParam
+    ? { labor_type: laborTypeParam }
+    : {};
+  const dayExtra: Record<string, string> = sp.day
+    ? { day: sp.day.slice(0, 10) }
+    : {};
 
+  const punchWin = actualPunchWindow(win);
+  const includesToday = periodIncludesToday(win);
+  let chartWin = win;
   let rows: LaborDailyRow[] = [];
-  let goalLaborPct: number | undefined;
+  let concurrentRows: LaborConcurrentRow[] = [];
+  let scheduledHoursRows: LaborScheduledHoursRow[] = [];
+  let scheduledConcurrentByBucket: {
+    date: string;
+    parttime_concurrent: number | null;
+    fulltime_concurrent: number | null;
+    total_concurrent: number | null;
+  }[] = [];
+  let goalLaborHoursWeek: number | undefined;
   let hoursPerPerson: { employee: string; hours: number }[] = [];
-  let scheduledPerPerson: { employee: string; hours: number; cost: number | null }[] = [];
-  let forward: LaborForwardSummary | undefined;
-  let projectedByDay: { date: string; projected_pt_pct: number | null }[] = [];
-  let burdenPct = 0;
+  let scheduleScrapedAt: string | null = null;
+  let coverageActuals: LaborActualShiftDayRow[] = [];
+  let coverageScheduled: LaborScheduledShiftDayRow[] = [];
   let error: string | undefined;
   try {
-    const [labor, config, period, fwd, schedPeople, projDays] = await Promise.all([
-      laborByGrain(win, grain),
+    // When Period includes today, extend charts through the latest ADP scheduled
+    // date (any Aggregation) — not just Period end.
+    const scheduleHorizonEnd = includesToday
+      ? await adpScheduleHorizonEnd().catch(() => null)
+      : null;
+    const todayIso = chicagoTodayIso();
+    chartWin = laborChartWindow(win, todayIso, scheduleHorizonEnd);
+    const schedWin = scheduledShiftWindow(win, todayIso, scheduleHorizonEnd);
+    const showSchedule = includesToday && schedWin != null;
+
+    const [
+      labor,
+      config,
+      perPerson,
+      concurrent,
+      schedHours,
+      schedDays,
+      scraped,
+      actualShiftDays,
+    ] = await Promise.all([
+      punchWin ? laborByGrain(punchWin, grain) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
-      payrollPeriod(1),
-      laborForwardSummary(win, DEFAULT_STORE),
-      scheduledHoursPerPerson(win).catch(() => []),
-      laborProjectedByDay(win).catch(() => []),
+      laborHoursPerPerson(win).catch(() => []),
+      punchWin ? laborConcurrentByGrain(punchWin, grain).catch(() => []) : Promise.resolve([]),
+      showSchedule && schedWin
+        ? laborScheduledHoursByGrain(schedWin, grain).catch(() => [])
+        : Promise.resolve([]),
+      showSchedule && schedWin
+        ? laborScheduledShiftDays(schedWin).catch(() => [])
+        : Promise.resolve([]),
+      adpScheduleScrapedAt().catch(() => null),
+      punchWin ? laborActualShiftDays(punchWin).catch(() => []) : Promise.resolve([]),
     ]);
     rows = labor;
-    forward = fwd;
-    scheduledPerPerson = schedPeople;
-    projectedByDay = projDays;
-    burdenPct = fwd.laborBurdenPct > 0 ? fwd.laborBurdenPct : 0;
-    goalLaborPct = goalFromConfig(config, "goal_labor_pct_max");
-    const openPeriod = period.find((p) => p.is_open) ?? period[0];
-    hoursPerPerson = period
-      .filter((p) => p.period_start === openPeriod?.period_start)
-      .map((p) => ({ employee: p.employee, hours: p.hours_worked }))
+    concurrentRows = concurrent;
+    scheduledHoursRows = schedHours;
+    coverageScheduled = schedDays;
+    coverageActuals = actualShiftDays;
+    scheduledConcurrentByBucket = rollConcurrentToGrain(
+      aggregateScheduledDays(schedDays),
+      grain,
+    );
+    scheduleScrapedAt = scraped;
+    goalLaborHoursWeek = goalFromConfig(config, "goal_labor_hours_week");
+    hoursPerPerson = perPerson
+      .map((p) => ({ employee: p.employee, hours: Number(p.hours) || 0 }))
+      .filter((p) => p.hours > 0)
       .sort((a, b) => b.hours - a.hours);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
 
-  const projMap = new Map(
-    projectedByDay.map((p) => [
-      formatBucket(p.date, grain),
-      p.projected_pt_pct != null ? Number((p.projected_pt_pct * 100).toFixed(1)) : null,
-    ]),
+  const actualByBucket = new Map(
+    rows.map((r) => {
+      const iso = isoKey(r.date);
+      return [
+        iso,
+        {
+          total_hours: r.total_hours != null ? Number(Number(r.total_hours).toFixed(1)) : null,
+          parttime_hours: r.hourly_hours != null ? Number(Number(r.hourly_hours).toFixed(1)) : null,
+          fulltime_hours:
+            r.fulltime_hours != null ? Number(Number(r.fulltime_hours).toFixed(1)) : null,
+          labor_pct: r.labor_pct != null ? Number(r.labor_pct) : null,
+          hourly_pct: r.hourly_pct != null ? Number(r.hourly_pct) : null,
+          fulltime_pct: r.fulltime_pct != null ? Number(r.fulltime_pct) : null,
+          net_sales: r.net_sales != null ? Number(r.net_sales) : null,
+        },
+      ] as const;
+    }),
   );
 
-  const chartData: {
-    date: string;
-    labor_pct: number | null;
-    hourly_pct: number | null;
-    fulltime_pct: number | null;
-    paid_labor_pct: number | null;
-    paid_hourly_pct: number | null;
-    projected_pt_pct: number | null;
-    hours_per_item: number | null;
-    hourly_hours_per_item: number | null;
-    fulltime_hours_per_item: number | null;
-    total_hours: number | null;
-    net_sales: number | null;
-    orders_per_hour: number | null;
-    items_per_hour: number | null;
-    fulltime_hours: number | null;
-    parttime_hours: number | null;
-  }[] = [...rows]
-    .sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1))
-    .map((r) => {
-      const bucket = formatBucket(r.date, grain);
-      const laborPct = r.labor_pct != null ? Number((r.labor_pct * 100).toFixed(1)) : null;
-      const hourlyPct = r.hourly_pct != null ? Number((r.hourly_pct * 100).toFixed(1)) : null;
-      const fulltimePct = r.fulltime_pct != null ? Number((r.fulltime_pct * 100).toFixed(1)) : null;
-      return {
-        date: bucket,
-        labor_pct: laborPct,
-        hourly_pct: hourlyPct,
-        fulltime_pct: fulltimePct,
-        paid_labor_pct:
-          laborPct != null && burdenPct > 0 ? Number((laborPct * (1 + burdenPct)).toFixed(1)) : null,
-        paid_hourly_pct:
-          hourlyPct != null && burdenPct > 0 ? Number((hourlyPct * (1 + burdenPct)).toFixed(1)) : null,
-        projected_pt_pct: projMap.get(bucket) ?? null,
-        hours_per_item: r.hours_per_item != null ? Number(r.hours_per_item) : null,
-        hourly_hours_per_item:
-          r.hourly_hours_per_item != null ? Number(r.hourly_hours_per_item) : null,
-        fulltime_hours_per_item:
-          r.fulltime_hours_per_item != null ? Number(r.fulltime_hours_per_item) : null,
-        total_hours: r.total_hours != null ? Number(r.total_hours) : null,
-        net_sales: r.net_sales != null ? Number(r.net_sales) : null,
-        orders_per_hour: r.total_hours ? Number((r.orders / r.total_hours).toFixed(2)) : null,
-        items_per_hour: r.total_hours ? Number((r.items_sold / r.total_hours).toFixed(2)) : null,
-        fulltime_hours: r.fulltime_hours != null ? Number(Number(r.fulltime_hours).toFixed(1)) : null,
-        parttime_hours: r.hourly_hours != null ? Number(Number(r.hourly_hours).toFixed(1)) : null,
-      };
-    });
+  const schedHoursByBucket = new Map(
+    scheduledHoursRows.map((r) => {
+      const iso = isoKey(r.date);
+      return [
+        iso,
+        {
+          parttime_scheduled_hours:
+            r.parttime_hours != null ? Number(Number(r.parttime_hours).toFixed(1)) : null,
+          fulltime_scheduled_hours:
+            r.fulltime_hours != null ? Number(Number(r.fulltime_hours).toFixed(1)) : null,
+        },
+      ] as const;
+    }),
+  );
 
-  if (lens === "blended") {
-    for (const [bucket, pct] of projMap) {
-      if (!chartData.some((d) => d.date === bucket)) {
-        chartData.push({
-          date: bucket,
-          labor_pct: null,
-          hourly_pct: null,
-          fulltime_pct: null,
-          paid_labor_pct: null,
-          paid_hourly_pct: null,
-          projected_pt_pct: pct,
-          hours_per_item: null,
-          hourly_hours_per_item: null,
-          fulltime_hours_per_item: null,
-          total_hours: null,
-          net_sales: null,
-          orders_per_hour: null,
-          items_per_hour: null,
-          fulltime_hours: null,
-          parttime_hours: null,
-        });
-      }
-    }
-  }
+  const concurrentActualByBucket = new Map(
+    concurrentRows.map((r) => {
+      const iso = isoKey(r.date);
+      return [
+        iso,
+        {
+          parttime_concurrent:
+            r.parttime_concurrent != null
+              ? Number(Number(r.parttime_concurrent).toFixed(1))
+              : null,
+          fulltime_concurrent:
+            r.fulltime_concurrent != null
+              ? Number(Number(r.fulltime_concurrent).toFixed(1))
+              : null,
+          total_concurrent:
+            r.total_concurrent != null ? Number(Number(r.total_concurrent).toFixed(1)) : null,
+        },
+      ] as const;
+    }),
+  );
 
-  const laborPctSeries =
-    lens === "paid"
-      ? [
-          { key: "paid_labor_pct", label: "Total paid %" },
-          { key: "paid_hourly_pct", label: "Part-time paid %" },
-        ]
-      : lens === "blended"
-        ? [
-            { key: "labor_pct", label: "Total wage % (completed)" },
-            { key: "hourly_pct", label: "Part-time wage % (completed)" },
-            { key: "projected_pt_pct", label: "Blended PT % (schedule)", dashed: true },
-          ]
-        : [
-            { key: "labor_pct", label: "Total wage %" },
-            { key: "hourly_pct", label: "Part-time wage %" },
-            { key: "fulltime_pct", label: "Full-time wage %" },
-          ];
+  const concurrentSchedByBucket = new Map(
+    scheduledConcurrentByBucket.map((r) => [isoKey(r.date), r] as const),
+  );
 
-  const columns: ColumnDef<LaborDailyRow>[] = [
-    { accessorKey: "date", header: "Date", meta: { format: { kind: "bucket", grain } } },
-    { accessorKey: "net_sales", header: "Net sales", meta: { format: { kind: "dollars" } } },
-    { accessorKey: "total_labor_cost", header: "Labor cost", meta: { format: { kind: "dollars" } } },
-    { accessorKey: "labor_pct", header: "Labor %", meta: { format: { kind: "pct" } } },
-    { accessorKey: "total_hours", header: "Hours", meta: { format: { kind: "number", digits: 1 } } },
-    { accessorKey: "hours_per_item", header: "Hrs/item", meta: { format: { kind: "number", digits: 3 } } },
-    { accessorKey: "orders", header: "Orders", meta: { format: { kind: "number" } } },
-  ];
+  const bucketIsos = enumerateBucketStarts(chartWin, grain);
+  const chartData = bucketIsos.map((iso) => {
+    const a = actualByBucket.get(iso);
+    const s = schedHoursByBucket.get(iso);
+    return {
+      date: formatBucket(iso, grain, grain === "day" ? { weekday: true } : undefined),
+      bucket_iso: iso,
+      total_hours: a?.total_hours ?? null,
+      parttime_hours: a?.parttime_hours ?? null,
+      fulltime_hours: a?.fulltime_hours ?? null,
+      labor_pct: a?.labor_pct ?? null,
+      hourly_pct: a?.hourly_pct ?? null,
+      fulltime_pct: a?.fulltime_pct ?? null,
+      net_sales: a?.net_sales ?? null,
+      parttime_scheduled_hours: s?.parttime_scheduled_hours ?? null,
+      fulltime_scheduled_hours: s?.fulltime_scheduled_hours ?? null,
+    };
+  });
+
+  const concurrentChartData = bucketIsos.map((iso) => {
+    const a = concurrentActualByBucket.get(iso);
+    const s = concurrentSchedByBucket.get(iso);
+    return {
+      date: formatBucket(iso, grain, grain === "day" ? { weekday: true } : undefined),
+      parttime_concurrent: a?.parttime_concurrent ?? null,
+      fulltime_concurrent: a?.fulltime_concurrent ?? null,
+      total_concurrent: a?.total_concurrent ?? null,
+      parttime_scheduled_concurrent: s?.parttime_concurrent ?? null,
+      fulltime_scheduled_concurrent: s?.fulltime_concurrent ?? null,
+      total_scheduled_concurrent: s?.total_concurrent ?? null,
+    };
+  });
+
+  const personChartData = hoursPerPerson.map((p) => ({
+    employee: p.employee,
+    hours: Number(p.hours.toFixed(1)),
+  }));
 
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Labor"
-        subtitle={`Hours, labor %, and throughput · ${storeDisplayName(DEFAULT_STORE)}`}
+        subtitle={`Historical ADP hours · ${storeDisplayName(DEFAULT_STORE)}`}
         right={
           <>
             <AggregationSelect
               value={grain}
               basePath="/labor"
-              extraParams={{ range: win.preset, lens, ...dateParams }}
+              extraParams={{ range: win.preset, ...laborTypeExtra, ...dateParams, ...dayExtra }}
             />
             <FilterSelect
               label="Period"
@@ -195,7 +277,7 @@ export default async function LaborPage({
               value={showCustomPicker ? "custom" : win.preset}
               options={RANGE_PRESETS}
               basePath="/labor"
-              extraParams={{ grain, lens }}
+              extraParams={{ grain, ...laborTypeExtra, ...dayExtra }}
             />
             {showCustomPicker ? (
               <DateRangePicker
@@ -203,138 +285,101 @@ export default async function LaborPage({
                 from={win.start}
                 to={win.end}
                 committed={win.preset === "custom"}
-                extraParams={{ grain, lens }}
+                extraParams={{ grain, ...laborTypeExtra, ...dayExtra }}
               />
             ) : null}
+            <FilterMultiSelect
+              label="Labor type"
+              param="labor_type"
+              selected={laborTypes}
+              options={[...LABOR_TYPE_OPTIONS]}
+              basePath="/labor"
+              extraParams={{
+                range: win.preset,
+                grain,
+                ...dateParams,
+                ...dayExtra,
+              }}
+            />
+            <SyncScheduledShiftsButton lastScrapedAt={scheduleScrapedAt} />
           </>
         }
       />
 
-      <FilterPills
-        label="Lens"
-        param="lens"
-        value={lens}
-        options={LABOR_LENS_OPTIONS}
-        basePath="/labor"
-        extraParams={{ range: win.preset, grain, ...dateParams }}
-      />
+      <div
+        role="note"
+        className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+      >
+        <p>
+          <span className="font-medium text-foreground">Actual</span> (solid colors) =
+          ADP clocked hours through yesterday.{" "}
+          <span className="font-medium text-foreground">Scheduled</span> (slate) stacks
+          on the hours / concurrent charts from today through the latest ADP scheduled
+          dates when the Period includes today (not only through Period end) — hover
+          also shows{" "}
+          <span className="font-medium text-foreground">Total (combined)</span> vs
+          weekly Goal.{" "}
+          {goalLaborHoursWeek != null && !Number.isNaN(Number(goalLaborHoursWeek))
+            ? `Weekly Goal (${Number(goalLaborHoursWeek)} hrs) is the gold dashed line on Aggregation=Weekly. `
+            : ""}
+          <span className="font-medium text-foreground">Avg concurrent</span> bars =
+          actual only (schedule stays in the hover). PT/FT concurrent is hours ÷ that
+          bucket&apos;s first→last span (one full-timer ≈ 1), not diluted by store-open
+          hours from the other bucket.{" "}
+          <span className="font-medium text-foreground">Staffing coverage</span> is a
+          day strip for the Period (extended through scheduled shifts when today is
+          included) with a headcount ribbon and person swimlanes — scroll the chips when
+          the range is long. Use{" "}
+          <span className="font-medium text-foreground">Sync scheduled shifts</span> after
+          editing the ADP schedule — status under the button shows starting / syncing /
+          done / error without blocking the rest of the page. Per-person hours below sum
+          clocked ADP hours over the Period.
+        </p>
+      </div>
 
       {error ? (
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
-          {forward ? (
-            <LaborForwardSummaryCard data={forward} lens={lens} periodDays={periodDays} />
-          ) : null}
-          <div className="grid gap-4 md:grid-cols-2">
-            <LineChartCard
-              title={
-                lens === "paid"
-                  ? "Labor % of net sales (paid)"
-                  : lens === "blended"
-                    ? "Labor % of net sales (blended)"
-                    : "Labor % of net sales (wage)"
-              }
-              data={chartData}
-              xKey="date"
-              series={laborPctSeries}
-              goal={goalLaborPct != null ? goalLaborPct * 100 : undefined}
-              goalLabel="Goal"
-            />
-            <LineChartCard
-              title="Hours per item — total / part-time / full-time"
-              data={chartData}
-              xKey="date"
-              series={[
-                { key: "hours_per_item", label: "Total" },
-                { key: "hourly_hours_per_item", label: "Part-time" },
-                { key: "fulltime_hours_per_item", label: "Full-time" },
-              ]}
-            />
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <BarChartCard
-              title="Shift hours — stacked (part-time vs full-time)"
-              data={chartData}
-              xKey="date"
-              stacked
-              series={[
-                { key: "parttime_hours", label: "Part-time" },
-                { key: "fulltime_hours", label: "Full-time" },
-              ]}
-            />
-            <LineChartCard
-              title="Throughput & saturation (orders, items per labor hour)"
-              data={chartData}
-              xKey="date"
-              series={[
-                { key: "orders_per_hour", label: "Orders/hr" },
-                { key: "items_per_hour", label: "Items/hr" },
-              ]}
-            />
-          </div>
-
-          <BarChartCard
-            title={`Total labor hours by ${grain}`}
+          <LaborHoursChart
             data={chartData}
-            xKey="date"
-            series={[{ key: "total_hours", label: "Hours" }]}
+            laborTypes={laborTypes}
+            grain={grain}
+            goalLaborHoursWeek={goalLaborHoursWeek}
           />
 
-          {lens === "blended" ? (
-            <div>
-              <h2 className="mb-2 text-sm font-medium text-muted-foreground">
-                Scheduled hours per person — forward (ADP)
-              </h2>
-              {scheduledPerPerson.length ? (
-                <div className="flex flex-col divide-y divide-border rounded-md border">
-                  {scheduledPerPerson.map((p) => (
-                    <div
-                      key={p.employee}
-                      className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
-                    >
-                      <span>{p.employee}</span>
-                      <span className="font-medium">
-                        {Number(p.hours).toFixed(1)} hrs
-                        {p.cost != null ? ` · $${Number(p.cost).toFixed(0)}` : ""}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  No forward ADP schedule rows in this Period yet.
-                </p>
-              )}
-            </div>
+          <LaborConcurrentChart
+            data={concurrentChartData}
+            laborTypes={laborTypes}
+            grain={grain}
+          />
+
+          <LaborCoveragePanel
+            win={chartWin}
+            actuals={coverageActuals}
+            scheduled={coverageScheduled}
+            laborTypes={laborTypes}
+            selectedDay={sp.day}
+            basePath="/labor"
+            extraParams={{
+              range: win.preset,
+              grain,
+              ...laborTypeExtra,
+              ...dateParams,
+            }}
+          />
+
+          <BarChartCard
+            title={`Hours per person — ${win.start} → ${win.end}`}
+            data={personChartData}
+            xKey="employee"
+            series={[{ key: "hours", label: "Hours" }]}
+            valueFormat="number"
+            height={Math.min(420, Math.max(220, personChartData.length * 28))}
+          />
+          {!personChartData.length ? (
+            <p className="text-sm text-muted-foreground">No ADP shift hours in this Period.</p>
           ) : null}
-
-          <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
-              Hours per person — current pay period
-            </h2>
-            {hoursPerPerson.length ? (
-              <div className="flex flex-col divide-y divide-border rounded-md border">
-                {hoursPerPerson.map((p) => (
-                  <div
-                    key={p.employee}
-                    className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
-                  >
-                    <span>{p.employee}</span>
-                    <span className="font-medium">{p.hours.toFixed(1)} hrs</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">No open pay period found.</p>
-            )}
-          </div>
-
-          <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">Daily detail</h2>
-            <DataTable columns={columns} data={rows} />
-          </div>
         </>
       )}
     </div>

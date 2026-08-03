@@ -9,7 +9,7 @@ import { FilterPills } from "@/components/filters/FilterPills";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
-import { RANGE_PRESETS, formatBucket, wantsCustom } from "@/lib/filters/range";
+import { RANGE_PRESETS, formatBucket, grainTitleLabel, wantsCustom } from "@/lib/filters/range";
 import { resolvePageGrain, resolvePageRange } from "@/lib/filters/period";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { KdsOrderInvestigationRow, OrderQualityDailyRow } from "@/lib/bq/queries";
@@ -233,7 +233,7 @@ export default async function OrderQualityPage({
           ) : null}
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">
-              {grain === "day" ? "Daily" : grain === "week" ? "Weekly" : "Monthly"} percentile detail
+              {grainTitleLabel(grain)} percentile detail
             </h2>
             <DataTable columns={columns} data={rows} />
           </div>

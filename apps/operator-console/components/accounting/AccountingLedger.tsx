@@ -23,7 +23,7 @@ import {
   type RuleMatchPreview,
 } from "@/app/accounting/actions";
 import { formatDollars } from "@/lib/format";
-import { formatBucket, truncateToGrain, type Grain } from "@/lib/filters/range";
+import { formatBucket, grainDisplayLabel, truncateToGrain, type Grain } from "@/lib/filters/range";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { ACCOUNTING_COLORS, expenseCategoryColor } from "@/lib/charts/palette";
 import { cn } from "@/lib/utils";
@@ -296,7 +296,7 @@ export function AccountingLedger({
     return { data, series };
   }, [categoryChartBase, squareNetSalesByIso, asPct]);
 
-  const grainLabel = grain === "day" ? "day" : grain === "week" ? "week" : "month";
+  const grainLabel = grainDisplayLabel(grain);
   const unitToggle = (
     <div className="flex items-center gap-1 rounded-md bg-secondary p-0.5">
       {(

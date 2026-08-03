@@ -1298,6 +1298,7 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 
 - **BQ dataset:** `jarvis-bhaga-prod.bhaga`
 - **Raw tables:** `square_transactions`, `adp_shifts`, `adp_punches`, `adp_wage_rates`, `square_daily_rollup`
+- **Wage rates (Issue #213):** dual-source — Earnings Regular (`rate_source=earnings`) plus People → Payroll info gap-fill (`rate_source=pay_info`). Grep Cloud Run logs for `BREADCRUMB wage_rate_gap` when punchers still lack rates after a run. Manual backfill: `python3 -m skills.adp_run_automation.pay_info_backend --from-bq-gaps --write-bq`.
 - **Curated views:** `vw_daily_sales`, `vw_tips_by_hour`, `vw_labor_daily`, `vw_labor_weekly`, `vw_sales_labor_daily`, `vw_employee_hours_summary`
 - **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`, `model_forecast_daily`
 - **Pipeline run log:** `pipeline_runs` (migration 016) — one appended row per terminal outcome; queried via `vw_pipeline_runs`

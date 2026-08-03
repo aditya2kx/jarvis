@@ -77,9 +77,64 @@ def test_build_employee_schedule_records_caps_over_attributed_payload():
         }],
     }]
     recs = sb.build_employee_schedule_records(weeks)
-    assert sum(r["scheduled_hours"] for r in recs) == pytest.approx(20.0)
+    # Cap keeps 3 wall-clock days (20h), then scale to paid week total 19h.
+    assert sum(r["scheduled_hours"] for r in recs) == pytest.approx(19.0)
     assert len(recs) == 3
     assert recs[0]["employee_id"] == "Employee489, Xcc2"
+
+
+def test_scale_hours_removes_unpaid_meal_like_lindsay():
+    """5× 9:00–5:30 wall (8.5h) with ADP week total 40:00 → 5×8.0 paid."""
+    weeks = [{
+        "week_label": "Week of Aug 3, 2026 - Aug 9, 2026",
+        "employee_rows": [{
+            "name": "Krause, Lindsay",
+            "week_total_text": "40:00 Hrs",
+            "days": [
+                {"header_index": i, "ranges": ["9:00 AM - 5:30 PM"]}
+                for i in (0, 1, 3, 5, 6)
+            ],
+        }],
+    }]
+    recs = sb.build_employee_schedule_records(weeks)
+    assert len(recs) == 5
+    assert sum(r["scheduled_hours"] for r in recs) == pytest.approx(40.0)
+    assert all(r["scheduled_hours"] == pytest.approx(8.0) for r in recs)
+    # Ranges stay wall-clock for coverage UI.
+    assert json.loads(recs[0]["shift_ranges_json"]) == ["9:00 AM - 5:30 PM"]
+
+
+def test_scale_hours_to_week_total_unit():
+    assert sb.scale_hours_to_week_total([8.5, 8.5, 8.5, 8.5, 8.5], 40.0) == [
+        8.0, 8.0, 8.0, 8.0, 8.0,
+    ]
+
+
+def test_scale_hours_never_inflates_sparse_days():
+    """2 scraped days + week_total 40 must NOT become 20h/day (concurrent blow-up)."""
+    assert sb.scale_hours_to_week_total([8.5, 8.5], 40.0) == [8.5, 8.5]
+
+
+def test_sparse_week_records_keep_wall_hours_for_concurrent():
+    """Sync/backfill path: incomplete week must not invent 20h days (Issue #213)."""
+    weeks = [{
+        "week_label": "Week of Aug 10, 2026 - Aug 16, 2026",
+        "employee_rows": [{
+            "name": "Krause, Lindsay",
+            "week_total_text": "40:00 Hrs",
+            "days": [
+                {"header_index": 0, "ranges": ["8:00 AM - 4:30 PM"]},
+                {"header_index": 1, "ranges": ["12:00 PM - 8:30 PM"]},
+                {"header_index": 2, "ranges": []},
+                {"header_index": 3, "ranges": []},
+                {"header_index": 4, "ranges": []},
+            ],
+        }],
+    }]
+    recs = sb.build_employee_schedule_records(weeks)
+    assert len(recs) == 2
+    assert all(r["scheduled_hours"] == pytest.approx(8.5) for r in recs)
+    assert sum(r["scheduled_hours"] for r in recs) == pytest.approx(17.0)
 
 
 @pytest.mark.parametrize("raw,expected", [

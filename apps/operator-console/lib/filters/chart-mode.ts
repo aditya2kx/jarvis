@@ -42,7 +42,11 @@ export function parseCompare(
   const raw = firstValue(value)?.trim().toLowerCase();
   if (!raw || raw === "0" || raw === "false" || raw === "off") return "off";
   if (raw === "day" || raw === "week" || raw === "month") return raw;
-  if (raw === "1" || raw === "true") return grain;
+  if (raw === "1" || raw === "true") {
+    // Legacy lag-1 matched Aggregation; weekday Aggregation falls back to week.
+    if (grain === "weekday") return "week";
+    if (grain === "day" || grain === "week" || grain === "month") return grain;
+  }
   return "off";
 }
 

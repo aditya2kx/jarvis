@@ -269,6 +269,11 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 042: vw_inventory_base_latest_daily + vw_inventory_order_assistant
     # prefer tub raw_text over box/case packaging when collapsing duplicate
     # display-name fields (two ClickUp "Mango" fields). Same views — no new targets.
+    # migration 051 (Issue #215): vw_order_reco_next_dates closing-aware today
+    # (include today until base inventory_closing_daily exists). Same view — no new target.
+    # migration 052 (Issue #215): next_dates cap order_reco_max_slots (default 4);
+    # tvf_order_reco_slot_n for slots ≥2. Console pivots N slots; Grafana combined
+    # stays dual-slot — no new GRAFANA_VIEWS (031/032 targets unchanged).
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

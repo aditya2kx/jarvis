@@ -1596,9 +1596,17 @@ fallback while the BQ table is being seeded. After seeding, Sheet config becomes
 > **Troubleshooting: /inventory On hand / Order tubs look like the wrong delivery date.**
 > Fixed in migration 041: live next-date headers were painted onto stale Slot 1/2 rows
 > (e.g. TOTAL On hand labeled Jul 23 = 120 with Order tubs = prior restock actuals).
-> Each reco row now stores `delivery_date`; combined view joins by date; next dates are
-> strictly `> today CT` (avoids delivery-day double-count after closing includes received tubs).
+> Each reco row now stores `delivery_date`; combined view joins by date.
+> Migration **051** (Issue #215): next dates keep **today CT** until a base
+> `inventory_closing_daily` row exists for today (restock-morning visibility without
+> evening double-count after closing absorbs received tubs). Migration **052**: planning
+> slots expand beyond 2 — cap `order_reco_max_slots` in `store_config` (default **4**);
+> `refresh_order_reco` / webhook `_refresh_order_reco` / console `refreshOrderReco` loop
+> `tvf_order_reco_slot1` then `tvf_order_reco_slot_n` for each live slot. Grafana
+> `vw_order_reco_combined` stays dual-slot; Operator Console pivots all live slots.
 > Deploy refreshes reco after schema so prod Operator Console updates on merge.
+>
+> Optional: `/bhaga-cloud config set order_reco_max_slots <N>` to raise/lower the column cap.
 
 > **`data_window_end` is DERIVED — never stored in `store_config`.** It is computed
 > live as `MAX(square_transactions.date_local)` via `core.store_config.resolve_data_window_end()`.

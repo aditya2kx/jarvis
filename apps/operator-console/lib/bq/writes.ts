@@ -78,18 +78,23 @@ export async function replaceRestockOrders(
 /**
  * Recompute inventory_order_reco for `store` — mirrors
  * core/order_reco.py::refresh_order_reco / handler.py::_refresh_order_reco.
- * Order matters: slot 2's TVF reads slot 1's materialized row, so slot 1's
- * INSERT must land before slot 2 runs. Call after any restock write or an
- * order_reco_max_tubs config change.
+ * Order matters: slot N's TVF reads slot N-1's materialized row, so earlier
+ * INSERTs must land first. Call after any restock write or an
+ * order_reco_max_tubs config change. Slot count follows live
+ * vw_order_reco_next_dates (migration 052, default cap 4).
  */
 export async function refreshOrderReco(store: string): Promise<void> {
-  const cfgRows = await q<{ value: string }>(
-    `SELECT value FROM ${fq("store_config")}
-     WHERE store = @store AND key = 'order_reco_max_tubs'
-     ORDER BY updated_at DESC LIMIT 1`,
-    { store },
-  );
+  const [cfgRows, slotRows] = await Promise.all([
+    q<{ value: string }>(
+      `SELECT value FROM ${fq("store_config")}
+       WHERE store = @store AND key = 'order_reco_max_tubs'
+       ORDER BY updated_at DESC LIMIT 1`,
+      { store },
+    ),
+    q<{ slot: number }>(`SELECT slot FROM ${fq("vw_order_reco_next_dates")} ORDER BY slot`),
+  ]);
   const maxTubs = intParam(cfgRows.length ? Number(cfgRows[0].value) : DEFAULT_MAX_TUBS);
+  const slots = slotRows.map((r) => Number(r.slot)).filter((n) => Number.isFinite(n));
 
   // Explicit columns — migration 041 added delivery_date; t.* + ts would mis-map.
   const cols =
@@ -102,18 +107,21 @@ export async function refreshOrderReco(store: string): Promise<void> {
     "_ord, CURRENT_TIMESTAMP(), delivery_date";
 
   await mutate(`DELETE FROM ${fq("inventory_order_reco")} WHERE store = @store`, { store });
+  if (!slots.length) return;
+
   await mutate(
     `INSERT INTO ${fq("inventory_order_reco")} (${cols})
      SELECT @store, 1, ${sel} FROM ${fq("tvf_order_reco_slot1")}(@maxTubs)`,
     { store, maxTubs },
   );
-  // Slot 2 must run AFTER slot 1's INSERT lands — its TVF reads slot 1's row
-  // back from inventory_order_reco (migration 031).
-  await mutate(
-    `INSERT INTO ${fq("inventory_order_reco")} (${cols})
-     SELECT @store, 2, ${sel} FROM ${fq("tvf_order_reco_slot2")}(@maxTubs)`,
-    { store, maxTubs },
-  );
+  for (const slot of slots) {
+    if (slot < 2) continue;
+    await mutate(
+      `INSERT INTO ${fq("inventory_order_reco")} (${cols})
+       SELECT @store, @slot, ${sel} FROM ${fq("tvf_order_reco_slot_n")}(@maxTubs, @slot)`,
+      { store, maxTubs, slot: intParam(slot) },
+    );
+  }
 }
 
 export type EnsureOrderRecoResult =

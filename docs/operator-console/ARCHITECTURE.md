@@ -240,10 +240,13 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
 `vw_order_reco_combined`, not a single list. Layout:
 
 - **Frozen identity columns** (left, pinned): `Item`, `Current Qty`, `Avg per day`.
-- **Per-date column group ×2** (the next two future registered delivery dates from
-  `vw_order_reco_next_dates`): `On Hand at Restock`, `Order Tubs`,
-  `Order Weight (lbs)`, `After Restock`, `Days Left After Restock`, and a
-  **Source badge** (`Estimated` vs `Actuals`).
+- **Per-date column group ×N** (live dates from `vw_order_reco_next_dates`,
+  capped by `order_reco_max_slots` default 4 — migration 052; includes
+  **today** until a base closing for today exists — migration 051): `On Hand
+  at Restock`, `Order Tubs`, `Order Weight (lbs)`, `After Restock`, `Days Left
+  After Restock`, and a **Source badge** (`Estimated` vs `Actuals`). Console
+  pivots `inventory_order_reco` long-format so adding another registered
+  schedule date adds another column group automatically.
 - **TOTAL row** per date incl. pallet weight (`Σ weight + 50·CEIL(Σtubs/40)`).
 - **Restock schedule panel** with the three shared operator actions from the Slack
   modal (**Register date (estimated)**, **Add order (actuals)** (CSV/photo → §5.1),

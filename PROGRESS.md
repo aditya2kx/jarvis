@@ -1,3 +1,12 @@
+## 2026-08-04 — Inventory restock-day columns + N-slot Order Assistant (Issue #215)
+
+**Scope:** Keep today's restock visible on `/inventory` until ClickUp closing absorbs stock; allow more than two planning date column groups.
+
+**Key changes (PR #217):**
+- Migration `051`: closing-aware `vw_order_reco_next_dates` (today until base closing exists).
+- Migration `052`: `order_reco_max_slots` (default 4) + `tvf_order_reco_slot_n`; refresh loops all live slots; console pivots dynamically.
+- Docs: DOMAIN / ARCHITECTURE / RUNBOOK; status.py registry notes for 051/052.
+
 ## 2026-08-01 — Labor console simplify + dual-source wage rates (Issue #213)
 
 **Scope:** Strip Forecast from Operator Console; rebuild `/labor` to historical ADP hours; gap-fill missing wage rates from ADP People → Payroll info.

@@ -60,7 +60,11 @@ describe("replaceEstimatedRestockDate", () => {
   it("happy path: deletes schedule+orders for from, MERGEs to, refreshes reco", async () => {
     q.mockResolvedValueOnce([{ n: 1 }]) // on schedule
       .mockResolvedValueOnce([{ n: 0 }]) // no actuals
-      .mockResolvedValueOnce([{ value: "120" }]); // max tubs for refresh
+      .mockImplementation(async (sql: string) => {
+        if (sql.includes("order_reco_max_tubs")) return [{ value: "120" }];
+        if (sql.includes("vw_order_reco_next_dates")) return [{ slot: 1 }, { slot: 2 }];
+        return [];
+      });
 
     const { replaceEstimatedRestockDate } = await load();
     await replaceEstimatedRestockDate("palmetto", "2026-07-23", "2026-07-25", "op@test");
@@ -74,7 +78,7 @@ describe("replaceEstimatedRestockDate", () => {
     );
     expect(sqls.some((s) => s.includes("MERGE") && s.includes("inventory_restock_schedule"))).toBe(true);
     expect(sqls.some((s) => s.includes("tvf_order_reco_slot1"))).toBe(true);
-    expect(sqls.some((s) => s.includes("tvf_order_reco_slot2"))).toBe(true);
+    expect(sqls.some((s) => s.includes("tvf_order_reco_slot_n"))).toBe(true);
   });
 
   it("submitRestock refuses replace-estimated", async () => {

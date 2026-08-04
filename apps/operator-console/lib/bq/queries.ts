@@ -1145,8 +1145,54 @@ export function orderRecoCombined(): Promise<OrderRecoCombinedRow[]> {
   return q<OrderRecoCombinedRow>(`SELECT * FROM ${fq("vw_order_reco_combined")}`);
 }
 
-// vw_order_reco_next_dates (migration 031) — the next 2 future registered
-// delivery dates, slot 1 = sooner. Empty/short when fewer dates are registered.
+/** Long-format reco rows for all live next-dates slots (migration 052). */
+export interface OrderRecoSlotLongRow {
+  Item: string;
+  Slot: number;
+  delivery_date: string;
+  "Current Qty": number;
+  "Avg per day": number;
+  "On Hand at Restock": number | null;
+  "Order Tubs": number | null;
+  "Order Weight lbs": number | null;
+  "After Restock": number | null;
+  "Days Left After Restock": number | null;
+  Source: "Estimated" | "Actuals" | null;
+  _ord: number;
+}
+
+export function orderRecoSlots(): Promise<OrderRecoSlotLongRow[]> {
+  return q<OrderRecoSlotLongRow>(
+    `SELECT
+       r.Item,
+       r.Slot,
+       CAST(r.delivery_date AS STRING) AS delivery_date,
+       r.\`Current Qty\`,
+       r.\`Avg per day\`,
+       r.\`On Hand at Restock\`,
+       r.\`Order Tubs\`,
+       r.\`Order Weight lbs\`,
+       r.\`After Restock\`,
+       r.\`Days Left After Restock\`,
+       IF(
+         EXISTS (
+           SELECT 1 FROM ${fq("inventory_restock_orders")} o
+           WHERE o.store = 'palmetto' AND o.delivery_date = r.delivery_date
+         ),
+         'Actuals',
+         'Estimated'
+       ) AS Source,
+       r._ord
+     FROM ${fq("inventory_order_reco")} r
+     INNER JOIN ${fq("vw_order_reco_next_dates")} d
+       ON r.delivery_date = d.delivery_date
+     WHERE r.store = 'palmetto'
+     ORDER BY r._ord ASC, r.\`Current Qty\` DESC, r.Slot ASC`,
+  );
+}
+
+// vw_order_reco_next_dates (031 + 041 + 051 + 052) — up to order_reco_max_slots
+// planning dates (default 4): future, plus today until a base closing exists.
 export interface NextDateRow {
   delivery_date: string;
   slot: number;
@@ -1162,6 +1208,8 @@ export interface EstimatedScheduleDateRow {
 }
 
 export function estimatedScheduleDates(store: string): Promise<EstimatedScheduleDateRow[]> {
+  // Same closing-aware today window as vw_order_reco_next_dates (migration 051):
+  // keep today until a base closing for today exists (Current Qty absorbed restock).
   return q<EstimatedScheduleDateRow>(
     `SELECT s.delivery_date
      FROM ${fq("inventory_restock_schedule")} s
@@ -1171,7 +1219,19 @@ export function estimatedScheduleDates(store: string): Promise<EstimatedSchedule
        WHERE store = @store
      ) o ON s.delivery_date = o.delivery_date
      WHERE s.store = @store
-       AND s.delivery_date > CURRENT_DATE('America/Chicago')
+       AND (
+         s.delivery_date > CURRENT_DATE('America/Chicago')
+         OR (
+           s.delivery_date = CURRENT_DATE('America/Chicago')
+           AND NOT EXISTS (
+             SELECT 1
+             FROM ${fq("inventory_closing_daily")} c
+             WHERE c.store = @store
+               AND c.category = 'base'
+               AND c.submitted_date = CURRENT_DATE('America/Chicago')
+           )
+         )
+       )
        AND o.delivery_date IS NULL
      ORDER BY s.delivery_date`,
     { store },

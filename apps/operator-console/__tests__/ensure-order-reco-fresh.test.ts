@@ -17,6 +17,9 @@ vi.mock("@/lib/bq/client", () => ({
 }));
 
 function routeQ(sql: string): unknown[] {
+  if (sql.includes("vw_order_reco_next_dates") && sql.includes("SELECT slot")) {
+    return [{ slot: 1 }, { slot: 2 }];
+  }
   if (sql.includes("vw_order_reco_next_dates")) {
     return [
       { delivery_date: "2026-07-23" },
@@ -81,7 +84,7 @@ describe("ensureOrderRecoFresh", () => {
       true,
     );
     expect(sqls.some((s) => s.includes("tvf_order_reco_slot1"))).toBe(true);
-    expect(sqls.some((s) => s.includes("tvf_order_reco_slot2"))).toBe(true);
+    expect(sqls.some((s) => s.includes("tvf_order_reco_slot_n"))).toBe(true);
   });
 
   it("refreshes when refreshed_at CT day is before today", async () => {

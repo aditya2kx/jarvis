@@ -229,6 +229,8 @@ Sheets is the **source of truth**; BigQuery is a **parallel read-only mirror** u
 
 > **Operator Console inventory day overrides (migration 048, Issue #194):** `inventory_usage_day_overrides` + rewrite of `vw_inventory_order_assistant` (override join) + `vw_inventory_usage_day_audit` — console `/inventory` day-grain audit only; not model_* / Grafana. Registered as a no-new-target note in `status.py` (same class as 037–047); OA freshness still via existing `vw_inventory_order_assistant` target.
 
+> **Order Assistant next-dates / N-slots (migrations 051–052, Issue #215):** `vw_order_reco_next_dates` is closing-aware (keep today until a base `inventory_closing_daily` row exists) and capped by `order_reco_max_slots` (default 4). `tvf_order_reco_slot_n` chains slots ≥2; `refresh_order_reco` / webhook / console loop all live slots. Grafana `vw_order_reco_combined` stays dual-slot (existing GRAFANA_VIEWS); console pivots N slots. Registered as no-new-target notes in `status.py` (same class as 041/048).
+
 Three supported ways to add information. Recipes A & B keep the raw → model contract intact (read raw
 sheets, write derived tabs); Recipe C is for when the data isn't scraped yet. For what each field
 *means*, see the domain data dictionary [`../knowledge-base/DOMAIN.md`](../knowledge-base/DOMAIN.md)

@@ -7,6 +7,7 @@ import {
   PackageSearch,
   Activity,
   Landmark,
+  Bot,
   type LucideIcon,
 } from "lucide-react";
 
@@ -49,7 +50,10 @@ export const NAV_GROUPS: NavGroup[] = [
   },
   {
     label: "System",
-    items: [{ href: "/pipeline", label: "Pipeline Health", icon: Activity }],
+    items: [
+      { href: "/automations", label: "Automations", icon: Bot },
+      { href: "/pipeline", label: "Pipeline Health", icon: Activity },
+    ],
   },
 ];
 

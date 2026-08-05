@@ -783,3 +783,117 @@ export async function readUsageDayAuditRow(
     delta: r.delta,
   };
 }
+
+// ── Automations (Issue #216) ───────────────────────────────────────────
+
+export type AutomationUpsert = {
+  enabled: boolean;
+  days_of_week: number[];
+  hour_local: number;
+  minute_local: number;
+  timezone: string;
+  destination: "dm" | "channel";
+  channel_id: string;
+  dm_user_id: string;
+  workspace_id: string;
+  template: string;
+};
+
+export async function upsertAutomation(
+  store: string,
+  automationId: string,
+  cfg: AutomationUpsert,
+  by: string,
+): Promise<void> {
+  await mutate(
+    `MERGE ${fq("automations")} T
+     USING (SELECT @store AS store, @id AS automation_id) S
+     ON T.store = S.store AND T.automation_id = S.automation_id
+     WHEN MATCHED THEN UPDATE SET
+       enabled = @enabled,
+       days_of_week = @days,
+       hour_local = @hour,
+       minute_local = @minute,
+       timezone = @tz,
+       destination = @destination,
+       channel_id = @channel_id,
+       dm_user_id = @dm_user_id,
+       workspace_id = @workspace_id,
+       template = @template,
+       updated_at = CURRENT_TIMESTAMP(),
+       updated_by = @by
+     WHEN NOT MATCHED THEN INSERT (
+       store, automation_id, enabled, days_of_week, hour_local, minute_local,
+       timezone, destination, channel_id, dm_user_id, workspace_id, template,
+       updated_at, updated_by
+     ) VALUES (
+       @store, @id, @enabled, @days, @hour, @minute,
+       @tz, @destination, @channel_id, @dm_user_id, @workspace_id, @template,
+       CURRENT_TIMESTAMP(), @by
+     )`,
+    {
+      store,
+      id: automationId,
+      enabled: cfg.enabled,
+      days: JSON.stringify(cfg.days_of_week),
+      hour: intParam(cfg.hour_local),
+      minute: intParam(cfg.minute_local),
+      tz: cfg.timezone,
+      destination: cfg.destination,
+      channel_id: cfg.channel_id,
+      dm_user_id: cfg.dm_user_id,
+      workspace_id: cfg.workspace_id,
+      template: cfg.template,
+      by,
+    },
+  );
+}
+
+export async function insertAutomationPost(row: {
+  store: string;
+  automation_id: string;
+  post_date_ct: string;
+  destination: string;
+  channel_id: string | null;
+  message_id: string | null;
+  content: string;
+  dry_run: boolean;
+  trigger: string;
+  updated_by: string;
+}): Promise<void> {
+  await mutate(
+    `INSERT INTO ${fq("automation_posts")} (
+       store, automation_id, post_date_ct, posted_at, destination, channel_id,
+       message_id, content, dry_run, trigger, updated_by
+     ) VALUES (
+       @store, @id, @post_date, CURRENT_TIMESTAMP(), @destination, @channel_id,
+       @message_id, @content, @dry_run, @trigger, @by
+     )`,
+    {
+      store: row.store,
+      id: row.automation_id,
+      post_date: dateParam(row.post_date_ct),
+      destination: row.destination,
+      channel_id: row.channel_id,
+      message_id: row.message_id,
+      content: row.content,
+      dry_run: row.dry_run,
+      trigger: row.trigger,
+      by: row.updated_by,
+    },
+  );
+}
+
+export async function hasAutomationPostToday(
+  store: string,
+  automationId: string,
+  postDateCt: string,
+): Promise<boolean> {
+  const rows = await q<{ n: number }>(
+    `SELECT COUNT(1) AS n FROM ${fq("automation_posts")}
+     WHERE store = @store AND automation_id = @id
+       AND post_date_ct = @d AND dry_run = FALSE`,
+    { store, id: automationId, d: dateParam(postDateCt) },
+  );
+  return Number(rows[0]?.n ?? 0) > 0;
+}

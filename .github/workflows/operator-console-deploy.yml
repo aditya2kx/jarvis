@@ -84,7 +84,7 @@ jobs:
             --memory 512Mi \
             --min-instances 1 \
             --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga,PLAID_ENV=production,PLAID_WEBHOOK_URL=https://bhaga-webhook-4yl5izovxq-uc.a.run.app/plaid/webhook \
-            --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest,PLAID_CLIENT_ID=plaid_client_id:latest,PLAID_SECRET=plaid_secret:latest
+            --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest,PLAID_CLIENT_ID=plaid_client_id:latest,PLAID_SECRET=plaid_secret:latest,CLICKUP_PAT=jarvis-clickup-palmetto-pat:latest
 
       # IAP IAM (roles/iap.httpsResourceAccessor), not run.invoker — only the
       # IAP service agent invokes the Cloud Run service now. Idempotent:

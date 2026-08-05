@@ -1704,3 +1704,102 @@ export function plaidCategoryRules(): Promise<CategoryRuleRow[]> {
      ORDER BY priority, id`,
   );
 }
+
+// ── Automations (Issue #216) ───────────────────────────────────────────
+
+export interface AutomationRow {
+  store: string;
+  automation_id: string;
+  enabled: boolean;
+  days_of_week: string;
+  hour_local: number;
+  minute_local: number;
+  timezone: string;
+  destination: string;
+  channel_id: string | null;
+  dm_user_id: string | null;
+  workspace_id: string;
+  template: string;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
+export async function getAutomation(
+  store: string,
+  automationId: string,
+): Promise<AutomationRow | null> {
+  const rows = await q<AutomationRow>(
+    `SELECT * FROM ${fq("automations")}
+     WHERE store = @store AND automation_id = @id
+     LIMIT 1`,
+    { store, id: automationId },
+  );
+  return rows[0] ?? null;
+}
+
+export async function listAutomations(store: string): Promise<AutomationRow[]> {
+  return q<AutomationRow>(
+    `SELECT * FROM ${fq("automations")} WHERE store = @store ORDER BY automation_id`,
+    { store },
+  );
+}
+
+export interface AutomationPostRow {
+  store: string;
+  automation_id: string;
+  post_date_ct: string;
+  posted_at: string;
+  destination: string;
+  channel_id: string | null;
+  message_id: string | null;
+  content: string | null;
+  dry_run: boolean;
+  trigger: string;
+  updated_by: string | null;
+}
+
+export function listAutomationPosts(
+  store: string,
+  automationId: string,
+  limit = 50,
+): Promise<AutomationPostRow[]> {
+  return q<AutomationPostRow>(
+    `SELECT store, automation_id,
+       CAST(post_date_ct AS STRING) AS post_date_ct,
+       CAST(posted_at AS STRING) AS posted_at,
+       destination, channel_id, message_id, content, dry_run, trigger, updated_by
+     FROM ${fq("automation_posts")}
+     WHERE store = @store AND automation_id = @id AND dry_run = FALSE
+     ORDER BY posted_at DESC
+     LIMIT @limit`,
+    { store, id: automationId, limit },
+  );
+}
+
+export interface ReviewBonusLeaderboardRow {
+  employee: string;
+  total_bonus: number;
+  period_start: string;
+  period_end: string;
+}
+
+/** Most-recent open pay period review-bonus rows. */
+export async function openReviewBonusLeaderboard(): Promise<ReviewBonusLeaderboardRow[]> {
+  return q<ReviewBonusLeaderboardRow>(
+    `WITH open_periods AS (
+       SELECT period_start, period_end
+       FROM ${fq("model_review_bonus_period")}
+       WHERE is_open = TRUE
+       ORDER BY period_start DESC
+       LIMIT 1
+     )
+     SELECT m.employee, m.total_bonus,
+       CAST(m.period_start AS STRING) AS period_start,
+       CAST(m.period_end AS STRING) AS period_end
+     FROM ${fq("model_review_bonus_period")} m
+     JOIN open_periods o
+       ON m.period_start = o.period_start AND m.period_end = o.period_end
+     WHERE m.is_open = TRUE
+     ORDER BY m.total_bonus DESC, m.employee`,
+  );
+}

@@ -98,27 +98,41 @@ _MAX_RETRIES = 3
 _INITIAL_BACKOFF_S = 2.0
 
 
-def _request(path: str, *, pat: str | None = None) -> dict:
-    """GET a ClickUp endpoint with retry/backoff for transient errors."""
+def _request(
+    path: str,
+    *,
+    pat: str | None = None,
+    method: str = "GET",
+    payload: dict | None = None,
+) -> dict:
+    """Call a ClickUp endpoint with retry/backoff for transient errors."""
     if pat is None:
         pat = get_pat()
     url = f"{API_BASE}{path}"
+    method = method.upper()
+    body_bytes = None if payload is None else json.dumps(payload).encode("utf-8")
 
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES + 1):
-        req = urllib.request.Request(url, headers={
+        headers = {
             "Authorization": pat,
             "Accept": "application/json",
-        })
+        }
+        if body_bytes is not None:
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=body_bytes, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read())
+                raw = resp.read()
+                if not raw:
+                    return {}
+                return json.loads(raw)
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")[:500]
             if e.code in _RETRYABLE_CODES and attempt < _MAX_RETRIES:
                 wait = _INITIAL_BACKOFF_S * (2 ** attempt)
                 print(
-                    f"[clickup] {e.code} on GET {path} (attempt {attempt + 1}/"
+                    f"[clickup] {e.code} on {method} {path} (attempt {attempt + 1}/"
                     f"{_MAX_RETRIES + 1}), retrying in {wait:.1f}s...",
                     file=sys.stderr,
                 )
@@ -134,17 +148,17 @@ def _request(path: str, *, pat: str | None = None) -> dict:
             if e.code == 429:
                 raise RuntimeError(
                     f"ClickUp rate limit exceeded (429) after {_MAX_RETRIES + 1} "
-                    f"attempts on GET {path}. Back off and retry later. "
+                    f"attempts on {method} {path}. Back off and retry later. "
                     f"Response: {body}"
                 ) from e
             raise RuntimeError(
-                f"ClickUp API error {e.code} on GET {path}: {body}"
+                f"ClickUp API error {e.code} on {method} {path}: {body}"
             ) from e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             if attempt < _MAX_RETRIES:
                 wait = _INITIAL_BACKOFF_S * (2 ** attempt)
                 print(
-                    f"[clickup] Network error on GET {path} (attempt "
+                    f"[clickup] Network error on {method} {path} (attempt "
                     f"{attempt + 1}/{_MAX_RETRIES + 1}): {e}, "
                     f"retrying in {wait:.1f}s...",
                     file=sys.stderr,
@@ -154,12 +168,52 @@ def _request(path: str, *, pat: str | None = None) -> dict:
                 continue
             raise RuntimeError(
                 f"ClickUp network error after {_MAX_RETRIES + 1} attempts "
-                f"on GET {path}: {e}"
+                f"on {method} {path}: {e}"
             ) from e
 
     raise RuntimeError(
         f"ClickUp request failed after {_MAX_RETRIES + 1} attempts: {last_exc}"
     )
+
+
+def post_message(
+    channel_id: str,
+    content: str,
+    *,
+    team_id: str = DEFAULT_TEAM_ID,
+    msg_type: str = "message",
+    pat: str | None = None,
+) -> dict:
+    """POST a top-level chat message. Returns the created message object (data)."""
+    data = _request(
+        f"/api/v3/workspaces/{team_id}/chat/channels/{channel_id}/messages",
+        method="POST",
+        payload={"type": msg_type, "content": content, "content_format": "text/md"},
+        pat=pat,
+    )
+    return data.get("data") or data
+
+
+def ensure_dm_channel(
+    user_ids: list[str],
+    *,
+    team_id: str = DEFAULT_TEAM_ID,
+    pat: str | None = None,
+) -> dict:
+    """Create or fetch a DM channel for ``user_ids`` (idempotent).
+
+    Returns the channel object (must include ``id``).
+    """
+    data = _request(
+        f"/api/v3/workspaces/{team_id}/chat/channels/direct_message",
+        method="POST",
+        payload={"user_ids": [str(u) for u in user_ids]},
+        pat=pat,
+    )
+    channel = data.get("data") or data
+    if not channel.get("id"):
+        raise RuntimeError(f"ClickUp DM create returned no channel id: {data!r}")
+    return channel
 
 
 def list_channels(team_id: str = DEFAULT_TEAM_ID, *, pat: str | None = None) -> list[dict]:

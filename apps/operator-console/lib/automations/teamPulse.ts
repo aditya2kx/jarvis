@@ -1,0 +1,109 @@
+/** Pure team-pulse compose helpers (mirror agents/bhaga/scripts/team_pulse.py). */
+
+export const AUTOMATION_ID = "team-pulse";
+export const DEFAULT_DAYS = [1, 3, 6]; // Tue Thu Sun (Python weekday Mon=0)
+export const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+
+export const DEFAULT_TEMPLATE = `Good Morning Team ! Sharing current pay cycle's leaderboard based of Google Review Bonus.
+
+{leaderboard}
+
+Keep the momentum going...!! One team, one fight.
+
+There would be more such incentives/challenges program rolled out soon.
+`;
+
+export function composeMessage(template: string, leaderboardMd: string): string {
+  if (template.includes("{leaderboard}")) {
+    return template.replace("{leaderboard}", leaderboardMd.trim()).trim();
+  }
+  if (!leaderboardMd.trim()) return template.trim();
+  return `${template.trim()}\n\n${leaderboardMd.trim()}`;
+}
+
+export function displayName(employee: string): string {
+  const raw = employee.trim();
+  if (raw.includes(", ")) {
+    const [last, first] = raw.split(", ", 2);
+    return `${first.trim()} ${last.trim()}`.trim();
+  }
+  return raw;
+}
+
+export function formatMoney(amount: number): string {
+  if (Math.abs(amount - Math.round(amount)) < 1e-9) return `$${Math.round(amount)}`;
+  return `$${amount.toFixed(2)}`;
+}
+
+export function formatLeaderboard(
+  rows: { employee: string; total_bonus: number | string | null }[],
+): string {
+  const byAmount = new Map<number, string[]>();
+  for (const r of rows) {
+    const amt = Number(r.total_bonus ?? 0);
+    if (!(amt > 0)) continue;
+    const name = displayName(String(r.employee ?? ""));
+    if (!name) continue;
+    const list = byAmount.get(amt) ?? [];
+    list.push(name);
+    byAmount.set(amt, list);
+  }
+  if (byAmount.size === 0) {
+    return "_No review bonuses credited in the current open pay period yet._";
+  }
+  const amounts = [...byAmount.keys()].sort((a, b) => b - a);
+  const lines: string[] = [];
+  amounts.forEach((amt, i) => {
+    const names = (byAmount.get(amt) ?? []).slice().sort();
+    const money = formatMoney(amt);
+    const top = i === 0;
+    if (names.length === 1) {
+      const verb = top ? `leading with ${money}` : `at ${money}`;
+      lines.push(`*   **${names[0]}** ${verb}.`);
+    } else if (names.length === 2) {
+      const verb = top ? `leading with ${money} each` : `at ${money} each`;
+      lines.push(`*   **${names[0]}** and **${names[1]}** ${verb}.`);
+    } else {
+      const head = names.slice(0, -1).map((n) => `**${n}**`).join(", ");
+      const verb = top ? `leading with ${money} each` : `at ${money} each`;
+      lines.push(`*   ${head}, and **${names[names.length - 1]}** ${verb}.`);
+    }
+  });
+  return lines.join("\n");
+}
+
+export function parseDays(raw: unknown): number[] {
+  if (Array.isArray(raw)) return raw.map((x) => Number(x));
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) return parsed.map((x) => Number(x));
+    } catch {
+      /* fall through */
+    }
+  }
+  return [...DEFAULT_DAYS];
+}
+
+export function cadenceSummary(
+  days: number[],
+  hour: number,
+  minute: number,
+  tz: string,
+): string {
+  const labels = days
+    .filter((d) => d >= 0 && d <= 6)
+    .sort((a, b) => a - b)
+    .map((d) => DAY_LABELS[d])
+    .join(" · ");
+  return `${labels} · ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")} ${tz}`;
+}
+
+export function chicagoTodayIso(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Chicago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}

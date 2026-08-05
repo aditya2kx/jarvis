@@ -1,3 +1,12 @@
+## 2026-08-05 — Team Pulse automations (Issue #216)
+
+**Scope:** Automate ClickUp team-motivation posts (review-bonus leaderboard + closer) with Operator Console control; DM-first default.
+
+**Key changes (PR #222):**
+- Console `/automations` → `/automations/team-pulse` (enable/days/time/destination/template/history).
+- Migration `054` `automations` + `automation_posts`; `skills/clickup_chat` POST + DM ensure; `team_pulse` job + webhook `/team-pulse`.
+- Evidence: dry-run + live Adi DM (`message_id=80170040717979`); scheduler create post-merge.
+
 ## 2026-08-05 — Accounting Plaid ingest resume (Issue #220)
 
 **Scope:** Operator Console Accounting froze after 2026-07-23 — Chase Item had empty webhook; no catch-up path.

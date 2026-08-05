@@ -4,7 +4,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from skills.plaid_api.sync import _pfc, _row_from_txn, purge_item
+from skills.plaid_api.sync import _pfc, _row_from_txn, purge_item, update_item_webhook
 
 
 class TestPfc(unittest.TestCase):
@@ -98,6 +98,35 @@ class TestPurgeItem(unittest.TestCase):
         self.assertIn("plaid_transactions", sqls[2])
         self.assertIn("DELETE FROM", sqls[3])
         self.assertIn("plaid_items", sqls[3])
+
+
+class TestUpdateItemWebhook(unittest.TestCase):
+    def test_rejects_non_https(self):
+        with self.assertRaises(ValueError):
+            update_item_webhook("palmetto", "item1", "http://insecure.example/plaid/webhook")
+
+    @patch("skills.plaid_api.sync.PlaidClient")
+    @patch("skills.plaid_api.sync.get_access_token", return_value="access-tok")
+    def test_calls_item_webhook_update(self, _tok, mock_client_cls):
+        client = MagicMock()
+        client.item_webhook_update.return_value = {
+            "item": {
+                "item_id": "item1",
+                "webhook": "https://bhaga-webhook.example/plaid/webhook",
+            }
+        }
+        mock_client_cls.return_value = client
+        out = update_item_webhook(
+            "palmetto",
+            "item1",
+            "https://bhaga-webhook.example/plaid/webhook",
+        )
+        client.item_webhook_update.assert_called_once_with(
+            "access-tok",
+            "https://bhaga-webhook.example/plaid/webhook",
+        )
+        self.assertEqual(out["item_id"], "item1")
+        self.assertEqual(out["webhook"], "https://bhaga-webhook.example/plaid/webhook")
 
 
 if __name__ == "__main__":

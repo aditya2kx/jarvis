@@ -1818,8 +1818,15 @@ grants are the current mechanism.
   flow + Palmetto taxonomy #160); Square net sales are not mixed on that tab. Link/sync via
   console; incremental via `bhaga-webhook` `POST /plaid/webhook`
   + `POST /plaid/sync` (shared `PLAID_SYNC_TOKEN` / sandbox trigger token). Skill:
-  `skills/plaid_api/`. Env on console + webhook: `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`,
-  optional `PLAID_WEBHOOK_URL`. Access tokens: Secret Manager `plaid_access_token_<item_id>`.
+  `skills/plaid_api/`. Env on console + webhook: `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`.
+  **Required on console:** `PLAID_WEBHOOK_URL=https://bhaga-webhook-4yl5izovxq-uc.a.run.app/plaid/webhook`
+  (set in `operator-console-deploy.yml`; without it, Link creates Items with an empty webhook and
+  Accounting freezes until Manual Sync — Issue #220). After Link (or for an existing Item), ensure
+  Plaid `item/get.webhook` matches that URL (`skills.plaid_api.sync.update_item_webhook`).
+  **Ingest layers:** (1) Plaid TRANSACTIONS webhook → `/plaid/webhook` (primary),
+  (2) best-effort `plaid_sync` catch-up inside `daily_refresh` on `bhaga-nightly` (no dedicated
+  Plaid Cloud Scheduler), (3) Manual **Sync now** on `/accounting` for backfill / last resort.
+  Access tokens: Secret Manager `plaid_access_token_<item_id>`.
   **Current env:** `PLAID_ENV=production` (cutover Issue #168). Production `plaid_secret`
   in Secret Manager; sandbox Platypus Item/txns purged before Chase Link. Ops:
   (1) rotate `plaid_secret` to the dashboard Production secret,

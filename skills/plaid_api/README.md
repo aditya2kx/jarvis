@@ -36,6 +36,26 @@ print(sync_item('palmetto', '<item_id>'))
 "
 ```
 
+## Webhook URL (Issue #220)
+
+Link only registers a webhook when console has `PLAID_WEBHOOK_URL` set (prod deploy
+points at `bhaga-webhook` `/plaid/webhook`). For an existing Item with an empty
+webhook field:
+
+```bash
+PLAID_ENV=production BHAGA_SECRETS_BACKEND=gcp python3 -c "
+from skills.plaid_api.sync import update_item_webhook
+print(update_item_webhook(
+    'palmetto', '<item_id>',
+    'https://bhaga-webhook-4yl5izovxq-uc.a.run.app/plaid/webhook',
+))
+"
+```
+
+Nightly catch-up: `daily_refresh._plaid_sync_linked_items` (best-effort, non-fatal)
+on the existing `bhaga-nightly` cron — no dedicated Plaid Cloud Scheduler.
+Manual **Sync now** on `/accounting` remains the backfill / last-resort path.
+
 ## Taxonomy seed + reapply (Issue #160)
 
 ```bash

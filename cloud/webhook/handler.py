@@ -1843,6 +1843,50 @@ def plaid_sync_kick():
 
 
 # ---------------------------------------------------------------------------
+# Team pulse (Issue #216) — Cloud Scheduler daily 08:00 CT kick
+# ---------------------------------------------------------------------------
+
+_TEAM_PULSE_TOKEN = (
+    os.environ.get("TEAM_PULSE_TOKEN", "")
+    or os.environ.get("PLAID_SYNC_TOKEN", "")
+    or _SANDBOX_TRIGGER_TOKEN
+)
+
+
+def _run_team_pulse_job() -> None:
+    """Background: day-gated ClickUp team-pulse post."""
+    try:
+        os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+        from agents.bhaga.scripts.team_pulse import run_team_pulse
+
+        result = run_team_pulse(trigger="scheduler", updated_by="bhaga-webhook")
+        log.info("team_pulse result=%s", {k: result.get(k) for k in ("status", "reason", "destination", "message_id", "post_date_ct")})
+    except Exception as exc:  # noqa: BLE001
+        log.error("team_pulse failed: %s", exc)
+
+
+@app.route("/team-pulse", methods=["POST"])
+def team_pulse_kick():
+    """Cloud Scheduler / manual kick — requires X-Team-Pulse-Token."""
+    token = request.headers.get("X-Team-Pulse-Token", "")
+    if not _TEAM_PULSE_TOKEN or not hmac.compare_digest(token, _TEAM_PULSE_TOKEN):
+        return Response("unauthorized", status=403)
+    body = request.get_json(force=True, silent=True) or {}
+    if body.get("dry_run"):
+        try:
+            os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+            from agents.bhaga.scripts.team_pulse import run_team_pulse
+
+            result = run_team_pulse(dry_run=True, force=True, trigger="preview", updated_by="bhaga-webhook")
+            return jsonify({k: result.get(k) for k in ("status", "content", "post_date_ct", "leaderboard_rows")})
+        except Exception as exc:  # noqa: BLE001
+            log.error("team_pulse dry_run failed: %s", exc)
+            return jsonify({"status": "error", "error": str(exc)}), 500
+    _dispatch_async(_run_team_pulse_job)
+    return jsonify({"status": "accepted"})
+
+
+# ---------------------------------------------------------------------------
 # Operator Console IAP fail beacon (Issue #194)
 # ---------------------------------------------------------------------------
 

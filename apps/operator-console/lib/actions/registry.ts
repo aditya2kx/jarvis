@@ -37,6 +37,10 @@ export const MUTATING_ACTIONS = [
   { name: "commitRuleFromTxnAction", page: "accounting", heavy: null },
   { name: "revertRuleEvidenceAction", page: "accounting", heavy: null },
   { name: "setTaxonomyExcludeAction", page: "accounting", heavy: null },
+  // Automations (Issue #216)
+  { name: "saveTeamPulseConfigAction", page: "automations", heavy: null },
+  { name: "previewTeamPulseAction", page: "automations", heavy: null },
+  { name: "postTeamPulseOnceAction", page: "automations", heavy: null },
 ] as const;
 
 export type MutatingActionName = (typeof MUTATING_ACTIONS)[number]["name"];

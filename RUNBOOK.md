@@ -196,6 +196,44 @@ gcloud scheduler jobs pause   bhaga-nightly --location=us-central1
 gcloud scheduler jobs resume  bhaga-nightly --location=us-central1
 ```
 
+### Team pulse (Issue #216)
+
+Daily ClickUp motivating leaderboard. Config lives in BQ `automations` (edited from
+Operator Console `/automations/team-pulse`). Scheduler fires every morning; the job
+no-ops unless enabled and today ∈ configured days. Default destination is a **DM**
+to the operator — promote to the group channel from the console when ready.
+
+| Field | Value |
+|---|---|
+| Name | `bhaga-team-pulse` (`--location=us-central1`) |
+| Schedule | `0 8 * * *` |
+| Time zone | `America/Chicago` |
+| Target | `POST https://bhaga-webhook-4yl5izovxq-uc.a.run.app/team-pulse` |
+| Auth | Header `X-Team-Pulse-Token` (same shared-secret pattern as Plaid sync / sandbox trigger) |
+
+```bash
+# Create (one-time; token from Secret Manager / existing SANDBOX_TRIGGER_TOKEN)
+gcloud scheduler jobs create http bhaga-team-pulse \
+  --location=us-central1 \
+  --schedule='0 8 * * *' \
+  --time-zone=America/Chicago \
+  --uri='https://bhaga-webhook-4yl5izovxq-uc.a.run.app/team-pulse' \
+  --http-method=POST \
+  --headers=Content-Type=application/json,X-Team-Pulse-Token=TOKEN
+
+gcloud scheduler jobs pause  bhaga-team-pulse --location=us-central1
+gcloud scheduler jobs resume bhaga-team-pulse --location=us-central1
+
+# Manual dry-run (no ClickUp write)
+curl -sS -X POST https://bhaga-webhook-4yl5izovxq-uc.a.run.app/team-pulse \
+  -H "X-Team-Pulse-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"dry_run":true}'
+
+# Local CLI
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.team_pulse --dry-run
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.team_pulse --once   # force day gate; still DM-first
+```
+
 > The `bhaga-daily-diff` scheduler + Cloud Run job have been **retired** (deleted 2026-05-29) and
 > the diff build/deploy steps were removed from `.github/workflows/deploy.yml`. `cloud/diff/` source
 > remains in the repo but is no longer built or deployed.

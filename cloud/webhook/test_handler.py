@@ -2009,3 +2009,36 @@ class TestDiagConsoleIap:
             resp = client.post("/diag/console-iap", json={"note": "3"}, headers=headers)
         assert resp.status_code == 429
         assert resp.data == b"rate_limited"
+
+
+class TestTeamPulseKick:
+    def test_missing_token_returns_403(self, monkeypatch):
+        monkeypatch.setattr(handler, "_TEAM_PULSE_TOKEN", "secret-tp")
+        with app.test_client() as client:
+            resp = client.post("/team-pulse", json={})
+        assert resp.status_code == 403
+        assert resp.data == b"unauthorized"
+
+    def test_wrong_token_returns_403(self, monkeypatch):
+        monkeypatch.setattr(handler, "_TEAM_PULSE_TOKEN", "secret-tp")
+        with app.test_client() as client:
+            resp = client.post(
+                "/team-pulse",
+                json={},
+                headers={"X-Team-Pulse-Token": "wrong"},
+            )
+        assert resp.status_code == 403
+
+    def test_valid_token_accepts_async(self, monkeypatch):
+        monkeypatch.setattr(handler, "_TEAM_PULSE_TOKEN", "secret-tp")
+        called = []
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn: called.append(fn))
+        with app.test_client() as client:
+            resp = client.post(
+                "/team-pulse",
+                json={},
+                headers={"X-Team-Pulse-Token": "secret-tp"},
+            )
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "accepted"
+        assert len(called) == 1

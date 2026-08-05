@@ -18,6 +18,7 @@ Jobs (Option B); they must never block the click path via daemon threads.
 | Accounting | Link / Relink | `createPlaidLinkTokenAction`, `exchangePlaidPublicTokenAction` | Plaid sync (in-request, staged UX) |
 | Accounting | Sync now | `syncPlaidNowAction` | Plaid sync |
 | Accounting | Overrides / taxonomy / rules | `setTxnCategoryOverrideAction`, `upsertTaxonomyNodeAction`, `setTaxonomyNodeEnabledAction`, `setCategoryRuleEnabledAction`, `setTaxonomyExcludeAction`, `dryRunRuleAction`, `previewRuleMatchesAction`, `commitRuleFromTxnAction`, `revertRuleEvidenceAction`, `reapplyPlaidCategoriesAction`, `setPlaidInternalAction` | — |
+| Automations | Team pulse save / preview / post once | `saveTeamPulseConfigAction`, `previewTeamPulseAction`, `postTeamPulseOnceAction` | — |
 
 Canonical machine-readable list: [`registry.ts`](./registry.ts).
 Gate: `python3 scripts/check_operator_console_actions.py`.

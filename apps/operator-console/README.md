@@ -14,7 +14,7 @@ Full design/decisions/build plan: [`docs/operator-console/`](../../docs/operator
 | `/accounting` | Linked bank feed (money in/out/cash flow + Palmetto categories) with Square net sales context and $ / % toggle |
 | `/sales` `/labor` `/order-quality` | Performance drill-downs (Forecast console page removed — Issue #213) |
 | `/inventory` | Ordering + Base runway |
-| `/payroll` `/pipeline` | People + system |
+| `/payroll` `/pipeline` `/automations` | People + system + scheduled automations (Team pulse) |
 
 Plaid skill: [`skills/plaid_api/`](../../skills/plaid_api/README.md). Migration `037_plaid_transactions.sql`.
 

@@ -1,3 +1,9 @@
+## 2026-08-05 — Webhook team-pulse image fix (Issue #223)
+
+**Scope:** Post-#222 `/team-pulse` returned `No module named 'agents'` — webhook image lacked BHAGA scripts + clickup_chat; no `CLICKUP_PAT` on service.
+
+**Key changes:** Expand `cloud/webhook/Dockerfile`; mount `CLICKUP_PAT` + `BHAGA_DATASTORE` on webhook deploy; scheduler `bhaga-team-pulse` already created; rotated `sandbox-trigger-token` (v3; prior disabled) after describe leak + jam re-exposure; scheduler header re-wired (Content-Type=application/json). Pre-merge evidence: Cloud Build import `ok team-pulse`; live dry-run on rev `bhaga-webhook-00171-8kn` (`i223-pr224`) → `status=dry_run`, 5 leaderboard rows.
+
 ## 2026-08-05 — Team Pulse automations (Issue #216)
 
 **Scope:** Automate ClickUp team-motivation posts (review-bonus leaderboard + closer) with Operator Console control; DM-first default.

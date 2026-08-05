@@ -2055,6 +2055,46 @@ def _build_ingest_inventory_env(run_id: str) -> dict:
     }
 
 
+def _plaid_sync_linked_items(store: str) -> None:
+    """Best-effort Plaid Accounting catch-up (Issue #220).
+
+    Webhook is the primary ingest path; this drains missed SYNC_UPDATES on the
+    existing bhaga-nightly cron. Never raises — a Plaid outage must not fail
+    Square/ADP tip/payroll. No Firestore step marker (always re-attempt).
+    """
+    try:
+        from skills.plaid_api.sync import list_linked_items, sync_item
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plaid_sync] import failed (non-fatal): {exc}", file=sys.stderr)
+        return
+    try:
+        items = list_linked_items(store)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[plaid_sync] list_linked_items failed store={store} (non-fatal): {exc}",
+            file=sys.stderr,
+        )
+        return
+    if not items:
+        print(f"[plaid_sync] no linked Items for store={store}")
+        return
+    for row in items:
+        item_id = row.get("item_id")
+        if not item_id:
+            continue
+        try:
+            result = sync_item(store, item_id)
+            print(
+                f"[plaid_sync] ok item={item_id} added={result.added} "
+                f"modified={result.modified} removed={result.removed} pages={result.pages}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[plaid_sync] failed item={item_id} (non-fatal): {exc}",
+                file=sys.stderr,
+            )
+
+
 def main() -> int:
     started = datetime.datetime.now(datetime.timezone.utc)
     run_id = uuid.uuid4().hex
@@ -2903,6 +2943,15 @@ def _run_refresh(run_id: str) -> int:
     if not ok:
         print("[refresh_order_reco] FAILED (non-fatal) — Order Recommendation panels will be stale.",
               file=sys.stderr)
+
+    # ── Plaid Accounting catch-up (Issue #220) ──────────────────────────────
+    # Non-fatal, no step marker: webhook is primary; this drains missed
+    # SYNC_UPDATES on the existing bhaga-nightly cron. Must never abort tip/payroll.
+    if not args.dry_run:
+        print("\n[plaid_sync] catching up linked Plaid Items...")
+        _plaid_sync_linked_items(args.store)
+    else:
+        print("[plaid_sync] SKIPPED — dry_run.")
 
     runtime_s = time.monotonic() - t_start
 

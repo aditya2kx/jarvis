@@ -104,5 +104,12 @@ class PlaidClient:
     def item_get(self, access_token: str) -> dict:
         return self._post("/item/get", {"access_token": access_token})
 
+    def item_webhook_update(self, access_token: str, webhook: str) -> dict:
+        """Set or replace the Item's webhook URL (Plaid /item/webhook/update)."""
+        return self._post(
+            "/item/webhook/update",
+            {"access_token": access_token, "webhook": webhook},
+        )
+
     def accounts_get(self, access_token: str) -> dict:
         return self._post("/accounts/get", {"access_token": access_token})

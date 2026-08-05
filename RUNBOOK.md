@@ -1634,9 +1634,17 @@ fallback while the BQ table is being seeded. After seeding, Sheet config becomes
 > **Troubleshooting: /inventory On hand / Order tubs look like the wrong delivery date.**
 > Fixed in migration 041: live next-date headers were painted onto stale Slot 1/2 rows
 > (e.g. TOTAL On hand labeled Jul 23 = 120 with Order tubs = prior restock actuals).
-> Each reco row now stores `delivery_date`; combined view joins by date; next dates are
-> strictly `> today CT` (avoids delivery-day double-count after closing includes received tubs).
+> Each reco row now stores `delivery_date`; combined view joins by date.
+> Migration **051** (Issue #215): next dates keep **today CT** until a base
+> `inventory_closing_daily` row exists for today (restock-morning visibility without
+> evening double-count after closing absorbs received tubs). Migration **052**: planning
+> slots expand beyond 2 — cap `order_reco_max_slots` in `store_config` (default **4**);
+> `refresh_order_reco` / webhook `_refresh_order_reco` / console `refreshOrderReco` loop
+> `tvf_order_reco_slot1` then `tvf_order_reco_slot_n` for each live slot. Grafana
+> `vw_order_reco_combined` stays dual-slot; Operator Console pivots all live slots.
 > Deploy refreshes reco after schema so prod Operator Console updates on merge.
+>
+> Optional: `/bhaga-cloud config set order_reco_max_slots <N>` to raise/lower the column cap.
 
 > **`data_window_end` is DERIVED — never stored in `store_config`.** It is computed
 > live as `MAX(square_transactions.date_local)` via `core.store_config.resolve_data_window_end()`.
@@ -1848,8 +1856,15 @@ grants are the current mechanism.
   flow + Palmetto taxonomy #160); Square net sales are not mixed on that tab. Link/sync via
   console; incremental via `bhaga-webhook` `POST /plaid/webhook`
   + `POST /plaid/sync` (shared `PLAID_SYNC_TOKEN` / sandbox trigger token). Skill:
-  `skills/plaid_api/`. Env on console + webhook: `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`,
-  optional `PLAID_WEBHOOK_URL`. Access tokens: Secret Manager `plaid_access_token_<item_id>`.
+  `skills/plaid_api/`. Env on console + webhook: `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV`.
+  **Required on console:** `PLAID_WEBHOOK_URL=https://bhaga-webhook-4yl5izovxq-uc.a.run.app/plaid/webhook`
+  (set in `operator-console-deploy.yml`; without it, Link creates Items with an empty webhook and
+  Accounting freezes until Manual Sync — Issue #220). After Link (or for an existing Item), ensure
+  Plaid `item/get.webhook` matches that URL (`skills.plaid_api.sync.update_item_webhook`).
+  **Ingest layers:** (1) Plaid TRANSACTIONS webhook → `/plaid/webhook` (primary),
+  (2) best-effort `plaid_sync` catch-up inside `daily_refresh` on `bhaga-nightly` (no dedicated
+  Plaid Cloud Scheduler), (3) Manual **Sync now** on `/accounting` for backfill / last resort.
+  Access tokens: Secret Manager `plaid_access_token_<item_id>`.
   **Current env:** `PLAID_ENV=production` (cutover Issue #168). Production `plaid_secret`
   in Secret Manager; sandbox Platypus Item/txns purged before Chase Link. Ops:
   (1) rotate `plaid_secret` to the dashboard Production secret,

@@ -1,3 +1,30 @@
+## 2026-08-05 — Accounting Plaid ingest resume (Issue #220)
+
+**Scope:** Operator Console Accounting froze after 2026-07-23 — Chase Item had empty webhook; no catch-up path.
+
+**Key changes (PR #221):**
+- Require `PLAID_WEBHOOK_URL` on console deploy; `update_item_webhook` for existing Items.
+- Best-effort non-fatal `_plaid_sync_linked_items` on `bhaga-nightly` / `daily_refresh` (no dedicated Plaid scheduler).
+- Live: webhook set + sync drained 85 txns through 2026-08-04; operator pre-PR verify on console.
+
+## 2026-08-05 — Labor scheduled hours: paid PTO + Exclude PTO filter (Issue #218)
+
+**Scope:** ADP Team Schedule undercounted vs footer when Approved Time Off lived in `cell_text` (not shift-range nodes). Count paid PTO toward scheduled hours; tag `hour_kind`; Labor console filter.
+
+**Key changes (PR #219):**
+- `schedule_backend.parse_day_cell_hours` + week-total scale; migration `053` `hour_kind`; backfill reconcile warn.
+- Console `/labor` PTO Include/Exclude; ARCHITECTURE note.
+- Inventory avg/day deferred (separate chat); activity dock follow-up.
+
+## 2026-08-04 — Inventory restock-day columns + N-slot Order Assistant (Issue #215)
+
+**Scope:** Keep today's restock visible on `/inventory` until ClickUp closing absorbs stock; allow more than two planning date column groups.
+
+**Key changes (PR #217):**
+- Migration `051`: closing-aware `vw_order_reco_next_dates` (today until base closing exists).
+- Migration `052`: `order_reco_max_slots` (default 4) + `tvf_order_reco_slot_n`; refresh loops all live slots; console pivots dynamically.
+- Docs: DOMAIN / ARCHITECTURE / RUNBOOK; status.py registry notes for 051/052.
+
 ## 2026-08-01 — Labor console simplify + dual-source wage rates (Issue #213)
 
 **Scope:** Strip Forecast from Operator Console; rebuild `/labor` to historical ADP hours; gap-fill missing wage rates from ADP People → Payroll info.

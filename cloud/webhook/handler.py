@@ -1315,6 +1315,9 @@ def _refresh_order_reco(store: str) -> None:
     module docstring; same rationale as _ACTIVE_BASES). Keep both in sync.
     Dispatched async from a restock submission or an order_reco_max_tubs
     config-set — never called on the 3s-deadline request path.
+
+    Migration 052: loops live next-dates slots (cap order_reco_max_slots,
+    default 4) via tvf_order_reco_slot1 + tvf_order_reco_slot_n.
     """
     if _bq is None:
         return
@@ -1326,6 +1329,12 @@ def _refresh_order_reco(store: str) -> None:
             job_config=_bq_param_config([("store", "STRING", store)]),
         ).result())
         max_tubs = int(rows[0]["value"]) if rows else _ORDER_RECO_DEFAULT_MAX_TUBS
+
+        slot_rows = list(_bq.query(  # type: ignore[union-attr]
+            f"SELECT slot FROM `{_BQ_PROJECT}.{_BQ_DATASET}.vw_order_reco_next_dates`"
+            f" ORDER BY slot",
+        ).result())
+        slots = [int(r["slot"]) for r in slot_rows]
 
         fq_reco = f"`{_BQ_ORDER_RECO_TABLE}`"
         # Explicit columns — migration 041 added delivery_date; t.* + ts would mis-map.
@@ -1343,19 +1352,31 @@ def _refresh_order_reco(store: str) -> None:
             f"DELETE FROM {fq_reco} WHERE store = @store",
             job_config=_bq_param_config([("store", "STRING", store)]),
         ).result()
+        if not slots:
+            log.info("refresh_order_reco: no next dates store=%s — cleared", store)
+            return
         _bq.query(  # type: ignore[union-attr]
             f"INSERT INTO {fq_reco} ({_cols}) SELECT @store, 1, {_sel}"
             f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot1`(@mt)",
             job_config=_bq_param_config([("store", "STRING", store), ("mt", "INT64", max_tubs)]),
         ).result()
-        # Slot 2 must run AFTER slot 1's INSERT lands — its TVF reads slot 1's
-        # row back from inventory_order_reco (see migration 031).
-        _bq.query(  # type: ignore[union-attr]
-            f"INSERT INTO {fq_reco} ({_cols}) SELECT @store, 2, {_sel}"
-            f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot2`(@mt)",
-            job_config=_bq_param_config([("store", "STRING", store), ("mt", "INT64", max_tubs)]),
-        ).result()
-        log.info("refresh_order_reco: recomputed store=%s max_tubs=%d", store, max_tubs)
+        for slot in slots:
+            if slot < 2:
+                continue
+            # Slot N reads prior slot's materialized row (migration 052).
+            _bq.query(  # type: ignore[union-attr]
+                f"INSERT INTO {fq_reco} ({_cols}) SELECT @store, @slot, {_sel}"
+                f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot_n`(@mt, @slot)",
+                job_config=_bq_param_config([
+                    ("store", "STRING", store),
+                    ("mt", "INT64", max_tubs),
+                    ("slot", "INT64", slot),
+                ]),
+            ).result()
+        log.info(
+            "refresh_order_reco: recomputed store=%s max_tubs=%d slots=%s",
+            store, max_tubs, slots,
+        )
     except Exception as exc:
         log.error("refresh_order_reco failed (breadcrumb): store=%s exc=%s", store, exc)
 

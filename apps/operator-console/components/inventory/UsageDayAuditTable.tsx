@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import type { UsageDayAuditRow } from "@/lib/bq/queries";
 import {
@@ -10,7 +10,12 @@ import {
   matrixStatusTag,
   pivotUsageDayAudit,
 } from "@/lib/inventory/usageDayAudit";
-import { UsageDayOverrideDrawer } from "@/components/inventory/UsageDayOverrideDrawer";
+import {
+  UsageDayOverrideDrawer,
+  type UsageDayOverridesApplied,
+} from "@/components/inventory/UsageDayOverrideDrawer";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
+import { useOrderRecoRefreshFollowup } from "@/lib/inventory/useOrderRecoRefreshFollowup";
 
 /** ~10 body rows visible; header sticky inside the scrollport. */
 const TABLE_MAX_H = "max-h-[min(36rem,70vh)]";
@@ -41,6 +46,23 @@ export function UsageDayAuditTable({
 }) {
   const matrix = useMemo(() => pivotUsageDayAudit(rows), [rows]);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  // Gate: client files that call *Action must import useConsoleAction.
+  useConsoleAction();
+  const { banner: recoBanner, followOrderReco } = useOrderRecoRefreshFollowup({
+    pendingBanner:
+      "Order recommendation refreshing — Avg/day and Order tubs update when ready.",
+    doneToast: "Averages updated",
+  });
+
+  const onApplied = useCallback(
+    (result: UsageDayOverridesApplied) => {
+      followOrderReco({
+        queued: result.queued ? ["order-reco"] : undefined,
+        baselineRefreshedAt: result.baselineRefreshedAt,
+      });
+    },
+    [followOrderReco],
+  );
 
   if (!matrix.dates.length) {
     return (
@@ -52,6 +74,15 @@ export function UsageDayAuditTable({
 
   return (
     <>
+      {recoBanner ? (
+        <p
+          className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100"
+          data-testid="usage-day-reco-banner"
+        >
+          {recoBanner}
+        </p>
+      ) : null}
+
       <div
         className={`max-w-full min-w-0 overflow-auto rounded-lg border border-border ${TABLE_MAX_H}`}
         data-testid="usage-day-audit"
@@ -106,6 +137,7 @@ export function UsageDayAuditTable({
         date={selectedDate}
         rows={rows}
         writable={writable}
+        onApplied={onApplied}
       />
     </>
   );

@@ -38,8 +38,10 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    `skills/adp_run_automation/pay_info_backend.py`),
    `adp_earnings`, `adp_scheduled_daily` (per-day scheduled hours, parsed from `Schedule-*.json`
    Team Schedule footer), `adp_scheduled_shifts` (per-employee day shifts from the same JSON
-   `employee_rows`), `adp_payroll_liability` (employer tax from Payroll Liability report),
-   via `schedule_backend.build_schedule_records`). Square tables (`square_transactions`,
+   `employee_rows`; paid ADP **Approved Time Off / PERSONAL** cells count toward hours with
+   `hour_kind` = `shift` | `pto` | `mixed` — Issue #218; console may Exclude PTO),
+   `adp_payroll_liability` (employer tax from Payroll Liability report),
+   via `schedule_backend.build_schedule_records` / `build_employee_schedule_records`). Square tables (`square_transactions`,
    `square_daily_rollup`, `square_item_lines`, `square_item_daily`, `square_kds_daily`,
    `square_kds_tickets`) are populated in step 2.
    If `load_raw_bigquery` fails, `square.done` and `adp.done` markers are **cleared** so the next
@@ -67,6 +69,10 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    `vw_inventory_base_latest_daily` (latest submission per base per day, used by Order Assistant
    section). Run standalone: `BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.ingest_inventory --store palmetto`.
    `review_bonus_period`. Idempotent on rerun.
+9b. **Plaid Accounting catch-up** (`_plaid_sync_linked_items`, Issue #220): best-effort
+   `skills.plaid_api.sync.sync_item` for every linked Item. **Non-fatal**, no Firestore marker —
+   webhook is primary; this drains missed updates on the existing `bhaga-nightly` cron (no dedicated
+   Plaid scheduler). Manual Sync on `/accounting` remains the backfill path.
 7. **Verify the rebuilt Model** — first **mechanically** (`assert_model_tabs_populated`: tabs non-empty,
    KDS joined), then **semantically** (`model_semantics.assert_model_semantics`: tip-pool conservation,
    a closed period's `adp_paid` reconciles **only when** a covering GCS Earnings export actually carries
@@ -229,6 +235,8 @@ Sheets is the **source of truth**; BigQuery is a **parallel read-only mirror** u
 > **Operator Console Accounting (migrations 037–047):** Plaid ledger tables/views (`plaid_*`, `vw_plaid_spend_by_category_daily`, `vw_plaid_money_in_daily`) are console-only — not model_* / Grafana. Migration **047** (`exclude_from_accounting`, Internal transfers seed, rule `account_mask`) is registered as a no-new-target note in `status.py` (same class as 037–046). Skill-side: `skills/plaid_api/category_rules.py` + `sync.py` assign `internal_transfers` on transfer heuristics.
 
 > **Operator Console inventory day overrides (migration 048, Issue #194):** `inventory_usage_day_overrides` + rewrite of `vw_inventory_order_assistant` (override join) + `vw_inventory_usage_day_audit` — console `/inventory` day-grain audit only; not model_* / Grafana. Registered as a no-new-target note in `status.py` (same class as 037–047); OA freshness still via existing `vw_inventory_order_assistant` target.
+
+> **Order Assistant next-dates / N-slots (migrations 051–052, Issue #215):** `vw_order_reco_next_dates` is closing-aware (keep today until a base `inventory_closing_daily` row exists) and capped by `order_reco_max_slots` (default 4). `tvf_order_reco_slot_n` chains slots ≥2; `refresh_order_reco` / webhook / console loop all live slots. Grafana `vw_order_reco_combined` stays dual-slot (existing GRAFANA_VIEWS); console pivots N slots. Registered as no-new-target notes in `status.py` (same class as 041/048).
 
 Three supported ways to add information. Recipes A & B keep the raw → model contract intact (read raw
 sheets, write derived tabs); Recipe C is for when the data isn't scraped yet. For what each field

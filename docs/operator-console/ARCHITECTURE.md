@@ -241,10 +241,13 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
 `vw_order_reco_combined`, not a single list. Layout:
 
 - **Frozen identity columns** (left, pinned): `Item`, `Current Qty`, `Avg per day`.
-- **Per-date column group ×2** (the next two future registered delivery dates from
-  `vw_order_reco_next_dates`): `On Hand at Restock`, `Order Tubs`,
-  `Order Weight (lbs)`, `After Restock`, `Days Left After Restock`, and a
-  **Source badge** (`Estimated` vs `Actuals`).
+- **Per-date column group ×N** (live dates from `vw_order_reco_next_dates`,
+  capped by `order_reco_max_slots` default 4 — migration 052; includes
+  **today** until a base closing for today exists — migration 051): `On Hand
+  at Restock`, `Order Tubs`, `Order Weight (lbs)`, `After Restock`, `Days Left
+  After Restock`, and a **Source badge** (`Estimated` vs `Actuals`). Console
+  pivots `inventory_order_reco` long-format so adding another registered
+  schedule date adds another column group automatically.
 - **TOTAL row** per date incl. pallet weight (`Σ weight + 50·CEIL(Σtubs/40)`).
 - **Restock schedule panel** with the three shared operator actions from the Slack
   modal (**Register date (estimated)**, **Add order (actuals)** (CSV/photo → §5.1),
@@ -442,6 +445,8 @@ diverging independently.
 `/labor` shows historical ADP hours plus forward ADP Team Schedule (no forecast-model numbers):
 
 - **Scheduled vs actual** cut at yesterday CT; Sync scheduled shifts runs `BHAGA_ADP_SCHEDULE_ONLY` (local or Cloud Run) → purge-before-upsert into `adp_scheduled_shifts`.
+- **Paid PTO** (ADP “Approved Time Off” / PERSONAL cells) counts toward scheduled hours so emp sums match the ADP footer; rows are tagged `hour_kind` (`shift` | `pto`). Labor page **PTO** filter defaults to Include; **Exclude PTO** drops `hour_kind=pto` from scheduled charts/coverage.
+- **Wall → paid**: per-employee week chip scales wall-clock ranges down (unpaid meal); never inflates when days are missing.
 - **Avg concurrent** uses per-bucket first→last span (one FT ≈ 1); schedule concurrent from wall-clock ranges.
 
 - **L1** one bar chart: Period + Aggregation; View Aggregate | PT/FT;

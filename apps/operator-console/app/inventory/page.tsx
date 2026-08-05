@@ -2,11 +2,10 @@ import {
   baseRunway,
   estimatedScheduleDates,
   nextDates,
-  orderRecoCombined,
+  orderRecoSlots,
   storeConfig,
   usageDayAudit,
   type BaseRunwayRow,
-  type OrderRecoCombinedRow,
   type UsageDayAuditRow,
 } from "@/lib/bq/queries";
 import { ensureOrderRecoFresh } from "@/lib/bq/writes";
@@ -14,6 +13,11 @@ import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
 import { storeDisplayName } from "@/lib/config/stores";
 import { triggerOrderRecoRefresh } from "@/lib/bhaga/recompute";
+import {
+  normalizeDeliveryDate,
+  pivotOrderRecoSlots,
+  type OrderRecoPivotedRow,
+} from "@/lib/inventory/orderRecoPivot";
 import { DataTable, type Thresholds } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { RestockImportDrawer } from "@/components/drawers/RestockImportDrawer";
@@ -25,8 +29,61 @@ export const dynamic = "force-dynamic";
 
 const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-bad" };
 
+function buildRecoColumns(dates: string[]): ColumnDef<OrderRecoPivotedRow>[] {
+  const cols: ColumnDef<OrderRecoPivotedRow>[] = [
+    { accessorKey: "Item", header: "Item" },
+    {
+      accessorKey: "Current Qty",
+      header: "Current Qty",
+      meta: { format: { kind: "number", digits: 1 } },
+    },
+    {
+      accessorKey: "Avg per day",
+      header: "Avg/day",
+      meta: { format: { kind: "number", digits: 2 } },
+    },
+  ];
+  dates.forEach((raw, i) => {
+    const slot = i + 1;
+    const date = normalizeDeliveryDate(raw) || `slot ${slot}`;
+    cols.push(
+      {
+        accessorKey: `On Hand ${slot}`,
+        header: `On hand (${date})`,
+        meta: { format: { kind: "number", digits: 1 } },
+      },
+      {
+        accessorKey: `Order Tubs ${slot}`,
+        header: "Order tubs",
+        meta: { format: { kind: "number" } },
+      },
+      {
+        accessorKey: `Order Weight ${slot}`,
+        header: "Order weight (lbs)",
+        meta: { format: { kind: "number", digits: 0 } },
+      },
+      {
+        accessorKey: `After Restock ${slot}`,
+        header: "After restock",
+        meta: { format: { kind: "number", digits: 1 } },
+      },
+      {
+        accessorKey: `Days Left ${slot}`,
+        header: "Days left",
+        meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
+      },
+      {
+        accessorKey: `Source ${slot}`,
+        header: "Source",
+        meta: { format: { kind: "source" } },
+      },
+    );
+  });
+  return cols;
+}
+
 export default async function InventoryPage() {
-  let rows: OrderRecoCombinedRow[] = [];
+  let rows: OrderRecoPivotedRow[] = [];
   let runwayRows: BaseRunwayRow[] = [];
   let auditRows: UsageDayAuditRow[] = [];
   let dates: string[] = [];
@@ -42,26 +99,24 @@ export default async function InventoryPage() {
         : {},
     );
     recoQueued = ensure.status === "queued";
-    const [reco, nd, config, runway, estimated, audit] = await Promise.all([
-      orderRecoCombined(),
+    const [slotRows, nd, config, runway, estimated, audit] = await Promise.all([
+      orderRecoSlots(),
       nextDates(),
       storeConfig(DEFAULT_STORE),
       baseRunway(),
       estimatedScheduleDates(DEFAULT_STORE),
       usageDayAudit(DEFAULT_STORE),
     ]);
-    rows = reco;
+    dates = nd.map((d) => normalizeDeliveryDate(d.delivery_date)).filter(Boolean);
+    rows = pivotOrderRecoSlots(dates, slotRows);
     runwayRows = runway;
     auditRows = audit;
-    dates = nd.map((d) => d.delivery_date);
     estimatedDates = estimated.map((d) => d.delivery_date);
     const maxTubsRow = config.find((c) => c.key === "order_reco_max_tubs");
     maxTubs = maxTubsRow ? Number(maxTubsRow.value) : undefined;
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
-
-  const [date1, date2] = dates;
 
   const runwayColumns: ColumnDef<BaseRunwayRow>[] = [
     { accessorKey: "Base", header: "Base" },
@@ -82,29 +137,11 @@ export default async function InventoryPage() {
     { accessorKey: "Status 2", header: "Status 2", meta: { format: { kind: "status" } } },
   ];
 
-  const columns: ColumnDef<OrderRecoCombinedRow>[] = [
-    { accessorKey: "Item", header: "Item" },
-    { accessorKey: "Current Qty", header: "Current Qty", meta: { format: { kind: "number", digits: 1 } } },
-    { accessorKey: "Avg per day", header: "Avg/day", meta: { format: { kind: "number", digits: 2 } } },
-    { accessorKey: "On Hand 1", header: date1 ? `On hand (${date1})` : "On hand — slot 1", meta: { format: { kind: "number", digits: 1 } } },
-    { accessorKey: "Order Tubs 1", header: "Order tubs", meta: { format: { kind: "number" } } },
-    { accessorKey: "After Restock 1", header: "After restock", meta: { format: { kind: "number", digits: 1 } } },
-    {
-      accessorKey: "Days Left 1",
-      header: "Days left",
-      meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
-    },
-    { accessorKey: "Source 1", header: "Source", meta: { format: { kind: "source" } } },
-    { accessorKey: "On Hand 2", header: date2 ? `On hand (${date2})` : "On hand — slot 2", meta: { format: { kind: "number", digits: 1 } } },
-    { accessorKey: "Order Tubs 2", header: "Order tubs", meta: { format: { kind: "number" } } },
-    { accessorKey: "After Restock 2", header: "After restock", meta: { format: { kind: "number", digits: 1 } } },
-    {
-      accessorKey: "Days Left 2",
-      header: "Days left",
-      meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
-    },
-    { accessorKey: "Source 2", header: "Source", meta: { format: { kind: "source" } } },
-  ];
+  const columns = buildRecoColumns(dates);
+  const nextDeliveryLabel =
+    dates.length === 0
+      ? "No delivery date registered yet."
+      : `Next delivery: ${dates.join(" · then ")}`;
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-4">
@@ -153,9 +190,11 @@ export default async function InventoryPage() {
             />
           </div>
 
-          <p className="text-sm text-muted-foreground">
-            {date1 ? `Next delivery: ${date1}` : "No delivery date registered yet."}
-            {date2 ? ` · then ${date2}` : ""}
+          <p className="text-sm text-muted-foreground">{nextDeliveryLabel}</p>
+          <p className="text-xs text-muted-foreground">
+            Order weight (lbs) = Order tubs × per-tub weight (Açaí 18 lbs; other bases 20 lbs;
+            Blade is direct-delivery / not weighed). TOTAL includes +50 lbs per pallet (40
+            tubs/pallet) — same as Grafana Order Assistant.
           </p>
           <DataTable columns={columns} data={rows} pinLeft={["Item", "Current Qty", "Avg per day"]} />
 

@@ -1035,6 +1035,45 @@ class RefreshOrderRecoStepTests(unittest.TestCase):
         self.assertNotIn("return 1", tail.split("if not ok:")[1].split("\n\n")[0])
 
 
+class PlaidSyncLinkedItemsTests(unittest.TestCase):
+    """Issue #220: nightly Plaid Accounting catch-up — non-fatal, not via run_step."""
+
+    def setUp(self):
+        self.src = (
+            daily_refresh.pathlib.Path(daily_refresh.__file__).parent / "daily_refresh.py"
+        ).read_text()
+
+    def test_plaid_sync_call_site_not_via_run_step(self):
+        """Must not land on the failures list that aborts tip/payroll."""
+        self.assertIn("_plaid_sync_linked_items(args.store)", self.src)
+        self.assertNotIn('run_step(\n        "plaid_sync"', self.src)
+        # Call site sits after refresh_order_reco.
+        reco_idx = self.src.index('run_step(\n        "refresh_order_reco"')
+        plaid_idx = self.src.index("_plaid_sync_linked_items(args.store)")
+        self.assertLess(reco_idx, plaid_idx)
+
+    def test_plaid_sync_swallows_sync_item_failure(self):
+        fake_result = mock.Mock(added=1, modified=0, removed=0, pages=1)
+        with mock.patch(
+            "skills.plaid_api.sync.list_linked_items",
+            return_value=[{"item_id": "item_ok"}, {"item_id": "item_bad"}, {"item_id": None}],
+        ), mock.patch(
+            "skills.plaid_api.sync.sync_item",
+            side_effect=[fake_result, RuntimeError("plaid down")],
+        ) as sync_mock:
+            # Must not raise — non-fatal isolation for Square/ADP nightly.
+            daily_refresh._plaid_sync_linked_items("palmetto")
+        # None item_id skipped; only two sync_item calls attempted.
+        self.assertEqual(sync_mock.call_count, 2)
+
+    def test_plaid_sync_list_failure_is_non_fatal(self):
+        with mock.patch(
+            "skills.plaid_api.sync.list_linked_items",
+            side_effect=RuntimeError("bq unavailable"),
+        ):
+            daily_refresh._plaid_sync_linked_items("palmetto")
+
+
 class PrepareProjectionRecoveryTests(unittest.TestCase):
     RD = datetime.date(2026, 6, 13)
 

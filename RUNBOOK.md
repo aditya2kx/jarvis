@@ -198,6 +198,12 @@ gcloud scheduler jobs resume  bhaga-nightly --location=us-central1
 
 ### Team pulse (Issue #216)
 
+Webhook image must include `agents/bhaga/scripts` + `skills/clickup_chat` + `core`
+(`cloud/webhook/Dockerfile`); Cloud Run mounts `CLICKUP_PAT` + `BHAGA_DATASTORE=bigquery`
+(see `deploy.yml`). Auth header uses `sandbox-trigger-token` via `X-Team-Pulse-Token`
+(falls back from `TEAM_PULSE_TOKEN` / `SANDBOX_TRIGGER_TOKEN`).
+
+
 Daily ClickUp motivating leaderboard. Config lives in BQ `automations` (edited from
 Operator Console `/automations/team-pulse`). Scheduler fires every morning; the job
 no-ops unless enabled and today ∈ configured days. Default destination is a **DM**

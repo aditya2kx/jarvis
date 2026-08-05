@@ -2,7 +2,7 @@
 
 **Scope:** Post-#222 `/team-pulse` returned `No module named 'agents'` — webhook image lacked BHAGA scripts + clickup_chat; no `CLICKUP_PAT` on service.
 
-**Key changes:** Expand `cloud/webhook/Dockerfile`; mount `CLICKUP_PAT` + `BHAGA_DATASTORE` on webhook deploy; scheduler `bhaga-team-pulse` already created; rotated `sandbox-trigger-token` after describe leak.
+**Key changes:** Expand `cloud/webhook/Dockerfile`; mount `CLICKUP_PAT` + `BHAGA_DATASTORE` on webhook deploy; scheduler `bhaga-team-pulse` already created; rotated `sandbox-trigger-token` (v3; prior disabled) after describe leak + jam re-exposure; scheduler header re-wired (Content-Type=application/json).
 
 ## 2026-08-05 — Team Pulse automations (Issue #216)
 

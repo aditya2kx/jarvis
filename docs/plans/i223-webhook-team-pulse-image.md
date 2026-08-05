@@ -53,14 +53,16 @@ curl -sS -X POST https://bhaga-webhook-4yl5izovxq-uc.a.run.app/team-pulse \
 # expect: status dry_run / composed markdown — NOT "No module named 'agents'"
 ```
 
-## Per-scenario evidence
+## Per-scenario evidence (jam-approved §4)
 
 | # | Scenario | Pass |
 |---|---|---|
-| E1 | Happy dry-run | curl returns dry_run body with leaderboard |
-| E2 | Auth fail | wrong token → 401/403 |
-| E3 | Legacy routes | Slack/Plaid paths still healthy (handler tests) |
-| E4 | Docs | RUNBOOK + PROGRESS updated |
+| E1 | Happy dry-run | Valid token → `status` dry_run + content/leaderboard — not `No module named 'agents'` |
+| E2 | Auth fail | Wrong `X-Team-Pulse-Token` → 403 |
+| E3 | Service config | describe shows `CLICKUP_PAT` + `BHAGA_DATASTORE=bigquery`; image ≠ pre-fix `85b96fe` |
+| E4 | Token rotate + re-wire | New SM version enabled, prior disabled; scheduler header from SM (never paste token); stale→403, latest→E1 |
+| E5 | Legacy routes | Webhook handler tests green (Slack/Plaid unchanged) |
+| E6 | Docs | RUNBOOK § Team pulse + PROGRESS #223 |
 
 ## Invariants
 

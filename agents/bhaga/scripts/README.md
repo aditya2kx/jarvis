@@ -38,8 +38,10 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    `skills/adp_run_automation/pay_info_backend.py`),
    `adp_earnings`, `adp_scheduled_daily` (per-day scheduled hours, parsed from `Schedule-*.json`
    Team Schedule footer), `adp_scheduled_shifts` (per-employee day shifts from the same JSON
-   `employee_rows`), `adp_payroll_liability` (employer tax from Payroll Liability report),
-   via `schedule_backend.build_schedule_records`). Square tables (`square_transactions`,
+   `employee_rows`; paid ADP **Approved Time Off / PERSONAL** cells count toward hours with
+   `hour_kind` = `shift` | `pto` | `mixed` — Issue #218; console may Exclude PTO),
+   `adp_payroll_liability` (employer tax from Payroll Liability report),
+   via `schedule_backend.build_schedule_records` / `build_employee_schedule_records`). Square tables (`square_transactions`,
    `square_daily_rollup`, `square_item_lines`, `square_item_daily`, `square_kds_daily`,
    `square_kds_tickets`) are populated in step 2.
    If `load_raw_bigquery` fails, `square.done` and `adp.done` markers are **cleared** so the next

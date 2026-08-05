@@ -1,3 +1,12 @@
+## 2026-08-05 — Labor scheduled hours: paid PTO + Exclude PTO filter (Issue #218)
+
+**Scope:** ADP Team Schedule undercounted vs footer when Approved Time Off lived in `cell_text` (not shift-range nodes). Count paid PTO toward scheduled hours; tag `hour_kind`; Labor console filter.
+
+**Key changes (PR #219):**
+- `schedule_backend.parse_day_cell_hours` + week-total scale; migration `053` `hour_kind`; backfill reconcile warn.
+- Console `/labor` PTO Include/Exclude; ARCHITECTURE note.
+- Inventory avg/day deferred (separate chat); activity dock follow-up.
+
 ## 2026-08-04 — Inventory restock-day columns + N-slot Order Assistant (Issue #215)
 
 **Scope:** Keep today's restock visible on `/inventory` until ClickUp closing absorbs stock; allow more than two planning date column groups.

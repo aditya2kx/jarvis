@@ -203,7 +203,6 @@ Webhook image must include `agents/bhaga/scripts` + `skills/clickup_chat` + `cor
 (see `deploy.yml`). Auth header uses `sandbox-trigger-token` via `X-Team-Pulse-Token`
 (falls back from `TEAM_PULSE_TOKEN` / `SANDBOX_TRIGGER_TOKEN`).
 
-
 Daily ClickUp motivating leaderboard. Config lives in BQ `automations` (edited from
 Operator Console `/automations/team-pulse`). Scheduler fires every morning; the job
 no-ops unless enabled and today ∈ configured days. Default destination is a **DM**

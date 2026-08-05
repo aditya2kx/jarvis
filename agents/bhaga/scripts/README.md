@@ -69,6 +69,10 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    `vw_inventory_base_latest_daily` (latest submission per base per day, used by Order Assistant
    section). Run standalone: `BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.ingest_inventory --store palmetto`.
    `review_bonus_period`. Idempotent on rerun.
+9b. **Plaid Accounting catch-up** (`_plaid_sync_linked_items`, Issue #220): best-effort
+   `skills.plaid_api.sync.sync_item` for every linked Item. **Non-fatal**, no Firestore marker —
+   webhook is primary; this drains missed updates on the existing `bhaga-nightly` cron (no dedicated
+   Plaid scheduler). Manual Sync on `/accounting` remains the backfill path.
 7. **Verify the rebuilt Model** — first **mechanically** (`assert_model_tabs_populated`: tabs non-empty,
    KDS joined), then **semantically** (`model_semantics.assert_model_semantics`: tip-pool conservation,
    a closed period's `adp_paid` reconciles **only when** a covering GCS Earnings export actually carries

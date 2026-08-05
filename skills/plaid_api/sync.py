@@ -443,6 +443,25 @@ def list_linked_items(store: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def update_item_webhook(store: str, item_id: str, webhook_url: str) -> dict:
+    """Set Plaid Item webhook URL without syncing transactions (Issue #220).
+
+    ``store`` is accepted for call-site consistency with ``sync_item`` / ``purge_item``;
+    the Plaid API keys off the Item access token only.
+    """
+    _ = store  # call-site symmetry; token is per item_id
+    if not webhook_url or not webhook_url.startswith("https://"):
+        raise ValueError(f"webhook_url must be https://…, got {webhook_url!r}")
+    token = get_access_token(item_id)
+    client = PlaidClient()
+    resp = client.item_webhook_update(token, webhook_url)
+    item = resp.get("item") or {}
+    return {
+        "item_id": item.get("item_id") or item_id,
+        "webhook": item.get("webhook") or webhook_url,
+    }
+
+
 def purge_item(store: str, item_id: str, *, dry_run: bool = True) -> dict:
     """Delete all plaid_transactions for item_id, then the plaid_items row.
 

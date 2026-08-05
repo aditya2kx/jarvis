@@ -1,3 +1,12 @@
+## 2026-08-05 — Accounting Plaid ingest resume (Issue #220)
+
+**Scope:** Operator Console Accounting froze after 2026-07-23 — Chase Item had empty webhook; no catch-up path.
+
+**Key changes (PR #221):**
+- Require `PLAID_WEBHOOK_URL` on console deploy; `update_item_webhook` for existing Items.
+- Best-effort non-fatal `_plaid_sync_linked_items` on `bhaga-nightly` / `daily_refresh` (no dedicated Plaid scheduler).
+- Live: webhook set + sync drained 85 txns through 2026-08-04; operator pre-PR verify on console.
+
 ## 2026-08-05 — Labor scheduled hours: paid PTO + Exclude PTO filter (Issue #218)
 
 **Scope:** ADP Team Schedule undercounted vs footer when Approved Time Off lived in `cell_text` (not shift-range nodes). Count paid PTO toward scheduled hours; tag `hour_kind`; Labor console filter.

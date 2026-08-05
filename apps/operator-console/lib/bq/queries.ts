@@ -202,8 +202,12 @@ export interface LaborScheduledHoursRow {
 export function laborScheduledHoursByGrain(
   win: DateWindow,
   grain: Grain,
+  opts?: { excludePto?: boolean },
 ): Promise<LaborScheduledHoursRow[]> {
   const bucket = bucketSql(grain, "s.date");
+  const ptoClause = opts?.excludePto
+    ? `AND IFNULL(s.hour_kind, 'shift') != 'pto'`
+    : "";
   return q<LaborScheduledHoursRow>(
     `SELECT
        ${bucket} AS date,
@@ -224,6 +228,7 @@ export function laborScheduledHoursByGrain(
      WHERE s.date BETWEEN @start AND @end
        AND s.date >= CURRENT_DATE('America/Chicago')
        AND IFNULL(s.scheduled_hours, 0) > 0
+       ${ptoClause}
      GROUP BY date
      ORDER BY date`,
     { start: dateParam(win.start), end: dateParam(win.end) },
@@ -242,7 +247,11 @@ export interface LaborScheduledShiftDayRow {
 
 export function laborScheduledShiftDays(
   win: DateWindow,
+  opts?: { excludePto?: boolean },
 ): Promise<LaborScheduledShiftDayRow[]> {
+  const ptoClause = opts?.excludePto
+    ? `AND IFNULL(s.hour_kind, 'shift') != 'pto'`
+    : "";
   return q<LaborScheduledShiftDayRow>(
     `SELECT
        CAST(s.date AS STRING) AS date,
@@ -260,6 +269,7 @@ export function laborScheduledShiftDays(
      WHERE s.date BETWEEN @start AND @end
        AND s.date >= CURRENT_DATE('America/Chicago')
        AND IFNULL(s.scheduled_hours, 0) > 0
+       ${ptoClause}
      ORDER BY date, employee`,
     { start: dateParam(win.start), end: dateParam(win.end) },
   );

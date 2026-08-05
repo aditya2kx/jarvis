@@ -1201,6 +1201,16 @@ export function orderRecoSlots(): Promise<OrderRecoSlotLongRow[]> {
   );
 }
 
+/** ISO timestamp of latest order-reco materialization (null if table empty). */
+export async function orderRecoRefreshedAt(store: string): Promise<string | null> {
+  const rows = await q<{ refreshed_at: string | null }>(
+    `SELECT CAST(MAX(refreshed_at) AS STRING) AS refreshed_at
+     FROM ${fq("inventory_order_reco")} WHERE store = @store`,
+    { store },
+  );
+  return rows[0]?.refreshed_at ?? null;
+}
+
 // vw_order_reco_next_dates (031 + 041 + 051 + 052) — up to order_reco_max_slots
 // planning dates (default 4): future, plus today until a base closing exists.
 export interface NextDateRow {

@@ -27,4 +27,23 @@ describe("orderRecoRefreshedAdvanced", () => {
   it("advances when baseline is null and latest exists", () => {
     expect(orderRecoRefreshedAdvanced(null, "2026-08-05T13:43:19.000Z")).toBe(true);
   });
+
+  // BQ `CAST(TIMESTAMP AS STRING)` shapes returned by orderRecoRefreshedAt
+  it("advances on BigQuery CAST AS STRING (+00) timestamps", () => {
+    expect(
+      orderRecoRefreshedAdvanced(
+        "2026-08-05 15:32:32.852292+00",
+        "2026-08-05 15:35:01.100000+00",
+      ),
+    ).toBe(true);
+  });
+
+  it("advances on BigQuery CAST AS STRING (UTC suffix) timestamps", () => {
+    expect(
+      orderRecoRefreshedAdvanced(
+        "2026-08-05 15:32:32.852292 UTC",
+        "2026-08-05 15:35:01.100000 UTC",
+      ),
+    ).toBe(true);
+  });
 });

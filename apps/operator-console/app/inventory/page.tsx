@@ -58,6 +58,11 @@ function buildRecoColumns(dates: string[]): ColumnDef<OrderRecoPivotedRow>[] {
         meta: { format: { kind: "number" } },
       },
       {
+        accessorKey: `Order Weight ${slot}`,
+        header: "Order weight (lbs)",
+        meta: { format: { kind: "number", digits: 0 } },
+      },
+      {
         accessorKey: `After Restock ${slot}`,
         header: "After restock",
         meta: { format: { kind: "number", digits: 1 } },
@@ -186,6 +191,11 @@ export default async function InventoryPage() {
           </div>
 
           <p className="text-sm text-muted-foreground">{nextDeliveryLabel}</p>
+          <p className="text-xs text-muted-foreground">
+            Order weight (lbs) = Order tubs × per-tub weight (Açaí 18 lbs; other bases 20 lbs;
+            Blade is direct-delivery / not weighed). TOTAL includes +50 lbs per pallet (40
+            tubs/pallet) — same as Grafana Order Assistant.
+          </p>
           <DataTable columns={columns} data={rows} pinLeft={["Item", "Current Qty", "Avg per day"]} />
 
           <div>

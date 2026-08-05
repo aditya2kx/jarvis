@@ -327,8 +327,49 @@ def parse_shift_range_hours(s: Optional[str]) -> float:
     return round((end - start) / 60.0, 2)
 
 
+# ADP Team Schedule puts paid PTO in cell_text, not <schedule-shift-range>
+# (e.g. "PERSONAL Approved Time Off. 8:00 AM - 4:00 PM"). Those hours are in
+# the footer + per-employee week total; skipping them undercounts vs ADP.
+_TIME_OFF_RE = re.compile(
+    r"(?:approved\s+)?time\s+off|personal|pto|vacation|sick",
+    re.IGNORECASE,
+)
+
+
+def is_time_off_cell(cell_text: Optional[str]) -> bool:
+    """True when day-cell text looks like approved time off / PTO."""
+    if not cell_text:
+        return False
+    return bool(_TIME_OFF_RE.search(str(cell_text)))
+
+
+def parse_day_cell_hours(day: dict) -> tuple[float, list[str], str]:
+    """Wall-clock hours + range labels + kind for one schedule day cell.
+
+    Prefers ``ranges`` (shift-range nodes). When those are empty but
+    ``cell_text`` is paid time off with an in/out window, parse that window
+    and tag ``hour_kind='pto'``. Otherwise ``hour_kind='shift'``.
+
+    Returns ``(hours, ranges_for_json, hour_kind)``.
+    """
+    ranges = [r for r in (day.get("ranges") or []) if r]
+    if ranges:
+        hours = round(sum(parse_shift_range_hours(r) for r in ranges), 2)
+        return hours, list(ranges), "shift"
+    cell_text = (day.get("cell_text") or "").strip()
+    if cell_text and is_time_off_cell(cell_text):
+        hours = parse_shift_range_hours(cell_text)
+        if hours > 0:
+            # Keep a synthetic range label for coverage swimlanes.
+            m = _SHIFT_RANGE_RE.search(cell_text)
+            label = m.group(0) if m else cell_text[:80]
+            return hours, [label], "pto"
+    return 0.0, [], "shift"
+
+
 def _day_range_hours(day: dict) -> float:
-    return round(sum(parse_shift_range_hours(r) for r in (day.get("ranges") or [])), 2)
+    hours, _, _ = parse_day_cell_hours(day)
+    return hours
 
 
 def scale_hours_to_week_total(
@@ -431,8 +472,9 @@ def build_employee_schedule_records(weeks: list[dict]) -> list[dict]:
             canonical = derive_canonical(raw_name)
             week_total = parse_hhmm_hours(emp.get("week_total_text"))
             days = cap_days_to_week_total(list(emp.get("days") or []), week_total)
-            # Collect parseable day slots first, then scale as a group.
-            pending: list[tuple[int, list, float]] = []
+            # Collect parseable day slots (shifts + paid PTO), then scale as a group.
+            # pending: (header_index, ranges, wall_hours, hour_kind)
+            pending: list[tuple[int, list, float, str]] = []
             for day in days:
                 idx = day.get("header_index")
                 if idx is None:
@@ -443,18 +485,17 @@ def build_employee_schedule_records(weeks: list[dict]) -> list[dict]:
                     continue
                 if idx_i < 0 or idx_i > 6:
                     continue
-                ranges = day.get("ranges") or []
-                hours = round(sum(parse_shift_range_hours(r) for r in ranges), 2)
+                hours, ranges, kind = parse_day_cell_hours(day)
                 if hours <= 0:
                     continue
-                pending.append((idx_i, list(ranges), hours))
+                pending.append((idx_i, list(ranges), hours, kind))
             if not pending:
                 continue
             scaled = scale_hours_to_week_total(
-                [h for _, _, h in pending],
+                [h for _, _, h, _ in pending],
                 week_total,
             )
-            for (idx_i, ranges, wall), hours in zip(pending, scaled):
+            for (idx_i, ranges, wall, kind), hours in zip(pending, scaled):
                 # Hard cap: never store paid hours above wall-clock for the day
                 # (defends concurrent + hours charts if scale logic regresses).
                 hours = round(min(hours, wall), 2) if wall > 0 else hours
@@ -468,6 +509,8 @@ def build_employee_schedule_records(weeks: list[dict]) -> list[dict]:
                     prev_ranges = json.loads(prev.get("shift_ranges_json") or "[]")
                     prev_ranges.extend(ranges)
                     prev["shift_ranges_json"] = json.dumps(prev_ranges)
+                    if prev.get("hour_kind") != kind:
+                        prev["hour_kind"] = "mixed"
                 else:
                     by_key[key] = {
                         "date": d,
@@ -476,8 +519,43 @@ def build_employee_schedule_records(weeks: list[dict]) -> list[dict]:
                         "scheduled_hours": hours,
                         "shift_ranges_json": json.dumps(list(ranges)),
                         "week_start": week_start.isoformat(),
+                        "hour_kind": kind,
                     }
     return [by_key[k] for k in sorted(by_key)]
+
+
+def reconcile_employee_vs_footer(
+    weeks: list[dict],
+    *,
+    tolerance_hours: float = 0.5,
+) -> list[str]:
+    """Return warning strings when emp-row sum diverges from footer grand.
+
+    Used by backfill after parse so silent undercounts (missed PTO, etc.)
+    leave a greppable breadcrumb.
+    """
+    warnings: list[str] = []
+    emp_recs = build_employee_schedule_records(weeks)
+    footer_recs = build_schedule_records(weeks)
+    emp_by_week: dict[str, float] = {}
+    for r in emp_recs:
+        ws = r["week_start"]
+        emp_by_week[ws] = emp_by_week.get(ws, 0.0) + float(r["scheduled_hours"])
+    footer_by_week: dict[str, float] = {}
+    for r in footer_recs:
+        ws = r["week_start"]
+        footer_by_week[ws] = footer_by_week.get(ws, 0.0) + float(r["scheduled_hours"])
+    for ws in sorted(set(emp_by_week) | set(footer_by_week)):
+        emp = round(emp_by_week.get(ws, 0.0), 2)
+        foot = round(footer_by_week.get(ws, 0.0), 2)
+        gap = round(foot - emp, 2)
+        if abs(gap) > tolerance_hours:
+            warnings.append(
+                f"adp_schedule reconcile week_start={ws}: "
+                f"footer={foot} emp_sum={emp} gap={gap} "
+                f"(>{tolerance_hours}h — check PTO/virtualization parse)"
+            )
+    return warnings
 
 
 # ── Public entry ──────────────────────────────────────────────────

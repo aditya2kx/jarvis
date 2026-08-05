@@ -202,8 +202,12 @@ export interface LaborScheduledHoursRow {
 export function laborScheduledHoursByGrain(
   win: DateWindow,
   grain: Grain,
+  opts?: { excludePto?: boolean },
 ): Promise<LaborScheduledHoursRow[]> {
   const bucket = bucketSql(grain, "s.date");
+  const ptoClause = opts?.excludePto
+    ? `AND IFNULL(s.hour_kind, 'shift') != 'pto'`
+    : "";
   return q<LaborScheduledHoursRow>(
     `SELECT
        ${bucket} AS date,
@@ -224,6 +228,7 @@ export function laborScheduledHoursByGrain(
      WHERE s.date BETWEEN @start AND @end
        AND s.date >= CURRENT_DATE('America/Chicago')
        AND IFNULL(s.scheduled_hours, 0) > 0
+       ${ptoClause}
      GROUP BY date
      ORDER BY date`,
     { start: dateParam(win.start), end: dateParam(win.end) },
@@ -242,7 +247,11 @@ export interface LaborScheduledShiftDayRow {
 
 export function laborScheduledShiftDays(
   win: DateWindow,
+  opts?: { excludePto?: boolean },
 ): Promise<LaborScheduledShiftDayRow[]> {
+  const ptoClause = opts?.excludePto
+    ? `AND IFNULL(s.hour_kind, 'shift') != 'pto'`
+    : "";
   return q<LaborScheduledShiftDayRow>(
     `SELECT
        CAST(s.date AS STRING) AS date,
@@ -260,6 +269,7 @@ export function laborScheduledShiftDays(
      WHERE s.date BETWEEN @start AND @end
        AND s.date >= CURRENT_DATE('America/Chicago')
        AND IFNULL(s.scheduled_hours, 0) > 0
+       ${ptoClause}
      ORDER BY date, employee`,
     { start: dateParam(win.start), end: dateParam(win.end) },
   );
@@ -1189,6 +1199,16 @@ export function orderRecoSlots(): Promise<OrderRecoSlotLongRow[]> {
      WHERE r.store = 'palmetto'
      ORDER BY r._ord ASC, r.\`Current Qty\` DESC, r.Slot ASC`,
   );
+}
+
+/** ISO timestamp of latest order-reco materialization (null if table empty). */
+export async function orderRecoRefreshedAt(store: string): Promise<string | null> {
+  const rows = await q<{ refreshed_at: string | null }>(
+    `SELECT CAST(MAX(refreshed_at) AS STRING) AS refreshed_at
+     FROM ${fq("inventory_order_reco")} WHERE store = @store`,
+    { store },
+  );
+  return rows[0]?.refreshed_at ?? null;
 }
 
 // vw_order_reco_next_dates (031 + 041 + 051 + 052) — up to order_reco_max_slots

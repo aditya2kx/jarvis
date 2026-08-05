@@ -126,6 +126,8 @@ BQ_TARGETS: list[Target] = [
     # reads as fresh. Empty until the first nightly schedule scrape runs.
     Target("adp_scheduled_daily", "date"),
     # migration 039 (Issue #166): per-employee schedule grain (same forward horizon).
+    # migration 053 (Issue #218): hour_kind (shift|pto|mixed) on same table — paid PTO
+    # counts toward scheduled hours; console Exclude PTO filters hour_kind=pto.
     Target("adp_scheduled_shifts", "date"),
     # migration 040 (Issue #166): adp_payroll_liability is a sparse paycheck
     # calibration snapshot (check_date), not a nightly freshness signal —

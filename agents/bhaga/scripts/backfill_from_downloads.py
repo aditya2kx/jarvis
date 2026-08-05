@@ -272,6 +272,10 @@ def main() -> int:
             emp_records = schedule_backend.build_employee_schedule_records(
                 payload.get("weeks", [])
             )
+            for warn in schedule_backend.reconcile_employee_vs_footer(
+                payload.get("weeks", [])
+            ):
+                print(f"  WARN: {warn}")
             emp_bq = [
                 {
                     "date": r["date"],
@@ -280,6 +284,7 @@ def main() -> int:
                     "scheduled_hours": r["scheduled_hours"],
                     "shift_ranges_json": r.get("shift_ranges_json"),
                     "week_start": r["week_start"],
+                    "hour_kind": r.get("hour_kind") or "shift",
                     "scraped_at_utc": scraped_at,
                     "materialized_at_utc": now_utc,
                 }

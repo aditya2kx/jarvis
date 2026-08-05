@@ -12,6 +12,8 @@ import {
   type RestockAction,
   type UsageDayOverrideMode,
 } from "@/lib/bq/writes";
+import { orderRecoRefreshedAt } from "@/lib/bq/queries";
+import { orderRecoRefreshedAdvanced } from "@/lib/inventory/orderRecoFreshness";
 import type { RestockRow } from "@/lib/restock/parse";
 import { okAck, failAck, type ActionAck } from "@/lib/actions/types";
 import { FEATURES } from "@/lib/config/features";
@@ -23,21 +25,36 @@ async function maybeQueueOrderReco(): Promise<string[] | undefined> {
   return ["order-reco"];
 }
 
+export type OrderRecoQueuedMeta = {
+  baselineRefreshedAt: string | null;
+};
+
+/** Capture refreshed_at, then enqueue (client polls until it advances). */
+async function queueOrderRecoWithBaseline(): Promise<{
+  queued: string[] | undefined;
+  baselineRefreshedAt: string | null;
+}> {
+  const baselineRefreshedAt = await orderRecoRefreshedAt(DEFAULT_STORE);
+  const queued = await maybeQueueOrderReco();
+  return { queued, baselineRefreshedAt };
+}
+
 export async function submitRestockAction(
   deliveryDate: string,
   action: RestockAction,
   rows: RestockRow[],
-): Promise<ActionAck> {
+): Promise<ActionAck<OrderRecoQueuedMeta>> {
   try {
     const by = await operatorEmail();
     await submitRestock(DEFAULT_STORE, deliveryDate, action, rows, by, {
       skipRefresh: FEATURES.asyncOrderReco,
     });
-    const queued = await maybeQueueOrderReco();
+    const { queued, baselineRefreshedAt } = await queueOrderRecoWithBaseline();
     revalidatePath("/inventory");
     return okAck({
       message: queued ? "Restock saved — recommendation refreshing…" : "Restock saved.",
       queued,
+      data: { baselineRefreshedAt },
     });
   } catch (e) {
     return failAck(e);
@@ -48,34 +65,38 @@ export async function submitRestockAction(
 export async function replaceEstimatedRestockDateAction(
   fromDate: string,
   toDate: string,
-): Promise<ActionAck> {
+): Promise<ActionAck<OrderRecoQueuedMeta>> {
   try {
     const by = await operatorEmail();
     await replaceEstimatedRestockDate(DEFAULT_STORE, fromDate, toDate, by, {
       skipRefresh: FEATURES.asyncOrderReco,
     });
-    const queued = await maybeQueueOrderReco();
+    const { queued, baselineRefreshedAt } = await queueOrderRecoWithBaseline();
     revalidatePath("/inventory");
     return okAck({
       message: queued ? "Date replaced — recommendation refreshing…" : "Date replaced.",
       queued,
+      data: { baselineRefreshedAt },
     });
   } catch (e) {
     return failAck(e);
   }
 }
 
-export async function setCapacityAction(maxTubs: number): Promise<ActionAck> {
+export async function setCapacityAction(
+  maxTubs: number,
+): Promise<ActionAck<OrderRecoQueuedMeta>> {
   try {
     const by = await operatorEmail();
     await setConfig(DEFAULT_STORE, "order_reco_max_tubs", String(maxTubs), by, {
       skipRefresh: FEATURES.asyncOrderReco,
     });
-    const queued = await maybeQueueOrderReco();
+    const { queued, baselineRefreshedAt } = await queueOrderRecoWithBaseline();
     revalidatePath("/inventory");
     return okAck({
       message: queued ? "Capacity saved — recommendation refreshing…" : "Capacity saved.",
       queued,
+      data: { baselineRefreshedAt },
     });
   } catch (e) {
     return failAck(e);
@@ -137,11 +158,15 @@ export type UsageDayOverrideDraft = {
   mode: UsageDayOverrideMode | "rule";
 };
 
+export type ApplyUsageDayOverridesResult = {
+  baselineRefreshedAt: string | null;
+};
+
 /** Batch apply drafts for one date — single reco refresh (Issue #194 drawer). */
 export async function applyUsageDayOverridesAction(
   submittedDate: string,
   changes: UsageDayOverrideDraft[],
-): Promise<ActionAck> {
+): Promise<ActionAck<ApplyUsageDayOverridesResult>> {
   if (!FEATURES.writeInventoryDayOverrides) {
     return failAck(new Error("Usage day overrides are disabled"));
   }
@@ -150,6 +175,8 @@ export async function applyUsageDayOverridesAction(
   }
   try {
     const by = await operatorEmail();
+    // Capture before enqueue so the client can poll until materialization advances.
+    const baselineRefreshedAt = await orderRecoRefreshedAt(DEFAULT_STORE);
     for (const c of changes) {
       if (c.mode === "rule") {
         await clearUsageDayOverride(DEFAULT_STORE, c.item, submittedDate);
@@ -164,6 +191,29 @@ export async function applyUsageDayOverridesAction(
         ? `Saved ${changes.length} override(s) — averages updating…`
         : `Saved ${changes.length} override(s).`,
       queued,
+      data: { baselineRefreshedAt },
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+export type OrderRecoRefreshPoll = {
+  refreshedAt: string | null;
+  advanced: boolean;
+};
+
+/** Poll inventory_order_reco.refreshed_at after async order-reco enqueue. */
+export async function pollOrderRecoRefreshAction(opts: {
+  baselineRefreshedAt: string | null;
+}): Promise<ActionAck<OrderRecoRefreshPoll>> {
+  try {
+    const refreshedAt = await orderRecoRefreshedAt(DEFAULT_STORE);
+    return okAck({
+      data: {
+        refreshedAt,
+        advanced: orderRecoRefreshedAdvanced(opts.baselineRefreshedAt, refreshedAt),
+      },
     });
   } catch (e) {
     return failAck(e);

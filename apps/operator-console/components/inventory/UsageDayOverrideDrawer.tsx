@@ -38,6 +38,11 @@ function seedChoice(row: UsageDayAuditRow): OverrideDraftChoice {
   return "rule";
 }
 
+export type UsageDayOverridesApplied = {
+  queued: boolean;
+  baselineRefreshedAt: string | null;
+};
+
 /**
  * Right-side editor for one closing date — same Sheet pattern as Restock /
  * Goals (mount only while open so closed state never reserves layout).
@@ -49,12 +54,15 @@ export function UsageDayOverrideDrawer({
   date,
   rows,
   writable,
+  onApplied,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   date: string | null;
   rows: UsageDayAuditRow[];
   writable: boolean;
+  /** Parent polls reco + router.refresh (drawer unmounts on close). */
+  onApplied?: (result: UsageDayOverridesApplied) => void;
 }) {
   const dayRows = useMemo(
     () =>
@@ -90,7 +98,12 @@ export function UsageDayOverrideDrawer({
       done: "Overrides saved.",
       queued: "Overrides saved — averages updating…",
     });
-    if (ack.ok) onOpenChange(false);
+    if (!ack.ok) return;
+    onOpenChange(false);
+    onApplied?.({
+      queued: Boolean(ack.queued?.length),
+      baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
+    });
   }
 
   // Critical: do not keep Sheet/Portal mounted when closed — Base UI can leave

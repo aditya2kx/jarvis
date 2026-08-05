@@ -68,8 +68,11 @@ describe("pivotOrderRecoSlots", () => {
     expect(rows[0]["On Hand 1"]).toBe(10);
     expect(rows[0]["On Hand 3"]).toBe(5);
     expect(rows[0]["Source 3"]).toBe("Estimated");
+    expect(rows[0]["Order Weight 1"]).toBe(252);
+    expect(rows[0]["Order Weight 2"]).toBe(270);
     expect(rows[1].Item).toBe("TOTAL");
     expect(rows[1]["Order Tubs 1"]).toBe(69);
+    expect(rows[1]["Order Weight 1"]).toBe(1400);
   });
 
   it("normalizeDeliveryDate truncates timestamps", () => {

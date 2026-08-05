@@ -36,6 +36,11 @@ import {
   serializeLaborTypes,
 } from "@/lib/filters/labor-type";
 import {
+  PTO_FILTER_OPTIONS,
+  parsePtoFilter,
+  serializePtoFilter,
+} from "@/lib/filters/pto-filter";
+import {
   actualPunchWindow,
   laborChartWindow,
   periodIncludesToday,
@@ -73,6 +78,7 @@ export default async function LaborPage({
     to?: string;
     grain?: string;
     labor_type?: string;
+    pto?: string;
     day?: string;
   }>;
 }) {
@@ -80,6 +86,8 @@ export default async function LaborPage({
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
   const grain = await resolvePageGrain(sp.grain);
   const laborTypes = parseLaborTypes(sp.labor_type);
+  const ptoFilter = parsePtoFilter(sp.pto);
+  const excludePto = ptoFilter === "exclude";
   const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
   const dateParams: Record<string, string> =
     win.preset === "custom" ? { from: win.start, to: win.end } : {};
@@ -87,6 +95,8 @@ export default async function LaborPage({
   const laborTypeExtra: Record<string, string> = laborTypeParam
     ? { labor_type: laborTypeParam }
     : {};
+  const ptoParam = serializePtoFilter(ptoFilter);
+  const ptoExtra: Record<string, string> = ptoParam ? { pto: ptoParam } : {};
   const dayExtra: Record<string, string> = sp.day
     ? { day: sp.day.slice(0, 10) }
     : {};
@@ -135,10 +145,10 @@ export default async function LaborPage({
       laborHoursPerPerson(win).catch(() => []),
       punchWin ? laborConcurrentByGrain(punchWin, grain).catch(() => []) : Promise.resolve([]),
       showSchedule && schedWin
-        ? laborScheduledHoursByGrain(schedWin, grain).catch(() => [])
+        ? laborScheduledHoursByGrain(schedWin, grain, { excludePto }).catch(() => [])
         : Promise.resolve([]),
       showSchedule && schedWin
-        ? laborScheduledShiftDays(schedWin).catch(() => [])
+        ? laborScheduledShiftDays(schedWin, { excludePto }).catch(() => [])
         : Promise.resolve([]),
       adpScheduleScrapedAt().catch(() => null),
       punchWin ? laborActualShiftDays(punchWin).catch(() => []) : Promise.resolve([]),
@@ -269,7 +279,7 @@ export default async function LaborPage({
             <AggregationSelect
               value={grain}
               basePath="/labor"
-              extraParams={{ range: win.preset, ...laborTypeExtra, ...dateParams, ...dayExtra }}
+              extraParams={{ range: win.preset, ...laborTypeExtra, ...ptoExtra, ...dateParams, ...dayExtra }}
             />
             <FilterSelect
               label="Period"
@@ -277,7 +287,7 @@ export default async function LaborPage({
               value={showCustomPicker ? "custom" : win.preset}
               options={RANGE_PRESETS}
               basePath="/labor"
-              extraParams={{ grain, ...laborTypeExtra, ...dayExtra }}
+              extraParams={{ grain, ...laborTypeExtra, ...ptoExtra, ...dayExtra }}
             />
             {showCustomPicker ? (
               <DateRangePicker
@@ -285,7 +295,7 @@ export default async function LaborPage({
                 from={win.start}
                 to={win.end}
                 committed={win.preset === "custom"}
-                extraParams={{ grain, ...laborTypeExtra, ...dayExtra }}
+                extraParams={{ grain, ...laborTypeExtra, ...ptoExtra, ...dayExtra }}
               />
             ) : null}
             <FilterMultiSelect
@@ -298,6 +308,21 @@ export default async function LaborPage({
                 range: win.preset,
                 grain,
                 ...dateParams,
+                ...ptoExtra,
+                ...dayExtra,
+              }}
+            />
+            <FilterSelect
+              label="PTO"
+              param="pto"
+              value={ptoFilter}
+              options={[...PTO_FILTER_OPTIONS]}
+              basePath="/labor"
+              extraParams={{
+                range: win.preset,
+                grain,
+                ...dateParams,
+                ...laborTypeExtra,
                 ...dayExtra,
               }}
             />
@@ -332,8 +357,9 @@ export default async function LaborPage({
           the range is long. Use{" "}
           <span className="font-medium text-foreground">Sync scheduled shifts</span> after
           editing the ADP schedule — status under the button shows starting / syncing /
-          done / error without blocking the rest of the page. Per-person hours below sum
-          clocked ADP hours over the Period.
+          done / error without blocking the rest of the page. Paid PTO is included in
+          scheduled hours by default (matches ADP); use the PTO filter to exclude it.
+          Per-person hours below sum clocked ADP hours over the Period.
         </p>
       </div>
 

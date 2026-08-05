@@ -115,8 +115,8 @@ def test_scale_hours_never_inflates_sparse_days():
     assert sb.scale_hours_to_week_total([8.5, 8.5], 40.0) == [8.5, 8.5]
 
 
-def test_sparse_week_records_keep_wall_hours_for_concurrent():
-    """Sync/backfill path: incomplete week must not invent 20h days (Issue #213)."""
+def test_sparse_week_without_pto_keeps_wall_hours():
+    """Incomplete week with empty cells (no PTO text) must not invent hours."""
     weeks = [{
         "week_label": "Week of Aug 10, 2026 - Aug 16, 2026",
         "employee_rows": [{
@@ -135,6 +135,93 @@ def test_sparse_week_records_keep_wall_hours_for_concurrent():
     assert len(recs) == 2
     assert all(r["scheduled_hours"] == pytest.approx(8.5) for r in recs)
     assert sum(r["scheduled_hours"] for r in recs) == pytest.approx(17.0)
+
+
+def test_krause_pto_cells_count_toward_week_total():
+    """Live Aug 10 bug: PERSONAL Approved Time Off in cell_text, not ranges.
+
+    Wall Mon+Tue 8.5 + three PTO 8:00–4:00 (=8) = 41 → scale to ADP 40 paid.
+    Mon/Tue land ~8 paid (unpaid meal), not 8.5 wall.
+    """
+    weeks = [{
+        "week_label": "Week of Aug 10, 2026 - Aug 16, 2026",
+        "employee_rows": [{
+            "name": "Krause, Lindsay",
+            "week_total_text": "40:00 Hrs",
+            "days": [
+                {
+                    "header_index": 0,
+                    "ranges": ["8:00 AM - 4:30 PM"],
+                    "cell_text": "8:00 AM - 4:30 PM",
+                },
+                {
+                    "header_index": 1,
+                    "ranges": ["12:00 PM - 8:30 PM"],
+                    "cell_text": "12:00 PM - 8:30 PM",
+                },
+                {
+                    "header_index": 2,
+                    "ranges": [],
+                    "cell_text": "PERSONAL Approved Time Off. 8:00 AM - 4:00 PM",
+                },
+                {
+                    "header_index": 3,
+                    "ranges": [],
+                    "cell_text": "PERSONAL Approved Time Off. 8:00 AM - 4:00 PM",
+                },
+                {
+                    "header_index": 4,
+                    "ranges": [],
+                    "cell_text": "PERSONAL Approved Time Off. 8:00 AM - 4:00 PM",
+                },
+            ],
+        }],
+    }]
+    recs = sb.build_employee_schedule_records(weeks)
+    assert len(recs) == 5
+    assert sum(r["scheduled_hours"] for r in recs) == pytest.approx(40.0)
+    by_date = {r["date"]: r for r in recs}
+    assert by_date["2026-08-10"]["hour_kind"] == "shift"
+    assert by_date["2026-08-12"]["hour_kind"] == "pto"
+    # Paid after scale (wall 41 → 40): Mon/Tue ~8.29, PTO ~7.80 — not wall 8.5
+    assert by_date["2026-08-10"]["scheduled_hours"] == pytest.approx(8.5 * 40 / 41, abs=0.02)
+    assert by_date["2026-08-12"]["scheduled_hours"] == pytest.approx(8.0 * 40 / 41, abs=0.02)
+
+
+def test_parse_day_cell_hours_pto():
+    hours, ranges, kind = sb.parse_day_cell_hours({
+        "ranges": [],
+        "cell_text": "PERSONAL Approved Time Off. 8:00 AM - 4:00 PM",
+    })
+    assert kind == "pto"
+    assert hours == pytest.approx(8.0)
+    assert ranges and "8:00 AM" in ranges[0]
+
+
+def test_reconcile_employee_vs_footer_warns_on_gap():
+    weeks = [{
+        "week_label": "Week of Aug 10, 2026 - Aug 16, 2026",
+        "grand": "15 Employees 238:30 Hrs",
+        "days": [
+            "5 Employees 32:00 Hrs",
+            "4 Employees 25:30 Hrs",
+            "5 Employees 32:30 Hrs",
+            "5 Employees 32:30 Hrs",
+            "6 Employees 40:30 Hrs",
+            "6 Employees 36:00 Hrs",
+            "6 Employees 39:30 Hrs",
+        ],
+        "employee_rows": [{
+            "name": "Krause, Lindsay",
+            "week_total_text": "40:00 Hrs",
+            "days": [
+                {"header_index": 0, "ranges": ["8:00 AM - 4:30 PM"]},
+                {"header_index": 1, "ranges": ["12:00 PM - 8:30 PM"]},
+            ],
+        }],
+    }]
+    warns = sb.reconcile_employee_vs_footer(weeks, tolerance_hours=0.5)
+    assert warns and "gap=" in warns[0]
 
 
 @pytest.mark.parametrize("raw,expected", [

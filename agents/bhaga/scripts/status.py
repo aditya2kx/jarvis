@@ -276,6 +276,11 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 052 (Issue #215): next_dates cap order_reco_max_slots (default 4);
     # tvf_order_reco_slot_n for slots ≥2. Console pivots N slots; Grafana combined
     # stays dual-slot — no new GRAFANA_VIEWS (031/032 targets unchanged).
+    # migration 053 (Issue #218): adp_scheduled_shifts.hour_kind (worked | paid_pto).
+    # Additive column on existing raw table — no new BQ_TARGETS/GRAFANA_VIEWS.
+    # migration 054 (Issue #216): automations + automation_posts for Team Pulse
+    # ClickUp schedule/history. Console-only config — not model_* / no Grafana panel;
+    # no new BQ_TARGETS/GRAFANA_VIEWS (same class as recognition_bonuses / 033).
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

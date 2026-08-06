@@ -15,6 +15,7 @@ export const MUTATING_ACTIONS = [
   { name: "setUsageDayOverrideAction", page: "inventory", heavy: "order-reco" },
   { name: "clearUsageDayOverrideAction", page: "inventory", heavy: "order-reco" },
   { name: "applyUsageDayOverridesAction", page: "inventory", heavy: "order-reco" },
+  { name: "applyOrderTubOverridesAction", page: "inventory", heavy: "order-reco" },
   { name: "pollOrderRecoRefreshAction", page: "inventory", heavy: null },
   // Payroll
   { name: "addTrainingShiftAction", page: "payroll", heavy: null },

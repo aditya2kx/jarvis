@@ -281,6 +281,10 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 054 (Issue #216): automations + automation_posts for Team Pulse
     # ClickUp schedule/history. Console-only config — not model_* / no Grafana panel;
     # no new BQ_TARGETS/GRAFANA_VIEWS (same class as recognition_bonuses / 033).
+    # migration 055 (Issue #225): inventory_order_tub_overrides + rewrite
+    # tvf_order_reco_slot1 / tvf_order_reco_slot_n for Manual pins on Estimated
+    # dates. Console /inventory drawer — not model_* / no Grafana panel; freshness
+    # still via inventory_order_reco refresh (031/032). No new BQ_TARGETS/GRAFANA_VIEWS.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

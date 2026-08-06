@@ -9,6 +9,11 @@ import { dateParam, fq, intParam, mutate, q } from "./client";
 
 const DEFAULT_MAX_TUBS = 120;
 
+export type RecoRefreshOpts = {
+  /** When true, caller enqueues durable order-reco refresh (Issue #175 Option B). */
+  skipRefresh?: boolean;
+};
+
 /** MERGE the delivery date into inventory_restock_schedule (idempotent). */
 export async function setRestockSchedule(store: string, deliveryDate: string, by: string): Promise<void> {
   await mutate(
@@ -41,6 +46,69 @@ export async function clearRestockSchedule(store: string, deliveryDate: string):
     date: dateParam(deliveryDate),
   });
   await clearRestockOrders(store, deliveryDate);
+  await clearOrderTubOverrides(store, deliveryDate);
+}
+
+/** DELETE manual Order Tubs pins for (store, date). */
+export async function clearOrderTubOverrides(store: string, deliveryDate: string): Promise<void> {
+  await mutate(
+    `DELETE FROM ${fq("inventory_order_tub_overrides")} WHERE store = @store AND delivery_date = @date`,
+    { store, date: dateParam(deliveryDate) },
+  );
+}
+
+/**
+ * Replace-per-date manual Order Tubs pins (Issue #225). Empty `rows` clears all
+ * pins for the date (all bases back to Estimated water-fill). Does not touch
+ * Actuals. Caller refreshes reco once after save.
+ */
+export async function replaceOrderTubOverrides(
+  store: string,
+  deliveryDate: string,
+  rows: { item: string; quantityTubs: number }[],
+  by: string,
+  opts: RecoRefreshOpts = {},
+): Promise<void> {
+  for (const r of rows) {
+    if (!Number.isInteger(r.quantityTubs) || r.quantityTubs < 0) {
+      throw new Error(`Invalid tub count for ${r.item}: ${r.quantityTubs}`);
+    }
+    if (r.item === "Blade" || r.item === "TOTAL") {
+      throw new Error(`Cannot pin Order Tubs for ${r.item}`);
+    }
+  }
+  const sum = rows.reduce((acc, r) => acc + r.quantityTubs, 0);
+  const cfgRows = await q<{ value: string }>(
+    `SELECT value FROM ${fq("store_config")}
+     WHERE store = @store AND key = 'order_reco_max_tubs'
+     ORDER BY updated_at DESC LIMIT 1`,
+    { store },
+  );
+  const maxTubs = cfgRows.length ? Number(cfgRows[0].value) : DEFAULT_MAX_TUBS;
+  if (sum > maxTubs) {
+    throw new Error(
+      `Manual Order Tubs sum (${sum}) exceeds capacity (${maxTubs}). Lower pins or raise capacity.`,
+    );
+  }
+
+  await clearOrderTubOverrides(store, deliveryDate);
+  if (rows.length) {
+    const params: Record<string, unknown> = { store, date: dateParam(deliveryDate), by };
+    const valuesSql = rows
+      .map((_, i) => {
+        params[`item${i}`] = rows[i].item;
+        params[`qty${i}`] = intParam(rows[i].quantityTubs);
+        return `(@store, @date, @item${i}, @qty${i}, @by, CURRENT_TIMESTAMP())`;
+      })
+      .join(", ");
+    await mutate(
+      `INSERT INTO ${fq("inventory_order_tub_overrides")}
+         (store, delivery_date, item, quantity_tubs, updated_by, updated_at)
+       VALUES ${valuesSql}`,
+      params,
+    );
+  }
+  if (!opts.skipRefresh) await refreshOrderReco(store);
 }
 
 /**
@@ -192,11 +260,6 @@ export type RestockAction = "add-order" | "register-only" | "reset-to-estimated"
  * the Slack path), then always refreshes the reco at the end.
  * "replace-estimated" is console-only — use replaceEstimatedRestockDate.
  */
-export type RecoRefreshOpts = {
-  /** When true, caller enqueues durable order-reco refresh (Issue #175 Option B). */
-  skipRefresh?: boolean;
-};
-
 export async function submitRestock(
   store: string,
   deliveryDate: string,

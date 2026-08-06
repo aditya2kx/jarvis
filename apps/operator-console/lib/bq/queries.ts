@@ -858,6 +858,7 @@ export function forecastGoalScheduleByGrain(
 export interface OrderQualityDailyRow {
   date: string;
   kds_median_min: number;
+  kds_avg_min: number;
   kds_p90_min: number;
   kds_p95_min: number;
   kds_p99_min: number;
@@ -880,14 +881,24 @@ export interface KdsBySourceRow {
   order_source: string;
   kds_completed_tickets: number;
   kds_p95_min: number;
+  kds_avg_min: number;
   [key: string]: unknown;
 }
 
 export function kdsBySource(win: DateWindow): Promise<KdsBySourceRow[]> {
   return q<KdsBySourceRow>(
-    `SELECT * FROM ${fq("vw_kds_order_quality_by_source_daily")}
-     WHERE date BETWEEN @start AND @end
-     ORDER BY date`,
+    `SELECT
+       date_local AS date,
+       order_source,
+       COUNT(*) AS kds_completed_tickets,
+       APPROX_QUANTILES(completion_time_sec / num_items / 60.0, 100)[OFFSET(95)] AS kds_p95_min,
+       AVG(completion_time_sec / num_items / 60.0) AS kds_avg_min
+     FROM ${fq("square_kds_tickets")}
+     WHERE date_local BETWEEN @start AND @end
+       AND completion_time_sec > 0
+       AND num_items > 0
+     GROUP BY date_local, order_source
+     ORDER BY date_local`,
     { start: dateParam(win.start), end: dateParam(win.end) },
   );
 }
@@ -898,33 +909,43 @@ export function kdsBySource(win: DateWindow): Promise<KdsBySourceRow[]> {
 // re-aggregated into weeks/months) can serve a grain-aware, Source-filtered
 // percentile view — both read pre-collapsed daily columns. This reads
 // migration 034's `vw_kds_per_item_min` (raw per-ticket ratio) so
-// APPROX_QUANTILES can run fresh at any GROUP BY <bucket>, with Source
-// applied inside the same query (not a client-side post-filter). `source`
-// is bound as a param, never interpolated — `'All'` means "no filter" via
-// the `@source = 'All' OR order_source = @source` guard rather than
-// building the SQL string conditionally.
+// APPROX_QUANTILES can run fresh at any GROUP BY <bucket>. Sources are bound
+// as `@all_sources` / `UNNEST(@sources)` (Sales-style multi-select), never
+// string-interpolated.
 export function orderQualityByGrain(
   win: DateWindow,
   grain: Grain,
-  source: string,
+  sources: string[] | null,
   onTime: number,
 ): Promise<OrderQualityDailyRow[]> {
   const bucket = bucketSql(grain);
+  const allSources = sources == null;
+  if (!allSources && sources.length === 0) {
+    return Promise.resolve([]);
+  }
+  const sourcesParam = allSources ? ["__all__"] : sources;
   return q<OrderQualityDailyRow>(
     `SELECT
        ${bucket} AS date,
        COUNT(*) AS kds_completed_tickets,
        APPROX_QUANTILES(per_item_min, 100)[OFFSET(50)] AS kds_median_min,
+       AVG(per_item_min) AS kds_avg_min,
        APPROX_QUANTILES(per_item_min, 100)[OFFSET(90)] AS kds_p90_min,
        APPROX_QUANTILES(per_item_min, 100)[OFFSET(95)] AS kds_p95_min,
        APPROX_QUANTILES(per_item_min, 100)[OFFSET(99)] AS kds_p99_min,
        SAFE_DIVIDE(COUNTIF(per_item_min > @onTime), COUNT(*)) AS kds_pct_items_over_goal
      FROM ${fq("vw_kds_per_item_min")}
      WHERE date BETWEEN @start AND @end
-       AND (@source = 'All' OR order_source = @source)
+       AND (@all_sources OR order_source IN UNNEST(@sources))
      GROUP BY date
      ORDER BY date`,
-    { start: dateParam(win.start), end: dateParam(win.end), source, onTime },
+    {
+      start: dateParam(win.start),
+      end: dateParam(win.end),
+      all_sources: allSources,
+      sources: sourcesParam,
+      onTime,
+    },
   );
 }
 
@@ -948,9 +969,14 @@ export interface KdsOrderInvestigationRow {
 // other console table's date-range convention.
 export function kdsOrderInvestigation(
   win: DateWindow,
-  source: string,
+  sources: string[] | null,
   minPerItem: number,
 ): Promise<KdsOrderInvestigationRow[]> {
+  const allSources = sources == null;
+  if (!allSources && sources.length === 0) {
+    return Promise.resolve([]);
+  }
+  const sourcesParam = allSources ? ["__all__"] : sources;
   return q<KdsOrderInvestigationRow>(
     `SELECT
        o.date_local,
@@ -971,10 +997,16 @@ export function kdsOrderInvestigation(
        o.items_in_ticket
      FROM ${fq("vw_kds_order_investigation")} o
      WHERE o.date_local BETWEEN @start AND @end
-       AND (@source = 'All' OR o.order_source = @source)
+       AND (@all_sources OR o.order_source IN UNNEST(@sources))
        AND ROUND(o.order_min / o.num_items, 1) >= @minPerItem
      ORDER BY min_per_item DESC, o.ticket_name`,
-    { start: dateParam(win.start), end: dateParam(win.end), source, minPerItem },
+    {
+      start: dateParam(win.start),
+      end: dateParam(win.end),
+      all_sources: allSources,
+      sources: sourcesParam,
+      minPerItem,
+    },
   );
 }
 
@@ -1167,7 +1199,7 @@ export interface OrderRecoSlotLongRow {
   "Order Weight lbs": number | null;
   "After Restock": number | null;
   "Days Left After Restock": number | null;
-  Source: "Estimated" | "Actuals" | null;
+  Source: "Estimated" | "Manual" | "Actuals" | null;
   _ord: number;
 }
 
@@ -1184,14 +1216,19 @@ export function orderRecoSlots(): Promise<OrderRecoSlotLongRow[]> {
        r.\`Order Weight lbs\`,
        r.\`After Restock\`,
        r.\`Days Left After Restock\`,
-       IF(
-         EXISTS (
+       CASE
+         WHEN EXISTS (
            SELECT 1 FROM ${fq("inventory_restock_orders")} o
            WHERE o.store = 'palmetto' AND o.delivery_date = r.delivery_date
-         ),
-         'Actuals',
-         'Estimated'
-       ) AS Source,
+         ) THEN 'Actuals'
+         WHEN EXISTS (
+           SELECT 1 FROM ${fq("inventory_order_tub_overrides")} ov
+           WHERE ov.store = 'palmetto'
+             AND ov.delivery_date = r.delivery_date
+             AND ov.item = r.Item
+         ) THEN 'Manual'
+         ELSE 'Estimated'
+       END AS Source,
        r._ord
      FROM ${fq("inventory_order_reco")} r
      INNER JOIN ${fq("vw_order_reco_next_dates")} d

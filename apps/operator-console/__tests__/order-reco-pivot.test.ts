@@ -75,6 +75,27 @@ describe("pivotOrderRecoSlots", () => {
     expect(rows[1]["Order Weight 1"]).toBe(1400);
   });
 
+  it("preserves Manual source on pivoted rows", () => {
+    const rows = pivotOrderRecoSlots(["2026-08-20"], [
+      {
+        Item: "Ube",
+        Slot: 1,
+        delivery_date: "2026-08-20",
+        "Current Qty": 4,
+        "Avg per day": 1,
+        "On Hand at Restock": 4,
+        "Order Tubs": 0,
+        "Order Weight lbs": 0,
+        "After Restock": 4,
+        "Days Left After Restock": 4,
+        Source: "Manual",
+        _ord: 0,
+      },
+    ]);
+    expect(rows[0]["Source 1"]).toBe("Manual");
+    expect(rows[0]["Order Tubs 1"]).toBe(0);
+  });
+
   it("normalizeDeliveryDate truncates timestamps", () => {
     expect(normalizeDeliveryDate("2026-08-17T00:00:00.000Z")).toBe("2026-08-17");
   });

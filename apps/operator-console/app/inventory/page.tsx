@@ -23,64 +23,12 @@ import { PageHeader } from "@/components/shell/PageHeader";
 import { RestockImportDrawer } from "@/components/drawers/RestockImportDrawer";
 import { CapacityEdit } from "@/components/drawers/CapacityEdit";
 import { UsageDayAuditTable } from "@/components/inventory/UsageDayAuditTable";
+import { OrderRecoTable } from "@/components/inventory/OrderRecoTable";
 import type { ColumnDef } from "@tanstack/react-table";
 
 export const dynamic = "force-dynamic";
 
 const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-bad" };
-
-function buildRecoColumns(dates: string[]): ColumnDef<OrderRecoPivotedRow>[] {
-  const cols: ColumnDef<OrderRecoPivotedRow>[] = [
-    { accessorKey: "Item", header: "Item" },
-    {
-      accessorKey: "Current Qty",
-      header: "Current Qty",
-      meta: { format: { kind: "number", digits: 1 } },
-    },
-    {
-      accessorKey: "Avg per day",
-      header: "Avg/day",
-      meta: { format: { kind: "number", digits: 2 } },
-    },
-  ];
-  dates.forEach((raw, i) => {
-    const slot = i + 1;
-    const date = normalizeDeliveryDate(raw) || `slot ${slot}`;
-    cols.push(
-      {
-        accessorKey: `On Hand ${slot}`,
-        header: `On hand (${date})`,
-        meta: { format: { kind: "number", digits: 1 } },
-      },
-      {
-        accessorKey: `Order Tubs ${slot}`,
-        header: "Order tubs",
-        meta: { format: { kind: "number" } },
-      },
-      {
-        accessorKey: `Order Weight ${slot}`,
-        header: "Order weight (lbs)",
-        meta: { format: { kind: "number", digits: 0 } },
-      },
-      {
-        accessorKey: `After Restock ${slot}`,
-        header: "After restock",
-        meta: { format: { kind: "number", digits: 1 } },
-      },
-      {
-        accessorKey: `Days Left ${slot}`,
-        header: "Days left",
-        meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
-      },
-      {
-        accessorKey: `Source ${slot}`,
-        header: "Source",
-        meta: { format: { kind: "source" } },
-      },
-    );
-  });
-  return cols;
-}
 
 export default async function InventoryPage() {
   let rows: OrderRecoPivotedRow[] = [];
@@ -137,7 +85,6 @@ export default async function InventoryPage() {
     { accessorKey: "Status 2", header: "Status 2", meta: { format: { kind: "status" } } },
   ];
 
-  const columns = buildRecoColumns(dates);
   const nextDeliveryLabel =
     dates.length === 0
       ? "No delivery date registered yet."
@@ -194,9 +141,18 @@ export default async function InventoryPage() {
           <p className="text-xs text-muted-foreground">
             Order weight (lbs) = Order tubs × per-tub weight (Açaí 18 lbs; other bases 20 lbs;
             Blade is direct-delivery / not weighed). TOTAL includes +50 lbs per pallet (40
-            tubs/pallet) — same as Grafana Order Assistant.
+            tubs/pallet) — same as Grafana Order Assistant. On Estimated dates, click an Order
+            tubs cell (or the pencil in the header) to pin Manual values for that delivery;
+            Apply once recomputes water-fill around those pins. Actuals dates stay read-only here
+            — use Restock import.
           </p>
-          <DataTable columns={columns} data={rows} pinLeft={["Item", "Current Qty", "Avg per day"]} />
+          <OrderRecoTable
+            dates={dates}
+            estimatedDates={estimatedDates}
+            rows={rows}
+            maxTubs={maxTubs}
+            writable={FEATURES.writeRestock}
+          />
 
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">

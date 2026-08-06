@@ -164,7 +164,7 @@ flowchart TD
 | **Accounting** | Square net sales (`vw_model_labor_daily`), Plaid spend/in (`plaid_transactions`, spend + money-in views), `plaid_items`, taxonomy exclude | Plaid Link; category override; propose-rule; taxonomy exclude toggles |
 | **Sales** | `square_transactions` + `square_item_lines` via `salesByGrain` (Source multi-select; **Composition** bars with Aggregate/By-source stacks, or **Trend** lines with optional prior-period compare; unfiltered Composition totals match `vw_model_labor_daily`) | — |
 | **Labor** | `vw_model_labor_daily` / `_weekly`, `adp_shifts` + `adp_scheduled_shifts` (actual vs schedule, concurrent, coverage); Sync → `BHAGA_ADP_SCHEDULE_ONLY` | Sync scheduled shifts |
-| **Order Quality** | `vw_order_quality_daily`, `vw_kds_order_quality_by_source_daily` | — |
+| **Order Quality** | `vw_kds_per_item_min` (grain percentiles + avg), live by-source from `square_kds_tickets` | — |
 | **Payroll & People** | `vw_model_payroll_period` (+ per-review), `training_shifts` (tip exemptions), `adp_shifts` | `training_shifts` (batch tip exemptions + recompute), **recognition bonuses (new table)**, `employee_aliases` |
 | **Inventory / Ordering** | `vw_order_assistant_table`, `vw_inventory_order_assistant`, `vw_order_reco_combined`, `vw_order_reco_next_dates`, `vw_inventory_base_runway`, `inventory_restock_schedule/orders` | `inventory_restock_schedule`, `inventory_restock_orders` (+ trigger `refresh_order_reco`), `order_reco_max_tubs` → `store_config` |
 | **Pipeline Health** | Firestore run state, per-view `refresh_date`, `status.py` logic | (optional) trigger refresh |
@@ -245,15 +245,23 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
   capped by `order_reco_max_slots` default 4 — migration 052; includes
   **today** until a base closing for today exists — migration 051): `On Hand
   at Restock`, `Order Tubs`, `Order Weight (lbs)`, `After Restock`, `Days Left
-  After Restock`, and a **Source badge** (`Estimated` vs `Actuals`). Console
+  After Restock`, and a **Source badge** (`Estimated` / `Manual` / `Actuals`).
+  `Manual` is a per-base pin on an Estimated date (`inventory_order_tub_overrides`,
+  migration 055) — does not flip the date to Actuals. Console
   pivots `inventory_order_reco` long-format so adding another registered
   schedule date adds another column group automatically.
+- **Edit estimates** (Issue #225): on Estimated delivery dates, click an
+  **Order tubs** cell (or the header pencil) to open a batch Sheet for that
+  date; operator sets Estimated vs Manual tubs, then Apply once →
+  replace-per-date overrides + one `refresh_order_reco`. Water-fill budget
+  shrinks by pinned tubs; pinned items (incl. 0) are excluded from candidates.
+  Actuals dates stay read-only in the table — use Restock import.
 - **TOTAL row** per date incl. pallet weight (`Σ weight + 50·CEIL(Σtubs/40)`).
 - **Restock schedule panel** with the three shared operator actions from the Slack
   modal (**Register date (estimated)**, **Add order (actuals)** (CSV/photo → §5.1),
   **Reset to estimated**) plus a console-only **Replace estimated date** (move an
   Estimated schedule date → new date, then refresh dual-date reco so Order tubs /
-  On hand update).
+  On hand update; clears tub overrides for the old date).
 - **Base runway table** (Issue #164, `vw_inventory_base_runway`): urgency view
   at the top of Inventory / Ordering. Columns: Base, Stock, Vel/day, Days left
   (burn-down from today, ignores future restocks), **Stockout 1 / Restock 1 /
@@ -387,15 +395,18 @@ range/grain contract from `lib/filters/range.ts` + `lib/filters/period.ts`:
   `custom`, which reads `?from=&to=` (two `<input type="date">`s in
   `DateRangePicker`) instead of a fixed window. Invalid/missing custom bounds
   fall back to the page default — never a thrown error on a malformed URL.
-- **Grain** (`day`/`week`/`month`, `AggregationSelect`): NOT a bind param —
-  `bucketSql(grain)` returns one of three **whitelisted** SQL fragments
-  (`date`, `DATE_TRUNC(date, WEEK(MONDAY))`, `DATE_TRUNC(date, MONTH)`),
-  never string-interpolated from user input. `formatBucket(date, grain)`
-  renders the bucket label (`"Jun 30"` / `"Wk of Jun 29"` / `"Jan 2026"`) by
-  parsing the `YYYY-MM-DD` string with a regex, deliberately bypassing
-  `Date`/`Intl.DateTimeFormat` — those convert through UTC and shift the
-  displayed calendar date by up to a day (and, for month grain, sometimes
-  the wrong month) once a timezone offset is applied.
+- **Grain** (`day`/`week`/`month`/`weekday`/`all`, `AggregationSelect`): NOT a
+  bind param — `bucketSql(grain)` returns one of five **whitelisted** SQL
+  fragments (`date`, `DATE_TRUNC(…, WEEK(MONDAY))`, `DATE_TRUNC(…, MONTH)`,
+  weekday DOW anchors, or `DATE '1970-01-01'` for **Entire period**), never
+  string-interpolated from user input. `formatBucket(date, grain)` renders the
+  bucket label (`"Jun 30"` / `"Wk of Jun 29"` / `"Jan 2026"` / `"Monday"` /
+  `"Entire period"`) by parsing the `YYYY-MM-DD` string with a regex,
+  deliberately bypassing `Date`/`Intl.DateTimeFormat` — those convert through
+  UTC and shift the displayed calendar date by up to a day (and, for month
+  grain, sometimes the wrong month) once a timezone offset is applied.
+  **Entire period** (Issue #225) collapses the selected Period into one chart
+  bar / table row across every Performance page that uses `AggregationSelect`.
 - **Composition / Trend chart modes** (Sales first; reuse on other screens):
   Shared stack — do **not** fork per page:
   - Mode gating: `lib/filters/chart-mode.ts` (`parseChartMode`, `parseCompare`,
@@ -439,6 +450,12 @@ percentile chart above it — so the Source dropdown now drives **both** the
 aggregate percentile table and the per-order drill-down, matching Grafana's
 "one filter row governs every panel on the tab" behavior instead of the two
 diverging independently.
+
+Issue #225: the dual line charts (aggregate + by-source) are replaced by **one
+`BarChartCard`** with **Metric** (P95 | Average = `AVG(per_item_min)`) and
+**View** (Aggregate | By-source, grouped bars). On-time goal defaults to **8m**
+(pills 5/8/10). **Source** is a multi-select (`FilterMultiSelect` / `?sources=`,
+same contract as Sales).
 
 ## 14. Labor page (Issue #213)
 

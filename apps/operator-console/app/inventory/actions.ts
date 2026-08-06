@@ -9,6 +9,7 @@ import {
   setUsageDayOverride,
   clearUsageDayOverride,
   readUsageDayAuditRow,
+  replaceOrderTubOverrides,
   type RestockAction,
   type UsageDayOverrideMode,
 } from "@/lib/bq/writes";
@@ -192,6 +193,43 @@ export async function applyUsageDayOverridesAction(
         : `Saved ${changes.length} override(s).`,
       queued,
       data: { baselineRefreshedAt },
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+export async function applyOrderTubOverridesAction(
+  deliveryDate: string,
+  rows: { item: string; quantityTubs: number }[],
+): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  if (!FEATURES.writeRestock) {
+    return failAck(new Error("Order tub overrides are disabled"));
+  }
+  try {
+    const by = await operatorEmail();
+    // Local BYPASS_IAP dogfood: sync recompute so Apply shows new tubs without
+    // waiting on Cloud Run (prod keeps asyncOrderReco enqueue).
+    const syncLocal = Boolean(process.env.BYPASS_IAP_EMAIL?.trim());
+    const skipRefresh = FEATURES.asyncOrderReco && !syncLocal;
+    await replaceOrderTubOverrides(DEFAULT_STORE, deliveryDate, rows, by, {
+      skipRefresh,
+    });
+    if (skipRefresh) {
+      const { queued, baselineRefreshedAt } = await queueOrderRecoWithBaseline();
+      revalidatePath("/inventory");
+      return okAck({
+        message: queued
+          ? "Estimate pins saved — recommendation refreshing…"
+          : "Estimate pins saved.",
+        queued,
+        data: { baselineRefreshedAt },
+      });
+    }
+    revalidatePath("/inventory");
+    return okAck({
+      message: "Estimate pins saved.",
+      data: { baselineRefreshedAt: await orderRecoRefreshedAt(DEFAULT_STORE) },
     });
   } catch (e) {
     return failAck(e);

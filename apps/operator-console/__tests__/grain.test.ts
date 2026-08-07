@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   GRAINS,
   WEEKDAY_ANCHOR_MON,
+  ALL_PERIOD_ANCHOR,
   addGrain,
   bucketSql,
   enumerateBucketStarts,
@@ -11,11 +12,12 @@ import {
 } from "@/lib/filters/range";
 
 describe("parseGrain", () => {
-  it("accepts day/week/month/weekday", () => {
+  it("accepts day/week/month/weekday/all", () => {
     expect(parseGrain("day")).toBe("day");
     expect(parseGrain("week")).toBe("week");
     expect(parseGrain("month")).toBe("month");
     expect(parseGrain("weekday")).toBe("weekday");
+    expect(parseGrain("all")).toBe("all");
   });
 
   it("falls back to the given default for an unknown/missing grain", () => {
@@ -47,14 +49,18 @@ describe("bucketSql", () => {
     );
   });
 
+  it("all collapses to a single period anchor date", () => {
+    expect(bucketSql("all")).toBe(`DATE '${ALL_PERIOD_ANCHOR}'`);
+  });
+
   it("honors a custom date column name", () => {
     expect(bucketSql("week", "date_local")).toBe("DATE_TRUNC(date_local, WEEK(MONDAY))");
   });
 });
 
 describe("GRAINS", () => {
-  it("has the 4 operator-facing grains in display order", () => {
-    expect(GRAINS.map((g) => g.value)).toEqual(["day", "week", "month", "weekday"]);
+  it("has the 5 operator-facing grains in display order", () => {
+    expect(GRAINS.map((g) => g.value)).toEqual(["day", "week", "month", "weekday", "all"]);
   });
 });
 
@@ -75,6 +81,11 @@ describe("formatBucket", () => {
     expect(formatBucket(WEEKDAY_ANCHOR_MON, "weekday")).toBe("Monday");
     expect(formatBucket("1970-01-11", "weekday")).toBe("Sunday");
     expect(formatBucket("2026-07-06", "weekday")).toBe("Monday"); // real Mon
+  });
+
+  it("all renders as Entire period", () => {
+    expect(formatBucket(ALL_PERIOD_ANCHOR, "all")).toBe("Entire period");
+    expect(formatBucket("2026-08-01", "all")).toBe("Entire period");
   });
 
   it("returns an em dash for null/undefined/invalid", () => {
@@ -121,5 +132,16 @@ describe("truncateToGrain / enumerate weekday", () => {
       "1970-01-11",
     ]);
     expect(addGrain(WEEKDAY_ANCHOR_MON, "weekday", 1)).toBe("1970-01-06");
+  });
+
+  it("enumerateBucketStarts for all returns a single period anchor", () => {
+    const win = {
+      start: "2026-07-01",
+      end: "2026-07-15",
+      label: "test",
+      preset: "custom" as const,
+    };
+    expect(enumerateBucketStarts(win, "all")).toEqual([ALL_PERIOD_ANCHOR]);
+    expect(truncateToGrain("2026-07-06", "all")).toBe(ALL_PERIOD_ANCHOR);
   });
 });

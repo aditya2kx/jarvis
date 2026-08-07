@@ -1,3 +1,11 @@
+## 2026-08-06 — Order Quality chart polish + inventory estimate pins (Issue #225)
+
+**Scope:** Manual Order Tubs pins on Estimated delivery dates; Order Quality single bar + Metric/View; Entire-period aggregation grain.
+
+- Migration `055`: `inventory_order_tub_overrides` + override-aware `tvf_order_reco_slot1` / `tvf_order_reco_slot_n` (Actuals win).
+- Console: `EstimateTubsDrawer` / `OrderRecoTable`; OQ Metric P95|Average + Aggregate|By-source; `grain=all`.
+- Evidence: BQ Mango 19→0 Manual with peer reallocate; kdsBySource parity 50/50; hosted screenshots on `evidence-screenshots`.
+
 ## 2026-08-05 — Webhook team-pulse image fix (Issue #223)
 
 **Scope:** Post-#222 `/team-pulse` returned `No module named 'agents'` — webhook image lacked BHAGA scripts + clickup_chat; no `CLICKUP_PAT` on service.

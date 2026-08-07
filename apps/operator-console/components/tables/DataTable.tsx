@@ -150,9 +150,10 @@ function renderFormatted(format: ColumnFormat, value: unknown): ReactNode {
       if (value == null || value === "") return null; // no slot 2 yet (Status 2)
       return <Badge variant={statusVariant(value as string)}>{value as string}</Badge>;
     case "source": {
-      const v = value as "Estimated" | "Actuals" | null | undefined;
+      const v = value as "Estimated" | "Manual" | "Actuals" | null | undefined;
       if (!v) return null; // no second date registered yet (vw_order_reco_combined §Source 2)
-      return <Badge variant={v === "Actuals" ? "default" : "secondary"}>{v}</Badge>;
+      const variant = v === "Actuals" ? "default" : v === "Manual" ? "outline" : "secondary";
+      return <Badge variant={variant}>{v}</Badge>;
     }
   }
 }

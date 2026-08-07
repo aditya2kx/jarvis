@@ -15,7 +15,7 @@ export type OrderRecoSlotLongRow = {
   "Order Weight lbs": number | null;
   "After Restock": number | null;
   "Days Left After Restock": number | null;
-  Source: "Estimated" | "Actuals" | null;
+  Source: "Estimated" | "Manual" | "Actuals" | null;
   _ord: number;
 };
 

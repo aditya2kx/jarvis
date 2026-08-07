@@ -219,14 +219,16 @@ export function resolveRange(
 // GROUP BY <bucketSql(grain)>), never client-side — so a "month" bucket sums
 // the exact same underlying rows a "day" bucket would show individually.
 // `weekday` collapses the Period onto Mon…Sun (all Mondays together, etc.).
+// `all` collapses the entire Period into one bucket (Issue #225).
 
-export type Grain = "day" | "week" | "month" | "weekday";
+export type Grain = "day" | "week" | "month" | "weekday" | "all";
 
 export const GRAINS: { value: Grain; label: string }[] = [
   { value: "day", label: "Daily" },
   { value: "week", label: "Weekly" },
   { value: "month", label: "Monthly" },
   { value: "weekday", label: "Weekday" },
+  { value: "all", label: "Entire period" },
 ];
 
 /** Operator-facing grain noun for chart titles / table captions. */
@@ -240,6 +242,8 @@ export function grainDisplayLabel(grain: Grain): string {
       return "month";
     case "weekday":
       return "weekday";
+    case "all":
+      return "period";
   }
 }
 
@@ -263,14 +267,15 @@ export function parseGrain(value: string | string[] | undefined, fallback: Grain
  *
  * When `compareGrain` is omitted it defaults to `displayGrain` (legacy lag-1).
  * Weekday Aggregation uses an equal-length prior Period (same span shifted
- * back), so Mon…Sun bars still align by index.
+ * back), so Mon…Sun bars still align by index. Entire-period Aggregation
+ * likewise shifts the whole Period back by its length.
  */
 export function priorWindow(
   win: DateWindow,
   displayGrain: Grain = "day",
   compareGrain: Grain = displayGrain,
 ): DateWindow {
-  if (displayGrain === "weekday") {
+  if (displayGrain === "weekday" || displayGrain === "all") {
     const m0 = /^(\d{4})-(\d{2})-(\d{2})/.exec(win.start);
     const m1 = /^(\d{4})-(\d{2})-(\d{2})/.exec(win.end);
     if (m0 && m1) {
@@ -288,14 +293,17 @@ export function priorWindow(
   }
   const curBuckets = enumerateBucketStarts(win, displayGrain);
   if (curBuckets.length === 0) {
+    const lagStep: Grain =
+      compareGrain === "weekday" || compareGrain === "all" ? "day" : compareGrain;
     return {
-      start: shiftCalendarDate(win.start, compareGrain === "weekday" ? "day" : compareGrain, -1),
-      end: shiftCalendarDate(win.end, compareGrain === "weekday" ? "day" : compareGrain, -1),
+      start: shiftCalendarDate(win.start, lagStep, -1),
+      end: shiftCalendarDate(win.end, lagStep, -1),
       label: "Prior period",
       preset: "custom",
     };
   }
-  const lagGrain: Grain = compareGrain === "weekday" ? "week" : compareGrain;
+  const lagGrain: Grain =
+    compareGrain === "weekday" || compareGrain === "all" ? "week" : compareGrain;
   const priorBuckets = curBuckets.map((b) =>
     truncateToGrain(shiftCalendarDate(b, lagGrain, -1), displayGrain),
   );
@@ -314,7 +322,7 @@ export function grainEndInclusive(bucketStart: string, grain: Grain): string {
   const y = Number(m[1]);
   const mo = Number(m[2]);
   const d = Number(m[3]);
-  if (grain === "day" || grain === "weekday") return bucketStart;
+  if (grain === "day" || grain === "weekday" || grain === "all") return bucketStart;
   if (grain === "week") {
     const end = addDays(y, mo, d, 6);
     return fmt(end.y, end.m, end.d);
@@ -330,8 +338,9 @@ export function shiftCalendarDate(isoDate: string, grain: Grain, delta: number):
   const y = Number(m[1]);
   const mo = Number(m[2]);
   const d = Number(m[3]);
-  if (grain === "day" || grain === "weekday") {
+  if (grain === "day" || grain === "weekday" || grain === "all") {
     // Weekday lag is "same DOW previous week" when used as a step of 1 → 7 days.
+    // Entire-period lag is day-stepped (priorWindow shifts by full span).
     const step = grain === "weekday" ? delta * 7 : delta;
     const next = addDays(y, mo, d, step);
     return fmt(next.y, next.m, next.d);
@@ -350,12 +359,18 @@ export function shiftCalendarDate(isoDate: string, grain: Grain, delta: number):
 /** Weekday Aggregation anchors: Mon 1970-01-05 … Sun 1970-01-11. */
 export const WEEKDAY_ANCHOR_MON = "1970-01-05";
 
+/** Entire-period Aggregation anchor — one GROUP BY key for the whole Period. */
+export const ALL_PERIOD_ANCHOR = "1970-01-01";
+
 /** Inclusive list of truncated bucket ISO starts covering `win` at `grain`. */
 export function enumerateBucketStarts(win: DateWindow, grain: Grain): string[] {
   // Weekday Aggregation always yields Mon…Sun anchors (Period only filters which
   // underlying days contribute — empty DOWs simply have no BQ rows).
   if (grain === "weekday") {
     return Array.from({ length: 7 }, (_, i) => addGrain(WEEKDAY_ANCHOR_MON, "weekday", i));
+  }
+  if (grain === "all") {
+    return [ALL_PERIOD_ANCHOR];
   }
   const out: string[] = [];
   let cur = truncateToGrain(win.start, grain);
@@ -379,6 +394,9 @@ export function addGrain(isoDate: string, grain: Grain, delta: number): string {
     const next = addDays(y, mo, d, delta);
     return fmt(next.y, next.m, next.d);
   }
+  if (grain === "all") {
+    return ALL_PERIOD_ANCHOR;
+  }
   if (grain === "weekday") {
     const next = addDays(y, mo, d, delta);
     return truncateToGrain(fmt(next.y, next.m, next.d), "weekday");
@@ -393,14 +411,16 @@ export function addGrain(isoDate: string, grain: Grain, delta: number): string {
 }
 
 // `grain` is never string-interpolated from a request — it is parsed above
-// into one of exactly 4 literal TS union values, then this function maps
-// that closed set to one of exactly 4 hardcoded SQL fragments. There is no
+// into one of exactly 5 literal TS union values, then this function maps
+// that closed set to one of exactly 5 hardcoded SQL fragments. There is no
 // code path from raw user input to a SQL string here (see queries.ts
 // `bucketSql` usages — always `bucketSql(grain)` on a `Grain`-typed value,
 // never a template of the raw search-param).
 //
 // Weekday buckets are anchored to Mon 1970-01-05 … Sun 1970-01-11 so ORDER BY
 // date yields Mon→Sun and `formatBucket` can render weekday names.
+// Entire-period buckets are anchored to ALL_PERIOD_ANCHOR so one GROUP BY
+// key covers the full Period window.
 export function bucketSql(grain: Grain, dateCol = "date"): string {
   switch (grain) {
     case "day":
@@ -412,6 +432,8 @@ export function bucketSql(grain: Grain, dateCol = "date"): string {
     case "weekday":
       // BQ DAYOFWEEK: Sunday=1 … Saturday=7 → Mon=0 … Sun=6
       return `DATE_ADD(DATE '${WEEKDAY_ANCHOR_MON}', INTERVAL MOD(EXTRACT(DAYOFWEEK FROM ${dateCol}) + 5, 7) DAY)`;
+    case "all":
+      return `DATE '${ALL_PERIOD_ANCHOR}'`;
   }
 }
 
@@ -444,7 +466,8 @@ export function weekdayIndexMon0(isoDate: string): number {
 
 /** Render a bucketed date value the way each grain reads best: a day as
  *  "Jun 30", a week as "Wk of Jun 30" (Monday, matching `bucketSql`'s
- *  WEEK(MONDAY) truncation), a month as "Jan 2026", a weekday as "Monday".
+ *  WEEK(MONDAY) truncation), a month as "Jan 2026", a weekday as "Monday",
+ *  entire period as "Entire period".
  *
  *  Deliberately does NOT go through `new Date(str)` + an America/Chicago
  *  `Intl.DateTimeFormat` (the pattern `formatDate` in lib/format.ts uses for
@@ -465,6 +488,7 @@ export function formatBucket(
   opts?: { weekday?: boolean },
 ): string {
   if (!value) return "—";
+  if (grain === "all") return "Entire period";
   const iso = typeof value === "string" ? value : value.toISOString();
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
   if (!m) return "—";
@@ -486,13 +510,14 @@ export function formatBucket(
   return dayLabel;
 }
 
-/** Client-side mirror of `bucketSql` — ISO date truncated to day / week(Mon) / month / weekday-anchor. */
+/** Client-side mirror of `bucketSql` — ISO date truncated to day / week(Mon) / month / weekday-anchor / entire-period. */
 export function truncateToGrain(isoDate: string, grain: Grain): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(isoDate));
   if (!m) return String(isoDate).slice(0, 10);
   const y = Number(m[1]);
   const mo = Number(m[2]);
   const d = Number(m[3]);
+  if (grain === "all") return ALL_PERIOD_ANCHOR;
   if (grain === "day") return `${m[1]}-${m[2]}-${m[3]}`;
   if (grain === "month") return `${m[1]}-${m[2]}-01`;
   if (grain === "weekday") {

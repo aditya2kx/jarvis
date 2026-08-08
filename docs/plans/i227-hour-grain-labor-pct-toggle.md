@@ -111,3 +111,12 @@ ARCHITECTURE.md grain list + Labor unit; `check_doc_freshness.py`; localhost dog
 python3 scripts/check_doc_freshness.py --base origin/main
 python3 scripts/verify.py --full
 ```
+
+## Pre-merge BQ evidence (2026-08-08)
+
+Prod `bhaga.square_transactions` (last 7 complete CT days / Aug 1-7 window):
+
+- Hour vs day net_sales SUM parity: `11033.41` / `11033.41` (`abs_diff=0`).
+- Stat Average denominator: `period_total/7 = 1576.20` (`n_days=7`).
+- SCHEDULED place_hour != ops_hour_local: e.g. `14→15`, `7→8` (promised pickup).
+- Migration 056 population (30d): `n_ops_hour=2900/2906`, `n_sched_ops=109/109`.

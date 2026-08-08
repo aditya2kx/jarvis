@@ -70,7 +70,7 @@ export function LineChartCard({
   goal,
   goalLabel,
   height = 260,
-  valueFormat = "number",
+  valueFormat,
 }: {
   title: string;
   /** Optional second line under the title (e.g. prior window dates). */
@@ -81,9 +81,14 @@ export function LineChartCard({
   goal?: number;
   goalLabel?: string;
   height?: number;
+  /**
+   * When omitted, left-axis ticks stay Recharts defaults (pre-#231 behavior).
+   * Sales Trend passes dollars/number explicitly.
+   */
   valueFormat?: LineValueFormat;
 }) {
   const hasRight = series.some((s) => s.yAxisId === "right");
+  const tipFormat: LineValueFormat = valueFormat ?? "number";
 
   return (
     <Card>
@@ -104,7 +109,11 @@ export function LineChartCard({
             <YAxis
               yAxisId="left"
               tick={{ fontSize: 12 }}
-              tickFormatter={(v) => formatTick(Number(v), valueFormat)}
+              tickFormatter={
+                valueFormat
+                  ? (v) => formatTick(Number(v), valueFormat)
+                  : undefined
+              }
             />
             {hasRight ? (
               <YAxis
@@ -146,7 +155,7 @@ export function LineChartCard({
                       if (key.startsWith("pct_")) return null;
                       return (
                         <div key={key} style={{ color: item.color }}>
-                          {String(item.name)}: {formatAbs(item.value, valueFormat)}
+                          {String(item.name)}: {formatAbs(item.value, tipFormat)}
                         </div>
                       );
                     })}

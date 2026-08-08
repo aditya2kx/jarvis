@@ -44,7 +44,7 @@ buckets**, not ADP employment classes — there are no salaried employees in the
 
 | Source | Pulled via | Quirk you must respect |
 |---|---|---|
-| **Square** transactions | `skills/square_api/` (REST API, OAuth 2.0) | Square returns UTC timestamps; `export.py` converts to `America/Chicago`. Register orders use `closed_at`; Kiosk/3rd-party use `created_at`. Gift-card purchases excluded from gross sales. Split-tender orders are aggregated to one row per `order_id`. |
+| **Square** transactions | `skills/square_api/` (REST API, OAuth 2.0) | Square returns UTC timestamps; `export.py` converts to `America/Chicago`. Register orders use `closed_at`; Kiosk/3rd-party use `created_at` for **place-time** (`created_at_*`). **Scheduled** fulfillments also store `pickup_at`/`deliver_at`/… + derived `ops_at_*` (migration 056 — `skills/square_api/fulfillment.py`); Sales Hour Aggregation buckets on ops clock, not place-time. Gift-card purchases excluded from gross sales. Split-tender orders are aggregated to one row per `order_id`. |
 | **Square** KDS / items | `skills/square_api/kds_reporting.py` (Reporting API / Cube.js KDS cube) | `display_on_kds_at` is used as "Time Created" for completion-time math. Naive UTC timestamps from the Reporting API are explicitly treated as UTC before shop-local conversion. `time_due` enables late-ticket stats. |
 | **ADP RUN** timecards + earnings | `skills/adp_run_automation/` (Playwright) | **Times are already shop-local — no conversion.** **Open shifts (no clock-out) are silently omitted** from the export → always scrape after close. **Name formats differ between reports** ("LastName FirstName" in timecards vs "LastName, FirstName" in earnings) → `employee_aliases` normalizes to one canonical name or employees double-count. |
 | **Google reviews** | ClickUp (`CLICKUP_PAT`) → `process_reviews.py` | Reviews are markdown messages prefixed `### Google Review`; parsed for post time, rating, reviewer, comment, and any named staff. |
@@ -132,6 +132,9 @@ functions of `update_model_sheet.py` / `forecast.py` for the labor / tip-alloc /
 | `staff_name` | Square-attributed staff (NOT used for tip allocation — hours drive that) |
 | `location` | Square location |
 | `raw_date_csv` / `raw_time_csv` / `raw_tz_csv` | untouched CSV values, kept for audit |
+| `fulfillment_type` / `schedule_type` | From Orders API fulfillments (`PICKUP`/`DELIVERY`, `ASAP`/`SCHEDULED`) — migration 056 |
+| `pickup_at_utc` / `deliver_at_utc` / `courier_pickup_at_utc` / `ready_at_utc` / `picked_up_at_utc` / `delivered_at_utc` / `placed_at_utc` / `accepted_at_utc` / `closed_at_utc` | Raw Square fulfillment + order close timestamps (UTC ISO) |
+| `ops_at_local_iso` / `ops_date_local` / `ops_hour_local` | Ops clock = `COALESCE(pickup_at, deliver_at, courier_pickup_at, ready_at, closed_at, created_at)` in shop-local TZ — used by Operator Console Sales Hour Aggregation |
 
 **`daily_rollup`** — one row per **shop-local day**. Key: `(date_local,)`. Derived from
 `transactions`. Fields: `txn_count`, `gross_sales_cents`, `tip_cents`, `net_sales_cents`,

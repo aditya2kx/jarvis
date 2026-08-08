@@ -62,7 +62,8 @@ export default async function OrderQualityPage({
 }) {
   const sp = await searchParams;
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
-  const grain = await resolvePageGrain(sp.grain);
+  const grainRaw = await resolvePageGrain(sp.grain);
+  const grain = grainRaw === "hour" ? "day" : grainRaw;
   const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
   const dateParams: Record<string, string> = win.preset === "custom" ? { from: win.start, to: win.end } : {};
   const onTime = parseOnTime(sp.onTime);

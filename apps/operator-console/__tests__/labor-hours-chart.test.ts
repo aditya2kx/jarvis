@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   formatHoursWithPct,
+  formatLaborPct,
   goalHoursAsSalesPct,
+  laborPctToChart,
+  laborPctTooltipContent,
   laborTooltipContent,
   pctOfHoursGoal,
   scopedLaborMetrics,
@@ -13,6 +16,7 @@ import {
   parseLaborTypes,
   serializeLaborTypes,
 } from "@/lib/filters/labor-type";
+import { parseLaborChartUnit } from "@/lib/filters/labor-chart-unit";
 
 describe("weeklyHoursGoalApplicable", () => {
   it("only applies at week Aggregation", () => {
@@ -39,6 +43,61 @@ describe("goalHoursAsSalesPct", () => {
 describe("formatHoursWithPct", () => {
   it("puts labor % in brackets beside hours", () => {
     expect(formatHoursWithPct(226.9, 0.314)).toBe("226.9 (31.4%)");
+  });
+});
+
+describe("formatLaborPct / laborPctToChart", () => {
+  it("formats fraction as percent string", () => {
+    expect(formatLaborPct(0.314)).toBe("31.4%");
+    expect(formatLaborPct(null)).toBe("—");
+  });
+
+  it("scales fraction to chart percent", () => {
+    expect(laborPctToChart(0.314)).toBe(31.4);
+    expect(laborPctToChart(null)).toBeNull();
+  });
+});
+
+describe("parseLaborChartUnit", () => {
+  it("defaults to hours; accepts pct", () => {
+    expect(parseLaborChartUnit(undefined)).toBe("hours");
+    expect(parseLaborChartUnit("hours")).toBe("hours");
+    expect(parseLaborChartUnit("pct")).toBe("pct");
+    expect(parseLaborChartUnit("bogus")).toBe("hours");
+  });
+});
+
+describe("laborPctTooltipContent", () => {
+  const row = {
+    date: "Wk of Jul 6",
+    bucket_iso: "2026-07-06",
+    total_hours: 265.2,
+    parttime_hours: 226.9,
+    fulltime_hours: 38.3,
+    labor_pct: 0.399,
+    hourly_pct: 0.314,
+    fulltime_pct: 0.085,
+    net_sales: 11161,
+    parttime_scheduled_hours: 40,
+    fulltime_scheduled_hours: 16,
+  };
+
+  it("lists PT/FT/Total percents and ignores schedule", () => {
+    const tip = laborPctTooltipContent(row, null);
+    expect(tip.entries.map((e) => e.label)).toEqual([
+      "Part-time",
+      "Full-time",
+      "Total",
+    ]);
+    expect(tip.entries[0]?.value).toBe("31.4%");
+    expect(tip.entries[2]?.value).toBe("39.9%");
+    expect(tip.lines).toEqual([]);
+  });
+
+  it("scopes to part-time when labor type filter is PT-only", () => {
+    const tip = laborPctTooltipContent(row, ["Part-time"]);
+    expect(tip.entries.map((e) => e.label)).toEqual(["Part-time", "Total"]);
+    expect(tip.entries[1]?.value).toBe("31.4%");
   });
 });
 

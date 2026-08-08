@@ -19,6 +19,7 @@ import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
 import {
   RANGE_PRESETS,
+  GRAINS,
   enumerateBucketStarts,
   formatBucket,
   grainTitleLabel,
@@ -32,6 +33,11 @@ import {
   parseCompare,
 } from "@/lib/filters/chart-mode";
 import { parseBreakdown, parseSources, serializeSources } from "@/lib/filters/sources";
+import {
+  SALES_STAT_OPTIONS,
+  parseSalesStat,
+  salesStatApplicable,
+} from "@/lib/filters/sales-stat";
 import { resolvePageGrain, resolvePageRange } from "@/lib/filters/period";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { SalesBySourceRow } from "@/lib/bq/queries";
@@ -54,6 +60,7 @@ export default async function SalesPage({
     breakdown?: string;
     mode?: string;
     compare?: string;
+    stat?: string;
   }>;
 }) {
   const sp = await searchParams;
@@ -67,6 +74,8 @@ export default async function SalesPage({
     parseCompare(sp.compare, grain),
   );
   const { mode, breakdown, compare } = coherent;
+  const showStat = salesStatApplicable(grain);
+  const stat = showStat ? parseSalesStat(sp.stat) : "total";
   const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
   const dateParams: Record<string, string> =
     win.preset === "custom" ? { from: win.start, to: win.end } : {};
@@ -74,6 +83,7 @@ export default async function SalesPage({
   const breakdownParam = breakdown ? "1" : "0";
   const compareParam = compare;
   const modeParam = mode;
+  const statExtra: Record<string, string> = showStat && stat !== "avg" ? { stat } : {};
   const compareOn = compare !== "off";
   const compareLabel = compareGrainLabel(compare);
   const priorSeriesLabel = compareLabel;
@@ -86,11 +96,11 @@ export default async function SalesPage({
   const prior = compareOn ? priorWindow(win, grain, compare) : null;
   try {
     const [sales, opts, config, priorSales] = await Promise.all([
-      salesByGrain(win, grain, sources, breakdown),
+      salesByGrain(win, grain, sources, breakdown, stat),
       salesSourceOptions(win),
       storeConfig(DEFAULT_STORE),
       prior
-        ? salesByGrain(prior, grain, sources, false)
+        ? salesByGrain(prior, grain, sources, false, stat)
         : Promise.resolve([] as SalesBySourceRow[]),
     ]);
     rows = sales;
@@ -105,9 +115,13 @@ export default async function SalesPage({
   const sorted = [...rows].sort((a, b) => (dateSortKey(a.date) > dateSortKey(b.date) ? 1 : -1));
 
   // For Trend+Compare: zero-fill both spines so bucket counts match priorWindow.
+  // Hour of day always fills 0–23 so quiet hours still appear on the axis.
   const chartSourceRows = (() => {
-    if (!compareOn || breakdown) return sorted;
-    return fillSalesSpine(sorted, enumerateBucketStarts(win, grain));
+    if (breakdown) return sorted;
+    if (compareOn || grain === "hour") {
+      return fillSalesSpine(sorted, enumerateBucketStarts(win, grain));
+    }
+    return sorted;
   })();
   const chartRows = chartSourceRows.map((r) => ({
     ...r,
@@ -182,8 +196,16 @@ export default async function SalesPage({
   const columns: ColumnDef<SalesBySourceRow>[] = [
     { accessorKey: "date", header: "Date", meta: { format: { kind: "bucket", grain } } },
     { accessorKey: "net_sales", header: "Net sales", meta: { format: { kind: "dollars" } } },
-    { accessorKey: "orders", header: "Orders", meta: { format: { kind: "number" } } },
-    { accessorKey: "items_sold", header: "Items", meta: { format: { kind: "number" } } },
+    {
+      accessorKey: "orders",
+      header: "Orders",
+      meta: { format: { kind: "number", digits: showStat && stat === "avg" ? 1 : 0 } },
+    },
+    {
+      accessorKey: "items_sold",
+      header: "Items",
+      meta: { format: { kind: "number", digits: showStat && stat === "avg" ? 1 : 0 } },
+    },
     { accessorKey: "avg_order_price", header: "AOV", meta: { format: { kind: "dollars" } } },
   ];
 
@@ -197,6 +219,28 @@ export default async function SalesPage({
       : noneSelected
         ? " · no sources selected"
         : ` · ${sources.length} source${sources.length === 1 ? "" : "s"}`;
+
+  const grainLabel = grainTitleLabel(grain);
+  const statPrefix = showStat && stat === "avg" ? "Average " : showStat ? "Total " : "";
+  const statSubtitle =
+    showStat && stat === "avg"
+      ? grain === "hour"
+        ? "Per day in Period"
+        : "Per weekday in Period"
+      : showStat
+        ? "Sum across Period"
+        : undefined;
+  const filterCarry = {
+    range: win.preset,
+    grain,
+    mode: modeParam,
+    ...statExtra,
+    ...dateParams,
+    ...(sourcesParam ? { sources: sourcesParam } : {}),
+    ...(mode === "composition"
+      ? { breakdown: breakdownParam }
+      : { compare: compareParam }),
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -217,9 +261,9 @@ export default async function SalesPage({
               extraParams={{
                 range: win.preset,
                 grain,
+                ...statExtra,
                 ...dateParams,
                 ...(sourcesParam ? { sources: sourcesParam } : {}),
-                // Mode switch clears the gated control of the other mode.
               }}
             />
             <FilterMultiSelect
@@ -232,6 +276,7 @@ export default async function SalesPage({
                 range: win.preset,
                 grain,
                 mode: modeParam,
+                ...statExtra,
                 ...(mode === "composition"
                   ? { breakdown: breakdownParam }
                   : { compare: compareParam }),
@@ -252,6 +297,7 @@ export default async function SalesPage({
                   range: win.preset,
                   grain,
                   mode: modeParam,
+                  ...statExtra,
                   ...dateParams,
                   ...(sourcesParam ? { sources: sourcesParam } : {}),
                 }}
@@ -267,6 +313,7 @@ export default async function SalesPage({
                   range: win.preset,
                   grain,
                   mode: modeParam,
+                  ...statExtra,
                   ...dateParams,
                   ...(sourcesParam ? { sources: sourcesParam } : {}),
                 }}
@@ -275,9 +322,11 @@ export default async function SalesPage({
             <AggregationSelect
               value={grain}
               basePath="/sales"
+              options={GRAINS}
               extraParams={{
                 range: win.preset,
                 mode: modeParam,
+                ...statExtra,
                 ...dateParams,
                 ...(sourcesParam ? { sources: sourcesParam } : {}),
                 ...(mode === "composition"
@@ -285,6 +334,16 @@ export default async function SalesPage({
                   : { compare: compareParam }),
               }}
             />
+            {showStat ? (
+              <FilterPills
+                label="Stat"
+                param="stat"
+                value={stat}
+                options={SALES_STAT_OPTIONS}
+                basePath="/sales"
+                extraParams={filterCarry}
+              />
+            ) : null}
             <FilterSelect
               label="Period"
               param="range"
@@ -294,6 +353,7 @@ export default async function SalesPage({
               extraParams={{
                 grain,
                 mode: modeParam,
+                ...statExtra,
                 ...(sourcesParam ? { sources: sourcesParam } : {}),
                 ...(mode === "composition"
                   ? { breakdown: breakdownParam }
@@ -309,6 +369,7 @@ export default async function SalesPage({
                 extraParams={{
                   grain,
                   mode: modeParam,
+                  ...statExtra,
                   ...(sourcesParam ? { sources: sourcesParam } : {}),
                   ...(mode === "composition"
                     ? { breakdown: breakdownParam }
@@ -326,67 +387,73 @@ export default async function SalesPage({
         <p className="text-sm text-muted-foreground">
           No sources selected — pick one or more in Source, or Select all.
         </p>
-      ) : mode === "composition" ? (
-        <>
-          <BarChartCard
-            title={`Net sales by ${grain}`}
-            data={netChart.data}
-            xKey="date"
-            series={netChart.series}
-            stacked={breakdown && netChart.series.length > 1}
-            goal={showGoal ? goalWeekly : undefined}
-            goalLabel="Weekly goal / 7"
-          />
-          <BarChartCard
-            title={`Orders by ${grain}`}
-            data={ordersChart.data}
-            xKey="date"
-            series={ordersChart.series}
-            stacked={breakdown && ordersChart.series.length > 1}
-            valueFormat="number"
-          />
-          <BarChartCard
-            title={`Items sold by ${grain}`}
-            data={itemsChart.data}
-            xKey="date"
-            series={itemsChart.series}
-            stacked={breakdown && itemsChart.series.length > 1}
-            valueFormat="number"
-          />
-          <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
-              {grainTitleLabel(grain)} detail
-              {detailSuffix}
-            </h2>
-            <DataTable<SalesBySourceRow> columns={columns} data={tableRows} />
-          </div>
-        </>
       ) : (
         <>
-          <LineChartCard
-            title={`Net sales by ${grain}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
-            subtitle={priorSubtitle}
-            data={netChart.data}
-            xKey="date"
-            series={netChart.series}
-          />
-          <LineChartCard
-            title={`Orders by ${grain}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
-            subtitle={priorSubtitle}
-            data={ordersChart.data}
-            xKey="date"
-            series={ordersChart.series}
-          />
-          <LineChartCard
-            title={`Items sold by ${grain}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
-            subtitle={priorSubtitle}
-            data={itemsChart.data}
-            xKey="date"
-            series={itemsChart.series}
-          />
+          {mode === "composition" ? (
+            <>
+              <BarChartCard
+                title={`${statPrefix}Net sales by ${grainLabel}`}
+                subtitle={statSubtitle}
+                data={netChart.data}
+                xKey="date"
+                series={netChart.series}
+                stacked={breakdown && netChart.series.length > 1}
+                valueFormat="dollars"
+                goal={showGoal ? goalWeekly : undefined}
+                goalLabel={showGoal ? "Weekly goal / 7" : undefined}
+              />
+              <BarChartCard
+                title={`${statPrefix}Orders by ${grainLabel}`}
+                subtitle={statSubtitle}
+                data={ordersChart.data}
+                xKey="date"
+                series={ordersChart.series}
+                stacked={breakdown && ordersChart.series.length > 1}
+                valueFormat="number"
+              />
+              <BarChartCard
+                title={`${statPrefix}Items sold by ${grainLabel}`}
+                subtitle={statSubtitle}
+                data={itemsChart.data}
+                xKey="date"
+                series={itemsChart.series}
+                stacked={breakdown && itemsChart.series.length > 1}
+                valueFormat="number"
+              />
+            </>
+          ) : (
+            <>
+              <LineChartCard
+                title={`${statPrefix}Net sales by ${grainLabel}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
+                subtitle={[statSubtitle, priorSubtitle].filter(Boolean).join(" · ") || undefined}
+                data={netChart.data}
+                xKey="date"
+                series={netChart.series}
+                valueFormat="dollars"
+              />
+              <LineChartCard
+                title={`${statPrefix}Orders by ${grainLabel}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
+                subtitle={[statSubtitle, priorSubtitle].filter(Boolean).join(" · ") || undefined}
+                data={ordersChart.data}
+                xKey="date"
+                series={ordersChart.series}
+                valueFormat="number"
+              />
+              <LineChartCard
+                title={`${statPrefix}Items sold by ${grainLabel}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
+                subtitle={[statSubtitle, priorSubtitle].filter(Boolean).join(" · ") || undefined}
+                data={itemsChart.data}
+                xKey="date"
+                series={itemsChart.series}
+                valueFormat="number"
+              />
+            </>
+          )}
+
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">
-              {grainTitleLabel(grain)} detail
+              {statPrefix}
+              {grainLabel} detail
               {detailSuffix}
             </h2>
             <DataTable<SalesBySourceRow> columns={columns} data={tableRows} />
@@ -396,3 +463,4 @@ export default async function SalesPage({
     </div>
   );
 }
+

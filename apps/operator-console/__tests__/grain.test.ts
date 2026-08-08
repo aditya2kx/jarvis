@@ -1,22 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
   GRAINS,
+  GRAINS_WITHOUT_HOUR,
   WEEKDAY_ANCHOR_MON,
   ALL_PERIOD_ANCHOR,
+  HOUR_ANCHOR_START,
   addGrain,
   bucketSql,
   enumerateBucketStarts,
   formatBucket,
+  formatHourLabel,
+  hourAnchorIso,
+  hourBucketSql,
+  hourIndexFromAnchor,
   parseGrain,
   truncateToGrain,
 } from "@/lib/filters/range";
 
 describe("parseGrain", () => {
-  it("accepts day/week/month/weekday/all", () => {
+  it("accepts day/week/month/weekday/hour/all", () => {
     expect(parseGrain("day")).toBe("day");
     expect(parseGrain("week")).toBe("week");
     expect(parseGrain("month")).toBe("month");
     expect(parseGrain("weekday")).toBe("weekday");
+    expect(parseGrain("hour")).toBe("hour");
     expect(parseGrain("all")).toBe("all");
   });
 
@@ -53,14 +60,64 @@ describe("bucketSql", () => {
     expect(bucketSql("all")).toBe(`DATE '${ALL_PERIOD_ANCHOR}'`);
   });
 
+  it("hour throws — callers must use hourBucketSql", () => {
+    expect(() => bucketSql("hour")).toThrow(/hourBucketSql/);
+  });
+
   it("honors a custom date column name", () => {
     expect(bucketSql("week", "date_local")).toBe("DATE_TRUNC(date_local, WEEK(MONDAY))");
   });
 });
 
+describe("hourBucketSql / hour anchors", () => {
+  it("maps hour_local onto 1970-01-01 + hour DAY", () => {
+    expect(hourBucketSql()).toBe(
+      `DATE_ADD(DATE '${HOUR_ANCHOR_START}', INTERVAL hour_local DAY)`,
+    );
+    expect(hourBucketSql("h")).toBe(`DATE_ADD(DATE '${HOUR_ANCHOR_START}', INTERVAL h DAY)`);
+  });
+
+  it("rejects non-identifier hour columns", () => {
+    expect(() => hourBucketSql("hour; DROP")).toThrow(/invalid/);
+  });
+
+  it("hourAnchorIso / hourIndexFromAnchor round-trip 0..23", () => {
+    for (let h = 0; h < 24; h++) {
+      expect(hourIndexFromAnchor(hourAnchorIso(h))).toBe(h);
+    }
+    expect(hourAnchorIso(0)).toBe(HOUR_ANCHOR_START);
+    expect(hourAnchorIso(23)).toBe("1970-01-24");
+  });
+
+  it("formatHourLabel is 12-hour am/pm", () => {
+    expect(formatHourLabel(0)).toBe("12am");
+    expect(formatHourLabel(1)).toBe("1am");
+    expect(formatHourLabel(12)).toBe("12pm");
+    expect(formatHourLabel(13)).toBe("1pm");
+    expect(formatHourLabel(23)).toBe("11pm");
+  });
+});
+
 describe("GRAINS", () => {
-  it("has the 5 operator-facing grains in display order", () => {
-    expect(GRAINS.map((g) => g.value)).toEqual(["day", "week", "month", "weekday", "all"]);
+  it("has the 6 operator-facing grains in display order", () => {
+    expect(GRAINS.map((g) => g.value)).toEqual([
+      "day",
+      "week",
+      "month",
+      "weekday",
+      "hour",
+      "all",
+    ]);
+  });
+
+  it("GRAINS_WITHOUT_HOUR omits hour for Accounting / Order Quality", () => {
+    expect(GRAINS_WITHOUT_HOUR.map((g) => g.value)).toEqual([
+      "day",
+      "week",
+      "month",
+      "weekday",
+      "all",
+    ]);
   });
 });
 
@@ -81,6 +138,12 @@ describe("formatBucket", () => {
     expect(formatBucket(WEEKDAY_ANCHOR_MON, "weekday")).toBe("Monday");
     expect(formatBucket("1970-01-11", "weekday")).toBe("Sunday");
     expect(formatBucket("2026-07-06", "weekday")).toBe("Monday"); // real Mon
+  });
+
+  it("hour renders 12am…11pm from anchors", () => {
+    expect(formatBucket(HOUR_ANCHOR_START, "hour")).toBe("12am");
+    expect(formatBucket("1970-01-14", "hour")).toBe("1pm"); // hour 13
+    expect(formatBucket("1970-01-24", "hour")).toBe("11pm");
   });
 
   it("all renders as Entire period", () => {
@@ -108,7 +171,7 @@ describe("formatBucket", () => {
   });
 });
 
-describe("truncateToGrain / enumerate weekday", () => {
+describe("truncateToGrain / enumerate weekday / hour", () => {
   it("maps calendar dates onto 1970 Mon…Sun anchors", () => {
     expect(truncateToGrain("2026-07-06", "weekday")).toBe(WEEKDAY_ANCHOR_MON); // Mon
     expect(truncateToGrain("2026-07-07", "weekday")).toBe("1970-01-06"); // Tue
@@ -132,6 +195,20 @@ describe("truncateToGrain / enumerate weekday", () => {
       "1970-01-11",
     ]);
     expect(addGrain(WEEKDAY_ANCHOR_MON, "weekday", 1)).toBe("1970-01-06");
+  });
+
+  it("enumerateBucketStarts for hour returns 24 hour anchors", () => {
+    const win = {
+      start: "2026-07-01",
+      end: "2026-07-15",
+      label: "test",
+      preset: "custom" as const,
+    };
+    const hours = enumerateBucketStarts(win, "hour");
+    expect(hours).toHaveLength(24);
+    expect(hours[0]).toBe(HOUR_ANCHOR_START);
+    expect(hours[23]).toBe("1970-01-24");
+    expect(addGrain(HOUR_ANCHOR_START, "hour", 1)).toBe("1970-01-02");
   });
 
   it("enumerateBucketStarts for all returns a single period anchor", () => {

@@ -184,10 +184,14 @@ export function LaborConcurrentChart({
   data,
   laborTypes,
   grain,
+  titlePrefix = "",
+  subtitle,
 }: {
   data: LaborConcurrentChartRow[];
   laborTypes: string[] | null;
   grain: Grain;
+  titlePrefix?: string;
+  subtitle?: string;
 }) {
   const { chartData, series, title, stacked } = useMemo(() => {
     const pt = showsPartTime(laborTypes);
@@ -255,8 +259,10 @@ export function LaborConcurrentChart({
     const base =
       grain === "day"
         ? "Avg concurrent on floor"
-        : "Avg concurrent on floor / day";
-    const title = neither ? base : `${base} by ${grain}`;
+        : grain === "hour"
+          ? "Concurrent on floor"
+          : "Avg concurrent on floor / day";
+    const title = neither ? `${titlePrefix}${base}` : `${titlePrefix}${base} by ${grain}`;
 
     return {
       chartData,
@@ -265,13 +271,14 @@ export function LaborConcurrentChart({
       // Stack PT+FT (actual and/or scheduled) so bar height = tooltip Total.
       stacked: series.length > 1,
     };
-  }, [data, grain, laborTypes]);
+  }, [data, grain, laborTypes, titlePrefix]);
 
   if (series.length === 0) return null;
 
   return (
     <BarChartCard
       title={title}
+      subtitle={subtitle}
       data={chartData}
       xKey="date"
       series={series}

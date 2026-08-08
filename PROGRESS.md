@@ -1,3 +1,11 @@
+## 2026-08-08 — Sales/Labor hour grain + Labor % toggle (Issue #227)
+
+**Scope:** Hour of day Aggregation on Sales + Labor; Total|Average Stat on Weekday/Hour; Labor Hours | % of net sales chart toggle; scheduled-order ops clock on `square_transactions` (migration 056).
+
+- Console: `grain=hour`, `?stat=avg|total`, `/labor?unit=pct`; Labor weekday/hour queries explode ADP shifts.
+- Data: fulfillment enrichment on Square ingest + optional `backfill_fulfillment_times.py`; ARCHITECTURE + DOMAIN lock-step.
+- Evidence: hosted screenshots on `evidence-screenshots` (PR #229); `verify.py --full` green.
+
 ## 2026-08-06 — Order Quality chart polish + inventory estimate pins (Issue #225)
 
 **Scope:** Manual Order Tubs pins on Estimated delivery dates; Order Quality single bar + Metric/View; Entire-period aggregation grain.

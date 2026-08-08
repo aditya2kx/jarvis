@@ -23,11 +23,29 @@ export interface Series {
   yAxisId?: "left" | "right";
 }
 
-function formatAbs(value: unknown): string {
+export type LineValueFormat = "dollars" | "percent" | "number";
+
+function formatAbs(value: unknown, format: LineValueFormat = "number"): string {
   if (value == null || value === "") return "—";
   const n = typeof value === "number" ? value : Number(value);
   if (Number.isNaN(n)) return "—";
+  if (format === "percent") return `${n.toFixed(1)}%`;
+  if (format === "dollars") {
+    return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
+  }
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function formatTick(value: number, format: LineValueFormat): string {
+  if (format === "percent") return `${Number(value).toFixed(0)}%`;
+  if (format === "number") {
+    const n = Number(value);
+    if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
+    return `${Math.round(n)}`;
+  }
+  const n = Number(value);
+  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
+  return `$${n.toFixed(0)}`;
 }
 
 function formatPct(value: unknown): string {
@@ -52,6 +70,7 @@ export function LineChartCard({
   goal,
   goalLabel,
   height = 260,
+  valueFormat = "number",
 }: {
   title: string;
   /** Optional second line under the title (e.g. prior window dates). */
@@ -62,6 +81,7 @@ export function LineChartCard({
   goal?: number;
   goalLabel?: string;
   height?: number;
+  valueFormat?: LineValueFormat;
 }) {
   const hasRight = series.some((s) => s.yAxisId === "right");
 
@@ -81,7 +101,11 @@ export function LineChartCard({
           >
             <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
             <XAxis dataKey={xKey} tick={{ fontSize: 12 }} />
-            <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
+            <YAxis
+              yAxisId="left"
+              tick={{ fontSize: 12 }}
+              tickFormatter={(v) => formatTick(Number(v), valueFormat)}
+            />
             {hasRight ? (
               <YAxis
                 yAxisId="right"
@@ -122,7 +146,7 @@ export function LineChartCard({
                       if (key.startsWith("pct_")) return null;
                       return (
                         <div key={key} style={{ color: item.color }}>
-                          {String(item.name)}: {formatAbs(item.value)}
+                          {String(item.name)}: {formatAbs(item.value, valueFormat)}
                         </div>
                       );
                     })}

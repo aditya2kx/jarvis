@@ -43,8 +43,8 @@ export function parseCompare(
   if (!raw || raw === "0" || raw === "false" || raw === "off") return "off";
   if (raw === "day" || raw === "week" || raw === "month") return raw;
   if (raw === "1" || raw === "true") {
-    // Legacy lag-1 matched Aggregation; weekday/all Aggregation falls back to week.
-    if (grain === "weekday" || grain === "all") return "week";
+    // Legacy lag-1 matched Aggregation; weekday/hour/all Aggregation falls back to week.
+    if (grain === "weekday" || grain === "hour" || grain === "all") return "week";
     if (grain === "day" || grain === "week" || grain === "month") return grain;
   }
   return "off";

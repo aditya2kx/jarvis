@@ -1,6 +1,6 @@
 import "server-only";
 import { dateParam, fq, intParam, q } from "./client";
-import { bucketSql, type DateWindow, type Grain } from "@/lib/filters/range";
+import { bucketSql, hourBucketSql, WEEKDAY_ANCHOR_MON, type DateWindow, type Grain } from "@/lib/filters/range";
 import {
   computeLaborForwardSummary,
   type LaborForwardSummary,
@@ -50,9 +50,192 @@ export function laborDaily(win: DateWindow): Promise<LaborDailyRow[]> {
 // daily percentages that would misweight low-volume days. `laborDaily`
 // above is untouched and still backs the Home scorecard (day-grain only,
 // out of scope for the grain picker).
-export function laborByGrain(win: DateWindow, grain: Grain): Promise<LaborDailyRow[]> {
+//
+// Hour of day (Issue #227): model_labor_daily is day-grain only — hours/cost
+// come from ADP shifts exploded across clock hours (in→out overlap), sales
+// from square_transactions ops clock. Scheduled stacks are not supported at
+// hour grain (ranges live in JSON).
+export function laborByGrain(
+  win: DateWindow,
+  grain: Grain,
+  stat: "total" | "avg" = "total",
+): Promise<LaborDailyRow[]> {
+  const useAvg = stat === "avg" && (grain === "weekday" || grain === "hour");
+  const periodDaysExpr = "(DATE_DIFF(@end, @start, DAY) + 1)";
+
+  if (grain === "hour") {
+    const bucket = hourBucketSql("hour_local");
+    const div = useAvg ? periodDaysExpr : "1";
+    return q<LaborDailyRow>(
+      `WITH clock AS (
+         SELECT hour_local FROM UNNEST(GENERATE_ARRAY(0, 23)) AS hour_local
+       ),
+       shifts AS (
+         SELECT
+           s.date,
+           s.employee_id,
+           s.total_hours,
+           SAFE.PARSE_TIME('%H:%M', s.in_time) AS tin,
+           SAFE.PARSE_TIME('%H:%M', s.out_time) AS tout,
+           IF(
+             IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
+             'fulltime',
+             'parttime'
+           ) AS labor_bucket,
+           IFNULL(w.wage_rate_dollars, 0) AS wage
+         FROM ${fq("adp_shifts")} s
+         LEFT JOIN ${fq("adp_wage_rates")} w
+           ON w.employee_id = s.employee_id
+         WHERE s.date BETWEEN @start AND @end
+           AND IFNULL(s.total_hours, 0) > 0
+           AND s.in_time IS NOT NULL AND s.out_time IS NOT NULL
+       ),
+       shift_slots AS (
+         SELECT
+           s.date,
+           s.employee_id,
+           c.hour_local,
+           s.labor_bucket,
+           s.wage,
+           s.total_hours,
+           GREATEST(
+             0,
+             TIME_DIFF(
+               LEAST(
+                 s.tout,
+                 TIME_ADD(TIME(c.hour_local, 0, 0), INTERVAL 1 HOUR)
+               ),
+               GREATEST(s.tin, TIME(c.hour_local, 0, 0)),
+               SECOND
+             )
+           ) / 3600.0 AS slot_raw
+         FROM shifts s
+         CROSS JOIN clock c
+         WHERE s.tin IS NOT NULL AND s.tout IS NOT NULL AND s.tout > s.tin
+       ),
+       shift_hours AS (
+         SELECT
+           date,
+           hour_local,
+           labor_bucket,
+           wage,
+           SAFE_DIVIDE(
+             total_hours * slot_raw,
+             SUM(slot_raw) OVER (PARTITION BY date, employee_id)
+           ) AS slot_hours
+         FROM shift_slots
+         WHERE slot_raw > 0
+       ),
+       labor_hour AS (
+         SELECT
+           hour_local,
+           SUM(IF(labor_bucket = 'parttime', slot_hours, 0)) AS hourly_hours,
+           SUM(IF(labor_bucket = 'fulltime', slot_hours, 0)) AS fulltime_hours,
+           SUM(IF(labor_bucket = 'parttime', slot_hours * wage, 0)) AS hourly_labor_cost,
+           SUM(IF(labor_bucket = 'fulltime', slot_hours * wage, 0)) AS fulltime_labor_cost
+         FROM shift_hours
+         GROUP BY hour_local
+       ),
+       sales_hour AS (
+         SELECT
+           COALESCE(
+             ops_hour_local,
+             EXTRACT(HOUR FROM DATETIME(
+               TIMESTAMP(COALESCE(NULLIF(ops_at_local_iso, ''), created_at_local_iso)),
+               'America/Chicago'))
+           ) AS hour_local,
+           SUM(net_sales_cents) / 100.0 AS net_sales,
+           COUNTIF(event_type = 'Payment') AS orders
+         FROM ${fq("square_transactions")}
+         WHERE COALESCE(ops_date_local, date_local) BETWEEN @start AND @end
+           AND COALESCE(NULLIF(ops_at_local_iso, ''), created_at_local_iso) IS NOT NULL
+           AND COALESCE(NULLIF(ops_at_local_iso, ''), created_at_local_iso) != ''
+         GROUP BY hour_local
+       )
+       SELECT
+         ${bucket} AS date,
+         CAST(NULL AS STRING) AS dow,
+         SAFE_DIVIDE(COALESCE(s.net_sales, 0), ${div}) AS net_sales,
+         SAFE_DIVIDE(
+           COALESCE(l.hourly_labor_cost, 0) + COALESCE(l.fulltime_labor_cost, 0),
+           ${div}
+         ) AS total_labor_cost,
+         SAFE_DIVIDE(
+           COALESCE(l.hourly_labor_cost, 0) + COALESCE(l.fulltime_labor_cost, 0),
+           NULLIF(s.net_sales, 0)
+         ) AS labor_pct,
+         SAFE_DIVIDE(COALESCE(l.hourly_labor_cost, 0), NULLIF(s.net_sales, 0)) AS hourly_pct,
+         SAFE_DIVIDE(COALESCE(l.fulltime_labor_cost, 0), NULLIF(s.net_sales, 0)) AS fulltime_pct,
+         SAFE_DIVIDE(
+           COALESCE(l.hourly_hours, 0) + COALESCE(l.fulltime_hours, 0),
+           ${div}
+         ) AS total_hours,
+         SAFE_DIVIDE(COALESCE(l.hourly_hours, 0), ${div}) AS hourly_hours,
+         SAFE_DIVIDE(COALESCE(l.fulltime_hours, 0), ${div}) AS fulltime_hours,
+         CAST(NULL AS FLOAT64) AS hours_per_item,
+         SAFE_DIVIDE(COALESCE(s.orders, 0), ${div}) AS orders,
+         CAST(NULL AS FLOAT64) AS items_sold,
+         SAFE_DIVIDE(s.net_sales, NULLIF(s.orders, 0)) AS avg_order_price
+       FROM labor_hour l
+       FULL OUTER JOIN sales_hour s USING (hour_local)
+       ORDER BY date DESC`,
+      { start: dateParam(win.start), end: dateParam(win.end) },
+    );
+  }
+
   const bucket = bucketSql(grain);
   const dow = grain === "day" ? "ANY_VALUE(dow)" : "CAST(NULL AS STRING)";
+
+  if (useAvg && grain === "weekday") {
+    return q<LaborDailyRow>(
+      `WITH period_weekday_n AS (
+         SELECT
+           DATE_ADD(
+             DATE '${WEEKDAY_ANCHOR_MON}',
+             INTERVAL MOD(EXTRACT(DAYOFWEEK FROM d) + 5, 7) DAY
+           ) AS bucket_date,
+           COUNT(*) AS n_days
+         FROM UNNEST(GENERATE_DATE_ARRAY(@start, @end)) AS d
+         GROUP BY 1
+       ),
+       agg AS (
+         SELECT
+           ${bucket} AS date,
+           CAST(NULL AS STRING) AS dow,
+           SUM(net_sales) AS net_sales,
+           SUM(total_labor_cost) AS total_labor_cost,
+           SUM(hourly_labor_cost) AS hourly_labor_cost,
+           SUM(fulltime_labor_cost) AS fulltime_labor_cost,
+           SUM(hourly_hours) AS hourly_hours,
+           SUM(fulltime_hours) AS fulltime_hours,
+           SUM(orders) AS orders,
+           SUM(items_sold) AS items_sold
+         FROM ${fq("vw_model_labor_daily")}
+         WHERE date BETWEEN @start AND @end
+         GROUP BY date
+       )
+       SELECT
+         a.date,
+         a.dow,
+         SAFE_DIVIDE(a.net_sales, p.n_days) AS net_sales,
+         SAFE_DIVIDE(a.total_labor_cost, p.n_days) AS total_labor_cost,
+         SAFE_DIVIDE(a.total_labor_cost, NULLIF(a.net_sales, 0)) AS labor_pct,
+         SAFE_DIVIDE(a.hourly_labor_cost, NULLIF(a.net_sales, 0)) AS hourly_pct,
+         SAFE_DIVIDE(a.fulltime_labor_cost, NULLIF(a.net_sales, 0)) AS fulltime_pct,
+         SAFE_DIVIDE(a.hourly_hours + a.fulltime_hours, p.n_days) AS total_hours,
+         SAFE_DIVIDE(a.hourly_hours, p.n_days) AS hourly_hours,
+         SAFE_DIVIDE(a.fulltime_hours, p.n_days) AS fulltime_hours,
+         SAFE_DIVIDE(a.hourly_hours + a.fulltime_hours, NULLIF(a.items_sold, 0)) AS hours_per_item,
+         SAFE_DIVIDE(a.orders, p.n_days) AS orders,
+         SAFE_DIVIDE(a.items_sold, p.n_days) AS items_sold,
+         SAFE_DIVIDE(a.net_sales, NULLIF(a.orders, 0)) AS avg_order_price
+       FROM agg a
+       LEFT JOIN period_weekday_n p ON p.bucket_date = a.date
+       ORDER BY a.date DESC`,
+      { start: dateParam(win.start), end: dateParam(win.end) },
+    );
+  }
+
   return q<LaborDailyRow>(
     `SELECT
        ${bucket} AS date,
@@ -119,8 +302,167 @@ export interface LaborConcurrentRow {
 export function laborConcurrentByGrain(
   win: DateWindow,
   grain: Grain,
+  stat: "total" | "avg" = "total",
 ): Promise<LaborConcurrentRow[]> {
+  const useAvg = stat === "avg" && (grain === "weekday" || grain === "hour");
+  const periodDaysExpr = "(DATE_DIFF(@end, @start, DAY) + 1)";
+
+  if (grain === "hour") {
+    const bucket = hourBucketSql("hour_local");
+    const div = useAvg ? periodDaysExpr : "1";
+    return q<LaborConcurrentRow>(
+      `WITH clock AS (
+         SELECT hour_local FROM UNNEST(GENERATE_ARRAY(0, 23)) AS hour_local
+       ),
+       shifts AS (
+         SELECT
+           s.date,
+           SAFE.PARSE_TIME('%H:%M', s.in_time) AS tin,
+           SAFE.PARSE_TIME('%H:%M', s.out_time) AS tout,
+           IF(
+             IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
+             'fulltime',
+             'parttime'
+           ) AS labor_bucket
+         FROM ${fq("adp_shifts")} s
+         LEFT JOIN ${fq("adp_wage_rates")} w
+           ON w.employee_id = s.employee_id
+         WHERE s.date BETWEEN @start AND @end
+           AND IFNULL(s.total_hours, 0) > 0
+       ),
+       covered AS (
+         SELECT
+           s.date,
+           c.hour_local,
+           s.labor_bucket,
+           GREATEST(
+             0,
+             LEAST(
+               1.0,
+               TIME_DIFF(
+                 LEAST(
+                   s.tout,
+                   TIME_ADD(TIME(c.hour_local, 0, 0), INTERVAL 1 HOUR)
+                 ),
+                 GREATEST(s.tin, TIME(c.hour_local, 0, 0)),
+                 SECOND
+               ) / 3600.0
+             )
+           ) AS frac
+         FROM shifts s
+         CROSS JOIN clock c
+         WHERE s.tin IS NOT NULL AND s.tout IS NOT NULL AND s.tout > s.tin
+       ),
+       daily AS (
+         SELECT
+           date,
+           hour_local,
+           SUM(IF(labor_bucket = 'parttime', frac, 0)) AS parttime_concurrent,
+           SUM(IF(labor_bucket = 'fulltime', frac, 0)) AS fulltime_concurrent,
+           SUM(frac) AS total_concurrent
+         FROM covered
+         WHERE frac > 0
+         GROUP BY date, hour_local
+       )
+       SELECT
+         ${bucket} AS date,
+         SAFE_DIVIDE(SUM(parttime_concurrent), ${div}) AS parttime_concurrent,
+         SAFE_DIVIDE(SUM(fulltime_concurrent), ${div}) AS fulltime_concurrent,
+         SAFE_DIVIDE(SUM(total_concurrent), ${div}) AS total_concurrent
+       FROM daily
+       GROUP BY hour_local
+       ORDER BY date`,
+      { start: dateParam(win.start), end: dateParam(win.end) },
+    );
+  }
+
   const bucket = bucketSql(grain, "date");
+
+  if (useAvg && grain === "weekday") {
+    return q<LaborConcurrentRow>(
+      `WITH period_weekday_n AS (
+         SELECT
+           DATE_ADD(
+             DATE '${WEEKDAY_ANCHOR_MON}',
+             INTERVAL MOD(EXTRACT(DAYOFWEEK FROM d) + 5, 7) DAY
+           ) AS bucket_date,
+           COUNT(*) AS n_days
+         FROM UNNEST(GENERATE_DATE_ARRAY(@start, @end)) AS d
+         GROUP BY 1
+       ),
+       shifts AS (
+         SELECT
+           s.date,
+           s.total_hours,
+           SAFE.PARSE_TIME('%H:%M', s.in_time) AS tin,
+           SAFE.PARSE_TIME('%H:%M', s.out_time) AS tout,
+           IF(
+             IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
+             'fulltime',
+             'parttime'
+           ) AS labor_bucket
+         FROM ${fq("adp_shifts")} s
+         LEFT JOIN ${fq("adp_wage_rates")} w
+           ON w.employee_id = s.employee_id
+         WHERE s.date BETWEEN @start AND @end
+           AND IFNULL(s.total_hours, 0) > 0
+       ),
+       daily AS (
+         SELECT
+           date,
+           SUM(IF(labor_bucket = 'parttime', total_hours, 0)) AS pt_hours,
+           SUM(IF(labor_bucket = 'fulltime', total_hours, 0)) AS ft_hours,
+           SAFE_DIVIDE(
+             TIME_DIFF(
+               MAX(IF(labor_bucket = 'parttime', tout, NULL)),
+               MIN(IF(labor_bucket = 'parttime', tin, NULL)),
+               SECOND
+             ),
+             3600.0
+           ) AS pt_span,
+           SAFE_DIVIDE(
+             TIME_DIFF(
+               MAX(IF(labor_bucket = 'fulltime', tout, NULL)),
+               MIN(IF(labor_bucket = 'fulltime', tin, NULL)),
+               SECOND
+             ),
+             3600.0
+           ) AS ft_span,
+           SAFE_DIVIDE(TIME_DIFF(MAX(tout), MIN(tin), SECOND), 3600.0) AS all_span
+         FROM shifts
+         WHERE tin IS NOT NULL AND tout IS NOT NULL AND tout > tin
+         GROUP BY date
+       ),
+       daily_avg AS (
+         SELECT
+           date,
+           SAFE_DIVIDE(pt_hours, pt_span) AS parttime_concurrent,
+           SAFE_DIVIDE(ft_hours, ft_span) AS fulltime_concurrent,
+           SAFE_DIVIDE(pt_hours + ft_hours, all_span) AS total_concurrent
+         FROM daily
+         WHERE all_span > 0
+       ),
+       agg AS (
+         SELECT
+           ${bucket} AS date,
+           SUM(parttime_concurrent) AS parttime_concurrent,
+           SUM(fulltime_concurrent) AS fulltime_concurrent,
+           SUM(total_concurrent) AS total_concurrent
+         FROM daily_avg
+         GROUP BY date
+       )
+       SELECT
+         a.date,
+         SAFE_DIVIDE(a.parttime_concurrent, p.n_days) AS parttime_concurrent,
+         SAFE_DIVIDE(a.fulltime_concurrent, p.n_days) AS fulltime_concurrent,
+         SAFE_DIVIDE(a.total_concurrent, p.n_days) AS total_concurrent
+       FROM agg a
+       LEFT JOIN period_weekday_n p ON p.bucket_date = a.date
+       ORDER BY a.date`,
+      { start: dateParam(win.start), end: dateParam(win.end) },
+    );
+  }
+
   return q<LaborConcurrentRow>(
     `WITH shifts AS (
        SELECT
@@ -204,6 +546,8 @@ export function laborScheduledHoursByGrain(
   grain: Grain,
   opts?: { excludePto?: boolean },
 ): Promise<LaborScheduledHoursRow[]> {
+  // Hour grain: schedule ranges are JSON strings — skip rather than invent.
+  if (grain === "hour") return Promise.resolve([]);
   const bucket = bucketSql(grain, "s.date");
   const ptoClause = opts?.excludePto
     ? `AND IFNULL(s.hour_kind, 'shift') != 'pto'`
@@ -352,9 +696,8 @@ export function salesByGrain(
   grain: Grain,
   sources: string[] | null,
   bySource: boolean,
+  stat: "total" | "avg" = "total",
 ): Promise<SalesBySourceRow[]> {
-  const bucket = bucketSql(grain, "date_local");
-  // bucketSql emits DATE_TRUNC(date_local, …) or the bare column for day grain.
   const sourceSelect = bySource ? "source" : "CAST(NULL AS STRING)";
   const groupBy = bySource ? "date, source" : "date";
   const allSources = sources == null;
@@ -367,6 +710,193 @@ export function salesByGrain(
   // be provided for empty arrays…"). When @all_sources is true the UNNEST arm
   // is never evaluated, so a one-element sentinel is enough to bind STRING[].
   const sourcesParam = allSources ? ["__all__"] : sources;
+  const params = {
+    start: dateParam(win.start),
+    end: dateParam(win.end),
+    all_sources: allSources,
+    sources: sourcesParam,
+  };
+
+  // Average only meaningful for collapsing grains (weekday / hour). Day/week/
+  // month/all stay as totals even if URL leaks stat=avg.
+  const useAvg =
+    stat === "avg" && (grain === "weekday" || grain === "hour");
+  // Denominator = calendar days in Period (hour) or weekday occurrences
+  // (weekday) — NOT "days that happened to have this bucket". Otherwise a
+  // one-off 9pm order makes Average == Total.
+  const periodDaysExpr = "(DATE_DIFF(@end, @start, DAY) + 1)";
+  // AOV stays order-weighted (not average of daily AOVs).
+  const aovExpr =
+    "SAFE_DIVIDE(SUM(net_sales_cents) / 100.0, SUM(orders))";
+
+  // Hour of day: use ops clock (promised fulfillment), not place-time.
+  // Scheduled DoorDash/etc. often place at midnight but fulfill in the morning —
+  // ops_at_local_iso / ops_hour_local (migration 056) bucket those correctly.
+  // Fallback to created_at_local_iso when ops_* not yet backfilled.
+  // IMPORTANT: EXTRACT(HOUR FROM TIMESTAMP(iso)) returns the UTC hour — during
+  // CDT (UTC-5) that maps 19:00 CT → hour 0 ("12am"). Always project through
+  // DATETIME(..., 'America/Chicago') (same bug exists in vw_tips_by_hour).
+  if (grain === "hour") {
+    const opsIso =
+      "COALESCE(NULLIF(ops_at_local_iso, ''), created_at_local_iso)";
+    const hourExpr =
+      `COALESCE(ops_hour_local, EXTRACT(HOUR FROM DATETIME(TIMESTAMP(${opsIso}), 'America/Chicago')))`;
+    const periodDate = "COALESCE(ops_date_local, date_local)";
+    const bucket = hourBucketSql("hour_local");
+    const netExprH = useAvg
+      ? `SAFE_DIVIDE(SUM(net_sales_cents) / 100.0, ${periodDaysExpr})`
+      : "SUM(net_sales_cents) / 100.0";
+    const ordersExprH = useAvg
+      ? `SAFE_DIVIDE(SUM(orders), ${periodDaysExpr})`
+      : "SUM(orders)";
+    const itemsExprH = useAvg
+      ? `SAFE_DIVIDE(SUM(items_sold), ${periodDaysExpr})`
+      : "SUM(items_sold)";
+    return q<SalesBySourceRow>(
+      `WITH txn AS (
+         SELECT
+           ${periodDate} AS date_local,
+           ${hourExpr} AS hour_local,
+           source,
+           SUM(net_sales_cents) AS net_sales_cents,
+           COUNTIF(event_type = 'Payment') AS orders
+         FROM ${fq("square_transactions")}
+         WHERE ${periodDate} BETWEEN @start AND @end
+           AND ${opsIso} IS NOT NULL
+           AND ${opsIso} != ''
+           AND (@all_sources OR source IN UNNEST(@sources))
+         GROUP BY date_local, hour_local, source
+       ),
+       items AS (
+         SELECT
+           COALESCE(t.ops_date_local, t.date_local) AS date_local,
+           COALESCE(
+             t.ops_hour_local,
+             EXTRACT(HOUR FROM DATETIME(
+               TIMESTAMP(COALESCE(NULLIF(t.ops_at_local_iso, ''), t.created_at_local_iso)),
+               'America/Chicago'))
+           ) AS hour_local,
+           t.source,
+           COUNT(*) AS items_sold
+         FROM ${fq("square_item_lines")} i
+         INNER JOIN ${fq("square_transactions")} t
+           ON t.transaction_id = i.transaction_id
+         WHERE COALESCE(t.ops_date_local, t.date_local) BETWEEN @start AND @end
+           AND COALESCE(NULLIF(t.ops_at_local_iso, ''), t.created_at_local_iso) IS NOT NULL
+           AND COALESCE(NULLIF(t.ops_at_local_iso, ''), t.created_at_local_iso) != ''
+           AND i.event_type = 'Payment'
+           AND (@all_sources OR t.source IN UNNEST(@sources))
+         GROUP BY date_local, hour_local, t.source
+       ),
+       joined AS (
+         SELECT
+           COALESCE(txn.date_local, items.date_local) AS date_local,
+           COALESCE(txn.hour_local, items.hour_local) AS hour_local,
+           COALESCE(txn.source, items.source) AS source,
+           COALESCE(txn.net_sales_cents, 0) AS net_sales_cents,
+           COALESCE(txn.orders, 0) AS orders,
+           COALESCE(items.items_sold, 0) AS items_sold
+         FROM txn
+         FULL OUTER JOIN items
+           USING (date_local, hour_local, source)
+       )
+       SELECT
+         ${bucket} AS date,
+         ${sourceSelect} AS source,
+         ${netExprH} AS net_sales,
+         ${ordersExprH} AS orders,
+         ${itemsExprH} AS items_sold,
+         ${aovExpr} AS avg_order_price
+       FROM joined
+       GROUP BY ${groupBy}
+       ORDER BY date DESC`,
+      params,
+    );
+  }
+
+  const bucket = bucketSql(grain, "date_local");
+  // Weekday Average: divide by calendar occurrences of that weekday in Period
+  // (e.g. 4 Mondays), via a period_weekday_n CTE — not days-with-sales.
+  if (useAvg && grain === "weekday") {
+    return q<SalesBySourceRow>(
+      `WITH period_weekday_n AS (
+         SELECT
+           DATE_ADD(
+             DATE '${WEEKDAY_ANCHOR_MON}',
+             INTERVAL MOD(EXTRACT(DAYOFWEEK FROM d) + 5, 7) DAY
+           ) AS bucket_date,
+           COUNT(*) AS n_days
+         FROM UNNEST(GENERATE_DATE_ARRAY(@start, @end)) AS d
+         GROUP BY 1
+       ),
+       txn AS (
+         SELECT
+           date_local,
+           source,
+           SUM(net_sales_cents) AS net_sales_cents,
+           COUNTIF(event_type = 'Payment') AS orders
+         FROM ${fq("square_transactions")}
+         WHERE date_local BETWEEN @start AND @end
+           AND (@all_sources OR source IN UNNEST(@sources))
+         GROUP BY date_local, source
+       ),
+       items AS (
+         SELECT
+           t.date_local,
+           t.source,
+           COUNT(*) AS items_sold
+         FROM ${fq("square_item_lines")} i
+         INNER JOIN ${fq("square_transactions")} t
+           ON t.transaction_id = i.transaction_id
+         WHERE t.date_local BETWEEN @start AND @end
+           AND i.event_type = 'Payment'
+           AND (@all_sources OR t.source IN UNNEST(@sources))
+         GROUP BY t.date_local, t.source
+       ),
+       joined AS (
+         SELECT
+           COALESCE(txn.date_local, items.date_local) AS date_local,
+           COALESCE(txn.source, items.source) AS source,
+           COALESCE(txn.net_sales_cents, 0) AS net_sales_cents,
+           COALESCE(txn.orders, 0) AS orders,
+           COALESCE(items.items_sold, 0) AS items_sold
+         FROM txn
+         FULL OUTER JOIN items
+           USING (date_local, source)
+       ),
+       agg AS (
+         SELECT
+           ${bucket} AS date,
+           ${sourceSelect} AS source,
+           SUM(net_sales_cents) AS net_sales_cents,
+           SUM(orders) AS orders,
+           SUM(items_sold) AS items_sold
+         FROM joined
+         GROUP BY ${groupBy}
+       )
+       SELECT
+         a.date,
+         a.source,
+         SAFE_DIVIDE(a.net_sales_cents / 100.0, p.n_days) AS net_sales,
+         SAFE_DIVIDE(a.orders, p.n_days) AS orders,
+         SAFE_DIVIDE(a.items_sold, p.n_days) AS items_sold,
+         SAFE_DIVIDE(a.net_sales_cents / 100.0, a.orders) AS avg_order_price
+       FROM agg a
+       LEFT JOIN period_weekday_n p ON p.bucket_date = a.date
+       ORDER BY a.date DESC`,
+      params,
+    );
+  }
+
+  const netExpr = useAvg
+    ? `SAFE_DIVIDE(SUM(net_sales_cents) / 100.0, ${periodDaysExpr})`
+    : "SUM(net_sales_cents) / 100.0";
+  const ordersExpr = useAvg
+    ? `SAFE_DIVIDE(SUM(orders), ${periodDaysExpr})`
+    : "SUM(orders)";
+  const itemsExpr = useAvg
+    ? `SAFE_DIVIDE(SUM(items_sold), ${periodDaysExpr})`
+    : "SUM(items_sold)";
   return q<SalesBySourceRow>(
     `WITH txn AS (
        SELECT
@@ -406,19 +936,14 @@ export function salesByGrain(
      SELECT
        ${bucket} AS date,
        ${sourceSelect} AS source,
-       SUM(net_sales_cents) / 100.0 AS net_sales,
-       SUM(orders) AS orders,
-       SUM(items_sold) AS items_sold,
-       SAFE_DIVIDE(SUM(net_sales_cents) / 100.0, SUM(orders)) AS avg_order_price
+       ${netExpr} AS net_sales,
+       ${ordersExpr} AS orders,
+       ${itemsExpr} AS items_sold,
+       ${aovExpr} AS avg_order_price
      FROM joined
      GROUP BY ${groupBy}
      ORDER BY date DESC`,
-    {
-      start: dateParam(win.start),
-      end: dateParam(win.end),
-      all_sources: allSources,
-      sources: sourcesParam,
-    },
+    params,
   );
 }
 

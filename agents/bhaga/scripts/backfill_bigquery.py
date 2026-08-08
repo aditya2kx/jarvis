@@ -127,7 +127,7 @@ def _parse_timestamp(val) -> datetime.datetime | None:
 def map_square_transaction(rec: dict) -> dict:
     """Map a Sheet transactions row to the BQ square_transactions schema."""
     net_sales = _parse_int(rec.get("gross_sales_cents")) - abs(_parse_int(rec.get("discount_cents")))
-    return {
+    out = {
         "transaction_id": str(rec.get("transaction_id", "")),
         "date_local": _parse_date(rec.get("date_local")),
         "event_type": str(rec.get("event_type", "")),
@@ -144,6 +144,24 @@ def map_square_transaction(rec: dict) -> dict:
         "created_at_local_iso": str(rec.get("created_at_local_iso", "")),
         "scraped_at_utc": _parse_timestamp(rec.get("scraped_at_utc")),
     }
+    # Optional fulfillment / ops-clock fields (migration 056). Present when
+    # skills.square_api.ingest enriched the parse record from Orders API.
+    # Absent on legacy sheet-only backfills — BQ columns stay NULL.
+    from skills.square_api.fulfillment import FULFILLMENT_BQ_FIELDS
+
+    for key in FULFILLMENT_BQ_FIELDS:
+        if key not in rec:
+            continue
+        val = rec.get(key)
+        if key == "ops_date_local":
+            out[key] = _parse_date(val) if val else None
+        elif key == "ops_hour_local":
+            out[key] = _parse_int(val) if val is not None and val != "" else None
+        elif val is None or val == "":
+            out[key] = None
+        else:
+            out[key] = str(val)
+    return out
 
 
 def map_square_daily_rollup(rec: dict) -> dict:

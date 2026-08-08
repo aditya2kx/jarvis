@@ -93,6 +93,10 @@ export function rollConcurrentToGrain(
       total_concurrent: d.total_concurrent,
     }));
   }
+  // Hour grain: scheduled concurrent needs range parsing — skip (empty).
+  if (grain === "hour") {
+    return [];
+  }
   type Bucket = {
     pt: number[];
     ft: number[];

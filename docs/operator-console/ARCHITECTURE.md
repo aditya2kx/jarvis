@@ -395,18 +395,40 @@ range/grain contract from `lib/filters/range.ts` + `lib/filters/period.ts`:
   `custom`, which reads `?from=&to=` (two `<input type="date">`s in
   `DateRangePicker`) instead of a fixed window. Invalid/missing custom bounds
   fall back to the page default — never a thrown error on a malformed URL.
-- **Grain** (`day`/`week`/`month`/`weekday`/`all`, `AggregationSelect`): NOT a
-  bind param — `bucketSql(grain)` returns one of five **whitelisted** SQL
+- **Grain** (`day`/`week`/`month`/`weekday`/`hour`/`all`, `AggregationSelect`): NOT a
+  bind param — `bucketSql(grain)` returns one of the **whitelisted** SQL
   fragments (`date`, `DATE_TRUNC(…, WEEK(MONDAY))`, `DATE_TRUNC(…, MONTH)`,
   weekday DOW anchors, or `DATE '1970-01-01'` for **Entire period**), never
-  string-interpolated from user input. `formatBucket(date, grain)` renders the
-  bucket label (`"Jun 30"` / `"Wk of Jun 29"` / `"Jan 2026"` / `"Monday"` /
+  string-interpolated from user input. **Hour of day** (Issue #227) is on
+  Sales + Labor (`options={GRAINS}`); Accounting / Order Quality keep
+  `GRAINS_WITHOUT_HOUR`. Sales Hour buckets on the **ops clock**
+  (`ops_hour_local` / `ops_at_local_iso`, migration 056 — promised
+  `pickup_at`/`deliver_at`, else ready/closed/created), falling back to
+  `created_at_local_iso` when ops_* is null. Labor Hour explodes ADP
+  `adp_shifts` in→out across clock hours (same DATE anchors) and pairs %
+  with ops-hour Square net sales; schedule stacks / scheduled concurrent are
+  hidden (JSON ranges aren't hour-bucketed). Hour extract always goes through
+  `DATETIME(..., 'America/Chicago')` — bare `EXTRACT(HOUR FROM TIMESTAMP(...))`
+  returns UTC and during CDT maps 7pm CT → hour 0 / "12am". `hourBucketSql`
+  maps 0–23 onto DATE anchors `1970-01-01`…`1970-01-24`; labels are `12am`…`11pm`.
+  **Stat** (`?stat=avg|total`, Issue #227): on Weekday / Hour of day only
+  (Sales + Labor), FilterPills Average | Total — **Average** (default) = sum /
+  calendar days in Period (hour) or / weekday occurrences in Period (weekday);
+  **Total** = sum across the Period. Sparse hours no longer make Average ==
+  Total. Day/week/month/all ignore `stat`. Labor % ratios are unchanged by
+  Stat (num and denom scale together).
+  `formatBucket(date, grain)` renders the bucket label
+  (`"Jun 30"` / `"Wk of Jun 29"` / `"Jan 2026"` / `"Monday"` / `"2pm"` /
   `"Entire period"`) by parsing the `YYYY-MM-DD` string with a regex,
   deliberately bypassing `Date`/`Intl.DateTimeFormat` — those convert through
   UTC and shift the displayed calendar date by up to a day (and, for month
   grain, sometimes the wrong month) once a timezone offset is applied.
   **Entire period** (Issue #225) collapses the selected Period into one chart
   bar / table row across every Performance page that uses `AggregationSelect`.
+- **Labor hours chart unit** (Issue #227): `/labor?unit=hours|pct` FilterPills —
+  Hours (default) keeps PT/FT (+ schedule) stacks; **% of net sales** switches the
+  Y-axis to BQ `hourly_pct`/`fulltime_pct`/`labor_pct` (completed actuals only —
+  no schedule stacks / weekly hours goal).
 - **Composition / Trend chart modes** (Sales first; reuse on other screens):
   Shared stack — do **not** fork per page:
   - Mode gating: `lib/filters/chart-mode.ts` (`parseChartMode`, `parseCompare`,
@@ -466,8 +488,11 @@ same contract as Sales).
 - **Wall → paid**: per-employee week chip scales wall-clock ranges down (unpaid meal); never inflates when days are missing.
 - **Avg concurrent** uses per-bucket first→last span (one FT ≈ 1); schedule concurrent from wall-clock ranges.
 
-- **L1** one bar chart: Period + Aggregation; View Aggregate | PT/FT;
-  client toggle Hours | % of Square net sales (`labor $ / net_sales`).
+- **L1** one bar chart: Period + Aggregation (incl. Weekday / Hour of day) +
+  Stat Average|Total on those grains; Hours | % of Square net sales
+  (`labor $ / net_sales`); schedule stacks omitted on Hour.
+- **L2** avg concurrent (same Aggregation/Stat; Hour = fractional headcount
+  in that clock hour).
 - **L3** hours-per-person bar for the same Period (`adp_shifts`).
 - Forecast nav/page removed from Operator Console; BQ/Grafana forecast pipeline kept.
 - Forward Wage/Paid/Blended lenses and `laborForwardSummary` are no longer

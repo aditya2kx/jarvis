@@ -14,6 +14,10 @@ converted to the account display TZ (Eastern), the matching label is emitted,
 and parse_transaction_rows converts ET -> shop_tz (Central) to derive
 date_local. This replicates the scrape exactly so parity holds.
 
+After parse, each txn is enriched with Orders API fulfillment timestamps +
+derived ops clock (``skills.square_api.fulfillment`` / migration 056) so
+Sales Hour Aggregation can bucket on promised pickup/deliver time.
+
 Usage (CLI):
     BHAGA_SECRETS_BACKEND=gcp python3 -m skills.square_api.ingest \\
         --store palmetto --start 2026-06-01 --end 2026-06-01
@@ -156,6 +160,14 @@ def ingest_window(
     items = [r for r in items
              if start_date.isoformat() <= r["date_local"] <= end_date.isoformat()]
     print(f"[ingest] parsed {len(txns)} txns, {len(items)} item lines (after date filter)")
+
+    # Enrich with fulfillment / ops-clock fields from Orders API (migration 056).
+    # Place-time stays on created_at_*; Sales Hour uses ops_at_* / ops_hour_local.
+    from skills.square_api.fulfillment import enrich_transaction_record
+    for t in txns:
+        enrich_transaction_record(
+            t, orders_by_id.get(t.get("transaction_id")), shop_tz=shop_tz,
+        )
 
     counts: dict[str, int] = {}
 

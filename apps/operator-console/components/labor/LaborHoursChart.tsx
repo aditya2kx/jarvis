@@ -5,6 +5,8 @@ import { BarChartCard } from "@/components/charts/BarChartCard";
 import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
 import type { Grain } from "@/lib/filters/range";
 import { showsFullTime, showsPartTime } from "@/lib/filters/labor-type";
+import type { LaborChartUnit } from "@/lib/filters/labor-chart-unit";
+import { grainDisplayLabel } from "@/lib/filters/range";
 
 export type LaborHoursChartRow = {
   date: string;
@@ -74,6 +76,66 @@ export function formatHoursWithPct(hours: number | null, laborPct: number | null
   const h = formatHours(hours);
   if (laborPct == null || Number.isNaN(Number(laborPct))) return h;
   return `${h} (${(Number(laborPct) * 100).toFixed(1)}%)`;
+}
+
+/** Fraction 0–1 → `"31.4%"`; null → em dash. */
+export function formatLaborPct(laborPct: number | null): string {
+  if (laborPct == null || Number.isNaN(Number(laborPct))) return "—";
+  return `${(Number(laborPct) * 100).toFixed(1)}%`;
+}
+
+/** BQ fraction → chart percent (31.4). */
+export function laborPctToChart(laborPct: number | null): number | null {
+  if (laborPct == null || Number.isNaN(Number(laborPct))) return null;
+  return Number((Number(laborPct) * 100).toFixed(2));
+}
+
+/**
+ * Tooltip for % of net sales mode — PT/FT/Total percents only (completed actuals).
+ * No schedule / hours goal lines.
+ */
+export function laborPctTooltipContent(
+  row: LaborHoursChartRow,
+  laborTypes: string[] | null,
+): { entries: LaborTooltipEntry[]; lines: string[] } {
+  const ptOn = showsPartTime(laborTypes);
+  const ftOn = showsFullTime(laborTypes);
+  const entries: LaborTooltipEntry[] = [];
+
+  const hasPct =
+    (row.hourly_pct != null && !Number.isNaN(Number(row.hourly_pct))) ||
+    (row.fulltime_pct != null && !Number.isNaN(Number(row.fulltime_pct))) ||
+    (row.labor_pct != null && !Number.isNaN(Number(row.labor_pct)));
+
+  if (hasPct) {
+    if (ptOn) {
+      entries.push({
+        label: "Part-time",
+        value: formatLaborPct(row.hourly_pct),
+        color: PT,
+      });
+    }
+    if (ftOn) {
+      entries.push({
+        label: "Full-time",
+        value: formatLaborPct(row.fulltime_pct),
+        color: FT,
+      });
+    }
+    const scoped = scopedLaborMetrics(row, laborTypes);
+    if (ptOn || ftOn) {
+      entries.push({
+        label: "Total",
+        value: formatLaborPct(scoped.laborPct),
+      });
+    }
+  }
+
+  const lines: string[] = [];
+  if (!hasPct) {
+    lines.push("No completed labor % (need Square net sales on completed days)");
+  }
+  return { entries, lines };
 }
 
 function sumNullable(a: number | null | undefined, b: number | null | undefined): number | null {
@@ -231,60 +293,99 @@ export function laborTooltipContent(
 
 /**
  * Bars = actual + scheduled stacked (slate on top). Weekly Goal = gold dashed line.
- * (Avg concurrent keeps schedule in the tooltip only — different chart.)
+ * When `unit=pct`, bars are labor % of Square net sales (completed actuals only —
+ * no schedule stacks / hours goal). (Avg concurrent keeps schedule in the tooltip
+ * only — different chart.)
  */
 export function LaborHoursChart({
   data,
   laborTypes,
   grain,
   goalLaborHoursWeek,
+  unit = "hours",
+  titlePrefix = "",
+  subtitle,
 }: {
   data: LaborHoursChartRow[];
   laborTypes: string[] | null;
   grain: Grain;
   goalLaborHoursWeek?: number;
+  unit?: LaborChartUnit;
+  titlePrefix?: string;
+  subtitle?: string;
 }) {
-  const { chartData, series, title, stacked, goal, goalLabel } = useMemo(() => {
+  const { chartData, series, title, stacked, goal, goalLabel, valueFormat } = useMemo(() => {
     const pt = showsPartTime(laborTypes);
     const ft = showsFullTime(laborTypes);
     const neither = !pt && !ft;
+    const pctMode = unit === "pct";
+    const grainNoun = grainDisplayLabel(grain);
 
     const hasAnyActual = data.some(
       (r) =>
         (r.parttime_hours != null && r.parttime_hours > 0) ||
         (r.fulltime_hours != null && r.fulltime_hours > 0),
     );
-    const hasAnySched = data.some(
+    const hasAnyPct = data.some(
       (r) =>
-        (r.parttime_scheduled_hours != null && r.parttime_scheduled_hours > 0) ||
-        (r.fulltime_scheduled_hours != null && r.fulltime_scheduled_hours > 0),
+        (r.hourly_pct != null && Number(r.hourly_pct) > 0) ||
+        (r.fulltime_pct != null && Number(r.fulltime_pct) > 0) ||
+        (r.labor_pct != null && Number(r.labor_pct) > 0),
     );
+    const hasAnySched =
+      !pctMode &&
+      data.some(
+        (r) =>
+          (r.parttime_scheduled_hours != null && r.parttime_scheduled_hours > 0) ||
+          (r.fulltime_scheduled_hours != null && r.fulltime_scheduled_hours > 0),
+      );
 
     const series: { key: string; label: string; color: string }[] = [];
     if (!neither) {
-      if (hasAnyActual && pt) {
-        series.push({ key: "parttime", label: "Part-time", color: PT });
-      }
-      if (hasAnyActual && ft) {
-        series.push({ key: "fulltime", label: "Full-time", color: FT });
-      }
-      if (hasAnySched && pt) {
-        series.push({
-          key: "parttime_sched",
-          label: "Part-time (scheduled)",
-          color: PT_S,
-        });
-      }
-      if (hasAnySched && ft) {
-        series.push({
-          key: "fulltime_sched",
-          label: "Full-time (scheduled)",
-          color: FT_S,
-        });
+      if (pctMode) {
+        if (hasAnyPct && pt) {
+          series.push({ key: "parttime", label: "Part-time", color: PT });
+        }
+        if (hasAnyPct && ft) {
+          series.push({ key: "fulltime", label: "Full-time", color: FT });
+        }
+      } else {
+        if (hasAnyActual && pt) {
+          series.push({ key: "parttime", label: "Part-time", color: PT });
+        }
+        if (hasAnyActual && ft) {
+          series.push({ key: "fulltime", label: "Full-time", color: FT });
+        }
+        if (hasAnySched && pt) {
+          series.push({
+            key: "parttime_sched",
+            label: "Part-time (scheduled)",
+            color: PT_S,
+          });
+        }
+        if (hasAnySched && ft) {
+          series.push({
+            key: "fulltime_sched",
+            label: "Full-time (scheduled)",
+            color: FT_S,
+          });
+        }
       }
     }
 
     const chartData = data.map((r) => {
+      if (pctMode) {
+        const tip = laborPctTooltipContent(r, laborTypes);
+        return {
+          date: r.date,
+          parttime: pt ? laborPctToChart(r.hourly_pct) : null,
+          fulltime: ft ? laborPctToChart(r.fulltime_pct) : null,
+          parttime_sched: null,
+          fulltime_sched: null,
+          tooltipEntries: tip.entries,
+          tooltipLines: tip.lines,
+        };
+      }
       const tip = laborTooltipContent(r, goalLaborHoursWeek, grain, laborTypes);
       return {
         date: r.date,
@@ -297,9 +398,12 @@ export function LaborHoursChart({
       };
     });
 
-    const title = `Labor hours by ${grain}`;
+    const title = pctMode
+      ? `${titlePrefix}Labor % of net sales by ${grainNoun}`
+      : `${titlePrefix}Labor hours by ${grainNoun}`;
 
     const showGoal =
+      !pctMode &&
       weeklyHoursGoalApplicable(grain) &&
       goalLaborHoursWeek != null &&
       !Number.isNaN(Number(goalLaborHoursWeek)) &&
@@ -312,13 +416,16 @@ export function LaborHoursChart({
       stacked: series.length > 1,
       goal: showGoal ? Number(goalLaborHoursWeek) : undefined,
       goalLabel: showGoal ? `Goal ${Number(goalLaborHoursWeek)} hrs` : undefined,
+      valueFormat: pctMode ? ("percent" as const) : ("number" as const),
     };
-  }, [data, grain, goalLaborHoursWeek, laborTypes]);
+  }, [data, grain, goalLaborHoursWeek, laborTypes, titlePrefix, unit]);
 
   if (series.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        No labor type selected — pick Part-time and/or Full-time in the Labor type filter.
+        {unit === "pct"
+          ? "No completed labor % in this Period — pick Part-time and/or Full-time, or switch to Hours."
+          : "No labor type selected — pick Part-time and/or Full-time in the Labor type filter."}
       </p>
     );
   }
@@ -326,11 +433,12 @@ export function LaborHoursChart({
   return (
     <BarChartCard
       title={title}
+      subtitle={subtitle}
       data={chartData}
       xKey="date"
       series={series}
       stacked={stacked}
-      valueFormat="number"
+      valueFormat={valueFormat}
       goal={goal}
       goalLabel={goalLabel}
       goalStroke={LABOR_CHART_COLORS.goalLine}

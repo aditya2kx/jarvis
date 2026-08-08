@@ -97,11 +97,21 @@ WORKBOOK_SCHEMAS: dict[str, list[dict]] = {
                 "source", "staff_name", "location",
                 "raw_date_csv", "raw_time_csv", "raw_tz_csv",
                 "scraped_at_utc",
+                # Migration 056 — fulfillment / ops-clock (appended; sheet auto-migrates).
+                "fulfillment_type", "schedule_type",
+                "pickup_at_utc", "deliver_at_utc", "courier_pickup_at_utc",
+                "ready_at_utc", "picked_up_at_utc", "delivered_at_utc",
+                "placed_at_utc", "accepted_at_utc", "closed_at_utc",
+                "ops_at_local_iso", "ops_date_local", "ops_hour_local",
             ],
             "notes": (
-                "One row per Square transaction. Source: skills/square_tips/transactions_backend.parse_csv. "
-                "Natural key: transaction_id. created_at_local_iso is shop-local (America/Chicago); "
-                "raw account TZ (ET) preserved in created_at_src_iso plus raw_date_csv/raw_time_csv/raw_tz_csv for audit."
+                "One row per Square transaction. Source: skills/square_tips/transactions_backend.parse_csv "
+                "+ skills/square_api/fulfillment enrichment on API ingest. "
+                "Natural key: transaction_id. created_at_local_iso is place/close shop-local time; "
+                "ops_at_local_iso / ops_hour_local is the promised fulfillment slot "
+                "(COALESCE pickup_at, deliver_at, courier_pickup_at, ready_at, closed_at, created_at) "
+                "used by Operator Console Sales Hour Aggregation. "
+                "raw account TZ preserved in created_at_src_iso plus raw_date_csv/raw_time_csv/raw_tz_csv for audit."
             ),
         },
         {

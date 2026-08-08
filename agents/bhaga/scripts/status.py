@@ -285,6 +285,10 @@ GRAFANA_VIEWS: list[Target] = [
     # tvf_order_reco_slot1 / tvf_order_reco_slot_n for Manual pins on Estimated
     # dates. Console /inventory drawer — not model_* / no Grafana panel; freshness
     # still via inventory_order_reco refresh (031/032). No new BQ_TARGETS/GRAFANA_VIEWS.
+    # migration 056 (Issue #227): square_transactions fulfillment + ops-clock
+    # columns (pickup_at/deliver_at/ready_at/…, ops_at_local_iso, ops_date_local,
+    # ops_hour_local). Additive on existing raw table — Sales Hour Aggregation
+    # uses ops_* ; no new BQ_TARGETS/GRAFANA_VIEWS.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

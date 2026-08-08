@@ -180,8 +180,11 @@ export default async function OrderQualityPage({
     { accessorKey: "items_in_ticket", header: "Items in Order" },
   ];
 
-  const sourcesExtra = sourcesParam ? { sources: sourcesParam } : {};
-  const sharedExtra = {
+  // Explicit Record so `{}` doesn't widen to `{ sources?: undefined }` (Next build TS).
+  const sourcesExtra: Record<string, string> = sourcesParam
+    ? { sources: sourcesParam }
+    : {};
+  const sharedExtra: Record<string, string> = {
     range: win.preset,
     onTime: String(onTime),
     grain,

@@ -84,21 +84,33 @@ def _git_sha() -> str:
     ).strip()
 
 
-def build_image(*, project: str, image: str, dry_run: bool) -> None:
-    """Build+push via Cloud Build (no local Docker required)."""
+def build_image(*, project: str, image: str, dry_run: bool, builder: str = "docker") -> None:
+    """Build+push image. Default ``docker`` matches operator-console-deploy.yml.
+
+    ``cloudbuild`` uses ``gcloud builds submit`` (needs Cloud Build bucket IAM).
+    """
     context = REPO_ROOT / "apps" / "operator-console"
     if not (context / "Dockerfile").is_file():
         raise SystemExit(f"console_preview_deploy: missing Dockerfile under {context}")
+    if builder == "cloudbuild":
+        _run(
+            [
+                "gcloud", "builds", "submit", str(context),
+                f"--project={project}",
+                f"--tag={image}",
+                "--timeout=1200",
+                "--quiet",
+            ],
+            dry_run=dry_run,
+        )
+        return
+    if builder != "docker":
+        raise SystemExit(f"console_preview_deploy: unknown --builder {builder!r}")
     _run(
-        [
-            "gcloud", "builds", "submit", str(context),
-            f"--project={project}",
-            f"--tag={image}",
-            "--timeout=1200",
-            "--quiet",
-        ],
+        ["docker", "build", "-t", image, str(context)],
         dry_run=dry_run,
     )
+    _run(["docker", "push", image], dry_run=dry_run)
 
 
 def deploy_tagged(
@@ -167,6 +179,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Remove prN tag from the service (post-merge cleanup)",
     )
+    ap.add_argument(
+        "--builder",
+        choices=("docker", "cloudbuild"),
+        default="docker",
+        help="Image build backend (default: docker, same as operator-console-deploy.yml)",
+    )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
@@ -186,7 +204,9 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("console_preview_deploy: --skip-build requires --image")
         sha = _git_sha()
         image = f"{registry(project)}/{SERVICE}:{tag}-{sha}"
-        build_image(project=project, image=image, dry_run=args.dry_run)
+        build_image(
+            project=project, image=image, dry_run=args.dry_run, builder=args.builder,
+        )
     elif not args.skip_build:
         # Explicit --image: deploy that digest/tag as-is (no Cloud Build).
         pass

@@ -280,10 +280,15 @@ def ensure_remote_branch(
         ["git", "rev-parse", base_ref if base_ref.startswith("origin/") else f"origin/{base_ref}"],
         text=True,
     ).strip()
-    # Prefer push-ref (works without local branch)
+    # Pushing an exact origin/main SHA creates an empty tip branch for the Cloud
+    # Agent startingRef. Local pre-push runs verify.py --full (~minutes) — pointless
+    # here (no new commits). Bypass with VERIFY=0; real gates still run on later
+    # commits / PR CI. Local intake felt faster because it often deferred push.
+    env = {**os.environ, "VERIFY": "0"}
     try:
         subprocess.check_call(
             ["git", "push", "origin", f"{sha}:refs/heads/{branch}"],
+            env=env,
         )
     except subprocess.CalledProcessError as exc:
         raise SystemExit(

@@ -1,0 +1,65 @@
+# PR-tagged Operator Console preview (Issue #228).
+# Deploys with --no-traffic --tag prN so canonical IAP URL traffic is untouched.
+# Trigger: workflow_dispatch, or call scripts/console_preview_deploy.py with ADC.
+name: Operator Console PR preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number (tag = prN)"
+        required: true
+        type: string
+      ref:
+        description: "Git ref to build (branch or SHA); default = workflow ref"
+        required: false
+        type: string
+        default: ""
+      remove_tags:
+        description: "If true, only remove the prN tag (post-merge cleanup)"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PROJECT_ID: jarvis-bhaga-prod
+  REGION: us-central1
+  REGISTRY: us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images
+  SERVICE: operator-console
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        if: ${{ inputs.remove_tags != true }}
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Deploy or cleanup tagged preview
+        env:
+          GCP_PROJECT: ${{ env.PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          PR="${{ inputs.pr }}"
+          if [[ "${{ inputs.remove_tags }}" == "true" ]]; then
+            python3 scripts/console_preview_deploy.py --pr "$PR" --remove-tags
+          else
+            python3 scripts/console_preview_deploy.py --pr "$PR"
+          fi

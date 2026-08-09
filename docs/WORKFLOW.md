@@ -399,6 +399,11 @@ legacy). Laptop-only exclusions: Touch ID/passkeys, launchd, CHITRA Socket Mode
 Cloud intake + local signal drain:
 - GitHub Actions emit cheap **`jarvis-signal` comments** on tracking issues (zero AI token cost for the signal itself).
 - **Intake:** Action (or `new_requirement.py`) calls Cursor Cloud Agents API → agent URL on the issue.
+- **Cloud Agent visual proof (console PRs):** the VM has no laptop-shareable localhost. Default §4
+  visual evidence is VM Playwright → hosted G5 screenshots via `apps/operator-console/scripts/capture_evidence.py`.
+  Operator poke uses a **tagged** Cloud Run preview (`scripts/console_preview_deploy.py` /
+  `operator-console-preview.yml`: `--no-traffic --tag prN`) — never overwrite canonical IAP traffic;
+  tag host = separate IAP cookie jar (Issue #208).
 - A laptop listener (`dev_event_listener.py`) still catch-ups CI/comment/merge signals when the Mac is online.
 - Local Cursor chats pick up non-intake events via `.cursor/hooks.json` or explicit catch-up.
 

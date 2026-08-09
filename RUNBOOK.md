@@ -339,9 +339,13 @@ Repo file [`.cursor/environment.json`](.cursor/environment.json) installs Python
 Laptop-only (not Cloud Agent): Touch ID / passkeys, launchd `com.jarvis.devsignals`, CHITRA `/tmp/jarvis-*` Slack inboxes, interactive OAuth on localhost.
 
 After spawn, intake **auto-opens** the Desktop Agents deeplink
-(`cursor://anysphere.cursor-deeplink/background-agent?bcId=…`) and the HTTPS
-URL (`https://cursor.com/agents/<id>`) via macOS `open` — same handoff feel as
-local worktree deeplinks. Open is best-effort and never fails intake.
+(`cursor://anysphere.cursor-deeplink/background-agent?bcId=…`) via macOS `open`.
+If Desktop open succeeds, the browser is **not** opened (URL stays on the issue
+comment). HTTPS (`https://cursor.com/agents/<id>`) is the fallback when Desktop
+open fails. Open is best-effort and never fails intake. Spawn always sets
+Cloud Agent `model` to Grok 4.5 medium with Fast off (`scripts/spawn_cloud_agent.py`
+`DEFAULT_CLOUD_MODEL_*`) — omitting `model` previously fell through to the
+user/team default (observed: high-fast).
 
 Escape hatches: `new_requirement.py --local`; listener `JARVIS_INTAKE_LOCAL=1`.
 

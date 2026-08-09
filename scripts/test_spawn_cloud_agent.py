@@ -38,6 +38,19 @@ class TestSpawnCloudAgent(unittest.TestCase):
         self.assertTrue(result.get("dry_run"))
         self.assertEqual(result["agent_id"], "bc-dry-run")
         self.assertIn("prompt", result["payload"])
+        model = result["payload"]["model"]
+        self.assertEqual(model["id"], SCA.DEFAULT_CLOUD_MODEL_ID)
+        self.assertIn({"id": "effort", "value": "medium"}, model["params"])
+        self.assertIn({"id": "fast", "value": "false"}, model["params"])
+
+    def test_model_omit_with_empty_dict(self):
+        result = SCA.spawn_cloud_agent(
+            prompt_text="hello",
+            starting_ref="fix/test",
+            model={},
+            dry_run=True,
+        )
+        self.assertNotIn("model", result["payload"])
 
     @patch("spawn_cloud_agent.urllib.request.urlopen")
     def test_spawn_parses_response(self, mock_urlopen):
@@ -113,18 +126,29 @@ class TestOpenHandoff(unittest.TestCase):
         self.assertIn("bcId=bc-abc", SCA.desktop_agent_deeplink("bc-abc"))
 
     @patch("spawn_cloud_agent.subprocess.run")
-    def test_open_calls_deeplink_then_https(self, mock_run):
+    def test_open_desktop_skips_browser_on_success(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        SCA.open_cloud_agent_handoff(
+            url="https://cursor.com/agents/bc-xyz",
+            agent_id="bc-xyz",
+            dry_run=False,
+        )
+        self.assertEqual(mock_run.call_count, 1)
+        first = mock_run.call_args_list[0].args[0]
+        self.assertEqual(first[0], "open")
+        self.assertIn("background-agent", first[1])
+        self.assertIn("bc-xyz", first[1])
+
+    @patch("spawn_cloud_agent.subprocess.run")
+    def test_open_falls_back_to_https_when_desktop_fails(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1)
         SCA.open_cloud_agent_handoff(
             url="https://cursor.com/agents/bc-xyz",
             agent_id="bc-xyz",
             dry_run=False,
         )
         self.assertEqual(mock_run.call_count, 2)
-        first = mock_run.call_args_list[0].args[0]
         second = mock_run.call_args_list[1].args[0]
-        self.assertEqual(first[0], "open")
-        self.assertIn("background-agent", first[1])
-        self.assertIn("bc-xyz", first[1])
         self.assertEqual(second, ["open", "https://cursor.com/agents/bc-xyz"])
 
     @patch("spawn_cloud_agent.agent_reachable", side_effect=[True])

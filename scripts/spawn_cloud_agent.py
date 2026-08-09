@@ -42,6 +42,23 @@ AGENT_URL_RE = re.compile(
 )
 AGENT_ID_RE = re.compile(r"(bc-[a-zA-Z0-9-]+)")
 
+# Cloud Agents API model selection (see GET /v1/models). Omitting ``model``
+# falls through to the user/team default — observed as Grok 4.5 high-fast.
+# Operator preference: Grok 4.5 medium, never Fast.
+DEFAULT_CLOUD_MODEL_ID = "grok-4-5"
+DEFAULT_CLOUD_MODEL_PARAMS: list[dict[str, str]] = [
+    {"id": "effort", "value": "medium"},
+    {"id": "fast", "value": "false"},
+]
+
+
+def default_cloud_model() -> dict[str, Any]:
+    """``model`` object for POST /v1/agents (id + effort/fast params)."""
+    return {
+        "id": DEFAULT_CLOUD_MODEL_ID,
+        "params": [dict(p) for p in DEFAULT_CLOUD_MODEL_PARAMS],
+    }
+
 
 def _cursor_token() -> str:
     key = (os.environ.get("CURSOR_AGENT_TOKEN") or "").strip()
@@ -119,27 +136,32 @@ def open_cloud_agent_handoff(
     agent_id: str = "",
     dry_run: bool = False,
 ) -> None:
-    """Best-effort auto-open: Desktop deeplink first, then HTTPS (parity with local intake).
+    """Best-effort auto-open: Desktop deeplink; HTTPS only if Desktop open fails.
 
-    Non-fatal: failures must not abort intake. Uses macOS ``open`` (same as
-    ``start_pr_session.open_cursor_handoff``).
+    Prefer the Mac app when the ``cursor://`` scheme hands off successfully.
+    Do **not** also open the browser in that case (double-window noise).
+    Non-fatal: failures must not abort intake. Uses macOS ``open``.
     """
     aid = agent_id or agent_id_from_ref(url)
     https = normalize_agent_url(url, aid)
     if dry_run:
         if aid:
             print(f"(dry-run) would open {desktop_agent_deeplink(aid)}")
-        if https:
+            print("(dry-run) would skip browser if Desktop open succeeds")
+        elif https:
             print(f"(dry-run) would open {https}")
         return
-    # Desktop first (closest to local ``cursor://`` prompt handoff), then web.
+    desktop_ok = False
     if aid:
         deeplink = desktop_agent_deeplink(aid)
         print(f"Opening Cursor Desktop Agents → {deeplink}")
-        subprocess.run(["open", deeplink], check=False)
-    if https:
+        completed = subprocess.run(["open", deeplink], check=False)
+        desktop_ok = completed.returncode == 0
+    if https and not desktop_ok:
         print(f"Opening Cloud Agent URL → {https}")
         subprocess.run(["open", https], check=False)
+    elif https and desktop_ok:
+        print(f"Desktop opened; skip browser (URL on issue: {https})")
 
 
 def agent_reachable(agent_id: str, *, agent_token: str | None = None) -> bool:
@@ -306,12 +328,18 @@ def spawn_cloud_agent(
     work_on_current_branch: bool = True,
     mode: str = "plan",
     name: str | None = None,
+    model: dict[str, Any] | None = None,
     model_id: str | None = None,
     env_vars: dict[str, str] | None = None,
     dry_run: bool = False,
     agent_token: str | None = None,
 ) -> dict[str, Any]:
-    """POST /v1/agents. Returns dict with agent_id, run_id, url (best-effort)."""
+    """POST /v1/agents. Returns dict with agent_id, run_id, url (best-effort).
+
+    ``model`` defaults to :func:`default_cloud_model` (Grok 4.5 medium, not fast).
+    Pass ``model={}`` to omit (API user/team default). ``model_id`` alone sets
+    ``{"id": model_id}`` without effort/fast params.
+    """
     payload: dict[str, Any] = {
         "prompt": {"text": prompt_text},
         "repos": [{"url": repo_url, "startingRef": starting_ref}],
@@ -321,8 +349,13 @@ def spawn_cloud_agent(
     }
     if name:
         payload["name"] = name[:100]
-    if model_id:
+    if model is not None:
+        if model:  # empty dict → omit model (API default)
+            payload["model"] = model
+    elif model_id:
         payload["model"] = {"id": model_id}
+    else:
+        payload["model"] = default_cloud_model()
     if env_vars:
         payload["envVars"] = env_vars
 
@@ -419,6 +452,7 @@ def spawn_for_issue(
         work_on_current_branch=True,
         mode="plan",
         name=name,
+        model=default_cloud_model(),
         env_vars={
             "BHAGA_SECRETS_BACKEND": "gcp",
             "GCP_PROJECT": "jarvis-bhaga-prod",

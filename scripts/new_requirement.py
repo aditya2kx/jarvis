@@ -600,7 +600,7 @@ def _run_one_cloud(
     if issue_url:
         print(f"Tracking issue: {issue_url}")
     print("Continue from laptop / web / mobile — no local worktree required.")
-    # Parity with local intake's open_cursor_handoff: auto-open Desktop + HTTPS.
+    # Auto-open Desktop Agents; browser only if Desktop open fails.
     SCA.open_cloud_agent_handoff(url=url, agent_id=agent_id, dry_run=dry_run)
     return 0
 

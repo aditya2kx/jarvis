@@ -26,7 +26,7 @@ Type `/jarvis-new-task` followed by the requirement text, e.g.:
 python3 scripts/new_requirement.py --requirement "<operator's text>"
 ```
 
-**Default is cloud-primary** (Issue #228): the script creates/links the tracking issue, ensures a remote branch, and spawns a **Cursor Cloud Agent**. It comments the agent URL on the issue, then **auto-opens** the Desktop Agents deeplink + HTTPS URL (same “handoff” feel as local worktree intake). Pass `--local` only for dogfood/lifecycle tests that need a sibling worktree.
+**Default is cloud-primary** (Issue #228): the script creates/links the tracking issue, ensures a remote branch, and spawns a **Cursor Cloud Agent** (Grok 4.5 medium, Fast off). It comments the agent URL on the issue, then **auto-opens** the Desktop Agents deeplink (browser only if Desktop open fails). Pass `--local` only for dogfood/lifecycle tests that need a sibling worktree.
 
 **Link-not-create:** if the operator includes a GitHub issue URL or `#NN` reference in
 the requirement text (e.g. `/jarvis-new-task fix the auth bug #42`), the script

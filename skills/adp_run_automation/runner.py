@@ -1723,20 +1723,30 @@ def _goto_next_week(page, frame) -> None:
 
 
 def _schedule_within_session(page, *, weeks: int = None) -> list[dict]:
-    """Scrape `weeks` consecutive weeks of Team Schedule totals.
+    """Scrape consecutive weeks of Team Schedule totals (cap + stop-on-stall).
 
     Pre-condition: `page` is on the v2 ADP RUN dashboard (POST_LOGIN_URL_RE).
     Returns a list of per-week raw payloads (see schedule_backend.build_schedule_records).
+
+    Issue #230: managers often publish (or leave in draft) weeks beyond
+    current+next. We advance the › chevron until the week label stops changing
+    or we hit ``MAX_SCHEDULE_WEEKS``. Draft weeks are included when ADP shows
+    them in the same Team Schedule grid.
     """
     from skills.adp_run_automation import schedule_backend as sb
 
-    weeks = weeks or sb.DEFAULT_WEEKS
+    weeks = min(weeks or sb.DEFAULT_WEEKS, sb.MAX_SCHEDULE_WEEKS)
     frame = _open_team_schedule(page)
     payloads: list[dict] = []
     for i in range(weeks):
         payloads.append(_scrape_one_week(page, frame))
-        if i < weeks - 1:
+        if i >= weeks - 1:
+            break
+        try:
             _goto_next_week(page, frame)
+        except RuntimeError as exc:
+            print(f"[adp_schedule] stop advancing weeks after {len(payloads)}: {exc}")
+            break
     return payloads
 
 

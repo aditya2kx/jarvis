@@ -28,6 +28,8 @@ export interface RuleListItem {
   match_operator: string;
   match_pattern: string;
   amount_sign: string | null;
+  from_mask?: string | null;
+  to_mask?: string | null;
   enabled: boolean | null;
 }
 
@@ -303,7 +305,12 @@ export function AccountingRulesDrawer({
                     {r.enabled === false ? " (off)" : ""}
                   </div>
                   <div className="text-muted-foreground">
-                    {r.match_operator} &quot;{r.match_pattern}&quot; ({r.amount_sign || "any"})
+                    {r.match_pattern
+                      ? `${r.match_operator} "${r.match_pattern}"`
+                      : "(no name pattern)"}{" "}
+                    ({r.amount_sign || "any"})
+                    {r.from_mask ? ` · from …${r.from_mask}` : ""}
+                    {r.to_mask ? ` · to …${r.to_mask}` : ""}
                   </div>
                   <div className="mt-1 flex gap-1">
                     <Button

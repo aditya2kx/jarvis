@@ -128,6 +128,44 @@ def _upsert_transactions(bq, rows: list[dict]) -> None:
     ).result()
 
 
+def _dedupe_transactions(bq) -> int:
+    """Keep one row per transaction_id (newest updated_at).
+
+    Uses CREATE OR REPLACE … WHERE rn = 1 — NOT DELETE on (transaction_id,
+    updated_at). Duplicate inserts from one MERGE share CURRENT_TIMESTAMP(); a
+    STRUCT delete key that omits the ROW_NUMBER tie-breaker would match keeper +
+    extras and wipe the transaction (Issue #230 / Claude review on PR #236).
+    """
+    rows = list(
+        bq.query(
+            f"""
+            SELECT COUNT(*) - COUNT(DISTINCT transaction_id) AS n
+            FROM {_fq("plaid_transactions")}
+            """
+        ).result()
+    )
+    extras = int(rows[0].n) if rows else 0
+    if extras <= 0:
+        return 0
+    bq.query(
+        f"""
+        CREATE OR REPLACE TABLE {_fq("plaid_transactions")} AS
+        SELECT * EXCEPT (rn)
+        FROM (
+          SELECT
+            *,
+            ROW_NUMBER() OVER (
+              PARTITION BY transaction_id
+              ORDER BY updated_at DESC NULLS LAST, TO_JSON_STRING(raw_json)
+            ) AS rn
+          FROM {_fq("plaid_transactions")}
+        )
+        WHERE rn = 1
+        """
+    ).result()
+    return extras
+
+
 def _delete_transactions(bq, removed_ids: list[str]) -> None:
     if not removed_ids:
         return
@@ -244,6 +282,12 @@ def sync_item(store: str, item_id: str, *, cursor: str | None = None) -> SyncRes
             )
     except Exception as exc:  # noqa: BLE001
         result.errors.append(f"categorize: {exc}")
+    try:
+        n = _dedupe_transactions(bq)
+        if n:
+            print(f"[plaid_api.sync] dedupe removed={n} item={item_id}")
+    except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"dedupe: {exc}")
     return result
 
 

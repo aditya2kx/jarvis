@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   effectiveExclude,
   effectiveExcludeFromMap,
+  excludedFromAccountingRollup,
 } from "@/lib/plaid/exclude-accounting";
 
 describe("effectiveExclude", () => {
@@ -43,5 +44,43 @@ describe("effectiveExclude", () => {
     ];
     expect(effectiveExcludeFromMap("personal__toll", nodes)).toBe(true);
     expect(effectiveExcludeFromMap("missing", nodes)).toBe(false);
+  });
+});
+
+describe("excludedFromAccountingRollup", () => {
+  const nodes = [
+    { id: "internal_transfers", parent_id: null, exclude_from_accounting: true },
+    {
+      id: "inventory_food_supplies",
+      parent_id: null,
+      exclude_from_accounting: null,
+    },
+    {
+      id: "inventory_food_supplies__palmetto_inventory_purchases",
+      parent_id: "inventory_food_supplies",
+      exclude_from_accounting: null,
+    },
+  ];
+
+  it("excludes is_internal even when a merchant rule stamped inventory", () => {
+    expect(
+      excludedFromAccountingRollup({
+        leafId: "inventory_food_supplies__palmetto_inventory_purchases",
+        nodes,
+        isInternal: true,
+        categoryId: "inventory_food_supplies",
+      }),
+    ).toBe(true);
+  });
+
+  it("includes non-internal inventory spend", () => {
+    expect(
+      excludedFromAccountingRollup({
+        leafId: "inventory_food_supplies__palmetto_inventory_purchases",
+        nodes,
+        isInternal: false,
+        categoryId: "inventory_food_supplies",
+      }),
+    ).toBe(false);
   });
 });

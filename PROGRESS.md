@@ -1,3 +1,11 @@
+## 2026-08-09 — Labor schedule horizon + Plaid dedupe + Accounting from/to (Issue #230)
+
+**Scope:** ADP schedule scrape up to 8 forward weeks; post-sync `plaid_transactions` dedupe (CREATE OR REPLACE keep rn=1) + ledger QUALIFY; category rules `from_mask`/`to_mask` (migration 057); DataTable sticky-pin loop fix.
+
+- Labor: `DEFAULT_WEEKS=MAX=8`; stop cleanly when week chevron stalls.
+- Accounting: duplicate `transaction_id` rows removed without wiping same-timestamp ties; From/To columns + propose-rule combo.
+- Evidence: Aug 2026 `extra_rows=0`; vitest/pytest; localhost operator play on `:3002`.
+
 ## 2026-08-09 — Team Pulse multi-vary reject + once lock + freshness (Issue #233)
 
 **Scope:** Gemini was concatenating 3 draft variations into one ClickUp post; soft once-gate + async `startTransition` allowed double Post-once; open-period rollup lag was undiagnosable in UI.

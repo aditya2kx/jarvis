@@ -21,7 +21,8 @@ def load_rules(bq) -> list[CategoryRule]:
         bq.query(
             f"""
             SELECT id, priority, match_field, match_operator, match_pattern,
-                   amount_sign, category_id, subcategory_id, enabled
+                   amount_sign, category_id, subcategory_id, enabled, account_mask,
+                   from_mask, to_mask
             FROM {_fq("plaid_category_rules")}
             WHERE IFNULL(enabled, TRUE) IS TRUE
             ORDER BY priority, id
@@ -41,6 +42,9 @@ def load_rules(bq) -> list[CategoryRule]:
                 category_id=r["category_id"],
                 subcategory_id=r["subcategory_id"],
                 enabled=bool(r["enabled"]) if r["enabled"] is not None else True,
+                account_mask=r["account_mask"],
+                from_mask=r.get("from_mask"),
+                to_mask=r.get("to_mask"),
             )
         )
     return out
@@ -54,23 +58,31 @@ def reapply_categories(
 ) -> dict[str, Any]:
     """Evaluate rules for txns without overrides; UPDATE only when changed."""
     rules = load_rules(bq)
-    where = ["1=1"]
     params = []
     from google.cloud import bigquery
 
+    where_t = ["1=1"]
     if item_id:
-        where.append("item_id = @item_id")
+        where_t.append("t.item_id = @item_id")
         params.append(bigquery.ScalarQueryParameter("item_id", "STRING", item_id))
     if transaction_ids:
-        where.append("transaction_id IN UNNEST(@ids)")
+        where_t.append("t.transaction_id IN UNNEST(@ids)")
         params.append(bigquery.ArrayQueryParameter("ids", "STRING", transaction_ids))
 
     sql = f"""
-        SELECT transaction_id, name, merchant_name, amount,
-               category_id, subcategory_id, rule_id,
-               override_category_id, override_subcategory_id
-        FROM {_fq("plaid_transactions")}
-        WHERE {" AND ".join(where)}
+        SELECT t.transaction_id, t.name, t.merchant_name, t.amount,
+               a.mask AS account_mask,
+               JSON_VALUE(t.raw_json, '$.counterparties[0].name') AS counterparty_name,
+               t.category_id, t.subcategory_id, t.rule_id,
+               t.override_category_id, t.override_subcategory_id,
+               IFNULL(t.is_internal, FALSE) AS is_internal
+        FROM {_fq("plaid_transactions")} t
+        LEFT JOIN {_fq("plaid_accounts")} a ON a.account_id = t.account_id
+        WHERE {" AND ".join(where_t)}
+        QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY t.transaction_id
+          ORDER BY t.updated_at DESC NULLS LAST
+        ) = 1
     """
     job_config = bigquery.QueryJobConfig(query_parameters=params) if params else None
     rows = list(bq.query(sql, job_config=job_config).result())
@@ -91,10 +103,12 @@ def reapply_categories(
         new_cat = match.category_id if match else None
         new_sub = match.subcategory_id if match else None
         new_rule = match.rule_id if match else None
+        new_internal = True if new_cat == "internal_transfers" else bool(d.get("is_internal"))
         if (
             (d.get("category_id") or None) == new_cat
             and (d.get("subcategory_id") or None) == new_sub
             and (d.get("rule_id") or None) == new_rule
+            and bool(d.get("is_internal")) == new_internal
         ):
             unchanged += 1
             continue
@@ -104,6 +118,7 @@ def reapply_categories(
                 "category_id": new_cat,
                 "subcategory_id": new_sub,
                 "rule_id": new_rule,
+                "is_internal": new_internal,
             }
         )
         updated += 1
@@ -127,6 +142,7 @@ def reapply_categories(
               category_id = S.category_id,
               subcategory_id = S.subcategory_id,
               rule_id = S.rule_id,
+              is_internal = S.is_internal,
               categorized_at = CURRENT_TIMESTAMP(),
               updated_at = CURRENT_TIMESTAMP()
             """

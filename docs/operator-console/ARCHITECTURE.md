@@ -161,7 +161,7 @@ flowchart TD
 | Screen | Reads (BQ `vw_*` / tables) | Write-backs |
 |---|---|---|
 | **Home** (Goal and Tracking) | labor/sales (`vw_model_labor_daily`), **Finance** bank in/out/cash flow (`vw_plaid_money_in_daily` + spend view, exclude-from-accounting), **Cost** taxonomy parents, **Labor** PT/FT/Total rates + bank payroll twin; prep p95; bases at risk; goals | Goals → `store_config` |
-| **Accounting** | Square net sales (`vw_model_labor_daily`), Plaid spend/in (`plaid_transactions`, spend + money-in views), `plaid_items`, taxonomy exclude | Plaid Link; category override; propose-rule; taxonomy exclude toggles |
+| **Accounting** | Square net sales (`vw_model_labor_daily`), Plaid spend/in (`plaid_transactions`, spend + money-in views), `plaid_items`, taxonomy exclude; ledger From/To last-4 via amount sign | Plaid Link; category override; propose-rule (name regex ± from/to masks); taxonomy exclude toggles |
 | **Sales** | `square_transactions` + `square_item_lines` via `salesByGrain` (Source multi-select; **Composition** bars with Aggregate/By-source stacks, or **Trend** lines with optional prior-period compare; unfiltered Composition totals match `vw_model_labor_daily`) | — |
 | **Labor** | `vw_model_labor_daily` / `_weekly`, `adp_shifts` + `adp_scheduled_shifts` (actual vs schedule, concurrent, coverage); Sync → `BHAGA_ADP_SCHEDULE_ONLY` | Sync scheduled shifts |
 | **Order Quality** | `vw_kds_per_item_min` (grain percentiles + avg), live by-source from `square_kds_tickets` | — |
@@ -483,7 +483,7 @@ same contract as Sales).
 
 `/labor` shows historical ADP hours plus forward ADP Team Schedule (no forecast-model numbers):
 
-- **Scheduled vs actual** cut at yesterday CT; Sync scheduled shifts runs `BHAGA_ADP_SCHEDULE_ONLY` (local or Cloud Run) → purge-before-upsert into `adp_scheduled_shifts`.
+- **Scheduled vs actual** cut at yesterday CT; Sync scheduled shifts runs `BHAGA_ADP_SCHEDULE_ONLY` (local or Cloud Run) → purge-before-upsert into `adp_scheduled_shifts`. Horizon: up to **8** forward weeks (stop when the Team Schedule › chevron does not advance); draft weeks are included when ADP shows them in the same grid (Issue #230).
 - **Paid PTO** (ADP “Approved Time Off” / PERSONAL cells) counts toward scheduled hours so emp sums match the ADP footer; rows are tagged `hour_kind` (`shift` | `pto`). Labor page **PTO** filter defaults to Include; **Exclude PTO** drops `hour_kind=pto` from scheduled charts/coverage.
 - **Wall → paid**: per-employee week chip scales wall-clock ranges down (unpaid meal); never inflates when days are missing.
 - **Avg concurrent** uses per-bucket first→last span (one FT ≈ 1); schedule concurrent from wall-clock ranges.

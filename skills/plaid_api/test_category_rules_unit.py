@@ -158,6 +158,60 @@ class TestEvaluateRules(unittest.TestCase):
         )
         self.assertEqual(m.rule_id if m else None, "card_only")
 
+    def test_to_mask_only_no_name_pattern(self):
+        rules = [
+            _r(
+                id="to_card",
+                priority=5,
+                match_pattern="",
+                to_mask="6029",
+                category_id="internal_transfers",
+                subcategory_id=None,
+            )
+        ]
+        m = evaluate_rules(
+            {
+                "name": "Payment to Chase card ending in 6029",
+                "amount": 500,
+                "account_mask": "8933",
+            },
+            rules,
+        )
+        self.assertEqual(m.rule_id if m else None, "to_card")
+
+    def test_from_to_and_name_with_sign(self):
+        rules = [
+            _r(
+                id="boa_in",
+                priority=10,
+                match_pattern="Bank of America",
+                match_operator="regex",
+                from_mask="8208",
+                to_mask="8933",
+                amount_sign="negative",
+                category_id="owner",
+            )
+        ]
+        m = evaluate_rules(
+            {
+                "name": "Online Transfer from Bank of America ########8208",
+                "amount": -1200,
+                "account_mask": "8933",
+            },
+            rules,
+        )
+        self.assertEqual(m.rule_id if m else None, "boa_in")
+        self.assertIsNone(
+            evaluate_rules(
+                {
+                    "name": "Online Transfer from Bank of America ########8208",
+                    "amount": 1200,
+                    "account_mask": "8933",
+                },
+                rules,
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -232,7 +232,7 @@ Sheets is the **source of truth**; BigQuery is a **parallel read-only mirror** u
 
 ## Extending the model
 
-> **Operator Console Accounting (migrations 037–047):** Plaid ledger tables/views (`plaid_*`, `vw_plaid_spend_by_category_daily`, `vw_plaid_money_in_daily`) are console-only — not model_* / Grafana. Migration **047** (`exclude_from_accounting`, Internal transfers seed, rule `account_mask`) is registered as a no-new-target note in `status.py` (same class as 037–046). Skill-side: `skills/plaid_api/category_rules.py` + `sync.py` assign `internal_transfers` on transfer heuristics.
+> **Operator Console Accounting (migrations 037–047):** Plaid ledger tables/views (`plaid_*`, `vw_plaid_spend_by_category_daily`, `vw_plaid_money_in_daily`) are console-only — not model_* / Grafana. Migration **047** (`exclude_from_accounting`, Internal transfers seed, rule `account_mask`) is registered as a no-new-target note in `status.py` (same class as 037–046). Skill-side: `skills/plaid_api/category_rules.py` + `sync.py` assign `internal_transfers` on transfer heuristics. Issue **#230**: post-sync `_dedupe_transactions` / console `dedupePlaidTransactions` remove race-inserted duplicate `transaction_id` rows; Accounting ledger query QUALIFY-distincts as defense in depth.
 
 > **Operator Console inventory day overrides (migration 048, Issue #194):** `inventory_usage_day_overrides` + rewrite of `vw_inventory_order_assistant` (override join) + `vw_inventory_usage_day_audit` — console `/inventory` day-grain audit only; not model_* / Grafana. Registered as a no-new-target note in `status.py` (same class as 037–047); OA freshness still via existing `vw_inventory_order_assistant` target.
 

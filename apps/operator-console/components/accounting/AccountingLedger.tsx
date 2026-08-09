@@ -28,6 +28,7 @@ import { BarChartCard } from "@/components/charts/BarChartCard";
 import { ACCOUNTING_COLORS, expenseCategoryColor } from "@/lib/charts/palette";
 import { cn } from "@/lib/utils";
 import { effectiveExclude } from "@/lib/plaid/exclude-accounting";
+import { patchTxnCategory } from "@/lib/plaid/patch-txn-category";
 import {
   AccountingRulesDrawer,
   type RuleListItem,
@@ -43,6 +44,12 @@ export interface AccountingTxnRow {
   bank_description: string | null;
   counterparty: string | null;
   account_last4: string;
+  /** Directional from account (linked or counterparty). */
+  from_account: string;
+  /** Directional to account (linked or counterparty). */
+  to_account: string;
+  from_mask: string | null;
+  to_mask: string | null;
   spend: number | null;
   earned: number | null;
   category: string;
@@ -175,17 +182,13 @@ function spendByCategoryGrain(
   return { data, series };
 }
 
-function maskFromAccountLast4(accountLast4: string): string {
-  const digits = accountLast4.replace(/\D/g, "");
-  return digits.length >= 4 ? digits.slice(-4) : digits;
-}
-
 function resetRuleState(row: AccountingTxnRow) {
   return {
     pattern:
       row.transaction_name && row.transaction_name !== "—" ? row.transaction_name : "",
     amountSign: row.amount > 0 ? "positive" : "negative",
-    accountMask: maskFromAccountLast4(row.account_last4),
+    fromMask: row.from_mask || "",
+    toMask: row.to_mask || "",
     matches: [] as RuleMatchPreview[],
     selectedIds: new Set<string>(),
     committedRuleId: null as string | null,
@@ -193,6 +196,15 @@ function resetRuleState(row: AccountingTxnRow) {
     applyFuture: true,
   };
 }
+
+/** Stable pin list — inline arrays re-create metaPinOffsets every render. */
+const ACCOUNTING_PIN_LEFT = [
+  "date",
+  "from_account",
+  "to_account",
+  "spend",
+  "earned",
+] as const;
 
 export function AccountingLedger({
   periodLabel,
@@ -215,8 +227,22 @@ export function AccountingLedger({
   /** Square net sales keyed by the same grain bucket ISO as bank charts. */
   squareNetSalesByIso: Record<string, number>;
 }) {
-  const [rows, setRows] = useState(initialRows);
-  const [filtered, setFiltered] = useState<AccountingTxnRow[]>(initialRows);
+  const [rows, setRows] = useState(() => {
+    const seen = new Set<string>();
+    return initialRows.filter((r) => {
+      if (seen.has(r.transaction_id)) return false;
+      seen.add(r.transaction_id);
+      return true;
+    });
+  });
+  const [filtered, setFiltered] = useState(() => {
+    const seen = new Set<string>();
+    return initialRows.filter((r) => {
+      if (seen.has(r.transaction_id)) return false;
+      seen.add(r.transaction_id);
+      return true;
+    });
+  });
   const [taxonomyState, setTaxonomy] = useState(taxonomy);
   const [explain, setExplain] = useState<AccountingTxnRow | null>(null);
   const { isPending: pending, stage, error, run } = useConsoleAction();
@@ -226,7 +252,8 @@ export function AccountingLedger({
 
   const [rulePattern, setRulePattern] = useState("");
   const [ruleAmountSign, setRuleAmountSign] = useState("positive");
-  const [ruleAccountMask, setRuleAccountMask] = useState("");
+  const [ruleFromMask, setRuleFromMask] = useState("");
+  const [ruleToMask, setRuleToMask] = useState("");
   const [ruleMatches, setRuleMatches] = useState<RuleMatchPreview[]>([]);
   const [selectedTxnIds, setSelectedTxnIds] = useState<Set<string>>(new Set());
   const [applyFuture, setApplyFuture] = useState(true);
@@ -234,24 +261,45 @@ export function AccountingLedger({
   const [ruleMsg, setRuleMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    setRows(initialRows);
-    setFiltered(initialRows);
+    const seen = new Set<string>();
+    const unique = initialRows.filter((r) => {
+      if (seen.has(r.transaction_id)) return false;
+      seen.add(r.transaction_id);
+      return true;
+    });
+    setRows(unique);
+    setFiltered(unique);
   }, [initialRows]);
 
   useEffect(() => {
     setTaxonomy(taxonomy);
   }, [taxonomy]);
 
-  const tableData = rows;
+  const tableData = useMemo(() => {
+    const seen = new Set<string>();
+    return rows.filter((r) => {
+      if (seen.has(r.transaction_id)) return false;
+      seen.add(r.transaction_id);
+      return true;
+    });
+  }, [rows]);
 
   const onFilteredRowsChange = useCallback((next: AccountingTxnRow[]) => {
-    setFiltered(next);
+    setFiltered((prev) => {
+      if (
+        prev.length === next.length &&
+        prev.every((r, i) => r.transaction_id === next[i]?.transaction_id && r === next[i])
+      ) {
+        return prev;
+      }
+      return next;
+    });
   }, []);
 
   const chartRows = useMemo(() => {
     const visibleIds = new Set(filtered.map((r) => r.transaction_id));
-    return rows.filter((r) => !r.excluded && visibleIds.has(r.transaction_id));
-  }, [rows, filtered]);
+    return tableData.filter((r) => !r.excluded && visibleIds.has(r.transaction_id));
+  }, [tableData, filtered]);
 
   const kpis = useMemo(() => moneyTotals(chartRows), [chartRows]);
   const cashFlow = kpis.earned - kpis.spend;
@@ -332,13 +380,18 @@ export function AccountingLedger({
     setExplain(row);
     setRulePattern(reset.pattern);
     setRuleAmountSign(reset.amountSign);
-    setRuleAccountMask(reset.accountMask);
+    setRuleFromMask(reset.fromMask);
+    setRuleToMask(reset.toMask);
     setRuleMatches(reset.matches);
     setSelectedTxnIds(reset.selectedIds);
     setCommittedRuleId(reset.committedRuleId);
     setRuleMsg(reset.msg);
     setApplyFuture(reset.applyFuture);
   }, []);
+
+  const ruleHasCriteria = Boolean(
+    rulePattern.trim() || ruleFromMask.replace(/\D/g, "").slice(-4) || ruleToMask.replace(/\D/g, "").slice(-4),
+  );
 
   function resolveExcludedWith(
     nodes: TaxonomyOption[],
@@ -376,36 +429,31 @@ export function AccountingLedger({
       const parent = taxonomyState.find((t) => t.id === categoryId);
       const child = taxonomyState.find((t) => t.id === subcategoryId);
       const excluded = resolveExcludedWith(taxonomyState, categoryId, subcategoryId);
+      const subcategoryLabel = child?.label || "—";
       setRows((prev) =>
         prev.map((r) =>
           r.transaction_id === txnId
-            ? {
-                ...r,
-                category_id: categoryId,
-                subcategory_id: subcategoryId,
-                category: parent?.label || (categoryId ? r.category : "Uncategorized"),
-                category_detail: child?.label || "—",
-                is_override: !!categoryId,
-                rule_id: categoryId ? null : r.rule_id,
-                rule_summary: categoryId ? null : r.rule_summary,
+            ? patchTxnCategory(r, {
+                categoryId,
+                subcategoryId,
+                categoryLabel: parent?.label || (categoryId ? r.category : "Uncategorized"),
+                subcategoryLabel,
                 excluded,
-                excluded_label: excluded ? "yes" : "no",
-              }
+                isOverride: !!categoryId,
+              })
             : r,
         ),
       );
       setExplain((prev) =>
         prev && prev.transaction_id === txnId
-          ? {
-              ...prev,
-              category_id: categoryId,
-              subcategory_id: subcategoryId,
-              category: parent?.label || (categoryId ? prev.category : "Uncategorized"),
-              category_detail: child?.label || "—",
-              is_override: !!categoryId,
+          ? patchTxnCategory(prev, {
+              categoryId,
+              subcategoryId,
+              categoryLabel: parent?.label || (categoryId ? prev.category : "Uncategorized"),
+              subcategoryLabel,
               excluded,
-              excluded_label: excluded ? "yes" : "no",
-            }
+              isOverride: !!categoryId,
+            })
           : prev,
       );
       return okAck({ message: "Category updated." });
@@ -545,18 +593,28 @@ export function AccountingLedger({
     void run(async () => {
       const ack = await previewRuleMatchesAction({
         match_pattern: rulePattern,
+        match_operator: rulePattern.trim() ? "regex" : "contains",
         amount_sign: ruleAmountSign,
-        account_mask: ruleAccountMask || null,
+        from_mask: ruleFromMask || null,
+        to_mask: ruleToMask || null,
         category_id: explain.category_id!,
         subcategory_id: explain.subcategory_id,
       });
       if (!ack.ok) return ack;
       const matches = ack.data!;
-      setRuleMatches(matches);
+      // Dedupe by transaction_id (BQ race can still leave extras until Cloud Run
+      // picks up post-sync dedupe — Issue #230). Avoids React duplicate-key on <li>.
+      const seen = new Set<string>();
+      const unique = matches.filter((m) => {
+        if (seen.has(m.transaction_id)) return false;
+        seen.add(m.transaction_id);
+        return true;
+      });
+      setRuleMatches(unique);
       setSelectedTxnIds(
-        new Set(matches.filter((m) => !m.has_override).map((m) => m.transaction_id)),
+        new Set(unique.filter((m) => !m.has_override).map((m) => m.transaction_id)),
       );
-      const message = matches.length ? `${matches.length} match(es)` : "No matches";
+      const message = unique.length ? `${unique.length} match(es)` : "No matches";
       setRuleMsg(message);
       setCommittedRuleId(null);
       return okAck({ message });
@@ -580,21 +638,47 @@ export function AccountingLedger({
 
   function commitRule() {
     if (!explain?.category_id) return;
+    const catId = explain.category_id;
+    const subId = explain.subcategory_id;
+    const selected = new Set(selectedTxnIds);
     void run(async () => {
       const ack = await commitRuleFromTxnAction({
         draft: {
           match_pattern: rulePattern,
+          match_operator: rulePattern.trim() ? "regex" : "contains",
           amount_sign: ruleAmountSign,
-          account_mask: ruleAccountMask || null,
-          category_id: explain.category_id!,
-          subcategory_id: explain.subcategory_id,
+          from_mask: ruleFromMask || null,
+          to_mask: ruleToMask || null,
+          category_id: catId,
+          subcategory_id: subId,
         },
-        selectedTxnIds: [...selectedTxnIds],
+        selectedTxnIds: [...selected],
         applyFuture,
       });
       if (!ack.ok) return ack;
       const result = ack.data!;
       setCommittedRuleId(result.ruleId);
+      const parent = taxonomyState.find((t) => t.id === catId);
+      const child = taxonomyState.find((t) => t.id === subId);
+      const excluded = resolveExcludedWith(taxonomyState, catId, subId);
+      const ruleSummary = `#? ${result.ruleId}: contains '${rulePattern.trim()}'`;
+      // Optimistic ledger refresh for applied matches (skip overrides).
+      setRows((prev) =>
+        prev.map((r) =>
+          selected.has(r.transaction_id) && !r.is_override
+            ? patchTxnCategory(r, {
+                categoryId: catId,
+                subcategoryId: subId,
+                categoryLabel: parent?.label || r.category,
+                subcategoryLabel: child?.label || "—",
+                excluded,
+                ruleId: result.ruleId,
+                ruleSummary,
+                isOverride: false,
+              })
+            : r,
+        ),
+      );
       const message = `Rule ${result.ruleId}: applied ${result.applied}, skipped override ${result.skipped_override}`;
       setRuleMsg(message);
       return okAck({ message });
@@ -616,6 +700,8 @@ export function AccountingLedger({
 
   const selectableMatchCount = ruleMatches.filter((m) => !m.has_override).length;
 
+  const getTxnRowId = useCallback((r: AccountingTxnRow) => r.transaction_id, []);
+
   const columns: ColumnDef<AccountingTxnRow>[] = useMemo(
     () => [
       {
@@ -624,9 +710,14 @@ export function AccountingLedger({
         meta: { format: { kind: "date" }, filterable: true, width: 88 },
       },
       {
-        accessorKey: "account_last4",
-        header: "Account",
-        meta: { filterable: true, filterVariant: "multi", wrap: true, maxWidth: 200, width: 160 },
+        accessorKey: "from_account",
+        header: "From",
+        meta: { filterable: true, filterVariant: "multi", wrap: true, maxWidth: 180, width: 140 },
+      },
+      {
+        accessorKey: "to_account",
+        header: "To",
+        meta: { filterable: true, filterVariant: "multi", wrap: true, maxWidth: 180, width: 140 },
       },
       {
         accessorKey: "spend",
@@ -876,16 +967,16 @@ export function AccountingLedger({
               columns={columns}
               data={tableData}
               enableColumnFilters
+              getRowId={getTxnRowId}
               onFilteredRowsChange={onFilteredRowsChange}
               initialSorting={[{ id: "date", desc: true }]}
-              pinLeft={["date", "account_last4", "spend", "earned"]}
+              pinLeft={ACCOUNTING_PIN_LEFT}
               rowHighlight={{
                 accessorKey: "excluded_label",
                 equals: "yes",
                 className: "opacity-60",
               }}
-            />
-          ) : (
+            />          ) : (
             <p className="text-sm text-muted-foreground">No transactions in this period.</p>
           )}
         </CardContent>
@@ -911,7 +1002,11 @@ export function AccountingLedger({
             {explain ? (
               <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
                 <p className="font-medium">{explain.transaction_name}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{explain.account_last4}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  From: {explain.from_account}
+                  <br />
+                  To: {explain.to_account}
+                </p>
                 {explain.counterparty ? (
                   <p className="mt-1 text-xs">
                     Counterparty: <span className="font-medium">{explain.counterparty}</span>
@@ -1028,10 +1123,13 @@ export function AccountingLedger({
             {canWrite && explain ? (
               <div className="flex flex-col gap-2 border-t pt-3">
                 <p className="text-xs font-medium text-muted-foreground">Propose rule</p>
+                <p className="text-[11px] text-muted-foreground">
+                  At least one of: name regex, from last-4, to last-4. Empty fields are ignored.
+                </p>
                 <input
                   type="text"
                   className="rounded border bg-background px-2 py-1.5 text-sm"
-                  placeholder="Match pattern"
+                  placeholder="Name regex (optional)"
                   value={rulePattern}
                   disabled={pending || committedRuleId != null}
                   onChange={(e) => setRulePattern(e.target.value)}
@@ -1050,17 +1148,25 @@ export function AccountingLedger({
                   <input
                     type="text"
                     className="rounded border bg-background px-2 py-1.5 text-sm w-24"
-                    placeholder="Acct last4"
-                    value={ruleAccountMask}
+                    placeholder="From last4"
+                    value={ruleFromMask}
                     disabled={pending || committedRuleId != null}
-                    onChange={(e) => setRuleAccountMask(e.target.value)}
+                    onChange={(e) => setRuleFromMask(e.target.value)}
+                  />
+                  <input
+                    type="text"
+                    className="rounded border bg-background px-2 py-1.5 text-sm w-24"
+                    placeholder="To last4"
+                    value={ruleToMask}
+                    disabled={pending || committedRuleId != null}
+                    onChange={(e) => setRuleToMask(e.target.value)}
                   />
                 </div>
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
-                  disabled={pending || !rulePattern.trim() || committedRuleId != null}
+                  disabled={pending || !ruleHasCriteria || committedRuleId != null}
                   onClick={findRuleMatches}
                 >
                   Find matches
@@ -1143,7 +1249,7 @@ export function AccountingLedger({
                     disabled={
                       pending ||
                       !explain.category_id ||
-                      !rulePattern.trim() ||
+                      !ruleHasCriteria ||
                       selectedTxnIds.size === 0
                     }
                     onClick={commitRule}

@@ -40,3 +40,21 @@ export function effectiveExcludeFromMap(
 
 export const INTERNAL_TRANSFERS_CATEGORY_ID = "internal_transfers";
 export const PAYROLL_LABOR_CATEGORY_ID = "payroll_labor";
+
+/**
+ * Whether a ledger row should drop out of Accounting cash-flow / spend charts.
+ * Internal is authoritative even when a category rule later stamped a non-internal
+ * leaf (e.g. ACH TRANSFER matched a merchant inventory rule).
+ */
+export function excludedFromAccountingRollup(opts: {
+  leafId: string | null | undefined;
+  nodes: TaxonomyExcludeNode[];
+  isInternal: boolean;
+  categoryId?: string | null;
+}): boolean {
+  if (opts.isInternal) return true;
+  const cat = opts.categoryId || null;
+  if (cat === INTERNAL_TRANSFERS_CATEGORY_ID) return true;
+  if (opts.leafId === INTERNAL_TRANSFERS_CATEGORY_ID) return true;
+  return effectiveExcludeFromMap(opts.leafId, opts.nodes);
+}

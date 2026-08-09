@@ -2182,6 +2182,10 @@ export function plaidTransactions(win: DateWindow): Promise<PlaidTransactionRow[
      LEFT JOIN ${fq("plaid_taxonomy_nodes")} os ON os.id = t.override_subcategory_id
      LEFT JOIN ${fq("plaid_category_rules")} r ON r.id = t.rule_id
      WHERE t.date BETWEEN @start AND @end
+     QUALIFY ROW_NUMBER() OVER (
+       PARTITION BY t.transaction_id
+       ORDER BY t.updated_at DESC NULLS LAST
+     ) = 1
      ORDER BY t.date DESC, t.transaction_id
      LIMIT 5000`,
     { start: dateParam(win.start), end: dateParam(win.end) },
@@ -2251,6 +2255,9 @@ export interface CategoryRuleRow {
   match_operator: string;
   match_pattern: string;
   amount_sign: string | null;
+  account_mask: string | null;
+  from_mask: string | null;
+  to_mask: string | null;
   category_id: string;
   subcategory_id: string | null;
   confidence: string | null;
@@ -2261,7 +2268,8 @@ export interface CategoryRuleRow {
 export function plaidCategoryRules(): Promise<CategoryRuleRow[]> {
   return q<CategoryRuleRow>(
     `SELECT id, priority, match_field, match_operator, match_pattern,
-            amount_sign, category_id, subcategory_id, confidence, enabled, notes
+            amount_sign, account_mask, from_mask, to_mask,
+            category_id, subcategory_id, confidence, enabled, notes
      FROM ${fq("plaid_category_rules")}
      ORDER BY priority, id`,
   );

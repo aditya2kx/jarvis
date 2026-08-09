@@ -4,7 +4,13 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from skills.plaid_api.sync import _pfc, _row_from_txn, purge_item, update_item_webhook
+from skills.plaid_api.sync import (
+    _dedupe_transactions,
+    _pfc,
+    _row_from_txn,
+    purge_item,
+    update_item_webhook,
+)
 
 
 class TestPfc(unittest.TestCase):
@@ -127,6 +133,31 @@ class TestUpdateItemWebhook(unittest.TestCase):
         )
         self.assertEqual(out["item_id"], "item1")
         self.assertEqual(out["webhook"], "https://bhaga-webhook.example/plaid/webhook")
+
+
+class TestDedupeTransactions(unittest.TestCase):
+    def test_no_op_when_no_extras(self):
+        bq = MagicMock()
+        job = MagicMock()
+        job.result.return_value = iter([_FakeRow(0)])
+        bq.query.return_value = job
+        self.assertEqual(_dedupe_transactions(bq), 0)
+        self.assertEqual(bq.query.call_count, 1)
+
+    def test_rewrites_when_extras(self):
+        bq = MagicMock()
+        count_job = MagicMock()
+        count_job.result.return_value = iter([_FakeRow(3)])
+        rewrite_job = MagicMock()
+        rewrite_job.result.return_value = iter([])
+        bq.query.side_effect = [count_job, rewrite_job]
+        self.assertEqual(_dedupe_transactions(bq), 3)
+        sql = bq.query.call_args_list[1].args[0]
+        self.assertIn("CREATE OR REPLACE TABLE", sql)
+        self.assertIn("ROW_NUMBER()", sql)
+        self.assertIn("PARTITION BY transaction_id", sql)
+        self.assertIn("WHERE rn = 1", sql)
+        self.assertNotIn("DELETE FROM", sql)
 
 
 if __name__ == "__main__":

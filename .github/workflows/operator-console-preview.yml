@@ -1,10 +1,15 @@
 # PR-tagged Operator Console preview (Issue #228).
 # Deploys with --no-traffic --tag prN so canonical IAP URL traffic is untouched.
-# Trigger: pull_request (same-repo) or workflow_dispatch; or run
-# scripts/console_preview_deploy.py locally with ADC.
 name: Operator Console PR preview
 
 on:
+  push:
+    branches:
+      - "fix/**"
+    paths:
+      - "apps/operator-console/**"
+      - "scripts/console_preview_deploy.py"
+      - ".github/workflows/operator-console-preview.yml"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
@@ -45,13 +50,16 @@ jobs:
     steps:
       - name: Resolve PR number + mode
         id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          echo "skip=false" >> "$GITHUB_OUTPUT"
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             echo "pr=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
             echo "remove=false" >> "$GITHUB_OUTPUT"
             echo "checkout_ref=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "pr=${{ inputs.pr }}" >> "$GITHUB_OUTPUT"
             echo "remove=${{ inputs.remove_tags }}" >> "$GITHUB_OUTPUT"
             if [[ -n "${{ inputs.ref }}" ]]; then
@@ -59,27 +67,45 @@ jobs:
             else
               echo "checkout_ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
             fi
+          else
+            BRANCH="${GITHUB_REF_NAME}"
+            PR=$(gh pr list --repo "${{ github.repository }}" --head "$BRANCH" --state open --json number --jq '.[0].number // empty' || true)
+            if [[ -z "$PR" ]]; then
+              echo "No open PR for branch $BRANCH — skip"
+              echo "pr=" >> "$GITHUB_OUTPUT"
+              echo "remove=false" >> "$GITHUB_OUTPUT"
+              echo "checkout_ref=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "pr=$PR" >> "$GITHUB_OUTPUT"
+            echo "remove=false" >> "$GITHUB_OUTPUT"
+            echo "checkout_ref=${{ github.sha }}" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: actions/checkout@v4
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.pr != ''
         with:
           ref: ${{ steps.meta.outputs.checkout_ref }}
 
       - name: Authenticate to GCP
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.pr != ''
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.pr != ''
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Configure Docker for Artifact Registry
-        if: ${{ steps.meta.outputs.remove != 'true' }}
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.pr != '' && steps.meta.outputs.remove != 'true'
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
       - name: Deploy or cleanup tagged preview
         id: deploy
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.pr != ''
         env:
           GCP_PROJECT: ${{ env.PROJECT_ID }}
         run: |
@@ -94,7 +120,7 @@ jobs:
           echo "url=${URL}" >> "$GITHUB_OUTPUT"
 
       - name: Comment preview URL on PR
-        if: ${{ steps.meta.outputs.remove != 'true' && steps.deploy.outputs.url != '' }}
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.remove != 'true' && steps.deploy.outputs.url != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -112,12 +138,11 @@ jobs:
           Cleanup after merge: \`python3 scripts/console_preview_deploy.py --pr ${PR} --remove-tags\`
           EOF
           )
-          # Upsert: replace prior preview comment from this bot if present
           PREV=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" \
             --jq '.[] | select(.user.type=="Bot" and (.body|contains("Operator Console PR preview"))) | .id' \
             | head -1 || true)
           if [[ -n "${PREV}" ]]; then
             gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${PREV}" -f body="$BODY"
           else
-            gh pr comment "$PR" --body "$BODY"
+            gh pr comment "$PR" --repo "${{ github.repository }}" --body "$BODY"
           fi

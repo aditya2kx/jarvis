@@ -3,6 +3,8 @@
  * Mirrored by skills/plaid_api/category_rules.py — keep semantics identical.
  */
 
+import { digitsMask, resolveFromTo } from "@/lib/plaid/account-parties";
+
 export type MatchOperator =
   | "contains"
   | "contains_any"
@@ -16,20 +18,27 @@ export interface CategoryRule {
   priority: number;
   match_field: "name" | "merchant_name" | "name_or_merchant";
   match_operator: MatchOperator;
+  /** Optional when from_mask and/or to_mask is set. */
   match_pattern: string;
   amount_sign: AmountSign | null;
   category_id: string;
   subcategory_id: string | null;
   enabled: boolean;
-  /** Optional account last-4 / mask constraint (Issue #189). */
+  /** Legacy: constrain linked Plaid account last-4. */
   account_mask?: string | null;
+  /** Optional: constrain resolved from-side last-4. */
+  from_mask?: string | null;
+  /** Optional: constrain resolved to-side last-4. */
+  to_mask?: string | null;
 }
 
 export interface TxnForRules {
   name: string | null;
   merchant_name: string | null;
   amount: number | null;
+  /** Linked Plaid account last-4. */
   account_mask?: string | null;
+  counterparty_name?: string | null;
   override_category_id?: string | null;
   override_subcategory_id?: string | null;
 }
@@ -47,7 +56,7 @@ function haystack(
   const name = txn.name || "";
   const merchant = txn.merchant_name || "";
   if (field === "merchant_name") return merchant;
-  if (field === "name") return `${name} ${merchant}`.trim(); // seed "name" → both
+  if (field === "name") return `${name} ${merchant}`.trim();
   return `${name} ${merchant}`.trim();
 }
 
@@ -86,22 +95,50 @@ function fieldMatches(text: string, operator: MatchOperator, pattern: string): b
   return false;
 }
 
-function accountMaskOk(
-  txnMask: string | null | undefined,
-  ruleMask: string | null | undefined,
+function maskEquals(
+  got: string | null | undefined,
+  wantRaw: string | null | undefined,
 ): boolean {
-  const want = (ruleMask || "").replace(/\D/g, "").slice(-4);
+  const want = digitsMask(wantRaw);
   if (!want) return true;
-  const got = (txnMask || "").replace(/\D/g, "").slice(-4);
-  return got.length === 4 && got === want;
+  const got4 = digitsMask(got);
+  return got4.length === 4 && got4 === want;
+}
+
+/** True when the rule has at least one of pattern / from / to / legacy account_mask. */
+export function ruleHasMatchCriteria(rule: CategoryRule): boolean {
+  return Boolean(
+    (rule.match_pattern || "").trim() ||
+      digitsMask(rule.from_mask) ||
+      digitsMask(rule.to_mask) ||
+      digitsMask(rule.account_mask),
+  );
 }
 
 export function ruleMatches(txn: TxnForRules, rule: CategoryRule): boolean {
   if (!rule.enabled) return false;
+  if (!ruleHasMatchCriteria(rule)) return false;
   if (!amountOk(txn.amount, rule.amount_sign)) return false;
-  if (!accountMaskOk(txn.account_mask, rule.account_mask)) return false;
-  const text = haystack(txn, rule.match_field);
-  return fieldMatches(text, rule.match_operator, rule.match_pattern);
+
+  // Legacy linked-account filter (Issue #189).
+  if (!maskEquals(txn.account_mask, rule.account_mask)) return false;
+
+  const parties = resolveFromTo({
+    amount: Number(txn.amount ?? 0),
+    our_mask: txn.account_mask,
+    name: txn.name,
+    merchant_name: txn.merchant_name,
+    counterparty_name: txn.counterparty_name,
+  });
+  if (!maskEquals(parties.from.mask, rule.from_mask)) return false;
+  if (!maskEquals(parties.to.mask, rule.to_mask)) return false;
+
+  const pattern = (rule.match_pattern || "").trim();
+  if (pattern) {
+    const text = haystack(txn, rule.match_field);
+    if (!fieldMatches(text, rule.match_operator, pattern)) return false;
+  }
+  return true;
 }
 
 /** First enabled rule by ascending priority; null if none. */

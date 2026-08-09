@@ -122,4 +122,63 @@ describe("evaluateRules", () => {
       )?.rule_id,
     ).toBe("card_only");
   });
+
+  it("matches to_mask only (no name pattern) for card payment", () => {
+    const match = evaluateRules(
+      {
+        name: "Payment to Chase card ending in 6029",
+        merchant_name: null,
+        amount: 500,
+        account_mask: "8933",
+      },
+      [
+        r({
+          id: "to_card",
+          priority: 5,
+          match_pattern: "",
+          to_mask: "6029",
+          category_id: "internal_transfers",
+          subcategory_id: null,
+        }),
+      ],
+    );
+    expect(match?.rule_id).toBe("to_card");
+  });
+
+  it("from+to AND name regex", () => {
+    const rules = [
+      r({
+        id: "boa_in",
+        priority: 10,
+        match_pattern: "Bank of America",
+        match_operator: "regex",
+        from_mask: "8208",
+        to_mask: "8933",
+        amount_sign: "negative",
+        category_id: "owner",
+      }),
+    ];
+    expect(
+      evaluateRules(
+        {
+          name: "Online Transfer from Bank of America ########8208",
+          merchant_name: null,
+          amount: -1200,
+          account_mask: "8933",
+        },
+        rules,
+      )?.rule_id,
+    ).toBe("boa_in");
+    expect(
+      evaluateRules(
+        {
+          name: "Online Transfer from Bank of America ########8208",
+          merchant_name: null,
+          amount: 1200,
+          account_mask: "8933",
+        },
+        rules,
+      ),
+    ).toBeNull();
+  });
 });

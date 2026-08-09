@@ -13,6 +13,45 @@ MatchField = Literal["name", "merchant_name", "name_or_merchant"]
 MatchOperator = Literal["contains", "contains_any", "equals_or_contains", "regex"]
 AmountSign = Literal["positive", "negative", "any"]
 
+_CARD_ENDING = re.compile(r"(?:card\s+)?ending\s+in\s*(\d{4})", re.I)
+_HASH_MASK = re.compile(r"#{4,}(\d{4})\b")
+_LAST4_BARE = re.compile(r"\b(?:to|from|acct|account|x{2,}|•{2,})\s*[#x•]*\s*(\d{4})\b", re.I)
+
+
+def digits_mask(raw: Any) -> str:
+    d = "".join(c for c in str(raw or "") if c.isdigit())
+    return d[-4:] if len(d) >= 4 else ""
+
+
+def extract_counterparty_mask(*parts: Any) -> str:
+    text = " ".join(str(p) for p in parts if p)
+    if not text:
+        return ""
+    m = _CARD_ENDING.search(text)
+    if m:
+        return m.group(1)
+    m = _HASH_MASK.search(text)
+    if m:
+        return m.group(1)
+    m = _LAST4_BARE.search(text)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def resolve_from_to(txn: dict[str, Any]) -> dict[str, str]:
+    our = digits_mask(txn.get("account_mask"))
+    other = extract_counterparty_mask(
+        txn.get("name"), txn.get("merchant_name"), txn.get("counterparty_name")
+    )
+    try:
+        amount = float(txn.get("amount") or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    if amount < 0:
+        return {"from_mask": other, "to_mask": our, "our_mask": our, "other_mask": other}
+    return {"from_mask": our, "to_mask": other, "our_mask": our, "other_mask": other}
+
 
 @dataclass(frozen=True)
 class CategoryRule:
@@ -26,6 +65,8 @@ class CategoryRule:
     subcategory_id: Optional[str]
     enabled: bool = True
     account_mask: Optional[str] = None
+    from_mask: Optional[str] = None
+    to_mask: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -42,7 +83,6 @@ def _haystack(txn: dict[str, Any], field: str) -> str:
         return name
     if field == "merchant_name":
         return merchant
-    # name_or_merchant (and seed "name" loaded as this): search both
     return f"{name} {merchant}".strip()
 
 
@@ -82,29 +122,46 @@ def _field_matches(text: str, operator: str, pattern: str) -> bool:
     return False
 
 
-def _account_mask_ok(txn_mask: Any, rule_mask: Optional[str]) -> bool:
-    want = "".join(c for c in (rule_mask or "") if c.isdigit())[-4:]
+def _mask_equals(got: Any, want_raw: Optional[str]) -> bool:
+    want = digits_mask(want_raw)
     if not want:
         return True
-    got = "".join(c for c in str(txn_mask or "") if c.isdigit())[-4:]
-    return len(got) == 4 and got == want
+    got4 = digits_mask(got)
+    return len(got4) == 4 and got4 == want
+
+
+def rule_has_match_criteria(rule: CategoryRule) -> bool:
+    return bool(
+        (rule.match_pattern or "").strip()
+        or digits_mask(rule.from_mask)
+        or digits_mask(rule.to_mask)
+        or digits_mask(rule.account_mask)
+    )
 
 
 def rule_matches(txn: dict[str, Any], rule: CategoryRule) -> bool:
     if not rule.enabled:
         return False
+    if not rule_has_match_criteria(rule):
+        return False
     if not _amount_ok(txn.get("amount"), rule.amount_sign):
         return False
-    if not _account_mask_ok(txn.get("account_mask"), rule.account_mask):
+    if not _mask_equals(txn.get("account_mask"), rule.account_mask):
         return False
-    field = rule.match_field or "name_or_merchant"
-    # Seed CSV uses match_field=name but merchants often hold the clean string —
-    # always search name + merchant for contains-family ops unless merchant_name
-    # is explicitly requested.
-    if field == "name":
-        field = "name_or_merchant"
-    text = _haystack(txn, field)
-    return _field_matches(text, rule.match_operator, rule.match_pattern)
+    parties = resolve_from_to(txn)
+    if not _mask_equals(parties["from_mask"], rule.from_mask):
+        return False
+    if not _mask_equals(parties["to_mask"], rule.to_mask):
+        return False
+    pattern = (rule.match_pattern or "").strip()
+    if pattern:
+        field = rule.match_field or "name_or_merchant"
+        if field == "name":
+            field = "name_or_merchant"
+        text = _haystack(txn, field)
+        if not _field_matches(text, rule.match_operator, pattern):
+            return False
+    return True
 
 
 def evaluate_rules(txn: dict[str, Any], rules: list[CategoryRule]) -> Optional[RuleMatch]:

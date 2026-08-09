@@ -128,6 +128,47 @@ def _upsert_transactions(bq, rows: list[dict]) -> None:
     ).result()
 
 
+def _dedupe_transactions(bq) -> int:
+    """Delete duplicate transaction_id rows (keep newest updated_at).
+
+    Concurrent MERGE WHEN NOT MATCHED INSERT races (console + webhook / dual
+    sync) can leave extras because BQ does not enforce unique keys (Issue #230).
+    """
+    from google.cloud import bigquery
+
+    rows = list(
+        bq.query(
+            f"""
+            SELECT COUNT(*) - COUNT(DISTINCT transaction_id) AS n
+            FROM {_fq("plaid_transactions")}
+            """
+        ).result()
+    )
+    extras = int(rows[0].n) if rows else 0
+    if extras <= 0:
+        return 0
+    bq.query(
+        f"""
+        DELETE FROM {_fq("plaid_transactions")}
+        WHERE STRUCT(transaction_id, updated_at) IN (
+          SELECT AS STRUCT transaction_id, updated_at
+          FROM (
+            SELECT
+              transaction_id,
+              updated_at,
+              ROW_NUMBER() OVER (
+                PARTITION BY transaction_id
+                ORDER BY updated_at DESC NULLS LAST, TO_JSON_STRING(raw_json)
+              ) AS rn
+            FROM {_fq("plaid_transactions")}
+          )
+          WHERE rn > 1
+        )
+        """
+    ).result()
+    return extras
+
+
 def _delete_transactions(bq, removed_ids: list[str]) -> None:
     if not removed_ids:
         return
@@ -244,6 +285,12 @@ def sync_item(store: str, item_id: str, *, cursor: str | None = None) -> SyncRes
             )
     except Exception as exc:  # noqa: BLE001
         result.errors.append(f"categorize: {exc}")
+    try:
+        n = _dedupe_transactions(bq)
+        if n:
+            print(f"[plaid_api.sync] dedupe removed={n} item={item_id}")
+    except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"dedupe: {exc}")
     return result
 
 

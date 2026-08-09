@@ -14,6 +14,7 @@ import {
   transactionsSync,
 } from "@/lib/plaid/client";
 import {
+  dedupePlaidTransactions,
   deletePlaidTransactions,
   markPlaidTransactionsInternal,
   setPlaidTransactionInternal,
@@ -156,6 +157,15 @@ async function drainSync(itemId: string, accessToken: string, startCursor: strin
       `plaid categorize failed item=${itemId}: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
+  // Concurrent MERGE races can leave duplicate transaction_id rows (Issue #230).
+  try {
+    const n = await dedupePlaidTransactions();
+    if (n) console.info(`plaid dedupe removed=${n} item=${itemId}`);
+  } catch (e) {
+    console.error(
+      `plaid dedupe failed item=${itemId}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
   return { added, modified, removed, cursor };
 }
 
@@ -249,6 +259,11 @@ export async function setTxnCategoryOverrideAction(
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();
+    await dedupePlaidTransactions().catch((e) => {
+      console.error(
+        `plaid dedupe before category override: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
     await setPlaidTransactionOverride(transactionId, categoryId, subcategoryId);
     // If clearing override, restore rule result immediately.
     if (!categoryId) {
@@ -397,7 +412,10 @@ export type RuleDraft = {
   match_pattern: string;
   match_operator?: string;
   amount_sign?: string | null;
+  /** Legacy linked-account last-4 filter. */
   account_mask?: string | null;
+  from_mask?: string | null;
+  to_mask?: string | null;
   category_id: string;
   subcategory_id?: string | null;
 };
@@ -410,34 +428,79 @@ export type RuleMatchPreview = {
   has_override: boolean;
 };
 
+function draftMask(raw: string | null | undefined): string {
+  return (raw || "").replace(/\D/g, "").slice(-4);
+}
+
+function draftHasCriteria(draft: RuleDraft): boolean {
+  return Boolean(
+    (draft.match_pattern || "").trim() ||
+      draftMask(draft.from_mask) ||
+      draftMask(draft.to_mask) ||
+      draftMask(draft.account_mask),
+  );
+}
+
 export async function previewRuleMatchesAction(
   draft: RuleDraft,
 ): Promise<ActionAck<RuleMatchPreview[]>> {
   return asAck(async () => {
     await operatorEmail();
+    if (!draft.category_id || !draftHasCriteria(draft)) return [];
+    await dedupePlaidTransactions().catch((e) => {
+      console.error(
+        `plaid dedupe before rule preview: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
+    const { ruleMatches } = await import("@/lib/plaid/category-rules");
     const pattern = (draft.match_pattern || "").trim();
-    if (!pattern || !draft.category_id) return [];
     const amountSign = draft.amount_sign || "any";
-    const accountMask = (draft.account_mask || "").replace(/\D/g, "").slice(-4) || null;
+    const accountMask = draftMask(draft.account_mask);
+    const fromMask = draftMask(draft.from_mask);
+    const toMask = draftMask(draft.to_mask);
+    const op = draft.match_operator || (pattern ? "regex" : "contains");
+
+    // Loose SQL prefilter, then exact eval with directional from/to.
     const rows = await (
       await import("@/lib/bq/client")
     ).q<{
       transaction_id: string;
       date: string;
       name: string | null;
+      merchant_name: string | null;
       amount: number;
+      account_mask: string | null;
+      counterparty_name: string | null;
       has_override: boolean;
     }>(
       `SELECT
          t.transaction_id,
          CAST(t.date AS STRING) AS date,
          t.name,
+         t.merchant_name,
          t.amount,
+         a.mask AS account_mask,
+         JSON_VALUE(t.raw_json, '$.counterparties[0].name') AS counterparty_name,
          t.override_category_id IS NOT NULL AS has_override
        FROM \`jarvis-bhaga-prod.bhaga.plaid_transactions\` t
        LEFT JOIN \`jarvis-bhaga-prod.bhaga.plaid_accounts\` a ON a.account_id = t.account_id
-       WHERE STRPOS(LOWER(CONCAT(IFNULL(t.name,''),' ',IFNULL(t.merchant_name,''))),
-                    LOWER(@pattern)) > 0
+       WHERE (
+           @pattern = ''
+           OR (
+             @match_operator = 'regex'
+             AND SAFE.REGEXP_CONTAINS(
+               CONCAT(IFNULL(t.name,''),' ',IFNULL(t.merchant_name,'')),
+               @pattern
+             )
+           )
+           OR (
+             @match_operator != 'regex'
+             AND STRPOS(
+               LOWER(CONCAT(IFNULL(t.name,''),' ',IFNULL(t.merchant_name,''))),
+               LOWER(@pattern)
+             ) > 0
+           )
+         )
          AND (
            @amount_sign = 'any'
            OR (@amount_sign = 'positive' AND t.amount > 0)
@@ -447,21 +510,75 @@ export async function previewRuleMatchesAction(
            @account_mask = ''
            OR RIGHT(REGEXP_REPLACE(IFNULL(a.mask,''), r'[^0-9]', ''), 4) = @account_mask
          )
+         AND (
+           (@from_mask = '' AND @to_mask = '')
+           OR (
+             @from_mask != ''
+             AND (
+               RIGHT(REGEXP_REPLACE(IFNULL(a.mask,''), r'[^0-9]', ''), 4) = @from_mask
+               OR STRPOS(IFNULL(t.name,''), @from_mask) > 0
+             )
+           )
+           OR (
+             @to_mask != ''
+             AND (
+               RIGHT(REGEXP_REPLACE(IFNULL(a.mask,''), r'[^0-9]', ''), 4) = @to_mask
+               OR STRPOS(IFNULL(t.name,''), @to_mask) > 0
+             )
+           )
+         )
+       QUALIFY ROW_NUMBER() OVER (
+         PARTITION BY t.transaction_id
+         ORDER BY t.updated_at DESC NULLS LAST
+       ) = 1
        ORDER BY t.date DESC
-       LIMIT 500`,
+       LIMIT 2000`,
       {
         pattern,
+        match_operator: op,
         amount_sign: amountSign,
-        account_mask: accountMask ?? "",
+        account_mask: accountMask,
+        from_mask: fromMask,
+        to_mask: toMask,
       },
     );
-    return rows.map((r) => ({
-      transaction_id: r.transaction_id,
-      date: r.date,
-      name: r.name,
-      amount: Number(r.amount),
-      has_override: Boolean(r.has_override),
-    }));
+
+    const probe = {
+      id: "preview",
+      priority: 1,
+      match_field: "name_or_merchant" as const,
+      match_operator: op as "regex" | "contains",
+      match_pattern: pattern,
+      amount_sign: amountSign as "any" | "positive" | "negative",
+      category_id: draft.category_id,
+      subcategory_id: draft.subcategory_id ?? null,
+      enabled: true,
+      account_mask: accountMask || null,
+      from_mask: fromMask || null,
+      to_mask: toMask || null,
+    };
+
+    return rows
+      .filter((r) =>
+        ruleMatches(
+          {
+            name: r.name,
+            merchant_name: r.merchant_name,
+            amount: Number(r.amount),
+            account_mask: r.account_mask,
+            counterparty_name: r.counterparty_name,
+          },
+          probe,
+        ),
+      )
+      .slice(0, 500)
+      .map((r) => ({
+        transaction_id: r.transaction_id,
+        date: r.date,
+        name: r.name,
+        amount: Number(r.amount),
+        has_override: Boolean(r.has_override),
+      }));
   });
 }
 
@@ -474,20 +591,30 @@ export async function commitRuleFromTxnAction(input: {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();
     const pattern = (input.draft.match_pattern || "").trim();
-    if (!pattern || !input.draft.category_id) {
-      throw new Error("pattern and category_id required");
+    if (!input.draft.category_id || !draftHasCriteria(input.draft)) {
+      throw new Error("category_id and at least one of name pattern / from / to required");
     }
-    const slug = pattern
+    await dedupePlaidTransactions().catch((e) => {
+      console.error(
+        `plaid dedupe before rule commit: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
+
+    const selectedIds = [...new Set(input.selectedTxnIds.filter(Boolean))];
+    const fromMask = draftMask(input.draft.from_mask) || null;
+    const toMask = draftMask(input.draft.to_mask) || null;
+    const accountMask = draftMask(input.draft.account_mask) || null;
+    const slugSrc = pattern || fromMask || toMask || accountMask || "rule";
+    const slug = slugSrc
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "_")
       .replace(/^_|_$/g, "")
       .slice(0, 40);
     const ruleId = `op_${slug || "rule"}_${Date.now().toString(36)}`;
-    const accountMask =
-      (input.draft.account_mask || "").replace(/\D/g, "").slice(-4) || null;
     const amountSign = input.draft.amount_sign || "any";
+    const matchOperator =
+      input.draft.match_operator || (pattern ? "regex" : "contains");
 
-    // Priority: after seeded rules — use max+10
     const priRows = await (
       await import("@/lib/bq/client")
     ).q<{ p: number }>(
@@ -499,25 +626,30 @@ export async function commitRuleFromTxnAction(input: {
     await mutate(
       `INSERT INTO \`jarvis-bhaga-prod.bhaga.plaid_category_rules\` (
          id, priority, match_field, match_operator, match_pattern, amount_sign,
-         account_mask, category_id, subcategory_id, confidence, enabled, notes, updated_at
+         account_mask, from_mask, to_mask, category_id, subcategory_id,
+         confidence, enabled, notes, updated_at
        ) VALUES (
          @id, @priority, 'name_or_merchant', @match_operator, @match_pattern, @amount_sign,
-         @account_mask, @category_id, @subcategory_id, 'medium', @enabled,
-         'Created from Accounting propose-rule', CURRENT_TIMESTAMP()
+         @account_mask, @from_mask, @to_mask, @category_id, @subcategory_id,
+         'medium', @enabled, 'Created from Accounting propose-rule', CURRENT_TIMESTAMP()
        )`,
       {
         id: ruleId,
         priority,
-        match_operator: input.draft.match_operator || "contains",
+        match_operator: matchOperator,
         match_pattern: pattern,
         amount_sign: amountSign,
         account_mask: accountMask,
+        from_mask: fromMask,
+        to_mask: toMask,
         category_id: input.draft.category_id,
         subcategory_id: input.draft.subcategory_id ?? null,
         enabled: input.applyFuture !== false,
       },
       {
         account_mask: "STRING",
+        from_mask: "STRING",
+        to_mask: "STRING",
         subcategory_id: "STRING",
         enabled: "BOOL",
       },
@@ -525,19 +657,18 @@ export async function commitRuleFromTxnAction(input: {
 
     let applied = 0;
     let skipped_override = 0;
-    for (const txnId of input.selectedTxnIds) {
-      const check = await (
+    if (selectedIds.length) {
+      const skipRows = await (
         await import("@/lib/bq/client")
-      ).q<{ ov: string | null }>(
-        `SELECT override_category_id AS ov
+      ).q<{ n: number }>(
+        `SELECT COUNT(*) AS n
          FROM \`jarvis-bhaga-prod.bhaga.plaid_transactions\`
-         WHERE transaction_id = @id`,
-        { id: txnId },
+         WHERE transaction_id IN UNNEST(@ids)
+           AND override_category_id IS NOT NULL`,
+        { ids: selectedIds },
       );
-      if (check[0]?.ov) {
-        skipped_override += 1;
-        continue;
-      }
+      skipped_override = Number(skipRows[0]?.n ?? 0);
+
       await mutate(
         `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_transactions\`
          SET category_id = @category_id,
@@ -546,10 +677,10 @@ export async function commitRuleFromTxnAction(input: {
              is_internal = IF(@category_id = 'internal_transfers', TRUE, is_internal),
              categorized_at = CURRENT_TIMESTAMP(),
              updated_at = CURRENT_TIMESTAMP()
-         WHERE transaction_id = @transaction_id
+         WHERE transaction_id IN UNNEST(@ids)
            AND override_category_id IS NULL`,
         {
-          transaction_id: txnId,
+          ids: selectedIds,
           category_id: input.draft.category_id,
           subcategory_id: input.draft.subcategory_id ?? null,
           rule_id: ruleId,
@@ -560,8 +691,14 @@ export async function commitRuleFromTxnAction(input: {
           rule_id: "STRING",
         },
       );
-      applied += 1;
+      applied = Math.max(0, selectedIds.length - skipped_override);
     }
+
+    await dedupePlaidTransactions().catch((e) => {
+      console.error(
+        `plaid dedupe after rule commit: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
 
     revalidatePath("/accounting");
     revalidatePath("/home");

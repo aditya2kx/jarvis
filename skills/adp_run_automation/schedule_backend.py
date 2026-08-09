@@ -59,8 +59,11 @@ from core.config_loader import project_dir
 _PROJECT = pathlib.Path(project_dir())
 DOWNLOADS_DIR = _PROJECT / "extracted" / "downloads"
 
-# Number of weeks to scrape forward (current + next is what ADP keeps planned).
-DEFAULT_WEEKS = 2
+# Forward horizon for Team Schedule scrape (Issue #230). ADP often has more than
+# "current + next" planned (incl. draft weeks when visible in the grid). The
+# runner advances until the week label stops changing, capped at MAX.
+DEFAULT_WEEKS = 8
+MAX_SCHEDULE_WEEKS = 8
 
 # JS evaluated inside iframe[name="timePartnerFrame"] to pull ONE week's totals.
 # Returns {grand: "<txt>", days: ["<txt>", ...]} where each <txt> is the raw

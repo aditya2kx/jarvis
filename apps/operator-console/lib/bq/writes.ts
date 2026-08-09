@@ -625,6 +625,38 @@ export async function deletePlaidTransactions(ids: string[]): Promise<void> {
   });
 }
 
+/**
+ * Remove duplicate plaid_transactions rows (same transaction_id).
+ * Concurrent MERGE inserts can race under dual sync paths (Issue #230).
+ * Keeps the newest updated_at (then arbitrary) per id. Returns deleted count.
+ */
+export async function dedupePlaidTransactions(): Promise<number> {
+  const before = await q<{ n: number }>(
+    `SELECT COUNT(*) - COUNT(DISTINCT transaction_id) AS n
+     FROM ${fq("plaid_transactions")}`,
+  );
+  const extras = Number(before[0]?.n ?? 0);
+  if (!(extras > 0)) return 0;
+  await mutate(
+    `DELETE FROM ${fq("plaid_transactions")}
+     WHERE STRUCT(transaction_id, updated_at) IN (
+       SELECT AS STRUCT transaction_id, updated_at
+       FROM (
+         SELECT
+           transaction_id,
+           updated_at,
+           ROW_NUMBER() OVER (
+             PARTITION BY transaction_id
+             ORDER BY updated_at DESC NULLS LAST, TO_JSON_STRING(raw_json)
+           ) AS rn
+         FROM ${fq("plaid_transactions")}
+       )
+       WHERE rn > 1
+     )`,
+  );
+  return extras;
+}
+
 /** Operator toggle: exclude (or include) a txn from Money out / category rollups. */
 export async function setPlaidTransactionInternal(
   transactionId: string,

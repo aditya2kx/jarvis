@@ -313,6 +313,13 @@ def test_build_records_skips_short_week():
     assert sb.build_schedule_records([short]) == []
 
 
+def test_default_weeks_horizon_covers_manager_planning():
+    """Issue #230: sync must look beyond current+next week."""
+    assert sb.DEFAULT_WEEKS == 8
+    assert sb.MAX_SCHEDULE_WEEKS == 8
+    assert sb.DEFAULT_WEEKS <= sb.MAX_SCHEDULE_WEEKS
+
+
 # ── daily_schedule (fixture file) ─────────────────────────────────
 
 

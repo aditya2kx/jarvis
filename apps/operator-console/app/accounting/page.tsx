@@ -5,6 +5,7 @@ import {
   plaidTaxonomyNodes,
   plaidTransactions,
 } from "@/lib/bq/queries";
+import { dedupePlaidTransactions } from "@/lib/bq/writes";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -21,7 +22,8 @@ import {
   type AccountingTxnRow,
 } from "@/components/accounting/AccountingLedger";
 import { dateSortKey, formatDollars } from "@/lib/format";
-import { effectiveExcludeFromMap } from "@/lib/plaid/exclude-accounting";
+import { excludedFromAccountingRollup } from "@/lib/plaid/exclude-accounting";
+import { resolveFromTo } from "@/lib/plaid/account-parties";
 
 export const dynamic = "force-dynamic";
 
@@ -60,6 +62,13 @@ export default async function AccountingPage({
   let error: string | undefined;
 
   try {
+    // Prod webhook/nightly may still race-insert until this branch deploys
+    // (Issue #230). Cheap no-op when already unique.
+    await dedupePlaidTransactions().catch((e) => {
+      console.error(
+        `plaid dedupe on accounting load: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
     const [items, transactions, nodes, ruleRows, labor] = await Promise.all([
       plaidItems(DEFAULT_STORE),
       plaidTransactions(win),
@@ -104,6 +113,14 @@ export default async function AccountingPage({
     const accountLast4 = mask
       ? `${kind ? `${kind} ` : ""}•••• ${mask}${acctName ? ` · ${acctName}` : ""}`
       : acctName || "—";
+    const parties = resolveFromTo({
+      amount,
+      our_mask: mask,
+      our_label: acctName ? `${kind ? `${kind} · ` : ""}${acctName}` : kind || null,
+      name: t.name,
+      merchant_name: t.merchant_name,
+      counterparty_name: t.counterparty_name,
+    });
     const isInternal = Boolean(t.is_internal);
     const isOverride = Boolean(t.override_category_id);
     const categoryLabel = t.category_label || "Uncategorized";
@@ -124,9 +141,12 @@ export default async function AccountingPage({
       t.subcategory_id ||
       t.override_category_id ||
       t.category_id;
-    const excluded =
-      effectiveExcludeFromMap(leafId, taxNodes) ||
-      (isInternal && (!leafId || leafId === "internal_transfers"));
+    const excluded = excludedFromAccountingRollup({
+      leafId,
+      nodes: taxNodes,
+      isInternal,
+      categoryId: t.override_category_id || t.category_id,
+    });
     return {
       transaction_id: t.transaction_id,
       date: t.date,
@@ -134,6 +154,10 @@ export default async function AccountingPage({
       bank_description: bankDescription,
       counterparty,
       account_last4: accountLast4,
+      from_account: parties.from.label,
+      to_account: parties.to.label,
+      from_mask: parties.from.mask || null,
+      to_mask: parties.to.mask || null,
       spend: amount > 0 ? amount : null,
       earned: amount < 0 ? Math.abs(amount) : null,
       category: categoryLabel,
@@ -167,6 +191,8 @@ export default async function AccountingPage({
     match_operator: r.match_operator,
     match_pattern: r.match_pattern,
     amount_sign: r.amount_sign,
+    from_mask: r.from_mask,
+    to_mask: r.to_mask,
     enabled: r.enabled,
   }));
 

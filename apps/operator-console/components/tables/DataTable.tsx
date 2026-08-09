@@ -46,6 +46,11 @@ import {
   facetedMultiOptions,
   filterTextOrMulti,
 } from "@/lib/tables/column-filter";
+import {
+  accumulateDomPinOffsets,
+  computeMetaPinOffsets,
+  pinOffsetsEqual,
+} from "@/lib/tables/pin-offsets";
 
 // Threshold coloring for numeric/pct/dollars columns (Figma: red/amber/green
 // on p95, % late, Days-left, wage-diff). `warn`/`bad` are in the same unit as
@@ -330,10 +335,11 @@ export function DataTable<TData>({
   rowHighlight,
   enableColumnFilters = false,
   onFilteredRowsChange,
+  getRowId,
 }: {
   columns: ColumnDef<TData>[];
   data: TData[];
-  pinLeft?: string[];
+  pinLeft?: readonly string[];
   initialSorting?: SortingState;
   /** Serializable row tint (RSC-safe). When any rule matches `row[accessorKey] === equals`, apply that className (OR). */
   rowHighlight?:
@@ -343,8 +349,13 @@ export function DataTable<TData>({
   enableColumnFilters?: boolean;
   /** Fired when the filtered (visible) row set changes — used by Accounting KPIs. */
   onFilteredRowsChange?: (rows: TData[]) => void;
+  /** Stable row id (Accounting: transaction_id). Omit to use TanStack index default. */
+  getRowId?: (row: TData, index: number) => string;
 }) {
-  const columnPinning: ColumnPinningState = { left: pinLeft, right: [] };
+  const columnPinning = useMemo<ColumnPinningState>(
+    () => ({ left: [...pinLeft], right: [] }),
+    [pinLeft],
+  );
   // Client-side sort across every column — Grafana's table panels let an
   // operator click any header to sort; this is the console-side equivalent.
   // Optional `enableColumnFilters` adds per-column text filters for dense
@@ -358,6 +369,9 @@ export function DataTable<TData>({
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: enableColumnFilters ? getFilteredRowModel() : undefined,
+    getRowId: getRowId
+      ? (row, index) => getRowId(row, index)
+      : undefined,
     state: { columnPinning, sorting, columnFilters },
     onColumnPinningChange: () => {},
     onSortingChange: setSorting,
@@ -369,12 +383,11 @@ export function DataTable<TData>({
     },
   });
 
-  const filteredRows = useMemo(
-    () => table.getFilteredRowModel().rows.map((r) => r.original),
-    // columnFilters + data drive the filtered model; table identity is stable.
+  const filteredRows = useMemo(() => {
+    return table.getFilteredRowModel().rows.map((r) => r.original);
+    // Prefer data/filters/sorting over `table` identity (new every render).
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional deps
-    [table, columnFilters, data, enableColumnFilters],
-  );
+  }, [columnFilters, data, enableColumnFilters, sorting]);
   const filteredCount = filteredRows.length;
   const filterActive =
     enableColumnFilters &&
@@ -460,38 +473,74 @@ export function DataTable<TData>({
     return undefined;
   }
 
-  // Multiple pinned columns each need a *cumulative* left offset — TanStack's
-  // own getStart("left") assumes the 150px default column size, but these
-  // columns are content-driven (no explicit `size`), so offsets are measured
-  // from the actually-rendered header cells instead of computed from state.
+  // Multiple pinned columns need cumulative left offsets. Prefer declared
+  // meta.width (pure — no setState). DOM measure is a fallback only; never
+  // sync meta widths into state (that path looped on Accounting row updates).
   const containerRef = useRef<HTMLDivElement>(null);
-  const [pinOffsets, setPinOffsets] = useState<Record<string, number>>({});
+  const [domPinOffsets, setDomPinOffsets] = useState<Record<string, number>>({});
   const [atEnd, setAtEnd] = useState(true);
+  const measuringRef = useRef(false);
+
+  const metaPinOffsets = useMemo(
+    () =>
+      computeMetaPinOffsets(
+        columns as { accessorKey?: string; id?: string; meta?: { width?: number } }[],
+        pinLeft,
+      ),
+    [columns, pinLeft],
+  );
+  const pinOffsets = metaPinOffsets ?? domPinOffsets;
 
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const measure = () => {
-      const heads = el.querySelectorAll<HTMLElement>('thead th[data-pinned="left"]');
-      let acc = 0;
-      const next: Record<string, number> = {};
-      heads.forEach((h) => {
-        const colId = h.dataset.colId!;
-        next[colId] = acc;
-        acc += h.offsetWidth;
-      });
-      setPinOffsets(next);
-      setAtEnd(el.scrollLeft + el.clientWidth >= el.scrollWidth - 1);
+
+    const updateScrollEnd = () => {
+      const end = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
+      setAtEnd((prev) => (prev === end ? prev : end));
     };
-    measure();
-    el.addEventListener("scroll", measure, { passive: true });
-    const ro = new ResizeObserver(measure);
+
+    // Meta path: offsets are render-time constants — only track scroll fade.
+    if (metaPinOffsets) {
+      updateScrollEnd();
+      el.addEventListener("scroll", updateScrollEnd, { passive: true });
+      return () => el.removeEventListener("scroll", updateScrollEnd);
+    }
+
+    const measureFromDom = () => {
+      if (measuringRef.current) {
+        updateScrollEnd();
+        return;
+      }
+      const heads = el.querySelectorAll<HTMLElement>('thead th[data-pinned="left"]');
+      const next = accumulateDomPinOffsets(
+        Array.from(heads).map((h) => ({
+          colId: h.dataset.colId || "",
+          width: h.offsetWidth,
+        })),
+      );
+      setDomPinOffsets((prev) => {
+        if (pinOffsetsEqual(prev, next)) return prev;
+        measuringRef.current = true;
+        requestAnimationFrame(() => {
+          measuringRef.current = false;
+        });
+        return next;
+      });
+      updateScrollEnd();
+    };
+
+    measureFromDom();
+    el.addEventListener("scroll", updateScrollEnd, { passive: true });
+    const ro = new ResizeObserver(measureFromDom);
     ro.observe(el);
     return () => {
-      el.removeEventListener("scroll", measure);
+      el.removeEventListener("scroll", updateScrollEnd);
       ro.disconnect();
     };
-  }, [columns, data, columnFilters]);
+    // pinLeft identity + column defs (not row data) — data churn must not
+    // re-measure sticky left (ResizeObserver ↔ setState loop).
+  }, [columns, pinLeft, metaPinOffsets]);
 
   const lastPinnedId = pinLeft[pinLeft.length - 1];
   const useFixedLayout = columns.some((c) => {

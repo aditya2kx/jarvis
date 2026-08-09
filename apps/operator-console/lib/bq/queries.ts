@@ -2345,6 +2345,34 @@ export interface ReviewBonusLeaderboardRow {
   period_end: string;
 }
 
+export interface ReviewBonusOpenMeta {
+  period_start: string;
+  period_end: string;
+  materialized_at_utc: string | null;
+}
+
+/** Most-recent open pay period bounds + last rollup time (Team Pulse freshness). */
+export async function openReviewBonusMeta(): Promise<ReviewBonusOpenMeta | null> {
+  const rows = await q<ReviewBonusOpenMeta>(
+    `WITH open_periods AS (
+       SELECT period_start, period_end
+       FROM ${fq("model_review_bonus_period")}
+       WHERE is_open = TRUE
+       ORDER BY period_start DESC
+       LIMIT 1
+     )
+     SELECT CAST(m.period_start AS STRING) AS period_start,
+       CAST(m.period_end AS STRING) AS period_end,
+       CAST(MAX(m.materialized_at_utc) AS STRING) AS materialized_at_utc
+     FROM ${fq("model_review_bonus_period")} m
+     JOIN open_periods o
+       ON m.period_start = o.period_start AND m.period_end = o.period_end
+     WHERE m.is_open = TRUE
+     GROUP BY m.period_start, m.period_end`,
+  );
+  return rows[0] ?? null;
+}
+
 /** Most-recent open pay period review-bonus rows. */
 export async function openReviewBonusLeaderboard(): Promise<ReviewBonusLeaderboardRow[]> {
   return q<ReviewBonusLeaderboardRow>(

@@ -2,6 +2,7 @@ import { PageHeader } from "@/components/shell/PageHeader";
 import {
   getAutomation,
   listAutomationPosts,
+  openReviewBonusMeta,
 } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { AUTOMATION_ID } from "@/lib/automations/teamPulse";
@@ -21,11 +22,13 @@ export default async function TeamPulsePage() {
   let channels: ClickUpNamedOption[] = [];
   let members: ClickUpNamedOption[] = [];
   let clickupError: string | undefined;
+  let reviewMeta: Awaited<ReturnType<typeof openReviewBonusMeta>> = null;
 
   try {
-    [cfg, posts] = await Promise.all([
+    [cfg, posts, reviewMeta] = await Promise.all([
       getAutomation(DEFAULT_STORE, AUTOMATION_ID),
       listAutomationPosts(DEFAULT_STORE, AUTOMATION_ID),
+      openReviewBonusMeta(),
     ]);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
@@ -58,6 +61,7 @@ export default async function TeamPulsePage() {
           channels={channels}
           members={members}
           clickupError={clickupError}
+          reviewMeta={reviewMeta}
         />
       )}
     </div>

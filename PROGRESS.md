@@ -1,3 +1,9 @@
+## 2026-08-09 — Team Pulse multi-vary reject + once lock + freshness (Issue #233)
+
+**Scope:** Gemini was concatenating 3 draft variations into one ClickUp post; soft once-gate + async `startTransition` allowed double Post-once; open-period rollup lag was undiagnosable in UI.
+
+**Key changes (PR #235):** `acceptVariedCopy` / `accept_varied_copy` reject multi-draft; `useConsoleAction` real busy lock; pre-ClickUp once recheck; Team Pulse open-period + rollup freshness chip. Leaderboard dollars match Payroll Review bonus column (same `model_review_bonus_period`).
+
 ## 2026-08-08 — Sales/Labor hour grain + Labor % toggle (Issue #227)
 
 **Scope:** Hour of day Aggregation on Sales + Labor; Total|Average Stat on Weekday/Hour; Labor Hours | % of net sales chart toggle; scheduled-order ops clock on `square_transactions` (migration 056).

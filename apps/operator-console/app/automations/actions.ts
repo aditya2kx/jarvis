@@ -123,6 +123,13 @@ export async function postTeamPulseOnceAction(): Promise<
       channelId = dm.id;
     }
 
+    // Re-check immediately before ClickUp write (narrows TOCTOU after compose/vary).
+    if (await hasAutomationPostToday(DEFAULT_STORE, AUTOMATION_ID, postDate)) {
+      throw new Error(
+        `Already posted today (${postDate} CT). Wait until tomorrow or use a different date.`,
+      );
+    }
+
     const created = await postChatMessage(channelId, content, workspace);
     await insertAutomationPost({
       store: DEFAULT_STORE,

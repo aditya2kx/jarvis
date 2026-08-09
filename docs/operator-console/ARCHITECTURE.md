@@ -168,7 +168,7 @@ flowchart TD
 | **Payroll & People** | `vw_model_payroll_period` (+ per-review), `training_shifts` (tip exemptions), `adp_shifts` | `training_shifts` (batch tip exemptions + recompute), **recognition bonuses (new table)**, `employee_aliases` |
 | **Inventory / Ordering** | `vw_order_assistant_table`, `vw_inventory_order_assistant`, `vw_order_reco_combined`, `vw_order_reco_next_dates`, `vw_inventory_base_runway`, `inventory_restock_schedule/orders` | `inventory_restock_schedule`, `inventory_restock_orders` (+ trigger `refresh_order_reco`), `order_reco_max_tubs` → `store_config` |
 | **Pipeline Health** | Firestore run state, per-view `refresh_date`, `status.py` logic | (optional) trigger refresh |
-| **Automations** | `automations`, `automation_posts`, `model_review_bonus_period` (leaderboard) | MERGE `automations`; Post once → ClickUp + INSERT `automation_posts` |
+| **Automations** | `automations`, `automation_posts`, `model_review_bonus_period` (open-period leaderboard + `materialized_at_utc` freshness) | MERGE `automations`; Preview/Post once compose from open rollup; Gemini single-message vary (multi-draft rejected); Post once → ClickUp + INSERT `automation_posts` (once/CT-day soft gate + UI busy lock) |
 
 ---
 

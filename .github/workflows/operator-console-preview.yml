@@ -1,9 +1,16 @@
 # PR-tagged Operator Console preview (Issue #228).
 # Deploys with --no-traffic --tag prN so canonical IAP URL traffic is untouched.
-# Trigger: workflow_dispatch, or call scripts/console_preview_deploy.py with ADC.
+# Trigger: pull_request (same-repo) or workflow_dispatch; or run
+# scripts/console_preview_deploy.py locally with ADC.
 name: Operator Console PR preview
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "apps/operator-console/**"
+      - "scripts/console_preview_deploy.py"
+      - ".github/workflows/operator-console-preview.yml"
   workflow_dispatch:
     inputs:
       pr:
@@ -33,11 +40,30 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: write
 
     steps:
+      - name: Resolve PR number + mode
+        id: meta
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "pr=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+            echo "remove=false" >> "$GITHUB_OUTPUT"
+            echo "checkout_ref=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr=${{ inputs.pr }}" >> "$GITHUB_OUTPUT"
+            echo "remove=${{ inputs.remove_tags }}" >> "$GITHUB_OUTPUT"
+            if [[ -n "${{ inputs.ref }}" ]]; then
+              echo "checkout_ref=${{ inputs.ref }}" >> "$GITHUB_OUTPUT"
+            else
+              echo "checkout_ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
+          ref: ${{ steps.meta.outputs.checkout_ref }}
 
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
@@ -49,17 +75,49 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Configure Docker for Artifact Registry
-        if: ${{ inputs.remove_tags != true }}
+        if: ${{ steps.meta.outputs.remove != 'true' }}
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
       - name: Deploy or cleanup tagged preview
+        id: deploy
         env:
           GCP_PROJECT: ${{ env.PROJECT_ID }}
         run: |
           set -euo pipefail
-          PR="${{ inputs.pr }}"
-          if [[ "${{ inputs.remove_tags }}" == "true" ]]; then
-            python3 scripts/console_preview_deploy.py --pr "$PR" --remove-tags
+          PR="${{ steps.meta.outputs.pr }}"
+          if [[ "${{ steps.meta.outputs.remove }}" == "true" ]]; then
+            python3 scripts/console_preview_deploy.py --pr "$PR" --remove-tags | tee /tmp/preview.out
           else
-            python3 scripts/console_preview_deploy.py --pr "$PR"
+            python3 scripts/console_preview_deploy.py --pr "$PR" | tee /tmp/preview.out
+          fi
+          URL=$(grep -E '^URL:' /tmp/preview.out | awk '{print $2}')
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Comment preview URL on PR
+        if: ${{ steps.meta.outputs.remove != 'true' && steps.deploy.outputs.url != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PR="${{ steps.meta.outputs.pr }}"
+          URL="${{ steps.deploy.outputs.url }}"
+          BODY=$(cat <<EOF
+          **Operator Console PR preview** (tagged, 0% traffic)
+
+          - URL: ${URL}
+          - Tag: \`pr${PR}\`
+          - Canonical IAP URL traffic: unchanged
+          - Sign in again on this host (separate IAP cookie jar — Issue #208)
+
+          Cleanup after merge: \`python3 scripts/console_preview_deploy.py --pr ${PR} --remove-tags\`
+          EOF
+          )
+          # Upsert: replace prior preview comment from this bot if present
+          PREV=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" \
+            --jq '.[] | select(.user.type=="Bot" and (.body|contains("Operator Console PR preview"))) | .id' \
+            | head -1 || true)
+          if [[ -n "${PREV}" ]]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${PREV}" -f body="$BODY"
+          else
+            gh pr comment "$PR" --body "$BODY"
           fi

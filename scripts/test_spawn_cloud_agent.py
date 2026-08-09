@@ -57,7 +57,7 @@ class TestSpawnCloudAgent(unittest.TestCase):
         result = SCA.spawn_cloud_agent(
             prompt_text="hello",
             starting_ref="fix/test",
-            api_key="test-key",
+            agent_token="test-key",
             dry_run=False,
         )
         self.assertEqual(result["agent_id"], "bc-abc")

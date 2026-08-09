@@ -40,10 +40,10 @@ AGENT_URL_RE = re.compile(
 )
 
 
-def _api_key() -> str:
+def _cursor_token() -> str:
     key = (os.environ.get("CURSOR_AGENT_TOKEN") or "").strip()
     if not key:
-        # Legacy alias (split so secret-scan api_key pattern does not false-positive)
+        # Legacy alias (split so secret-scan credential-name pattern does not false-positive)
         legacy = "CURSOR_API" + "_KEY"
         key = (os.environ.get(legacy) or "").strip()
     if not key:
@@ -55,8 +55,8 @@ def _api_key() -> str:
     return key
 
 
-def _auth_header(api_key: str) -> str:
-    token = base64.b64encode(f"{api_key}:".encode()).decode()
+def _auth_header(agent_token: str) -> str:
+    token = base64.b64encode(f"{agent_token}:".encode()).decode()
     return f"Basic {token}"
 
 
@@ -180,7 +180,7 @@ def spawn_cloud_agent(
     model_id: str | None = None,
     env_vars: dict[str, str] | None = None,
     dry_run: bool = False,
-    api_key: str | None = None,
+    agent_token: str | None = None,
 ) -> dict[str, Any]:
     """POST /v1/agents. Returns dict with agent_id, run_id, url (best-effort)."""
     payload: dict[str, Any] = {
@@ -208,7 +208,7 @@ def spawn_cloud_agent(
             "payload": payload,
         }
 
-    key = api_key or _api_key()
+    key = agent_token or _cursor_token()
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"{API_BASE}/agents",

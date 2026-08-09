@@ -20,8 +20,9 @@ Usage:
     python3 scripts/console_preview_deploy.py --pr 234 --remove-tags
 
 Env: ``GCP_PROJECT`` (required unless ``--project``). Needs ``gcloud`` + ADC
-or WIF (CI). Prefer GH workflow ``operator-console-preview.yml`` from a Cloud
-Agent VM that has no ADC.
+or WIF (CI), plus Docker for the default ``--builder docker`` path (same as
+``operator-console-deploy.yml``). ``--builder cloudbuild`` needs Cloud Build
+bucket IAM. Prefer the GH workflow from a Cloud Agent VM that has no ADC.
 """
 
 from __future__ import annotations

@@ -163,6 +163,55 @@ def deploy_tagged(
     return preview_url(tag)
 
 
+def verify_preview_url(url: str, *, dry_run: bool = False) -> None:
+    """Assert the tag host is live: HTTP 302 → accounts.google.com (IAP).
+
+    Fails loud on 404/DNS so we never hand the operator a dead link.
+    Does not complete OAuth (no browser session here).
+    """
+    if dry_run:
+        print(f"(dry-run) would verify IAP challenge on {url}")
+        return
+    try:
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(url, method="HEAD")
+        # Don't follow redirects — we want the IAP 302 itself.
+        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
+        # Replace redirect handler with one that doesn't follow
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                return None
+
+        opener = urllib.request.build_opener(_NoRedirect)
+        try:
+            opener.open(req, timeout=20)
+            raise SystemExit(
+                f"console_preview_deploy: verify failed for {url}: "
+                f"expected IAP 302, got 2xx/3xx without redirect"
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (301, 302, 303, 307, 308):
+                raise SystemExit(
+                    f"console_preview_deploy: verify failed for {url}: "
+                    f"HTTP {exc.code} (want IAP 302 → accounts.google.com)"
+                ) from exc
+            loc = exc.headers.get("Location") or ""
+            if "accounts.google.com" not in loc:
+                raise SystemExit(
+                    f"console_preview_deploy: verify failed for {url}: "
+                    f"redirect Location not Google IAP ({loc[:120]!r})"
+                )
+            print(f"Verified IAP challenge: {url} → accounts.google.com (HTTP {exc.code})")
+    except SystemExit:
+        raise
+    except Exception as exc:
+        raise SystemExit(
+            f"console_preview_deploy: verify failed for {url}: {exc}"
+        ) from exc
+
+
 def remove_tags(*, project: str, tag: str, dry_run: bool) -> None:
     _run(
         [
@@ -229,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     deploy_url = deploy_tagged(
         project=project, image=image, tag=tag, dry_run=args.dry_run,
     )
+    verify_preview_url(deploy_url, dry_run=args.dry_run)
 
     print()
     print("─── CONSOLE PREVIEW ───")
@@ -242,6 +292,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "IAP: sign in again on this host — separate cookie jar from "
         "operator-console-…run.app (Issue #208)."
+    )
+    print(
+        "Mobile/Cursor tip: Cloud Run tag URLs contain '---'; paste the full "
+        "URL into the browser address bar — in-app link openers often mangle it."
     )
     return 0
 

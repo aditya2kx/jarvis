@@ -40,6 +40,40 @@ class TestPreviewUrl(unittest.TestCase):
         mock_rm.assert_called_once()
         self.assertEqual(mock_rm.call_args.kwargs["tag"], "pr234")
 
+    def test_verify_accepts_iap_302(self):
+        err = __import__("urllib.error").error.HTTPError(
+            url="https://example/",
+            code=302,
+            msg="Found",
+            hdrs={"Location": "https://accounts.google.com/o/oauth2/v2/auth?x=1"},
+            fp=None,
+        )
+
+        class _Opener:
+            def open(self, *a, **k):
+                raise err
+
+        with patch("urllib.request.build_opener", return_value=_Opener()):
+            CPD.verify_preview_url("https://pr234---operator-console-x.a.run.app/")
+
+    def test_verify_rejects_404(self):
+        err = __import__("urllib.error").error.HTTPError(
+            url="https://example/",
+            code=404,
+            msg="Not Found",
+            hdrs={},
+            fp=None,
+        )
+
+        class _Opener:
+            def open(self, *a, **k):
+                raise err
+
+        with patch("urllib.request.build_opener", return_value=_Opener()):
+            with self.assertRaises(SystemExit) as cm:
+                CPD.verify_preview_url("https://bad.example/")
+        self.assertIn("404", str(cm.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

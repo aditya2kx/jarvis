@@ -144,18 +144,20 @@ class TestDedupeTransactions(unittest.TestCase):
         self.assertEqual(_dedupe_transactions(bq), 0)
         self.assertEqual(bq.query.call_count, 1)
 
-    def test_deletes_when_extras(self):
+    def test_rewrites_when_extras(self):
         bq = MagicMock()
         count_job = MagicMock()
         count_job.result.return_value = iter([_FakeRow(3)])
-        delete_job = MagicMock()
-        delete_job.result.return_value = iter([])
-        bq.query.side_effect = [count_job, delete_job]
+        rewrite_job = MagicMock()
+        rewrite_job.result.return_value = iter([])
+        bq.query.side_effect = [count_job, rewrite_job]
         self.assertEqual(_dedupe_transactions(bq), 3)
         sql = bq.query.call_args_list[1].args[0]
+        self.assertIn("CREATE OR REPLACE TABLE", sql)
         self.assertIn("ROW_NUMBER()", sql)
         self.assertIn("PARTITION BY transaction_id", sql)
-        self.assertIn("DELETE FROM", sql)
+        self.assertIn("WHERE rn = 1", sql)
+        self.assertNotIn("DELETE FROM", sql)
 
 
 if __name__ == "__main__":

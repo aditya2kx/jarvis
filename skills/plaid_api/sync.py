@@ -129,13 +129,13 @@ def _upsert_transactions(bq, rows: list[dict]) -> None:
 
 
 def _dedupe_transactions(bq) -> int:
-    """Delete duplicate transaction_id rows (keep newest updated_at).
+    """Keep one row per transaction_id (newest updated_at).
 
-    Concurrent MERGE WHEN NOT MATCHED INSERT races (console + webhook / dual
-    sync) can leave extras because BQ does not enforce unique keys (Issue #230).
+    Uses CREATE OR REPLACE … WHERE rn = 1 — NOT DELETE on (transaction_id,
+    updated_at). Duplicate inserts from one MERGE share CURRENT_TIMESTAMP(); a
+    STRUCT delete key that omits the ROW_NUMBER tie-breaker would match keeper +
+    extras and wipe the transaction (Issue #230 / Claude review on PR #236).
     """
-    from google.cloud import bigquery
-
     rows = list(
         bq.query(
             f"""
@@ -149,21 +149,18 @@ def _dedupe_transactions(bq) -> int:
         return 0
     bq.query(
         f"""
-        DELETE FROM {_fq("plaid_transactions")}
-        WHERE STRUCT(transaction_id, updated_at) IN (
-          SELECT AS STRUCT transaction_id, updated_at
-          FROM (
-            SELECT
-              transaction_id,
-              updated_at,
-              ROW_NUMBER() OVER (
-                PARTITION BY transaction_id
-                ORDER BY updated_at DESC NULLS LAST, TO_JSON_STRING(raw_json)
-              ) AS rn
-            FROM {_fq("plaid_transactions")}
-          )
-          WHERE rn > 1
+        CREATE OR REPLACE TABLE {_fq("plaid_transactions")} AS
+        SELECT * EXCEPT (rn)
+        FROM (
+          SELECT
+            *,
+            ROW_NUMBER() OVER (
+              PARTITION BY transaction_id
+              ORDER BY updated_at DESC NULLS LAST, TO_JSON_STRING(raw_json)
+            ) AS rn
+          FROM {_fq("plaid_transactions")}
         )
+        WHERE rn = 1
         """
     ).result()
     return extras

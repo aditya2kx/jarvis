@@ -1,8 +1,18 @@
+<<<<<<< HEAD
 ## 2026-08-09 — Team Pulse multi-vary reject + once lock + freshness (Issue #233)
 
 **Scope:** Gemini was concatenating 3 draft variations into one ClickUp post; soft once-gate + async `startTransition` allowed double Post-once; open-period rollup lag was undiagnosable in UI.
 
 **Key changes (PR #235):** `acceptVariedCopy` / `accept_varied_copy` reject multi-draft; `useConsoleAction` real busy lock; pre-ClickUp once recheck; Team Pulse open-period + rollup freshness chip. Leaderboard dollars match Payroll Review bonus column (same `model_review_bonus_period`).
+=======
+## 2026-08-09 — Labor schedule horizon + Plaid dedupe + Accounting from/to (Issue #230)
+
+**Scope:** ADP schedule scrape up to 8 forward weeks; post-sync `plaid_transactions` dedupe (CREATE OR REPLACE keep rn=1) + ledger QUALIFY; category rules `from_mask`/`to_mask` (migration 057); DataTable sticky-pin loop fix.
+
+- Labor: `DEFAULT_WEEKS=MAX=8`; stop cleanly when week chevron stalls.
+- Accounting: duplicate `transaction_id` rows removed without wiping same-timestamp ties; From/To columns + propose-rule combo.
+- Evidence: Aug 2026 `extra_rows=0`; vitest/pytest; localhost operator play on `:3002`.
+>>>>>>> ab9de47 (fix(#230): safe Plaid dedupe rewrite + doc freshness)
 
 ## 2026-08-08 — Sales/Labor hour grain + Labor % toggle (Issue #227)
 

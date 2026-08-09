@@ -289,6 +289,9 @@ GRAFANA_VIEWS: list[Target] = [
     # columns (pickup_at/deliver_at/ready_at/…, ops_at_local_iso, ops_date_local,
     # ops_hour_local). Additive on existing raw table — Sales Hour Aggregation
     # uses ops_* ; no new BQ_TARGETS/GRAFANA_VIEWS.
+    # migration 057 (Issue #230): plaid_category_rules.from_mask / to_mask for
+    # directional account-party matching. Additive columns on existing rules
+    # table — Accounting console only; no new BQ_TARGETS/GRAFANA_VIEWS.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

@@ -120,33 +120,47 @@ def deploy_tagged(
     image: str,
     tag: str,
     dry_run: bool,
-) -> None:
-    """New revision: no traffic to it; reachable only via tag URL."""
+) -> str:
+    """New revision: no traffic to it; reachable only via tag URL.
+
+    Returns the URL Cloud Run reports (authoritative; may be hash host).
+    """
     # Mirror production deploy flags so the revision has IAP + env/secrets.
     # --no-traffic keeps 100% on the current production revision.
-    _run(
-        [
-            "gcloud", "run", "deploy", SERVICE,
-            f"--image={image}",
-            f"--region={REGION}",
-            f"--project={project}",
-            "--no-allow-unauthenticated",
-            "--iap",
-            "--memory=512Mi",
-            "--min-instances=1",
-            "--no-traffic",
-            f"--tag={tag}",
-            f"--set-env-vars=BQ_PROJECT={project},BQ_DATASET=bhaga,"
-            "PLAID_ENV=production,"
-            "PLAID_WEBHOOK_URL=https://bhaga-webhook-4yl5izovxq-uc.a.run.app/plaid/webhook",
-            "--set-secrets="
-            "GEMINI_TOKEN=operator-console-gemini-token:latest,"
-            "PLAID_CLIENT_ID=plaid_client_id:latest,"
-            "PLAID_SECRET=plaid_secret:latest,"
-            "CLICKUP_PAT=jarvis-clickup-palmetto-pat:latest",
-        ],
-        dry_run=dry_run,
+    cmd = [
+        "gcloud", "run", "deploy", SERVICE,
+        f"--image={image}",
+        f"--region={REGION}",
+        f"--project={project}",
+        "--no-allow-unauthenticated",
+        "--iap",
+        "--memory=512Mi",
+        "--min-instances=1",
+        "--no-traffic",
+        f"--tag={tag}",
+        f"--set-env-vars=BQ_PROJECT={project},BQ_DATASET=bhaga,"
+        "PLAID_ENV=production,"
+        "PLAID_WEBHOOK_URL=https://bhaga-webhook-4yl5izovxq-uc.a.run.app/plaid/webhook",
+        "--set-secrets="
+        "GEMINI_TOKEN=operator-console-gemini-token:latest,"
+        "PLAID_CLIENT_ID=plaid_client_id:latest,"
+        "PLAID_SECRET=plaid_secret:latest,"
+        "CLICKUP_PAT=jarvis-clickup-palmetto-pat:latest",
+    ]
+    print("+", " ".join(cmd))
+    if dry_run:
+        return preview_url(tag)
+    completed = subprocess.run(cmd, check=True, text=True, capture_output=True)
+    # gcloud prints both stdout and progress on stderr
+    combined = (completed.stdout or "") + "\n" + (completed.stderr or "")
+    print(combined)
+    m = re.search(
+        r"https://[a-z0-9-]+---" + re.escape(SERVICE) + r"[a-z0-9.-]*\.a\.run\.app",
+        combined,
     )
+    if m:
+        return m.group(0)
+    return preview_url(tag)
 
 
 def remove_tags(*, project: str, tag: str, dry_run: bool) -> None:
@@ -212,13 +226,18 @@ def main(argv: list[str] | None = None) -> int:
         # Explicit --image: deploy that digest/tag as-is (no Cloud Build).
         pass
 
-    deploy_tagged(project=project, image=image, tag=tag, dry_run=args.dry_run)
+    deploy_url = deploy_tagged(
+        project=project, image=image, tag=tag, dry_run=args.dry_run,
+    )
 
     print()
     print("─── CONSOLE PREVIEW ───")
     print(f"Tag:      {tag}")
     print(f"Image:    {image}")
-    print(f"URL:      {url}")
+    print(f"URL:      {deploy_url}")
+    alt = preview_url(tag)
+    if deploy_url.rstrip("/") != alt.rstrip("/"):
+        print(f"Alt URL:  {alt}  (project-number form; prefer gcloud URL above)")
     print("Canonical traffic: unchanged (this revision has 0%).")
     print(
         "IAP: sign in again on this host — separate cookie jar from "

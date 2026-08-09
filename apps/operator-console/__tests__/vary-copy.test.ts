@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { acceptVariedCopy } from "@/lib/automations/varyAccept";
 
 const LB =
-  "*   **Brooke Willingham** and **Jarin Priyosha** leading with $70 each.\n" +
-  "*   **Ximena Ortiz** at $30.";
+  "*   **Alex Example** and **Sam Sample** leading with $40 each.\n" +
+  "*   **Pat Placeholder** at $20.";
 
 describe("acceptVariedCopy", () => {
   it("accepts a single rewrite with verbatim leaderboard", () => {

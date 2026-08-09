@@ -13,7 +13,7 @@ Out of scope: new Automations types, review-bonus pool rule changes, ClickUp des
 - `automation_posts.message_id=80170041046292` (`2026-08-08`, `trigger=once`): **one** ClickUp message whose `content` concatenates **three** Gemini drafts separated by `---`.
 - `varyMotivationalCopy` (`apps/operator-console/lib/automations/varyCopy.ts:47-51`) accepts any text that `includes(leaderboard)` — multi-draft passes.
 - `2026-08-05`: two `once` rows ~16 min apart (soft `hasAutomationPostToday` + `useConsoleAction` async `startTransition` clears `isPending` mid-flight — `apps/operator-console/lib/actions/useConsoleAction.ts:30-58`).
-- Aug 5 posts predated Aug 7 Ximena/Dolce credits; Aug 8 post included them. Open period still `2026-07-27`→`2026-08-08`.
+- Aug 5 posts predated Aug 7 newly credited reviews; Aug 8 post included them. Open period still `2026-07-27`→`2026-08-08`.
 
 ### Per-scenario evidence (PR §4)
 

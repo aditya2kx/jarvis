@@ -51,8 +51,8 @@ class DayGateTests(unittest.TestCase):
 
 class AcceptVariedCopyTests(unittest.TestCase):
     LB = (
-        "*   **Brooke Willingham** and **Jarin Priyosha** leading with $70 each.\n"
-        "*   **Ximena Ortiz** at $30."
+        "*   **Alex Example** and **Sam Sample** leading with $40 each.\n"
+        "*   **Pat Placeholder** at $20."
     )
 
     def test_accepts_single_rewrite(self):

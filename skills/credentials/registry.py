@@ -121,10 +121,17 @@ def get_secret(name: str) -> str:
                 "google-cloud-secret-manager is not installed. "
                 "Install it with: pip install google-cloud-secret-manager"
             )
-        client = _secretmanager.SecretManagerServiceClient()
-        secret_path = f"projects/{_GCP_PROJECT}/secrets/{name}/versions/latest"
-        response = client.access_secret_version(name=secret_path)
-        return response.payload.data.decode("utf-8")
+        try:
+            client = _secretmanager.SecretManagerServiceClient()
+            secret_path = f"projects/{_GCP_PROJECT}/secrets/{name}/versions/latest"
+            response = client.access_secret_version(name=secret_path)
+            return response.payload.data.decode("utf-8")
+        except Exception as exc:
+            raise RuntimeError(
+                f"Secret Manager read failed for {name!r} (ADC missing? "
+                f"On Cloud Agents, mount a SA JSON / WIF with secretAccessor). "
+                f"Detail: {exc}"
+            ) from exc
 
     reg = _load_registry()
     entry = reg.get(name)

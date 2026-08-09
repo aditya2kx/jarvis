@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""Start a new requirement: isolated git worktree + cost session + Cursor handoff.
+"""Start a new requirement: Cloud Agent (default) or local worktree handoff.
 
 The single command when the user shares a new requirement (or an agent hears
-"new requirement", "let's work on X", etc.). It:
+"new requirement", "let's work on X", etc.).
 
-  1. Creates a **sibling git worktree** on a fresh branch off ``origin/main`` so
-     concurrent chat spaces never fight over one checkout.
-  2. Runs ``start_pr_session.py`` there (branch-keyed cost session + brief +
-     launcher — no assumed PR number).
-  3. Opens **Cursor** on that worktree in a **new window** and seeds a fresh
-     Agent chat via ``cursor://`` deeplink.
+**Default (cloud-primary, Issue #228):**
+  1. Creates/links a tracking issue + remote branch off ``origin/main`` (no sibling worktree).
+  2. Spawns a **Cursor Cloud Agent** via ``spawn_cloud_agent.py`` and comments the URL.
+  3. Operator continues that agent from laptop / web / mobile.
+
+**``--local`` escape hatch** (dogfood / lifecycle tests):
+  1. Creates a sibling git worktree on a fresh branch.
+  2. Runs ``start_pr_session.py`` (cost session + brief + launcher).
+  3. Opens Cursor on that worktree via ``cursor://`` deeplink.
 
 The agent in the *current* chat must NOT implement the requirement — hand off.
 
-**Multiple requirements** are consolidated into **one** worktree / PR by default.
-Pass ``--split`` to create a separate worktree and PR for each requirement.
+**Multiple requirements** are consolidated into **one** branch / PR by default.
+Pass ``--split`` to create a separate branch and PR for each requirement.
 
 Usage:
     # Single requirement
@@ -54,6 +57,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import pr_cost_ledger as L
 import start_pr_session as S
+import spawn_cloud_agent as SCA
 
 
 _ISSUE_URL_RE = re.compile(r"github\.com/[^/\s]+/[^/\s]+/issues/(\d+)")
@@ -468,14 +472,25 @@ def _run_one(
     dry_run: bool,
     no_open: bool = False,
     existing_issue: int | None = None,
+    local: bool = False,
 ) -> int:
-    """Create one worktree for a single (possibly consolidated) requirement."""
-    wt = worktree or default_worktree_path(repo_root, branch)
-
+    """Start one requirement: Cloud Agent (default) or local worktree (``local=True``)."""
     print(f"Repo:     {repo_root}")
     print(f"Branch:   {branch}")
-    print(f"Worktree: {wt}")
-    print(f"Base:     {base}\n")
+    print(f"Base:     {base}")
+    print(f"Mode:     {'local worktree' if local else 'cloud agent'}\n")
+
+    if not local:
+        return _run_one_cloud(
+            repo_root=repo_root,
+            branch=branch,
+            requirement=requirement,
+            dry_run=dry_run,
+            existing_issue=existing_issue,
+        )
+
+    wt = worktree or default_worktree_path(repo_root, branch)
+    print(f"Worktree: {wt}\n")
 
     create_worktree(
         repo_root=repo_root,
@@ -503,17 +518,10 @@ def _run_one(
         existing_issue=existing_issue,
     )
 
-    # Seed the phase cache into the worktree so `phase_state.py status` inside
-    # the worktree shows the correct issue number and substep state.  Without
-    # this copy the worktree's metrics/pr_cost/ has no *-phase.json and status
-    # reports Issue: #none even though GitHub has the correct issue.
-    # Also writes worktree_path into both copies of the cache (H2).
     _seed_cache_to_worktree(branch=branch, worktree=wt, dry_run=dry_run)
 
-    # Post worktree path on the tracking issue (H2) so it's visible on GitHub.
     if issue_url:
-        import re as _re
-        m = _re.search(r"/issues/(\d+)", issue_url or "")
+        m = re.search(r"/issues/(\d+)", issue_url or "")
         if m:
             _post_worktree_comment(int(m.group(1)), wt, branch, dry_run=dry_run)
 
@@ -524,7 +532,6 @@ def _run_one(
         return 0
 
     if no_open:
-        # Agent-driven run (cloud/CI/dogfood): skip the Cursor window.
         print("\n─── WORKTREE READY (--no-open) ───")
         print(f"Worktree: {wt}")
         if issue_url:
@@ -532,8 +539,6 @@ def _run_one(
         print("Pick up the work in this chat; commit and push from within the worktree.")
         return 0
 
-    # Ensure the always-on dev-signals daemon is running so every new worktree
-    # is automatically covered for CI/comment/merge events without manual setup.
     try:
         import dev_event_listener as _DEL
         _DEL.ensure_daemon()
@@ -557,6 +562,43 @@ def _run_one(
     print(f"  python3 scripts/pr_cost_ledger.py bind-pr --branch {branch}")
     print("  python3 scripts/pr_cost_ledger.py sync --pr <n>")
     return 0
+
+
+def _run_one_cloud(
+    *,
+    repo_root: Path,
+    branch: str,
+    requirement: str,
+    dry_run: bool,
+    existing_issue: int | None = None,
+) -> int:
+    """Cloud-primary intake: remote branch + Cursor Cloud Agent (no sibling worktree)."""
+    issue_url = init_phase_tracking(
+        branch=branch, requirement=requirement, dry_run=dry_run,
+        existing_issue=existing_issue,
+    )
+    issue_num: int | None = existing_issue
+    if issue_url and not issue_num:
+        m = re.search(r"/issues/(\d+)", issue_url)
+        if m:
+            issue_num = int(m.group(1))
+
+    result = SCA.spawn_for_issue(
+        issue=issue_num,
+        branch=branch,
+        requirement=requirement,
+        ensure_branch=True,
+        dry_run=dry_run,
+    )
+    url = result.get("url") or ""
+    print("\n─── CLOUD HANDOFF ───")
+    print("Do NOT implement this requirement in the current chat.")
+    print(f"Open the Cursor Cloud Agent: {url}")
+    if issue_url:
+        print(f"Tracking issue: {issue_url}")
+    print("Continue from laptop / web / mobile — no local worktree required.")
+    return 0
+
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -622,8 +664,13 @@ def main(argv: list[str] | None = None) -> int:
         help=f"Model slug for the jam handoff deeplink (default: {S.DEFAULT_JAM_HANDOFF_MODEL})",
     )
     cli.add_argument("--no-open", action="store_true",
-                     help="Create worktree + brief + issue without opening a Cursor window "
-                          "(agent-driven / cloud / dogfood runs).")
+                     help="With --local: create worktree + brief + issue without opening Cursor "
+                          "(agent-driven / dogfood runs). Ignored for cloud-default path.")
+    cli.add_argument(
+        "--local", action="store_true",
+        help="Escape hatch: create a sibling local worktree + Cursor deeplink instead of "
+             "spawning a Cursor Cloud Agent (default is cloud-primary).",
+    )
     cli.add_argument("--issue", type=int, default=None,
                      help="Link an already-filed GitHub issue instead of creating a new one.")
     cli.add_argument("--dry-run", action="store_true", help="Print plan without creating anything")
@@ -669,6 +716,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 no_open=args.no_open,
                 existing_issue=issue_ref,
+                local=args.local,
             )
         return rc
 
@@ -719,6 +767,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         no_open=args.no_open,
         existing_issue=issue_ref,
+        local=args.local,
     )
 
 

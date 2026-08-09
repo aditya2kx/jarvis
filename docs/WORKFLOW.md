@@ -387,11 +387,20 @@ The latest run's annotated transcript lives in `docs/dogfood/lifecycle-run-<date
 
 ### Overview
 
-v2 replaces cloud agents with a **local-first, event-driven** flow:
-- GitHub Actions emit cheap **`jarvis-signal` comments** on tracking issues (zero AI token cost).
-- A laptop listener (`dev_event_listener.py`) catches up on signals when the Mac is online.
-- Signals are routed to the correct **worktree inbox** (`session-<slug>-pending.jsonl`) via `dev_event_router.py`.
-- Local Cursor chats pick up events via `.cursor/hooks.json` (busy/idle lock + queue drain) or explicit catch-up.
+v2 originally went **local-first** (laptop listener + sibling worktrees). Issue #228
+flips **intake** to **cloud-primary**: `/jarvis-new-task` (IDE or GitHub comment) spawns a
+Cursor Cloud Agent; the operator continues that agent from anywhere. CI/comment/merge
+signals still route through the local listener when a worktree exists (`--local` or
+legacy). Laptop-only exclusions: Touch ID/passkeys, launchd, CHITRA Socket Mode
+`/tmp/jarvis-*` inboxes, interactive localhost OAuth grants.
+
+### Overview
+
+Cloud intake + local signal drain:
+- GitHub Actions emit cheap **`jarvis-signal` comments** on tracking issues (zero AI token cost for the signal itself).
+- **Intake:** Action (or `new_requirement.py`) calls Cursor Cloud Agents API → agent URL on the issue.
+- A laptop listener (`dev_event_listener.py`) still catch-ups CI/comment/merge signals when the Mac is online.
+- Local Cursor chats pick up non-intake events via `.cursor/hooks.json` or explicit catch-up.
 
 ### Event path
 
@@ -412,7 +421,7 @@ GH Action (check_suite / issue_comment / pr-merged-lifecycle)
 | `ci_passed` | `ci_green` | `check_suite.completed` success | — |
 | `ci_other` | `ci_status` | `check_suite.completed` other | — |
 | `pr_merged` | `retrospective` | `pr-merged-lifecycle.yml` | Triggers retro jam flow |
-| `intake` | `intake` | `/jarvis-new-task` comment | Allowlist-gated; no debounce. The signal's `issue` field is threaded through to `new_requirement.py --issue N`, which fetches the issue's title+body (`gh issue view`) to seed the brief — a short intake comment alone (e.g. "let's work on this") is not enough context — and links the EXISTING issue instead of creating a duplicate. Branch is `fix/i{N}-<title-slug>` (issue-based, unique). |
+| `intake` | `intake` | `/jarvis-new-task` comment | Allowlist-gated; no debounce. **Cloud-primary (Issue #228):** `jarvis-dev-signals.yml` `intake-signal` calls `scripts/spawn_cloud_agent.py` (Cursor Cloud Agents API) and comments the agent URL on the issue. Local `dev_event_listener` marks the signal seen and does **not** create a sibling worktree unless `JARVIS_INTAKE_LOCAL=1`. IDE `/jarvis-new-task` runs `new_requirement.py` (default cloud; `--local` escape hatch). Link-not-create via `--issue` / `#N` still applies (`fix/i{N}-<slug>`). |
 | `comment` | `address_comment` | Operator comment on any issue/PR, **or an inline diff/review comment on a PR** | Allowlist-gated (workflow primary gate); loop-safe. **Note:** for PR comments (`issue_comment` on a PR, `pull_request_review_comment`, or `pull_request_review`), branch is resolved via `gh pr view --json headRefName`; the signal is then posted on the branch's **tracking issue** (via `find-issue --branch`), not on the PR itself — the tracking issue stays open long after the PR merges/closes, so `watch-all`'s open-issue polling always catches it (Issue #140). Falls back to posting on the original issue/PR number if no tracking issue resolves. For plain issue comments, branch is resolved via `find-branch` (reads laptop phase cache); absent on the Actions runner → gracefully skips with log message. |
 | _(PR→issue link)_ | _(GH-side, no inbox)_ | `pull_request.opened` → `pr-issue-link` job in `jarvis-dev-signals.yml` | obs 3: comments the PR URL on the tracking issue + appends `Refs #N` to the PR body (both idempotent). Resolves the issue via `find-issue --branch` (gh scan fallback works in CI). Active once merged to `main`. |
 

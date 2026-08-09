@@ -345,7 +345,9 @@ def catch_up(
         author = comment.get("author", {}).get("login") if isinstance(comment.get("author"), dict) else None
 
         # Intake signals have no branch — route_signal returns unrouted for them.
-        # Handle them here: allowlist check + seen-file dedup + run new_requirement.py.
+        # Handle them here: allowlist check + seen-file dedup.
+        # Cloud-primary (Issue #228): GitHub Action intake-signal spawns the Cloud
+        # Agent. Local listener only marks the signal seen unless JARVIS_INTAKE_LOCAL=1.
         if signal.get("event") == "intake":
             if author not in _R.ALLOWED_AUTHORS:
                 print(f"signal {signal.get('id', '?')[:8]} → unauthorized  [intake author={author}]")
@@ -355,22 +357,23 @@ def catch_up(
             if sid and sid in seen:
                 print(f"signal {sid[:8]} → duplicate  [intake already dispatched]")
                 continue
-            # age is None when the signal has no/unparseable `ts` — fall back to
-            # seen-file dedup only (safe: format_signal always emits `ts`, so a
-            # missing ts means a hand-crafted/legacy signal, not a normal replay).
             age = _signal_age_sec(signal)
             if age is not None and age > _INTAKE_MAX_AGE_SEC:
-                # Seen-file dedup is the only guard against replay; if it's ever
-                # lost (crash, manual cache reset), don't reopen a Cursor window
-                # for a signal that's minutes-to-days old — just mark it seen.
                 print(f"signal {sid[:8]} → stale-skip  [intake age={age:.0f}s > {_INTAKE_MAX_AGE_SEC}s]")
                 if sid:
                     seen.add(sid)
                     _save_intake_seen(seen)
                 continue
             requirement = signal.get("requirement") or ""
-            print(f"signal {sid[:8]} → intake  [requirement={requirement[:60]!r}]")
-            _dispatch("", signal)
+            local_intake = os.environ.get("JARVIS_INTAKE_LOCAL", "0") not in ("0", "false", "no", "")
+            if local_intake:
+                print(f"signal {sid[:8]} → intake-local  [requirement={requirement[:60]!r}]")
+                _dispatch("", signal)
+            else:
+                print(
+                    f"signal {sid[:8]} → intake-cloud-skip  "
+                    f"[GH Action owns Cloud Agent spawn; set JARVIS_INTAKE_LOCAL=1 to restore local wt]"
+                )
             if sid:
                 seen.add(sid)
                 _save_intake_seen(seen)

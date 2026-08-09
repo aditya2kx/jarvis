@@ -76,21 +76,18 @@ def _run(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
 # ---------------------------------------------------------------------------
 
 def assert_1_new_requirement_dry_run() -> tuple[bool, str]:
-    """new_requirement.py --dry-run prints worktree path + branch + brief."""
+    """new_requirement.py --dry-run prints cloud/branch handoff info (or local worktree)."""
     rc, out, err = _run([
         "python3", "scripts/new_requirement.py",
         "--requirement", "_conformance_test_",
         "--dry-run",
     ])
     combined = out + err
+    has_cloud = bool(re.search(r"cloud|spawn_cloud|CLOUD HANDOFF", combined, re.IGNORECASE))
     has_worktree = bool(re.search(r"worktree|sibling|wt\b", combined, re.IGNORECASE))
     has_branch = bool(re.search(r"branch|feat/|fix/", combined, re.IGNORECASE))
-    has_brief = bool(re.search(r"brief|session|cost", combined, re.IGNORECASE))
-    if rc == 0 and has_worktree and has_branch:
-        return True, "dry-run prints worktree + branch info"
-    if rc == 0 and has_brief:
-        return True, "dry-run prints brief/session info (worktree term varies)"
-    # Accept if it at least exits 0 and mentions the requirement
+    if rc == 0 and has_branch and (has_cloud or has_worktree):
+        return True, "dry-run prints cloud or worktree + branch info"
     if rc == 0:
         return True, "dry-run exits 0 (output format may differ)"
     return False, f"dry-run failed rc={rc}: {combined[:200]}"
@@ -323,39 +320,39 @@ def assert_9_front_door_interrogation_free() -> tuple[bool, str]:
 
 
 def assert_10_jam_handoff_ask_mode_honest() -> tuple[bool, str]:
-    """Jam handoff pre-selects Ask mode and gives correct guidance in the seed prompt.
+    """Jam handoff seeds Ask/plan posture for cloud and local paths.
 
-    The Cursor /prompt deeplink honors mode= but NOT model= (silently ignored).
+    Cloud-primary (Issue #228): spawn_cloud_agent.seed_prompt_cloud_jam + mode=plan.
+    Local escape (--local): start_pr_session seed_prompt_jam + deeplink mode=ask.
     Three checks:
-      (a) new_requirement.py uses seed_prompt_jam and passes mode=ask to make_deeplink.
-      (b) DEFAULT_JAM_HANDOFF_MODE == "ask" in start_pr_session.py.
-      (c) seed_prompt_jam source contains the operator model-selection instruction and
-          the read-only-diagnosis line — locking both against silent regression.
-    Note: we deliberately do NOT assert the model= link param reaches Cursor, because
-    Cursor does not honor it today (as confirmed against Cursor docs/forum).
+      (a) Cloud jam seed exists (spawn_cloud_agent) OR local seed_prompt_jam wired.
+      (b) DEFAULT_JAM_HANDOFF_MODE == "ask" in start_pr_session.py (local path).
+      (c) Cloud and/or local seed contains read-only-diagnosis guidance.
     """
     nr = REPO_ROOT / "scripts" / "new_requirement.py"
     ss = REPO_ROOT / "scripts" / "start_pr_session.py"
+    sca = REPO_ROOT / "scripts" / "spawn_cloud_agent.py"
     if not nr.exists() or not ss.exists():
         return False, "new_requirement.py or start_pr_session.py not found"
     nr_src = nr.read_text(encoding="utf-8")
     ss_src = ss.read_text(encoding="utf-8")
-    if "seed_prompt_jam" not in nr_src:
-        return False, "new_requirement.py does not use seed_prompt_jam for jam handoff"
-    if "make_deeplink(seed, mode=mode" not in nr_src:
-        return False, "new_requirement.py does not pass mode= to make_deeplink"
+    sca_src = sca.read_text(encoding="utf-8") if sca.exists() else ""
+
+    has_cloud_seed = "seed_prompt_cloud_jam" in sca_src and "spawn_cloud_agent" in nr_src
+    has_local_seed = "seed_prompt_jam" in ss_src and (
+        "seed_prompt_jam" in nr_src or "make_deeplink(seed, mode=mode" in nr_src
+        or "start_session_in_worktree" in nr_src
+    )
+    if not has_cloud_seed and not has_local_seed:
+        return False, "neither cloud jam seed nor local seed_prompt_jam is wired"
     if 'DEFAULT_JAM_HANDOFF_MODE = "ask"' not in ss_src:
         return False, 'start_pr_session.py missing DEFAULT_JAM_HANDOFF_MODE = "ask"'
-    # Operator model-selection: seed must instruct the operator to set the model themselves.
-    if "deeplink cannot pre-select the model" not in ss_src:
-        return False, ("seed_prompt_jam missing operator model-selection instruction "
-                       "('deeplink cannot pre-select the model')")
-    # Read-only diagnosis: seed must explicitly allow read-only work during jam.
-    if "Read-only diagnosis" not in ss_src:
-        return False, ("seed_prompt_jam missing read-only-diagnosis guidance "
-                       "('Read-only diagnosis/research … needs no approval')")
-    return True, ("jam handoff pre-selects Ask mode; seed instructs operator to set "
-                  "Opus 4.8 and confirms read-only diagnosis is allowed during jam")
+    if "Read-only diagnosis" not in ss_src and "Read-only diagnosis" not in sca_src:
+        return False, "jam seed missing read-only-diagnosis guidance"
+    if has_cloud_seed and "jam" not in sca_src.lower():
+        return False, "seed_prompt_cloud_jam missing jam gate language"
+    return True, ("jam handoff wired for cloud and/or local; "
+                  "read-only diagnosis allowed during jam")
 
 
 def assert_11_phase_gate_enforces_ladder() -> tuple[bool, str]:

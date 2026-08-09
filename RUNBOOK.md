@@ -322,6 +322,24 @@ gcloud run services update bhaga-webhook \
 > ```
 > `hydrate` reads from GCP Secret Manager via ADC (no `gcloud` binary required) and writes to
 > Keychain without printing the value. Works for ClickUp, Google, Square, ADP, and Slack.
+
+### Cloud Agent bootstrap (Issue #228)
+
+Cursor Cloud Agents for Jarvis intake need:
+
+| Secret / env | Where | Purpose |
+|---|---|---|
+| `CURSOR_AGENT_TOKEN` | GitHub Actions secret + local shell for IDE spawn | `POST https://api.cursor.com/v1/agents` |
+| `BHAGA_SECRETS_BACKEND=gcp` | Cloud Agent env (dashboard or spawn `envVars`) | Read secrets from Secret Manager, not Keychain |
+| `GCP_PROJECT=jarvis-bhaga-prod` | Cloud Agent env | SM project |
+| ADC / SA JSON | Cursor Cloud Agents dashboard Secrets | `secretAccessor` on the inventory above |
+
+Repo file [`.cursor/environment.json`](.cursor/environment.json) installs Python deps + `apps/operator-console` `npm ci`.
+
+Laptop-only (not Cloud Agent): Touch ID / passkeys, launchd `com.jarvis.devsignals`, CHITRA `/tmp/jarvis-*` Slack inboxes, interactive OAuth on localhost.
+
+Escape hatches: `new_requirement.py --local`; listener `JARVIS_INTAKE_LOCAL=1`.
+
 | `clickup_palmetto_pat` | (legacy ClickUp PAT) | ClickUp PAT (older handle) |
 | `clickup` | (legacy ClickUp) | Legacy ClickUp credential |
 

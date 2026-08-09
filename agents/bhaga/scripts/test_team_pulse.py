@@ -49,5 +49,34 @@ class DayGateTests(unittest.TestCase):
         self.assertEqual(tp.parse_days("[1,3,6]"), [1, 3, 6])
 
 
+class AcceptVariedCopyTests(unittest.TestCase):
+    LB = (
+        "*   **Brooke Willingham** and **Jarin Priyosha** leading with $70 each.\n"
+        "*   **Ximena Ortiz** at $30."
+    )
+
+    def test_accepts_single_rewrite(self):
+        text = f"Good morning, team!\n\n{self.LB}\n\nKeep up the great work."
+        out, ok = tp.accept_varied_copy(text, self.LB)
+        self.assertTrue(ok)
+        self.assertEqual(out, text)
+
+    def test_rejects_multi_draft_dashes(self):
+        text = (
+            f"Good morning, team!\n\n{self.LB}\n\nKeep going.\n\n---\n\n"
+            f"Hi team!\n\n{self.LB}\n\nFantastic effort.\n\n---\n\n"
+            f"Hey everyone!\n\n{self.LB}\n\nOne team."
+        )
+        out, ok = tp.accept_varied_copy(text, self.LB)
+        self.assertFalse(ok)
+        self.assertEqual(out, "")
+
+    def test_rejects_repeated_leaderboard(self):
+        text = f"A\n\n{self.LB}\n\nB\n\n{self.LB}\n\nC"
+        out, ok = tp.accept_varied_copy(text, self.LB)
+        self.assertFalse(ok)
+        self.assertEqual(out, "")
+
+
 if __name__ == "__main__":
     unittest.main()

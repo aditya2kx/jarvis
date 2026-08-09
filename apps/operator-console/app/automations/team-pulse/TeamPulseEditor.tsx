@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/select";
 import { DataTable } from "@/components/tables/DataTable";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
-import type { AutomationPostRow, AutomationRow } from "@/lib/bq/queries";
+import type { AutomationPostRow, AutomationRow, ReviewBonusOpenMeta } from "@/lib/bq/queries";
 import type { ClickUpNamedOption } from "@/lib/automations/clickupTypes";
 import { DEFAULT_WORKSPACE_ID } from "@/lib/automations/clickupTypes";
 import {
@@ -38,10 +38,25 @@ type Props = {
   channels: ClickUpNamedOption[];
   members: ClickUpNamedOption[];
   clickupError?: string;
+  reviewMeta?: ReviewBonusOpenMeta | null;
 };
 
 function labelFor(options: ClickUpNamedOption[], id: string): string {
   return options.find((o) => o.id === id)?.label ?? id;
+}
+
+function formatRollup(iso: string | null | undefined): string {
+  if (!iso) return "unknown";
+  const d = new Date(iso.endsWith("Z") || iso.includes("+") ? iso : `${iso}Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(d);
 }
 
 export function TeamPulseEditor({
@@ -50,6 +65,7 @@ export function TeamPulseEditor({
   channels,
   members,
   clickupError,
+  reviewMeta,
 }: Props) {
   const { run, isPending, stage, error } = useConsoleAction();
   const [enabled, setEnabled] = useState(() => {
@@ -177,6 +193,26 @@ export function TeamPulseEditor({
         </Badge>
         <span>{cadence}</span>
       </div>
+
+      {reviewMeta ? (
+        <p className="text-xs text-muted-foreground">
+          Open review-bonus period{" "}
+          <Badge variant="outline" className="font-normal">
+            {reviewMeta.period_start} – {reviewMeta.period_end}
+          </Badge>
+          {" · "}
+          rollup {formatRollup(reviewMeta.materialized_at_utc)} (CT). New Google
+          review bonuses appear after the nightly{" "}
+          <code className="rounded bg-muted px-1">process_reviews</code> rollup.
+        </p>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          No open review-bonus period in BQ yet — Preview/Post will show an empty
+          leaderboard until{" "}
+          <code className="rounded bg-muted px-1">process_reviews</code> writes
+          one.
+        </p>
+      )}
 
       <Card>
         <CardHeader>

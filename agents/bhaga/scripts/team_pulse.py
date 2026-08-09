@@ -53,6 +53,24 @@ def compose_message(template: str, leaderboard_md: str) -> str:
     return f"{template.strip()}\n\n{leaderboard_md.strip()}"
 
 
+def accept_varied_copy(text: str, leaderboard_md: str) -> tuple[str, bool]:
+    """Pure gate: exactly one verbatim leaderboard; reject multi-draft ``---``.
+
+    Returns ``(text, True)`` when acceptable, else ``("", False)``.
+    """
+    lb = (leaderboard_md or "").strip()
+    t = (text or "").strip()
+    if not t or not lb:
+        return "", False
+    if t.count(lb) != 1:
+        return "", False
+    # Draft separators like the 2026-08-08 triple-variation ClickUp post.
+    for line in t.splitlines():
+        if line.strip() == "---":
+            return "", False
+    return t, True
+
+
 def vary_motivational_copy(
     message: str,
     leaderboard_md: str,
@@ -62,7 +80,7 @@ def vary_motivational_copy(
     """Gemini paraphrase of greeting/closers; leaderboard must stay verbatim.
 
     Returns ``(text, varied)``. Falls back to ``message`` if no token / API
-    failure / leaderboard not preserved.
+    failure / leaderboard not preserved / multi-draft response.
     """
     import os
     import urllib.error
@@ -87,7 +105,8 @@ def vary_motivational_copy(
         "(one-team energy, keep momentum, collaborative) so each post feels fresh.\n"
         "3. Stay short, warm, professional. No emoji overload. "
         "No new employee names or dollar amounts.\n"
-        "4. Return ONLY the full message markdown, nothing else.\n\n"
+        "4. Return EXACTLY ONE full message markdown — no alternatives, "
+        "no numbered options, no --- separators between drafts.\n\n"
         f"LEADERBOARD (must appear verbatim):\n{lb}\n\n"
         f"CURRENT MESSAGE:\n{message}"
     )
@@ -108,11 +127,13 @@ def vary_motivational_copy(
             ((data.get("candidates") or [{}])[0].get("content") or {})
             .get("parts") or [{}]
         )[0].get("text") or ""
-        text = text.strip()
-        if not text or lb not in text:
-            logger.warning("team_pulse: Gemini drop/alter leaderboard — using template")
+        accepted, ok = accept_varied_copy(text, lb)
+        if not ok:
+            logger.warning(
+                "team_pulse: Gemini multi-draft or drop/alter leaderboard — using template"
+            )
             return message, False
-        return text, True
+        return accepted, True
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as e:
         logger.warning("team_pulse: Gemini vary failed: %s — using template", e)
         return message, False

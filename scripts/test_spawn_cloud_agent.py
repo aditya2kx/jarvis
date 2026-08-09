@@ -75,6 +75,7 @@ class TestSpawnCloudAgent(unittest.TestCase):
         )
         self.assertTrue(result.get("reused"))
         self.assertEqual(result["url"], "https://cursor.com/agents/bc-old")
+        self.assertEqual(result["agent_id"], "bc-old")
 
     @patch("spawn_cloud_agent._post_issue_comment")
     @patch("spawn_cloud_agent.ensure_remote_branch")
@@ -97,6 +98,52 @@ class TestAgentUrlRe(unittest.TestCase):
         self.assertIsNotNone(
             SCA.AGENT_URL_RE.search("https://cursor.com/agents/bc-deadbeef01")
         )
+
+
+class TestOpenHandoff(unittest.TestCase):
+    def test_normalize_and_deeplink(self):
+        self.assertEqual(
+            SCA.normalize_agent_url("https://cursor.com/agents/bc-abc"),
+            "https://cursor.com/agents/bc-abc",
+        )
+        self.assertEqual(
+            SCA.agent_id_from_ref("https://cursor.com/agents/bc-abc"),
+            "bc-abc",
+        )
+        self.assertIn("bcId=bc-abc", SCA.desktop_agent_deeplink("bc-abc"))
+
+    @patch("spawn_cloud_agent.subprocess.run")
+    def test_open_calls_deeplink_then_https(self, mock_run):
+        SCA.open_cloud_agent_handoff(
+            url="https://cursor.com/agents/bc-xyz",
+            agent_id="bc-xyz",
+            dry_run=False,
+        )
+        self.assertEqual(mock_run.call_count, 2)
+        first = mock_run.call_args_list[0].args[0]
+        second = mock_run.call_args_list[1].args[0]
+        self.assertEqual(first[0], "open")
+        self.assertIn("background-agent", first[1])
+        self.assertIn("bc-xyz", first[1])
+        self.assertEqual(second, ["open", "https://cursor.com/agents/bc-xyz"])
+
+    @patch("spawn_cloud_agent.agent_reachable", side_effect=[True])
+    @patch("spawn_cloud_agent.subprocess.check_output")
+    def test_find_existing_skips_unreachable(self, mock_out, mock_reach):
+        mock_out.return_value = (
+            "old https://cursor.com/agents/bc-dead\n"
+            "new https://cursor.com/agents/bc-live\n"
+        )
+        # Walk newest-first: live is reachable → return it (dead never probed).
+        url = SCA.find_existing_agent_url(7)
+        self.assertEqual(url, "https://cursor.com/agents/bc-live")
+        mock_reach.assert_called_once_with("bc-live")
+
+    @patch("spawn_cloud_agent.agent_reachable", return_value=False)
+    @patch("spawn_cloud_agent.subprocess.check_output")
+    def test_find_existing_all_unreachable(self, mock_out, _reach):
+        mock_out.return_value = "https://cursor.com/agents/bc-dead\n"
+        self.assertIsNone(SCA.find_existing_agent_url(7))
 
 
 if __name__ == "__main__":

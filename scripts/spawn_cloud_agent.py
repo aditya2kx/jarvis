@@ -36,8 +36,11 @@ import start_pr_session as S
 API_BASE = "https://api.cursor.com/v1"
 DEFAULT_REPO_URL = "https://github.com/aditya2kx/jarvis"
 AGENT_URL_RE = re.compile(
-    r"https://cursor\.com/agents\S*|https://www\.cursor\.com/agents\S*|\bbc-[a-zA-Z0-9]+\b"
+    r"https://(?:www\.)?cursor\.com/agents/(bc-[a-zA-Z0-9-]+)"
+    r"|https://(?:www\.)?cursor\.com/agents\S*"
+    r"|(bc-[a-zA-Z0-9-]+)"
 )
+AGENT_ID_RE = re.compile(r"(bc-[a-zA-Z0-9-]+)")
 
 
 def _cursor_token() -> str:
@@ -86,8 +89,95 @@ def seed_prompt_cloud_jam(
     )
 
 
+def agent_id_from_ref(ref: str) -> str:
+    """Extract ``bc-…`` id from a URL, bare id, or free text."""
+    if not ref:
+        return ""
+    m = AGENT_ID_RE.search(ref.strip())
+    return m.group(1) if m else ""
+
+
+def normalize_agent_url(url: str = "", agent_id: str = "") -> str:
+    """Prefer a canonical ``https://cursor.com/agents/<bcId>`` URL."""
+    aid = agent_id or agent_id_from_ref(url)
+    if aid:
+        return f"https://cursor.com/agents/{aid}"
+    return (url or "").strip().rstrip(".,)")
+
+
+def desktop_agent_deeplink(agent_id: str) -> str:
+    """Official Cursor Desktop deeplink for a Cloud Agent (``background-agent``)."""
+    return (
+        "cursor://anysphere.cursor-deeplink/background-agent"
+        f"?bcId={agent_id}"
+    )
+
+
+def open_cloud_agent_handoff(
+    *,
+    url: str = "",
+    agent_id: str = "",
+    dry_run: bool = False,
+) -> None:
+    """Best-effort auto-open: Desktop deeplink first, then HTTPS (parity with local intake).
+
+    Non-fatal: failures must not abort intake. Uses macOS ``open`` (same as
+    ``start_pr_session.open_cursor_handoff``).
+    """
+    aid = agent_id or agent_id_from_ref(url)
+    https = normalize_agent_url(url, aid)
+    if dry_run:
+        if aid:
+            print(f"(dry-run) would open {desktop_agent_deeplink(aid)}")
+        if https:
+            print(f"(dry-run) would open {https}")
+        return
+    # Desktop first (closest to local ``cursor://`` prompt handoff), then web.
+    if aid:
+        deeplink = desktop_agent_deeplink(aid)
+        print(f"Opening Cursor Desktop Agents → {deeplink}")
+        subprocess.run(["open", deeplink], check=False)
+    if https:
+        print(f"Opening Cloud Agent URL → {https}")
+        subprocess.run(["open", https], check=False)
+
+
+def agent_reachable(agent_id: str, *, agent_token: str | None = None) -> bool:
+    """True if GET /v1/agents/{id} succeeds (skip deleted/archived dogfoods on reuse)."""
+    if not agent_id:
+        return False
+    try:
+        token = agent_token if agent_token is not None else _cursor_token()
+    except SystemExit:
+        return True  # cannot probe without token — keep prior reuse behavior
+    req = urllib.request.Request(
+        f"{API_BASE}/agents/{agent_id}",
+        headers={"Authorization": _auth_header(token)},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        if exc.code in (404, 410):
+            return False
+        # 401/5xx: don't block intake on probe flakiness
+        return True
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return True
+    # Archived agents are soft-deleted for reuse purposes
+    status = str(
+        body.get("status")
+        or (body.get("agent") or {}).get("status")
+        or ""
+    ).upper()
+    if status in ("ARCHIVED", "DELETED"):
+        return False
+    return True
+
+
 def find_existing_agent_url(issue: int) -> str | None:
-    """Return an existing Cloud Agent URL already commented on *issue*, if any."""
+    """Return the newest still-reachable Cloud Agent URL commented on *issue*."""
     try:
         out = subprocess.check_output(
             [
@@ -100,11 +190,45 @@ def find_existing_agent_url(issue: int) -> str | None:
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
+    # Prefer the last match (most recent comment wins).
+    found: list[str] = []
     for line in out.splitlines():
         m = AGENT_URL_RE.search(line)
-        if m:
-            return m.group(0)
+        if not m:
+            continue
+        raw = m.group(0)
+        aid = m.group(1) if m.lastindex and m.group(1) else agent_id_from_ref(raw)
+        found.append(normalize_agent_url(raw, aid))
+    for url in reversed(found):
+        aid = agent_id_from_ref(url)
+        if not aid or agent_reachable(aid):
+            return url
+        print(f"Skipping unreachable Cloud Agent on #{issue}: {url}")
     return None
+
+
+def delete_cloud_agent(agent_id: str, *, dry_run: bool = False) -> None:
+    """DELETE /v1/agents/{id} — irreversible; used to clear dogfood spawns."""
+    aid = agent_id_from_ref(agent_id)
+    if not aid:
+        raise SystemExit(f"Not a Cloud Agent id: {agent_id!r}")
+    if dry_run:
+        print(f"(dry-run) would DELETE {API_BASE}/agents/{aid}")
+        return
+    req = urllib.request.Request(
+        f"{API_BASE}/agents/{aid}",
+        headers={"Authorization": _auth_header(_cursor_token())},
+        method="DELETE",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            resp.read()
+        print(f"Deleted Cloud Agent {aid}")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (404, 410):
+            print(f"Cloud Agent {aid} already gone ({exc.code})")
+            return
+        raise SystemExit(f"DELETE agent failed HTTP {exc.code}: {exc.read()[:300]!r}") from exc
 
 
 def _post_issue_comment(issue: int, body: str, *, dry_run: bool) -> None:
@@ -270,7 +394,7 @@ def spawn_for_issue(
         if existing:
             print(f"Reusing existing Cloud Agent on #{issue}: {existing}")
             return {
-                "agent_id": "",
+                "agent_id": agent_id_from_ref(existing),
                 "run_id": "",
                 "url": existing,
                 "reused": True,

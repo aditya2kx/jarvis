@@ -591,12 +591,17 @@ def _run_one_cloud(
         dry_run=dry_run,
     )
     url = result.get("url") or ""
+    agent_id = result.get("agent_id") or SCA.agent_id_from_ref(url)
     print("\n─── CLOUD HANDOFF ───")
     print("Do NOT implement this requirement in the current chat.")
     print(f"Open the Cursor Cloud Agent: {url}")
+    if agent_id:
+        print(f"Desktop deeplink: {SCA.desktop_agent_deeplink(agent_id)}")
     if issue_url:
         print(f"Tracking issue: {issue_url}")
     print("Continue from laptop / web / mobile — no local worktree required.")
+    # Parity with local intake's open_cursor_handoff: auto-open Desktop + HTTPS.
+    SCA.open_cloud_agent_handoff(url=url, agent_id=agent_id, dry_run=dry_run)
     return 0
 
 

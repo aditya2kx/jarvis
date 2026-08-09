@@ -338,6 +338,11 @@ Repo file [`.cursor/environment.json`](.cursor/environment.json) installs Python
 
 Laptop-only (not Cloud Agent): Touch ID / passkeys, launchd `com.jarvis.devsignals`, CHITRA `/tmp/jarvis-*` Slack inboxes, interactive OAuth on localhost.
 
+After spawn, intake **auto-opens** the Desktop Agents deeplink
+(`cursor://anysphere.cursor-deeplink/background-agent?bcId=…`) and the HTTPS
+URL (`https://cursor.com/agents/<id>`) via macOS `open` — same handoff feel as
+local worktree deeplinks. Open is best-effort and never fails intake.
+
 Escape hatches: `new_requirement.py --local`; listener `JARVIS_INTAKE_LOCAL=1`.
 
 | `clickup_palmetto_pat` | (legacy ClickUp PAT) | ClickUp PAT (older handle) |

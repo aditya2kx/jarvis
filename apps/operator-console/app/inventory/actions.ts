@@ -322,6 +322,7 @@ export async function clearCurrentQtyOverrideAction(
     return failAck(new Error("Current Qty overrides are disabled"));
   }
   try {
+    await operatorEmail(); // same IAP gate as set / usage-day clear
     await clearCurrentQtyOverride(DEFAULT_STORE, item, { skipRefresh: false });
     return finishOrderRecoWrite(false, {
       done: "Current Qty reset — order reco recalculated.",
@@ -360,6 +361,7 @@ export async function clearCurrentQtyOverridesAction(
     return failAck(new Error("Current Qty overrides are disabled"));
   }
   try {
+    await operatorEmail();
     await clearCurrentQtyOverrides(DEFAULT_STORE, items, { skipRefresh: false });
     return finishOrderRecoWrite(false, {
       done: "Current Qty reset — order reco recalculated.",

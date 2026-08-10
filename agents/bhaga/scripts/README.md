@@ -241,6 +241,8 @@ Sheets is the **source of truth**; BigQuery is a **parallel read-only mirror** u
 > **Order tub Manual pins (migration 055, Issue #225):** `inventory_order_tub_overrides` + rewrite of `tvf_order_reco_slot1` / `tvf_order_reco_slot_n` so Estimated dates can pin per-base Order Tubs (incl. 0); Actuals still win. Console `/inventory` drawer → one Apply → `refresh_order_reco`. Not model_* / Grafana — no new `BQ_TARGETS`/`GRAFANA_VIEWS` (same class as 048/052); freshness still via `inventory_order_reco` refresh.
 >
 > **Square fulfillment ops clock (migration 056, Issue #227):** additive columns on `square_transactions` (`fulfillment_type` / `schedule_type` / promised + close timestamps / `ops_at_local_iso` / `ops_date_local` / `ops_hour_local`). Enriched on API ingest via `skills/square_api/fulfillment.py`; optional repair via `skills/square_api/backfill_fulfillment_times.py`. Operator Console Sales (and Labor %) Hour Aggregation buckets on ops clock. No new `BQ_TARGETS`/`GRAFANA_VIEWS` — note only in `status.py`.
+>
+> **Current Qty overrides (migration 058, Issue #240):** `inventory_current_qty_overrides` + COALESCE into `vw_inventory_order_assistant.latest_reading`. Console `/inventory` Current Qty Sheet → MERGE/clear → `refresh_order_reco`. Not model_* / Grafana — no new `BQ_TARGETS`/`GRAFANA_VIEWS` (same class as 055); freshness via reco refresh. Deploy workflow also forces `update-traffic --to-latest` so sticky tags cannot leave new revisions at 0%.
 
 Three supported ways to add information. Recipes A & B keep the raw → model contract intact (read raw
 sheets, write derived tabs); Recipe C is for when the data isn't scraped yet. For what each field

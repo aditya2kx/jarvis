@@ -1801,6 +1801,13 @@ Deploys with `--no-traffic --tag prN` — **never** shifts traffic off the canon
 IAP URL. The tag host is a **separate IAP cookie jar** (Issue #208): sign in again
 on `prN---…`; do not mix hosts with the canonical URL mid-session.
 
+**Billing / lifecycle:** tagged preview revisions use `--min-instances=0` (scale-to-zero).
+Idle concurrent PR tags do **not** each hold a warm instance. You pay only for request
+time when someone hits that tag host (plus the shared Artifact Registry image). They are
+throwaway poke links: remove after merge with
+`python3 scripts/console_preview_deploy.py --pr N --remove-tags` (or the workflow’s
+`remove_tags: true` input). Canonical prod keeps `--min-instances=1` (Issue #175).
+
 **Link hygiene:** Cloud Run tag hostnames contain a literal `---` separator. In-app
 browsers (Cursor mobile) often mangle that hostname into a 404 host. Prefer a
 markdown hyperlink or paste the raw URL into Safari’s address bar. The deploy

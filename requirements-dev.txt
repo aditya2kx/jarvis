@@ -1,0 +1,2 @@
+# Dev / Cloud Agent verify deps (not needed in prod Cloud Run images).
+pytest>=8.0.0

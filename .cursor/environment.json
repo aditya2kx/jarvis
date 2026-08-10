@@ -1,4 +1,4 @@
 {
-  "install": "python3 -m pip install -r requirements.txt && cd apps/operator-console && npm ci",
+  "install": "python3 -m pip install -r requirements.txt -r requirements-dev.txt && bash scripts/install-git-hooks.sh && cd apps/operator-console && npm ci",
   "start": "echo 'Jarvis cloud env ready; BHAGA_SECRETS_BACKEND=gcp'"
 }

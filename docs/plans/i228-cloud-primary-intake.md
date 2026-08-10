@@ -22,6 +22,10 @@ isProject: false
 
 # Cloud-primary Jarvis intake (Issue #228)
 
+> **Ship tracker (living):** [`docs/plans/i228-cloud-lifecycle-tracker.md`](i228-cloud-lifecycle-tracker.md) —
+> built / confidence / verified-in-cloud for every jam→ship capability. Merge only when
+> every row is `Ship?=yes` or an explicit waiver.
+
 ## Locked decisions (jam + define-evidence approved)
 
 - **Option A:** both intake surfaces always spawn a **Cursor Cloud Agent**; continue that same agent from laptop/web/mobile.

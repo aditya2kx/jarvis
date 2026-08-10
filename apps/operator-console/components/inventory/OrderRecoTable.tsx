@@ -9,6 +9,7 @@ import {
   EstimateTubsDrawer,
   type EstimateTubRow,
 } from "@/components/inventory/EstimateTubsDrawer";
+import { CurrentQtyDrawer } from "@/components/inventory/CurrentQtyDrawer";
 import {
   normalizeDeliveryDate,
   type OrderRecoPivotedRow,
@@ -19,7 +20,8 @@ import { cn } from "@/lib/utils";
 const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-bad" };
 
 /**
- * Dual-date reco table with Order Tubs click → batch estimate drawer (Issue #225).
+ * Dual-date reco table with Order Tubs click → batch estimate drawer (Issue #225)
+ * and Current Qty click → sticky override (Issue #240).
  * Client-owned so cell renderers / click handlers stay on this side of the RSC boundary.
  */
 export function OrderRecoTable({
@@ -40,6 +42,7 @@ export function OrderRecoTable({
     [estimatedDates],
   );
   const [openDate, setOpenDate] = useState<string | null>(null);
+  const [qtyItem, setQtyItem] = useState<string | null>(null);
 
   const drawerRows: EstimateTubRow[] = useMemo(() => {
     if (!openDate) return [];
@@ -54,13 +57,47 @@ export function OrderRecoTable({
       }));
   }, [openDate, dates, rows]);
 
+  const qtyValue = useMemo(() => {
+    if (!qtyItem) return null;
+    const row = rows.find((r) => String(r.Item) === qtyItem);
+    if (!row) return null;
+    const n = Number(row["Current Qty"]);
+    return Number.isFinite(n) ? n : null;
+  }, [qtyItem, rows]);
+
   const columns = useMemo((): ColumnDef<OrderRecoPivotedRow>[] => {
     const cols: ColumnDef<OrderRecoPivotedRow>[] = [
       { accessorKey: "Item", header: "Item" },
       {
         accessorKey: "Current Qty",
+        enableSorting: false,
         header: "Current Qty",
-        meta: { format: { kind: "number", digits: 1 } },
+        cell: ({ getValue, row }) => {
+          const item = String(row.original.Item ?? "");
+          const rawVal = getValue();
+          const n = rawVal == null || rawVal === "" ? null : Number(rawVal);
+          const display = n == null || Number.isNaN(n) ? "—" : formatNumber(n, 1);
+          const canEditQty =
+            writable && item !== "TOTAL" && item !== "Blade";
+          if (!canEditQty) {
+            return <span className="tabular-nums">{display}</span>;
+          }
+          return (
+            <button
+              type="button"
+              className={cn(
+                "group inline-flex min-h-10 min-w-[3.5rem] items-center gap-1 rounded-md px-1.5 -mx-1.5",
+                "text-left tabular-nums hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              )}
+              onClick={() => setQtyItem(item)}
+              aria-label={`Edit Current Qty for ${item}`}
+              title={`Edit Current Qty · ${item}`}
+            >
+              <span>{display}</span>
+              <PencilIcon className="h-3 w-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+            </button>
+          );
+        },
       },
       {
         accessorKey: "Avg per day",
@@ -177,15 +214,25 @@ export function OrderRecoTable({
         pinLeft={["Item", "Current Qty", "Avg per day"]}
       />
       {writable ? (
-        <EstimateTubsDrawer
-          open={openDate != null}
-          onOpenChange={(o) => {
-            if (!o) setOpenDate(null);
-          }}
-          deliveryDate={openDate}
-          rows={drawerRows}
-          maxTubs={maxTubs}
-        />
+        <>
+          <EstimateTubsDrawer
+            open={openDate != null}
+            onOpenChange={(o) => {
+              if (!o) setOpenDate(null);
+            }}
+            deliveryDate={openDate}
+            rows={drawerRows}
+            maxTubs={maxTubs}
+          />
+          <CurrentQtyDrawer
+            open={qtyItem != null}
+            onOpenChange={(o) => {
+              if (!o) setQtyItem(null);
+            }}
+            item={qtyItem}
+            currentQty={qtyValue}
+          />
+        </>
       ) : null}
     </>
   );

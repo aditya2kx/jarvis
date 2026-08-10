@@ -947,6 +947,56 @@ export async function clearUsageDayOverride(
   );
 }
 
+/**
+ * Sticky Current Qty override (Issue #240). COALESCE'd in
+ * vw_inventory_order_assistant; rematerialize reco after write.
+ */
+export async function setCurrentQtyOverride(
+  store: string,
+  item: string,
+  quantityUnits: number,
+  by: string,
+  opts: RecoRefreshOpts = {},
+): Promise<void> {
+  const trimmed = item.trim();
+  if (!trimmed || trimmed === "TOTAL" || trimmed === "Blade") {
+    throw new Error(`setCurrentQtyOverride: invalid item '${item}'`);
+  }
+  if (!Number.isFinite(quantityUnits) || quantityUnits < 0) {
+    throw new Error(`setCurrentQtyOverride: quantity must be ≥ 0 (got ${quantityUnits})`);
+  }
+  await mutate(
+    `MERGE ${fq("inventory_current_qty_overrides")} T
+     USING (SELECT @store AS store, @item AS item) S
+     ON T.store = S.store AND T.item = S.item
+     WHEN MATCHED THEN UPDATE SET
+       quantity_units = @qty, updated_by = @by, updated_at = CURRENT_TIMESTAMP()
+     WHEN NOT MATCHED THEN INSERT
+       (store, item, quantity_units, updated_by, updated_at)
+       VALUES (@store, @item, @qty, @by, CURRENT_TIMESTAMP())`,
+    { store, item: trimmed, qty: quantityUnits, by },
+  );
+  if (!opts.skipRefresh) await refreshOrderReco(store);
+}
+
+/** Drop Current Qty override → ClickUp closing reading wins again. */
+export async function clearCurrentQtyOverride(
+  store: string,
+  item: string,
+  opts: RecoRefreshOpts = {},
+): Promise<void> {
+  const trimmed = item.trim();
+  if (!trimmed || trimmed === "TOTAL" || trimmed === "Blade") {
+    throw new Error(`clearCurrentQtyOverride: invalid item '${item}'`);
+  }
+  await mutate(
+    `DELETE FROM ${fq("inventory_current_qty_overrides")}
+     WHERE store = @store AND item = @item`,
+    { store, item: trimmed },
+  );
+  if (!opts.skipRefresh) await refreshOrderReco(store);
+}
+
 /** Read one audit row after override for threshold preview. */
 export async function readUsageDayAuditRow(
   store: string,

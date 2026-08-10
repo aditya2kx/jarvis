@@ -1754,7 +1754,8 @@ Automatic on push to `main` touching `apps/operator-console/**` via
 [`.github/workflows/operator-console-deploy.yml`](.github/workflows/operator-console-deploy.yml):
 builds the container, applies any pending `core/migrations/*.sql` (same runner as this pipeline —
 `core.datastore.ensure_schema()`), deploys `--no-allow-unauthenticated --iap --min-instances=1`
-(Issue #175 cold-start mitigation), then grants
+(Issue #175 cold-start mitigation), then **`gcloud run services update-traffic … --to-latest`**
+so sticky tags never leave the new revision at 0% (Issue #240), then grants
 `roles/iap.httpsResourceAccessor` to each operator account. No manual deploy step. `--iap` is
 idempotent against the one-time Console-only provisioning below — it does not redo it.
 

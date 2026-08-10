@@ -347,6 +347,7 @@ export async function moveRestockDate(
   await setRestockSchedule(store, toDate, by);
 
   if (orderRows.length) {
+    // Prefer Actuals over Manual pins when both exist (Actuals date makes overrides moot).
     await replaceRestockOrders(
       store,
       toDate,

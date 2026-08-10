@@ -997,6 +997,31 @@ export async function clearCurrentQtyOverride(
   if (!opts.skipRefresh) await refreshOrderReco(store);
 }
 
+/** Batch MERGE Current Qty overrides, then one reco refresh (Issue #240). */
+export async function applyCurrentQtyOverrides(
+  store: string,
+  rows: { item: string; quantityUnits: number }[],
+  by: string,
+  opts: RecoRefreshOpts = {},
+): Promise<void> {
+  for (const r of rows) {
+    await setCurrentQtyOverride(store, r.item, r.quantityUnits, by, { skipRefresh: true });
+  }
+  if (!opts.skipRefresh) await refreshOrderReco(store);
+}
+
+/** Clear overrides for many items, then one reco refresh. */
+export async function clearCurrentQtyOverrides(
+  store: string,
+  items: string[],
+  opts: RecoRefreshOpts = {},
+): Promise<void> {
+  for (const item of items) {
+    await clearCurrentQtyOverride(store, item, { skipRefresh: true });
+  }
+  if (!opts.skipRefresh) await refreshOrderReco(store);
+}
+
 /** Read one audit row after override for threshold preview. */
 export async function readUsageDayAuditRow(
   store: string,

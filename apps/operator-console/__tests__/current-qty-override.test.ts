@@ -75,4 +75,27 @@ describe("setCurrentQtyOverride / clearCurrentQtyOverride", () => {
       sqls.some((s) => s.includes("DELETE FROM") && s.includes("inventory_current_qty_overrides")),
     ).toBe(true);
   });
+
+  it("batch apply MERGEs each dirty row then refreshes once", async () => {
+    q.mockImplementation(async (sql: string) => {
+      if (sql.includes("order_reco_max_tubs")) return [{ value: "120" }];
+      if (sql.includes("vw_order_reco_next_dates")) return [{ slot: 1 }];
+      return [];
+    });
+    const { applyCurrentQtyOverrides } = await load();
+    await applyCurrentQtyOverrides(
+      "palmetto",
+      [
+        { item: "Mango", quantityUnits: 10 },
+        { item: "Acai", quantityUnits: 4 },
+      ],
+      "op@test",
+    );
+    const sqls = mutate.mock.calls.map((c) => String(c[0]));
+    const merges = sqls.filter(
+      (s) => s.includes("MERGE") && s.includes("inventory_current_qty_overrides"),
+    );
+    expect(merges.length).toBe(2);
+    expect(sqls.filter((s) => s.includes("tvf_order_reco_slot1")).length).toBe(1);
+  });
 });

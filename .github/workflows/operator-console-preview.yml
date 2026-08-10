@@ -1,0 +1,156 @@
+# PR-tagged Operator Console preview (Issue #228).
+# Deploys with --no-traffic --tag prN so canonical IAP URL traffic is untouched.
+name: Operator Console PR preview
+
+on:
+  push:
+    branches:
+      - "fix/**"
+    paths:
+      - "apps/operator-console/**"
+      - "scripts/console_preview_deploy.py"
+      - ".github/workflows/operator-console-preview.yml"
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "apps/operator-console/**"
+      - "scripts/console_preview_deploy.py"
+      - ".github/workflows/operator-console-preview.yml"
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number (tag = prN)"
+        required: true
+        type: string
+      ref:
+        description: "Git ref to build (branch or SHA); default = workflow ref"
+        required: false
+        type: string
+        default: ""
+      remove_tags:
+        description: "If true, only remove the prN tag (post-merge cleanup)"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PROJECT_ID: jarvis-bhaga-prod
+  REGION: us-central1
+  REGISTRY: us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images
+  SERVICE: operator-console
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+
+    steps:
+      - name: Resolve PR number + mode
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "pr=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+            echo "remove=false" >> "$GITHUB_OUTPUT"
+            echo "checkout_ref=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "pr=${{ inputs.pr }}" >> "$GITHUB_OUTPUT"
+            echo "remove=${{ inputs.remove_tags }}" >> "$GITHUB_OUTPUT"
+            if [[ -n "${{ inputs.ref }}" ]]; then
+              echo "checkout_ref=${{ inputs.ref }}" >> "$GITHUB_OUTPUT"
+            else
+              echo "checkout_ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            BRANCH="${GITHUB_REF_NAME}"
+            PR=$(gh pr list --repo "${{ github.repository }}" --head "$BRANCH" --state open --json number --jq '.[0].number // empty' || true)
+            if [[ -z "$PR" ]]; then
+              echo "No open PR for branch $BRANCH — skip"
+              echo "pr=" >> "$GITHUB_OUTPUT"
+              echo "remove=false" >> "$GITHUB_OUTPUT"
+              echo "checkout_ref=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "pr=$PR" >> "$GITHUB_OUTPUT"
+            echo "remove=false" >> "$GITHUB_OUTPUT"
+            echo "checkout_ref=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.pr != ''
+        with:
+          ref: ${{ steps.meta.outputs.checkout_ref }}
+
+      - name: Authenticate to GCP
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.pr != ''
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.pr != ''
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.pr != '' && steps.meta.outputs.remove != 'true'
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Deploy or cleanup tagged preview
+        id: deploy
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.pr != ''
+        env:
+          GCP_PROJECT: ${{ env.PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          PR="${{ steps.meta.outputs.pr }}"
+          if [[ "${{ steps.meta.outputs.remove }}" == "true" ]]; then
+            python3 scripts/console_preview_deploy.py --pr "$PR" --remove-tags | tee /tmp/preview.out
+          else
+            python3 scripts/console_preview_deploy.py --pr "$PR" | tee /tmp/preview.out
+          fi
+          URL=$(grep -E '^URL:' /tmp/preview.out | awk '{print $2}')
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Comment preview URL on PR
+        if: steps.meta.outputs.skip != 'true' && steps.meta.outputs.remove != 'true' && steps.deploy.outputs.url != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PR="${{ steps.meta.outputs.pr }}"
+          URL="${{ steps.deploy.outputs.url }}"
+          # Keep heredoc body indented for YAML (run: |); strip 10 spaces for the comment.
+          BODY=$(sed 's/^          //' <<EOF
+          **Operator Console PR preview** (tagged, 0% traffic)
+
+          Open (markdown link — tap this, do not trust auto-detected \`---\` URLs):
+          [pr${PR} preview](${URL})
+
+          Raw URL (paste into Safari address bar if the link is mangled):
+          \`${URL}\`
+
+          - Tag: \`pr${PR}\`
+          - Verified: HTTP 302 → Google IAP (script \`verify_preview_url\`)
+          - Canonical IAP URL traffic: unchanged
+          - Sign in again on this host (separate IAP cookie jar — Issue #208)
+          - Cloud Run tag hosts use \`---\` in the hostname; Cursor/mobile linkifiers often corrupt that — paste the raw URL if you see Google 404
+
+          Cleanup after merge: \`python3 scripts/console_preview_deploy.py --pr ${PR} --remove-tags\`
+          EOF
+          )
+          PREV=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" \
+            --jq '.[] | select(.user.type=="Bot" and (.body|contains("Operator Console PR preview"))) | .id' \
+            | head -1 || true)
+          if [[ -n "${PREV}" ]]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${PREV}" -f body="$BODY"
+          else
+            gh pr comment "$PR" --repo "${{ github.repository }}" --body "$BODY"
+          fi

@@ -328,8 +328,8 @@ def _make_intake_signal_comment(
 
 
 class TestIntakeCatchUp(unittest.TestCase):
-    def test_intake_dispatches_new_requirement(self):
-        """Intake signal from allowlisted author triggers _dispatch (which runs new_requirement.py)."""
+    def test_intake_cloud_skip_by_default(self):
+        """Default: intake is marked seen; GH Action owns Cloud Agent (no local _dispatch)."""
         with tempfile.TemporaryDirectory() as tmp:
             mdir = Path(tmp) / "metrics" / "pr_cost"
             mdir.mkdir(parents=True)
@@ -339,12 +339,30 @@ class TestIntakeCatchUp(unittest.TestCase):
                  patch.object(R, "METRICS_DIR", mdir), \
                  patch.object(L, "_INTAKE_SEEN_FILE", intake_seen), \
                  patch.object(L, "_gh_issue_comments", return_value=[comment]), \
+                 patch.dict(os.environ, {"JARVIS_INTAKE_LOCAL": "0"}, clear=False), \
+                 patch.object(L, "_dispatch", return_value="dispatched") as mock_dispatch:
+                n = L.catch_up(101)
+        self.assertEqual(n, 1)
+        mock_dispatch.assert_not_called()
+
+    def test_intake_dispatches_when_local_escape(self):
+        """JARVIS_INTAKE_LOCAL=1 restores sibling-worktree dispatch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            mdir = Path(tmp) / "metrics" / "pr_cost"
+            mdir.mkdir(parents=True)
+            intake_seen = mdir / "listener-intake-seen.json"
+            comment = _make_intake_signal_comment("add dark mode", "intake-uuid-local")
+            with patch.object(L, "METRICS_DIR", mdir), \
+                 patch.object(R, "METRICS_DIR", mdir), \
+                 patch.object(L, "_INTAKE_SEEN_FILE", intake_seen), \
+                 patch.object(L, "_gh_issue_comments", return_value=[comment]), \
+                 patch.dict(os.environ, {"JARVIS_INTAKE_LOCAL": "1"}, clear=False), \
                  patch.object(L, "_dispatch", return_value="dispatched") as mock_dispatch:
                 n = L.catch_up(101)
         self.assertEqual(n, 1)
         mock_dispatch.assert_called_once()
         call_args = mock_dispatch.call_args
-        self.assertEqual(call_args[0][0], "")  # branch is empty for intake
+        self.assertEqual(call_args[0][0], "")
         self.assertEqual(call_args[0][1].get("requirement"), "add dark mode")
 
     def test_intake_dedup_via_seen_file(self):
@@ -358,14 +376,13 @@ class TestIntakeCatchUp(unittest.TestCase):
                  patch.object(R, "METRICS_DIR", mdir), \
                  patch.object(L, "_INTAKE_SEEN_FILE", intake_seen), \
                  patch.object(L, "_gh_issue_comments", return_value=[comment]), \
+                 patch.dict(os.environ, {"JARVIS_INTAKE_LOCAL": "0"}, clear=False), \
                  patch.object(L, "_dispatch", return_value="dispatched") as mock_dispatch:
-                # First call — should dispatch
                 n1 = L.catch_up(101)
-                # Second call with same comment — should be deduped
                 n2 = L.catch_up(101)
         self.assertEqual(n1, 1)
-        self.assertEqual(n2, 0)  # deduped
-        self.assertEqual(mock_dispatch.call_count, 1)
+        self.assertEqual(n2, 0)
+        mock_dispatch.assert_not_called()
 
     def test_intake_unauthorized_author_skipped(self):
         """Intake signal from non-allowlisted author is ignored."""
@@ -384,8 +401,8 @@ class TestIntakeCatchUp(unittest.TestCase):
         self.assertEqual(n, 0)
         mock_dispatch.assert_not_called()
 
-    def test_intake_no_requirement_still_dispatches(self):
-        """Intake signal without a requirement text still dispatches (empty string)."""
+    def test_intake_no_requirement_still_counts(self):
+        """Intake without requirement text still counts as delivered (cloud-skip)."""
         from post_merge_lifecycle import format_signal
         sig_block = format_signal("intake", "", signal_id="intake-uuid-noreq", issue=101)
         comment = {
@@ -401,10 +418,11 @@ class TestIntakeCatchUp(unittest.TestCase):
                  patch.object(R, "METRICS_DIR", mdir), \
                  patch.object(L, "_INTAKE_SEEN_FILE", intake_seen), \
                  patch.object(L, "_gh_issue_comments", return_value=[comment]), \
+                 patch.dict(os.environ, {"JARVIS_INTAKE_LOCAL": "0"}, clear=False), \
                  patch.object(L, "_dispatch", return_value="dispatched") as mock_dispatch:
                 n = L.catch_up(101)
         self.assertEqual(n, 1)
-        mock_dispatch.assert_called_once()
+        mock_dispatch.assert_not_called()
 
     def test_intake_stale_signal_skipped_not_dispatched(self):
         """A signal older than _INTAKE_MAX_AGE_SEC must never re-open Cursor —
@@ -429,7 +447,7 @@ class TestIntakeCatchUp(unittest.TestCase):
             seen = json.loads(intake_seen.read_text())
             self.assertIn("intake-uuid-stale", seen)
 
-    def test_intake_recent_signal_still_dispatches(self):
+    def test_intake_recent_signal_still_counts(self):
         """A freshly-emitted signal (ts=now) must NOT be treated as stale."""
         with tempfile.TemporaryDirectory() as tmp:
             mdir = Path(tmp) / "metrics" / "pr_cost"
@@ -440,10 +458,11 @@ class TestIntakeCatchUp(unittest.TestCase):
                  patch.object(R, "METRICS_DIR", mdir), \
                  patch.object(L, "_INTAKE_SEEN_FILE", intake_seen), \
                  patch.object(L, "_gh_issue_comments", return_value=[comment]), \
+                 patch.dict(os.environ, {"JARVIS_INTAKE_LOCAL": "0"}, clear=False), \
                  patch.object(L, "_dispatch", return_value="dispatched") as mock_dispatch:
                 n = L.catch_up(101)
         self.assertEqual(n, 1)
-        mock_dispatch.assert_called_once()
+        mock_dispatch.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

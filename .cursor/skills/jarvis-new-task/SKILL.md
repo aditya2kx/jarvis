@@ -1,12 +1,12 @@
 ---
 name: jarvis-new-task
-description: Spin up an isolated worktree, branch, tracking issue, and brief for a new requirement. Invoke explicitly with the requirement text. First member of the /jarvis-* skill family.
+description: Spin up a Cursor Cloud Agent (default) or local worktree for a new requirement. Invoke explicitly with the requirement text. First member of the /jarvis-* skill family.
 disable-model-invocation: true
 ---
 
 # jarvis-new-task
 
-Use this skill when the operator signals a new, separate requirement that should live on its own branch and worktree.
+Use this skill when the operator signals a new, separate requirement that should live on its own branch and tracking issue.
 
 ## How to invoke
 
@@ -26,6 +26,8 @@ Type `/jarvis-new-task` followed by the requirement text, e.g.:
 python3 scripts/new_requirement.py --requirement "<operator's text>"
 ```
 
+**Default is cloud-primary** (Issue #228): the script creates/links the tracking issue, ensures a remote branch, and spawns a **Cursor Cloud Agent** (Grok 4.5 medium, Fast off). It comments the agent URL on the issue, then **auto-opens** the Desktop Agents deeplink (browser only if Desktop open fails). Pass `--local` only for dogfood/lifecycle tests that need a sibling worktree.
+
 **Link-not-create:** if the operator includes a GitHub issue URL or `#NN` reference in
 the requirement text (e.g. `/jarvis-new-task fix the auth bug #42`), the script
 auto-detects it and links the existing issue instead of creating a new one.  Pass it
@@ -36,17 +38,18 @@ through verbatim — do **not** ask a clarifying question about the issue number
 the requirement text is identical.  If no issue number is present the branch is
 `fix/<slug>` with an automatic `-2`, `-3`, … suffix on collision.
 
-4. After the script launches (it creates or links a worktree, branch, GitHub issue, and opens a new Cursor window), **stop**. Do NOT continue implementing in the current chat.
-5. Confirm to the operator that the new worktree is being set up and that they should continue work in the new Cursor window.
+4. After the script launches, **stop**. Do NOT continue implementing in the current chat.
+5. Confirm to the operator that a Cloud Agent was started (or a local worktree if `--local`) and that they should continue there — open the agent URL from the tracking issue comment.
 
 ## Hard rules
 
 - NEVER implement the requirement inline in the current chat or branch.
-- NEVER ask clarifying questions before running the script — the front door accepts rough text; refinement happens in the jam gate of the new chat space.
+- NEVER ask clarifying questions before running the script — the front door accepts rough text; refinement happens in the jam gate of the new chat space (Cloud Agent).
 - This is a one-shot action: run the script and stop.
 
 ## See also
 
 - `scripts/new_requirement.py` — the front door script
+- `scripts/spawn_cloud_agent.py` — Cloud Agents API helper
 - `.cursor/rules/new-requirement-intake.mdc` — canonical intake rule
 - Other `/jarvis-*` skills surface by typing `/jarvis` in the chat input

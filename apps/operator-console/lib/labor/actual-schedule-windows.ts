@@ -2,11 +2,21 @@ import {
   chicagoTodayIso,
   shiftCalendarDate,
   type DateWindow,
+  type Grain,
 } from "@/lib/filters/range";
 
 /** Period overlaps Chicago today (schedule overlay is eligible). */
 export function periodIncludesToday(win: DateWindow, todayIso = chicagoTodayIso()): boolean {
   return win.start <= todayIso && win.end >= todayIso;
+}
+
+/**
+ * Collapsing Aggregations (Weekday / Hour of day) average finished days only.
+ * Schedule stacks on those charts mix unfinished ADP shifts into Mon…Sun /
+ * hour-of-day rollups and mislead — keep schedule on day/week/month (+ coverage).
+ */
+export function scheduleStacksOnLaborCharts(grain: Grain): boolean {
+  return grain !== "weekday" && grain !== "hour";
 }
 
 /**

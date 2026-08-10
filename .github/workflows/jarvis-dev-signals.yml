@@ -150,15 +150,39 @@ jobs:
             --issue "$ISSUE" \
             ${REQ:+--requirement "$REQ"} || true)"
 
-          # Add jarvis-work label so the local watch-all daemon picks up this issue
-          # on its next poll cycle (within 30s). Required because new issues from
-          # /jarvis-new-task comments don't have the label yet.
+          # Add jarvis-work label so watchers / phase tooling pick up this issue.
           gh issue edit "$ISSUE" --repo "$REPO" \
             --add-label "jarvis-work" || echo "::warning::could not add jarvis-work label to #$ISSUE"
 
           IBODY="Intake signal queued from \`${AUTHOR}\`: \`${BODY:0:120}\`."$'\n\n'"${SIG}"
           gh issue comment "$ISSUE" --repo "$REPO" \
             --body "$IBODY" || echo "::warning::could not post intake signal on issue #$ISSUE"
+
+      - name: Spawn Cursor Cloud Agent
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+          BODY: ${{ github.event.comment.body }}
+          CURSOR_AGENT_TOKEN: ${{ secrets.CURSOR_AGENT_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          STRIPPED="${BODY#/jarvis-new-task}"
+          REQ="${STRIPPED# }"
+          TITLE="$(gh issue view "$ISSUE" --repo "$REPO" --json title -q .title)"
+          # Single-line slug (avoid YAML multiline python -c inside run: |)
+          SLUG="$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/(.{40}).*/\1/; s/-+$//' )"
+          SLUG="${SLUG:-requirement}"
+          BRANCH="fix/i${ISSUE}-${SLUG}"
+          if [ -z "${CURSOR_AGENT_TOKEN:-}" ]; then
+            echo "::error::CURSOR_AGENT_TOKEN secret missing — cannot spawn Cloud Agent"
+            exit 1
+          fi
+          # spawn_cloud_agent reads CURSOR_AGENT_TOKEN from the environment
+          python3 scripts/spawn_cloud_agent.py \
+            --issue "$ISSUE" \
+            --branch "$BRANCH" \
+            --requirement "${REQ:-$TITLE}"
+
 
   # ── Operator comment signal (any issue/PR comment from aditya2kx) ───────────
   # Loop guard: skip comments that already contain 'jarvis-signal' so the

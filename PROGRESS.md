@@ -12,6 +12,10 @@
 
 **Key changes (PR #235):** `acceptVariedCopy` / `accept_varied_copy` reject multi-draft; `useConsoleAction` real busy lock; pre-ClickUp once recheck; Team Pulse open-period + rollup freshness chip. Leaderboard dollars match Payroll Review bonus column (same `model_review_bonus_period`).
 
+## 2026-08-09 — Cloud-primary /jarvis-new-task intake (Issue #228)
+
+**Scope:** IDE + GitHub `/jarvis-new-task` spawn Cursor Cloud Agents by default (`spawn_cloud_agent.py`); local worktree is `--local` / `JARVIS_INTAKE_LOCAL=1` escape. Secrets via `BHAGA_SECRETS_BACKEND=gcp`. PR #234.
+
 ## 2026-08-08 — Sales/Labor hour grain + Labor % toggle (Issue #227)
 
 **Scope:** Hour of day Aggregation on Sales + Labor; Total|Average Stat on Weekday/Hour; Labor Hours | % of net sales chart toggle; scheduled-order ops clock on `square_transactions` (migration 056).

@@ -413,47 +413,39 @@ class TestAssertion10(unittest.TestCase):
         self.assertTrue(passed, msg=detail)
 
     def _make_nr_stub(self, scripts_dir: Path) -> None:
-        """Write a new_requirement.py stub that passes the wiring checks."""
+        """Write a new_requirement.py stub that passes the local-path wiring checks."""
         (scripts_dir / "new_requirement.py").write_text(
             "# stub\n"
-            "seed_prompt_jam = True\n"
-            "# make_deeplink(seed, mode=mode, model=model)\n"
+            "def start_session_in_worktree():\n"
+            "    pass\n"
         )
 
-    def test_fails_when_seed_missing_model_selection_line(self):
-        """seed_prompt_jam that lacks the operator model-selection instruction must fail."""
+    def test_fails_when_ask_mode_default_missing(self):
+        """start_pr_session without DEFAULT_JAM_HANDOFF_MODE = ask must fail."""
         with tempfile.TemporaryDirectory() as tmp:
             scripts_dir = Path(tmp) / "scripts"
             scripts_dir.mkdir()
             self._make_nr_stub(scripts_dir)
-            # Ask mode + diagnosis line but missing model-selection line
             (scripts_dir / "start_pr_session.py").write_text(textwrap.dedent("""\
-                DEFAULT_JAM_HANDOFF_MODE = "ask"
-                DEFAULT_JAM_HANDOFF_MODEL = "claude-opus-4-8-thinking-high"
+                DEFAULT_JAM_HANDOFF_MODE = "agent"
                 def seed_prompt_jam(key, *, brief_rel, requirement=None):
                     return "jam\\nRead-only diagnosis is expected during jam."
-                def make_deeplink(text, *, mode="agent", model=None):
-                    return f"cursor://x?text={text}&mode={mode}"
             """))
             with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
                 passed, detail = vl.assert_10_jam_handoff_ask_mode_honest()
-        self.assertFalse(passed, f"Should fail without model-selection line: {detail}")
-        self.assertIn("model-selection", detail)
+        self.assertFalse(passed, f"Should fail without ask default: {detail}")
+        self.assertIn("DEFAULT_JAM_HANDOFF_MODE", detail)
 
     def test_fails_when_seed_missing_diagnosis_line(self):
-        """seed_prompt_jam that lacks the read-only-diagnosis line must fail."""
+        """Jam seeds that lack read-only-diagnosis guidance must fail."""
         with tempfile.TemporaryDirectory() as tmp:
             scripts_dir = Path(tmp) / "scripts"
             scripts_dir.mkdir()
             self._make_nr_stub(scripts_dir)
-            # Has model-selection line but missing diagnosis line
             (scripts_dir / "start_pr_session.py").write_text(textwrap.dedent("""\
                 DEFAULT_JAM_HANDOFF_MODE = "ask"
-                DEFAULT_JAM_HANDOFF_MODEL = "claude-opus-4-8-thinking-high"
                 def seed_prompt_jam(key, *, brief_rel, requirement=None):
-                    return "jam\\ndeeplink cannot pre-select the model."
-                def make_deeplink(text, *, mode="agent", model=None):
-                    return f"cursor://x?text={text}&mode={mode}"
+                    return "jam only"
             """))
             with patch("verify_lifecycle.REPO_ROOT", Path(tmp)):
                 passed, detail = vl.assert_10_jam_handoff_ask_mode_honest()

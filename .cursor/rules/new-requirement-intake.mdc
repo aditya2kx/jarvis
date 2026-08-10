@@ -6,7 +6,7 @@ alwaysApply: true
 # New-requirement intake
 
 <!-- canonical:intake -->
-**When the operator signals a new requirement mid-session, the agent MUST invoke the `/jarvis-new-task` Cursor Skill (which runs `scripts/new_requirement.py`) to spin up an isolated worktree, branch, tracking issue, and brief — and MUST NEVER implement the requirement inline in the current chat.**
+**When the operator signals a new requirement mid-session, the agent MUST invoke the `/jarvis-new-task` Cursor Skill (which runs `scripts/new_requirement.py`) to spin up an isolated branch, tracking issue, and Cursor Cloud Agent — and MUST NEVER implement the requirement inline in the current chat.**
 
 ## The front door: `/jarvis-new-task`
 
@@ -22,13 +22,14 @@ This invokes the `.cursor/skills/jarvis-new-task/SKILL.md` skill, which runs:
 python3 scripts/new_requirement.py --requirement "<operator's text>"
 ```
 
-The script:
-1. Creates a sibling git worktree on a fresh branch off `origin/main`
-2. Runs `start_pr_session.py` (cost session + brief + launcher)
-3. Opens Cursor in a new window with a jam-mode deeplink
-4. Creates a GitHub tracking issue and seeds the phase cache in both repos
+The script (cloud-primary, Issue #228):
+1. Creates or links a GitHub tracking issue and a remote branch off `origin/main`
+2. Spawns a **Cursor Cloud Agent** (`scripts/spawn_cloud_agent.py`) and comments the agent URL on the issue
+3. Operator continues that agent from laptop / web / mobile (no mandatory local worktree)
 
-**After `/jarvis-new-task` fires, stop.** The agent must NOT ask clarifying questions before running — the front door accepts rough text; refinement happens in the jam gate of the new chat space.
+Pass `--local` only for dogfood/lifecycle tests that need a sibling worktree + Cursor deeplink.
+
+**After `/jarvis-new-task` fires, stop.** The agent must NOT ask clarifying questions before running — the front door accepts rough text; refinement happens in the jam gate of the new Cloud Agent chat.
 
 ## Agent behaviour (soft guidance — does NOT block)
 
@@ -45,10 +46,11 @@ The agent owns the "never inline" constraint; the operator owns the explicit inv
 Implementing a new requirement in an existing chat's branch:
 - Mixes unrelated concerns in one diff (CI, review, rollback all become harder)
 - Loses the phase-tracking, cost attribution, and evidence trail that `new_requirement.py` provides
-- Violates the worktree isolation invariant that lets concurrent PRs co-exist
+- Violates the isolation invariant that lets concurrent PRs co-exist
 
 ## See also
 
 - `.cursor/skills/jarvis-new-task/SKILL.md` — the `/jarvis-new-task` Cursor Skill
+- `scripts/spawn_cloud_agent.py` — Cloud Agents API helper
 - `self-drive.mdc` — self-drive rule and operator-reserved gates
-- `jarvis-hard-lessons.mdc` §19 — "Every new requirement MUST start in an isolated worktree"
+- `jarvis-hard-lessons.mdc` §19 — every new requirement starts in an isolated branch / Cloud Agent

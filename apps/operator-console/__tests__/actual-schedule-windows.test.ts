@@ -4,6 +4,7 @@ import {
   extendEndForScheduleHorizon,
   laborChartWindow,
   periodIncludesToday,
+  scheduleStacksOnLaborCharts,
   scheduledShiftWindow,
 } from "@/lib/labor/actual-schedule-windows";
 import type { DateWindow } from "@/lib/filters/range";
@@ -58,5 +59,14 @@ describe("actual / schedule windows", () => {
     expect(
       laborChartWindow(win("2026-07-01", "2026-07-15"), today, "2026-08-16").end,
     ).toBe("2026-07-15");
+  });
+
+  it("scheduleStacksOnLaborCharts: collapsing grains are finished-only", () => {
+    expect(scheduleStacksOnLaborCharts("day")).toBe(true);
+    expect(scheduleStacksOnLaborCharts("week")).toBe(true);
+    expect(scheduleStacksOnLaborCharts("month")).toBe(true);
+    expect(scheduleStacksOnLaborCharts("all")).toBe(true);
+    expect(scheduleStacksOnLaborCharts("weekday")).toBe(false);
+    expect(scheduleStacksOnLaborCharts("hour")).toBe(false);
   });
 });

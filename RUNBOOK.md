@@ -322,6 +322,33 @@ gcloud run services update bhaga-webhook \
 > ```
 > `hydrate` reads from GCP Secret Manager via ADC (no `gcloud` binary required) and writes to
 > Keychain without printing the value. Works for ClickUp, Google, Square, ADP, and Slack.
+
+### Cloud Agent bootstrap (Issue #228)
+
+Cursor Cloud Agents for Jarvis intake need:
+
+| Secret / env | Where | Purpose |
+|---|---|---|
+| `CURSOR_AGENT_TOKEN` | GitHub Actions secret + local shell for IDE spawn | `POST https://api.cursor.com/v1/agents` |
+| `BHAGA_SECRETS_BACKEND=gcp` | Cloud Agent env (dashboard or spawn `envVars`) | Read secrets from Secret Manager, not Keychain |
+| `GCP_PROJECT=jarvis-bhaga-prod` | Cloud Agent env | SM project |
+| ADC / SA JSON | Cursor Cloud Agents dashboard Secrets | `secretAccessor` on the inventory above |
+
+Repo file [`.cursor/environment.json`](.cursor/environment.json) installs Python deps + `apps/operator-console` `npm ci`.
+
+Laptop-only (not Cloud Agent): Touch ID / passkeys, launchd `com.jarvis.devsignals`, CHITRA `/tmp/jarvis-*` Slack inboxes, interactive OAuth on localhost.
+
+After spawn, intake **auto-opens** the Desktop Agents deeplink
+(`cursor://anysphere.cursor-deeplink/background-agent?bcId=…`) via macOS `open`.
+If Desktop open succeeds, the browser is **not** opened (URL stays on the issue
+comment). HTTPS (`https://cursor.com/agents/<id>`) is the fallback when Desktop
+open fails. Open is best-effort and never fails intake. Spawn always sets
+Cloud Agent `model` to Grok 4.5 medium with Fast off (`scripts/spawn_cloud_agent.py`
+`DEFAULT_CLOUD_MODEL_*`) — omitting `model` previously fell through to the
+user/team default (observed: high-fast).
+
+Escape hatches: `new_requirement.py --local`; listener `JARVIS_INTAKE_LOCAL=1`.
+
 | `clickup_palmetto_pat` | (legacy ClickUp PAT) | ClickUp PAT (older handle) |
 | `clickup` | (legacy ClickUp) | Legacy ClickUp credential |
 
@@ -1758,9 +1785,40 @@ builds the container, applies any pending `core/migrations/*.sql` (same runner a
 `roles/iap.httpsResourceAccessor` to each operator account. No manual deploy step. `--iap` is
 idempotent against the one-time Console-only provisioning below — it does not redo it.
 
-**Pre-merge review-deploy** (no PR preview hostname): build/push the branch image and
-`gcloud run deploy operator-console … --min-instances=1` onto the same service URL below;
-hard-refresh after deploy. Next `main` push restores the merged SHA.
+**Pre-merge PR preview (tagged revision — preferred for Cloud Agents / §4):**
+use [`scripts/console_preview_deploy.py`](scripts/console_preview_deploy.py) or the
+`Operator Console PR preview` workflow (`workflow_dispatch` with `pr: N`):
+
+```bash
+# From a machine/CI with gcloud + ADC (or the GH Action with WIF):
+python3 scripts/console_preview_deploy.py --pr 234
+# → https://pr234---operator-console-887772634501.us-central1.run.app
+# cleanup after merge:
+python3 scripts/console_preview_deploy.py --pr 234 --remove-tags
+```
+
+Deploys with `--no-traffic --tag prN` — **never** shifts traffic off the canonical
+IAP URL. The tag host is a **separate IAP cookie jar** (Issue #208): sign in again
+on `prN---…`; do not mix hosts with the canonical URL mid-session.
+
+**Billing / lifecycle:** tagged preview revisions use `--min-instances=0` (scale-to-zero).
+Idle concurrent PR tags do **not** each hold a warm instance. You pay only for request
+time when someone hits that tag host (plus the shared Artifact Registry image). They are
+throwaway poke links: remove after merge with
+`python3 scripts/console_preview_deploy.py --pr N --remove-tags` (or the workflow’s
+`remove_tags: true` input). Canonical prod keeps `--min-instances=1` (Issue #175).
+
+**Link hygiene:** Cloud Run tag hostnames contain a literal `---` separator. In-app
+browsers (Cursor mobile) often mangle that hostname into a 404 host. Prefer a
+markdown hyperlink or paste the raw URL into Safari’s address bar. The deploy
+helper runs `verify_preview_url` (expects HTTP 302 → `accounts.google.com`) before
+printing the URL so dead links are not handed to the operator.
+
+**Legacy same-URL review-deploy** (overwrites the live service image until next
+`main` push): build/push the branch image and
+`gcloud run deploy operator-console … --min-instances=1` onto the sole operator URL
+below; hard-refresh after deploy. Prefer tagged preview instead so prod traffic
+stays on the last `main` revision.
 
 ### One-time IAP provisioning (Console-only, cannot be scripted)
 

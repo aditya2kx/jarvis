@@ -413,7 +413,8 @@ range/grain contract from `lib/filters/range.ts` + `lib/filters/period.ts`:
   `created_at_local_iso` when ops_* is null. Labor Hour explodes ADP
   `adp_shifts` in→out across clock hours (same DATE anchors) and pairs %
   with ops-hour Square net sales; schedule stacks / scheduled concurrent are
-  hidden (JSON ranges aren't hour-bucketed). Hour extract always goes through
+  hidden on Hour and Weekday (collapsing grains = finished clocked rollups
+  only; Hour also lacks JSON range hour-bucketing). Hour extract always goes through
   `DATETIME(..., 'America/Chicago')` — bare `EXTRACT(HOUR FROM TIMESTAMP(...))`
   returns UTC and during CDT maps 7pm CT → hour 0 / "12am". `hourBucketSql`
   maps 0–23 onto DATE anchors `1970-01-01`…`1970-01-24`; labels are `12am`…`11pm`.
@@ -496,7 +497,9 @@ same contract as Sales).
 
 - **L1** one bar chart: Period + Aggregation (incl. Weekday / Hour of day) +
   Stat Average|Total on those grains; Hours | % of Square net sales
-  (`labor $ / net_sales`); schedule stacks omitted on Hour.
+  (`labor $ / net_sales`); schedule stacks omitted on Weekday / Hour
+  (finished clocked rollups only; day/week/month still stack when Period
+  includes today).
 - **L2** avg concurrent (same Aggregation/Stat; Hour = fractional headcount
   in that clock hour).
 - **L3** hours-per-person bar for the same Period (`adp_shifts`).

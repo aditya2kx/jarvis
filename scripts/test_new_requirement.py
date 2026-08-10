@@ -64,7 +64,7 @@ class TestExtractIssueRef(unittest.TestCase):
         rc = N.main([
             "--requirement", "link not create #87 demo",
             "--branch", "fix/test-link",
-            "--dry-run",
+            "--dry-run", "--local",
         ])
         self.assertEqual(rc, 0)
         # init_phase_tracking must be called with existing_issue=87
@@ -107,7 +107,7 @@ class TestNewRequirement(unittest.TestCase):
             Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-launch.html"),
             "cursor://test",
         )
-        rc = N.main(["--requirement", "Test requirement", "--branch", "fix/test-req", "--dry-run"])
+        rc = N.main(["--requirement", "Test requirement", "--branch", "fix/test-req", "--dry-run", "--local"])
         self.assertEqual(rc, 0)
         mock_wt.assert_called_once()
         mock_session.assert_called_once()
@@ -207,7 +207,7 @@ class TestDefaultBase(unittest.TestCase):
             Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-launch.html"),
             "cursor://test",
         )
-        N.main(["--requirement", "Test base default", "--branch", "fix/test-base", "--dry-run"])
+        N.main(["--requirement", "Test base default", "--branch", "fix/test-base", "--dry-run", "--local"])
         _, kwargs = mock_wt.call_args
         self.assertEqual(kwargs.get("base"), "origin/main")
 
@@ -226,7 +226,7 @@ class TestDefaultBase(unittest.TestCase):
             "--requirement", "Test base override",
             "--branch", "fix/test-base-override",
             "--base", "feat/some-inflight-branch",
-            "--dry-run",
+            "--dry-run", "--local",
         ])
         _, kwargs = mock_wt.call_args
         self.assertEqual(kwargs.get("base"), "feat/some-inflight-branch")
@@ -369,7 +369,7 @@ class TestFetchIssueContext(unittest.TestCase):
         rc = N.main([
             "--requirement", "let's work on this",
             "--issue", "112",
-            "--dry-run",
+            "--dry-run", "--local",
         ])
         self.assertEqual(rc, 0)
 
@@ -411,7 +411,7 @@ class TestFetchIssueContext(unittest.TestCase):
             rc = N.main([
                 "--requirement", "branch slug uniqueness",
                 "--issue", "97",
-                "--dry-run",
+                "--dry-run", "--local",
             ])
         self.assertEqual(rc, 0)
         output = buf.getvalue()
@@ -439,7 +439,7 @@ class TestFetchIssueContext(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             rc = N.main([
                 "--requirement", "collision test word",
-                "--dry-run",
+                "--dry-run", "--local",
             ])
         self.assertEqual(rc, 0)
         output = buf.getvalue()

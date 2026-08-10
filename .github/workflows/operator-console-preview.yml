@@ -127,24 +127,25 @@ jobs:
           set -euo pipefail
           PR="${{ steps.meta.outputs.pr }}"
           URL="${{ steps.deploy.outputs.url }}"
-          BODY=$(cat <<EOF
-**Operator Console PR preview** (tagged, 0% traffic)
+          # Keep heredoc body indented for YAML (run: |); strip 10 spaces for the comment.
+          BODY=$(sed 's/^          //' <<EOF
+          **Operator Console PR preview** (tagged, 0% traffic)
 
-Open (markdown link — tap this, do not trust auto-detected `---` URLs):
-[pr${PR} preview](${URL})
+          Open (markdown link — tap this, do not trust auto-detected \`---\` URLs):
+          [pr${PR} preview](${URL})
 
-Raw URL (paste into Safari address bar if the link is mangled):
-\`${URL}\`
+          Raw URL (paste into Safari address bar if the link is mangled):
+          \`${URL}\`
 
-- Tag: \`pr${PR}\`
-- Verified: HTTP 302 → Google IAP (script \`verify_preview_url\`)
-- Canonical IAP URL traffic: unchanged
-- Sign in again on this host (separate IAP cookie jar — Issue #208)
-- Cloud Run tag hosts use \`---\` in the hostname; Cursor/mobile linkifiers often corrupt that — paste the raw URL if you see Google 404
+          - Tag: \`pr${PR}\`
+          - Verified: HTTP 302 → Google IAP (script \`verify_preview_url\`)
+          - Canonical IAP URL traffic: unchanged
+          - Sign in again on this host (separate IAP cookie jar — Issue #208)
+          - Cloud Run tag hosts use \`---\` in the hostname; Cursor/mobile linkifiers often corrupt that — paste the raw URL if you see Google 404
 
-Cleanup after merge: \`python3 scripts/console_preview_deploy.py --pr ${PR} --remove-tags\`
-EOF
-)
+          Cleanup after merge: \`python3 scripts/console_preview_deploy.py --pr ${PR} --remove-tags\`
+          EOF
+          )
           PREV=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" \
             --jq '.[] | select(.user.type=="Bot" and (.body|contains("Operator Console PR preview"))) | .id' \
             | head -1 || true)

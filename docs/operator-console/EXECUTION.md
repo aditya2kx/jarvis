@@ -405,7 +405,9 @@ server's local tz.
 - Trigger on push to `main` touching `apps/operator-console/**`.
 - Steps: checkout → auth to GCP (WIF, same pattern as `.github/workflows/deploy.yml`)
   → build container → push to Artifact Registry → `gcloud run deploy operator-console
-  --image … --region … --no-allow-unauthenticated --iap` → `gcloud iap web
+  --image … --region … --no-allow-unauthenticated --iap` →
+  `gcloud run services update-traffic operator-console --to-latest` (Issue #240: sticky
+  tags must not leave new revisions at 0%) → `gcloud iap web
   add-iam-policy-binding --resource-type=cloud-run --service=operator-console
   --member=user:<operator-workspace-email> --role=roles/iap.httpsResourceAccessor` (repeated per
   operator account).

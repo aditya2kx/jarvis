@@ -10,6 +10,10 @@ import {
   type EstimateTubRow,
 } from "@/components/inventory/EstimateTubsDrawer";
 import {
+  CurrentQtyDrawer,
+  type CurrentQtyRow,
+} from "@/components/inventory/CurrentQtyDrawer";
+import {
   normalizeDeliveryDate,
   type OrderRecoPivotedRow,
 } from "@/lib/inventory/orderRecoPivot";
@@ -19,7 +23,8 @@ import { cn } from "@/lib/utils";
 const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-bad" };
 
 /**
- * Dual-date reco table with Order Tubs click → batch estimate drawer (Issue #225).
+ * Dual-date reco table with Order Tubs click → batch estimate drawer (Issue #225)
+ * and Current Qty click → batch sticky override Sheet (Issue #240).
  * Client-owned so cell renderers / click handlers stay on this side of the RSC boundary.
  */
 export function OrderRecoTable({
@@ -40,6 +45,7 @@ export function OrderRecoTable({
     [estimatedDates],
   );
   const [openDate, setOpenDate] = useState<string | null>(null);
+  const [qtyOpen, setQtyOpen] = useState(false);
 
   const drawerRows: EstimateTubRow[] = useMemo(() => {
     if (!openDate) return [];
@@ -54,13 +60,68 @@ export function OrderRecoTable({
       }));
   }, [openDate, dates, rows]);
 
+  const qtyRows: CurrentQtyRow[] = useMemo(
+    () =>
+      rows
+        .filter((r) => r.Item !== "TOTAL" && r.Item !== "Blade")
+        .map((r) => ({
+          item: String(r.Item),
+          currentQty: Number(r["Current Qty"] ?? 0),
+        })),
+    [rows],
+  );
+
   const columns = useMemo((): ColumnDef<OrderRecoPivotedRow>[] => {
     const cols: ColumnDef<OrderRecoPivotedRow>[] = [
       { accessorKey: "Item", header: "Item" },
       {
         accessorKey: "Current Qty",
-        header: "Current Qty",
-        meta: { format: { kind: "number", digits: 1 } },
+        enableSorting: false,
+        header: () => (
+          <span className="inline-flex items-center gap-1">
+            Current Qty
+            {writable ? (
+              <button
+                type="button"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label="Edit Current Qty for all bases"
+                title="Edit Current Qty"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setQtyOpen(true);
+                }}
+              >
+                <PencilIcon className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+          </span>
+        ),
+        cell: ({ getValue, row }) => {
+          const item = String(row.original.Item ?? "");
+          const rawVal = getValue();
+          const n = rawVal == null || rawVal === "" ? null : Number(rawVal);
+          const display = n == null || Number.isNaN(n) ? "—" : formatNumber(n, 1);
+          const canEditQty =
+            writable && item !== "TOTAL" && item !== "Blade";
+          if (!canEditQty) {
+            return <span className="tabular-nums">{display}</span>;
+          }
+          return (
+            <button
+              type="button"
+              className={cn(
+                "group inline-flex min-h-10 min-w-[3.5rem] items-center gap-1 rounded-md px-1.5 -mx-1.5",
+                "text-left tabular-nums hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              )}
+              onClick={() => setQtyOpen(true)}
+              aria-label={`Edit Current Qty (all bases)`}
+              title="Edit Current Qty"
+            >
+              <span>{display}</span>
+              <PencilIcon className="h-3 w-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+            </button>
+          );
+        },
       },
       {
         accessorKey: "Avg per day",
@@ -177,15 +238,22 @@ export function OrderRecoTable({
         pinLeft={["Item", "Current Qty", "Avg per day"]}
       />
       {writable ? (
-        <EstimateTubsDrawer
-          open={openDate != null}
-          onOpenChange={(o) => {
-            if (!o) setOpenDate(null);
-          }}
-          deliveryDate={openDate}
-          rows={drawerRows}
-          maxTubs={maxTubs}
-        />
+        <>
+          <EstimateTubsDrawer
+            open={openDate != null}
+            onOpenChange={(o) => {
+              if (!o) setOpenDate(null);
+            }}
+            deliveryDate={openDate}
+            rows={drawerRows}
+            maxTubs={maxTubs}
+          />
+          <CurrentQtyDrawer
+            open={qtyOpen}
+            onOpenChange={setQtyOpen}
+            rows={qtyRows}
+          />
+        </>
       ) : null}
     </>
   );

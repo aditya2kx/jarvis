@@ -245,6 +245,12 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
 `vw_order_reco_combined`, not a single list. Layout:
 
 - **Frozen identity columns** (left, pinned): `Item`, `Current Qty`, `Avg per day`.
+  **Current Qty** is editable when `FEATURES.writeRestock` is on (Issue #240): click the
+  cell or header pencil → right Sheet listing **all bases** (same pattern as Order Tubs)
+  → Apply once → sticky `inventory_current_qty_overrides` MERGEs (COALESCE into
+  `vw_inventory_order_assistant`) → **inline** `refresh_order_reco` so On hand / Order
+  tubs / Days left / Base runway converge before the Sheet closes (not async-enqueue).
+  Reset all clears overrides so ClickUp closings win again.
 - **Per-date column group ×N** (live dates from `vw_order_reco_next_dates`,
   capped by `order_reco_max_slots` default 4 — migration 052; includes
   **today** until a base closing for today exists — migration 051): `On Hand

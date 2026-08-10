@@ -12,6 +12,10 @@ import {
   clearUsageDayOverride,
   readUsageDayAuditRow,
   replaceOrderTubOverrides,
+  setCurrentQtyOverride,
+  clearCurrentQtyOverride,
+  applyCurrentQtyOverrides,
+  clearCurrentQtyOverrides,
   type RestockAction,
   type UsageDayOverrideMode,
 } from "@/lib/bq/writes";
@@ -281,6 +285,87 @@ export async function applyOrderTubOverridesAction(
     return finishOrderRecoWrite(skipRefresh, {
       done: "Estimate pins saved.",
       queued: "Estimate pins saved — recommendation refreshing…",
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Issue #240 — sticky Current Qty override (gated like Order Tubs). */
+export async function setCurrentQtyOverrideAction(
+  item: string,
+  quantityUnits: number,
+): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  if (!FEATURES.writeRestock) {
+    return failAck(new Error("Current Qty overrides are disabled"));
+  }
+  try {
+    const by = await operatorEmail();
+    // Always rematerialize inline — On Hand / Order Tubs / Days left / runway
+    // all derive from current_qty; async enqueue would leave the table stale.
+    await setCurrentQtyOverride(DEFAULT_STORE, item, quantityUnits, by, {
+      skipRefresh: false,
+    });
+    return finishOrderRecoWrite(false, {
+      done: "Current Qty saved — order reco recalculated.",
+      queued: "Current Qty saved — recommendation refreshing…",
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+export async function clearCurrentQtyOverrideAction(
+  item: string,
+): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  if (!FEATURES.writeRestock) {
+    return failAck(new Error("Current Qty overrides are disabled"));
+  }
+  try {
+    await operatorEmail(); // same IAP gate as set / usage-day clear
+    await clearCurrentQtyOverride(DEFAULT_STORE, item, { skipRefresh: false });
+    return finishOrderRecoWrite(false, {
+      done: "Current Qty reset — order reco recalculated.",
+      queued: "Current Qty reset — recommendation refreshing…",
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Batch Apply for Current Qty Sheet (all dirty bases). */
+export async function applyCurrentQtyOverridesAction(
+  rows: { item: string; quantityUnits: number }[],
+): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  if (!FEATURES.writeRestock) {
+    return failAck(new Error("Current Qty overrides are disabled"));
+  }
+  try {
+    const by = await operatorEmail();
+    // Always rematerialize inline — see setCurrentQtyOverrideAction.
+    await applyCurrentQtyOverrides(DEFAULT_STORE, rows, by, { skipRefresh: false });
+    return finishOrderRecoWrite(false, {
+      done: "Current Qty saved — order reco recalculated.",
+      queued: "Current Qty saved — recommendation refreshing…",
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Reset many bases to ClickUp closings. */
+export async function clearCurrentQtyOverridesAction(
+  items: string[],
+): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  if (!FEATURES.writeRestock) {
+    return failAck(new Error("Current Qty overrides are disabled"));
+  }
+  try {
+    await operatorEmail();
+    await clearCurrentQtyOverrides(DEFAULT_STORE, items, { skipRefresh: false });
+    return finishOrderRecoWrite(false, {
+      done: "Current Qty reset — order reco recalculated.",
+      queued: "Current Qty reset — recommendation refreshing…",
     });
   } catch (e) {
     return failAck(e);

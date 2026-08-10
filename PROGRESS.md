@@ -1,3 +1,9 @@
+## 2026-08-10 — Deploy traffic → latest + editable Current Qty (Issue #240)
+
+**Scope:** Operator Console deploys left sticky tags holding % traffic on old revisions (#239 incident); Inventory Current Qty was read-only.
+
+**Key changes (PR #241):** `operator-console-deploy.yml` `update-traffic --to-latest`; migration `058` `inventory_current_qty_overrides` + OA COALESCE; clickable Current Qty Sheet on `/inventory`.
+
 ## 2026-08-09 — Labor schedule horizon + Plaid dedupe + Accounting from/to (Issue #230)
 
 **Scope:** ADP schedule scrape up to 8 forward weeks; post-sync `plaid_transactions` dedupe (CREATE OR REPLACE keep rn=1) + ledger QUALIFY; category rules `from_mask`/`to_mask` (migration 057); DataTable sticky-pin loop fix.

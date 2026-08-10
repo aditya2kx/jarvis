@@ -18,6 +18,10 @@ export const MUTATING_ACTIONS = [
   { name: "clearUsageDayOverrideAction", page: "inventory", heavy: "order-reco" },
   { name: "applyUsageDayOverridesAction", page: "inventory", heavy: "order-reco" },
   { name: "applyOrderTubOverridesAction", page: "inventory", heavy: "order-reco" },
+  { name: "setCurrentQtyOverrideAction", page: "inventory", heavy: "order-reco" },
+  { name: "clearCurrentQtyOverrideAction", page: "inventory", heavy: "order-reco" },
+  { name: "applyCurrentQtyOverridesAction", page: "inventory", heavy: "order-reco" },
+  { name: "clearCurrentQtyOverridesAction", page: "inventory", heavy: "order-reco" },
   { name: "pollOrderRecoRefreshAction", page: "inventory", heavy: null },
   // Payroll
   { name: "addTrainingShiftAction", page: "payroll", heavy: null },

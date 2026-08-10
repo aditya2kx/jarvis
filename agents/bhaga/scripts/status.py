@@ -292,6 +292,10 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 057 (Issue #230): plaid_category_rules.from_mask / to_mask for
     # directional account-party matching. Additive columns on existing rules
     # table — Accounting console only; no new BQ_TARGETS/GRAFANA_VIEWS.
+    # migration 058 (Issue #240): inventory_current_qty_overrides + COALESCE into
+    # vw_inventory_order_assistant.latest_reading. Console /inventory Current Qty
+    # edit — not model_* / no Grafana panel; freshness via inventory_order_reco
+    # refresh. No new BQ_TARGETS/GRAFANA_VIEWS.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

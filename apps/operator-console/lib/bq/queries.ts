@@ -1820,6 +1820,42 @@ export function estimatedScheduleDates(store: string): Promise<EstimatedSchedule
   );
 }
 
+/** Future schedule dates (Estimated or Actuals) — Move / Remove pickers. */
+export interface ScheduledRestockDateRow {
+  delivery_date: string;
+  has_actuals: boolean;
+}
+
+export function scheduledRestockDates(store: string): Promise<ScheduledRestockDateRow[]> {
+  return q<ScheduledRestockDateRow>(
+    `SELECT
+       CAST(s.delivery_date AS STRING) AS delivery_date,
+       IF(o.delivery_date IS NULL, FALSE, TRUE) AS has_actuals
+     FROM ${fq("inventory_restock_schedule")} s
+     LEFT JOIN (
+       SELECT DISTINCT delivery_date
+       FROM ${fq("inventory_restock_orders")}
+       WHERE store = @store
+     ) o ON s.delivery_date = o.delivery_date
+     WHERE s.store = @store
+       AND (
+         s.delivery_date > CURRENT_DATE('America/Chicago')
+         OR (
+           s.delivery_date = CURRENT_DATE('America/Chicago')
+           AND NOT EXISTS (
+             SELECT 1
+             FROM ${fq("inventory_closing_daily")} c
+             WHERE c.store = @store
+               AND c.category = 'base'
+               AND c.submitted_date = CURRENT_DATE('America/Chicago')
+           )
+         )
+       )
+     ORDER BY s.delivery_date`,
+    { store },
+  );
+}
+
 // vw_inventory_base_runway (migration 036, Issue #164) — dual restock slots
 // matching Next delivery; Actuals-only Status 1/2; Stockout 2 chains via D1.
 export interface BaseRunwayRow {

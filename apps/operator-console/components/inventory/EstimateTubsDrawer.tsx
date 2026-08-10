@@ -21,7 +21,10 @@ import {
 } from "@/components/ui/select";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { useOrderRecoRefreshFollowup } from "@/lib/inventory/useOrderRecoRefreshFollowup";
-import { applyOrderTubOverridesAction } from "@/app/inventory/actions";
+import {
+  applyOrderTubOverridesAction,
+  submitRestockAction,
+} from "@/app/inventory/actions";
 
 export type EstimateTubRow = {
   item: string;
@@ -34,8 +37,9 @@ type Mode = "estimated" | "manual";
 type Draft = { mode: Mode; qty: string };
 
 /**
- * Batch editor for one Estimated delivery date — draft all base Order Tubs,
- * then one Apply → one reco recompute (Issue #225).
+ * Batch editor for one delivery date's Order Tubs.
+ * - Estimated/Manual → pin overrides (Issue #225).
+ * - Actuals → replace-per-date restock orders (Issue #238).
  */
 export function EstimateTubsDrawer({
   open,
@@ -58,11 +62,17 @@ export function EstimateTubsDrawer({
     [rows],
   );
 
+  const isActuals = bases.some((r) => r.source === "Actuals");
+
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const { isPending, stage, error, run, setError } = useConsoleAction();
   const { banner, followOrderReco } = useOrderRecoRefreshFollowup({
-    pendingBanner: "Order recommendation refreshing — Order tubs update when pins apply.",
-    doneToast: "Estimate pins applied — Order tubs updated",
+    pendingBanner: isActuals
+      ? "Order recommendation refreshing — Actuals update when ready."
+      : "Order recommendation refreshing — Order tubs update when pins apply.",
+    doneToast: isActuals
+      ? "Actuals saved — Order tubs updated"
+      : "Estimate pins applied — Order tubs updated",
   });
 
   useEffect(() => {
@@ -70,24 +80,27 @@ export function EstimateTubsDrawer({
     const init: Record<string, Draft> = {};
     for (const r of bases) {
       init[r.item] = {
-        mode: r.source === "Manual" ? "manual" : "estimated",
+        mode: isActuals ? "manual" : r.source === "Manual" ? "manual" : "estimated",
         qty: String(r.orderTubs ?? 0),
       };
     }
     setDrafts(init);
     setError(null);
-  }, [open, deliveryDate, bases, setError]);
+  }, [open, deliveryDate, bases, isActuals, setError]);
 
   function seed(item: string): Draft {
     const r = bases.find((b) => b.item === item);
     return {
-      mode: r?.source === "Manual" ? "manual" : "estimated",
+      mode: isActuals ? "manual" : r?.source === "Manual" ? "manual" : "estimated",
       qty: String(r?.orderTubs ?? 0),
     };
   }
 
   const dirty = bases.filter((r) => {
     const d = drafts[r.item] ?? seed(r.item);
+    if (isActuals) {
+      return Number(d.qty) !== r.orderTubs;
+    }
     const wasManual = r.source === "Manual";
     if (d.mode === "estimated") return wasManual;
     if (!wasManual) return true;
@@ -96,6 +109,35 @@ export function EstimateTubsDrawer({
 
   async function handleApply() {
     if (!deliveryDate || !dirty.length) return;
+
+    if (isActuals) {
+      const actualRows: { item: string; quantityTubs: number }[] = [];
+      for (const r of bases) {
+        const d = drafts[r.item] ?? seed(r.item);
+        const n = Number(d.qty);
+        if (!Number.isInteger(n) || n < 0) {
+          setError(`Enter a non-negative integer for ${r.item}.`);
+          return;
+        }
+        actualRows.push({ item: r.item, quantityTubs: n });
+      }
+      const ack = await run(
+        () => submitRestockAction(deliveryDate, "add-order", actualRows),
+        {
+          saving: "Saving…",
+          done: "Actuals saved.",
+          queued: "Actuals saved — recommendation refreshing…",
+        },
+      );
+      if (!ack.ok) return;
+      onOpenChange(false);
+      followOrderReco({
+        queued: ack.queued,
+        baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
+      });
+      return;
+    }
+
     const manualRows: { item: string; quantityTubs: number }[] = [];
     for (const r of bases) {
       const d = drafts[r.item] ?? seed(r.item);
@@ -141,11 +183,21 @@ export function EstimateTubsDrawer({
     >
       <SheetContent className="flex w-full flex-col gap-0 overflow-y-auto sm:max-w-md">
         <SheetHeader>
-          <SheetTitle>Edit estimates — {deliveryDate}</SheetTitle>
+          <SheetTitle>
+            {isActuals ? "Edit actuals" : "Edit estimates"} — {deliveryDate}
+          </SheetTitle>
           <SheetDescription>
-            Pin Order Tubs per base for this Estimated date, then Apply once. Unpinned bases
-            recompute under capacity{maxTubs != null ? ` (${maxTubs} tubs)` : ""}. Actuals dates
-            use Restock import instead.
+            {isActuals ? (
+              <>
+                Update Actuals Order Tubs for this delivery, then Apply once. Saves replace the
+                uploaded Actuals for the date (same as Restock → Add actuals).
+              </>
+            ) : (
+              <>
+                Pin Order Tubs per base for this Estimated date, then Apply once. Unpinned bases
+                recompute under capacity{maxTubs != null ? ` (${maxTubs} tubs)` : ""}.
+              </>
+            )}
           </SheetDescription>
         </SheetHeader>
 
@@ -161,30 +213,36 @@ export function EstimateTubsDrawer({
                   <Label className="text-xs text-muted-foreground">{r.item}</Label>
                   <p className="text-xs text-muted-foreground">
                     Current: {r.orderTubs}
-                    {r.source === "Manual" ? " · Manual" : " · Estimated"}
+                    {isActuals
+                      ? " · Actuals"
+                      : r.source === "Manual"
+                        ? " · Manual"
+                        : " · Estimated"}
                   </p>
                 </div>
-                <div className="w-[8.5rem]">
-                  <Label className="text-xs text-muted-foreground">Mode</Label>
-                  <Select
-                    value={d.mode}
-                    onValueChange={(v) => {
-                      if (v !== "estimated" && v !== "manual") return;
-                      setDrafts((prev) => ({
-                        ...prev,
-                        [r.item]: { ...d, mode: v },
-                      }));
-                    }}
-                  >
-                    <SelectTrigger className="h-10">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="estimated">Estimated</SelectItem>
-                      <SelectItem value="manual">Manual</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+                {isActuals ? null : (
+                  <div className="w-[8.5rem]">
+                    <Label className="text-xs text-muted-foreground">Mode</Label>
+                    <Select
+                      value={d.mode}
+                      onValueChange={(v) => {
+                        if (v !== "estimated" && v !== "manual") return;
+                        setDrafts((prev) => ({
+                          ...prev,
+                          [r.item]: { ...d, mode: v },
+                        }));
+                      }}
+                    >
+                      <SelectTrigger className="h-10">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="estimated">Estimated</SelectItem>
+                        <SelectItem value="manual">Manual</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
                 <div className="w-20">
                   <Label className="text-xs text-muted-foreground">Tubs</Label>
                   <Input
@@ -192,7 +250,8 @@ export function EstimateTubsDrawer({
                     min={0}
                     step={1}
                     className="h-10"
-                    disabled={d.mode !== "manual"}
+                    disabled={!isActuals && d.mode !== "manual"}
+                    aria-label={`${r.item} tubs`}
                     value={d.qty}
                     onChange={(e) =>
                       setDrafts((prev) => ({

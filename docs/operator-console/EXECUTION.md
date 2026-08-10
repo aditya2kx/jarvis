@@ -266,19 +266,25 @@ Steps:
      `inventory_restock_orders` (replace-per-date).
    - `clearRestockOrders(store, date)` → DELETE (reset to estimated).
    - `clearRestockSchedule(store, date)` → DELETE schedule then clear orders
-     (used by Replace estimated date).
+     (used by Move / Remove / Replace estimated date).
+   - `moveRestockDate(store, from, to, by)` → console-only: carry Actuals +
+     Manual overrides from→to (wrong-date fix), then refreshOrderReco.
+   - `removeRestockDate(store, date, by)` → console-only: clearRestockSchedule +
+     refreshOrderReco (confirm required in UI).
    - `replaceEstimatedRestockDate(store, from, to, by)` → console-only: guard
      Estimated-only, clearRestockSchedule(from), setRestockSchedule(to),
      refreshOrderReco.
-   - `estimatedScheduleDates(store)` → future schedule dates with no actuals
-     (feeds the Replace From dropdown).
+   - `scheduledRestockDates(store)` → future schedule dates (Estimated or
+     Actuals) for Move / Remove pickers.
+   - `estimatedScheduleDates(store)` → future schedule dates with no actuals.
    - `setConfig(store, key, value)` → MERGE `store_config`.
    - `refreshOrderReco(store)` → run the 3 statements from
      `core/order_reco.py::refresh_order_reco` (DELETE, INSERT slot1, INSERT slot2).
      **Order matters: slot 1 before slot 2.**
    After any restock write or `order_reco_max_tubs` change, call `refreshOrderReco`.
 4. Server actions in the drawers (`RestockImportDrawer`), guarded by
-   `operatorEmail()` for `updated_by`. Nothing writes until operator confirms.
+   `operatorEmail()` for `updated_by`. Add/update Actuals uses an estimate-
+   prefilled form (CSV/photo optional). Nothing writes until operator confirms.
 5. `app/api/parse-restock/route.ts` — accepts CSV or image:
    - CSV → parse with the same rules as `skills/inventory_parse/parse.py` and the
      handler's `_parse_restock_csv` (base,quantity; known bases only).

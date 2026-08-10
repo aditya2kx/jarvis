@@ -11,6 +11,8 @@ export const MUTATING_ACTIONS = [
   // Inventory
   { name: "submitRestockAction", page: "inventory", heavy: "order-reco" },
   { name: "replaceEstimatedRestockDateAction", page: "inventory", heavy: "order-reco" },
+  { name: "moveRestockDateAction", page: "inventory", heavy: "order-reco" },
+  { name: "removeRestockDateAction", page: "inventory", heavy: "order-reco" },
   { name: "setCapacityAction", page: "inventory", heavy: "order-reco" },
   { name: "setUsageDayOverrideAction", page: "inventory", heavy: "order-reco" },
   { name: "clearUsageDayOverrideAction", page: "inventory", heavy: "order-reco" },

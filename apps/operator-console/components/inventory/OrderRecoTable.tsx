@@ -73,7 +73,8 @@ export function OrderRecoTable({
       const slot = i + 1;
       const date = normalizeDeliveryDate(raw) || `slot ${slot}`;
       const isEstimated = estimatedSet.has(date);
-      const canEdit = writable && isEstimated;
+      // Issue #238: Actuals dates are editable too (replace-per-date Actuals).
+      const canEdit = writable;
 
       cols.push(
         {
@@ -91,8 +92,12 @@ export function OrderRecoTable({
                 <button
                   type="button"
                   className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label={`Edit estimates for ${date}`}
-                  title={`Edit estimates · ${date}`}
+                  aria-label={
+                    isEstimated ? `Edit estimates for ${date}` : `Edit actuals for ${date}`
+                  }
+                  title={
+                    isEstimated ? `Edit estimates · ${date}` : `Edit actuals · ${date}`
+                  }
                   onClick={(e) => {
                     e.stopPropagation();
                     setOpenDate(date);
@@ -120,7 +125,11 @@ export function OrderRecoTable({
                 )}
                 onClick={() => setOpenDate(date)}
                 aria-label={`Edit Order tubs for ${date}`}
-                title={`Edit estimates · ${date}`}
+                title={
+                  source === "Actuals"
+                    ? `Edit actuals · ${date}`
+                    : `Edit estimates · ${date}`
+                }
               >
                 <span>{display}</span>
                 {source === "Manual" ? (

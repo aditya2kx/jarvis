@@ -38,6 +38,9 @@ function routeQ(sql: string): unknown[] {
   if (sql.includes("MAX(refreshed_at)")) {
     return [{ refreshed_ct: "2026-07-17" }];
   }
+  if (sql.includes("HAVING COUNT(*) > 1")) {
+    return [{ n: 0 }];
+  }
   if (sql.includes("order_reco_max_tubs")) {
     return [{ value: "120" }];
   }
@@ -113,5 +116,18 @@ describe("ensureOrderRecoFresh", () => {
     expect(did).toEqual({ status: "queued" });
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it("refreshes when duplicate Slot/Item rows exist even if dates match", async () => {
+    q.mockImplementation(async (sql: string) => {
+      if (sql.includes("HAVING COUNT(*) > 1")) {
+        return [{ n: 5 }];
+      }
+      return routeQ(sql);
+    });
+    const { ensureOrderRecoFresh } = await load();
+    const did = await ensureOrderRecoFresh("palmetto");
+    expect(did).toEqual({ status: "refreshed" });
+    expect(mutate).toHaveBeenCalled();
   });
 });

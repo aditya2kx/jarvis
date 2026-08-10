@@ -131,3 +131,8 @@ python3 scripts/verify.py --full
 cd apps/operator-console && npm run dev
 ```
 Pass: edit + reset on `http://localhost:3000/inventory`.
+
+
+## Evidence addendum (2026-08-10)
+
+Live batch ≥2 (Mango+Coconut) ASSERT_OK in PR #241 §4 — On Hand / Days Left recomputed; clear count 0.

@@ -135,7 +135,10 @@ def deploy_tagged(
         "--no-allow-unauthenticated",
         "--iap",
         "--memory=512Mi",
-        "--min-instances=1",
+        # Preview revisions must scale to zero when idle. Do NOT copy prod's
+        # --min-instances=1 (Issue #175) onto tagged 0%-traffic revisions —
+        # that would bill a warm instance per concurrent PR preview.
+        "--min-instances=0",
         "--no-traffic",
         f"--tag={tag}",
         f"--set-env-vars=BQ_PROJECT={project},BQ_DATASET=bhaga,"

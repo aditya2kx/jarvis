@@ -1801,6 +1801,12 @@ Deploys with `--no-traffic --tag prN` — **never** shifts traffic off the canon
 IAP URL. The tag host is a **separate IAP cookie jar** (Issue #208): sign in again
 on `prN---…`; do not mix hosts with the canonical URL mid-session.
 
+**Link hygiene:** Cloud Run tag hostnames contain a literal `---` separator. In-app
+browsers (Cursor mobile) often mangle that hostname into a 404 host. Prefer a
+markdown hyperlink or paste the raw URL into Safari’s address bar. The deploy
+helper runs `verify_preview_url` (expects HTTP 302 → `accounts.google.com`) before
+printing the URL so dead links are not handed to the operator.
+
 **Legacy same-URL review-deploy** (overwrites the live service image until next
 `main` push): build/push the branch image and
 `gcloud run deploy operator-console … --min-instances=1` onto the sole operator URL

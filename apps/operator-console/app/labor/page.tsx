@@ -55,6 +55,7 @@ import {
   actualPunchWindow,
   laborChartWindow,
   periodIncludesToday,
+  scheduleStacksOnLaborCharts,
   scheduledShiftWindow,
 } from "@/lib/labor/actual-schedule-windows";
 import {
@@ -147,8 +148,12 @@ export default async function LaborPage({
     const todayIso = chicagoTodayIso();
     chartWin = laborChartWindow(win, todayIso, scheduleHorizonEnd);
     const schedWin = scheduledShiftWindow(win, todayIso, scheduleHorizonEnd);
-    // Hour grain: schedule ranges are JSON — no stacks / concurrent schedule.
-    const showSchedule = includesToday && schedWin != null && grain !== "hour";
+    // Coverage swimlanes still show today+ schedule when Period includes today.
+    // Hours / concurrent charts only stack schedule on day/week/month — Weekday
+    // and Hour of day are finished (clocked) rollups only.
+    const showScheduleOnCoverage = includesToday && schedWin != null;
+    const showScheduleOnCharts =
+      showScheduleOnCoverage && scheduleStacksOnLaborCharts(grain);
 
     const [
       labor,
@@ -166,10 +171,10 @@ export default async function LaborPage({
       punchWin
         ? laborConcurrentByGrain(punchWin, grain, stat).catch(() => [])
         : Promise.resolve([]),
-      showSchedule && schedWin
+      showScheduleOnCharts && schedWin
         ? laborScheduledHoursByGrain(schedWin, grain, { excludePto }).catch(() => [])
         : Promise.resolve([]),
-      showSchedule && schedWin
+      showScheduleOnCoverage && schedWin
         ? laborScheduledShiftDays(schedWin, { excludePto }).catch(() => [])
         : Promise.resolve([]),
       adpScheduleScrapedAt().catch(() => null),
@@ -180,10 +185,9 @@ export default async function LaborPage({
     scheduledHoursRows = schedHours;
     coverageScheduled = schedDays;
     coverageActuals = actualShiftDays;
-    scheduledConcurrentByBucket = rollConcurrentToGrain(
-      aggregateScheduledDays(schedDays),
-      grain,
-    );
+    scheduledConcurrentByBucket = showScheduleOnCharts
+      ? rollConcurrentToGrain(aggregateScheduledDays(schedDays), grain)
+      : [];
     scheduleScrapedAt = scraped;
     goalLaborHoursWeek = goalFromConfig(config, "goal_labor_hours_week");
     hoursPerPerson = perPerson
@@ -439,8 +443,10 @@ export default async function LaborPage({
           weekly Goal.{" "}
           <span className="font-medium text-foreground">% of net sales</span> on the
           Hours chart uses completed days only (no schedule stacks).{" "}
-          {grain === "hour"
-            ? "Hour of day allocates clocked shifts across clock hours and pairs with Sales ops-hour net sales for %; schedule stacks are hidden. "
+          {!scheduleStacksOnLaborCharts(grain)
+            ? grain === "hour"
+              ? "Hour of day allocates clocked shifts across clock hours and pairs with Sales ops-hour net sales for %; schedule stacks are hidden (finished shifts only). "
+              : "Weekday rolls up finished (clocked) days only — schedule stacks are hidden. "
             : ""}
           {showStat
             ? `Stat Average = typical ${grain === "hour" ? "hour across days" : "weekday"} in the Period; Total = sum across the Period. `

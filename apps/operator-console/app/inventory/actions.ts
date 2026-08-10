@@ -6,6 +6,8 @@ import {
   submitRestock,
   setConfig,
   replaceEstimatedRestockDate,
+  moveRestockDate,
+  removeRestockDate,
   setUsageDayOverride,
   clearUsageDayOverride,
   readUsageDayAuditRow,
@@ -30,6 +32,15 @@ export type OrderRecoQueuedMeta = {
   baselineRefreshedAt: string | null;
 };
 
+/**
+ * Prod: skip inline TVFs and enqueue Cloud Run (Issue #175).
+ * Local BYPASS_IAP dogfood: run refresh inline so Inventory updates without a job.
+ */
+function shouldSkipInlineOrderReco(): boolean {
+  const syncLocal = Boolean(process.env.BYPASS_IAP_EMAIL?.trim());
+  return FEATURES.asyncOrderReco && !syncLocal;
+}
+
 /** Capture refreshed_at, then enqueue (client polls until it advances). */
 async function queueOrderRecoWithBaseline(): Promise<{
   queued: string[] | undefined;
@@ -40,6 +51,26 @@ async function queueOrderRecoWithBaseline(): Promise<{
   return { queued, baselineRefreshedAt };
 }
 
+async function finishOrderRecoWrite(
+  skipRefresh: boolean,
+  messages: { done: string; queued: string },
+): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  if (skipRefresh) {
+    const { queued, baselineRefreshedAt } = await queueOrderRecoWithBaseline();
+    revalidatePath("/inventory");
+    return okAck({
+      message: queued ? messages.queued : messages.done,
+      queued,
+      data: { baselineRefreshedAt },
+    });
+  }
+  revalidatePath("/inventory");
+  return okAck({
+    message: messages.done,
+    data: { baselineRefreshedAt: await orderRecoRefreshedAt(DEFAULT_STORE) },
+  });
+}
+
 export async function submitRestockAction(
   deliveryDate: string,
   action: RestockAction,
@@ -47,15 +78,13 @@ export async function submitRestockAction(
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
   try {
     const by = await operatorEmail();
+    const skipRefresh = shouldSkipInlineOrderReco();
     await submitRestock(DEFAULT_STORE, deliveryDate, action, rows, by, {
-      skipRefresh: FEATURES.asyncOrderReco,
+      skipRefresh,
     });
-    const { queued, baselineRefreshedAt } = await queueOrderRecoWithBaseline();
-    revalidatePath("/inventory");
-    return okAck({
-      message: queued ? "Restock saved — recommendation refreshing…" : "Restock saved.",
-      queued,
-      data: { baselineRefreshedAt },
+    return finishOrderRecoWrite(skipRefresh, {
+      done: "Restock saved.",
+      queued: "Restock saved — recommendation refreshing…",
     });
   } catch (e) {
     return failAck(e);
@@ -69,15 +98,52 @@ export async function replaceEstimatedRestockDateAction(
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
   try {
     const by = await operatorEmail();
+    const skipRefresh = shouldSkipInlineOrderReco();
     await replaceEstimatedRestockDate(DEFAULT_STORE, fromDate, toDate, by, {
-      skipRefresh: FEATURES.asyncOrderReco,
+      skipRefresh,
     });
-    const { queued, baselineRefreshedAt } = await queueOrderRecoWithBaseline();
-    revalidatePath("/inventory");
-    return okAck({
-      message: queued ? "Date replaced — recommendation refreshing…" : "Date replaced.",
-      queued,
-      data: { baselineRefreshedAt },
+    return finishOrderRecoWrite(skipRefresh, {
+      done: "Date replaced.",
+      queued: "Date replaced — recommendation refreshing…",
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Console-only: move schedule (+ Actuals / Manual pins) from → to. */
+export async function moveRestockDateAction(
+  fromDate: string,
+  toDate: string,
+): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  try {
+    const by = await operatorEmail();
+    const skipRefresh = shouldSkipInlineOrderReco();
+    await moveRestockDate(DEFAULT_STORE, fromDate, toDate, by, {
+      skipRefresh,
+    });
+    return finishOrderRecoWrite(skipRefresh, {
+      done: "Date moved.",
+      queued: "Date moved — recommendation refreshing…",
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Console-only: remove a registered delivery date entirely. */
+export async function removeRestockDateAction(
+  deliveryDate: string,
+): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  try {
+    const by = await operatorEmail();
+    const skipRefresh = shouldSkipInlineOrderReco();
+    await removeRestockDate(DEFAULT_STORE, deliveryDate, by, {
+      skipRefresh,
+    });
+    return finishOrderRecoWrite(skipRefresh, {
+      done: "Date removed.",
+      queued: "Date removed — recommendation refreshing…",
     });
   } catch (e) {
     return failAck(e);
@@ -89,15 +155,13 @@ export async function setCapacityAction(
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
   try {
     const by = await operatorEmail();
+    const skipRefresh = shouldSkipInlineOrderReco();
     await setConfig(DEFAULT_STORE, "order_reco_max_tubs", String(maxTubs), by, {
-      skipRefresh: FEATURES.asyncOrderReco,
+      skipRefresh,
     });
-    const { queued, baselineRefreshedAt } = await queueOrderRecoWithBaseline();
-    revalidatePath("/inventory");
-    return okAck({
-      message: queued ? "Capacity saved — recommendation refreshing…" : "Capacity saved.",
-      queued,
-      data: { baselineRefreshedAt },
+    return finishOrderRecoWrite(skipRefresh, {
+      done: "Capacity saved.",
+      queued: "Capacity saved — recommendation refreshing…",
     });
   } catch (e) {
     return failAck(e);
@@ -210,26 +274,13 @@ export async function applyOrderTubOverridesAction(
     const by = await operatorEmail();
     // Local BYPASS_IAP dogfood: sync recompute so Apply shows new tubs without
     // waiting on Cloud Run (prod keeps asyncOrderReco enqueue).
-    const syncLocal = Boolean(process.env.BYPASS_IAP_EMAIL?.trim());
-    const skipRefresh = FEATURES.asyncOrderReco && !syncLocal;
+    const skipRefresh = shouldSkipInlineOrderReco();
     await replaceOrderTubOverrides(DEFAULT_STORE, deliveryDate, rows, by, {
       skipRefresh,
     });
-    if (skipRefresh) {
-      const { queued, baselineRefreshedAt } = await queueOrderRecoWithBaseline();
-      revalidatePath("/inventory");
-      return okAck({
-        message: queued
-          ? "Estimate pins saved — recommendation refreshing…"
-          : "Estimate pins saved.",
-        queued,
-        data: { baselineRefreshedAt },
-      });
-    }
-    revalidatePath("/inventory");
-    return okAck({
-      message: "Estimate pins saved.",
-      data: { baselineRefreshedAt: await orderRecoRefreshedAt(DEFAULT_STORE) },
+    return finishOrderRecoWrite(skipRefresh, {
+      done: "Estimate pins saved.",
+      queued: "Estimate pins saved — recommendation refreshing…",
     });
   } catch (e) {
     return failAck(e);

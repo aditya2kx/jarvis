@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Sheet,
   SheetContent,
@@ -20,45 +20,94 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { submitRestockAction, replaceEstimatedRestockDateAction } from "@/app/inventory/actions";
+import {
+  submitRestockAction,
+  moveRestockDateAction,
+  removeRestockDateAction,
+} from "@/app/inventory/actions";
 import type { RestockAction } from "@/lib/bq/writes";
-import { buildSampleCsv, type RestockRow } from "@/lib/restock/parse";
+import { ACTIVE_BASES, buildSampleCsv, type RestockRow } from "@/lib/restock/parse";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { useOrderRecoRefreshFollowup } from "@/lib/inventory/useOrderRecoRefreshFollowup";
 
-const ACTION_LABELS: Record<RestockAction, string> = {
-  "add-order": "Add order (actuals)",
+const ACTION_LABELS: Record<Exclude<RestockAction, "replace-estimated">, string> = {
+  "add-order": "Add / update actuals",
   "register-only": "Register date only (estimated)",
   "reset-to-estimated": "Reset to estimated",
-  "replace-estimated": "Replace estimated date",
+  "move-date": "Move date",
+  "remove-date": "Remove date",
 };
 
-// Nothing writes to BQ until the operator reviews the parsed rows and hits
-// Submit — mirrors the Slack restock modal's confirm step (EXECUTION.md §M3).
+type UiRestockAction = keyof typeof ACTION_LABELS;
+
+const EMPTY_ESTIMATES: Record<string, RestockRow[]> = {};
+const EMPTY_SCHEDULED: { delivery_date: string; has_actuals: boolean }[] = [];
+
+function seedRowsFromEstimates(
+  deliveryDate: string,
+  estimateByDate: Record<string, RestockRow[]>,
+): RestockRow[] {
+  const fromReco = estimateByDate[deliveryDate];
+  const byItem = new Map((fromReco ?? []).map((r) => [r.item, r.quantityTubs]));
+  return ACTIVE_BASES.map((item) => ({
+    item,
+    quantityTubs: byItem.has(item) ? Number(byItem.get(item)) : 0,
+  }));
+}
+
+// Nothing writes to BQ until the operator reviews the rows and hits Submit —
+// mirrors the Slack restock modal's confirm step (EXECUTION.md §M3).
 export function RestockImportDrawer({
   dates,
-  estimatedDates = [],
+  scheduledDates = EMPTY_SCHEDULED,
+  estimateByDate = EMPTY_ESTIMATES,
   defaultAction = "add-order",
 }: {
   dates: string[];
-  estimatedDates?: string[];
+  /** Future schedule dates (Estimated or Actuals) for Move / Remove. */
+  scheduledDates?: { delivery_date: string; has_actuals: boolean }[];
+  /** Per delivery date → Order Tubs from reco (prefills Add actuals form). */
+  estimateByDate?: Record<string, RestockRow[]>;
   /** Test/default override — production always leaves this at add-order. */
-  defaultAction?: RestockAction;
+  defaultAction?: UiRestockAction;
 }) {
+  const scheduledList = useMemo(
+    () =>
+      scheduledDates.map((d) => ({
+        delivery_date: String(d.delivery_date).slice(0, 10),
+        has_actuals: Boolean(d.has_actuals),
+      })),
+    [scheduledDates],
+  );
+
   const [open, setOpen] = useState(false);
   const [deliveryDate, setDeliveryDate] = useState(dates[0] ?? "");
-  const [action, setAction] = useState<RestockAction>(defaultAction);
-  const [fromDate, setFromDate] = useState(estimatedDates[0] ?? "");
+  const [action, setAction] = useState<UiRestockAction>(defaultAction);
+  const [fromDate, setFromDate] = useState(scheduledList[0]?.delivery_date ?? "");
   const [toDate, setToDate] = useState("");
-  const [rows, setRows] = useState<RestockRow[]>([]);
+  const [removeDate, setRemoveDate] = useState(scheduledList[0]?.delivery_date ?? "");
+  const [removeConfirmed, setRemoveConfirmed] = useState(false);
+  const [rows, setRows] = useState<RestockRow[]>(() =>
+    seedRowsFromEstimates(dates[0] ?? "", estimateByDate),
+  );
   const [parseErrors, setParseErrors] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
+  const [showImport, setShowImport] = useState(false);
   const { isPending, stage, error, run } = useConsoleAction();
   const { banner: recoBanner, followOrderReco } = useOrderRecoRefreshFollowup({
     doneToast: "Restock applied — Order tubs updated",
   });
 
-  const isReplace = action === "replace-estimated";
+  const isMove = action === "move-date";
+  const isRemove = action === "remove-date";
+  const isAddOrder = action === "add-order";
+
+  useEffect(() => {
+    if (!open || !isAddOrder) return;
+    setRows(seedRowsFromEstimates(deliveryDate, estimateByDate));
+    setParseErrors([]);
+    setShowImport(false);
+  }, [open, isAddOrder, deliveryDate, estimateByDate]);
 
   async function handleFile(file: File) {
     setStatus("Parsing…");
@@ -70,9 +119,16 @@ export function RestockImportDrawer({
       setStatus(`Parse failed: ${body.error ?? res.statusText}`);
       return;
     }
-    setRows(body.rows ?? []);
+    const parsed: RestockRow[] = body.rows ?? [];
+    const byItem = new Map(parsed.map((r) => [r.item, r.quantityTubs]));
+    setRows(
+      ACTIVE_BASES.map((item) => ({
+        item,
+        quantityTubs: byItem.has(item) ? Number(byItem.get(item)) : 0,
+      })),
+    );
     setParseErrors(body.errors ?? []);
-    setStatus(body.rows?.length ? `Parsed ${body.rows.length} row(s) — review below.` : "No valid rows parsed.");
+    setStatus(parsed.length ? `Imported ${parsed.length} row(s) — review below.` : "No valid rows parsed.");
   }
 
   function downloadSampleCsv() {
@@ -90,25 +146,47 @@ export function RestockImportDrawer({
   }
 
   async function handleSubmit() {
-    if (isReplace) {
+    if (isMove) {
       if (!fromDate || !toDate) {
-        setStatus("Pick both the current estimated date and the new delivery date.");
+        setStatus("Pick both the current date and the new delivery date.");
         return;
       }
-      if (!estimatedDates.length) {
-        setStatus("No estimated dates to replace.");
+      if (!scheduledList.length) {
+        setStatus("No scheduled dates to move.");
         return;
       }
-      const ack = await run(
-        () => replaceEstimatedRestockDateAction(fromDate, toDate),
-        {
-          saving: "Submitting…",
-          done: "Submitted.",
-          queued: "Submitted — recommendation refreshing…",
-        },
-      );
+      const ack = await run(() => moveRestockDateAction(fromDate, toDate), {
+        saving: "Moving…",
+        done: "Moved.",
+        queued: "Moved — recommendation refreshing…",
+      });
       if (ack.ok) {
         setOpen(false);
+        followOrderReco({
+          queued: ack.queued,
+          baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
+        });
+      }
+      return;
+    }
+
+    if (isRemove) {
+      if (!removeDate) {
+        setStatus("Pick a delivery date to remove.");
+        return;
+      }
+      if (!removeConfirmed) {
+        setStatus("Confirm removal before submitting.");
+        return;
+      }
+      const ack = await run(() => removeRestockDateAction(removeDate), {
+        saving: "Removing…",
+        done: "Removed.",
+        queued: "Removed — recommendation refreshing…",
+      });
+      if (ack.ok) {
+        setOpen(false);
+        setRemoveConfirmed(false);
         followOrderReco({
           queued: ack.queued,
           baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
@@ -121,8 +199,16 @@ export function RestockImportDrawer({
       setStatus("Pick a delivery date first.");
       return;
     }
+    if (isAddOrder) {
+      for (const r of rows) {
+        if (!Number.isInteger(r.quantityTubs) || r.quantityTubs < 0) {
+          setStatus(`Enter a non-negative integer for ${r.item}.`);
+          return;
+        }
+      }
+    }
     const ack = await run(
-      () => submitRestockAction(deliveryDate, action, rows),
+      () => submitRestockAction(deliveryDate, action as RestockAction, rows),
       {
         saving: "Submitting…",
         done: "Submitted.",
@@ -131,7 +217,6 @@ export function RestockImportDrawer({
     );
     if (ack.ok) {
       setOpen(false);
-      setRows([]);
       followOrderReco({
         queued: ack.queued,
         baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
@@ -140,6 +225,10 @@ export function RestockImportDrawer({
   }
 
   const feedback = stage || error || status || recoBanner;
+  const submitDisabled =
+    isPending ||
+    (isMove && scheduledList.length === 0) ||
+    (isRemove && (scheduledList.length === 0 || !removeConfirmed));
 
   return (
     <>
@@ -148,156 +237,237 @@ export function RestockImportDrawer({
           {recoBanner}
         </p>
       ) : null}
-    <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger render={<Button size="sm">Restock…</Button>} />
-      <SheetContent className="w-full max-w-lg overflow-y-auto">
-        <SheetHeader>
-          <SheetTitle>Restock</SheetTitle>
-          <SheetDescription>
-            Register a delivery date, replace an estimated date, or upload a CSV/photo of the
-            order — nothing writes until you submit.
-          </SheetDescription>
-        </SheetHeader>
+      <Sheet open={open} onOpenChange={setOpen}>
+        <SheetTrigger render={<Button size="sm">Restock…</Button>} />
+        <SheetContent className="flex w-full flex-col gap-0 overflow-y-auto sm:max-w-md">
+          <SheetHeader>
+            <SheetTitle>Restock</SheetTitle>
+            <SheetDescription>
+              Add or update Actuals from estimates, move a wrong date, or remove a cancelled
+              delivery — nothing writes until you submit.
+            </SheetDescription>
+          </SheetHeader>
 
-        <div className="flex flex-col gap-4 px-4">
-          <div className="flex flex-col gap-1.5">
-            <Label>Action</Label>
-            <Select
-              value={action}
-              onValueChange={(v) => {
-                const next = v as RestockAction;
-                setAction(next);
-                setStatus(null);
-                if (next === "replace-estimated" && !fromDate && estimatedDates[0]) {
-                  setFromDate(estimatedDates[0]);
-                }
-              }}
-            >
-              <SelectTrigger>
-                <SelectValue>
-                  {(value: string | null) =>
-                    value ? (ACTION_LABELS[value as RestockAction] ?? value) : "Select action"
+          <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
+            <div className="flex flex-col gap-1.5">
+              <Label>Action</Label>
+              <Select
+                value={action}
+                onValueChange={(v) => {
+                  const next = v as UiRestockAction;
+                  setAction(next);
+                  setStatus(null);
+                  setRemoveConfirmed(false);
+                  if (next === "move-date" && !fromDate && scheduledList[0]) {
+                    setFromDate(scheduledList[0].delivery_date);
                   }
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {Object.entries(ACTION_LABELS).map(([value, label]) => (
-                  <SelectItem
-                    key={value}
-                    value={value}
-                    disabled={value === "replace-estimated" && estimatedDates.length === 0}
-                  >
-                    {label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {isReplace ? (
-            <>
-              <div className="flex flex-col gap-1.5">
-                <Label>Current estimated date</Label>
-                {estimatedDates.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No estimated dates to replace.</p>
-                ) : (
-                  <Select value={fromDate} onValueChange={(v) => setFromDate(v ?? "")}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select date" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {estimatedDates.map((d) => (
-                        <SelectItem key={d} value={d}>
-                          {d}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="to-date">New delivery date</Label>
-                <Input
-                  id="to-date"
-                  type="date"
-                  value={toDate}
-                  onChange={(e) => setToDate(e.target.value)}
-                />
-              </div>
-            </>
-          ) : (
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="delivery-date">Delivery date</Label>
-              <Input
-                id="delivery-date"
-                type="date"
-                value={deliveryDate}
-                onChange={(e) => setDeliveryDate(e.target.value)}
-              />
-            </div>
-          )}
-
-          {action === "add-order" && (
-            <div className="flex flex-col gap-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <Label htmlFor="restock-file">Order CSV or photo</Label>
-                <Button type="button" variant="outline" size="sm" onClick={downloadSampleCsv}>
-                  Download sample CSV
-                </Button>
-              </div>
-              <Input
-                id="restock-file"
-                type="file"
-                accept=".csv,text/csv,image/*"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) void handleFile(f);
+                  if (next === "remove-date" && !removeDate && scheduledList[0]) {
+                    setRemoveDate(scheduledList[0].delivery_date);
+                  }
                 }}
-              />
+              >
+                <SelectTrigger className="h-10">
+                  <SelectValue>
+                    {(value: string | null) =>
+                      value
+                        ? (ACTION_LABELS[value as UiRestockAction] ?? value)
+                        : "Select action"
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(ACTION_LABELS).map(([value, label]) => (
+                    <SelectItem
+                      key={value}
+                      value={value}
+                      disabled={
+                        (value === "move-date" || value === "remove-date") &&
+                        scheduledList.length === 0
+                      }
+                    >
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-          )}
 
-          {feedback ? (
-            <p className={`text-sm ${error ? "text-destructive" : "text-muted-foreground"}`}>
-              {feedback}
-            </p>
-          ) : null}
-
-          {parseErrors.length ? (
-            <ul className="list-disc pl-4 text-sm text-destructive">
-              {parseErrors.map((e) => (
-                <li key={e}>{e}</li>
-              ))}
-            </ul>
-          ) : null}
-
-          {rows.length ? (
-            <div className="flex flex-col gap-2">
-              <Label>Review before submitting</Label>
-              {rows.map((r) => (
-                <div key={r.item} className="flex items-center justify-between gap-2">
-                  <span className="min-w-0 flex-1 truncate text-sm">{r.item}</span>
+            {isMove ? (
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Current date</Label>
+                  {scheduledList.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No scheduled dates to move.</p>
+                  ) : (
+                    <Select value={fromDate} onValueChange={(v) => setFromDate(v ?? "")}>
+                      <SelectTrigger className="h-10">
+                        <SelectValue placeholder="Select date" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {scheduledList.map((d) => (
+                          <SelectItem key={d.delivery_date} value={d.delivery_date}>
+                            {d.delivery_date}
+                            {d.has_actuals ? " · Actuals" : " · Estimated"}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="to-date">New delivery date</Label>
                   <Input
-                    type="number"
-                    min={0}
-                    step="1"
-                    className="w-24"
-                    value={r.quantityTubs}
-                    onChange={(e) => updateQty(r.item, Number(e.target.value))}
+                    id="to-date"
+                    type="date"
+                    className="h-10"
+                    value={toDate}
+                    onChange={(e) => setToDate(e.target.value)}
                   />
                 </div>
-              ))}
-            </div>
-          ) : null}
-        </div>
+              </>
+            ) : isRemove ? (
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Date to remove</Label>
+                  {scheduledList.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No scheduled dates to remove.</p>
+                  ) : (
+                    <Select
+                      value={removeDate}
+                      onValueChange={(v) => {
+                        setRemoveDate(v ?? "");
+                        setRemoveConfirmed(false);
+                      }}
+                    >
+                      <SelectTrigger className="h-10">
+                        <SelectValue placeholder="Select date" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {scheduledList.map((d) => (
+                          <SelectItem key={d.delivery_date} value={d.delivery_date}>
+                            {d.delivery_date}
+                            {d.has_actuals ? " · Actuals" : " · Estimated"}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-1 size-4 accent-foreground"
+                    checked={removeConfirmed}
+                    onChange={(e) => setRemoveConfirmed(e.target.checked)}
+                  />
+                  <span>
+                    Remove this date from the schedule
+                    {scheduledList.find((d) => d.delivery_date === removeDate)?.has_actuals
+                      ? " and delete its Actuals"
+                      : ""}
+                    . This cannot be undone from here.
+                  </span>
+                </label>
+              </>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="delivery-date">Delivery date</Label>
+                <Input
+                  id="delivery-date"
+                  type="date"
+                  className="h-10"
+                  value={deliveryDate}
+                  onChange={(e) => setDeliveryDate(e.target.value)}
+                />
+              </div>
+            )}
 
-        <SheetFooter>
-          <Button onClick={() => void handleSubmit()} disabled={isPending || (isReplace && estimatedDates.length === 0)}>
-            {isPending ? "Submitting…" : "Submit"}
-          </Button>
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
+            {isAddOrder ? (
+              <>
+                <div className="flex flex-col gap-2">
+                  <Label>Actuals (prefilled from estimates)</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Edit only quantities that differ from the estimate, then Submit.
+                  </p>
+                  {rows.map((r) => (
+                    <div
+                      key={r.item}
+                      className="flex items-center justify-between gap-2 rounded-md border border-border/60 px-2 py-1.5"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-sm">{r.item}</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="1"
+                        className="h-10 w-24"
+                        aria-label={`${r.item} tubs`}
+                        value={r.quantityTubs}
+                        onChange={(e) => updateQty(r.item, Number(e.target.value))}
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-10 w-fit"
+                    onClick={() => setShowImport((v) => !v)}
+                  >
+                    {showImport ? "Hide import" : "Import CSV / photo…"}
+                  </Button>
+                  {showImport ? (
+                    <>
+                      <div className="flex items-center justify-between gap-2">
+                        <Label htmlFor="restock-file">Order CSV or photo</Label>
+                        <Button type="button" variant="outline" size="sm" onClick={downloadSampleCsv}>
+                          Download sample CSV
+                        </Button>
+                      </div>
+                      <Input
+                        id="restock-file"
+                        type="file"
+                        accept=".csv,text/csv,image/*"
+                        className="h-10"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) void handleFile(f);
+                        }}
+                      />
+                    </>
+                  ) : null}
+                </div>
+              </>
+            ) : null}
+
+            {feedback ? (
+              <p className={`text-sm ${error ? "text-destructive" : "text-muted-foreground"}`}>
+                {feedback}
+              </p>
+            ) : null}
+
+            {parseErrors.length ? (
+              <ul className="list-disc pl-4 text-sm text-destructive">
+                {parseErrors.map((e) => (
+                  <li key={e}>{e}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+
+          <SheetFooter className="gap-2 border-t border-border/60 pt-3">
+            <Button
+              onClick={() => void handleSubmit()}
+              disabled={submitDisabled}
+              className="h-10"
+            >
+              {isPending ? "Submitting…" : isRemove ? "Remove" : isMove ? "Move" : "Submit"}
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </>
   );
 }

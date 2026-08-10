@@ -210,7 +210,7 @@ export async function ensureOrderRecoFresh(
   store: string,
   opts: { enqueue?: () => Promise<void> } = {},
 ): Promise<EnsureOrderRecoResult> {
-  const [next, mat, todayRows, refreshedRows] = await Promise.all([
+  const [next, mat, todayRows, refreshedRows, dupRows] = await Promise.all([
     q<{ delivery_date: string }>(
       `SELECT CAST(delivery_date AS STRING) AS delivery_date
        FROM ${fq("vw_order_reco_next_dates")} ORDER BY slot`,
@@ -227,6 +227,17 @@ export async function ensureOrderRecoFresh(
        FROM ${fq("inventory_order_reco")} WHERE store = @store`,
       { store },
     ),
+    // Concurrent refresh races leave duplicate (store, Slot, Item) rows — date
+    // sets still "match", so detect dups explicitly (Issue #238 localhost race).
+    q<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM (
+         SELECT Slot, Item FROM ${fq("inventory_order_reco")}
+         WHERE store = @store
+         GROUP BY Slot, Item
+         HAVING COUNT(*) > 1
+       )`,
+      { store },
+    ),
   ]);
 
   const live = new Set(next.map((d) => d.delivery_date.slice(0, 10)));
@@ -239,8 +250,9 @@ export async function ensureOrderRecoFresh(
   const refreshedCt = refreshedRows[0]?.refreshed_ct ?? "";
   const datesMatch = live.size === have.size && [...live].every((d) => have.has(d));
   const staleDay = Boolean(today && refreshedCt && refreshedCt < today);
+  const hasDupes = Boolean(dupRows.length && Number(dupRows[0].n) > 0);
 
-  if (!datesMatch || staleDay || (live.size === 0 && have.size > 0)) {
+  if (!datesMatch || staleDay || hasDupes || (live.size === 0 && have.size > 0)) {
     if (opts.enqueue) {
       await opts.enqueue();
       return { status: "queued" };
@@ -251,14 +263,20 @@ export async function ensureOrderRecoFresh(
   return { status: "fresh" };
 }
 
-export type RestockAction = "add-order" | "register-only" | "reset-to-estimated" | "replace-estimated";
+export type RestockAction =
+  | "add-order"
+  | "register-only"
+  | "reset-to-estimated"
+  | "replace-estimated"
+  | "move-date"
+  | "remove-date";
 
 /**
  * One restock submission — mirrors handler.py::_handle_restock_submission's
  * three shared actions (add-order / register-only / reset-to-estimated).
  * Always registers the schedule first (even before any row write, same as
  * the Slack path), then always refreshes the reco at the end.
- * "replace-estimated" is console-only — use replaceEstimatedRestockDate.
+ * Console-only move/remove/replace use dedicated helpers — not submitRestock.
  */
 export async function submitRestock(
   store: string,
@@ -271,6 +289,12 @@ export async function submitRestock(
   if (action === "replace-estimated") {
     throw new Error("submitRestock: use replaceEstimatedRestockDate for replace-estimated");
   }
+  if (action === "move-date") {
+    throw new Error("submitRestock: use moveRestockDate for move-date");
+  }
+  if (action === "remove-date") {
+    throw new Error("submitRestock: use removeRestockDate for remove-date");
+  }
   await setRestockSchedule(store, deliveryDate, by);
   if (action === "reset-to-estimated") {
     await clearRestockOrders(store, deliveryDate);
@@ -282,9 +306,89 @@ export async function submitRestock(
 }
 
 /**
+ * Console-only: rekey a scheduled delivery from `fromDate` → `toDate`, carrying
+ * Actuals and Manual tub overrides. Fixes wrong-date Actuals (e.g. 8/17 → 8/20)
+ * in one step. Reads rows before clear so nothing is orphaned.
+ */
+export async function moveRestockDate(
+  store: string,
+  fromDate: string,
+  toDate: string,
+  by: string,
+  opts: RecoRefreshOpts = {},
+): Promise<void> {
+  if (fromDate === toDate) {
+    throw new Error("moveRestockDate: from and to dates must differ");
+  }
+
+  const scheduled = await q<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM ${fq("inventory_restock_schedule")}
+     WHERE store = @store AND delivery_date = @date`,
+    { store, date: dateParam(fromDate) },
+  );
+  if (!scheduled.length || Number(scheduled[0].n) === 0) {
+    throw new Error(`moveRestockDate: ${fromDate} is not on the restock schedule`);
+  }
+
+  const [orderRows, overrideRows] = await Promise.all([
+    q<{ item: string; quantity_tubs: number }>(
+      `SELECT item, quantity_tubs FROM ${fq("inventory_restock_orders")}
+       WHERE store = @store AND delivery_date = @date`,
+      { store, date: dateParam(fromDate) },
+    ),
+    q<{ item: string; quantity_tubs: number }>(
+      `SELECT item, quantity_tubs FROM ${fq("inventory_order_tub_overrides")}
+       WHERE store = @store AND delivery_date = @date`,
+      { store, date: dateParam(fromDate) },
+    ),
+  ]);
+
+  await clearRestockSchedule(store, fromDate);
+  await setRestockSchedule(store, toDate, by);
+
+  if (orderRows.length) {
+    await replaceRestockOrders(
+      store,
+      toDate,
+      orderRows.map((r) => ({ item: r.item, quantityTubs: Number(r.quantity_tubs) })),
+      by,
+    );
+  } else if (overrideRows.length) {
+    await replaceOrderTubOverrides(
+      store,
+      toDate,
+      overrideRows.map((r) => ({ item: r.item, quantityTubs: Number(r.quantity_tubs) })),
+      by,
+      { skipRefresh: true },
+    );
+  }
+
+  if (!opts.skipRefresh) await refreshOrderReco(store);
+}
+
+/** Console-only: delete a registered delivery date (schedule + actuals + overrides). */
+export async function removeRestockDate(
+  store: string,
+  deliveryDate: string,
+  by: string,
+  opts: RecoRefreshOpts = {},
+): Promise<void> {
+  void by; // audited via caller identity; DELETE rows don't store updated_by
+  const scheduled = await q<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM ${fq("inventory_restock_schedule")}
+     WHERE store = @store AND delivery_date = @date`,
+    { store, date: dateParam(deliveryDate) },
+  );
+  if (!scheduled.length || Number(scheduled[0].n) === 0) {
+    throw new Error(`removeRestockDate: ${deliveryDate} is not on the restock schedule`);
+  }
+  await clearRestockSchedule(store, deliveryDate);
+  if (!opts.skipRefresh) await refreshOrderReco(store);
+}
+
+/**
  * Console-only: move an Estimated schedule date (no actuals) from `fromDate`
- * to `toDate`, then recompute dual-date order reco so Order tubs / On hand
- * reflect the new lead days.
+ * to `toDate`. Prefer moveRestockDate when Actuals may be present.
  */
 export async function replaceEstimatedRestockDate(
   store: string,

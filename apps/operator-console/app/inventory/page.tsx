@@ -3,6 +3,7 @@ import {
   estimatedScheduleDates,
   nextDates,
   orderRecoSlots,
+  scheduledRestockDates,
   storeConfig,
   usageDayAudit,
   type BaseRunwayRow,
@@ -18,6 +19,7 @@ import {
   pivotOrderRecoSlots,
   type OrderRecoPivotedRow,
 } from "@/lib/inventory/orderRecoPivot";
+import { ACTIVE_BASES, type RestockRow } from "@/lib/restock/parse";
 import { DataTable, type Thresholds } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { RestockImportDrawer } from "@/components/drawers/RestockImportDrawer";
@@ -25,6 +27,27 @@ import { CapacityEdit } from "@/components/drawers/CapacityEdit";
 import { UsageDayAuditTable } from "@/components/inventory/UsageDayAuditTable";
 import { OrderRecoTable } from "@/components/inventory/OrderRecoTable";
 import type { ColumnDef } from "@tanstack/react-table";
+
+function buildEstimateByDate(
+  slotRows: { Item: string; delivery_date: string; "Order Tubs": number | null }[],
+): Record<string, RestockRow[]> {
+  const byDate = new Map<string, Map<string, number>>();
+  for (const r of slotRows) {
+    if (r.Item === "TOTAL" || r.Item === "Blade") continue;
+    const d = normalizeDeliveryDate(r.delivery_date);
+    if (!d) continue;
+    if (!byDate.has(d)) byDate.set(d, new Map());
+    byDate.get(d)!.set(r.Item, Number(r["Order Tubs"] ?? 0));
+  }
+  const out: Record<string, RestockRow[]> = {};
+  for (const [d, items] of byDate) {
+    out[d] = ACTIVE_BASES.map((item) => ({
+      item,
+      quantityTubs: items.has(item) ? Number(items.get(item)) : 0,
+    }));
+  }
+  return out;
+}
 
 export const dynamic = "force-dynamic";
 
@@ -36,30 +59,41 @@ export default async function InventoryPage() {
   let auditRows: UsageDayAuditRow[] = [];
   let dates: string[] = [];
   let estimatedDates: string[] = [];
+  let scheduledDates: { delivery_date: string; has_actuals: boolean }[] = [];
+  let estimateByDate: Record<string, RestockRow[]> = {};
   let maxTubs: number | undefined;
   let error: string | undefined;
   let recoQueued = false;
   try {
+    // Prod: enqueue Cloud Run when stale. Local BYPASS_IAP: refresh inline so
+    // Inventory columns match schedule without waiting on a job.
+    const syncLocal = Boolean(process.env.BYPASS_IAP_EMAIL?.trim());
     const ensure = await ensureOrderRecoFresh(
       DEFAULT_STORE,
-      FEATURES.asyncOrderReco
+      FEATURES.asyncOrderReco && !syncLocal
         ? { enqueue: () => triggerOrderRecoRefresh(DEFAULT_STORE) }
         : {},
     );
     recoQueued = ensure.status === "queued";
-    const [slotRows, nd, config, runway, estimated, audit] = await Promise.all([
+    const [slotRows, nd, config, runway, estimated, scheduled, audit] = await Promise.all([
       orderRecoSlots(),
       nextDates(),
       storeConfig(DEFAULT_STORE),
       baseRunway(),
       estimatedScheduleDates(DEFAULT_STORE),
+      scheduledRestockDates(DEFAULT_STORE),
       usageDayAudit(DEFAULT_STORE),
     ]);
     dates = nd.map((d) => normalizeDeliveryDate(d.delivery_date)).filter(Boolean);
     rows = pivotOrderRecoSlots(dates, slotRows);
     runwayRows = runway;
     auditRows = audit;
-    estimatedDates = estimated.map((d) => d.delivery_date);
+    estimatedDates = estimated.map((d) => normalizeDeliveryDate(d.delivery_date)).filter(Boolean);
+    scheduledDates = scheduled.map((d) => ({
+      delivery_date: normalizeDeliveryDate(d.delivery_date),
+      has_actuals: Boolean(d.has_actuals),
+    }));
+    estimateByDate = buildEstimateByDate(slotRows);
     const maxTubsRow = config.find((c) => c.key === "order_reco_max_tubs");
     maxTubs = maxTubsRow ? Number(maxTubsRow.value) : undefined;
   } catch (e) {
@@ -99,7 +133,11 @@ export default async function InventoryPage() {
           FEATURES.writeRestock ? (
             <>
               <CapacityEdit currentMaxTubs={maxTubs} />
-              <RestockImportDrawer dates={dates} estimatedDates={estimatedDates} />
+              <RestockImportDrawer
+                dates={dates}
+                scheduledDates={scheduledDates}
+                estimateByDate={estimateByDate}
+              />
             </>
           ) : null
         }
@@ -141,10 +179,9 @@ export default async function InventoryPage() {
           <p className="text-xs text-muted-foreground">
             Order weight (lbs) = Order tubs × per-tub weight (Açaí 18 lbs; other bases 20 lbs;
             Blade is direct-delivery / not weighed). TOTAL includes +50 lbs per pallet (40
-            tubs/pallet) — same as Grafana Order Assistant. On Estimated dates, click an Order
-            tubs cell (or the pencil in the header) to pin Manual values for that delivery;
-            Apply once recomputes water-fill around those pins. Actuals dates stay read-only here
-            — use Restock import.
+            tubs/pallet) — same as Grafana Order Assistant. Click an Order tubs cell (or the
+            pencil in the header) to edit that delivery: Estimated dates pin Manual values;
+            Actuals dates update uploaded Actuals. Apply once recomputes the recommendation.
           </p>
           <OrderRecoTable
             dates={dates}

@@ -203,10 +203,14 @@ Reused write contracts (already proven in `handler.py`):
 - **Restock actuals** → **replace-per-date**: DELETE `inventory_restock_orders`
   for (store, date), INSERT parsed rows, then enqueue `refresh_order_reco`.
 - **Reset to estimated** → DELETE actuals for (store, date), then enqueue refresh.
-- **Replace estimated date** (console-only) → DELETE schedule (+ any orphan
-  actuals) for the old Estimated date, MERGE the new date, then
-  enqueue `refresh_order_reco`. Refuses dates that already have Actuals. Slack modal
-  does not expose this action.
+- **Move date** (console-only) → read Actuals + Manual tub overrides for `from`,
+  DELETE schedule (+ orphans) for `from`, MERGE `to`, re-INSERT carried rows on
+  `to`, then enqueue `refresh_order_reco`. Works when `from` already has Actuals
+  (e.g. wrong-date upload 8/17 → 8/20). Slack modal does not expose this.
+- **Remove date** (console-only) → DELETE schedule + actuals + overrides for a
+  date, then enqueue refresh. Requires an explicit confirm in the drawer.
+- **Replace estimated date** (console-only, Estimated-only) → same as Move but
+  refuses dates that already have Actuals. UI prefers **Move date**.
 - **Recognition bonus** → *new* MERGE table (mirror `training_shifts`) — no write
   path exists on `main` yet (flagged in PLAN.md).
 
@@ -250,18 +254,20 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
   migration 055) — does not flip the date to Actuals. Console
   pivots `inventory_order_reco` long-format so adding another registered
   schedule date adds another column group automatically.
-- **Edit estimates** (Issue #225): on Estimated delivery dates, click an
-  **Order tubs** cell (or the header pencil) to open a batch Sheet for that
-  date; operator sets Estimated vs Manual tubs, then Apply once →
-  replace-per-date overrides + one `refresh_order_reco`. Water-fill budget
-  shrinks by pinned tubs; pinned items (incl. 0) are excluded from candidates.
-  Actuals dates stay read-only in the table — use Restock import.
+- **Edit estimates / actuals** (Issues #225 / #238): click an **Order tubs**
+  cell (or the header pencil) to open a batch Sheet for that date. Estimated
+  dates: set Estimated vs Manual tubs, then Apply → replace-per-date overrides +
+  one `refresh_order_reco`. Actuals dates: edit qty → replace-per-date
+  `inventory_restock_orders` (same write as Restock Add actuals). Water-fill
+  budget shrinks by pinned tubs on Estimated dates; pinned items (incl. 0) are
+  excluded from candidates.
 - **TOTAL row** per date incl. pallet weight (`Σ weight + 50·CEIL(Σtubs/40)`).
 - **Restock schedule panel** with the three shared operator actions from the Slack
-  modal (**Register date (estimated)**, **Add order (actuals)** (CSV/photo → §5.1),
-  **Reset to estimated**) plus a console-only **Replace estimated date** (move an
-  Estimated schedule date → new date, then refresh dual-date reco so Order tubs /
-  On hand update; clears tub overrides for the old date).
+  modal (**Register date (estimated)**, **Add / update actuals** (estimate-prefilled
+  form; optional CSV/photo → §5.1), **Reset to estimated**) plus console-only
+  **Move date** (rekey schedule + Actuals/Manual pins `from → to`, then refresh
+  dual-date reco) and **Remove date** (delete schedule + Actuals + overrides after
+  confirm).
 - **Base runway table** (Issue #164, `vw_inventory_base_runway`): urgency view
   at the top of Inventory / Ordering. Columns: Base, Stock, Vel/day, Days left
   (burn-down from today, ignores future restocks), **Stockout 1 / Restock 1 /

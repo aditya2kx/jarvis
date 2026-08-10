@@ -301,12 +301,13 @@ export async function setCurrentQtyOverrideAction(
   }
   try {
     const by = await operatorEmail();
-    const skipRefresh = shouldSkipInlineOrderReco();
+    // Always rematerialize inline — On Hand / Order Tubs / Days left / runway
+    // all derive from current_qty; async enqueue would leave the table stale.
     await setCurrentQtyOverride(DEFAULT_STORE, item, quantityUnits, by, {
-      skipRefresh,
+      skipRefresh: false,
     });
-    return finishOrderRecoWrite(skipRefresh, {
-      done: "Current Qty saved.",
+    return finishOrderRecoWrite(false, {
+      done: "Current Qty saved — order reco recalculated.",
       queued: "Current Qty saved — recommendation refreshing…",
     });
   } catch (e) {
@@ -321,10 +322,9 @@ export async function clearCurrentQtyOverrideAction(
     return failAck(new Error("Current Qty overrides are disabled"));
   }
   try {
-    const skipRefresh = shouldSkipInlineOrderReco();
-    await clearCurrentQtyOverride(DEFAULT_STORE, item, { skipRefresh });
-    return finishOrderRecoWrite(skipRefresh, {
-      done: "Current Qty reset to ClickUp reading.",
+    await clearCurrentQtyOverride(DEFAULT_STORE, item, { skipRefresh: false });
+    return finishOrderRecoWrite(false, {
+      done: "Current Qty reset — order reco recalculated.",
       queued: "Current Qty reset — recommendation refreshing…",
     });
   } catch (e) {
@@ -341,10 +341,10 @@ export async function applyCurrentQtyOverridesAction(
   }
   try {
     const by = await operatorEmail();
-    const skipRefresh = shouldSkipInlineOrderReco();
-    await applyCurrentQtyOverrides(DEFAULT_STORE, rows, by, { skipRefresh });
-    return finishOrderRecoWrite(skipRefresh, {
-      done: "Current Qty saved.",
+    // Always rematerialize inline — see setCurrentQtyOverrideAction.
+    await applyCurrentQtyOverrides(DEFAULT_STORE, rows, by, { skipRefresh: false });
+    return finishOrderRecoWrite(false, {
+      done: "Current Qty saved — order reco recalculated.",
       queued: "Current Qty saved — recommendation refreshing…",
     });
   } catch (e) {
@@ -360,10 +360,9 @@ export async function clearCurrentQtyOverridesAction(
     return failAck(new Error("Current Qty overrides are disabled"));
   }
   try {
-    const skipRefresh = shouldSkipInlineOrderReco();
-    await clearCurrentQtyOverrides(DEFAULT_STORE, items, { skipRefresh });
-    return finishOrderRecoWrite(skipRefresh, {
-      done: "Current Qty reset to ClickUp readings.",
+    await clearCurrentQtyOverrides(DEFAULT_STORE, items, { skipRefresh: false });
+    return finishOrderRecoWrite(false, {
+      done: "Current Qty reset — order reco recalculated.",
       queued: "Current Qty reset — recommendation refreshing…",
     });
   } catch (e) {

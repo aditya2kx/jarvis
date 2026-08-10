@@ -48,8 +48,9 @@ export function CurrentQtyDrawer({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const { isPending, stage, error, run, setError } = useConsoleAction();
   const { banner, followOrderReco } = useOrderRecoRefreshFollowup({
-    pendingBanner: "Order recommendation refreshing — Current Qty updates when ready.",
-    doneToast: "Current Qty updated",
+    pendingBanner:
+      "Recalculating On hand / Order tubs / Days left from the new Current Qty…",
+    doneToast: "Current Qty saved — order recommendation updated",
   });
 
   useEffect(() => {
@@ -89,32 +90,32 @@ export function CurrentQtyDrawer({
     if (!payload.length) return;
 
     const ack = await run(() => applyCurrentQtyOverridesAction(payload), {
-      saving: "Saving…",
-      done: "Current Qty saved.",
+      saving: "Saving + recalculating…",
+      done: "Current Qty saved — order reco recalculated.",
       queued: "Current Qty saved — recommendation refreshing…",
     });
     if (!ack.ok) return;
-    onOpenChange(false);
     followOrderReco({
       queued: ack.queued,
       baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
     });
+    onOpenChange(false);
   }
 
   async function handleResetAll() {
     const items = bases.map((r) => r.item);
     if (!items.length) return;
     const ack = await run(() => clearCurrentQtyOverridesAction(items), {
-      saving: "Resetting…",
-      done: "Current Qty reset to ClickUp readings.",
+      saving: "Resetting + recalculating…",
+      done: "Current Qty reset — order reco recalculated.",
       queued: "Current Qty reset — recommendation refreshing…",
     });
     if (!ack.ok) return;
-    onOpenChange(false);
     followOrderReco({
       queued: ack.queued,
       baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
     });
+    onOpenChange(false);
   }
 
   // Critical: do not keep Sheet mounted when closed — Base UI can leave a
@@ -132,8 +133,9 @@ export function CurrentQtyDrawer({
         <SheetHeader>
           <SheetTitle>Edit Current Qty</SheetTitle>
           <SheetDescription>
-            Override on-hand for each base, then Apply once. Sticky until you reset to ClickUp
-            closings.
+            Override on-hand for each base, then Apply once. Saves rematerialize order reco so
+            On hand, Order tubs, Days left, and Base runway update. Sticky until Reset all to
+            ClickUp closings.
           </SheetDescription>
         </SheetHeader>
 

@@ -1,3 +1,9 @@
+## 2026-08-11 — Team pulse payroll period filter for manual Preview/Post (Issue #245)
+
+**Scope:** Automations Team pulse Preview/Post always used the open review-bonus period; operators needed a Payroll-style period picker to compose against a prior biweek and DM themselves.
+
+**Key changes (PR #246):** `/automations/team-pulse?period=` FilterSelect; `reviewBonusLeaderboardForPeriod`; period-aware `{pay_cycle}` + Chicago `{greeting}`; manual Post once drops once/day cap (scheduler still dedupes). RUNBOOK + Operator Console ARCHITECTURE + scripts README lock-step.
+
 ## 2026-08-10 — Deploy traffic → latest + editable Current Qty (Issue #240)
 
 **Scope:** Operator Console deploys left sticky tags holding % traffic on old revisions (#239 incident); Inventory Current Qty was read-only.

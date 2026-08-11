@@ -2437,3 +2437,34 @@ export async function openReviewBonusLeaderboard(): Promise<ReviewBonusLeaderboa
      ORDER BY m.total_bonus DESC, m.employee`,
   );
 }
+
+/** Review-bonus rows for an explicit biweek (manual Team pulse Preview/Post). */
+export async function reviewBonusLeaderboardForPeriod(
+  periodStart: string,
+): Promise<ReviewBonusLeaderboardRow[]> {
+  return q<ReviewBonusLeaderboardRow>(
+    `SELECT m.employee, m.total_bonus,
+       CAST(m.period_start AS STRING) AS period_start,
+       CAST(m.period_end AS STRING) AS period_end
+     FROM ${fq("model_review_bonus_period")} m
+     WHERE m.period_start = @start
+     ORDER BY m.total_bonus DESC, m.employee`,
+    { start: dateParam(periodStart) },
+  );
+}
+
+/** Rollup meta for an explicit biweek (manual Team pulse freshness line). */
+export async function reviewBonusMetaForPeriod(
+  periodStart: string,
+): Promise<ReviewBonusOpenMeta | null> {
+  const rows = await q<ReviewBonusOpenMeta>(
+    `SELECT CAST(m.period_start AS STRING) AS period_start,
+       CAST(m.period_end AS STRING) AS period_end,
+       CAST(MAX(m.materialized_at_utc) AS STRING) AS materialized_at_utc
+     FROM ${fq("model_review_bonus_period")} m
+     WHERE m.period_start = @start
+     GROUP BY m.period_start, m.period_end`,
+    { start: dateParam(periodStart) },
+  );
+  return rows[0] ?? null;
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,6 +39,8 @@ type Props = {
   members: ClickUpNamedOption[];
   clickupError?: string;
   reviewMeta?: ReviewBonusOpenMeta | null;
+  selectedPeriodStart: string;
+  periodEnd: string | null;
 };
 
 function labelFor(options: ClickUpNamedOption[], id: string): string {
@@ -66,6 +68,8 @@ export function TeamPulseEditor({
   members,
   clickupError,
   reviewMeta,
+  selectedPeriodStart,
+  periodEnd,
 }: Props) {
   const { run, isPending, stage, error } = useConsoleAction();
   const [enabled, setEnabled] = useState(() => {
@@ -91,6 +95,11 @@ export function TeamPulseEditor({
   );
   const [preview, setPreview] = useState<string | null>(null);
   const [previewVaried, setPreviewVaried] = useState(false);
+
+  useEffect(() => {
+    setPreview(null);
+    setPreviewVaried(false);
+  }, [selectedPeriodStart]);
 
   const cadence = useMemo(
     () => cadenceSummary(days, hour, minute, "America/Chicago"),
@@ -136,7 +145,8 @@ export function TeamPulseEditor({
   }
 
   async function onPreview() {
-    const ack = await run(() => previewTeamPulseAction(), {
+    if (!selectedPeriodStart) return;
+    const ack = await run(() => previewTeamPulseAction(selectedPeriodStart), {
       saving: "Composing…",
       done: "Preview ready.",
     });
@@ -147,7 +157,8 @@ export function TeamPulseEditor({
   }
 
   async function onPostOnce() {
-    await run(() => postTeamPulseOnceAction(), {
+    if (!selectedPeriodStart) return;
+    await run(() => postTeamPulseOnceAction(selectedPeriodStart), {
       saving: "Posting…",
       done: "Posted.",
     });
@@ -177,6 +188,11 @@ export function TeamPulseEditor({
     { accessorKey: "trigger", header: "Trigger" },
   ];
 
+  const periodLabel =
+    selectedPeriodStart && periodEnd
+      ? `${selectedPeriodStart} – ${periodEnd}`
+      : selectedPeriodStart || "—";
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
@@ -196,7 +212,7 @@ export function TeamPulseEditor({
 
       {reviewMeta ? (
         <p className="text-xs text-muted-foreground">
-          Open review-bonus period{" "}
+          Selected review-bonus period{" "}
           <Badge variant="outline" className="font-normal">
             {reviewMeta.period_start} – {reviewMeta.period_end}
           </Badge>
@@ -204,13 +220,18 @@ export function TeamPulseEditor({
           rollup {formatRollup(reviewMeta.materialized_at_utc)} (CT). New Google
           review bonuses appear after the nightly{" "}
           <code className="rounded bg-muted px-1">process_reviews</code> rollup.
+          Preview / Post once use this period; the morning schedule still uses
+          the open period only.
         </p>
       ) : (
         <p className="text-xs text-muted-foreground">
-          No open review-bonus period in BQ yet — Preview/Post will show an empty
-          leaderboard until{" "}
+          No review-bonus rollup for{" "}
+          <Badge variant="outline" className="font-normal">
+            {periodLabel}
+          </Badge>{" "}
+          yet — Preview/Post will show an empty leaderboard until{" "}
           <code className="rounded bg-muted px-1">process_reviews</code> writes
-          one.
+          one. Morning schedule still uses the open period only.
         </p>
       )}
 
@@ -387,9 +408,12 @@ export function TeamPulseEditor({
         <CardContent className="flex flex-col gap-3">
           <p className="text-xs text-muted-foreground">
             Use <code className="rounded bg-muted px-1">{"{leaderboard}"}</code>{" "}
-            for the live ranking (always exact). Greeting + closers
-            (“keep the momentum…”, “one team one fight”) are lightly rewritten
-            by Gemini each Preview / Post so they stay fresh.
+            for the live ranking (always exact),{" "}
+            <code className="rounded bg-muted px-1">{"{pay_cycle}"}</code> for
+            current vs dated biweek, and{" "}
+            <code className="rounded bg-muted px-1">{"{greeting}"}</code> for
+            Good Morning / Afternoon / Evening (America/Chicago). Greeting +
+            closers are also lightly rewritten by Gemini each Preview / Post.
           </p>
           <textarea
             className="min-h-48 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -412,7 +436,7 @@ export function TeamPulseEditor({
           type="button"
           variant="outline"
           className="min-h-11"
-          disabled={isPending}
+          disabled={isPending || !selectedPeriodStart}
           onClick={() => void onPreview()}
         >
           Preview
@@ -421,7 +445,7 @@ export function TeamPulseEditor({
           type="button"
           variant="secondary"
           className="min-h-11"
-          disabled={isPending}
+          disabled={isPending || !selectedPeriodStart}
           onClick={() => void onPostOnce()}
         >
           Post once now

@@ -5,10 +5,11 @@ import { operatorEmail, DEFAULT_STORE } from "@/lib/auth/identity";
 import { asAck, type ActionAck } from "@/lib/actions/types";
 import {
   getAutomation,
-  openReviewBonusLeaderboard,
+  listPayPeriodsWithPaidStatus,
+  reviewBonusLeaderboardForPeriod,
+  type ReviewBonusLeaderboardRow,
 } from "@/lib/bq/queries";
 import {
-  hasAutomationPostToday,
   insertAutomationPost,
   upsertAutomation,
   type AutomationUpsert,
@@ -20,8 +21,22 @@ import {
   composeMessage,
   DEFAULT_TEMPLATE,
   formatLeaderboard,
+  type PayCycleContext,
 } from "@/lib/automations/teamPulse";
 import { varyMotivationalCopy } from "@/lib/automations/varyCopy";
+
+async function payCycleForPeriod(
+  periodStart: string,
+  rows: ReviewBonusLeaderboardRow[],
+): Promise<PayCycleContext> {
+  const periods = await listPayPeriodsWithPaidStatus(6);
+  const opt = periods.find((p) => p.period_start === periodStart);
+  return {
+    periodStart,
+    periodEnd: opt?.period_end ?? rows[0]?.period_end ?? null,
+    isCurrent: Boolean(opt?.is_current),
+  };
+}
 
 export type TeamPulseConfigInput = {
   enabled: boolean;
@@ -73,24 +88,35 @@ export async function saveTeamPulseConfigAction(
   }, "Team pulse settings saved.");
 }
 
-export async function previewTeamPulseAction(): Promise<
-  ActionAck<{ content: string; varied: boolean }>
-> {
+function assertPeriodStart(periodStart: string): void {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(periodStart)) {
+    throw new Error("Invalid pay period.");
+  }
+}
+
+export async function previewTeamPulseAction(
+  periodStart: string,
+): Promise<ActionAck<{ content: string; varied: boolean }>> {
   return asAck(async () => {
+    assertPeriodStart(periodStart);
     const cfg = await getAutomation(DEFAULT_STORE, AUTOMATION_ID);
     const template = cfg?.template || DEFAULT_TEMPLATE;
-    const rows = await openReviewBonusLeaderboard();
+    const rows = await reviewBonusLeaderboardForPeriod(periodStart);
     const leaderboard = formatLeaderboard(rows);
-    const base = composeMessage(template, leaderboard);
+    const cycle = await payCycleForPeriod(periodStart, rows);
+    const base = composeMessage(template, leaderboard, cycle);
     const { text, varied } = await varyMotivationalCopy(base, leaderboard);
     return { content: text, varied };
   }, "Preview ready.");
 }
 
-export async function postTeamPulseOnceAction(): Promise<
+export async function postTeamPulseOnceAction(
+  periodStart: string,
+): Promise<
   ActionAck<{ message_id: string; destination: string; channel_id: string }>
 > {
   return asAck(async () => {
+    assertPeriodStart(periodStart);
     const by = await operatorEmail();
     let cfg = await getAutomation(DEFAULT_STORE, AUTOMATION_ID);
     if (!cfg) {
@@ -99,16 +125,18 @@ export async function postTeamPulseOnceAction(): Promise<
     }
     if (!cfg) throw new Error("Failed to load team-pulse config after seed");
 
+    // Manual Post once: no once-per-day cap (operator may re-send / try periods).
+    // Scheduled webhook still dedupes via team_pulse.py / hasAutomationPostToday.
     const postDate = chicagoTodayIso();
-    if (await hasAutomationPostToday(DEFAULT_STORE, AUTOMATION_ID, postDate)) {
-      throw new Error(
-        `Already posted today (${postDate} CT). Wait until tomorrow or use a different date.`,
-      );
-    }
 
-    const rows = await openReviewBonusLeaderboard();
+    const rows = await reviewBonusLeaderboardForPeriod(periodStart);
     const leaderboard = formatLeaderboard(rows);
-    const base = composeMessage(cfg.template || DEFAULT_TEMPLATE, leaderboard);
+    const cycle = await payCycleForPeriod(periodStart, rows);
+    const base = composeMessage(
+      cfg.template || DEFAULT_TEMPLATE,
+      leaderboard,
+      cycle,
+    );
     const { text: content } = await varyMotivationalCopy(base, leaderboard);
     const workspace = DEFAULT_WORKSPACE_ID;
     const dest =
@@ -121,13 +149,6 @@ export async function postTeamPulseOnceAction(): Promise<
         workspace,
       );
       channelId = dm.id;
-    }
-
-    // Re-check immediately before ClickUp write (narrows TOCTOU after compose/vary).
-    if (await hasAutomationPostToday(DEFAULT_STORE, AUTOMATION_ID, postDate)) {
-      throw new Error(
-        `Already posted today (${postDate} CT). Wait until tomorrow or use a different date.`,
-      );
     }
 
     const created = await postChatMessage(channelId, content, workspace);

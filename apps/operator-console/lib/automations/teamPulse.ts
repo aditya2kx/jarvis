@@ -4,7 +4,7 @@ export const AUTOMATION_ID = "team-pulse";
 export const DEFAULT_DAYS = [1, 3, 6]; // Tue Thu Sun (Python weekday Mon=0)
 export const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 
-export const DEFAULT_TEMPLATE = `Good Morning Team ! Sharing current pay cycle's leaderboard based of Google Review Bonus.
+export const DEFAULT_TEMPLATE = `{greeting} Team ! Sharing {pay_cycle}'s leaderboard based of Google Review Bonus.
 
 {leaderboard}
 
@@ -13,12 +13,101 @@ Keep the momentum going...!! One team, one fight.
 There would be more such incentives/challenges program rolled out soon.
 `;
 
-export function composeMessage(template: string, leaderboardMd: string): string {
-  if (template.includes("{leaderboard}")) {
-    return template.replace("{leaderboard}", leaderboardMd.trim()).trim();
+export type PayCycleContext = {
+  periodStart: string;
+  periodEnd?: string | null;
+  isCurrent: boolean;
+};
+
+/** Chicago local hour 0–23 (for greeting). */
+export function chicagoHour(now: Date = new Date()): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    hour: "numeric",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  return Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+}
+
+/** "Good Morning" / "Good Afternoon" / "Good Evening" in America/Chicago. */
+export function timeOfDayGreeting(now: Date = new Date()): string {
+  const h = chicagoHour(now);
+  if (h < 12) return "Good Morning";
+  if (h < 17) return "Good Afternoon";
+  return "Good Evening";
+}
+
+/**
+ * Fill `{greeting}` and rewrite legacy Good Morning/Afternoon/Evening so
+ * Preview/Post match Chicago time of day.
+ */
+export function applyGreetingWording(
+  template: string,
+  now: Date = new Date(),
+): string {
+  const greeting = timeOfDayGreeting(now);
+  let t = template.includes("{greeting}")
+    ? template.split("{greeting}").join(greeting)
+    : template;
+  t = t.replace(/\bGood (Morning|Afternoon|Evening)\b/gi, greeting);
+  return t;
+}
+
+/** Human date for message copy (UTC calendar date → "Jul 27"). */
+export function formatPayCycleDate(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(dt);
+}
+
+/** "current pay cycle" or "the Jul 27 – Aug 9 pay cycle". */
+export function formatPayCycleLabel(ctx: PayCycleContext): string {
+  if (ctx.isCurrent) return "current pay cycle";
+  const start = formatPayCycleDate(ctx.periodStart);
+  if (ctx.periodEnd) {
+    return `the ${start} – ${formatPayCycleDate(ctx.periodEnd)} pay cycle`;
   }
-  if (!leaderboardMd.trim()) return template.trim();
-  return `${template.trim()}\n\n${leaderboardMd.trim()}`;
+  return `the ${start} pay cycle`;
+}
+
+/**
+ * Fill `{pay_cycle}` and rewrite legacy "current pay cycle['s]" when the
+ * selected biweek is not the current one (stored BQ templates).
+ */
+export function applyPayCycleWording(
+  template: string,
+  ctx: PayCycleContext,
+): string {
+  const label = formatPayCycleLabel(ctx);
+  let t = template;
+  if (t.includes("{pay_cycle}")) {
+    t = t.split("{pay_cycle}").join(label);
+  }
+  if (!ctx.isCurrent) {
+    t = t.replace(/\bcurrent pay cycle's\b/gi, `${label}'s`);
+    t = t.replace(/\bcurrent pay cycle\b/gi, label);
+  }
+  return t;
+}
+
+export function composeMessage(
+  template: string,
+  leaderboardMd: string,
+  period?: PayCycleContext,
+  now: Date = new Date(),
+): string {
+  let filled = applyGreetingWording(template, now);
+  if (period) filled = applyPayCycleWording(filled, period);
+  if (filled.includes("{leaderboard}")) {
+    return filled.replace("{leaderboard}", leaderboardMd.trim()).trim();
+  }
+  if (!leaderboardMd.trim()) return filled.trim();
+  return `${filled.trim()}\n\n${leaderboardMd.trim()}`;
 }
 
 export function displayName(employee: string): string {
@@ -49,7 +138,7 @@ export function formatLeaderboard(
     byAmount.set(amt, list);
   }
   if (byAmount.size === 0) {
-    return "_No review bonuses credited in the current open pay period yet._";
+    return "_No review bonuses credited in this pay period yet._";
   }
   const amounts = [...byAmount.keys()].sort((a, b) => b - a);
   const lines: string[] = [];

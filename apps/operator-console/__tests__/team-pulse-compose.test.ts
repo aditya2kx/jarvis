@@ -6,6 +6,7 @@ import {
   formatLeaderboard,
   formatPayCycleLabel,
   parseDays,
+  timeOfDayGreeting,
 } from "@/lib/automations/teamPulse";
 
 function shouldRun(days: number[], weekday: number, enabled: boolean): boolean {
@@ -87,5 +88,26 @@ describe("teamPulse compose", () => {
     expect(out).toContain("the Jul 27 – Aug 9 pay cycle's leaderboard");
     expect(out).toContain("**Ada**");
     expect(out).not.toContain("{pay_cycle}");
+  });
+
+  it("greeting follows Chicago time of day", () => {
+    // 2026-08-11 15:00 UTC = 10:00 CT → Morning
+    const morning = new Date("2026-08-11T15:00:00Z");
+    expect(timeOfDayGreeting(morning)).toBe("Good Morning");
+    // 18:00 UTC = 13:00 CT → Afternoon
+    const afternoon = new Date("2026-08-11T18:00:00Z");
+    expect(timeOfDayGreeting(afternoon)).toBe("Good Afternoon");
+    // 01:00 UTC next day = 20:00 CT → Evening
+    const evening = new Date("2026-08-12T01:00:00Z");
+    expect(timeOfDayGreeting(evening)).toBe("Good Evening");
+
+    const out = composeMessage(
+      "Good Morning Team ! Sharing {pay_cycle}'s board.\n\n{leaderboard}",
+      "*   **Ada** leading with $10.",
+      { periodStart: "2026-08-10", periodEnd: "2026-08-23", isCurrent: true },
+      afternoon,
+    );
+    expect(out.startsWith("Good Afternoon Team")).toBe(true);
+    expect(out).not.toMatch(/Good Morning/i);
   });
 });

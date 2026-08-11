@@ -32,7 +32,7 @@ DEFAULT_TZ = "America/Chicago"
 # Python weekday: Mon=0 … Sun=6 → Tue/Thu/Sun
 DEFAULT_DAYS = [1, 3, 6]
 
-DEFAULT_TEMPLATE = """Good Morning Team ! Sharing {pay_cycle}'s leaderboard based of Google Review Bonus.
+DEFAULT_TEMPLATE = """{greeting} Team ! Sharing {pay_cycle}'s leaderboard based of Google Review Bonus.
 
 {leaderboard}
 
@@ -42,6 +42,34 @@ There would be more such incentives/challenges program rolled out soon.
 """
 
 DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def time_of_day_greeting(
+    now: datetime.datetime | None = None, tz: str = DEFAULT_TZ
+) -> str:
+    """Good Morning / Afternoon / Evening in America/Chicago."""
+    when = now or datetime.datetime.now(ZoneInfo(tz))
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=ZoneInfo(tz))
+    else:
+        when = when.astimezone(ZoneInfo(tz))
+    h = when.hour
+    if h < 12:
+        return "Good Morning"
+    if h < 17:
+        return "Good Afternoon"
+    return "Good Evening"
+
+
+def apply_greeting_wording(
+    template: str, now: datetime.datetime | None = None
+) -> str:
+    """Fill ``{greeting}``; rewrite legacy Good Morning/Afternoon/Evening."""
+    import re
+
+    greeting = time_of_day_greeting(now)
+    t = template.replace("{greeting}", greeting) if "{greeting}" in template else template
+    return re.sub(r"\bGood (Morning|Afternoon|Evening)\b", greeting, t, flags=re.I)
 
 
 def apply_pay_cycle_wording(template: str, *, is_current: bool = True,
@@ -76,10 +104,12 @@ def apply_pay_cycle_wording(template: str, *, is_current: bool = True,
 def compose_message(template: str, leaderboard_md: str,
                     *, is_current: bool = True,
                     period_start: str | None = None,
-                    period_end: str | None = None) -> str:
-    """Fill ``{pay_cycle}`` + ``{leaderboard}`` (tolerate missing placeholder)."""
+                    period_end: str | None = None,
+                    now: datetime.datetime | None = None) -> str:
+    """Fill ``{greeting}`` + ``{pay_cycle}`` + ``{leaderboard}``."""
+    filled = apply_greeting_wording(template, now)
     filled = apply_pay_cycle_wording(
-        template,
+        filled,
         is_current=is_current,
         period_start=period_start,
         period_end=period_end,

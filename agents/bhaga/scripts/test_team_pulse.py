@@ -15,6 +15,20 @@ class ComposeTests(unittest.TestCase):
         self.assertTrue(out.startswith("Hi"))
         self.assertTrue(out.endswith("Bye"))
 
+    def test_greeting_follows_chicago_hour(self):
+        import datetime
+        from zoneinfo import ZoneInfo
+
+        afternoon = datetime.datetime(2026, 8, 11, 13, 0, tzinfo=ZoneInfo("America/Chicago"))
+        self.assertEqual(tp.time_of_day_greeting(afternoon), "Good Afternoon")
+        out = tp.compose_message(
+            "Good Morning Team ! Sharing x.\n\n{leaderboard}",
+            "*   **Ada** leading with $10.",
+            now=afternoon,
+        )
+        self.assertTrue(out.startswith("Good Afternoon Team"))
+        self.assertNotIn("Good Morning", out)
+
     def test_format_leaderboard_groups(self):
         rows = [
             {"employee": "Willingham, Brooke", "total_bonus": 70},

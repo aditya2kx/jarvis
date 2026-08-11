@@ -408,11 +408,12 @@ export function TeamPulseEditor({
         <CardContent className="flex flex-col gap-3">
           <p className="text-xs text-muted-foreground">
             Use <code className="rounded bg-muted px-1">{"{leaderboard}"}</code>{" "}
-            for the live ranking (always exact) and{" "}
+            for the live ranking (always exact),{" "}
             <code className="rounded bg-muted px-1">{"{pay_cycle}"}</code> for
-            “current pay cycle” vs a dated prior biweek (matches the Period
-            filter). Greeting + closers are lightly rewritten by Gemini each
-            Preview / Post so they stay fresh.
+            current vs dated biweek, and{" "}
+            <code className="rounded bg-muted px-1">{"{greeting}"}</code> for
+            Good Morning / Afternoon / Evening (America/Chicago). Greeting +
+            closers are also lightly rewritten by Gemini each Preview / Post.
           </p>
           <textarea
             className="min-h-48 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

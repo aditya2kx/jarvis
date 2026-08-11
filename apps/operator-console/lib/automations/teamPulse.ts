@@ -4,7 +4,7 @@ export const AUTOMATION_ID = "team-pulse";
 export const DEFAULT_DAYS = [1, 3, 6]; // Tue Thu Sun (Python weekday Mon=0)
 export const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 
-export const DEFAULT_TEMPLATE = `Good Morning Team ! Sharing {pay_cycle}'s leaderboard based of Google Review Bonus.
+export const DEFAULT_TEMPLATE = `{greeting} Team ! Sharing {pay_cycle}'s leaderboard based of Google Review Bonus.
 
 {leaderboard}
 
@@ -18,6 +18,40 @@ export type PayCycleContext = {
   periodEnd?: string | null;
   isCurrent: boolean;
 };
+
+/** Chicago local hour 0–23 (for greeting). */
+export function chicagoHour(now: Date = new Date()): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    hour: "numeric",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  return Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+}
+
+/** "Good Morning" / "Good Afternoon" / "Good Evening" in America/Chicago. */
+export function timeOfDayGreeting(now: Date = new Date()): string {
+  const h = chicagoHour(now);
+  if (h < 12) return "Good Morning";
+  if (h < 17) return "Good Afternoon";
+  return "Good Evening";
+}
+
+/**
+ * Fill `{greeting}` and rewrite legacy Good Morning/Afternoon/Evening so
+ * Preview/Post match Chicago time of day.
+ */
+export function applyGreetingWording(
+  template: string,
+  now: Date = new Date(),
+): string {
+  const greeting = timeOfDayGreeting(now);
+  let t = template.includes("{greeting}")
+    ? template.split("{greeting}").join(greeting)
+    : template;
+  t = t.replace(/\bGood (Morning|Afternoon|Evening)\b/gi, greeting);
+  return t;
+}
 
 /** Human date for message copy (UTC calendar date → "Jul 27"). */
 export function formatPayCycleDate(iso: string): string {
@@ -65,8 +99,10 @@ export function composeMessage(
   template: string,
   leaderboardMd: string,
   period?: PayCycleContext,
+  now: Date = new Date(),
 ): string {
-  const filled = period ? applyPayCycleWording(template, period) : template;
+  let filled = applyGreetingWording(template, now);
+  if (period) filled = applyPayCycleWording(filled, period);
   if (filled.includes("{leaderboard}")) {
     return filled.replace("{leaderboard}", leaderboardMd.trim()).trim();
   }

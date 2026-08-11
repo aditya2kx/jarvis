@@ -49,7 +49,7 @@ export function formatLeaderboard(
     byAmount.set(amt, list);
   }
   if (byAmount.size === 0) {
-    return "_No review bonuses credited in the current open pay period yet._";
+    return "_No review bonuses credited in this pay period yet._";
   }
   const amounts = [...byAmount.keys()].sort((a, b) => b - a);
   const lines: string[] = [];

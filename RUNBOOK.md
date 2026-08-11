@@ -208,13 +208,17 @@ Operator Console `/automations/team-pulse`). Scheduler fires every morning; the 
 no-ops unless enabled and today ∈ configured days. Default destination is a **DM**
 to the operator — promote to the group channel from the console when ready.
 
-Leaderboard source is the **open** `model_review_bonus_period` rollup (written by
-nightly `process_reviews`). The console shows open period dates + last
-`materialized_at_utc` so a missing “new” bonus is diagnosable as rollup lag, not a
-missing Automations card. Gemini may paraphrase greeting/closers only; multi-draft
-replies (`---` / repeated leaderboard) fall back to the template. **Post once** is
-once per America/Chicago calendar day (soft BQ check + UI busy lock); concurrent
-non-UI callers can still race — BQ does not enforce UNIQUE on `automation_posts`.
+Leaderboard source for the **scheduled** morning job is the **open**
+`model_review_bonus_period` rollup (written by nightly `process_reviews`).
+Operator Console `/automations/team-pulse` Preview / Post once use a Payroll-style
+`?period=` filter (same period list as `/payroll`) so you can compose against a
+closed biweek and DM yourself; the morning schedule is unchanged. The console shows
+the selected period’s dates + last `materialized_at_utc` so a missing “new” bonus
+is diagnosable as rollup lag, not a missing Automations card. Gemini may paraphrase
+greeting/closers only; multi-draft replies (`---` / repeated leaderboard) fall back
+to the template. **Post once** is once per America/Chicago calendar day (soft BQ
+check + UI busy lock); concurrent non-UI callers can still race — BQ does not
+enforce UNIQUE on `automation_posts`.
 
 | Field | Value |
 |---|---|

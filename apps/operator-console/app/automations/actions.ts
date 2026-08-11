@@ -5,7 +5,7 @@ import { operatorEmail, DEFAULT_STORE } from "@/lib/auth/identity";
 import { asAck, type ActionAck } from "@/lib/actions/types";
 import {
   getAutomation,
-  openReviewBonusLeaderboard,
+  reviewBonusLeaderboardForPeriod,
 } from "@/lib/bq/queries";
 import {
   hasAutomationPostToday,
@@ -73,13 +73,20 @@ export async function saveTeamPulseConfigAction(
   }, "Team pulse settings saved.");
 }
 
-export async function previewTeamPulseAction(): Promise<
-  ActionAck<{ content: string; varied: boolean }>
-> {
+function assertPeriodStart(periodStart: string): void {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(periodStart)) {
+    throw new Error("Invalid pay period.");
+  }
+}
+
+export async function previewTeamPulseAction(
+  periodStart: string,
+): Promise<ActionAck<{ content: string; varied: boolean }>> {
   return asAck(async () => {
+    assertPeriodStart(periodStart);
     const cfg = await getAutomation(DEFAULT_STORE, AUTOMATION_ID);
     const template = cfg?.template || DEFAULT_TEMPLATE;
-    const rows = await openReviewBonusLeaderboard();
+    const rows = await reviewBonusLeaderboardForPeriod(periodStart);
     const leaderboard = formatLeaderboard(rows);
     const base = composeMessage(template, leaderboard);
     const { text, varied } = await varyMotivationalCopy(base, leaderboard);
@@ -87,10 +94,13 @@ export async function previewTeamPulseAction(): Promise<
   }, "Preview ready.");
 }
 
-export async function postTeamPulseOnceAction(): Promise<
+export async function postTeamPulseOnceAction(
+  periodStart: string,
+): Promise<
   ActionAck<{ message_id: string; destination: string; channel_id: string }>
 > {
   return asAck(async () => {
+    assertPeriodStart(periodStart);
     const by = await operatorEmail();
     let cfg = await getAutomation(DEFAULT_STORE, AUTOMATION_ID);
     if (!cfg) {
@@ -106,7 +116,7 @@ export async function postTeamPulseOnceAction(): Promise<
       );
     }
 
-    const rows = await openReviewBonusLeaderboard();
+    const rows = await reviewBonusLeaderboardForPeriod(periodStart);
     const leaderboard = formatLeaderboard(rows);
     const base = composeMessage(cfg.template || DEFAULT_TEMPLATE, leaderboard);
     const { text: content } = await varyMotivationalCopy(base, leaderboard);

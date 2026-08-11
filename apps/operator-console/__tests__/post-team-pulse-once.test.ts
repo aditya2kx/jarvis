@@ -7,7 +7,7 @@ vi.mock("next/cache", () => ({
 
 const hasAutomationPostToday = vi.fn();
 const getAutomation = vi.fn();
-const openReviewBonusLeaderboard = vi.fn();
+const reviewBonusLeaderboardForPeriod = vi.fn();
 const upsertAutomation = vi.fn();
 const insertAutomationPost = vi.fn();
 const postChatMessage = vi.fn();
@@ -22,7 +22,8 @@ vi.mock("@/lib/auth/identity", () => ({
 
 vi.mock("@/lib/bq/queries", () => ({
   getAutomation: (...a: unknown[]) => getAutomation(...a),
-  openReviewBonusLeaderboard: (...a: unknown[]) => openReviewBonusLeaderboard(...a),
+  reviewBonusLeaderboardForPeriod: (...a: unknown[]) =>
+    reviewBonusLeaderboardForPeriod(...a),
 }));
 
 vi.mock("@/lib/bq/writes", () => ({
@@ -43,7 +44,9 @@ vi.mock("@/lib/automations/varyCopy", () => ({
 
 import { postTeamPulseOnceAction } from "@/app/automations/actions";
 
-describe("postTeamPulseOnceAction once-gate (Issue #233)", () => {
+const PERIOD = "2026-07-27";
+
+describe("postTeamPulseOnceAction once-gate (Issue #233/#245)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     operatorEmail.mockResolvedValue("tester@example.com");
@@ -54,8 +57,13 @@ describe("postTeamPulseOnceAction once-gate (Issue #233)", () => {
       channel_id: "ch",
       dm_user_id: "198109189",
     });
-    openReviewBonusLeaderboard.mockResolvedValue([
-      { employee: "Example, Alex", total_bonus: 40, period_start: "2026-07-27", period_end: "2026-08-08" },
+    reviewBonusLeaderboardForPeriod.mockResolvedValue([
+      {
+        employee: "Example, Alex",
+        total_bonus: 40,
+        period_start: PERIOD,
+        period_end: "2026-08-08",
+      },
     ]);
     varyMotivationalCopy.mockResolvedValue({
       text: "Hi\n\n*   **Alex Example** leading with $40.\n\nBye",
@@ -67,7 +75,7 @@ describe("postTeamPulseOnceAction once-gate (Issue #233)", () => {
 
   it("fails on first once-check without calling ClickUp", async () => {
     hasAutomationPostToday.mockResolvedValue(true);
-    const ack = await postTeamPulseOnceAction();
+    const ack = await postTeamPulseOnceAction(PERIOD);
     expect(ack.ok).toBe(false);
     if (!ack.ok) expect(ack.error).toMatch(/Already posted today/);
     expect(postChatMessage).not.toHaveBeenCalled();
@@ -78,11 +86,25 @@ describe("postTeamPulseOnceAction once-gate (Issue #233)", () => {
     hasAutomationPostToday
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);
-    const ack = await postTeamPulseOnceAction();
+    const ack = await postTeamPulseOnceAction(PERIOD);
     expect(ack.ok).toBe(false);
     if (!ack.ok) expect(ack.error).toMatch(/Already posted today/);
     expect(hasAutomationPostToday).toHaveBeenCalledTimes(2);
     expect(postChatMessage).not.toHaveBeenCalled();
     expect(insertAutomationPost).not.toHaveBeenCalled();
+  });
+
+  it("loads leaderboard for the selected period", async () => {
+    hasAutomationPostToday.mockResolvedValue(false);
+    const ack = await postTeamPulseOnceAction(PERIOD);
+    expect(ack.ok).toBe(true);
+    expect(reviewBonusLeaderboardForPeriod).toHaveBeenCalledWith(PERIOD);
+  });
+
+  it("rejects invalid period", async () => {
+    const ack = await postTeamPulseOnceAction("not-a-date");
+    expect(ack.ok).toBe(false);
+    if (!ack.ok) expect(ack.error).toMatch(/Invalid pay period/);
+    expect(reviewBonusLeaderboardForPeriod).not.toHaveBeenCalled();
   });
 });

@@ -43,6 +43,20 @@ describe("actual / schedule windows", () => {
     expect(scheduledShiftWindow(win("2026-07-01", "2026-07-15"), today)).toBeNull();
   });
 
+  it("future-only Period keeps schedule window without horizon (scope B / #243)", () => {
+    // includesToday=false; scheduleHorizonEnd=null — still non-null for coverage.
+    const future = scheduledShiftWindow(
+      win("2026-08-12", "2026-08-18"),
+      today,
+      null,
+    );
+    expect(future).toEqual({
+      ...win("2026-08-12", "2026-08-18"),
+      preset: "custom",
+    });
+    expect(periodIncludesToday(win("2026-08-12", "2026-08-18"), today)).toBe(false);
+  });
+
   it("extends schedule + chart spine to ADP horizon when Period includes today", () => {
     expect(extendEndForScheduleHorizon("2026-08-01", "2026-08-16")).toBe("2026-08-16");
     expect(extendEndForScheduleHorizon("2026-08-20", "2026-08-16")).toBe("2026-08-20");

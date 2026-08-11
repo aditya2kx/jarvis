@@ -8,6 +8,7 @@ vi.mock("next/cache", () => ({
 const hasAutomationPostToday = vi.fn();
 const getAutomation = vi.fn();
 const reviewBonusLeaderboardForPeriod = vi.fn();
+const listPayPeriodsWithPaidStatus = vi.fn();
 const upsertAutomation = vi.fn();
 const insertAutomationPost = vi.fn();
 const postChatMessage = vi.fn();
@@ -24,6 +25,8 @@ vi.mock("@/lib/bq/queries", () => ({
   getAutomation: (...a: unknown[]) => getAutomation(...a),
   reviewBonusLeaderboardForPeriod: (...a: unknown[]) =>
     reviewBonusLeaderboardForPeriod(...a),
+  listPayPeriodsWithPaidStatus: (...a: unknown[]) =>
+    listPayPeriodsWithPaidStatus(...a),
 }));
 
 vi.mock("@/lib/bq/writes", () => ({
@@ -63,6 +66,14 @@ describe("postTeamPulseOnceAction once-gate (Issue #233/#245)", () => {
         total_bonus: 40,
         period_start: PERIOD,
         period_end: "2026-08-08",
+      },
+    ]);
+    listPayPeriodsWithPaidStatus.mockResolvedValue([
+      {
+        period_start: PERIOD,
+        period_end: "2026-08-08",
+        unpaid: true,
+        is_current: false,
       },
     ]);
     varyMotivationalCopy.mockResolvedValue({

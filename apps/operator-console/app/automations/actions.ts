@@ -5,7 +5,9 @@ import { operatorEmail, DEFAULT_STORE } from "@/lib/auth/identity";
 import { asAck, type ActionAck } from "@/lib/actions/types";
 import {
   getAutomation,
+  listPayPeriodsWithPaidStatus,
   reviewBonusLeaderboardForPeriod,
+  type ReviewBonusLeaderboardRow,
 } from "@/lib/bq/queries";
 import {
   hasAutomationPostToday,
@@ -20,8 +22,22 @@ import {
   composeMessage,
   DEFAULT_TEMPLATE,
   formatLeaderboard,
+  type PayCycleContext,
 } from "@/lib/automations/teamPulse";
 import { varyMotivationalCopy } from "@/lib/automations/varyCopy";
+
+async function payCycleForPeriod(
+  periodStart: string,
+  rows: ReviewBonusLeaderboardRow[],
+): Promise<PayCycleContext> {
+  const periods = await listPayPeriodsWithPaidStatus(6);
+  const opt = periods.find((p) => p.period_start === periodStart);
+  return {
+    periodStart,
+    periodEnd: opt?.period_end ?? rows[0]?.period_end ?? null,
+    isCurrent: Boolean(opt?.is_current),
+  };
+}
 
 export type TeamPulseConfigInput = {
   enabled: boolean;
@@ -88,7 +104,8 @@ export async function previewTeamPulseAction(
     const template = cfg?.template || DEFAULT_TEMPLATE;
     const rows = await reviewBonusLeaderboardForPeriod(periodStart);
     const leaderboard = formatLeaderboard(rows);
-    const base = composeMessage(template, leaderboard);
+    const cycle = await payCycleForPeriod(periodStart, rows);
+    const base = composeMessage(template, leaderboard, cycle);
     const { text, varied } = await varyMotivationalCopy(base, leaderboard);
     return { content: text, varied };
   }, "Preview ready.");
@@ -118,7 +135,12 @@ export async function postTeamPulseOnceAction(
 
     const rows = await reviewBonusLeaderboardForPeriod(periodStart);
     const leaderboard = formatLeaderboard(rows);
-    const base = composeMessage(cfg.template || DEFAULT_TEMPLATE, leaderboard);
+    const cycle = await payCycleForPeriod(periodStart, rows);
+    const base = composeMessage(
+      cfg.template || DEFAULT_TEMPLATE,
+      leaderboard,
+      cycle,
+    );
     const { text: content } = await varyMotivationalCopy(base, leaderboard);
     const workspace = DEFAULT_WORKSPACE_ID;
     const dest =

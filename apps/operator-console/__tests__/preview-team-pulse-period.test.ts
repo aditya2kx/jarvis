@@ -7,6 +7,7 @@ vi.mock("next/cache", () => ({
 
 const getAutomation = vi.fn();
 const reviewBonusLeaderboardForPeriod = vi.fn();
+const listPayPeriodsWithPaidStatus = vi.fn();
 const varyMotivationalCopy = vi.fn();
 const operatorEmail = vi.fn();
 
@@ -19,6 +20,8 @@ vi.mock("@/lib/bq/queries", () => ({
   getAutomation: (...a: unknown[]) => getAutomation(...a),
   reviewBonusLeaderboardForPeriod: (...a: unknown[]) =>
     reviewBonusLeaderboardForPeriod(...a),
+  listPayPeriodsWithPaidStatus: (...a: unknown[]) =>
+    listPayPeriodsWithPaidStatus(...a),
 }));
 
 vi.mock("@/lib/bq/writes", () => ({
@@ -44,7 +47,8 @@ describe("previewTeamPulseAction period (Issue #245)", () => {
     vi.clearAllMocks();
     operatorEmail.mockResolvedValue("tester@example.com");
     getAutomation.mockResolvedValue({
-      template: "Hi\n\n{leaderboard}\n\nBye",
+      template:
+        "Sharing current pay cycle's leaderboard.\n\n{leaderboard}\n\nBye",
     });
     reviewBonusLeaderboardForPeriod.mockResolvedValue([
       {
@@ -52,6 +56,14 @@ describe("previewTeamPulseAction period (Issue #245)", () => {
         total_bonus: 40,
         period_start: "2026-07-13",
         period_end: "2026-07-26",
+      },
+    ]);
+    listPayPeriodsWithPaidStatus.mockResolvedValue([
+      {
+        period_start: "2026-07-13",
+        period_end: "2026-07-26",
+        unpaid: false,
+        is_current: false,
       },
     ]);
     varyMotivationalCopy.mockImplementation(async (base: string) => ({
@@ -67,6 +79,8 @@ describe("previewTeamPulseAction period (Issue #245)", () => {
     if (ack.ok) {
       expect(ack.data?.content).toContain("Alex Example");
       expect(ack.data?.content).toContain("$40");
+      expect(ack.data?.content).toMatch(/Jul 13/);
+      expect(ack.data?.content).not.toMatch(/current pay cycle/i);
     }
   });
 

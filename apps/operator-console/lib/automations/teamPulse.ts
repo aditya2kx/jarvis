@@ -4,7 +4,7 @@ export const AUTOMATION_ID = "team-pulse";
 export const DEFAULT_DAYS = [1, 3, 6]; // Tue Thu Sun (Python weekday Mon=0)
 export const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 
-export const DEFAULT_TEMPLATE = `Good Morning Team ! Sharing current pay cycle's leaderboard based of Google Review Bonus.
+export const DEFAULT_TEMPLATE = `Good Morning Team ! Sharing {pay_cycle}'s leaderboard based of Google Review Bonus.
 
 {leaderboard}
 
@@ -13,12 +13,65 @@ Keep the momentum going...!! One team, one fight.
 There would be more such incentives/challenges program rolled out soon.
 `;
 
-export function composeMessage(template: string, leaderboardMd: string): string {
-  if (template.includes("{leaderboard}")) {
-    return template.replace("{leaderboard}", leaderboardMd.trim()).trim();
+export type PayCycleContext = {
+  periodStart: string;
+  periodEnd?: string | null;
+  isCurrent: boolean;
+};
+
+/** Human date for message copy (UTC calendar date → "Jul 27"). */
+export function formatPayCycleDate(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(dt);
+}
+
+/** "current pay cycle" or "the Jul 27 – Aug 9 pay cycle". */
+export function formatPayCycleLabel(ctx: PayCycleContext): string {
+  if (ctx.isCurrent) return "current pay cycle";
+  const start = formatPayCycleDate(ctx.periodStart);
+  if (ctx.periodEnd) {
+    return `the ${start} – ${formatPayCycleDate(ctx.periodEnd)} pay cycle`;
   }
-  if (!leaderboardMd.trim()) return template.trim();
-  return `${template.trim()}\n\n${leaderboardMd.trim()}`;
+  return `the ${start} pay cycle`;
+}
+
+/**
+ * Fill `{pay_cycle}` and rewrite legacy "current pay cycle['s]" when the
+ * selected biweek is not the current one (stored BQ templates).
+ */
+export function applyPayCycleWording(
+  template: string,
+  ctx: PayCycleContext,
+): string {
+  const label = formatPayCycleLabel(ctx);
+  let t = template;
+  if (t.includes("{pay_cycle}")) {
+    t = t.split("{pay_cycle}").join(label);
+  }
+  if (!ctx.isCurrent) {
+    t = t.replace(/\bcurrent pay cycle's\b/gi, `${label}'s`);
+    t = t.replace(/\bcurrent pay cycle\b/gi, label);
+  }
+  return t;
+}
+
+export function composeMessage(
+  template: string,
+  leaderboardMd: string,
+  period?: PayCycleContext,
+): string {
+  const filled = period ? applyPayCycleWording(template, period) : template;
+  if (filled.includes("{leaderboard}")) {
+    return filled.replace("{leaderboard}", leaderboardMd.trim()).trim();
+  }
+  if (!leaderboardMd.trim()) return filled.trim();
+  return `${filled.trim()}\n\n${leaderboardMd.trim()}`;
 }
 
 export function displayName(employee: string): string {

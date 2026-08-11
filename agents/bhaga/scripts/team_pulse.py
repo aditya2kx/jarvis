@@ -32,7 +32,7 @@ DEFAULT_TZ = "America/Chicago"
 # Python weekday: Mon=0 … Sun=6 → Tue/Thu/Sun
 DEFAULT_DAYS = [1, 3, 6]
 
-DEFAULT_TEMPLATE = """Good Morning Team ! Sharing current pay cycle's leaderboard based of Google Review Bonus.
+DEFAULT_TEMPLATE = """Good Morning Team ! Sharing {pay_cycle}'s leaderboard based of Google Review Bonus.
 
 {leaderboard}
 
@@ -44,13 +44,51 @@ There would be more such incentives/challenges program rolled out soon.
 DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
-def compose_message(template: str, leaderboard_md: str) -> str:
-    """Fill ``{leaderboard}`` (and tolerate missing placeholder)."""
-    if "{leaderboard}" in template:
-        return template.replace("{leaderboard}", leaderboard_md.strip()).strip()
+def apply_pay_cycle_wording(template: str, *, is_current: bool = True,
+                            period_start: str | None = None,
+                            period_end: str | None = None) -> str:
+    """Fill ``{pay_cycle}``; rewrite legacy 'current pay cycle' when not current.
+
+    Scheduled posts always use ``is_current=True`` (open period).
+    """
+    if is_current:
+        label = "current pay cycle"
+    elif period_start and period_end:
+        # Match TS formatPayCycleDate (en-US short month).
+        def _fmt(iso: str) -> str:
+            dt = datetime.date.fromisoformat(iso)
+            return f"{dt.strftime('%b')} {dt.day}"
+        label = f"the {_fmt(period_start)} – {_fmt(period_end)} pay cycle"
+    elif period_start:
+        dt = datetime.date.fromisoformat(period_start)
+        label = f"the {dt.strftime('%b')} {dt.day} pay cycle"
+    else:
+        label = "current pay cycle"
+
+    t = template.replace("{pay_cycle}", label) if "{pay_cycle}" in template else template
+    if not is_current:
+        import re
+        t = re.sub(r"\bcurrent pay cycle's\b", f"{label}'s", t, flags=re.I)
+        t = re.sub(r"\bcurrent pay cycle\b", label, t, flags=re.I)
+    return t
+
+
+def compose_message(template: str, leaderboard_md: str,
+                    *, is_current: bool = True,
+                    period_start: str | None = None,
+                    period_end: str | None = None) -> str:
+    """Fill ``{pay_cycle}`` + ``{leaderboard}`` (tolerate missing placeholder)."""
+    filled = apply_pay_cycle_wording(
+        template,
+        is_current=is_current,
+        period_start=period_start,
+        period_end=period_end,
+    )
+    if "{leaderboard}" in filled:
+        return filled.replace("{leaderboard}", leaderboard_md.strip()).strip()
     if not leaderboard_md.strip():
-        return template.strip()
-    return f"{template.strip()}\n\n{leaderboard_md.strip()}"
+        return filled.strip()
+    return f"{filled.strip()}\n\n{leaderboard_md.strip()}"
 
 
 def accept_varied_copy(text: str, leaderboard_md: str) -> tuple[str, bool]:

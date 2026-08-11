@@ -5,7 +5,6 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
-const hasAutomationPostToday = vi.fn();
 const getAutomation = vi.fn();
 const reviewBonusLeaderboardForPeriod = vi.fn();
 const listPayPeriodsWithPaidStatus = vi.fn();
@@ -30,7 +29,7 @@ vi.mock("@/lib/bq/queries", () => ({
 }));
 
 vi.mock("@/lib/bq/writes", () => ({
-  hasAutomationPostToday: (...a: unknown[]) => hasAutomationPostToday(...a),
+  hasAutomationPostToday: vi.fn(),
   insertAutomationPost: (...a: unknown[]) => insertAutomationPost(...a),
   upsertAutomation: (...a: unknown[]) => upsertAutomation(...a),
 }));
@@ -49,7 +48,7 @@ import { postTeamPulseOnceAction } from "@/app/automations/actions";
 
 const PERIOD = "2026-07-27";
 
-describe("postTeamPulseOnceAction once-gate (Issue #233/#245)", () => {
+describe("postTeamPulseOnceAction manual (Issue #245)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     operatorEmail.mockResolvedValue("tester@example.com");
@@ -84,32 +83,24 @@ describe("postTeamPulseOnceAction once-gate (Issue #233/#245)", () => {
     postChatMessage.mockResolvedValue({ id: "msg-1" });
   });
 
-  it("fails on first once-check without calling ClickUp", async () => {
-    hasAutomationPostToday.mockResolvedValue(true);
-    const ack = await postTeamPulseOnceAction(PERIOD);
-    expect(ack.ok).toBe(false);
-    if (!ack.ok) expect(ack.error).toMatch(/Already posted today/);
-    expect(postChatMessage).not.toHaveBeenCalled();
-    expect(insertAutomationPost).not.toHaveBeenCalled();
-  });
-
-  it("pre-ClickUp recheck blocks when a race posts between compose and send", async () => {
-    hasAutomationPostToday
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(true);
-    const ack = await postTeamPulseOnceAction(PERIOD);
-    expect(ack.ok).toBe(false);
-    if (!ack.ok) expect(ack.error).toMatch(/Already posted today/);
-    expect(hasAutomationPostToday).toHaveBeenCalledTimes(2);
-    expect(postChatMessage).not.toHaveBeenCalled();
-    expect(insertAutomationPost).not.toHaveBeenCalled();
-  });
-
-  it("loads leaderboard for the selected period", async () => {
-    hasAutomationPostToday.mockResolvedValue(false);
+  it("loads leaderboard for the selected period and posts", async () => {
     const ack = await postTeamPulseOnceAction(PERIOD);
     expect(ack.ok).toBe(true);
     expect(reviewBonusLeaderboardForPeriod).toHaveBeenCalledWith(PERIOD);
+    expect(postChatMessage).toHaveBeenCalledTimes(1);
+    expect(insertAutomationPost).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows multiple manual posts the same CT day", async () => {
+    postChatMessage
+      .mockResolvedValueOnce({ id: "msg-1" })
+      .mockResolvedValueOnce({ id: "msg-2" });
+    const first = await postTeamPulseOnceAction(PERIOD);
+    const second = await postTeamPulseOnceAction(PERIOD);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(postChatMessage).toHaveBeenCalledTimes(2);
+    expect(insertAutomationPost).toHaveBeenCalledTimes(2);
   });
 
   it("rejects invalid period", async () => {

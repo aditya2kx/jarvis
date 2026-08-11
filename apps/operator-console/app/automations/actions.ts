@@ -10,7 +10,6 @@ import {
   type ReviewBonusLeaderboardRow,
 } from "@/lib/bq/queries";
 import {
-  hasAutomationPostToday,
   insertAutomationPost,
   upsertAutomation,
   type AutomationUpsert,
@@ -126,12 +125,9 @@ export async function postTeamPulseOnceAction(
     }
     if (!cfg) throw new Error("Failed to load team-pulse config after seed");
 
+    // Manual Post once: no once-per-day cap (operator may re-send / try periods).
+    // Scheduled webhook still dedupes via team_pulse.py / hasAutomationPostToday.
     const postDate = chicagoTodayIso();
-    if (await hasAutomationPostToday(DEFAULT_STORE, AUTOMATION_ID, postDate)) {
-      throw new Error(
-        `Already posted today (${postDate} CT). Wait until tomorrow or use a different date.`,
-      );
-    }
 
     const rows = await reviewBonusLeaderboardForPeriod(periodStart);
     const leaderboard = formatLeaderboard(rows);
@@ -153,13 +149,6 @@ export async function postTeamPulseOnceAction(
         workspace,
       );
       channelId = dm.id;
-    }
-
-    // Re-check immediately before ClickUp write (narrows TOCTOU after compose/vary).
-    if (await hasAutomationPostToday(DEFAULT_STORE, AUTOMATION_ID, postDate)) {
-      throw new Error(
-        `Already posted today (${postDate} CT). Wait until tomorrow or use a different date.`,
-      );
     }
 
     const created = await postChatMessage(channelId, content, workspace);

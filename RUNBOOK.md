@@ -216,9 +216,9 @@ closed biweek and DM yourself; the morning schedule is unchanged. The console sh
 the selected period’s dates + last `materialized_at_utc` so a missing “new” bonus
 is diagnosable as rollup lag, not a missing Automations card. Gemini may paraphrase
 greeting/closers only; multi-draft replies (`---` / repeated leaderboard) fall back
-to the template. **Post once** is once per America/Chicago calendar day (soft BQ
-check + UI busy lock); concurrent non-UI callers can still race — BQ does not
-enforce UNIQUE on `automation_posts`.
+to the template. **Post once** (console manual) has **no** once-per-day cap —
+you can Preview/Post repeatedly (e.g. try periods / DM yourself). The morning
+**scheduler** still no-ops if a non-dry-run post already exists for that CT day.
 
 | Field | Value |
 |---|---|

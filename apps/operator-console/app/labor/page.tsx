@@ -61,6 +61,10 @@ import {
   aggregateScheduledDays,
   rollConcurrentToGrain,
 } from "@/lib/labor/schedule-aggregate";
+import {
+  showChartSchedule,
+  showCoverageSchedule,
+} from "@/lib/labor/schedule-fetch-gates";
 import type {
   LaborActualShiftDayRow,
   LaborConcurrentRow,
@@ -147,8 +151,17 @@ export default async function LaborPage({
     const todayIso = chicagoTodayIso();
     chartWin = laborChartWindow(win, todayIso, scheduleHorizonEnd);
     const schedWin = scheduledShiftWindow(win, todayIso, scheduleHorizonEnd);
-    // Hour grain: schedule ranges are JSON — no stacks / concurrent schedule.
-    const showSchedule = includesToday && schedWin != null && grain !== "hour";
+    // Charts: Hour grain omits schedule stacks (#227). Coverage is day-level —
+    // show ADP schedule whenever the schedule window is non-null (any Aggregation;
+    // future-only Periods included) — Issue #243.
+    const chartSchedule = showChartSchedule({
+      includesToday,
+      hasSchedWin: schedWin != null,
+      grain,
+    });
+    const coverageSchedule = showCoverageSchedule({
+      hasSchedWin: schedWin != null,
+    });
 
     const [
       labor,
@@ -166,10 +179,10 @@ export default async function LaborPage({
       punchWin
         ? laborConcurrentByGrain(punchWin, grain, stat).catch(() => [])
         : Promise.resolve([]),
-      showSchedule && schedWin
+      chartSchedule && schedWin
         ? laborScheduledHoursByGrain(schedWin, grain, { excludePto }).catch(() => [])
         : Promise.resolve([]),
-      showSchedule && schedWin
+      (chartSchedule || coverageSchedule) && schedWin
         ? laborScheduledShiftDays(schedWin, { excludePto }).catch(() => [])
         : Promise.resolve([]),
       adpScheduleScrapedAt().catch(() => null),
@@ -178,12 +191,11 @@ export default async function LaborPage({
     rows = labor;
     concurrentRows = concurrent;
     scheduledHoursRows = schedHours;
-    coverageScheduled = schedDays;
+    coverageScheduled = coverageSchedule ? schedDays : [];
     coverageActuals = actualShiftDays;
-    scheduledConcurrentByBucket = rollConcurrentToGrain(
-      aggregateScheduledDays(schedDays),
-      grain,
-    );
+    scheduledConcurrentByBucket = chartSchedule
+      ? rollConcurrentToGrain(aggregateScheduledDays(schedDays), grain)
+      : [];
     scheduleScrapedAt = scraped;
     goalLaborHoursWeek = goalFromConfig(config, "goal_labor_hours_week");
     hoursPerPerson = perPerson
@@ -454,7 +466,9 @@ export default async function LaborPage({
           hours from the other bucket.{" "}
           <span className="font-medium text-foreground">Staffing coverage</span> is a
           day strip for the Period (extended through scheduled shifts when today is
-          included) with a headcount ribbon and person swimlanes — scroll the chips when
+          included) with a headcount ribbon and person swimlanes — Aggregation does not
+          apply here, so scheduled shifts still show when Aggregation is Hour (or any
+          other grain) whenever ADP has them in the schedule window. Scroll the chips when
           the range is long. Use{" "}
           <span className="font-medium text-foreground">Sync scheduled shifts</span> after
           editing the ADP schedule — status under the button shows starting / syncing /

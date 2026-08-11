@@ -505,6 +505,9 @@ same contract as Sales).
   (`labor $ / net_sales`); schedule stacks omitted on Hour.
 - **L2** avg concurrent (same Aggregation/Stat; Hour = fractional headcount
   in that clock hour).
+- **Staffing coverage** (day chips + swimlanes): always shows ADP scheduled
+  segments when the schedule window has rows — **not** gated by Aggregation
+  (Hour included). Hours/Concurrent keep Hour schedule-hide (#227 / #243).
 - **L3** hours-per-person bar for the same Period (`adp_shifts`).
 - Forecast nav/page removed from Operator Console; BQ/Grafana forecast pipeline kept.
 - Forward Wage/Paid/Blended lenses and `laborForwardSummary` are no longer

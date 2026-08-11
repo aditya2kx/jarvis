@@ -512,9 +512,10 @@ export function LaborCoveragePanel({
         </CardTitle>
         <CardDescription>
           Day chips follow the Period (and, when today is in range, through the latest
-          ADP schedule — same horizon as the charts above). Scroll for more days; chips
-          update this panel in place. Hover the timeline for headcount + who is on
-          (start–end). Solid = clocked; slate hatch = scheduled.
+          ADP schedule — same horizon as the charts above). Scheduled swimlanes always
+          render when ADP has shifts in that window — Aggregation does not filter them.
+          Scroll for more days; chips update this panel in place. Hover the timeline for
+          headcount + who is on (start–end). Solid = clocked; slate hatch = scheduled.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">

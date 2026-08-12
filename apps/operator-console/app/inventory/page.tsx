@@ -3,6 +3,7 @@ import {
   estimatedScheduleDates,
   nextDates,
   orderRecoSlots,
+  restockActuals,
   scheduledRestockDates,
   storeConfig,
   usageDayAudit,
@@ -19,6 +20,13 @@ import {
   pivotOrderRecoSlots,
   type OrderRecoPivotedRow,
 } from "@/lib/inventory/orderRecoPivot";
+import {
+  pivotRestockActuals,
+  restockActualsColumns,
+  type RestockActualsPivotedRow,
+} from "@/lib/inventory/restockActuals";
+import { RANGE_PRESETS, wantsCustom } from "@/lib/filters/range";
+import { resolvePageRange } from "@/lib/filters/period";
 import { ACTIVE_BASES, type RestockRow } from "@/lib/restock/parse";
 import { DataTable, type Thresholds } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
@@ -26,6 +34,9 @@ import { RestockImportDrawer } from "@/components/drawers/RestockImportDrawer";
 import { CapacityEdit } from "@/components/drawers/CapacityEdit";
 import { UsageDayAuditTable } from "@/components/inventory/UsageDayAuditTable";
 import { OrderRecoTable } from "@/components/inventory/OrderRecoTable";
+import { OrderedTubsActualsTable } from "@/components/inventory/OrderedTubsActualsTable";
+import { FilterSelect } from "@/components/filters/FilterSelect";
+import { DateRangePicker } from "@/components/filters/DateRangePicker";
 import type { ColumnDef } from "@tanstack/react-table";
 
 function buildEstimateByDate(
@@ -53,10 +64,21 @@ export const dynamic = "force-dynamic";
 
 const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-bad" };
 
-export default async function InventoryPage() {
+export default async function InventoryPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ range?: string; from?: string; to?: string }>;
+}) {
+  const sp = await searchParams;
+  const win = await resolvePageRange(sp.range, sp.from, sp.to);
+  const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
+  const dateParams: Record<string, string> =
+    win.preset === "custom" ? { from: win.start, to: win.end } : {};
+
   let rows: OrderRecoPivotedRow[] = [];
   let runwayRows: BaseRunwayRow[] = [];
   let auditRows: UsageDayAuditRow[] = [];
+  let actualsRows: RestockActualsPivotedRow[] = [];
   let dates: string[] = [];
   let estimatedDates: string[] = [];
   let scheduledDates: { delivery_date: string; has_actuals: boolean }[] = [];
@@ -75,15 +97,18 @@ export default async function InventoryPage() {
         : {},
     );
     recoQueued = ensure.status === "queued";
-    const [slotRows, nd, config, runway, estimated, scheduled, audit] = await Promise.all([
-      orderRecoSlots(),
-      nextDates(),
-      storeConfig(DEFAULT_STORE),
-      baseRunway(),
-      estimatedScheduleDates(DEFAULT_STORE),
-      scheduledRestockDates(DEFAULT_STORE),
-      usageDayAudit(DEFAULT_STORE),
-    ]);
+    const [slotRows, nd, config, runway, estimated, scheduled, audit, actuals] =
+      await Promise.all([
+        orderRecoSlots(),
+        nextDates(),
+        storeConfig(DEFAULT_STORE),
+        baseRunway(),
+        estimatedScheduleDates(DEFAULT_STORE),
+        scheduledRestockDates(DEFAULT_STORE),
+        usageDayAudit(DEFAULT_STORE),
+        restockActuals(DEFAULT_STORE, win),
+      ]);
+    actualsRows = pivotRestockActuals(actuals);
     dates = nd.map((d) => normalizeDeliveryDate(d.delivery_date)).filter(Boolean);
     rows = pivotOrderRecoSlots(dates, slotRows);
     runwayRows = runway;
@@ -190,6 +215,38 @@ export default async function InventoryPage() {
             maxTubs={maxTubs}
             writable={FEATURES.writeRestock}
           />
+
+          <div data-testid="ordered-tubs-actuals">
+            <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-baseline sm:justify-between">
+              <h2 className="text-sm font-medium text-muted-foreground">
+                Ordered tubs (Actuals)
+              </h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <FilterSelect
+                  label="Period"
+                  param="range"
+                  value={showCustomPicker ? "custom" : win.preset}
+                  options={RANGE_PRESETS}
+                  basePath="/inventory"
+                  extraParams={dateParams}
+                />
+                {showCustomPicker ? (
+                  <DateRangePicker
+                    basePath="/inventory"
+                    from={win.start}
+                    to={win.end}
+                    committed={win.preset === "custom"}
+                  />
+                ) : null}
+              </div>
+            </div>
+            <p className="mb-2 text-xs text-muted-foreground">
+              Uploaded order quantities for delivery dates in {win.label} ({win.start} –{" "}
+              {win.end}). Estimates are omitted — only Actuals from restock uploads. Last 7 /
+              30 days end today, so a future delivery needs This month or Custom.
+            </p>
+            <OrderedTubsActualsTable rows={actualsRows} columns={restockActualsColumns()} />
+          </div>
 
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">

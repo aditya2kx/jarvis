@@ -1856,6 +1856,30 @@ export function scheduledRestockDates(store: string): Promise<ScheduledRestockDa
   );
 }
 
+/** Uploaded restock actuals in a Period — never estimated water-fill. */
+export interface RestockActualsRow {
+  delivery_date: string;
+  item: string;
+  quantity_tubs: number | null;
+}
+
+export function restockActuals(
+  store: string,
+  win: DateWindow,
+): Promise<RestockActualsRow[]> {
+  return q<RestockActualsRow>(
+    `SELECT
+       CAST(delivery_date AS STRING) AS delivery_date,
+       item,
+       quantity_tubs
+     FROM ${fq("inventory_restock_orders")}
+     WHERE store = @store
+       AND delivery_date BETWEEN @start AND @end
+     ORDER BY delivery_date DESC, item`,
+    { store, start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
 // vw_inventory_base_runway (migration 036, Issue #164) — dual restock slots
 // matching Next delivery; Actuals-only Status 1/2; Stockout 2 chains via D1.
 export interface BaseRunwayRow {

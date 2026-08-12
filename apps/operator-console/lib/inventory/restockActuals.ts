@@ -49,17 +49,18 @@ export function pivotRestockActuals(
 export function restockActualsColumns(
   bases: readonly string[] = ACTIVE_BASES,
 ): ColumnDef<RestockActualsPivotedRow>[] {
+  const numberFmt = { kind: "number" as const, digits: 0 };
   return [
     { accessorKey: "date", header: "Date", meta: { format: { kind: "date" } } },
     ...bases.map((base) => ({
       accessorKey: base,
       header: base,
-      meta: { format: { kind: "number", digits: 0 } },
+      meta: { format: numberFmt },
     })),
     {
       accessorKey: "TOTAL",
       header: "TOTAL",
-      meta: { format: { kind: "number", digits: 0 } },
+      meta: { format: numberFmt },
     },
   ];
 }

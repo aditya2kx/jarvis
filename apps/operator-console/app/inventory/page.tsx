@@ -155,16 +155,34 @@ export default async function InventoryPage({
         title="Inventory / Ordering"
         subtitle={`Order Assistant recommendations · ${storeDisplayName(DEFAULT_STORE)}`}
         right={
-          FEATURES.writeRestock ? (
-            <>
-              <CapacityEdit currentMaxTubs={maxTubs} />
-              <RestockImportDrawer
-                dates={dates}
-                scheduledDates={scheduledDates}
-                estimateByDate={estimateByDate}
+          <>
+            <FilterSelect
+              label="Period"
+              param="range"
+              value={showCustomPicker ? "custom" : win.preset}
+              options={RANGE_PRESETS}
+              basePath="/inventory"
+              extraParams={dateParams}
+            />
+            {showCustomPicker ? (
+              <DateRangePicker
+                basePath="/inventory"
+                from={win.start}
+                to={win.end}
+                committed={win.preset === "custom"}
               />
-            </>
-          ) : null
+            ) : null}
+            {FEATURES.writeRestock ? (
+              <>
+                <CapacityEdit currentMaxTubs={maxTubs} />
+                <RestockImportDrawer
+                  dates={dates}
+                  scheduledDates={scheduledDates}
+                  estimateByDate={estimateByDate}
+                />
+              </>
+            ) : null}
+          </>
         }
       />
 
@@ -217,33 +235,14 @@ export default async function InventoryPage({
           />
 
           <div data-testid="ordered-tubs-actuals">
-            <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-baseline sm:justify-between">
-              <h2 className="text-sm font-medium text-muted-foreground">
-                Ordered tubs (Actuals)
-              </h2>
-              <div className="flex flex-wrap items-center gap-2">
-                <FilterSelect
-                  label="Period"
-                  param="range"
-                  value={showCustomPicker ? "custom" : win.preset}
-                  options={RANGE_PRESETS}
-                  basePath="/inventory"
-                  extraParams={dateParams}
-                />
-                {showCustomPicker ? (
-                  <DateRangePicker
-                    basePath="/inventory"
-                    from={win.start}
-                    to={win.end}
-                    committed={win.preset === "custom"}
-                  />
-                ) : null}
-              </div>
-            </div>
+            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
+              Ordered tubs (Actuals)
+            </h2>
             <p className="mb-2 text-xs text-muted-foreground">
               Uploaded order quantities for delivery dates in {win.label} ({win.start} –{" "}
-              {win.end}). Estimates are omitted — only Actuals from restock uploads. Last 7 /
-              30 days end today, so a future delivery needs This month or Custom.
+              {win.end}). Period is the header control (same as Sales / Labor). Estimates are
+              omitted. Reco, runway, and usage-by-day are not Period-filtered. Last 7 / 30 days
+              end today, so a future delivery needs This month or Custom.
             </p>
             <OrderedTubsActualsTable rows={actualsRows} columns={restockActualsColumns()} />
           </div>

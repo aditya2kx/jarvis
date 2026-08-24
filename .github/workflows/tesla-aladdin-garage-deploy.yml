@@ -39,6 +39,7 @@ jobs:
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
       - name: Allow Cloud Run to persist rotated Tesla refresh tokens
+        continue-on-error: true
         run: |
           gcloud secrets add-iam-policy-binding tesla-fleet-refresh-token \
             --project ${{ env.PROJECT_ID }} \
@@ -73,7 +74,7 @@ jobs:
             --cpu 1 \
             --timeout 3600 \
             --service-account bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
-            --set-env-vars "GCP_PROJECT=${{ env.PROJECT_ID }},TESLA_VIN=7SAYGAEE2TF605512,TESLA_PARTNER_DOMAIN=yuejj.fleetkey.net,HOME_LAT=29.464083,HOME_LON=-95.517465,GEOFENCE_ENTER_M=400,GEOFENCE_HYSTERESIS_M=80,OPEN_COOLDOWN_S=600,POLL_INTERVAL_S=20,ALADDIN_DEVICE_SERIAL=F0AD4E3E7403,ALADDIN_DOOR_INDEX=1,ALADDIN_DOOR_NAME=Big Peach,ALADDIN_DRY_RUN=0,GARAGE_WORKER=1,GARAGE_PERSIST=1,TESLA_REFRESH_TOKEN_SECRET=tesla-fleet-refresh-token,GARAGE_NOTIFY_TO=aditya.2ky@gmail.com" \
+            --set-env-vars "GCP_PROJECT=${{ env.PROJECT_ID }},TESLA_VIN=7SAYGAEE2TF605512,TESLA_PARTNER_DOMAIN=yuejj.fleetkey.net,HOME_LAT=29.464083,HOME_LON=-95.517465,GEOFENCE_ENTER_M=400,GEOFENCE_HYSTERESIS_M=80,OPEN_COOLDOWN_S=600,POLL_INTERVAL_S=0,TESLA_TELEMETRY=1,LOCATION_MIN_DELTA_M=80,ALADDIN_DEVICE_SERIAL=F0AD4E3E7403,ALADDIN_DOOR_INDEX=1,ALADDIN_DOOR_NAME=Big Peach,ALADDIN_DRY_RUN=0,GARAGE_WORKER=1,GARAGE_PERSIST=1,TESLA_REFRESH_TOKEN_SECRET=tesla-fleet-refresh-token,GARAGE_NOTIFY_TO=aditya.2ky@gmail.com" \
             --set-secrets "TESLA_CLIENT_ID=tesla-fleet-client-id:latest,TESLA_CLIENT_SECRET=tesla-fleet-client-secret:latest,TESLA_REFRESH_TOKEN=tesla-fleet-refresh-token:latest,ALADDIN_USERNAME=aladdin-connect-username:latest,ALADDIN_PASSWORD=aladdin-connect-password:latest,GARAGE_ADMIN_TOKEN=garage-admin-token:latest,GMAIL_CLIENT_ID=gmail-client-id:latest,GMAIL_CLIENT_SECRET=gmail-client-secret:latest,GMAIL_REFRESH_TOKEN=gmail-refresh-token:latest"
 
       - name: Point Tesla OAuth callback at this service
@@ -86,4 +87,5 @@ jobs:
           echo "service_url=${URL}"
 
       - name: Ensure stale-poll log metric
+        continue-on-error: true
         run: python3 scripts/ensure_garage_stale_poll_alert.py --project ${{ env.PROJECT_ID }}

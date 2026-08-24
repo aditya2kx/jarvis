@@ -44,3 +44,26 @@ def test_location_ok():
     r = _client().get("/location", headers={"X-Garage-Token": "test-token"})
     assert r.status_code == 200
     assert r.get_json()["distance_m"] == 12.5
+
+
+def test_telemetry_unauthorized():
+    garage_app._worker = MagicMock()
+    r = _client().post("/telemetry", json={"latitude": 1, "longitude": 2})
+    assert r.status_code == 401
+
+
+def test_telemetry_observe_fix():
+    w = MagicMock()
+    w.cfg.vin = "7SAYGAEE2TF605512"
+    w.observe_fix.return_value = "inside"
+    garage_app._worker = w
+    r = _client().post(
+        "/telemetry",
+        headers={"X-Garage-Token": "test-token"},
+        json={"vin": "7SAYGAEE2TF605512", "latitude": 29.46, "longitude": -95.51},
+    )
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["event"] == "inside"
+    w.observe_fix.assert_called_once()

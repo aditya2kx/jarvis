@@ -22,6 +22,15 @@ Partner public key must be served at:
 `GET /api/1/vehicles/{id}/vehicle_data?endpoints=` takes a **semicolon** list
 (`location_data;drive_state`). Commas return 400.
 
+## Fleet Telemetry config
+
+`POST /api/1/vehicles/fleet_telemetry_config` asks Tesla to stream `Location` to a
+self-hosted [fleet-telemetry](https://github.com/teslamotors/fleet-telemetry)
+hostname:443 (mTLS). Fields use `interval_seconds` + `minimum_delta` (metres).
+This is **not** a geofence webhook and does **not** wake a sleeping vehicle.
+`fleet_telemetry_config_body()` / `put_fleet_telemetry_config()` build that POST.
+The garage worker consumes the HTTP dispatcher JSON at `POST /telemetry`.
+
 ## Secrets
 
 Names only: `tesla_fleet_client_id`, `tesla_fleet_client_secret`,

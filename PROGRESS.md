@@ -1,3 +1,9 @@
+## 2026-08-24 — Tesla Aladdin garage: telemetry ingest + non-fatal deploy extras
+
+**Scope:** Cloud Run already deployed; GHA then failed on log-metric IAM. 20 s REST `vehicle_data` polls are expensive and 408 when Dhanno sleeps.
+
+**Key changes:** deploy job `continue-on-error` on secret IAM + stale-poll metric; worker `observe_fix` + `POST /telemetry`; Fleet Telemetry config helper; `TESLA_TELEMETRY=1` / `POLL_INTERVAL_S=0`; still never `wake_up`. Cars stream to a self-hosted fleet-telemetry host, not Cloud Run mTLS.
+
 ## 2026-08-24 — GCP access experience (Cloud Agent ≠ ADC)
 
 **Scope:** Cursor Cloud Agents have no `gcloud` and no Application Default Credentials. Jarvis already had laptop hydrate + GHA WIF; agents were rediscovering the gap each session.

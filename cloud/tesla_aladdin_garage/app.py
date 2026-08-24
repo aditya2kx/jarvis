@@ -13,6 +13,7 @@ from typing import Optional
 from flask import Flask, jsonify, redirect, request
 
 from cloud.tesla_aladdin_garage import persist
+from cloud.tesla_aladdin_garage.telemetry import extract_location_fixes
 from cloud.tesla_aladdin_garage.worker import GarageWorker, WorkerConfig
 from skills.aladdin_connect.client import AladdinConnectClient
 from skills.tesla_fleet.client import TeslaFleetClient
@@ -86,6 +87,8 @@ def health():
             "last_error": st.last_error,
             "partner_domain": w.tesla.partner_domain,
             "persisted": stored,
+            "telemetry": w.cfg.telemetry,
+            "poll_s": w.cfg.poll_s,
         }
     )
 
@@ -143,8 +146,15 @@ def oauth_callback():
     w = get_worker()
     w.state.needs_reauth = False
     w.state.last_error = ""
-    log.info("tesla-aladdin-garage oauth_ok")
-    return jsonify({"ok": True, "message": "Tesla tokens stored; next poll will use them."})
+    cfg = w.ensure_telemetry_config()
+    log.info("tesla-aladdin-garage oauth_ok telemetry_config=%s", cfg.get("reason") or cfg.get("ok"))
+    return jsonify(
+        {
+            "ok": True,
+            "message": "Tesla tokens stored; telemetry config attempted.",
+            "telemetry_config": cfg,
+        }
+    )
 
 
 @app.post("/tick")
@@ -154,6 +164,35 @@ def tick():
         return denied
     event = get_worker().tick()
     return jsonify({"ok": True, "event": event})
+
+
+@app.post("/telemetry")
+def telemetry():
+    """Ingest fleet-telemetry HTTP-dispatcher JSON. Never wakes the car."""
+    denied = _require_admin()
+    if denied:
+        return denied
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({"ok": False, "error": "json_required"}), 400
+    w = get_worker()
+    fixes = extract_location_fixes(body, expected_vin=w.cfg.vin)
+    if not fixes:
+        log.info("tesla-aladdin-garage skip reason=telemetry_no_fix")
+        return jsonify({"ok": True, "event": "skip_no_fix", "fixes": 0})
+    events = [
+        w.observe_fix(f["latitude"], f["longitude"], f.get("shift_state"), source="telemetry")
+        for f in fixes
+    ]
+    return jsonify({"ok": True, "event": events[-1], "events": events, "fixes": len(fixes)})
+
+
+@app.post("/telemetry/configure")
+def telemetry_configure():
+    denied = _require_admin()
+    if denied:
+        return denied
+    return jsonify(get_worker().ensure_telemetry_config())
 
 
 def start_background() -> None:

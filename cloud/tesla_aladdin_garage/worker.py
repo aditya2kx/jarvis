@@ -31,9 +31,15 @@ class WorkerConfig:
     door_index: int = 1
     door_name: str = "Big Peach"
     dry_run: bool = True
+    telemetry: bool = False
+    telemetry_host: str = ""
+    telemetry_ca: str = ""
+    location_delta_m: float = 80.0
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
+        telemetry = os.environ.get("TESLA_TELEMETRY", "0") not in ("0", "", "false", "False")
+        poll_default = "0" if telemetry else "20"
         return cls(
             vin=os.environ.get("TESLA_VIN", ""),
             home_lat=float(os.environ.get("HOME_LAT", "0") or 0),
@@ -41,11 +47,15 @@ class WorkerConfig:
             enter_m=float(os.environ.get("GEOFENCE_ENTER_M", "400")),
             hysteresis_m=float(os.environ.get("GEOFENCE_HYSTERESIS_M", "80")),
             cooldown_s=float(os.environ.get("OPEN_COOLDOWN_S", "600")),
-            poll_s=float(os.environ.get("POLL_INTERVAL_S", "20")),
+            poll_s=float(os.environ.get("POLL_INTERVAL_S", poll_default)),
             door_serial=os.environ.get("ALADDIN_DEVICE_SERIAL", ""),
             door_index=int(os.environ.get("ALADDIN_DOOR_INDEX", "1")),
             door_name=os.environ.get("ALADDIN_DOOR_NAME", "Big Peach"),
             dry_run=os.environ.get("ALADDIN_DRY_RUN", "1") != "0",
+            telemetry=telemetry,
+            telemetry_host=os.environ.get("TESLA_TELEMETRY_HOST", "").strip(),
+            telemetry_ca=os.environ.get("TESLA_TELEMETRY_CA", "").strip(),
+            location_delta_m=float(os.environ.get("LOCATION_MIN_DELTA_M", "80")),
         )
 
     def apply_overlay(self, overlay: dict) -> None:
@@ -120,6 +130,8 @@ class GarageWorker:
             "needs_reauth": self.state.needs_reauth,
             "enter_m": self.cfg.enter_m,
             "dry_run": self.cfg.dry_run,
+            "telemetry": self.cfg.telemetry,
+            "poll_s": self.cfg.poll_s,
         }
 
     def _persist(self) -> None:
@@ -128,8 +140,44 @@ class GarageWorker:
     def stop(self) -> None:
         self._stop.set()
 
+    def observe_fix(
+        self,
+        lat: float,
+        lon: float,
+        shift: Optional[str] = None,
+        *,
+        source: str = "rest",
+        count: bool = True,
+    ) -> str:
+        """Apply one GPS fix to the geofence. Never wakes the car."""
+        if count:
+            self.state.polls += 1
+            self.state.last_poll_ts = self._now()
+        self.state.simulated_enter = False
+        dist = self.geofence.distance_m(float(lat), float(lon))
+        self.state.last_distance_m = dist
+        if shift is not None:
+            self.state.last_shift = shift
+        event = self.geofence.observe(float(lat), float(lon))
+        self.state.last_event = event
+        log.info(
+            "tesla-aladdin-garage poll vin=%s dist_m=%.1f event=%s shift=%s dry_run=%s source=%s",
+            self.cfg.vin,
+            dist,
+            event,
+            shift,
+            self.cfg.dry_run,
+            source,
+        )
+        if event == "enter":
+            result = self._maybe_open()
+            self._persist()
+            return result
+        self._persist()
+        return event
+
     def tick(self) -> str:
-        """One poll. Never wakes the car."""
+        """One REST poll. Never wakes the car."""
         self.state.polls += 1
         self.state.last_poll_ts = self._now()
         self.state.simulated_enter = False
@@ -163,25 +211,39 @@ class GarageWorker:
         if lat is None or lon is None:
             log.info("tesla-aladdin-garage skip reason=no_fix vin=%s", self.cfg.vin)
             return "skip_no_fix"
-        dist = self.geofence.distance_m(float(lat), float(lon))
-        self.state.last_distance_m = dist
-        self.state.last_shift = loc.get("shift_state")
-        event = self.geofence.observe(float(lat), float(lon))
-        self.state.last_event = event
-        log.info(
-            "tesla-aladdin-garage poll vin=%s dist_m=%.1f event=%s shift=%s dry_run=%s",
-            self.cfg.vin,
-            dist,
-            event,
+        return self.observe_fix(
+            float(lat),
+            float(lon),
             loc.get("shift_state"),
-            self.cfg.dry_run,
+            source="rest",
+            count=False,
         )
-        if event == "enter":
-            result = self._maybe_open()
-            self._persist()
-            return result
-        self._persist()
-        return event
+
+    def ensure_telemetry_config(self) -> dict:
+        """POST fleet_telemetry_config when TESLA_TELEMETRY_HOST is set."""
+        host = self.cfg.telemetry_host
+        if not host:
+            log.info("tesla-aladdin-garage skip reason=telemetry_host_unconfigured")
+            return {"ok": False, "reason": "telemetry_host_unconfigured"}
+        if self.tesla.needs_user_auth():
+            return {"ok": False, "reason": "needs_reauth"}
+        try:
+            resp = self.tesla.put_fleet_telemetry_config(
+                vins=[self.cfg.vin],
+                hostname=host,
+                ca=self.cfg.telemetry_ca,
+                interval_seconds=15,
+                minimum_delta=self.cfg.location_delta_m,
+            )
+            log.info("tesla-aladdin-garage telemetry_config host=%s", host)
+            return {"ok": True, "response": resp}
+        except TeslaFleetError as e:
+            log.error(
+                "tesla-aladdin-garage fail reason=telemetry_config status=%s err=%s",
+                e.status,
+                e,
+            )
+            return {"ok": False, "reason": "telemetry_config", "status": e.status, "error": str(e)}
 
     def current_location(self) -> dict:
         """Live Tesla fix + distance. Does not mutate the geofence."""
@@ -315,16 +377,31 @@ class GarageWorker:
 
     def run_forever(self) -> None:
         log.info(
-            "tesla-aladdin-garage start vin=%s enter_m=%s hyst_m=%s dry_run=%s",
+            "tesla-aladdin-garage start vin=%s enter_m=%s hyst_m=%s dry_run=%s telemetry=%s poll_s=%s",
             self.cfg.vin,
             self.cfg.enter_m,
             self.cfg.hysteresis_m,
             self.cfg.dry_run,
+            self.cfg.telemetry,
+            self.cfg.poll_s,
         )
+        if self.cfg.telemetry:
+            self.ensure_telemetry_config()
+        heartbeat_s = self.cfg.poll_s if self.cfg.poll_s > 0 else 20.0
         while not self._stop.is_set():
             try:
-                self.tick()
+                if self.cfg.poll_s > 0:
+                    self.tick()
+                else:
+                    log.info(
+                        "tesla-aladdin-garage poll vin=%s dist_m=%s event=%s shift=%s dry_run=%s source=heartbeat",
+                        self.cfg.vin,
+                        self.state.last_distance_m,
+                        self.state.last_event,
+                        self.state.last_shift,
+                        self.cfg.dry_run,
+                    )
             except Exception as e:
                 self.state.last_error = str(e)
                 log.error("tesla-aladdin-garage fail reason=tick_crash err=%s", e)
-            self._stop.wait(self.cfg.poll_s)
+            self._stop.wait(heartbeat_s)

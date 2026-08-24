@@ -48,7 +48,7 @@ BHAGA_SECRETS = frozenset([
 # Committed map: GCP Secret Manager secret name -> Keychain metadata.
 # Works on a fresh clone without the gitignored registry.json.
 # Used by hydrate() to bootstrap any provider without re-discovery.
-# Providers: ClickUp, Google, Square, ADP, Slack.
+# Providers: ClickUp, Google, Square, ADP, Slack, Tesla Fleet, Aladdin Connect.
 SECRET_TO_KEYCHAIN: dict[str, dict[str, str]] = {
     "jarvis-clickup-palmetto-pat": {
         "service": "jarvis-clickup-palmetto-pat",
@@ -73,6 +73,26 @@ SECRET_TO_KEYCHAIN: dict[str, dict[str, str]] = {
     "slack_bhaga_cloud_bot": {
         "service": "slack_bhaga_cloud_bot",
         "account": "bhaga_cloud_slack_bot",
+    },
+    "tesla-fleet-client-id": {
+        "service": "tesla-fleet-client-id",
+        "account": "TESLA_CLIENT_ID",
+    },
+    "tesla-fleet-client-secret": {
+        "service": "tesla-fleet-client-secret",
+        "account": "TESLA_CLIENT_SECRET",
+    },
+    "tesla-fleet-refresh-token": {
+        "service": "tesla-fleet-refresh-token",
+        "account": "TESLA_REFRESH_TOKEN",
+    },
+    "aladdin-connect-username": {
+        "service": "aladdin-connect-username",
+        "account": "ALADDIN_USERNAME",
+    },
+    "aladdin-connect-password": {
+        "service": "aladdin-connect-password",
+        "account": "ALADDIN_PASSWORD",
     },
 }
 

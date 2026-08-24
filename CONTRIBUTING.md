@@ -82,5 +82,6 @@ The pre-push git hook runs `--full` automatically.  See
 | Claude Opus review bot | [docs/contributing/review-bot.md](docs/contributing/review-bot.md) |
 | Pushing + bot account gotchas | [docs/contributing/push-gotchas.md](docs/contributing/push-gotchas.md) |
 | Per-PR cost ledger + model routing | [docs/contributing/cost.md](docs/contributing/cost.md) |
+| GCP surfaces (WIF / ADC / Cloud Agent) | [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md) |
 | One-time GitHub enforcement settings | [docs/contributing/enforcement.md](docs/contributing/enforcement.md) |
 | End-to-end lifecycle + agent hierarchy | [docs/WORKFLOW.md](docs/WORKFLOW.md) |

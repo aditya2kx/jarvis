@@ -18,6 +18,7 @@ Jarvis (this workspace)
   Operate via **[`RUNBOOK.md`](../../RUNBOOK.md)**. No local Slack-listener or `/tmp` protocol for BHAGA.
 - **CHITRA / CHANAKYA / AKSHAYA: local laptop** — Slack-listener + `/tmp/jarvis-*.json` protocol applies.
   See `jarvis-hard-lessons.mdc` § Session Continuity.
+- **tesla-aladdin-garage: Cloud Run always-on** (min=1, max=1, CPU never throttled). Geofence Dhanno → Big Peach. See `RUNBOOK.md` § Tesla Aladdin garage and `cloud/tesla_aladdin_garage/README.md`.
 
 ## Routing
 1. Tax → CHITRA (`chitra.mdc`, `chitra-workflows.mdc`, `chitra-playbook.mdc`)
@@ -44,6 +45,7 @@ Before planning or designing, read the relevant docs and derive proposals from t
 - **All GitHub ops as `jarvis-agent-bot328`**, never as `aditya2kx` (except owner-only admin ops).
 - **Browser automation → Playwright (`user-playwright`); plan API migration.** Ownership ladder: API → MCP → IaC → Playwright.
 - **Prod/runtime on hosted infra** (Cloud Run, GH Actions, BQ). Laptop = build + one-time provisioning only.
+- **GCP identity is surface-specific.** Run `python3 scripts/gcp_access_probe.py` before any Secret Manager write or `gcloud`. Cursor Cloud Agents have no ADC — follow `docs/contributing/gcp-access.md`; never mint a JSON key.
 
 ## Adding an agent or skill
 - New agent: `agents/<name>/` + `knowledge-base/` + `scripts/` + `.cursor/rules/<name>.mdc` (glob-scoped)

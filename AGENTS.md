@@ -29,6 +29,12 @@ Read these first, derive proposals from them, cite what you used.
 | **CHANAKYA** | Product research, market analysis | Local laptop | `chanakya.mdc` |
 | **AKSHAYA** | Inventory forecasting & ordering | Local laptop | `akshaya.mdc` |
 
+### Cloud workers
+
+| Worker | Purpose | Deployment | Read |
+|---|---|---|---|
+| **tesla-aladdin-garage** | Geofence Dhanno → open Big Peach (Aladdin) | Cloud Run, always-on, max instances = 1 | `cloud/tesla_aladdin_garage/README.md` + `RUNBOOK.md` § Tesla Aladdin garage |
+
 ---
 
 ## Repo-wide rules (all agents, all machines)
@@ -69,6 +75,7 @@ Read these first, derive proposals from them, cite what you used.
 | Run local CI mirror | `python3 scripts/verify.py --full` |
 | See project state / decisions | `PROGRESS.md` |
 | Missing a cloud secret locally (ClickUp, Google, Square, ADP, Slack) | `python3 -m skills.credentials.registry audit` (shows exact fix) then `hydrate <name>` |
+| Talk to GCP (`gcloud`, Secret Manager write, Cloud Run mutate) | [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md) — always `python3 scripts/gcp_access_probe.py` first. Cloud Agents have no ADC. |
 
 ---
 
@@ -86,5 +93,6 @@ When you change behavior, update the doc in the same change:
 | Added a new `.cursor/rules/*.mdc` file | Update `ALWAYS_ON` set in `verify_lifecycle.py::assert_16` if always-on; add row to Tier-1 table above |
 | Added or changed a `/jarvis-*` Cursor Skill | `docs/contributing/skills.md` |
 | Anything notable (status, decision, blocker) | `PROGRESS.md` (dated entry) |
+| GCP identity / Secret Manager write path / Cloud Agent gcloud gap | `docs/contributing/gcp-access.md` + `RUNBOOK.md` (identity bullet + §7/§9) |
 
 Run `python3 scripts/check_doc_freshness.py` before finishing any change.

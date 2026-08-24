@@ -1573,6 +1573,39 @@ export function payrollPeriod(periods = 2): Promise<PayrollPeriodRow[]> {
   );
 }
 
+export interface PayrollDraftRunRow {
+  status: string | null;
+  error: string | null;
+  preview_hours: number | null;
+  preview_gross: number | null;
+}
+
+/** Last Start→Preview for a biweek. Console-only table (migration 065/066). */
+export async function payrollDraftRun(
+  store: string,
+  periodStart: string,
+  periodEnd: string,
+): Promise<PayrollDraftRunRow | null> {
+  try {
+    const rows = await q<PayrollDraftRunRow>(
+      `SELECT status, error, preview_hours, preview_gross
+       FROM ${fq("payroll_draft_runs")}
+       WHERE store = @store
+         AND period_start = @start
+         AND period_end = @end
+       LIMIT 1`,
+      {
+        store,
+        start: dateParam(periodStart),
+        end: dateParam(periodEnd),
+      },
+    );
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export interface ReviewBonusDetailRow {
   post_date_ct: string;
   reviewer: string;

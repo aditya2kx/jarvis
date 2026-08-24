@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Permanent Cloud Scheduler for BHAGA ADP payroll Start→Preview→Delete.
+"""Permanent Cloud Scheduler for BHAGA ADP payroll Start→Preview (leave draft).
 
 ``bhaga-nightly`` stays at 21:30 CT and never Starts payroll. This job
 fires every Monday 07:00 America/Chicago against ``bhaga-daily-refresh:run``
@@ -49,8 +49,8 @@ def build_payroll_draft_job(*, store: str = "palmetto") -> dict:
     return {
         "name": job_path(),
         "description": (
-            "Monday 07:00 America/Chicago ADP payroll Start→Preview→Delete "
-            "after biweek Sunday. Never Approve. Python no-ops mid-biweek Mondays."
+            "Monday 07:00 America/Chicago ADP payroll Start→Preview; leave draft. "
+            "Never Approve. Python no-ops mid-biweek Mondays."
         ),
         "schedule": SCHEDULE,
         "time_zone": rs.SCHEDULER_TZ,

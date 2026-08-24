@@ -13,7 +13,7 @@ Jobs (Option B); they must never block the click path via daemon threads.
 | Inventory | Capacity | `setCapacityAction` | `order-reco` job |
 | Inventory | Page self-heal | `ensureOrderRecoFresh` (RSC) | `order-reco` job when stale |
 | Payroll | Tip exemptions Update | `applyTipExemptionsAction` | `model-recompute` job |
-| Payroll | ADP Preview (delete after) | `runPayrollDraftAction` / `pollPayrollDraftAction` | `adp-payroll-draft` job |
+| Payroll | Run ADP Preview | `runPayrollDraftAction` / `pollPayrollDraftAction` | Headless `adp-payroll-draft` (local laptop when BYPASS_IAP); BQ stores Preview hours + Gross |
 | Payroll | Recognition bonus | `addRecognitionBonusAction` | — |
 | Payroll | Training quick-add (flag off) | `addTrainingShiftAction` | — |
 | Accounting | Link / Relink | `createPlaidLinkTokenAction`, `exchangePlaidPublicTokenAction` | Plaid sync (in-request, staged UX) |

@@ -433,6 +433,7 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 | `vw_model_labor_weekly` (ext 005) | ISO week | All `model_labor_weekly` cols + same new Labor section cols | Same extensions as daily. Source: `model_labor_weekly`. |
 | `vw_model_payroll_period` (ext 059–064 / Issue #251) | (period, employee) | prior cols + `labor_type`, `wage_rate_dollars`, `ot_hours`, `ot_rate_dollars`, `perks`, `perk_reason` (`id:dollars` joined by `;`) | Roster 1:1 with ADP Enter: tip-pool **UNION** punchers dated `period_start..period_end` **UNION** carry 0h for anyone who punched in the 28 days before `period_start` (e.g. terminated Juan). Paid hours still through **yesterday CT** (today’s in-progress punches stay 0 until nightly). Tips = `our_calc` for tip-pool rows, else 0. Recurring perks from `employee_perks` (cents; Lindsay gym $20/biweek). Console shows one Perks total + named chips. Wages = `ROUND` of hours×rate as **NUMERIC** (half-up cents, matching ADP Preview Gross — not FLOAT64). |
 | `employee_perks` | (store, employee, perk_id) | `amount_cents`, `cadence`, `adp_earning_description` | Named paycheck extras (gym → ADP Misc reimbursement). Integer cents. |
+| `payroll_draft_runs` (065–066 / Issue #251) | (store, period_start, period_end) | `status`, `preview_hours`, `preview_gross`, `error`, timestamps | Last ADP Start→Preview for that biweek. Console **Preview done** + hours/total-pay vs Gross. Not Grafana. |
 
 ### Raw BQ tables (migration 005 — 1:1 mirrors of scrape output)
 

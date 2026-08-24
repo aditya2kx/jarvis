@@ -9,9 +9,13 @@ import {
   applyTipExemptions,
   type TipExemptionDraft,
 } from "@/lib/bq/writes";
-import { triggerModelRecompute, triggerPayrollDraft, getCloudRunExecutionStatus } from "@/lib/bhaga/recompute";
+import { triggerModelRecompute } from "@/lib/bhaga/recompute";
 import { failAck, okAck, type ActionAck } from "@/lib/actions/types";
 import { listPayPeriodsWithPaidStatus } from "@/lib/bq/queries";
+import {
+  pollPayrollDraft,
+  startPayrollDraft,
+} from "@/lib/bhaga/payroll-draft";
 
 export async function addTrainingShiftAction(
   employeeName: string,
@@ -74,11 +78,11 @@ export async function applyTipExemptionsAction(
   }
 }
 
-/** Enqueue ADP Start→Preview→Delete for an unpaid period. Never Approve. */
+/** Start ADP Preview for an unpaid period. Leaves draft; never Approve/Save. */
 export async function runPayrollDraftAction(
   periodStart: string,
   periodEnd: string,
-): Promise<ActionAck<{ executionName: string }>> {
+): Promise<ActionAck<{ executionName?: string; mode: "local" | "cloud" }>> {
   try {
     if (!FEATURES.adpPayrollDraft) {
       throw new Error("ADP Preview draft is disabled (FEATURES.adpPayrollDraft)");
@@ -91,38 +95,47 @@ export async function runPayrollDraftAction(
     if (!opt.unpaid) {
       throw new Error("ADP Preview is only for unpaid (not-completed) periods");
     }
-    const { executionName } = await triggerPayrollDraft(
+    const started = await startPayrollDraft(
       DEFAULT_STORE,
       periodStart,
       periodEnd,
     );
     return okAck({
-      data: { executionName },
+      data: { executionName: started.executionName, mode: started.mode },
       queued: ["adp-payroll-draft"],
-      message:
-        "ADP Preview queued — fills tips/bonus/perks, then Deletes. Never Approve.",
+      message: started.message,
     });
   } catch (e) {
     return failAck(e);
   }
 }
 
-/** Poll Cloud Run execution for the payroll draft job. */
+/** Poll local status file, Cloud Run execution, and BQ Preview totals. */
 export async function pollPayrollDraftAction(opts: {
-  executionName: string;
+  executionName?: string | null;
+  mode?: "local" | "cloud" | null;
+  periodStart: string;
+  periodEnd: string;
 }): Promise<
   ActionAck<{
     done: boolean;
     succeeded: boolean | null;
     failed: boolean;
     message: string | null;
+    previewHours?: number | null;
+    previewGross?: number | null;
   }>
 > {
   try {
     if (!FEATURES.adpPayrollDraft) {
       throw new Error("ADP Preview draft is disabled (FEATURES.adpPayrollDraft)");
     }
-    const status = await getCloudRunExecutionStatus(opts.executionName);
+    const status = await pollPayrollDraft({
+      executionName: opts.executionName,
+      mode: opts.mode,
+      periodStart: opts.periodStart,
+      periodEnd: opts.periodEnd,
+    });
     return okAck({ data: status });
   } catch (e) {
     return failAck(e);

@@ -9,10 +9,10 @@ export const FEATURES = {
   inventory: true,
   payroll: true,
   /**
-   * Issue #251 — Playwright ADP RUN Start→Preview→Delete. Never Approve.
+   * Issue #251 — Playwright ADP RUN Start→Preview; leave draft. Never Approve/Save.
    * Console /payroll button (unpaid periods) + Monday 07:00 CT
    * ``bhaga-payroll-draft`` scheduler. Cloud Run job env stays unset so
-   * ``bhaga-nightly`` 21:30 CT never Starts payroll.
+   * ``bhaga-nightly`` 21:30 CT never Starts payroll. Operator submits in ADP.
    */
   adpPayrollDraft: true,
   pipeline: true,

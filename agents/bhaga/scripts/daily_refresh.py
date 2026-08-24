@@ -134,6 +134,15 @@ STORE_PROFILES = PROJECT_ROOT / "agents" / "bhaga" / "knowledge-base" / "store-p
 DOWNLOAD_DIR = PROJECT_ROOT / "extracted" / "downloads"
 MASTER_TXN_CSV = DOWNLOAD_DIR / "transactions-master.csv"
 CT = ZoneInfo("America/Chicago")
+PAYROLL_DRAFT_STATUS_PATH = pathlib.Path("/tmp/jarvis-adp-payroll-draft.status.json")
+
+
+def write_payroll_draft_status(state: str, **extra) -> None:
+    payload = {"state": state, **extra}
+    try:
+        PAYROLL_DRAFT_STATUS_PATH.write_text(json.dumps(payload) + "\n")
+    except OSError as exc:
+        print(f"[adp_payroll_draft] BREADCRUMB status_write_failed {exc}")
 
 
 def _load_profile(store: str) -> dict:
@@ -353,18 +362,18 @@ def _maybe_run_period_end_payroll_draft(
     refresh_date: datetime.date,
     profile: dict,
     dry_run: bool,
-) -> None:
-    """Flagged Start→Preview→Delete. Never Approve.
+) -> dict | None:
+    """Flagged Start→Preview; leave In Progress. Never Approve/Save/Delete.
 
     Used by ``BHAGA_PAYROLL_DRAFT_ONLY`` (Monday 07:00 scheduler + console
-    button). Not invoked from ``bhaga-nightly``.
+    button). Not invoked from ``bhaga-nightly``. Operator submits in ADP.
     """
     if not _adp_payroll_draft_env_on():
         print(
             "[adp_payroll_draft] SKIPPED — BHAGA_ADP_PAYROLL_DRAFT unset "
             f"(refresh_date={refresh_date.isoformat()})"
         )
-        return
+        return None
     explicit = _explicit_payroll_period_from_env()
     if explicit is not None:
         ps, pe = explicit
@@ -374,7 +383,7 @@ def _maybe_run_period_end_payroll_draft(
         freq = adp.get("pay_frequency", "Biweekly")
         if not anchor:
             print("[adp_payroll_draft] BREADCRUMB skip no pay_periods_anchor_end_date")
-            return
+            return None
         from agents.bhaga.scripts import update_model_sheet as _ums  # noqa: PLC0415
 
         closed_start, closed_end = _ums.most_recent_closed_period(
@@ -389,7 +398,7 @@ def _maybe_run_period_end_payroll_draft(
                 f"refresh_date={refresh_date.isoformat()} "
                 f"closed={closed_start.isoformat()}..{closed_end.isoformat()}"
             )
-            return
+            return None
         ps, pe = window
     print(
         f"[adp_payroll_draft] BREADCRUMB period_end_hook "
@@ -397,12 +406,12 @@ def _maybe_run_period_end_payroll_draft(
         f"dry_run={dry_run}"
     )
     if dry_run:
-        return
+        return None
     from skills.adp_run_automation.payroll_draft_backend import (  # noqa: PLC0415
         run_draft,
     )
 
-    run_draft(
+    return run_draft(
         store=store,
         period_start=ps.isoformat(),
         period_end=pe.isoformat(),
@@ -410,6 +419,7 @@ def _maybe_run_period_end_payroll_draft(
         allow_prod_draft=True,
         hold_seconds=0,
         allow_start=True,
+        keep_draft=True,
     )
 
 
@@ -2409,20 +2419,28 @@ def _run_refresh(run_id: str) -> int:
         return 0
 
     # Monday 07:00 CT ``bhaga-payroll-draft`` + /payroll button: Start→Preview
-    # →Delete only. Before the completeness gate so a 7am Monday run is not
-    # refused as "today's sources still in flight". Never Approve.
+    # and leave In Progress (never Approve/Save/Delete). Before the completeness
+    # gate so a 7am Monday run is not refused as "today's sources still in flight".
     if _env_skip("BHAGA_PAYROLL_DRAFT_ONLY"):
         args.store = os.environ.get("BHAGA_STORE") or args.store
         print(
             f"[adp-payroll-draft-only] store={args.store} "
-            f"refresh_date={refresh_date.isoformat()} — Start→Preview→Delete only"
+            f"refresh_date={refresh_date.isoformat()} — Start→Preview, leave draft"
         )
         os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
         if args.dry_run:
+            write_payroll_draft_status("ok", skipped="dry_run")
             return 0
+        write_payroll_draft_status(
+            "running",
+            store=args.store,
+            refresh_date=refresh_date.isoformat(),
+            period_start=os.environ.get("BHAGA_PAYROLL_PERIOD_START") or "",
+            period_end=os.environ.get("BHAGA_PAYROLL_PERIOD_END") or "",
+        )
         try:
             profile = _load_profile(args.store)
-            _maybe_run_period_end_payroll_draft(
+            draft_result = _maybe_run_period_end_payroll_draft(
                 store=args.store,
                 refresh_date=refresh_date,
                 profile=profile,
@@ -2434,7 +2452,15 @@ def _run_refresh(run_id: str) -> int:
                 f"refresh_date={refresh_date.isoformat()} err={draft_exc!r}",
                 file=sys.stderr,
             )
+            write_payroll_draft_status("fail", error=repr(draft_exc))
             return 1
+        extra: dict = {}
+        if draft_result:
+            extra["period_start"] = draft_result.get("period_start")
+            extra["period_end"] = draft_result.get("period_end")
+            extra["preview_hours"] = draft_result.get("preview_hours")
+            extra["preview_gross"] = draft_result.get("preview_gross")
+        write_payroll_draft_status("ok", **extra)
         return 0
 
     # Self-clean any one-shot maintenance smart-retry scheduler for this date. The

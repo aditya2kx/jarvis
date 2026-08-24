@@ -152,8 +152,8 @@ function payrollDraftOnlyEnv(
 }
 
 /**
- * Enqueue ADP RUN Start→Preview→Delete for an unpaid period (Issue #251).
- * Job short-circuits via BHAGA_PAYROLL_DRAFT_ONLY. Never Approve.
+ * Enqueue ADP RUN Start→Preview and leave the draft (Issue #251).
+ * Job short-circuits via BHAGA_PAYROLL_DRAFT_ONLY. Never Approve/Save.
  */
 export async function triggerPayrollDraft(
   store: string,

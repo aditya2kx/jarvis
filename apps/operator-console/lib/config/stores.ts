@@ -6,6 +6,9 @@ export const STORE_DISPLAY: Record<string, string> = {
   palmetto: "Austin",
 };
 
+/** ADP RUN tenant from agents/bhaga/knowledge-base/store-profiles/palmetto.json adp_run.tenant_uuid */
+export const ADP_RUN_TENANT_UUID = "836d254c-789b-41b8-8052-d48a639e95d8";
+
 export function storeDisplayName(store: string): string {
   return STORE_DISPLAY[store] ?? store;
 }

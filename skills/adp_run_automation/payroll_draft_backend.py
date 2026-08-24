@@ -1,7 +1,8 @@
-"""ADP RUN payroll draft: Start → fill Preview → Delete. Never Approve.
+"""ADP RUN payroll draft: Start → fill Preview; leave In Progress. Never Approve.
 
 Issue #251. Default is dry-run (print packet, no ADP writes). Live Start requires
-``--allow-prod-draft`` and will refuse Approve/Submit locators.
+``--allow-prod-draft`` and will refuse Approve/Submit/Save locators. The operator
+reviews in ADP and submits if it looks right. ``--delete-after`` is cleanup only.
 """
 
 from __future__ import annotations
@@ -201,7 +202,7 @@ def wage_guardrail_failures(
 def _slack_guardrail(period: str, fails: list[str], *, strict: bool) -> None:
     if not fails:
         return
-    verb = "STOPPED (period-end)" if strict else "WARN (mid-period; still Preview+Delete)"
+    verb = "STOPPED (period-end)" if strict else "WARN (mid-period; still Preview, leave draft)"
     body = (
         f"ADP payroll draft guardrail {verb} {period}\n"
         + "\n".join(f"• {f}" for f in fails[:30])
@@ -222,17 +223,16 @@ def run_draft(
     period_end: str,
     dry_run: bool = True,
     allow_prod_draft: bool = False,
-    keep_draft: bool = False,
+    keep_draft: bool = True,
     view_rows: list[dict[str, Any]] | None = None,
     hold_seconds: int = 180,
     allow_start: bool = False,
 ) -> dict[str, Any]:
-    """Build the payroll packet. Live ADP Start is gated; dry-run never Starts."""
-    if keep_draft:
-        raise RuntimeError(
-            "[adp_payroll_draft] BREADCRUMB keep_draft_forbidden "
-            "evidence ladder must Delete"
-        )
+    """Build the payroll packet. Live ADP Start is gated; dry-run never Starts.
+
+    Default leaves the In Progress worksheet for the operator to review/submit.
+    Never Approve/Save. ``keep_draft=False`` Deletes (cleanup only).
+    """
     rows = view_rows if view_rows is not None else _load_view_rows(
         period_start, period_end
     )
@@ -264,22 +264,122 @@ def run_draft(
         raise RuntimeError(
             "[adp_payroll_draft] BREADCRUMB refused_start need --allow-prod-draft"
         )
-    live = run_live_preview(
+    record_payroll_draft_run(
         store=store,
-        hold_seconds=hold_seconds,
-        allow_start=allow_start,
-        packet=packet,
         period_start=period_start,
         period_end=period_end,
-        delete_after=True,
+        status="running",
     )
+    try:
+        live = run_live_preview(
+            store=store,
+            hold_seconds=hold_seconds,
+            allow_start=allow_start,
+            packet=packet,
+            period_start=period_start,
+            period_end=period_end,
+            delete_after=not keep_draft,
+        )
+    except Exception as exc:
+        record_payroll_draft_run(
+            store=store,
+            period_start=period_start,
+            period_end=period_end,
+            status="fail",
+            error=repr(exc),
+        )
+        raise
     result["started"] = live.get("started", False)
     result["deleted"] = live.get("deleted", False)
     result["guardrail_fails"] = live.get("guardrail_fails", [])
     result["screenshots"] = live.get("screenshots", [])
+    result["preview_url"] = live.get("preview_url") or ""
+    result["preview_hours"] = live.get("preview_hours")
+    result["preview_gross"] = live.get("preview_gross")
     result["saved"] = False
     result["approved"] = False
+    record_payroll_draft_run(
+        store=store,
+        period_start=period_start,
+        period_end=period_end,
+        status="ok",
+        preview_hours=result["preview_hours"],
+        preview_gross=result["preview_gross"],
+    )
     return result
+
+
+def _adp_headed() -> bool:
+    """Visible Chromium only when BHAGA_ADP_HEADED=1. Default is headless."""
+    return os.environ.get("BHAGA_ADP_HEADED", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def operator_adp_preview_url(page_url: str, payroll_home_url: str = "") -> str:
+    """URL the operator opens in their own browser (login as themselves)."""
+    for candidate in (page_url, payroll_home_url):
+        u = (candidate or "").strip()
+        if u.startswith("http") and "adp.com" in u.lower():
+            return u
+    return "https://runpayroll.adp.com/enrollment.aspx"
+
+
+def record_payroll_draft_run(
+    *,
+    store: str,
+    period_start: str,
+    period_end: str,
+    status: str,
+    preview_url: str = "",
+    preview_hours: float | None = None,
+    preview_gross: float | None = None,
+    error: str = "",
+) -> None:
+    """MERGE latest draft status for a period. Best-effort; never raises.
+
+    ``running`` omits totals so a prior Preview snapshot stays until the new
+    run finishes. Preview URLs are session hashes and are not stored for UI.
+    """
+    from datetime import datetime, timezone
+
+    try:
+        from core.datastore import load_rows  # noqa: PLC0415
+
+        now = datetime.now(timezone.utc).isoformat()
+        row: dict[str, Any] = {
+            "store": store,
+            "period_start": period_start,
+            "period_end": period_end,
+            "status": status,
+        }
+        types = {
+            "period_start": "DATE",
+            "period_end": "DATE",
+            "started_at_utc": "TIMESTAMP",
+            "finished_at_utc": "TIMESTAMP",
+            "preview_hours": "FLOAT64",
+            "preview_gross": "FLOAT64",
+        }
+        if status == "running":
+            row["started_at_utc"] = now
+        else:
+            row["finished_at_utc"] = now
+            row["error"] = error or None
+            if preview_hours is not None:
+                row["preview_hours"] = float(preview_hours)
+            if preview_gross is not None:
+                row["preview_gross"] = float(preview_gross)
+            if preview_url:
+                row["preview_url"] = preview_url
+        load_rows(
+            "payroll_draft_runs",
+            [row],
+            merge_keys=["store", "period_start", "period_end"],
+            column_bq_types=types,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_payroll_draft] BREADCRUMB record_run_failed {exc}")
 
 
 def _load_view_rows(period_start: str, period_end: str) -> list[dict[str, Any]]:
@@ -378,6 +478,75 @@ def _open_payroll_home(page) -> None:
         print("[adp_payroll_draft] WARN still not on v2 dashboard after Payroll click")
     for lab in _visible_action_labels(page):
         print(f"[adp_payroll_draft] control {lab!r}")
+
+
+_PAYROLL_HOME_DUMP_JS = """() => {
+  const items = [];
+  const seen = new Set();
+  const els = document.querySelectorAll(
+    "a, button, [role='link'], [role='button'], [data-test-id]"
+  );
+  for (const el of els) {
+    const id = el.getAttribute("data-test-id") || "";
+    const href = el.getAttribute("href") || "";
+    const text = (el.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 240);
+    const blob = (id + " " + href + " " + text).toLowerCase();
+    if (!/(pay|payroll|history|complete|check|regular)/.test(blob)) continue;
+    const key = [id, href, text].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push({ tag: el.tagName, id, href, text });
+  }
+  return { url: location.href, n: items.length, items: items.slice(0, 150) };
+}"""
+
+
+def collect_payroll_home_dump(page) -> dict[str, Any]:
+    """Read-only snapshot of Payroll Home links/tiles (no Start/Approve)."""
+    return page.evaluate(_PAYROLL_HOME_DUMP_JS)
+
+
+def dump_payroll_home_history(*, store: str = "palmetto") -> dict[str, Any]:
+    """Login → Payroll Home → print tiles/links. Never Start or Approve."""
+    from skills.adp_run_automation.runner import (  # noqa: PLC0415
+        _ensure_logged_in,
+        launch_persistent,
+    )
+
+    headed = _adp_headed()
+    with launch_persistent(
+        portal="adp",
+        headed=headed,
+        slow_mo_ms=0,
+    ) as (_ctx, page):
+        _ensure_logged_in(page, store=store)
+        _open_payroll_home(page)
+        page.wait_for_timeout(2_000)
+        dump = collect_payroll_home_dump(page)
+        print(f"[adp_payroll_draft] BREADCRUMB list_history url={dump.get('url')}")
+        import json
+
+        print(json.dumps(dump, indent=2)[:24_000])
+        shot = screenshot_preview(page, "payroll-home-history")
+        dump["screenshot"] = shot
+
+        details = page.locator(
+            "[data-test-id='latest-payroll-view-payrolls-details']"
+        ).first
+        try:
+            details.wait_for(state="visible", timeout=8_000)
+            abort_if_forbidden_label(details.inner_text() or "Payroll details")
+            print("[adp_payroll_draft] BREADCRUMB click latest-payroll-view-payrolls-details")
+            details.click()
+            page.wait_for_timeout(3_500)
+            dump["details_url"] = page.url
+            dump["details"] = collect_payroll_home_dump(page)
+            print(f"[adp_payroll_draft] BREADCRUMB details_url={page.url}")
+            print(json.dumps(dump["details"], indent=2)[:24_000])
+            dump["details_screenshot"] = screenshot_preview(page, "payroll-details")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[adp_payroll_draft] BREADCRUMB details_click_failed {exc}")
+        return dump
 
 
 def _wait_wizard_ready(page) -> None:
@@ -613,6 +782,57 @@ def _preview_pay_rows(page) -> dict[str, dict[str, float]]:
     if not isinstance(raw, dict):
         return {}
     return raw.get("rows") or {}
+
+
+def combine_preview_totals(
+    rows: dict[str, dict[str, float]],
+    footer: dict[str, float | None] | None = None,
+) -> tuple[float | None, float | None]:
+    """Prefer Preview footer Total hours / Gross pay; else sum grid rows."""
+    footer = footer or {}
+    row_h = round(sum(float(r.get("hours") or 0) for r in rows.values()), 2)
+    row_g = round(sum(float(r.get("gross") or 0) for r in rows.values()), 2)
+    fh = footer.get("hours")
+    fg = footer.get("gross")
+    if fh not in (None,) and float(fh or 0) > 0:
+        hours = round(float(fh), 2)
+    elif row_h:
+        hours = row_h
+    else:
+        hours = None
+    if fg not in (None,) and float(fg or 0) > 0:
+        gross = round(float(fg), 2)
+    elif row_g:
+        gross = row_g
+    else:
+        gross = None
+    return hours, gross
+
+
+def _preview_footer_totals(page) -> dict[str, float | None]:
+    raw = page.evaluate(
+        """() => {
+          const num = (t) => {
+            const s = (t || '').replace(/[$,]/g, '').trim();
+            const n = parseFloat(s);
+            return Number.isFinite(n) ? n : null;
+          };
+          const text = document.body.innerText || '';
+          const hours = text.match(/Total hours\\s+([0-9,.]+)/i);
+          const gross = text.match(/Gross pay\\s+\\$?([0-9,.]+)/i);
+          return {
+            hours: hours ? num(hours[1]) : null,
+            gross: gross ? num(gross[1]) : null,
+          };
+        }"""
+    )
+    print(f"[adp_payroll_draft] preview_footer {raw}")
+    if not isinstance(raw, dict):
+        return {"hours": None, "gross": None}
+    return {
+        "hours": raw.get("hours"),
+        "gross": raw.get("gross"),
+    }
 
 
 def _print_hours_wages_compare(
@@ -1157,12 +1377,13 @@ def run_live_preview(
     packet: list[PayrollPacketRow] | None = None,
     period_start: str = "",
     period_end: str = "",
-    delete_after: bool = True,
+    delete_after: bool = False,
 ) -> dict[str, Any]:
-    """Login → Run payroll → hours guardrail → Import/fill → Preview → hold → Delete.
+    """Login → Run payroll → hours guardrail → Import/fill → Preview → leave draft.
 
     Mid-period (as-of before period_end): Slack mismatches as WARN and still Preview.
-    Period-end: Slack and skip fill. Never Finish Later / Approve / Submit.
+    Period-end: Slack and skip fill. Never Finish Later / Approve / Submit / Save.
+    ``delete_after`` is optional cleanup; default is leave In Progress for the operator.
     """
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -1178,13 +1399,26 @@ def run_live_preview(
     shots: list[str] = []
     guardrail_fails: list[str] = []
     deleted = False
-    import re
+    headed = _adp_headed()
+    preview_url = ""
+    payroll_home_url = ""
+    preview_hours: float | None = None
+    preview_gross: float | None = None
+    started = False
+    print(
+        f"[adp_payroll_draft] headed={headed} "
+        "(set BHAGA_ADP_HEADED=1 for a visible browser)"
+    )
 
-    with launch_persistent(portal="adp", headed=True, slow_mo_ms=50) as (_ctx, page):
+    with launch_persistent(
+        portal="adp",
+        headed=headed,
+        slow_mo_ms=50 if headed else 0,
+    ) as (_ctx, page):
         _ensure_logged_in(page, store=store)
         _open_payroll_home(page)
+        payroll_home_url = page.url
         shots.append(screenshot_preview(page, "home"))
-        started = False
         _dismiss_adp_error_dialog(page)
         if allow_start:
             started = _click_start_if_present(page)
@@ -1236,7 +1470,8 @@ def run_live_preview(
             shots.append(screenshot_preview(page, "preview-modal"))
             _dismiss_looks_right_for_screenshot(page)
             shots.append(screenshot_preview(page, "preview"))
-            print(f"[adp_payroll_draft] preview_url {page.url}")
+            preview_url = operator_adp_preview_url(page.url, payroll_home_url)
+            print(f"[adp_payroll_draft] preview_url {preview_url}")
             preview_rows: dict[str, dict[str, float]] = {}
             for _ in range(3):
                 preview_rows.update(_preview_pay_rows(page))
@@ -1250,17 +1485,32 @@ def run_live_preview(
                     break
                 break
             _print_hours_wages_compare(packet, adp_hours, preview_rows)
+            footer = _preview_footer_totals(page)
+            ph, pg = combine_preview_totals(preview_rows, footer)
+            preview_hours, preview_gross = ph, pg
+            print(
+                f"[adp_payroll_draft] BREADCRUMB preview_totals "
+                f"hours={ph} gross={pg}"
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"[adp_payroll_draft] Preview path ({exc})")
             shots.append(screenshot_preview(page, "no-preview"))
         print(
             f"[adp_payroll_draft] BREADCRUMB preview_hold store={store} "
-            f"secs={hold_seconds} no_save no_approve strict={strict}"
+            f"secs={hold_seconds} headed={headed} no_save no_approve strict={strict}"
         )
-        page.wait_for_timeout(max(hold_seconds, 1) * 1000)
+        if headed and hold_seconds > 0:
+            page.wait_for_timeout(hold_seconds * 1000)
         if delete_after:
             deleted = _click_delete_in_progress(page)
             shots.append(screenshot_preview(page, "after-delete"))
+        else:
+            print(
+                "[adp_payroll_draft] BREADCRUMB leave_draft "
+                "no Delete/Cancel/Save/Approve — operator reviews in ADP"
+            )
+    if not preview_url:
+        preview_url = operator_adp_preview_url("", payroll_home_url)
     return {
         "started": started,
         "screenshots": shots,
@@ -1268,14 +1518,22 @@ def run_live_preview(
         "approved": False,
         "deleted": deleted,
         "guardrail_fails": guardrail_fails,
+        "preview_url": preview_url,
+        "preview_hours": preview_hours,
+        "preview_gross": preview_gross,
     }
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--store", default="palmetto")
-    p.add_argument("--period-start", required=True)
-    p.add_argument("--period-end", required=True)
+    p.add_argument("--period-start", default="")
+    p.add_argument("--period-end", default="")
+    p.add_argument(
+        "--list-history",
+        action="store_true",
+        help="Read-only: dump Payroll Home completed-payrun tiles/links.",
+    )
     p.add_argument("--dry-run", action="store_true", default=True)
     p.add_argument("--no-dry-run", action="store_true")
     p.add_argument("--allow-prod-draft", action="store_true")
@@ -1283,16 +1541,26 @@ def main(argv: list[str] | None = None) -> int:
         "--hold-seconds",
         type=int,
         default=180,
-        help="Keep headed ADP Preview open so the operator can compare.",
+        help="Pause after Preview only when BHAGA_ADP_HEADED=1 (debug).",
     )
     p.add_argument(
         "--allow-start",
         action="store_true",
         help="Click Start after Payroll Home (still never Save/Approve).",
     )
+    p.add_argument(
+        "--delete-after",
+        action="store_true",
+        help="Delete the In Progress worksheet after Preview (cleanup only).",
+    )
     args = p.parse_args(argv)
-    dry = not args.no_dry_run
     os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+    if args.list_history:
+        dump_payroll_home_history(store=args.store)
+        return 0
+    if not args.period_start or not args.period_end:
+        p.error("--period-start and --period-end are required unless --list-history")
+    dry = not args.no_dry_run
     out = run_draft(
         store=args.store,
         period_start=args.period_start,
@@ -1301,6 +1569,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_prod_draft=args.allow_prod_draft,
         hold_seconds=args.hold_seconds,
         allow_start=args.allow_start,
+        keep_draft=not args.delete_after,
     )
     return 0
 

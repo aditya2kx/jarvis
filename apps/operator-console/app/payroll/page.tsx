@@ -6,6 +6,7 @@ import {
   tipExemptions,
   listCanonicalEmployees,
   listPayPeriodsWithPaidStatus,
+  payrollDraftRun,
 } from "@/lib/bq/queries";
 import { formatDate, formatDollars, formatHours } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -22,6 +23,8 @@ import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { payPeriodKey } from "@/lib/payroll/periodKey";
 import { rowMatchesLaborType } from "@/lib/payroll/laborBucket";
 import { PayrollDraftButton } from "@/components/payroll/PayrollDraftButton";
+import { adpPayrollDetailsUrl } from "@/lib/payroll/adpLink";
+import { previewLine } from "@/lib/payroll/previewDiff";
 import {
   LABOR_TYPE_OPTIONS,
   parseLaborTypes,
@@ -39,7 +42,17 @@ import type {
 
 export const dynamic = "force-dynamic";
 
-function HeadlineStat({ label, display }: { label: string; display: string }) {
+function HeadlineStat({
+  label,
+  display,
+  hint,
+  hintWarn,
+}: {
+  label: string;
+  display: string;
+  hint?: string;
+  hintWarn?: boolean;
+}) {
   return (
     <Card>
       <CardHeader>
@@ -49,6 +62,17 @@ function HeadlineStat({ label, display }: { label: string; display: string }) {
       </CardHeader>
       <CardContent>
         <p className="text-2xl font-semibold tabular-nums">{display}</p>
+        {hint ? (
+          <p
+            className={
+              hintWarn
+                ? "mt-1 text-[11px] leading-tight text-amber-700 dark:text-amber-400"
+                : "mt-1 text-[11px] leading-tight text-muted-foreground"
+            }
+          >
+            {hint}
+          </p>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -86,6 +110,7 @@ export default async function PayrollPage({
   let shifts: AdpShiftRow[] = [];
   let exemptions: TipExemptionRow[] = [];
   let employees: string[] = [];
+  let draftRun: Awaited<ReturnType<typeof payrollDraftRun>> = null;
   let error: string | undefined;
   try {
     const settled = await Promise.all([
@@ -107,7 +132,14 @@ export default async function PayrollPage({
 
   if (!error && selectedPeriodStart && periodEnd) {
     try {
-      periods = await payrollPeriod(6);
+      const [periodRowsAll, run] = await Promise.all([
+        payrollPeriod(6),
+        FEATURES.adpPayrollDraft
+          ? payrollDraftRun(DEFAULT_STORE, selectedPeriodStart, periodEnd)
+          : Promise.resolve(null),
+      ]);
+      periods = periodRowsAll;
+      draftRun = run;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -151,6 +183,16 @@ export default async function PayrollPage({
     0,
   );
   const totalPerks = periodRows.reduce((s, p) => s + (Number(p.perks) || 0), 0);
+  const hoursVsPreview = previewLine(
+    totalHours,
+    draftRun?.preview_hours,
+    "hours",
+  );
+  const payVsPreview = previewLine(
+    totalPay,
+    draftRun?.preview_gross,
+    "pay",
+  );
 
   const periodLabel =
     selectedPeriodStart && periodEnd
@@ -251,13 +293,27 @@ export default async function PayrollPage({
                 ...(selectedPeriodStart ? { period: selectedPeriodStart } : {}),
               }}
             />
-            {FEATURES.adpPayrollDraft &&
-            selectedUnpaid &&
-            selectedPeriodStart &&
-            periodEnd ? (
+            {FEATURES.adpPayrollDraft && selectedPeriodStart && periodEnd ? (
               <PayrollDraftButton
                 periodStart={selectedPeriodStart}
                 periodEnd={periodEnd}
+                unpaid={selectedUnpaid}
+                isCurrent={Boolean(selectedOpt?.is_current)}
+                historicPayrollUrl={
+                  selectedUnpaid ? null : adpPayrollDetailsUrl()
+                }
+                initialHasPreview={draftRun?.status === "ok"}
+                initialPreviewHours={draftRun?.preview_hours ?? null}
+                initialPreviewGross={draftRun?.preview_gross ?? null}
+                consoleHours={totalHours}
+                consoleTotalPay={totalPay}
+                initialStatus={
+                  draftRun?.status === "running" ||
+                  draftRun?.status === "ok" ||
+                  draftRun?.status === "fail"
+                    ? draftRun.status
+                    : null
+                }
               />
             ) : null}
             {FEATURES.writeTraining ? <TrainingQuickAdd /> : null}
@@ -286,6 +342,8 @@ export default async function PayrollPage({
               <HeadlineStat
                 label="Hours"
                 display={`${formatHours(totalHours)}h`}
+                hint={selectedUnpaid ? hoursVsPreview?.label : undefined}
+                hintWarn={Boolean(hoursVsPreview && !hoursVsPreview.match)}
               />
               <HeadlineStat label="Wages" display={formatDollars(totalWages)} />
               <HeadlineStat label="Tips" display={formatDollars(totalTips)} />
@@ -301,15 +359,18 @@ export default async function PayrollPage({
               <HeadlineStat
                 label="Total pay"
                 display={formatDollars(totalPay)}
+                hint={selectedUnpaid ? payVsPreview?.label : undefined}
+                hintWarn={Boolean(payVsPreview && !payVsPreview.match)}
               />
             </div>
             <p className="text-xs text-muted-foreground">
-              Against ADP Preview: Hours → Total hours, Total pay → Gross pay.
-              People and hours are 1:1 with Enter payroll. Open-biweek hours
-              run through yesterday CT (not today). Zero-hour rows are people
-              ADP still lists this run with no punches in that window. Wages
-              is hours × rate only — Preview Gross also includes tips, bonus,
-              and perks. Taxes, Net pay, and Cash required are ADP-only.
+              Against last ADP Preview: Hours → Total hours, Total pay → Gross
+              (wages + tips + bonus + perks). Preview URLs are not shown — they
+              are session hashes. People and hours are 1:1 with Enter payroll.
+              Open-biweek hours run through yesterday CT (not today). Zero-hour
+              rows are people ADP still lists this run with no punches in that
+              window. Wages is hours × rate only. Taxes, Net pay, and Cash
+              required are ADP-only.
             </p>
           </div>
 

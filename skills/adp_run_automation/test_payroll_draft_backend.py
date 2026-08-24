@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from skills.adp_run_automation.payroll_draft_backend import (
     abort_if_forbidden_label,
+    combine_preview_totals,
     header_index,
     hours_guardrail_failures,
     packet_from_view_rows,
@@ -169,16 +171,112 @@ class TestGuardrails(unittest.TestCase):
             )
         self.assertIn("refused_start", str(ctx.exception))
 
-    def test_keep_draft_forbidden(self):
-        with self.assertRaises(RuntimeError) as ctx:
-            run_draft(
+    def test_keep_draft_dry_run_ok(self):
+        out = run_draft(
+            store="palmetto",
+            period_start="2026-08-10",
+            period_end="2026-08-17",
+            keep_draft=True,
+            view_rows=[],
+        )
+        self.assertTrue(out["dry_run"])
+        self.assertFalse(out["started"])
+
+    def test_live_preview_runs_once(self):
+        live = {
+            "started": True,
+            "deleted": False,
+            "guardrail_fails": [],
+            "screenshots": [],
+            "preview_url": "https://runpayrollmain.adp.com/preview",
+            "preview_hours": 458.97,
+            "preview_gross": 8999.06,
+        }
+        with (
+            patch(
+                "skills.adp_run_automation.payroll_draft_backend.run_live_preview",
+                return_value=live,
+            ) as preview,
+            patch(
+                "skills.adp_run_automation.payroll_draft_backend.record_payroll_draft_run",
+            ) as record,
+        ):
+            out = run_draft(
                 store="palmetto",
                 period_start="2026-08-10",
-                period_end="2026-08-17",
-                keep_draft=True,
-                view_rows=[],
+                period_end="2026-08-23",
+                dry_run=False,
+                allow_prod_draft=True,
+                allow_start=True,
+                view_rows=[{"employee": "A", "hours_worked": 8, "ot_hours": 0}],
             )
-        self.assertIn("keep_draft_forbidden", str(ctx.exception))
+        self.assertEqual(preview.call_count, 1)
+        self.assertEqual(
+            [c.kwargs["status"] for c in record.call_args_list],
+            ["running", "ok"],
+        )
+        self.assertTrue(out["started"])
+        self.assertEqual(out["preview_url"], live["preview_url"])
+        self.assertEqual(out["preview_hours"], 458.97)
+        self.assertEqual(out["preview_gross"], 8999.06)
+
+
+class TestPreviewTotals(unittest.TestCase):
+    def test_footer_beats_row_sum(self):
+        hours, gross = combine_preview_totals(
+            {"A, B": {"hours": 10, "gross": 100}},
+            {"hours": 458.97, "gross": 8999.06},
+        )
+        self.assertEqual(hours, 458.97)
+        self.assertEqual(gross, 8999.06)
+
+    def test_row_sum_when_no_footer(self):
+        hours, gross = combine_preview_totals(
+            {
+                "A, B": {"hours": 10.5, "gross": 200.1},
+                "C, D": {"hours": 2.5, "gross": 50.4},
+            },
+            {},
+        )
+        self.assertEqual(hours, 13.0)
+        self.assertEqual(gross, 250.5)
+
+
+class TestHeadlessPreviewUrl(unittest.TestCase):
+    def test_operator_url_prefers_live_page(self):
+        from skills.adp_run_automation.payroll_draft_backend import (
+            operator_adp_preview_url,
+        )
+
+        live = (
+            "https://runpayrollmain.adp.com/@836d254c-789b-41b8-8052-d48a639e95d8"
+            "/v2/payroll/preview"
+        )
+        home = (
+            "https://runpayrollmain.adp.com/@836d254c-789b-41b8-8052-d48a639e95d8/v2/"
+        )
+        self.assertEqual(operator_adp_preview_url(live, home), live)
+        self.assertEqual(operator_adp_preview_url("about:blank", home), home)
+        self.assertTrue(
+            operator_adp_preview_url("", "").startswith("https://runpayroll.adp.com")
+        )
+
+    def test_headed_only_when_env_set(self):
+        import os
+
+        from skills.adp_run_automation.payroll_draft_backend import _adp_headed
+
+        prev = os.environ.get("BHAGA_ADP_HEADED")
+        try:
+            os.environ.pop("BHAGA_ADP_HEADED", None)
+            self.assertFalse(_adp_headed())
+            os.environ["BHAGA_ADP_HEADED"] = "1"
+            self.assertTrue(_adp_headed())
+        finally:
+            if prev is None:
+                os.environ.pop("BHAGA_ADP_HEADED", None)
+            else:
+                os.environ["BHAGA_ADP_HEADED"] = prev
 
 
 if __name__ == "__main__":

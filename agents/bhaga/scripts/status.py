@@ -310,6 +310,8 @@ GRAFANA_VIEWS: list[Target] = [
     # Same view — no new target.
     # migration 064 (Issue #251): ADP half-up cents on hours×rate via NUMERIC ROUND
     # (FLOAT64 ROUND was $0.01 low on Ximena/Kayah). Same view — no new target.
+    # migration 065–066 (Issue #251): payroll_draft_runs — last Start→Preview
+    # status + preview_hours / preview_gross. Console /payroll only — not Grafana.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

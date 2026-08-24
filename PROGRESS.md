@@ -1,6 +1,6 @@
 ## 2026-08-24 — Monday 07:00 CT ADP Preview + /payroll button (Issue #251)
 
-**Scope:** Do not Start payroll from `bhaga-nightly` (21:30 CT). Dedicated `bhaga-payroll-draft` Monday 07:00 America/Chicago + unpaid-period `/payroll` button (Start→Preview→Delete, never Approve).
+**Scope:** Do not Start payroll from `bhaga-nightly` (21:30 CT). Dedicated `bhaga-payroll-draft` Monday 07:00 America/Chicago + `/payroll` **Run ADP Preview** (headless Start→Preview, leave draft; never Approve/Save). Open biweek: no ADP chrome. Closed unpaid: Run XOR Preview done + hours/total-pay vs last Preview Gross (no Preview URL). Paid: Open ADP payroll.
 
 ## 2026-08-18 — Payroll & People rate/OT/FT/perks (Issue #251)
 

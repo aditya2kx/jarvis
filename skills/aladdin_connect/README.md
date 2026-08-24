@@ -1,6 +1,7 @@
 # Aladdin Connect skill
 
 Genie Aladdin Connect via Cognito `USER_PASSWORD_AUTH` + `api.smartgarage.systems`.
+Device calls use the Cognito **AccessToken** (IdToken returns 401).
 
 ## Env
 

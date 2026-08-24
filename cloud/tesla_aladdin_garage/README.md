@@ -12,6 +12,7 @@ Geofence Dhanno → open **Big Peach** via Aladdin Connect.
 - Single Cloud Run instance, CPU always allocated.
 - Last event/error/poll written to Firestore `tesla_aladdin_garage/state` (`GARAGE_PERSIST=1`).
 - Admin token (`GARAGE_ADMIN_TOKEN` / `X-Garage-Token`) required for `/tick`, `/location`, `/simulate/enter`, `/config`.
+- Aladdin `/devices` uses Cognito **AccessToken** (IdToken is 401). Cloud Run SA must have `secretVersionAdder` on `tesla-fleet-refresh-token` so `/oauth/tesla` survives a revision restart.
 
 ## Env / secrets
 

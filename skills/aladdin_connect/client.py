@@ -32,6 +32,22 @@ class AladdinError(RuntimeError):
         self.body = body
 
 
+def _serial_match(door: dict, serial: str) -> bool:
+    """Match configured pin against device id, serial_number, or serial prefix."""
+    serial = serial.upper()
+    candidates = [
+        str(door.get("serial") or ""),
+        str(door.get("device_id") or ""),
+    ]
+    for raw in candidates:
+        val = raw.upper()
+        if not val:
+            continue
+        if val == serial or val.startswith(serial) or serial.startswith(val):
+            return True
+    return False
+
+
 def secret_hash(username: str, client_id: str = COGNITO_CLIENT_ID, client_secret: str = COGNITO_CLIENT_SECRET) -> str:
     digest = hmac.new(
         client_secret.encode("utf-8"),
@@ -74,13 +90,14 @@ class AladdinConnectClient:
         result = data.get("AuthenticationResult") or {}
         self._id_token = result.get("IdToken") or ""
         self._access_token = result.get("AccessToken") or ""
-        if not self._id_token:
+        # api.smartgarage.systems 401s IdToken; AccessToken is required.
+        if not self._access_token:
             raise AladdinError("tesla-aladdin-garage fail reason=aladdin_login_no_token")
 
     def _token(self) -> str:
-        if not self._id_token:
+        if not self._access_token:
             self.login()
-        return self._id_token
+        return self._access_token
 
     def list_devices(self) -> list[dict]:
         data = self._api("GET", "/devices")
@@ -119,7 +136,7 @@ class AladdinConnectClient:
         name_l = (name or "").strip().lower()
         matches = doors
         if serial:
-            matches = [d for d in matches if str(d.get("serial", "")).upper() == serial]
+            matches = [d for d in matches if _serial_match(d, serial)]
         if name_l:
             named = [d for d in matches if name_l in str(d.get("name", "")).lower()]
             if named:

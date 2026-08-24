@@ -319,7 +319,7 @@ gcloud run services update bhaga-webhook \
 | `plaid_access_token_<item_id>` | operator-console + bhaga-webhook (dynamic) | Per linked Item access_token after Plaid Link exchange — never stored in BQ. |
 | `tesla-fleet-client-id` | tesla-aladdin-garage (`TESLA_CLIENT_ID`) | Tesla Fleet app client id (developer.tesla.com). |
 | `tesla-fleet-client-secret` | tesla-aladdin-garage (`TESLA_CLIENT_SECRET`) | Tesla Fleet app client secret. |
-| `tesla-fleet-refresh-token` | tesla-aladdin-garage (`TESLA_REFRESH_TOKEN`) | User refresh token; rotated on refresh and written back as a new secret version. |
+| `tesla-fleet-refresh-token` | tesla-aladdin-garage (`TESLA_REFRESH_TOKEN`) | User refresh token; rotated on refresh and written back as a new secret version. Cloud Run SA needs `secretVersionAdder` (not only `secretAccessor`) or `/oauth/tesla` tokens stay in memory and die on restart. |
 | `aladdin-connect-username` | tesla-aladdin-garage (`ALADDIN_USERNAME`) | Genie Aladdin Connect account email (must **own** Big Peach). |
 | `aladdin-connect-password` | tesla-aladdin-garage (`ALADDIN_PASSWORD`) | Aladdin Connect password. |
 

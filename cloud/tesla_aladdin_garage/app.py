@@ -140,6 +140,9 @@ def oauth_callback():
     if err:
         return jsonify({"ok": False, "error": err}), 400
     tesla.exchange_code(request.args.get("code") or "", state=request.args.get("state") or "")
+    w = get_worker()
+    w.state.needs_reauth = False
+    w.state.last_error = ""
     log.info("tesla-aladdin-garage oauth_ok")
     return jsonify({"ok": True, "message": "Tesla tokens stored; next poll will use them."})
 

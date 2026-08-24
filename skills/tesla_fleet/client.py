@@ -26,6 +26,36 @@ PUBLIC_KEY_PATH = "/.well-known/appspecific/com.tesla.3p.public-key.pem"
 LOCATION_ENDPOINTS = "location_data;drive_state"
 
 
+def fleet_telemetry_config_body(
+    *,
+    vins: list[str],
+    hostname: str,
+    port: int = 443,
+    ca: str = "",
+    interval_seconds: int = 15,
+    minimum_delta: float = 80.0,
+) -> dict:
+    """JSON body for POST /api/1/vehicles/fleet_telemetry_config.
+
+    Cars connect to `hostname:port` over mTLS (not Cloud Run). `minimum_delta`
+    is metres between Location publishes. Does not wake a sleeping vehicle.
+    """
+    host = hostname.strip().removeprefix("https://").removeprefix("http://").split("/")[0]
+    config: dict[str, Any] = {
+        "hostname": host,
+        "port": int(port),
+        "fields": {
+            "Location": {
+                "interval_seconds": int(interval_seconds),
+                "minimum_delta": float(minimum_delta),
+            }
+        },
+    }
+    if ca.strip():
+        config["ca"] = ca.strip()
+    return {"vins": [v.strip().upper() for v in vins if v.strip()], "config": config}
+
+
 class TeslaFleetError(RuntimeError):
     def __init__(self, message: str, status: Optional[int] = None, body: str = ""):
         super().__init__(message)
@@ -219,6 +249,35 @@ class TeslaFleetClient:
         path = vehicle_data_path(vehicle_id)
         data = self._api("GET", path)
         return parse_vehicle_location(data.get("response") or {})
+
+    def put_fleet_telemetry_config(
+        self,
+        *,
+        vins: list[str],
+        hostname: str,
+        port: int = 443,
+        ca: str = "",
+        interval_seconds: int = 15,
+        minimum_delta: float = 80.0,
+    ) -> dict:
+        """Ask Tesla to stream Location to a fleet-telemetry host. Never wake_up.
+
+        Tesla requires this POST through the Vehicle Command HTTP Proxy
+        (unsigned Fleet API returns HTTP 400).
+        """
+        body = fleet_telemetry_config_body(
+            vins=vins,
+            hostname=hostname,
+            port=port,
+            ca=ca,
+            interval_seconds=interval_seconds,
+            minimum_delta=minimum_delta,
+        )
+        return self._api(
+            "POST",
+            "/api/1/vehicles/fleet_telemetry_config",
+            payload=json.dumps(body).encode(),
+        )
 
     def _store_token(self, data: dict) -> dict:
         self._access_token = data.get("access_token") or ""

@@ -63,11 +63,13 @@ COUPLINGS: list[dict] = [
     {
         "code": [
             "cloud/tesla_aladdin_garage/**",
+            "skills/tesla_fleet/**",
             ".github/workflows/tesla-aladdin-garage-deploy.yml",
             "scripts/ensure_garage_stale_poll_alert.py",
         ],
         "docs": [
             "cloud/tesla_aladdin_garage/README.md",
+            "skills/tesla_fleet/README.md",
             "RUNBOOK.md",
         ],
         "why": "garage worker / deploy / alerting change → update garage README + RUNBOOK Tesla Aladdin section.",

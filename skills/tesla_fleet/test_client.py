@@ -2,7 +2,7 @@
 
 import pytest
 
-from skills.tesla_fleet.client import TeslaFleetError, vehicle_data_path
+from skills.tesla_fleet.client import TeslaFleetError, fleet_telemetry_config_body, vehicle_data_path
 
 
 def test_vehicle_data_path_uses_semicolon():
@@ -28,3 +28,18 @@ def test_parse_vehicle_location_drive_state():
     )
     assert loc["latitude"] == 1.5
     assert loc["longitude"] == 2.5
+
+
+def test_fleet_telemetry_config_body_location_delta():
+    body = fleet_telemetry_config_body(
+        vins=[" 7saygaee2tf605512 "],
+        hostname="https://telemetry.example.com/unused",
+        minimum_delta=80,
+    )
+    assert body["vins"] == ["7SAYGAEE2TF605512"]
+    assert body["config"]["hostname"] == "telemetry.example.com"
+    assert body["config"]["port"] == 443
+    loc = body["config"]["fields"]["Location"]
+    assert loc["interval_seconds"] == 15
+    assert loc["minimum_delta"] == 80.0
+    assert "ca" not in body["config"]

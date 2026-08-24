@@ -1,3 +1,9 @@
+## 2026-08-24 — Tesla Aladdin garage: telemetry ingest + non-fatal deploy extras
+
+**Scope:** Cloud Run already deployed; GHA then failed on log-metric IAM. 20 s REST `vehicle_data` polls are expensive and 408 when Dhanno sleeps.
+
+**Key changes:** deploy job `continue-on-error` on secret IAM + stale-poll metric; worker `observe_fix` + `POST /telemetry`; Fleet Telemetry config helper; `TESLA_TELEMETRY=1` / `POLL_INTERVAL_S=0`; still never `wake_up`. Cars stream to a self-hosted fleet-telemetry host, not Cloud Run mTLS.
+
 ## 2026-08-24 — Monday 07:00 CT ADP Preview + /payroll button (Issue #251)
 
 **Scope:** Do not Start payroll from `bhaga-nightly` (21:30 CT). Dedicated `bhaga-payroll-draft` Monday 07:00 America/Chicago + `/payroll` **Run ADP Preview** (headless Start→Preview, leave draft; never Approve/Save). Open biweek: no ADP chrome. Closed unpaid: Run XOR Preview done + hours/total-pay vs last Preview Gross (no Preview URL). Paid: Open ADP payroll.

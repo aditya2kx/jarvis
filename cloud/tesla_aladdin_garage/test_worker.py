@@ -174,3 +174,52 @@ def test_overlay_changes_enter_m():
     assert w.cfg.enter_m == 350
     assert w.geofence.enter_m == 350
 
+
+def test_observe_fix_from_telemetry_opens_without_rest_poll():
+    tesla, aladdin = _tesla(*HOME), _aladdin()
+    w = GarageWorker(_cfg(), tesla, aladdin)
+    outside = HOME[0] + 0.01
+    assert w.observe_fix(outside, HOME[1], source="telemetry") == "outside"
+    tesla.vehicle_location.assert_not_called()
+    assert w.observe_fix(HOME[0], HOME[1], source="telemetry") == "opened_dry_run"
+    aladdin.open_door.assert_called_once()
+    tesla.vehicle_location.assert_not_called()
+
+
+def test_ensure_telemetry_config_skips_without_host():
+    tesla, aladdin = _tesla(*HOME), _aladdin()
+    w = GarageWorker(_cfg(), tesla, aladdin)
+    assert w.ensure_telemetry_config()["reason"] == "telemetry_host_unconfigured"
+    tesla.put_fleet_telemetry_config.assert_not_called()
+
+
+def test_ensure_telemetry_config_posts_when_host_set():
+    tesla, aladdin = _tesla(*HOME), _aladdin()
+    tesla.put_fleet_telemetry_config.return_value = {"response": "ok"}
+    w = GarageWorker(_cfg(telemetry=True, telemetry_host="telemetry.example.com"), tesla, aladdin)
+    out = w.ensure_telemetry_config()
+    assert out["ok"] is True
+    tesla.put_fleet_telemetry_config.assert_called_once()
+    kwargs = tesla.put_fleet_telemetry_config.call_args.kwargs
+    assert kwargs["hostname"] == "telemetry.example.com"
+    assert kwargs["minimum_delta"] == 80.0
+
+
+def test_heartbeat_updates_last_poll_ts():
+    import threading
+    import time
+
+    tesla, aladdin = _tesla(*HOME), _aladdin()
+    w = GarageWorker(_cfg(poll_s=0, telemetry=True), tesla, aladdin)
+    assert w.state.last_poll_ts == 0.0
+
+    def stop_soon():
+        time.sleep(0.05)
+        w._stop.set()
+
+    threading.Thread(target=stop_soon, daemon=True).start()
+    w.run_forever()
+    tesla.vehicle_location.assert_not_called()
+    tesla.put_fleet_telemetry_config.assert_not_called()
+    assert w.state.last_poll_ts > 0.0
+

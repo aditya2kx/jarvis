@@ -2018,5 +2018,20 @@ python3 scripts/secret_manager_put.py --secret garage-admin-token --data-file /p
 
 Deploy: `.github/workflows/tesla-aladdin-garage-deploy.yml` (push to `main` or `workflow_dispatch`).
 Do **not** run a laptop Docker copy at the same time. Stale-poll log metric
-`tesla_aladdin_garage_poll` is created by the deploy job.
+`tesla_aladdin_garage_poll` is created by the deploy job (`continue-on-error` — a
+`logging.logMetrics.create` deny must not fail a successful Cloud Run deploy).
+
+Location path: Tesla Fleet Telemetry push, not 20 s REST polls. Set
+`TESLA_TELEMETRY=1` `POLL_INTERVAL_S=0`. Cars (awake only) stream `Location` to a
+self-hosted fleet-telemetry host (`TESLA_TELEMETRY_HOST`); that host POSTs JSON to
+`$URL/telemetry` with `X-Garage-Token`. Cloud Run cannot terminate vehicle mTLS.
+`POST /telemetry/configure` registers the stream when the host env is set.
+Asleep car → no stream, no wake, ~$0. Heartbeat still logs `tesla-aladdin-garage poll`.
+
+```bash
+# Ingest a dispatcher fix (does not wake the car)
+curl -sS -X POST "$URL/telemetry" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"vin":"'"$TESLA_VIN"'","latitude":29.464,"longitude":-95.517}'
+```
 

@@ -40,6 +40,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { formatDate, formatDollars, formatCents, formatNumber, formatPct } from "@/lib/format";
+import { parsePerkReasons } from "@/lib/payroll/perkLabels";
+import { classifyAdpDiff } from "@/lib/payroll/adpDiff";
 import { formatBucket, type Grain } from "@/lib/filters/range";
 import { cn } from "@/lib/utils";
 import {
@@ -79,9 +81,11 @@ export type ColumnFormat =
   | { kind: "dollars"; thresholds?: Thresholds }
   | { kind: "cents" }
   | { kind: "pct"; digits?: number; thresholds?: Thresholds }
-  | { kind: "number"; digits?: number; thresholds?: Thresholds }
+  | { kind: "number"; digits?: number; minDigits?: number; thresholds?: Thresholds }
   | { kind: "status" }
-  | { kind: "source" };
+  | { kind: "source" }
+  | { kind: "perks"; reasonKey?: string }
+  | { kind: "adp_diff"; paidKey: string };
 
 declare module "@tanstack/react-table" {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -128,7 +132,46 @@ function thresholdClass(value: number | null | undefined, t: Thresholds): string
   return "text-emerald-500 font-medium";
 }
 
-function renderFormatted(format: ColumnFormat, value: unknown): ReactNode {
+function PerksCell({
+  total,
+  reason,
+}: {
+  total: number | null | undefined;
+  reason: string | null | undefined;
+}) {
+  const items = parsePerkReasons(reason);
+  const dollars = total ?? 0;
+  if (dollars === 0 && items.length === 0) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  const showAmountOnChip = items.length > 1;
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <span>{formatDollars(dollars)}</span>
+      {items.length > 0 ? (
+        <div className="flex flex-wrap gap-1">
+          {items.map((item) => (
+            <Badge
+              key={item.id}
+              variant="outline"
+              className="font-normal"
+            >
+              {showAmountOnChip && item.dollars != null
+                ? `${item.label} ${formatDollars(item.dollars)}`
+                : item.label}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function renderFormatted(
+  format: ColumnFormat,
+  value: unknown,
+  row?: Record<string, unknown>,
+): ReactNode {
   switch (format.kind) {
     case "date":
       return formatDate(value as Parameters<typeof formatDate>[0]);
@@ -149,7 +192,13 @@ function renderFormatted(format: ColumnFormat, value: unknown): ReactNode {
     case "number": {
       const v = value as number | null | undefined;
       const cls = format.thresholds ? thresholdClass(v, format.thresholds) : undefined;
-      return <span className={cls}>{formatNumber(v, format.digits)}</span>;
+      return (
+        <span className={cls}>
+          {formatNumber(v, format.digits, {
+            minimumFractionDigits: format.minDigits,
+          })}
+        </span>
+      );
     }
     case "status":
       if (value == null || value === "") return null; // no slot 2 yet (Status 2)
@@ -159,6 +208,30 @@ function renderFormatted(format: ColumnFormat, value: unknown): ReactNode {
       if (!v) return null; // no second date registered yet (vw_order_reco_combined §Source 2)
       const variant = v === "Actuals" ? "default" : v === "Manual" ? "outline" : "secondary";
       return <Badge variant={variant}>{v}</Badge>;
+    }
+    case "perks": {
+      const reasonKey = format.reasonKey ?? "perk_reason";
+      const reason = row ? (row[reasonKey] as string | null | undefined) : undefined;
+      return <PerksCell total={value as number | null | undefined} reason={reason} />;
+    }
+    case "adp_diff": {
+      const paid = row ? (row[format.paidKey] as number | null | undefined) : undefined;
+      const kind = classifyAdpDiff(paid, value as number | null | undefined);
+      if (kind === "not_on_check") {
+        return (
+          <Badge variant="outline" className="font-normal text-muted-foreground">
+            Not on ADP
+          </Badge>
+        );
+      }
+      const v = value as number | null | undefined;
+      const cls = thresholdClass(v, {
+        warn: 1,
+        bad: 25,
+        direction: "higher-bad",
+        useAbs: true,
+      });
+      return <span className={cls}>{formatDollars(v)}</span>;
     }
   }
 }
@@ -545,7 +618,7 @@ export function DataTable<TData>({
   const lastPinnedId = pinLeft[pinLeft.length - 1];
   const useFixedLayout = columns.some((c) => {
     const meta = c.meta as { wrap?: boolean; maxWidth?: number; width?: number } | undefined;
-    return Boolean(meta?.wrap || meta?.maxWidth != null || meta?.width != null);
+    return Boolean(meta?.maxWidth != null || meta?.width != null);
   });
 
   return (
@@ -569,7 +642,10 @@ export function DataTable<TData>({
         </p>
       ) : null}
       <div className="relative overflow-hidden rounded-md border border-border">
-        <Table containerRef={containerRef} className={cn(useFixedLayout && "table-fixed")}>
+        <Table
+          containerRef={containerRef}
+          className={cn(useFixedLayout ? "table-fixed" : "min-w-max")}
+        >
           <TableHeader>
             {table.getHeaderGroups().map((hg) => (
               <TableRow key={hg.id}>
@@ -675,7 +751,11 @@ export function DataTable<TData>({
                         )}
                       >
                         {format
-                          ? renderFormatted(format, cell.getValue())
+                          ? renderFormatted(
+                              format,
+                              cell.getValue(),
+                              cell.row.original as Record<string, unknown>,
+                            )
                           : flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </TableCell>
                     );

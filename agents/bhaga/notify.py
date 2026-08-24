@@ -320,6 +320,43 @@ def scrape_concurrency_alert(
     return _safe_send(text)
 
 
+def wage_rate_flow_alert(
+    *,
+    date: str,
+    scrape_errors: Optional[dict[str, str]] = None,
+    remaining_gaps: Optional[list[str]] = None,
+    flow_error: Optional[str] = None,
+    attempted: int = 0,
+    scraped_ok: int = 0,
+) -> Optional[dict]:
+    """Warn that ADP Payroll-info wage refresh had issues — nightly tips still ran.
+
+    This path is diagnostic, not a pipeline halt. Grep Cloud Run for
+    ``BREADCRUMB wage_rate_gap`` / ``[pay_info] FAIL``.
+    """
+    scrape_errors = scrape_errors or {}
+    remaining_gaps = remaining_gaps or []
+    fail_lines = [f"• `{name}`: `{err}`" for name, err in list(scrape_errors.items())[:15]]
+    if len(scrape_errors) > 15:
+        fail_lines.append(f"• … +{len(scrape_errors) - 15} more")
+    gap_str = ", ".join(f"`{n}`" for n in remaining_gaps[:20]) or "_(none)_"
+    if len(remaining_gaps) > 20:
+        gap_str += f" … +{len(remaining_gaps) - 20} more"
+    flow_str = f"\n*Flow error:* `{flow_error}`" if flow_error else ""
+    fails_block = ("\n*Failed scrapes:*\n" + "\n".join(fail_lines)) if fail_lines else ""
+    text = (
+        f":warning: *BHAGA: wage-rate (ADP Payroll info) flow had issues* "
+        f"for refresh *{date}* on {_host_tag()}\n"
+        f"Timecard / earnings / tips still ran — debug this separately "
+        f"(do not treat as a full nightly failure).\n"
+        f"*Attempted:* {attempted}  *Scraped OK:* {scraped_ok}"
+        f"{flow_str}{fails_block}\n"
+        f"*Still missing a rate in BQ:* {gap_str}\n"
+        f"_Grep Cloud Run: `BREADCRUMB wage_rate_gap` or `[pay_info] FAIL`._"
+    )
+    return _safe_send(text)
+
+
 def new_employee_alert(
     new_pairs: list[tuple[str, str]],
     *,

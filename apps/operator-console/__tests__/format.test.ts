@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCents, formatDollars, formatPct, formatNumber, formatDate } from "@/lib/format";
+import { formatCents, formatDollars, formatHours, formatPct, formatNumber, formatDate } from "@/lib/format";
 
 describe("formatDollars", () => {
   it("formats a dollars-and-cents float as USD (vw_model_labor_daily shape)", () => {
@@ -29,6 +29,17 @@ describe("formatPct", () => {
 describe("formatNumber", () => {
   it("groups thousands", () => {
     expect(formatNumber(12345)).toBe("12,345");
+  });
+  it("does not force trailing decimals by default", () => {
+    expect(formatNumber(458.97, 1)).toBe("459");
+  });
+});
+
+describe("formatHours", () => {
+  it("always shows ADP hundredths so headline matches Preview Total hours", () => {
+    expect(formatHours(458.97)).toBe("458.97");
+    expect(formatHours(47.3)).toBe("47.30");
+    expect(formatHours(0)).toBe("0.00");
   });
 });
 

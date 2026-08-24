@@ -1,0 +1,39 @@
+{
+  "_doc": "Selectors for ADP RUN Payroll Home Start → Preview. Never Approve/Submit/Save on the Issue #251 evidence ladder. Calibrated 2026-08-19.",
+  "last_verified": "2026-08-19",
+  "forbid_click": ["Approve", "Submit", "Impound", "Save", "Finish Later"],
+  "navigation": {
+    "payroll_nav_button": {
+      "playwright_locator": "[data-test-id='Payroll-btn']",
+      "fallback_role": "button named Payroll"
+    }
+  },
+  "payroll_home": {
+    "notes": "Home shows Run payroll [run-payroll-btn]. Closing without Finish later / Approve returns Home to Run payroll (no saved In Progress).",
+    "run_payroll_button": {
+      "playwright_locator": "[data-test-id='run-payroll-btn']",
+      "fallback_role": "button named Run payroll"
+    }
+  },
+  "enter_payroll": {
+    "early_run_modal": "No, Continue with this Regular Payroll (never Yes Off-cycle)",
+    "preview_button": "[data-test-id='pdeNextButton']",
+    "cancel_button": "[data-test-id='cancelPDEButton']",
+    "save_button": "[data-test-id='savePDEButton']",
+    "finish_later": "[data-test-id='finishLaterPDEButton']",
+    "ag_grid": {
+      "pinned_names": ".ag-pinned-left-cols-container [role=row]",
+      "center_rows": ".ag-center-cols-container [role=row]",
+      "tips_col_id": "NQCREDTPPA",
+      "misc_col_id": "ADVNTA",
+      "bonus_col_id": "BONA",
+      "regular_hours_col_id": "REGH"
+    },
+    "columns": [
+      "Regular Hours",
+      "Misc Reimb",
+      "NQCCTips Owed (Nonqualified)",
+      "Overtime Hours (Qualified)"
+    ]
+  }
+}

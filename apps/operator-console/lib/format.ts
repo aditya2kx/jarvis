@@ -8,6 +8,8 @@ export function formatDollars(dollars: number | null | undefined): string {
   return dollars.toLocaleString("en-US", {
     style: "currency",
     currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   });
 }
 
@@ -24,9 +26,21 @@ export function formatPct(fraction: number | null | undefined, digits = 1): stri
   return `${(fraction * 100).toFixed(digits)}%`;
 }
 
-export function formatNumber(n: number | null | undefined, digits = 0): string {
+export function formatNumber(
+  n: number | null | undefined,
+  digits = 0,
+  options?: { minimumFractionDigits?: number },
+): string {
   if (n == null || Number.isNaN(n)) return "—";
-  return n.toLocaleString("en-US", { maximumFractionDigits: digits });
+  return n.toLocaleString("en-US", {
+    minimumFractionDigits: options?.minimumFractionDigits ?? 0,
+    maximumFractionDigits: digits,
+  });
+}
+
+/** ADP Time Tracker / Preview hours: always hundredths (47.30, 458.97). */
+export function formatHours(hours: number | null | undefined): string {
+  return formatNumber(hours, 2, { minimumFractionDigits: 2 });
 }
 
 const CHICAGO = "America/Chicago";

@@ -1540,13 +1540,19 @@ export interface PayrollPeriodRow {
   period_end: string;
   is_open: boolean;
   employee: string;
+  labor_type: string;
+  wage_rate_dollars: number | null;
+  ot_rate_dollars: number | null;
   hours_worked: number;
-  est_gross_pay: number;
+  ot_hours: number;
+  est_gross_pay: number | null;
   tips_allocated: number;
   review_bonus: number;
   /** Manual recognition bonus dollars (migration 049). */
   recognition_bonus: number;
   recognition_reason: string | null;
+  perks: number;
+  perk_reason: string | null;
   est_total_pay: number;
   adp_wages_paid: number;
   adp_tips_paid: number;
@@ -1565,6 +1571,39 @@ export function payrollPeriod(periods = 2): Promise<PayrollPeriodRow[]> {
      ORDER BY period_start DESC, employee`,
     { periods },
   );
+}
+
+export interface PayrollDraftRunRow {
+  status: string | null;
+  error: string | null;
+  preview_hours: number | null;
+  preview_gross: number | null;
+}
+
+/** Last Start→Preview for a biweek. Console-only table (migration 065/066). */
+export async function payrollDraftRun(
+  store: string,
+  periodStart: string,
+  periodEnd: string,
+): Promise<PayrollDraftRunRow | null> {
+  try {
+    const rows = await q<PayrollDraftRunRow>(
+      `SELECT status, error, preview_hours, preview_gross
+       FROM ${fq("payroll_draft_runs")}
+       WHERE store = @store
+         AND period_start = @start
+         AND period_end = @end
+       LIMIT 1`,
+      {
+        store,
+        start: dateParam(periodStart),
+        end: dateParam(periodEnd),
+      },
+    );
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export interface ReviewBonusDetailRow {

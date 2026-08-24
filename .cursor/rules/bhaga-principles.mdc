@@ -25,7 +25,9 @@ Read these first and derive proposals from them (see also AGENTS.md § consult-f
    reviews dedupe by review identity. Never append duplicates.
 4. **Money = integer cents** internally; dollars only at the sheet boundary. Never floats for currency.
 5. **Rounding residuals** distribute by largest-remainder so shares sum to the day's pool exactly.
-6. **Read-only toward ADP** for payroll — BHAGA produces outputs, never auto-writes back to RUN.
+6. **Read-only toward ADP** for payroll Submit — never Approve/impound. Flagged Start→Preview
+   draft (Issue #251) is headless; console shows Preview done + hours/total-pay vs last
+   Preview Gross (no Preview URL). Operator submits in ADP.
 7. **Timezone = America/Chicago** for every date boundary; a date is "today" only after the 21:30 CT
    nightly. Never let local/PST/UTC leak in.
 

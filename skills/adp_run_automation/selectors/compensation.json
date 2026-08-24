@@ -1,6 +1,6 @@
 {
   "_doc": "Calibrated selectors for skills/adp_run_automation/compensation_backend.py against ADP RUN's Reports > My saved custom reports > 'Earnings and Hours V1' report. Produces an .xlsx with one row per paycheck-earning-line, from which we infer current wage rate per employee.",
-  "last_verified": "2026-05-16",
+  "last_verified": "2026-08-18",
   "verified_by": "Cursor AI agent driving user-playwright MCP, fresh from-scratch flow against store ADP account.",
   "discovery_path": [
     "Originally planned to scrape Employees > Compensation (per-employee detail page). Would have required iterating ~12-14 employees x 1 page each.",
@@ -43,7 +43,7 @@
       "from_date_textbox": {
         "playwright_locator": "getByRole('textbox', { name: 'From *' })",
         "format": "MM/DD/YYYY (e.g. 03/22/2026)",
-        "notes": "Type-and-blur works (fill() sets value then implicit change event). The adjacent 'Choose a date.' button opens a calendar widget that's harder to drive."
+        "notes": "Type-and-blur works (fill() sets value then implicit change event). The adjacent 'Choose a date.' button opens a calendar widget that's harder to drive. CRITICAL: From/To filter Payroll Check Date, NOT Period Start/End. Passing 07/27/2026–08/09/2026 (a pay period) returns the 07/31 check (prior period), not the 08/14 check for that period. Pad period-end by ~14 days (see runner._earnings_report_date_window)."
       },
       "to_date_textbox": {
         "playwright_locator": "getByRole('textbox', { name: 'To *' })",
@@ -51,8 +51,9 @@
       },
       "employment_status_combobox": {
         "combobox_aria_pattern": "Employment status {Active|Inactive|All}",
+        "playwright_locator": "[data-test-id='employment-status-field'] (role=combobox name often missing)",
         "default": "Active",
-        "notes": "Leave at Active for daily refresh. If you ever need historical wage data for terminated employees, switch to 'All'."
+        "notes": "MUST set All on every scrape. Active omitted Perales/Willingham from Earnings & Hours even though Payroll Details showed them on the 08/14 check (Issue #251). Role locators time out; use data-test-id then option All."
       },
       "people_in_report_radio": {
         "radiogroup_name": "People in this report",

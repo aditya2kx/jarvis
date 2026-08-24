@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from skills.adp_run_automation.runner import (
     _CURRENT_PAY_PERIOD_RE,
     _biweekly_period_bounds,
+    _earnings_report_date_window,
     _is_current_pay_period_label,
     _parse_pay_period_range,
 )
@@ -116,6 +117,36 @@ class BiweeklyPeriodBoundsTests(unittest.TestCase):
         self.assertTrue(
             bounds[0] <= datetime.date(2026, 7, 15) <= bounds[1]
         )
+
+
+class EarningsCheckDateWindowTests(unittest.TestCase):
+    """ADP Earnings From/To is check date; period windows must be padded."""
+
+    def test_period_window_includes_later_check(self):
+        start, end = _earnings_report_date_window(
+            today=datetime.date(2026, 8, 18),
+            earnings_start=datetime.date(2026, 7, 27),
+            earnings_end=datetime.date(2026, 8, 9),
+        )
+        self.assertEqual(start, datetime.date(2026, 7, 27))
+        # 08/09 + 14d = 08/23, clamped to today 08/18 — includes check 08/14.
+        self.assertEqual(end, datetime.date(2026, 8, 18))
+        self.assertTrue(datetime.date(2026, 8, 14) <= end)
+
+    def test_unpadded_period_end_would_miss_check(self):
+        # The bug: period end 08/09 excludes check 08/14.
+        self.assertGreater(
+            datetime.date(2026, 8, 14),
+            datetime.date(2026, 8, 9),
+        )
+
+    def test_nightly_ninety_day_lookback(self):
+        start, end = _earnings_report_date_window(
+            today=datetime.date(2026, 8, 18),
+            target_date=datetime.date(2026, 8, 17),
+        )
+        self.assertEqual(end, datetime.date(2026, 8, 17))
+        self.assertEqual(start, datetime.date(2026, 5, 19))
 
 
 if __name__ == "__main__":

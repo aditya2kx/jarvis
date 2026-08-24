@@ -13,6 +13,7 @@ Geofence Dhanno → open **Big Peach** via Aladdin Connect.
 - Last event/error/poll written to Firestore `tesla_aladdin_garage/state` (`GARAGE_PERSIST=1`).
 - Admin token (`GARAGE_ADMIN_TOKEN` / `X-Garage-Token`) required for `/tick`, `/location`, `/simulate/enter`, `/config`.
 - Aladdin `/devices` uses Cognito **AccessToken** (IdToken is 401). Cloud Run SA must have `secretVersionAdder` on `tesla-fleet-refresh-token` so `/oauth/tesla` survives a revision restart.
+- If Big Peach is **already open**, skip `OPEN_DOOR` and email `aditya.2ky@gmail.com` (Tesla metres-from-home in the subject). Same email on open and on Aladdin failure. Needs Gmail OAuth secrets for that mailbox (`GMAIL_*`); without them the worker still opens, it just logs `notify_unconfigured`.
 
 ## Env / secrets
 

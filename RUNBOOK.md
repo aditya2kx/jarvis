@@ -1961,6 +1961,7 @@ A second copy would double-open the door.
 | Door | Big Peach `ALADDIN_DEVICE_SERIAL=F0AD4E3E7403` / `ALADDIN_DOOR_INDEX=1` |
 | Home | `HOME_LAT` / `HOME_LON` · enter 400 m (Firestore overlay `enter_m`) · hysteresis 80 m · cooldown 600 s |
 | Live | `ALADDIN_DRY_RUN=0` |
+| Notify | `aditya.2ky@gmail.com` (`GARAGE_NOTIFY_TO`). Subject includes Tesla metres-from-home. Skip `OPEN_DOOR` if already open; still email. |
 | Admin | Secret `garage-admin-token` → header `X-Garage-Token` |
 
 ```bash

@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from skills.aladdin_connect.client import AladdinConnectClient, secret_hash
+from skills.aladdin_connect.client import AladdinConnectClient, secret_hash, door_is_open
 
 
 def test_secret_hash_stable():
@@ -45,3 +45,12 @@ def test_resolve_door_matches_device_id_prefix():
     ):
         door = c.resolve_door(serial="F0AD4E3E7403", door_index=1)
     assert door["device_id"] == "F0AD4E3E7403"
+
+
+def test_door_is_open_int_and_closed():
+    assert door_is_open({"status": 1}) is True
+    assert door_is_open({"status": 2}) is True
+    assert door_is_open({"status": 3}) is False
+    assert door_is_open({"status": 4}) is False
+    assert door_is_open({"status": "open"}) is True
+

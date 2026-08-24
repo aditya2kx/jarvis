@@ -52,6 +52,40 @@ def _aladdin():
     return a
 
 
+def test_already_open_skips_command_and_notifies():
+    tesla, aladdin = _tesla(29.472, HOME[1]), _aladdin()
+    aladdin.resolve_door.return_value["status"] = 1
+    notes = []
+    w = GarageWorker(_cfg(), tesla, aladdin, notify=lambda ev, fields: notes.append((ev, fields)))
+    w.tick()
+    tesla.vehicle_location.return_value = {
+        "latitude": HOME[0],
+        "longitude": HOME[1],
+        "shift_state": "D",
+    }
+    assert w.tick() == "skip_already_open"
+    aladdin.open_door.assert_not_called()
+    assert notes[-1][0] == "skip_already_open"
+    assert notes[-1][1]["enter_m"] == 400
+    assert notes[-1][1]["distance_m"] is not None
+    assert notes[-1][1]["distance_m"] < 400
+
+
+def test_open_notifies():
+    tesla, aladdin = _tesla(29.472, HOME[1]), _aladdin()
+    notes = []
+    w = GarageWorker(_cfg(), tesla, aladdin, notify=lambda ev, fields: notes.append(ev))
+    w.tick()
+    tesla.vehicle_location.return_value = {
+        "latitude": HOME[0],
+        "longitude": HOME[1],
+        "shift_state": "D",
+    }
+    assert w.tick() == "opened_dry_run"
+    assert "opened" in notes
+
+
+
 def test_already_home_does_not_open():
     tesla, aladdin = _tesla(*HOME), _aladdin()
     w = GarageWorker(_cfg(), tesla, aladdin)

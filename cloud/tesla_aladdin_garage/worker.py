@@ -11,7 +11,8 @@ from typing import Callable, Optional
 
 from cloud.tesla_aladdin_garage.geofence import Geofence, offset_point
 from cloud.tesla_aladdin_garage import persist
-from skills.aladdin_connect.client import AladdinConnectClient
+from cloud.tesla_aladdin_garage.notify import send_garage_email
+from skills.aladdin_connect.client import AladdinConnectClient, door_is_open
 from skills.tesla_fleet.client import TeslaFleetClient, TeslaFleetError
 
 log = logging.getLogger("tesla_aladdin_garage")
@@ -72,6 +73,7 @@ class WorkerState:
     vehicle_id: Optional[str] = None
     polls: int = 0
     opens: int = 0
+    simulated_enter: bool = False
 
 
 class GarageWorker:
@@ -82,11 +84,13 @@ class GarageWorker:
         aladdin: AladdinConnectClient,
         *,
         now: Callable[[], float] = time.time,
+        notify: Optional[Callable] = None,
     ):
         self.cfg = cfg
         self.tesla = tesla
         self.aladdin = aladdin
         self._now = now
+        self._notify = notify or send_garage_email
         self.geofence = Geofence(cfg.home_lat, cfg.home_lon, cfg.enter_m, cfg.hysteresis_m)
         self.state = WorkerState()
         self._stop = threading.Event()
@@ -128,6 +132,7 @@ class GarageWorker:
         """One poll. Never wakes the car."""
         self.state.polls += 1
         self.state.last_poll_ts = self._now()
+        self.state.simulated_enter = False
         if self.tesla.needs_user_auth():
             self.state.needs_reauth = True
             self.state.last_error = "missing_refresh_token"
@@ -225,16 +230,39 @@ class GarageWorker:
             first,
             self.geofence.distance_m(olat, olon),
         )
+        tesla_m = self.state.last_distance_m
         event = self.geofence.observe(self.cfg.home_lat, self.cfg.home_lon)
         self.state.last_event = event
-        self.state.last_distance_m = 0.0
-        log.info("tesla-aladdin-garage simulate event=%s", event)
+        # Keep last live Tesla metres for the email (0 would be the fake home pin).
+        self.state.last_distance_m = tesla_m if tesla_m is not None else outside_m
+        self.state.simulated_enter = True
+        log.info(
+            "tesla-aladdin-garage simulate event=%s tesla_dist_m=%s approach_m=%.1f",
+            event,
+            self.state.last_distance_m,
+            outside_m,
+        )
         if event == "enter":
             result = self._maybe_open()
             self._persist()
             return result
         self._persist()
         return event
+
+    def _emit(self, event: str, door: Optional[dict] = None, detail: str = "") -> None:
+        fields = {
+            "door": (door or {}).get("name") or self.cfg.door_name,
+            "distance_m": self.state.last_distance_m,
+            "enter_m": self.cfg.enter_m,
+            "simulated": bool(self.state.simulated_enter),
+            "door_status": None if door is None else door.get("status"),
+            "vin": self.cfg.vin,
+            "detail": detail,
+        }
+        try:
+            self._notify(event, fields)
+        except Exception as e:
+            log.error("tesla-aladdin-garage fail reason=notify err=%s", e)
 
     def _maybe_open(self) -> str:
         now = self._now()
@@ -247,6 +275,22 @@ class GarageWorker:
                 name=self.cfg.door_name,
                 door_index=self.cfg.door_index,
             )
+            if door_is_open(door):
+                self.state.last_open_ts = now
+                log.info(
+                    "tesla-aladdin-garage skip reason=already_open door=%s status=%s dist_m=%s enter_m=%s",
+                    door.get("name"),
+                    door.get("status"),
+                    self.state.last_distance_m,
+                    self.cfg.enter_m,
+                )
+                self._emit(
+                    "skip_already_open",
+                    door,
+                    "Door already open (manual / app). No Aladdin command sent. "
+                    "Use this to decide whether to change enter_m.",
+                )
+                return "skip_already_open"
             self.aladdin.dry_run = self.cfg.dry_run
             result = self.aladdin.open_door(door["device_id"], int(door["door_index"]))
             self.state.aladdin_ok = True
@@ -259,11 +303,14 @@ class GarageWorker:
                 self.cfg.dry_run,
                 result,
             )
-            return "opened_dry_run" if self.cfg.dry_run else "opened"
+            event = "opened_dry_run" if self.cfg.dry_run else "opened"
+            self._emit("opened", door, f"dry_run={self.cfg.dry_run} result={result}")
+            return event
         except Exception as e:
             self.state.aladdin_ok = False
             self.state.last_error = str(e)
             log.error("tesla-aladdin-garage fail reason=aladdin_open err=%s", e)
+            self._emit("open_error", detail=str(e))
             return "open_error"
 
     def run_forever(self) -> None:

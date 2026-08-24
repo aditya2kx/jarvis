@@ -24,6 +24,19 @@ COGNITO_CLIENT_SECRET = "7bokto0ep96055k42fnrmuth84k7jdcjablestb7j53o8lp63v5"
 COGNITO_URL = "https://cognito-idp.us-east-2.amazonaws.com/"
 API_BASE = "https://api.smartgarage.systems"
 
+# AIOAladdinConnect / Genie: 1=open 2=opening 3=closed 4=closing
+_OPEN_STATUSES = {1, 2, "1", "2", "open", "opening", "OPEN", "OPENING"}
+
+
+def door_is_open(door: dict) -> bool:
+    """True when Big Peach is already up (or opening) — do not send OPEN_DOOR."""
+    status = door.get("status")
+    if status in _OPEN_STATUSES:
+        return True
+    if isinstance(status, str) and status.strip().lower() in ("open", "opening"):
+        return True
+    return False
+
 
 class AladdinError(RuntimeError):
     def __init__(self, message: str, status: Optional[int] = None, body: str = ""):

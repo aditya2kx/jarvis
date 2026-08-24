@@ -8,6 +8,7 @@ GitHub + GCP access** — no dependency on the old laptop, its Keychain, or its 
 - **Region:** `us-central1`
 - **Store:** `palmetto` (Austin)
 - **Repo:** `https://github.com/aditya2kx/jarvis` (branch `main`; agent pushes via `jarvis-agent-bot328` HTTPS, PAT in Keychain — see §7 bot-PAT auth model)
+- **GCP identity:** surface-specific. Always `python3 scripts/gcp_access_probe.py` first, then [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md). Cursor Cloud Agent VMs have **no ADC and usually no `gcloud`** — that is expected. CI uses WIF (`WIF_PROVIDER` / `WIF_SERVICE_ACCOUNT`). Laptop/Cloud Shell uses user ADC. Never mint a JSON service-account key to work around a Cloud Agent.
 
 ---
 
@@ -329,6 +330,11 @@ gcloud run services update bhaga-webhook \
 | `plaid_client_id` | operator-console + bhaga-webhook (`PLAID_CLIENT_ID`) | Plaid dashboard client_id (Issue #158 Accounting). |
 | `plaid_secret` | operator-console + bhaga-webhook (`PLAID_SECRET`) | Plaid secret (sandbox or production per `PLAID_ENV`). |
 | `plaid_access_token_<item_id>` | operator-console + bhaga-webhook (dynamic) | Per linked Item access_token after Plaid Link exchange — never stored in BQ. |
+| `tesla-fleet-client-id` | tesla-aladdin-garage (`TESLA_CLIENT_ID`) | Tesla Fleet app client id (developer.tesla.com). |
+| `tesla-fleet-client-secret` | tesla-aladdin-garage (`TESLA_CLIENT_SECRET`) | Tesla Fleet app client secret. |
+| `tesla-fleet-refresh-token` | tesla-aladdin-garage (`TESLA_REFRESH_TOKEN`) | User refresh token; rotated on refresh and written back as a new secret version. Cloud Run SA needs `secretVersionAdder` (not only `secretAccessor`) or `/oauth/tesla` tokens stay in memory and die on restart. |
+| `aladdin-connect-username` | tesla-aladdin-garage (`ALADDIN_USERNAME`) | Genie Aladdin Connect account email (must **own** Big Peach). |
+| `aladdin-connect-password` | tesla-aladdin-garage (`ALADDIN_PASSWORD`) | Aladdin Connect password. |
 
 > **Local bootstrap (all providers):** If a secret is missing from your macOS Keychain on a fresh
 > clone, use:
@@ -342,9 +348,13 @@ gcloud run services update bhaga-webhook \
 | `clickup_palmetto_pat` | (legacy ClickUp PAT) | ClickUp PAT (older handle) |
 | `clickup` | (legacy ClickUp) | Legacy ClickUp credential |
 
-Manual rotation (add a new version; the job/service read `:latest`):
+Manual rotation (add a new version; the job/service read `:latest`). Prefer ADC so a missing
+`gcloud` binary is not a blocker — [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md)
+recipe B. Probe first (`surface=` must be `adc_ready` or `github_actions_wif`):
 
 ```bash
+python3 scripts/secret_manager_put.py --secret <name> --data-file /path/to/value.txt
+# or, if gcloud + ADC are both present:
 gcloud secrets versions add <name> --data-file=- --project jarvis-bhaga-prod
 # (paste the new secret value on stdin, then Ctrl-D)
 ```
@@ -469,7 +479,8 @@ confirmed via a DM to the submitting operator, not the modal (which just closes)
 - Workflow: `.github/workflows/deploy.yml`, triggered on **push to `main`** (and manual
   `workflow_dispatch` with an optional `rollback_sha`).
 - Auth: Workload Identity Federation via repo secrets `WIF_PROVIDER` and `WIF_SERVICE_ACCOUNT`
-  (no static keys). 
+  (no static keys). This is the **only** prod deploy identity. A Cursor Cloud Agent does not
+  inherit it — see [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md). 
 - Steps: build orchestrator + webhook images → push (`:<git-sha>` and `:latest`) → `gcloud run jobs
   update bhaga-daily-refresh` + `gcloud run services update bhaga-webhook` to the new SHA.
 - **Rollback:** `gh workflow run deploy.yml -f rollback_sha=<good-sha>` (re-points both units to a
@@ -1947,3 +1958,65 @@ grants are the current mechanism.
   column literally named `value`, and an INT64-vs-FLOAT64 TVF param mismatch).
 - **Local dev against live BQ:** `apps/operator-console/README.md` § Local development
   (`gcloud auth application-default login`, `BYPASS_IAP_EMAIL` for local identity).
+
+---
+
+## Tesla Aladdin garage (Dhanno → Big Peach)
+
+Always-on Cloud Run worker. **One instance only** (`min=1`, `max=1`, `--no-cpu-throttling`).
+A second copy would double-open the door.
+
+| | |
+|---|---|
+| Service | `tesla-aladdin-garage` (`us-central1`) |
+| Image | `us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images/tesla-aladdin-garage` |
+| VIN | `TESLA_VIN` (Dhanno) |
+| Partner domain | `yuejj.fleetkey.net` (public key already hosted; partner registered) |
+| Door | Big Peach `ALADDIN_DEVICE_SERIAL=F0AD4E3E7403` / `ALADDIN_DOOR_INDEX=1` |
+| Home | `HOME_LAT` / `HOME_LON` · enter 400 m (Firestore overlay `enter_m`) · hysteresis 80 m · cooldown 600 s |
+| Live | `ALADDIN_DRY_RUN=0` |
+| Notify | `aditya.2ky@gmail.com` (`GARAGE_NOTIFY_TO`). Subject includes Tesla metres-from-home. Skip `OPEN_DOOR` if already open; still email. |
+| Admin | Secret `garage-admin-token` → header `X-Garage-Token` |
+
+```bash
+# Health (last event, enter_m, persisted Firestore snapshot)
+curl -sS "$URL/health"
+
+# Live Tesla distance from home (does not open the door)
+curl -sS "$URL/location" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN"
+
+# Simulate 400 m enter → OPEN Big Peach (live; cooldown 600 s)
+curl -sS -X POST "$URL/simulate/enter" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN"
+
+# Change radius without rebuild
+curl -sS -X POST "$URL/config" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"enter_m": 350}'
+
+# Re-auth if needs_reauth=true (add the callback URL on the Tesla app first)
+open "$URL/oauth/tesla"
+
+# Logs (greppable skip/open/fail)
+gcloud run services logs read tesla-aladdin-garage --region us-central1 --limit 50 \
+  --format='value(textPayload)' | grep tesla-aladdin-garage
+```
+
+One-time secrets (values from `local/tesla-aladdin-garage.env`; never commit). **Not from a
+Cursor Cloud Agent** unless `gcp_access_probe.py` prints `surface=adc_ready`. Canonical
+recipe: [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md) B.
+
+```bash
+python3 scripts/gcp_access_probe.py   # must be adc_ready
+set -a && source local/tesla-aladdin-garage.env && set +a
+python3 scripts/secret_manager_put.py --secret tesla-fleet-client-id --from-env TESLA_CLIENT_ID
+python3 scripts/secret_manager_put.py --secret tesla-fleet-client-secret --from-env TESLA_CLIENT_SECRET
+python3 scripts/secret_manager_put.py --secret aladdin-connect-username --from-env ALADDIN_USERNAME
+python3 scripts/secret_manager_put.py --secret aladdin-connect-password --from-env ALADDIN_PASSWORD
+# If TESLA_REFRESH_TOKEN is empty, put a placeholder then finish via /oauth/tesla
+python3 scripts/secret_manager_put.py --secret tesla-fleet-refresh-token --from-env TESLA_REFRESH_TOKEN
+python3 scripts/secret_manager_put.py --secret garage-admin-token --data-file /path/to/admin.token
+```
+
+Deploy: `.github/workflows/tesla-aladdin-garage-deploy.yml` (push to `main` or `workflow_dispatch`).
+Do **not** run a laptop Docker copy at the same time. Stale-poll log metric
+`tesla_aladdin_garage_poll` is created by the deploy job.
+

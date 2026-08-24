@@ -2,6 +2,18 @@
 
 **Scope:** Do not Start payroll from `bhaga-nightly` (21:30 CT). Dedicated `bhaga-payroll-draft` Monday 07:00 America/Chicago + `/payroll` **Run ADP Preview** (headless Start→Preview, leave draft; never Approve/Save). Open biweek: no ADP chrome. Closed unpaid: Run XOR Preview done + hours/total-pay vs last Preview Gross (no Preview URL). Paid: Open ADP payroll.
 
+## 2026-08-24 — GCP access experience (Cloud Agent ≠ ADC)
+
+**Scope:** Cursor Cloud Agents have no `gcloud` and no Application Default Credentials. Jarvis already had laptop hydrate + GHA WIF; agents were rediscovering the gap each session.
+
+**Key changes:** `docs/contributing/gcp-access.md` (canonical surfaces + recipes); `scripts/gcp_access_probe.py`; `scripts/secret_manager_put.py` (ADC write, never prints values). Hard lesson 23 + preference 28. Tesla garage secret seed now points at the ADC recipe instead of a Cloud Agent `gcloud`.
+
+## 2026-08-24 — Tesla Aladdin garage Cloud Run worker (Dhanno → Big Peach)
+
+**Scope:** Previous Tesla/Aladdin garage session authorized on an ephemeral VM and never reached GCP. Jarvis now owns the always-on worker.
+
+**Key changes:** `skills/tesla_fleet` + `skills/aladdin_connect`; Cloud Run service `tesla-aladdin-garage` (min=1, max=1, CPU never throttled); geofence 400 m / 80 m hysteresis; `ALADDIN_DRY_RUN=0`; Fleet `vehicle_data` endpoints semicolon-separated; no `wake_up`. Secrets from env / Secret Manager; `/oauth/tesla` re-auth if refresh token missing.
+
 ## 2026-08-18 — Payroll & People rate/OT/FT/perks (Issue #251)
 
 **Scope:** `/payroll` first table was tip-pool only (no Lindsay); no wage rate, OT, or gym perk.

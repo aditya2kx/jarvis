@@ -62,6 +62,30 @@ COUPLINGS: list[dict] = [
     },
     {
         "code": [
+            "cloud/tesla_aladdin_garage/**",
+            ".github/workflows/tesla-aladdin-garage-deploy.yml",
+            "scripts/ensure_garage_stale_poll_alert.py",
+        ],
+        "docs": [
+            "cloud/tesla_aladdin_garage/README.md",
+            "RUNBOOK.md",
+        ],
+        "why": "garage worker / deploy / alerting change → update garage README + RUNBOOK Tesla Aladdin section.",
+    },
+    {
+        "code": [
+            "scripts/gcp_access_probe.py",
+            "scripts/secret_manager_put.py",
+        ],
+        "docs": [
+            "docs/contributing/gcp-access.md",
+            "RUNBOOK.md",
+            "AGENTS.md",
+        ],
+        "why": "GCP probe / Secret Manager put path changed → update gcp-access.md recipes + RUNBOOK identity + AGENTS.md map.",
+    },
+    {
+        "code": [
             "skills/tip_ledger_writer/schema.py",
             "agents/bhaga/scripts/update_model_sheet.py",
             "agents/bhaga/scripts/forecast.py",

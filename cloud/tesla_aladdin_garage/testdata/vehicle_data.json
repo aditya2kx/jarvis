@@ -1,0 +1,15 @@
+{
+  "state": "online",
+  "drive_state": {
+    "latitude": 29.464083,
+    "longitude": -95.517465,
+    "heading": 90,
+    "speed": 0,
+    "shift_state": "P",
+    "power": 0
+  },
+  "location_data": {
+    "latitude": 29.5,
+    "longitude": -95.6
+  }
+}

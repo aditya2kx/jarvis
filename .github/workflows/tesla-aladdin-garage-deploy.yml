@@ -1,0 +1,68 @@
+name: Build and Deploy Tesla Aladdin garage
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cloud/tesla_aladdin_garage/**"
+      - "skills/tesla_fleet/**"
+      - "skills/aladdin_connect/**"
+      - ".github/workflows/tesla-aladdin-garage-deploy.yml"
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: jarvis-bhaga-prod
+  REGION: us-central1
+  REGISTRY: us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images
+  SERVICE: tesla-aladdin-garage
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build image
+        run: |
+          docker build -f cloud/tesla_aladdin_garage/Dockerfile \
+            -t ${{ env.REGISTRY }}/tesla-aladdin-garage:${{ github.sha }} \
+            -t ${{ env.REGISTRY }}/tesla-aladdin-garage:latest .
+
+      - name: Push image
+        run: |
+          docker push ${{ env.REGISTRY }}/tesla-aladdin-garage:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/tesla-aladdin-garage:latest
+
+      # One always-on instance, CPU never throttled so the geofence thread keeps
+      # polling. Max=1 so two copies cannot both open Big Peach.
+      - name: Deploy Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image ${{ env.REGISTRY }}/tesla-aladdin-garage:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --allow-unauthenticated \
+            --min-instances 1 \
+            --max-instances 1 \
+            --no-cpu-throttling \
+            --memory 256Mi \
+            --cpu 1 \
+            --timeout 3600 \
+            --set-env-vars "GCP_PROJECT=${{ env.PROJECT_ID }},TESLA_VIN=7SAYGAEE2TF605512,TESLA_PARTNER_DOMAIN=yuejj.fleetkey.net,HOME_LAT=29.464083,HOME_LON=-95.517465,GEOFENCE_ENTER_M=400,GEOFENCE_HYSTERESIS_M=80,OPEN_COOLDOWN_S=600,POLL_INTERVAL_S=20,ALADDIN_DEVICE_SERIAL=F0AD4E3E7403,ALADDIN_DOOR_INDEX=1,ALADDIN_DOOR_NAME=Big Peach,ALADDIN_DRY_RUN=0,GARAGE_WORKER=1,TESLA_REFRESH_TOKEN_SECRET=tesla-fleet-refresh-token" \
+            --set-secrets "TESLA_CLIENT_ID=tesla-fleet-client-id:latest,TESLA_CLIENT_SECRET=tesla-fleet-client-secret:latest,TESLA_REFRESH_TOKEN=tesla-fleet-refresh-token:latest,ALADDIN_USERNAME=aladdin-connect-username:latest,ALADDIN_PASSWORD=aladdin-connect-password:latest"

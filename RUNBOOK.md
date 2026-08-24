@@ -316,6 +316,11 @@ gcloud run services update bhaga-webhook \
 | `plaid_client_id` | operator-console + bhaga-webhook (`PLAID_CLIENT_ID`) | Plaid dashboard client_id (Issue #158 Accounting). |
 | `plaid_secret` | operator-console + bhaga-webhook (`PLAID_SECRET`) | Plaid secret (sandbox or production per `PLAID_ENV`). |
 | `plaid_access_token_<item_id>` | operator-console + bhaga-webhook (dynamic) | Per linked Item access_token after Plaid Link exchange — never stored in BQ. |
+| `tesla-fleet-client-id` | tesla-aladdin-garage (`TESLA_CLIENT_ID`) | Tesla Fleet app client id (developer.tesla.com). |
+| `tesla-fleet-client-secret` | tesla-aladdin-garage (`TESLA_CLIENT_SECRET`) | Tesla Fleet app client secret. |
+| `tesla-fleet-refresh-token` | tesla-aladdin-garage (`TESLA_REFRESH_TOKEN`) | User refresh token; rotated on refresh and written back as a new secret version. |
+| `aladdin-connect-username` | tesla-aladdin-garage (`ALADDIN_USERNAME`) | Genie Aladdin Connect account email (must **own** Big Peach). |
+| `aladdin-connect-password` | tesla-aladdin-garage (`ALADDIN_PASSWORD`) | Aladdin Connect password. |
 
 > **Local bootstrap (all providers):** If a secret is missing from your macOS Keychain on a fresh
 > clone, use:
@@ -1933,3 +1938,45 @@ grants are the current mechanism.
   column literally named `value`, and an INT64-vs-FLOAT64 TVF param mismatch).
 - **Local dev against live BQ:** `apps/operator-console/README.md` § Local development
   (`gcloud auth application-default login`, `BYPASS_IAP_EMAIL` for local identity).
+
+---
+
+## Tesla Aladdin garage (Dhanno → Big Peach)
+
+Always-on Cloud Run worker. **One instance only** (`min=1`, `max=1`, `--no-cpu-throttling`).
+A second copy would double-open the door.
+
+| | |
+|---|---|
+| Service | `tesla-aladdin-garage` (`us-central1`) |
+| Image | `us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images/tesla-aladdin-garage` |
+| VIN | `TESLA_VIN` (Dhanno) |
+| Partner domain | `yuejj.fleetkey.net` (public key already hosted; partner registered) |
+| Door | Big Peach `ALADDIN_DEVICE_SERIAL=F0AD4E3E7403` / `ALADDIN_DOOR_INDEX=1` |
+| Home | `HOME_LAT` / `HOME_LON` · enter 400 m · hysteresis 80 m · cooldown 600 s |
+| Live | `ALADDIN_DRY_RUN=0` |
+
+```bash
+# Health
+curl -sS "https://tesla-aladdin-garage-HASH-uc.a.run.app/health"
+
+# Re-auth if needs_reauth=true (add the callback URL on the Tesla app first)
+open "https://tesla-aladdin-garage-HASH-uc.a.run.app/oauth/tesla"
+
+# Logs (greppable)
+gcloud run services logs read tesla-aladdin-garage --region us-central1 --limit 50
+```
+
+One-time secrets (values from env / previous authorize; never commit):
+
+```bash
+for n in tesla-fleet-client-id tesla-fleet-client-secret tesla-fleet-refresh-token \
+         aladdin-connect-username aladdin-connect-password; do
+  gcloud secrets create $n --replication-policy=automatic --project=jarvis-bhaga-prod || true
+done
+# then: printf '%s' "$TESLA_CLIENT_ID" | gcloud secrets versions add tesla-fleet-client-id --data-file=-
+```
+
+Deploy: `.github/workflows/tesla-aladdin-garage-deploy.yml` (push to `main` or `workflow_dispatch`).
+Do **not** run a laptop Docker copy at the same time.
+

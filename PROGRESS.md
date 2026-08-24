@@ -1,3 +1,9 @@
+## 2026-08-24 — Tesla Aladdin garage Cloud Run worker (Dhanno → Big Peach)
+
+**Scope:** Previous Tesla/Aladdin garage session authorized on an ephemeral VM and never reached GCP. Jarvis now owns the always-on worker.
+
+**Key changes:** `skills/tesla_fleet` + `skills/aladdin_connect`; Cloud Run service `tesla-aladdin-garage` (min=1, max=1, CPU never throttled); geofence 400 m / 80 m hysteresis; `ALADDIN_DRY_RUN=0`; Fleet `vehicle_data` endpoints semicolon-separated; no `wake_up`. Secrets from env / Secret Manager; `/oauth/tesla` re-auth if refresh token missing.
+
 ## 2026-08-11 — Team pulse payroll period filter for manual Preview/Post (Issue #245)
 
 **Scope:** Automations Team pulse Preview/Post always used the open review-bonus period; operators needed a Payroll-style period picker to compose against a prior biweek and DM themselves.

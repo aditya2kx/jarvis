@@ -29,6 +29,12 @@ Read these first, derive proposals from them, cite what you used.
 | **CHANAKYA** | Product research, market analysis | Local laptop | `chanakya.mdc` |
 | **AKSHAYA** | Inventory forecasting & ordering | Local laptop | `akshaya.mdc` |
 
+### Cloud workers
+
+| Worker | Purpose | Deployment | Read |
+|---|---|---|---|
+| **tesla-aladdin-garage** | Geofence Dhanno → open Big Peach (Aladdin) | Cloud Run, always-on, max instances = 1 | `cloud/tesla_aladdin_garage/README.md` + `RUNBOOK.md` § Tesla Aladdin garage |
+
 ---
 
 ## Repo-wide rules (all agents, all machines)

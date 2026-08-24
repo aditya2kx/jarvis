@@ -1898,7 +1898,7 @@ class TestOrderRecoOnlyEarlyExit(unittest.TestCase):
 
 
 class TestPeriodEndPayrollDraftBounds(unittest.TestCase):
-    """Monday nightly after Sunday close; not Sunday itself, not Tuesday."""
+    """Monday 07:00 after Sunday close; not Sunday itself, not Tuesday."""
 
     def test_monday_after_aug_23_close(self):
         from agents.bhaga.scripts.daily_refresh import period_end_payroll_draft_bounds
@@ -1939,6 +1939,69 @@ class TestPeriodEndPayrollDraftBounds(unittest.TestCase):
                 dry_run=False,
             )
             run_draft.assert_not_called()
+
+    def test_explicit_period_skips_monday_bounds(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "BHAGA_ADP_PAYROLL_DRAFT": "1",
+                "BHAGA_PAYROLL_PERIOD_START": "2026-08-24",
+                "BHAGA_PAYROLL_PERIOD_END": "2026-09-06",
+            },
+            clear=False,
+        ), mock.patch(
+            "skills.adp_run_automation.payroll_draft_backend.run_draft",
+        ) as run_draft:
+            dr._maybe_run_period_end_payroll_draft(
+                store="palmetto",
+                refresh_date=datetime.date(2026, 8, 31),
+                profile={"adp_run": {}},
+                dry_run=False,
+            )
+            run_draft.assert_called_once()
+            kwargs = run_draft.call_args.kwargs
+            self.assertEqual(kwargs["period_start"], "2026-08-24")
+            self.assertEqual(kwargs["period_end"], "2026-09-06")
+            self.assertTrue(kwargs["allow_start"])
+            self.assertTrue(kwargs["allow_prod_draft"])
+
+
+class TestPayrollDraftOnlyEarlyExit(unittest.TestCase):
+    """BHAGA_PAYROLL_DRAFT_ONLY=1 skips scrape/model (Monday 7am + console)."""
+
+    def test_draft_only_calls_hook_before_completeness_gate(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        called: list[dict] = []
+
+        def _hook(**kwargs):
+            called.append(kwargs)
+
+        argv = ["daily_refresh", "--store", "palmetto", "--no-slack"]
+        with mock.patch.object(sys, "argv", argv), \
+             mock.patch.dict(
+                 os.environ,
+                 {
+                     "BHAGA_PAYROLL_DRAFT_ONLY": "1",
+                     "BHAGA_ADP_PAYROLL_DRAFT": "1",
+                     "BHAGA_STORE": "palmetto",
+                 },
+                 clear=False,
+             ), \
+             mock.patch.object(dr, "_load_profile", return_value={"adp_run": {}}), \
+             mock.patch.object(
+                 dr, "_maybe_run_period_end_payroll_draft", side_effect=_hook,
+             ), \
+             mock.patch.object(
+                 dr, "is_refresh_date_complete",
+                 side_effect=AssertionError("must not hit completeness gate"),
+             ):
+            rc = dr.main()
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(called), 1)
+        self.assertEqual(called[0]["store"], "palmetto")
 
 
 class TestAdpBundlePayInfoNonfatal(unittest.TestCase):

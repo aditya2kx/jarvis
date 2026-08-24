@@ -132,6 +132,47 @@ export async function triggerAdpScheduleSync(
   return runJob(adpScheduleOnlyEnv(store), `triggerAdpScheduleSync(store=${store})`);
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+function payrollDraftOnlyEnv(
+  store: string,
+  periodStart: string,
+  periodEnd: string,
+): { name: string; value: string }[] {
+  return [
+    { name: "BHAGA_PAYROLL_DRAFT_ONLY", value: "1" },
+    { name: "BHAGA_ADP_PAYROLL_DRAFT", value: "1" },
+    { name: "BHAGA_IGNORE_HALT", value: "1" },
+    { name: "BHAGA_SKIP_SQUARE", value: "1" },
+    { name: "BHAGA_SKIP_KDS", value: "1" },
+    { name: "BHAGA_STORE", value: store },
+    { name: "BHAGA_PAYROLL_PERIOD_START", value: periodStart },
+    { name: "BHAGA_PAYROLL_PERIOD_END", value: periodEnd },
+  ];
+}
+
+/**
+ * Enqueue ADP RUN Start→Preview→Delete for an unpaid period (Issue #251).
+ * Job short-circuits via BHAGA_PAYROLL_DRAFT_ONLY. Never Approve.
+ */
+export async function triggerPayrollDraft(
+  store: string,
+  periodStart: string,
+  periodEnd: string,
+): Promise<{ executionName: string }> {
+  if (!store) throw new Error("triggerPayrollDraft: store is required");
+  if (!ISO_DATE.test(periodStart) || !ISO_DATE.test(periodEnd)) {
+    throw new Error("triggerPayrollDraft: period dates must be YYYY-MM-DD");
+  }
+  if (periodStart > periodEnd) {
+    throw new Error("triggerPayrollDraft: period start is after end");
+  }
+  return runJob(
+    payrollDraftOnlyEnv(store, periodStart, periodEnd),
+    `triggerPayrollDraft(store=${store} ${periodStart}..${periodEnd})`,
+  );
+}
+
 export type CloudRunExecutionStatus = {
   done: boolean;
   succeeded: boolean | null;

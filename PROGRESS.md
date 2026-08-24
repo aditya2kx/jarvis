@@ -1,3 +1,7 @@
+## 2026-08-24 — Monday 07:00 CT ADP Preview + /payroll button (Issue #251)
+
+**Scope:** Do not Start payroll from `bhaga-nightly` (21:30 CT). Dedicated `bhaga-payroll-draft` Monday 07:00 America/Chicago + unpaid-period `/payroll` button (Start→Preview→Delete, never Approve).
+
 ## 2026-08-18 — Payroll & People rate/OT/FT/perks (Issue #251)
 
 **Scope:** `/payroll` first table was tip-pool only (no Lindsay); no wage rate, OT, or gym perk.

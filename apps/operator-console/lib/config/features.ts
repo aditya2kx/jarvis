@@ -9,11 +9,12 @@ export const FEATURES = {
   inventory: true,
   payroll: true,
   /**
-   * Issue #251 — Playwright ADP RUN Start→Preview→Delete. Default off; never Approve.
-   * Cloud Run env BHAGA_ADP_PAYROLL_DRAFT=1 enables Monday 21:30 CT nightly
-   * after the biweek Sunday (refresh_date = period_end + 1). Never Approve.
+   * Issue #251 — Playwright ADP RUN Start→Preview→Delete. Never Approve.
+   * Console /payroll button (unpaid periods) + Monday 07:00 CT
+   * ``bhaga-payroll-draft`` scheduler. Cloud Run job env stays unset so
+   * ``bhaga-nightly`` 21:30 CT never Starts payroll.
    */
-  adpPayrollDraft: false,
+  adpPayrollDraft: true,
   pipeline: true,
   /** Issue #158/#160 — Accounting page (linked bank feed only). */
   accounting: true,

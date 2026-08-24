@@ -13,6 +13,7 @@ import {
   pickRecomputeAnchorDate,
   triggerModelRecompute,
   triggerOrderRecoRefresh,
+  triggerPayrollDraft,
 } from "@/lib/bhaga/recompute";
 
 describe("pickRecomputeAnchorDate", () => {
@@ -38,7 +39,11 @@ describe("triggerModelRecompute", () => {
     getAccessToken.mockResolvedValue({ token: "test-token" });
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: true, text: async () => "" }),
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: async () => "",
+        json: async () => ({}),
+      }),
     );
   });
 
@@ -72,7 +77,11 @@ describe("triggerOrderRecoRefresh", () => {
     getAccessToken.mockResolvedValue({ token: "test-token" });
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: true, text: async () => "" }),
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: async () => "",
+        json: async () => ({}),
+      }),
     );
   });
 
@@ -84,5 +93,49 @@ describe("triggerOrderRecoRefresh", () => {
     const env = body.overrides.containerOverrides[0].env as { name: string; value: string }[];
     expect(env.find((e) => e.name === "BHAGA_ORDER_RECO_ONLY")?.value).toBe("1");
     expect(env.find((e) => e.name === "BHAGA_STORE")?.value).toBe("palmetto");
+  });
+});
+
+describe("triggerPayrollDraft", () => {
+  beforeEach(() => {
+    getAccessToken.mockReset();
+    getAccessToken.mockResolvedValue({ token: "test-token" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: async () => "",
+        json: async () => ({
+          metadata: {
+            name: "projects/jarvis-bhaga-prod/locations/us-central1/jobs/bhaga-daily-refresh/executions/x",
+          },
+        }),
+      }),
+    );
+  });
+
+  it("POSTs :run with draft-only env and period bounds", async () => {
+    const out = await triggerPayrollDraft("palmetto", "2026-08-10", "2026-08-23");
+    expect(out.executionName).toContain("/executions/");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
+    const body = JSON.parse(String(init?.body));
+    const env = body.overrides.containerOverrides[0].env as { name: string; value: string }[];
+    expect(env.find((e) => e.name === "BHAGA_PAYROLL_DRAFT_ONLY")?.value).toBe("1");
+    expect(env.find((e) => e.name === "BHAGA_ADP_PAYROLL_DRAFT")?.value).toBe("1");
+    expect(env.find((e) => e.name === "BHAGA_PAYROLL_PERIOD_START")?.value).toBe(
+      "2026-08-10",
+    );
+    expect(env.find((e) => e.name === "BHAGA_PAYROLL_PERIOD_END")?.value).toBe(
+      "2026-08-23",
+    );
+    expect(env.find((e) => e.name === "BHAGA_SKIP_ADP")).toBeUndefined();
+  });
+
+  it("rejects non-ISO dates without calling Cloud Run", async () => {
+    await expect(
+      triggerPayrollDraft("palmetto", "08/10/2026", "2026-08-23"),
+    ).rejects.toThrow(/YYYY-MM-DD/);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

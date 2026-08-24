@@ -189,11 +189,24 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
 | Time zone | `America/Chicago` (21:30 CT, ~60 min after the 21:00 store close) |
 | Target | `POST https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/jarvis-bhaga-prod/jobs/bhaga-daily-refresh:run` (OIDC) |
 
+### ADP payroll draft (Issue #251)
+
+`bhaga-nightly` stays at 21:30 CT and does **not** Start payroll.
+
+| Field | Value |
+|---|---|
+| Name | `bhaga-payroll-draft` (`--location=us-central1`) |
+| Schedule | `0 7 * * 1` |
+| Time zone | `America/Chicago` (Monday 07:00 CT, after Sunday 21:30 nightly has Sunday punches) |
+| Target | same `:run` URI as `bhaga-nightly`, body overrides `BHAGA_PAYROLL_DRAFT_ONLY=1` + `BHAGA_ADP_PAYROLL_DRAFT=1` (never set those on the Cloud Run Job default env) |
+| Skip | Python no-ops unless `refresh_date == closed period_end + 1` (mid-biweek Mondays exit 0) |
+
 ```bash
 # Inspect / pause / resume
 gcloud scheduler jobs describe bhaga-nightly --location=us-central1
 gcloud scheduler jobs pause   bhaga-nightly --location=us-central1
 gcloud scheduler jobs resume  bhaga-nightly --location=us-central1
+gcloud scheduler jobs describe bhaga-payroll-draft --location=us-central1
 ```
 
 ### Team pulse (Issue #216)
@@ -1354,7 +1367,7 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 - **BQ dataset:** `jarvis-bhaga-prod.bhaga`
 - **Raw tables:** `square_transactions`, `adp_shifts`, `adp_punches`, `adp_wage_rates`, `square_daily_rollup`
 - **Wage rates (Issue #213 / #251):** Earnings Regular (`rate_source=earnings`) plus nightly People → Payroll info refresh for **all recent punchers** (`rate_source=pay_info`; updates raises; preserves OT). Grep Cloud Run for `BREADCRUMB wage_rate_gap` / `wage_rate_change` / `wage_rate_flow_issue`. Failures Slack a `:warning:` (tips still run). Manual: `python3 -m skills.adp_run_automation.pay_info_backend --from-bq-punchers --write-bq`.
-- **ADP payroll draft (Issue #251, flag off):** After the biweek **Sunday** is fully in BQ, the **Monday 21:30 CT** `bhaga-nightly` (`refresh_date` = Monday = `period_end + 1`) can Start→Preview→Delete. Set Cloud Run `BHAGA_ADP_PAYROLL_DRAFT=1` to enable. Never Approve. This cycle (Aug 10–23) would have been **Mon Aug 24 21:30 CT**; next auto window is **Mon Sep 7 21:30 CT** (period Aug 24–Sep 6). Manual: `python3 -m skills.adp_run_automation.payroll_draft_backend --store palmetto --period-start YYYY-MM-DD --period-end YYYY-MM-DD --no-dry-run --allow-prod-draft --allow-start`.
+- **ADP payroll draft (Issue #251):** After the biweek **Sunday** is in BQ (from `bhaga-nightly` 21:30 CT), **Monday 07:00 CT** `bhaga-payroll-draft` Start→Preview→Delete. Never Approve. `bhaga-nightly` does **not** Start payroll. Console `/payroll` **Run ADP Preview (delete after)** on unpaid periods enqueues the same job. Next auto: **Mon Sep 7 07:00 CT** (period Aug 24–Sep 6). Manual: `python3 -m skills.adp_run_automation.payroll_draft_backend --store palmetto --period-start YYYY-MM-DD --period-end YYYY-MM-DD --no-dry-run --allow-prod-draft --allow-start`.
 - **Curated views:** `vw_daily_sales`, `vw_tips_by_hour`, `vw_labor_daily`, `vw_labor_weekly`, `vw_sales_labor_daily`, `vw_employee_hours_summary`
 - **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`, `model_forecast_daily`
 - **Pipeline run log:** `pipeline_runs` (migration 016) — one appended row per terminal outcome; queried via `vw_pipeline_runs`

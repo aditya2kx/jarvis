@@ -21,6 +21,7 @@ import { FEATURES } from "@/lib/config/features";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { payPeriodKey } from "@/lib/payroll/periodKey";
 import { rowMatchesLaborType } from "@/lib/payroll/laborBucket";
+import { PayrollDraftButton } from "@/components/payroll/PayrollDraftButton";
 import {
   LABOR_TYPE_OPTIONS,
   parseLaborTypes,
@@ -250,6 +251,15 @@ export default async function PayrollPage({
                 ...(selectedPeriodStart ? { period: selectedPeriodStart } : {}),
               }}
             />
+            {FEATURES.adpPayrollDraft &&
+            selectedUnpaid &&
+            selectedPeriodStart &&
+            periodEnd ? (
+              <PayrollDraftButton
+                periodStart={selectedPeriodStart}
+                periodEnd={periodEnd}
+              />
+            ) : null}
             {FEATURES.writeTraining ? <TrainingQuickAdd /> : null}
             {FEATURES.writeRecognition ? (
               <RecognitionDrawer

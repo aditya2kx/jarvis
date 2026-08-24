@@ -59,7 +59,7 @@ Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON`, `GEOFENCE_ENTER
 | `GET /location` | admin | live Tesla lat/lon + metres from home (does not open) |
 | `POST /simulate/enter` | admin | fake outside→enter then **open Big Peach** |
 | `POST /config` | admin | `{"enter_m": 350}` Firestore overlay |
-| `POST /telemetry` | admin | fleet-telemetry HTTP-dispatcher JSON → same geofence |
+| `POST /telemetry` | admin | fleet-telemetry HTTP-dispatcher JSON → same geofence. Golden samples: `testdata/dispatcher_{outside,enter}.json` (teslamotors PR #91 shape). |
 | `POST /telemetry/configure` | admin | `POST /api/1/vehicles/fleet_telemetry_config` if `TESLA_TELEMETRY_HOST` is set |
 | `GET /oauth/tesla` | no | operator browser re-auth |
 

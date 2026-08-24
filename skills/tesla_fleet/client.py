@@ -260,7 +260,11 @@ class TeslaFleetClient:
         interval_seconds: int = 15,
         minimum_delta: float = 80.0,
     ) -> dict:
-        """Ask Tesla to stream Location to a fleet-telemetry host. Never wake_up."""
+        """Ask Tesla to stream Location to a fleet-telemetry host. Never wake_up.
+
+        Tesla requires this POST through the Vehicle Command HTTP Proxy
+        (unsigned Fleet API returns HTTP 400).
+        """
         body = fleet_telemetry_config_body(
             vins=vins,
             hostname=hostname,
@@ -274,11 +278,6 @@ class TeslaFleetClient:
             "/api/1/vehicles/fleet_telemetry_config",
             payload=json.dumps(body).encode(),
         )
-
-    def get_fleet_telemetry_config(self, vin: str) -> dict:
-        vin = vin.strip().upper()
-        q = urllib.parse.urlencode({"vin": vin})
-        return self._api("GET", f"/api/1/vehicles/{vin}/fleet_telemetry_config?{q}")
 
     def _store_token(self, data: dict) -> dict:
         self._access_token = data.get("access_token") or ""

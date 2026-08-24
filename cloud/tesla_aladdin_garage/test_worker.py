@@ -204,3 +204,22 @@ def test_ensure_telemetry_config_posts_when_host_set():
     assert kwargs["hostname"] == "telemetry.example.com"
     assert kwargs["minimum_delta"] == 80.0
 
+
+def test_heartbeat_updates_last_poll_ts():
+    import threading
+    import time
+
+    tesla, aladdin = _tesla(*HOME), _aladdin()
+    w = GarageWorker(_cfg(poll_s=0, telemetry=True), tesla, aladdin)
+    assert w.state.last_poll_ts == 0.0
+
+    def stop_soon():
+        time.sleep(0.05)
+        w._stop.set()
+
+    threading.Thread(target=stop_soon, daemon=True).start()
+    w.run_forever()
+    tesla.vehicle_location.assert_not_called()
+    tesla.put_fleet_telemetry_config.assert_not_called()
+    assert w.state.last_poll_ts > 0.0
+

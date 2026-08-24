@@ -29,7 +29,8 @@ self-hosted [fleet-telemetry](https://github.com/teslamotors/fleet-telemetry)
 hostname:443 (mTLS). Fields use `interval_seconds` + `minimum_delta` (metres).
 This is **not** a geofence webhook and does **not** wake a sleeping vehicle.
 `fleet_telemetry_config_body()` / `put_fleet_telemetry_config()` build that POST.
-The garage worker consumes the HTTP dispatcher JSON at `POST /telemetry`.
+Tesla requires the call through the Vehicle Command HTTP Proxy (unsigned Fleet API
+returns HTTP 400). The garage worker consumes the HTTP dispatcher JSON at `POST /telemetry`.
 
 ## Secrets
 

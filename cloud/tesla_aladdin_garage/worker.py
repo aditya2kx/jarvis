@@ -393,6 +393,7 @@ class GarageWorker:
                 if self.cfg.poll_s > 0:
                     self.tick()
                 else:
+                    self.state.last_poll_ts = self._now()
                     log.info(
                         "tesla-aladdin-garage poll vin=%s dist_m=%s event=%s shift=%s dry_run=%s source=heartbeat",
                         self.cfg.vin,

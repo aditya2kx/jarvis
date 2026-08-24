@@ -53,3 +53,17 @@ def test_list_of_payloads():
         ]
     )
     assert len(fixes) == 2
+
+
+def test_official_dispatcher_fixture():
+    """Shape from teslamotors/fleet-telemetry HTTP dispatcher (PR #91)."""
+    from pathlib import Path
+    import json
+
+    raw = json.loads(
+        (Path(__file__).parent / "testdata/dispatcher_enter.json").read_text()
+    )
+    fixes = extract_location_fixes(raw, expected_vin=VIN)
+    assert len(fixes) == 1
+    assert fixes[0]["latitude"] == 29.464083
+    assert fixes[0]["longitude"] == -95.517465

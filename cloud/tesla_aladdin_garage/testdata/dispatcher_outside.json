@@ -1,0 +1,19 @@
+{
+  "createdAt": "2023-12-21T02:46:51.386927610Z",
+  "vin": "7SAYGAEE2TF605512",
+  "data": [
+    {
+      "key": "VehicleName",
+      "value": { "stringValue": "Dhanno" }
+    },
+    {
+      "key": "Location",
+      "value": {
+        "locationValue": {
+          "latitude": 29.472,
+          "longitude": -95.517465
+        }
+      }
+    }
+  ]
+}

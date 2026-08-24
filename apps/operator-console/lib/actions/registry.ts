@@ -27,6 +27,8 @@ export const MUTATING_ACTIONS = [
   { name: "addTrainingShiftAction", page: "payroll", heavy: null },
   { name: "addRecognitionBonusAction", page: "payroll", heavy: null },
   { name: "applyTipExemptionsAction", page: "payroll", heavy: "model-recompute" },
+  { name: "runPayrollDraftAction", page: "payroll", heavy: "adp-payroll-draft" },
+  { name: "pollPayrollDraftAction", page: "payroll", heavy: null },
   // Labor
   { name: "syncScheduledShiftsAction", page: "labor", heavy: "adp-schedule" },
   { name: "pollScheduledShiftsSyncAction", page: "labor", heavy: null },

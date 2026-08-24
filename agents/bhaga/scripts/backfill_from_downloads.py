@@ -463,13 +463,29 @@ def main() -> int:
                 else:
                     n = write_pay_info_rates_bq(rates, dry_run=False)
                     summaries.append({"table": "adp_wage_rates_pay_info", "rows": n})
+                    remaining: list[str] = []
                     try:
                         from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415
                             assert_no_missing_puncher_rates,
                         )
-                        assert_no_missing_puncher_rates(days=60)
+                        remaining = assert_no_missing_puncher_rates(days=60)
                     except Exception as exc:  # noqa: BLE001
                         print(f"WARN: wage gap assert failed: {type(exc).__name__}: {exc}")
+                    scrape_errors = payload.get("errors") or {}
+                    if scrape_errors or remaining:
+                        try:
+                            from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415
+                                report_pay_info_issues,
+                            )
+                            report_pay_info_issues(
+                                date=datetime.date.today().isoformat(),
+                                scrape_errors=scrape_errors,
+                                remaining_gaps=remaining,
+                                attempted=len(payload.get("attempted") or []),
+                                scraped_ok=len(rates),
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"WARN: pay_info Slack warn failed: {type(exc).__name__}: {exc}")
             except Exception as exc:  # noqa: BLE001
                 print(f"WARN: pay_info rate load failed: {type(exc).__name__}: {exc}")
 

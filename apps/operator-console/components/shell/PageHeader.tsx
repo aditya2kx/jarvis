@@ -18,9 +18,13 @@ export function PageHeader({
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-baseline sm:justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-        {right ? <div className="flex flex-wrap items-center gap-2">{right}</div> : null}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="shrink-0 text-2xl font-semibold tracking-tight">{title}</h1>
+        {right ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2">
+            {right}
+          </div>
+        ) : null}
       </div>
       {subtitle ? <p className="text-sm text-muted-foreground">{subtitle}</p> : null}
     </div>

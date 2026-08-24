@@ -729,11 +729,19 @@ def _target_meta_path(xlsx_path: pathlib.Path) -> pathlib.Path:
     return xlsx_path.with_suffix(xlsx_path.suffix + ".target-meta.json")
 
 
-def _write_target_meta(xlsx_path: pathlib.Path, target_date: Optional[datetime.date]) -> None:
+def _write_target_meta(
+    xlsx_path: pathlib.Path,
+    target_date: Optional[datetime.date],
+    *,
+    range_start: Optional[datetime.date] = None,
+    range_end: Optional[datetime.date] = None,
+) -> None:
     """Best-effort write of the target-date sidecar (see ``_target_meta_path``)."""
     try:
         meta = {
             "target_date": target_date.isoformat() if target_date else None,
+            "range_start": range_start.isoformat() if range_start else None,
+            "range_end": range_end.isoformat() if range_end else None,
             "downloaded_at": datetime.datetime.now().isoformat(),
             "xlsx_filename": xlsx_path.name,
         }
@@ -747,6 +755,8 @@ def _xlsx_fresh_for_target(
     *,
     target_date: Optional[datetime.date],
     min_bytes: int,
+    range_start: Optional[datetime.date] = None,
+    range_end: Optional[datetime.date] = None,
 ) -> bool:
     """Tighter form of ``is_fresh_download`` that also checks the sidecar.
 
@@ -784,7 +794,53 @@ def _xlsx_fresh_for_target(
             f"but this run wants target_date={want!r} — treating as stale"
         )
         return False
+    if range_start is not None or range_end is not None:
+        want_s = range_start.isoformat() if range_start else None
+        want_e = range_end.isoformat() if range_end else None
+        got_s = meta.get("range_start")
+        got_e = meta.get("range_end")
+        if got_s != want_s or got_e != want_e:
+            print(
+                f"[adp] freshness: {xlsx_path.name} range={got_s!r}..{got_e!r} "
+                f"but this run wants {want_s!r}..{want_e!r} — treating as stale"
+            )
+            return False
     return True
+
+
+# ADP Earnings & Hours "From/To" filters Payroll Check Date, not period
+# start/end. Palmetto's 2026-07-27..2026-08-09 period paid on 2026-08-14;
+# feeding period dates into From/To returned the *previous* check (07/31).
+EARNINGS_CHECK_DATE_LOOKAHEAD_DAYS = 14
+
+
+def _earnings_report_date_window(
+    *,
+    today: datetime.date,
+    target_date: Optional[datetime.date] = None,
+    earnings_window_days: int = 90,
+    earnings_start: Optional[datetime.date] = None,
+    earnings_end: Optional[datetime.date] = None,
+) -> tuple[datetime.date, datetime.date]:
+    """Resolve Earnings custom-range From/To as check-date bounds.
+
+    When the caller passes a pay-period window, pad ``end`` by
+    ``EARNINGS_CHECK_DATE_LOOKAHEAD_DAYS`` (clamped to ``today``) so the
+    check that posts after period-end is included.
+    """
+    if earnings_start is not None and earnings_end is not None:
+        padded_end = earnings_end + datetime.timedelta(
+            days=EARNINGS_CHECK_DATE_LOOKAHEAD_DAYS
+        )
+        window_end = min(padded_end, today)
+        if window_end < earnings_start:
+            window_end = earnings_end
+        return earnings_start, window_end
+    window_end = earnings_end or target_date or today
+    window_start = earnings_start or (
+        window_end - datetime.timedelta(days=earnings_window_days)
+    )
+    return window_start, window_end
 
 
 def _mark_run_step_done(
@@ -1121,27 +1177,34 @@ def download_earnings(
     """Open Reports > My saved custom reports > '{wage_rate_report_name}',
     set Custom date range, preview, download Excel.
 
-    Default date range: last 90 days (more than enough to infer current rates
-    AND capture the most recent pay-period's Credit Card Tips Owed).
+    Default date range: last 90 days. ADP's From/To is **Payroll Check Date**,
+    not pay-period start/end — an explicit period window is padded by
+    ``EARNINGS_CHECK_DATE_LOOKAHEAD_DAYS`` so the check that posts after
+    period-end is included.
 
     Idempotency: if today's Earnings-and-Hours XLSX is already on disk
-    (CT-today mtime), skip the browser entirely and return the cached path.
+    (CT-today mtime) for the same target + range, skip the browser.
     """
     today = datetime.date.today()
     expected = DOWNLOADS_DIR / f"Earnings-and-Hours-V1-{today.isoformat()}.xlsx"
-    # Standalone download_earnings has no target_date concept — the report
-    # is preset-driven ("Last payroll"). Use end_date if provided, else
-    # today_ct, as the freshness key so a same-day rerun with a different
-    # window doesn't silently reuse the prior XLSX.
-    target_for_freshness = end_date or today
-    if _xlsx_fresh_for_target(expected, target_date=target_for_freshness, min_bytes=5_000):
+    start, end = _earnings_report_date_window(
+        today=today,
+        earnings_start=start_date,
+        earnings_end=end_date,
+    )
+    target_for_freshness = end
+    if _xlsx_fresh_for_target(
+        expected,
+        target_date=target_for_freshness,
+        min_bytes=5_000,
+        range_start=start,
+        range_end=end,
+    ):
         print(f"[adp_earnings] SKIP browser — fresh Earnings XLSX already on disk: {expected}")
         return expected
 
     profile = _load_store_profile(store)
     report_name = profile["adp_run"].get("wage_rate_report_name", "Earnings and Hours V1")
-    start = start_date or (today - datetime.timedelta(days=90))
-    end = end_date or today
 
     with launch_persistent(
         portal="adp",
@@ -1151,9 +1214,11 @@ def download_earnings(
     ) as (ctx, page):
         _ensure_logged_in(page, store=store)
         path = _earnings_within_session(
-            page, store=store, start=start, end=end
+            page, store=store, start=start, end=end, use_custom_range=True,
         )
-        _write_target_meta(path, target_for_freshness)
+        _write_target_meta(
+            path, target_for_freshness, range_start=start, range_end=end,
+        )
         return path
 
 
@@ -1273,6 +1338,79 @@ def _wait_for_earnings_ready_button(page, *, timeout_ms: int, locator_specs: lis
     )
 
 
+def _pierce_data_test_ids(page) -> list[str]:
+    """Collect data-test-id attrs including open-shadow descendants."""
+    try:
+        return page.evaluate(
+            """() => {
+              const acc = [];
+              const walk = (root) => {
+                root.querySelectorAll('[data-test-id]').forEach(
+                  (e) => acc.push(e.getAttribute('data-test-id'))
+                );
+                root.querySelectorAll('*').forEach((el) => {
+                  if (el.shadowRoot) walk(el.shadowRoot);
+                });
+              };
+              walk(document);
+              return acc;
+            }"""
+        )
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _set_earnings_employment_all(page) -> None:
+    """Set Custom report builder Employment status = All.
+
+    ADP sdf-select often has no accessible name matching 'Employment status',
+    so role-based locators time out (Issue #251). Try data-test-id + sdf-select.
+    """
+    locators = [
+        page.locator('[data-test-id="employment-status-field"]'),
+        page.locator('[data-test-id*="employment-status"]'),
+        page.locator('[data-test-id*="EmploymentStatus"]'),
+        page.get_by_role("combobox", name=re.compile(r"Employment status", re.I)),
+        page.get_by_label(re.compile(r"Employment status", re.I)),
+        page.locator("sdf-select").filter(
+            has_text=re.compile(r"Employment|Active", re.I)
+        ),
+    ]
+    last_exc: Optional[BaseException] = None
+    for loc in locators:
+        try:
+            loc.first.click(timeout=4_000)
+            page.wait_for_timeout(300)
+            page.get_by_role("option", name=re.compile(r"^All$", re.I)).first.click(
+                timeout=4_000
+            )
+            print("[earnings] step=employment-status-all")
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            continue
+    ids = _pierce_data_test_ids(page)
+    interesting = [
+        i for i in ids
+        if i and re.search(r"emp|status|people|filter", i, re.I)
+    ]
+    print(
+        f"[earnings] WARN: Employment-status=All not set ({last_exc}); "
+        f"filter data-test-ids={interesting[:40]!r}"
+    )
+    try:
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        shot_dir = pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
+        shot_dir.mkdir(parents=True, exist_ok=True)
+        page.screenshot(
+            path=str(shot_dir / f"adp-earnings-employment-filter-{ts}.png"),
+            full_page=True,
+        )
+        print(f"[earnings] saved employment-filter snapshot adp-earnings-employment-filter-{ts}.png")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _earnings_within_session(
     page,
     *,
@@ -1288,12 +1426,12 @@ def _earnings_within_session(
     browser context.
 
     DECISION LOCK-IN: two modes
-    - use_custom_range=False (nightly incremental): selects "Last payroll" preset
-      — the only preset guaranteed non-empty for the current pay cycle.
-    - use_custom_range=True (explicit historical window): selects "Custom date range",
-      fills From/To (MM/DD/YYYY), and sets Employment status = All so terminated
-      employees appear in the historical window. Raises if start/end missing or
-      range > 12 months (ADP server cap).
+    - use_custom_range=False (legacy): selects "Last payroll" preset.
+      **Do not use for nightly.** 2026-08-18 Last payroll omitted new hires
+      Perales/Willingham who were on the check (Payroll Details) but not in
+      the default Earnings export.
+    - use_custom_range=True (nightly + backfill): "Custom date range" +
+      Employment status = All so new and terminated employees appear.
 
     Flow (verified end-to-end 2026-05-19):
 
@@ -1390,10 +1528,9 @@ def _earnings_within_session(
 
     # Listbox options exposed: Last month / Last year / Last quarter /
     # Custom date range / Last payroll.
-    # nightly (use_custom_range=False): "Last payroll" — the most-recently-CLOSED
-    #   payroll; guaranteed non-empty for current wage-rate + CC-Tips-Owed lines.
-    # historical backfill (use_custom_range=True): "Custom date range" with explicit
-    #   From/To + Employment status = All (includes terminated employees).
+    # From/To is Payroll Check Date (not period start/end). Nightly uses
+    # custom range (Last payroll omitted new hires, Issue #251).
+    # Explicit period windows are padded in _earnings_report_date_window.
     if use_custom_range:
         if start is None or end is None:
             raise ValueError(
@@ -1408,18 +1545,7 @@ def _earnings_within_session(
         page.wait_for_timeout(500)
         page.get_by_role("textbox", name=re.compile(r"^From", re.I)).first.fill(start.strftime("%m/%d/%Y"))
         page.get_by_role("textbox", name=re.compile(r"^To", re.I)).first.fill(end.strftime("%m/%d/%Y"))
-        # Employment status = All — includes terminated employees in historical window.
-        # Best-guess role-based locator; verified / corrected in T6 sandbox DOM snapshot.
-        try:
-            emp = page.get_by_role("combobox", name=re.compile(r"Employment status", re.I)).first
-            emp.click()
-            page.wait_for_timeout(300)
-            page.get_by_role("option", name=re.compile(r"^All$", re.I)).first.click()
-        except Exception as exc:  # noqa: BLE001
-            print(
-                f"[earnings] WARN: Employment-status=All not set ({exc}); "
-                f"continuing with default. Verify selector via sandbox DOM snapshot."
-            )
+        _set_earnings_employment_all(page)
         print(f"[earnings] step=selected-custom-range {start}..{end} employment=All")
     else:
         page.get_by_role(
@@ -1922,16 +2048,13 @@ def download_adp_bundle(
         include_earnings: if False, only Timecard runs (orchestrator sets
             this off Mon/Tue per `_should_run_rates`).
         earnings_window_days: how far back the earnings scrape's "From"
-            date should go when using the nightly "Last payroll" preset
-            (default 90; ignored when earnings_custom_range=True).
-        earnings_start: explicit window start for historical backfill
-            (requires earnings_custom_range=True).
-        earnings_end: explicit window end for historical backfill
-            (requires earnings_custom_range=True).
-        earnings_custom_range: if True, selects "Custom date range" in
-            the ADP report builder and fills earnings_start/end + sets
-            Employment status = All. Use for historical backfills only;
-            nightly runs should keep False (Last payroll preset).
+            date should go (default 90). Nightly always uses custom range.
+        earnings_start: explicit window start for historical backfill.
+        earnings_end: explicit window end for historical backfill.
+        earnings_custom_range: unused for the download itself (bundle always
+            custom-range + Employment=All). Kept so callers can pass a
+            tighter earnings_start/end window, which is then padded so the
+            post-period check date is included (see _earnings_report_date_window).
 
     Returns:
         {
@@ -1945,6 +2068,14 @@ def download_adp_bundle(
     er_expected = DOWNLOADS_DIR / f"Earnings-and-Hours-V1-{today.isoformat()}.xlsx"
     sched_expected = DOWNLOADS_DIR / f"Schedule-{today.isoformat()}.json"
 
+    er_window_start, er_window_end = _earnings_report_date_window(
+        today=today,
+        target_date=target_date,
+        earnings_window_days=earnings_window_days,
+        earnings_start=earnings_start,
+        earnings_end=earnings_end,
+    )
+
     # Layer A is target_date-aware (2026-05-23 fix): a file downloaded earlier
     # today for a DIFFERENT target_date does NOT count as fresh, because it
     # may not cover the current run's window. See _xlsx_fresh_for_target.
@@ -1952,7 +2083,13 @@ def download_adp_bundle(
         tc_expected, target_date=target_date, min_bytes=10_000,
     )
     er_fresh = (
-        _xlsx_fresh_for_target(er_expected, target_date=target_date, min_bytes=5_000)
+        _xlsx_fresh_for_target(
+            er_expected,
+            target_date=target_date,
+            min_bytes=5_000,
+            range_start=er_window_start,
+            range_end=er_window_end,
+        )
         if include_earnings else False
     )
     # Schedule is forward-looking (this week + next), not tied to target_date,
@@ -2065,17 +2202,18 @@ def download_adp_bundle(
                               f"url={page.url}")
                         page.wait_for_timeout(2_000)
 
-                if earnings_custom_range and earnings_start and earnings_end:
-                    window_start, window_end = earnings_start, earnings_end
-                else:
-                    window_end = target_date or today
-                    window_start = window_end - datetime.timedelta(days=earnings_window_days)
+                window_start, window_end = er_window_start, er_window_end
+                # Always custom-range + Employment=All. "Last payroll" dropped
+                # new hires from Earnings & Hours (Issue #251, 2026-08-18).
                 path = _earnings_within_session(
                     page, store=store, target_date=target_date,
                     start=window_start, end=window_end,
-                    use_custom_range=earnings_custom_range,
+                    use_custom_range=True,
                 )
-                _write_target_meta(path, target_date)
+                _write_target_meta(
+                    path, target_date,
+                    range_start=window_start, range_end=window_end,
+                )
                 result["earnings_xlsx"] = path
                 _mark_run_step_done(
                     "adp_earnings", refresh_date=target_date,
@@ -2177,8 +2315,9 @@ def download_adp_bundle(
             result["errors"]["adp_liability"] = f"{type(exc).__name__}: {exc}"
             print(f"[adp_bundle] liability FAILED: {type(exc).__name__}: {exc}")
 
-        # Wage-rate gap-fill via People → Payroll info (Issue #213). Runs every
-        # night there are punchers without a rate — not Mon/Tue-only. Soft-fail.
+        # Wage-rate refresh via People → Payroll info (Issues #213/#251).
+        # Every night we scrape ALL recent punchers so raises land before the
+        # next paycheck. Soft-fail: Slack warning, never fail Timecard/tips.
         try:
             from skills.adp_run_automation import pay_info_backend as pib  # noqa: PLC0415
             from skills.store_profile import load_aliases, load_exclusions  # noqa: PLC0415
@@ -2189,44 +2328,50 @@ def download_adp_bundle(
             tc_path = result.get("timecard_xlsx") or (
                 tc_expected if tc_fresh else None
             )
-            er_path = result.get("earnings_xlsx") or (
-                er_expected if (include_earnings and er_fresh) else None
-            )
-            gap_names = pib.gap_names_from_session_files(
+            names: list[str] = pib.puncher_names_from_session_files(
                 timecard_xlsx=tc_path,
-                earnings_xlsx=er_path,
                 employee_aliases=aliases,
-                excluded_employees=excluded,
             )
-            # Also include lingering BQ gaps (e.g. not on tonight's timecard file).
             try:
                 os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
-                for n in pib.gap_names_from_bq(days=60):
-                    if n not in gap_names:
-                        gap_names.append(n)
-                gap_names = sorted(set(gap_names))
+                for n in pib.puncher_names_from_bq(days=60):
+                    if n not in names:
+                        names.append(n)
+                names = sorted(set(names))
             except Exception as exc:  # noqa: BLE001
-                print(f"[adp_bundle] pay_info BQ gap union skipped: {exc}")
+                print(f"[adp_bundle] pay_info BQ puncher union skipped: {exc}")
 
-            if gap_names:
-                print(f"[adp_bundle] pay_info gap-fill for {len(gap_names)}: {gap_names}")
+            if names:
+                print(f"[adp_bundle] pay_info refresh for {len(names)}: {names}")
                 page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
                 page.wait_for_timeout(1500)
-                rates = pib.scrape_pay_info_rates(
-                    page, gap_names, dashboard_url=dashboard_url,
+                rates, scrape_errors = pib.scrape_pay_info_rates(
+                    page, names, dashboard_url=dashboard_url,
                     excluded=set(excluded),
                 )
-                if rates:
-                    path = pib.write_pay_info_json(rates, store=store)
-                    result["pay_info_json"] = path
-                    print(f"[adp_bundle] pay_info OK → {path}")
-                else:
-                    print("[adp_bundle] pay_info: no rates scraped")
+                path = pib.write_pay_info_json(
+                    rates, store=store, errors=scrape_errors, attempted=names,
+                )
+                result["pay_info_json"] = path
+                print(f"[adp_bundle] pay_info OK → {path} ({len(rates)} rates)")
+                if scrape_errors:
+                    print(
+                        f"[adp_bundle] pay_info scrape errors "
+                        f"(Slack after BQ load): {scrape_errors}"
+                    )
             else:
-                print("[adp_bundle] pay_info: no wage-rate gaps")
+                print("[adp_bundle] pay_info: no punchers to refresh")
         except Exception as exc:  # noqa: BLE001
-            result["errors"]["adp_pay_info"] = f"{type(exc).__name__}: {exc}"
             print(f"[adp_bundle] pay_info FAILED: {type(exc).__name__}: {exc}")
+            try:
+                from skills.adp_run_automation import pay_info_backend as pib  # noqa: PLC0415
+
+                pib.report_pay_info_issues(
+                    date=str(target_date),
+                    flow_error=f"{type(exc).__name__}: {exc}",
+                )
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
                 page.screenshot(
@@ -2236,6 +2381,7 @@ def download_adp_bundle(
                 )
             except Exception:  # noqa: BLE001
                 pass
+            # Do NOT put this on result["errors"] — tips/timecard must still succeed.
 
         return result
 
@@ -2255,9 +2401,10 @@ def main() -> int:
     cli.add_argument("--force", action="store_true",
                      help="(schedule) Re-scrape even if today's Schedule JSON is fresh.")
     cli.add_argument("--start", default=None,
-                     help="(earnings only) Start date YYYY-MM-DD. Default: 90 days ago.")
+                     help="(earnings only) Check-date From YYYY-MM-DD. "
+                          "Pay-period dates are padded so the later check is included.")
     cli.add_argument("--end", default=None,
-                     help="(earnings only) End date YYYY-MM-DD. Default: today.")
+                     help="(earnings only) Check-date To YYYY-MM-DD.")
     args = cli.parse_args()
 
     if args.scrape == "timecard":

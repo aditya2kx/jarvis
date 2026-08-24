@@ -4,6 +4,10 @@
 
 **Key changes:** deploy job `continue-on-error` on secret IAM + stale-poll metric; worker `observe_fix` + `POST /telemetry`; Fleet Telemetry config helper; `TESLA_TELEMETRY=1` / `POLL_INTERVAL_S=0`; still never `wake_up`. Cars stream to a self-hosted fleet-telemetry host, not Cloud Run mTLS.
 
+## 2026-08-24 — Monday 07:00 CT ADP Preview + /payroll button (Issue #251)
+
+**Scope:** Do not Start payroll from `bhaga-nightly` (21:30 CT). Dedicated `bhaga-payroll-draft` Monday 07:00 America/Chicago + `/payroll` **Run ADP Preview** (headless Start→Preview, leave draft; never Approve/Save). Open biweek: no ADP chrome. Closed unpaid: Run XOR Preview done + hours/total-pay vs last Preview Gross (no Preview URL). Paid: Open ADP payroll.
+
 ## 2026-08-24 — GCP access experience (Cloud Agent ≠ ADC)
 
 **Scope:** Cursor Cloud Agents have no `gcloud` and no Application Default Credentials. Jarvis already had laptop hydrate + GHA WIF; agents were rediscovering the gap each session.
@@ -15,6 +19,12 @@
 **Scope:** Previous Tesla/Aladdin garage session authorized on an ephemeral VM and never reached GCP. Jarvis now owns the always-on worker.
 
 **Key changes:** `skills/tesla_fleet` + `skills/aladdin_connect`; Cloud Run service `tesla-aladdin-garage` (min=1, max=1, CPU never throttled); geofence 400 m / 80 m hysteresis; `ALADDIN_DRY_RUN=0`; Fleet `vehicle_data` endpoints semicolon-separated; no `wake_up`. Secrets from env / Secret Manager; `/oauth/tesla` re-auth if refresh token missing.
+
+## 2026-08-18 — Payroll & People rate/OT/FT/perks (Issue #251)
+
+**Scope:** `/payroll` first table was tip-pool only (no Lindsay); no wage rate, OT, or gym perk.
+
+**In progress:** migration `059` `employee_perks` + `vw_model_payroll_period` union; Labor type filter; ADP draft dry-run guards (Start not wired until Delete spike). Gym $20/biweek for Krause, Lindsay.
 
 ## 2026-08-11 — Team pulse payroll period filter for manual Preview/Post (Issue #245)
 

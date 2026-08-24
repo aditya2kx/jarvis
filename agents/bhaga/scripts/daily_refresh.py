@@ -134,6 +134,15 @@ STORE_PROFILES = PROJECT_ROOT / "agents" / "bhaga" / "knowledge-base" / "store-p
 DOWNLOAD_DIR = PROJECT_ROOT / "extracted" / "downloads"
 MASTER_TXN_CSV = DOWNLOAD_DIR / "transactions-master.csv"
 CT = ZoneInfo("America/Chicago")
+PAYROLL_DRAFT_STATUS_PATH = pathlib.Path("/tmp/jarvis-adp-payroll-draft.status.json")
+
+
+def write_payroll_draft_status(state: str, **extra) -> None:
+    payload = {"state": state, **extra}
+    try:
+        PAYROLL_DRAFT_STATUS_PATH.write_text(json.dumps(payload) + "\n")
+    except OSError as exc:
+        print(f"[adp_payroll_draft] BREADCRUMB status_write_failed {exc}")
 
 
 def _load_profile(store: str) -> dict:
@@ -302,6 +311,116 @@ def _should_run_rates(*, override: str | None) -> bool:
         return False
     today = datetime.datetime.now(CT).date()
     return today.weekday() in {0, 1}
+
+
+def _adp_payroll_draft_env_on() -> bool:
+    return os.environ.get("BHAGA_ADP_PAYROLL_DRAFT", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def period_end_payroll_draft_bounds(
+    refresh_date: datetime.date,
+    *,
+    closed_start: datetime.date,
+    closed_end: datetime.date,
+) -> tuple[datetime.date, datetime.date] | None:
+    """Run once the calendar day after the biweek Sunday.
+
+    Palmetto periods end Sunday. Dedicated ``bhaga-payroll-draft`` at
+    07:00 CT Monday uses ``refresh_date`` = that Monday, so
+    ``refresh_date == closed_end + 1 day``. Sunday punches are in BQ
+    (from Sunday 21:30 nightly). Mid-biweek Mondays and Tuesday+ skip.
+    ``bhaga-nightly`` (21:30 CT) never calls this path.
+    """
+    if closed_end == refresh_date - datetime.timedelta(days=1):
+        return closed_start, closed_end
+    return None
+
+
+def _explicit_payroll_period_from_env() -> tuple[datetime.date, datetime.date] | None:
+    """Console unpaid-period override. Both env vars or neither."""
+    start_raw = os.environ.get("BHAGA_PAYROLL_PERIOD_START", "").strip()
+    end_raw = os.environ.get("BHAGA_PAYROLL_PERIOD_END", "").strip()
+    if not start_raw and not end_raw:
+        return None
+    if not start_raw or not end_raw:
+        raise ValueError(
+            "BHAGA_PAYROLL_PERIOD_START and BHAGA_PAYROLL_PERIOD_END "
+            "must both be set"
+        )
+    start = datetime.date.fromisoformat(start_raw)
+    end = datetime.date.fromisoformat(end_raw)
+    if start > end:
+        raise ValueError(f"period start {start} after end {end}")
+    return start, end
+
+
+def _maybe_run_period_end_payroll_draft(
+    *,
+    store: str,
+    refresh_date: datetime.date,
+    profile: dict,
+    dry_run: bool,
+) -> dict | None:
+    """Flagged Start→Preview; leave In Progress. Never Approve/Save/Delete.
+
+    Used by ``BHAGA_PAYROLL_DRAFT_ONLY`` (Monday 07:00 scheduler + console
+    button). Not invoked from ``bhaga-nightly``. Operator submits in ADP.
+    """
+    if not _adp_payroll_draft_env_on():
+        print(
+            "[adp_payroll_draft] SKIPPED — BHAGA_ADP_PAYROLL_DRAFT unset "
+            f"(refresh_date={refresh_date.isoformat()})"
+        )
+        return None
+    explicit = _explicit_payroll_period_from_env()
+    if explicit is not None:
+        ps, pe = explicit
+    else:
+        adp = profile.get("adp_run") or {}
+        anchor = adp.get("pay_periods_anchor_end_date")
+        freq = adp.get("pay_frequency", "Biweekly")
+        if not anchor:
+            print("[adp_payroll_draft] BREADCRUMB skip no pay_periods_anchor_end_date")
+            return None
+        from agents.bhaga.scripts import update_model_sheet as _ums  # noqa: PLC0415
+
+        closed_start, closed_end = _ums.most_recent_closed_period(
+            anchor_end_date=anchor, pay_frequency=freq, today=refresh_date,
+        )
+        window = period_end_payroll_draft_bounds(
+            refresh_date, closed_start=closed_start, closed_end=closed_end,
+        )
+        if window is None:
+            print(
+                f"[adp_payroll_draft] SKIPPED — not first day after close "
+                f"refresh_date={refresh_date.isoformat()} "
+                f"closed={closed_start.isoformat()}..{closed_end.isoformat()}"
+            )
+            return None
+        ps, pe = window
+    print(
+        f"[adp_payroll_draft] BREADCRUMB period_end_hook "
+        f"store={store} period={ps.isoformat()}..{pe.isoformat()} "
+        f"dry_run={dry_run}"
+    )
+    if dry_run:
+        return None
+    from skills.adp_run_automation.payroll_draft_backend import (  # noqa: PLC0415
+        run_draft,
+    )
+
+    return run_draft(
+        store=store,
+        period_start=ps.isoformat(),
+        period_end=pe.isoformat(),
+        dry_run=False,
+        allow_prod_draft=True,
+        hold_seconds=0,
+        allow_start=True,
+        keep_draft=True,
+    )
 
 
 # ── Per-day step markers (Layer B idempotency) ─────────────────────
@@ -1588,13 +1707,26 @@ def _adp_bundle_then_raise(
         earnings_custom_range=earnings_custom_range,
     )
     errs = dict(result.get("errors") or {})
-    # adp_schedule is a best-effort, non-critical auxiliary scrape (forward
-    # scheduled hours for the Grafana scheduled-vs-goal panel). The forecast /
-    # labor / tip pipeline does not depend on it, so a schedule hiccup must NOT
-    # fail the nightly ADP step. Warn but don't raise on it.
+    # Best-effort auxiliary scrapes: warn, do not fail Timecard/tips.
+    # adp_schedule — forward hours for Grafana; labor/tips do not depend on it.
+    # adp_pay_info — wage refresh Slack-warns on its own; must not halt nightly.
     sched_err = errs.pop("adp_schedule", None)
     if sched_err:
         print(f"[adp_bundle] WARN: schedule scrape failed (non-fatal): {sched_err}")
+    pay_info_err = errs.pop("adp_pay_info", None)
+    if pay_info_err:
+        print(f"[adp_bundle] WARN: pay_info scrape failed (non-fatal): {pay_info_err}")
+        try:
+            from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415
+                report_pay_info_issues,
+            )
+
+            report_pay_info_issues(
+                date=str(target_date),
+                flow_error=str(pay_info_err),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[adp_bundle] pay_info Slack warn skipped: {exc}")
     if errs:
         summary = "; ".join(f"{name}: {msg}" for name, msg in errs.items())
         raise RuntimeError(f"adp_bundle partial failure ({len(errs)} component(s)): {summary}")
@@ -1811,21 +1943,36 @@ def _adp_will_launch_browser(
     needs_adp: bool,
     target_date: datetime.date | None,
     include_earnings: bool,
+    earnings_start: datetime.date | None = None,
+    earnings_end: datetime.date | None = None,
 ) -> bool:
     """Mirror download_adp_bundle's Layer-A gate to predict a browser launch."""
     if not needs_adp:
         return False
     from skills.adp_run_automation.runner import (
         DOWNLOADS_DIR as _DL,
+        _earnings_report_date_window,
         _xlsx_fresh_for_target,
     )
 
     today = datetime.date.today()
     tc = _DL / f"Timecard-{today.isoformat()}.xlsx"
     er = _DL / f"Earnings-and-Hours-V1-{today.isoformat()}.xlsx"
+    er_start, er_end = _earnings_report_date_window(
+        today=today,
+        target_date=target_date,
+        earnings_start=earnings_start,
+        earnings_end=earnings_end,
+    )
     tc_fresh = _xlsx_fresh_for_target(tc, target_date=target_date, min_bytes=10_000)
     er_fresh = (
-        _xlsx_fresh_for_target(er, target_date=target_date, min_bytes=5_000)
+        _xlsx_fresh_for_target(
+            er,
+            target_date=target_date,
+            min_bytes=5_000,
+            range_start=er_start,
+            range_end=er_end,
+        )
         if include_earnings
         else False
     )
@@ -2271,6 +2418,51 @@ def _run_refresh(run_id: str) -> int:
         print("[adp-schedule-only] BQ upsert complete")
         return 0
 
+    # Monday 07:00 CT ``bhaga-payroll-draft`` + /payroll button: Start→Preview
+    # and leave In Progress (never Approve/Save/Delete). Before the completeness
+    # gate so a 7am Monday run is not refused as "today's sources still in flight".
+    if _env_skip("BHAGA_PAYROLL_DRAFT_ONLY"):
+        args.store = os.environ.get("BHAGA_STORE") or args.store
+        print(
+            f"[adp-payroll-draft-only] store={args.store} "
+            f"refresh_date={refresh_date.isoformat()} — Start→Preview, leave draft"
+        )
+        os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+        if args.dry_run:
+            write_payroll_draft_status("ok", skipped="dry_run")
+            return 0
+        write_payroll_draft_status(
+            "running",
+            store=args.store,
+            refresh_date=refresh_date.isoformat(),
+            period_start=os.environ.get("BHAGA_PAYROLL_PERIOD_START") or "",
+            period_end=os.environ.get("BHAGA_PAYROLL_PERIOD_END") or "",
+        )
+        try:
+            profile = _load_profile(args.store)
+            draft_result = _maybe_run_period_end_payroll_draft(
+                store=args.store,
+                refresh_date=refresh_date,
+                profile=profile,
+                dry_run=False,
+            )
+        except Exception as draft_exc:  # noqa: BLE001
+            print(
+                f"[adp_payroll_draft] BREADCRUMB draft_only_failed "
+                f"refresh_date={refresh_date.isoformat()} err={draft_exc!r}",
+                file=sys.stderr,
+            )
+            write_payroll_draft_status("fail", error=repr(draft_exc))
+            return 1
+        extra: dict = {}
+        if draft_result:
+            extra["period_start"] = draft_result.get("period_start")
+            extra["period_end"] = draft_result.get("period_end")
+            extra["preview_hours"] = draft_result.get("preview_hours")
+            extra["preview_gross"] = draft_result.get("preview_gross")
+        write_payroll_draft_status("ok", **extra)
+        return 0
+
     # Self-clean any one-shot maintenance smart-retry scheduler for this date. The
     # run it triggered (or any stale one for the same date) is removed here so the
     # scheduler never re-fires. Cloud-only + best-effort (never blocks the run);
@@ -2474,9 +2666,9 @@ def _run_refresh(run_id: str) -> int:
         datetime.date.fromisoformat(args.adp_to) if args.adp_to
         else (datetime.date.fromisoformat(args.window_to) if args.window_to else None)
     )
-    # Use custom-range earnings when a window is explicitly set (backfill mode).
-    # Keep "Last payroll" for nightly incremental (no --from/--to, no --adp-from).
-    earnings_custom_range = bool(adp_window_from and adp_window_to)
+    # Earnings always uses custom date range + Employment=All in the bundle.
+    # ADP From/To is check date, not period dates (Issue #251, 2026-08-18).
+    earnings_custom_range = True
     # A windowed run with no explicit pay-period override => Select All periods
     # (extra periods upsert harmlessly via keyed BQ MERGE).
     if args.window_from and not args.adp_pay_period and not args.adp_to:
@@ -2553,6 +2745,8 @@ def _run_refresh(run_id: str) -> int:
         if _adp_will_launch_browser(
             needs_adp=needs_adp, target_date=adp_target_date,
             include_earnings=include_rates,
+            earnings_start=adp_window_from,
+            earnings_end=adp_window_to,
         ):
             otp_portals.append("ADP")
 

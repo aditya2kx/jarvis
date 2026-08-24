@@ -75,7 +75,9 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
    Never floats for currency.
 5. **Rounding residuals** distribute deterministically (largest-remainder) so the sum of shares
    equals the day's pool exactly. Never silently absorb residual cents.
-6. **Read-only toward ADP for payroll.** BHAGA produces outputs; it never auto-writes back to RUN.
+6. **Read-only toward ADP for payroll Submit.** BHAGA never clicks Approve/Submit / never
+   impounds cash. Issue #251: a flagged ADP **draft** (Start → Preview → **Delete**) is
+   allowed; default off (`FEATURES.adpPayrollDraft` / `BHAGA_ADP_PAYROLL_DRAFT`).
 7. **Timezone = Central (Texas).** All date selection on Square / ADP / reviews and all report
    timestamps use `ZoneInfo("America/Chicago")`. A date is "today" only after the shop closes (the
    nightly fires 21:30 CT). Never let local/PST/UTC leak into a date boundary.

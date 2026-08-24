@@ -1540,13 +1540,19 @@ export interface PayrollPeriodRow {
   period_end: string;
   is_open: boolean;
   employee: string;
+  labor_type: string;
+  wage_rate_dollars: number | null;
+  ot_rate_dollars: number | null;
   hours_worked: number;
-  est_gross_pay: number;
+  ot_hours: number;
+  est_gross_pay: number | null;
   tips_allocated: number;
   review_bonus: number;
   /** Manual recognition bonus dollars (migration 049). */
   recognition_bonus: number;
   recognition_reason: string | null;
+  perks: number;
+  perk_reason: string | null;
   est_total_pay: number;
   adp_wages_paid: number;
   adp_tips_paid: number;

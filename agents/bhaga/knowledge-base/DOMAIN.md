@@ -92,13 +92,14 @@ functions of `update_model_sheet.py` / `forecast.py` for the labor / tip-alloc /
 `shifts` minus totals, plus `punch_idx_in_day` (0-based punch order within the day).
 
 **`wage_rates`** — one row per **employee**. Key: `(employee_id,)`. Dual source
-(Issue #213):
+(Issue #213 / #251):
 
-1. **Primary:** `compensation_backend.infer_wage_rates` from Earnings & Hours V1
-   Regular lines (`rate_source=earnings`) — available after payroll.
-2. **Gap-fill:** People → Payroll info → Hourly pay rate via
-   `pay_info_backend` (`rate_source=pay_info`) for punchers missing a rate
-   before their first paycheck. Earnings Regular always overwrites pay_info.
+1. **Earnings Regular** (`compensation_backend.infer_wage_rates`, `rate_source=earnings`)
+   — available after payroll; also carries OT / salaried flags.
+2. **Payroll info refresh** (`pay_info_backend`, `rate_source=pay_info`) — nightly
+   scrape of **all recent punchers** (People → Hourly pay rate). MERGEs raises
+   before the next check. Does **not** overwrite existing OT / salaried flags.
+   Scrape failures Slack a `:warning:` and do not fail Timecard/tips.
 
 | Field | Meaning |
 |---|---|
@@ -262,7 +263,7 @@ translation.
 - **`total_labor_cost`** — `hourly + fulltime`.
 - Per-shift cost = `regular_hours × rate + ot_hours × (ot_rate or rate×1.5) + doubletime_hours ×
   rate × 2`. Employees missing a wage row (new hires) fall back to the **median hourly rate**
-  until `pay_info` gap-fill lands a rate (Issue #213); median remains last resort.
+  until `pay_info` nightly refresh lands a rate (Issue #213/#251); median remains last resort.
   This is **wage-only** employer cost (no FICA/FUTA/SUTA/workers' comp). Operator Console
   Issue #166 optionally overlays an **all-in** view via `store_config.labor_burden_pct`
   (fraction; recommended start `0.13`) without changing the warehouse columns.
@@ -430,7 +431,8 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 | `vw_model_labor_daily` (extended) | day | All `model_labor_daily` cols + `labor_pct`, `hourly_pct`, `fulltime_pct` aliases | Extended view for the Grafana Labor Cost section. No view-on-view — source: `model_labor_daily`. |
 | `vw_model_labor_daily` (ext 005) | day | All prior cols + `total_hours`, `hourly/fulltime_hours_per_item`, `*_hours_per_1k_net_sales` | Adds per-$1k and per-item hours ratios for the Labor section charts. |
 | `vw_model_labor_weekly` (ext 005) | ISO week | All `model_labor_weekly` cols + same new Labor section cols | Same extensions as daily. Source: `model_labor_weekly`. |
-| `vw_model_payroll_period` (ext 005) | (period, employee) | `hours_worked`, `est_gross_pay`, `adp_wages_paid`, `wage_diff`, `tips_allocated`, `adp_tips_paid`, `tip_diff`, `review_bonus`, `adp_bonus_paid`, `bonus_diff`, `est_total_pay`, `adp_total_paid` | Joins `model_tip_alloc_period` + `model_review_bonus_period` + `adp_wage_rates` + `adp_earnings`. ADP actuals come from `adp_earnings`; diffs = estimated − actual. |
+| `vw_model_payroll_period` (ext 059–064 / Issue #251) | (period, employee) | prior cols + `labor_type`, `wage_rate_dollars`, `ot_hours`, `ot_rate_dollars`, `perks`, `perk_reason` (`id:dollars` joined by `;`) | Roster 1:1 with ADP Enter: tip-pool **UNION** punchers dated `period_start..period_end` **UNION** carry 0h for anyone who punched in the 28 days before `period_start` (e.g. terminated Juan). Paid hours still through **yesterday CT** (today’s in-progress punches stay 0 until nightly). Tips = `our_calc` for tip-pool rows, else 0. Recurring perks from `employee_perks` (cents; Lindsay gym $20/biweek). Console shows one Perks total + named chips. Wages = `ROUND` of hours×rate as **NUMERIC** (half-up cents, matching ADP Preview Gross — not FLOAT64). |
+| `employee_perks` | (store, employee, perk_id) | `amount_cents`, `cadence`, `adp_earning_description` | Named paycheck extras (gym → ADP Misc reimbursement). Integer cents. |
 
 ### Raw BQ tables (migration 005 — 1:1 mirrors of scrape output)
 
@@ -440,7 +442,7 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 | `square_item_daily` | `date_local` | BHAGA Square Raw > item_daily_rollup | `(date_local,)` |
 | `square_kds_daily` | `date_local` | BHAGA Square Raw > kds_daily | `(date_local,)` |
 | `square_kds_tickets` | `date_local` | BHAGA Square Raw > kds_tickets (NEW) | `(date_local, time_created, ticket_name)` |
-| `adp_earnings` | `period_start` | BHAGA ADP Raw > earnings (NEW) | `(period_start, period_end, employee, description, check_date)` |
+| `adp_earnings` | `period_start` | BHAGA ADP Raw > earnings (NEW) | `(period_start, period_end, employee, description, check_date)` — scrape From/To is **Payroll Check Date**, not period dates |
 | `google_reviews` | `post_date_ct` | BHAGA Review Raw > reviews | `(review_id,)` |
 
 `square_kds_tickets` and `adp_earnings` are written to BQ by the nightly pipeline: Square data via `skills/square_api/ingest.py` (REST API); ADP data via `backfill_from_downloads.py --skip square`. Their raw Sheet tabs are rendered from BQ by `render_raw_sheet_from_bq.py`.

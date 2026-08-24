@@ -304,6 +304,89 @@ def _should_run_rates(*, override: str | None) -> bool:
     return today.weekday() in {0, 1}
 
 
+def _adp_payroll_draft_env_on() -> bool:
+    return os.environ.get("BHAGA_ADP_PAYROLL_DRAFT", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def period_end_payroll_draft_bounds(
+    refresh_date: datetime.date,
+    *,
+    closed_start: datetime.date,
+    closed_end: datetime.date,
+) -> tuple[datetime.date, datetime.date] | None:
+    """Run once on the first nightly after the biweek Sunday.
+
+    Palmetto periods end Sunday. ``bhaga-nightly`` at 21:30 CT uses
+    ``refresh_date`` = that calendar day. Monday's job has
+    ``refresh_date == closed_end + 1 day``, Sunday punches are in BQ, and
+    ``vw_model_payroll_period`` hours include period-end (no longer
+    yesterday-CT while open). Tuesday+ skips.
+    """
+    if closed_end == refresh_date - datetime.timedelta(days=1):
+        return closed_start, closed_end
+    return None
+
+
+def _maybe_run_period_end_payroll_draft(
+    *,
+    store: str,
+    refresh_date: datetime.date,
+    profile: dict,
+    dry_run: bool,
+) -> None:
+    """Flagged Start→Preview→Delete. Never Approve. Non-fatal to nightly."""
+    if not _adp_payroll_draft_env_on():
+        print(
+            "[adp_payroll_draft] SKIPPED — BHAGA_ADP_PAYROLL_DRAFT unset "
+            f"(refresh_date={refresh_date.isoformat()})"
+        )
+        return
+    adp = profile.get("adp_run") or {}
+    anchor = adp.get("pay_periods_anchor_end_date")
+    freq = adp.get("pay_frequency", "Biweekly")
+    if not anchor:
+        print("[adp_payroll_draft] BREADCRUMB skip no pay_periods_anchor_end_date")
+        return
+    from agents.bhaga.scripts import update_model_sheet as _ums  # noqa: PLC0415
+
+    closed_start, closed_end = _ums.most_recent_closed_period(
+        anchor_end_date=anchor, pay_frequency=freq, today=refresh_date,
+    )
+    window = period_end_payroll_draft_bounds(
+        refresh_date, closed_start=closed_start, closed_end=closed_end,
+    )
+    if window is None:
+        print(
+            f"[adp_payroll_draft] SKIPPED — not first day after close "
+            f"refresh_date={refresh_date.isoformat()} "
+            f"closed={closed_start.isoformat()}..{closed_end.isoformat()}"
+        )
+        return
+    ps, pe = window
+    print(
+        f"[adp_payroll_draft] BREADCRUMB period_end_hook "
+        f"store={store} period={ps.isoformat()}..{pe.isoformat()} "
+        f"dry_run={dry_run}"
+    )
+    if dry_run:
+        return
+    from skills.adp_run_automation.payroll_draft_backend import (  # noqa: PLC0415
+        run_draft,
+    )
+
+    run_draft(
+        store=store,
+        period_start=ps.isoformat(),
+        period_end=pe.isoformat(),
+        dry_run=False,
+        allow_prod_draft=True,
+        hold_seconds=0,
+        allow_start=True,
+    )
+
+
 # ── Per-day step markers (Layer B idempotency) ─────────────────────
 #
 # When the wrapper fires and a step partially succeeds, we don't want the
@@ -1588,13 +1671,26 @@ def _adp_bundle_then_raise(
         earnings_custom_range=earnings_custom_range,
     )
     errs = dict(result.get("errors") or {})
-    # adp_schedule is a best-effort, non-critical auxiliary scrape (forward
-    # scheduled hours for the Grafana scheduled-vs-goal panel). The forecast /
-    # labor / tip pipeline does not depend on it, so a schedule hiccup must NOT
-    # fail the nightly ADP step. Warn but don't raise on it.
+    # Best-effort auxiliary scrapes: warn, do not fail Timecard/tips.
+    # adp_schedule — forward hours for Grafana; labor/tips do not depend on it.
+    # adp_pay_info — wage refresh Slack-warns on its own; must not halt nightly.
     sched_err = errs.pop("adp_schedule", None)
     if sched_err:
         print(f"[adp_bundle] WARN: schedule scrape failed (non-fatal): {sched_err}")
+    pay_info_err = errs.pop("adp_pay_info", None)
+    if pay_info_err:
+        print(f"[adp_bundle] WARN: pay_info scrape failed (non-fatal): {pay_info_err}")
+        try:
+            from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415
+                report_pay_info_issues,
+            )
+
+            report_pay_info_issues(
+                date=str(target_date),
+                flow_error=str(pay_info_err),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[adp_bundle] pay_info Slack warn skipped: {exc}")
     if errs:
         summary = "; ".join(f"{name}: {msg}" for name, msg in errs.items())
         raise RuntimeError(f"adp_bundle partial failure ({len(errs)} component(s)): {summary}")
@@ -1811,21 +1907,36 @@ def _adp_will_launch_browser(
     needs_adp: bool,
     target_date: datetime.date | None,
     include_earnings: bool,
+    earnings_start: datetime.date | None = None,
+    earnings_end: datetime.date | None = None,
 ) -> bool:
     """Mirror download_adp_bundle's Layer-A gate to predict a browser launch."""
     if not needs_adp:
         return False
     from skills.adp_run_automation.runner import (
         DOWNLOADS_DIR as _DL,
+        _earnings_report_date_window,
         _xlsx_fresh_for_target,
     )
 
     today = datetime.date.today()
     tc = _DL / f"Timecard-{today.isoformat()}.xlsx"
     er = _DL / f"Earnings-and-Hours-V1-{today.isoformat()}.xlsx"
+    er_start, er_end = _earnings_report_date_window(
+        today=today,
+        target_date=target_date,
+        earnings_start=earnings_start,
+        earnings_end=earnings_end,
+    )
     tc_fresh = _xlsx_fresh_for_target(tc, target_date=target_date, min_bytes=10_000)
     er_fresh = (
-        _xlsx_fresh_for_target(er, target_date=target_date, min_bytes=5_000)
+        _xlsx_fresh_for_target(
+            er,
+            target_date=target_date,
+            min_bytes=5_000,
+            range_start=er_start,
+            range_end=er_end,
+        )
         if include_earnings
         else False
     )
@@ -2474,9 +2585,9 @@ def _run_refresh(run_id: str) -> int:
         datetime.date.fromisoformat(args.adp_to) if args.adp_to
         else (datetime.date.fromisoformat(args.window_to) if args.window_to else None)
     )
-    # Use custom-range earnings when a window is explicitly set (backfill mode).
-    # Keep "Last payroll" for nightly incremental (no --from/--to, no --adp-from).
-    earnings_custom_range = bool(adp_window_from and adp_window_to)
+    # Earnings always uses custom date range + Employment=All in the bundle.
+    # ADP From/To is check date, not period dates (Issue #251, 2026-08-18).
+    earnings_custom_range = True
     # A windowed run with no explicit pay-period override => Select All periods
     # (extra periods upsert harmlessly via keyed BQ MERGE).
     if args.window_from and not args.adp_pay_period and not args.adp_to:
@@ -2553,6 +2664,8 @@ def _run_refresh(run_id: str) -> int:
         if _adp_will_launch_browser(
             needs_adp=needs_adp, target_date=adp_target_date,
             include_earnings=include_rates,
+            earnings_start=adp_window_from,
+            earnings_end=adp_window_to,
         ):
             otp_portals.append("ADP")
 
@@ -2904,6 +3017,23 @@ def _run_refresh(run_id: str) -> int:
         print("[process_reviews] SKIPPED — review_fetch failed in parallel phase.")
     else:
         print("[process_reviews] SKIPPED — raw_sheets_ok=False (need fresh ADP punches).")
+
+    # Issue #251: after Sunday close, Monday 21:30 CT nightly fills ADP Preview
+    # (tips/bonus/perks) then Deletes. Env off until operator sets
+    # BHAGA_ADP_PAYROLL_DRAFT=1. Never Approve. Failure must not fail tips.
+    try:
+        _maybe_run_period_end_payroll_draft(
+            store=args.store,
+            refresh_date=refresh_date,
+            profile=profile,
+            dry_run=args.dry_run,
+        )
+    except Exception as draft_exc:  # noqa: BLE001
+        print(
+            f"[adp_payroll_draft] BREADCRUMB nightly_hook_failed "
+            f"refresh_date={refresh_date.isoformat()} err={draft_exc!r}",
+            file=sys.stderr,
+        )
 
     # ── Inventory ingest (Order Assistant) ──────────────────────────────────
     # Non-fatal: an ingest failure must not block the tip/payroll pipeline.

@@ -786,6 +786,21 @@ class EarningsCustomRangeTests(unittest.TestCase):
         self.assertIn("requires both start and end", str(cm.exception))
 
 
+    def test_nightly_bundle_forces_custom_range(self):
+        """Last payroll + Active-only omitted new hires; force custom range + All."""
+        import inspect
+
+        from skills.adp_run_automation import runner as r
+
+        src = inspect.getsource(r.download_adp_bundle)
+        self.assertIn("use_custom_range=True", src)
+        self.assertNotIn("use_custom_range=earnings_custom_range", src)
+        self.assertIn(
+            "_set_earnings_employment_all",
+            inspect.getsource(r._earnings_within_session),
+        )
+
+
 class ProcessReviewsUntilArgTests(unittest.TestCase):
     """--until arg caps review processing window."""
 
@@ -1880,6 +1895,91 @@ class TestOrderRecoOnlyEarlyExit(unittest.TestCase):
             rc = dr.main()
         self.assertEqual(rc, 0)
         self.assertEqual(called, ["palmetto"])
+
+
+class TestPeriodEndPayrollDraftBounds(unittest.TestCase):
+    """Monday nightly after Sunday close; not Sunday itself, not Tuesday."""
+
+    def test_monday_after_aug_23_close(self):
+        from agents.bhaga.scripts.daily_refresh import period_end_payroll_draft_bounds
+
+        start = datetime.date(2026, 8, 10)
+        end = datetime.date(2026, 8, 23)
+        self.assertEqual(
+            period_end_payroll_draft_bounds(
+                datetime.date(2026, 8, 24), closed_start=start, closed_end=end,
+            ),
+            (start, end),
+        )
+        self.assertIsNone(
+            period_end_payroll_draft_bounds(
+                datetime.date(2026, 8, 23), closed_start=start, closed_end=end,
+            )
+        )
+        self.assertIsNone(
+            period_end_payroll_draft_bounds(
+                datetime.date(2026, 8, 25), closed_start=start, closed_end=end,
+            )
+        )
+
+    def test_env_off_skips_run_draft(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with mock.patch.dict(os.environ, {"BHAGA_ADP_PAYROLL_DRAFT": ""}, clear=False), \
+             mock.patch(
+                 "skills.adp_run_automation.payroll_draft_backend.run_draft",
+             ) as run_draft:
+            dr._maybe_run_period_end_payroll_draft(
+                store="palmetto",
+                refresh_date=datetime.date(2026, 8, 24),
+                profile={"adp_run": {
+                    "pay_periods_anchor_end_date": "2026-05-17",
+                    "pay_frequency": "Biweekly",
+                }},
+                dry_run=False,
+            )
+            run_draft.assert_not_called()
+
+
+class TestAdpBundlePayInfoNonfatal(unittest.TestCase):
+    """Wage-rate pay_info issues must Slack-warn, not fail Timecard/tips."""
+
+    def test_pay_info_error_does_not_raise(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        result = {"errors": {"adp_pay_info": "TimeoutError: search"}}
+        with mock.patch(
+            "skills.adp_run_automation.runner.download_adp_bundle",
+            return_value=result,
+        ), mock.patch(
+            "skills.adp_run_automation.pay_info_backend.report_pay_info_issues",
+        ) as report:
+            out = dr._adp_bundle_then_raise(
+                store="palmetto",
+                target_date=datetime.date(2026, 8, 18),
+                include_earnings=False,
+                headed=False,
+            )
+        self.assertEqual(out, result)
+        report.assert_called_once()
+
+    def test_timecard_error_still_raises(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        result = {"errors": {"adp_timecard": "boom"}}
+        with mock.patch(
+            "skills.adp_run_automation.runner.download_adp_bundle",
+            return_value=result,
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                dr._adp_bundle_then_raise(
+                    store="palmetto",
+                    target_date=datetime.date(2026, 8, 18),
+                    include_earnings=False,
+                    headed=False,
+                )
+        self.assertIn("adp_timecard", str(ctx.exception))
+        self.assertNotIn("adp_pay_info", str(ctx.exception))
 
 
 if __name__ == "__main__":

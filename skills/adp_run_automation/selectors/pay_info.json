@@ -2,6 +2,9 @@
   "description": "ADP RUN People → Payroll info → Hourly pay rate (Issue #213 gap-fill)",
   "nav": {
     "people_btn": "[data-test-id=\"People-btn\"]",
+    "directory_btn": "Directory",
+    "people_search_placeholder": "Search people | Search for an employee's name",
+    "people_search_host": "[data-test-id=\"aeed-desktop-search-input\"]",
     "payroll_tab": "#EMPLOYEE_PAYROLL",
     "manage_pay_info_text": "Manage pay info",
     "payroll_info_text": "Payroll info"

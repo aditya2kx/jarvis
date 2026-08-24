@@ -8,6 +8,12 @@ export const FEATURES = {
   orderQuality: true,
   inventory: true,
   payroll: true,
+  /**
+   * Issue #251 — Playwright ADP RUN Start→Preview→Delete. Default off; never Approve.
+   * Cloud Run env BHAGA_ADP_PAYROLL_DRAFT=1 enables Monday 21:30 CT nightly
+   * after the biweek Sunday (refresh_date = period_end + 1). Never Approve.
+   */
+  adpPayrollDraft: false,
   pipeline: true,
   /** Issue #158/#160 — Accounting page (linked bank feed only). */
   accounting: true,

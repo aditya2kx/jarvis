@@ -296,6 +296,20 @@ GRAFANA_VIEWS: list[Target] = [
     # vw_inventory_order_assistant.latest_reading. Console /inventory Current Qty
     # edit — not model_* / no Grafana panel; freshness via inventory_order_reco
     # refresh. No new BQ_TARGETS/GRAFANA_VIEWS.
+    # migration 059 (Issue #251): employee_perks + rewrite vw_model_payroll_period
+    # (PT tip-alloc UNION FT shifts; wage_rate, ot_hours, perks). Same view already
+    # in GRAFANA_VIEWS — no new target.
+    # migration 060 (Issue #251): perk_reason = id:dollars agg for multi-perk chips.
+    # Same view — no new target.
+    # migration 061 (Issue #251): hours/wages from adp_shifts, not tip-eligible hours.
+    # Same view — no new target.
+    # migration 062 (Issue #251): full ADP puncher roster + open hours through yesterday CT.
+    # Same view — no new target.
+    # migration 063 (Issue #251): 1:1 roster — biweek punchers (hours through yesterday)
+    # plus carry 0h for recent punchers not in this window (terminated-but-listed).
+    # Same view — no new target.
+    # migration 064 (Issue #251): ADP half-up cents on hours×rate via NUMERIC ROUND
+    # (FLOAT64 ROUND was $0.01 low on Ximena/Kayah). Same view — no new target.
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

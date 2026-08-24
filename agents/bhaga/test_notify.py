@@ -91,3 +91,23 @@ class TestSquareDeviceBlockedAlert:
                             lambda text: captured.setdefault("text", text))
         notify.square_device_blocked_alert(date="2026-06-08")
         assert "Evidence:" not in captured["text"]
+
+
+class TestWageRateFlowAlert:
+    def test_warning_not_pipeline_failure(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(notify, "_safe_send",
+                            lambda text: captured.setdefault("text", text))
+        notify.wage_rate_flow_alert(
+            date="2026-08-18",
+            scrape_errors={"Perales, Elizabeth": "TimeoutError: search"},
+            remaining_gaps=["Perales, Elizabeth"],
+            attempted=12,
+            scraped_ok=11,
+        )
+        text = captured["text"]
+        assert ":warning:" in text
+        assert "debug this separately" in text
+        assert "Perales, Elizabeth" in text
+        assert "FAILED" not in text
+        assert "2026-08-18" in text

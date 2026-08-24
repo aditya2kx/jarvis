@@ -10,14 +10,16 @@ All three run in **one browser session / one login / one OTP** via
 | Function | Source | Output | Parser |
 |---|---|---|---|
 | `download_timecard` | Reports → Time → Timecard | `Timecard-<date>.xlsx` (per-punch) | `shift_backend.py` |
-| `download_earnings` | Reports → saved "Earnings and Hours V1" | `Earnings-…-<date>.xlsx` (wage rates + CC-tips) | `compensation_backend.py` |
+| `download_earnings` | Reports → saved "Earnings and Hours V1" | `Earnings-…-<date>.xlsx` (wage rates + CC-tips). From/To is **check date**, not period dates. | `compensation_backend.py` |
 | `download_schedule` | Home → **Team Schedule** ("Manage Schedules") | `Schedule-<date>.json` (per-day scheduled hours, current + next week) | `schedule_backend.py` |
-| pay_info gap-fill (in bundle) | People → Payroll info → Hourly pay rate | `PayInfoRates-<date>.json` | `pay_info_backend.py` |
+| pay_info rate refresh (in bundle) | People → Payroll info → Hourly pay rate | `PayInfoRates-<date>.json` | `pay_info_backend.py` |
+| `payroll_draft_backend.run_draft` | Payroll Home → Start (flagged) | In-progress worksheet then **Delete** | `payroll_draft_backend.py` — dry-run default; never Approve |
 
-**Wage-rate dual source (Issue #213):** Earnings Regular is authoritative after
-payroll. Punchers missing `adp_wage_rates.wage_rate_dollars` are gap-filled from
-Payroll info in the same ADP session (every night gaps exist, not Mon/Tue-only).
-CLI: `python3 -m skills.adp_run_automation.pay_info_backend --from-bq-gaps --write-bq`.
+**Wage-rate dual source (Issue #213 / #251):** Earnings Regular after payroll.
+Nightly Payroll info scrapes **all recent punchers** so raises land before the
+next check (OT / salaried flags from earnings are preserved). Per-employee
+failures Slack a warning and do not fail Timecard/tips.
+CLI: `python3 -m skills.adp_run_automation.pay_info_backend --from-bq-punchers --write-bq`.
 
 **Team Schedule scrape** (added 2026-06-10): ADP exposes NO structured export
 for the schedule (Actions → "Print schedule" only opens the browser's native

@@ -44,6 +44,24 @@ def vehicle_data_path(vehicle_id: str | int, endpoints: str = LOCATION_ENDPOINTS
     return f"/api/1/vehicles/{vehicle_id}/vehicle_data?{q}"
 
 
+def parse_vehicle_location(resp: dict) -> dict:
+    """Pull lat/lon from a vehicle_data payload (drive_state, else location_data)."""
+    drive = resp.get("drive_state") or {}
+    loc = resp.get("location_data") or {}
+    lat = drive.get("latitude") if drive.get("latitude") is not None else loc.get("latitude")
+    lon = drive.get("longitude") if drive.get("longitude") is not None else loc.get("longitude")
+    return {
+        "latitude": lat,
+        "longitude": lon,
+        "heading": drive.get("heading"),
+        "speed": drive.get("speed"),
+        "shift_state": drive.get("shift_state"),
+        "power": drive.get("power"),
+        "state": resp.get("state"),
+        "raw": resp,
+    }
+
+
 def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
@@ -200,21 +218,7 @@ class TeslaFleetClient:
         """Return drive/location fields. Does not wake a sleeping vehicle."""
         path = vehicle_data_path(vehicle_id)
         data = self._api("GET", path)
-        resp = data.get("response") or {}
-        drive = resp.get("drive_state") or {}
-        loc = resp.get("location_data") or {}
-        lat = drive.get("latitude") if drive.get("latitude") is not None else loc.get("latitude")
-        lon = drive.get("longitude") if drive.get("longitude") is not None else loc.get("longitude")
-        return {
-            "latitude": lat,
-            "longitude": lon,
-            "heading": drive.get("heading"),
-            "speed": drive.get("speed"),
-            "shift_state": drive.get("shift_state"),
-            "power": drive.get("power"),
-            "state": resp.get("state"),
-            "raw": resp,
-        }
+        return parse_vehicle_location(data.get("response") or {})
 
     def _store_token(self, data: dict) -> dict:
         self._access_token = data.get("access_token") or ""
@@ -283,3 +287,4 @@ TeslaFleetClient.register_partner = TeslaFleetClient.register_partner
 TeslaFleetClient.list_vehicles = TeslaFleetClient.list_vehicles
 TeslaFleetClient.authorization_url = TeslaFleetClient.authorization_url
 TeslaFleetClient.exchange_code = TeslaFleetClient.exchange_code
+parse_vehicle_location = parse_vehicle_location

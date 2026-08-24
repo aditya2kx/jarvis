@@ -1959,33 +1959,49 @@ A second copy would double-open the door.
 | VIN | `TESLA_VIN` (Dhanno) |
 | Partner domain | `yuejj.fleetkey.net` (public key already hosted; partner registered) |
 | Door | Big Peach `ALADDIN_DEVICE_SERIAL=F0AD4E3E7403` / `ALADDIN_DOOR_INDEX=1` |
-| Home | `HOME_LAT` / `HOME_LON` · enter 400 m · hysteresis 80 m · cooldown 600 s |
+| Home | `HOME_LAT` / `HOME_LON` · enter 400 m (Firestore overlay `enter_m`) · hysteresis 80 m · cooldown 600 s |
 | Live | `ALADDIN_DRY_RUN=0` |
+| Admin | Secret `garage-admin-token` → header `X-Garage-Token` |
 
 ```bash
-# Health
-curl -sS "https://tesla-aladdin-garage-HASH-uc.a.run.app/health"
+# Health (last event, enter_m, persisted Firestore snapshot)
+curl -sS "$URL/health"
+
+# Live Tesla distance from home (does not open the door)
+curl -sS "$URL/location" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN"
+
+# Simulate 400 m enter → OPEN Big Peach (live; cooldown 600 s)
+curl -sS -X POST "$URL/simulate/enter" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN"
+
+# Change radius without rebuild
+curl -sS -X POST "$URL/config" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"enter_m": 350}'
 
 # Re-auth if needs_reauth=true (add the callback URL on the Tesla app first)
-open "https://tesla-aladdin-garage-HASH-uc.a.run.app/oauth/tesla"
+open "$URL/oauth/tesla"
 
-# Logs (greppable)
-gcloud run services logs read tesla-aladdin-garage --region us-central1 --limit 50
+# Logs (greppable skip/open/fail)
+gcloud run services logs read tesla-aladdin-garage --region us-central1 --limit 50 \
+  --format='value(textPayload)' | grep tesla-aladdin-garage
 ```
 
-One-time secrets (values from env / previous authorize; never commit). **Not from a
+One-time secrets (values from `local/tesla-aladdin-garage.env`; never commit). **Not from a
 Cursor Cloud Agent** unless `gcp_access_probe.py` prints `surface=adc_ready`. Canonical
 recipe: [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md) B.
 
 ```bash
 python3 scripts/gcp_access_probe.py   # must be adc_ready
+set -a && source local/tesla-aladdin-garage.env && set +a
 python3 scripts/secret_manager_put.py --secret tesla-fleet-client-id --from-env TESLA_CLIENT_ID
 python3 scripts/secret_manager_put.py --secret tesla-fleet-client-secret --from-env TESLA_CLIENT_SECRET
-python3 scripts/secret_manager_put.py --secret tesla-fleet-refresh-token --from-env TESLA_REFRESH_TOKEN
 python3 scripts/secret_manager_put.py --secret aladdin-connect-username --from-env ALADDIN_USERNAME
 python3 scripts/secret_manager_put.py --secret aladdin-connect-password --from-env ALADDIN_PASSWORD
+# If TESLA_REFRESH_TOKEN is empty, put a placeholder then finish via /oauth/tesla
+python3 scripts/secret_manager_put.py --secret tesla-fleet-refresh-token --from-env TESLA_REFRESH_TOKEN
+python3 scripts/secret_manager_put.py --secret garage-admin-token --data-file /path/to/admin.token
 ```
 
 Deploy: `.github/workflows/tesla-aladdin-garage-deploy.yml` (push to `main` or `workflow_dispatch`).
-Do **not** run a laptop Docker copy at the same time.
+Do **not** run a laptop Docker copy at the same time. Stale-poll log metric
+`tesla_aladdin_garage_poll` is created by the deploy job.
 

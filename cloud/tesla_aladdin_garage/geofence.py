@@ -48,6 +48,9 @@ class Geofence:
         return "outside"
 
 
-Geofence.distance_m = Geofence.distance_m
-Geofence.observe = Geofence.observe
-haversine_m = haversine_m
+def offset_point(lat: float, lon: float, dist_m: float, bearing_deg: float = 0.0) -> tuple[float, float]:
+    """Approximate dest point (metres). 1 deg lat ≈ 111_320 m."""
+    bearing = math.radians(bearing_deg)
+    dlat = (dist_m * math.cos(bearing)) / 111320.0
+    dlon = (dist_m * math.sin(bearing)) / (111320.0 * max(math.cos(math.radians(lat)), 1e-6))
+    return lat + dlat, lon + dlon

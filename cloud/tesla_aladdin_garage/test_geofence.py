@@ -31,3 +31,11 @@ def test_hysteresis_holds_until_exit_radius():
     g.observe(*_at(100))
     assert g.observe(*_at(450)) == "inside"
     assert g.observe(*_at(500)) == "exit"
+
+
+def test_offset_point_north_is_farther():
+    from cloud.tesla_aladdin_garage.geofence import offset_point
+
+    lat, lon = offset_point(*HOME, 500, 0)
+    assert Geofence(*HOME).distance_m(lat, lon) > 480
+

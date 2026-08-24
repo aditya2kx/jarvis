@@ -105,3 +105,38 @@ def test_missing_token_asks_reauth():
     tesla.needs_user_auth.return_value = True
     w = GarageWorker(_cfg(), tesla, aladdin)
     assert w.tick() == "needs_reauth"
+
+
+def test_simulate_enter_opens_dry_run():
+    tesla, aladdin = _tesla(*HOME), _aladdin()
+    w = GarageWorker(_cfg(dry_run=True), tesla, aladdin)
+    assert w.simulate_enter() == "opened_dry_run"
+    aladdin.open_door.assert_called_once()
+
+
+def test_simulate_enter_cooldown():
+    tesla, aladdin = _tesla(*HOME), _aladdin()
+    now = [0.0]
+    w = GarageWorker(_cfg(), tesla, aladdin, now=lambda: now[0])
+    assert w.simulate_enter() == "opened_dry_run"
+    now[0] = 10
+    assert w.simulate_enter() == "skip_cooldown"
+    assert aladdin.open_door.call_count == 1
+
+
+def test_current_location_does_not_open():
+    tesla, aladdin = _tesla(*HOME), _aladdin()
+    w = GarageWorker(_cfg(), tesla, aladdin)
+    loc = w.current_location()
+    assert loc["ok"] is True
+    assert loc["distance_m"] < 1
+    aladdin.open_door.assert_not_called()
+
+
+def test_overlay_changes_enter_m():
+    tesla, aladdin = _tesla(*HOME), _aladdin()
+    w = GarageWorker(_cfg(), tesla, aladdin)
+    w.apply_overlay({"enter_m": 350})
+    assert w.cfg.enter_m == 350
+    assert w.geofence.enter_m == 350
+

@@ -1,4 +1,4 @@
-"""Cloud Run entry: /health, Tesla OAuth, background geofence worker.
+"""Cloud Run entry: /health, Tesla OAuth, location, simulate-enter, geofence worker.
 
 Always-on: min instances = 1, CPU never throttled, max instances = 1.
 """
@@ -12,6 +12,7 @@ from typing import Optional
 
 from flask import Flask, jsonify, redirect, request
 
+from cloud.tesla_aladdin_garage import persist
 from cloud.tesla_aladdin_garage.worker import GarageWorker, WorkerConfig
 from skills.aladdin_connect.client import AladdinConnectClient
 from skills.tesla_fleet.client import TeslaFleetClient
@@ -56,16 +57,27 @@ def get_worker() -> GarageWorker:
         return _worker
 
 
+def _require_admin():
+    expected = os.environ.get("GARAGE_ADMIN_TOKEN", "")
+    got = request.headers.get("X-Garage-Token", "")
+    if not expected or got != expected:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    return None
+
+
 @app.get("/health")
 def health():
     w = get_worker()
     st = w.state
+    stored = persist.load_state()
     return jsonify(
         {
             "ok": True,
             "service": "tesla-aladdin-garage",
             "vin": w.cfg.vin,
             "dry_run": w.cfg.dry_run,
+            "enter_m": w.cfg.enter_m,
+            "hysteresis_m": w.cfg.hysteresis_m,
             "needs_reauth": st.needs_reauth or w.tesla.needs_user_auth(),
             "last_event": st.last_event,
             "last_distance_m": st.last_distance_m,
@@ -73,6 +85,45 @@ def health():
             "opens": st.opens,
             "last_error": st.last_error,
             "partner_domain": w.tesla.partner_domain,
+            "persisted": stored,
+        }
+    )
+
+
+@app.get("/location")
+def location():
+    denied = _require_admin()
+    if denied:
+        return denied
+    return jsonify(get_worker().current_location())
+
+
+@app.post("/simulate/enter")
+def simulate_enter():
+    denied = _require_admin()
+    if denied:
+        return denied
+    event = get_worker().simulate_enter()
+    return jsonify({"ok": True, "event": event})
+
+
+@app.post("/config")
+def config():
+    denied = _require_admin()
+    if denied:
+        return denied
+    body = request.get_json(silent=True) or {}
+    overlay = {k: body[k] for k in ("enter_m", "hysteresis_m", "cooldown_s", "poll_s") if k in body}
+    persist.save_config(overlay)
+    get_worker().apply_overlay(overlay)
+    w = get_worker()
+    return jsonify(
+        {
+            "ok": True,
+            "enter_m": w.cfg.enter_m,
+            "hysteresis_m": w.cfg.hysteresis_m,
+            "cooldown_s": w.cfg.cooldown_s,
+            "poll_s": w.cfg.poll_s,
         }
     )
 
@@ -95,9 +146,9 @@ def oauth_callback():
 
 @app.post("/tick")
 def tick():
-    token = os.environ.get("GARAGE_ADMIN_TOKEN", "")
-    if token and request.headers.get("X-Garage-Token") != token:
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    denied = _require_admin()
+    if denied:
+        return denied
     event = get_worker().tick()
     return jsonify({"ok": True, "event": event})
 

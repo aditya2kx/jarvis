@@ -9,7 +9,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from cloud.tesla_aladdin_garage.geofence import Geofence
+from cloud.tesla_aladdin_garage.geofence import Geofence, offset_point
+from cloud.tesla_aladdin_garage import persist
 from skills.aladdin_connect.client import AladdinConnectClient
 from skills.tesla_fleet.client import TeslaFleetClient, TeslaFleetError
 
@@ -46,6 +47,16 @@ class WorkerConfig:
             dry_run=os.environ.get("ALADDIN_DRY_RUN", "1") != "0",
         )
 
+    def apply_overlay(self, overlay: dict) -> None:
+        if overlay.get("enter_m") is not None:
+            self.enter_m = float(overlay["enter_m"])
+        if overlay.get("hysteresis_m") is not None:
+            self.hysteresis_m = float(overlay["hysteresis_m"])
+        if overlay.get("cooldown_s") is not None:
+            self.cooldown_s = float(overlay["cooldown_s"])
+        if overlay.get("poll_s") is not None:
+            self.poll_s = float(overlay["poll_s"])
+
 
 @dataclass
 class WorkerState:
@@ -79,6 +90,36 @@ class GarageWorker:
         self.geofence = Geofence(cfg.home_lat, cfg.home_lon, cfg.enter_m, cfg.hysteresis_m)
         self.state = WorkerState()
         self._stop = threading.Event()
+        overlay = persist.load_config()
+        if overlay:
+            self.apply_overlay(overlay)
+
+    def apply_overlay(self, overlay: dict) -> None:
+        self.cfg.apply_overlay(overlay)
+        self.geofence.enter_m = self.cfg.enter_m
+        self.geofence.hysteresis_m = self.cfg.hysteresis_m
+        log.info(
+            "tesla-aladdin-garage config enter_m=%s hyst_m=%s cooldown_s=%s",
+            self.cfg.enter_m,
+            self.cfg.hysteresis_m,
+            self.cfg.cooldown_s,
+        )
+
+    def _snapshot(self) -> dict:
+        return {
+            "last_event": self.state.last_event,
+            "last_distance_m": self.state.last_distance_m,
+            "last_error": self.state.last_error,
+            "last_poll_ts": self.state.last_poll_ts,
+            "polls": self.state.polls,
+            "opens": self.state.opens,
+            "needs_reauth": self.state.needs_reauth,
+            "enter_m": self.cfg.enter_m,
+            "dry_run": self.cfg.dry_run,
+        }
+
+    def _persist(self) -> None:
+        persist.save_state(self._snapshot())
 
     def stop(self) -> None:
         self._stop.set()
@@ -91,6 +132,7 @@ class GarageWorker:
             self.state.needs_reauth = True
             self.state.last_error = "missing_refresh_token"
             log.error("tesla-aladdin-garage fail reason=missing_refresh_token action=reauthorize")
+            self._persist()
             return "needs_reauth"
         try:
             if not self.state.vehicle_id:
@@ -130,7 +172,68 @@ class GarageWorker:
             self.cfg.dry_run,
         )
         if event == "enter":
-            return self._maybe_open()
+            result = self._maybe_open()
+            self._persist()
+            return result
+        self._persist()
+        return event
+
+    def current_location(self) -> dict:
+        """Live Tesla fix + distance. Does not mutate the geofence."""
+        if self.tesla.needs_user_auth():
+            self.state.needs_reauth = True
+            return {"ok": False, "needs_reauth": True, "error": "missing_refresh_token"}
+        try:
+            if not self.state.vehicle_id:
+                v = self.tesla.find_vehicle(self.cfg.vin)
+                self.state.vehicle_id = str(v.get("id") or v.get("vehicle_id") or "")
+            loc = self.tesla.vehicle_location(self.state.vehicle_id)
+        except TeslaFleetError as e:
+            log.error("tesla-aladdin-garage fail reason=location_fetch err=%s", e)
+            return {"ok": False, "error": str(e), "status": e.status}
+        lat, lon = loc.get("latitude"), loc.get("longitude")
+        dist = None
+        if lat is not None and lon is not None:
+            dist = self.geofence.distance_m(float(lat), float(lon))
+            self.state.last_distance_m = dist
+        log.info(
+            "tesla-aladdin-garage location lat=%s lon=%s dist_m=%s shift=%s",
+            lat,
+            lon,
+            dist,
+            loc.get("shift_state"),
+        )
+        return {
+            "ok": True,
+            "latitude": lat,
+            "longitude": lon,
+            "distance_m": dist,
+            "shift_state": loc.get("shift_state"),
+            "enter_m": self.cfg.enter_m,
+            "home_lat": self.cfg.home_lat,
+            "home_lon": self.cfg.home_lon,
+        }
+
+    def simulate_enter(self) -> str:
+        """Force outside → enter → maybe open. Used for live evidence without driving."""
+        outside_m = self.cfg.enter_m + self.cfg.hysteresis_m + 50.0
+        olat, olon = offset_point(self.cfg.home_lat, self.cfg.home_lon, outside_m, 0.0)
+        self.geofence.inside = None
+        first = self.geofence.observe(olat, olon)
+        log.info(
+            "tesla-aladdin-garage simulate phase=outside event=%s dist_m=%.1f",
+            first,
+            self.geofence.distance_m(olat, olon),
+        )
+        event = self.geofence.observe(self.cfg.home_lat, self.cfg.home_lon)
+        self.state.last_event = event
+        self.state.last_distance_m = 0.0
+        log.info("tesla-aladdin-garage simulate event=%s", event)
+        if event == "enter":
+            result = self._maybe_open()
+            self._persist()
+            return result
+        self._persist()
         return event
 
     def _maybe_open(self) -> str:

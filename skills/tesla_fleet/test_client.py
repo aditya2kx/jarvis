@@ -18,3 +18,13 @@ def test_vehicle_data_path_uses_semicolon():
 def test_vehicle_data_path_rejects_comma():
     with pytest.raises(TeslaFleetError, match="semicolon"):
         vehicle_data_path("1", endpoints="location_data,drive_state")
+
+
+def test_parse_vehicle_location_drive_state():
+    from skills.tesla_fleet.client import parse_vehicle_location
+
+    loc = parse_vehicle_location(
+        {"drive_state": {"latitude": 1.5, "longitude": 2.5, "shift_state": "D"}}
+    )
+    assert loc["latitude"] == 1.5
+    assert loc["longitude"] == 2.5

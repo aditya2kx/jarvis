@@ -1,3 +1,9 @@
+## 2026-08-24 — GCP access experience (Cloud Agent ≠ ADC)
+
+**Scope:** Cursor Cloud Agents have no `gcloud` and no Application Default Credentials. Jarvis already had laptop hydrate + GHA WIF; agents were rediscovering the gap each session.
+
+**Key changes:** `docs/contributing/gcp-access.md` (canonical surfaces + recipes); `scripts/gcp_access_probe.py`; `scripts/secret_manager_put.py` (ADC write, never prints values). Hard lesson 23 + preference 28. Tesla garage secret seed now points at the ADC recipe instead of a Cloud Agent `gcloud`.
+
 ## 2026-08-24 — Tesla Aladdin garage Cloud Run worker (Dhanno → Big Peach)
 
 **Scope:** Previous Tesla/Aladdin garage session authorized on an ephemeral VM and never reached GCP. Jarvis now owns the always-on worker.

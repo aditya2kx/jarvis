@@ -29,6 +29,7 @@ Not "later," not "in a follow-up" — same change. A doc that lags the code is a
 | `scripts/new_requirement.py`, `start_pr_session.py`, `phase_state.py`, `lifecycle.py`, `verify.py` | `docs/WORKFLOW.md` (lifecycle map) |
 | `.github/workflows/claude-review.yml`, PR template, `check_pr_description.py` | `CONTRIBUTING.md` + `docs/contributing/review-bot.md` |
 | `scripts/pr_cost_ledger.py`, `install-git-hooks.sh`, cost workflows | `docs/contributing/cost.md` + `RUNBOOK.md` |
+| `scripts/gcp_access_probe.py`, `scripts/secret_manager_put.py`, WIF/deploy auth | `docs/contributing/gcp-access.md` + `RUNBOOK.md` identity bullet |
 | Anything notable (new capability, decision, blocker, status) | `PROGRESS.md` (dated line) |
 
 The canonical map also lives in [`AGENTS.md`](../../AGENTS.md) § Keeping docs current.

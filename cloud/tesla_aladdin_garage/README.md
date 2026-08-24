@@ -13,6 +13,11 @@ Geofence Dhanno → open **Big Peach** via Aladdin Connect.
 
 ## Env / secrets
 
+GCP identity: [docs/contributing/gcp-access.md](../../docs/contributing/gcp-access.md).
+Seed versions with `python3 scripts/secret_manager_put.py` from a laptop/Cloud Shell
+where `python3 scripts/gcp_access_probe.py` prints `surface=adc_ready`. Do not put
+secrets from a Cursor Cloud Agent, and do not run a second worker locally.
+
 Secrets (Secret Manager → Cloud Run):
 
 - `TESLA_CLIENT_ID` ← `tesla-fleet-client-id`

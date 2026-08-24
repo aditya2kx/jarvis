@@ -45,6 +45,7 @@ Before planning or designing, read the relevant docs and derive proposals from t
 - **All GitHub ops as `jarvis-agent-bot328`**, never as `aditya2kx` (except owner-only admin ops).
 - **Browser automation → Playwright (`user-playwright`); plan API migration.** Ownership ladder: API → MCP → IaC → Playwright.
 - **Prod/runtime on hosted infra** (Cloud Run, GH Actions, BQ). Laptop = build + one-time provisioning only.
+- **GCP identity is surface-specific.** Run `python3 scripts/gcp_access_probe.py` before any Secret Manager write or `gcloud`. Cursor Cloud Agents have no ADC — follow `docs/contributing/gcp-access.md`; never mint a JSON key.
 
 ## Adding an agent or skill
 - New agent: `agents/<name>/` + `knowledge-base/` + `scripts/` + `.cursor/rules/<name>.mdc` (glob-scoped)

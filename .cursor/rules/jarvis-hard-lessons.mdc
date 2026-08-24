@@ -35,6 +35,7 @@ These are mistakes that actually happened.  Check before every multi-step task.
 20. **PR descriptions MUST use the 6-section template verbatim** — CI fails otherwise. Never `--body` with free-form text.  Always use `gh pr create --base main --fill`.
 21. **The agent NEVER merges a PR.** Your job ends at *merge-ready*.  Never run `gh pr merge`.
 22. **Every GitHub API call must use the bot token** (`jarvis-agent-bot328`), never `ADI_TOKEN` except for owner-only admin operations.
+23. **Cursor Cloud Agent ≠ laptop ADC.** Probe with `python3 scripts/gcp_access_probe.py` before claiming gcloud access. `surface=cursor_cloud_no_adc` is expected. Do not mint a GCP JSON key, do not ask the operator to click Cloud Console for Secret Manager puts, and do not treat a missing `gcloud` binary as “install it and you’re done” — without ADC it still cannot call `jarvis-bhaga-prod`. Recipes: `docs/contributing/gcp-access.md`.
 
 ---
 

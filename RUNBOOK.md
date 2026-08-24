@@ -8,6 +8,7 @@ GitHub + GCP access** — no dependency on the old laptop, its Keychain, or its 
 - **Region:** `us-central1`
 - **Store:** `palmetto` (Austin)
 - **Repo:** `https://github.com/aditya2kx/jarvis` (branch `main`; agent pushes via `jarvis-agent-bot328` HTTPS, PAT in Keychain — see §7 bot-PAT auth model)
+- **GCP identity:** surface-specific. Always `python3 scripts/gcp_access_probe.py` first, then [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md). Cursor Cloud Agent VMs have **no ADC and usually no `gcloud`** — that is expected. CI uses WIF (`WIF_PROVIDER` / `WIF_SERVICE_ACCOUNT`). Laptop/Cloud Shell uses user ADC. Never mint a JSON service-account key to work around a Cloud Agent.
 
 ---
 
@@ -334,9 +335,13 @@ gcloud run services update bhaga-webhook \
 | `clickup_palmetto_pat` | (legacy ClickUp PAT) | ClickUp PAT (older handle) |
 | `clickup` | (legacy ClickUp) | Legacy ClickUp credential |
 
-Manual rotation (add a new version; the job/service read `:latest`):
+Manual rotation (add a new version; the job/service read `:latest`). Prefer ADC so a missing
+`gcloud` binary is not a blocker — [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md)
+recipe B. Probe first (`surface=` must be `adc_ready` or `github_actions_wif`):
 
 ```bash
+python3 scripts/secret_manager_put.py --secret <name> --data-file /path/to/value.txt
+# or, if gcloud + ADC are both present:
 gcloud secrets versions add <name> --data-file=- --project jarvis-bhaga-prod
 # (paste the new secret value on stdin, then Ctrl-D)
 ```
@@ -461,7 +466,8 @@ confirmed via a DM to the submitting operator, not the modal (which just closes)
 - Workflow: `.github/workflows/deploy.yml`, triggered on **push to `main`** (and manual
   `workflow_dispatch` with an optional `rollback_sha`).
 - Auth: Workload Identity Federation via repo secrets `WIF_PROVIDER` and `WIF_SERVICE_ACCOUNT`
-  (no static keys). 
+  (no static keys). This is the **only** prod deploy identity. A Cursor Cloud Agent does not
+  inherit it — see [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md). 
 - Steps: build orchestrator + webhook images → push (`:<git-sha>` and `:latest`) → `gcloud run jobs
   update bhaga-daily-refresh` + `gcloud run services update bhaga-webhook` to the new SHA.
 - **Rollback:** `gh workflow run deploy.yml -f rollback_sha=<good-sha>` (re-points both units to a
@@ -1967,14 +1973,17 @@ open "https://tesla-aladdin-garage-HASH-uc.a.run.app/oauth/tesla"
 gcloud run services logs read tesla-aladdin-garage --region us-central1 --limit 50
 ```
 
-One-time secrets (values from env / previous authorize; never commit):
+One-time secrets (values from env / previous authorize; never commit). **Not from a
+Cursor Cloud Agent** unless `gcp_access_probe.py` prints `surface=adc_ready`. Canonical
+recipe: [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md) B.
 
 ```bash
-for n in tesla-fleet-client-id tesla-fleet-client-secret tesla-fleet-refresh-token \
-         aladdin-connect-username aladdin-connect-password; do
-  gcloud secrets create $n --replication-policy=automatic --project=jarvis-bhaga-prod || true
-done
-# then: printf '%s' "$TESLA_CLIENT_ID" | gcloud secrets versions add tesla-fleet-client-id --data-file=-
+python3 scripts/gcp_access_probe.py   # must be adc_ready
+python3 scripts/secret_manager_put.py --secret tesla-fleet-client-id --from-env TESLA_CLIENT_ID
+python3 scripts/secret_manager_put.py --secret tesla-fleet-client-secret --from-env TESLA_CLIENT_SECRET
+python3 scripts/secret_manager_put.py --secret tesla-fleet-refresh-token --from-env TESLA_REFRESH_TOKEN
+python3 scripts/secret_manager_put.py --secret aladdin-connect-username --from-env ALADDIN_USERNAME
+python3 scripts/secret_manager_put.py --secret aladdin-connect-password --from-env ALADDIN_PASSWORD
 ```
 
 Deploy: `.github/workflows/tesla-aladdin-garage-deploy.yml` (push to `main` or `workflow_dispatch`).

@@ -62,6 +62,18 @@ COUPLINGS: list[dict] = [
     },
     {
         "code": [
+            "scripts/gcp_access_probe.py",
+            "scripts/secret_manager_put.py",
+        ],
+        "docs": [
+            "docs/contributing/gcp-access.md",
+            "RUNBOOK.md",
+            "AGENTS.md",
+        ],
+        "why": "GCP probe / Secret Manager put path changed → update gcp-access.md recipes + RUNBOOK identity + AGENTS.md map.",
+    },
+    {
+        "code": [
             "skills/tip_ledger_writer/schema.py",
             "agents/bhaga/scripts/update_model_sheet.py",
             "agents/bhaga/scripts/forecast.py",

@@ -34,10 +34,17 @@ printf 'pending-reauth' | python3 scripts/secret_manager_put.py --secret tesla-f
 python3 -c "import secrets; print(secrets.token_urlsafe(32))" > /tmp/garage-admin.token
 python3 scripts/secret_manager_put.py --secret garage-admin-token --data-file /tmp/garage-admin.token
 rm /tmp/garage-admin.token
+# Gmail OAuth for aditya.2ky@gmail.com (never Palmetto). Deploy mounts these as GMAIL_*.
+python3 scripts/secret_manager_put.py --secret gmail-client-id --from-env GMAIL_CLIENT_ID
+python3 scripts/secret_manager_put.py --secret gmail-client-secret --from-env GMAIL_CLIENT_SECRET
+python3 scripts/secret_manager_put.py --secret gmail-refresh-token --from-env GMAIL_REFRESH_TOKEN
 ```
 
 Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON`, `GEOFENCE_ENTER_M`,
-`ALADDIN_DEVICE_SERIAL`, `ALADDIN_DOOR_INDEX`, `ALADDIN_DRY_RUN=0`, `GARAGE_PERSIST=1`.
+`ALADDIN_DEVICE_SERIAL`, `ALADDIN_DOOR_INDEX`, `ALADDIN_DRY_RUN=0`, `GARAGE_PERSIST=1`,
+`GARAGE_NOTIFY_TO=aditya.2ky@gmail.com`. Gmail OAuth is Secret Manager only (`gmail-client-id`,
+`gmail-client-secret`, `gmail-refresh-token` → `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` /
+`GMAIL_REFRESH_TOKEN`).
 
 ## HTTP
 

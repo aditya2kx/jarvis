@@ -69,3 +69,5 @@ Stale-poll metric: `tesla_aladdin_garage_poll` (deploy job tries to ensure it; I
 
 Re-auth: open `https://<service>/oauth/tesla` (callback must be registered on the Tesla app).
 
+Live Cloud Run until this change deploys still uses REST `POLL_INTERVAL_S=20` (revision `tesla-aladdin-garage-00010-rwg`). After merge the deploy job sets `TESLA_TELEMETRY=1` / `POLL_INTERVAL_S=0`.
+

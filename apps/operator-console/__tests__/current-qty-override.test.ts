@@ -13,6 +13,7 @@ vi.mock("@/lib/bq/client", () => ({
   q: (...args: unknown[]) => q(...args),
   dateParam: (d: string) => dateParam(d),
   intParam: (n: number) => intParam(n),
+  timestampParam: (d: Date) => d,
   fq: (name: string) => fq(name),
 }));
 

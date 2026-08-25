@@ -1318,6 +1318,7 @@ def _refresh_order_reco(store: str) -> None:
 
     Migration 052: loops live next-dates slots (cap order_reco_max_slots,
     default 4) via tvf_order_reco_slot1 + tvf_order_reco_slot_n.
+    Migration 067: write-then-swap with a shared refreshed_at generation.
     """
     if _bq is None:
         return
@@ -1343,22 +1344,28 @@ def _refresh_order_reco(store: str) -> None:
             "`Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock`, "
             "_ord, refreshed_at, delivery_date"
         )
+        if not slots:
+            _bq.query(  # type: ignore[union-attr]
+                f"DELETE FROM {fq_reco} WHERE store = @store",
+                job_config=_bq_param_config([("store", "STRING", store)]),
+            ).result()
+            log.info("refresh_order_reco: no next dates store=%s — cleared", store)
+            return
+        from datetime import datetime, timezone
+        gen = datetime.now(timezone.utc)
         _sel = (
             "Item, `Current Qty`, `Avg per day`, `On Hand at Restock`, "
             "`Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock`, "
-            "_ord, CURRENT_TIMESTAMP(), delivery_date"
+            "_ord, @gen, delivery_date"
         )
-        _bq.query(  # type: ignore[union-attr]
-            f"DELETE FROM {fq_reco} WHERE store = @store",
-            job_config=_bq_param_config([("store", "STRING", store)]),
-        ).result()
-        if not slots:
-            log.info("refresh_order_reco: no next dates store=%s — cleared", store)
-            return
         _bq.query(  # type: ignore[union-attr]
             f"INSERT INTO {fq_reco} ({_cols}) SELECT @store, 1, {_sel}"
             f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot1`(@mt)",
-            job_config=_bq_param_config([("store", "STRING", store), ("mt", "INT64", max_tubs)]),
+            job_config=_bq_param_config([
+                ("store", "STRING", store),
+                ("mt", "INT64", max_tubs),
+                ("gen", "TIMESTAMP", gen),
+            ]),
         ).result()
         for slot in slots:
             if slot < 2:
@@ -1371,8 +1378,16 @@ def _refresh_order_reco(store: str) -> None:
                     ("store", "STRING", store),
                     ("mt", "INT64", max_tubs),
                     ("slot", "INT64", slot),
+                    ("gen", "TIMESTAMP", gen),
                 ]),
             ).result()
+        _bq.query(  # type: ignore[union-attr]
+            f"DELETE FROM {fq_reco} WHERE store = @store AND refreshed_at != @gen",
+            job_config=_bq_param_config([
+                ("store", "STRING", store),
+                ("gen", "TIMESTAMP", gen),
+            ]),
+        ).result()
         log.info(
             "refresh_order_reco: recomputed store=%s max_tubs=%d slots=%s",
             store, max_tubs, slots,

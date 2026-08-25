@@ -86,13 +86,36 @@ describe("triggerOrderRecoRefresh", () => {
   });
 
   it("POSTs :run with BHAGA_ORDER_RECO_ONLY", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => "",
+        json: async () => ({ executions: [] }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => "",
+        json: async () => ({}),
+      } as Response);
     await triggerOrderRecoRefresh("palmetto");
-    expect(fetch).toHaveBeenCalledTimes(1);
-    const [, init] = vi.mocked(fetch).mock.calls[0]!;
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const [, init] = vi.mocked(fetch).mock.calls[1]!;
     const body = JSON.parse(String(init?.body));
     const env = body.overrides.containerOverrides[0].env as { name: string; value: string }[];
     expect(env.find((e) => e.name === "BHAGA_ORDER_RECO_ONLY")?.value).toBe("1");
     expect(env.find((e) => e.name === "BHAGA_STORE")?.value).toBe("palmetto");
+  });
+
+  it("skips :run when a Cloud Run execution is already in flight", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      text: async () => "",
+      json: async () => ({ executions: [{ name: "x" }] }),
+    } as Response);
+    const out = await triggerOrderRecoRefresh("palmetto");
+    expect(out).toEqual({ started: false });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(fetch).mock.calls[0]![0])).toMatch(/\/executions/);
   });
 });
 

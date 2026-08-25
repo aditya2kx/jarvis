@@ -78,6 +78,10 @@ export function intParam(value: number) {
   return BigQuery.int(value);
 }
 
+export function timestampParam(value: Date) {
+  return BigQuery.timestamp(value);
+}
+
 /**
  * Run a write (MERGE/INSERT/DELETE) statement. Same param binding as `q()`
  * (dates must use `dateParam`) but returns nothing — every caller in

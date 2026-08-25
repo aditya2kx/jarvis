@@ -4,6 +4,12 @@
 
 **Key changes:** `GEOFENCE_ENTER_M=800`; notify counts our billable Fleet calls + Location ingest at published rates; Tesla portal remains authoritative.
 
+## 2026-08-24 — Inventory reco: no torn numbers while refresh runs (Issue #261)
+
+**Scope:** Registering an estimated date (or any async order-reco job) could paint Order tubs / TOTAL from a half-written `inventory_order_reco`; page-open showed a reload banner and could enqueue a second job.
+
+**Key changes:** write-then-swap refresh (migration 067); console paints only complete date generations; poll instead of reload; skip Cloud Run `:run` if a job is already running.
+
 ## 2026-08-24 — Tesla Aladdin garage: telemetry ingest + non-fatal deploy extras
 
 **Scope:** Cloud Run already deployed; GHA then failed on log-metric IAM. 20 s REST `vehicle_data` polls are expensive and 408 when Dhanno sleeps.

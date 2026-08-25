@@ -244,6 +244,8 @@ Sheets is the **source of truth**; BigQuery is a **parallel read-only mirror** u
 >
 > **Square fulfillment ops clock (migration 056, Issue #227):** additive columns on `square_transactions` (`fulfillment_type` / `schedule_type` / promised + close timestamps / `ops_at_local_iso` / `ops_date_local` / `ops_hour_local`). Enriched on API ingest via `skills/square_api/fulfillment.py`; optional repair via `skills/square_api/backfill_fulfillment_times.py`. Operator Console Sales (and Labor %) Hour Aggregation buckets on ops clock. No new `BQ_TARGETS`/`GRAFANA_VIEWS` — note only in `status.py`.
 >
+> **Order reco write-then-swap (migration 067, Issue #261):** `refresh_order_reco` INSERTs a shared `refreshed_at` generation then DELETEs older rows (no empty table). `tvf_order_reco_slot_n` QUALIFYs `s_prev` to latest generation per item. Console `/inventory` omits date columns until item Order tubs sum to TOTAL.
+
 > **Current Qty overrides (migration 058, Issue #240):** `inventory_current_qty_overrides` + COALESCE into `vw_inventory_order_assistant.latest_reading`. Console `/inventory` Current Qty Sheet → MERGE/clear → `refresh_order_reco`. Not model_* / Grafana — no new `BQ_TARGETS`/`GRAFANA_VIEWS` (same class as 055); freshness via reco refresh. Deploy workflow also forces `update-traffic --to-latest` so sticky tags cannot leave new revisions at 0%.
 >
 > **ADP Preview runs (migration 065–066, Issue #251):** `payroll_draft_runs` stores last Start→Preview `status` + `preview_hours` / `preview_gross` per biweek. Console `/payroll` shows **Run ADP Preview** or **Preview done** (hours + total pay vs last Preview). No Preview URL — ADP session hashes 404. Paid periods still use **Open ADP payroll**. Not model_* / Grafana — no new `BQ_TARGETS`/`GRAFANA_VIEWS`.

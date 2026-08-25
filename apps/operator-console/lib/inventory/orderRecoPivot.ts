@@ -17,6 +17,7 @@ export type OrderRecoSlotLongRow = {
   "Days Left After Restock": number | null;
   Source: "Estimated" | "Manual" | "Actuals" | null;
   _ord: number;
+  refreshed_at?: string | null;
 };
 
 export type OrderRecoPivotedRow = {
@@ -73,4 +74,71 @@ export function pivotOrderRecoSlots(
     if (ord !== 0) return ord;
     return Number(b["Current Qty"]) - Number(a["Current Qty"]);
   });
+}
+
+function tubsOf(row: OrderRecoSlotLongRow): number {
+  return Number(row["Order Tubs"] ?? 0);
+}
+
+/** Dates in `rows` whose item Order Tubs sum to the TOTAL row. */
+export function completeDatesForRows(rows: OrderRecoSlotLongRow[]): string[] {
+  const byDate = new Map<string, OrderRecoSlotLongRow[]>();
+  for (const r of rows) {
+    const d = normalizeDeliveryDate(r.delivery_date);
+    if (!d) continue;
+    if (!byDate.has(d)) byDate.set(d, []);
+    byDate.get(d)!.push(r);
+  }
+  const out: string[] = [];
+  for (const [d, group] of byDate) {
+    const total = group.find((r) => r.Item === "TOTAL");
+    const items = group.filter((r) => r.Item !== "TOTAL");
+    if (!total || items.length === 0) continue;
+    const sum = items.reduce((acc, r) => acc + tubsOf(r), 0);
+    if (sum === tubsOf(total)) out.push(d);
+  }
+  return out.sort();
+}
+
+export type PaintGeneration = {
+  refreshedAt: string | null;
+  readyDates: string[];
+  pending: boolean;
+};
+
+/**
+ * Prefer a fully consistent reco generation that covers the most live dates.
+ * Incomplete generations (mid write-then-swap) lose to an older complete one.
+ */
+export function selectPaintGeneration(
+  liveDates: string[],
+  longRows: OrderRecoSlotLongRow[],
+): PaintGeneration {
+  const live = [...new Set(liveDates.map(normalizeDeliveryDate).filter(Boolean))].sort();
+  const liveSet = new Set(live);
+  const byGen = new Map<string, OrderRecoSlotLongRow[]>();
+  for (const r of longRows) {
+    const g = r.refreshed_at == null || r.refreshed_at === "" ? "_none" : String(r.refreshed_at);
+    if (!byGen.has(g)) byGen.set(g, []);
+    byGen.get(g)!.push(r);
+  }
+  let best: { score: number; ts: string; dates: string[] } | null = null;
+  for (const [ts, rows] of byGen) {
+    const complete = completeDatesForRows(rows).filter((d) => liveSet.has(d));
+    const score = complete.length;
+    if (
+      !best ||
+      score > best.score ||
+      (score === best.score && ts > best.ts)
+    ) {
+      best = { score, ts, dates: complete };
+    }
+  }
+  const readyDates = best?.dates ?? [];
+  const pending = live.some((d) => !readyDates.includes(d));
+  return {
+    refreshedAt: best && best.ts !== "_none" ? best.ts : null,
+    readyDates,
+    pending,
+  };
 }

@@ -205,7 +205,29 @@ def test_ensure_telemetry_config_posts_when_host_set():
     assert kwargs["minimum_delta"] == 80.0
 
 
-def test_heartbeat_updates_last_poll_ts():
+def test_from_env_rest_poll_when_telemetry_host_missing(monkeypatch):
+    monkeypatch.setenv("TESLA_TELEMETRY", "1")
+    monkeypatch.setenv("POLL_INTERVAL_S", "0")
+    monkeypatch.delenv("TESLA_TELEMETRY_HOST", raising=False)
+    monkeypatch.setenv("TESLA_VIN", "TEST")
+    monkeypatch.setenv("HOME_LAT", "29.46")
+    monkeypatch.setenv("HOME_LON", "-95.51")
+    cfg = WorkerConfig.from_env()
+    assert cfg.poll_s == 20.0
+    assert cfg.telemetry is True
+    assert cfg.telemetry_host == ""
+
+
+def test_from_env_keeps_poll_zero_when_telemetry_host_set(monkeypatch):
+    monkeypatch.setenv("TESLA_TELEMETRY", "1")
+    monkeypatch.setenv("POLL_INTERVAL_S", "0")
+    monkeypatch.setenv("TESLA_TELEMETRY_HOST", "telemetry.example.com")
+    monkeypatch.setenv("TESLA_VIN", "TEST")
+    monkeypatch.setenv("HOME_LAT", "29.46")
+    monkeypatch.setenv("HOME_LON", "-95.51")
+    cfg = WorkerConfig.from_env()
+    assert cfg.poll_s == 0.0
+    assert cfg.telemetry_host == "telemetry.example.com"
     import threading
     import time
 

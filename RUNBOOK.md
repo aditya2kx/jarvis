@@ -2024,12 +2024,14 @@ Do **not** run a laptop Docker copy at the same time. Stale-poll log metric
 `tesla_aladdin_garage_poll` is created by the deploy job (`continue-on-error` — a
 `logging.logMetrics.create` deny must not fail a successful Cloud Run deploy).
 
-Location path: Tesla Fleet Telemetry push, not 20 s REST polls. Set
-`TESLA_TELEMETRY=1` `POLL_INTERVAL_S=0`. Cars (awake only) stream `Location` to a
-self-hosted fleet-telemetry host (`TESLA_TELEMETRY_HOST`); that host POSTs JSON to
-`$URL/telemetry` with `X-Garage-Token`. Cloud Run cannot terminate vehicle mTLS.
-`POST /telemetry/configure` registers the stream when the host env is set.
-Asleep car → no stream, no wake, ~$0. Heartbeat still logs `tesla-aladdin-garage poll`.
+Location path: REST `vehicle_data` poll every 20 s (`POLL_INTERVAL_S=20`) until
+`TESLA_TELEMETRY_HOST` exists. `TESLA_TELEMETRY=1` with `POLL_INTERVAL_S=0` and no
+host is ingest-only with nothing ingesting (2026-08-25 miss: no enter, no email,
+no open). Cars can later stream `Location` to a self-hosted fleet-telemetry host;
+that host POSTs JSON to `$URL/telemetry` with `X-Garage-Token`. Cloud Run cannot
+terminate vehicle mTLS. `POST /telemetry/configure` registers the stream when the
+host env is set. Asleep car → REST 408 skip, no wake. Heartbeat still logs
+`tesla-aladdin-garage poll`.
 
 ```bash
 # Ingest a dispatcher fix (does not wake the car)

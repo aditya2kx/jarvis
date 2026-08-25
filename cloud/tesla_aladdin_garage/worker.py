@@ -39,7 +39,15 @@ class WorkerConfig:
     @classmethod
     def from_env(cls) -> "WorkerConfig":
         telemetry = os.environ.get("TESLA_TELEMETRY", "0") not in ("0", "", "false", "False")
-        poll_default = "0" if telemetry else "20"
+        telemetry_host = os.environ.get("TESLA_TELEMETRY_HOST", "").strip()
+        # Ingest-only (poll_s=0) is blind unless a fleet-telemetry host POSTs /telemetry.
+        poll_default = "0" if (telemetry and telemetry_host) else "20"
+        poll_s = float(os.environ.get("POLL_INTERVAL_S", poll_default))
+        if poll_s <= 0 and not telemetry_host:
+            log.warning(
+                "tesla-aladdin-garage fail reason=telemetry_host_unconfigured action=rest_poll poll_s=20"
+            )
+            poll_s = 20.0
         return cls(
             vin=os.environ.get("TESLA_VIN", ""),
             home_lat=float(os.environ.get("HOME_LAT", "0") or 0),
@@ -47,13 +55,13 @@ class WorkerConfig:
             enter_m=float(os.environ.get("GEOFENCE_ENTER_M", "800")),
             hysteresis_m=float(os.environ.get("GEOFENCE_HYSTERESIS_M", "80")),
             cooldown_s=float(os.environ.get("OPEN_COOLDOWN_S", "600")),
-            poll_s=float(os.environ.get("POLL_INTERVAL_S", poll_default)),
+            poll_s=poll_s,
             door_serial=os.environ.get("ALADDIN_DEVICE_SERIAL", ""),
             door_index=int(os.environ.get("ALADDIN_DOOR_INDEX", "1")),
             door_name=os.environ.get("ALADDIN_DOOR_NAME", "Big Peach"),
             dry_run=os.environ.get("ALADDIN_DRY_RUN", "1") != "0",
             telemetry=telemetry,
-            telemetry_host=os.environ.get("TESLA_TELEMETRY_HOST", "").strip(),
+            telemetry_host=telemetry_host,
             telemetry_ca=os.environ.get("TESLA_TELEMETRY_CA", "").strip(),
             location_delta_m=float(os.environ.get("LOCATION_MIN_DELTA_M", "80")),
         )

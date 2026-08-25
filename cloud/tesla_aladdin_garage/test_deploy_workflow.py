@@ -22,10 +22,11 @@ def test_iam_binding_step_is_nonfatal():
     assert "continue-on-error: true" in head
 
 
-def test_deploy_enables_telemetry_not_rest_poll():
+def test_deploy_keeps_rest_poll_until_telemetry_host():
     text = WF.read_text()
     assert "TESLA_TELEMETRY=1" in text
-    assert "POLL_INTERVAL_S=0" in text
+    assert "POLL_INTERVAL_S=20" in text
+    assert "POLL_INTERVAL_S=0" not in text
     assert "LOCATION_MIN_DELTA_M=80" in text
     assert "GEOFENCE_ENTER_M=800" in text
     assert "TESLA_MONTH_BUDGET_USD=10" in text

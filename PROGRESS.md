@@ -1,4 +1,9 @@
-## 2026-08-25 — Garage persist on named Firestore DB `garage`; disarm leftover live sandbox
+## 2026-08-25 — Garage missed open: ingest-only with no telemetry host
+
+**Scope:** Arrival produced no email and Big Peach stayed closed. Worker `last_event=boot`, zero `/telemetry` POSTs, `POLL_INTERVAL_S=0`.
+
+**Key changes:** Live `POLL_INTERVAL_S=20` (rev `00019`). Code refuses poll=0 unless `TESLA_TELEMETRY_HOST` is set. First-sample-inside still does not open.
+
 
 **Scope:** PR #262 deployed (`00016-v2s`) but `config_load` still 400 on `(default)`. Leftover `.github/sandbox-live.yml` `full-live` made live sandbox look required on the PR checks pier.
 

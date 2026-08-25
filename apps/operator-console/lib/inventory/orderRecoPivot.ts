@@ -80,7 +80,7 @@ function tubsOf(row: OrderRecoSlotLongRow): number {
   return Number(row["Order Tubs"] ?? 0);
 }
 
-/** Dates in `rows` whose item Order Tubs sum to the TOTAL row. */
+/** Dates in `rows` whose item Order Tubs sum to the TOTAL row (integer tubs). */
 export function completeDatesForRows(rows: OrderRecoSlotLongRow[]): string[] {
   const byDate = new Map<string, OrderRecoSlotLongRow[]>();
   for (const r of rows) {

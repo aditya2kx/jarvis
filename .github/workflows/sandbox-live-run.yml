@@ -40,7 +40,10 @@ on:
         required: false
         type: string
   pull_request:
-    types: [labeled, synchronize, reopened]
+    # Include `opened` so "Resolve what to run" / skip-success always report.
+    # Without it, a required-status expectation stays pending on PRs that never
+    # needed a live scrape (same class of merge-block as Sandbox e2e).
+    types: [opened, labeled, synchronize, reopened]
   issue_comment:
     types: [created]
 
@@ -101,6 +104,20 @@ jobs:
           CMT_ASSOC: ${{ github.event.comment.author_association }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: python3 agents/bhaga/scripts/sandbox_workflow_resolve.py
+
+  # Always report a green "Live sandbox run" when the scenario is not opted in.
+  # A SKIPPED required check stays pending on some merge graphs and blocks CI
+  # even though live sandbox is not required.
+  live-skip:
+    name: Live sandbox run
+    needs: resolve
+    if: needs.resolve.outputs.run != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip — live sandbox is opt-in
+        run: |
+          echo "Skipping live sandbox — no sandbox-live label and/or empty .github/sandbox-live.yml."
+          echo "This check is not required for merge; reporting success so it cannot block CI."
 
   live:
     name: Live sandbox run

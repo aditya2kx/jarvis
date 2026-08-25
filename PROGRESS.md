@@ -1,3 +1,9 @@
+## 2026-08-25 — Garage persist on named Firestore DB `garage`; disarm leftover live sandbox
+
+**Scope:** PR #262 deployed (`00016-v2s`) but `config_load` still 400 on `(default)`. Leftover `.github/sandbox-live.yml` `full-live` made live sandbox look required on the PR checks pier.
+
+**Key changes:** Cloud Run `GARAGE_FIRESTORE_DB=garage` (no parentheses). Empty `sandbox-live.yml`; live-run workflow reports skip-success on `opened` so it cannot block merge.
+
 ## 2026-08-24 — Garage Firestore persist: do not pass database=(default)
 
 **Scope:** Cloud Run `config_load` 400 `Invalid database id %28default%29` left Tesla usage in memory and hid the 400 m overlay.

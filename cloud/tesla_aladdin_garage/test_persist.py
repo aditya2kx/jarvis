@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 from cloud.tesla_aladdin_garage import persist
 
 
-def test_db_omits_default_database_kw(monkeypatch):
+def test_db_defaults_to_named_garage(monkeypatch):
     persist.set_client(None)
     monkeypatch.setenv("GARAGE_PERSIST", "1")
     monkeypatch.setenv("GCP_PROJECT", "jarvis-bhaga-prod")
@@ -16,7 +16,20 @@ def test_db_omits_default_database_kw(monkeypatch):
     persist._db()
     kwargs = fake.call_args.kwargs
     assert kwargs.get("project") == "jarvis-bhaga-prod"
-    assert "database" not in kwargs
+    assert kwargs.get("database") == "garage"
+    persist.set_client(None)
+
+
+def test_db_garage_env_wins(monkeypatch):
+    persist.set_client(None)
+    monkeypatch.setenv("GARAGE_PERSIST", "1")
+    monkeypatch.setenv("GCP_PROJECT", "jarvis-bhaga-prod")
+    monkeypatch.setenv("FIRESTORE_DB", "other")
+    monkeypatch.setenv("GARAGE_FIRESTORE_DB", "garage")
+    fake = MagicMock()
+    monkeypatch.setattr("google.cloud.firestore.Client", fake)
+    persist._db()
+    assert fake.call_args.kwargs["database"] == "garage"
     persist.set_client(None)
 
 

@@ -1,8 +1,4 @@
-# Sandbox live run config — Issue #178: ADP timecard period selection + Square OAuth save.
-#
-# full-live: exercises the fixed Pay Period enumeration against real ADP for a date
-# in the open biweekly window (2026-07-15 had Select-All download timeout in prod).
-# Evidence needed to lift Claude review confidence to ≥95%.
-scenarios:
-  - name: full-live
-    date: "2026-07-15"
+# Idle. Live sandbox is opt-in: add the `sandbox-live` label AND list scenarios
+# here for that PR only. Empty this back to `scenarios: []` before merge.
+# It is not a required check — do not leave a leftover full-live date armed.
+scenarios: []

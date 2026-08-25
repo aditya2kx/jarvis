@@ -259,7 +259,12 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
   `Manual` is a per-base pin on an Estimated date (`inventory_order_tub_overrides`,
   migration 055) — does not flip the date to Actuals. Console
   pivots `inventory_order_reco` long-format so adding another registered
-  schedule date adds another column group automatically.
+  schedule date adds another column group automatically. While an async
+  `order-reco` job is in flight, the table paints only a **complete
+  generation** (item Order tubs sum to TOTAL per date); new dates stay
+  hidden until ready. Pending uses `InventoryRecoFreshness` (poll
+  `refreshed_at` / paint-ready — not a “reload the page” banner). Refresh
+  is write-then-swap (`refreshed_at` generation, migration 067).
 - **Edit estimates / actuals** (Issues #225 / #238): click an **Order tubs**
   cell (or the header pencil) to open a batch Sheet for that date. Estimated
   dates: set Estimated vs Manual tubs, then Apply → replace-per-date overrides +

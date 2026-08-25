@@ -180,6 +180,7 @@ def telemetry():
     if not fixes:
         log.info("tesla-aladdin-garage skip reason=telemetry_no_fix")
         return jsonify({"ok": True, "event": "skip_no_fix", "fixes": 0})
+    persist.record_billable("signals", len(fixes))
     events = [
         w.observe_fix(f["latitude"], f["longitude"], f.get("shift_state"), source="telemetry")
         for f in fixes

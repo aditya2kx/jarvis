@@ -14,14 +14,14 @@ def test_subject_and_body_include_tesla_distance():
         "enter_m": 800,
         "distance_m": 187.4,
         "door": "Big Peach",
-        "cursor_cost_lines": ["Cursor spend (2026-08, Jarvis PR ledger): $4.12 / $10.00 (within cap)"],
-        "cursor_cost_subject": "Cursor $4.12/$10",
+        "tesla_cost_lines": ["Tesla Fleet (2026-08): $1.20 / $10.00 credit (within cap)"],
+        "tesla_cost_subject": "Tesla Fleet $1.20/$10",
     }
     subj = email_subject("opened", fields)
     assert "187 m" in subj
     assert "enter 800 m" in subj
-    assert "Cursor $4.12/$10" in subj
+    assert "Tesla Fleet $1.20/$10" in subj
     body = email_body("skip_already_open", fields)
     assert body.startswith("Tesla distance from home when this fired: 187 m")
     assert "800 m" in body
-    assert "$4.12 / $10.00" in body
+    assert "$1.20 / $10.00" in body

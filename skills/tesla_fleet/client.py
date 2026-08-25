@@ -26,6 +26,16 @@ PUBLIC_KEY_PATH = "/.well-known/appspecific/com.tesla.3p.public-key.pem"
 LOCATION_ENDPOINTS = "location_data;drive_state"
 
 
+def billable_category(path: str) -> str:
+    """Map a Fleet path to Tesla pricing category. Auth token URLs are not passed here."""
+    p = path.lower()
+    if "wake_up" in p:
+        return "wakes"
+    if "command" in p or "fleet_telemetry_config" in p:
+        return "commands"
+    return "data"
+
+
 def fleet_telemetry_config_body(
     *,
     vins: list[str],
@@ -109,6 +119,7 @@ class TeslaFleetClient:
         partner_domain: str = "",
         refresh_token: str = "",
         on_tokens: Optional[Callable[[dict], None]] = None,
+        on_billable: Optional[Callable[[str], None]] = None,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
@@ -121,6 +132,7 @@ class TeslaFleetClient:
         self._access_token = ""
         self._access_exp = 0.0
         self.on_tokens = on_tokens
+        self.on_billable = on_billable
         self._pkce_verifier = ""
         self._oauth_state = ""
 
@@ -143,6 +155,7 @@ class TeslaFleetClient:
             refresh_token=overrides.get("refresh_token")
             or os.environ.get("TESLA_REFRESH_TOKEN", ""),
             on_tokens=overrides.get("on_tokens"),
+            on_billable=overrides.get("on_billable"),
         )
 
     def needs_user_auth(self) -> bool:
@@ -295,6 +308,15 @@ class TeslaFleetClient:
             )
         return data
 
+    def _note_billable(self, path: str, status: int) -> None:
+        if not self.on_billable or status >= 500:
+            return
+        cat = billable_category(path)
+        try:
+            self.on_billable(cat)
+        except Exception as e:  # noqa: BLE001
+            log.error("tesla-aladdin-garage fail reason=billable_hook err=%s", e)
+
     def _api(self, method: str, path: str, token: Optional[str] = None, payload: Optional[bytes] = None) -> dict:
         if token is None:
             token = self.ensure_access_token()
@@ -303,7 +325,14 @@ class TeslaFleetClient:
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
-        return json.loads(_http_json(method, url, headers=headers, payload=payload))
+        try:
+            data = json.loads(_http_json(method, url, headers=headers, payload=payload))
+            self._note_billable(path, 200)
+            return data
+        except TeslaFleetError as e:
+            if e.status:
+                self._note_billable(path, e.status)
+            raise
 
     def _post_form(self, url: str, body: dict) -> dict:
         encoded = urllib.parse.urlencode(body).encode()

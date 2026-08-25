@@ -16,7 +16,7 @@ Geofence Dhanno → open **Big Peach** via Aladdin Connect.
 - Last event/error/poll written to Firestore `tesla_aladdin_garage/state` (`GARAGE_PERSIST=1`).
 - Admin token (`GARAGE_ADMIN_TOKEN` / `X-Garage-Token`) required for `/tick`, `/location`, `/simulate/enter`, `/config`, `/telemetry`, `/telemetry/configure`.
 - Aladdin `/devices` uses Cognito **AccessToken** (IdToken is 401). Cloud Run SA must have `secretVersionAdder` on `tesla-fleet-refresh-token` so `/oauth/tesla` survives a revision restart.
-- If Big Peach is **already open**, skip `OPEN_DOOR` and email `aditya.2ky@gmail.com` (Tesla metres-from-home in the subject). Same email on open and on Aladdin failure. Body includes current-month Cursor spend from the Jarvis PR cost ledger vs `$10` (`CURSOR_MONTH_BUDGET_USD`). Needs Gmail OAuth secrets for that mailbox (`GMAIL_*`); without them the worker still opens, it just logs `notify_unconfigured`.
+- If Big Peach is **already open**, skip `OPEN_DOOR` and email `aditya.2ky@gmail.com` (Tesla metres-from-home in the subject). Same email on open and on Aladdin failure. Body includes Tesla Fleet month spend vs the **$10 developer discount** (`TESLA_MONTH_BUDGET_USD`; Jarvis-counted Data/streaming, Tesla portal is authoritative). Needs Gmail OAuth secrets for that mailbox (`GMAIL_*`); without them the worker still opens, it just logs `notify_unconfigured`.
 
 ## Env / secrets
 
@@ -47,7 +47,7 @@ Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON`, `GEOFENCE_ENTER
 `ALADDIN_DEVICE_SERIAL`, `ALADDIN_DOOR_INDEX`, `ALADDIN_DRY_RUN=0`, `GARAGE_PERSIST=1`,
 `GARAGE_NOTIFY_TO=aditya.2ky@gmail.com`, `TESLA_TELEMETRY=1`, `POLL_INTERVAL_S=0`,
 `TESLA_TELEMETRY_HOST` (fleet-telemetry hostname cars connect to; empty = ingest-only),
-`LOCATION_MIN_DELTA_M=80`, `CURSOR_MONTH_BUDGET_USD=10`. Gmail OAuth is Secret Manager only (`gmail-client-id`,
+`LOCATION_MIN_DELTA_M=80`, `TESLA_MONTH_BUDGET_USD=10`. Gmail OAuth is Secret Manager only (`gmail-client-id`,
 `gmail-client-secret`, `gmail-refresh-token` → `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` /
 `GMAIL_REFRESH_TOKEN`).
 

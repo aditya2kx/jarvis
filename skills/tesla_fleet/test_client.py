@@ -30,6 +30,14 @@ def test_parse_vehicle_location_drive_state():
     assert loc["longitude"] == 2.5
 
 
+def test_billable_category():
+    from skills.tesla_fleet.client import billable_category
+
+    assert billable_category("/api/1/vehicles/1/vehicle_data") == "data"
+    assert billable_category("/api/1/vehicles/1/wake_up") == "wakes"
+    assert billable_category("/api/1/vehicles/fleet_telemetry_config") == "commands"
+
+
 def test_fleet_telemetry_config_body_location_delta():
     body = fleet_telemetry_config_body(
         vins=[" 7saygaee2tf605512 "],

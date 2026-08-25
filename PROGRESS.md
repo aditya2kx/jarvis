@@ -1,8 +1,8 @@
-## 2026-08-24 — Garage: 800 m enter + Cursor month cost on notify (#258)
+## 2026-08-24 — Garage: 800 m enter + Tesla Fleet $10 credit on notify (#258)
 
-**Scope:** Open Big Peach earlier (800 m). Every garage email should show Chicago calendar-month Cursor spend vs $10 so overspend is visible without Grafana.
+**Scope:** Open Big Peach at 800 m. Every garage email should show Tesla Fleet month spend vs Tesla's $10 developer discount (not Cursor).
 
-**Key changes:** `GEOFENCE_ENTER_M=800`; notify body/subject from `jarvis_dev` PR cost tables; fail-open if BQ is down.
+**Key changes:** `GEOFENCE_ENTER_M=800`; notify counts our billable Fleet calls + Location ingest at published rates; Tesla portal remains authoritative.
 
 ## 2026-08-24 — Tesla Aladdin garage: telemetry ingest + non-fatal deploy extras
 

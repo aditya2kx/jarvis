@@ -15,6 +15,10 @@ log = logging.getLogger("tesla_aladdin_garage")
 COLLECTION = "tesla_aladdin_garage"
 CONFIG_DOC = "config"
 STATE_DOC = "state"
+USAGE_DOC = "tesla_usage"
+
+# Process-local fallback when Firestore is off or failing (one Cloud Run instance).
+_usage_mem: dict[str, Any] = {}
 
 _client: Any = None
 
@@ -84,3 +88,47 @@ def load_state() -> dict:
     except Exception as e:  # noqa: BLE001
         log.error("tesla-aladdin-garage fail reason=state_load err=%s", e)
         return {}
+
+
+def _empty_usage(month: str) -> dict[str, Any]:
+    return {"month": month, "data": 0, "commands": 0, "wakes": 0, "signals": 0}
+
+
+def load_tesla_usage(month: str) -> dict[str, Any]:
+    cached = _usage_mem.get(month)
+    db = _db()
+    if db is None:
+        return dict(cached or _empty_usage(month))
+    try:
+        snap = db.collection(COLLECTION).document(USAGE_DOC).get()
+        data = snap.to_dict() or {} if snap.exists else {}
+        if data.get("month") != month:
+            return dict(cached or _empty_usage(month))
+        _usage_mem[month] = data
+        return dict(data)
+    except Exception as e:  # noqa: BLE001
+        log.error("tesla-aladdin-garage fail reason=usage_load err=%s", e)
+        return dict(cached or _empty_usage(month))
+
+
+def record_billable(category: str, n: int = 1) -> None:
+    """Increment this UTC-month Tesla usage bucket. Categories: data, commands, wakes, signals."""
+    from datetime import datetime, timezone
+
+    if category not in ("data", "commands", "wakes", "signals"):
+        category = "data"
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    cur = load_tesla_usage(month)
+    if cur.get("month") != month:
+        cur = _empty_usage(month)
+    cur[category] = int(cur.get(category) or 0) + int(n)
+    cur["month"] = month
+    cur["updated_ts"] = time.time()
+    _usage_mem[month] = cur
+    db = _db()
+    if db is None:
+        return
+    try:
+        db.collection(COLLECTION).document(USAGE_DOC).set(cur, merge=True)
+    except Exception as e:  # noqa: BLE001
+        log.error("tesla-aladdin-garage fail reason=usage_save err=%s", e)

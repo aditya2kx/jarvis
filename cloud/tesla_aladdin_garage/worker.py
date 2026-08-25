@@ -107,6 +107,8 @@ class GarageWorker:
         overlay = persist.load_config()
         if overlay:
             self.apply_overlay(overlay)
+        if getattr(tesla, "on_billable", None) is None:
+            tesla.on_billable = persist.record_billable
 
     def apply_overlay(self, overlay: dict) -> None:
         self.cfg.apply_overlay(overlay)

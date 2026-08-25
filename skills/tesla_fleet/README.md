@@ -31,8 +31,9 @@ This is **not** a geofence webhook and does **not** wake a sleeping vehicle.
 `fleet_telemetry_config_body()` / `put_fleet_telemetry_config()` build that POST.
 Tesla requires the call through the Vehicle Command HTTP Proxy (unsigned Fleet API
 returns HTTP 400). The garage worker consumes the HTTP dispatcher JSON at `POST /telemetry`.
-Garage notify emails include Cursor month-to-date from the Jarvis PR cost ledger
-(`CURSOR_MONTH_BUDGET_USD`, default $10); that is not a Tesla API.
+Garage notify emails include Tesla Fleet month-to-date vs Tesla's **$10/mo
+developer discount** (`TESLA_MONTH_BUDGET_USD`). Tesla has no billing API; we count
+our own status<500 Fleet calls plus ingested Location signals.
 
 ## Secrets
 

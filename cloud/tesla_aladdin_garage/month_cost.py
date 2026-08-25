@@ -1,86 +1,96 @@
-"""Current-month Cursor spend from the Jarvis PR cost ledger (BigQuery).
+"""Tesla Fleet monthly spend vs the $10 developer discount.
 
-Cloud Run cannot read the laptop Cursor session DB. The hosted source of truth
-is `jarvis_dev.pr_cost_build_session` + `pr_cost_review_run` (same numbers as
-the Grafana Jarvis development dashboard). Fail-open: callers treat errors as
-unavailable and still send the garage email.
+Tesla has no Fleet API for billing. We count our own billable calls
+(status < 500) plus ingested telemetry Location signals, then apply
+published rates: Data 500/$1, Commands 1000/$1, Wakes 50/$1,
+streaming 150000 signals/$1. Auth token URLs are not counted.
+Fail-open: email still sends if Firestore is down.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from cloud.tesla_aladdin_garage import persist
 
 log = logging.getLogger("tesla_aladdin_garage")
 
-PROJECT_ID = os.environ.get("GCP_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT") or "jarvis-bhaga-prod"
-DATASET = os.environ.get("JARVIS_DEV_BQ_DATASET", "jarvis_dev")
-TZ = "America/Chicago"
 DEFAULT_BUDGET_USD = 10.0
-
-_MONTH_SQL = """
-SELECT
-  COALESCE(SUM(cost_usd), 0) AS usd
-FROM (
-  SELECT cost_usd, SAFE.TIMESTAMP(ts) AS t
-  FROM `{project}.{dataset}.pr_cost_build_session`
-  UNION ALL
-  SELECT cost_usd, SAFE.TIMESTAMP(ts) AS t
-  FROM `{project}.{dataset}.pr_cost_review_run`
-)
-WHERE t >= TIMESTAMP(DATE_TRUNC(CURRENT_DATE('{tz}'), MONTH), '{tz}')
-  AND t < TIMESTAMP(DATE_ADD(DATE_TRUNC(CURRENT_DATE('{tz}'), MONTH), INTERVAL 1 MONTH), '{tz}')
-"""
+# Tesla developer.tesla.com pay-per-use (2026).
+RATE_DATA = 500.0
+RATE_COMMANDS = 1000.0
+RATE_WAKES = 50.0
+RATE_SIGNALS = 150_000.0
 
 
 def budget_usd() -> float:
-    raw = os.environ.get("CURSOR_MONTH_BUDGET_USD", str(DEFAULT_BUDGET_USD))
+    raw = os.environ.get("TESLA_MONTH_BUDGET_USD", str(DEFAULT_BUDGET_USD))
     try:
         return float(raw)
     except (TypeError, ValueError):
         return DEFAULT_BUDGET_USD
 
 
-def format_cursor_cost_lines(info: dict[str, Any]) -> list[str]:
+def utc_month(now: Optional[datetime] = None) -> str:
+    n = now or datetime.now(timezone.utc)
+    return n.strftime("%Y-%m")
+
+
+def estimate_usd(counts: dict[str, Any]) -> float:
+    data = float(counts.get("data") or 0)
+    commands = float(counts.get("commands") or 0)
+    wakes = float(counts.get("wakes") or 0)
+    signals = float(counts.get("signals") or 0)
+    return (
+        data / RATE_DATA
+        + commands / RATE_COMMANDS
+        + wakes / RATE_WAKES
+        + signals / RATE_SIGNALS
+    )
+
+
+def format_tesla_cost_lines(info: dict[str, Any]) -> list[str]:
     budget = float(info.get("budget_usd") or DEFAULT_BUDGET_USD)
     month = info.get("month") or "this month"
     if not info.get("ok"):
         err = f" ({info.get('error')})" if info.get("error") else ""
         return [
-            f"Cursor spend ({month}, Jarvis PR ledger): unavailable{err}",
-            f"Cap: ${budget:.2f}/month. Check Grafana if this stays unavailable.",
+            f"Tesla Fleet ({month}) vs ${budget:.0f}/mo discount: unavailable{err}",
+            "Tesla has no usage API; check developer.tesla.com → Billing and Usage.",
         ]
     usd = float(info["usd"])
     remaining = budget - usd
     flag = "OVER CAP" if remaining < 0 else "within cap"
     leftover = f"-${abs(remaining):.2f}" if remaining < 0 else f"${remaining:.2f}"
+    data = int(info.get("data") or 0)
+    signals = int(info.get("signals") or 0)
+    commands = int(info.get("commands") or 0)
+    wakes = int(info.get("wakes") or 0)
     return [
-        f"Cursor spend ({month}, Jarvis PR ledger): ${usd:.2f} / ${budget:.2f} ({flag})",
-        f"Remaining vs cap: {leftover}. This is billed Cursor usage captured into BigQuery, not Tesla/Aladdin.",
+        f"Tesla Fleet ({month}): ${usd:.2f} / ${budget:.2f} credit ({flag})",
+        f"Remaining vs $10 discount: {leftover}. Data {data} · streaming {signals} · commands {commands} · wakes {wakes}.",
+        "Jarvis-counted calls (status<500) + Location ingest. Portal is authoritative; we never wake_up.",
     ]
 
 
-def format_cursor_cost_subject(info: dict[str, Any]) -> str:
+def format_tesla_cost_subject(info: dict[str, Any]) -> str:
     if not info.get("ok"):
-        return "Cursor n/a"
+        return "Tesla Fleet n/a"
     usd = float(info["usd"])
     budget = float(info.get("budget_usd") or DEFAULT_BUDGET_USD)
-    return f"Cursor ${usd:.2f}/${budget:.0f}"
+    return f"Tesla Fleet ${usd:.2f}/${budget:.0f}"
 
 
-def month_cursor_cost(*, query_fn=None) -> dict[str, Any]:
-    """Return {ok, usd, budget_usd, month, error}."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
-    now = datetime.now(ZoneInfo(TZ))
-    month = now.strftime("%Y-%m")
+def month_tesla_cost(*, snapshot_fn=None) -> dict[str, Any]:
+    month = utc_month()
     budget = budget_usd()
     try:
-        usd = float((query_fn or _query_month_usd)())
-    except Exception as e:  # noqa: BLE001 — notify must fail-open
-        log.error("tesla-aladdin-garage fail reason=cursor_month_cost err=%s", e)
+        snap = (snapshot_fn or persist.load_tesla_usage)(month)
+    except Exception as e:  # noqa: BLE001
+        log.error("tesla-aladdin-garage fail reason=tesla_month_cost err=%s", e)
         return {
             "ok": False,
             "usd": None,
@@ -88,24 +98,17 @@ def month_cursor_cost(*, query_fn=None) -> dict[str, Any]:
             "month": month,
             "error": type(e).__name__,
         }
-    return {"ok": True, "usd": usd, "budget_usd": budget, "month": month, "error": ""}
-
-
-def _query_month_usd() -> float:
-    from google.auth.transport.requests import AuthorizedSession
-    import google.auth
-
-    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/bigquery"])
-    session = AuthorizedSession(creds)
-    sql = _MONTH_SQL.format(project=PROJECT_ID, dataset=DATASET, tz=TZ)
-    url = f"https://bigquery.googleapis.com/bigquery/v2/projects/{PROJECT_ID}/queries"
-    resp = session.post(
-        url, json={"query": sql, "useLegacySql": False, "timeoutMs": 20000}, timeout=25
-    )
-    if resp.status_code >= 400:
-        raise RuntimeError(f"bq_http_{resp.status_code}")
-    data = resp.json()
-    rows = data.get("rows") or []
-    if not rows:
-        return 0.0
-    return float(rows[0]["f"][0]["v"])
+    counts = {
+        "data": int(snap.get("data") or 0),
+        "commands": int(snap.get("commands") or 0),
+        "wakes": int(snap.get("wakes") or 0),
+        "signals": int(snap.get("signals") or 0),
+    }
+    return {
+        "ok": True,
+        "usd": estimate_usd(counts),
+        "budget_usd": budget,
+        "month": month,
+        "error": "",
+        **counts,
+    }

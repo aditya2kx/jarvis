@@ -18,9 +18,9 @@ from email.mime.text import MIMEText
 from typing import Any, Optional
 
 from cloud.tesla_aladdin_garage.month_cost import (
-    format_cursor_cost_lines,
-    format_cursor_cost_subject,
-    month_cursor_cost,
+    format_tesla_cost_lines,
+    format_tesla_cost_subject,
+    month_tesla_cost,
 )
 
 log = logging.getLogger("tesla_aladdin_garage")
@@ -51,7 +51,7 @@ def email_subject(event: str, fields: dict[str, Any]) -> str:
     tesla = _fmt_m(fields.get("distance_m"))
     enter = _fmt_m(fields.get("enter_m"))
     extra = " simulated" if fields.get("simulated") else ""
-    cost = fields.get("cursor_cost_subject") or ""
+    cost = fields.get("tesla_cost_subject") or ""
     cost_bit = f" — {cost}" if cost else ""
     return f"{head} — Tesla {tesla} from home (enter {enter}){extra}{cost_bit}"
 
@@ -60,7 +60,7 @@ def email_body(event: str, fields: dict[str, Any]) -> str:
     tesla = _fmt_m(fields.get("distance_m"))
     enter = _fmt_m(fields.get("enter_m"))
     sim = " (simulated enter; Tesla metres are last live poll if any)" if fields.get("simulated") else ""
-    cost_lines = fields.get("cursor_cost_lines") or []
+    cost_lines = fields.get("tesla_cost_lines") or []
     return "\n".join(
         [
             f"Tesla distance from home when this fired: {tesla}{sim}",
@@ -90,10 +90,10 @@ def send_garage_email(event: str, fields: dict[str, Any], *, to: Optional[str] =
         log.info("tesla-aladdin-garage skip reason=notify_unconfigured event=%s", event)
         return False
     payload = dict(fields)
-    if "cursor_cost_lines" not in payload:
-        info = month_cursor_cost()
-        payload["cursor_cost_lines"] = format_cursor_cost_lines(info)
-        payload["cursor_cost_subject"] = format_cursor_cost_subject(info)
+    if "tesla_cost_lines" not in payload:
+        info = month_tesla_cost()
+        payload["tesla_cost_lines"] = format_tesla_cost_lines(info)
+        payload["tesla_cost_subject"] = format_tesla_cost_subject(info)
     subject = email_subject(event, payload)
     lines = email_body(event, payload)
     try:

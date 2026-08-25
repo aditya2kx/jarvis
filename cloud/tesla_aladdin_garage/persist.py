@@ -23,6 +23,15 @@ _usage_mem: dict[str, Any] = {}
 _client: Any = None
 
 
+def _firestore_database() -> str:
+    raw = (
+        os.environ.get("GARAGE_FIRESTORE_DB")
+        or os.environ.get("FIRESTORE_DB")
+        or "(default)"
+    )
+    return raw.strip() or "(default)"
+
+
 def _db():
     global _client
     if os.environ.get("GARAGE_PERSIST", "0") != "1":
@@ -32,11 +41,21 @@ def _db():
     try:
         from google.cloud import firestore
 
+        # Never pass database="(default)". REST transports URL-encode the id
+        # once in the resource name and again in the path, so the API sees
+        # "%28default%29" and returns 400 Invalid database id %28default%29.
+        # Same pattern as skills.bhaga_config.state_adapter / bhaga-webhook.
+        kwargs: dict[str, Any] = {}
         project = os.environ.get("GCP_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
-        _client = firestore.Client(project=project) if project else firestore.Client()
+        if project:
+            kwargs["project"] = project
+        db_id = _firestore_database()
+        if db_id != "(default)":
+            kwargs["database"] = db_id
+        _client = firestore.Client(**kwargs)
         return _client
     except Exception as e:  # noqa: BLE001 — persist is best-effort
-        log.error("tesla-aladdin-garage fail reason=firestore_client err=%s", e)
+        log.error("tesla-aladdin-garage fail reason=firestore_client err=%r", e)
         return None
 
 
@@ -54,7 +73,7 @@ def load_config() -> dict:
         snap = db.collection(COLLECTION).document(CONFIG_DOC).get()
         return snap.to_dict() or {} if snap.exists else {}
     except Exception as e:  # noqa: BLE001
-        log.error("tesla-aladdin-garage fail reason=config_load err=%s", e)
+        log.error("tesla-aladdin-garage fail reason=config_load err=%r", e)
         return {}
 
 
@@ -75,7 +94,7 @@ def save_state(state: dict) -> None:
     try:
         db.collection(COLLECTION).document(STATE_DOC).set(state, merge=True)
     except Exception as e:  # noqa: BLE001
-        log.error("tesla-aladdin-garage fail reason=state_save err=%s", e)
+        log.error("tesla-aladdin-garage fail reason=state_save err=%r", e)
 
 
 def load_state() -> dict:
@@ -86,7 +105,7 @@ def load_state() -> dict:
         snap = db.collection(COLLECTION).document(STATE_DOC).get()
         return snap.to_dict() or {} if snap.exists else {}
     except Exception as e:  # noqa: BLE001
-        log.error("tesla-aladdin-garage fail reason=state_load err=%s", e)
+        log.error("tesla-aladdin-garage fail reason=state_load err=%r", e)
         return {}
 
 
@@ -107,7 +126,7 @@ def load_tesla_usage(month: str) -> dict[str, Any]:
         _usage_mem[month] = data
         return dict(data)
     except Exception as e:  # noqa: BLE001
-        log.error("tesla-aladdin-garage fail reason=usage_load err=%s", e)
+        log.error("tesla-aladdin-garage fail reason=usage_load err=%r", e)
         return dict(cached or _empty_usage(month))
 
 
@@ -131,4 +150,4 @@ def record_billable(category: str, n: int = 1) -> None:
     try:
         db.collection(COLLECTION).document(USAGE_DOC).set(cur, merge=True)
     except Exception as e:  # noqa: BLE001
-        log.error("tesla-aladdin-garage fail reason=usage_save err=%s", e)
+        log.error("tesla-aladdin-garage fail reason=usage_save err=%r", e)

@@ -1,3 +1,9 @@
+## 2026-08-24 — Garage: 800 m enter + Tesla Fleet $10 credit on notify (#258)
+
+**Scope:** Open Big Peach at 800 m. Every garage email should show Tesla Fleet month spend vs Tesla's $10 developer discount (not Cursor).
+
+**Key changes:** `GEOFENCE_ENTER_M=800`; notify counts our billable Fleet calls + Location ingest at published rates; Tesla portal remains authoritative.
+
 ## 2026-08-24 — Tesla Aladdin garage: telemetry ingest + non-fatal deploy extras
 
 **Scope:** Cloud Run already deployed; GHA then failed on log-metric IAM. 20 s REST `vehicle_data` polls are expensive and 408 when Dhanno sleeps.

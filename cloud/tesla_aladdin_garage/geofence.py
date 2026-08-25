@@ -20,7 +20,7 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 class Geofence:
     home_lat: float
     home_lon: float
-    enter_m: float = 400.0
+    enter_m: float = 800.0
     hysteresis_m: float = 80.0
     inside: Optional[bool] = field(default=None)
 

@@ -17,6 +17,12 @@ import urllib.request
 from email.mime.text import MIMEText
 from typing import Any, Optional
 
+from cloud.tesla_aladdin_garage.month_cost import (
+    format_tesla_cost_lines,
+    format_tesla_cost_subject,
+    month_tesla_cost,
+)
+
 log = logging.getLogger("tesla_aladdin_garage")
 
 DEFAULT_TO = "aditya.2ky@gmail.com"
@@ -45,17 +51,22 @@ def email_subject(event: str, fields: dict[str, Any]) -> str:
     tesla = _fmt_m(fields.get("distance_m"))
     enter = _fmt_m(fields.get("enter_m"))
     extra = " simulated" if fields.get("simulated") else ""
-    return f"{head} — Tesla {tesla} from home (enter {enter}){extra}"
+    cost = fields.get("tesla_cost_subject") or ""
+    cost_bit = f" — {cost}" if cost else ""
+    return f"{head} — Tesla {tesla} from home (enter {enter}){extra}{cost_bit}"
 
 
 def email_body(event: str, fields: dict[str, Any]) -> str:
     tesla = _fmt_m(fields.get("distance_m"))
     enter = _fmt_m(fields.get("enter_m"))
     sim = " (simulated enter; Tesla metres are last live poll if any)" if fields.get("simulated") else ""
+    cost_lines = fields.get("tesla_cost_lines") or []
     return "\n".join(
         [
             f"Tesla distance from home when this fired: {tesla}{sim}",
             f"Geofence enter radius: {enter}",
+            "",
+            *cost_lines,
             "",
             f"Event: {event}",
             f"Door: {fields.get('door', 'Big Peach')}",
@@ -78,8 +89,13 @@ def send_garage_email(event: str, fields: dict[str, Any], *, to: Optional[str] =
     if not dest or not client_id or not client_secret or not refresh:
         log.info("tesla-aladdin-garage skip reason=notify_unconfigured event=%s", event)
         return False
-    subject = email_subject(event, fields)
-    lines = email_body(event, fields)
+    payload = dict(fields)
+    if "tesla_cost_lines" not in payload:
+        info = month_tesla_cost()
+        payload["tesla_cost_lines"] = format_tesla_cost_lines(info)
+        payload["tesla_cost_subject"] = format_tesla_cost_subject(info)
+    subject = email_subject(event, payload)
+    lines = email_body(event, payload)
     try:
         access = _access_token(client_id, client_secret, refresh)
         _gmail_send(access, dest, dest, subject, lines)

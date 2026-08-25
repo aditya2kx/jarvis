@@ -27,3 +27,5 @@ def test_deploy_enables_telemetry_not_rest_poll():
     assert "TESLA_TELEMETRY=1" in text
     assert "POLL_INTERVAL_S=0" in text
     assert "LOCATION_MIN_DELTA_M=80" in text
+    assert "GEOFENCE_ENTER_M=800" in text
+    assert "TESLA_MONTH_BUDGET_USD=10" in text

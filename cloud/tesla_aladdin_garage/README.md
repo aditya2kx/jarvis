@@ -9,14 +9,14 @@ Geofence Dhanno → open **Big Peach** via Aladdin Connect.
 - `Location.minimum_delta` is 80 m (env `LOCATION_MIN_DELTA_M`). Same 400 m enter / 80 m hysteresis as before.
 - Optional REST fallback: set `POLL_INTERVAL_S>0`. `vehicle_data?endpoints=location_data;drive_state` (semicolon).
 - **Never** `wake_up` / vehicle commands.
-- Home `29.464083,-95.517465`, enter 400 m, hysteresis 80 m (exit 480 m). Override `enter_m` at runtime: `POST /config` `{"enter_m": 350}` (admin token).
+- Home `29.464083,-95.517465`, enter 800 m, hysteresis 80 m (exit 880 m). Override `enter_m` at runtime: `POST /config` `{"enter_m": 350}` (admin token).
 - First fix inside the fence does **not** open (already home).
 - Cooldown 600 s. `ALADDIN_DRY_RUN=0` is live.
 - Single Cloud Run instance, CPU always allocated.
 - Last event/error/poll written to Firestore `tesla_aladdin_garage/state` (`GARAGE_PERSIST=1`).
 - Admin token (`GARAGE_ADMIN_TOKEN` / `X-Garage-Token`) required for `/tick`, `/location`, `/simulate/enter`, `/config`, `/telemetry`, `/telemetry/configure`.
 - Aladdin `/devices` uses Cognito **AccessToken** (IdToken is 401). Cloud Run SA must have `secretVersionAdder` on `tesla-fleet-refresh-token` so `/oauth/tesla` survives a revision restart.
-- If Big Peach is **already open**, skip `OPEN_DOOR` and email `aditya.2ky@gmail.com` (Tesla metres-from-home in the subject). Same email on open and on Aladdin failure. Needs Gmail OAuth secrets for that mailbox (`GMAIL_*`); without them the worker still opens, it just logs `notify_unconfigured`.
+- If Big Peach is **already open**, skip `OPEN_DOOR` and email `aditya.2ky@gmail.com` (Tesla metres-from-home in the subject). Same email on open and on Aladdin failure. Body includes Tesla Fleet month spend vs the **$10 developer discount** (`TESLA_MONTH_BUDGET_USD`; Jarvis-counted Data/streaming, Tesla portal is authoritative). Needs Gmail OAuth secrets for that mailbox (`GMAIL_*`); without them the worker still opens, it just logs `notify_unconfigured`.
 
 ## Env / secrets
 
@@ -43,11 +43,11 @@ python3 scripts/secret_manager_put.py --secret gmail-client-secret --from-env GM
 python3 scripts/secret_manager_put.py --secret gmail-refresh-token --from-env GMAIL_REFRESH_TOKEN
 ```
 
-Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON`, `GEOFENCE_ENTER_M`,
+Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON`, `GEOFENCE_ENTER_M` (800),
 `ALADDIN_DEVICE_SERIAL`, `ALADDIN_DOOR_INDEX`, `ALADDIN_DRY_RUN=0`, `GARAGE_PERSIST=1`,
 `GARAGE_NOTIFY_TO=aditya.2ky@gmail.com`, `TESLA_TELEMETRY=1`, `POLL_INTERVAL_S=0`,
 `TESLA_TELEMETRY_HOST` (fleet-telemetry hostname cars connect to; empty = ingest-only),
-`LOCATION_MIN_DELTA_M=80`. Gmail OAuth is Secret Manager only (`gmail-client-id`,
+`LOCATION_MIN_DELTA_M=80`, `TESLA_MONTH_BUDGET_USD=10`. Gmail OAuth is Secret Manager only (`gmail-client-id`,
 `gmail-client-secret`, `gmail-refresh-token` → `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` /
 `GMAIL_REFRESH_TOKEN`).
 

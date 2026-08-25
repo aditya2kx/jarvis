@@ -29,3 +29,9 @@ def test_deploy_enables_telemetry_not_rest_poll():
     assert "LOCATION_MIN_DELTA_M=80" in text
     assert "GEOFENCE_ENTER_M=800" in text
     assert "TESLA_MONTH_BUDGET_USD=10" in text
+
+
+def test_garage_requirements_pin_grpcio():
+    req = (ROOT / "cloud/tesla_aladdin_garage/requirements.txt").read_text()
+    assert "grpcio>=" in req
+    assert "grpcio-status>=" in req

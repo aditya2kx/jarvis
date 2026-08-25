@@ -2,3 +2,5 @@ flask>=3.0,<4
 gunicorn>=22.0,<23
 google-cloud-secret-manager>=2.16,<3
 google-cloud-firestore>=2.16,<3
+grpcio>=1.62,<2
+grpcio-status>=1.62,<2

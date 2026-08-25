@@ -142,3 +142,15 @@ export function selectPaintGeneration(
     pending,
   };
 }
+
+/** Rows that belong to `paint.refreshedAt` (or null-timestamp rows when unset). */
+export function rowsForPaintGeneration(
+  longRows: OrderRecoSlotLongRow[],
+  paint: PaintGeneration,
+): OrderRecoSlotLongRow[] {
+  if (paint.refreshedAt == null) {
+    return longRows.filter((r) => r.refreshed_at == null || r.refreshed_at === "");
+  }
+  const want = String(paint.refreshedAt);
+  return longRows.filter((r) => String(r.refreshed_at) === want);
+}

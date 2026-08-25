@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeDeliveryDate,
   pivotOrderRecoSlots,
+  rowsForPaintGeneration,
   selectPaintGeneration,
 } from "@/lib/inventory/orderRecoPivot";
 import type { OrderRecoSlotLongRow } from "@/lib/inventory/orderRecoPivot";
@@ -162,5 +163,28 @@ describe("pivotOrderRecoSlots", () => {
     const paint = selectPaintGeneration(live, rows);
     expect(paint.readyDates).toEqual(["2026-08-28"]);
     expect(paint.pending).toBe(true);
+  });
+
+  it("pivots only the selected generation when two gens share a live date", () => {
+    const live = ["2026-08-28", "2026-09-04"];
+    const mixed = [
+      row({ Item: "Açaí", delivery_date: "2026-08-28", "Order Tubs": 10, refreshed_at: "t1" }),
+      row({ Item: "TOTAL", delivery_date: "2026-08-28", "Order Tubs": 10, refreshed_at: "t1" }),
+      row({ Item: "Açaí", delivery_date: "2026-09-04", "Order Tubs": 0, refreshed_at: "t1" }),
+      row({ Item: "TOTAL", delivery_date: "2026-09-04", "Order Tubs": 33, refreshed_at: "t1" }),
+      row({ Item: "Açaí", delivery_date: "2026-08-28", "Order Tubs": 13, refreshed_at: "t0" }),
+      row({ Item: "TOTAL", delivery_date: "2026-08-28", "Order Tubs": 13, refreshed_at: "t0" }),
+    ];
+    const paint = selectPaintGeneration(live, mixed);
+    expect(paint.refreshedAt).toBe("t1");
+    expect(paint.readyDates).toEqual(["2026-08-28"]);
+    const unfiltered = pivotOrderRecoSlots(paint.readyDates, mixed);
+    expect(unfiltered.find((r) => r.Item === "Açaí")?.["Order Tubs 1"]).toBe(13);
+    const pivoted = pivotOrderRecoSlots(
+      paint.readyDates,
+      rowsForPaintGeneration(mixed, paint),
+    );
+    expect(pivoted.find((r) => r.Item === "Açaí")?.["Order Tubs 1"]).toBe(10);
+    expect(pivoted.find((r) => r.Item === "TOTAL")?.["Order Tubs 1"]).toBe(10);
   });
 });

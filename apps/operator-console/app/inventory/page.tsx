@@ -19,6 +19,7 @@ import { triggerOrderRecoRefresh } from "@/lib/bhaga/recompute";
 import {
   normalizeDeliveryDate,
   pivotOrderRecoSlots,
+  rowsForPaintGeneration,
   selectPaintGeneration,
   type OrderRecoPivotedRow,
 } from "@/lib/inventory/orderRecoPivot";
@@ -120,7 +121,8 @@ export default async function InventoryPage({
     const paint = selectPaintGeneration(liveDates, slotRows);
     dates = paint.readyDates;
     recoPending = paint.pending || recoQueued;
-    rows = pivotOrderRecoSlots(dates, slotRows);
+    const paintRows = rowsForPaintGeneration(slotRows, paint);
+    rows = pivotOrderRecoSlots(dates, paintRows);
     runwayRows = runway;
     auditRows = audit;
     estimatedDates = estimated.map((d) => normalizeDeliveryDate(d.delivery_date)).filter(Boolean);
@@ -128,7 +130,7 @@ export default async function InventoryPage({
       delivery_date: normalizeDeliveryDate(d.delivery_date),
       has_actuals: Boolean(d.has_actuals),
     }));
-    estimateByDate = buildEstimateByDate(slotRows);
+    estimateByDate = buildEstimateByDate(paintRows);
     const maxTubsRow = config.find((c) => c.key === "order_reco_max_tubs");
     maxTubs = maxTubsRow ? Number(maxTubsRow.value) : undefined;
   } catch (e) {

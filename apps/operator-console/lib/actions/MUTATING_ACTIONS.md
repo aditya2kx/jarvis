@@ -11,7 +11,7 @@ Jobs (Option B); they must never block the click path via daemon threads.
 | Inventory | Restock submit | `submitRestockAction` | `order-reco` job |
 | Inventory | Replace estimated date | `replaceEstimatedRestockDateAction` | `order-reco` job |
 | Inventory | Capacity | `setCapacityAction` | `order-reco` job |
-| Inventory | Page self-heal | `ensureOrderRecoFresh` (RSC) | `order-reco` job when stale |
+| Inventory | Page self-heal | `ensureOrderRecoFresh` (RSC) | `order-reco` job when stale; skip `:run` if a job is already running |
 | Payroll | Tip exemptions Update | `applyTipExemptionsAction` | `model-recompute` job |
 | Payroll | Run ADP Preview | `runPayrollDraftAction` / `pollPayrollDraftAction` | Headless `adp-payroll-draft` (local laptop when BYPASS_IAP); BQ stores Preview hours + Gross |
 | Payroll | Recognition bonus | `addRecognitionBonusAction` | — |

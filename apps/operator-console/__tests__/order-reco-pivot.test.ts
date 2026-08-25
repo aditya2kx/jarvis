@@ -1,5 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { normalizeDeliveryDate, pivotOrderRecoSlots } from "@/lib/inventory/orderRecoPivot";
+import {
+  normalizeDeliveryDate,
+  pivotOrderRecoSlots,
+  rowsForPaintGeneration,
+  selectPaintGeneration,
+} from "@/lib/inventory/orderRecoPivot";
+import type { OrderRecoSlotLongRow } from "@/lib/inventory/orderRecoPivot";
+
+function row(
+  partial: Partial<OrderRecoSlotLongRow> & Pick<OrderRecoSlotLongRow, "Item" | "delivery_date">,
+): OrderRecoSlotLongRow {
+  return {
+    Slot: 1,
+    "Current Qty": 1,
+    "Avg per day": 1,
+    "On Hand at Restock": 1,
+    "Order Tubs": 0,
+    "Order Weight lbs": 0,
+    "After Restock": 1,
+    "Days Left After Restock": 1,
+    Source: "Estimated",
+    _ord: partial.Item === "TOTAL" ? 1 : 0,
+    refreshed_at: "2026-08-24T00:00:00Z",
+    ...partial,
+  };
+}
 
 describe("pivotOrderRecoSlots", () => {
   it("pivots three slots into On Hand N / Source N columns", () => {
@@ -98,5 +123,68 @@ describe("pivotOrderRecoSlots", () => {
 
   it("normalizeDeliveryDate truncates timestamps", () => {
     expect(normalizeDeliveryDate("2026-08-17T00:00:00.000Z")).toBe("2026-08-17");
+  });
+
+  it("selectPaintGeneration omits a live date until item tubs sum to TOTAL", () => {
+    const live = ["2026-08-28", "2026-09-04"];
+    const old = [
+      row({ Item: "Açaí", delivery_date: "2026-08-28", "Order Tubs": 13, refreshed_at: "t0" }),
+      row({ Item: "TOTAL", delivery_date: "2026-08-28", "Order Tubs": 13, refreshed_at: "t0" }),
+    ];
+    const mid = [
+      ...old,
+      row({ Item: "Açaí", delivery_date: "2026-09-04", "Order Tubs": 0, refreshed_at: "t1" }),
+      row({ Item: "TOTAL", delivery_date: "2026-09-04", "Order Tubs": 33, refreshed_at: "t1" }),
+    ];
+    const torn = selectPaintGeneration(live, mid);
+    expect(torn.readyDates).toEqual(["2026-08-28"]);
+    expect(torn.pending).toBe(true);
+
+    const done = [
+      row({ Item: "Açaí", delivery_date: "2026-08-28", "Order Tubs": 13, refreshed_at: "t2" }),
+      row({ Item: "TOTAL", delivery_date: "2026-08-28", "Order Tubs": 13, refreshed_at: "t2" }),
+      row({ Item: "Açaí", delivery_date: "2026-09-04", "Order Tubs": 22, refreshed_at: "t2" }),
+      row({ Item: "Matcha", delivery_date: "2026-09-04", "Order Tubs": 11, refreshed_at: "t2" }),
+      row({ Item: "TOTAL", delivery_date: "2026-09-04", "Order Tubs": 33, refreshed_at: "t2" }),
+    ];
+    const ready = selectPaintGeneration(live, done);
+    expect(ready.readyDates).toEqual(["2026-08-28", "2026-09-04"]);
+    expect(ready.pending).toBe(false);
+  });
+
+  it("prefers an older complete generation over a newer partial one", () => {
+    const live = ["2026-08-28", "2026-09-04"];
+    const rows = [
+      row({ Item: "Açaí", delivery_date: "2026-08-28", "Order Tubs": 10, refreshed_at: "2026-08-24T10:00:00Z" }),
+      row({ Item: "TOTAL", delivery_date: "2026-08-28", "Order Tubs": 10, refreshed_at: "2026-08-24T10:00:00Z" }),
+      row({ Item: "Açaí", delivery_date: "2026-08-28", "Order Tubs": 10, refreshed_at: "2026-08-24T11:00:00Z" }),
+      row({ Item: "TOTAL", delivery_date: "2026-08-28", "Order Tubs": 10, refreshed_at: "2026-08-24T11:00:00Z" }),
+    ];
+    const paint = selectPaintGeneration(live, rows);
+    expect(paint.readyDates).toEqual(["2026-08-28"]);
+    expect(paint.pending).toBe(true);
+  });
+
+  it("pivots only the selected generation when two gens share a live date", () => {
+    const live = ["2026-08-28", "2026-09-04"];
+    const mixed = [
+      row({ Item: "Açaí", delivery_date: "2026-08-28", "Order Tubs": 10, refreshed_at: "t1" }),
+      row({ Item: "TOTAL", delivery_date: "2026-08-28", "Order Tubs": 10, refreshed_at: "t1" }),
+      row({ Item: "Açaí", delivery_date: "2026-09-04", "Order Tubs": 0, refreshed_at: "t1" }),
+      row({ Item: "TOTAL", delivery_date: "2026-09-04", "Order Tubs": 33, refreshed_at: "t1" }),
+      row({ Item: "Açaí", delivery_date: "2026-08-28", "Order Tubs": 13, refreshed_at: "t0" }),
+      row({ Item: "TOTAL", delivery_date: "2026-08-28", "Order Tubs": 13, refreshed_at: "t0" }),
+    ];
+    const paint = selectPaintGeneration(live, mixed);
+    expect(paint.refreshedAt).toBe("t1");
+    expect(paint.readyDates).toEqual(["2026-08-28"]);
+    const unfiltered = pivotOrderRecoSlots(paint.readyDates, mixed);
+    expect(unfiltered.find((r) => r.Item === "Açaí")?.["Order Tubs 1"]).toBe(13);
+    const pivoted = pivotOrderRecoSlots(
+      paint.readyDates,
+      rowsForPaintGeneration(mixed, paint),
+    );
+    expect(pivoted.find((r) => r.Item === "Açaí")?.["Order Tubs 1"]).toBe(10);
+    expect(pivoted.find((r) => r.Item === "TOTAL")?.["Order Tubs 1"]).toBe(10);
   });
 });

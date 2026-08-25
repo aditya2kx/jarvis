@@ -1765,6 +1765,7 @@ export interface OrderRecoSlotLongRow {
   "Days Left After Restock": number | null;
   Source: "Estimated" | "Manual" | "Actuals" | null;
   _ord: number;
+  refreshed_at: string | null;
 }
 
 export function orderRecoSlots(): Promise<OrderRecoSlotLongRow[]> {
@@ -1793,7 +1794,8 @@ export function orderRecoSlots(): Promise<OrderRecoSlotLongRow[]> {
          ) THEN 'Manual'
          ELSE 'Estimated'
        END AS Source,
-       r._ord
+       r._ord,
+       CAST(r.refreshed_at AS STRING) AS refreshed_at
      FROM ${fq("inventory_order_reco")} r
      INNER JOIN ${fq("vw_order_reco_next_dates")} d
        ON r.delivery_date = d.delivery_date

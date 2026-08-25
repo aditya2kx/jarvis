@@ -104,10 +104,39 @@ export async function triggerModelRecompute(dates: string[]): Promise<string[]> 
 /**
  * Enqueue dual-date order-reco refresh only (Issue #175 Option B).
  * Job short-circuits via BHAGA_ORDER_RECO_ONLY in daily_refresh.py.
+ * No-ops when a bhaga-daily-refresh execution is already running (#261).
  */
-export async function triggerOrderRecoRefresh(store: string): Promise<void> {
+export async function triggerOrderRecoRefresh(store: string): Promise<{ started: boolean }> {
   if (!store) throw new Error("triggerOrderRecoRefresh: store is required");
+  if (await hasRunningBhagaJob()) {
+    return { started: false };
+  }
   await runJob(orderRecoOnlyEnv(store), `triggerOrderRecoRefresh(store=${store})`);
+  return { started: true };
+}
+
+/** True when any bhaga-daily-refresh execution has not set completionTime. */
+export async function hasRunningBhagaJob(): Promise<boolean> {
+  const auth = new GoogleAuth({
+    scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+  });
+  const client = await auth.getClient();
+  const token = await client.getAccessToken();
+  if (!token.token) {
+    throw new Error("hasRunningBhagaJob: failed to obtain ADC access token");
+  }
+  const url = `https://run.googleapis.com/v2/${JOB_RESOURCE}/executions?pageSize=20`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token.token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`hasRunningBhagaJob: HTTP ${res.status} ${text.slice(0, 300)}`);
+  }
+  const json = (await res.json()) as {
+    executions?: { completionTime?: string }[];
+  };
+  return (json.executions ?? []).some((e) => !e.completionTime);
 }
 
 function adpScheduleOnlyEnv(store: string): { name: string; value: string }[] {

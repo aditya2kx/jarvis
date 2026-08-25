@@ -2,6 +2,7 @@ import {
   baseRunway,
   estimatedScheduleDates,
   nextDates,
+  orderRecoRefreshedAt,
   orderRecoSlots,
   restockActuals,
   scheduledRestockDates,
@@ -18,6 +19,8 @@ import { triggerOrderRecoRefresh } from "@/lib/bhaga/recompute";
 import {
   normalizeDeliveryDate,
   pivotOrderRecoSlots,
+  rowsForPaintGeneration,
+  selectPaintGeneration,
   type OrderRecoPivotedRow,
 } from "@/lib/inventory/orderRecoPivot";
 import {
@@ -35,6 +38,7 @@ import { CapacityEdit } from "@/components/drawers/CapacityEdit";
 import { UsageDayAuditTable } from "@/components/inventory/UsageDayAuditTable";
 import { OrderRecoTable } from "@/components/inventory/OrderRecoTable";
 import { OrderedTubsActualsTable } from "@/components/inventory/OrderedTubsActualsTable";
+import { InventoryRecoFreshness } from "@/components/inventory/InventoryRecoFreshness";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -80,16 +84,20 @@ export default async function InventoryPage({
   let auditRows: UsageDayAuditRow[] = [];
   let actualsRows: RestockActualsPivotedRow[] = [];
   let dates: string[] = [];
+  let liveDates: string[] = [];
   let estimatedDates: string[] = [];
   let scheduledDates: { delivery_date: string; has_actuals: boolean }[] = [];
   let estimateByDate: Record<string, RestockRow[]> = {};
   let maxTubs: number | undefined;
   let error: string | undefined;
   let recoQueued = false;
+  let recoBaseline: string | null = null;
+  let recoPending = false;
   try {
     // Prod: enqueue Cloud Run when stale. Local BYPASS_IAP: refresh inline so
     // Inventory columns match schedule without waiting on a job.
     const syncLocal = Boolean(process.env.BYPASS_IAP_EMAIL?.trim());
+    recoBaseline = await orderRecoRefreshedAt(DEFAULT_STORE);
     const ensure = await ensureOrderRecoFresh(
       DEFAULT_STORE,
       FEATURES.asyncOrderReco && !syncLocal
@@ -109,8 +117,12 @@ export default async function InventoryPage({
         restockActuals(DEFAULT_STORE, win),
       ]);
     actualsRows = pivotRestockActuals(actuals);
-    dates = nd.map((d) => normalizeDeliveryDate(d.delivery_date)).filter(Boolean);
-    rows = pivotOrderRecoSlots(dates, slotRows);
+    liveDates = nd.map((d) => normalizeDeliveryDate(d.delivery_date)).filter(Boolean);
+    const paint = selectPaintGeneration(liveDates, slotRows);
+    dates = paint.readyDates;
+    recoPending = paint.pending || recoQueued;
+    const paintRows = rowsForPaintGeneration(slotRows, paint);
+    rows = pivotOrderRecoSlots(dates, paintRows);
     runwayRows = runway;
     auditRows = audit;
     estimatedDates = estimated.map((d) => normalizeDeliveryDate(d.delivery_date)).filter(Boolean);
@@ -118,7 +130,7 @@ export default async function InventoryPage({
       delivery_date: normalizeDeliveryDate(d.delivery_date),
       has_actuals: Boolean(d.has_actuals),
     }));
-    estimateByDate = buildEstimateByDate(slotRows);
+    estimateByDate = buildEstimateByDate(paintRows);
     const maxTubsRow = config.find((c) => c.key === "order_reco_max_tubs");
     maxTubs = maxTubsRow ? Number(maxTubsRow.value) : undefined;
   } catch (e) {
@@ -145,9 +157,9 @@ export default async function InventoryPage({
   ];
 
   const nextDeliveryLabel =
-    dates.length === 0
+    liveDates.length === 0
       ? "No delivery date registered yet."
-      : `Next delivery: ${dates.join(" · then ")}`;
+      : `Next delivery: ${liveDates.join(" · then ")}`;
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-4">
@@ -176,7 +188,7 @@ export default async function InventoryPage({
               <>
                 <CapacityEdit currentMaxTubs={maxTubs} />
                 <RestockImportDrawer
-                  dates={dates}
+                  dates={liveDates.length ? liveDates : dates}
                   scheduledDates={scheduledDates}
                   estimateByDate={estimateByDate}
                 />
@@ -190,11 +202,11 @@ export default async function InventoryPage({
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
-          {recoQueued ? (
-            <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
-              Order recommendation refreshing in the background — numbers may update on the next
-              reload.
-            </p>
+          {recoPending ? (
+            <InventoryRecoFreshness
+              pending={recoPending}
+              baselineRefreshedAt={recoBaseline}
+            />
           ) : null}
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">Base runway</h2>

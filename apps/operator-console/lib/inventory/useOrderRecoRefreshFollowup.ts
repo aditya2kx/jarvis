@@ -80,9 +80,10 @@ export function useOrderRecoRefreshFollowup(opts?: {
   }, [finishOk, finishTimeout, stopPolling, toast]);
 
   const followOrderReco = useCallback(
-    (input: OrderRecoFollowupInput) => {
-      // Config / override rows are live; tables need a refresh either way.
-      router.refresh();
+    (input: OrderRecoFollowupInput, opts?: { skipImmediateRefresh?: boolean }) => {
+      if (!opts?.skipImmediateRefresh) {
+        router.refresh();
+      }
       if (!input.queued?.length) {
         return;
       }

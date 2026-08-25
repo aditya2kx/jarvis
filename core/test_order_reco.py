@@ -1,8 +1,8 @@
 """Unit tests for core/order_reco.py (Issue #137, Option D + #215 N-slots).
 
 Stubs core.datastore.read_query and core.store_config.get_config so no live
-BQ connection is needed. Asserts DELETE-then-slot1-then-slot_n order (later
-slots read prior rows from inventory_order_reco).
+BQ connection is needed. Asserts slot1-then-slot_n-then-DELETE-old order
+(later slots read prior rows from inventory_order_reco; Issue #261).
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 
 class TestRefreshOrderReco(unittest.TestCase):
-    def test_deletes_then_inserts_slot1_then_slot_n(self):
+    def test_inserts_then_deletes_prior_generation(self):
         calls = []
 
         def fake_read_query(sql):
@@ -26,16 +26,16 @@ class TestRefreshOrderReco(unittest.TestCase):
             from core.order_reco import refresh_order_reco
             refresh_order_reco("palmetto")
 
-        self.assertEqual(len(calls), 5, calls)  # next_dates + DELETE + 3 inserts
+        self.assertEqual(len(calls), 5, calls)  # next_dates + 3 inserts + DELETE old
         self.assertIn("vw_order_reco_next_dates", calls[0])
-        self.assertIn("DELETE FROM", calls[1])
-        self.assertIn("inventory_order_reco", calls[1])
-        self.assertIn("tvf_order_reco_slot1", calls[2])
-        self.assertIn(", 1,", calls[2])
+        self.assertIn("tvf_order_reco_slot1", calls[1])
+        self.assertIn(", 1,", calls[1])
+        self.assertIn("tvf_order_reco_slot_n", calls[2])
+        self.assertIn("(120, 2)", calls[2])
         self.assertIn("tvf_order_reco_slot_n", calls[3])
-        self.assertIn("(120, 2)", calls[3])
-        self.assertIn("tvf_order_reco_slot_n", calls[4])
-        self.assertIn("(120, 3)", calls[4])
+        self.assertIn("(120, 3)", calls[3])
+        self.assertIn("DELETE FROM", calls[4])
+        self.assertIn("refreshed_at !=", calls[4])
 
     def test_clears_only_when_no_next_dates(self):
         calls = []

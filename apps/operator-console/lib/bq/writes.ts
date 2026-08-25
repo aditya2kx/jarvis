@@ -1,5 +1,5 @@
 import "server-only";
-import { dateParam, fq, intParam, mutate, q } from "./client";
+import { dateParam, fq, intParam, mutate, q, timestampParam } from "./client";
 
 // Every write here mirrors the exact statement cloud/webhook/handler.py uses
 // (see handler.py::_restock_set_schedule/_restock_clear_orders/
@@ -146,8 +146,10 @@ export async function replaceRestockOrders(
 /**
  * Recompute inventory_order_reco for `store` — mirrors
  * core/order_reco.py::refresh_order_reco / handler.py::_refresh_order_reco.
- * Order matters: slot N's TVF reads slot N-1's materialized row, so earlier
- * INSERTs must land first. Call after any restock write or an
+ * Order matters: slot N's TVF reads slot N-1's materialized row (latest
+ * refreshed_at, migration 067), so earlier INSERTs must land first. After all
+ * slots insert with a shared generation timestamp, DELETE prior generations.
+ * Call after any restock write or an
  * order_reco_max_tubs config change. Slot count follows live
  * vw_order_reco_next_dates (migration 052, default cap 4).
  */
@@ -163,6 +165,7 @@ export async function refreshOrderReco(store: string): Promise<void> {
   ]);
   const maxTubs = intParam(cfgRows.length ? Number(cfgRows[0].value) : DEFAULT_MAX_TUBS);
   const slots = slotRows.map((r) => Number(r.slot)).filter((n) => Number.isFinite(n));
+  const gen = timestampParam(new Date());
 
   // Explicit columns — migration 041 added delivery_date; t.* + ts would mis-map.
   const cols =
@@ -172,24 +175,30 @@ export async function refreshOrderReco(store: string): Promise<void> {
   const sel =
     "Item, `Current Qty`, `Avg per day`, `On Hand at Restock`, " +
     "`Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock`, " +
-    "_ord, CURRENT_TIMESTAMP(), delivery_date";
+    "_ord, @gen, delivery_date";
 
-  await mutate(`DELETE FROM ${fq("inventory_order_reco")} WHERE store = @store`, { store });
-  if (!slots.length) return;
+  if (!slots.length) {
+    await mutate(`DELETE FROM ${fq("inventory_order_reco")} WHERE store = @store`, { store });
+    return;
+  }
 
   await mutate(
     `INSERT INTO ${fq("inventory_order_reco")} (${cols})
      SELECT @store, 1, ${sel} FROM ${fq("tvf_order_reco_slot1")}(@maxTubs)`,
-    { store, maxTubs },
+    { store, maxTubs, gen },
   );
   for (const slot of slots) {
     if (slot < 2) continue;
     await mutate(
       `INSERT INTO ${fq("inventory_order_reco")} (${cols})
        SELECT @store, @slot, ${sel} FROM ${fq("tvf_order_reco_slot_n")}(@maxTubs, @slot)`,
-      { store, maxTubs, slot: intParam(slot) },
+      { store, maxTubs, slot: intParam(slot), gen },
     );
   }
+  await mutate(
+    `DELETE FROM ${fq("inventory_order_reco")} WHERE store = @store AND refreshed_at != @gen`,
+    { store, gen },
+  );
 }
 
 export type EnsureOrderRecoResult =

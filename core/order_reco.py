@@ -14,12 +14,18 @@ explicitly — `SELECT store, slot, t.*, ts` mis-maps after ALTER ADD.
 Migration 052: more than 2 planning slots via `tvf_order_reco_slot_n` and a
 config-capped `vw_order_reco_next_dates` (order_reco_max_slots, default 4).
 
+Migration 067: write-then-swap — INSERT a shared `refreshed_at` generation,
+then DELETE rows whose `refreshed_at` differs. Avoids an empty/torn table
+between DELETE and INSERT. `tvf_order_reco_slot_n` QUALIFYs `s_prev` to the
+latest `refreshed_at` per item.
+
 Public API
 ----------
 refresh_order_reco(store="palmetto") -> None
-    DELETE-then-INSERT (idempotent) inventory_order_reco for *store*: reads
+    INSERT-then-DELETE-old (idempotent) inventory_order_reco for *store*: reads
     `order_reco_max_tubs` from store_config (default 120), then runs slot 1's
-    TVF and inserts its rows, then runs slot_n for each live slot >= 2.
+    TVF and inserts its rows, then runs slot_n for each live slot >= 2, then
+    drops prior generations.
 
 Called from: nightly daily_refresh, restock submit, config-set on
 order_reco_max_tubs, deploy post-ensure_schema, and console stale-refresh.
@@ -29,6 +35,7 @@ cloud/webhook/handler.py duplicates the SQL inline — keep both in sync.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -62,15 +69,18 @@ def refresh_order_reco(store: str = "palmetto") -> None:
         )
     ]
 
-    read_query(f"DELETE FROM {fq('inventory_order_reco')} WHERE store = '{store}'")
     if not slots:
+        read_query(f"DELETE FROM {fq('inventory_order_reco')} WHERE store = '{store}'")
         logger.info("refresh_order_reco: no next dates store=%s — cleared", store)
         return
+
+    gen = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+    sel = _RECO_SELECT_FROM_TVF.replace("CURRENT_TIMESTAMP()", f"TIMESTAMP('{gen}')")
 
     # Slot 1 burns from current qty / today.
     read_query(
         f"INSERT INTO {fq('inventory_order_reco')} ({_RECO_INSERT_COLS})"
-        f" SELECT '{store}', 1, {_RECO_SELECT_FROM_TVF}"
+        f" SELECT '{store}', 1, {sel}"
         f" FROM {fq('tvf_order_reco_slot1')}({max_tubs})"
     )
     # Slots >= 2 chain from the prior materialized slot (migration 052).
@@ -79,9 +89,13 @@ def refresh_order_reco(store: str = "palmetto") -> None:
             continue
         read_query(
             f"INSERT INTO {fq('inventory_order_reco')} ({_RECO_INSERT_COLS})"
-            f" SELECT '{store}', {slot}, {_RECO_SELECT_FROM_TVF}"
+            f" SELECT '{store}', {slot}, {sel}"
             f" FROM {fq('tvf_order_reco_slot_n')}({max_tubs}, {slot})"
         )
+    read_query(
+        f"DELETE FROM {fq('inventory_order_reco')} "
+        f"WHERE store = '{store}' AND refreshed_at != TIMESTAMP('{gen}')"
+    )
     logger.info(
         "refresh_order_reco: recomputed store=%s max_tubs=%d slots=%s",
         store,

@@ -19,8 +19,12 @@ import {
   type RestockAction,
   type UsageDayOverrideMode,
 } from "@/lib/bq/writes";
-import { orderRecoRefreshedAt } from "@/lib/bq/queries";
+import { nextDates, orderRecoRefreshedAt, orderRecoSlots } from "@/lib/bq/queries";
 import { orderRecoRefreshedAdvanced } from "@/lib/inventory/orderRecoFreshness";
+import {
+  normalizeDeliveryDate,
+  selectPaintGeneration,
+} from "@/lib/inventory/orderRecoPivot";
 import type { RestockRow } from "@/lib/restock/parse";
 import { okAck, failAck, type ActionAck } from "@/lib/actions/types";
 import { FEATURES } from "@/lib/config/features";
@@ -377,16 +381,26 @@ export type OrderRecoRefreshPoll = {
   advanced: boolean;
 };
 
-/** Poll inventory_order_reco.refreshed_at after async order-reco enqueue. */
+/** Poll until the painted reco generation is complete and newer than baseline. */
 export async function pollOrderRecoRefreshAction(opts: {
   baselineRefreshedAt: string | null;
 }): Promise<ActionAck<OrderRecoRefreshPoll>> {
   try {
-    const refreshedAt = await orderRecoRefreshedAt(DEFAULT_STORE);
+    const [refreshedAt, slotRows, nd] = await Promise.all([
+      orderRecoRefreshedAt(DEFAULT_STORE),
+      orderRecoSlots(),
+      nextDates(),
+    ]);
+    const live = nd.map((d) => normalizeDeliveryDate(d.delivery_date)).filter(Boolean);
+    const paint = selectPaintGeneration(live, slotRows);
+    const genAdvanced = orderRecoRefreshedAdvanced(
+      opts.baselineRefreshedAt,
+      paint.refreshedAt,
+    );
     return okAck({
       data: {
         refreshedAt,
-        advanced: orderRecoRefreshedAdvanced(opts.baselineRefreshedAt, refreshedAt),
+        advanced: !paint.pending && genAdvanced,
       },
     });
   } catch (e) {

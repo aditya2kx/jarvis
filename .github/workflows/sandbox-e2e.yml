@@ -15,7 +15,10 @@ name: Sandbox e2e
 on:
   workflow_dispatch: {}
   pull_request:
-    types: [labeled, synchronize, reopened]
+    # Include `opened` so the job always reports a check named "Sandbox e2e".
+    # Without it, a required-status expectation stays pending forever and
+    # blocks merge on PRs that never needed a live sandbox run.
+    types: [opened, labeled, synchronize, reopened]
 
 # One run per PR; a new push cancels the previous (cost + no orphan sheets).
 concurrency:

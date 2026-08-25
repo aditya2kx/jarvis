@@ -51,6 +51,7 @@ def _db():
         if db_id != "(default)":
             kwargs["database"] = db_id
         _client = firestore.Client(**kwargs)
+        log.info("tesla-aladdin-garage firestore_client database=%r", db_id)
         return _client
     except Exception as e:  # noqa: BLE001 — persist is best-effort
         log.error("tesla-aladdin-garage fail reason=firestore_client err=%r", e)

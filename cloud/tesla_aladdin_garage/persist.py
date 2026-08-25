@@ -27,9 +27,9 @@ def _firestore_database() -> str:
     raw = (
         os.environ.get("GARAGE_FIRESTORE_DB")
         or os.environ.get("FIRESTORE_DB")
-        or "(default)"
+        or "garage"
     )
-    return raw.strip() or "(default)"
+    return raw.strip() or "garage"
 
 
 def _db():
@@ -41,10 +41,8 @@ def _db():
     try:
         from google.cloud import firestore
 
-        # Never pass database="(default)". REST transports URL-encode the id
-        # once in the resource name and again in the path, so the API sees
-        # "%28default%29" and returns 400 Invalid database id %28default%29.
-        # Same pattern as skills.bhaga_config.state_adapter / bhaga-webhook.
+        # Default named DB `garage` (no parentheses). REST double-encodes
+        # "(default)" to "%28default%29" → 400. BHAGA stays on (default).
         kwargs: dict[str, Any] = {}
         project = os.environ.get("GCP_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
         if project:

@@ -1,3 +1,9 @@
+## 2026-08-24 — Garage Firestore persist: do not pass database=(default)
+
+**Scope:** Cloud Run `config_load` 400 `Invalid database id %28default%29` left Tesla usage in memory and hid the 400 m overlay.
+
+**Key changes:** construct `firestore.Client` like `bhaga-webhook` (omit `database=` for `(default)`); pin `grpcio`; keep overlay `enter_m=800` so persist coming back does not revert the geofence.
+
 ## 2026-08-24 — Garage: 800 m enter + Tesla Fleet $10 credit on notify (#258)
 
 **Scope:** Open Big Peach at 800 m. Every garage email should show Tesla Fleet month spend vs Tesla's $10 developer discount (not Cursor).

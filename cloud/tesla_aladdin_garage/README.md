@@ -6,14 +6,14 @@ Geofence Dhanno → open **Big Peach** via Aladdin Connect.
 
 - Prefer Tesla Fleet Telemetry **push** (HTTP ingest at `POST /telemetry`). REST `vehicle_data` polling is off when `TESLA_TELEMETRY=1` and `POLL_INTERVAL_S=0`.
 - Tesla has no geofence webhook. The car (when awake) streams `Location` over mTLS to a self-hosted [fleet-telemetry](https://github.com/teslamotors/fleet-telemetry) host (`TESLA_TELEMETRY_HOST:443`). That process POSTs JSON here. Cloud Run cannot terminate vehicle mTLS.
-- `Location.minimum_delta` is 80 m (env `LOCATION_MIN_DELTA_M`). Same 400 m enter / 80 m hysteresis as before.
+- `Location.minimum_delta` is 80 m (env `LOCATION_MIN_DELTA_M`). Enter 800 m / hysteresis 80 m.
 - Optional REST fallback: set `POLL_INTERVAL_S>0`. `vehicle_data?endpoints=location_data;drive_state` (semicolon).
 - **Never** `wake_up` / vehicle commands.
 - Home `29.464083,-95.517465`, enter 800 m, hysteresis 80 m (exit 880 m). Override `enter_m` at runtime: `POST /config` `{"enter_m": 350}` (admin token).
 - First fix inside the fence does **not** open (already home).
 - Cooldown 600 s. `ALADDIN_DRY_RUN=0` is live.
 - Single Cloud Run instance, CPU always allocated.
-- Last event/error/poll written to Firestore `tesla_aladdin_garage/state` (`GARAGE_PERSIST=1`).
+- Last event/error/poll + Tesla usage counters in Firestore `tesla_aladdin_garage/{state,tesla_usage}` (`GARAGE_PERSIST=1`). Client must not pass `database="(default)"` — REST double-encodes it to `%28default%29` (400). Overlay `enter_m` still wins over env.
 - Admin token (`GARAGE_ADMIN_TOKEN` / `X-Garage-Token`) required for `/tick`, `/location`, `/simulate/enter`, `/config`, `/telemetry`, `/telemetry/configure`.
 - Aladdin `/devices` uses Cognito **AccessToken** (IdToken is 401). Cloud Run SA must have `secretVersionAdder` on `tesla-fleet-refresh-token` so `/oauth/tesla` survives a revision restart.
 - If Big Peach is **already open**, skip `OPEN_DOOR` and email `aditya.2ky@gmail.com` (Tesla metres-from-home in the subject). Same email on open and on Aladdin failure. Body includes Tesla Fleet month spend vs the **$10 developer discount** (`TESLA_MONTH_BUDGET_USD`; Jarvis-counted Data/streaming, Tesla portal is authoritative). Needs Gmail OAuth secrets for that mailbox (`GMAIL_*`); without them the worker still opens, it just logs `notify_unconfigured`.

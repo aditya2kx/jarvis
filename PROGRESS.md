@@ -1,3 +1,9 @@
+## 2026-08-24 — Garage: 800 m enter + Cursor month cost on notify (#258)
+
+**Scope:** Open Big Peach earlier (800 m). Every garage email should show Chicago calendar-month Cursor spend vs $10 so overspend is visible without Grafana.
+
+**Key changes:** `GEOFENCE_ENTER_M=800`; notify body/subject from `jarvis_dev` PR cost tables; fail-open if BQ is down.
+
 ## 2026-08-24 — Tesla Aladdin garage: telemetry ingest + non-fatal deploy extras
 
 **Scope:** Cloud Run already deployed; GHA then failed on log-metric IAM. 20 s REST `vehicle_data` polls are expensive and 408 when Dhanno sleeps.

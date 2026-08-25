@@ -14,6 +14,14 @@ def test_stale_poll_metric_step_is_nonfatal():
     assert "continue-on-error: true" in head
 
 
+def test_bq_iam_step_is_nonfatal():
+    text = WF.read_text()
+    assert "Allow garage notify to read Jarvis Cursor cost ledger" in text
+    block = text.split("Allow garage notify to read Jarvis Cursor cost ledger", 1)[1]
+    head = block.split("- name:", 1)[0]
+    assert "continue-on-error: true" in head
+
+
 def test_iam_binding_step_is_nonfatal():
     text = WF.read_text()
     assert "Allow Cloud Run to persist rotated Tesla refresh tokens" in text
@@ -27,3 +35,5 @@ def test_deploy_enables_telemetry_not_rest_poll():
     assert "TESLA_TELEMETRY=1" in text
     assert "POLL_INTERVAL_S=0" in text
     assert "LOCATION_MIN_DELTA_M=80" in text
+    assert "GEOFENCE_ENTER_M=800" in text
+    assert "CURSOR_MONTH_BUDGET_USD=10" in text

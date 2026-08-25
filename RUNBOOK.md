@@ -1973,9 +1973,9 @@ A second copy would double-open the door.
 | VIN | `TESLA_VIN` (Dhanno) |
 | Partner domain | `yuejj.fleetkey.net` (public key already hosted; partner registered) |
 | Door | Big Peach `ALADDIN_DEVICE_SERIAL=F0AD4E3E7403` / `ALADDIN_DOOR_INDEX=1` |
-| Home | `HOME_LAT` / `HOME_LON` · enter 400 m (Firestore overlay `enter_m`) · hysteresis 80 m · cooldown 600 s |
+| Home | `HOME_LAT` / `HOME_LON` · enter 800 m (Firestore overlay `enter_m` wins if set) · hysteresis 80 m · cooldown 600 s |
 | Live | `ALADDIN_DRY_RUN=0` |
-| Notify | `aditya.2ky@gmail.com` (`GARAGE_NOTIFY_TO`). Subject includes Tesla metres-from-home. Skip `OPEN_DOOR` if already open; still email. |
+| Notify | `aditya.2ky@gmail.com` (`GARAGE_NOTIFY_TO`). Subject includes Tesla metres-from-home and current-month Cursor spend vs `$10` (Jarvis `jarvis_dev` PR ledger, America/Chicago). Skip `OPEN_DOOR` if already open; still email. |
 | Admin | Secret `garage-admin-token` → header `X-Garage-Token` |
 
 ```bash
@@ -1985,12 +1985,12 @@ curl -sS "$URL/health"
 # Live Tesla distance from home (does not open the door)
 curl -sS "$URL/location" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN"
 
-# Simulate 400 m enter → OPEN Big Peach (live; cooldown 600 s)
+# Simulate 800 m enter → OPEN Big Peach (live; cooldown 600 s)
 curl -sS -X POST "$URL/simulate/enter" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN"
 
-# Change radius without rebuild
+# Change radius without rebuild (clears a stale 400 m overlay if needed)
 curl -sS -X POST "$URL/config" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN" \
-  -H 'Content-Type: application/json' -d '{"enter_m": 350}'
+  -H 'Content-Type: application/json' -d '{"enter_m": 800}'
 
 # Re-auth if needs_reauth=true (add the callback URL on the Tesla app first)
 open "$URL/oauth/tesla"

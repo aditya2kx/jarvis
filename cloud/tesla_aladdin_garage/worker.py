@@ -23,7 +23,7 @@ class WorkerConfig:
     vin: str
     home_lat: float
     home_lon: float
-    enter_m: float = 400.0
+    enter_m: float = 800.0
     hysteresis_m: float = 80.0
     cooldown_s: float = 600.0
     poll_s: float = 20.0
@@ -44,7 +44,7 @@ class WorkerConfig:
             vin=os.environ.get("TESLA_VIN", ""),
             home_lat=float(os.environ.get("HOME_LAT", "0") or 0),
             home_lon=float(os.environ.get("HOME_LON", "0") or 0),
-            enter_m=float(os.environ.get("GEOFENCE_ENTER_M", "400")),
+            enter_m=float(os.environ.get("GEOFENCE_ENTER_M", "800")),
             hysteresis_m=float(os.environ.get("GEOFENCE_HYSTERESIS_M", "80")),
             cooldown_s=float(os.environ.get("OPEN_COOLDOWN_S", "600")),
             poll_s=float(os.environ.get("POLL_INTERVAL_S", poll_default)),

@@ -103,8 +103,8 @@ This is expected, not a broken install.
   still cannot call `jarvis-bhaga-prod`.
 - Run a second copy of `tesla-aladdin-garage` on the agent “until Cloud Run is up”.
 
-Grafana panel queries go through Grafana’s Bearer token, **not** ADC — see
-`agents/bhaga/grafana/README.md`.
+Grafana **dev-cost** panel queries go through Grafana’s Bearer token, **not** ADC — see
+`grafana/jarvis_dev/` and `agents/bhaga/grafana/README.md` (BHAGA Analytics UI retired).
 
 ### E — One-time laptop ADC login
 

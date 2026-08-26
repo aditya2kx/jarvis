@@ -23,7 +23,7 @@ goals, training shifts, recognition bonuses, and restock schedule/actuals.
 **In scope (v1):** Home (health command center), Sales, Labor, Forecast, Order
 Quality, Payroll & People, Inventory / Ordering (dual-date Order Assistant),
 Pipeline Health; goals + restock + training + recognition write-backs; IAP auth;
-Cloud Run deploy; Grafana coexistence.
+Cloud Run deploy. BHAGA Grafana retired (Issue #276).
 
 **Out of scope (v1):** multi-store beyond Austin (design supports it, data TBD for
 Houston), mobile-native app, replacing the Slack commands (they coexist).

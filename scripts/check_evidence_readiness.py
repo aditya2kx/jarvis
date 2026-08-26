@@ -124,8 +124,8 @@ _SCREENSHOT_URL_RE = re.compile(
 _GRAFANA_SCREENSHOT_RE = _SCREENSHOT_URL_RE
 _VERIFY_PANELS_RE = re.compile(r"verify_panels|/api/ds/query", re.IGNORECASE)
 
-# Grafana dashboard directories to watch (either contains dashboard.json files)
-_GRAFANA_DIRS = ("agents/bhaga/grafana/", "grafana/")
+# Live Grafana-as-code (jarvis-dev cost only). BHAGA Analytics retired Issue #276.
+_GRAFANA_DIRS = ("grafana/",)
 
 # Operator Console portal paths that require working-scenario screenshots in §4.
 # Pure tests under these trees do not trigger G5.
@@ -228,8 +228,8 @@ def predict(body: str) -> tuple[bool, str]:
             return False, (
                 "grafana change → §4 must show: "
                 + " AND ".join(missing)
-                + ". Run: python3 agents/bhaga/grafana/capture_screenshot.py --panel <id> "
-                "--label <label> && python3 agents/bhaga/grafana/verify_panels.py"
+                + ". Run: python3 grafana/jarvis_dev/verify_panels.py "
+                "(BHAGA Analytics Grafana is retired — Issue #276)"
             )
 
     # G5: Operator Console portal changes require working-scenario https screenshots

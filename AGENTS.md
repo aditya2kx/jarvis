@@ -65,7 +65,8 @@ Read these first, derive proposals from them, cite what you used.
 | If you want to… | Read |
 |---|---|
 | Operate / debug the live BHAGA cloud system | `RUNBOOK.md` |
-| Verify/compare/screenshot a Grafana panel, or find the Grafana auth model | `agents/bhaga/grafana/README.md` |
+| Operator Console (store UI; BHAGA Grafana retired #276) | `apps/operator-console/` + `RUNBOOK.md` §17 |
+| Jarvis Development Grafana (PR cost) | `grafana/jarvis_dev/` |
 | Understand BHAGA domain (orders, items, labor, tips, reviews) | `agents/bhaga/knowledge-base/DOMAIN.md` |
 | Understand BHAGA pipeline code | `agents/bhaga/scripts/README.md` |
 | Know BHAGA behavioral rules & invariants | `.cursor/rules/bhaga.mdc` |

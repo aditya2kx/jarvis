@@ -201,11 +201,10 @@ COUPLINGS: list[dict] = [
     {
         "code": [
             "core/migrations/*.sql",
-            "agents/bhaga/grafana/dashboard.json",
         ],
         "docs": ["agents/bhaga/scripts/status.py"],
         "why": (
-            "schema migration or Grafana dashboard changed → update the status doctor's "
+            "schema migration changed → update the status doctor's "
             "target registry (BQ_TARGETS / GRAFANA_VIEWS / KNOWN_UNCHECKED_GRAFANA_REFS) "
             "and its anti-drift sync tests so the freshness checker stays in sync."
         ),
@@ -214,10 +213,14 @@ COUPLINGS: list[dict] = [
         "code": ["agents/bhaga/grafana/*.py"],
         "docs": ["agents/bhaga/grafana/README.md"],
         "why": (
-            "Grafana tooling changed (deploy/verify/compare/screenshot/evidence) → update "
-            "the Grafana README (auth model + tool catalog) so the next agent finds it "
-            "instead of rediscovering the Bearer-token/render-API path from scratch."
+            "BHAGA Grafana dir (retired UI; screenshot upload + delete-dashboard) "
+            "changed → update the README so agents do not resurrect dashboard-as-code."
         ),
+    },
+    {
+        "code": ["grafana/jarvis_dev/**"],
+        "docs": ["docs/contributing/cost.md", "RUNBOOK.md"],
+        "why": "Jarvis Development Grafana dashboard changed → cost.md + RUNBOOK stay accurate.",
     },
 ]
 

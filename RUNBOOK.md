@@ -59,7 +59,7 @@ Cloud Run Service  bhaga-webhook  (image: bhaga-webhook)
 - **BigQuery** (`jarvis-bhaga-prod.bhaga`) is the **single source of truth** for ALL data: scraped raw
   data (Square, ADP, KDS, Reviews), ADP earnings, and operator-editable tunables (`bhaga.store_config`).
   Sheets are a **read-only projection** — written by the pipeline, never authoritative. See §14 for
-  BQ + Grafana operations and §15 for the BQ SoT details.
+  BQ operations and §15 for the BQ SoT details. Store UI is Operator Console (§17).
 - **GCS** (`bhaga-scrape-cache`) retains **only** trusted-device browser sessions (`_session/`) and
   failure evidence/logs (`<date>/evidence/`). Raw data files are **no longer written to GCS** — BQ
   is the persistent store. The old scrape-file cache (`download_cached_files`) is retired.
@@ -1305,7 +1305,7 @@ gcloud scheduler jobs resume bhaga-nightly --location=us-central1   # after prod
 
 ---
 
-## 14. BigQuery + Grafana Cloud (added PR #16, 2026-06-03)
+## 14. BigQuery + Operator Console (Grafana BHAGA retired #276)
 
 ### Status doctor — check freshness first
 
@@ -1323,26 +1323,21 @@ python3 -m agents.bhaga.scripts.status --store palmetto --json
 python3 -m agents.bhaga.scripts.status --store palmetto --check-schema
 ```
 
-It prints a compact freshness table across all three layers (Sheets → BQ → Grafana BI
-views) and exits nonzero if any layer is missing the date — so it is usable in scripts
-and alerts.  Don't hand-investigate; run this first.
+It prints a compact freshness table across Sheets, BigQuery, and BI contract views
+(`GRAFANA_VIEWS` — Operator Console) and exits nonzero if any layer is missing the date —
+so it is usable in scripts and alerts.  Don't hand-investigate; run this first.
 
 **Anti-drift contract:** `status.py` keeps a declarative registry (`BQ_TARGETS`,
-`GRAFANA_VIEWS`) that must track `core/migrations/*.sql` and
-`agents/bhaga/grafana/dashboard.json`.  Sync is enforced by:
-- Static tests in `agents/bhaga/scripts/test_status.py` (parse migration SQL + dashboard
-  JSON and assert the registry covers them — fails CI if a new table or panel appears
-  without an update to the registry).
-- `scripts/check_doc_freshness.py --strict` coupling (CI hard-fails a migration or
-  dashboard PR that doesn't also update `status.py`).
+`GRAFANA_VIEWS`) that must track `core/migrations/*.sql`.  Sync is enforced by:
+- Static tests in `agents/bhaga/scripts/test_status.py` (parse migration SQL
+  and assert the registry covers them).
+- `scripts/check_doc_freshness.py --strict` coupling (CI hard-fails a migration
+  PR that doesn't also update `status.py`).
 
-**Rendering/verifying/comparing/screenshotting a dashboard panel does NOT need
-this `BHAGA_SECRETS_BACKEND`/`BHAGA_IMPERSONATE_SA`/ADC dance at all** — see
-`agents/bhaga/grafana/README.md` § Auth model. That tooling (`verify_panels.py`,
-`compare_panels.py`, `capture_screenshot.py`, `evidence.py`) talks to Grafana
-Cloud with a Bearer token; Grafana queries BigQuery server-side. Only applying
-schema DDL (`ensure_schema()`) needs the cloud service account. A `config.yaml
-not found` error from `status.py` is unrelated and does not block Grafana work.
+BHAGA Analytics Grafana is retired (Issue #276). Screenshot upload for console
+PR evidence still lives in `agents/bhaga/grafana/capture_screenshot.py`. Jarvis
+Development cost dashboard: `grafana/jarvis_dev/`. Only applying schema DDL
+(`ensure_schema()`) needs the cloud service account.
 
 ### Pipeline Health row (updated to two-table design, PR feat/bhaga-dashboard-pipeline-health, 2026-06-12)
 
@@ -1389,13 +1384,13 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 - **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`, `model_forecast_daily`
 - **Pipeline run log:** `pipeline_runs` (migration 016) — one appended row per terminal outcome; queried via `vw_pipeline_runs`
 - **Source pull log:** `source_pulls` (migration 017) — one appended row per per-source pull attempt; queried via `vw_source_pulls`
-- **Model views (Grafana BI contract):** `vw_model_labor_daily`, `vw_model_period_summary`, `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions`, `vw_pipeline_runs`, `vw_source_pulls`
-- **Grafana org:** `steadyangelfish2985`
-- **Dashboard URL:** `https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1/bhaga-analytics`
-- **Read-only SA:** `grafana-bq-reader@jarvis-bhaga-prod.iam.gserviceaccount.com` (DataViewer + JobUser)
+- **Model views (Operator Console / BI contract):** `vw_model_labor_daily`, `vw_model_period_summary`, `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions`, `vw_pipeline_runs`, `vw_source_pulls`
+- **Store UI:** Operator Console (`RUNBOOK.md` §17). BHAGA Analytics Grafana retired Issue #276.
+- **Jarvis Development Grafana (PR cost):** https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jarvis-development
+- **Read-only SA (jarvis-dev Grafana BQ):** `grafana-bq-reader@jarvis-bhaga-prod.iam.gserviceaccount.com` (DataViewer + JobUser)
 - **SA key:** stored in Secret Manager secret `grafana-bq-reader-key`
-- **API token:** stored in macOS Keychain (`security find-generic-password -s grafana-cloud-api-token -a steadyangelfish2985 -w`)
-- **GitHub secrets required:** `GRAFANA_API_TOKEN`, `GRAFANA_ORG_SLUG` (= `steadyangelfish2985`)
+- **API token (jarvis-dev only):** macOS Keychain `grafana-cloud-api-token` / GitHub `GRAFANA_API_TOKEN`
+- **GitHub secrets for jarvis-dev sync:** `GRAFANA_API_TOKEN`, `GRAFANA_ORG_SLUG`
 
 ### Orchestrator SA IAM (BigQuery) — required, easy to miss
 
@@ -1443,65 +1438,24 @@ The model compute is a single BQ-canonical path:
 
 After model writes, `reconcile_model.py` (non-fatal) compares each Sheet model tab against its BQ table and alerts on drift. See `agents/bhaga/scripts/reconcile_model.py`.
 
-**Recovery retrigger (`/bhaga-cloud refresh <date>`):** When BQ raw data is already present and scrape markers are done, `_prepare_projection_recovery` auto-clears projection step markers if the prior run for that date failed (or a drift probe fails). The retrigger skips OTP/login and re-runs `render_raw_sheets` → `materialize_model_bq` → `render_model_sheet_from_bq` only. Grafana Pipeline Health shows `recovery_retrigger=TRUE` on such runs; an empty Data Source Pulls list is expected (no new scrapes).
+**Recovery retrigger (`/bhaga-cloud refresh <date>`):** When BQ raw data is already present and scrape markers are done, `_prepare_projection_recovery` auto-clears projection step markers if the prior run for that date failed (or a drift probe fails). The retrigger skips OTP/login and re-runs `render_raw_sheets` → `materialize_model_bq` → `render_model_sheet_from_bq` only. Operator Console `/pipeline` shows `recovery_retrigger=TRUE` on such runs; an empty Data Source Pulls list is expected (no new scrapes).
 
-### Re-deploying the dashboard
+### BHAGA Grafana (retired Issue #276)
 
-```bash
-# from repo root, after activating venv:
-python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985
-
-# or CI: push a change to agents/bhaga/grafana/** → GitHub Action auto-deploys
-```
-
-**Datasource UID is bound at deploy time (don't commit it).** `dashboard.json` keeps
-panels datasource-agnostic by pointing every `datasource` at the `${ds_bigquery}`
-template variable. A `type: datasource` variable's value is the datasource *name*, but
-panels reference it as `"uid": "${ds_bigquery}"` — so Grafana looks up a datasource whose
-UID equals the *name*, fails with "Data source not found", and **every panel shows "No
-data".** `deploy.py` fixes this by calling `bind_datasource_uid()` (see
-`agents/bhaga/grafana/deploy.py`): it resolves the real datasource UID via
-`get_bigquery_datasource_uid()` and rewrites every `${ds_bigquery}` ref + the var's
-`current` value to that literal UID before `push_dashboard`. The repo stays UID-free.
-
-**Panel SQL must use BigQuery-valid column aliases.** BigQuery Standard SQL treats
-`"..."` as a *string literal*, so `AS "Orders"` is a syntax error — use backticks
-(`` AS `Orders` ``). Output field names also may not contain `/` or `$` (spaces and
-hyphens are fine), so use e.g. `` AS `Hrs per 1k Net Sales` `` not `Hrs / $1k …`. Field
-names still drive the `byName` field overrides, so keep them in sync. Prefer
-BigQuery-valid snake_case aliases (e.g. `` AS `hrs_per_net_sales` ``) and set the
-human label with a `displayName` field override — that sidesteps the `/`/`$`
-restriction entirely.
-
-**Hour fields use the `suffix: h` custom unit, not the built-in `h`.** Grafana's
-built-in `h` (and `m`) units are *durations* that auto-scale — `60` renders as
-`2.5 day` and `0.15` as `9 min`, which is wrong for shift-hours and hours-per-X
-panels. Use the custom unit `suffix: h` (and `suffix: min` for the slow-orders
-table) so the raw number is shown with a unit and no rescaling.
-
-**Verify panels return data (read-only, end-to-end):** full tool catalog
-(including prod-vs-branch parity and the one-command PR-evidence entrypoint)
-is `agents/bhaga/grafana/README.md` — start there.
+Operator Console is the store UI. Do not re-push BHAGA Analytics.
 
 ```bash
-# Runs every panel's rawSql through Grafana /api/ds/query with the real datasource UID
-# and the dashboard's template-var defaults; prints section | id | status | rows.
-python3 agents/bhaga/grafana/verify_panels.py
-python3 agents/bhaga/grafana/verify_panels.py --var date_from=2026-05-01   # override a var
-python3 agents/bhaga/grafana/verify_panels.py --fail-on-empty             # 0-row = failure
+python3 agents/bhaga/grafana/deploy.py --delete-bhaga-analytics   # uid bhaga-analytics-v1
+python3 grafana/jarvis_dev/deploy.py   # PR-cost dashboard only
 ```
 
-> **Incident (2026-06-07, PR for grafana-datasource-uid).** Every BQ panel showed "No
-> data" from two independent bugs: (1) the `ds_bigquery` variable carried the datasource
-> *name* instead of its UID (panels → "Data source not found"); (2) the 11 timeseries
-> panels used invalid double-quoted aliases (`AS "Orders"`). `verify_panels.py` is the
-> regression guard — it caught the alias bug that earlier ad-hoc testing had masked.
+See `agents/bhaga/grafana/README.md`.
 
 ### Running SQL migrations
 
 Migrations in `core/migrations/*.sql` are applied automatically:
 
-1. **On merge to `main`** — `.github/workflows/deploy.yml` runs `ensure_schema()` after the Cloud Run image deploy; `.github/workflows/grafana-dashboard-sync.yml` runs it before pushing dashboard JSON (so new panel SQL never references columns that do not exist yet).
+1. **On merge to `main`** — `.github/workflows/deploy.yml` and operator-console deploy run `ensure_schema()` after image deploy.
 2. **On every Cloud Run nightly / manual job** — `daily_refresh` calls `ensure_schema()` at startup when `BHAGA_SECRETS_BACKEND=gcp`.
 
 Manual apply (one-off / laptop sandbox only):
@@ -1567,17 +1521,11 @@ loads it into `model_forecast_daily` (merge key: `date`). **Future rows** are me
 | `vw_forecast_accuracy` | View | Past forecast days joined to actuals (forecast vs actual orders/items) |
 | `vw_forecast_exclusions` | View | Recent 60 days of input rows with `forecast_exclude` flag, reasons, `net_sales`, `aov`, and prior-week comparisons |
 
-### Grafana dashboard section
+### Forecast UI
 
-Section 7 "Labor Forecast" on the BHAGA Analytics dashboard shows:
-- **Labor Forecast — next 30 days table** (panel 71, `vw_model_forecast`): Day-of-week (`dow`), date, forecast orders/items, prior-week actuals (falling back to that day's forecast when orders=0 / failed), % change vs prior week, **Goal Total Hours** (forecast_items × goal_hours_per_item; covers part-time + full-time), **Scheduled Part Time** (ADP-scheduled hours, excludes the one full-time employee; current+next week only), Sched PT − Goal Total gap (abs hrs + %)
-- **Goal Total Hours vs Scheduled Part Time** (panel 74, `vw_model_forecast`): two-line chart — dashed Goal Total Hours vs solid Scheduled Part Time (same inputs as panel 71; goal updates on nightly forecast rebuild for upcoming days, frozen for past dates in `model_forecast_daily`)
-- **Forecast vs Actual — Orders** (panel 72, `vw_forecast_accuracy`): order forecast vs actual history — split to half-width in v33
-- **Forecast vs Actual — Items** (panel 75, `vw_forecast_accuracy`): item forecast vs actual history — new panel in v33, side-by-side with panel 72
-- **Forecast Inputs / Exclusions table** (panel 73, `vw_forecast_exclusions`): recent input days with exclusion flags, `net_sales`, `aov`, prior-week comparisons — v33 adds AOV/net-sales columns
-- **KDS goal** uses `$goal_kds_p95_min` (default 8 min) as of v33; previously p99.
-  Data for scheduled hours comes from the nightly **best-effort** ADP schedule scrape
-  (`adp_scheduled_daily`, migration 013); a scrape failure does not fail the nightly run.
+Forecast vs actual is **not** in Operator Console (Issue #213). BQ forecast pipeline
+(`model_forecast_daily`, `vw_model_forecast`, …) still runs nightly. BHAGA Grafana
+section 7 is retired with the dashboard (Issue #276).
 
 ### Applying the migration (one-time)
 
@@ -1777,9 +1725,8 @@ no proxy command. The legacy `gcloud iap oauth-brands` API requires a Google Wor
 organization and is deprecated project-wide (confirmed 2026-07-04), but a custom **"External"**
 OAuth client — provisioned once via the Cloud Console's Google Auth Platform + the Cloud Run
 Security tab's IAP checkbox — works fine without an org (reversing the earlier "no IAP" pivot; see
-`docs/operator-console/PLAN.md` decisions log, 2026-07-05). Grafana **stays live** (coexistence,
-not a replacement in v1) — the console is additive, giving the operator navigation, goal tracking,
-and write-backs Grafana never had.
+`docs/operator-console/PLAN.md` decisions log, 2026-07-05). Grafana **is retired for BHAGA Analytics** (Issue #276); the console is the operator UI
+(navigation, goal tracking, write-backs). Jarvis Development Grafana remains for PR cost.
 
 Full design/build docs: [`docs/operator-console/`](docs/operator-console/) (`PLAN.md` — living plan
 + decisions log + milestones; `ARCHITECTURE.md`; `EXECUTION.md` — step-by-step; `COST.md`).

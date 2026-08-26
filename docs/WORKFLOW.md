@@ -187,7 +187,7 @@ Automation maturity: M0 manual prose → M1 scripted → M2 gate/hook → M3 sel
 | | Hard Lessons | jarvis-hard-lessons.md | on-demand rule | M1 | agent | M2 (gate conversions) |
 | | 100% test coverage | pytest | gate | M2 | agent | M2 |
 | Evidence & verification | Local verify harness | verify.py | gate | M2 | agent | M2 ✓ (this PR) |
-| | Live labor $ (no frozen model dollars) | check_live_labor_cost.py (wired in verify.py + grafana-dashboard-sync) | gate | M2 | agent | M2 (#267) |
+| | Live labor $ (no frozen model dollars) | check_live_labor_cost.py (wired in verify.py) | gate | M2 | agent | M2 (#267) |
 | | Plan readiness gate | check_plan_readiness.py (evidence-tier declaration required) | gate | M2 | agent | M2 ✓ |
 | | Evidence readiness predictor | check_evidence_readiness.py (mirrors D2a rubric; exits 1 for pytest-only) | gate | M2 | agent | M2 ✓ |
 | | Lifecycle conformance | verify_lifecycle.py | gate | M2 | agent | M2 ✓ |
@@ -362,7 +362,8 @@ L3 (roadmap):
 | Local loop mirrors CI | test_verify.py::test_ci_parity | Test PASS |
 | Babysit unprompted | pr-workflow.mdc + babysit skill | Always-on rule |
 | Review replies done | check_pr_review_replies.py | Gate exit 0 |
-| Grafana stays visualization-only (no business/SQL logic in `rawSql`) | check_grafana_no_logic.py (hard gate in verify --full) + `grafana-dashboard-sync.yml` CI step | Gate exit code |
+| Operator Console is the BHAGA store UI (BHAGA Grafana retired) | no dashboard.json resurrection (`core/test_migration_029` + missing `grafana-dashboard-sync.yml`) | Test + absent workflow |
+| Jarvis-dev Grafana stays visualization-only | grafana/jarvis_dev + grafana-jarvis-dev-sync.yml | Deploy on merge |
 | Whole lifecycle works end-to-end | dogfood_lifecycle.py run/resume/check | Annotated transcript in docs/dogfood/ |
 | Every PR links its tracking issue (Closes/Fixes/Resolves #N, not a bare mention) — merges can't strand issues | check_pr_description.py required-issue-link check (hard gate in verify --full, wired via `pr-description.yml`) | Gate exit code |
 | No stranded issues (open, but implementing PR already merged) | `scripts/audit_stranded_issues.py --report` | "0 stranded issues found" |

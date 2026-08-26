@@ -14,14 +14,18 @@ Ask: *"Could this change silently produce wrong numbers on existing data?"*
 When in doubt, flag it.
 
 ## Grafana dashboard changes
-Push the dashboard from your branch *before* opening the PR so the reviewer sees
-the live panel:
+
+**BHAGA Analytics Grafana is retired (Issue #276).** Store UI is Operator Console.
+Do not push `agents/bhaga/grafana/dashboard.json` (file removed).
+
+Jarvis Development (PR cost) is still Grafana Cloud:
+
 ```bash
-python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985
+python3 grafana/jarvis_dev/deploy.py
 ```
-Capture a screenshot for PR §4.  The `grafana-dashboard-sync.yml` CI workflow
-re-syncs from `main` on every merge (so the `dashboard.json` in the repo is always
-the source of truth — do not use `deploy.py` for anything other than `dashboard.json`).
+
+CI: `.github/workflows/grafana-jarvis-dev-sync.yml` on merge when `grafana/jarvis_dev/**` changes.
+Console PR screenshots: `apps/operator-console/scripts/capture_evidence.py`.
 
 ## Post-merge verification
 After the operator merges:

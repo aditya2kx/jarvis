@@ -1,3 +1,9 @@
+## 2026-08-26 — Take BHAGA Grafana down (Issue #276)
+
+**Scope:** Operator Console is the store UI. Stop deploying BHAGA Analytics Grafana. Keep Jarvis Development (PR cost) Grafana.
+
+**Key changes:** deleted `grafana-dashboard-sync.yml` + BHAGA `dashboard.json` / verify/compare/evidence; `deploy.py --delete-bhaga-analytics`; G3 only on `grafana/`; `check_grafana_no_logic` retired; docs lock-step (RUNBOOK §14/§17, AGENTS.md, bhaga.mdc). Forecast vs actual stays BQ-only (#213).
+
 ## 2026-08-25 — Aug 24 coverage, live labor $, pay_info floor, period perks (Issue #267)
 
 **Scope:** Labor coverage empty on 2026-08-24 (Timecard Select All / closed period). Frozen `model_labor_daily` $ after a $1.25 pay_info scrape. Mileage/cert could not share `employee_perks` with gym. Weekly hours goal was buried off the filter row.

@@ -29,7 +29,7 @@ def _get_token(org_slug: str) -> str:
     if not token:
         raise RuntimeError(
             "Grafana Cloud API token not found. Set the GRAFANA_API_TOKEN env "
-            "var (the repo secret used by .github/workflows/grafana-dashboard-sync.yml) "
+            "var (the repo secret used by .github/workflows/grafana-jarvis-dev-sync.yml) "
             f"or, locally, store it in Keychain (service={_KEYCHAIN_SERVICE}, "
             f"account={org_slug}) via the signup_playbook."
         )
@@ -299,6 +299,32 @@ def get_dashboard_url(uid: str, *, org_slug: str) -> str:
     meta = result.get("meta", {})
     slug = meta.get("slug", uid)
     return f"{grafana_url}/d/{uid}/{slug}"
+
+
+def delete_dashboard(uid: str, *, org_slug: str) -> str:
+    """Delete a Grafana dashboard by uid. HTTP 404 is success (already gone)."""
+    token = _get_token(org_slug)
+    grafana_url = f"https://{org_slug}.grafana.net"
+    url = f"{grafana_url}/api/dashboards/uid/{uid}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    req = urllib.request.Request(url, headers=headers, method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+            msg = json.loads(raw).get("message", "deleted") if raw else "deleted"
+            print(f"[grafana] Deleted dashboard uid={uid}: {msg}")
+            return str(msg)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            print(f"[grafana] Dashboard uid={uid} already gone (404)")
+            return "already-gone"
+        body_bytes = e.read()
+        raise RuntimeError(
+            f"Grafana API DELETE {url} → HTTP {e.code}: {body_bytes.decode()[:500]}"
+        ) from None
 
 
 def create_read_only_sa(

@@ -72,5 +72,8 @@ class TestDashboardPanelsBecomePassThrough(unittest.TestCase):
     Milestone 1 so Milestone 2 cannot silently reintroduce inline logic.
     """
 
-    def test_dashboard_json_exists(self):
-        self.assertTrue(_DASHBOARD_JSON.is_file())
+    def test_bhaga_dashboard_json_retired(self):
+        self.assertFalse(
+            _DASHBOARD_JSON.is_file(),
+            "BHAGA Grafana dashboard.json retired (Issue #276); Operator Console is the UI",
+        )

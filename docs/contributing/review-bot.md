@@ -23,21 +23,12 @@ cancelled by the concurrency rule) wrongly labelled itself a re-review.  Unit co
 
 ## Grafana evidence gate (G3)
 
-When any file under `agents/bhaga/grafana/` or `grafana/` changes, `check_evidence_readiness.py`
-requires `§4` to contain **all three**:
-
-1. A viewable `https://` screenshot URL (e.g. GitHub releases PNG via `capture_screenshot.py`).
-2. `verify_panels.py` output (`OK=N`).
-3. An explicit OK mention for **each changed panel id** — e.g. `panel 76 executed OK` or `76 ... OK`.
-
-The changed panel ids are extracted from the diff of `dashboard.json` files in both grafana
-directories. A PR that changes panel 76 but only writes `OK=19` without mentioning panel 76
-specifically will fail the gate.
+When any file under `grafana/` (Jarvis Development dashboard) changes,
+`check_evidence_readiness.py` requires `§4` screenshot URL + `grafana/jarvis_dev/verify_panels.py`.
+BHAGA Analytics Grafana is retired (Issue #276); `agents/bhaga/grafana/` no longer triggers G3.
 
 ```bash
-# Capture + verify for changed panel(s):
-python3 agents/bhaga/grafana/capture_screenshot.py --panel 76 --label my-change
-python3 agents/bhaga/grafana/verify_panels.py
+python3 grafana/jarvis_dev/verify_panels.py
 ```
 
 ## Operator Console evidence gate (G5)

@@ -93,6 +93,12 @@ jobs:
             --project ${{ env.PROJECT_ID }} \
             --update-secrets TESLA_TELEMETRY_CA=tesla-telemetry-ca:latest
 
+      - name: Signed fleet_telemetry_config via GCE tesla-http-proxy
+        continue-on-error: true
+        run: |
+          python3 -m pip install -q google-cloud-secretmanager
+          PYTHONPATH=. python3 -m cloud.tesla_aladdin_garage.gce_signed_telemetry_config
+
       - name: Ensure stale-poll log metric
         continue-on-error: true
         run: python3 scripts/ensure_garage_stale_poll_alert.py --project ${{ env.PROJECT_ID }}

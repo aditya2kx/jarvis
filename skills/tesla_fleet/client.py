@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import secrets
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -118,6 +119,7 @@ class TeslaFleetClient:
         redirect_uri: str = "",
         partner_domain: str = "",
         refresh_token: str = "",
+        command_proxy_url: str = "",
         on_tokens: Optional[Callable[[dict], None]] = None,
         on_billable: Optional[Callable[[str], None]] = None,
     ):
@@ -128,6 +130,7 @@ class TeslaFleetClient:
         self.auth_url = auth_url
         self.redirect_uri = redirect_uri
         self.partner_domain = partner_domain
+        self.command_proxy_url = command_proxy_url.strip().rstrip("/")
         self._refresh_token = refresh_token
         self._access_token = ""
         self._access_exp = 0.0
@@ -154,6 +157,9 @@ class TeslaFleetClient:
             or os.environ.get("TESLA_PARTNER_DOMAIN", ""),
             refresh_token=overrides.get("refresh_token")
             or os.environ.get("TESLA_REFRESH_TOKEN", ""),
+            command_proxy_url=overrides.get("command_proxy_url")
+            if "command_proxy_url" in overrides
+            else os.environ.get("TESLA_COMMAND_PROXY_URL", ""),
             on_tokens=overrides.get("on_tokens"),
             on_billable=overrides.get("on_billable"),
         )
@@ -276,7 +282,9 @@ class TeslaFleetClient:
         """Ask Tesla to stream Location to a fleet-telemetry host. Never wake_up.
 
         Tesla requires this POST through the Vehicle Command HTTP Proxy
-        (unsigned Fleet API returns HTTP 400).
+        (unsigned Fleet API returns HTTP 400). When ``command_proxy_url`` is set
+        (GCE ``tesla-http-proxy`` at https://127.0.0.1:4443), POST there instead
+        of the Fleet audience.
         """
         body = fleet_telemetry_config_body(
             vins=vins,
@@ -290,6 +298,8 @@ class TeslaFleetClient:
             "POST",
             "/api/1/vehicles/fleet_telemetry_config",
             payload=json.dumps(body).encode(),
+            base_url=self.command_proxy_url or None,
+            ssl_insecure=bool(self.command_proxy_url),
         )
 
     def _store_token(self, data: dict) -> dict:
@@ -317,16 +327,29 @@ class TeslaFleetClient:
         except Exception as e:  # noqa: BLE001
             log.error("tesla-aladdin-garage fail reason=billable_hook err=%s", e)
 
-    def _api(self, method: str, path: str, token: Optional[str] = None, payload: Optional[bytes] = None) -> dict:
+    def _api(
+        self,
+        method: str,
+        path: str,
+        token: Optional[str] = None,
+        payload: Optional[bytes] = None,
+        *,
+        base_url: Optional[str] = None,
+        ssl_insecure: bool = False,
+    ) -> dict:
         if token is None:
             token = self.ensure_access_token()
-        url = self.audience + path if path.startswith("/") else path
+        root = (base_url or self.audience).rstrip("/")
+        url = root + path if path.startswith("/") else path
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
+        ctx = ssl._create_unverified_context() if ssl_insecure else None
         try:
-            data = json.loads(_http_json(method, url, headers=headers, payload=payload))
+            data = json.loads(
+                _http_json(method, url, headers=headers, payload=payload, ssl_context=ctx)
+            )
             self._note_billable(path, 200)
             return data
         except TeslaFleetError as e:
@@ -346,10 +369,11 @@ def _http_json(
     headers: Optional[dict] = None,
     payload: Optional[bytes] = None,
     expect_json: bool = True,
+    ssl_context: Optional[ssl.SSLContext] = None,
 ) -> str:
     req = urllib.request.Request(url, data=payload, method=method, headers=headers or {})
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=ssl_context) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             return raw
     except urllib.error.HTTPError as e:

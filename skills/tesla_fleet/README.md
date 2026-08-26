@@ -29,8 +29,11 @@ self-hosted [fleet-telemetry](https://github.com/teslamotors/fleet-telemetry)
 hostname:port (mTLS; garage uses 8443 so :443 can serve the Tesla public key). Fields use `interval_seconds` + `minimum_delta` (metres).
 This is **not** a geofence webhook and does **not** wake a sleeping vehicle.
 `fleet_telemetry_config_body()` / `put_fleet_telemetry_config()` build that POST.
-Tesla requires the call through the Vehicle Command HTTP Proxy (unsigned Fleet API
-returns HTTP 400). The garage worker consumes the HTTP dispatcher JSON at `POST /telemetry`.
+Tesla requires the call through the Vehicle Command HTTP Proxy (`TESLA_COMMAND_PROXY_URL`,
+GCE `tesla-http-proxy` on `https://127.0.0.1:4443`). Unsigned Fleet API is HTTP 400.
+Cloud Run never POSTs unsigned; laptop/deploy uses
+`python3 -m cloud.tesla_aladdin_garage.gce_signed_telemetry_config` (IAP SSH onto the VM).
+The garage worker consumes the HTTP dispatcher JSON at `POST /telemetry`.
 Garage notify emails include Tesla Fleet month-to-date vs Tesla's **$10/mo
 developer discount** (`TESLA_MONTH_BUDGET_USD`). Tesla has no billing API; we count
 our own status<500 Fleet calls plus ingested Location signals.

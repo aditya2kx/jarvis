@@ -1983,10 +1983,18 @@ Location path: Tesla Fleet Telemetry push, not 20 s REST polls. Set
 `tesla-fleet-telemetry` (`e2-micro`, us-central1-a; public key :443, mTLS :8443).
 Official fleet-telemetry MQTT-forwards to `$URL/telemetry` with
 `X-Garage-Token`. Cloud Run cannot terminate vehicle mTLS. See
-`cloud/tesla_aladdin_garage/telemetry_host/README.md`. `POST /telemetry/configure`
-must go through the Vehicle Command HTTP Proxy (unsigned Fleet POST is 400)
-unless Tesla still accepts a legacy CSR app.
-Asleep car → no stream, no wake, ~$0. Heartbeat still logs `tesla-aladdin-garage poll`.
+`cloud/tesla_aladdin_garage/telemetry_host/README.md`. Cloud Run **does not** POST
+unsigned `fleet_telemetry_config` (Tesla 400). Re-subscribe via the GCE
+`tesla-http-proxy` (`127.0.0.1:4443`):
+
+```bash
+python3 -m cloud.tesla_aladdin_garage.gce_signed_telemetry_config
+```
+
+Expect `http=200` and `updated_vehicles 1`. Deploy runs the same step
+(`continue-on-error`). Cloud Run logs `skip reason=telemetry_config_needs_proxy`
+on boot. Asleep car → no stream, no wake, ~$0. Heartbeat still logs
+`tesla-aladdin-garage poll`.
 
 ```bash
 # Ingest a dispatcher fix (does not wake the car)

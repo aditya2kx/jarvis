@@ -31,6 +31,7 @@ def _cfg(**kw) -> WorkerConfig:
 def _tesla(lat, lon, shift="P"):
     t = MagicMock()
     t.needs_user_auth.return_value = False
+    t.command_proxy_url = ""
     t.find_vehicle.return_value = {"id": "99", "vin": VIN}
     t.vehicle_location.return_value = {
         "latitude": lat,
@@ -193,8 +194,18 @@ def test_ensure_telemetry_config_skips_without_host():
     tesla.put_fleet_telemetry_config.assert_not_called()
 
 
+def test_ensure_telemetry_config_skips_without_proxy():
+    tesla, aladdin = _tesla(*HOME), _aladdin()
+    tesla.command_proxy_url = ""
+    w = GarageWorker(_cfg(telemetry=True, telemetry_host="telemetry.example.com"), tesla, aladdin)
+    out = w.ensure_telemetry_config()
+    assert out["reason"] == "telemetry_config_needs_proxy"
+    tesla.put_fleet_telemetry_config.assert_not_called()
+
+
 def test_ensure_telemetry_config_posts_when_host_set():
     tesla, aladdin = _tesla(*HOME), _aladdin()
+    tesla.command_proxy_url = "https://127.0.0.1:4443"
     tesla.put_fleet_telemetry_config.return_value = {"response": "ok"}
     w = GarageWorker(_cfg(telemetry=True, telemetry_host="telemetry.example.com"), tesla, aladdin)
     out = w.ensure_telemetry_config()

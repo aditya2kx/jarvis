@@ -202,7 +202,25 @@ def test_ensure_telemetry_config_posts_when_host_set():
     tesla.put_fleet_telemetry_config.assert_called_once()
     kwargs = tesla.put_fleet_telemetry_config.call_args.kwargs
     assert kwargs["hostname"] == "telemetry.example.com"
+    assert kwargs["port"] == 443
     assert kwargs["minimum_delta"] == 80.0
+
+
+def test_from_env_reads_telemetry_port():
+    import os
+    from unittest.mock import patch
+
+    with patch.dict(
+        os.environ,
+        {
+            "TESLA_TELEMETRY_PORT": "8443",
+            "TESLA_TELEMETRY_HOST": "35.239.192.226.sslip.io",
+        },
+        clear=False,
+    ):
+        cfg = WorkerConfig.from_env()
+    assert cfg.telemetry_port == 8443
+    assert cfg.telemetry_host == "35.239.192.226.sslip.io"
 
 
 def test_heartbeat_updates_last_poll_ts():

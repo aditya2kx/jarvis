@@ -34,6 +34,7 @@ class WorkerConfig:
     telemetry: bool = False
     telemetry_host: str = ""
     telemetry_ca: str = ""
+    telemetry_port: int = 443
     location_delta_m: float = 80.0
 
     @classmethod
@@ -55,6 +56,7 @@ class WorkerConfig:
             telemetry=telemetry,
             telemetry_host=os.environ.get("TESLA_TELEMETRY_HOST", "").strip(),
             telemetry_ca=os.environ.get("TESLA_TELEMETRY_CA", "").strip(),
+            telemetry_port=int(os.environ.get("TESLA_TELEMETRY_PORT", "443") or 443),
             location_delta_m=float(os.environ.get("LOCATION_MIN_DELTA_M", "80")),
         )
 
@@ -233,11 +235,16 @@ class GarageWorker:
             resp = self.tesla.put_fleet_telemetry_config(
                 vins=[self.cfg.vin],
                 hostname=host,
+                port=self.cfg.telemetry_port,
                 ca=self.cfg.telemetry_ca,
                 interval_seconds=15,
                 minimum_delta=self.cfg.location_delta_m,
             )
-            log.info("tesla-aladdin-garage telemetry_config host=%s", host)
+            log.info(
+                "tesla-aladdin-garage telemetry_config host=%s port=%s",
+                host,
+                self.cfg.telemetry_port,
+            )
             return {"ok": True, "response": resp}
         except TeslaFleetError as e:
             log.error(

@@ -25,9 +25,13 @@ def test_iam_binding_step_is_nonfatal():
 def test_deploy_enables_telemetry_not_rest_poll():
     text = WF.read_text()
     assert "TESLA_TELEMETRY=1" in text
+    assert "TESLA_TELEMETRY_HOST=35.239.192.226.sslip.io" in text
+    assert "TESLA_TELEMETRY_PORT=8443" in text
+    assert "TESLA_PARTNER_DOMAIN=35.239.192.226.sslip.io" in text
     assert "POLL_INTERVAL_S=0" in text
     assert "LOCATION_MIN_DELTA_M=80" in text
     assert "GEOFENCE_ENTER_M=800" in text
+    assert "TESLA_TELEMETRY_CA=tesla-telemetry-ca:latest" in text
     assert "TESLA_MONTH_BUDGET_USD=10" in text
 
 

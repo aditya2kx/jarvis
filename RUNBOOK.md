@@ -1973,7 +1973,7 @@ A second copy would double-open the door.
 | Service | `tesla-aladdin-garage` (`us-central1`) |
 | Image | `us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images/tesla-aladdin-garage` |
 | VIN | `TESLA_VIN` (Dhanno) |
-| Partner domain | `yuejj.fleetkey.net` (public key already hosted; partner registered) |
+| Partner domain | `35.239.192.226.sslip.io` (public key on :443; cars mTLS :8443) |
 | Door | Big Peach `ALADDIN_DEVICE_SERIAL=F0AD4E3E7403` / `ALADDIN_DOOR_INDEX=1` |
 | Home | `HOME_LAT` / `HOME_LON` · enter 800 m (Firestore overlay `enter_m` wins if set) · hysteresis 80 m · cooldown 600 s |
 | Persist | Firestore named DB `garage` (`GARAGE_FIRESTORE_DB=garage`), collection `tesla_aladdin_garage`. BHAGA stays on `(default)`. Do **not** set `FIRESTORE_DB=(default)` on Cloud Run — REST double-encodes it to `400 Invalid database id %28default%29`. Usage falls back in-memory if persist fails. |
@@ -2025,10 +2025,14 @@ Do **not** run a laptop Docker copy at the same time. Stale-poll log metric
 `logging.logMetrics.create` deny must not fail a successful Cloud Run deploy).
 
 Location path: Tesla Fleet Telemetry push, not 20 s REST polls. Set
-`TESLA_TELEMETRY=1` `POLL_INTERVAL_S=0`. Cars (awake only) stream `Location` to a
-self-hosted fleet-telemetry host (`TESLA_TELEMETRY_HOST`); that host POSTs JSON to
-`$URL/telemetry` with `X-Garage-Token`. Cloud Run cannot terminate vehicle mTLS.
-`POST /telemetry/configure` registers the stream when the host env is set.
+`TESLA_TELEMETRY=1` `POLL_INTERVAL_S=0` `TESLA_TELEMETRY_HOST=35.239.192.226.sslip.io`
+`TESLA_TELEMETRY_PORT=8443`. Cars (awake only) stream `Location` to GCE
+`tesla-fleet-telemetry` (`e2-micro`, us-central1-a; public key :443, mTLS :8443).
+Official fleet-telemetry MQTT-forwards to `$URL/telemetry` with
+`X-Garage-Token`. Cloud Run cannot terminate vehicle mTLS. See
+`cloud/tesla_aladdin_garage/telemetry_host/README.md`. `POST /telemetry/configure`
+must go through the Vehicle Command HTTP Proxy (unsigned Fleet POST is 400)
+unless Tesla still accepts a legacy CSR app.
 Asleep car → no stream, no wake, ~$0. Heartbeat still logs `tesla-aladdin-garage poll`.
 
 ```bash

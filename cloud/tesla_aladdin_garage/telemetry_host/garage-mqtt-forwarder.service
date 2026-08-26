@@ -1,0 +1,17 @@
+[Unit]
+Description=Tesla garage MQTT → Cloud Run /telemetry
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/opt/tesla-fleet-telemetry/forwarder.env
+Environment=PYTHONPATH=/opt/tesla-fleet-telemetry/src
+WorkingDirectory=/opt/tesla-fleet-telemetry/src
+ExecStart=/usr/bin/python3 -m cloud.tesla_aladdin_garage.mqtt_forwarder_main
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

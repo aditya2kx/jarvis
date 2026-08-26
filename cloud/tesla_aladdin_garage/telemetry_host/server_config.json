@@ -1,0 +1,23 @@
+{
+  "host": "0.0.0.0",
+  "port": 8443,
+  "log_level": "info",
+  "json_log_enable": true,
+  "namespace": "tesla",
+  "transmit_decoded_records": true,
+  "mqtt": {
+    "broker": "127.0.0.1:1883",
+    "client_id": "fleet-telemetry",
+    "topic_base": "telemetry",
+    "qos": 1,
+    "retained": false
+  },
+  "records": {
+    "V": ["mqtt", "logger"],
+    "connectivity": ["logger"]
+  },
+  "tls": {
+    "server_cert": "/etc/letsencrypt/live/35.239.192.226.sslip.io/fullchain.pem",
+    "server_key": "/etc/letsencrypt/live/35.239.192.226.sslip.io/privkey.pem"
+  }
+}

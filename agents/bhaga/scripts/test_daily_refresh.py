@@ -1897,6 +1897,39 @@ class TestOrderRecoOnlyEarlyExit(unittest.TestCase):
         self.assertEqual(called, ["palmetto"])
 
 
+class TestClearAdpReportsIfShiftsMissing(unittest.TestCase):
+    """Issue #267: empty Timecard must not leave adp_reports done."""
+
+    RD = datetime.date(2026, 8, 24)
+
+    def test_clears_when_zero_shifts_and_marker_done(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with mock.patch.object(dr, "_adp_shift_count_for", return_value=0), \
+             mock.patch.object(dr, "step_already_done", return_value=True), \
+             mock.patch.object(dr, "clear_step_done") as clear:
+            self.assertTrue(dr.clear_adp_reports_if_shifts_missing(self.RD))
+        clear.assert_called_once_with(self.RD, "adp_reports")
+
+    def test_does_not_clear_when_count_unavailable(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with mock.patch.object(dr, "_adp_shift_count_for", return_value=None), \
+             mock.patch.object(dr, "step_already_done", return_value=True), \
+             mock.patch.object(dr, "clear_step_done") as clear:
+            self.assertFalse(dr.clear_adp_reports_if_shifts_missing(self.RD))
+        clear.assert_not_called()
+
+    def test_does_not_clear_when_shifts_exist(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with mock.patch.object(dr, "_adp_shift_count_for", return_value=5), \
+             mock.patch.object(dr, "step_already_done", return_value=True), \
+             mock.patch.object(dr, "clear_step_done") as clear:
+            self.assertFalse(dr.clear_adp_reports_if_shifts_missing(self.RD))
+        clear.assert_not_called()
+
+
 class TestTimecardOnlyEarlyExit(unittest.TestCase):
     """BHAGA_ADP_TIMECARD_ONLY=1 scrapes Timecard + BQ hours, not pay_info."""
 

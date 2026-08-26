@@ -666,6 +666,28 @@ def _adp_shift_count_for(refresh_date: datetime.date) -> int | None:
         return None
 
 
+def clear_adp_reports_if_shifts_missing(refresh_date: datetime.date) -> bool:
+    """Clear adp_reports when Timecard left 0 punches for refresh_date.
+
+    Select All on day-1 of an open biweek upserts the closed period only
+    (Issue #267 / 2026-08-24). Leaving adp_reports done skips ADP forever.
+    Returns True iff the marker was cleared. BQ count None (unavailable)
+    or n>0 does not clear. A legitimate zero-punch day will re-scrape
+    until punches exist — no store-closed calendar yet.
+    """
+    n_shifts = _adp_shift_count_for(refresh_date)
+    if n_shifts is None:
+        return False
+    if n_shifts == 0 and step_already_done(refresh_date, "adp_reports"):
+        print(
+            f"[adp_reports] BREADCRUMB adp_shifts_missing_refresh_date "
+            f"date={refresh_date.isoformat()} — clearing adp_reports"
+        )
+        clear_step_done(refresh_date, "adp_reports")
+        return True
+    return False
+
+
 def _stamp_adp_hours_scraped_at(start: datetime.date, end: datetime.date) -> None:
     """Set scraped_at_utc so the console Sync clocked hours button can poll."""
     try:
@@ -3117,13 +3139,7 @@ def _run_refresh(run_id: str) -> int:
             # Select All Timecard on day-1 of an open biweek upserts closed
             # periods only; do not leave adp_reports done or the next nightly
             # skips ADP forever (2026-08-24 / Issue #267).
-            n_shifts = _adp_shift_count_for(refresh_date)
-            if n_shifts == 0 and step_already_done(refresh_date, "adp_reports"):
-                print(
-                    f"[adp_reports] BREADCRUMB adp_shifts_missing_refresh_date "
-                    f"date={refresh_date.isoformat()} — clearing adp_reports"
-                )
-                clear_step_done(refresh_date, "adp_reports")
+            clear_adp_reports_if_shifts_missing(refresh_date)
         else:
             failures.append(("load_raw_bigquery", RuntimeError("see step log")))
             # Gate: clear the scrape-done markers so the next retry re-scrapes

@@ -217,7 +217,7 @@ export type EnsureOrderRecoResult =
  */
 export async function ensureOrderRecoFresh(
   store: string,
-  opts: { enqueue?: () => Promise<void> } = {},
+  opts: { enqueue?: () => Promise<unknown> } = {},
 ): Promise<EnsureOrderRecoResult> {
   const [next, mat, todayRows, refreshedRows, dupRows] = await Promise.all([
     q<{ delivery_date: string }>(

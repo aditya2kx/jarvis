@@ -276,11 +276,15 @@ function CoverageTimeline({
   points,
   axisStart,
   axisEnd,
+  scheduled,
+  activeDay,
 }: {
   people: CoveragePersonDay[];
   points: OccupancyPoint[];
   axisStart: number;
   axisEnd: number;
+  scheduled: ScheduledShiftInput[];
+  activeDay: string;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ minute: number; pct: number } | null>(null);
@@ -548,6 +552,8 @@ export function LaborCoveragePanel({
           points={points}
           axisStart={bounds.startMin}
           axisEnd={bounds.endMin}
+          scheduled={scheduledForCoverage}
+          activeDay={activeDay}
         />
 
         <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">

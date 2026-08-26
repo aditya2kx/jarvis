@@ -1,3 +1,9 @@
+## 2026-08-26 — Signed Tesla `fleet_telemetry_config` via GCE proxy (Issue #278)
+
+**Scope:** Cloud Run was POSTing unsigned `fleet_telemetry_config` (Tesla 400). Tesla app phone pings are not Jarvis; Fleet keys/hosts were healthy.
+
+**Key changes:** `TESLA_COMMAND_PROXY_URL` → `tesla-http-proxy` on GCE (`127.0.0.1:4443`); live signed POST HTTP 200 (`updated_vehicles: 1`). Cloud Run skips unsigned POST (`telemetry_config_needs_proxy`). Deploy helper `gce_signed_telemetry_config.py` (IAP SSH + curl). Geofence/Aladdin unchanged.
+
 ## 2026-08-26 — Take BHAGA Grafana down (Issue #276)
 
 **Scope:** Operator Console is the store UI. Stop deploying BHAGA Analytics Grafana. Keep Jarvis Development (PR cost) Grafana.

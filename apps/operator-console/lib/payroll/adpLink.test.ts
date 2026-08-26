@@ -63,6 +63,29 @@ describe("adpPayrollChrome", () => {
     ).toMatchObject({ show: true, showButton: true, showLink: false });
   });
 
+  it("submitted unpaid is completed chrome, not preview", () => {
+    const c = adpPayrollLinkCopy({
+      unpaid: true,
+      hasPreview: true,
+      submitted: true,
+    });
+    expect(c.kind).toBe("completed");
+    expect(c.badge).toBe("Submitted");
+    expect(
+      adpPayrollChrome({
+        isCurrent: false,
+        unpaid: true,
+        hasPreview: true,
+        submitted: true,
+      }),
+    ).toMatchObject({
+      show: true,
+      showButton: false,
+      showLink: true,
+      kind: "completed",
+    });
+  });
+
   it("paid historic shows only the completed payroll link", () => {
     expect(
       adpPayrollChrome({

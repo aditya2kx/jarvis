@@ -69,3 +69,22 @@ export function scheduledShiftWindow(
   if (start > end) return null;
   return { ...win, start, end, preset: "custom", label: win.label };
 }
+
+const ISO = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Timecard scrape target: past coverage chip or closed period end, else yesterday.
+ * Never today+ (incomplete punches).
+ */
+export function clockedHoursTargetDate(opts: {
+  todayIso: string;
+  periodEnd?: string | null;
+  coverageDay?: string | null;
+}): string {
+  const yesterday = shiftCalendarDate(opts.todayIso, "day", -1);
+  const day = (opts.coverageDay ?? "").slice(0, 10);
+  if (ISO.test(day) && day < opts.todayIso) return day;
+  const end = (opts.periodEnd ?? "").slice(0, 10);
+  if (ISO.test(end) && end < opts.todayIso) return end;
+  return yesterday;
+}

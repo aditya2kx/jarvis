@@ -67,3 +67,12 @@ export function elapsedDaysInWindow(start: string, end: string, todayIso: string
   if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return 1;
   return Math.max(1, Math.round((e - s) / 86_400_000) + 1);
 }
+
+/** Scale the weekly hours max to the selected Period (week → 1×, month → days/7). */
+export function weeklyHoursGoalForWindow(
+  weeklyMax: number | null,
+  elapsedDays: number,
+): number | null {
+  if (weeklyMax == null || !(weeklyMax > 0) || !(elapsedDays > 0)) return null;
+  return Number((weeklyMax * (elapsedDays / 7)).toFixed(1));
+}

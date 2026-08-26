@@ -90,3 +90,20 @@ export function dateInUnpaidWindows(
 ): boolean {
   return windows.some((w) => dateIso >= w.start && dateIso <= w.end);
 }
+
+/**
+ * Payroll Liability check date for a closed biweek (Palmetto: Friday after
+ * Sunday period_end, typically +5 days). Window is exclusive of period_end
+ * through +10 days so the next biweek's check does not match.
+ */
+export function checkDateMatchesPeriod(
+  checkDateIso: string,
+  periodEndIso: string,
+  maxDaysAfterEnd = 10,
+): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(checkDateIso) || !/^\d{4}-\d{2}-\d{2}$/.test(periodEndIso)) {
+    return false;
+  }
+  const last = toIso(addDays(parseIso(periodEndIso), maxDaysAfterEnd));
+  return checkDateIso > periodEndIso && checkDateIso <= last;
+}

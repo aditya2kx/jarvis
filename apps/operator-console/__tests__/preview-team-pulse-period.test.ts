@@ -63,6 +63,7 @@ describe("previewTeamPulseAction period (Issue #245)", () => {
         period_start: "2026-07-13",
         period_end: "2026-07-26",
         unpaid: false,
+        submitted: false,
         is_current: false,
       },
     ]);

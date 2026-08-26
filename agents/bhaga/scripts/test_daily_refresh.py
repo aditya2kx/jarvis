@@ -1897,6 +1897,48 @@ class TestOrderRecoOnlyEarlyExit(unittest.TestCase):
         self.assertEqual(called, ["palmetto"])
 
 
+class TestTimecardOnlyEarlyExit(unittest.TestCase):
+    """BHAGA_ADP_TIMECARD_ONLY=1 scrapes Timecard + BQ hours, not pay_info."""
+
+    def test_timecard_only_downloads_and_backfills(self):
+        import pathlib
+        import tempfile
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        argv = ["daily_refresh", "--store", "palmetto", "--date", "2026-08-23", "--no-slack"]
+        with tempfile.TemporaryDirectory() as td:
+            fake_dl = pathlib.Path(td)
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.dict(
+                     os.environ,
+                     {"BHAGA_ADP_TIMECARD_ONLY": "1", "BHAGA_STORE": "palmetto"},
+                     clear=False,
+                 ), \
+                 mock.patch(
+                     "skills.adp_run_automation.runner.DOWNLOADS_DIR", fake_dl,
+                 ), \
+                 mock.patch(
+                     "skills.adp_run_automation.runner.download_timecard",
+                     return_value=fake_dl / "Timecard.xlsx",
+                 ) as dl, \
+                 mock.patch("agents.bhaga.scripts.daily_refresh.subprocess.run") as run, \
+                 mock.patch.object(dr, "_stamp_adp_hours_scraped_at") as stamp, \
+                 mock.patch.object(
+                     dr, "_load_profile", side_effect=AssertionError("must not load profile"),
+                 ):
+                rc = dr.main()
+        self.assertEqual(rc, 0)
+        dl.assert_called_once()
+        self.assertEqual(dl.call_args.kwargs.get("target_date"), datetime.date(2026, 8, 23))
+        run.assert_called_once()
+        skip = run.call_args.args[0]
+        self.assertIn("agents.bhaga.scripts.backfill_from_downloads", skip)
+        self.assertIn("adp_rates", skip)
+        self.assertNotIn("adp_shifts", skip)
+        self.assertNotIn("adp_punches", skip)
+        stamp.assert_called_once_with(datetime.date(2026, 8, 10), datetime.date(2026, 8, 23))
+
+
 class TestPeriodEndPayrollDraftBounds(unittest.TestCase):
     """Monday 07:00 after Sunday close; not Sunday itself, not Tuesday."""
 

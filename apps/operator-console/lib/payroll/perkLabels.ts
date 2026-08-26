@@ -6,8 +6,17 @@ export type PerkItem = {
   dollars: number | null;
 };
 
+const PERK_LABELS: Record<string, string> = {
+  gym: "Gym",
+  mileage: "Mileage",
+  food_handler: "Food handler cert",
+  other: "Other reimbursement",
+};
+
 export function labelPerkId(id: string): string {
-  const cleaned = id.trim().replace(/[_-]+/g, " ");
+  const key = id.trim();
+  if (PERK_LABELS[key]) return PERK_LABELS[key];
+  const cleaned = key.replace(/[_-]+/g, " ");
   if (!cleaned) return id;
   return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }

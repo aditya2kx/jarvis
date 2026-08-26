@@ -122,6 +122,12 @@ GATES: list[Gate] = [
         modes={"fast", "full"},
     ),
     Gate(
+        name="live-labor-cost",
+        argv=["python3", "scripts/check_live_labor_cost.py"],
+        hard=True,
+        modes={"fast", "full"},
+    ),
+    Gate(
         name="operator-console-actions",
         argv=["python3", "scripts/check_operator_console_actions.py"],
         hard=True,
@@ -141,6 +147,7 @@ CI_SCRIPT_NAMES: frozenset[str] = frozenset([
     "check_doc_freshness.py",
     "check_pr_description.py",
     "check_grafana_no_logic.py",  # grafana-dashboard-sync.yml (Issue #126)
+    "check_live_labor_cost.py",  # grafana-dashboard-sync.yml + verify (Issue #267)
     "pr_cost_ledger.py",   # cost gate — handled outside verify.py (pr-workflow.mdc)
 ])
 

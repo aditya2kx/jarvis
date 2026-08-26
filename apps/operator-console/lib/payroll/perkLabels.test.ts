@@ -25,4 +25,9 @@ describe("labelPerkId", () => {
   it("title-cases snake ids", () => {
     expect(labelPerkId("phone_stipend")).toBe("Phone stipend");
   });
+
+  it("uses named labels for reimbursements", () => {
+    expect(labelPerkId("mileage")).toBe("Mileage");
+    expect(labelPerkId("food_handler")).toBe("Food handler cert");
+  });
 });

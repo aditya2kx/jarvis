@@ -16,10 +16,11 @@ import {
   coverageNarrative,
   coverageStripDates,
   dayChipSummary,
+  filterScheduledForCoverage,
   formatClockMin,
   occupancySeries,
   peopleActiveAt,
-  resolveCoverageDay,
+  defaultCoverageDay,
   segmentLeftPct,
   segmentWidthPct,
   snapMinute,
@@ -420,7 +421,12 @@ function CoverageTimeline({
             );
           })
         ) : (
-          <p className="text-sm text-muted-foreground">No shifts for this day.</p>
+          <p className="text-sm text-muted-foreground">
+            No clocked ADP punches for this day
+            {scheduled.some((s) => s.date.slice(0, 10) === activeDay)
+              ? " — Team Schedule had no usable shift ranges to draw."
+              : " — if the store was open, Timecard may not have included this date yet."}
+          </p>
         )}
         {/* Crosshair over track column only (past name gutter + gap). */}
         {hover ? (
@@ -444,16 +450,12 @@ export function LaborCoveragePanel({
   actuals,
   scheduled,
   laborTypes,
-  selectedDay,
   todayIso = chicagoTodayIso(),
 }: {
   win: DateWindow;
   actuals: ActualShiftInput[];
   scheduled: ScheduledShiftInput[];
   laborTypes: string[] | null;
-  selectedDay?: string;
-  basePath?: string;
-  extraParams?: Record<string, string>;
   todayIso?: string;
 }) {
   const strip = useMemo(
@@ -461,8 +463,8 @@ export function LaborCoveragePanel({
     [win.start, win.end],
   );
   const initial = useMemo(
-    () => resolveCoverageDay(selectedDay, strip, todayIso),
-    [selectedDay, strip, todayIso],
+    () => defaultCoverageDay(strip, todayIso),
+    [strip, todayIso],
   );
   const [day, setDay] = useState<string | null>(initial);
   const dayKey = `${initial ?? ""}|${strip.join(",")}`;
@@ -472,15 +474,20 @@ export function LaborCoveragePanel({
     setDay(initial);
   }
 
+  const scheduledForCoverage = useMemo(
+    () => filterScheduledForCoverage(actuals, scheduled, todayIso),
+    [actuals, scheduled, todayIso],
+  );
+
   const chips = useMemo(
     () =>
       strip.map((iso) =>
         dayChipSummary(
           iso,
-          buildPersonDaysForDate(iso, actuals, scheduled, laborTypes),
+          buildPersonDaysForDate(iso, actuals, scheduledForCoverage, laborTypes),
         ),
       ),
-    [strip, actuals, scheduled, laborTypes],
+    [strip, actuals, scheduledForCoverage, laborTypes],
   );
 
   const activeDay = day ?? initial;
@@ -488,9 +495,9 @@ export function LaborCoveragePanel({
   const people = useMemo(
     () =>
       activeDay
-        ? buildPersonDaysForDate(activeDay, actuals, scheduled, laborTypes)
+        ? buildPersonDaysForDate(activeDay, actuals, scheduledForCoverage, laborTypes)
         : [],
-    [activeDay, actuals, scheduled, laborTypes],
+    [activeDay, actuals, scheduledForCoverage, laborTypes],
   );
 
   const bounds = useMemo(() => axisBounds(people), [people]);

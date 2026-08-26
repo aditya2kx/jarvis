@@ -1,3 +1,9 @@
+## 2026-08-25 — Aug 24 coverage, live labor $, pay_info floor, period perks (Issue #267)
+
+**Scope:** Labor coverage empty on 2026-08-24 (Timecard Select All / closed period). Frozen `model_labor_daily` $ after a $1.25 pay_info scrape. Mileage/cert could not share `employee_perks` with gym. Weekly hours goal was buried off the filter row.
+
+**Key changes:** clear `adp_reports` when `adp_shifts` is empty for `refresh_date`; past-day schedule overlay; refuse pay_info drops `< 0.5×`; migrations `068`/`069`; live labor $ views; Sync clocked hours; perk drawer; Hours goal in Labor header + Home Labor row; coverage defaults to today CT.
+
 ## 2026-08-25 — Garage fleet-telemetry GCE host (mTLS + MQTT forwarder)
 
 **Scope:** Cloud Run ingest was live but cars had nowhere to stream (`TESLA_TELEMETRY_HOST` empty). REST poll stays off.

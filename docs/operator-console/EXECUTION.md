@@ -111,7 +111,7 @@ apps/operator-console/
     charts/{LineChartCard,BarChartCard,GoalLine}.tsx
     tables/DataTable.tsx       # TanStack wrapper w/ column pinning
     kpi/{HealthScorecard,KpiStat,GoalBar}.tsx
-    drawers/{GoalsDrawer,TrainingQuickAdd,TipExemptionsEditor,RecognitionDrawer,RestockImportDrawer}.tsx
+    drawers/{GoalsDrawer,TrainingQuickAdd,TipExemptionsEditor,RecognitionDrawer,PerkDrawer,RestockImportDrawer}.tsx
   lib/
     bq/client.ts               # BigQuery singleton
     bq/queries.ts              # one typed fn per view (SELECT * FROM vw_*)

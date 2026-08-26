@@ -100,6 +100,8 @@ functions of `update_model_sheet.py` / `forecast.py` for the labor / tip-alloc /
    scrape of **all recent punchers** (People → Hourly pay rate). MERGEs raises
    before the next check. Does **not** overwrite existing OT / salaried flags.
    Scrape failures Slack a `:warning:` and do not fail Timecard/tips.
+   Operator Console **Sync clocked hours** re-scrapes Timecard only (`BHAGA_ADP_TIMECARD_ONLY`);
+   it never runs this pay_info path.
 
 | Field | Meaning |
 |---|---|
@@ -268,6 +270,11 @@ translation.
   Issue #166 optionally overlays an **all-in** view via `store_config.labor_burden_pct`
   (fraction; recommended start `0.13`) without changing the warehouse columns.
 
+Operator Console Labor / Home labor $ and Grafana Labor Wages / Net Sales read
+**`vw_labor_daily_live` / `vw_labor_weekly_live`** (`adp_shifts.total_hours × adp_wage_rates`,
+FT = salaried or `excluded_from_labor_pct`) over Square net sales from `model_labor_daily`.
+Frozen `model_labor_daily` dollars are not a presentation source (Issue #267).
+
 **Labor % (two denominators × three scopes)**
 - `hourly_pct_of_net_sales`, `hourly_pct_of_net_sales_plus_tips`
 - `fulltime_pct_of_net_sales`, `fulltime_pct_of_net_sales_plus_tips`
@@ -428,11 +435,12 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 | BQ table / view | Grain | Key columns | Purpose |
 |---|---|---|---|
 | `model_review_bonus_period` | (period_start, employee) | `reviews_credited`, `named_count`, `base_dollars`, `named_dollars`, `total_bonus` | BQ mirror of the `review_bonus_period` Sheet tab; written by `process_reviews.py` when `BHAGA_DATASTORE=bigquery`. Merge keys: (period_start, employee). **Write semantics (2026-06 hardening):** uses `replace_scope=True` in `load_model_rows` — partition values present in the batch are deleted before the MERGE so a dropped employee leaves no ghost row. Schema unchanged. |
-| `vw_model_labor_daily` (extended) | day | All `model_labor_daily` cols + `labor_pct`, `hourly_pct`, `fulltime_pct` aliases | Extended view for the Grafana Labor Cost section. No view-on-view — source: `model_labor_daily`. |
+| `vw_model_labor_daily` (extended) | day | All `model_labor_daily` cols + `labor_pct` aliases | Grafana hours / hours-per-item. Frozen labor $. |
+| `vw_labor_daily_live` / `vw_labor_weekly_live` | day / Mon-week | Live `adp_shifts × adp_wage_rates` $ + model sales | Console Labor/Home labor % and Grafana Daily/Weekly Labor Wages / Net Sales (Issue #267). |
 | `vw_model_labor_daily` (ext 005) | day | All prior cols + `total_hours`, `hourly/fulltime_hours_per_item`, `*_hours_per_1k_net_sales` | Adds per-$1k and per-item hours ratios for the Labor section charts. |
 | `vw_model_labor_weekly` (ext 005) | ISO week | All `model_labor_weekly` cols + same new Labor section cols | Same extensions as daily. Source: `model_labor_weekly`. |
-| `vw_model_payroll_period` (ext 059–064 / Issue #251) | (period, employee) | prior cols + `labor_type`, `wage_rate_dollars`, `ot_hours`, `ot_rate_dollars`, `perks`, `perk_reason` (`id:dollars` joined by `;`) | Roster 1:1 with ADP Enter: tip-pool **UNION** punchers dated `period_start..period_end` **UNION** carry 0h for anyone who punched in the 28 days before `period_start` (e.g. terminated Juan). Paid hours still through **yesterday CT** (today’s in-progress punches stay 0 until nightly). Tips = `our_calc` for tip-pool rows, else 0. Recurring perks from `employee_perks` (cents; Lindsay gym $20/biweek). Console shows one Perks total + named chips. Wages = `ROUND` of hours×rate as **NUMERIC** (half-up cents, matching ADP Preview Gross — not FLOAT64). |
-| `employee_perks` | (store, employee, perk_id) | `amount_cents`, `cadence`, `adp_earning_description` | Named paycheck extras (gym → ADP Misc reimbursement). Integer cents. |
+| `vw_model_payroll_period` (ext 059–068 / Issue #251 / #267) | (period, employee) | prior cols + `labor_type`, `wage_rate_dollars`, `ot_hours`, `ot_rate_dollars`, `perks`, `perk_reason` (`id:dollars` joined by `;`) | Roster 1:1 with ADP Enter: tip-pool **UNION** punchers dated `period_start..period_end` **UNION** carry 0h for anyone who punched in the 28 days before `period_start` (e.g. terminated Juan). Paid hours still through **yesterday CT** (today’s in-progress punches stay 0 until nightly). Tips = `our_calc` for tip-pool rows, else 0. Perks from `employee_perks`: `pay_period=''` every biweek (Lindsay gym $20) **or** `YYYY-MM-DD..YYYY-MM-DD` once (mileage, cert). Console shows one Perks total + named chips. Wages = `ROUND` of hours×rate as **NUMERIC** (half-up cents, matching ADP Preview Gross — not FLOAT64). |
+| `employee_perks` | (store, employee, perk_id, pay_period) | `amount_cents`, `cadence`, `adp_earning_description` | Named paycheck extras (gym / mileage / food_handler → ADP Misc reimbursement). Integer cents. `pay_period` `''` = recurring; dated key = one period. |
 | `payroll_draft_runs` (065–066 / Issue #251) | (store, period_start, period_end) | `status`, `preview_hours`, `preview_gross`, `error`, timestamps | Last ADP Start→Preview for that biweek. Console **Preview done** + hours/total-pay vs Gross. Not Grafana. |
 
 ### Raw BQ tables (migration 005 — 1:1 mirrors of scrape output)

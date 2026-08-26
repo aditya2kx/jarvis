@@ -5,6 +5,7 @@ import {
   unpaidCurrentPayPeriod,
   isPeriodUnpaid,
   dateInUnpaidWindows,
+  checkDateMatchesPeriod,
 } from "@/lib/payroll/openPeriod";
 
 describe("openPeriod calendar (parity with update_model_sheet)", () => {
@@ -69,5 +70,13 @@ describe("unpaidCurrentPayPeriod (Issue #170)", () => {
     expect(dateInUnpaidWindows("2026-07-14", windows)).toBe(true);
     expect(dateInUnpaidWindows("2026-07-10", windows)).toBe(true);
     expect(dateInUnpaidWindows("2026-06-20", windows)).toBe(false);
+  });
+
+  it("checkDateMatchesPeriod maps Friday check to Sunday period_end", () => {
+    expect(checkDateMatchesPeriod("2026-08-28", "2026-08-23")).toBe(true);
+    expect(checkDateMatchesPeriod("2026-08-14", "2026-08-09")).toBe(true);
+    expect(checkDateMatchesPeriod("2026-08-28", "2026-08-09")).toBe(false);
+    expect(checkDateMatchesPeriod("2026-08-23", "2026-08-23")).toBe(false);
+    expect(checkDateMatchesPeriod("2026-09-11", "2026-08-23")).toBe(false);
   });
 });

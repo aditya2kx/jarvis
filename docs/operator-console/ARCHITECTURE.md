@@ -160,12 +160,12 @@ flowchart TD
 
 | Screen | Reads (BQ `vw_*` / tables) | Write-backs |
 |---|---|---|
-| **Home** (Goal and Tracking) | labor/sales (`vw_model_labor_daily`), **Finance** bank in/out/cash flow (`vw_plaid_money_in_daily` + spend view, exclude-from-accounting), **Cost** taxonomy parents, **Labor** PT/FT/Total rates + bank payroll twin; prep p95; bases at risk; goals | Goals → `store_config` |
+| **Home** (Goal and Tracking) | labor/sales (Square from `vw_model_labor_daily`; labor $ `vw_labor_daily_live`), **Finance** bank in/out/cash flow (`vw_plaid_money_in_daily` + spend view, exclude-from-accounting), **Cost** taxonomy parents, **Labor** PT/FT/Total rates + bank payroll twin; prep p95; bases at risk; goals | Goals → `store_config` (also revalidates `/labor`) |
 | **Accounting** | Square net sales (`vw_model_labor_daily`), Plaid spend/in (`plaid_transactions`, spend + money-in views), `plaid_items`, taxonomy exclude; ledger From/To last-4 via amount sign | Plaid Link; category override; propose-rule (name regex ± from/to masks); taxonomy exclude toggles |
 | **Sales** | `square_transactions` + `square_item_lines` via `salesByGrain` (Source multi-select; **Composition** bars with Aggregate/By-source stacks, or **Trend** lines with optional prior-period compare; unfiltered Composition totals match `vw_model_labor_daily`) | — |
-| **Labor** | `vw_model_labor_daily` / `_weekly`, `adp_shifts` + `adp_scheduled_shifts` (actual vs schedule, concurrent, coverage); Sync → `BHAGA_ADP_SCHEDULE_ONLY` | Sync scheduled shifts |
+| **Labor** | Square from `vw_model_labor_daily`; labor $ / % `vw_labor_daily_live`; `adp_scheduled_shifts` (actual vs schedule, concurrent, coverage); Sync scheduled → `BHAGA_ADP_SCHEDULE_ONLY`; Sync clocked hours → `BHAGA_ADP_TIMECARD_ONLY` | Sync scheduled/clocked; weekly hours goal → `store_config.goal_labor_hours_week` (same as Home) |
 | **Order Quality** | `vw_kds_per_item_min` (grain percentiles + avg), live by-source from `square_kds_tickets` | — |
-| **Payroll & People** | `vw_model_payroll_period` (+ per-review), `training_shifts` (tip exemptions), `adp_shifts` | `training_shifts` (batch tip exemptions + recompute), **recognition bonuses (new table)**, `employee_aliases` |
+| **Payroll & People** | `vw_model_payroll_period` (+ per-review), `training_shifts` (tip exemptions), `adp_shifts`, `employee_perks`; period status = unpaid / submitted (`adp_payroll_liability` check date) / paid (`adp_total_paid`) | `training_shifts` (batch tip exemptions + recompute), recognition bonuses, `employee_perks` (reimbursements; `pay_period` `''` or dated), `employee_aliases`; Sync clocked hours (`BHAGA_ADP_TIMECARD_ONLY`); ADP Preview only while unpaid and not submitted |
 | **Inventory / Ordering** | `vw_order_assistant_table`, `vw_inventory_order_assistant`, `vw_order_reco_combined`, `vw_order_reco_next_dates`, `vw_inventory_base_runway`, `inventory_restock_schedule/orders`; **Ordered tubs (Actuals)** = header Period-filtered `inventory_restock_orders` (no estimates; reco/runway/usage ignore Period) | `inventory_restock_schedule`, `inventory_restock_orders` (+ trigger `refresh_order_reco`), `order_reco_max_tubs` → `store_config` |
 | **Pipeline Health** | Firestore run state, per-view `refresh_date`, `status.py` logic | (optional) trigger refresh |
 | **Automations** | `automations`, `automation_posts`, `model_review_bonus_period` (selected `?period=` leaderboard + `materialized_at_utc` freshness; schedule still open-period) | MERGE `automations`; Preview/Post once compose from Payroll period filter rollup (no once/day cap on manual Post); Gemini single-message vary (multi-draft rejected); Post once → ClickUp + INSERT `automation_posts`; morning webhook still once/CT-day |
@@ -189,6 +189,7 @@ flowchart LR
   M --> OK[revalidate screen]
   SA -. restock/capacity/self-heal .-> Job[Cloud Run Job\nBHAGA_ORDER_RECO_ONLY]
   SA -. tip exemptions .-> Job2[Cloud Run Job\nFORCE_MODEL_RECOMPUTE]
+  SA -. sync clocked hours .-> Job3[Cloud Run Job\nBHAGA_ADP_TIMECARD_ONLY]
   Job --> RR[refresh_order_reco]
 ```
 
@@ -500,7 +501,7 @@ same contract as Sales).
 
 `/labor` shows historical ADP hours plus forward ADP Team Schedule (no forecast-model numbers):
 
-- **Scheduled vs actual** cut at yesterday CT; Sync scheduled shifts runs `BHAGA_ADP_SCHEDULE_ONLY` (local or Cloud Run) → purge-before-upsert into `adp_scheduled_shifts`. Horizon: up to **8** forward weeks (stop when the Team Schedule › chevron does not advance); draft weeks are included when ADP shows them in the same grid (Issue #230).
+- **Scheduled vs actual** cut at yesterday CT; Sync scheduled shifts runs `BHAGA_ADP_SCHEDULE_ONLY` (local or Cloud Run) → purge-before-upsert into `adp_scheduled_shifts`. **Sync clocked hours** (Labor + Payroll) runs `BHAGA_ADP_TIMECARD_ONLY` → Timecard XLSX + `adp_shifts`/`adp_punches` only (no pay_info). Target date = past coverage chip or closed period end, else yesterday CT. Horizon: up to **8** forward weeks (stop when the Team Schedule › chevron does not advance); draft weeks are included when ADP shows them in the same grid (Issue #230).
 - **Paid PTO** (ADP “Approved Time Off” / PERSONAL cells) counts toward scheduled hours so emp sums match the ADP footer; rows are tagged `hour_kind` (`shift` | `pto`). Labor page **PTO** filter defaults to Include; **Exclude PTO** drops `hour_kind=pto` from scheduled charts/coverage.
 - **Wall → paid**: per-employee week chip scales wall-clock ranges down (unpaid meal); never inflates when days are missing.
 - **Avg concurrent** uses per-bucket first→last span (one FT ≈ 1); schedule concurrent from wall-clock ranges.
@@ -513,6 +514,8 @@ same contract as Sales).
 - **Staffing coverage** (day chips + swimlanes): always shows ADP scheduled
   segments when the schedule window has rows — **not** gated by Aggregation
   (Hour included). Hours/Concurrent keep Hour schedule-hide (#227 / #243).
+  Open/refresh selects **today** (America/Chicago) when that day is in the
+  Period strip; a chip click still sticks until the next full load.
 - **L3** hours-per-person bar for the same Period (`adp_shifts`).
 - Forecast nav/page removed from Operator Console; BQ/Grafana forecast pipeline kept.
 - Forward Wage/Paid/Blended lenses and `laborForwardSummary` are no longer

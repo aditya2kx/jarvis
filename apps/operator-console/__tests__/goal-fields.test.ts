@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   GOAL_FIELDS,
   fractionToPercentInput,
+  parseHoursGoalInput,
   percentInputToFraction,
   sanitizeDollarInput,
 } from "@/lib/kpi/goal-fields";
@@ -12,6 +13,7 @@ import {
   paceFor,
   rollupStatus,
   statusFor,
+  weeklyHoursGoalForWindow,
 } from "@/lib/kpi/scorecard-math";
 import type { BaseRunwayRow, OrderQualityDailyRow } from "@/lib/bq/queries";
 
@@ -41,6 +43,20 @@ describe("percentInputToFraction", () => {
   it("round-trips through both conversions", () => {
     expect(percentInputToFraction(fractionToPercentInput("0.9"))).toBe("0.9");
     expect(fractionToPercentInput(percentInputToFraction("7.5"))).toBe("7.5");
+  });
+});
+
+describe("parseHoursGoalInput", () => {
+  it("stores a positive weekly hours goal", () => {
+    expect(parseHoursGoalInput("230")).toBe("230");
+    expect(parseHoursGoalInput(" 230.50 ")).toBe("230.5");
+  });
+
+  it("rejects empty, zero, and non-numeric", () => {
+    expect(parseHoursGoalInput("")).toBeNull();
+    expect(parseHoursGoalInput("0")).toBeNull();
+    expect(parseHoursGoalInput("-1")).toBeNull();
+    expect(parseHoursGoalInput("abc")).toBeNull();
   });
 });
 
@@ -83,6 +99,7 @@ describe("GOAL_FIELDS", () => {
     expect(GOAL_FIELDS.find((f) => f.key === "goal_hourly_labor_pct_max")?.kind).toBe("percent");
     expect(GOAL_FIELDS.find((f) => f.key === "goal_labor_pct_max")?.kind).toBe("percent");
     expect(GOAL_FIELDS.find((f) => f.key === "goal_kds_p95_min")?.kind).toBe("minutes");
+    expect(GOAL_FIELDS.find((f) => f.key === "goal_labor_hours_week")?.kind).toBe("hours");
     expect(GOAL_FIELDS.find((f) => f.key === "goal_bases_at_risk_max")?.kind).toBe("count");
   });
 });
@@ -153,5 +170,15 @@ describe("elapsedDaysInWindow", () => {
 
   it("uses full window when end is already in the past", () => {
     expect(elapsedDaysInWindow("2026-06-01", "2026-06-30", "2026-07-12")).toBe(30);
+  });
+});
+
+describe("weeklyHoursGoalForWindow", () => {
+  it("keeps a 7-day Period at the weekly max", () => {
+    expect(weeklyHoursGoalForWindow(230, 7)).toBe(230);
+  });
+
+  it("scales a 14-day Period to 2× weekly", () => {
+    expect(weeklyHoursGoalForWindow(230, 14)).toBe(460);
   });
 });

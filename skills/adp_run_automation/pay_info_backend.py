@@ -465,11 +465,20 @@ def prepare_pay_info_writes(
                 merged[flag] = prev[flag]
         prev_wage = prev.get("wage_rate_dollars")
         if prev_wage is not None and abs(float(prev_wage) - float(wage)) > 0.005:
+            old_f = float(prev_wage)
+            new_f = float(wage)
+            # Token hourlies on salaried Payroll-info pages (Lindsay $25 → $1.25).
+            if old_f > 0 and new_f < 0.5 * old_f:
+                print(
+                    f"[pay_info] BREADCRUMB refused_rate_drop name={key} "
+                    f"old={old_f} new={new_f}"
+                )
+                continue
             changes.append(
                 {
                     "employee_name": key,
-                    "old": float(prev_wage),
-                    "new": float(wage),
+                    "old": old_f,
+                    "new": new_f,
                 }
             )
         fills.append(merged)

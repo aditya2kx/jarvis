@@ -1,10 +1,10 @@
 {
   "uid": "bhaga-analytics-v1",
   "title": "BHAGA Analytics",
-  "description": "8-section dashboard: Pipeline Health (top), Daily Sales, Weekly Sales, Labor (daily+weekly), Order Quality, Payroll, Labor Forecast. Powered by BQ views from migrations 004+005+016.",
+  "description": "8-section dashboard: Pipeline Health (top), Daily Sales, Weekly Sales, Labor (daily+weekly; wages/% from vw_labor_*_live), Order Quality, Payroll, Labor Forecast. Powered by BQ views from migrations 004+005+016+069.",
   "graphTooltip": 1,
   "schemaVersion": 38,
-  "version": 41,
+  "version": 42,
   "refresh": "1h",
   "timezone": "America/Chicago",
   "time": {
@@ -760,7 +760,7 @@
       "id": 32,
       "type": "timeseries",
       "title": "Daily Labor Wages / Net Sales (total / part-time / full-time)",
-      "description": "Labor wages (shift hours × wage rate) as a share of net sales, split by total / part-time / full-time. Total = all labor; Part-time = hourly staff; Full-time = salaried/full-time staff. Lower is leaner. Shown as a percent (e.g. 35% = labor costs 35¢ per $1 of net sales). Non-positive-sales days are blanked. Dashed line = goal ($goal_labor_pct_of_net_sales).",
+      "description": "Labor wages (current ADP wage_rates × clocked shift hours — vw_labor_daily_live, not frozen model dollars) as a share of net sales, split by total / part-time / full-time. Total = all labor; Part-time = hourly staff; Full-time = salaried/full-time staff. Lower is leaner. Shown as a percent (e.g. 35% = labor costs 35¢ per $1 of net sales). Non-positive-sales days are blanked. Dashed line = goal ($goal_labor_pct_of_net_sales).",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -818,7 +818,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, SAFE_DIVIDE(total_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Total`, SAFE_DIVIDE(hourly_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Part-time`, SAFE_DIVIDE(fulltime_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Full-time`, CAST('$goal_labor_pct_of_net_sales' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_daily` WHERE date >= DATE('$date_from') ORDER BY date"
+          "rawSql": "SELECT TIMESTAMP(date, 'America/Chicago') AS time, SAFE_DIVIDE(total_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Total`, SAFE_DIVIDE(hourly_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Part-time`, SAFE_DIVIDE(fulltime_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Full-time`, CAST('$goal_labor_pct_of_net_sales' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_labor_daily_live` WHERE date >= DATE('$date_from') ORDER BY date"
         }
       ]
     },
@@ -958,7 +958,7 @@
       "id": 36,
       "type": "timeseries",
       "title": "Weekly Labor Wages / Net Sales (total / part-time / full-time)",
-      "description": "Labor wages (shift hours × wage rate) as a share of net sales, split by total / part-time / full-time. Total = all labor; Part-time = hourly staff; Full-time = salaried/full-time staff. Lower is leaner. Shown as a percent (e.g. 35% = labor costs 35¢ per $1 of net sales). Non-positive-sales weeks are blanked. Dashed line = goal ($goal_labor_pct_of_net_sales). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon–Sun week ending 6/7.",
+      "description": "Labor wages (current ADP wage_rates × clocked shift hours — vw_labor_weekly_live, not frozen model dollars) as a share of net sales, split by total / part-time / full-time. Total = all labor; Part-time = hourly staff; Full-time = salaried/full-time staff. Lower is leaner. Shown as a percent (e.g. 35% = labor costs 35¢ per $1 of net sales). Non-positive-sales weeks are blanked. Dashed line = goal ($goal_labor_pct_of_net_sales). Each point is plotted at the week-ENDING date (Sunday), so a '6/7' tick = the Mon–Sun week ending 6/7.",
       "datasource": {
         "type": "grafana-bigquery-datasource",
         "uid": "${ds_bigquery}"
@@ -1028,7 +1028,7 @@
           "format": 0,
           "project": "jarvis-bhaga-prod",
           "dataset": "bhaga",
-          "rawSql": "SELECT TIMESTAMP(week_end, 'America/Chicago') AS time, SAFE_DIVIDE(total_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Total`, SAFE_DIVIDE(hourly_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Part-time`, SAFE_DIVIDE(fulltime_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Full-time`, CAST('$goal_labor_pct_of_net_sales' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_model_labor_weekly` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
+          "rawSql": "SELECT TIMESTAMP(week_end, 'America/Chicago') AS time, SAFE_DIVIDE(total_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Total`, SAFE_DIVIDE(hourly_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Part-time`, SAFE_DIVIDE(fulltime_labor_cost, NULLIF(GREATEST(net_sales, 0), 0)) AS `Full-time`, CAST('$goal_labor_pct_of_net_sales' AS FLOAT64) AS `Goal` FROM `jarvis-bhaga-prod.bhaga.vw_labor_weekly_live` WHERE week_start >= DATE('$date_from') ORDER BY week_start"
         }
       ]
     },

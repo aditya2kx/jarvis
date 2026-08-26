@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { GoalBar } from "./GoalBar";
 import { saveGoalAction } from "@/app/home/actions";
-import { GOAL_FIELDS, fractionToPercentInput, percentInputToFraction, sanitizeDollarInput } from "@/lib/kpi/goal-fields";
+import { GOAL_FIELDS, fractionToPercentInput, parseHoursGoalInput, percentInputToFraction, sanitizeDollarInput } from "@/lib/kpi/goal-fields";
 import { periodHref } from "@/lib/filters/range";
 import type { HealthScorecard as HealthScorecardData, HealthMetric, HealthGroup, GoalStatus } from "@/lib/kpi/health";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
@@ -111,7 +111,16 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
 
   function save() {
     if (!field || !m.goalKey) return;
-    const stored = field.kind === "percent" ? percentInputToFraction(inputValue) : inputValue;
+    let stored = inputValue;
+    if (field.kind === "percent") stored = percentInputToFraction(inputValue);
+    else if (field.kind === "hours") {
+      const parsed = parseHoursGoalInput(inputValue);
+      if (parsed == null) {
+        setError("Enter a weekly hours goal greater than 0.");
+        return;
+      }
+      stored = parsed;
+    }
     void run(() => saveGoalAction(m.goalKey!, stored), { saving: "Saving…" }).then((ack) => {
       if (ack.ok) {
         setEditing(false);
@@ -174,7 +183,9 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
                     ? "h-7 pr-7 text-xs"
                     : field.kind === "dollars"
                       ? "h-7 pl-4 text-xs"
-                      : "h-7 text-xs"
+                      : field.kind === "hours"
+                        ? "h-7 pr-7 text-xs"
+                        : "h-7 text-xs"
                 }
               />
               {field.kind === "dollars" ? (
@@ -185,6 +196,9 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
               ) : null}
               {field.kind === "minutes" ? (
                 <span className="pointer-events-none absolute inset-y-0 right-1.5 flex items-center text-xs text-muted-foreground">min</span>
+              ) : null}
+              {field.kind === "hours" ? (
+                <span className="pointer-events-none absolute inset-y-0 right-1.5 flex items-center text-xs text-muted-foreground">hrs</span>
               ) : null}
             </div>
             <Button size="icon-sm" variant="ghost" disabled={isPending} onClick={save} aria-label="Save goal">

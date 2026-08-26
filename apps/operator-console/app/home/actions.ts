@@ -14,6 +14,7 @@ export async function saveGoalsAction(
     const entries = GOAL_KEYS.filter((k) => values[k] !== undefined && values[k] !== "");
     await Promise.all(entries.map((k) => upsertGoal(DEFAULT_STORE, k, values[k]!, by)));
     revalidatePath("/home");
+    revalidatePath("/labor");
   }, "Goals saved.");
 }
 
@@ -29,5 +30,6 @@ export async function saveGoalAction(key: GoalKey, value: string): Promise<Actio
     const by = await operatorEmail();
     await upsertGoal(DEFAULT_STORE, key, value, by);
     revalidatePath("/home");
+    revalidatePath("/labor");
   }, "Goal saved.");
 }

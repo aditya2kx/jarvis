@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   actualPunchWindow,
+  clockedHoursTargetDate,
   extendEndForScheduleHorizon,
   laborChartWindow,
   periodIncludesToday,
@@ -33,6 +34,21 @@ describe("actual / schedule windows", () => {
       win("2026-07-01", "2026-07-15"),
     );
     expect(actualPunchWindow(win("2026-08-01", "2026-08-07"), today)).toBeNull();
+  });
+
+  it("clockedHoursTargetDate uses past chip / closed period end else yesterday", () => {
+    expect(
+      clockedHoursTargetDate({ todayIso: today, coverageDay: "2026-07-30" }),
+    ).toBe("2026-07-30");
+    expect(
+      clockedHoursTargetDate({ todayIso: today, coverageDay: "2026-08-01" }),
+    ).toBe("2026-07-31");
+    expect(
+      clockedHoursTargetDate({ todayIso: today, periodEnd: "2026-07-26" }),
+    ).toBe("2026-07-26");
+    expect(
+      clockedHoursTargetDate({ todayIso: today, periodEnd: "2026-08-09" }),
+    ).toBe("2026-07-31");
   });
 
   it("scheduledShiftWindow starts today when Period reaches today+", () => {

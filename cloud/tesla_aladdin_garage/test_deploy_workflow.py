@@ -6,6 +6,15 @@ ROOT = Path(__file__).resolve().parents[2]
 WF = ROOT / ".github/workflows/tesla-aladdin-garage-deploy.yml"
 
 
+def test_signed_telemetry_config_step_is_nonfatal():
+    text = WF.read_text()
+    assert "Signed fleet_telemetry_config via GCE tesla-http-proxy" in text
+    assert "gce_signed_telemetry_config" in text
+    block = text.split("Signed fleet_telemetry_config via GCE tesla-http-proxy", 1)[1]
+    head = block.split("- name:", 1)[0]
+    assert "continue-on-error: true" in head
+
+
 def test_stale_poll_metric_step_is_nonfatal():
     text = WF.read_text()
     assert "Ensure stale-poll log metric" in text

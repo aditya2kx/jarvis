@@ -224,13 +224,22 @@ class GarageWorker:
         )
 
     def ensure_telemetry_config(self) -> dict:
-        """POST fleet_telemetry_config when TESLA_TELEMETRY_HOST is set."""
+        """POST fleet_telemetry_config via Vehicle Command proxy only.
+
+        Cloud Run has no path to GCE localhost:4443; skip with
+        telemetry_config_needs_proxy. Signed configure is
+        gce_signed_telemetry_config on the telemetry VM.
+        """
         host = self.cfg.telemetry_host
         if not host:
             log.info("tesla-aladdin-garage skip reason=telemetry_host_unconfigured")
             return {"ok": False, "reason": "telemetry_host_unconfigured"}
         if self.tesla.needs_user_auth():
             return {"ok": False, "reason": "needs_reauth"}
+        proxy = getattr(self.tesla, "command_proxy_url", "") or ""
+        if not proxy:
+            log.info("tesla-aladdin-garage skip reason=telemetry_config_needs_proxy")
+            return {"ok": False, "reason": "telemetry_config_needs_proxy"}
         try:
             resp = self.tesla.put_fleet_telemetry_config(
                 vins=[self.cfg.vin],

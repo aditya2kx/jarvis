@@ -10,7 +10,16 @@ Public CA used in Tesla `fleet_telemetry_config.ca` is Let's Encrypt ISRG Root X
 
 Partner domain is `35.239.192.226.sslip.io` (must match telemetry hostname). Command
 private key is Secret Manager `tesla-fleet-command-key`; `tesla-http-proxy` on this VM
-(`127.0.0.1:4443`) signs `fleet_telemetry_config`. Unsigned Fleet POST is HTTP 400.
+(`127.0.0.1:4443`) signs `fleet_telemetry_config`. Cloud Run cannot reach localhost:4443
+(IAP TCP tunnel to :4443 also fails — proxy is loopback-only). Re-subscribe:
+
+```bash
+# From a laptop with ADC (prints http=200 / updated_vehicles, never tokens):
+python3 -m cloud.tesla_aladdin_garage.gce_signed_telemetry_config
+```
+
+On the VM itself: `TESLA_COMMAND_PROXY_URL=https://127.0.0.1:4443 python3 -m cloud.tesla_aladdin_garage.configure_fleet_telemetry`.
+Unsigned Fleet POST is HTTP 400 — do not send it from Cloud Run.
 
 ```bash
 # After TLS + containers are up (from a laptop with ADC):

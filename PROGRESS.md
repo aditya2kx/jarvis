@@ -2,7 +2,7 @@
 
 **Scope:** Cloud Run ingest was live but cars had nowhere to stream (`TESLA_TELEMETRY_HOST` empty). REST poll stays off.
 
-**Key changes:** always-on `e2-micro` `tesla-fleet-telemetry` (`35.239.192.226.sslip.io` public key :443, cars mTLS :8443). Official `tesla/fleet-telemetry` MQTT → `POST /telemetry`. Deploy pins host, port 8443, ISRG CA, partner domain. Tesla `fleet_telemetry_config` is live (`synced` when the car is next awake).
+**Key changes:** always-on `e2-micro` `tesla-fleet-telemetry` (`35.239.192.226.sslip.io` public key :443, cars mTLS :8443). Official `tesla/fleet-telemetry` MQTT → `POST /telemetry`. Deploy pins host, port 8443, ISRG CA, partner domain. Signed `fleet_telemetry_config` POST returned HTTP 200 (`updated_vehicles: 1`, `key_paired True`). Live `/health` is `last_event=inside` with `POLL_INTERVAL_S=0` (not boot). `synced` waits for the car awake — never `wake_up`.
 
 ## 2026-08-25 — Garage persist on named Firestore DB `garage`; disarm leftover live sandbox
 

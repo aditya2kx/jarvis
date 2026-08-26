@@ -75,7 +75,7 @@ jobs:
             --timeout 3600 \
             --service-account bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
             --set-env-vars "GCP_PROJECT=${{ env.PROJECT_ID }},TESLA_VIN=7SAYGAEE2TF605512,TESLA_PARTNER_DOMAIN=yuejj.fleetkey.net,HOME_LAT=29.464083,HOME_LON=-95.517465,GEOFENCE_ENTER_M=800,GEOFENCE_HYSTERESIS_M=80,OPEN_COOLDOWN_S=600,POLL_INTERVAL_S=0,TESLA_TELEMETRY=1,TESLA_TELEMETRY_HOST=35.239.192.226.sslip.io,LOCATION_MIN_DELTA_M=80,ALADDIN_DEVICE_SERIAL=F0AD4E3E7403,ALADDIN_DOOR_INDEX=1,ALADDIN_DOOR_NAME=Big Peach,ALADDIN_DRY_RUN=0,GARAGE_WORKER=1,GARAGE_PERSIST=1,GARAGE_FIRESTORE_DB=garage,TESLA_REFRESH_TOKEN_SECRET=tesla-fleet-refresh-token,GARAGE_NOTIFY_TO=aditya.2ky@gmail.com,TESLA_MONTH_BUDGET_USD=10" \
-            --set-secrets "TESLA_CLIENT_ID=tesla-fleet-client-id:latest,TESLA_CLIENT_SECRET=tesla-fleet-client-secret:latest,TESLA_REFRESH_TOKEN=tesla-fleet-refresh-token:latest,ALADDIN_USERNAME=aladdin-connect-username:latest,ALADDIN_PASSWORD=aladdin-connect-password:latest,GARAGE_ADMIN_TOKEN=garage-admin-token:latest,GMAIL_CLIENT_ID=gmail-client-id:latest,GMAIL_CLIENT_SECRET=gmail-client-secret:latest,GMAIL_REFRESH_TOKEN=gmail-refresh-token:latest,TESLA_TELEMETRY_CA=tesla-telemetry-ca:latest"
+            --set-secrets "TESLA_CLIENT_ID=tesla-fleet-client-id:latest,TESLA_CLIENT_SECRET=tesla-fleet-client-secret:latest,TESLA_REFRESH_TOKEN=tesla-fleet-refresh-token:latest,ALADDIN_USERNAME=aladdin-connect-username:latest,ALADDIN_PASSWORD=aladdin-connect-password:latest,GARAGE_ADMIN_TOKEN=garage-admin-token:latest,GMAIL_CLIENT_ID=gmail-client-id:latest,GMAIL_CLIENT_SECRET=gmail-client-secret:latest,GMAIL_REFRESH_TOKEN=gmail-refresh-token:latest"
 
       - name: Point Tesla OAuth callback at this service
         run: |
@@ -85,6 +85,13 @@ jobs:
             --project ${{ env.PROJECT_ID }} \
             --update-env-vars "TESLA_REDIRECT_URI=${URL}/oauth/tesla/callback"
           echo "service_url=${URL}"
+
+      - name: Mount telemetry CA
+        run: |
+          gcloud run services update ${{ env.SERVICE }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --update-secrets TESLA_TELEMETRY_CA=tesla-telemetry-ca:latest
 
       - name: Ensure stale-poll log metric
         continue-on-error: true

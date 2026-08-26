@@ -5,8 +5,8 @@ Always-on `e2-micro` `tesla-fleet-telemetry` in `us-central1-a`. Cars speak mTLS
 `127.0.0.1:1883` plus `mqtt_forwarder_main.py` POSTs Location to Cloud Run
 `/telemetry`.
 
-Hostname: `35.239.192.226.sslip.io` (static external IP). Do not put Caddy/nginx in
-front of 443 — fleet-telemetry must terminate vehicle mTLS.
+Public CA used in Tesla `fleet_telemetry_config.ca` is Let's Encrypt ISRG Root X1
+(Secret Manager `tesla-telemetry-ca`; fetch from https://letsencrypt.org/certs/isrgrootx1.pem).
 
 Tesla `fleet_status` currently reports this VIN as **unpaired** for the Fleet app
 (`key_paired=false`). Pair in the Tesla mobile app:

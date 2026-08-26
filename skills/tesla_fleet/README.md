@@ -26,7 +26,7 @@ Partner public key must be served at:
 
 `POST /api/1/vehicles/fleet_telemetry_config` asks Tesla to stream `Location` to a
 self-hosted [fleet-telemetry](https://github.com/teslamotors/fleet-telemetry)
-hostname:443 (mTLS). Fields use `interval_seconds` + `minimum_delta` (metres).
+hostname:port (mTLS; garage uses 8443 so :443 can serve the Tesla public key). Fields use `interval_seconds` + `minimum_delta` (metres).
 This is **not** a geofence webhook and does **not** wake a sleeping vehicle.
 `fleet_telemetry_config_body()` / `put_fleet_telemetry_config()` build that POST.
 Tesla requires the call through the Vehicle Command HTTP Proxy (unsigned Fleet API

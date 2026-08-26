@@ -202,6 +202,7 @@ def test_ensure_telemetry_config_posts_when_host_set():
     tesla.put_fleet_telemetry_config.assert_called_once()
     kwargs = tesla.put_fleet_telemetry_config.call_args.kwargs
     assert kwargs["hostname"] == "telemetry.example.com"
+    assert kwargs["port"] == 443
     assert kwargs["minimum_delta"] == 80.0
 
 

@@ -101,7 +101,11 @@ export default async function InventoryPage({
     const ensure = await ensureOrderRecoFresh(
       DEFAULT_STORE,
       FEATURES.asyncOrderReco && !syncLocal
-        ? { enqueue: () => triggerOrderRecoRefresh(DEFAULT_STORE) }
+        ? {
+            enqueue: async () => {
+              await triggerOrderRecoRefresh(DEFAULT_STORE);
+            },
+          }
         : {},
     );
     recoQueued = ensure.status === "queued";

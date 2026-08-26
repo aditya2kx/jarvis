@@ -585,10 +585,10 @@ Uploads to the `evidence-screenshots` GitHub release (same bucket as Grafana
 - [ ] Payroll shows period start + end dates and the selected period's Total pay / Wages / Review bonus.
 - [ ] Every Grafana parity gap below has a console equivalent (§7).
 
-## 7. Grafana panel coverage checklist
+## 7. Grafana panel coverage checklist (historical)
 
-Mechanical parity gate — every Grafana BHAGA Analytics panel maps to a
-console location. Re-run this table whenever a Grafana panel changes.
+BHAGA Analytics Grafana is retired (Issue #276). Console locations below remain
+the operator UI. Forecast vs actual has no console page (Issue #213).
 
 | Grafana panel (dashboard.json) | Console location |
 |---|---|

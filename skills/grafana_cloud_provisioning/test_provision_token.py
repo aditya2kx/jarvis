@@ -1,7 +1,7 @@
 """Token resolution must be cloud-native: GRAFANA_API_TOKEN env var first,
 Keychain only as a local fallback, and never crash when `security` is absent
-(Linux CI). Regression guard for the failed grafana-dashboard-sync deploys
-where `security` did not exist on the runner (RUNBOOK §0)."""
+(Linux CI). Regression guard for Grafana Cloud token resolution when `security`
+is absent on the runner (RUNBOOK §0). Jarvis-dev sync still uses GRAFANA_API_TOKEN."""
 
 import os
 import subprocess

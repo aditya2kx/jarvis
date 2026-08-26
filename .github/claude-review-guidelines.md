@@ -124,19 +124,14 @@ post-run verify gate (Firestore/BQ state) counts as 95-100% real-execution evide
 
 ## D2b. Grafana dashboard changes — required evidence checklist
 
-If this PR modifies `agents/bhaga/grafana/dashboard.json`, §4 **must** contain all three:
+BHAGA Analytics Grafana is **retired** (Issue #276). Operator Console is the store UI.
 
-1. **Deploy output** — the `[bhaga-grafana-deploy] Dashboard deployed: <url>` line from running
-   `python3 agents/bhaga/grafana/deploy.py --org-slug steadyangelfish2985` before review.
-2. **Live URL** — the Grafana dashboard link so the reviewer can navigate to the affected panel(s).
-3. **Screenshot(s)** for any visual property change (axis scale, color, layout, panel title) — the
-   reviewer cannot open Grafana directly. PNGs rendered via the Grafana Render API, committed to
-   `docs/pr-evidence/<PR#>/` on the branch, and inlined via raw.githubusercontent.com URLs.
+If this PR modifies `grafana/jarvis_dev/dashboard.json` (dev-cost dashboard), §4 **must**
+contain screenshot URL + `grafana/jarvis_dev/verify_panels.py` output (G3). Do **not**
+require BHAGA `agents/bhaga/grafana/dashboard.json` (that file is gone).
 
-Full deploy + screenshot recipe: **`CONTRIBUTING.md` § "Grafana dashboard changes"**.
-
-**Flag as REQUEST CHANGES** if `dashboard.json` changed but §4 is missing the deploy output, the
-live URL, or screenshots for visual changes. "Will sync on merge" is not acceptable.
+**Flag as REQUEST CHANGES** if jarvis-dev dashboard JSON changed but §4 is missing
+verify_panels output / screenshots for visual changes.
 
 ## D2c. Cost & cleanup discipline (from CONTRIBUTING.md § Design & execution principles)
 - **Token / cost:** flag obvious cost regressions — per-row network calls, unbounded LLM turns,

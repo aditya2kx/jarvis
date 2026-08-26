@@ -91,7 +91,7 @@ class TestPredictEmptyBody(unittest.TestCase):
 
 
 class TestG3GrafanaPathAwareCheck(unittest.TestCase):
-    """G3: when the diff touches agents/bhaga/grafana/, §4 must have screenshot URL + verify_panels."""
+    """G3: when the diff touches grafana/ (jarvis-dev), §4 must have screenshot URL + verify_panels."""
 
     def _predict_with_grafana_diff(self, body: str) -> tuple[bool, str]:
         from unittest.mock import patch

@@ -55,32 +55,26 @@ _STORE_PROFILE_DIR = (
     / "store-profiles"
 )
 
-GRAFANA_DASHBOARD_URL = "https://steadyangelfish2985.grafana.net/d/bhaga-analytics-v1"
+GRAFANA_DASHBOARD_URL = (
+    "https://operator-console-887772634501.us-central1.run.app"
+)  # JSON key kept; BHAGA Grafana retired Issue #276
 
 # ── Declarative target registry ───────────────────────────────────────────────
 #
 # THIS IS THE SINGLE SOURCE OF TRUTH for what the doctor checks.
 #
 # Anti-drift contract: tests in test_status.py parse:
-#   - agents/bhaga/grafana/dashboard.json  → every vw_* must be in GRAFANA_VIEWS
 #   - core/migrations/003_model_tables.sql → every model_* must be in BQ_TARGETS
 #   - core/migrations/00*.sql column defs  → every date_column must exist
+# GRAFANA_VIEWS is the Operator Console / BI freshness list (BHAGA Grafana
+# dashboard.json retired Issue #276).
 #
-# When you add a new migration, model table, or Grafana panel on a new view:
+# When you add a new migration, model table, or console view:
 #   1. Add the Target here.
 #   2. Run: python3 -m pytest agents/bhaga/scripts/test_status.py
 #
 # (CI runs check_doc_freshness.py --strict which enforces editing this file
-# alongside schema/dashboard changes.)
-#
-# Panel-SQL contract (learned the hard way — see RUNBOOK §14 incident
-# 2026-06-07): dashboard.json column aliases MUST use BigQuery-valid identifiers
-# — backticks, not double quotes (`AS "x"` is a string-literal syntax error) —
-# and output field names may not contain `/` or `$` (spaces/hyphens are fine).
-# Validate any panel SQL change with `python3 agents/bhaga/grafana/verify_panels.py`.
-#
-# 2026-06-15: weekly Labor % panels (ids 36, 37) got max=1/min=0 cap — display
-# only, no new views or columns, no registry change needed.
+# alongside schema changes.)
 
 SHEET_TABS: tuple[str, ...] = ("daily", "tip_alloc_daily")
 
@@ -140,9 +134,7 @@ BQ_TARGETS: list[Target] = [
 ]
 
 GRAFANA_VIEWS: list[Target] = [
-    # These are the exact views the Grafana dashboard renders.  All are checked
-    # against BQ — no browser visit required; data-layer confirmation is the
-    # contract.  See dashboard URL printed in output.
+    # Operator Console / BI contract views (name kept). Checked against BQ.
     Target("vw_daily_sales", "date_local"),
     Target("vw_labor_daily", "date"),
     Target("vw_labor_weekly", "week_start"),  # panel 38 — Weekly Shift Hours per Person
@@ -685,7 +677,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _print_table(results, date=check_date)
         print()
-        print(f"  Grafana: {GRAFANA_DASHBOARD_URL}")
+        print(f"  Operator console: {GRAFANA_DASHBOARD_URL}")
         print()
         if not missing:
             print(

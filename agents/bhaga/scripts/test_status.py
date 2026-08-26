@@ -366,7 +366,16 @@ _DASHBOARD_JSON = _REPO_ROOT / "agents" / "bhaga" / "grafana" / "dashboard.json"
 
 
 class TestGrafanaContractInSync:
-    """Every vw_* view referenced in dashboard.json must be in GRAFANA_VIEWS."""
+    """Every vw_* view referenced in dashboard.json must be in GRAFANA_VIEWS.
+
+    Skipped after Issue #276 (BHAGA Grafana dashboard.json removed). GRAFANA_VIEWS
+    remains the BQ freshness list for Operator Console views.
+    """
+
+    def setup_method(self):
+        if not _DASHBOARD_JSON.is_file():
+            import pytest
+            pytest.skip("BHAGA Grafana dashboard.json retired (Issue #276)")
 
     def _vw_refs_from_dashboard(self) -> set[str]:
         """Extract all `bhaga.<name>` table/view references from panel rawSql."""

@@ -66,24 +66,26 @@ def main() -> int:
                 "use vw_labor_daily_live (or adp_shifts × adp_wage_rates for hour grain)"
             )
 
-    dashboard = json.loads(_DASHBOARD.read_text())
-    for panel in dashboard.get("panels", []):
-        if panel.get("type") in ("row", "text"):
-            continue
-        pid = panel.get("id")
-        title = panel.get("title", "")
-        for target in panel.get("targets") or []:
-            sql = target.get("rawSql") or ""
-            if _frozen_labor_cost(sql):
-                errors.append(
-                    f"Grafana panel {pid} ({title!r}) reads labor $ from frozen "
-                    "vw_model_labor_daily/weekly — use vw_labor_*_live"
-                )
-            elif _grafana_labor_cost_not_live(sql):
-                errors.append(
-                    f"Grafana panel {pid} ({title!r}) computes labor $ without "
-                    "vw_labor_daily_live / vw_labor_weekly_live"
-                )
+    # BHAGA Grafana dashboard retired (Issue #276). Skip JSON if the file is gone.
+    if _DASHBOARD.is_file():
+        dashboard = json.loads(_DASHBOARD.read_text())
+        for panel in dashboard.get("panels", []):
+            if panel.get("type") in ("row", "text"):
+                continue
+            pid = panel.get("id")
+            title = panel.get("title", "")
+            for target in panel.get("targets") or []:
+                sql = target.get("rawSql") or ""
+                if _frozen_labor_cost(sql):
+                    errors.append(
+                        f"Grafana panel {pid} ({title!r}) reads labor $ from frozen "
+                        "vw_model_labor_daily/weekly — use vw_labor_*_live"
+                    )
+                elif _grafana_labor_cost_not_live(sql):
+                    errors.append(
+                        f"Grafana panel {pid} ({title!r}) computes labor $ without "
+                        "vw_labor_daily_live / vw_labor_weekly_live"
+                    )
 
     if errors:
         print("check_live_labor_cost: FAIL")

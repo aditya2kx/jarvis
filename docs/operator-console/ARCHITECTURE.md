@@ -22,7 +22,7 @@ per-screen node IDs and the Figma-tooling path-length caveat.
 1. **The app is a thin, read-mostly skin over the existing BHAGA warehouse.** All
    analytics already exist as `jarvis-bhaga-prod.bhaga.*` BigQuery views. The app
    does **no** metric math — it renders views, exactly like Grafana does today
-   (`scripts/check_grafana_no_logic.py` philosophy). New numbers = new BQ view, not
+   (`apps/operator-console` + BQ views; no metric math in the app). New numbers = new BQ view, not
    app logic.
 2. **Every write goes through the sanctioned MERGE layer.** Writes reuse the exact
    idempotent BQ MERGE / replace-per-key patterns already in
@@ -33,8 +33,9 @@ per-screen node IDs and the Figma-tooling path-length caveat.
    No laptop runtime. (Matches the repo-wide convention.)
 4. **Config-driven, multi-store from day one.** `store` is a first-class filter;
    goals and capacity live in `store_config`, never hardcoded.
-5. **Grafana coexists during migration.** The dashboard stays live until the
-   console reaches parity; both read the same views, so they can't diverge.
+5. **Grafana BHAGA Analytics is retired (Issue #276).** Operator Console is the store UI.
+   Jarvis Development Grafana (`grafana/jarvis_dev`) remains for PR cost. Both console and
+   leftover Grafana (if any) read the same BQ views.
 
 ---
 

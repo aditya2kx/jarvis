@@ -471,7 +471,7 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 | `vw_forecast_exclusions` | date | `date`, `dow`, `orders`, `prev_wk_orders`, `orders_vs_prev_wk`, `items_sold`, `prev_wk_items`, `items_vs_prev_wk`, `net_sales`, `prev_wk_net_sales`, `net_sales_vs_prev_wk`, `aov`, `prev_wk_aov`, `forecast_exclude`, `outlier_reason`, `forecast_exclude_reason` | Recent 60-day input days with exclusion flags, reasons, net-sales/AOV vs prior week (migration 014). |
 | `vw_kds_order_quality_by_source_daily` | (date, order_source) | `kds_completed_tickets`, `kds_p95_min` | Per-source daily p95 of per-ITEM KDS prep time, straight from `square_kds_tickets` (migration 025). Backs panel 51's per-source chart + the `kds_source` filter variable. |
 
-**Grafana dashboard** (`agents/bhaga/grafana/dashboard.json`) reads from these views in 5 sections: Daily Sales, Weekly Sales, Labor, Order Quality, Payroll.
+**Operator Console** (`apps/operator-console`) reads these views. BHAGA Grafana `dashboard.json` retired Issue #276.
 
 **Migration 026 additions** (`core/migrations/026_review_bonus_detail.sql`):
 
@@ -503,7 +503,7 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 
 | BQ table / view | Grain | Key columns | Purpose |
 |---|---|---|---|
-| `vw_order_assistant_table` | one row per (store, item) + 1 TOTAL row | `Item`, `Current Qty`, `Reported`, `Last Restock`, `Usage 7d`, `Avg per day`, `Days Left`, `Days Considered`, `Exclusions` | Verbatim port of the analytics-table-with-TOTAL-row logic that used to live in Grafana panel 79's `rawSql`. Grafana panel 79 is now `SELECT * FROM vw_order_assistant_table` — no logic in Grafana (`scripts/check_grafana_no_logic.py` enforces this going forward). |
+| `vw_order_assistant_table` | one row per (store, item) + 1 TOTAL row | `Item`, `Current Qty`, `Reported`, `Last Restock`, `Usage 7d`, `Avg per day`, `Days Left`, `Days Considered`, `Exclusions` | Verbatim port of the analytics-table-with-TOTAL-row logic that used to live in Grafana panel 79's `rawSql`. Grafana panel 79 was `SELECT * FROM vw_order_assistant_table` — logic lives in BQ. Operator Console `/inventory` is the UI (Issue #276). |
 | `tvf_order_reco(ship_days INT64, max_tubs INT64)` | one row per (store, item) + 1 TOTAL row | `Item`, `Current Qty`, `Avg per day`, `On Hand in 10d`, `Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock` | Table-valued function — verbatim port of panel 81's max-min water-fill order-recommendation algorithm. Parameterized so the `oa_ship_days`/`oa_max_tubs` Grafana variables keep working as live sliders; Grafana panel 81 is now `SELECT * FROM tvf_order_reco($oa_ship_days, $oa_max_tubs)`. Invariants unchanged: Blade reserved against the cap but never ordered (`order_tubs = 0`, excluded from weight); TOTAL pallet weight = `Σ per-row weight + 50 × CEIL(Σ order_tubs / 40)`. |
 
 **Migration 030 additions** (`core/migrations/030_restock_plan.sql`, Issue #137 — dual-date restock upload, PR A of 2):

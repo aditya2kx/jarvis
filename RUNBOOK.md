@@ -2025,10 +2025,13 @@ Do **not** run a laptop Docker copy at the same time. Stale-poll log metric
 `logging.logMetrics.create` deny must not fail a successful Cloud Run deploy).
 
 Location path: Tesla Fleet Telemetry push, not 20 s REST polls. Set
-`TESLA_TELEMETRY=1` `POLL_INTERVAL_S=0`. Cars (awake only) stream `Location` to a
-self-hosted fleet-telemetry host (`TESLA_TELEMETRY_HOST`); that host POSTs JSON to
-`$URL/telemetry` with `X-Garage-Token`. Cloud Run cannot terminate vehicle mTLS.
-`POST /telemetry/configure` registers the stream when the host env is set.
+`TESLA_TELEMETRY=1` `POLL_INTERVAL_S=0` `TESLA_TELEMETRY_HOST=35.239.192.226.sslip.io`.
+Cars (awake only) stream `Location` to GCE `tesla-fleet-telemetry` (`e2-micro`,
+us-central1-a). Official fleet-telemetry MQTT-forwards to `$URL/telemetry` with
+`X-Garage-Token`. Cloud Run cannot terminate vehicle mTLS. See
+`cloud/tesla_aladdin_garage/telemetry_host/README.md`. `POST /telemetry/configure`
+must go through the Vehicle Command HTTP Proxy (unsigned Fleet POST is 400)
+unless Tesla still accepts a legacy CSR app.
 Asleep car → no stream, no wake, ~$0. Heartbeat still logs `tesla-aladdin-garage poll`.
 
 ```bash

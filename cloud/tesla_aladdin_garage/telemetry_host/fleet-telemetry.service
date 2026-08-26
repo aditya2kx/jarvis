@@ -1,0 +1,19 @@
+[Unit]
+Description=Tesla official fleet-telemetry (mTLS :443)
+After=docker.service mosquitto.service
+Requires=docker.service
+Wants=mosquitto.service
+
+[Service]
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm -f tesla-fleet-telemetry
+ExecStart=/usr/bin/docker run --name tesla-fleet-telemetry --network host --user 0 --memory 320m \
+  -v /opt/tesla-fleet-telemetry/server_config.json:/etc/fleet-telemetry/config.json:ro \
+  -v /etc/letsencrypt:/etc/letsencrypt:ro \
+  tesla/fleet-telemetry:latest \
+  /fleet-telemetry -config=/etc/fleet-telemetry/config.json
+ExecStop=/usr/bin/docker stop tesla-fleet-telemetry
+
+[Install]
+WantedBy=multi-user.target

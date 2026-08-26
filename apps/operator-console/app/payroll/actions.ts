@@ -6,6 +6,7 @@ import { FEATURES } from "@/lib/config/features";
 import {
   addTrainingShift,
   addRecognitionBonus,
+  addEmployeePerk,
   applyTipExemptions,
   type TipExemptionDraft,
 } from "@/lib/bq/writes";
@@ -46,6 +47,43 @@ export async function addRecognitionBonusAction(
     await addRecognitionBonus(DEFAULT_STORE, payPeriod, employee, amountCents, reason, by);
     revalidatePath("/payroll");
     return okAck({ message: "Recognition bonus added." });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+const PERK_IDS = new Set(["mileage", "gym", "food_handler", "other"]);
+
+export async function addEmployeePerkAction(
+  employee: string,
+  perkId: string,
+  amountDollars: number,
+  payPeriod: string,
+  cadence: "once" | "biweekly",
+  note: string,
+): Promise<ActionAck> {
+  try {
+    if (!FEATURES.writePerks) throw new Error("Reimbursement write path is disabled");
+    if (!PERK_IDS.has(perkId)) throw new Error("Unknown reimbursement type");
+    const by = await operatorEmail();
+    const amountCents = Math.round(amountDollars * 100);
+    const storedPeriod = cadence === "biweekly" ? "" : payPeriod;
+    if (cadence === "once" && !storedPeriod.trim()) {
+      throw new Error("Pay period is required for one-time reimbursements");
+    }
+    const desc = note.trim() || "Misc reimbursement";
+    await addEmployeePerk(
+      DEFAULT_STORE,
+      employee,
+      perkId,
+      amountCents,
+      storedPeriod,
+      cadence,
+      desc,
+      by,
+    );
+    revalidatePath("/payroll");
+    return okAck({ message: "Reimbursement added." });
   } catch (e) {
     return failAck(e);
   }
@@ -92,8 +130,8 @@ export async function runPayrollDraftAction(
       (p) => p.period_start === periodStart && p.period_end === periodEnd,
     );
     if (!opt) throw new Error("Unknown pay period");
-    if (!opt.unpaid) {
-      throw new Error("ADP Preview is only for unpaid (not-completed) periods");
+    if (!opt.unpaid || opt.submitted) {
+      throw new Error("ADP Preview is only for unpaid periods that are not yet submitted");
     }
     const started = await startPayrollDraft(
       DEFAULT_STORE,

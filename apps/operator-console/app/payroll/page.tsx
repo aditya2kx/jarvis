@@ -2,6 +2,7 @@ import {
   payrollPeriod,
   reviewBonusDetail,
   recognitionBonuses,
+  adpHoursScrapedAt,
   adpShiftsForPeriod,
   tipExemptions,
   listCanonicalEmployees,
@@ -17,12 +18,16 @@ import { FilterMultiSelect } from "@/components/filters/FilterMultiSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TrainingQuickAdd } from "@/components/drawers/TrainingQuickAdd";
 import { RecognitionDrawer } from "@/components/drawers/RecognitionDrawer";
+import { PerkDrawer } from "@/components/drawers/PerkDrawer";
 import { TipExemptionsEditor } from "@/components/drawers/TipExemptionsEditor";
 import { FEATURES } from "@/lib/config/features";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { payPeriodKey } from "@/lib/payroll/periodKey";
 import { rowMatchesLaborType } from "@/lib/payroll/laborBucket";
 import { PayrollDraftButton } from "@/components/payroll/PayrollDraftButton";
+import { SyncClockedHoursButton } from "@/components/labor/SyncClockedHoursButton";
+import { chicagoTodayIso } from "@/lib/filters/range";
+import { clockedHoursTargetDate } from "@/lib/labor/actual-schedule-windows";
 import { adpPayrollDetailsUrl } from "@/lib/payroll/adpLink";
 import { previewLine } from "@/lib/payroll/previewDiff";
 import {
@@ -111,6 +116,7 @@ export default async function PayrollPage({
   let exemptions: TipExemptionRow[] = [];
   let employees: string[] = [];
   let draftRun: Awaited<ReturnType<typeof payrollDraftRun>> = null;
+  let hoursScrapedAt: string | null = null;
   let error: string | undefined;
   try {
     const settled = await Promise.all([
@@ -129,6 +135,8 @@ export default async function PayrollPage({
   const selectedOpt = periodOptions.find((o) => o.period_start === selectedPeriodStart);
   const periodEnd = selectedOpt?.period_end;
   const selectedUnpaid = Boolean(selectedOpt?.unpaid);
+  const selectedSubmitted = Boolean(selectedOpt?.submitted);
+  const showPreviewHints = selectedUnpaid && !selectedSubmitted;
 
   if (!error && selectedPeriodStart && periodEnd) {
     try {
@@ -153,6 +161,11 @@ export default async function PayrollPage({
             rowMatchesLaborType(p.labor_type, laborTypes),
         )
       : [];
+  const hasAdpEarnings = periodRows.some(
+    (p) => p.adp_wages_paid != null || p.adp_total_paid != null,
+  );
+  const compareToAdp = hasAdpEarnings;
+  const awaitingEarnings = selectedSubmitted && !hasAdpEarnings;
 
   const tipStart = selectedPeriodStart;
   const tipEnd = periodEnd;
@@ -160,14 +173,16 @@ export default async function PayrollPage({
 
   if (!error && tipStart && tipEnd) {
     try {
-      const [s, e, empRows] = await Promise.all([
+      const [s, e, empRows, hoursScraped] = await Promise.all([
         adpShiftsForPeriod(DEFAULT_STORE, tipStart, tipEnd),
         tipExemptions(DEFAULT_STORE, tipStart, tipEnd),
         listCanonicalEmployees(DEFAULT_STORE),
+        adpHoursScrapedAt().catch(() => null),
       ]);
       shifts = s;
       exemptions = e;
       employees = empRows.map((r) => r.employee_name);
+      hoursScrapedAt = hoursScraped;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -224,9 +239,8 @@ export default async function PayrollPage({
       meta: { format: { kind: "perks" }, wrap: true },
     },
     { accessorKey: "est_total_pay", header: "Est. total", meta: { format: { kind: "dollars" } } },
-    ...(selectedUnpaid
-      ? []
-      : [
+    ...(compareToAdp
+      ? [
           {
             accessorKey: "wage_diff",
             header: "Wage vs ADP",
@@ -241,7 +255,8 @@ export default async function PayrollPage({
               format: { kind: "adp_diff" as const, paidKey: "adp_bonus_paid" },
             },
           } satisfies ColumnDef<PayrollPeriodRow>,
-        ]),
+        ]
+      : []),
   ];
 
   const reviewColumns: ColumnDef<ReviewBonusDetailRow>[] = [
@@ -263,7 +278,9 @@ export default async function PayrollPage({
     value: o.period_start,
     label: `${formatDate(o.period_start)} – ${formatDate(o.period_end)} · ${
       o.is_current ? "Current · " : ""
-    }${o.unpaid ? "Unpaid" : "Paid (ADP)"}`,
+    }${
+      o.unpaid ? (o.submitted ? "Submitted" : "Unpaid") : "Paid (ADP)"
+    }`,
   }));
 
   return (
@@ -299,8 +316,11 @@ export default async function PayrollPage({
                 periodEnd={periodEnd}
                 unpaid={selectedUnpaid}
                 isCurrent={Boolean(selectedOpt?.is_current)}
+                submitted={selectedSubmitted}
                 historicPayrollUrl={
-                  selectedUnpaid ? null : adpPayrollDetailsUrl()
+                  selectedUnpaid && !selectedSubmitted
+                    ? null
+                    : adpPayrollDetailsUrl()
                 }
                 initialHasPreview={draftRun?.status === "ok"}
                 initialPreviewHours={draftRun?.preview_hours ?? null}
@@ -316,9 +336,24 @@ export default async function PayrollPage({
                 }
               />
             ) : null}
+            {periodEnd ? (
+              <SyncClockedHoursButton
+                lastScrapedAt={hoursScrapedAt}
+                targetDate={clockedHoursTargetDate({
+                  todayIso: chicagoTodayIso(),
+                  periodEnd,
+                })}
+              />
+            ) : null}
             {FEATURES.writeTraining ? <TrainingQuickAdd /> : null}
             {FEATURES.writeRecognition ? (
               <RecognitionDrawer
+                defaultPayPeriod={recognitionPayPeriod}
+                employees={employees}
+              />
+            ) : null}
+            {FEATURES.writePerks ? (
+              <PerkDrawer
                 defaultPayPeriod={recognitionPayPeriod}
                 employees={employees}
               />
@@ -335,15 +370,21 @@ export default async function PayrollPage({
             <p className="text-xs text-muted-foreground">
               Pay period {periodLabel}
               {selectedOpt?.is_current ? " · Current" : ""}
-              {selectedUnpaid ? " · Unpaid (ADP)" : " · Paid (ADP)"}
+              {selectedUnpaid
+                ? selectedSubmitted
+                  ? " · Submitted (ADP)"
+                  : " · Unpaid (ADP)"
+                : " · Paid (ADP)"}
               {editable ? " · tip exemptions editable" : ""}
             </p>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
               <HeadlineStat
                 label="Hours"
                 display={`${formatHours(totalHours)}h`}
-                hint={selectedUnpaid ? hoursVsPreview?.label : undefined}
-                hintWarn={Boolean(hoursVsPreview && !hoursVsPreview.match)}
+                hint={showPreviewHints ? hoursVsPreview?.label : undefined}
+                hintWarn={Boolean(
+                  showPreviewHints && hoursVsPreview && !hoursVsPreview.match,
+                )}
               />
               <HeadlineStat label="Wages" display={formatDollars(totalWages)} />
               <HeadlineStat label="Tips" display={formatDollars(totalTips)} />
@@ -359,18 +400,18 @@ export default async function PayrollPage({
               <HeadlineStat
                 label="Total pay"
                 display={formatDollars(totalPay)}
-                hint={selectedUnpaid ? payVsPreview?.label : undefined}
-                hintWarn={Boolean(payVsPreview && !payVsPreview.match)}
+                hint={showPreviewHints ? payVsPreview?.label : undefined}
+                hintWarn={Boolean(
+                  showPreviewHints && payVsPreview && !payVsPreview.match,
+                )}
               />
             </div>
             <p className="text-xs text-muted-foreground">
-              Against last ADP Preview: Hours → Total hours, Total pay → Gross
-              (wages + tips + bonus + perks). Preview URLs are not shown — they
-              are session hashes. People and hours are 1:1 with Enter payroll.
-              Open-biweek hours run through yesterday CT (not today). Zero-hour
-              rows are people ADP still lists this run with no punches in that
-              window. Wages is hours × rate only. Taxes, Net pay, and Cash
-              required are ADP-only.
+              {showPreviewHints
+                ? "Against last ADP Preview: Hours → Total hours, Total pay → Gross (wages + tips + bonus + perks). Preview URLs are not shown — they are session hashes. People and hours are 1:1 with Enter payroll. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only. Taxes, Net pay, and Cash required are ADP-only."
+                : awaitingEarnings
+                  ? "Submitted in ADP. Earnings & Hours is not in BigQuery yet, so there is nothing to compare — Hours / Wages / Total pay are our estimate only. Wage vs ADP appears once that scrape lands."
+                  : "People and hours are 1:1 with Enter payroll. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only. Taxes, Net pay, and Cash required are ADP-only."}
             </p>
           </div>
 
@@ -384,9 +425,11 @@ export default async function PayrollPage({
               pinLeft={["employee"]}
             />
             <p className="text-xs text-muted-foreground">
-              {selectedUnpaid
-                ? "Wage vs ADP / Bonus vs ADP appear after the period is paid. Scroll sideways for later columns."
-                : "Wage vs ADP and Bonus vs ADP compare our estimate to Earnings & Hours. $0.00 = match. “Not on ADP” means they punched here but had no paycheck line that period (not a rate bug)."}
+              {showPreviewHints
+                ? "Wage vs ADP / Bonus vs ADP appear after Earnings & Hours lands for a paid period."
+                : awaitingEarnings
+                  ? "No Earnings & Hours rows yet — ADP paycheck diffs are hidden until that scrape, not shown as Not on ADP."
+                  : "Wage vs ADP and Bonus vs ADP compare our estimate to Earnings & Hours. $0.00 = match. “Not on ADP” means they punched here but had no paycheck line that period (not a rate bug)."}
             </p>
           </div>
 

@@ -1199,6 +1199,12 @@ date-suffixed forms), and only then Select All. Select All of full history can e
 download wait (Slack `failure_alert` on 2026-07-15/16); the Timecard export timeout is 180s
 as a safety net. If punches/shifts are missing for dates, add
 `Retry-Dates: YYYY-MM-DD[, …]` to the fix PR so deploy full-scrapes the gap.
+If Timecard **Select All** (or a closed period) loads with **zero** `adp_shifts` rows for
+`refresh_date`, `clear_adp_reports_if_shifts_missing` **clears** Firestore `adp_reports`
+(`BREADCRUMB adp_shifts_missing_refresh_date`) so the next run retries ADP instead of skipping. Operator Console Labor overlays Team Schedule
+on past days only when that date has no punches. **Sync clocked hours** (Labor + Payroll) re-scrapes
+Timecard only (`BHAGA_ADP_TIMECARD_ONLY=1`; skips pay_info / token hourlies) for yesterday, a past
+coverage chip, or a closed pay-period end — same OTP path as nightly.
 
 **Post-login maintenance interstitial (RUN maintenance window) + smart retry.** ADP also serves
 a maintenance/throttle interstitial **after** a valid login during scheduled RUN maintenance.
@@ -1377,7 +1383,7 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 
 - **BQ dataset:** `jarvis-bhaga-prod.bhaga`
 - **Raw tables:** `square_transactions`, `adp_shifts`, `adp_punches`, `adp_wage_rates`, `square_daily_rollup`
-- **Wage rates (Issue #213 / #251):** Earnings Regular (`rate_source=earnings`) plus nightly People → Payroll info refresh for **all recent punchers** (`rate_source=pay_info`; updates raises; preserves OT). Grep Cloud Run for `BREADCRUMB wage_rate_gap` / `wage_rate_change` / `wage_rate_flow_issue`. Failures Slack a `:warning:` (tips still run). Manual: `python3 -m skills.adp_run_automation.pay_info_backend --from-bq-punchers --write-bq`.
+- **Wage rates (Issue #213 / #251 / #267):** Earnings Regular (`rate_source=earnings`) plus nightly People → Payroll info refresh for **all recent punchers** (`rate_source=pay_info`; updates raises; preserves OT). **Refuse** MERGE when the new hourly is `< 0.5 ×` the existing rate (`BREADCRUMB refused_rate_drop` — ADP token hourlies on salaried/excluded people). Also grep `wage_rate_gap` / `wage_rate_change` / `wage_rate_flow_issue`. Failures Slack a `:warning:` (tips still run). Manual: `python3 -m skills.adp_run_automation.pay_info_backend --from-bq-punchers --write-bq`.
 - **ADP payroll draft (Issue #251):** After the biweek **Sunday** is in BQ (from `bhaga-nightly` 21:30 CT), **Monday 07:00 CT** `bhaga-payroll-draft` runs **headless** Start→Preview and **leaves the draft**. Never Approve/Save. `/payroll`: hide ADP chrome on the **open** biweek; closed unpaid is **Run ADP Preview** XOR **Preview done** (hours + total pay vs last Preview Gross — **no Preview URL**, those hashes 404); paid history is **Open ADP payroll** (`#xfm-Payroll Detail`). Operator logs in as themselves. `bhaga-nightly` does **not** Start payroll. Cloud Run Job **default env has no `BHAGA_ADP_PAYROLL_DRAFT`** (verified 2026-08-24 `gcloud run jobs describe bhaga-daily-refresh`); only the Monday scheduler override sets it. Visible Chromium only with `BHAGA_ADP_HEADED=1`. Next auto: **Mon Sep 7 07:00 CT**. Manual: `python3 -m skills.adp_run_automation.payroll_draft_backend --store palmetto --period-start YYYY-MM-DD --period-end YYYY-MM-DD --no-dry-run --allow-prod-draft --allow-start`.
 - **Curated views:** `vw_daily_sales`, `vw_tips_by_hour`, `vw_labor_daily`, `vw_labor_weekly`, `vw_sales_labor_daily`, `vw_employee_hours_summary`
 - **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`, `model_forecast_daily`

@@ -31,9 +31,13 @@ export interface LaborDailyRow {
 // tables (store_config, training_shifts, inventory_*, pipeline_runs,
 // source_pulls) carry a real `store` key; do not add a WHERE store= filter
 // here until a second store's data actually lands in this table.
+//
+// Labor $ / %: `vw_labor_daily_live` (migration 069) = current adp_wage_rates ×
+// adp_shifts. Never read hourly/fulltime/total_labor_cost from
+// vw_model_labor_daily (frozen last recompute — Issue #267 $1.25 scrape).
 export function laborDaily(win: DateWindow): Promise<LaborDailyRow[]> {
   return q<LaborDailyRow>(
-    `SELECT * FROM ${fq("vw_model_labor_daily")}
+    `SELECT * FROM ${fq("vw_labor_daily_live")}
      WHERE date BETWEEN @start AND @end
      ORDER BY date DESC`,
     { start: dateParam(win.start), end: dateParam(win.end) },
@@ -53,8 +57,9 @@ export function laborDaily(win: DateWindow): Promise<LaborDailyRow[]> {
 //
 // Hour of day (Issue #227): model_labor_daily is day-grain only — hours/cost
 // come from ADP shifts exploded across clock hours (in→out overlap), sales
-// from square_transactions ops clock. Scheduled stacks are not supported at
-// hour grain (ranges live in JSON).
+// from square_transactions ops clock. Day/week/month/weekday use the same
+// live rates × shifts overlay as `laborDaily` (sales still from the model
+// view). Scheduled stacks are not supported at hour grain (ranges live in JSON).
 export function laborByGrain(
   win: DateWindow,
   grain: Grain,
@@ -210,7 +215,7 @@ export function laborByGrain(
            SUM(fulltime_hours) AS fulltime_hours,
            SUM(orders) AS orders,
            SUM(items_sold) AS items_sold
-         FROM ${fq("vw_model_labor_daily")}
+         FROM ${fq("vw_labor_daily_live")}
          WHERE date BETWEEN @start AND @end
          GROUP BY date
        )
@@ -254,7 +259,7 @@ export function laborByGrain(
        SUM(orders) AS orders,
        SUM(items_sold) AS items_sold,
        SAFE_DIVIDE(SUM(net_sales), SUM(orders)) AS avg_order_price
-     FROM ${fq("vw_model_labor_daily")}
+     FROM ${fq("vw_labor_daily_live")}
      WHERE date BETWEEN @start AND @end
      GROUP BY date
      ORDER BY date DESC`,
@@ -591,11 +596,14 @@ export interface LaborScheduledShiftDayRow {
 
 export function laborScheduledShiftDays(
   win: DateWindow,
-  opts?: { excludePto?: boolean },
+  opts?: { excludePto?: boolean; allowPast?: boolean },
 ): Promise<LaborScheduledShiftDayRow[]> {
   const ptoClause = opts?.excludePto
     ? `AND IFNULL(s.hour_kind, 'shift') != 'pto'`
     : "";
+  const todayClause = opts?.allowPast
+    ? ""
+    : "AND s.date >= CURRENT_DATE('America/Chicago')";
   return q<LaborScheduledShiftDayRow>(
     `SELECT
        CAST(s.date AS STRING) AS date,
@@ -611,7 +619,7 @@ export function laborScheduledShiftDays(
      LEFT JOIN ${fq("adp_wage_rates")} w
        ON w.employee_id = s.employee_id
      WHERE s.date BETWEEN @start AND @end
-       AND s.date >= CURRENT_DATE('America/Chicago')
+       ${todayClause}
        AND IFNULL(s.scheduled_hours, 0) > 0
        ${ptoClause}
      ORDER BY date, employee`,
@@ -661,6 +669,14 @@ export function adpScheduleScrapedAt(): Promise<string | null> {
   return q<{ scraped: string | null }>(
     `SELECT CAST(MAX(scraped_at_utc) AS STRING) AS scraped
      FROM ${fq("adp_scheduled_shifts")}`,
+  ).then((rows) => rows[0]?.scraped ?? null);
+}
+
+/** Max scraped_at on clocked hours (Sync clocked hours button). */
+export function adpHoursScrapedAt(): Promise<string | null> {
+  return q<{ scraped: string | null }>(
+    `SELECT CAST(MAX(scraped_at_utc) AS STRING) AS scraped
+     FROM ${fq("adp_shifts")}`,
   ).then((rows) => rows[0]?.scraped ?? null);
 }
 
@@ -974,7 +990,7 @@ export interface LaborWeeklyRow {
 
 export function laborWeekly(weeks = 12): Promise<LaborWeeklyRow[]> {
   return q<LaborWeeklyRow>(
-    `SELECT * FROM ${fq("vw_model_labor_weekly")}
+    `SELECT * FROM ${fq("vw_labor_weekly_live")}
      ORDER BY week_start DESC LIMIT @weeks`,
     { weeks },
   );
@@ -1015,7 +1031,7 @@ export async function laborForwardSummary(
          COALESCE(SUM(fulltime_labor_cost), 0) AS completed_ft_cost,
          COALESCE(SUM(net_sales), 0) AS completed_net_sales,
          COUNT(*) AS completed_day_count
-       FROM ${fq("vw_model_labor_daily")}
+       FROM ${fq("vw_labor_daily_live")}
        WHERE date BETWEEN @start AND @end
          AND date < CURRENT_DATE('America/Chicago')
      ),
@@ -1066,7 +1082,7 @@ export async function laborForwardSummary(
            SUM(fulltime_labor_cost),
            NULLIF(COUNTIF(orders > 0 OR hourly_hours > 0 OR fulltime_hours > 0), 0)
          ) AS avg_ft_cost_per_open_day
-       FROM ${fq("vw_model_labor_daily")}
+       FROM ${fq("vw_labor_daily_live")}
        WHERE date BETWEEN DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 28 DAY)
          AND DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 1 DAY)
      ),
@@ -2037,6 +2053,11 @@ export interface PayPeriodOption {
   period_end: string;
   /** True when ADP has not paid tips for this biweek (adp_total_paid IS NULL). */
   unpaid: boolean;
+  /**
+   * Payroll Liability exists for this biweek's check date even if Earnings &
+   * Hours (adp_total_paid) is still empty — submitted / in process.
+   */
+  submitted: boolean;
   /** In-progress calendar biweek (after last closed end). */
   is_current: boolean;
 }
@@ -2052,6 +2073,7 @@ export async function listPayPeriodsWithPaidStatus(
   const {
     calendarOpenPayPeriod,
     isPeriodUnpaid,
+    checkDateMatchesPeriod,
   } = await import("@/lib/payroll/openPeriod");
 
   const today = new Intl.DateTimeFormat("en-CA", {
@@ -2077,20 +2099,37 @@ export async function listPayPeriodsWithPaidStatus(
     { limit: intParam(limit) },
   );
 
+  let checkDates: string[] = [];
+  try {
+    const liability = await q<{ check_date: string }>(
+      `SELECT CAST(check_date AS STRING) AS check_date
+       FROM ${fq("adp_payroll_liability")}`,
+    );
+    checkDates = liability.map((r) => String(r.check_date).slice(0, 10));
+  } catch {
+    checkDates = [];
+  }
+
+  const submittedFor = (periodEnd: string, unpaid: boolean) =>
+    unpaid && checkDates.some((d) => checkDateMatchesPeriod(d, periodEnd));
+
   const out: PayPeriodOption[] = [
     {
       period_start: current.start,
       period_end: current.end,
       unpaid: true,
+      submitted: submittedFor(current.end, true),
       is_current: true,
     },
   ];
   for (const r of rows) {
     if (r.period_start === current.start) continue;
+    const unpaid = isPeriodUnpaid(r.adp_total_paid);
     out.push({
       period_start: r.period_start,
       period_end: r.period_end,
-      unpaid: isPeriodUnpaid(r.adp_total_paid),
+      unpaid,
+      submitted: submittedFor(r.period_end, unpaid),
       is_current: false,
     });
   }

@@ -82,6 +82,20 @@ class TestPayInfoParse(unittest.TestCase):
         self.assertEqual(fills[0]["ot_rate_dollars"], 37.5)
         self.assertEqual(changes, [])
 
+    def test_prepare_writes_refuses_token_hourly_drop(self):
+        incoming = [rate_record("Krause, Lindsay", wage_rate_dollars=1.25)]
+        existing = {
+            "Krause, Lindsay": {
+                "wage_rate_dollars": 25.0,
+                "ot_rate_dollars": 37.5,
+                "is_salaried": False,
+                "multi_rate": False,
+            }
+        }
+        fills, changes = prepare_pay_info_writes(incoming, existing)
+        self.assertEqual(fills, [])
+        self.assertEqual(changes, [])
+
 
 if __name__ == "__main__":
     unittest.main()

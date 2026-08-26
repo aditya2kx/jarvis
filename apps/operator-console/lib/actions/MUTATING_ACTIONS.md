@@ -8,6 +8,7 @@ Jobs (Option B); they must never block the click path via daemon threads.
 |---|---|---|---|
 | Home | Goals drawer | `saveGoalsAction` | — |
 | Home | Inline goal pencil | `saveGoalAction` | — |
+| Labor | Weekly hours goal pencil | `saveGoalAction` (`goal_labor_hours_week`) | — |
 | Inventory | Restock submit | `submitRestockAction` | `order-reco` job |
 | Inventory | Replace estimated date | `replaceEstimatedRestockDateAction` | `order-reco` job |
 | Inventory | Capacity | `setCapacityAction` | `order-reco` job |
@@ -16,6 +17,9 @@ Jobs (Option B); they must never block the click path via daemon threads.
 | Payroll | Run ADP Preview | `runPayrollDraftAction` / `pollPayrollDraftAction` | Headless `adp-payroll-draft` (local laptop when BYPASS_IAP); BQ stores Preview hours + Gross |
 | Payroll | Recognition bonus | `addRecognitionBonusAction` | — |
 | Payroll | Training quick-add (flag off) | `addTrainingShiftAction` | — |
+| Payroll | Add reimbursement | `addEmployeePerkAction` | — |
+| Payroll / Labor | Sync clocked hours | `syncClockedHoursAction` / `pollClockedHoursSyncAction` | Headless `adp-timecard` (local laptop when BYPASS_IAP); Timecard + BQ shifts/punches, not pay_info |
+| Labor | Sync scheduled shifts | `syncScheduledShiftsAction` / `pollScheduledShiftsSyncAction` | Headless `adp-schedule` |
 | Accounting | Link / Relink | `createPlaidLinkTokenAction`, `exchangePlaidPublicTokenAction` | Plaid sync (in-request, staged UX) |
 | Accounting | Sync now | `syncPlaidNowAction` | Plaid sync |
 | Accounting | Overrides / taxonomy / rules | `setTxnCategoryOverrideAction`, `upsertTaxonomyNodeAction`, `setTaxonomyNodeEnabledAction`, `setCategoryRuleEnabledAction`, `setTaxonomyExcludeAction`, `dryRunRuleAction`, `previewRuleMatchesAction`, `commitRuleFromTxnAction`, `revertRuleEvidenceAction`, `reapplyPlaidCategoriesAction`, `setPlaidInternalAction` | — |

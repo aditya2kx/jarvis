@@ -14,12 +14,21 @@ export function adpPayrollDetailsUrl(
 export function adpPayrollLinkCopy(opts: {
   unpaid: boolean;
   hasPreview: boolean;
+  submitted?: boolean;
 }): {
   kind: AdpPayrollLinkKind;
   linkText: string;
   emptyText: string;
   badge: string;
 } {
+  if (opts.submitted && opts.unpaid) {
+    return {
+      kind: "completed",
+      linkText: "Open ADP payroll",
+      emptyText: "No ADP payroll link",
+      badge: "Submitted",
+    };
+  }
   if (opts.unpaid) {
     return {
       kind: opts.hasPreview ? "preview" : "missing",
@@ -45,6 +54,7 @@ export function adpPayrollChrome(opts: {
   isCurrent: boolean;
   unpaid: boolean;
   hasPreview: boolean;
+  submitted?: boolean;
   running?: boolean;
 }): {
   show: boolean;
@@ -55,9 +65,13 @@ export function adpPayrollChrome(opts: {
   const copy = adpPayrollLinkCopy({
     unpaid: opts.unpaid,
     hasPreview: opts.hasPreview,
+    submitted: opts.submitted,
   });
   if (opts.isCurrent) {
     return { show: false, showButton: false, showLink: false, kind: "missing" };
+  }
+  if (opts.submitted && opts.unpaid) {
+    return { show: true, showButton: false, showLink: true, kind: "completed" };
   }
   if (opts.unpaid) {
     if (opts.running) {

@@ -1897,6 +1897,81 @@ class TestOrderRecoOnlyEarlyExit(unittest.TestCase):
         self.assertEqual(called, ["palmetto"])
 
 
+class TestClearAdpReportsIfShiftsMissing(unittest.TestCase):
+    """Issue #267: empty Timecard must not leave adp_reports done."""
+
+    RD = datetime.date(2026, 8, 24)
+
+    def test_clears_when_zero_shifts_and_marker_done(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with mock.patch.object(dr, "_adp_shift_count_for", return_value=0), \
+             mock.patch.object(dr, "step_already_done", return_value=True), \
+             mock.patch.object(dr, "clear_step_done") as clear:
+            self.assertTrue(dr.clear_adp_reports_if_shifts_missing(self.RD))
+        clear.assert_called_once_with(self.RD, "adp_reports")
+
+    def test_does_not_clear_when_count_unavailable(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with mock.patch.object(dr, "_adp_shift_count_for", return_value=None), \
+             mock.patch.object(dr, "step_already_done", return_value=True), \
+             mock.patch.object(dr, "clear_step_done") as clear:
+            self.assertFalse(dr.clear_adp_reports_if_shifts_missing(self.RD))
+        clear.assert_not_called()
+
+    def test_does_not_clear_when_shifts_exist(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with mock.patch.object(dr, "_adp_shift_count_for", return_value=5), \
+             mock.patch.object(dr, "step_already_done", return_value=True), \
+             mock.patch.object(dr, "clear_step_done") as clear:
+            self.assertFalse(dr.clear_adp_reports_if_shifts_missing(self.RD))
+        clear.assert_not_called()
+
+
+class TestTimecardOnlyEarlyExit(unittest.TestCase):
+    """BHAGA_ADP_TIMECARD_ONLY=1 scrapes Timecard + BQ hours, not pay_info."""
+
+    def test_timecard_only_downloads_and_backfills(self):
+        import pathlib
+        import tempfile
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        argv = ["daily_refresh", "--store", "palmetto", "--date", "2026-08-23", "--no-slack"]
+        with tempfile.TemporaryDirectory() as td:
+            fake_dl = pathlib.Path(td)
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.dict(
+                     os.environ,
+                     {"BHAGA_ADP_TIMECARD_ONLY": "1", "BHAGA_STORE": "palmetto"},
+                     clear=False,
+                 ), \
+                 mock.patch(
+                     "skills.adp_run_automation.runner.DOWNLOADS_DIR", fake_dl,
+                 ), \
+                 mock.patch(
+                     "skills.adp_run_automation.runner.download_timecard",
+                     return_value=fake_dl / "Timecard.xlsx",
+                 ) as dl, \
+                 mock.patch("agents.bhaga.scripts.daily_refresh.subprocess.run") as run, \
+                 mock.patch.object(dr, "_stamp_adp_hours_scraped_at") as stamp, \
+                 mock.patch.object(
+                     dr, "_load_profile", side_effect=AssertionError("must not load profile"),
+                 ):
+                rc = dr.main()
+        self.assertEqual(rc, 0)
+        dl.assert_called_once()
+        self.assertEqual(dl.call_args.kwargs.get("target_date"), datetime.date(2026, 8, 23))
+        run.assert_called_once()
+        skip = run.call_args.args[0]
+        self.assertIn("agents.bhaga.scripts.backfill_from_downloads", skip)
+        self.assertIn("adp_rates", skip)
+        self.assertNotIn("adp_shifts", skip)
+        self.assertNotIn("adp_punches", skip)
+        stamp.assert_called_once_with(datetime.date(2026, 8, 10), datetime.date(2026, 8, 23))
+
+
 class TestPeriodEndPayrollDraftBounds(unittest.TestCase):
     """Monday 07:00 after Sunday close; not Sunday itself, not Tuesday."""
 

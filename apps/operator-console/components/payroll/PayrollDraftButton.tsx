@@ -24,6 +24,7 @@ export function PayrollDraftButton({
   periodEnd,
   unpaid = true,
   isCurrent = false,
+  submitted = false,
   historicPayrollUrl = null,
   initialHasPreview = false,
   initialPreviewHours = null,
@@ -36,6 +37,7 @@ export function PayrollDraftButton({
   periodEnd: string;
   unpaid?: boolean;
   isCurrent?: boolean;
+  submitted?: boolean;
   historicPayrollUrl?: string | null;
   initialHasPreview?: boolean;
   initialPreviewHours?: number | null;
@@ -65,15 +67,17 @@ export function PayrollDraftButton({
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const didAutoPoll = useRef(false);
 
-  const copy = adpPayrollLinkCopy({ unpaid, hasPreview });
+  const copy = adpPayrollLinkCopy({ unpaid, hasPreview, submitted });
   const busy = phase === "starting" || phase === "running";
   const chrome = adpPayrollChrome({
     isCurrent,
     unpaid,
     hasPreview,
+    submitted,
     running: busy,
   });
   const canRun = chrome.showButton;
+  const showPreviewDiff = unpaid && hasPreview && !busy && !submitted;
   const hoursLine = previewLine(consoleHours, previewHours, "hours");
   const payLine = previewLine(consoleTotalPay, previewGross, "pay");
 
@@ -203,7 +207,7 @@ export function PayrollDraftButton({
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-      {unpaid && hasPreview && !busy ? (
+      {showPreviewDiff ? (
         <Badge variant="outline" className="font-normal">
           {copy.badge}
         </Badge>
@@ -239,7 +243,7 @@ export function PayrollDraftButton({
               : "Run ADP Preview"}
         </Button>
       ) : null}
-      {unpaid && hasPreview && !busy ? (
+      {showPreviewDiff ? (
         <p className="max-w-[18rem] text-[11px] leading-tight text-muted-foreground sm:max-w-xs">
           {[hoursLine?.label, payLine?.label].filter(Boolean).join(" · ") ||
             "Last Preview captured — hours and total pay compare after the next run"}

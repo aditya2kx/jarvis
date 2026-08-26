@@ -22,6 +22,7 @@ import {
   paceFor,
   rollupStatus,
   statusFor,
+  weeklyHoursGoalForWindow,
 } from "@/lib/kpi/scorecard-math";
 
 export type { GoalStatus };
@@ -62,7 +63,7 @@ function deltaLabel(
   actual: number | null,
   goal: number | null,
   lowerIsBetter: boolean,
-  kind: "dollars" | "number" | "minutes",
+  kind: "dollars" | "number" | "minutes" | "hours",
 ): string | undefined {
   if (actual == null || goal == null) return undefined;
   const diff = actual - goal;
@@ -75,6 +76,8 @@ function deltaLabel(
     mag = abs.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
   } else if (kind === "minutes") {
     mag = `${abs.toFixed(1)} min`;
+  } else if (kind === "hours") {
+    mag = `${abs.toFixed(1)} hrs`;
   } else {
     mag = abs.toFixed(1);
   }
@@ -135,6 +138,7 @@ export async function loadHealthScorecard(
   const ptLabor$ = sum(rows, (r) => Number(r.hourly_labor_cost ?? 0));
   const ftLabor$ = sum(rows, (r) => Number(r.fulltime_labor_cost ?? 0));
   const totalRatesLabor$ = sum(rows, (r) => r.total_labor_cost);
+  const laborHours = sum(rows, (r) => Number(r.total_hours ?? 0));
   const ordersTotal = sum(rows, (r) => r.orders);
   const dayCount = elapsedDaysInWindow(win.start, win.end, chicagoTodayIso());
   const ordersPerDay =
@@ -165,6 +169,8 @@ export async function loadHealthScorecard(
   const goalTotalLaborPct = goalValue(config, "goal_labor_pct_max");
   const goalPrepP95 = goalValue(config, "goal_kds_p95_min");
   const goalRiskyMax = goalValue(config, "goal_bases_at_risk_max");
+  const goalHoursWeek = goalValue(config, "goal_labor_hours_week");
+  const hoursGoal = weeklyHoursGoalForWindow(goalHoursWeek, dayCount);
 
   const pctOfSales = (n: number | null): number | null => {
     if (n == null || netSales == null || !netSales) return null;
@@ -177,6 +183,7 @@ export async function loadHealthScorecard(
   const totalPace = paceFor(totalBankCost, gTotal.value, true);
   const prepPace = paceFor(prepP95, goalPrepP95, true);
   const riskyPace = paceFor(riskyCount, goalRiskyMax, true);
+  const hoursPace = paceFor(laborHours, hoursGoal, true);
 
   const finance: HealthMetric[] = [
     metric({
@@ -309,6 +316,21 @@ export async function loadHealthScorecard(
 
   const laborMetrics: HealthMetric[] = [
     metric({
+      key: "labor_hours_week",
+      label: "Labor hours",
+      actual: laborHours,
+      goal: hoursGoal,
+      status: hoursGoal != null ? statusFor(hoursPace) : "no-goal",
+      pace: hoursGoal != null ? hoursPace : null,
+      formatted: fmtHours(laborHours),
+      goalFormatted: fmtHours(hoursGoal),
+      goalKey: "goal_labor_hours_week",
+      rawGoal: goalRaw(config, "goal_labor_hours_week"),
+      lowerIsBetter: true,
+      deltaFormatted: deltaLabel(laborHours, hoursGoal, true, "hours"),
+      info: "ADP clocked hours in this Period vs the weekly hours max, scaled by days ÷ 7. Pencil edits the same store_config key as Labor → Hours goal.",
+    }),
+    metric({
       key: "labor_pt_rates",
       label: `Part-time (rates) · ${fmtPct(ptPct)}`,
       actual: ptLabor$,
@@ -321,7 +343,7 @@ export async function loadHealthScorecard(
       rawGoal: goalRaw(config, "goal_hourly_labor_pct_max"),
       lowerIsBetter: true,
       deltaFormatted: ptPct != null ? deltaLabelPct(ptPct, goalPtLaborPct) : undefined,
-      info: "Hourly (part-time) labor $ from ADP rates × hours (vw_model_labor_daily.hourly_labor_cost).",
+      info: "Hourly (part-time) labor $ from current ADP wage_rates × clocked hours (not frozen model_labor_daily dollars).",
     }),
     metric({
       key: "labor_ft_rates",
@@ -335,7 +357,7 @@ export async function loadHealthScorecard(
       goalKey: null,
       rawGoal: undefined,
       lowerIsBetter: true,
-      info: "Full-time / salaried labor $ from rates (vw_model_labor_daily.fulltime_labor_cost).",
+      info: "Full-time / salaried / excluded-from-% labor $ from current ADP wage_rates × clocked hours.",
     }),
     metric({
       key: "labor_total_rates",
@@ -449,4 +471,8 @@ function deltaLabelPct(actual: number | null, goal: number | null): string | und
 
 function fmtMinutes(n: number | null): string {
   return n == null ? "—" : `${n.toFixed(1)} min`;
+}
+
+function fmtHours(n: number | null): string {
+  return n == null || !Number.isFinite(n) ? "—" : `${n.toFixed(1)} hrs`;
 }

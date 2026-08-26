@@ -69,6 +69,15 @@ class TestPayrollAdpWageRoundingSql(unittest.TestCase):
         )
 
 
+class TestEmployeePerksPayPeriodSql(unittest.TestCase):
+    def test_period_scoped_join(self):
+        sql = (ROOT / "core/migrations/068_employee_perks_pay_period.sql").read_text()
+        self.assertIn("ADD COLUMN IF NOT EXISTS pay_period", sql)
+        self.assertIn("IFNULL(e.pay_period, '') = ''", sql)
+        self.assertIn("'..'", sql)
+        self.assertIn("CAST(ROUND(", sql)
+
+
 class TestGrossPayMath(unittest.TestCase):
     def test_lindsay_regular_plus_ot_plus_perk(self):
         hours, ot, rate, ot_rate, perk = 77.88, 1.0, 25.0, 37.5, 20.0

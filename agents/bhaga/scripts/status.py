@@ -152,6 +152,9 @@ GRAFANA_VIEWS: list[Target] = [
     Target("vw_model_period_summary", "period_start", "period_coverage"),
     # migration 004 / dashboard refactor views
     Target("vw_model_labor_weekly", "iso_week", "iso_week"),
+    # migration 069: live ADP rates × shifts for labor $ / % (Issue #267).
+    Target("vw_labor_daily_live", "date"),
+    Target("vw_labor_weekly_live", "week_start"),
     Target("vw_model_payroll_period", "period_start", "period_coverage"),
     # per-item KDS time distribution (percentile chart); dashboard v27 added
     # a dashed p99 Goal series — same view, no new entry needed.
@@ -312,6 +315,12 @@ GRAFANA_VIEWS: list[Target] = [
     # Same view — no new target.
     # migration 064 (Issue #251): ADP half-up cents on hours×rate via NUMERIC ROUND
     # (FLOAT64 ROUND was $0.01 low on Ximena/Kayah). Same view — no new target.
+    # migration 068 (Issue #267): employee_perks.pay_period ('' = recurring;
+    # dated = once). Same vw_model_payroll_period — no new target.
+    # (067 in prod _schema_migrations is order_reco_write_then_swap.)
+    # migration 069 (Issue #267): vw_labor_daily_live + vw_labor_weekly_live
+    # (current wage_rates × adp_shifts; Grafana panels 32/36 + console Labor/Home).
+    # Registered in GRAFANA_VIEWS above.
     # migration 065–066 (Issue #251): payroll_draft_runs — last Start→Preview
     # status + preview_hours / preview_gross. Console /payroll only — not Grafana.
 ]

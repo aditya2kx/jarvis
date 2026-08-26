@@ -88,7 +88,7 @@ export function FilterMultiSelect({
           type="button"
           aria-label={`Filter ${label}`}
           className={cn(
-            "flex h-8 min-w-32 max-w-56 items-center justify-between gap-1 rounded-md border px-2 text-left text-xs font-normal outline-none transition-colors",
+            "flex h-7 min-w-32 max-w-56 items-center justify-between gap-1 rounded-md border px-2 text-left text-xs font-normal outline-none transition-colors",
             "focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40",
             !isAll
               ? "border-primary/50 bg-primary/10 text-foreground"

@@ -163,6 +163,38 @@ export async function triggerAdpScheduleSync(
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
+function adpTimecardOnlyEnv(
+  store: string,
+  targetDate: string,
+): { name: string; value: string }[] {
+  return [
+    { name: "BHAGA_ADP_TIMECARD_ONLY", value: "1" },
+    { name: "BHAGA_IGNORE_HALT", value: "1" },
+    { name: "BHAGA_SKIP_SQUARE", value: "1" },
+    { name: "BHAGA_SKIP_KDS", value: "1" },
+    { name: "BHAGA_STORE", value: store },
+    { name: "REFRESH_DATE", value: targetDate },
+  ];
+}
+
+/**
+ * Enqueue ADP Timecard scrape + BQ shifts/punches only (Issue #267).
+ * Skips pay_info. Short-circuits via BHAGA_ADP_TIMECARD_ONLY.
+ */
+export async function triggerAdpTimecardSync(
+  store: string,
+  targetDate: string,
+): Promise<{ executionName: string }> {
+  if (!store) throw new Error("triggerAdpTimecardSync: store is required");
+  if (!ISO_DATE.test(targetDate)) {
+    throw new Error("triggerAdpTimecardSync: targetDate must be YYYY-MM-DD");
+  }
+  return runJob(
+    adpTimecardOnlyEnv(store, targetDate),
+    `triggerAdpTimecardSync(store=${store} date=${targetDate})`,
+  );
+}
+
 function payrollDraftOnlyEnv(
   store: string,
   periodStart: string,

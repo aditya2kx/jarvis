@@ -23,6 +23,8 @@ export const FEATURES = {
   writeTraining: false,
   writeTipExemptions: true,
   writeRecognition: true,
+  /** Issue #267 — mileage/gym/cert MERGE into employee_perks (period or recurring). */
+  writePerks: true,
   writeRestock: true,
   /**
    * Issue #194 — per-day force include/exclude on Base usage audit table.

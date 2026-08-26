@@ -29,9 +29,12 @@ export const MUTATING_ACTIONS = [
   { name: "applyTipExemptionsAction", page: "payroll", heavy: "model-recompute" },
   { name: "runPayrollDraftAction", page: "payroll", heavy: "adp-payroll-draft" },
   { name: "pollPayrollDraftAction", page: "payroll", heavy: null },
+  { name: "addEmployeePerkAction", page: "payroll", heavy: null },
   // Labor
   { name: "syncScheduledShiftsAction", page: "labor", heavy: "adp-schedule" },
   { name: "pollScheduledShiftsSyncAction", page: "labor", heavy: null },
+  { name: "syncClockedHoursAction", page: "labor", heavy: "adp-timecard" },
+  { name: "pollClockedHoursSyncAction", page: "labor", heavy: null },
   // Accounting
   { name: "createPlaidLinkTokenAction", page: "accounting", heavy: null },
   { name: "exchangePlaidPublicTokenAction", page: "accounting", heavy: "plaid-sync" },

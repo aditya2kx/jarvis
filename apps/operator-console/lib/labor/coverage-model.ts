@@ -83,15 +83,14 @@ export function coverageStripDates(
 }
 
 /**
- * Default focus: yesterday if in strip, else today if in strip, else last chip.
+ * Default focus on open/refresh: today if in the Period strip, else last chip
+ * (past Periods that do not include today).
  */
 export function defaultCoverageDay(
   strip: string[],
   todayIso: string,
 ): string | null {
   if (!strip.length) return null;
-  const yesterday = shiftCalendarDate(todayIso, "day", -1);
-  if (strip.includes(yesterday)) return yesterday;
   if (strip.includes(todayIso)) return todayIso;
   return strip[strip.length - 1]!;
 }
@@ -193,6 +192,23 @@ export function buildPersonDaysForDate(
     const bStart = Math.min(...b.segments.map((s) => s.startMin));
     if (aStart !== bStart) return aStart - bStart;
     return a.employee.localeCompare(b.employee);
+  });
+}
+
+/**
+ * Past days with clocked punches hide schedule. Past days with no punches
+ * keep schedule (Timecard gap). Today+ always shows schedule.
+ */
+export function filterScheduledForCoverage(
+  actuals: ActualShiftInput[],
+  scheduled: ScheduledShiftInput[],
+  todayIso: string,
+): ScheduledShiftInput[] {
+  const actualDates = new Set(actuals.map((a) => a.date.slice(0, 10)));
+  return scheduled.filter((s) => {
+    const d = s.date.slice(0, 10);
+    if (d >= todayIso) return true;
+    return !actualDates.has(d);
   });
 }
 

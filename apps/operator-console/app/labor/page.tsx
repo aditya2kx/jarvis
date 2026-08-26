@@ -1,4 +1,5 @@
 import {
+  adpHoursScrapedAt,
   adpScheduleHorizonEnd,
   adpScheduleScrapedAt,
   laborActualShiftDays,
@@ -14,8 +15,10 @@ import { dateSortKey } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { LaborHoursChart } from "@/components/labor/LaborHoursChart";
+import { LaborWeeklyHoursGoal } from "@/components/labor/LaborWeeklyHoursGoal";
 import { LaborConcurrentChart } from "@/components/labor/LaborConcurrentChart";
 import { LaborCoveragePanel } from "@/components/labor/LaborCoveragePanel";
+import { SyncClockedHoursButton } from "@/components/labor/SyncClockedHoursButton";
 import { SyncScheduledShiftsButton } from "@/components/labor/SyncScheduledShiftsButton";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { FilterSelect } from "@/components/filters/FilterSelect";
@@ -53,6 +56,7 @@ import {
 } from "@/lib/filters/sales-stat";
 import {
   actualPunchWindow,
+  clockedHoursTargetDate,
   laborChartWindow,
   periodIncludesToday,
   scheduledShiftWindow,
@@ -139,6 +143,7 @@ export default async function LaborPage({
   let goalLaborHoursWeek: number | undefined;
   let hoursPerPerson: { employee: string; hours: number }[] = [];
   let scheduleScrapedAt: string | null = null;
+  let hoursScrapedAt: string | null = null;
   let coverageActuals: LaborActualShiftDayRow[] = [];
   let coverageScheduled: LaborScheduledShiftDayRow[] = [];
   let error: string | undefined;
@@ -170,7 +175,9 @@ export default async function LaborPage({
       concurrent,
       schedHours,
       schedDays,
+      coverageSchedDays,
       scraped,
+      hoursScraped,
       actualShiftDays,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
@@ -185,18 +192,25 @@ export default async function LaborPage({
       (chartSchedule || coverageSchedule) && schedWin
         ? laborScheduledShiftDays(schedWin, { excludePto }).catch(() => [])
         : Promise.resolve([]),
+      coverageSchedule
+        ? laborScheduledShiftDays(chartWin, { excludePto, allowPast: true }).catch(
+            () => [],
+          )
+        : Promise.resolve([]),
       adpScheduleScrapedAt().catch(() => null),
+      adpHoursScrapedAt().catch(() => null),
       punchWin ? laborActualShiftDays(punchWin).catch(() => []) : Promise.resolve([]),
     ]);
     rows = labor;
     concurrentRows = concurrent;
     scheduledHoursRows = schedHours;
-    coverageScheduled = coverageSchedule ? schedDays : [];
+    coverageScheduled = coverageSchedule ? coverageSchedDays : [];
     coverageActuals = actualShiftDays;
     scheduledConcurrentByBucket = chartSchedule
       ? rollConcurrentToGrain(aggregateScheduledDays(schedDays), grain)
       : [];
     scheduleScrapedAt = scraped;
+    hoursScrapedAt = hoursScraped;
     goalLaborHoursWeek = goalFromConfig(config, "goal_labor_hours_week");
     hoursPerPerson = perPerson
       .map((p) => ({ employee: p.employee, hours: Number(p.hours) || 0 }))
@@ -431,6 +445,14 @@ export default async function LaborPage({
                 ...dayExtra,
               }}
             />
+            <LaborWeeklyHoursGoal current={goalLaborHoursWeek} />
+            <SyncClockedHoursButton
+              lastScrapedAt={hoursScrapedAt}
+              targetDate={clockedHoursTargetDate({
+                todayIso: chicagoTodayIso(),
+                coverageDay: sp.day,
+              })}
+            />
             <SyncScheduledShiftsButton lastScrapedAt={scheduleScrapedAt} />
           </>
         }
@@ -450,7 +472,9 @@ export default async function LaborPage({
           <span className="font-medium text-foreground">Total (combined)</span> vs
           weekly Goal.{" "}
           <span className="font-medium text-foreground">% of net sales</span> on the
-          Hours chart uses completed days only (no schedule stacks).{" "}
+          Hours chart uses completed days only (no schedule stacks) and current
+          ADP wage rates × clocked hours over Square net sales (not frozen
+          model-sheet labor $).{" "}
           {grain === "hour"
             ? "Hour of day allocates clocked shifts across clock hours and pairs with Sales ops-hour net sales for %; schedule stacks are hidden. "
             : ""}
@@ -458,7 +482,7 @@ export default async function LaborPage({
             ? `Stat Average = typical ${grain === "hour" ? "hour across days" : "weekday"} in the Period; Total = sum across the Period. `
             : ""}
           {goalLaborHoursWeek != null && !Number.isNaN(Number(goalLaborHoursWeek))
-            ? `Weekly Goal (${Number(goalLaborHoursWeek)} hrs) is the gold dashed line on Aggregation=Weekly in Hours mode. `
+            ? `Weekly Goal (${Number(goalLaborHoursWeek)} hrs) is the gold dashed line on Aggregation=Weekly in Hours mode — same value as Home Goals. `
             : ""}
           <span className="font-medium text-foreground">Avg concurrent</span> bars =
           actual only (schedule stays in the hover). PT/FT concurrent is hours ÷ that
@@ -471,8 +495,11 @@ export default async function LaborPage({
           other grain) whenever ADP has them in the schedule window. Scroll the chips when
           the range is long. Use{" "}
           <span className="font-medium text-foreground">Sync scheduled shifts</span> after
-          editing the ADP schedule — status under the button shows starting / syncing /
-          done / error without blocking the rest of the page. Paid PTO is included in
+          editing the ADP schedule, and{" "}
+          <span className="font-medium text-foreground">Sync clocked hours</span> after
+          punch-out fixes (Timecard only — does not re-scrape pay rates). Status under
+          each button shows starting / syncing / done / error without blocking the rest
+          of the page. Hover a sync button when idle for last-synced time. Paid PTO is included in
           scheduled hours by default (matches ADP); use the PTO filter to exclude it.
           Per-person hours below sum clocked ADP hours over the Period.
         </p>
@@ -505,16 +532,6 @@ export default async function LaborPage({
             actuals={coverageActuals}
             scheduled={coverageScheduled}
             laborTypes={laborTypes}
-            selectedDay={sp.day}
-            basePath="/labor"
-            extraParams={{
-              range: win.preset,
-              grain,
-              ...statExtra,
-              ...laborTypeExtra,
-              ...unitExtra,
-              ...dateParams,
-            }}
           />
 
           <BarChartCard

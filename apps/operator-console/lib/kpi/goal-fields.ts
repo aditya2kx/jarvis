@@ -72,7 +72,8 @@ export const GOAL_FIELDS: GoalField[] = [
     key: "goal_labor_hours_week",
     label: "Labor hours — weekly max",
     kind: "hours",
-    helpText: "Absolute ADP clocked hours per week, e.g. 230. Labor page scales day÷7 / month×(days/7).",
+    helpText:
+      "Absolute ADP clocked hours per week, e.g. 230. Same store_config key on Home (Goals) and Labor (gold dashed line at Aggregation=Weekly).",
   },
   {
     key: "goal_hourly_labor_pct_max",
@@ -131,6 +132,15 @@ export function percentInputToFraction(input: string): string {
   const n = Number(input);
   if (!Number.isFinite(n)) return input;
   return trimTrailingZeros((n / 100).toFixed(6));
+}
+
+/** Weekly hours goal input → stored string, or null if empty/invalid/non-positive. */
+export function parseHoursGoalInput(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return trimTrailingZeros(n.toFixed(2));
 }
 
 /** Caps a dollars-kind input to at most 2 decimal places as the operator

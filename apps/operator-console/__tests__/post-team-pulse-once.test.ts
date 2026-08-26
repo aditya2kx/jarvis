@@ -72,6 +72,7 @@ describe("postTeamPulseOnceAction manual (Issue #245)", () => {
         period_start: PERIOD,
         period_end: "2026-08-08",
         unpaid: true,
+        submitted: false,
         is_current: false,
       },
     ]);

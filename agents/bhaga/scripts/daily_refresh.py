@@ -650,6 +650,75 @@ def clear_step_done(refresh_date: datetime.date, step_name: str) -> None:
     _adapter_clear_step(refresh_date, step_name)
 
 
+def _adp_shift_count_for(refresh_date: datetime.date) -> int | None:
+    """Row count in adp_shifts for refresh_date, or None if BQ is unavailable."""
+    try:
+        from core.datastore import fq, read_query  # noqa: PLC0415
+        rows = read_query(
+            f"SELECT COUNT(*) AS n FROM {fq('adp_shifts')} "
+            f"WHERE date = DATE('{refresh_date.isoformat()}')"
+        )
+        if not rows:
+            return 0
+        return int(rows[0].get("n") or 0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_reports] WARN: could not count adp_shifts: {exc}")
+        return None
+
+
+def clear_adp_reports_if_shifts_missing(refresh_date: datetime.date) -> bool:
+    """Clear adp_reports when Timecard left 0 punches for refresh_date.
+
+    Select All on day-1 of an open biweek upserts the closed period only
+    (Issue #267 / 2026-08-24). Leaving adp_reports done skips ADP forever.
+    Returns True iff the marker was cleared. BQ count None (unavailable)
+    or n>0 does not clear. A legitimate zero-punch day will re-scrape
+    until punches exist — no store-closed calendar yet.
+    """
+    n_shifts = _adp_shift_count_for(refresh_date)
+    if n_shifts is None:
+        return False
+    if n_shifts == 0 and step_already_done(refresh_date, "adp_reports"):
+        print(
+            f"[adp_reports] BREADCRUMB adp_shifts_missing_refresh_date "
+            f"date={refresh_date.isoformat()} — clearing adp_reports"
+        )
+        clear_step_done(refresh_date, "adp_reports")
+        return True
+    return False
+
+
+def _stamp_adp_hours_scraped_at(start: datetime.date, end: datetime.date) -> None:
+    """Set scraped_at_utc so the console Sync clocked hours button can poll."""
+    try:
+        from google.cloud import bigquery  # noqa: PLC0415
+        from core.datastore import fq, get_client  # noqa: PLC0415
+
+        client = get_client()
+        if client is None:
+            print("[adp-timecard-only] WARN: no BQ client; skip scraped_at stamp")
+            return
+        params = [
+            bigquery.ScalarQueryParameter("start", "DATE", start),
+            bigquery.ScalarQueryParameter("end", "DATE", end),
+        ]
+        cfg = bigquery.QueryJobConfig(query_parameters=params)
+        for table in ("adp_shifts", "adp_punches"):
+            job = client.query(
+                f"UPDATE {fq(table)} SET scraped_at_utc = CURRENT_TIMESTAMP() "
+                f"WHERE date BETWEEN @start AND @end",
+                job_config=cfg,
+            )
+            job.result()
+            print(
+                f"[adp-timecard-only] stamped scraped_at_utc on {table} "
+                f"{start.isoformat()}..{end.isoformat()} "
+                f"rows={job.num_dml_affected_rows}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp-timecard-only] WARN: scraped_at stamp failed: {exc}")
+
+
 def apply_force_model_recompute(refresh_date: datetime.date) -> list[str]:
     """Clear _MODEL_RECOMPUTE_STEPS markers when BHAGA_FORCE_MODEL_RECOMPUTE is set.
 
@@ -2418,6 +2487,65 @@ def _run_refresh(run_id: str) -> int:
         print("[adp-schedule-only] BQ upsert complete")
         return 0
 
+    # Console "Sync clocked hours" (Issue #267): Timecard scrape + BQ shifts/punches
+    # only — no pay_info (token hourlies), no Square/KDS/model. Before completeness
+    # so it works mid-day after ADP punch-out fixes. Forces a fresh Timecard XLSX.
+    if _env_skip("BHAGA_ADP_TIMECARD_ONLY"):
+        args.store = os.environ.get("BHAGA_STORE") or args.store
+        print(
+            f"[adp-timecard-only] store={args.store} "
+            f"target_date={refresh_date.isoformat()} — timecard + BQ hours only"
+        )
+        os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+        from skills.adp_run_automation.runner import (  # noqa: PLC0415
+            DOWNLOADS_DIR,
+            download_timecard,
+        )
+        today_xlsx = DOWNLOADS_DIR / f"Timecard-{_today_ct().isoformat()}.xlsx"
+        meta = today_xlsx.with_suffix(today_xlsx.suffix + ".target-meta.json")
+        for cached in (today_xlsx, meta):
+            if cached.exists():
+                cached.unlink()
+                print(f"[adp-timecard-only] removed cached {cached.name} (force re-scrape)")
+        headed = _env_skip("BHAGA_ADP_HEADED")
+        print(
+            f"[adp-timecard-only] headed={headed} "
+            f"(set BHAGA_ADP_HEADED=1 for a visible browser)"
+        )
+        path = download_timecard(
+            store=args.store,
+            target_date=refresh_date,
+            headed=headed,
+        )
+        print(f"[adp-timecard-only] wrote {path}")
+        bq_env = {**os.environ, "BHAGA_DATASTORE": "bigquery", "PYTHONUNBUFFERED": "1"}
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agents.bhaga.scripts.backfill_from_downloads",
+                "--store",
+                args.store,
+                "--skip",
+                "square",
+                "--skip",
+                "adp_rates",
+                "--skip",
+                "adp_schedule",
+                "--skip",
+                "adp_liability",
+                "--skip",
+                "square_rollup",
+            ],
+            cwd=str(PROJECT_ROOT),
+            check=True,
+            env=bq_env,
+        )
+        stamp_start = refresh_date - datetime.timedelta(days=13)
+        _stamp_adp_hours_scraped_at(stamp_start, refresh_date)
+        print("[adp-timecard-only] BQ upsert complete")
+        return 0
+
     # Monday 07:00 CT ``bhaga-payroll-draft`` + /payroll button: Start→Preview
     # and leave In Progress (never Approve/Save/Delete). Before the completeness
     # gate so a 7am Monday run is not refused as "today's sources still in flight".
@@ -3008,6 +3136,10 @@ def _run_refresh(run_id: str) -> int:
         )
         if ok:
             raw_sheets_ok = True
+            # Select All Timecard on day-1 of an open biweek upserts closed
+            # periods only; do not leave adp_reports done or the next nightly
+            # skips ADP forever (2026-08-24 / Issue #267).
+            clear_adp_reports_if_shifts_missing(refresh_date)
         else:
             failures.append(("load_raw_bigquery", RuntimeError("see step log")))
             # Gate: clear the scrape-done markers so the next retry re-scrapes

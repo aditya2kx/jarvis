@@ -633,6 +633,43 @@ export async function addRecognitionBonus(
   );
 }
 
+export async function addEmployeePerk(
+  store: string,
+  employee: string,
+  perkId: string,
+  amountCents: number,
+  payPeriod: string,
+  cadence: string,
+  adpEarningDescription: string,
+  by: string,
+): Promise<void> {
+  await mutate(
+    `MERGE ${fq("employee_perks")} T
+     USING (SELECT @store AS store, @employee AS employee, @perk_id AS perk_id,
+                   @pay_period AS pay_period) S
+     ON T.store = S.store AND T.employee = S.employee
+       AND T.perk_id = S.perk_id AND IFNULL(T.pay_period, '') = S.pay_period
+     WHEN MATCHED THEN UPDATE SET amount_cents = @cents, cadence = @cadence,
+       adp_earning_description = @desc,
+       updated_at = CURRENT_TIMESTAMP(), updated_by = @by
+     WHEN NOT MATCHED THEN INSERT
+       (store, employee, perk_id, amount_cents, cadence, adp_earning_description,
+        pay_period, updated_at, updated_by)
+       VALUES (@store, @employee, @perk_id, @cents, @cadence, @desc,
+        @pay_period, CURRENT_TIMESTAMP(), @by)`,
+    {
+      store,
+      employee,
+      perk_id: perkId,
+      cents: intParam(amountCents),
+      cadence,
+      desc: adpEarningDescription,
+      pay_period: payPeriod,
+      by,
+    },
+  );
+}
+
 /** Upsert a linked Plaid Item metadata row (access_token stays in Secret Manager). */
 export async function upsertPlaidItem(
   store: string,

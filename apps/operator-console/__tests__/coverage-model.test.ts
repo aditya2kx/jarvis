@@ -5,6 +5,7 @@ import {
   coverageNarrative,
   coverageStripDates,
   defaultCoverageDay,
+  filterScheduledForCoverage,
   occupancySeries,
   parseHhMm,
   peopleActiveAt,
@@ -58,10 +59,10 @@ describe("coverageStripDates", () => {
 });
 
 describe("defaultCoverageDay", () => {
-  it("prefers yesterday, then today, then last", () => {
+  it("prefers today when in the strip, else last chip", () => {
     expect(
       defaultCoverageDay(["2026-07-30", "2026-07-31", "2026-08-01"], "2026-08-01"),
-    ).toBe("2026-07-31");
+    ).toBe("2026-08-01");
     expect(defaultCoverageDay(["2026-08-01", "2026-08-02"], "2026-08-01")).toBe(
       "2026-08-01",
     );
@@ -199,5 +200,32 @@ describe("peopleActiveAt", () => {
       endMin: 13 * 60,
     });
     expect(peopleActiveAt(people, 6 * 60).map((p) => p.employee)).toEqual([]);
+  });
+});
+
+describe("filterScheduledForCoverage", () => {
+  const sched = (date: string) => ({
+    date,
+    employee: "A",
+    labor_bucket: "parttime",
+    scheduled_hours: 8,
+    shift_ranges_json: '[{"startMin":540,"endMin":1020,"hours":8}]',
+  });
+  const punch = (date: string) => ({
+    date,
+    employee: "A",
+    labor_bucket: "parttime",
+    in_time: "09:00",
+    out_time: "17:00",
+    total_hours: 8,
+  });
+
+  it("keeps past schedule only when that day has no punches", () => {
+    const out = filterScheduledForCoverage(
+      [punch("2026-08-23")],
+      [sched("2026-08-23"), sched("2026-08-24"), sched("2026-08-25")],
+      "2026-08-25",
+    );
+    expect(out.map((s) => s.date)).toEqual(["2026-08-24", "2026-08-25"]);
   });
 });

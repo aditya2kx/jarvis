@@ -9,7 +9,7 @@ vehicle commands.
 |---|---|
 | `TESLA_CLIENT_ID` / `TESLA_CLIENT_SECRET` | Fleet app (developer.tesla.com) |
 | `TESLA_REFRESH_TOKEN` | User token; rotate on refresh |
-| `TESLA_PARTNER_DOMAIN` | Public-key host, e.g. `h1hh2.fleetkey.net` |
+| `TESLA_PARTNER_DOMAIN` | Public-key host, e.g. `35.239.192.226.sslip.io` |
 | `TESLA_REDIRECT_URI` | OAuth callback (Cloud Run URL or `http://localhost:8765/oauth/tesla/callback`) |
 | `TESLA_AUDIENCE` | Default `https://fleet-api.prd.na.vn.cloud.tesla.com` |
 

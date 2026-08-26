@@ -8,12 +8,10 @@ Always-on `e2-micro` `tesla-fleet-telemetry` in `us-central1-a`. Cars speak mTLS
 Public CA used in Tesla `fleet_telemetry_config.ca` is Let's Encrypt ISRG Root X1
 (Secret Manager `tesla-telemetry-ca`; fetch from https://letsencrypt.org/certs/isrgrootx1.pem).
 
-Tesla `fleet_status` currently reports this VIN as **unpaired** for the Fleet app
-(`key_paired=false`). Pair in the Tesla mobile app:
-`https://tesla.com/_ak/yuejj.fleetkey.net` (car nearby). Then store the matching
-EC private key as Secret Manager `tesla-fleet-command-key` and run
-`tesla-http-proxy` on this VM so `POST /api/1/vehicles/fleet_telemetry_config`
-can be signed. Unsigned Fleet POST is HTTP 400.
+Tesla `fleet_status` reports this VIN unpaired until the Tesla app enrolls
+`https://tesla.com/_ak/h1hh2.fleetkey.net` (car nearby). Command private key is
+Secret Manager `tesla-fleet-command-key`; `tesla-http-proxy` on this VM (`127.0.0.1:4443`)
+signs `fleet_telemetry_config`. Unsigned Fleet POST is HTTP 400.
 
 ```bash
 # After TLS + containers are up (from a laptop with ADC):

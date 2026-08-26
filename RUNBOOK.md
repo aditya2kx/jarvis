@@ -1973,7 +1973,7 @@ A second copy would double-open the door.
 | Service | `tesla-aladdin-garage` (`us-central1`) |
 | Image | `us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images/tesla-aladdin-garage` |
 | VIN | `TESLA_VIN` (Dhanno) |
-| Partner domain | `yuejj.fleetkey.net` (public key already hosted; partner registered) |
+| Partner domain | `h1hh2.fleetkey.net` (pair in Tesla app: `https://tesla.com/_ak/h1hh2.fleetkey.net`) |
 | Door | Big Peach `ALADDIN_DEVICE_SERIAL=F0AD4E3E7403` / `ALADDIN_DOOR_INDEX=1` |
 | Home | `HOME_LAT` / `HOME_LON` · enter 800 m (Firestore overlay `enter_m` wins if set) · hysteresis 80 m · cooldown 600 s |
 | Persist | Firestore named DB `garage` (`GARAGE_FIRESTORE_DB=garage`), collection `tesla_aladdin_garage`. BHAGA stays on `(default)`. Do **not** set `FIRESTORE_DB=(default)` on Cloud Run — REST double-encodes it to `400 Invalid database id %28default%29`. Usage falls back in-memory if persist fails. |

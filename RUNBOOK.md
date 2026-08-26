@@ -1200,8 +1200,8 @@ download wait (Slack `failure_alert` on 2026-07-15/16); the Timecard export time
 as a safety net. If punches/shifts are missing for dates, add
 `Retry-Dates: YYYY-MM-DD[, …]` to the fix PR so deploy full-scrapes the gap.
 If Timecard **Select All** (or a closed period) loads with **zero** `adp_shifts` rows for
-`refresh_date`, nightly **clears** Firestore `adp_reports` (`BREADCRUMB adp_shifts_missing_refresh_date`)
-so the next run retries ADP instead of skipping. Operator Console Labor overlays Team Schedule
+`refresh_date`, `clear_adp_reports_if_shifts_missing` **clears** Firestore `adp_reports`
+(`BREADCRUMB adp_shifts_missing_refresh_date`) so the next run retries ADP instead of skipping. Operator Console Labor overlays Team Schedule
 on past days only when that date has no punches. **Sync clocked hours** (Labor + Payroll) re-scrapes
 Timecard only (`BHAGA_ADP_TIMECARD_ONLY=1`; skips pay_info / token hourlies) for yesterday, a past
 coverage chip, or a closed pay-period end — same OTP path as nightly.

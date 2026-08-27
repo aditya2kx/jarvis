@@ -83,11 +83,20 @@ python3 -m pytest -q cloud/tesla_aladdin_garage/test_notify.py
 | E5 Failure | `POST /config {"enter_m": 200}` | 409; radius unchanged |
 | E6 Legacy | first sample never enter; no wake_up; max-instances 1 | existing tests; BHAGA untouched |
 
-**Post-merge verification**
+**Post-merge verification** (also captured pre-merge via `workflow_dispatch` run 33094310107):
+
+```
+$ curl -sS "$URL/health"  # enter_m
+500.0
+
+$ python3 -c "from google.cloud import firestore; d=firestore.Client(project='jarvis-bhaga-prod', database='garage').collection('tesla_aladdin_garage').document('config').get().to_dict() or {}; print(sorted(d))"
+['source', 'updated_ts']
+```
+
+Live `/health` `enter_m` is **500**. Firestore config overlay no longer contains `enter_m` (200 deleted).
 
 ```bash
 curl -sS "$(gcloud run services describe tesla-aladdin-garage --region us-central1 --project jarvis-bhaga-prod --format='value(status.url)')/health"
-# expect enter_m 500
 python3 -c "from google.cloud import firestore; d=firestore.Client(project='jarvis-bhaga-prod', database='garage').collection('tesla_aladdin_garage').document('config').get().to_dict() or {}; print(d)"
 ```
 

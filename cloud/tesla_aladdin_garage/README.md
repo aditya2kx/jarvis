@@ -6,14 +6,14 @@ Geofence Dhanno → open **Big Peach** via Aladdin Connect.
 
 - Prefer Tesla Fleet Telemetry **push** (HTTP ingest at `POST /telemetry`). REST `vehicle_data` polling is off when `TESLA_TELEMETRY=1` and `POLL_INTERVAL_S=0`.
 - Tesla has no geofence webhook. The car (when awake) streams `Location` over mTLS to a self-hosted [fleet-telemetry](https://github.com/teslamotors/fleet-telemetry) host (`TESLA_TELEMETRY_HOST`:`TESLA_TELEMETRY_PORT`, live 8443). Nginx serves the Tesla public key on :443. That process POSTs JSON here. Cloud Run cannot terminate vehicle mTLS.
-- `Location.minimum_delta` is 80 m (env `LOCATION_MIN_DELTA_M`). Enter 800 m / hysteresis 80 m.
+- `Location.minimum_delta` is 80 m (env `LOCATION_MIN_DELTA_M`). Enter / hysteresis: **`geofence.json` only** (500 m / 80 m, exit 580 m).
 - Optional REST fallback: set `POLL_INTERVAL_S>0`. `vehicle_data?endpoints=location_data;drive_state` (semicolon).
 - **Never** `wake_up` / vehicle commands.
-- Home `29.464083,-95.517465`, enter 800 m, hysteresis 80 m (exit 880 m). Override `enter_m` at runtime: `POST /config` `{"enter_m": 350}` (admin token).
+- Home `29.464083,-95.517465`. Enter radius is `cloud/tesla_aladdin_garage/geofence.json` (not Cloud Run env, not Firestore overlay). `POST /config` with `enter_m` returns 409.
 - First fix inside the fence does **not** open (already home).
 - Cooldown 600 s. `ALADDIN_DRY_RUN=0` is live.
 - Single Cloud Run instance, CPU always allocated.
-- Last event/error/poll + Tesla usage counters in Firestore **named database `garage`** (`GARAGE_FIRESTORE_DB=garage`), collection `tesla_aladdin_garage/{config,state,tesla_usage}`. Do not use `(default)` on Cloud Run — REST double-encodes it to `%28default%29` (400). Overlay `enter_m` still wins over env.
+- Last event/error/poll + Tesla usage counters in Firestore **named database `garage`** (`GARAGE_FIRESTORE_DB=garage`), collection `tesla_aladdin_garage/{config,state,tesla_usage}`. Do not use `(default)` on Cloud Run — REST double-encodes it to `%28default%29` (400). Worker deletes stale `config.enter_m` overlay on boot.
 - Admin token (`GARAGE_ADMIN_TOKEN` / `X-Garage-Token`) required for `/tick`, `/location`, `/simulate/enter`, `/config`, `/telemetry`, `/telemetry/configure`.
 - Aladdin `/devices` uses Cognito **AccessToken** (IdToken is 401). Cloud Run SA must have `secretVersionAdder` on `tesla-fleet-refresh-token` so `/oauth/tesla` survives a revision restart.
 - If Big Peach is **already open**, skip `OPEN_DOOR` and email `aditya.2ky@gmail.com` (Tesla metres-from-home in the subject). Same email on open and on Aladdin failure. Body includes Tesla Fleet month spend vs the **$10 developer discount** (`TESLA_MONTH_BUDGET_USD`; Jarvis-counted Data/streaming, Tesla portal is authoritative). Needs Gmail OAuth secrets for that mailbox (`GMAIL_*`); without them the worker still opens, it just logs `notify_unconfigured`.
@@ -43,7 +43,7 @@ python3 scripts/secret_manager_put.py --secret gmail-client-secret --from-env GM
 python3 scripts/secret_manager_put.py --secret gmail-refresh-token --from-env GMAIL_REFRESH_TOKEN
 ```
 
-Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON`, `GEOFENCE_ENTER_M` (800),
+Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON` (enter from `geofence.json`, not env),
 `ALADDIN_DEVICE_SERIAL`, `ALADDIN_DOOR_INDEX`, `ALADDIN_DRY_RUN=0`, `GARAGE_PERSIST=1`,
 `GARAGE_NOTIFY_TO=aditya.2ky@gmail.com`, `TESLA_TELEMETRY=1`, `POLL_INTERVAL_S=0`,
 `TESLA_TELEMETRY_HOST` (fleet-telemetry hostname cars connect to; empty = ingest-only),
@@ -59,7 +59,7 @@ Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON`, `GEOFENCE_ENTER
 | `GET /health` | no | polls, last_event, enter_m, needs_reauth, persisted state |
 | `GET /location` | admin | live Tesla lat/lon + metres from home (does not open) |
 | `POST /simulate/enter` | admin | fake outside→enter then **open Big Peach** |
-| `POST /config` | admin | `{"enter_m": 350}` Firestore overlay |
+| `POST /config` | admin | `cooldown_s` / `poll_s` only; `enter_m` → 409 |
 | `POST /telemetry` | admin | fleet-telemetry HTTP-dispatcher JSON → same geofence. Golden samples: `testdata/dispatcher_{outside,enter}.json` (teslamotors PR #91 shape). |
 | `POST /telemetry/configure` | admin | skip unless `TESLA_COMMAND_PROXY_URL` (Cloud Run: use GCE `gce_signed_telemetry_config`) |
 | `GET /oauth/tesla` | no | operator browser re-auth |

@@ -76,11 +76,32 @@ def load_config() -> dict:
         return {}
 
 
+def clear_geofence_overlay() -> None:
+    """Drop stale enter_m / hysteresis_m so named-db-seed cannot pin the radius."""
+    db = _db()
+    if db is None:
+        return
+    try:
+        from google.cloud.firestore import DELETE_FIELD
+
+        db.collection(COLLECTION).document(CONFIG_DOC).set(
+            {
+                "enter_m": DELETE_FIELD,
+                "hysteresis_m": DELETE_FIELD,
+                "updated_ts": time.time(),
+            },
+            merge=True,
+        )
+        log.info("tesla-aladdin-garage config_cleared_geofence_overlay")
+    except Exception as e:  # noqa: BLE001
+        log.error("tesla-aladdin-garage fail reason=geofence_overlay_clear err=%r", e)
+
+
 def save_config(overlay: dict) -> None:
     db = _db()
     if db is None:
         return
-    payload = {k: v for k, v in overlay.items() if v is not None}
+    payload = {k: v for k, v in overlay.items() if v is not None and k not in ("enter_m", "hysteresis_m")}
     payload["updated_ts"] = time.time()
     db.collection(COLLECTION).document(CONFIG_DOC).set(payload, merge=True)
     log.info("tesla-aladdin-garage config_saved keys=%s", sorted(payload))

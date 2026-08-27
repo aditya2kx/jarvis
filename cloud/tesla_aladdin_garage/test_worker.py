@@ -168,12 +168,24 @@ def test_current_location_does_not_open():
     aladdin.open_door.assert_not_called()
 
 
-def test_overlay_changes_enter_m():
+def test_overlay_cannot_change_enter_m():
     tesla, aladdin = _tesla(*HOME), _aladdin()
     w = GarageWorker(_cfg(), tesla, aladdin)
-    w.apply_overlay({"enter_m": 350})
-    assert w.cfg.enter_m == 350
-    assert w.geofence.enter_m == 350
+    w.apply_overlay({"enter_m": 350, "hysteresis_m": 10, "cooldown_s": 12})
+    assert w.cfg.enter_m == 400
+    assert w.geofence.enter_m == 400
+    assert w.cfg.hysteresis_m == 80
+    assert w.cfg.cooldown_s == 12
+
+
+def test_from_env_reads_json_not_geofence_env(monkeypatch):
+    monkeypatch.setenv("GEOFENCE_ENTER_M", "200")
+    monkeypatch.setenv("GEOFENCE_HYSTERESIS_M", "10")
+    monkeypatch.setenv("HOME_LAT", "29.464083")
+    monkeypatch.setenv("HOME_LON", "-95.517465")
+    cfg = WorkerConfig.from_env()
+    assert cfg.enter_m == 500
+    assert cfg.hysteresis_m == 80
 
 
 def test_observe_fix_from_telemetry_opens_without_rest_poll():

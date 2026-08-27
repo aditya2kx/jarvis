@@ -25,3 +25,4 @@ def test_subject_and_body_include_tesla_distance():
     assert body.startswith("Tesla distance from home when this fired: 187 m")
     assert "800 m" in body
     assert "$1.20 / $10.00" in body
+    assert "geofence.json" in body

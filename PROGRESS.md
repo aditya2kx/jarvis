@@ -1,3 +1,9 @@
+## 2026-08-27 — Garage enter radius: `geofence.json` SoT at 500 m (Issue #280)
+
+**Scope:** Firestore overlay (`named-db-seed` 200 m) beat Cloud Run env 800 m. One file is the only writer.
+
+**Key changes:** `cloud/tesla_aladdin_garage/geofence.json` (`enter_m` 500, hysteresis 80); ignore overlay/env for radius; boot clears stale `config.enter_m`; `POST /config` with `enter_m` is 409.
+
 ## 2026-08-26 — Signed Tesla `fleet_telemetry_config` via GCE proxy (Issue #278)
 
 **Scope:** Cloud Run was POSTing unsigned `fleet_telemetry_config` (Tesla 400). Tesla app phone pings are not Jarvis; Fleet keys/hosts were healthy.

@@ -54,3 +54,20 @@ def test_db_strips_encoded_default_alias(monkeypatch):
     persist._db()
     assert "database" not in fake.call_args.kwargs
     persist.set_client(None)
+
+
+def test_clear_geofence_overlay_deletes_radius_keys(monkeypatch):
+    monkeypatch.setenv("GARAGE_PERSIST", "1")
+    fake = MagicMock()
+    persist.set_client(fake)
+    persist.clear_geofence_overlay()
+    from google.cloud.firestore import DELETE_FIELD
+
+    fake.collection.assert_called_with("tesla_aladdin_garage")
+    fake.collection.return_value.document.assert_called_with("config")
+    kwargs = fake.collection.return_value.document.return_value.set.call_args.kwargs
+    payload = fake.collection.return_value.document.return_value.set.call_args.args[0]
+    assert payload["enter_m"] is DELETE_FIELD
+    assert payload["hysteresis_m"] is DELETE_FIELD
+    assert kwargs.get("merge") is True
+    persist.set_client(None)

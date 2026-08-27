@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
+
+_RADII_PATH = Path(__file__).with_name("geofence.json")
+
+
+def load_radii(path: Path | None = None) -> tuple[float, float]:
+    """Return (enter_m, hysteresis_m) from geofence.json. The only SoT for prod."""
+    raw = json.loads((path or _RADII_PATH).read_text())
+    enter_m = float(raw["enter_m"])
+    hysteresis_m = float(raw["hysteresis_m"])
+    if enter_m <= 0 or hysteresis_m < 0:
+        raise ValueError(f"invalid geofence radii enter_m={enter_m} hysteresis_m={hysteresis_m}")
+    return enter_m, hysteresis_m
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -20,7 +34,7 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 class Geofence:
     home_lat: float
     home_lon: float
-    enter_m: float = 800.0
+    enter_m: float = 500.0
     hysteresis_m: float = 80.0
     inside: Optional[bool] = field(default=None)
 

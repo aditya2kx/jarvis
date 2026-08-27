@@ -1,5 +1,6 @@
 """Deploy job must not fail the Cloud Run rollout on log-metric IAM."""
 
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +40,11 @@ def test_deploy_enables_telemetry_not_rest_poll():
     assert "TESLA_PARTNER_DOMAIN=35.239.192.226.sslip.io" in text
     assert "POLL_INTERVAL_S=0" in text
     assert "LOCATION_MIN_DELTA_M=80" in text
-    assert "GEOFENCE_ENTER_M=800" in text
+    assert "GEOFENCE_ENTER_M" not in text
+    assert "GEOFENCE_HYSTERESIS_M" not in text
+    radii = json.loads((ROOT / "cloud/tesla_aladdin_garage/geofence.json").read_text())
+    assert radii["enter_m"] == 500
+    assert radii["hysteresis_m"] == 80
     assert "TESLA_TELEMETRY_CA=tesla-telemetry-ca:latest" in text
     assert "TESLA_MONTH_BUDGET_USD=10" in text
 

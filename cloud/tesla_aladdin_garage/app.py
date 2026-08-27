@@ -116,7 +116,9 @@ def config():
     if denied:
         return denied
     body = request.get_json(silent=True) or {}
-    overlay = {k: body[k] for k in ("enter_m", "hysteresis_m", "cooldown_s", "poll_s") if k in body}
+    if "enter_m" in body or "hysteresis_m" in body:
+        return jsonify({"ok": False, "error": "geofence_file_sot"}), 409
+    overlay = {k: body[k] for k in ("cooldown_s", "poll_s") if k in body}
     persist.save_config(overlay)
     get_worker().apply_overlay(overlay)
     w = get_worker()

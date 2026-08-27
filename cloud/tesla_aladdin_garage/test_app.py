@@ -37,6 +37,17 @@ def test_simulate_enter_ok():
     assert r.get_json()["event"] == "opened"
 
 
+def test_config_rejects_enter_m():
+    garage_app._worker = MagicMock()
+    r = _client().post(
+        "/config",
+        headers={"X-Garage-Token": "test-token"},
+        json={"enter_m": 200},
+    )
+    assert r.status_code == 409
+    assert r.get_json()["error"] == "geofence_file_sot"
+
+
 def test_location_ok():
     w = MagicMock()
     w.current_location.return_value = {"ok": True, "distance_m": 12.5}

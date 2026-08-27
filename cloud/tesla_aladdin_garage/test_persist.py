@@ -54,3 +54,12 @@ def test_db_strips_encoded_default_alias(monkeypatch):
     persist._db()
     assert "database" not in fake.call_args.kwargs
     persist.set_client(None)
+
+
+def test_clear_geofence_overlay_deletes_radius_keys(monkeypatch):
+    monkeypatch.setenv("GARAGE_PERSIST", "1")
+    fake = MagicMock()
+    persist.set_client(fake)
+    persist.clear_geofence_overlay()
+    fake.collection.assert_called_with("tesla_aladdin_garage")
+    persist.set_client(None)

@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from cloud.tesla_aladdin_garage.geofence import Geofence, offset_point
+from cloud.tesla_aladdin_garage.geofence import Geofence, load_radii, offset_point
 from cloud.tesla_aladdin_garage import persist
 from cloud.tesla_aladdin_garage.notify import send_garage_email
 from skills.aladdin_connect.client import AladdinConnectClient, door_is_open
@@ -23,7 +23,7 @@ class WorkerConfig:
     vin: str
     home_lat: float
     home_lon: float
-    enter_m: float = 800.0
+    enter_m: float = 500.0
     hysteresis_m: float = 80.0
     cooldown_s: float = 600.0
     poll_s: float = 20.0
@@ -41,12 +41,13 @@ class WorkerConfig:
     def from_env(cls) -> "WorkerConfig":
         telemetry = os.environ.get("TESLA_TELEMETRY", "0") not in ("0", "", "false", "False")
         poll_default = "0" if telemetry else "20"
+        enter_m, hysteresis_m = load_radii()
         return cls(
             vin=os.environ.get("TESLA_VIN", ""),
             home_lat=float(os.environ.get("HOME_LAT", "0") or 0),
             home_lon=float(os.environ.get("HOME_LON", "0") or 0),
-            enter_m=float(os.environ.get("GEOFENCE_ENTER_M", "800")),
-            hysteresis_m=float(os.environ.get("GEOFENCE_HYSTERESIS_M", "80")),
+            enter_m=enter_m,
+            hysteresis_m=hysteresis_m,
             cooldown_s=float(os.environ.get("OPEN_COOLDOWN_S", "600")),
             poll_s=float(os.environ.get("POLL_INTERVAL_S", poll_default)),
             door_serial=os.environ.get("ALADDIN_DEVICE_SERIAL", ""),
@@ -61,10 +62,7 @@ class WorkerConfig:
         )
 
     def apply_overlay(self, overlay: dict) -> None:
-        if overlay.get("enter_m") is not None:
-            self.enter_m = float(overlay["enter_m"])
-        if overlay.get("hysteresis_m") is not None:
-            self.hysteresis_m = float(overlay["hysteresis_m"])
+        # enter_m / hysteresis_m live only in geofence.json — never overlay.
         if overlay.get("cooldown_s") is not None:
             self.cooldown_s = float(overlay["cooldown_s"])
         if overlay.get("poll_s") is not None:
@@ -106,6 +104,7 @@ class GarageWorker:
         self.geofence = Geofence(cfg.home_lat, cfg.home_lon, cfg.enter_m, cfg.hysteresis_m)
         self.state = WorkerState()
         self._stop = threading.Event()
+        persist.clear_geofence_overlay()
         overlay = persist.load_config()
         if overlay:
             self.apply_overlay(overlay)

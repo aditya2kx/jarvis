@@ -5,6 +5,14 @@ from cloud.tesla_aladdin_garage.geofence import Geofence, haversine_m
 HOME = (29.464083, -95.517465)
 
 
+def test_load_radii_from_json():
+    from cloud.tesla_aladdin_garage.geofence import load_radii
+
+    enter_m, hysteresis_m = load_radii()
+    assert enter_m == 500
+    assert hysteresis_m == 80
+
+
 def test_haversine_zero():
     assert haversine_m(*HOME, *HOME) < 0.01
 

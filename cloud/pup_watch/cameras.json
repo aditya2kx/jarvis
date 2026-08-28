@@ -1,0 +1,14 @@
+{
+  "_comment": "Source of truth for which daycare yard cameras pup-watch polls. Add a camera here (not in code) when the daycare exposes another yard. yard_regions are tile crops in 720x576 frame coordinates; tiling roughly doubles the pup's apparent size and is what carries recall at the far end of the yard.",
+  "cameras": [
+    {
+      "name": "sm-yard",
+      "alias": "5ee276849d4bf",
+      "label": "S/M YARD",
+      "yard_regions": [
+        [0, 0, 720, 330],
+        [0, 250, 720, 576]
+      ]
+    }
+  ]
+}

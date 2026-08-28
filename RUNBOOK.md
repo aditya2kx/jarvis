@@ -2001,3 +2001,66 @@ curl -sS -X POST "$URL/telemetry" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN" \
   -d '{"vin":"'"$TESLA_VIN"'","latitude":29.464,"longitude":-95.517}'
 ```
 
+
+## pup-watch (daycare yard → email)
+
+Emails when the pup is let out **alone** in the daycare yard. He is only ever
+put out on his own, so "exactly one dog in the yard" is the primary signal, not
+a proxy. People in the yard are expected and never suppress an alert.
+
+Full design, thresholds and the measurements behind them:
+`cloud/pup_watch/README.md`.
+
+Unlike `tesla-aladdin-garage` this service is **scale-to-zero** — no
+`--min-instances`, no `--no-cpu-throttling`. Cloud Scheduler job
+`pup-watch-tick` POSTs `/tick` once a minute (`* 6-20 * * *`, America/Chicago)
+and the handler returns in ~1ms unless a monitoring session is open. That is
+what keeps it inside the Cloud Run free tier; the cost is up to 60s of
+notification delay.
+
+State lives in the **named `pupwatch` Firestore database** (`pup_watch/session`,
+`pup_watch/state`, `pup_watch/config`) — never BHAGA's `(default)`.
+
+```bash
+URL=$(gcloud run services describe pup-watch --region us-central1 \
+  --project jarvis-bhaga-prod --format='value(status.url)')
+TOKEN=$(gcloud secrets versions access latest --secret=pupwatch-admin-token \
+  --project jarvis-bhaga-prod)
+
+# Start / status / stop
+curl -sS -X POST "$URL/session/start" -H "X-PupWatch-Token: $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"hours": 9}'
+curl -sS "$URL/session" -H "X-PupWatch-Token: $TOKEN"
+curl -sS -X POST "$URL/session/stop" -H "X-PupWatch-Token: $TOKEN"
+
+# Force one poll now instead of waiting for the tick
+curl -sS -X POST "$URL/tick" -H "X-PupWatch-Token: $TOKEN"
+```
+
+Sessions auto-expire at `stop_after_ts` and in any case after
+`session_max_hours`, so a forgotten session stops polling.
+
+Deploy config it needs (one-time):
+
+| Where | Name | Why |
+|---|---|---|
+| Secret Manager | `pupwatch-admin-token` | Control endpoints + Scheduler header. Service refuses everything if unset |
+| Secret Manager | `pupwatch-gemini-token` | Identity re-ID. Use a **paid** key — free-tier prompts are used for training and these frames contain other people's dogs and staff |
+| GH repo secret | `PUPWATCH_NOTIFY_TO` | Comma-separated recipients. Kept out of git because they are personal addresses |
+| GH repo variable | `PUPWATCH_REFERENCE_URIS` | `gs://` reference photos of the pup |
+| Reused | `gmail-client-id` / `gmail-client-secret` / `gmail-refresh-token` | Same Gmail OAuth as tesla-aladdin-garage |
+
+Triage a quiet watch:
+
+```bash
+# Is monitoring even on, and did the last tick see anything?
+curl -sS "$URL/health"
+gcloud logging read \
+  'resource.labels.service_name="pup-watch" AND textPayload:"pup-watch poll"' \
+  --project jarvis-bhaga-prod --limit 20 --format='value(textPayload)'
+```
+
+Every poll logs one greppable line with `camera`, `seen`, `hits/frames`,
+`dogs`, `persons`, `decision` and `reason`, which is enough to tell "camera
+offline" from "dog seen but identity rejected" from "already emailed this
+visit" without reproducing anything locally.

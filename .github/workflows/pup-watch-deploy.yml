@@ -1,0 +1,112 @@
+name: Build and Deploy pup-watch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cloud/pup_watch/**"
+      - ".github/workflows/pup-watch-deploy.yml"
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: jarvis-bhaga-prod
+  REGION: us-central1
+  REGISTRY: us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images
+  SERVICE: pup-watch
+  SCHEDULER_JOB: pup-watch-tick
+  FIRESTORE_DB: pupwatch
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      # Named DB keeps pup-watch state away from BHAGA's (default) database.
+      # Already-exists is the normal case, so this must not fail the rollout.
+      - name: Ensure Firestore database
+        continue-on-error: true
+        run: |
+          gcloud firestore databases create \
+            --database=${{ env.FIRESTORE_DB }} \
+            --location=${{ env.REGION }} \
+            --type=firestore-native \
+            --project ${{ env.PROJECT_ID }} \
+            --quiet
+
+      - name: Build image
+        run: |
+          docker build -f cloud/pup_watch/Dockerfile \
+            -t ${{ env.REGISTRY }}/pup-watch:${{ github.sha }} \
+            -t ${{ env.REGISTRY }}/pup-watch:latest .
+
+      - name: Push image
+        run: |
+          docker push ${{ env.REGISTRY }}/pup-watch:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/pup-watch:latest
+
+      # No --min-instances and no --no-cpu-throttling, unlike
+      # tesla-aladdin-garage: this service scales to zero and is woken once a
+      # minute by Cloud Scheduler. An always-warm instance is what would make
+      # this cost real money, and a <=60s notification delay is acceptable here.
+      # Recipients come from a repo secret, never from this file — they are
+      # personal addresses and the repo keeps PII out of git.
+      - name: Deploy Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image ${{ env.REGISTRY }}/pup-watch:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --allow-unauthenticated \
+            --max-instances 1 \
+            --memory 2Gi \
+            --cpu 1 \
+            --timeout 300 \
+            --service-account bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
+            --set-env-vars "GCP_PROJECT=${{ env.PROJECT_ID }},PUPWATCH_PERSIST=1,PUPWATCH_FIRESTORE_DB=${{ env.FIRESTORE_DB }},PUPWATCH_MODEL_PATH=/app/models/detector.onnx,PUPWATCH_ORT_THREADS=2,PUPWATCH_REFERENCE_URIS=${{ vars.PUPWATCH_REFERENCE_URIS }},PUPWATCH_NOTIFY_TO=${{ secrets.PUPWATCH_NOTIFY_TO }}" \
+            --set-secrets "PUPWATCH_ADMIN_TOKEN=pupwatch-admin-token:latest,PUPWATCH_GEMINI_TOKEN=pupwatch-gemini-token:latest,GMAIL_CLIENT_ID=gmail-client-id:latest,GMAIL_CLIENT_SECRET=gmail-client-secret:latest,GMAIL_REFRESH_TOKEN=gmail-refresh-token:latest"
+
+      # One heartbeat a minute during plausible daycare hours. The handler
+      # returns in ~1ms when no session is open, so an idle day is effectively
+      # free; the operator's start/stop is what actually enables detection.
+      - name: Ensure Cloud Scheduler tick
+        run: |
+          URL=$(gcloud run services describe ${{ env.SERVICE }} \
+            --region ${{ env.REGION }} --project ${{ env.PROJECT_ID }} \
+            --format='value(status.url)')
+          TOKEN=$(gcloud secrets versions access latest \
+            --secret=pupwatch-admin-token --project ${{ env.PROJECT_ID }})
+          if gcloud scheduler jobs describe ${{ env.SCHEDULER_JOB }} \
+               --location ${{ env.REGION }} --project ${{ env.PROJECT_ID }} >/dev/null 2>&1; then
+            VERB=update
+          else
+            VERB=create
+          fi
+          gcloud scheduler jobs $VERB http ${{ env.SCHEDULER_JOB }} \
+            --location ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --schedule "* 6-20 * * *" \
+            --time-zone "America/Chicago" \
+            --uri "${URL}/tick" \
+            --http-method POST \
+            --update-headers "X-PupWatch-Token=${TOKEN}" \
+            --attempt-deadline 120s \
+            --max-retry-attempts 1 \
+            --quiet
+          echo "service_url=${URL}"

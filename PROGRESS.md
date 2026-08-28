@@ -1,3 +1,15 @@
+## 2026-08-28 — pup-watch: email when the pup is out alone in the daycare yard
+
+**Scope:** New scale-to-zero cloud worker on the public ipcamlive daycare stream. The pup is only ever let out alone, so "exactly one dog in the yard" is the primary signal rather than a proxy; people in frame never suppress an alert.
+
+**Key changes:** `cloud/pup_watch/` (HLS frame grab → tiled ONNX detection → cream gate → Gemini re-ID → episode state machine → multi-recipient Gmail with the annotated frame); `pup-watch-deploy.yml` + Cloud Scheduler `* 6-20 * * *` America/Chicago; state in named `pupwatch` Firestore DB. Recipients/reference photos stay out of git (repo secret + GCS).
+
+**Evidence:** live end-to-end run against the real camera resolved the playlist from the alias, pulled 4 frames, ran 12 inference passes and correctly reported 0 dogs on the empty yard (best `person` score 0.018). Pup composited into that real frame at 12 position/size combinations: **12/12** `lone_cream_dog`, cream fraction 48–60% vs a 30% threshold. Tiling is what carries far-field recall; a 9 MB nano detector failed in the 55–70 px band and was rejected. 124 unit tests.
+
+**Deliberately not built:** occupancy/motion pre-gate — measured cost is already inside the free tier (~105k of 180k vCPU-s/mo at 8 h/day), and a motion gate risks missing a dog lying still. First lever if session hours grow.
+
+**Open:** composite-based accuracy is not the same as labelled daycare-hours capture; precision/recall still needs a real session. Night/IR breaks the cream gate (accepted — daycare is daytime).
+
 ## 2026-08-27 — Garage enter radius: `geofence.json` SoT at 500 m (Issue #280)
 
 **Scope:** Firestore overlay (`named-db-seed` 200 m) beat Cloud Run env 800 m. One file is the only writer.

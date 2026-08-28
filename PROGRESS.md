@@ -49,6 +49,17 @@ Separately, enabling `BHAGA_SCOPED_MATERIALIZE` exposed #295: `daily_refresh` in
 **Scope:** Operator asked to drop the enter radius 500 → 300 m and pushed back that a threshold change should not need a code deploy. Revises #280: that PR removed the runtime knob to end a three-writer ambiguity, which made every threshold tweak an image build + Cloud Run rollout.
 
 **Key changes:** Firestore `config.enter_m` is now the authority, `geofence.json` (300 / 80) is the bootstrap seed, env stays ignored; `/health` reports `enter_m_source`. `POST /config` accepts radii with bounds validation (`400 invalid_radii`, 50–2000 m) and returns `503 config_not_persisted` when the Firestore write fails, so an unpersisted change is never reported as applied. Removed `clear_geofence_overlay()` — it would erase operator config on every restart. `LOCATION_MIN_DELTA_M` 80 → 40 m, hoisted to workflow-scope env so the signed-config step (which reads the runner env, not Cloud Run's) actually sends it; it stays deploy-time because the Tesla-side push needs the GCE command proxy.
+## 2026-08-28 — pup-watch: email when the pup is out alone in the daycare yard
+
+**Scope:** New scale-to-zero cloud worker on the public ipcamlive daycare stream. The pup is only ever let out alone, so "exactly one dog in the yard" is the primary signal rather than a proxy; people in frame never suppress an alert.
+
+**Key changes:** `cloud/pup_watch/` (HLS frame grab → tiled ONNX detection → cream gate → Gemini re-ID → episode state machine → multi-recipient Gmail with the annotated frame); `pup-watch-deploy.yml` + Cloud Scheduler `* 6-20 * * *` America/Chicago; state in named `pupwatch` Firestore DB. Recipients/reference photos stay out of git (repo secret + GCS).
+
+**Evidence:** live end-to-end run against the real camera resolved the playlist from the alias, pulled 4 frames, ran 12 inference passes and correctly reported 0 dogs on the empty yard (best `person` score 0.018). Pup composited into that real frame at 12 position/size combinations: **12/12** `lone_cream_dog`, cream fraction 48–60% vs a 30% threshold. Tiling is what carries far-field recall; a 9 MB nano detector failed in the 55–70 px band and was rejected. 124 unit tests.
+
+**Deliberately not built:** occupancy/motion pre-gate — measured cost is already inside the free tier (~105k of 180k vCPU-s/mo at 8 h/day), and a motion gate risks missing a dog lying still. First lever if session hours grow.
+
+**Open:** composite-based accuracy is not the same as labelled daycare-hours capture; precision/recall still needs a real session. Night/IR breaks the cream gate (accepted — daycare is daytime).
 
 ## 2026-08-27 — Garage enter radius: `geofence.json` SoT at 500 m (Issue #280)
 

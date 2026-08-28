@@ -302,6 +302,50 @@ def test_tick_does_not_email_twice_for_the_same_visit(store, monkeypatch):
     assert len(sent) == 1
 
 
+def test_tick_retries_next_poll_when_send_fails(store, monkeypatch):
+    """Regression: a failed Gmail send used to still mark the episode as
+    notified, silently dropping the alert for the whole outing. A failed send
+    must roll back the episode-open bookkeeping so the next poll retries."""
+    store["session"].update({"active": True, "started_ts": NOW, "stop_after_ts": NOW + 3600})
+    _stub_stream(monkeypatch, frames=2)
+
+    attempts = []
+    monkeypatch.setattr(notify, "send_sighting", lambda fields, image=None: attempts.append(1) and False)
+
+    _stub_analyse(monkeypatch, [_verdict(True), _verdict(True)])
+    first = worker.tick(now=NOW)
+    assert first["notified"] is False
+    assert store["state"].get("episode_active") is not True  # rolled back, not stuck open
+
+    _stub_analyse(monkeypatch, [_verdict(True), _verdict(True)])
+    second = worker.tick(now=NOW + 60)
+    assert len(attempts) == 2  # retried, not swallowed as "already_in_episode"
+
+
+def test_tick_stops_retrying_once_the_send_succeeds(store, monkeypatch):
+    store["session"].update({"active": True, "started_ts": NOW, "stop_after_ts": NOW + 3600})
+    _stub_stream(monkeypatch, frames=2)
+    calls = {"n": 0}
+
+    def flaky(fields, image=None):
+        calls["n"] += 1
+        return calls["n"] >= 2  # fails once, then succeeds
+
+    monkeypatch.setattr(notify, "send_sighting", flaky)
+
+    _stub_analyse(monkeypatch, [_verdict(True), _verdict(True)])
+    worker.tick(now=NOW)
+    _stub_analyse(monkeypatch, [_verdict(True), _verdict(True)])
+    worker.tick(now=NOW + 60)
+    assert calls["n"] == 2
+    assert store["state"]["episode_active"] is True
+
+    # A third sighting in the same visit must not send again.
+    _stub_analyse(monkeypatch, [_verdict(True), _verdict(True)])
+    worker.tick(now=NOW + 120)
+    assert calls["n"] == 2
+
+
 def test_tick_reports_not_notified_when_nothing_seen(store, monkeypatch):
     store["session"].update({"active": True, "started_ts": NOW, "stop_after_ts": NOW + 3600})
     _stub_stream(monkeypatch, frames=2)

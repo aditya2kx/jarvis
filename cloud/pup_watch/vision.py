@@ -156,10 +156,11 @@ def dedupe(dets: Iterable[Detection], iou_threshold: float = 0.5) -> list[Detect
     return kept
 
 
-def cream_stats(im: Any, box: Box) -> CreamStats:
+def cream_stats(im: Any, box: Box, settings: Optional[Settings] = None) -> CreamStats:
     """Share of the box that reads as a bright, desaturated (cream) coat."""
     import numpy as np
 
+    s = settings or Settings()
     x1, y1, x2, y2 = (int(round(v)) for v in box)
     w, h = im.size
     x1, y1 = max(0, x1), max(0, y1)
@@ -174,7 +175,6 @@ def cream_stats(im: Any, box: Box) -> CreamStats:
         return CreamStats(0.0, 0.0, 0.0)
     brightness = a.mean(axis=2)
     saturation = a.max(axis=2) - a.min(axis=2)
-    s = Settings()
     mask = (brightness > s.cream_brightness_min) & (saturation < s.cream_saturation_max)
     return CreamStats(
         fraction=float(mask.mean()),
@@ -216,7 +216,7 @@ def analyse_frame(
         return FrameVerdict(tuple(dogs), tuple(persons), None, False, f"multiple_dogs n={len(dogs)}")
 
     best = max(dogs, key=lambda d: d.score)
-    stats = cream_stats(im, best.box)
+    stats = cream_stats(im, best.box, settings)
     if not stats.passes(settings):
         return FrameVerdict(
             tuple(dogs), tuple(persons), stats, False,

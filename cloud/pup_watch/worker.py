@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from . import episode, identify, notify, persist, stream, vision
-from .config import Camera, Settings, load_cameras, settings_with_overlay
+from .config import COCO_DOG, Camera, Settings, load_cameras, settings_with_overlay
 
 log = logging.getLogger("pup_watch")
 
@@ -131,7 +131,7 @@ def evaluate_camera(camera: Camera, settings: Settings) -> CameraResult:
     result.seen = True
 
     if settings.require_gemini_confirm and result.best_frame is not None and result.best_detections:
-        dog = max((d for d in result.best_detections if d.cls == 16), key=lambda d: d.score, default=None)
+        dog = max((d for d in result.best_detections if d.cls == COCO_DOG), key=lambda d: d.score, default=None)
         if dog is not None:
             crop = vision.crop_detection(result.best_frame, dog.box)
             ident = identify.confirm_pup(
@@ -173,6 +173,7 @@ def tick(*, now: Optional[float] = None) -> dict[str, Any]:
     for camera in cameras:
         result = evaluate_camera(camera, settings)
         results.append(result)
+        pre_decide_state = dict(state)
         decision = episode.decide(
             state, seen=result.seen, now=now, settings=settings, camera=camera.name
         )
@@ -206,7 +207,21 @@ def tick(*, now: Optional[float] = None) -> dict[str, Any]:
                     fields["identity_notes"] = result.identity.notes
                 else:
                     fields["identity_skipped"] = result.identity.skipped
-            notified = notify.send_sighting(fields, image) or notified
+            if notify.send_sighting(fields, image):
+                notified = True
+            else:
+                # A failed send must not silently drop the whole outing.
+                # Revert this poll's state change entirely — not just the
+                # episode flags, but also last_seen_ts/last_camera — because
+                # decide()'s "within_absence_window" path treats a recent
+                # last_seen_ts as proof the visit was already notified, which
+                # would wrongly suppress the retry on the very next poll.
+                state = dict(pre_decide_state)
+                state["last_poll_ts"] = now
+                log.error(
+                    "pup-watch fail reason=notify_failed_rolled_back_episode camera=%s",
+                    camera.name,
+                )
 
     persist.save_state(state)
     return {

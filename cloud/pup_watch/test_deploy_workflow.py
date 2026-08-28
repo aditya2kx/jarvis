@@ -63,7 +63,7 @@ def test_gmail_and_gemini_credentials_are_mounted_from_secret_manager():
         "GMAIL_CLIENT_ID=gmail-client-id:latest",
         "GMAIL_CLIENT_SECRET=gmail-client-secret:latest",
         "GMAIL_REFRESH_TOKEN=gmail-refresh-token:latest",
-        "PUPWATCH_GEMINI_KEY=pupwatch-gemini-key:latest",
+        "PUPWATCH_GEMINI_TOKEN=pupwatch-gemini-token:latest",
     ):
         assert secret in text
 

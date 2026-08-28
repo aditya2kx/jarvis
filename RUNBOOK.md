@@ -2045,7 +2045,7 @@ Deploy config it needs (one-time):
 | Where | Name | Why |
 |---|---|---|
 | Secret Manager | `pupwatch-admin-token` | Control endpoints + Scheduler header. Service refuses everything if unset |
-| Secret Manager | `pupwatch-gemini-key` | Identity re-ID. Use a **paid** key — free-tier prompts are used for training and these frames contain other people's dogs and staff |
+| Secret Manager | `pupwatch-gemini-token` | Identity re-ID. Use a **paid** key — free-tier prompts are used for training and these frames contain other people's dogs and staff |
 | GH repo secret | `PUPWATCH_NOTIFY_TO` | Comma-separated recipients. Kept out of git because they are personal addresses |
 | GH repo variable | `PUPWATCH_REFERENCE_URIS` | `gs://` reference photos of the pup |
 | Reused | `gmail-client-id` / `gmail-client-secret` / `gmail-refresh-token` | Same Gmail OAuth as tesla-aladdin-garage |

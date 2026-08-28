@@ -102,7 +102,7 @@ def _no_gemini(monkeypatch):
     """Default: identity check is unavailable, so it must not suppress sightings."""
     monkeypatch.setattr(
         identify, "confirm_pup",
-        lambda crop, **kw: identify.Identification(False, 0.0, 0, skipped="no_api_key"),
+        lambda crop, **kw: identify.Identification(False, 0.0, 0, skipped="no_token"),
     )
     monkeypatch.setattr(vision, "crop_detection", lambda frame, box, pad=0.18: b"crop")
     monkeypatch.setattr(vision, "annotate", lambda frame, dets: b"annotated")
@@ -210,12 +210,12 @@ def test_confirmed_pup_passes_through(monkeypatch):
 
 
 def test_inconclusive_identity_check_does_not_suppress(monkeypatch):
-    """No API key / no references must fail open, not silently swallow sightings."""
+    """No token / no references must fail open, not silently swallow sightings."""
     _stub_stream(monkeypatch, frames=2)
     _stub_analyse(monkeypatch, [_verdict(True), _verdict(True)])
-    result = worker.evaluate_camera(CAM, S)  # autouse fixture returns skipped=no_api_key
+    result = worker.evaluate_camera(CAM, S)  # autouse fixture returns skipped=no_token
     assert result.seen is True
-    assert result.identity.skipped == "no_api_key"
+    assert result.identity.skipped == "no_token"
 
 
 def test_identity_check_not_called_when_disabled(monkeypatch):

@@ -15,7 +15,7 @@ def _reply(payload: dict) -> dict:
 
 
 def _stub(monkeypatch, payload, *, capture=None):
-    monkeypatch.setenv("PUPWATCH_GEMINI_KEY", "key123")
+    monkeypatch.setenv("PUPWATCH_GEMINI_TOKEN", "key123")
     monkeypatch.setattr(identify, "reference_images", lambda: REFS)
 
     def post(url, body, timeout):
@@ -27,16 +27,16 @@ def _stub(monkeypatch, payload, *, capture=None):
     monkeypatch.setattr(identify, "_post", post)
 
 
-def test_missing_api_key_is_skipped_not_a_rejection(monkeypatch):
-    monkeypatch.delenv("PUPWATCH_GEMINI_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+def test_missing_token_is_skipped_not_a_rejection(monkeypatch):
+    monkeypatch.delenv("PUPWATCH_GEMINI_TOKEN", raising=False)
+    monkeypatch.delenv("GEMINI_TOKEN", raising=False)
     ident = identify.confirm_pup(CROP, **KW)
-    assert ident.skipped == "no_api_key"
+    assert ident.skipped == "no_token"
     assert ident.conclusive is False
 
 
 def test_missing_references_is_skipped(monkeypatch):
-    monkeypatch.setenv("PUPWATCH_GEMINI_KEY", "key123")
+    monkeypatch.setenv("PUPWATCH_GEMINI_TOKEN", "key123")
     monkeypatch.setattr(identify, "reference_images", lambda: ())
     ident = identify.confirm_pup(CROP, **KW)
     assert ident.skipped == "no_reference_images"
@@ -89,9 +89,9 @@ def test_request_pins_deterministic_structured_output(monkeypatch):
     assert "gemini-2.5-flash-lite" in cap["url"]
 
 
-def test_api_key_is_url_encoded_not_interpolated_raw(monkeypatch):
+def test_token_is_url_encoded_not_interpolated_raw(monkeypatch):
     cap: dict = {}
-    monkeypatch.setenv("PUPWATCH_GEMINI_KEY", "abc/def+ghi")
+    monkeypatch.setenv("PUPWATCH_GEMINI_TOKEN", "abc/def+ghi")
     monkeypatch.setattr(identify, "reference_images", lambda: REFS)
     monkeypatch.setattr(
         identify, "_post",
@@ -104,7 +104,7 @@ def test_api_key_is_url_encoded_not_interpolated_raw(monkeypatch):
 
 
 def test_transport_error_fails_open_as_inconclusive(monkeypatch):
-    monkeypatch.setenv("PUPWATCH_GEMINI_KEY", "key123")
+    monkeypatch.setenv("PUPWATCH_GEMINI_TOKEN", "key123")
     monkeypatch.setattr(identify, "reference_images", lambda: REFS)
 
     def boom(url, body, timeout):
@@ -117,7 +117,7 @@ def test_transport_error_fails_open_as_inconclusive(monkeypatch):
 
 
 def test_malformed_response_fails_open(monkeypatch):
-    monkeypatch.setenv("PUPWATCH_GEMINI_KEY", "key123")
+    monkeypatch.setenv("PUPWATCH_GEMINI_TOKEN", "key123")
     monkeypatch.setattr(identify, "reference_images", lambda: REFS)
     monkeypatch.setattr(identify, "_post", lambda url, body, timeout: {"candidates": []})
     assert identify.confirm_pup(CROP, **KW).conclusive is False

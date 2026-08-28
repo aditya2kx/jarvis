@@ -69,8 +69,8 @@ class Identification:
         return not self.skipped
 
 
-def _api_key() -> str:
-    return (os.environ.get("PUPWATCH_GEMINI_KEY") or os.environ.get("GEMINI_API_KEY") or "").strip()
+def _gemini_token() -> str:
+    return (os.environ.get("PUPWATCH_GEMINI_TOKEN") or os.environ.get("GEMINI_TOKEN") or "").strip()
 
 
 def _read_uri(uri: str) -> Optional[bytes]:
@@ -130,10 +130,10 @@ def confirm_pup(
     timeout: float = 30.0,
 ) -> Identification:
     """Ask Gemini whether `crop_jpeg` shows our pup. Never raises."""
-    key = _api_key()
+    key = _gemini_token()
     refs = reference_images()
     if not key:
-        return Identification(False, 0.0, 0, skipped="no_api_key")
+        return Identification(False, 0.0, 0, skipped="no_token")
     if not refs:
         return Identification(False, 0.0, 0, skipped="no_reference_images")
 

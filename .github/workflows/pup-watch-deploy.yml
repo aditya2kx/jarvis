@@ -80,7 +80,7 @@ jobs:
             --timeout 300 \
             --service-account bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
             --set-env-vars "GCP_PROJECT=${{ env.PROJECT_ID }},PUPWATCH_PERSIST=1,PUPWATCH_FIRESTORE_DB=${{ env.FIRESTORE_DB }},PUPWATCH_MODEL_PATH=/app/models/detector.onnx,PUPWATCH_ORT_THREADS=2,PUPWATCH_REFERENCE_URIS=${{ vars.PUPWATCH_REFERENCE_URIS }},PUPWATCH_NOTIFY_TO=${{ secrets.PUPWATCH_NOTIFY_TO }}" \
-            --set-secrets "PUPWATCH_ADMIN_TOKEN=pupwatch-admin-token:latest,PUPWATCH_GEMINI_KEY=pupwatch-gemini-key:latest,GMAIL_CLIENT_ID=gmail-client-id:latest,GMAIL_CLIENT_SECRET=gmail-client-secret:latest,GMAIL_REFRESH_TOKEN=gmail-refresh-token:latest"
+            --set-secrets "PUPWATCH_ADMIN_TOKEN=pupwatch-admin-token:latest,PUPWATCH_GEMINI_TOKEN=pupwatch-gemini-token:latest,GMAIL_CLIENT_ID=gmail-client-id:latest,GMAIL_CLIENT_SECRET=gmail-client-secret:latest,GMAIL_REFRESH_TOKEN=gmail-refresh-token:latest"
 
       # One heartbeat a minute during plausible daycare hours. The handler
       # returns in ~1ms when no session is open, so an idle day is effectively

@@ -64,9 +64,9 @@ def test_body_renders_local_time_not_utc():
 
 def test_body_surfaces_a_skipped_identity_check():
     fields = {k: v for k, v in FIELDS.items() if k != "identity_confidence"}
-    fields["identity_skipped"] = "no_api_key"
+    fields["identity_skipped"] = "no_token"
     text = notify.body(fields)
-    assert "Identity check skipped: no_api_key" in text
+    assert "Identity check skipped: no_token" in text
 
 
 def test_body_tolerates_missing_optional_fields():

@@ -108,7 +108,7 @@ does not need a redeploy. Unknown or unparseable keys are ignored.
 |---|---|
 | `PUPWATCH_NOTIFY_TO` | Comma-separated recipients. **Never** committed — personal addresses |
 | `PUPWATCH_ADMIN_TOKEN` | Required; the service refuses all control endpoints without it |
-| `PUPWATCH_GEMINI_KEY` | Identity confirmation. Use a **paid** key: free-tier prompts are used for training, and these frames contain other people's dogs and daycare staff |
+| `PUPWATCH_GEMINI_TOKEN` | Identity confirmation. Use a **paid** key: free-tier prompts are used for training, and these frames contain other people's dogs and daycare staff |
 | `PUPWATCH_REFERENCE_URIS` | Comma-separated `gs://` (or local) reference photos of the pup |
 | `PUPWATCH_PERSIST` | `1` to use Firestore; otherwise state is a no-op |
 | `PUPWATCH_MODEL_PATH` | Detector weights, baked into the image at `/app/models/detector.onnx` |

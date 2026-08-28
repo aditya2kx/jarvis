@@ -34,6 +34,7 @@ Read these first, derive proposals from them, cite what you used.
 | Worker | Purpose | Deployment | Read |
 |---|---|---|---|
 | **tesla-aladdin-garage** | Geofence Dhanno → open Big Peach (Aladdin) | Cloud Run, always-on, max instances = 1 | `cloud/tesla_aladdin_garage/README.md` + `RUNBOOK.md` § Tesla Aladdin garage |
+| **pup-watch** | Email when the pup is let out alone in the daycare yard | Cloud Run, scale-to-zero + Cloud Scheduler tick | `cloud/pup_watch/README.md` + `RUNBOOK.md` § pup-watch |
 
 ---
 

@@ -204,6 +204,32 @@ def test_cream_stats_clamps_out_of_bounds_box():
     assert stats.fraction > 0.9
 
 
+def test_cream_stats_honours_a_passed_in_settings_override():
+    """Regression: cream_stats used to ignore its settings arg and always
+    thresholded against Settings() defaults, so a Firestore overlay of
+    cream_brightness_min/cream_saturation_max had no effect."""
+    dim = (140, 130, 120)  # passes a loosened threshold, fails the default
+    default = vision.cream_stats(Image.new("RGB", (40, 40), dim), (0, 0, 40, 40))
+    assert not default.passes(S)
+
+    loose = Settings(cream_brightness_min=100.0, cream_saturation_max=150.0)
+    loosened = vision.cream_stats(Image.new("RGB", (40, 40), dim), (0, 0, 40, 40), loose)
+    assert loosened.passes(loose)
+
+
+def test_analyse_frame_applies_the_overlaid_cream_thresholds():
+    """End-to-end: a custom Settings must change the lone_cream_dog verdict."""
+    box = (300, 300, 340, 380)
+    dim = (140, 130, 120)
+    im = _paint(_yard(), box, dim)
+    vision.set_session(FakeSession([(*box, 0.71, COCO_DOG)]))
+    assert vision.analyse_frame(im, settings=S).lone_cream_dog is False
+
+    loose = Settings(cream_brightness_min=100.0, cream_saturation_max=150.0, cream_pixel_fraction_min=0.30)
+    vision.set_session(FakeSession([(*box, 0.71, COCO_DOG)]))
+    assert vision.analyse_frame(im, settings=loose).lone_cream_dog is True
+
+
 def test_crop_detection_upscales_small_crops_for_the_identity_check():
     im = _paint(_yard(), (300, 300, 340, 380), CREAM)
     out = vision.crop_detection(im, (300, 300, 340, 380))

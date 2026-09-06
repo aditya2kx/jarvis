@@ -79,3 +79,6 @@ metrics/pr_cost/report.html
 metrics/pr_cost/PR-*.json
 metrics/pr_cost/session-*.json
 metrics/pr_cost/*-pending.jsonl
+
+# Cached upstream Tesla wrap templates (their artwork, fetched on demand)
+skills/tesla_wraps/.template_cache/

@@ -9,7 +9,7 @@ Two designs ship today, both rendered for the **2025+ Model Y Premium**
 | Design | File | Look |
 |---|---|---|
 | Dark Knight | [`wraps/Dark_Knight.png`](wraps/Dark_Knight.png) | Tumbler-inspired matte black: hard-edged armour facets a few percent apart in value, one raking blade across the doors, bat crest on the hood and rear hatch |
-| Iron Man | [`wraps/Iron_Man.png`](wraps/Iron_Man.png) | Mark-43 livery: candy hot-rod red over champagne gold, faceplate on the hood, lit eye slits across the nose, chest reactor ringed by a JARVIS reticle on each front door, repulsors at the quarters and tail |
+| Iron Man | [`wraps/Iron_Man.png`](wraps/Iron_Man.png) | Mark-43 livery: candy hot-rod red over champagne gold, plated helmet on the hood, lit eye slits across the nose, chest reactor ringed by a JARVIS target lock on each front door, repulsors at the quarters and tail |
 
 ### On the Dark Knight finish
 
@@ -32,31 +32,45 @@ redistribute.
 Three references, one per zone of the car, each on the panel that can actually
 carry it:
 
-* **Hood — the faceplate.** It is the only panel tall enough to hold a helmet
-  at real proportions. Two of those proportions do all the work: the silhouette
-  is widest at the *cheek*, about 45% of the way up (`emblems.FACE_ASPECT` =
-  1.22), and the gold is shaded by **form** — highlights sitting on the brow,
-  both cheekbones, the nose bridge and the chin — rather than by a top-to-bottom
-  colour ramp, which is what makes a helmet look like a printed sticker of one.
-  Its width is capped at 154px because the hood island forks into two horns
-  below y=310 for the windscreen scuttle; a helmet sized to the bounding box
-  gets its crown sliced open by that notch.
+* **Hood — the helmet.** It is the only panel tall enough to hold one at real
+  proportions (`emblems.FACE_ASPECT` = 1.4832 — the helmet is half again as
+  tall as it is wide). What makes it read as *the* helmet is not the silhouette
+  but the **plate break-up**, so the shapes are traced the same way as the bat:
+  segment a flat front-elevation reference into its shell / plate / emitter
+  regions, contour each one, simplify, keep the right half, mirror. That yields
+  a brow plate with a V notch driven into it from the crown, a cheek plate
+  wrapping under both eyes, a chin plate and a crescent jaw plate either side —
+  and the red showing between them *is* the eye sockets and the mouth, so
+  neither has to be drawn. Shading follows the same principle: each plate is
+  domed away from its own outline and bevelled bright along whichever edge
+  faces the crown, rather than lit by hand-placed highlights. Width is capped
+  at 130px because the hood island forks into two horns below y=310 for the
+  windscreen scuttle; a helmet sized to the bounding box gets its crown sliced
+  open by that notch.
 * **Front doors — the reactor and JARVIS.** The reactor is the light source and
-  the reticle is what it projects, so they belong on the same panel.
-  `emblems.hud()` draws nothing inside 0.72 of its radius, because the reactor
-  occupies 0.70 of it. Every HUD stroke is specified in **pixels**, not in
-  fractions of the radius: the film HUD reads as projected light precisely
-  because it never gains weight, and `paint.ticks()` measures perpendicular
-  distance to each tick's ray for the same reason — thresholding on angle
-  instead makes ticks thinner than a pixel at large radii and they render
-  dashed.
+  the reticle is what it projects, so they belong on the same panel, and the
+  reticle is composited *over* the reactor so the bloom falls behind the
+  hairlines. The grammar is JARVIS's: rings broken into segments
+  (`paint.dashes()`), a frame of four square corner brackets, two heavy gauge
+  arcs, and a tick ladder. Unbroken concentric circles read as a clock face.
+  Every stroke is specified in **pixels**, not fractions of the radius, because
+  the film HUD reads as projected light precisely by never gaining weight —
+  though note `paint.ring()` feathers both edges, so a stroke under ~2.4px just
+  fades rather than sharpening. `paint.ticks()` measures perpendicular distance
+  to each tick's ray for the same reason: thresholding on angle makes ticks
+  thinner than a pixel at large radii and they render dashed.
 * **Nose and tail — the eye slits and the boot thruster.** The front fascia is
-  the car's face, so it gets the helmet's slits directly.
+  the car's face, so it wears the helmet's own eye, lifted out of the faceplate
+  and rescaled (`emblems.slit_outline()`, `emblems.SLIT_ASPECT`) so the nose and
+  the hood can never drift apart.
 
 The palette is champagne gold over deep candy red, not brass over orange. Panel
 radii for the reactors are bounded by each panel's *inscribed* circle rather
 than its bounding box, since the reactor's bloom reaches 1.30x its radius and
-the reticle's brackets reach 1.12x.
+the reticle's brackets reach 1.13x. Each reactor also carries a `rotate`/`flip`
+pair, because only its core triangle has an orientation and the atlas points
+"up the car" a different way in every zone — stamped flat, a door or tail
+reactor ends up apex-down.
 
 The armour and the helmet are Marvel trademarks; same personal-use caveat as
 the bat crest above.
@@ -111,8 +125,10 @@ Two facts about the layout drive everything else:
 * **Texture X means different things in different places.** Across the hood and
   the fascias it runs laterally across the car, but on the flanks it runs
   *vertically up the body* — inner edge at the beltline, outer edge at the
-  rocker. That is why `emblems.stamp()` takes a `rotate` argument: a badge on
-  the door has to be turned 90° to stand upright on the car.
+  rocker — towards larger X on the left of the car and smaller X on the right.
+  That is why `emblems.stamp()` takes a `rotate` argument: a badge on the door
+  has to be turned 90° to stand upright on the car (-90 on the left flank, 90
+  on the right).
 
 Each island exposes a `frame()` of `(u, v)` grids. `u` is global and
 longitudinal; `v` is normalised per panel, which is what keeps a beltline

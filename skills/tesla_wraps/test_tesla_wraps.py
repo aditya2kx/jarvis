@@ -118,10 +118,27 @@ def test_face_outline_is_normalised_and_symmetric():
     assert sorted(xs) == pytest.approx(sorted(-x for x in xs))
 
 
-def test_faceplate_is_widest_at_the_cheek_not_the_crown():
-    """The one proportion that decides whether it reads as a helmet or an egg."""
+def test_helmet_is_widest_at_the_temple():
+    """The proportion that decides whether it reads as a helmet or an egg."""
     widest = max(emblems.face_outline(), key=lambda p: p[0])
-    assert 0.40 < widest[1] < 0.52
+    assert 0.53 < widest[1] < 0.68
+
+
+def test_plates_and_eyes_stay_inside_the_helmet_shell():
+    """Gold outside the shell is the tell of a badge drawn shape-by-shape."""
+    size, box = (400, 400), dict(cx=200.0, cy=200.0, width=280.0, height=280.0 * emblems.FACE_ASPECT)
+    shell = emblems.stamp(size, emblems.face_outline(), **box) > 0.5
+    for outline in emblems.face_plates() + emblems.face_eyes():
+        assert not ((emblems.stamp(size, outline, **box) > 0.02) & ~shell).any()
+
+
+def test_eye_slits_sit_in_the_gap_between_the_brow_and_cheek_plates():
+    """The socket is not drawn — it is shell left bare between two plates. An
+    eye that lands on gold instead has nothing to be recessed into."""
+    size, box = (400, 400), dict(cx=200.0, cy=200.0, width=280.0, height=280.0 * emblems.FACE_ASPECT)
+    plates = np.clip(sum(emblems.stamp(size, p, **box) for p in emblems.face_plates()), 0, 1)
+    for eye in emblems.face_eyes():
+        assert (emblems.stamp(size, eye, **box) * plates).max() < 0.5
 
 
 def test_hud_stays_a_hairline_inside_its_reticle():
@@ -133,6 +150,15 @@ def test_hud_stays_a_hairline_inside_its_reticle():
     # Hairlines only: a reticle that inks more than a few percent of its own
     # disc has stopped being projected light and become a decal.
     assert mask.sum() < 0.06 * np.pi * (radius * 1.20) ** 2
+
+
+def test_hud_outer_ring_is_segmented_not_continuous():
+    """An unbroken circle reads as a clock face; JARVIS draws readouts."""
+    radius = 90.0
+    mask = emblems.hud((320, 320), 160, 160, radius)
+    r = np.sqrt(np.sum((np.mgrid[0:320, 0:320] - 160) ** 2, axis=0))
+    _, count = ndimage.label((mask > 0.2) & (np.abs(r - radius) < 1.0))
+    assert count > 20
 
 
 def test_arc_reactor_is_confined_to_its_radius():
@@ -225,20 +251,20 @@ def test_faceplate_clears_the_hood_scuttle_notch(atlas):
     assert not ((alpha > 0.02) & ~island.mask).any()
 
 
-@pytest.mark.parametrize("panel,radius", IRON_MAN_REACTORS)
-def test_reactor_and_its_reticle_fit_the_panel(atlas, panel, radius):
+@pytest.mark.parametrize("panel,radius,rotate,flip", IRON_MAN_REACTORS)
+def test_reactor_and_its_reticle_fit_the_panel(atlas, panel, radius, rotate, flip):
     island = atlas[panel]
     cx, cy = island.centroid
-    _, alpha = emblems.arc_reactor(atlas.size[::-1], cx, cy, radius)
+    _, alpha = emblems.arc_reactor(atlas.size[::-1], cx, cy, radius, flip, rotate)
     reticle = emblems.hud(atlas.size[::-1], cx, cy, radius * 1.42)
     assert not ((np.maximum(alpha, reticle) > 0.02) & ~island.mask).any()
 
 
-@pytest.mark.parametrize("panel,radius", IRON_MAN_REPULSORS)
-def test_repulsor_fits_its_panel(atlas, panel, radius):
+@pytest.mark.parametrize("panel,radius,rotate,flip", IRON_MAN_REPULSORS)
+def test_repulsor_fits_its_panel(atlas, panel, radius, rotate, flip):
     island = atlas[panel]
     cx, cy = island.centroid
-    _, alpha = emblems.arc_reactor(atlas.size[::-1], cx, cy, radius)
+    _, alpha = emblems.arc_reactor(atlas.size[::-1], cx, cy, radius, flip, rotate)
     assert not ((alpha > 0.02) & ~island.mask).any()
 
 

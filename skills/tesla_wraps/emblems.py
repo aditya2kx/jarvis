@@ -49,38 +49,76 @@ def bat_outline() -> list[tuple[float, float]]:
     return list(_BAT_RIGHT) + [(-x, y) for x, y in reversed(_BAT_RIGHT)]
 
 
-# Right half of a Mark-43 faceplate, walked from the chin up the jaw to the
-# cheek corner and on round the crown. Two proportions do the work: the widest
-# point is the cheek at 45% of the height (not the temple), and the crown
-# tapers hard above it. Get either wrong and the silhouette turns into an egg.
-FACE_ASPECT = 1.22
+# The helmet, traced the same way as the bat: segment a flat front-elevation
+# reference into its shell / plate / emitter regions, contour each region,
+# simplify, and keep the right half so the mirror is exact.
+#
+# What makes the helmet read as *the* helmet is not the silhouette, it is the
+# plate break-up: a brow plate with a V notch driven down into it from the
+# crown, a cheek plate that wraps under both eye slits, a separate chin plate,
+# and a crescent jaw plate either side. The red between them is helmet shell
+# showing through, and those gaps are the mouth and the eye sockets. Draw the
+# outline alone and you get a gold egg; draw the plates and the rest follows.
+FACE_ASPECT = 1.4832
 
-_FACE_RIGHT = [
-    (0.000, 0.000), (0.098, 0.003), (0.172, 0.018), (0.234, 0.050),
-    (0.288, 0.100), (0.336, 0.164), (0.386, 0.244), (0.436, 0.322),
-    (0.478, 0.392), (0.500, 0.448), (0.498, 0.512), (0.488, 0.574),
-    (0.470, 0.634), (0.446, 0.692), (0.416, 0.748), (0.380, 0.802),
-    (0.338, 0.852), (0.290, 0.898), (0.236, 0.938), (0.176, 0.970),
-    (0.108, 0.991), (0.038, 1.000), (0.000, 1.000),
+_SHELL_RIGHT = [
+    (+0.0000, 1.0000), (+0.0826, 0.9979), (+0.1835, 0.9773), (+0.2508, 0.9526), (+0.2997, 0.9278),
+    (+0.3379, 0.9021), (+0.3869, 0.8588), (+0.4235, 0.8113), (+0.4480, 0.7515),
+    (+0.4541, 0.7021), (+0.4541, 0.6443), (+0.5000, 0.6134), (+0.5000, 0.5536),
+    (+0.4908, 0.4464), (+0.4939, 0.3948), (+0.4878, 0.3619), (+0.4434, 0.3361),
+    (+0.3777, 0.2918), (+0.3716, 0.2835), (+0.3685, 0.1722), (+0.2492, 0.0670),
+    (+0.2278, 0.0526), (+0.1911, 0.0155), (+0.1682, 0.0000),
 ]
 
-# Eye slit, right side: a slanted bar that lifts and widens towards the temple.
-_EYE_RIGHT = [(0.078, 0.536), (0.400, 0.576), (0.424, 0.656), (0.080, 0.606)]
+_BROW_RIGHT = [
+    (+0.0841, 0.6876), (+0.1575, 0.8918), (+0.1636, 0.9062), (+0.1743, 0.9072),
+    (+0.2752, 0.8701), (+0.3746, 0.8031), (+0.3502, 0.7454), (+0.3379, 0.6876),
+    (+0.3379, 0.5206), (+0.2661, 0.4928), (+0.2080, 0.4784), (+0.1284, 0.4660),
+    (+0.0336, 0.4598),
+]
 
-# Socket the slit sits in — a shade larger all round, so the light reads as
-# recessed behind the plate rather than painted onto it.
-_SOCKET_RIGHT = [(0.060, 0.518), (0.410, 0.560), (0.438, 0.674), (0.062, 0.624)]
+_CHEEK_RIGHT = [
+    (+0.1009, 0.4433), (+0.1376, 0.4124), (+0.2049, 0.4124), (+0.2752, 0.4206),
+    (+0.3532, 0.4402), (+0.3654, 0.4670), (+0.3716, 0.5082), (+0.3654, 0.5701),
+    (+0.3716, 0.7124), (+0.3884, 0.7546), (+0.3991, 0.7454), (+0.3991, 0.6670),
+    (+0.4113, 0.5928), (+0.4297, 0.5371), (+0.4602, 0.4794), (+0.4358, 0.4464),
+    (+0.3563, 0.3742), (+0.2783, 0.3216), (+0.1942, 0.2753), (+0.1560, 0.1856),
+]
 
-# Seam where the faceplate meets the skullcap, and the jaw plate's lower edge.
-_TEMPLE_SEAM = [(0.442, 0.566), (0.464, 0.664), (0.448, 0.762), (0.398, 0.844), (0.318, 0.906)]
-_JAW_SEAM = [(-0.196, 0.074), (-0.100, 0.050), (0.000, 0.043), (0.100, 0.050), (0.196, 0.074)]
+_CHIN_RIGHT = [
+    (+0.1514, 0.1660), (+0.1361, 0.0732), (+0.1284, 0.0680), (+0.1009, 0.0660),
+]
 
-# Mouth grille: wide shallow trapezoid low on the face, with vertical slats.
-_MOUTH = [(-0.242, 0.290), (0.242, 0.290), (0.210, 0.150), (-0.210, 0.150)]
+# Crescent jaw plate — a closed loop that lives entirely on the right.
+_JAW_RIGHT = [
+    (+0.2141, 0.1196), (+0.1927, 0.1196), (+0.1881, 0.1227), (+0.1789, 0.1660),
+    (+0.2003, 0.2361), (+0.2064, 0.2402), (+0.2187, 0.2649), (+0.2905, 0.3052),
+    (+0.3364, 0.3361), (+0.3379, 0.3309), (+0.3287, 0.3247), (+0.3257, 0.3144),
+    (+0.3012, 0.2856), (+0.2890, 0.2608), (+0.2706, 0.2381), (+0.2584, 0.2093),
+    (+0.2462, 0.1928), (+0.2462, 0.1845), (+0.2401, 0.1804), (+0.2278, 0.1557),
+    (+0.2278, 0.1433), (+0.2217, 0.1392), (+0.2217, 0.1309),
+]
 
-# A standalone eye slit in its own normalised box, x running inner (-0.5) to
-# outer (0.5). Rises and deepens towards the outer end, same as the helmet's.
-_SLIT = [(-0.50, 0.16), (0.44, 0.44), (0.50, 0.92), (-0.50, 0.56)]
+# Right eye slit, also a closed loop on one side only.
+_EYE_RIGHT = [
+    (+0.1590, 0.4268), (+0.1453, 0.4299), (+0.1315, 0.4474), (+0.1529, 0.4515),
+    (+0.1713, 0.4495), (+0.2385, 0.4619), (+0.3410, 0.4959), (+0.3379, 0.4588),
+    (+0.3150, 0.4474), (+0.2997, 0.4474), (+0.2446, 0.4330),
+]
+
+
+def _renormalise(points: list[tuple[float, float]]) -> tuple[list, float]:
+    """Rescale a shape into its own box: x in -0.5..0.5, y in 0..1."""
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    w, h = max(xs) - min(xs), max(ys) - min(ys)
+    boxed = [((x - min(xs)) / w - 0.5, (y - min(ys)) / h) for x, y in points]
+    return boxed, h / w
+
+
+# The nose fascia wears the helmet's own eye, lifted out of the faceplate and
+# rescaled, so the two never drift apart. x runs inner (-0.5) to outer (0.5).
+_SLIT, SLIT_ASPECT = _renormalise(_EYE_RIGHT)
 
 
 def slit_outline(mirror: bool = False) -> list[tuple[float, float]]:
@@ -88,9 +126,31 @@ def slit_outline(mirror: bool = False) -> list[tuple[float, float]]:
     return [(-x, y) for x, y in _SLIT] if mirror else list(_SLIT)
 
 
+def _closed(right: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Mirror a right-half profile into a closed, exactly symmetric outline."""
+    return list(right) + [(-x, y) for x, y in reversed(right)]
+
+
 def face_outline() -> list[tuple[float, float]]:
-    """Closed faceplate silhouette, normalised to x in -0.5..0.5, y in 0..1."""
-    return list(_FACE_RIGHT) + [(-x, y) for x, y in reversed(_FACE_RIGHT)]
+    """Closed helmet silhouette, normalised to x in -0.5..0.5, y in 0..1."""
+    return _closed(_SHELL_RIGHT)
+
+
+def face_plates() -> list[list[tuple[float, float]]]:
+    """Closed outlines of the five gold plates, in the same normalised box."""
+    mirrored = [(-x, y) for x, y in _JAW_RIGHT]
+    return [
+        _closed(_BROW_RIGHT),
+        _closed(_CHEEK_RIGHT),
+        _closed(_CHIN_RIGHT),
+        list(_JAW_RIGHT),
+        mirrored,
+    ]
+
+
+def face_eyes() -> list[list[tuple[float, float]]]:
+    """Closed outlines of the two eye slits, in the same normalised box."""
+    return [list(_EYE_RIGHT), [(-x, y) for x, y in _EYE_RIGHT]]
 
 
 def stamp(
@@ -107,8 +167,9 @@ def stamp(
 
     ``rotate`` is needed because the atlas is not uniformly oriented: on the
     hood and fascias texture X runs across the car, but on the flanks texture X
-    runs *up* the car body. Pass 90 for the left flank and -90 for the right so
-    a badge stands upright on the door rather than lying on its side.
+    runs *up* the car body — towards larger X on the left of the car and
+    smaller X on the right. Pass -90 on the left flank and 90 on the right so a
+    badge stands upright on the door rather than lying on its side.
     """
     h, w = shape
     canvas = Image.new("L", (w * SUPERSAMPLE, h * SUPERSAMPLE), 0)
@@ -128,12 +189,22 @@ def stamp(
 
 
 def arc_reactor(
-    shape: tuple[int, int], cx: float, cy: float, radius: float, flip: bool = False
+    shape: tuple[int, int],
+    cx: float,
+    cy: float,
+    radius: float,
+    flip: bool = False,
+    rotate: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return ``(rgb, alpha)`` layers for a Mark-43 style arc reactor.
 
     Concentric rings plus the triangular core, with a soft cyan bloom that falls
     off outside the bezel so it reads as emitted light rather than a decal.
+
+    Only the core triangle has an orientation, but it has to be given one:
+    texture X runs up the car on the flanks, so a reactor stamped flat onto a
+    door ends up with its apex pointing at the bumper. Pass ``rotate`` the same
+    way as ``stamp``.
     """
     r = paint.radial(shape, cx, cy, radius)
     rgb = np.zeros(shape + (3,))
@@ -160,12 +231,13 @@ def arc_reactor(
 
     triangle = stamp(
         shape,
-        [(0.0, 0.0), (0.5, 1.0), (-0.5, 1.0)],
+        [(0.0, 1.0), (0.5, 0.0), (-0.5, 0.0)],
         cx,
         cy,
         radius * 0.78,
         radius * 0.66,
         flip=flip,
+        rotate=rotate,
     )
     triangle *= paint.band(r, 0.0, 0.55, 0.02)
     rgb = rgb * (1 - triangle[..., None]) + paint.hex_rgb("#E8FEFF") * triangle[..., None]
@@ -177,98 +249,77 @@ def arc_reactor(
     return np.clip(rgb, 0, 1), np.clip(alpha, 0, 1)
 
 
-def _blob(nx, ny, x0: float, y0: float, rx: float, ry: float) -> np.ndarray:
-    """Soft elliptical falloff, used to model raised forms on the faceplate."""
-    return np.exp(-(((nx - x0) / rx) ** 2 + ((ny - y0) / ry) ** 2))
+def _bevel(mask: np.ndarray, width: float, flip: bool) -> np.ndarray:
+    """-1..1 lighting term: +1 on the edges of ``mask`` that face the crown.
 
-
-def _stroke(points: list[tuple[float, float]], width: float) -> list[tuple[float, float]]:
-    """Expand a polyline into a closed polygon of constant normalised width."""
-    left, right = [], []
-    for i, (x, y) in enumerate(points):
-        ax, ay = points[max(i - 1, 0)]
-        bx, by = points[min(i + 1, len(points) - 1)]
-        dx, dy = bx - ax, by - ay
-        norm = np.hypot(dx, dy) or 1.0
-        ox, oy = -dy / norm * width / 2, dx / norm * width / 2
-        left.append((x + ox, y + oy))
-        right.append((x - ox, y - oy))
-    return left + right[::-1]
+    Sobel along image Y gives the edge normal; the sign flips with ``flip``
+    because the helmet's own up is whichever way the atlas has it lying.
+    """
+    blurred = ndimage.gaussian_filter(mask, sigma=max(width * 0.012, 0.8))
+    lift = ndimage.sobel(blurred, axis=0) * (1.0 if flip else -1.0)
+    return lift / max(np.abs(lift).max(), 1e-9)
 
 
 def faceplate(
     shape: tuple[int, int], cx: float, cy: float, width: float, flip: bool = False
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return ``(rgb, alpha)`` layers for a machined gold Mark-43 faceplate.
+    """Return ``(rgb, alpha)`` layers for a Mark-43 helmet.
 
-    The gold is shaded by *form*, not by height: highlights sit on the brow,
-    the two cheekbones, the nose bridge and the chin, and everything between
-    them falls into shadow. Ramping the colour top-to-bottom instead is what
-    makes a helmet look like a printed sticker of one.
+    Shaded from the plate geometry rather than from hand-placed highlights:
+    every gold plate is domed away from its own outline and bevelled bright
+    along whichever of its edges faces the crown, so the brow, cheeks, jaw and
+    chin catch the light because of where their edges are. The red shell
+    showing between them is what draws the eye sockets and the mouth.
     """
     height = width * FACE_ASPECT
-    ys, xs = np.mgrid[0 : shape[0], 0 : shape[1]]
-    ny = (ys - cy) / height + 0.5
-    if flip:
-        ny = 1.0 - ny
-    nx = (xs - cx) / width
 
     def poly(points: list[tuple[float, float]]) -> np.ndarray:
         return stamp(shape, points, cx, cy, width, height, flip=flip)
 
-    def mirrored(points: list[tuple[float, float]]) -> np.ndarray:
-        return np.clip(poly(points) + poly([(-x, y) for x, y in points]), 0, 1)
-
     shell = poly(face_outline())
     inside = shell > 0.5
+    plates = np.clip(sum(poly(p) for p in face_plates()), 0, 1)
+    eyes = np.clip(sum(poly(e) for e in face_eyes()), 0, 1) * inside
 
-    GOLD_HI, GOLD, GOLD_DEEP, GOLD_SHADOW = "#FBEEC0", "#D9B15A", "#96702A", "#4E3714"
+    RED_HI, RED, RED_DEEP = "#C9262C", "#8E1218", "#3B080D"
+    GOLD_HI, GOLD, GOLD_DEEP, GOLD_SHADOW = "#FBEEC0", "#D9B15A", "#8E6A28", "#3F2C12"
 
-    form = (
-        1.00 * _blob(nx, ny, 0.000, 0.840, 0.250, 0.135)  # forehead
-        + 0.92 * _blob(nx, ny, 0.300, 0.400, 0.140, 0.200)  # cheekbones, running
-        + 0.92 * _blob(nx, ny, -0.300, 0.400, 0.140, 0.200)  # down the cheek
-        + 0.55 * _blob(nx, ny, 0.215, 0.300, 0.130, 0.150)
-        + 0.55 * _blob(nx, ny, -0.215, 0.300, 0.130, 0.150)
-        + 0.78 * _blob(nx, ny, 0.000, 0.080, 0.200, 0.080)  # chin
-        + 0.62 * _blob(nx, ny, 0.000, 0.670, 0.075, 0.110)  # nose bridge
-        + 0.45 * _blob(nx, ny, 0.000, 0.380, 0.045, 0.210)  # centre spine
-        + 0.58 * _blob(nx, ny, 0.225, 0.696, 0.170, 0.048)  # brow ridge
-        + 0.58 * _blob(nx, ny, -0.225, 0.696, 0.170, 0.048)
-    )
+    # Shell first: candy red, darkest down in the sockets and the mouth, which
+    # are simply the parts of it the plates do not cover.
+    shell_lift = _bevel(shell, width, flip)
     rgb = paint.ramp(
-        np.clip(form, 0, 1.35) / 1.35,
-        [(0.00, GOLD_SHADOW), (0.22, GOLD_DEEP), (0.58, GOLD), (0.86, GOLD_HI), (1.00, "#FFFBEA")],
+        np.clip(0.74 + 0.34 * shell_lift, 0, 1),
+        [(0.00, "#1A0407"), (0.30, RED_DEEP), (0.68, RED), (1.00, RED_HI)],
     )
+    recess = np.clip(1.0 - paint.edge_distance(plates > 0.5) / max(width * 0.042, 2.5), 0, 1)
+    rgb *= (1 - 0.60 * recess * (plates < 0.5))[..., None]
 
-    # Rolled edge, so the silhouette stays legible against the red instead of
-    # dissolving into it.
-    lip = np.clip(1.0 - paint.edge_distance(inside) / 4.5, 0, 1) * inside
-    rgb *= (1 - 0.60 * lip)[..., None]
+    # Plates: dome + bevel, with a hard dark line right at the plate edge so
+    # each one reads as a separate piece of armour and not as one gold field.
+    solid = plates > 0.5
+    ys = np.mgrid[0 : shape[0], 0 : shape[1]][0]
+    ny = (ys - cy) / height + 0.5
+    if flip:
+        ny = 1.0 - ny
+    dome = np.clip(paint.edge_distance(solid) / max(width * 0.065, 2.5), 0, 1)
+    gold = paint.ramp(
+        np.clip(0.14 + 0.30 * dome + 0.50 * _bevel(plates, width, flip) + 0.22 * np.clip(ny, 0, 1), 0, 1),
+        [(0.00, GOLD_SHADOW), (0.26, GOLD_DEEP), (0.62, GOLD), (0.90, GOLD_HI), (1.00, "#FFFBEA")],
+    )
+    lip = np.clip(1.0 - paint.edge_distance(solid) / 2.2, 0, 1) * solid
+    gold *= (1 - 0.45 * lip)[..., None]
+    rgb = rgb * (1 - plates[..., None]) + gold * plates[..., None]
 
-    # Where the faceplate meets the skullcap, and the jaw plate's lower edge.
-    # Blurred, so they read as a step in the plating rather than a scratch.
-    seams = np.clip(mirrored(_stroke(_TEMPLE_SEAM, 0.014)) + 0.6 * poly(_stroke(_JAW_SEAM, 0.011)), 0, 1)
-    seams = ndimage.gaussian_filter(seams, sigma=max(width * 0.007, 0.7))
-    rgb *= (1 - 0.34 * seams / max(seams.max(), 1e-9))[..., None]
-
-    # Mouth grille: dark slot with vertical slats. Five, not seven — on a hood
-    # the plate lands around 150px wide, and finer slats turn to mush.
-    mouth = poly(_MOUTH)
-    rgb = rgb * (1 - (0.88 * mouth)[..., None]) + paint.hex_rgb("#120F0C") * (0.88 * mouth)[..., None]
-    for x0 in (-0.132, -0.066, 0.000, 0.066, 0.132):
-        slat = poly([(x0 - 0.013, 0.158), (x0 + 0.013, 0.158), (x0 + 0.012, 0.282), (x0 - 0.012, 0.282)])
-        rgb += paint.hex_rgb("#7A6231") * (0.62 * slat * mouth)[..., None]
-
-    # Eyes: recessed socket, hard-edged emitter, and a bloom that spills onto
-    # the gold — the spill is what sells them as light instead of paint.
-    socket = mirrored(_SOCKET_RIGHT)
-    rgb *= (1 - 0.80 * socket)[..., None]
-    eyes = mirrored(_EYE_RIGHT)
-    glow = ndimage.gaussian_filter(eyes, sigma=max(width * 0.030, 1.0))
+    # Eyes: hard-edged emitter plus a bloom that spills onto the gold — the
+    # spill is what sells them as light instead of paint.
+    glow = ndimage.gaussian_filter(eyes, sigma=max(width * 0.026, 1.0))
     glow /= max(glow.max(), 1e-9)
-    rgb += paint.hex_rgb("#4FC8E6") * (0.62 * glow**1.5)[..., None]
+    rgb += paint.hex_rgb("#5CD2EC") * (0.66 * glow**1.5)[..., None]
     rgb = rgb * (1 - eyes[..., None]) + paint.hex_rgb("#EAFDFF") * eyes[..., None]
+
+    # Rolled edge, so the silhouette stays legible against the hood.
+    rim = np.clip(1.0 - paint.edge_distance(inside) / 3.0, 0, 1) * inside
+    rgb *= (1 - 0.50 * rim)[..., None]
 
     alpha = np.clip(shell + 0.45 * glow * inside, 0, 1)
     return np.clip(rgb, 0, 1), alpha
@@ -284,33 +335,44 @@ def hud(shape: tuple[int, int], cx: float, cy: float, radius: float) -> np.ndarr
     Nothing is drawn inside 0.72 of the radius — a reticle is drawn *around*
     something, and here that something is an arc reactor of 0.70 the radius,
     which would bury any inner detail.
+
+    The grammar is JARVIS's, not a generic crosshair's: rings are broken into
+    segments, the frame is four square corner brackets rather than a circle,
+    and the only heavy strokes are the two gauge arcs. A HUD made of unbroken
+    concentric circles reads as a clock face.
     """
-    layers = [
-        # (radius fraction, stroke px, start deg, span deg, intensity)
-        (1.000, 1.6, 0.0, 360.0, 0.50),
-        (0.845, 1.0, 0.0, 360.0, 0.32),
-        (0.755, 1.5, 18.0, 74.0, 0.60),
-        (0.755, 1.5, 198.0, 74.0, 0.60),
-    ]
+    ys, xs = np.mgrid[0 : shape[0], 0 : shape[1]]
     mask = np.zeros(shape)
-    for frac, stroke, start, span, level in layers:
-        mask = np.maximum(mask, level * paint.ring(shape, cx, cy, radius * frac, stroke, start, span))
 
-    # Bracket marks sitting outside the outer ring, at the diagonals.
-    for start in (32.0, 122.0, 212.0, 302.0):
-        mask = np.maximum(
-            mask, 0.80 * paint.ring(shape, cx, cy, radius * 1.12, 2.6, start, 26.0)
-        )
+    def add(layer: np.ndarray, level: float) -> None:
+        nonlocal mask
+        mask = np.maximum(mask, level * layer)
 
-    # Fine ladder plus every-30-degree major ticks.
-    mask = np.maximum(mask, 0.45 * paint.ticks(shape, cx, cy, radius * 0.885, radius * 0.965, 60))
-    mask = np.maximum(
-        mask, 0.75 * paint.ticks(shape, cx, cy, radius * 0.855, radius * 0.985, 12, width=2.2)
-    )
+    def bar(x0: float, x1: float, y0: float, y1: float) -> np.ndarray:
+        return paint.band(xs, x0, x1, 0.9) * paint.band(ys, y0, y1, 0.9)
+
+    # Segmented outer ring, hairline inner ring, and the two gauge arcs. Strokes
+    # below ~2.4px never reach full value once ``ring`` has feathered both of
+    # its edges, so a thinner line here just fades rather than sharpening.
+    add(paint.ring(shape, cx, cy, radius, 2.4) * paint.dashes(shape, cx, cy, 48, 0.5), 0.48)
+    add(paint.ring(shape, cx, cy, radius * 0.930, 2.4), 0.26)
+    for start in (24.0, 204.0):
+        add(paint.ring(shape, cx, cy, radius * 0.862, 2.8, start, 96.0), 0.85)
+
+    # Tick ladder outside the gauges, with a heavier mark on each quadrant.
+    add(paint.ticks(shape, cx, cy, radius * 0.952, radius * 0.994, 36), 0.38)
+    add(paint.ticks(shape, cx, cy, radius * 0.930, radius * 1.010, 4, width=2.4, phase_deg=45.0), 0.70)
+
+    # Square corner brackets: the frame JARVIS puts round a tracked object.
+    side, arm, stroke = radius * 0.800, radius * 0.30, 2.2
+    for sx in (-1.0, 1.0):
+        for sy in (-1.0, 1.0):
+            px, py = cx + sx * side, cy + sy * side
+            add(bar(*sorted((px, px - sx * arm)), py - stroke / 2, py + stroke / 2), 0.90)
+            add(bar(px - stroke / 2, px + stroke / 2, *sorted((py, py - sy * arm))), 0.90)
+
     # Crosshair, in the gap between the reactor's bezel and the first ring.
-    mask = np.maximum(
-        mask, 0.70 * paint.ticks(shape, cx, cy, radius * 0.725, radius * 0.805, 4, width=2.2)
-    )
+    add(paint.ticks(shape, cx, cy, radius * 0.725, radius * 0.800, 4, width=2.2), 0.70)
     return np.clip(mask, 0, 1)
 
 

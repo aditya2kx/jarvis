@@ -34,17 +34,24 @@ DARK_KNIGHT_CRESTS = (
 # the largest that clears the hood's scuttle notch — the hood island splits
 # into two horns below y=310, and a helmet sized to the bounding box instead
 # would have its crown sliced open by that V.
-IRON_MAN_FACE = ("hood", 210.0, 154.0, False)
+IRON_MAN_FACE = ("hood", 210.0, 130.0, False)
 # (panel, reactor radius). Radii are bounded by each panel's inscribed circle —
-# the reticle reaches 1.59x the reactor radius, so a door reactor above ~46px
+# the reticle reaches 1.61x the reactor radius, so a door reactor above ~46px
 # would throw its brackets across the window line.
-IRON_MAN_REACTORS = (("front_door_l", 44.0), ("front_door_r", 44.0))
+# (panel, reactor radius, rotate, flip). Only the core triangle has an
+# orientation, but it needs one: the atlas points "up the car" a different way
+# on every zone, so a reactor stamped flat onto a door or the tail ends up
+# apex-down. Same rule as the bat crest — whatever makes the emblem upright.
+IRON_MAN_REACTORS = (
+    ("front_door_l", 44.0, -90, False),
+    ("front_door_r", 44.0, 90, False),
+)
 # The reactor's bloom reaches 1.30x its radius, so these are sized against the
 # panel's inscribed circle, not its bounding box.
 IRON_MAN_REPULSORS = (
-    ("quarter_panel_l", 21.0),
-    ("quarter_panel_r", 21.0),
-    ("rear_fascia", 26.0),
+    ("quarter_panel_l", 21.0, -90, False),
+    ("quarter_panel_r", 21.0, 90, False),
+    ("rear_fascia", 26.0, 0, True),
 )
 
 
@@ -275,11 +282,13 @@ def iron_man(atlas: Atlas) -> Canvas:
     paint.blend(rgb, GUNMETAL, 0.9 * paint.band(u, 0.0, 0.020, 0.005) * fascia)
     for cx, mirror in ((435.0, True), (589.0, False)):
         outline = emblems.slit_outline(mirror)
-        socket = emblems.stamp(c.shape, outline, cx, 62.0, 138.0, 34.0) * fascia
-        slit = emblems.stamp(c.shape, outline, cx, 62.0, 122.0, 24.0) * fascia
+        # Sized by the helmet's own eye aspect so the nose and the hood agree.
+        socket = emblems.stamp(c.shape, outline, cx, 62.0, 116.0, 116.0 * emblems.SLIT_ASPECT)
+        slit = emblems.stamp(c.shape, outline, cx, 62.0, 104.0, 104.0 * emblems.SLIT_ASPECT)
+        socket, slit = socket * fascia, slit * fascia
         paint.blend(rgb, "#0B1216", 0.88 * socket)
-        paint.blend(rgb, "#E4FBFF", 0.92 * slit)
-        paint.shade(rgb, 0.55 * ndimage.gaussian_filter(slit, sigma=4.0) * fascia)
+        paint.blend(rgb, HUD, 0.50 * ndimage.gaussian_filter(slit, sigma=5.0) * fascia)
+        paint.blend(rgb, "#DEF8FF", 0.94 * slit)
 
     # Hood: red field for the faceplate to sit on, gold only as an edge rib.
     hood = c.mask("hood")
@@ -317,20 +326,22 @@ def iron_man(atlas: Atlas) -> Canvas:
     paint.shade(rgb, 0.14 * sheen * c.painted)
 
     # JARVIS: chest reactor plus its projected reticle, one per front door.
-    for panel, radius in IRON_MAN_REACTORS:
+    for panel, radius, rotate, flip in IRON_MAN_REACTORS:
         px, py = c.centre_of(panel)
         panel_mask = c.mask(panel)
-        reticle = emblems.hud(c.shape, px, py, radius * 1.42) * panel_mask
-        paint.blend(rgb, HUD, 0.62 * reticle)
-        paint.shade(rgb, 0.9 * ndimage.gaussian_filter(reticle, sigma=2.6) * panel_mask)
-        layer_rgb, layer_a = emblems.arc_reactor(c.shape, px, py, radius)
+        layer_rgb, layer_a = emblems.arc_reactor(c.shape, px, py, radius, flip, rotate)
         emblems.composite(rgb, layer_rgb, layer_a, panel_mask)
+        # Drawn over the reactor, not under it: the reticle is what the reactor
+        # projects, so its bloom should fall behind the hairlines.
+        reticle = emblems.hud(c.shape, px, py, radius * 1.42) * panel_mask
+        paint.shade(rgb, 0.9 * ndimage.gaussian_filter(reticle, sigma=2.6) * panel_mask)
+        paint.blend(rgb, HUD, 0.72 * reticle)
 
     # Palm repulsors on the rear quarters, and the boot thruster at the tail.
-    for panel, radius in IRON_MAN_REPULSORS:
+    for panel, radius, rotate, flip in IRON_MAN_REPULSORS:
         px, py = c.centre_of(panel)
         panel_mask = c.mask(panel)
-        layer_rgb, layer_a = emblems.arc_reactor(c.shape, px, py, radius)
+        layer_rgb, layer_a = emblems.arc_reactor(c.shape, px, py, radius, flip, rotate)
         emblems.composite(rgb, layer_rgb, layer_a, panel_mask)
 
     panel, cy, width, flip = IRON_MAN_FACE

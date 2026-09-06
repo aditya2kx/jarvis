@@ -144,6 +144,24 @@ def ring(
     return sel
 
 
+def dashes(
+    shape: tuple[int, int],
+    cx: float,
+    cy: float,
+    count: int,
+    duty: float = 0.55,
+    phase_deg: float = 0.0,
+) -> np.ndarray:
+    """Angular comb of ``count`` sectors, each ``duty`` of a step wide.
+
+    Multiply a ring by this to chop it into segments. A HUD ring reads as a
+    readout rather than a decoration precisely because it is broken up.
+    """
+    _, theta = polar(shape, cx, cy)
+    step = 360.0 / count
+    return band((theta - phase_deg) % step, 0.0, step * duty, feather=step * 0.06)
+
+
 def ticks(
     shape: tuple[int, int],
     cx: float,

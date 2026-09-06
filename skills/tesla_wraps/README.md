@@ -9,7 +9,7 @@ Two designs ship today, both rendered for the **2025+ Model Y Premium**
 | Design | File | Look |
 |---|---|---|
 | Dark Knight | [`wraps/Dark_Knight.png`](wraps/Dark_Knight.png) | Tumbler-inspired matte black: hard-edged armour facets a few percent apart in value, one raking blade across the doors, bat crest on the hood and rear hatch |
-| Iron Man | [`wraps/Iron_Man.png`](wraps/Iron_Man.png) | Hot-rod red with gold shoulder plating and a gold spine down the hood, charcoal rocker skirt, arc reactor on the hood and rear fascia |
+| Iron Man | [`wraps/Iron_Man.png`](wraps/Iron_Man.png) | Mark-43 livery: candy hot-rod red over champagne gold, faceplate on the hood, lit eye slits across the nose, chest reactor ringed by a JARVIS reticle on each front door, repulsors at the quarters and tail |
 
 ### On the Dark Knight finish
 
@@ -26,6 +26,40 @@ fastest way to make it look like fan art, so `_stamp_bat()` always derives
 height from width and never stretches the shape to fill a panel. It is a
 Warner Bros. trademark; this is a personal-use vehicle wrap, not artwork to
 redistribute.
+
+### On the Iron Man finish
+
+Three references, one per zone of the car, each on the panel that can actually
+carry it:
+
+* **Hood — the faceplate.** It is the only panel tall enough to hold a helmet
+  at real proportions. Two of those proportions do all the work: the silhouette
+  is widest at the *cheek*, about 45% of the way up (`emblems.FACE_ASPECT` =
+  1.22), and the gold is shaded by **form** — highlights sitting on the brow,
+  both cheekbones, the nose bridge and the chin — rather than by a top-to-bottom
+  colour ramp, which is what makes a helmet look like a printed sticker of one.
+  Its width is capped at 154px because the hood island forks into two horns
+  below y=310 for the windscreen scuttle; a helmet sized to the bounding box
+  gets its crown sliced open by that notch.
+* **Front doors — the reactor and JARVIS.** The reactor is the light source and
+  the reticle is what it projects, so they belong on the same panel.
+  `emblems.hud()` draws nothing inside 0.72 of its radius, because the reactor
+  occupies 0.70 of it. Every HUD stroke is specified in **pixels**, not in
+  fractions of the radius: the film HUD reads as projected light precisely
+  because it never gains weight, and `paint.ticks()` measures perpendicular
+  distance to each tick's ray for the same reason — thresholding on angle
+  instead makes ticks thinner than a pixel at large radii and they render
+  dashed.
+* **Nose and tail — the eye slits and the boot thruster.** The front fascia is
+  the car's face, so it gets the helmet's slits directly.
+
+The palette is champagne gold over deep candy red, not brass over orange. Panel
+radii for the reactors are bounded by each panel's *inscribed* circle rather
+than its bounding box, since the reactor's bloom reaches 1.30x its radius and
+the reticle's brackets reach 1.12x.
+
+The armour and the helmet are Marvel trademarks; same personal-use caveat as
+the bat crest above.
 
 ## Getting them onto the car
 

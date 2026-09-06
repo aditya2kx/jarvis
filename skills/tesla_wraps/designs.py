@@ -9,6 +9,7 @@ panel even though those islands are different shapes.
 from __future__ import annotations
 
 import numpy as np
+from scipy import ndimage
 
 from . import emblems, paint
 from .atlas import SIDE_PANELS, Atlas
@@ -25,6 +26,25 @@ from .atlas import SIDE_PANELS, Atlas
 DARK_KNIGHT_CRESTS = (
     ("hood", 246.0, 244.0, True),
     ("rear_hatch", 900.0, 106.0, False),
+)
+
+# Iron Man placements. The faceplate is (panel, centre_y, width, flip); `flip`
+# is False so the chin points at the bumper and the crown at the windscreen,
+# the same orientation as the bat crest and Tesla's own examples. The width is
+# the largest that clears the hood's scuttle notch — the hood island splits
+# into two horns below y=310, and a helmet sized to the bounding box instead
+# would have its crown sliced open by that V.
+IRON_MAN_FACE = ("hood", 210.0, 154.0, False)
+# (panel, reactor radius). Radii are bounded by each panel's inscribed circle —
+# the reticle reaches 1.59x the reactor radius, so a door reactor above ~46px
+# would throw its brackets across the window line.
+IRON_MAN_REACTORS = (("front_door_l", 44.0), ("front_door_r", 44.0))
+# The reactor's bloom reaches 1.30x its radius, so these are sized against the
+# panel's inscribed circle, not its bounding box.
+IRON_MAN_REPULSORS = (
+    ("quarter_panel_l", 21.0),
+    ("quarter_panel_r", 21.0),
+    ("rear_fascia", 26.0),
 )
 
 
@@ -163,84 +183,157 @@ def _stamp_bat(
 
 
 def iron_man(atlas: Atlas) -> Canvas:
-    """Hot-rod red over gold armour plating, with arc reactors fore and aft."""
+    """Mark-43 livery: candy hot-rod red, champagne gold, JARVIS in cyan.
+
+    Three references, one per zone of the car. The hood carries the faceplate,
+    because it is the only panel with the height to hold a helmet at its real
+    proportions. The front doors carry a chest reactor ringed by a JARVIS
+    targeting reticle — the reactor is the light source and the HUD is what it
+    projects, so they belong on the same panel. The nose and tail carry the
+    eye slits and the boot thruster.
+
+    The screen suits are champagne gold over deep candy red, not brass over
+    orange, and the HUD is always a hairline. Both are easy to overshoot and
+    both are what separates this from a costume.
+    """
     c = Canvas(atlas)
     rgb, u, v = c.rgb, c.u, c.v
 
-    GOLD, GOLD_HI, GOLD_DEEP = "#C8981F", "#F2CC5B", "#8A6410"
-    CHARCOAL = "#17181C"
+    RED_HI, RED, RED_DEEP, RED_SHADOW = "#D22B30", "#A0151B", "#5E0B11", "#2A060A"
+    GOLD_HI, GOLD, GOLD_DEEP, GOLD_SHADOW = "#F6E2AC", "#D8B563", "#95712C", "#4A3616"
+    GUNMETAL = "#15161A"
+    HUD = "#8CEBFF"
 
-    paint.fill(rgb, c.painted, "#A8161B")
+    paint.fill(rgb, c.painted, RED)
 
-    # Body sides: red deepening towards the rocker, with a charcoal skirt.
+    # Flanks: candy red rolling off into a gunmetal rocker, the way the Mark's
+    # thigh plating sits over dark under-armour.
     body = c.body
     paint.gradient(
         rgb,
         body,
         v,
-        [(0.0, "#D6262A"), (0.35, "#AE1519"), (0.72, "#6B0C11"), (0.86, "#2A0B0D"), (1.0, CHARCOAL)],
+        [
+            (0.00, RED_HI),
+            (0.30, RED),
+            (0.66, RED_DEEP),
+            (0.84, RED_SHADOW),
+            (0.92, GUNMETAL),
+            (1.00, "#0C0D10"),
+        ],
     )
 
-    # Gold shoulder plating: deepest over the front wheel, tapering away as it
-    # runs rearward, exactly like the pauldron on a Mark suit.
-    shoulder = np.clip(0.42 - 0.62 * (u - 0.11), 0.0, 1.0)
-    gold_sel = np.clip((shoulder - v) / 0.018, 0, 1) * body
-    rgb[...] = np.where(
-        (gold_sel > 0)[..., None],
-        paint.ramp(v / np.maximum(shoulder, 1e-6), [(0.0, GOLD_HI), (0.6, GOLD), (1.0, GOLD_DEEP)])
-        * gold_sel[..., None]
-        + rgb * (1 - gold_sel[..., None]),
-        rgb,
-    )
+    # Gold pauldron: a hard-edged plate over the front wheel that tapers away
+    # towards the rear, with a bright machined rim along its lower edge. A soft
+    # fade here would read as an airbrush; the suit's plates have real edges.
+    shoulder = np.clip(0.46 - 0.70 * (u - 0.11), 0.0, 1.0)
+    plate = np.clip((shoulder - v) / 0.010, 0, 1) * body
+    across = np.clip(v / np.maximum(shoulder, 1e-6), 0, 1)
+    gold = paint.ramp(across, [(0.0, GOLD_DEEP), (0.35, GOLD_HI), (0.72, GOLD), (1.0, GOLD_DEEP)])
+    rgb *= 1 - plate[..., None]
+    rgb += gold * plate[..., None]
+    paint.blend(rgb, GOLD_HI, 0.55 * paint.band(shoulder - v, 0.0, 0.018, 0.005) * body)
 
-    # A second gold flash kicks back up over the rear quarter.
+    # Hip flash kicking back up over the rear quarter.
     quarter = c.mask("quarter_panel_l", "quarter_panel_r")
-    flash = paint.band(v - (1.05 - 1.1 * u), -0.09, 0.02, 0.02) * quarter
-    paint.blend(rgb, GOLD, 0.85 * flash)
+    flash = paint.band(v - (1.02 - 1.05 * u), -0.10, 0.015, 0.020) * quarter
+    paint.blend(rgb, GOLD, 0.80 * flash)
+    paint.blend(rgb, GOLD_HI, 0.45 * paint.band(v - (1.02 - 1.05 * u), -0.10, -0.082, 0.008) * quarter)
 
-    # Thin gold seams tracing the armour plates.
-    plate = np.abs(((paint.diagonal(c.shape, 74.0) * 7.0) % 1.0) - 0.5) * 2.0
-    paint.blend(rgb, GOLD_HI, 0.18 * np.clip((plate - 0.93) / 0.07, 0, 1) * body)
+    # Armour seams. Longitudinal splits rake with the beltline; transverse ones
+    # sit mid-panel so they read as plate joins rather than doubling the shut
+    # lines the panel gaps already draw. Both are masked out of the gold, where
+    # they would read as scratches in the plating rather than joins between it.
+    red = body & (plate < 0.5)
+    for offset, rake in ((0.30, 0.30), (0.55, 0.20), (0.76, 0.10)):
+        edge = v - (offset + rake * u)
+        paint.blend(rgb, GOLD_SHADOW, 0.42 * paint.band(edge, -0.005, 0.005, 0.003) * red)
+        paint.blend(rgb, GOLD_DEEP, 0.26 * paint.band(edge, 0.005, 0.011, 0.003) * red)
+    for at in (0.46, 0.67, 0.85):
+        paint.blend(rgb, GOLD_SHADOW, 0.26 * paint.band(u, at - 0.004, at + 0.004, 0.002) * red)
 
     trim = c.mask("roof_rail_l", "roof_rail_r", "rail_rear_l", "rail_rear_r")
-    paint.gradient(rgb, trim, u, [(0.3, "#2C2D33"), (0.95, CHARCOAL)])
-    mirrors = c.mask("mirror_l", "mirror_r")
-    paint.gradient(rgb, mirrors, v, [(0.0, GOLD_HI), (1.0, GOLD_DEEP)])
+    paint.gradient(rgb, trim, u, [(0.3, "#26272C"), (0.95, GUNMETAL)])
+    paint.gradient(rgb, c.mask("mirror_l", "mirror_r"), v, [(0.0, GOLD_HI), (1.0, GOLD_DEEP)])
 
-    # Front fascia: gold mask panel with red flanks and a dark intake band.
+    # Nose: gold mask panel with the helmet's eye slits lit across it.
     fascia = c.mask("front_fascia")
     lateral = np.abs(np.mgrid[0 : c.shape[0], 0 : c.shape[1]][1] - 512) / 266.0
     paint.gradient(
-        rgb, fascia, lateral, [(0.0, GOLD_HI), (0.42, GOLD), (0.52, "#B8181C"), (1.0, "#7A0F13")]
+        rgb,
+        fascia,
+        lateral,
+        [(0.0, GOLD_HI), (0.28, GOLD), (0.46, GOLD_DEEP), (0.54, RED), (1.0, RED_DEEP)],
     )
-    paint.blend(rgb, CHARCOAL, 0.9 * paint.band(u, 0.0, 0.022, 0.006) * fascia)
+    paint.blend(rgb, GUNMETAL, 0.9 * paint.band(u, 0.0, 0.020, 0.005) * fascia)
+    for cx, mirror in ((435.0, True), (589.0, False)):
+        outline = emblems.slit_outline(mirror)
+        socket = emblems.stamp(c.shape, outline, cx, 62.0, 138.0, 34.0) * fascia
+        slit = emblems.stamp(c.shape, outline, cx, 62.0, 122.0, 24.0) * fascia
+        paint.blend(rgb, "#0B1216", 0.88 * socket)
+        paint.blend(rgb, "#E4FBFF", 0.92 * slit)
+        paint.shade(rgb, 0.55 * ndimage.gaussian_filter(slit, sigma=4.0) * fascia)
 
-    # Hood: gold spine down the centre, red shoulders.
+    # Hood: red field for the faceplate to sit on, gold only as an edge rib.
     hood = c.mask("hood")
     paint.gradient(
         rgb,
         hood,
         v,
-        [(0.0, GOLD_HI), (0.36, GOLD), (0.55, GOLD_DEEP), (0.62, "#B8181C"), (1.0, "#7E1014")],
+        [(0.0, RED_HI), (0.46, RED), (0.84, RED_DEEP), (0.93, GOLD_DEEP), (1.0, GOLD)],
     )
 
     rear = c.mask("rear_hatch", "rear_fascia", "rear_corner_l", "rear_corner_r")
-    paint.gradient(rgb, rear, u, [(0.85, "#C21E22"), (0.94, "#8E1116"), (1.0, "#360B0E")])
-    paint.blend(rgb, GOLD, 0.8 * paint.band(u, 0.856, 0.868, 0.005) * rear)
+    paint.gradient(rgb, rear, u, [(0.85, RED_HI), (0.93, RED), (0.97, RED_DEEP), (1.0, RED_SHADOW)])
+    # Tailgate: a machined gold rib with a JARVIS hairline running through it.
+    hatch = c.mask("rear_hatch")
+    paint.gradient(
+        rgb,
+        hatch,
+        u,
+        [
+            (0.853, GOLD_SHADOW),
+            (0.861, GOLD_DEEP),
+            (0.874, GOLD_HI),
+            (0.893, GOLD),
+            (0.904, GOLD_DEEP),
+            (0.910, GOLD_SHADOW),
+        ],
+    )
+    paint.blend(rgb, HUD, 0.55 * paint.band(u, 0.8805, 0.8825, 0.0008) * hatch)
 
-    _metal_grain(c, seed=29, grain=0.045, weave=0.018)
+    _metal_grain(c, seed=29, grain=0.020, weave=0.010)
+    # Metallic flake, so the red reads as candy paint rather than flat vinyl.
+    paint.shade(rgb, 0.09 * (paint.fractal_noise(c.shape, 71, octaves=2, base=1.6) - 0.5) * body)
+    sheen = np.clip(1.0 - np.abs(paint.diagonal(c.shape, 58.0) - 0.42) / 0.20, 0, 1) ** 2
+    paint.shade(rgb, 0.14 * sheen * c.painted)
 
-    # Specular sweep so the red reads as candy paint rather than flat vinyl.
-    sheen = np.clip(1.0 - np.abs(paint.diagonal(c.shape, 58.0) - 0.42) / 0.22, 0, 1) ** 2
-    paint.shade(rgb, 0.16 * sheen * c.painted)
+    # JARVIS: chest reactor plus its projected reticle, one per front door.
+    for panel, radius in IRON_MAN_REACTORS:
+        px, py = c.centre_of(panel)
+        panel_mask = c.mask(panel)
+        reticle = emblems.hud(c.shape, px, py, radius * 1.42) * panel_mask
+        paint.blend(rgb, HUD, 0.62 * reticle)
+        paint.shade(rgb, 0.9 * ndimage.gaussian_filter(reticle, sigma=2.6) * panel_mask)
+        layer_rgb, layer_a = emblems.arc_reactor(c.shape, px, py, radius)
+        emblems.composite(rgb, layer_rgb, layer_a, panel_mask)
 
-    hx, _ = c.centre_of("hood")
-    layer_rgb, layer_a = emblems.arc_reactor(c.shape, hx, 245.0, 68.0, flip=True)
-    emblems.composite(rgb, layer_rgb, layer_a, hood)
+    # Palm repulsors on the rear quarters, and the boot thruster at the tail.
+    for panel, radius in IRON_MAN_REPULSORS:
+        px, py = c.centre_of(panel)
+        panel_mask = c.mask(panel)
+        layer_rgb, layer_a = emblems.arc_reactor(c.shape, px, py, radius)
+        emblems.composite(rgb, layer_rgb, layer_a, panel_mask)
 
-    fx, fy = c.centre_of("rear_fascia")
-    layer_rgb, layer_a = emblems.arc_reactor(c.shape, fx, fy, 30.0)
-    emblems.composite(rgb, layer_rgb, layer_a, c.mask("rear_fascia"))
+    panel, cy, width, flip = IRON_MAN_FACE
+    fx, _ = c.centre_of(panel)
+    hood_mask = c.mask(panel)
+    layer_rgb, layer_a = emblems.faceplate(c.shape, fx, cy, width, flip=flip)
+    # Contact shadow, without which the helmet's dark crown disappears into the
+    # dark end of the hood gradient.
+    halo = ndimage.gaussian_filter(layer_a, sigma=5.0) - layer_a
+    paint.shade(rgb, -0.85 * np.clip(halo, 0, 1) * hood_mask)
+    emblems.composite(rgb, layer_rgb, layer_a, hood_mask)
 
     paint.shade(rgb, -0.40 * c.seam)
     return c

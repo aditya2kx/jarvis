@@ -112,6 +112,60 @@ def radial(shape: tuple[int, int], cx: float, cy: float, radius: float) -> np.nd
     return np.sqrt((xs - cx) ** 2 + (ys - cy) ** 2) / radius
 
 
+def polar(shape: tuple[int, int], cx: float, cy: float) -> tuple[np.ndarray, np.ndarray]:
+    """Distance in pixels and bearing in degrees (0..360, clockwise from +x)."""
+    ys, xs = np.mgrid[0 : shape[0], 0 : shape[1]]
+    dx, dy = xs - cx, ys - cy
+    return np.hypot(dx, dy), np.degrees(np.arctan2(dy, dx)) % 360.0
+
+
+def ring(
+    shape: tuple[int, int],
+    cx: float,
+    cy: float,
+    radius: float,
+    width: float,
+    start_deg: float = 0.0,
+    span_deg: float = 360.0,
+    feather: float = 1.2,
+) -> np.ndarray:
+    """Hairline annulus, optionally only a ``span_deg`` arc of one.
+
+    Widths here are in pixels rather than normalised units because the whole
+    point of a HUD line is that it stays a hairline no matter how big the
+    reticle around it is.
+    """
+    r, theta = polar(shape, cx, cy)
+    sel = band(r, radius - width / 2, radius + width / 2, feather)
+    if span_deg < 360.0:
+        # Feather in degrees shrinks with radius so arc ends stay square.
+        ends = np.degrees(feather / max(radius, 1e-6))
+        sel = sel * band((theta - start_deg) % 360.0, 0.0, span_deg, max(ends, 1e-3))
+    return sel
+
+
+def ticks(
+    shape: tuple[int, int],
+    cx: float,
+    cy: float,
+    inner: float,
+    outer: float,
+    count: int,
+    width: float = 1.4,
+    phase_deg: float = 0.0,
+) -> np.ndarray:
+    """A ladder of ``count`` radial tick marks between two radii."""
+    r, theta = polar(shape, cx, cy)
+    step = 360.0 / count
+    offset = (theta - phase_deg) % step
+    away = np.minimum(offset, step - offset)
+    # Perpendicular distance to the tick's ray, in pixels. Thresholding on the
+    # *angle* instead makes ticks narrower than a pixel at large radii, which
+    # renders them as dashed lines.
+    across = np.abs(np.sin(np.radians(away))) * r
+    return band(r, inner, outer, 1.2) * np.clip(0.5 + (width / 2 - across) / 1.0, 0, 1)
+
+
 def diagonal(shape: tuple[int, int], angle_deg: float, phase: float = 0.0) -> np.ndarray:
     """Projection onto a direction, normalised so the canvas spans roughly 0..1."""
     ys, xs = np.mgrid[0 : shape[0], 0 : shape[1]]

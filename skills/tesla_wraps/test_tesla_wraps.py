@@ -10,10 +10,17 @@ import urllib.error
 
 import numpy as np
 import pytest
+from scipy import ndimage
 
 from . import emblems, paint
 from .atlas import ALL_PANELS, SIDE_PANELS, load_template
-from .designs import DARK_KNIGHT_CRESTS, DESIGNS
+from .designs import (
+    DARK_KNIGHT_CRESTS,
+    DESIGNS,
+    IRON_MAN_FACE,
+    IRON_MAN_REACTORS,
+    IRON_MAN_REPULSORS,
+)
 from .generate import NAME_RE, render, validate
 
 
@@ -102,6 +109,32 @@ def test_stamp_rotation_swaps_the_emblem_axes():
         assert bool(np.ptp(xs) > np.ptp(ys)) is wider
 
 
+def test_face_outline_is_normalised_and_symmetric():
+    points = emblems.face_outline()
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    assert min(ys) == pytest.approx(0.0) and max(ys) == pytest.approx(1.0)
+    assert min(xs) == pytest.approx(-0.5) and max(xs) == pytest.approx(0.5)
+    assert sorted(xs) == pytest.approx(sorted(-x for x in xs))
+
+
+def test_faceplate_is_widest_at_the_cheek_not_the_crown():
+    """The one proportion that decides whether it reads as a helmet or an egg."""
+    widest = max(emblems.face_outline(), key=lambda p: p[0])
+    assert 0.40 < widest[1] < 0.52
+
+
+def test_hud_stays_a_hairline_inside_its_reticle():
+    radius = 60.0
+    mask = emblems.hud((300, 300), 150, 150, radius)
+    ys, xs = np.nonzero(mask > 0.05)
+    reach = np.sqrt((xs - 150) ** 2 + (ys - 150) ** 2).max()
+    assert radius < reach < radius * 1.20
+    # Hairlines only: a reticle that inks more than a few percent of its own
+    # disc has stopped being projected light and become a decal.
+    assert mask.sum() < 0.06 * np.pi * (radius * 1.20) ** 2
+
+
 def test_arc_reactor_is_confined_to_its_radius():
     rgb, alpha = emblems.arc_reactor((256, 256), 128, 128, 40.0)
     assert alpha.shape == (256, 256)
@@ -125,6 +158,25 @@ def test_band_selects_the_requested_interval():
     sel = paint.band(t, 0.4, 0.6, feather=0.01)
     assert sel[50] == pytest.approx(1.0)
     assert sel[0] == 0.0 and sel[-1] == 0.0
+
+
+def test_ring_draws_an_annulus_at_the_requested_radius():
+    sel = paint.ring((200, 200), 100, 100, 60.0, 3.0)
+    r = np.sqrt(np.sum((np.mgrid[0:200, 0:200] - 100) ** 2, axis=0))
+    assert sel[r < 55].max() == 0.0
+    assert sel[np.abs(r - 60) < 0.25].min() > 0.9
+
+
+def test_ring_arc_covers_only_its_span():
+    quarter = paint.ring((200, 200), 100, 100, 60.0, 3.0, start_deg=0.0, span_deg=90.0)
+    full = paint.ring((200, 200), 100, 100, 60.0, 3.0)
+    assert quarter.sum() == pytest.approx(full.sum() / 4, rel=0.05)
+
+
+def test_ticks_draws_the_requested_count():
+    sel = paint.ticks((300, 300), 150, 150, 100.0, 120.0, 12)
+    labelled, count = ndimage.label(sel > 0.5)
+    assert count == 12
 
 
 # --- output contract -----------------------------------------------------
@@ -161,6 +213,33 @@ def test_bat_crest_fits_inside_its_panel(atlas, panel, cy, width, flip):
     )
     assert (crest > 0.5).sum() > 0
     assert not ((crest > 0.02) & ~island.mask).any()
+
+
+def test_faceplate_clears_the_hood_scuttle_notch(atlas):
+    """The hood island forks below y=310; a helmet sized to the bounding box
+    instead of to the notch gets its crown sliced open."""
+    panel, cy, width, flip = IRON_MAN_FACE
+    island = atlas[panel]
+    _, alpha = emblems.faceplate(atlas.size[::-1], island.centroid[0], cy, width, flip=flip)
+    assert (alpha > 0.5).sum() > 0
+    assert not ((alpha > 0.02) & ~island.mask).any()
+
+
+@pytest.mark.parametrize("panel,radius", IRON_MAN_REACTORS)
+def test_reactor_and_its_reticle_fit_the_panel(atlas, panel, radius):
+    island = atlas[panel]
+    cx, cy = island.centroid
+    _, alpha = emblems.arc_reactor(atlas.size[::-1], cx, cy, radius)
+    reticle = emblems.hud(atlas.size[::-1], cx, cy, radius * 1.42)
+    assert not ((np.maximum(alpha, reticle) > 0.02) & ~island.mask).any()
+
+
+@pytest.mark.parametrize("panel,radius", IRON_MAN_REPULSORS)
+def test_repulsor_fits_its_panel(atlas, panel, radius):
+    island = atlas[panel]
+    cx, cy = island.centroid
+    _, alpha = emblems.arc_reactor(atlas.size[::-1], cx, cy, radius)
+    assert not ((alpha > 0.02) & ~island.mask).any()
 
 
 @pytest.mark.parametrize("stem", ["Dark_Knight", "Iron_Man", "a b-c_1"])

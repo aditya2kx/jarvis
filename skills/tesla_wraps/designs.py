@@ -263,7 +263,14 @@ def iron_man(atlas: Atlas) -> Canvas:
         rgb,
         fascia,
         lateral,
-        [(0.0, GOLD_HI), (0.28, GOLD), (0.46, GOLD_DEEP), (0.54, RED), (1.0, RED_DEEP)],
+        [
+            (0.00, GOLD),
+            (0.14, GOLD_HI),
+            (0.32, GOLD),
+            (0.46, GOLD_DEEP),
+            (0.54, RED),
+            (1.00, RED_DEEP),
+        ],
     )
     paint.blend(rgb, GUNMETAL, 0.9 * paint.band(u, 0.0, 0.020, 0.005) * fascia)
     for cx, mirror in ((435.0, True), (589.0, False)):
@@ -293,10 +300,11 @@ def iron_man(atlas: Atlas) -> Canvas:
         u,
         [
             (0.853, GOLD_SHADOW),
-            (0.861, GOLD_DEEP),
-            (0.874, GOLD_HI),
-            (0.893, GOLD),
-            (0.904, GOLD_DEEP),
+            (0.858, GOLD_DEEP),
+            (0.868, GOLD),
+            (0.877, GOLD_HI),
+            (0.886, GOLD),
+            (0.899, GOLD_DEEP),
             (0.910, GOLD_SHADOW),
         ],
     )

@@ -1,3 +1,11 @@
+## 2026-09-06 — `skills/tesla_wraps`: Dark Knight + Iron Man Paint Shop wraps (PR #284)
+
+**Scope:** Operator asked for two custom wraps for the Model Y using Tesla's published UV templates (`teslamotors/custom-wraps`). Landed as a skill next to `tesla_fleet` / `tesla_aladdin_garage`; `Playground/` is gitignored and would not have shipped the artwork.
+
+**Key changes:** new `skills/tesla_wraps/` (`atlas.py` names the 20 UV islands of the `modely-2025-premium` template from geometry; `paint.py` / `emblems.py` / `designs.py` render the two liveries; `generate.py` validates against Tesla's PNG / ≤1 MB / ≤30-char-filename rules). Atlas orientation: texture Y is nose-to-tail, texture X is lateral on the hood but *vertical up the body* on the flanks — hence `emblems.stamp(rotate=...)`. Other trims unwrap into 19 or 22 islands and are hard-refused rather than mis-mapped. Rendered wraps committed at `skills/tesla_wraps/wraps/`.
+
+**Blocked on operator (Cloud Agent surface):** no tracking issue exists for this branch (`gh` is read-only here), so the PR Description gate's `Closes #N` cannot be satisfied; and the BQ cost ledger cannot be seeded — `gcp_access_probe.py` reports `surface=cursor_cloud_no_adc`, and WIF is CI-only per `docs/contributing/gcp-access.md`.
+
 ## 2026-08-27 — Garage enter radius: `geofence.json` SoT at 500 m (Issue #280)
 
 **Scope:** Firestore overlay (`named-db-seed` 200 m) beat Cloud Run env 800 m. One file is the only writer.

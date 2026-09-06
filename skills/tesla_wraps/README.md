@@ -8,8 +8,24 @@ Two designs ship today, both rendered for the **2025+ Model Y Premium**
 
 | Design | File | Look |
 |---|---|---|
-| Dark Knight | [`wraps/Dark_Knight.png`](wraps/Dark_Knight.png) | Matte black over gunmetal armour, amber hairline down each flank, bat crest on the hood in a pool of cold light, badges on the quarter panels and rear hatch |
+| Dark Knight | [`wraps/Dark_Knight.png`](wraps/Dark_Knight.png) | Tumbler-inspired matte black: hard-edged armour facets a few percent apart in value, one raking blade across the doors, bat crest on the hood and rear hatch |
 | Iron Man | [`wraps/Iron_Man.png`](wraps/Iron_Man.png) | Hot-rod red with gold shoulder plating and a gold spine down the hood, charcoal rocker skirt, arc reactor on the hood and rear fascia |
+
+### On the Dark Knight finish
+
+The Tumbler's paint is bead-blasted matte over angular plating, so that design
+carries no accent colour, no metallic grain, and no gradient that could read as
+a highlight — a single specular sweep makes the whole thing look like gloss
+vinyl instead. All the interest comes from hard facet steps between five close
+values of near-black, plus `paint.matte_grain()`, which is deliberately
+directionless because any streaking reads as satin.
+
+The crest is the wide, flat Nolan-trilogy silhouette (`emblems.BAT_ASPECT` =
+0.3385 — barely a third as tall as it is wide). Getting that ratio wrong is the
+fastest way to make it look like fan art, so `_stamp_bat()` always derives
+height from width and never stretches the shape to fill a panel. It is a
+Warner Bros. trademark; this is a personal-use vehicle wrap, not artwork to
+redistribute.
 
 ## Getting them onto the car
 

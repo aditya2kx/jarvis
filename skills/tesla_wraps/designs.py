@@ -14,6 +14,20 @@ from . import emblems, paint
 from .atlas import SIDE_PANELS, Atlas
 
 
+# Bat crest placements: (panel, centre_y, width, faces_rearward). Centre X is
+# the panel's own centroid. These are sized to the panel rather than centred
+# blindly: the hood tapers towards the bumper so its crest sits aft of centre,
+# and the hatch band is only ~41px of full-width texture, so a wider crest
+# there would clip its wingtips against the rear glass.
+# `flip` orients hood art for a viewer standing at the nose — verified against
+# Tesla's own Reindeer example, whose muzzle points at the bumper and antlers
+# at the windscreen.
+DARK_KNIGHT_CRESTS = (
+    ("hood", 246.0, 244.0, True),
+    ("rear_hatch", 900.0, 106.0, False),
+)
+
+
 class Canvas:
     """A float RGB canvas plus its alpha, with per-panel coordinate frames."""
 
@@ -43,7 +57,7 @@ class Canvas:
     def _seam_proximity(self) -> np.ndarray:
         """1.0 at a panel's edge falling to 0 a few pixels in — for panel-gap shading."""
         depth = paint.edge_distance(self.painted)
-        return np.clip(1.0 - depth / 7.0, 0, 1) * self.painted
+        return np.clip(1.0 - depth / 4.0, 0, 1) * self.painted
 
     def mask(self, *names: str) -> np.ndarray:
         return self.atlas.mask_of(*names)
@@ -61,86 +75,66 @@ def _metal_grain(canvas: Canvas, seed: int, grain: float, weave: float) -> None:
 
 
 def dark_knight(atlas: Atlas) -> Canvas:
-    """Matte black armour with gunmetal facets, amber hairlines and a bat crest."""
+    """Tumbler-inspired matte black: flat armour facets, no shine, bat crest.
+
+    The Tumbler's finish is bead-blasted matte over hard angular plating, so
+    this design deliberately has no accent colour, no gradient that could read
+    as a highlight, and no metallic grain — every bit of interest comes from
+    hard-edged facets sitting a few percent apart in value.
+    """
     c = Canvas(atlas)
     rgb, u, v = c.rgb, c.u, c.v
 
-    INK, GRAPHITE, GUNMETAL = "#05070A", "#161C25", "#2A323E"
-    AMBER, STEEL = "#E8B23A", "#3D4959"
-
-    paint.fill(rgb, c.painted, INK)
-
-    # Body sides: lit along the beltline, falling into black at the rocker.
-    body = c.body
-    paint.gradient(
-        rgb, body, v, [(0.0, "#333F51"), (0.28, "#1B2330"), (0.70, "#080B10"), (1.0, "#020305")]
+    VOID, BLACK, CHARCOAL, GRAPHITE, PLATE = (
+        "#08090B",
+        "#101215",
+        "#191C20",
+        "#23272C",
+        "#2E3238",
     )
-    paint.shade(rgb, -0.18 * u * body)
 
-    # The armour break: a shoulder plate whose lower edge steps down once as it
-    # runs rearward, so the black-on-black split has an angular kink rather than
-    # reading as a plain pinstripe.
-    sweep = 0.30 + 0.30 * u + 0.16 * np.clip((u - 0.52) / 0.06, 0, 1)
-    paint.shade(rgb, 0.34 * np.clip((sweep - v) / 0.03, 0, 1) * body)
-    paint.blend(rgb, AMBER, 0.75 * paint.band(v - sweep, -0.010, 0.010, 0.005) * body)
+    paint.fill(rgb, c.painted, BLACK)
 
-    # Faint angular shards for a plated look.
-    shards = np.abs(((paint.diagonal(c.shape, 68.0) * 11.0) % 1.0) - 0.5) * 2.0
-    paint.shade(rgb, 0.075 * (shards - 0.5) * body)
+    # Armour facets. The boundaries are straight lines in (u, v), so the steps
+    # between them stay angular instead of blending into a soft gradient.
+    body = c.body
+    shoulder = 0.16 - 0.05 * u
+    waist = 0.56 + 0.10 * u
+    sill = 0.82 + 0.03 * u
+    paint.fill(rgb, body & (v < shoulder), PLATE)
+    paint.fill(rgb, body & (v >= shoulder) & (v < waist), GRAPHITE)
+    paint.fill(rgb, body & (v >= waist) & (v < sill), CHARCOAL)
+    paint.fill(rgb, body & (v >= sill), VOID)
 
-    # Trim and glass-adjacent parts stay a shade lighter so the car reads as
-    # black-on-black rather than a single flat slab.
-    trim = c.mask("roof_rail_l", "roof_rail_r", "rail_rear_l", "rail_rear_r", "mirror_l", "mirror_r")
-    paint.fill(rgb, trim, GUNMETAL)
-    paint.gradient(rgb, trim, u, [(0.3, STEEL), (0.95, GRAPHITE)])
+    # The blade: one long wedge raking down across the doors as it runs
+    # rearward, which is the Tumbler's defining line.
+    rake = 0.36 + 0.62 * u
+    paint.shade(rgb, 0.15 * (body & (v > rake - 0.13) & (v < rake)))
+    paint.shade(rgb, -0.10 * u * body)
 
-    # Front fascia: graphite across the top edge, amber hairline underneath.
+    # Trim stays flat black — the Tumbler has no bright work anywhere.
+    paint.fill(rgb, c.mask("roof_rail_l", "roof_rail_r", "rail_rear_l", "rail_rear_r"), VOID)
+    paint.fill(rgb, c.mask("mirror_l", "mirror_r"), CHARCOAL)
+
     fascia = c.mask("front_fascia")
-    paint.gradient(rgb, fascia, u, [(0.005, "#1B222C"), (0.06, INK), (0.12, "#0A0D12")])
-    paint.blend(rgb, AMBER, 0.55 * paint.band(u, 0.088, 0.094, 0.004) * fascia)
+    paint.gradient(rgb, fascia, u, [(0.005, CHARCOAL), (0.055, BLACK), (0.115, VOID)])
 
-    # Rear: hairline above the plate, mirrored on the lower fascia.
-    rear = c.mask("rear_hatch", "rear_fascia", "rear_corner_l", "rear_corner_r")
-    paint.gradient(rgb, rear, u, [(0.85, "#12171F"), (1.0, "#040508")])
-    paint.blend(rgb, AMBER, 0.5 * paint.band(u, 0.858, 0.864, 0.004) * rear)
+    rear = c.mask("rear_fascia", "rear_corner_l", "rear_corner_r")
+    paint.gradient(rgb, rear, u, [(0.85, BLACK), (1.0, VOID)])
 
-    _metal_grain(c, seed=11, grain=0.055, weave=0.030)
-
-    # Bat crest on the hood, sitting in a bat-signal pool of cold light. The
-    # crest sits low on the island because the hood tapers towards the nose.
     hood = c.mask("hood")
-    hx, _ = c.centre_of("hood")
-    hy = 248.0
-    r = paint.radial(c.shape, hx, hy, 178.0)
-    paint.blend(rgb, "#7288A5", np.clip(1.0 - r, 0, 1) ** 1.25 * hood)
-    paint.blend(rgb, AMBER, 0.18 * paint.band(r, 0.88, 1.0, 0.07) * hood)
-    # Hood art is read by someone standing at the nose, so it faces rearward.
-    _stamp_bat(c, hood, hx, hy, width=212.0, height=94.0, amber=AMBER, flip=True)
-
-    # Smaller crest on the rear hatch band.
+    paint.gradient(rgb, hood, u, [(0.107, CHARCOAL), (0.33, PLATE)])
     hatch = c.mask("rear_hatch")
-    rx, ry = c.centre_of("rear_hatch")
-    _stamp_bat(c, hatch, rx, ry, width=132.0, height=40.0, amber=AMBER)
+    paint.fill(rgb, hatch, GRAPHITE)
 
-    # Quarter-panel badges, sitting just under the beltline on each flank.
-    for side in ("l", "r"):
-        name = f"quarter_panel_{side}"
-        x0, _, x1, _ = atlas[name].bbox
-        span = x1 - 1 - x0
-        bx = (x1 - 1 - 0.36 * span) if side == "l" else (x0 + 0.36 * span)
-        _stamp_bat(
-            c,
-            c.mask(name),
-            bx,
-            858.0,
-            width=112.0,
-            height=48.0,
-            amber=AMBER,
-            rotate=90 if side == "l" else -90,
-        )
+    paint.shade(rgb, paint.matte_grain(c.shape, seed=11) * c.painted)
 
-    # Darken every panel edge so the seams read as real panel gaps.
-    paint.shade(rgb, -0.45 * c.seam)
+    for panel, cy, width, flip in DARK_KNIGHT_CRESTS:
+        cx, _ = c.centre_of(panel)
+        _stamp_bat(c, c.mask(panel), cx, cy, width=width, colour=VOID, flip=flip)
+
+    # Panel gaps, kept shallow so they read as shut lines rather than outlines.
+    paint.shade(rgb, -0.30 * c.seam)
     return c
 
 
@@ -150,17 +144,22 @@ def _stamp_bat(
     cx: float,
     cy: float,
     width: float,
-    height: float,
-    amber: str,
+    colour: str,
     flip: bool = False,
     rotate: int = 0,
 ):
+    """Stamp the bat at its true aspect ratio — never stretched to fit a panel."""
     bat = emblems.stamp(
-        c.shape, emblems.bat_outline(), cx, cy, width, height, flip=flip, rotate=rotate
+        c.shape,
+        emblems.bat_outline(),
+        cx,
+        cy,
+        width,
+        width * emblems.BAT_ASPECT,
+        flip=flip,
+        rotate=rotate,
     )
-    halo = emblems.outlined(bat, thickness=2.4)
-    paint.blend(c.rgb, "#040507", bat * mask)
-    paint.blend(c.rgb, amber, 0.9 * halo * mask)
+    paint.blend(c.rgb, colour, bat * mask)
 
 
 def iron_man(atlas: Atlas) -> Canvas:

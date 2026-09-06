@@ -13,7 +13,7 @@ import pytest
 
 from . import emblems, paint
 from .atlas import ALL_PANELS, SIDE_PANELS, load_template
-from .designs import DESIGNS
+from .designs import DARK_KNIGHT_CRESTS, DESIGNS
 from .generate import NAME_RE, render, validate
 
 
@@ -78,7 +78,18 @@ def test_bat_outline_is_normalised_and_symmetric():
     xs = [x for x, _ in points]
     ys = [y for _, y in points]
     assert min(ys) == pytest.approx(0.0) and max(ys) == pytest.approx(1.0)
-    assert min(xs) == pytest.approx(-0.5) and max(xs) == pytest.approx(0.5)
+    assert min(xs) == pytest.approx(-0.5, abs=0.002)
+    assert max(xs) == pytest.approx(0.5, abs=0.002)
+    assert sorted(xs) == pytest.approx(sorted(-x for x in xs))
+
+
+def test_bat_keeps_the_flat_nolan_proportions():
+    """A bat stamped at BAT_ASPECT must come out wide and low, not comic-book."""
+    mask = emblems.stamp(
+        (256, 256), emblems.bat_outline(), 128, 128, 200, 200 * emblems.BAT_ASPECT
+    )
+    ys, xs = np.nonzero(mask > 0.5)
+    assert np.ptp(ys) / np.ptp(xs) == pytest.approx(emblems.BAT_ASPECT, abs=0.03)
 
 
 def test_stamp_rotation_swaps_the_emblem_axes():
@@ -132,6 +143,24 @@ def test_rendered_wrap_meets_tesla_requirements(atlas, name, tmp_path):
     # Every UV island must be painted; an unpainted panel renders as bare car.
     for panel in SIDE_PANELS:
         assert arr[..., 3][atlas[panel].mask].min() == 255, panel
+
+
+@pytest.mark.parametrize("panel,cy,width,flip", DARK_KNIGHT_CRESTS)
+def test_bat_crest_fits_inside_its_panel(atlas, panel, cy, width, flip):
+    """A crest that overruns its island gets sliced off against the glass."""
+    island = atlas[panel]
+    cx = island.centroid[0]
+    crest = emblems.stamp(
+        atlas.size[::-1],
+        emblems.bat_outline(),
+        cx,
+        cy,
+        width,
+        width * emblems.BAT_ASPECT,
+        flip=flip,
+    )
+    assert (crest > 0.5).sum() > 0
+    assert not ((crest > 0.02) & ~island.mask).any()
 
 
 @pytest.mark.parametrize("stem", ["Dark_Knight", "Iron_Man", "a b-c_1"])

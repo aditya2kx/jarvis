@@ -80,6 +80,19 @@ def carbon_weave(shape: tuple[int, int], pitch: int = 6) -> np.ndarray:
     return np.clip(0.7 * a + 0.3 * b, -1, 1)
 
 
+def matte_grain(shape: tuple[int, int], seed: int, tooth: float = 0.011) -> np.ndarray:
+    """Fine isotropic grain in roughly -1..1, for a bead-blasted matte surface.
+
+    Deliberately directionless: any streaking or highlight reads as satin or
+    gloss vinyl, which is the opposite of the finish this is imitating.
+    """
+    rng = np.random.default_rng(seed)
+    fine = ndimage.gaussian_filter(rng.standard_normal(shape), sigma=1.1)
+    fine /= max(np.abs(fine).max(), 1e-9)
+    broad = (fractal_noise(shape, seed + 1, octaves=3, base=110.0) - 0.5) * 2.0
+    return tooth * fine + 0.5 * broad
+
+
 def brushed(shape: tuple[int, int], seed: int, length: float = 26.0) -> np.ndarray:
     """Directional streaks in -1..1, for brushed/anodised metal."""
     rng = np.random.default_rng(seed)
@@ -106,8 +119,3 @@ def diagonal(shape: tuple[int, int], angle_deg: float, phase: float = 0.0) -> np
     proj = xs * np.cos(rad) + ys * np.sin(rad)
     proj -= proj.min()
     return proj / max(proj.max(), 1e-9) + phase
-
-
-def to_image_arrays(canvas: np.ndarray, alpha: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    rgb = np.rint(np.clip(canvas, 0, 1) * 255).astype(np.uint8)
-    return rgb, alpha.astype(np.uint8)

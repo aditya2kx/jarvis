@@ -13,53 +13,39 @@ from . import paint
 
 SUPERSAMPLE = 4
 
-def _arc(p0, p1, bulge: float, steps: int = 14):
-    """Quadratic Bezier from ``p0`` to ``p1``, bowed perpendicular by ``bulge``.
+# Right half of the wide, angular Nolan-trilogy bat, walked from the tail point
+# up the inner edge to the wing tip and back along the top to the ear notch.
+# Traced from a reference silhouette, simplified, then mirrored below so the
+# emblem is exactly symmetric. Height is 0.3385 of the width — the shape is far
+# flatter than a classic comic bat, and getting that ratio wrong is the single
+# most obvious way to make it look like fan art.
+BAT_ASPECT = 0.3385
 
-    Positive bulge bows towards the top of the emblem box, which is what carves
-    the scooped membrane between a bat wing's finger points.
-    """
-    (x0, y0), (x1, y1) = p0, p1
-    dx, dy = x1 - x0, y1 - y0
-    length = max((dx * dx + dy * dy) ** 0.5, 1e-9)
-    mx, my = (x0 + x1) / 2, (y0 + y1) / 2
-    cx, cy = mx + (dy / length) * bulge, my - (dx / length) * bulge
-    ts = [i / steps for i in range(1, steps + 1)]
-    return [
-        (
-            (1 - t) ** 2 * x0 + 2 * (1 - t) * t * cx + t**2 * x1,
-            (1 - t) ** 2 * y0 + 2 * (1 - t) * t * cy + t**2 * y1,
-        )
-        for t in ts
-    ]
-
-
-# Right half of the bat, walked clockwise from the crown of the head to the tip
-# of the tail. Each entry is (vertex, bulge-of-segment-leading-to-it).
 _BAT_RIGHT = [
-    ((0.075, 0.105), 0.030),  # head crown -> neck
-    ((0.500, 0.000), 0.070),  # wing leading edge, bowed up to a sharp tip
-    ((0.445, 0.150), 0.000),  # trailing edge under the tip
-    ((0.398, 0.315), 0.000),  # finger 1
-    ((0.348, 0.155), 0.026),  # membrane scoop
-    ((0.256, 0.400), 0.000),  # finger 2
-    ((0.192, 0.192), 0.034),
-    ((0.118, 0.530), 0.000),  # finger 3
-    ((0.098, 0.295), 0.020),
-    ((0.000, 0.715), 0.000),  # tail point
+    (0.0000, 1.0000), (0.0190, 0.8756), (0.0345, 0.8096), (0.0681, 0.7157),
+    (0.0836, 0.6853), (0.1112, 0.6447), (0.1147, 0.6447), (0.1198, 0.6345),
+    (0.1233, 0.6345), (0.1250, 0.6294), (0.1284, 0.6294), (0.1353, 0.6193),
+    (0.1405, 0.6193), (0.1474, 0.6091), (0.1526, 0.6091), (0.1543, 0.6041),
+    (0.1612, 0.6041), (0.1629, 0.5990), (0.1698, 0.5990), (0.1716, 0.5939),
+    (0.1784, 0.5939), (0.1802, 0.5888), (0.1905, 0.5888), (0.1922, 0.5838),
+    (0.2026, 0.5838), (0.2043, 0.5787), (0.2216, 0.5787), (0.2233, 0.5736),
+    (0.2509, 0.5736), (0.2526, 0.5685), (0.3060, 0.5685), (0.3078, 0.5736),
+    (0.3422, 0.5736), (0.3440, 0.5787), (0.3474, 0.5787), (0.3414, 0.4898),
+    (0.3431, 0.4036), (0.3500, 0.3376), (0.3672, 0.2513), (0.3888, 0.1827),
+    (0.4078, 0.1371), (0.4284, 0.0964), (0.4647, 0.0406), (0.4681, 0.0406),
+    (0.4853, 0.0152), (0.4888, 0.0152), (0.4957, 0.0051), (0.4991, 0.0051),
+    (0.4991, 0.0000), (0.1647, 0.0000), (0.1586, 0.0178), (0.1534, 0.0838),
+    (0.1448, 0.1396), (0.1319, 0.1777), (0.1284, 0.1827), (0.1250, 0.1827),
+    (0.1147, 0.1980), (0.1095, 0.1980), (0.1078, 0.2030), (0.1026, 0.2030),
+    (0.1009, 0.2081), (0.0957, 0.2081), (0.0940, 0.2132), (0.0853, 0.2132),
+    (0.0836, 0.2183), (0.0750, 0.2183), (0.0733, 0.2234), (0.0422, 0.2234),
+    (0.0362, 0.2107), (0.0293, 0.1244), (0.0267, 0.0305), (0.0164, 0.1320),
 ]
 
 
 def bat_outline() -> list[tuple[float, float]]:
-    """Closed outline of the bat, normalised to fill x in -0.5..0.5, y in 0..1."""
-    right = [(0.0, 0.062)]
-    for vertex, bulge in _BAT_RIGHT:
-        right.extend(_arc(right[-1], vertex, bulge) if bulge else [vertex])
-    points = right + [(-x, y) for x, y in reversed(right[:-1])]
-
-    lo = min(y for _, y in points)
-    hi = max(y for _, y in points)
-    return [(x, (y - lo) / (hi - lo)) for x, y in points]
+    """Closed outline of the bat, normalised to x in -0.5..0.5, y in 0..1."""
+    return list(_BAT_RIGHT) + [(-x, y) for x, y in reversed(_BAT_RIGHT)]
 
 
 def stamp(
@@ -94,15 +80,6 @@ def stamp(
         points.append((px * SUPERSAMPLE, py * SUPERSAMPLE))
     ImageDraw.Draw(canvas).polygon(points, fill=255)
     return np.asarray(canvas.resize((w, h), Image.LANCZOS), dtype=np.float64) / 255.0
-
-
-def outlined(mask: np.ndarray, thickness: float = 2.0) -> np.ndarray:
-    """A soft halo just outside ``mask``, for emblem pinstripes."""
-    from scipy import ndimage
-
-    solid = mask > 0.5
-    outside = ndimage.distance_transform_edt(~solid)
-    return np.clip(1.0 - np.abs(outside - thickness) / thickness, 0, 1) * (~solid)
 
 
 def arc_reactor(

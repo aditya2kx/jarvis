@@ -70,16 +70,16 @@ class WorkerConfig:
 
     def apply_overlay(self, overlay: dict) -> None:
         """Apply a Firestore config overlay. Radii are validated before they land."""
-        enter_m = self.enter_m if overlay.get("enter_m") is None else float(overlay["enter_m"])
-        hysteresis_m = (
-            self.hysteresis_m
-            if overlay.get("hysteresis_m") is None
-            else float(overlay["hysteresis_m"])
-        )
-        if (enter_m, hysteresis_m) != (self.enter_m, self.hysteresis_m):
+        has_enter = overlay.get("enter_m") is not None
+        has_hysteresis = overlay.get("hysteresis_m") is not None
+        if has_enter or has_hysteresis:
+            enter_m = float(overlay["enter_m"]) if has_enter else self.enter_m
+            hysteresis_m = float(overlay["hysteresis_m"]) if has_hysteresis else self.hysteresis_m
             validate_radii(enter_m, hysteresis_m)
             self.enter_m = enter_m
             self.hysteresis_m = hysteresis_m
+            # Firestore is the authority whenever it holds a radius, even when the
+            # value happens to equal the seed.
             self.enter_m_source = "firestore"
         if overlay.get("cooldown_s") is not None:
             self.cooldown_s = float(overlay["cooldown_s"])

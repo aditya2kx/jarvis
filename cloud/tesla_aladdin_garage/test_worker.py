@@ -209,6 +209,16 @@ def test_boot_prefers_firestore_over_file(monkeypatch):
     assert w2.cfg.enter_m_source == "geofence.json"
 
 
+def test_source_is_firestore_even_when_value_matches_seed(monkeypatch):
+    """Authority is 'who holds the value', not 'whose value differs'."""
+    monkeypatch.setattr(
+        "cloud.tesla_aladdin_garage.persist.load_config", lambda: {"enter_m": 400}
+    )
+    w = GarageWorker(_cfg(enter_m=400), _tesla(*HOME), _aladdin())
+    assert w.cfg.enter_m == 400
+    assert w.cfg.enter_m_source == "firestore"
+
+
 def test_boot_does_not_erase_operator_config(monkeypatch):
     """#280 deleted the overlay on boot; that would now wipe operator config."""
     monkeypatch.setattr(

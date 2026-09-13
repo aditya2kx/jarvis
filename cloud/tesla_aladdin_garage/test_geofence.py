@@ -9,7 +9,7 @@ def test_load_radii_from_json():
     from cloud.tesla_aladdin_garage.geofence import load_radii
 
     enter_m, hysteresis_m = load_radii()
-    assert enter_m == 500
+    assert enter_m == 300
     assert hysteresis_m == 80
 
 

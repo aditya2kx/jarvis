@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from cloud.tesla_aladdin_garage import persist
 from cloud.tesla_aladdin_garage.worker import GarageWorker, WorkerConfig
 
 VIN = "7SAYGAEE2TF605512"
@@ -168,14 +169,64 @@ def test_current_location_does_not_open():
     aladdin.open_door.assert_not_called()
 
 
-def test_overlay_cannot_change_enter_m():
+def test_overlay_sets_enter_m():
+    """Firestore overlay is the runtime authority for the radius (revises #280)."""
     tesla, aladdin = _tesla(*HOME), _aladdin()
     w = GarageWorker(_cfg(), tesla, aladdin)
     w.apply_overlay({"enter_m": 350, "hysteresis_m": 10, "cooldown_s": 12})
+    assert w.cfg.enter_m == 350
+    assert w.geofence.enter_m == 350
+    assert w.cfg.hysteresis_m == 10
+    assert w.geofence.hysteresis_m == 10
+    assert w.cfg.enter_m_source == "firestore"
+    assert w.cfg.cooldown_s == 12
+
+
+def test_overlay_rejects_out_of_bounds_radius():
+    import pytest
+
+    tesla, aladdin = _tesla(*HOME), _aladdin()
+    w = GarageWorker(_cfg(), tesla, aladdin)
+    with pytest.raises(ValueError):
+        w.apply_overlay({"enter_m": 9000})
     assert w.cfg.enter_m == 400
     assert w.geofence.enter_m == 400
-    assert w.cfg.hysteresis_m == 80
-    assert w.cfg.cooldown_s == 12
+
+
+def test_boot_prefers_firestore_over_file(monkeypatch):
+    """/health must be able to answer 'which authority set the live radius'."""
+    monkeypatch.setattr(
+        "cloud.tesla_aladdin_garage.persist.load_config", lambda: {"enter_m": 275}
+    )
+    w = GarageWorker(_cfg(), _tesla(*HOME), _aladdin())
+    assert w.cfg.enter_m == 275
+    assert w.geofence.enter_m == 275
+    assert w.cfg.enter_m_source == "firestore"
+
+    monkeypatch.setattr("cloud.tesla_aladdin_garage.persist.load_config", lambda: {})
+    w2 = GarageWorker(_cfg(), _tesla(*HOME), _aladdin())
+    assert w2.cfg.enter_m == 400
+    assert w2.cfg.enter_m_source == "geofence.json"
+
+
+def test_source_is_firestore_even_when_value_matches_seed(monkeypatch):
+    """Authority is 'who holds the value', not 'whose value differs'."""
+    monkeypatch.setattr(
+        "cloud.tesla_aladdin_garage.persist.load_config", lambda: {"enter_m": 400}
+    )
+    w = GarageWorker(_cfg(enter_m=400), _tesla(*HOME), _aladdin())
+    assert w.cfg.enter_m == 400
+    assert w.cfg.enter_m_source == "firestore"
+
+
+def test_boot_does_not_erase_operator_config(monkeypatch):
+    """#280 deleted the overlay on boot; that would now wipe operator config."""
+    monkeypatch.setattr(
+        "cloud.tesla_aladdin_garage.persist.load_config", lambda: {"enter_m": 275}
+    )
+    assert not hasattr(persist, "clear_geofence_overlay")
+    w = GarageWorker(_cfg(), _tesla(*HOME), _aladdin())
+    assert w.cfg.enter_m == 275
 
 
 def test_from_env_reads_json_not_geofence_env(monkeypatch):
@@ -184,7 +235,7 @@ def test_from_env_reads_json_not_geofence_env(monkeypatch):
     monkeypatch.setenv("HOME_LAT", "29.464083")
     monkeypatch.setenv("HOME_LON", "-95.517465")
     cfg = WorkerConfig.from_env()
-    assert cfg.enter_m == 500
+    assert cfg.enter_m == 300
     assert cfg.hysteresis_m == 80
 
 

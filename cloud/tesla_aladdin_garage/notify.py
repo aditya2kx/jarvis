@@ -74,7 +74,8 @@ def email_body(event: str, fields: dict[str, Any]) -> str:
             f"VIN: {fields.get('vin', '')}",
             f"Detail: {fields.get('detail', '')}",
             "",
-            "If this fired too early or too late, change enter_m in cloud/tesla_aladdin_garage/geofence.json and deploy.",
+            "If this fired too early or too late, POST /config {\"enter_m\": N} with the admin token — "
+            "it applies immediately, no deploy.",
             "Already-open means someone used the wall button / app — no Aladdin command was sent.",
         ]
     )

@@ -264,6 +264,7 @@ Pass: doc-freshness clean for the `cloud/**` → RUNBOOK coupling; `verify.py --
 | E7 Happy (prod) | **The requirement itself** — no deploy | after merge, `POST /config {"enter_m": 300}` then `GET /health` shows `enter_m=300.0`, `enter_m_source=firestore`, with **no** Cloud Run revision created (`gcloud run revisions list` unchanged) |
 | E8 Failure (prod, **blocking**) | Signed telemetry-config landed | deploy log for "Signed fleet_telemetry_config via GCE tesla-http-proxy" shows `http=200` and `updated_vehicles 1`. The step is `continue-on-error: true`, so a green deploy does **not** imply success |
 | E9 Legacy (non-blocking) | Real arrival | after the next drive home, Cloud Run logs show consecutive `Location` samples ~40 m apart and a `tesla-aladdin-garage open` event |
+| E10 Happy (real Firestore) | Round-trip against the named DB `garage` | `POST /config {"enter_m": 300}` → real Firestore doc reads `{'enter_m': 300}`; a cold worker restart reloads it as `source=firestore`; a rejected `enter_m: 5` leaves the stored doc untouched. Run against an isolated evidence collection so prod's live config doc is never written |
 
 Prod commands (E5/E7 mutate config only — never the door):
 

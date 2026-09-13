@@ -37,15 +37,71 @@ def test_simulate_enter_ok():
     assert r.get_json()["event"] == "opened"
 
 
-def test_config_rejects_enter_m():
-    garage_app._worker = MagicMock()
-    r = _client().post(
-        "/config",
-        headers={"X-Garage-Token": "test-token"},
-        json={"enter_m": 200},
+def _config_worker(enter_m=500.0, hysteresis_m=80.0):
+    from cloud.tesla_aladdin_garage.worker import GarageWorker, WorkerConfig
+
+    cfg = WorkerConfig(
+        vin="7SAYGAEE2TF605512",
+        home_lat=29.464083,
+        home_lon=-95.517465,
+        enter_m=enter_m,
+        hysteresis_m=hysteresis_m,
+        dry_run=True,
     )
-    assert r.status_code == 409
-    assert r.get_json()["error"] == "geofence_file_sot"
+    tesla = MagicMock()
+    tesla.needs_user_auth.return_value = False
+    return GarageWorker(cfg, tesla, MagicMock())
+
+
+def test_config_accepts_enter_m():
+    """The radius is operator-tunable at runtime — no deploy, no image rebuild."""
+    garage_app._worker = _config_worker()
+    with patch.object(garage_app.persist, "save_config", return_value=True) as saved:
+        r = _client().post(
+            "/config",
+            headers={"X-Garage-Token": "test-token"},
+            json={"enter_m": 300},
+        )
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["enter_m"] == 300
+    assert body["enter_m_source"] == "firestore"
+    assert saved.call_args.args[0]["enter_m"] == 300
+    assert garage_app._worker.geofence.enter_m == 300
+
+
+def test_config_rejects_out_of_bounds_enter_m():
+    garage_app._worker = _config_worker()
+    with patch.object(garage_app.persist, "save_config", return_value=True) as saved:
+        r = _client().post(
+            "/config",
+            headers={"X-Garage-Token": "test-token"},
+            json={"enter_m": 5},
+        )
+    assert r.status_code == 400
+    assert r.get_json()["error"] == "invalid_radii"
+    saved.assert_not_called()
+    assert garage_app._worker.cfg.enter_m == 500
+
+
+def test_config_503_when_not_persisted():
+    """An unpersisted radius would silently revert on restart — never report success."""
+    garage_app._worker = _config_worker()
+    with patch.object(garage_app.persist, "save_config", return_value=False):
+        r = _client().post(
+            "/config",
+            headers={"X-Garage-Token": "test-token"},
+            json={"enter_m": 300},
+        )
+    assert r.status_code == 503
+    assert r.get_json()["error"] == "config_not_persisted"
+    assert garage_app._worker.cfg.enter_m == 500
+
+
+def test_config_requires_admin_token():
+    garage_app._worker = MagicMock()
+    r = _client().post("/config", json={"enter_m": 300})
+    assert r.status_code == 401
 
 
 def test_location_ok():

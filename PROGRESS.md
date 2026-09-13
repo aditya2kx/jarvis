@@ -1,3 +1,9 @@
+## 2026-09-13 — Garage radius becomes runtime config, set to 300 m (Issue #286)
+
+**Scope:** Operator asked to drop the enter radius 500 → 300 m and pushed back that a threshold change should not need a code deploy. Revises #280: that PR removed the runtime knob to end a three-writer ambiguity, which made every threshold tweak an image build + Cloud Run rollout.
+
+**Key changes:** Firestore `config.enter_m` is now the authority, `geofence.json` (300 / 80) is the bootstrap seed, env stays ignored; `/health` reports `enter_m_source`. `POST /config` accepts radii with bounds validation (`400 invalid_radii`, 50–2000 m) and returns `503 config_not_persisted` when the Firestore write fails, so an unpersisted change is never reported as applied. Removed `clear_geofence_overlay()` — it would erase operator config on every restart. `LOCATION_MIN_DELTA_M` 80 → 40 m, hoisted to workflow-scope env so the signed-config step (which reads the runner env, not Cloud Run's) actually sends it; it stays deploy-time because the Tesla-side push needs the GCE command proxy.
+
 ## 2026-08-27 — Garage enter radius: `geofence.json` SoT at 500 m (Issue #280)
 
 **Scope:** Firestore overlay (`named-db-seed` 200 m) beat Cloud Run env 800 m. One file is the only writer.

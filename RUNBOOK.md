@@ -1928,7 +1928,8 @@ A second copy would double-open the door.
 | VIN | `TESLA_VIN` (Dhanno) |
 | Partner domain | `35.239.192.226.sslip.io` (public key on :443; cars mTLS :8443) |
 | Door | Big Peach `ALADDIN_DEVICE_SERIAL=F0AD4E3E7403` / `ALADDIN_DOOR_INDEX=1` |
-| Home | `HOME_LAT` / `HOME_LON` · enter **500 m** from `cloud/tesla_aladdin_garage/geofence.json` (not env, not Firestore overlay) · hysteresis 80 m · cooldown 600 s |
+| Home | `HOME_LAT` / `HOME_LON` · enter **300 m** · hysteresis 80 m (exit 380 m) · cooldown 600 s. Radius is **runtime config**: Firestore `config.enter_m` wins, `cloud/tesla_aladdin_garage/geofence.json` is the bootstrap seed, `GEOFENCE_ENTER_M` env is ignored. `/health` reports `enter_m_source`. |
+| Telemetry delta | `LOCATION_MIN_DELTA_M=40` — metres between Location publishes. **Deploy-time only** (workflow-scope env in the deploy YAML, consumed by both the Cloud Run env and the signed-config step). Takes effect only when the "Signed fleet_telemetry_config" step reports `http=200`; that step is `continue-on-error`, so a green deploy alone does not prove it landed. |
 | Persist | Firestore named DB `garage` (`GARAGE_FIRESTORE_DB=garage`), collection `tesla_aladdin_garage`. BHAGA stays on `(default)`. Do **not** set `FIRESTORE_DB=(default)` on Cloud Run — REST double-encodes it to `400 Invalid database id %28default%29`. Usage falls back in-memory if persist fails. |
 | Live | `ALADDIN_DRY_RUN=0` |
 | Notify | `aditya.2ky@gmail.com` (`GARAGE_NOTIFY_TO`). Subject includes Tesla metres-from-home and Tesla Fleet month spend vs the **$10** developer discount (Jarvis-counted Data/streaming; Tesla has no usage API). Skip `OPEN_DOOR` if already open; still email. |
@@ -1944,7 +1945,13 @@ curl -sS "$URL/location" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN"
 # Simulate enter → OPEN Big Peach (live; cooldown 600 s)
 curl -sS -X POST "$URL/simulate/enter" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN"
 
-# Radius: edit cloud/tesla_aladdin_garage/geofence.json and deploy. POST /config {"enter_m": N} is 409.
+# Radius: no deploy needed. Applies immediately and survives restarts.
+curl -sS -X POST "$URL/config" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"enter_m": 300}'
+curl -sS "$URL/health"   # confirm enter_m + enter_m_source=firestore
+# 400 invalid_radii = outside 50-2000 m. 503 config_not_persisted = Firestore write failed,
+# the change did NOT stick; fix persistence before trusting the value.
+# geofence.json is only the seed for a fresh instance with no Firestore config.
 
 # Re-auth if needs_reauth=true (add the callback URL on the Tesla app first)
 open "$URL/oauth/tesla"

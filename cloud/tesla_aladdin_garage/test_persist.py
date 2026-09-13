@@ -56,18 +56,32 @@ def test_db_strips_encoded_default_alias(monkeypatch):
     persist.set_client(None)
 
 
-def test_clear_geofence_overlay_deletes_radius_keys(monkeypatch):
+def test_save_config_keeps_enter_m(monkeypatch):
+    """The radius is runtime config now — save_config must not filter it out."""
     monkeypatch.setenv("GARAGE_PERSIST", "1")
     fake = MagicMock()
     persist.set_client(fake)
-    persist.clear_geofence_overlay()
-    from google.cloud.firestore import DELETE_FIELD
-
+    assert persist.save_config({"enter_m": 300, "hysteresis_m": 80}) is True
     fake.collection.assert_called_with("tesla_aladdin_garage")
     fake.collection.return_value.document.assert_called_with("config")
-    kwargs = fake.collection.return_value.document.return_value.set.call_args.kwargs
-    payload = fake.collection.return_value.document.return_value.set.call_args.args[0]
-    assert payload["enter_m"] is DELETE_FIELD
-    assert payload["hysteresis_m"] is DELETE_FIELD
-    assert kwargs.get("merge") is True
+    call = fake.collection.return_value.document.return_value.set.call_args
+    assert call.args[0]["enter_m"] == 300
+    assert call.args[0]["hysteresis_m"] == 80
+    assert call.kwargs.get("merge") is True
+    persist.set_client(None)
+
+
+def test_save_config_reports_failure_when_persist_off(monkeypatch):
+    """No Firestore means the change would vanish on restart — callers must see False."""
+    persist.set_client(None)
+    monkeypatch.setenv("GARAGE_PERSIST", "0")
+    assert persist.save_config({"enter_m": 300}) is False
+
+
+def test_save_config_reports_failure_on_write_error(monkeypatch):
+    monkeypatch.setenv("GARAGE_PERSIST", "1")
+    fake = MagicMock()
+    fake.collection.return_value.document.return_value.set.side_effect = RuntimeError("boom")
+    persist.set_client(fake)
+    assert persist.save_config({"enter_m": 300}) is False
     persist.set_client(None)

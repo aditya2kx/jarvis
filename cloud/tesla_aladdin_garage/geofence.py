@@ -10,14 +10,34 @@ from typing import Optional
 
 _RADII_PATH = Path(__file__).with_name("geofence.json")
 
+ENTER_M_BOUNDS = (50.0, 2000.0)
+HYSTERESIS_M_BOUNDS = (0.0, 500.0)
+
+
+def validate_radii(enter_m: float, hysteresis_m: float) -> None:
+    """Raise ValueError when a radius would make the fence useless or absurd.
+
+    Below 50 m the car is already in the driveway before the door starts moving;
+    above 2000 m it would open from streets away.
+    """
+    lo, hi = ENTER_M_BOUNDS
+    if not lo <= enter_m <= hi:
+        raise ValueError(f"enter_m={enter_m} outside {lo}-{hi} m")
+    lo, hi = HYSTERESIS_M_BOUNDS
+    if not lo <= hysteresis_m <= hi:
+        raise ValueError(f"hysteresis_m={hysteresis_m} outside {lo}-{hi} m")
+
 
 def load_radii(path: Path | None = None) -> tuple[float, float]:
-    """Return (enter_m, hysteresis_m) from geofence.json. The only SoT for prod."""
+    """Return (enter_m, hysteresis_m) from geofence.json — the bootstrap seed.
+
+    Firestore config wins at runtime; this file is what a fresh instance starts
+    from when Firestore holds no radius.
+    """
     raw = json.loads((path or _RADII_PATH).read_text())
     enter_m = float(raw["enter_m"])
     hysteresis_m = float(raw["hysteresis_m"])
-    if enter_m <= 0 or hysteresis_m < 0:
-        raise ValueError(f"invalid geofence radii enter_m={enter_m} hysteresis_m={hysteresis_m}")
+    validate_radii(enter_m, hysteresis_m)
     return enter_m, hysteresis_m
 
 
@@ -34,7 +54,7 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 class Geofence:
     home_lat: float
     home_lon: float
-    enter_m: float = 500.0
+    enter_m: float = 300.0
     hysteresis_m: float = 80.0
     inside: Optional[bool] = field(default=None)
 

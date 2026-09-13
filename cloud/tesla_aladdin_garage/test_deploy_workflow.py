@@ -1,6 +1,7 @@
 """Deploy job must not fail the Cloud Run rollout on log-metric IAM."""
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,12 +40,21 @@ def test_deploy_enables_telemetry_not_rest_poll():
     assert "TESLA_TELEMETRY_PORT=8443" in text
     assert "TESLA_PARTNER_DOMAIN=35.239.192.226.sslip.io" in text
     assert "POLL_INTERVAL_S=0" in text
-    assert "LOCATION_MIN_DELTA_M=80" in text
+    assert "LOCATION_MIN_DELTA_M=${{ env.LOCATION_MIN_DELTA_M }}" in text
+    assert "LOCATION_MIN_DELTA_M=80" not in text
     assert "GEOFENCE_ENTER_M" not in text
     assert "GEOFENCE_HYSTERESIS_M" not in text
     radii = json.loads((ROOT / "cloud/tesla_aladdin_garage/geofence.json").read_text())
-    assert radii["enter_m"] == 500
+    assert radii["enter_m"] == 300
     assert radii["hysteresis_m"] == 80
+
+
+def test_signed_config_step_sees_location_delta():
+    """gce_signed_telemetry_config reads LOCATION_MIN_DELTA_M from the runner env,
+    so a workflow-level env key must exist or the helper silently falls back to 80
+    and the car keeps publishing at the old delta while Cloud Run reports the new one."""
+    text = WF.read_text()
+    assert re.search(r'^env:\n(?:  .*\n)*  LOCATION_MIN_DELTA_M: "40"', text, re.MULTILINE)
     assert "TESLA_TELEMETRY_CA=tesla-telemetry-ca:latest" in text
     assert "TESLA_MONTH_BUDGET_USD=10" in text
 

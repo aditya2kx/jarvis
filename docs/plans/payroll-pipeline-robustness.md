@@ -102,6 +102,15 @@ wrong by construction — hours, not status, define who needs a rate.
 - Audit the raw tables (`adp_wage_rates` and siblings) for duplicate keys the same
   way. Only the model layer has been proven so far — this is a known unknown.
 - Clear the circuit breaker; backfill 2026-09-07 → 2026-09-13 (7 missing days).
+  **Done 2026-09-13, by the nightly itself.** Once the breaker was cleared, the
+  21:30 CDT cron (execution `bhaga-daily-refresh-mvsvx`) computed its own gap window
+  from `config.data_window_end` and closed all seven days unaided — the self-healing
+  path working as designed, so no manual range command was needed. It exited 0 in
+  614.7s with `semantics OK — tip_pool_conservation: 180 dates checked, max residual
+  0c`. `model_tip_alloc_daily` is now 814 rows / 814 distinct `(date, employee)` keys
+  spanning 2026-03-09 → 2026-09-13: the gap is closed and the dedupe held through a
+  full-history rebuild. That rebuild is also the cleanest possible check on Milestone
+  1 — it regenerated every row from raw and landed on exactly the deduped set.
 
 Verify:
 
@@ -339,6 +348,26 @@ tests, 42 state-adapter tests, 465 console tests pass; `tsc --noEmit` adds no ne
 - Make the `pay_info` → `earnings` fallback deliberate rather than incidental.
 - Restore failure-evidence capture to GCS (silently broken since 2026-08-24).
 
+**Live confirmation from the 2026-09-13 nightly** (deployed code, pre-merge), which
+reproduced both halves of this milestone in one run:
+
+```
+[pay_info] FAIL Alvarez, Sebastian: TimeoutError: Locator.click: Timeout 10000ms exceeded.
+[pay_info] FAIL Flores, Juan:       TimeoutError: Locator.click: Timeout 10000ms exceeded.
+[pay_info] OK — no punchers missing wage rates in last 60d
+[pay_info] BREADCRUMB wage_rate_flow_issue attempted=16 ok=13 scrape_fail=3 gaps=[]
+```
+
+`gaps=[]` beside three failures is the false alarm stated above, measured: nobody
+lacked a rate, and Slack got a "Failed scrapes" message anyway. The new alerting
+condition would have stayed silent here.
+
+`Alvarez, Sebastian` failing is the strongest evidence yet for the session-timeout
+diagnosis, and it is new — he is the **first** name in the roster, scraped straight
+after the schedule crawl left the page idle for roughly two minutes. The failure
+tracks *time since last interaction*, not the employee, which is why the victim set
+drifts night to night and why per-employee theories never explained it.
+
 Target signatures (`skills/adp_run_automation/pay_info_backend.py`):
 
 ```python
@@ -420,6 +449,11 @@ production pair. Both Cloud Run **services** set `PLAID_ENV=production` explicit
 **job** never did — and the job is what runs the nightly `plaid_sync` catch-up. So every
 night it sent production keys to sandbox and got back an error that reads exactly like
 an expired credential.
+
+Reproduced once more on the 2026-09-13 nightly, still on deployed code:
+`[plaid_sync] failed item=ya7xdVa8... (non-fatal): Plaid POST /transactions/sync
+failed 400: INVALID_API_KEYS`. Non-fatal, so it has been degrading quietly rather
+than failing the run.
 
 Fixed in code rather than by editing job env, so it cannot regress the next time a
 surface is added: on Cloud Run (`K_SERVICE` / `CLOUD_RUN_JOB`) the default now follows

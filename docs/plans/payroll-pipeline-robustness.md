@@ -701,3 +701,86 @@ more. The Goal line gaining `· 34.4% of sales` is the same fix surfacing throug
 finished, which is precisely what the operator observed it failing to do.
 
 Model routing: **Composer**.
+
+---
+
+## Evidence closure — M6, M3, M5 (2026-09-14)
+
+Review asked for direct execution proof on three earlier milestones. Two are now
+closed with live output; the third is de-scoped to a tracked follow-up.
+
+### M6 — Plaid, closed
+
+`plaid_env()` resolution, run locally across the four cases that matter:
+
+| env | resolved | host |
+|---|---|---|
+| *(off Cloud Run)* | `sandbox` | `https://sandbox.plaid.com` |
+| `CLOUD_RUN_JOB=bhaga-daily-refresh` | `production` | `https://production.plaid.com` |
+| `K_SERVICE=bhaga-webhook` | `production` | `https://production.plaid.com` |
+| `PLAID_ENV=sandbox` + `CLOUD_RUN_JOB=x` | `sandbox` | explicit still wins |
+
+Then the nightly's own code path (`_plaid_sync_linked_items`), with the job's env:
+
+```
+api_base = https://production.plaid.com
+[plaid_sync] ok item=ya7xdVa8Qocw3oyNxn5eFzemxvRKXnIXa0LoO added=0 modified=0 removed=0 pages=1
+```
+
+and the pre-fix env for contrast, same credentials, same code, wrong host:
+
+```
+api_base = https://sandbox.plaid.com
+"error_message": "invalid client_id or secret provided"
+```
+
+That is the whole bug in two runs: the keys were never expired, the host was wrong.
+
+### M3 — scoped materialize, closed on **prod**
+
+```
+BHAGA_SCOPED_MATERIALIZE=1 python3 -m agents.bhaga.scripts.materialize_model_bq \
+  --store palmetto --dates 2026-09-08
+```
+
+```
+# Scoped write: 1 day(s), 1 ISO week(s), 1 pay period(s)
+  model_daily:            scoped to  1/210 row(s) on date
+  model_labor_weekly:     scoped to  1/30  row(s) on iso_week
+  model_labor_period:     scoped to  1/14  row(s) on pay_period_start
+  model_tip_alloc_daily:  scoped to  2/814 row(s) on date      (atomic scoped)
+  model_tip_alloc_period: scoped to 10/154 row(s) on period_start (atomic scoped)
+```
+
+Every model table was snapshotted before the run and diffed after. "Touched" means
+`materialized_at_utc` moved; "business drift" is every column *except* that one,
+compared with `EXCEPT DISTINCT` in both directions:
+
+| table | grains touched | business drift | which grain |
+|---|---|---|---|
+| `model_daily` | 1 | 0 | `2026-09-08` |
+| `model_labor_daily` | 1 | 0 | `2026-09-08` |
+| `model_labor_weekly` | 1 | 0 | `2026-W37` |
+| `model_labor_period` | 1 | 0 | `2026-09-07` |
+| `model_tip_alloc_period` | 1 | 0 | `2026-09-07` |
+| `model_tip_alloc_daily` | 1 | 0 | `2026-09-08` |
+| `model_period_summary` | 1 | 0 | `2026-09-07` |
+| `model_review_bonus_period` | 0 | 0 | — |
+
+Exactly the requested day, the ISO week that contains it, and the pay period that
+contains it — nothing else. Zero business drift anywhere confirms the scoped write is
+a faithful rebuild, not a partial one. Snapshot tables were dropped afterwards.
+
+### M5 — ADP modal recovery, de-scoped to [#293](https://github.com/aditya2kx/jarvis/issues/293)
+
+We cannot show a run where a previously-timing-out name is preceded by
+`dismiss_blocking_modals -> True` and then resolves, because the Session Timeout dialog
+only appears after real idle time in a live session — it cannot be summoned to order.
+Rather than claim a cure, #293 tracks pinning the modal DOM as a fixture and asserting
+recovery deterministically.
+
+Residual risk is bounded and never silent: every affected employee had a rate from the
+redundant earnings source (`gaps=[]`), failures are loud (`[pay_info] FAIL`) and now
+upload screenshot + DOM to GCS, and `select_directory_match()` refuses rather than
+guesses — so the failure mode is a missing scrape, never a wrong wage on the wrong
+person.

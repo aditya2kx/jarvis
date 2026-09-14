@@ -82,6 +82,7 @@ import traceback
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
@@ -205,6 +206,45 @@ def _read_data_window_end_from_sheet(
                 )
             return None, cell_was_empty
     return None, True
+
+
+def ingested_dates(
+    gap_start: datetime.date,
+    refresh_date: datetime.date,
+    extra_windows: Sequence[tuple[datetime.date | None, datetime.date | None]] = (),
+) -> list[str]:
+    """Every date this run could have rewritten raw data for.
+
+    The scoped model write (``BHAGA_SCOPED_MATERIALIZE``) only rebuilds the
+    grain units named here, so this list has to be at least as wide as the
+    ingest. It used to be just ``refresh_date`` while ingest covered the whole
+    gap window, which meant a catch-up run laid fresh raw data under stale model
+    rows for every day but the last — invisible, because each table still had
+    exactly one row per key (Issue #295).
+
+    Source-specific overrides (``--square-from``, ``--adp-from/--adp-to``, the
+    unified ``--from/--to``) can reach outside the gap window, so they *widen*
+    it here rather than being assumed to fall inside it. Widening is cheap: a
+    date whose raw data did not change re-materializes to the same values,
+    because the computation is full-history either way and only the write is
+    scoped. Narrowing is what loses data.
+
+    Pure function so the scope/ingest agreement can be unit-tested without
+    standing up Playwright/BQ/Slack.
+    """
+    start, end = gap_start, refresh_date
+    for win_start, win_end in extra_windows:
+        if win_start is not None and win_start < start:
+            start = win_start
+        if win_end is not None and win_end > end:
+            end = win_end
+    if end < start:
+        # An empty gap (nothing to scrape) still materializes the day it ran for.
+        return [refresh_date.isoformat()]
+    return [
+        (start + datetime.timedelta(days=offset)).isoformat()
+        for offset in range((end - start).days + 1)
+    ]
 
 
 def compute_gap_window(
@@ -3204,12 +3244,24 @@ def _run_refresh(run_id: str) -> int:
             "BHAGA_DATASTORE": "bigquery",
             "PYTHONUNBUFFERED": "1",
         }
-        # Scope the write to the date being refreshed. materialize_model_bq
-        # ignores --dates unless BHAGA_SCOPED_MATERIALIZE is set, so the default
-        # remains a full rebuild until the flag is turned on.
+        # Scope the write to every date this run ingested, not just the day it
+        # ran for — a catch-up covering gap_start..refresh_date rewrites raw data
+        # for all of them, and a narrower scope leaves stale model rows on top of
+        # it (Issue #295). materialize_model_bq ignores --dates unless
+        # BHAGA_SCOPED_MATERIALIZE is set, so the default remains a full rebuild.
+        model_dates = ingested_dates(
+            gap_start,
+            refresh_date,
+            extra_windows=(
+                (square_from, square_to),
+                (adp_window_from, adp_window_to),
+            ),
+        )
+        print(f"[materialize_model_bq] scope: {len(model_dates)} date(s) "
+              f"{model_dates[0]}..{model_dates[-1]}")
         bq_model_cmd = [
             sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
-            "--store", args.store, "--dates", refresh_date.isoformat(),
+            "--store", args.store, "--dates", ",".join(model_dates),
         ]
         ok, val = run_step(
             "materialize_model_bq",

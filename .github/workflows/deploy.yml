@@ -98,6 +98,62 @@ jobs:
             --update-env-vars PLAID_ENV=production,PLAID_DEFAULT_STORE=palmetto,BHAGA_DATASTORE=bigquery \
             --update-secrets PLAID_CLIENT_ID=plaid_client_id:latest,PLAID_SECRET=plaid_secret:latest,CLICKUP_PAT=jarvis-clickup-palmetto-pat:latest
 
+      # `services update --image` creates a revision but will NOT move traffic if
+      # the service has traffic pinned to a named revision. bhaga-webhook was
+      # pinned to an `i223-pr224` preview on 2026-08-05 and served it for six
+      # weeks; #264 and #291 merged, built, deployed green, and never went live
+      # (#294). The console workflow already learned this in #240 — same fix here.
+      - name: Route 100% traffic to latest revision
+        if: ${{ !inputs.rollback_sha }}
+        run: |
+          gcloud run services update-traffic bhaga-webhook \
+            --to-latest \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }}
+
+      # Routing above removes the known cause; this asserts the effect, because
+      # the actual defect in #294 was not the pin — it was that a deploy serving
+      # six-week-old code is indistinguishable from a good one in the Actions UI.
+      # Compares what is *serving* against the image built from this commit:
+      # by digest for the service (Cloud Run resolves tags to digests on the
+      # revision) and by tag for the job (which keeps the tag it was given).
+      - name: Verify deployed units run this commit
+        if: ${{ !inputs.rollback_sha }}
+        run: |
+          set -euo pipefail
+          fail=0
+
+          expected_digest="$(gcloud artifacts docker images describe \
+            ${{ env.REGISTRY }}/bhaga-webhook:${{ github.sha }} \
+            --format='value(image_summary.digest)')"
+          serving_rev="$(gcloud run services describe bhaga-webhook \
+            --region ${{ env.REGION }} --project ${{ env.PROJECT_ID }} \
+            --format=json | jq -r '.status.traffic[] | select(.percent == 100) | .revisionName')"
+          serving_image="$(gcloud run revisions describe "$serving_rev" \
+            --region ${{ env.REGION }} --project ${{ env.PROJECT_ID }} \
+            --format='value(spec.containers[0].image)')"
+          echo "webhook: serving revision $serving_rev"
+          echo "webhook: serving image    $serving_image"
+          echo "webhook: expected digest  $expected_digest"
+          if [ "${serving_image##*@}" != "$expected_digest" ]; then
+            echo "::error::bhaga-webhook serves $serving_image, not ${{ github.sha }} ($expected_digest). Traffic is pinned to an older revision — run: gcloud run services update-traffic bhaga-webhook --to-latest --region ${{ env.REGION }}"
+            fail=1
+          fi
+
+          job_image="$(gcloud run jobs describe bhaga-daily-refresh \
+            --region ${{ env.REGION }} --project ${{ env.PROJECT_ID }} \
+            --format='value(spec.template.spec.template.spec.containers[0].image)')"
+          echo "job: image $job_image"
+          if [ "${job_image##*:}" != "${{ github.sha }}" ]; then
+            echo "::error::bhaga-daily-refresh runs $job_image, not ${{ github.sha }}."
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Both units run ${{ github.sha }}."
+
       # Apply pending BQ migrations from core/migrations/ before recording the
       # deploy. Idempotent — no-op when already applied. Keeps schema in sync
       # with the merged code + Grafana panels that reference new columns/views.

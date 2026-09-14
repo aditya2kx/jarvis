@@ -85,6 +85,110 @@ class GapWindowMultiDayTest(unittest.TestCase):
             "ingest_window must accept end_date — single-range call is the contract",
         )
 
+    def test_scoped_model_write_covers_every_ingested_day(self) -> None:
+        """Issue #295: the model scope must be as wide as the ingest window.
+
+        Same class of bug this file already guards, one layer down: ingest
+        correctly covers gap_start..refresh_date as a range, but the scoped
+        model write was handed only ``refresh_date``. Under
+        BHAGA_SCOPED_MATERIALIZE that leaves fresh raw data under stale model
+        rows for every day of the gap except the last — and it is invisible,
+        because each table still holds exactly one row per key.
+        """
+        from agents.bhaga.scripts.daily_refresh import ingested_dates
+
+        gap_start = datetime.date(2026, 9, 7)
+        refresh_date = datetime.date(2026, 9, 13)
+
+        dates = ingested_dates(gap_start, refresh_date)
+
+        self.assertEqual(
+            dates,
+            ["2026-09-07", "2026-09-08", "2026-09-09",
+             "2026-09-10", "2026-09-11", "2026-09-12", "2026-09-13"],
+            "a 7-day catch-up must scope the model write to all 7 ingested days",
+        )
+        self.assertEqual(
+            len(dates), (refresh_date - gap_start).days + 1,
+            "scope width must equal the ingest window width, inclusive",
+        )
+
+    def test_steady_state_nightly_scopes_to_the_single_day(self) -> None:
+        """No gap → exactly one date. Widening must not leak into the common case."""
+        from agents.bhaga.scripts.daily_refresh import ingested_dates
+
+        day = datetime.date(2026, 9, 14)
+        self.assertEqual(ingested_dates(day, day), ["2026-09-14"])
+
+    def test_source_overrides_widen_the_scope_they_never_narrow_it(self) -> None:
+        """--square-from/--adp-to can reach outside the gap window.
+
+        Those windows are what actually gets ingested, so the scope has to
+        follow them. A source window that falls *inside* the gap must not
+        shrink the scope — narrowing is the failure mode, not widening.
+        """
+        from agents.bhaga.scripts.daily_refresh import ingested_dates
+
+        gap_start = datetime.date(2026, 9, 12)
+        refresh_date = datetime.date(2026, 9, 13)
+
+        widened = ingested_dates(
+            gap_start,
+            refresh_date,
+            extra_windows=(
+                (datetime.date(2026, 9, 10), None),   # --square-from reaches back
+                (None, datetime.date(2026, 9, 15)),   # --adp-to reaches forward
+            ),
+        )
+        self.assertEqual(widened[0], "2026-09-10", "earlier source window must widen the start")
+        self.assertEqual(widened[-1], "2026-09-15", "later source window must widen the end")
+
+        unchanged = ingested_dates(
+            gap_start,
+            refresh_date,
+            extra_windows=((datetime.date(2026, 9, 13), datetime.date(2026, 9, 13)),),
+        )
+        self.assertEqual(
+            unchanged, ["2026-09-12", "2026-09-13"],
+            "a source window inside the gap must not narrow the scope",
+        )
+
+    def test_empty_gap_still_materializes_the_refresh_date(self) -> None:
+        """gap_start after refresh_date means nothing to scrape — but the run
+        still has to write the day it ran for, never an empty scope (which
+        materialize_model_bq would treat as 'no rows' and skip)."""
+        from agents.bhaga.scripts.daily_refresh import ingested_dates
+
+        dates = ingested_dates(
+            datetime.date(2026, 9, 14), datetime.date(2026, 9, 13),
+        )
+        self.assertEqual(dates, ["2026-09-13"])
+
+    def test_orchestrator_passes_the_window_not_just_refresh_date(self) -> None:
+        """Guard the call site itself.
+
+        ``ingested_dates`` being correct is worthless if the orchestrator goes
+        back to ``--dates refresh_date.isoformat()``, which is exactly the line
+        #295 was about.
+        """
+        source = (PROJECT_ROOT / "agents/bhaga/scripts/daily_refresh.py").read_text()
+        # The argv list literal handed to materialize_model_bq.
+        argv = source.split("agents.bhaga.scripts.materialize_model_bq", 1)[1]
+        argv = argv.split("]", 1)[0]
+
+        self.assertIn(
+            "model_dates", argv,
+            "materialize_model_bq must receive the joined ingest window",
+        )
+        self.assertNotIn(
+            "refresh_date.isoformat()", argv,
+            "passing only refresh_date is the Issue #295 regression",
+        )
+        self.assertIn(
+            "model_dates = ingested_dates(", source,
+            "the window must come from ingested_dates, not be rebuilt inline",
+        )
+
     def test_download_adp_bundle_takes_one_target_date_for_the_pay_period(self) -> None:
         """A two-day gap (5/21 + 5/22) sits inside one ADP pay period, so
         ONE bundle call with target_date=5/22 must cover both days. If the

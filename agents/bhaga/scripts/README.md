@@ -53,6 +53,12 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
 6. **Materialize Model → BigQuery** (`materialize_model_bq` step): computes all model tabs from BQ
    raw data (shared `build_*` functions in `update_model_sheet.py`) and writes to `model_*` BQ tables.
    Includes post-build tip-pool conservation check.
+   **Scope = the ingest window, never just the refresh date.** `daily_refresh` passes `--dates` from
+   `ingested_dates(gap_start, refresh_date, extra_windows=…)`, which spans the whole gap the run
+   ingested and is widened (never narrowed) by `--square-from/--square-to` and `--adp-from/--adp-to`.
+   A scope narrower than the ingest leaves fresh raw data under stale model rows — silently, since
+   every table still holds exactly one row per key (Issue #295). Widening is safe: computation is
+   full-history regardless, so an unchanged day re-materializes to identical values.
 7. **BQ-internal verify** (`verify_model_bq()`): queries model BQ tables directly (row counts +
    KDS column check + semantic tip/ADP/review checks). Replaces Sheet-reading verify. No Sheet
    projection steps (deleted 2026-06-15 Sheets exit). **Recovery retrigger:** `_prepare_projection_recovery`

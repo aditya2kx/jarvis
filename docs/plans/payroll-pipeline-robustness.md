@@ -183,7 +183,7 @@ now returns whether it started so a refused date is reported instead of implied;
 the recompute was not queued. 169 webhook tests, 34 materialize/datastore tests, 10
 console tests, `verify.py --full` PASS.
 
-## Milestone 3 — Scope the recompute to the request
+## Milestone 3 — Scope the recompute to the request · **Done 2026-09-13**
 
 Today `materialize(store)` takes no date at all and rebuilds all history. The console
 asks to recompute one date; the backend rebuilds everything. The 83-day blast radius
@@ -232,6 +232,26 @@ containing pay period (2026-09-07..2026-09-20) and its ISO week in the aggregate
 row counts for all other keys unchanged.
 
 Model routing: **Opus** (grain derivation is the design-heavy milestone).
+
+**Landed 2026-09-13.** `touched_scope(dates, periods)` maps every model table to its
+grain units — days for daily tables, the containing ISO week for
+`model_labor_weekly`, the containing pay period for the three period-grained tables.
+`load_model_rows(scope=…)` filters on `_grain_col(table)` before the write;
+`materialize(store, dates=…)` threads the scope through all seven writes plus the
+whole-day exemption eviction; `_assert_conservation(period_results, only_starts)`
+checks only the periods the run actually wrote. `daily_refresh` passes
+`--dates <refresh_date>`. Gated by `BHAGA_SCOPED_MATERIALIZE`, default off.
+
+**Deliberately not done: bounding the raw reads.** `read_shifts_bq` /
+`read_transactions_bq` still read full history, and should. Scoping the *write* is a
+correctness fix — the rows we skip are byte-identical to what is already stored, so
+skipping them cannot change a number. Scoping the *read* is a different and far more
+dangerous thing: every week- and period-grained aggregate, the 8-week forecast
+backfill, `discover_periods`, and `last_data_date` all derive from the full raw set,
+so a truncated read would silently recompute aggregates from partial inputs — exactly
+the "silently produce wrong numbers" failure the feature-flag test exists to catch.
+The full read is a cost and latency concern, not a correctness one; it belongs in its
+own change with its own evidence, not bundled into the scoping fix. Follow-up issue.
 
 ## Milestone 4 — Breaker and portal tell the truth
 

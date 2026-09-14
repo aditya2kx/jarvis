@@ -475,5 +475,120 @@ class TestEvictWholeDayExemptTipAlloc(unittest.TestCase):
         )
 
 
+class TestTouchedScope(unittest.TestCase):
+    """touched_scope maps dates onto whole grain units, never partial ones."""
+
+    PERIODS = [
+        {"start": "2026-08-24", "end": "2026-09-06"},
+        {"start": "2026-09-07", "end": "2026-09-20"},
+    ]
+
+    def test_single_date_expands_to_containing_week_and_period(self):
+        m = _load_module()
+        scope = m.touched_scope(["2026-09-08"], self.PERIODS)  # a Tuesday
+        self.assertEqual(scope["model_daily"], {"2026-09-08"})
+        self.assertEqual(scope["model_tip_alloc_daily"], {"2026-09-08"})
+        # ISO week 37 of 2026 starts Monday 2026-09-07.
+        self.assertEqual(scope["model_labor_weekly"], {"2026-W37"})
+        # The containing pay period, as a whole unit — not the single day.
+        self.assertEqual(scope["model_period_summary"], {"2026-09-07"})
+        self.assertEqual(scope["model_labor_period"], {"2026-09-07"})
+        self.assertEqual(scope["model_tip_alloc_period"], {"2026-09-07"})
+
+    def test_dates_spanning_two_periods_take_both(self):
+        m = _load_module()
+        scope = m.touched_scope(["2026-09-06", "2026-09-07"], self.PERIODS)
+        self.assertEqual(scope["model_period_summary"], {"2026-08-24", "2026-09-07"})
+        # 2026-09-06 is the Sunday of ISO week 36; 09-07 opens week 37.
+        self.assertEqual(scope["model_labor_weekly"], {"2026-W36", "2026-W37"})
+
+    def test_date_outside_every_known_period_adds_no_period(self):
+        m = _load_module()
+        scope = m.touched_scope(["2026-12-25"], self.PERIODS)
+        self.assertEqual(scope["model_daily"], {"2026-12-25"})
+        self.assertEqual(scope["model_period_summary"], set())
+
+    def test_every_model_table_gets_a_scope(self):
+        m = _load_module()
+        scope = m.touched_scope(["2026-09-08"], self.PERIODS)
+        self.assertEqual(set(scope), set(m._MERGE_KEYS))
+
+
+class TestLoadModelRowsScope(unittest.TestCase):
+    """scope= filters the write to the named grain units and nothing else."""
+
+    HEADER_ROWS = [
+        ["date", "gross_sales"],
+        ["2026-09-07", "100"],
+        ["2026-09-08", "200"],
+        ["2026-09-09", "300"],
+    ]
+
+    def test_scope_filters_rows_before_write(self):
+        m = _load_module()
+        with mock.patch.object(m, "_load", return_value=1) as mock_load:
+            m.load_model_rows("model_daily", self.HEADER_ROWS, scope={"2026-09-08"})
+        written = mock_load.call_args[0][1]
+        self.assertEqual([r["date"] for r in written], ["2026-09-08"])
+
+    def test_no_scope_writes_every_row(self):
+        m = _load_module()
+        with mock.patch.object(m, "_load", return_value=3) as mock_load:
+            m.load_model_rows("model_daily", self.HEADER_ROWS)
+        self.assertEqual(len(mock_load.call_args[0][1]), 3)
+
+    def test_empty_scope_writes_nothing(self):
+        m = _load_module()
+        with mock.patch.object(m, "_load") as mock_load:
+            n = m.load_model_rows("model_daily", self.HEADER_ROWS, scope=set())
+        self.assertEqual(n, 0)
+        mock_load.assert_not_called()
+
+    def test_scope_uses_the_grain_column_not_the_date_column(self):
+        """Weekly rows are selected by iso_week; their date columns are irrelevant."""
+        m = _load_module()
+        header_rows = [
+            ["iso_week", "week_start", "hours"],
+            ["2026-W36", "2026-08-31", "10"],
+            ["2026-W37", "2026-09-07", "20"],
+        ]
+        with mock.patch.object(m, "_load", return_value=1) as mock_load:
+            m.load_model_rows("model_labor_weekly", header_rows, scope={"2026-W37"})
+        written = mock_load.call_args[0][1]
+        self.assertEqual([r["iso_week"] for r in written], ["2026-W37"])
+
+
+class TestScopedConservation(unittest.TestCase):
+    """A scoped run must not fail on a period it never wrote."""
+
+    def _period(self, start: str, *, balanced: bool) -> dict:
+        share = 5000 if balanced else 4000
+        return {
+            "start": start, "end": start, "is_open": False,
+            "per_period_ours": {"Alice": 5000},
+            "per_day_allocations": [
+                {"date": start, "employee": "Alice", "share_cents": share},
+            ],
+        }
+
+    def test_out_of_scope_defect_does_not_raise(self):
+        m = _load_module()
+        periods = [self._period("2026-06-16", balanced=False),
+                   self._period("2026-09-07", balanced=True)]
+        m._assert_conservation(periods, {"2026-09-07"})  # must not raise
+
+    def test_in_scope_defect_still_raises(self):
+        m = _load_module()
+        periods = [self._period("2026-09-07", balanced=False)]
+        with self.assertRaises(RuntimeError):
+            m._assert_conservation(periods, {"2026-09-07"})
+
+    def test_unscoped_run_still_checks_everything(self):
+        m = _load_module()
+        periods = [self._period("2026-06-16", balanced=False)]
+        with self.assertRaises(RuntimeError):
+            m._assert_conservation(periods)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3165,11 +3165,17 @@ def _run_refresh(run_id: str) -> int:
             "BHAGA_DATASTORE": "bigquery",
             "PYTHONUNBUFFERED": "1",
         }
+        # Scope the write to the date being refreshed. materialize_model_bq
+        # ignores --dates unless BHAGA_SCOPED_MATERIALIZE is set, so the default
+        # remains a full rebuild until the flag is turned on.
+        bq_model_cmd = [
+            sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
+            "--store", args.store, "--dates", refresh_date.isoformat(),
+        ]
         ok, val = run_step(
             "materialize_model_bq",
             lambda: subprocess.run(
-                [sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
-                 "--store", args.store],
+                bq_model_cmd,
                 cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
             ),
             refresh_date=refresh_date,

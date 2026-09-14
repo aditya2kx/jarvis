@@ -1820,6 +1820,41 @@ export function orderRecoSlots(): Promise<OrderRecoSlotLongRow[]> {
   );
 }
 
+export interface InventoryStockRow {
+  Item: string;
+  "Current Qty": number;
+  "Avg per day": number;
+  "Days left": number | null;
+  _ord: number;
+}
+
+/**
+ * Stock level and burn rate per base, independent of any delivery date.
+ *
+ * `orderRecoSlots` INNER JOINs the live delivery dates, and `refresh_order_reco`
+ * clears `inventory_order_reco` outright when none are registered — so with no
+ * date on the books the page had nothing to show and rendered an empty table.
+ * But how much stock is on hand and how fast it is going are facts about the
+ * store, not about an order: on 2026-09-13, with no date registered since
+ * 09-08, the blanked page was withholding "Açaí: 5.9 days left".
+ *
+ * This is the same source the reco itself builds on, read directly.
+ */
+export function inventoryStockLevels(store: string): Promise<InventoryStockRow[]> {
+  return q<InventoryStockRow>(
+    `SELECT
+       item AS Item,
+       current_qty AS \`Current Qty\`,
+       avg_daily_usage AS \`Avg per day\`,
+       days_left AS \`Days left\`,
+       0 AS _ord
+     FROM ${fq("vw_inventory_order_assistant")}
+     WHERE store = @store AND category = 'base'
+     ORDER BY \`Days left\` ASC NULLS LAST, \`Current Qty\` DESC`,
+    { store },
+  );
+}
+
 /** ISO timestamp of latest order-reco materialization (null if table empty). */
 export async function orderRecoRefreshedAt(store: string): Promise<string | null> {
   const rows = await q<{ refreshed_at: string | null }>(

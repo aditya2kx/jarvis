@@ -584,3 +584,49 @@ than adding a dedicated one — it already exercises the changed materialize pat
 Per J2, acceptance evidence covers **both** sandbox e2e and prod ADP/Square live
 verification. Per J3, the backfill re-runs **all** pending dates (2026-09-07 →
 2026-09-13), not only the most recent.
+
+---
+
+## Milestone 7 — Inventory page must not go blank · **Done 2026-09-13**
+
+Operator-reported, same night: `/inventory` showed "No delivery date registered yet."
+over an empty table. Not a rendering bug — a data-dependency bug of exactly the kind
+this PR exists to remove.
+
+`orderRecoSlots()` INNER JOINs `vw_order_reco_next_dates`, and `refresh_order_reco`
+*deletes* `inventory_order_reco` outright when that view is empty. No delivery date had
+been registered since 2026-09-08 (the table is written only by an explicit operator
+action — there is no cadence generator), so on 09-13 the view was empty and the page had
+literally nothing to select.
+
+The consequence is the failure mode this PR keeps hitting: a missing input in one layer
+blanked a layer that does not depend on it. Stock on hand and burn rate are facts about
+the store, not about an order. BQ knew them the whole time — the 20:32 closing count had
+**Blade at 3.0 days left and Açaí at 5.9** — and the page withheld both behind
+"No rows.", which reads as "nothing to do".
+
+**Fix.** When no delivery date is live, `/inventory` falls back to
+`inventoryStockLevels()` (`vw_inventory_order_assistant`, the same source the reco is
+built from) and renders Item / Current Qty / Avg-per-day / **Days left**, ordered most-
+urgent-first and using the existing `DAYS_LEFT_THRESHOLDS` colouring. The per-slot
+ordering columns stay absent, because On Hand at Restock and Order Tubs are defined
+relative to a delivery date and inventing them without one would be making numbers up.
+The label now says what is missing *and* what still holds, and names the action that
+restores the rest.
+
+No feature flag: the change cannot produce a wrong number — it is strictly additive on
+a page that previously rendered zero rows, and the reco path is untouched when a date
+exists.
+
+Verify:
+```bash
+cd apps/operator-console && npx vitest run __tests__/inventory-stock-only.test.ts
+```
+Pass criterion: stock rows survive the absence of a delivery date, no ordering columns
+are fabricated, `Days left: null` is not coerced to `0`, and ordering is preserved.
+
+Live: rendered against prod BQ in the real empty-schedule state —
+[screenshot](https://github.com/aditya2kx/jarvis/releases/download/evidence-screenshots/inventory-stock-only-no-delivery-date-20260913-233439.png)
+shows Blade 3 and Açaí 5.9 where the operator saw "No rows."
+
+Model routing: **Composer**.

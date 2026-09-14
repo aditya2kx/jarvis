@@ -407,31 +407,20 @@ def _insert_rows(
 ) -> int:
     """Simple INSERT of every row (no merge — duplicate keys are preserved).
 
-    Per-column BQ types are resolved hint-first, then from the first non-None
-    value in the batch, else STRING — so an all-None column (e.g. a nullable
-    rate in one batch) is typed correctly instead of defaulting to a type that
-    rejects the NULL. This mirrors the typing logic in ``_merge_rows``.
+    Per-column BQ types come from ``_resolve_col_types`` — hint, then the
+    table's own schema, then the batch's first non-None value — so an all-None
+    column (a nullable rate absent from one batch) is typed correctly instead of
+    defaulting to one the target rejects.
     """
     col_list = ", ".join(columns)
     hints = column_bq_types_hint or {}
+    schema_types = table_column_types(client, fq_table)
 
     inserted = 0
     batch_size = 500
     for i in range(0, len(rows), batch_size):
         batch = rows[i : i + batch_size]
-
-        col_types: dict[str, str] = {}
-        for c in columns:
-            if c in hints:
-                col_types[c] = hints[c]
-                continue
-            for row in batch:
-                v = row.get(c)
-                if v is not None:
-                    col_types[c] = _infer_bq_type(v)
-                    break
-            else:
-                col_types[c] = "STRING"
+        col_types = _resolve_col_types(columns, batch, hints, schema_types)
 
         values_clauses = []
         params = []
@@ -467,36 +456,23 @@ def _merge_rows(
 ) -> int:
     """MERGE (upsert) rows into the target table.
 
-    NULL handling: infers the BQ type for each column from the first non-None
-    value in the batch.  NULL values are emitted as CAST(NULL AS <type>) in
-    the SQL rather than as @parameters so that UNION ALL sees uniform types.
+    NULL handling: NULLs are emitted as CAST(NULL AS <type>) in the SQL rather
+    than as @parameters, so UNION ALL sees uniform types. The type comes from
+    ``_resolve_col_types`` (hint, then the table's schema, then the batch).
 
-    column_bq_types_hint: explicit type overrides that take priority, used when
-    all values in a batch are None (so inference falls back to STRING).
+    column_bq_types_hint: explicit type overrides that take priority over both.
     """
     from google.cloud import bigquery
 
     non_key_cols = [c for c in columns if c not in merge_keys]
     hints = column_bq_types_hint or {}
+    schema_types = table_column_types(client, fq_table)
 
     merged = 0
     batch_size = 200
     for i in range(0, len(rows), batch_size):
         batch = rows[i : i + batch_size]
-
-        # Determine the canonical BQ type for each column; hints take priority
-        col_types: dict[str, str] = {}
-        for c in columns:
-            if c in hints:
-                col_types[c] = hints[c]
-                continue
-            for row in batch:
-                v = row.get(c)
-                if v is not None:
-                    col_types[c] = _infer_bq_type(v)
-                    break
-            else:
-                col_types[c] = "STRING"
+        col_types = _resolve_col_types(columns, batch, hints, schema_types)
 
         source_rows = []
         params = []
@@ -628,6 +604,69 @@ def assert_unique_natural_key(table_name: str, key_cols: list[str]) -> None:
             f"{table_name}: {n - k} duplicate row(s) on natural key "
             f"({', '.join(key_cols)}) — {n} rows, {k} distinct keys. Write rejected."
         )
+
+
+_SCHEMA_TYPE_CACHE: dict[str, dict[str, str]] = {}
+
+
+def table_column_types(client, fq_table: str) -> dict[str, str]:
+    """``{column: bq_type}`` as the table itself declares them.
+
+    The target's schema is the only authority that is right for an **all-None
+    batch**, where value inference has nothing to look at and falls back to
+    STRING. That fallback produced `Value of type STRING cannot be assigned to
+    T.er_futa, which has type FLOAT64` whenever ADP's Payroll Liability body
+    omitted the FUTA line — a nullable column doing exactly what nullable means.
+    Call sites could pass ``column_bq_types`` to paper over it, but that asks
+    every caller to remember a per-column fact the table already knows.
+
+    Cached per table: schemas do not change inside a run, and this sits in the
+    inner loop of every batch. Returns ``{}` if the schema cannot be read, so
+    typing degrades to inference rather than failing the write.
+    """
+    key = fq_table.strip("`")
+    if key in _SCHEMA_TYPE_CACHE:
+        return _SCHEMA_TYPE_CACHE[key]
+    try:
+        schema = client.get_table(key).schema
+        types = {f.name: ("BOOL" if f.field_type == "BOOLEAN" else f.field_type)
+                 for f in schema}
+    except Exception:  # noqa: BLE001 — typing is best-effort; see docstring
+        logger.debug("schema lookup failed for %s", key, exc_info=True)
+        types = {}
+    _SCHEMA_TYPE_CACHE[key] = types
+    return types
+
+
+def _resolve_col_types(
+    columns: list[str],
+    batch: list[dict],
+    hints: dict[str, str],
+    schema_types: dict[str, str],
+) -> dict[str, str]:
+    """Per-column BQ type, most-authoritative source first.
+
+    Explicit hint > the table's own schema > first non-None value in the batch >
+    STRING. Inference stays ahead of nothing but the last-resort default, so a
+    column absent from the schema (e.g. writing to a staging table mid-creation)
+    still behaves as it always did.
+    """
+    col_types: dict[str, str] = {}
+    for c in columns:
+        if c in hints:
+            col_types[c] = hints[c]
+            continue
+        if c in schema_types:
+            col_types[c] = schema_types[c]
+            continue
+        for row in batch:
+            v = row.get(c)
+            if v is not None:
+                col_types[c] = _infer_bq_type(v)
+                break
+        else:
+            col_types[c] = "STRING"
+    return col_types
 
 
 def _infer_bq_type(value: Any) -> str:

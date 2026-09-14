@@ -3,6 +3,7 @@ import {
   adpScheduleHorizonEnd,
   adpScheduleScrapedAt,
   laborActualShiftDays,
+  laborActualsThrough,
   laborByGrain,
   laborConcurrentByGrain,
   laborHoursPerPerson,
@@ -33,6 +34,7 @@ import {
   enumerateBucketStarts,
   formatBucket,
   wantsCustom,
+  type DateWindow,
 } from "@/lib/filters/range";
 import { resolvePageGrain, resolvePageRange } from "@/lib/filters/period";
 import {
@@ -59,6 +61,7 @@ import {
   clockedHoursTargetDate,
   laborChartWindow,
   periodIncludesToday,
+  scheduleTakesOverFrom,
   scheduledShiftWindow,
 } from "@/lib/labor/actual-schedule-windows";
 import {
@@ -128,9 +131,9 @@ export default async function LaborPage({
     ? { day: sp.day.slice(0, 10) }
     : {};
 
-  const punchWin = actualPunchWindow(win);
   const includesToday = periodIncludesToday(win);
   let chartWin = win;
+  let punchWin: DateWindow | null = null;
   let rows: LaborDailyRow[] = [];
   let concurrentRows: LaborConcurrentRow[] = [];
   let scheduledHoursRows: LaborScheduledHoursRow[] = [];
@@ -154,8 +157,16 @@ export default async function LaborPage({
       ? await adpScheduleHorizonEnd().catch(() => null)
       : null;
     const todayIso = chicagoTodayIso();
+    // Hand off from actual to scheduled where the punches actually end, not at
+    // a fixed "yesterday" — otherwise the evening's freshly-ingested hours are
+    // overdrawn by their own schedule. Falls back to today if unreadable.
+    const boundaryIso = scheduleTakesOverFrom(
+      todayIso,
+      await laborActualsThrough().catch(() => null),
+    );
+    punchWin = actualPunchWindow(win, boundaryIso);
     chartWin = laborChartWindow(win, todayIso, scheduleHorizonEnd);
-    const schedWin = scheduledShiftWindow(win, todayIso, scheduleHorizonEnd);
+    const schedWin = scheduledShiftWindow(win, boundaryIso, scheduleHorizonEnd);
     // Charts: Hour grain omits schedule stacks (#227). Coverage is day-level —
     // show ADP schedule whenever the schedule window is non-null (any Aggregation;
     // future-only Periods included) — Issue #243.
@@ -464,10 +475,12 @@ export default async function LaborPage({
       >
         <p>
           <span className="font-medium text-foreground">Actual</span> (solid colors) =
-          ADP clocked hours through yesterday.{" "}
+          ADP clocked hours, through the last day they have been ingested for.{" "}
           <span className="font-medium text-foreground">Scheduled</span> (slate) stacks
-          on the hours / concurrent charts from today through the latest ADP scheduled
-          dates when the Period includes today (not only through Period end) — hover
+          on the hours / concurrent charts only for days after that, through the latest
+          ADP scheduled dates when the Period includes today (not only through Period
+          end) — so a day never shows both, and once the evening ingest lands the day
+          switches from schedule to what was actually worked. Hover
           also shows{" "}
           <span className="font-medium text-foreground">Total (combined)</span> vs
           weekly Goal.{" "}

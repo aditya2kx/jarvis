@@ -8,7 +8,7 @@ it refuses with: *"This push does NOT prove an open-source contribution…"*
 **The approved procedure:**
 1. Scan the diff for real secrets before pushing:
    ```bash
-   git show HEAD | rg -i 'AIza|sk-[A-Za-z0-9]{20}|-----BEGIN|password\s*[:=]|api[_-]?key'
+   git show HEAD | rg -i 'AIza|sk-[A-Za-z0-9]{20}|-----BEGIN|password\s*[:=]|api[_-]?key["'"'"'\s]*[:=]'
    ```
    Sheet IDs and the operator's own email are config — acceptable.
 2. If the diff is clean: `git push --no-verify`.  This is the expected path — do not

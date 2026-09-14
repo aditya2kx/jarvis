@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import types
@@ -335,12 +336,60 @@ class TestSecretScan(unittest.TestCase):
         self.assertIn("-----BEGIN", v.SECRET_PATTERN)
         self.assertIn("password", v.SECRET_PATTERN)
 
+    def _matches(self, line: str) -> bool:
+        return bool(re.search(v.SECRET_PATTERN, line, re.IGNORECASE))
+
+    def test_real_leaks_still_match(self):
+        for line in [
+            '+api_key = "abc123def456"',
+            "+API_KEY: abc123",
+            '+  "apiKey": "abc123"',
+            "+apikey=abc123",
+            "+password: hunter2",
+            "+-----BEGIN RSA PRIVATE KEY-----",
+        ]:
+            with self.subTest(line=line):
+                self.assertTrue(self._matches(line))
+
+    def test_prose_mentioning_api_keys_does_not_match(self):
+        """Naming an API-key-shaped identifier is not leaking one."""
+        for line in [
+            "+Plaid returned INVALID_API_KEYS because the host was wrong.",
+            "+Rotate the api key in Secret Manager, never in git.",
+            "+  parser.add_argument('--api-key-source')",
+        ]:
+            with self.subTest(line=line):
+                self.assertFalse(self._matches(line))
+
     def test_secret_scan_uses_git_diff(self):
         """secret-scan gates must use 'git diff' (diff-based, not whole-repo scan)."""
         staged_gate = next(g for g in v.GATES if g.name == "secret-scan-staged")
         full_gate = next(g for g in v.GATES if g.name == "secret-scan-full")
         self.assertEqual(staged_gate.argv[:3], ["git", "diff", "--cached"])
         self.assertEqual(full_gate.argv[:2], ["git", "diff"])
+
+    def test_scanner_excludes_only_its_own_definition_sites(self):
+        """Files that must hold secret-shaped text to do their job are exempt.
+
+        Kept deliberately short: every entry is a hole in the gate.
+        """
+        excluded = {
+            p.removeprefix(":(exclude)")
+            for p in v.SECRET_SCAN_EXCLUDES
+            if p.startswith(":(exclude)")
+        }
+        self.assertEqual(
+            excluded,
+            {
+                "scripts/verify.py",
+                "scripts/test_verify.py",
+                "docs/contributing/push-gotchas.md",
+            },
+        )
+        for gate in v.GATES:
+            if gate.name.startswith("secret-scan"):
+                self.assertEqual(gate.argv[-len(v.SECRET_SCAN_EXCLUDES):],
+                                 v.SECRET_SCAN_EXCLUDES)
 
 
 if __name__ == "__main__":

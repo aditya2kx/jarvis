@@ -105,6 +105,52 @@ _SCOPE_CLEAR_COL: dict[str, str] = {
 }
 
 
+def _grain_col(table: str) -> str:
+    """The column whose value names one whole unit of ``table``'s grain.
+
+    Daily tables are keyed by ``date``; weekly by ``iso_week``; period-grained by
+    the period start. This is the column ``touched_scope`` enumerates and the one
+    ``load_model_rows(scope=...)`` filters on.
+    """
+    return _SCOPE_CLEAR_COL.get(table) or _MERGE_KEYS[table][0]
+
+
+def touched_scope(dates: list[str], periods: list[dict]) -> dict[str, set[str]]:
+    """Map each model table to the grain units a set of dates touches.
+
+    Daily tables get the dates themselves. Week- and period-grained tables get
+    the *containing* ISO week / pay period, because those rows are aggregates:
+    rewriting half a week would be worse than not rewriting it at all. Each such
+    unit is rebuilt whole, from full-history inputs, so a partial week still
+    materializes the same row a full rebuild would.
+
+    ``periods`` is ``discover_periods`` output (dicts with ISO ``start``/``end``).
+    """
+    days = {str(d) for d in dates}
+    weeks: set[str] = set()
+    period_starts: set[str] = set()
+    for d in sorted(days):
+        day = datetime.date.fromisoformat(d)
+        monday = day - datetime.timedelta(days=day.weekday())
+        iso_year, iso_week, _ = monday.isocalendar()
+        weeks.add(f"{iso_year}-W{iso_week:02d}")
+        for p in periods:
+            if str(p["start"]) <= d <= str(p["end"]):
+                period_starts.add(str(p["start"]))
+                break
+
+    scope: dict[str, set[str]] = {}
+    for table in _MERGE_KEYS:
+        col = _grain_col(table)
+        if col == "date":
+            scope[table] = set(days)
+        elif col == "iso_week":
+            scope[table] = weeks
+        else:
+            scope[table] = period_starts
+    return scope
+
+
 def _clean_str(v: object) -> str:
     """Strip Google Sheets text-force prefix (') and whitespace from strings."""
     s = str(v).strip()
@@ -242,6 +288,7 @@ def load_model_rows(
     materialized_at: datetime.datetime | None = None,
     replace: bool = False,
     replace_scope: bool = False,
+    scope: set[str] | None = None,
 ) -> int:
     """Convert build_*-style header+rows output and upsert into a BQ model table.
 
@@ -260,6 +307,10 @@ def load_model_rows(
     evicts ghost rows for employees who dropped out (e.g. excluded mid-period)
     without touching unrelated partitions. Use for all tables in _SCOPE_CLEAR_COL.
     The delete is idempotent: re-running with the same batch converges correctly.
+
+    ``scope`` restricts the write to rows whose grain value (see ``_grain_col``)
+    is in the set — the rest are left as they already stand in BQ. Passing None
+    writes every built row (full rebuild).
     """
     if not header_rows or len(header_rows) < 2:
         return 0
@@ -272,18 +323,31 @@ def load_model_rows(
         _assert_sandbox_write_isolation()
         read_query(f"DELETE FROM `{_PROJECT_ID}.{_DATASET}.{table}` WHERE TRUE")
     dicts = _header_rows_to_dicts(header_rows)
+    if scope is not None:
+        col = _grain_col(table)
+        before = len(dicts)
+        dicts = [d for d in dicts if _clean_str(d.get(col, "")) in scope]
+        print(f"  {table}: scoped to {len(dicts)}/{before} row(s) on {col}")
+        if not dicts:
+            return 0
     if replace_scope and not dry_run:
         from core.datastore import (  # noqa: PLC0415
-            read_query, _PROJECT_ID, _DATASET, _assert_sandbox_write_isolation,
+            assert_unique_natural_key, merge_rows_scoped,
         )
-        _assert_sandbox_write_isolation()
-        col = _SCOPE_CLEAR_COL[table]
-        vals = sorted({_clean_str(d[col]) for d in dicts if d.get(col) is not None})
-        if vals:
-            in_list = ", ".join(f"'{v}'" for v in vals)
-            read_query(
-                f"DELETE FROM `{_PROJECT_ID}.{_DATASET}.{table}` WHERE {col} IN ({in_list})"
-            )
+
+        coerced = [_coerce(table, d, materialized_at) for d in dicts]
+        if not coerced:
+            return 0
+        n = merge_rows_scoped(
+            table,
+            coerced,
+            merge_keys=_MERGE_KEYS[table],
+            scope_col=_SCOPE_CLEAR_COL[table],
+            column_bq_types=_col_type_hints(table),
+        )
+        assert_unique_natural_key(table, _MERGE_KEYS[table])
+        print(f"  {table}: {n} rows merged (atomic scoped)")
+        return n
     return _load(table, dicts, materialized_at, dry_run)
 
 
@@ -292,6 +356,7 @@ def _evict_whole_day_exempt_tip_alloc(
     training_shifts: dict[tuple[str, str], dict],
     *,
     dry_run: bool,
+    only_dates: set[str] | None = None,
 ) -> int:
     """DELETE tip_alloc_daily rows for whole-day tip exemptions (0 eligible hours).
 
@@ -304,6 +369,7 @@ def _evict_whole_day_exempt_tip_alloc(
         (name, date_iso)
         for (name, date_iso), meta in training_shifts.items()
         if not (meta.get("exempt_start") and meta.get("exempt_end"))
+        and (only_dates is None or date_iso in only_dates)
     ]
     if not whole_day:
         return 0
@@ -330,7 +396,9 @@ def _evict_whole_day_exempt_tip_alloc(
     return len(whole_day)
 
 
-def _assert_conservation(period_results: list[dict]) -> None:
+def _assert_conservation(
+    period_results: list[dict], only_starts: set[str] | None = None
+) -> None:
     """Verify tip-pool conservation for every period: allocated == pool.
 
     The allocator distributes the full tip pool across employees — the sum of
@@ -338,8 +406,14 @@ def _assert_conservation(period_results: list[dict]) -> None:
     tolerance (1 cent). Raises RuntimeError with the offending period + delta
     on violation so the pipeline fails loudly rather than silently writing
     incorrect BQ rows.
+
+    ``only_starts`` limits the check to the periods this run actually wrote. A
+    scoped recompute must not fail on a pre-existing defect in a period it never
+    touched — that turns one bad period into a total outage (2026-09-07).
     """
     for p in period_results:
+        if only_starts is not None and str(p["start"]) not in only_starts:
+            continue
         if p.get("is_open"):
             # Open periods are in-progress; conservation holds only for closed ones.
             continue
@@ -355,8 +429,21 @@ def _assert_conservation(period_results: list[dict]) -> None:
             )
 
 
-def materialize(store: str, *, dry_run: bool = False) -> None:
-    """Build all model tabs from BQ raw data and write to model_* tables."""
+def materialize(
+    store: str,
+    *,
+    dates: list[str] | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Build model tabs from BQ raw data and write to model_* tables.
+
+    ``dates`` scopes the *write* to the grain units those dates touch (see
+    ``touched_scope``); None rebuilds everything, which is what the backfill path
+    wants. The *computation* stays full-history either way: every aggregate is
+    derived from the complete raw read, so a scoped run writes byte-identical
+    rows to what a full rebuild would — it just leaves untouched dates alone
+    instead of restamping 83 days on every nightly.
+    """
     import json
 
     profile_path = _STORE_PROFILES / f"{store}.json"
@@ -364,7 +451,8 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
         raise FileNotFoundError(f"Store profile not found: {profile_path}")
     profile = json.loads(profile_path.read_text())
 
-    print(f"# materialize_model_bq [{store}] dry_run={dry_run}")
+    scope_label = ",".join(dates) if dates else "full history"
+    print(f"# materialize_model_bq [{store}] dry_run={dry_run} scope={scope_label}")
 
     # ── Load raw data from BQ ────────────────────────────────────────────────
     print("# Loading raw data from BigQuery...")
@@ -537,25 +625,36 @@ def materialize(store: str, *, dry_run: bool = False) -> None:
     day_alloc_rows = build_tip_alloc_daily_rows(period_results, daily_summary)
     summary_rows = build_period_summary_rows(period_results)
 
+    # ── Resolve the write scope ──────────────────────────────────────────────
+    scopes = touched_scope(dates, periods) if dates else {}
+    if dates:
+        print(
+            f"# Scoped write: {len(scopes['model_daily'])} day(s), "
+            f"{len(scopes['model_labor_weekly'])} ISO week(s), "
+            f"{len(scopes['model_period_summary'])} pay period(s)"
+        )
+
     # ── Post-build conservation check (fail loudly on any tip-pool drift) ────
-    _assert_conservation(period_results)
+    _assert_conservation(period_results, scopes.get("model_period_summary"))
 
     materialized_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
     # ── Write to BQ model tables via the shared loader ───────────────────────
     print("# Writing to BigQuery...")
-    load_model_rows("model_daily", daily_rows, dry_run=dry_run, materialized_at=materialized_at)
-    load_model_rows("model_labor_daily", labor_daily_rows, dry_run=dry_run, materialized_at=materialized_at)
-    load_model_rows("model_labor_weekly", labor_weekly_rows, dry_run=dry_run, materialized_at=materialized_at)
-    load_model_rows("model_labor_period", labor_period_rows, dry_run=dry_run, materialized_at=materialized_at)
-    load_model_rows("model_tip_alloc_period", period_rows, dry_run=dry_run, materialized_at=materialized_at, replace_scope=True)
-    load_model_rows("model_tip_alloc_daily", day_alloc_rows, dry_run=dry_run, materialized_at=materialized_at, replace_scope=True)
+    load_model_rows("model_daily", daily_rows, dry_run=dry_run, materialized_at=materialized_at, scope=scopes.get("model_daily"))
+    load_model_rows("model_labor_daily", labor_daily_rows, dry_run=dry_run, materialized_at=materialized_at, scope=scopes.get("model_labor_daily"))
+    load_model_rows("model_labor_weekly", labor_weekly_rows, dry_run=dry_run, materialized_at=materialized_at, scope=scopes.get("model_labor_weekly"))
+    load_model_rows("model_labor_period", labor_period_rows, dry_run=dry_run, materialized_at=materialized_at, scope=scopes.get("model_labor_period"))
+    load_model_rows("model_tip_alloc_period", period_rows, dry_run=dry_run, materialized_at=materialized_at, replace_scope=True, scope=scopes.get("model_tip_alloc_period"))
+    load_model_rows("model_tip_alloc_daily", day_alloc_rows, dry_run=dry_run, materialized_at=materialized_at, replace_scope=True, scope=scopes.get("model_tip_alloc_daily"))
     # Whole-day tip exemptions drop to 0 eligible hours and disappear from
     # day_alloc_rows. replace_scope clears by date then MERGEs survivors — but
     # a concurrent raced materialize can re-insert pre-exemption ghost rows for
     # those employees. Evict explicitly from training_shifts whole-day marks.
-    _evict_whole_day_exempt_tip_alloc(store, training_shifts, dry_run=dry_run)
-    load_model_rows("model_period_summary", summary_rows, dry_run=dry_run, materialized_at=materialized_at)
+    _evict_whole_day_exempt_tip_alloc(
+        store, training_shifts, dry_run=dry_run, only_dates=scopes.get("model_tip_alloc_daily")
+    )
+    load_model_rows("model_period_summary", summary_rows, dry_run=dry_run, materialized_at=materialized_at, scope=scopes.get("model_period_summary"))
 
     # ── Load forecast (future window + gap-fill backfill; non-fatal) ─────────
     # Future rows (today+1..today+N): MERGE on date — always reflects the current
@@ -612,8 +711,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Materialize BHAGA model into BigQuery.")
     parser.add_argument("--store", required=True, help="Store name (e.g. palmetto)")
     parser.add_argument("--dry-run", action="store_true", help="Print row counts without writing")
+    parser.add_argument(
+        "--dates",
+        default="",
+        help="Comma-separated ISO dates to scope the write to "
+             "(requires BHAGA_SCOPED_MATERIALIZE=1; otherwise ignored).",
+    )
     args = parser.parse_args()
-    materialize(args.store, dry_run=args.dry_run)
+    dates = [d.strip() for d in args.dates.split(",") if d.strip()]
+    if dates and not os.environ.get("BHAGA_SCOPED_MATERIALIZE"):
+        print(
+            f"# --dates {args.dates} ignored — BHAGA_SCOPED_MATERIALIZE is off; "
+            "rebuilding full history."
+        )
+        dates = []
+    materialize(args.store, dates=dates or None, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

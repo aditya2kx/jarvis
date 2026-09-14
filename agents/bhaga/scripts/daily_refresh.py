@@ -2641,7 +2641,46 @@ def _run_refresh(run_id: str) -> int:
     # read as "bad output". An in-flight OTP READY resume is allowed through
     # (it's completing a handshake, not a fresh attempt); --ignore-halt /
     # BHAGA_IGNORE_HALT lets the operator run a fix (which auto-clears below).
-    halt = None if args.dry_run else _adapter_get_pipeline_halt()
+    halt = None if args.dry_run else _adapter_get_pipeline_halt(include_expired=True)
+
+    # An expired breaker resumes — but never silently. Clear it, say so, and let
+    # the run proceed; a breaker that holds unattended is the six-day outage.
+    if halt and halt.get("expired"):
+        print(f"[pipeline_halt] breaker EXPIRED (tripped {halt.get('since')}, "
+              f"TTL reached at {halt.get('expires_at')}) — auto-resuming.",
+              file=sys.stderr)
+        try:
+            failure_alert(
+                step="pipeline_halt_expired",
+                exception=RuntimeError(
+                    f"breaker expired without operator action: {halt.get('reason')}"
+                ),
+                date=refresh_date.isoformat(),
+                evidence_uri=None,
+                extra=(
+                    "The circuit breaker reached its TTL and auto-resumed. Nobody "
+                    "acted on the original fault, so the underlying defect may still "
+                    "be present — check the reason above against tonight's output."
+                ),
+            )
+        except Exception:  # noqa: BLE001, S110
+            pass
+        try:
+            _adapter_clear_pipeline_halt()
+        except Exception:  # noqa: BLE001, S110
+            pass
+        halt = None
+
+    # A model-scoped breaker stops model writes only. Raw ingest keeps running:
+    # refusing to collect Square/ADP data cannot fix a bad computation, and on
+    # 2026-09-07 it cost six days of raw data that then had to be backfilled.
+    if halt and not args.ignore_halt and halt.get("scope") != "all":
+        print(f"[pipeline_halt] breaker tripped at scope=model "
+              f"({halt.get('reason')}) — skipping model writes, CONTINUING raw "
+              f"ingest.", file=sys.stderr)
+        args.skip_model = True
+        halt = None
+
     if halt and not args.ignore_halt:
         pending = _adapter_get_pending_otp(refresh_date)
         otp_resume = bool(pending and pending.get("ready_received"))
@@ -3165,11 +3204,17 @@ def _run_refresh(run_id: str) -> int:
             "BHAGA_DATASTORE": "bigquery",
             "PYTHONUNBUFFERED": "1",
         }
+        # Scope the write to the date being refreshed. materialize_model_bq
+        # ignores --dates unless BHAGA_SCOPED_MATERIALIZE is set, so the default
+        # remains a full rebuild until the flag is turned on.
+        bq_model_cmd = [
+            sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
+            "--store", args.store, "--dates", refresh_date.isoformat(),
+        ]
         ok, val = run_step(
             "materialize_model_bq",
             lambda: subprocess.run(
-                [sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
-                 "--store", args.store],
+                bq_model_cmd,
                 cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
             ),
             refresh_date=refresh_date,

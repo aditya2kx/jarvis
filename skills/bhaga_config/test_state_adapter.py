@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import os
 from unittest.mock import MagicMock, patch
 
@@ -192,6 +193,44 @@ class TestPipelineHaltLocal:
         # Idempotent.
         state_adapter.clear_pipeline_halt()
         assert state_adapter.get_pipeline_halt() is None
+
+    def test_defaults_to_model_scope_with_a_ttl(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        rec = state_adapter.set_pipeline_halt(reason="boom")
+        assert rec["scope"] == state_adapter.HALT_SCOPE_MODEL
+        assert rec["expires_at"]  # bounded by default — cannot hold forever
+
+    def test_expired_halt_reads_as_not_halted(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        state_adapter.set_pipeline_halt(reason="boom", ttl_hours=1)
+        path = tmp_path / ".bhaga" / "state" / "pipeline_state.json"
+        data = json.loads(path.read_text())
+        data["expires_at"] = (
+            datetime.datetime.now(state_adapter.CT) - datetime.timedelta(hours=1)
+        ).isoformat()
+        path.write_text(json.dumps(data))
+
+        assert state_adapter.get_pipeline_halt() is None
+        # …but it is still visible to a caller that wants to escalate the expiry.
+        stale = state_adapter.get_pipeline_halt(include_expired=True)
+        assert stale["expired"] is True
+        assert stale["reason"] == "boom"
+
+    def test_ttl_zero_never_expires(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        rec = state_adapter.set_pipeline_halt(reason="boom", ttl_hours=0)
+        assert rec["expires_at"] is None
+        assert state_adapter.get_pipeline_halt() is not None
+
+    def test_record_without_expires_at_never_expires(self, tmp_path, monkeypatch):
+        """A halt written before TTLs existed must not un-halt itself on upgrade."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        path = tmp_path / ".bhaga" / "state" / "pipeline_state.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"halted": True, "reason": "legacy"}))
+        got = state_adapter.get_pipeline_halt()
+        assert got is not None
+        assert got["expired"] is False
 
     def test_not_keyed_by_refresh_date(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))

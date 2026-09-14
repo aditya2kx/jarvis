@@ -1,3 +1,13 @@
+## 2026-09-13 — Pipeline stopped corrupting data, halting on itself, and hiding it (Issue #285)
+
+**Scope:** Nothing landed after 2026-09-06. Two manual Operator Console backfills on 09-07 raced a non-atomic delete-then-merge, doubling 389 `(date, employee)` keys in `model_tip_alloc_daily`. Tip-pool conservation caught it and tripped the breaker — correctly — but the breaker was untiered and never expired, so a model-layer fault also stopped Square and ADP ingest for a week while the Operator Console showed stale numbers as if healthy. Payroll was never wrong: `vw_model_payroll_period` reads `model_tip_alloc_period`, which stayed clean (144 compared / $0.00 delta).
+
+**Key changes:** `merge_rows_scoped` makes the model write one atomic `MERGE` (`WHEN NOT MATCHED BY SOURCE THEN DELETE`) plus `assert_unique_natural_key`, so concurrency can no longer duplicate; console + multi-date Slack refresh serialize on a resource-keyed busy guard. `touched_scope` + `--dates` scope a recompute to the grain units a date actually touches (aggregates rebuilt whole), behind `BHAGA_SCOPED_MATERIALIZE`, default off. Halts gained `scope` (`model` skips model writes, raw ingest continues) and a TTL that auto-resumes with an alarm; `HealthBanner` puts halt + data age on every console page; independent staleness alarm fires when the model stops advancing. ADP scraper handles the Session Timeout modal (`div.message-box-outer`, `Ok` never `Cancel`), clears the Directory Active filter (Flores is Terminated — he was never in the list), refuses ambiguous matches (`Johnson, Dolce` vs `Johnson, Dolce J`), and alerts on `remaining_gaps` instead of scrape mechanism. Plaid's `INVALID_API_KEYS` was not an expired key: the Cloud Run *job* never set `PLAID_ENV`, so production secrets went to sandbox — no rotation needed.
+
+**Decision:** raw reads stay unbounded. Scoping the write is a correctness fix (skipped rows are byte-identical); scoping the read would recompute week/period aggregates from partial inputs. Cost, not correctness — its own change.
+
+**Evidence:** once the breaker was cleared the 21:30 CDT cron closed the 09-07→09-13 gap unaided (`bhaga-daily-refresh-mvsvx`, exit 0, 614.7s, conservation 180 dates / 0c residual). `model_tip_alloc_daily` now 814 rows / 814 distinct keys through 09-13 — the dedupe survived a full regeneration from raw.
+
 ## 2026-09-13 — Garage radius becomes runtime config, set to 300 m (Issue #286)
 
 **Scope:** Operator asked to drop the enter radius 500 → 300 m and pushed back that a threshold change should not need a code deploy. Revises #280: that PR removed the runtime knob to end a three-writer ambiguity, which made every threshold tweak an image build + Cloud Run rollout.

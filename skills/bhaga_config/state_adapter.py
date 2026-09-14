@@ -39,6 +39,11 @@ __all__ = [
     "get_pipeline_halt",
     "set_pipeline_halt",
     "clear_pipeline_halt",
+    "get_notify_state",
+    "set_notify_state",
+    "HALT_SCOPE_MODEL",
+    "HALT_SCOPE_ALL",
+    "DEFAULT_HALT_TTL_HOURS",
     "try_acquire_lock",
     "release_lock",
 ]
@@ -374,24 +379,58 @@ def _pipeline_state_doc_ref(client):
     return client.collection(collection).document(_PIPELINE_STATE_DOC)
 
 
-def get_pipeline_halt() -> dict | None:
-    """Return the halt record if the pipeline is currently HALTED, else None."""
+HALT_SCOPE_MODEL = "model"
+HALT_SCOPE_ALL = "all"
+DEFAULT_HALT_TTL_HOURS = 12
+
+
+def _annotate_halt(data: dict) -> dict:
+    """Add the derived ``expired`` bit to a halt record.
+
+    A record with no ``expires_at`` (written before TTLs existed) never expires,
+    so an upgrade cannot silently un-halt a pipeline that is still broken.
+    """
+    expires_at = data.get("expires_at")
+    expired = False
+    if expires_at:
+        try:
+            expired = datetime.datetime.now(CT) >= datetime.datetime.fromisoformat(expires_at)
+        except (TypeError, ValueError):
+            expired = False
+    return {**data, "expired": expired}
+
+
+def get_pipeline_halt(*, include_expired: bool = False) -> dict | None:
+    """Return the halt record if the pipeline is currently HALTED, else None.
+
+    An expired halt reads as *not* halted by default, so a breaker can never hold
+    the pipeline down indefinitely on its own (the 2026-09-07 six-day outage).
+    Pass ``include_expired=True`` to see it anyway — the nightly does, so it can
+    escalate the expiry instead of resuming silently.
+
+    The returned record carries an ``expired`` bool alongside the stored fields.
+    """
     if _state_backend() == "firestore":
         client = _get_firestore_client()
         doc = _pipeline_state_doc_ref(client).get()
         if not doc.exists:
             return None
         data = doc.to_dict() or {}
-        return data if data.get("halted") else None
+    else:
+        path = _local_pipeline_state_path()
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
 
-    path = _local_pipeline_state_path()
-    if not path.exists():
+    if not data.get("halted"):
         return None
-    try:
-        data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+    record = _annotate_halt(data)
+    if record["expired"] and not include_expired:
         return None
-    return data if data.get("halted") else None
+    return record
 
 
 def set_pipeline_halt(
@@ -399,13 +438,32 @@ def set_pipeline_halt(
     reason: str,
     refresh_date: datetime.date | None = None,
     since: str | None = None,
+    scope: str = HALT_SCOPE_MODEL,
+    ttl_hours: int = DEFAULT_HALT_TTL_HOURS,
 ) -> dict:
-    """Trip the breaker. Idempotent (a re-trip just refreshes reason/since)."""
+    """Trip the breaker. Idempotent (a re-trip just refreshes reason/since).
+
+    ``scope`` decides how much the breaker stops:
+      - ``model`` (default) — model writes are skipped, raw ingest keeps running.
+        Almost every trip is a model-layer fault, and stopping ingest for one is
+        what turned a bad computation into six days of uncollected Square/ADP
+        data. Raw ingest cannot make a model fault worse; refusing to collect can.
+      - ``all`` — refuse the whole run, for faults that make ingest itself unsafe.
+
+    ``ttl_hours`` bounds how long the breaker can hold unattended; pass 0 for a
+    halt that never expires.
+    """
+    now = datetime.datetime.now(CT)
     payload = {
         "halted": True,
         "reason": reason,
-        "since": since or datetime.datetime.now(CT).isoformat(),
+        "since": since or now.isoformat(),
         "refresh_date": refresh_date.isoformat() if refresh_date else None,
+        "scope": scope,
+        "expires_at": (
+            (now + datetime.timedelta(hours=ttl_hours)).isoformat()
+            if ttl_hours else None
+        ),
     }
     if _state_backend() == "firestore":
         client = _get_firestore_client()
@@ -424,7 +482,10 @@ def clear_pipeline_halt() -> None:
     if _state_backend() == "firestore":
         client = _get_firestore_client()
         _pipeline_state_doc_ref(client).set(
-            {"halted": False, "reason": None, "since": None, "refresh_date": None}
+            {
+                "halted": False, "reason": None, "since": None,
+                "refresh_date": None, "scope": None, "expires_at": None,
+            }
         )
         return
     path = _local_pipeline_state_path()
@@ -432,6 +493,59 @@ def clear_pipeline_halt() -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+# ── Notification memory ────────────────────────────────────────────────────
+# A singleton doc (same shape/locality as the breaker) recording what has
+# already been said, so a recurring condition is reported once instead of every
+# night. Sandbox-isolated like all other run state.
+
+_NOTIFY_STATE_FILE = "notify_state.json"
+_NOTIFY_STATE_DOC = "_notify_state"
+
+
+def _local_notify_state_path() -> pathlib.Path:
+    return pathlib.Path.home() / ".bhaga" / "state" / _NOTIFY_STATE_FILE
+
+
+def get_notify_state(key: str) -> list:
+    """Return the remembered list for ``key`` (empty when nothing is stored)."""
+    if _state_backend() == "firestore":
+        client = _get_firestore_client()
+        collection = _collection_name()
+        _assert_sandbox_state_isolation(collection)
+        doc = client.collection(collection).document(_NOTIFY_STATE_DOC).get()
+        data = (doc.to_dict() or {}) if doc.exists else {}
+    else:
+        path = _local_notify_state_path()
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return []
+    value = data.get(key)
+    return list(value) if isinstance(value, list) else []
+
+
+def set_notify_state(key: str, value: list) -> None:
+    """Remember ``value`` under ``key``. Merges — other keys are untouched."""
+    if _state_backend() == "firestore":
+        client = _get_firestore_client()
+        collection = _collection_name()
+        _assert_sandbox_state_isolation(collection)
+        client.collection(collection).document(_NOTIFY_STATE_DOC).set(
+            {key: list(value)}, merge=True
+        )
+        return
+    path = _local_notify_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        data = {}
+    data[key] = list(value)
+    path.write_text(json.dumps(data, indent=2))
 
 
 def _local_failure_path(refresh_date: datetime.date, step: str) -> pathlib.Path:

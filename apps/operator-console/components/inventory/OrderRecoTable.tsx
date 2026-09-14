@@ -130,6 +130,20 @@ export function OrderRecoTable({
       },
     ];
 
+    // With no delivery date there are no order columns to show, so Days left is
+    // the only thing left that can be acted on — and it is the urgent one. When
+    // dates exist it stays out of the way: each slot already carries its own
+    // "Days Left N" after that restock.
+    if (dates.length === 0) {
+      cols.push({
+        accessorKey: "Days left",
+        header: "Days left",
+        meta: {
+          format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS },
+        },
+      });
+    }
+
     dates.forEach((raw, i) => {
       const slot = i + 1;
       const date = normalizeDeliveryDate(raw) || `slot ${slot}`;

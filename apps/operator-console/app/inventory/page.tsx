@@ -1,6 +1,7 @@
 import {
   baseRunway,
   estimatedScheduleDates,
+  inventoryStockLevels,
   nextDates,
   orderRecoRefreshedAt,
   orderRecoSlots,
@@ -21,6 +22,7 @@ import {
   pivotOrderRecoSlots,
   rowsForPaintGeneration,
   selectPaintGeneration,
+  stockOnlyRows,
   type OrderRecoPivotedRow,
 } from "@/lib/inventory/orderRecoPivot";
 import {
@@ -93,6 +95,8 @@ export default async function InventoryPage({
   let recoQueued = false;
   let recoBaseline: string | null = null;
   let recoPending = false;
+  /** Showing stock/burn only, because no delivery date is registered. */
+  let stockOnly = false;
   try {
     // Prod: enqueue Cloud Run when stale. Local BYPASS_IAP: refresh inline so
     // Inventory columns match schedule without waiting on a job.
@@ -134,6 +138,14 @@ export default async function InventoryPage({
       delivery_date: normalizeDeliveryDate(d.delivery_date),
       has_actuals: Boolean(d.has_actuals),
     }));
+    // No delivery date on the books: the ordering columns are undefined, but
+    // stock and burn rate are not. Fall back to them rather than rendering an
+    // empty table — a blank page looks like "nothing to do" at exactly the
+    // moment a base may be days from running out.
+    if (dates.length === 0) {
+      rows = stockOnlyRows(await inventoryStockLevels(DEFAULT_STORE));
+      stockOnly = rows.length > 0;
+    }
     estimateByDate = buildEstimateByDate(paintRows);
     const maxTubsRow = config.find((c) => c.key === "order_reco_max_tubs");
     maxTubs = maxTubsRow ? Number(maxTubsRow.value) : undefined;
@@ -160,10 +172,16 @@ export default async function InventoryPage({
     { accessorKey: "Status 2", header: "Status 2", meta: { format: { kind: "status" } } },
   ];
 
+  // Say what is missing AND what still holds. The bare "No delivery date
+  // registered yet." over an empty table read as "no data", when in fact
+  // current stock and burn rate were known the whole time.
   const nextDeliveryLabel =
-    liveDates.length === 0
-      ? "No delivery date registered yet."
-      : `Next delivery: ${liveDates.join(" · then ")}`;
+    liveDates.length > 0
+      ? `Next delivery: ${liveDates.join(" · then ")}`
+      : stockOnly
+        ? "No delivery date registered yet — showing current stock and burn rate. " +
+          "Register a delivery date to get order quantities."
+        : "No delivery date registered yet.";
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-4">
@@ -235,13 +253,21 @@ export default async function InventoryPage({
           </div>
 
           <p className="text-sm text-muted-foreground">{nextDeliveryLabel}</p>
-          <p className="text-xs text-muted-foreground">
-            Order weight (lbs) = Order tubs × per-tub weight (Açaí 18 lbs; other bases 20 lbs;
-            Blade is direct-delivery / not weighed). TOTAL includes +50 lbs per pallet (40
-            tubs/pallet) — same as Grafana Order Assistant. Click an Order tubs cell (or the
-            pencil in the header) to edit that delivery: Estimated dates pin Manual values;
-            Actuals dates update uploaded Actuals. Apply once recomputes the recommendation.
-          </p>
+          {stockOnly ? (
+            <p className="text-xs text-muted-foreground">
+              Days left = Current Qty ÷ Avg/day, from the latest closing counts. Order
+              quantities need a delivery date to count back from, so those columns appear
+              once one is registered.
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Order weight (lbs) = Order tubs × per-tub weight (Açaí 18 lbs; other bases 20 lbs;
+              Blade is direct-delivery / not weighed). TOTAL includes +50 lbs per pallet (40
+              tubs/pallet) — same as Grafana Order Assistant. Click an Order tubs cell (or the
+              pencil in the header) to edit that delivery: Estimated dates pin Manual values;
+              Actuals dates update uploaded Actuals. Apply once recomputes the recommendation.
+            </p>
+          )}
           <OrderRecoTable
             dates={dates}
             estimatedDates={estimatedDates}

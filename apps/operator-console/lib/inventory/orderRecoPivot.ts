@@ -76,6 +76,36 @@ export function pivotOrderRecoSlots(
   });
 }
 
+export type InventoryStockLongRow = {
+  Item: string;
+  "Current Qty": number;
+  "Avg per day": number;
+  "Days left": number | null;
+};
+
+/**
+ * Rows for the no-delivery-date case: stock and burn rate, no order columns.
+ *
+ * Every ordering column (On Hand at Restock, Order Tubs, After Restock) is
+ * defined relative to a delivery date, so without one there is genuinely
+ * nothing to say about them. Current Qty, Avg/day and Days left are not —
+ * they describe the store right now. Showing them keeps the page useful
+ * while a date is missing, instead of going blank and hiding a base that is
+ * days from running out.
+ *
+ * Shaped as `OrderRecoPivotedRow` so the same table renders both cases; with
+ * `dates` empty the per-slot columns simply do not exist.
+ */
+export function stockOnlyRows(rows: InventoryStockLongRow[]): OrderRecoPivotedRow[] {
+  return rows.map((r) => ({
+    Item: r.Item,
+    "Current Qty": Number(r["Current Qty"] ?? 0),
+    "Avg per day": Number(r["Avg per day"] ?? 0),
+    "Days left": r["Days left"] == null ? null : Number(r["Days left"]),
+    _ord: 0,
+  }));
+}
+
 function tubsOf(row: OrderRecoSlotLongRow): number {
   return Number(row["Order Tubs"] ?? 0);
 }

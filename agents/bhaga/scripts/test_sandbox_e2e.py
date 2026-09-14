@@ -965,7 +965,25 @@ class TestRetroExclusion(unittest.TestCase):
         for i, emp in enumerate(employees):
             s = share + (1 if i < remainder else 0)
             rows.append([date, emp, s, pool_cents])
+        bq_state = store[0]
+
+        def fake_merge_rows_scoped(tbl, batch, *, merge_keys, scope_col, column_bq_types=None):
+            """In-memory stand-in for the atomic scoped MERGE: upsert the batch,
+            then evict target rows in the batch's scope that the batch omitted."""
+            store[2](tbl, batch, merge_keys=merge_keys)
+            batch_keys = {tuple(str(r.get(k)) for k in merge_keys) for r in batch}
+            scope_vals = {str(r[scope_col]) for r in batch if r.get(scope_col) is not None}
+            bq_state[tbl] = [
+                r
+                for r in bq_state.get(tbl, [])
+                if str(r.get(scope_col)) not in scope_vals
+                or tuple(str(r.get(k)) for k in merge_keys) in batch_keys
+            ]
+            return len(batch)
+
         with mock.patch.object(ds, "read_query", store[1]), \
+             mock.patch.object(ds, "merge_rows_scoped", fake_merge_rows_scoped), \
+             mock.patch.object(ds, "assert_unique_natural_key", lambda *a, **k: None), \
              mock.patch.object(m, "load_rows", store[2]), \
              mock.patch.object(m, "_col_type_hints", return_value={}):
             m.load_model_rows("model_tip_alloc_daily", rows, replace_scope=True)

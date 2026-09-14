@@ -165,6 +165,57 @@ def move_file_into_folder(token: str, file_id: str, folder_id: str) -> None:
     api_request(url, token, method="PATCH", data={})
 
 
+def widen_tabs_to_fit(token: str, spreadsheet_id: str, tab_specs: list[dict]) -> dict[str, int]:
+    """Grow any tab whose grid is narrower than its header spec needs.
+
+    ``create_spreadsheet`` reserves ``len(header) + 4`` columns, so a fresh sheet
+    always fits. A *reused* one may not: when a header spec gains columns, every
+    sheet created before that grew stays at its old width, and ``values.batchUpdate``
+    does not auto-expand a grid the way appending rows does — it rejects the whole
+    batch with ``Range (transactions!AI1) exceeds grid limits``. A sandbox slot is
+    leased and re-seeded for years, so this is drift, not a fresh-install concern.
+
+    Returns ``{tab_name: columns_added}`` for the tabs that were widened.
+    """
+    need = {
+        spec["tab_name"]: len(spec["header"]) + 2
+        for spec in tab_specs
+        if spec.get("tab_name")
+    }
+    info = api_request(
+        f"{SHEETS_API}/spreadsheets/{spreadsheet_id}"
+        "?fields=sheets.properties(sheetId,title,gridProperties/columnCount)",
+        token,
+    )
+    requests, widened = [], {}
+    for props in (s.get("properties", {}) for s in info.get("sheets", [])):
+        title = props.get("title")
+        if title not in need:
+            continue
+        have = props.get("gridProperties", {}).get("columnCount", 0)
+        short = need[title] - have
+        if short <= 0:
+            continue
+        requests.append({
+            "appendDimension": {
+                "sheetId": props["sheetId"],
+                "dimension": "COLUMNS",
+                "length": short,
+            }
+        })
+        widened[title] = short
+
+    if requests:
+        api_request(
+            f"{SHEETS_API}/spreadsheets/{spreadsheet_id}:batchUpdate",
+            token,
+            method="POST",
+            data={"requests": requests},
+        )
+        print(f"  widened narrow tab(s) to fit headers: {widened}")
+    return widened
+
+
 def seed_tab_headers(token: str, spreadsheet_id: str, tab_specs: list[dict]) -> None:
     """Batch-write header rows + a notes comment into each tab.
 
@@ -172,7 +223,10 @@ def seed_tab_headers(token: str, spreadsheet_id: str, tab_specs: list[dict]) -> 
     Notes are written into cell N1 (one column past the headers) as a freeform
     'how-to-use' string, so the operator opening the sheet sees usage context
     without us creating a separate _meta tab.
+
+    Widens any too-narrow tab first — see ``widen_tabs_to_fit``.
     """
+    widen_tabs_to_fit(token, spreadsheet_id, tab_specs)
     data = []
     for spec in tab_specs:
         tab = spec["tab_name"]

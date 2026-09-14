@@ -540,6 +540,19 @@ Run `python3 scripts/check_doc_freshness.py` before the final push.
 
 `Evidence tier: sandbox-live` · `scenario: full-live`
 
+**Breaker tiering, proven live 2026-09-14** — three sandbox runs of
+`bhaga-sandbox-refresh`, one per behaviour:
+
+| Halt state | Result | Execution |
+|---|---|---|
+| `scope="model"` | `skipping model writes, CONTINUING raw ingest` · exit 0, 19.8s | `9flws` |
+| `scope="all"` | `REFUSING TO RUN — pipeline HALTED` · `exit(3)`, `status=halted` | `bsvn8` |
+| expired TTL | `breaker EXPIRED … auto-resuming` · exit 0 · halt doc cleared to `None` | `882dp` |
+
+The first row is the whole point: under the old untiered breaker that same state
+exited non-zero and collected nothing, which is how one bad model number cost a week
+of Square and ADP data. Sandbox halt state was left clear.
+
 **Captured 2026-09-14** — run
 [34802593712](https://github.com/aditya2kx/jarvis/actions/runs/34802593712), date
 `2026-09-12`: `DONE in 113.6s`, `semantics OK — tip_pool_conservation: 147 dates, 0c`.

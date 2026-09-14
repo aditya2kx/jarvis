@@ -23,10 +23,15 @@ export function healthMessage(
   h: SystemHealth,
 ): { tone: Tone; headline: string; detail: string } | null {
   if (h.error) {
+    // Warn, not muted: "we could not tell" must not read like "nothing to see".
+    // `halted` is false here only because it is unknown, and the figures below
+    // may be stale for a reason this page cannot see.
     return {
-      tone: "muted",
+      tone: "warn",
       headline: "Pipeline health unknown",
-      detail: `Could not read breaker or data window: ${h.error}`,
+      detail:
+        `Could not read the breaker or the data window, so the figures below ` +
+        `may be stale: ${h.error}`,
     };
   }
   if (h.halted) {

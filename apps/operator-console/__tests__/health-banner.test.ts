@@ -62,8 +62,16 @@ describe("healthMessage", () => {
 
   it("admits when health could not be determined", () => {
     const msg = healthMessage({ ...HEALTHY, error: "no ADC" });
-    expect(msg?.tone).toBe("muted");
     expect(msg?.headline).toContain("unknown");
+    expect(msg?.detail).toContain("no ADC");
+  });
+
+  it("warns rather than mutes when health is unknown", () => {
+    // halted:false here means "unknown", not "fine" — a grey banner reads as
+    // nothing-to-see, which is how stale numbers pass for current.
+    const msg = healthMessage({ ...HEALTHY, error: "firestore 503" });
+    expect(msg?.tone).toBe("warn");
+    expect(msg?.detail).toContain("may be stale");
   });
 
   it("prefers the halt over staleness — the halt explains the staleness", () => {

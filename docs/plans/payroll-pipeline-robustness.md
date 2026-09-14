@@ -540,6 +540,32 @@ Run `python3 scripts/check_doc_freshness.py` before the final push.
 
 `Evidence tier: sandbox-live` · `scenario: full-live`
 
+**Captured 2026-09-14** — run
+[34802593712](https://github.com/aditya2kx/jarvis/actions/runs/34802593712), date
+`2026-09-12`: `DONE in 113.6s`, `semantics OK — tip_pool_conservation: 147 dates, 0c`.
+
+Two fixes were needed to get there, both surfaced *by* the scenario and both the same
+class of bug as the milestones themselves — a recoverable state that halted the run:
+
+1. **`widen_tabs_to_fit`** (`bootstrap_sheets.py`). A slot sheet is created with
+   `len(header) + 4` columns and leased for years; when a header spec grows, the grid
+   stays narrow and `values.batchUpdate` rejects the batch (`Range (transactions!AI1)
+   exceeds grid limits`) rather than expanding as appending rows does.
+2. **Schema-derived column types** (`core/datastore.py`). An all-`None` batch has
+   nothing to infer from, so typing fell back to STRING and BQ refused: `Value of type
+   STRING cannot be assigned to T.er_futa, which has type FLOAT64`. ADP's liability
+   body had simply omitted the FUTA line. `column_bq_types` hints existed to paper over
+   this, but that asks every call site to remember what the table already knows.
+
+**Milestone 5 partial result, stated plainly.** In the pre-fix sandbox run (this
+branch's scraper code), `Majdinasab, Tina → $15.2500` succeeded — one of the two
+chronic failures — and `Johnson, Dolce J` resolved via `select_directory_match` rather
+than guessing between the colliding records. But three other names still timed out
+(`Alvarez`, `Priyosha`, `Urrutia`). The modal handling helps and is not a cure. All
+three had rates from the redundant source (`gaps=[]`), which is exactly the case the
+new outcome-based alerting downgrades to a breadcrumb. Residual flakiness in the
+`pay_info` path is a follow-up, not a claim this PR closes.
+
 Per `user-preferences.mdc` J5 this reuses the existing `full-live` scenario rather
 than adding a dedicated one — it already exercises the changed materialize path.
 Per J2, acceptance evidence covers **both** sandbox e2e and prod ADP/Square live

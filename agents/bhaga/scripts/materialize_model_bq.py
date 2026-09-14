@@ -274,16 +274,22 @@ def load_model_rows(
     dicts = _header_rows_to_dicts(header_rows)
     if replace_scope and not dry_run:
         from core.datastore import (  # noqa: PLC0415
-            read_query, _PROJECT_ID, _DATASET, _assert_sandbox_write_isolation,
+            assert_unique_natural_key, merge_rows_scoped,
         )
-        _assert_sandbox_write_isolation()
-        col = _SCOPE_CLEAR_COL[table]
-        vals = sorted({_clean_str(d[col]) for d in dicts if d.get(col) is not None})
-        if vals:
-            in_list = ", ".join(f"'{v}'" for v in vals)
-            read_query(
-                f"DELETE FROM `{_PROJECT_ID}.{_DATASET}.{table}` WHERE {col} IN ({in_list})"
-            )
+
+        coerced = [_coerce(table, d, materialized_at) for d in dicts]
+        if not coerced:
+            return 0
+        n = merge_rows_scoped(
+            table,
+            coerced,
+            merge_keys=_MERGE_KEYS[table],
+            scope_col=_SCOPE_CLEAR_COL[table],
+            column_bq_types=_col_type_hints(table),
+        )
+        assert_unique_natural_key(table, _MERGE_KEYS[table])
+        print(f"  {table}: {n} rows merged (atomic scoped)")
+        return n
     return _load(table, dicts, materialized_at, dry_run)
 
 

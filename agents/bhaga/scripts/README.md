@@ -172,8 +172,10 @@ no session management, no OTP for Square. Token auto-refresh via `skills/square_
 Run executions for the same date can overlap (nightly scheduler + webhook READY-resume + manual
 `/bhaga refresh` + Slack retry delivery). The guard is layered:
 - `cloud/webhook/handler.py`: discards Slack-retry deliveries (`X-Slack-Retry-Num > 0`), stores seen
-  `event_id`s in Firestore `webhook_events/<event_id>` (5 min TTL), and checks `_is_already_running`
-  before calling `_trigger_cloud_run_job` (fail-open: listing errors allow the trigger).
+  `event_id`s in Firestore `webhook_events/<event_id>` (5 min TTL), and checks `_any_execution_running`
+  before calling `_trigger_cloud_run_job` (fail-open: listing errors allow the trigger). That check is
+  keyed on the job, not on `REFRESH_DATE`, because every execution rebuilds the shared model tables;
+  date ranges are dispatched one at a time via `_wait_for_job_idle`.
 - ADP's own runner acquires a TTL-based lock so a second execution fails fast with `ScrapeLockHeldError`.
 - `daily_refresh.py` classifies `ScrapeLockHeldError` via `_is_scrape_lock_held` and calls
   `notify.scrape_concurrency_alert`.

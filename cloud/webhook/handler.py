@@ -681,14 +681,26 @@ def _run_refresh_worker(
     job_name = _SANDBOX_JOB_RESOURCE if sandbox else None
     prefix = ":test_tube: [SANDBOX] " if sandbox else ":hourglass_flowing_sand: "
     date_labels: list[str] = []
-    for date_str in dates:
+    resolved_job = job_name or os.environ.get("CLOUD_RUN_JOB_NAME")
+    for idx, date_str in enumerate(dates):
+        # Serialize: every execution rebuilds the shared model tables, so
+        # overlapping runs race the scoped write. Firing a date range all at once
+        # is what produced the 2026-09-07 duplication at two-job scale.
+        if idx and resolved_job and not _wait_for_job_idle(resolved_job):
+            date_labels.append(f"{date_str} (skipped — previous run still busy)")
+            break
         recompute_only = _decide_recompute(date_str, dataset=probe_dataset)
         mode_label = "recompute" if recompute_only else "full+OTP"
         env_overrides = _build_refresh_env_overrides(date_str, recompute_only)
-        _trigger_cloud_run_job_with_env(date_str, env_overrides, job_name=job_name)
+        started = _trigger_cloud_run_job_with_env(
+            date_str, env_overrides, job_name=job_name
+        )
+        if not started:
+            date_labels.append(f"{date_str} (not started — job busy)")
+            break
         date_labels.append(f"{date_str} ({mode_label})")
     dates_text = ", ".join(date_labels)
-    summary = f"{prefix}Refresh triggered: {dates_text}."
+    summary = f"{prefix}Refresh triggered sequentially: {dates_text}."
     _post_response_url(response_url, {"response_type": "in_channel", "text": summary})
 
 
@@ -1479,60 +1491,50 @@ def _handle_restock_submission(payload: dict) -> dict:
         return {"response_action": "clear"}
 
 
-def _is_already_running(job_name: str, date_str: str) -> bool:
-    """Return True if a non-terminal execution for ``date_str`` already exists.
+def _any_execution_running(job_name: str) -> bool:
+    """Return True if ANY non-terminal execution exists on the job.
 
-    Queries the Cloud Run v2 executions list for the job and checks whether any
-    execution that has ``REFRESH_DATE=date_str`` is still running (no completion
-    time and not in a terminal state). This is the already-running guard that
-    prevents the webhook from spawning a duplicate execution when the operator
-    double-taps READY or Slack retries the delivery.
+    This is the dispatch lock, keyed on the resource (the job, and through it the
+    shared model tables) rather than on ``REFRESH_DATE``. A model recompute
+    rebuilds every model table, so two executions conflict regardless of which
+    dates they were asked for — the old date-keyed guard was answering the wrong
+    question and let a seven-date range launch seven overlapping jobs.
 
-    Fail-open: returns False (allow the trigger) on any error so a listing
-    failure never blocks a legitimately-needed resume.
+    Fail-open: returns False on any error so a listing failure never blocks work.
     """
     try:
         from google.cloud import run_v2
 
         exec_client = run_v2.ExecutionsClient()
-        parent = job_name  # job resource name is the parent for executions
-        request = run_v2.ListExecutionsRequest(parent=parent, page_size=20)
-        pager = exec_client.list_executions(request=request)
-
-        # Terminal Cloud Run execution conditions
-        _TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED"}
-
+        pager = exec_client.list_executions(
+            request=run_v2.ListExecutionsRequest(parent=job_name, page_size=20)
+        )
+        terminal = {"SUCCEEDED", "FAILED", "CANCELLED"}
         for execution in pager:
-            # Check if execution has completed
-            completion_time = getattr(execution, "completion_time", None)
-            if completion_time is not None:
-                continue  # already finished — not a running duplicate
-
-            # Check condition (state)
+            if getattr(execution, "completion_time", None) is not None:
+                continue
             conditions = getattr(execution, "conditions", []) or []
-            for cond in conditions:
-                state = getattr(cond, "state", None)
-                if state is not None and str(state).split(".")[-1] in _TERMINAL:
-                    # Terminal — skip
-                    break
-            else:
-                # No terminal condition found — execution may be running.
-                # Check if its REFRESH_DATE override matches.
-                overrides = getattr(execution, "overrides", None)
-                if overrides is None:
-                    continue
-                container_overrides = getattr(overrides, "container_overrides", []) or []
-                for co in container_overrides:
-                    env_vars = getattr(co, "env", []) or []
-                    for ev in env_vars:
-                        if getattr(ev, "name", "") == "REFRESH_DATE" and getattr(ev, "value", "") == date_str:
-                            log.info(
-                                "already-running guard: skipping trigger for date=%s "
-                                "(execution %s is non-terminal)", date_str, execution.name,
-                            )
-                            return True
+            if any(
+                str(getattr(c, "state", "")).split(".")[-1] in terminal for c in conditions
+            ):
+                continue
+            return True
     except Exception as exc:
-        log.warning("already-running check failed (fail-open): %s", exc)
+        log.warning("any-execution-running check failed (fail-open): %s", exc)
+    return False
+
+
+def _wait_for_job_idle(job_name: str, *, timeout_s: int = 3600, poll_s: int = 20) -> bool:
+    """Block until no execution is running on ``job_name``. True if it went idle.
+
+    Returns False on timeout so the caller can stop rather than pile on.
+    """
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if not _any_execution_running(job_name):
+            return True
+        time.sleep(poll_s)
+    log.warning("wait-for-idle timed out after %ss on job=%s", timeout_s, job_name)
     return False
 
 
@@ -1593,28 +1595,33 @@ def _trigger_cloud_run_job_with_env(
     date_str: str,
     env_pairs: list[tuple[str, str]],
     job_name: Optional[str] = None,
-) -> None:
+) -> bool:
     """Low-level: enqueue a Cloud Run Job execution with an explicit env-override list.
+
+    Returns True if an execution was enqueued, False if it was skipped, so the
+    caller can tell the operator a date did not start instead of implying it did.
 
     ``env_pairs`` is a list of (name, value) tuples injected as container env overrides.
     ``job_name`` defaults to the CLOUD_RUN_JOB_NAME env var.
 
     Guards (fail-open so a guard error never blocks a legitimate resume):
-    1. Already-running check: skips if a non-terminal execution for date_str already
-       exists on this job (duplicate-launch guard).
+    1. Busy check: skips if ANY non-terminal execution exists on this job. The
+       guard is keyed on the resource, not on ``date_str``, because every run
+       rebuilds the shared model tables — two executions conflict no matter which
+       dates they were asked for.
     2. Slack-retry dedup applied upstream before this function is called.
     """
     job_name = job_name or os.environ.get("CLOUD_RUN_JOB_NAME")
     if not job_name:
         log.warning("CLOUD_RUN_JOB_NAME not set — cannot trigger job")
-        return
+        return False
 
-    if _is_already_running(job_name, date_str):
+    if _any_execution_running(job_name):
         log.info(
-            "trigger skipped — a non-terminal execution for date=%s already exists "
-            "on job=%s (duplicate-launch guard)", date_str, job_name,
+            "trigger skipped for date=%s — job=%s already has a non-terminal "
+            "execution (resource-keyed busy guard)", date_str, job_name,
         )
-        return
+        return False
 
     try:
         from google.cloud import run_v2
@@ -1633,14 +1640,16 @@ def _trigger_cloud_run_job_with_env(
             ),
         )
         log.info("Cloud Run Job triggered for date=%s env=%s", date_str, env_pairs)
+        return True
     except Exception as exc:
         log.error("Failed to trigger Cloud Run Job: %s", exc)
+        return False
 
 
 def _trigger_cloud_run_job(
     date_str: str,
     job_name: Optional[str] = None,
-) -> None:
+) -> bool:
     """Enqueue a Cloud Run Job execution for the given date.
 
     Used by the READY-handshake OTP resume path (BHAGA_OTP_REQUIRE_READY=1).
@@ -1649,15 +1658,16 @@ def _trigger_cloud_run_job(
     job's resource name so the reply runs the sandbox job, not prod.
 
     Guards (both fail-open so a guard error never blocks a legitimate resume):
-    1. Already-running check: if a non-terminal execution for ``date_str`` already
-       exists on this job, skip the trigger and log — prevents the webhook from
-       spawning a second execution when the operator double-taps READY or Slack
-       retries the delivery.
+    1. Busy check: if the job already has a non-terminal execution, skip the
+       trigger and log — prevents the webhook from spawning a second execution
+       when the operator double-taps READY or Slack retries the delivery.
     2. The Slack-retry dedup (``_is_slack_retry`` / ``_check_and_store_event_id``)
        is applied upstream (in ``slack_events``), before this function is called.
+
+    Returns True if an execution was enqueued.
     """
     env_pairs = [("REFRESH_DATE", date_str)]
-    _trigger_cloud_run_job_with_env(date_str, env_pairs, job_name)
+    return _trigger_cloud_run_job_with_env(date_str, env_pairs, job_name)
 
 
 def _get_latest_run_summary() -> str:

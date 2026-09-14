@@ -1269,8 +1269,12 @@ duplicate SMS OTPs. This guard remains active for ADP. For Square there is no lo
 
 1. **Webhook dedup** — the Slack webhook (`cloud/webhook/handler.py`) discards Slack-retry deliveries
    (`X-Slack-Retry-Num > 0`) and stores event IDs in Firestore (`webhook_events/<event_id>`) with a
-   5-minute TTL. Before triggering a Cloud Run job it checks for a non-terminal execution of the same
-   date (`_is_already_running`; fail-open).
+   5-minute TTL. Before triggering a Cloud Run job it checks whether the job has **any** non-terminal
+   execution (`_any_execution_running`; fail-open). The lock is keyed on the resource, not on
+   `REFRESH_DATE`: every run rebuilds the shared model tables, so two dates conflict just as surely as
+   two triggers for one date. A multi-date range therefore runs sequentially — the webhook waits for
+   each execution to finish (`_wait_for_job_idle`) before starting the next, and reports any date it
+   could not start.
 
 **One-time setup (operator).** By least privilege the run SA has GCS read + object write but not
 project bucket-create, so create the sandbox cache bucket once and grant the SA object access:

@@ -27,6 +27,7 @@ import { rowMatchesLaborType } from "@/lib/payroll/laborBucket";
 import { PayrollDraftButton } from "@/components/payroll/PayrollDraftButton";
 import { SyncClockedHoursButton } from "@/components/labor/SyncClockedHoursButton";
 import { chicagoTodayIso } from "@/lib/filters/range";
+import { hasRunningBhagaJob } from "@/lib/bhaga/recompute";
 import { clockedHoursTargetDate } from "@/lib/labor/actual-schedule-windows";
 import { adpPayrollDetailsUrl } from "@/lib/payroll/adpLink";
 import { previewLine } from "@/lib/payroll/previewDiff";
@@ -170,19 +171,25 @@ export default async function PayrollPage({
   const tipStart = selectedPeriodStart;
   const tipEnd = periodEnd;
   const editable = FEATURES.writeTipExemptions && selectedUnpaid;
+  let refreshRunning = false;
 
   if (!error && tipStart && tipEnd) {
     try {
-      const [s, e, empRows, hoursScraped] = await Promise.all([
+      const [s, e, empRows, hoursScraped, running] = await Promise.all([
         adpShiftsForPeriod(DEFAULT_STORE, tipStart, tipEnd),
         tipExemptions(DEFAULT_STORE, tipStart, tipEnd),
         listCanonicalEmployees(DEFAULT_STORE),
         adpHoursScrapedAt().catch(() => null),
+        // Applying exemptions queues a model recompute, which the server will
+        // refuse while a run is live. Ask up front so the button is disabled
+        // instead of accepting a click it cannot honour.
+        hasRunningBhagaJob().catch(() => false),
       ]);
       shifts = s;
       exemptions = e;
       employees = empRows.map((r) => r.employee_name);
       hoursScrapedAt = hoursScraped;
+      refreshRunning = running;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -440,6 +447,7 @@ export default async function PayrollPage({
               employees={employees}
               editable={editable}
               periodLabel={periodLabel}
+              refreshRunning={refreshRunning}
             />
           ) : null}
 

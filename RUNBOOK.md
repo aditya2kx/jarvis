@@ -673,13 +673,33 @@ OTP-pending wait; `1` = a step/verification failure (the wrapper retries); `EXIT
 breaker is tripped and the run **refused to start** so it can't repeat known-bad output.
 
 The breaker is a GLOBAL flag (Firestore `<collection>/_pipeline_state`, local
-`~/.bhaga/state/pipeline_state.json`), NOT keyed by date. While tripped, fresh scheduled runs refuse
-and exit `EXIT_HALTED`; an in-flight OTP READY resume passes through (it's completing a handshake, not
-a fresh attempt). **To recover:** fix + deploy the regression, then re-run with `--ignore-halt` (or set
+`~/.bhaga/state/pipeline_state.json`), NOT keyed by date.
+
+**Scope (2026-09).** A halt carries a `scope`:
+
+| Scope | Effect | When |
+|---|---|---|
+| `model` (default) | Model writes are skipped; **raw Square/ADP ingest still runs.** | Every semantic-guard trip. The fault is in the computation, and refusing to collect raw data cannot fix a computation — on 2026-09-07 it cost six days of uncollected data that then had to be backfilled. |
+| `all` | The run refuses and exits `EXIT_HALTED`. | Faults that make ingest itself unsafe. |
+
+**TTL (2026-09).** A halt also carries `expires_at` (default 12 h; `ttl_hours=0` means never).
+Once expired it reads as not-halted, the next nightly resumes, and the expiry is **escalated** — a
+`pipeline_halt_expired` alert fires so an unattended auto-resume is never silent. A halt record
+written before TTLs existed (no `expires_at`) never expires, so an upgrade cannot un-halt a
+pipeline that is still broken.
+
+An in-flight OTP READY resume passes through a halt (it's completing a handshake, not a fresh
+attempt). **To recover:** fix + deploy the regression, then re-run with `--ignore-halt` (or set
 `BHAGA_IGNORE_HALT=1`) — **a fully-healthy verified run auto-clears the breaker.** To clear it manually
 without a run, use the sanctioned path `state_adapter.clear_pipeline_halt()` (never hand-edit
-Firestore). Inspect the current state with `state_adapter.get_pipeline_halt()` (returns the `reason` /
-`since` / `refresh_date` that tripped it, or `None` when healthy).
+Firestore). Inspect the current state with `state_adapter.get_pipeline_halt()` (returns `reason` /
+`since` / `scope` / `expires_at` / `refresh_date`, or `None` when healthy); pass
+`include_expired=True` to see a halt that has already aged out.
+
+**Independent staleness alarm.** A run that dies, halts, or never starts cannot raise an alarm about
+itself, so the alarm lives on the morning `bhaga-team-pulse` kick (08:00 CT) instead: if
+`model_daily` has not advanced within 2 days it DMs the operator with the current window end and the
+breaker reason. `POST /staleness-check` (same `X-Team-Pulse-Token`) runs it on demand.
 
 `trigger_dated_refresh.py` (used by `Retry-Dates:` deploy trailers) always injects `BHAGA_IGNORE_HALT=1`
 so deploy-triggered retries automatically bypass the breaker — the fix is baked into the image by
@@ -1731,6 +1751,22 @@ OAuth client — provisioned once via the Cloud Console's Google Auth Platform +
 Security tab's IAP checkbox — works fine without an org (reversing the earlier "no IAP" pivot; see
 `docs/operator-console/PLAN.md` decisions log, 2026-07-05). Grafana **is retired for BHAGA Analytics** (Issue #276); the console is the operator UI
 (navigation, goal tracking, write-backs). Jarvis Development Grafana remains for PR cost.
+
+### Health banner (2026-09)
+
+Every page renders a server-derived health banner (`components/shell/HealthBanner.tsx` in the root
+layout, backed by `lib/bhaga/health.ts`). It shows the breaker state — including whether the halt is
+model-scoped, in which case raw ingest is still running — and, failing that, whether the data window
+has stopped advancing, naming the date the figures stop at. Derived on the server so it is identical
+for every viewer: pipeline health is a property of the system, not of a session. It is computed from
+the Firestore `_pipeline_state` doc (read over REST with ADC — the console has no Firestore SDK) plus
+`MAX(date)` from `model_daily`. A healthy system shows no banner; a failed health lookup says
+"unknown" rather than implying health. This exists because on 2026-09-07 the console rendered
+six-day-old numbers as though they were current.
+
+The payroll Tip Exemptions **Update** button is disabled while a `bhaga-daily-refresh` execution is
+live (`hasRunningBhagaJob()` at render), since applying exemptions queues a model recompute that the
+server would refuse anyway.
 
 Full design/build docs: [`docs/operator-console/`](docs/operator-console/) (`PLAN.md` — living plan
 + decisions log + milestones; `ARCHITECTURE.md`; `EXECUTION.md` — step-by-step; `COST.md`).

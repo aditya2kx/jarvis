@@ -362,14 +362,44 @@ class MainHaltBreakerTests(unittest.TestCase):
              mock.patch.object(sys, "argv", argv):
             return daily_refresh.main()
 
-    def test_refuses_when_halted(self):
+    def test_refuses_when_halted_at_scope_all(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.dict(os.environ, {"HOME": tmp}):
                 daily_refresh._adapter_set_pipeline_halt(
                     reason="semantic guard failed: adp dead",
-                    refresh_date=datetime.date(2026, 6, 1))
+                    refresh_date=datetime.date(2026, 6, 1),
+                    scope="all")
             rc = self._run(tmp)
             self.assertEqual(rc, daily_refresh.EXIT_HALTED)
+
+    def test_model_scoped_halt_still_ingests_raw(self):
+        """A model fault must not stop Square/ADP collection (2026-09-07)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"HOME": tmp}):
+                daily_refresh._adapter_set_pipeline_halt(
+                    reason="semantic guard failed: tip pool NOT conserved",
+                    refresh_date=datetime.date(2026, 6, 1))  # default scope=model
+            # Reaching the post-halt sentinel means the run proceeded past the
+            # gate instead of exiting EXIT_HALTED.
+            with self.assertRaises(self._PostHaltSentinel):
+                self._run(tmp)
+
+    def test_expired_halt_auto_resumes_and_clears(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"HOME": tmp}):
+                daily_refresh._adapter_set_pipeline_halt(
+                    reason="boom", scope="all", ttl_hours=0)
+                # ttl_hours=0 means "never expires"; force an expiry in the past.
+                import json as _json
+                import pathlib as _pathlib
+                p = _pathlib.Path(tmp) / ".bhaga" / "state" / "pipeline_state.json"
+                data = _json.loads(p.read_text())
+                data["expires_at"] = "2020-01-01T00:00:00-06:00"
+                p.write_text(_json.dumps(data))
+
+                with self.assertRaises(self._PostHaltSentinel):
+                    self._run(tmp)
+                self.assertIsNone(daily_refresh._adapter_get_pipeline_halt())
 
     def test_ignore_halt_proceeds(self):
         with tempfile.TemporaryDirectory() as tmp:

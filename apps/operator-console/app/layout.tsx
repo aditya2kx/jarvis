@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { Topbar } from "@/components/shell/Topbar";
+import { HealthBanner } from "@/components/shell/HealthBanner";
 import { IapLoginBeacon } from "@/components/shell/IapLoginBeacon";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ActionToastProvider } from "@/lib/actions/ActionToast";
@@ -49,6 +50,7 @@ export default function RootLayout({
               <Sidebar />
               <div className="flex flex-1 flex-col overflow-hidden">
                 <Topbar />
+                <HealthBanner />
                 <main className="flex-1 overflow-y-auto p-4 md:p-6">{children}</main>
               </div>
             </div>

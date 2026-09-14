@@ -213,6 +213,29 @@ def failure_alert(
     return _safe_send(text)
 
 
+def staleness_alarm(
+    *,
+    data_window_end: Optional[str],
+    age_days: Optional[int],
+    halt_reason: Optional[str] = None,
+) -> Optional[dict]:
+    """Announce that the model has stopped advancing.
+
+    Deliberately independent of the nightly: the nightly cannot report its own
+    silence, and on 2026-09-07 nobody noticed for six days because the only way
+    to find out was to open the console and recognise stale numbers.
+    """
+    if data_window_end is None:
+        body = "the model table is empty — no data at all."
+    else:
+        body = (
+            f"the model still ends at *{data_window_end}* "
+            f"({age_days} day(s) old). The nightly has not advanced the window."
+        )
+    halt_line = f"\n*Breaker:* {halt_reason}" if halt_reason else ""
+    return _safe_send(f"🕳️ BHAGA data is STALE — {body}{halt_line}")
+
+
 def info_ping(text: str) -> Optional[dict]:
     """Generic info DM (e.g. 'starting refresh', 'OTP requested', etc)."""
     return _safe_send(f"ℹ️ BHAGA: {text} on {_host_tag()}")

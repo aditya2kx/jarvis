@@ -253,7 +253,7 @@ the "silently produce wrong numbers" failure the feature-flag test exists to cat
 The full read is a cost and latency concern, not a correctness one; it belongs in its
 own change with its own evidence, not bundled into the scoping fix. Follow-up issue.
 
-## Milestone 4 — Breaker and portal tell the truth
+## Milestone 4 — Breaker and portal tell the truth · **Done 2026-09-13**
 
 - Tier the breaker: a model-layer fault should stop model writes but let **raw ingest
   continue**. Today a model fault halts ingestion too, which is why six days of
@@ -299,6 +299,21 @@ raw tables; a fresh browser session (no cookies) loads the console and sees the 
 reason and data age; the halt auto-expires after its TTL.
 
 Model routing: **Sonnet** (Python + TS), **Opus** for the banner UX pass.
+
+**Landed 2026-09-13.** `set_pipeline_halt(scope=…, ttl_hours=…)` with `scope` defaulting to
+`model` and a 12 h TTL; `get_pipeline_halt(include_expired=…)` treats an expired halt as
+not-halted, and the nightly escalates the expiry with a `pipeline_halt_expired`
+alert before resuming. `daily_refresh` tiers the gate: a model-scoped halt sets
+`skip_model` and lets raw ingest run; only `scope=all` still returns `EXIT_HALTED`.
+Console: `lib/bhaga/health.ts` (`getSystemHealth`, Firestore-over-REST with ADC — no
+new dependency) feeds `components/shell/HealthBanner.tsx` from the root layout, so
+every page on every session shows the breaker state or the date the data stops at, and
+says "unknown" rather than implying health when the lookup fails. The payroll Update
+button is disabled while a run is live. The staleness alarm rides the existing 08:00 CT
+`bhaga-team-pulse` kick (plus `POST /staleness-check`) rather than a second scheduler —
+the only property it needs is a daily beat the nightly cannot silence. 173 webhook
+tests, 42 state-adapter tests, 465 console tests pass; `tsc --noEmit` adds no new errors
+(3 pre-existing, unchanged).
 
 ## Milestone 5 — ADP scraper resilience
 

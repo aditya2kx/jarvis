@@ -1911,6 +1911,71 @@ def _run_team_pulse_job() -> None:
         log.error("team_pulse failed: %s", exc)
 
 
+# Days the model may lag before the morning alarm fires. One day is normal
+# (the nightly runs at 21:30 CT for that same day); two is a missed night.
+_STALENESS_ALARM_AFTER_DAYS = 2
+
+
+def _data_window_age_days() -> tuple[str | None, int | None]:
+    """Return (latest model date, whole days old) from BQ. (None, None) on error."""
+    try:
+        from google.cloud import bigquery  # type: ignore[import]
+
+        client = bigquery.Client(project=_BQ_PROJECT)
+        rows = list(client.query(
+            f"SELECT CAST(MAX(date) AS STRING) AS d, "
+            f"DATE_DIFF(CURRENT_DATE('America/Chicago'), MAX(date), DAY) AS age "
+            f"FROM `{_BQ_PROJECT}.bhaga.model_daily`"
+        ).result())
+        if not rows or rows[0]["d"] is None:
+            return None, None
+        return rows[0]["d"], int(rows[0]["age"])
+    except Exception as exc:  # noqa: BLE001
+        log.error("staleness check: BQ read failed: %s", exc)
+        return None, None
+
+
+def _run_staleness_alarm() -> None:
+    """Background: alert if the model has stopped advancing.
+
+    Runs on the morning kick rather than inside the nightly on purpose — a run
+    that dies, halts, or never starts cannot raise an alarm about itself. This
+    is the check that would have caught 2026-09-07 on the 8th instead of the 13th.
+    """
+    try:
+        window_end, age = _data_window_age_days()
+        if age is not None and age <= _STALENESS_ALARM_AFTER_DAYS:
+            log.info("staleness check OK: model ends %s (%s day(s) old)", window_end, age)
+            return
+        halt_reason = None
+        try:
+            from skills.bhaga_config.state_adapter import get_pipeline_halt
+
+            halt = get_pipeline_halt(include_expired=True)
+            halt_reason = halt.get("reason") if halt else None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("staleness check: halt read failed: %s", exc)
+
+        from agents.bhaga.notify import staleness_alarm
+
+        staleness_alarm(
+            data_window_end=window_end, age_days=age, halt_reason=halt_reason
+        )
+        log.warning("staleness ALARM: model ends %s (%s day(s) old)", window_end, age)
+    except Exception as exc:  # noqa: BLE001
+        log.error("staleness alarm failed: %s", exc)
+
+
+@app.route("/staleness-check", methods=["POST"])
+def staleness_check_kick():
+    """Manual/scheduled staleness probe — same token as the team-pulse kick."""
+    token = request.headers.get("X-Team-Pulse-Token", "")
+    if not _TEAM_PULSE_TOKEN or not hmac.compare_digest(token, _TEAM_PULSE_TOKEN):
+        return Response("unauthorized", status=403)
+    _dispatch_async(_run_staleness_alarm)
+    return jsonify({"status": "accepted"})
+
+
 @app.route("/team-pulse", methods=["POST"])
 def team_pulse_kick():
     """Cloud Scheduler / manual kick — requires X-Team-Pulse-Token."""
@@ -1929,6 +1994,10 @@ def team_pulse_kick():
             log.error("team_pulse dry_run failed: %s", exc)
             return jsonify({"status": "error", "error": str(exc)}), 500
     _dispatch_async(_run_team_pulse_job)
+    # Ride the existing 08:00 CT kick rather than provisioning a second
+    # scheduler: this is already a daily beat that does not depend on the
+    # nightly having succeeded, which is the only property the alarm needs.
+    _dispatch_async(_run_staleness_alarm)
     return jsonify({"status": "accepted"})
 
 

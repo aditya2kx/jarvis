@@ -82,12 +82,15 @@ export function TipExemptionsEditor({
   employees,
   editable,
   periodLabel,
+  refreshRunning = false,
 }: {
   shifts: AdpShiftRow[];
   exemptions: TipExemptionRow[];
   employees: string[];
   editable: boolean;
   periodLabel: string;
+  /** True when a bhaga-daily-refresh execution is live at page render. */
+  refreshRunning?: boolean;
 }) {
   const exemptionByKey = useMemo(() => {
     const m = new Map<DraftKey, TipExemptionRow>();
@@ -218,9 +221,20 @@ export function TipExemptionsEditor({
           Shifts · tip exemptions · {periodLabel}
         </h2>
         {editable ? (
-          <Button size="sm" disabled={isPending || dirtyCount === 0} onClick={() => void handleUpdate()}>
-            {isPending ? "Updating…" : `Update${dirtyCount ? ` (${dirtyCount})` : ""}`}
-          </Button>
+          <div className="flex items-center gap-2">
+            {refreshRunning ? (
+              <span className="text-xs text-muted-foreground">
+                A refresh is running — updates are paused until it finishes.
+              </span>
+            ) : null}
+            <Button
+              size="sm"
+              disabled={isPending || dirtyCount === 0 || refreshRunning}
+              onClick={() => void handleUpdate()}
+            >
+              {isPending ? "Updating…" : `Update${dirtyCount ? ` (${dirtyCount})` : ""}`}
+            </Button>
+          </div>
         ) : null}
       </div>
 

@@ -6,7 +6,9 @@ import hashlib
 import hmac
 import json
 import os
+import sys
 import time
+import types
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -2071,7 +2073,75 @@ class TestTeamPulseKick:
             )
         assert resp.status_code == 200
         assert resp.get_json()["status"] == "accepted"
-        assert len(called) == 1
+        # The morning kick carries the staleness alarm alongside the pulse.
+        assert [f.__name__ for f in called] == [
+            "_run_team_pulse_job",
+            "_run_staleness_alarm",
+        ]
+
+
+class TestStalenessAlarm:
+    """The alarm must fire from a beat the nightly cannot silence."""
+
+    def test_quiet_when_data_is_current(self, monkeypatch):
+        monkeypatch.setattr(
+            handler, "_data_window_age_days", lambda: ("2026-09-13", 0)
+        )
+        sent = []
+        monkeypatch.setitem(
+            sys.modules,
+            "agents.bhaga.notify",
+            types.SimpleNamespace(staleness_alarm=lambda **kw: sent.append(kw)),
+        )
+        handler._run_staleness_alarm()
+        assert sent == []
+
+    def test_fires_when_the_window_stops_advancing(self, monkeypatch):
+        monkeypatch.setattr(
+            handler, "_data_window_age_days", lambda: ("2026-09-06", 7)
+        )
+        sent = []
+        monkeypatch.setitem(
+            sys.modules,
+            "agents.bhaga.notify",
+            types.SimpleNamespace(staleness_alarm=lambda **kw: sent.append(kw)),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "skills.bhaga_config.state_adapter",
+            types.SimpleNamespace(
+                get_pipeline_halt=lambda **kw: {"reason": "tip pool NOT conserved"}
+            ),
+        )
+        handler._run_staleness_alarm()
+        assert sent == [{
+            "data_window_end": "2026-09-06",
+            "age_days": 7,
+            "halt_reason": "tip pool NOT conserved",
+        }]
+
+    def test_fires_when_the_model_is_empty(self, monkeypatch):
+        monkeypatch.setattr(handler, "_data_window_age_days", lambda: (None, None))
+        sent = []
+        monkeypatch.setitem(
+            sys.modules,
+            "agents.bhaga.notify",
+            types.SimpleNamespace(staleness_alarm=lambda **kw: sent.append(kw)),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "skills.bhaga_config.state_adapter",
+            types.SimpleNamespace(get_pipeline_halt=lambda **kw: None),
+        )
+        handler._run_staleness_alarm()
+        assert sent and sent[0]["data_window_end"] is None
+
+    def test_rejects_a_bad_token(self):
+        with app.test_client() as client:
+            resp = client.post(
+                "/staleness-check", json={}, headers={"X-Team-Pulse-Token": "nope"}
+            )
+        assert resp.status_code == 403
 
 
 # ===========================================================================

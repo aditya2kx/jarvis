@@ -315,7 +315,7 @@ the only property it needs is a daily beat the nightly cannot silence. 173 webho
 tests, 42 state-adapter tests, 465 console tests pass; `tsc --noEmit` adds no new errors
 (3 pre-existing, unchanged).
 
-## Milestone 5 — ADP scraper resilience
+## Milestone 5 — ADP scraper resilience · **Done 2026-09-13**
 
 - **Alert on outcome, not mechanism.** `report_pay_info_issues`
   (`skills/adp_run_automation/pay_info_backend.py`) fires when *any* of
@@ -379,6 +379,28 @@ Pass criterion: the live run resolves all 16 punchers including `Flores, Juan`
 
 Model routing: **Sonnet** (Playwright selectors calibrated against the 2026-09-13
 spike findings recorded above).
+
+**Landed 2026-09-13.** `report_pay_info_issues` alerts only on `remaining_gaps` or a
+flow error — a scrape failure for someone who already has a rate via `earnings` is now
+a breadcrumb, which retires the nightly false alarm. `dismiss_blocking_modals()` clicks
+**Ok** on `div.message-box-outer` (never Cancel), re-checked at every click via
+`_click_through_modals` and after each failure so one employee's timeout no longer
+poisons the rest of the loop. `clear_directory_status_filter()` ticks Terminated +
+Leave of absence before searching, which is what makes Flores reachable at all.
+`_wait_for_directory_results` replaces the fixed 2.5 s sleep with a poll on the rendered
+roster. `select_directory_match()` requires an exact name and raises
+`AmbiguousEmployeeError` on a near match, guarding `Johnson, Dolce` vs
+`Johnson, Dolce J`. `_capture_pay_info_failure` routes evidence to
+`gs://<cache>/<date>/evidence/` instead of a local path that does not survive a Cloud
+Run execution. 152 ADP-skill tests pass.
+
+**Deliberately not done: the `associate_id` migration.** Adding the columns now would
+add two columns nothing can populate: the spike established that the Directory list
+view exposes no ADP identifier, so capturing an associate ID means visiting each
+profile page — a separate scrape with its own failure modes and its own evidence.
+Shipping the schema ahead of the capture buys nothing and invites code that reads a
+column which is null for every row. The exact-match refusal above closes the actual
+risk (a wrong-person match) today. Follow-up issue for the ID capture.
 
 ## Milestone 6 — Hygiene
 

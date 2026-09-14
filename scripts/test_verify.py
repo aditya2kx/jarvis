@@ -368,6 +368,29 @@ class TestSecretScan(unittest.TestCase):
         self.assertEqual(staged_gate.argv[:3], ["git", "diff", "--cached"])
         self.assertEqual(full_gate.argv[:2], ["git", "diff"])
 
+    def test_scanner_excludes_only_its_own_definition_sites(self):
+        """Files that must hold secret-shaped text to do their job are exempt.
+
+        Kept deliberately short: every entry is a hole in the gate.
+        """
+        excluded = {
+            p.removeprefix(":(exclude)")
+            for p in v.SECRET_SCAN_EXCLUDES
+            if p.startswith(":(exclude)")
+        }
+        self.assertEqual(
+            excluded,
+            {
+                "scripts/verify.py",
+                "scripts/test_verify.py",
+                "docs/contributing/push-gotchas.md",
+            },
+        )
+        for gate in v.GATES:
+            if gate.name.startswith("secret-scan"):
+                self.assertEqual(gate.argv[-len(v.SECRET_SCAN_EXCLUDES):],
+                                 v.SECRET_SCAN_EXCLUDES)
+
 
 if __name__ == "__main__":
     unittest.main()

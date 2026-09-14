@@ -145,7 +145,13 @@ CI_SCRIPT_NAMES: frozenset[str] = frozenset([
 ])
 
 # Secret pattern from CONTRIBUTING.md § "Pushing & opening PRs"
-SECRET_PATTERN = r"AIza|sk-[A-Za-z0-9]{20}|-----BEGIN|password\s*[:=]|api[_-]?key"
+# The api-key arm requires an assignment, like the password arm beside it: a leak is
+# `api_key = "..."`, not the words. Without it the gate fires on any prose containing
+# an API_KEY-shaped identifier — e.g. Plaid's INVALID_API_KEYS error code — and a gate
+# that cries wolf on documentation is a gate people learn to wave through.
+SECRET_PATTERN = (
+    r"AIza|sk-[A-Za-z0-9]{20}|-----BEGIN|password\s*[:=]|api[_-]?key[\"'\s]*[:=]"
+)
 
 
 # ---------------------------------------------------------------------------

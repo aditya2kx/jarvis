@@ -630,3 +630,59 @@ Live: rendered against prod BQ in the real empty-schedule state —
 shows Blade 3 and Açaí 5.9 where the operator saw "No rows."
 
 Model routing: **Composer**.
+
+---
+
+## Milestone 8 — Labor chart must not draw a forecast over a fact · **Done 2026-09-14**
+
+Operator-reported: the week of Sep 7 had finished, but its bar still carried a
+scheduled (slate) segment.
+
+It was not a stale bar. `actualPunchWindow` clipped actuals at **yesterday** whenever
+the Period reached today, and `laborScheduledHoursByGrain` admitted schedule from
+`>= CURRENT_DATE('America/Chicago')`. So the current day was *always* drawn from its
+schedule, even after its punches had been ingested — which happens every evening at
+the 21:30 CT nightly. Between ingest and midnight, a day with real clocked hours was
+rendered as a forecast.
+
+Measured on the reported week, straight from BQ:
+
+| | hours |
+|---|---|
+| Actual drawn (Sep 7–12 only) | 152.9 |
+| Scheduled drawn (Sep 13) | 31.4 |
+| **Combined, as shown** | **184.3** |
+| Sep 13 hours actually clocked and in BQ | 28.3 |
+| **True week total** | **181.2** |
+
+The three numbers in the first block reproduce the operator's tooltip exactly. The
+finished week was overstated by **3.1 hours**, and a real number was hidden behind a
+prediction of itself — the same substitution this PR removes elsewhere.
+
+**Fix.** The handoff now follows the data: `scheduleTakesOverFrom(today, actualsThrough)`
+returns the day after the last date with clocked hours, clamped at today so a lagging
+ingest can never pull the boundary backwards and paint schedule over days that are
+merely awaiting punches. That one date drives both windows, and the redundant
+`>= CURRENT_DATE` predicate in the scheduled SQL is gone — two boundaries for one
+decision is how they drifted apart in the first place. A day can now show actual or
+scheduled, never both. The page note no longer promises "through yesterday".
+
+No feature flag: it strictly narrows what may be drawn as a forecast, and the failure
+mode is falling back to exactly today's behaviour if `laborActualsThrough()` cannot be
+read.
+
+Verify:
+```bash
+cd apps/operator-console && npx vitest run __tests__/labor-actuals-boundary.test.ts
+```
+Pass criterion: with Sunday's hours ingested the week reports actual through 09-13 and
+**no** schedule window; with them missing it still forecasts 09-13; the boundary never
+moves earlier than today; an unreadable actuals date falls back to today.
+
+Live: [screenshot](https://github.com/aditya2kx/jarvis/releases/download/evidence-screenshots/labor-weekly-actuals-boundary-20260914-000002.png)
+— Wk of Sep 7 renders fully solid, Wk of Sep 14 / Sep 21 remain fully scheduled.
+Stated plainly: that capture was taken at 00:00:02, so the calendar had also rolled;
+it confirms the rendering but does not by itself separate the fix from midnight. The
+BQ table above and the unit tests are what pin the behaviour at the reported moment.
+
+Model routing: **Composer**.

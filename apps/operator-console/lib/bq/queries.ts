@@ -546,6 +546,34 @@ export interface LaborScheduledHoursRow {
   [key: string]: unknown;
 }
 
+/**
+ * Latest date that actually has clocked hours, or null if none.
+ *
+ * The chart used to hand off from actual to scheduled at "yesterday", on the
+ * assumption that today's punches are never in yet. That assumption expires
+ * every evening once the nightly ADP ingest lands: on 2026-09-13 BQ held 28.3
+ * clocked hours for the day while the chart drew 31.4 *scheduled* hours in
+ * their place, hiding real data behind a forecast and overstating the finished
+ * week by 3.0 hours. Ask the data where it ends instead of assuming.
+ */
+export async function laborActualsThrough(): Promise<string | null> {
+  const rows = await q<{ through: string | null }>(
+    `SELECT CAST(MAX(date) AS STRING) AS through
+     FROM ${fq("vw_labor_daily_live")}
+     WHERE IFNULL(hourly_hours, 0) + IFNULL(fulltime_hours, 0) > 0`,
+  );
+  return rows[0]?.through ?? null;
+}
+
+/**
+ * Scheduled hours per bucket. `win.start` is the authoritative handoff point —
+ * see `scheduleTakesOverFrom`.
+ *
+ * This used to also filter `s.date >= CURRENT_DATE('America/Chicago')`. Two
+ * boundaries for one decision is how they drift apart: the caller moved its
+ * window past today while the SQL kept re-admitting today's schedule on top of
+ * the actuals already counted for it.
+ */
 export function laborScheduledHoursByGrain(
   win: DateWindow,
   grain: Grain,
@@ -575,7 +603,6 @@ export function laborScheduledHoursByGrain(
      LEFT JOIN ${fq("adp_wage_rates")} w
        ON w.employee_id = s.employee_id
      WHERE s.date BETWEEN @start AND @end
-       AND s.date >= CURRENT_DATE('America/Chicago')
        AND IFNULL(s.scheduled_hours, 0) > 0
        ${ptoClause}
      GROUP BY date

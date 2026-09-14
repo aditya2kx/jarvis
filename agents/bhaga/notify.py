@@ -413,6 +413,24 @@ def new_employee_alert(
     return _safe_send(text)
 
 
+_ANOMALY_STATE_KEY = "review_anomalies"
+
+
+def partition_anomalies(
+    anomalies: list[str], already_reported: list[str]
+) -> tuple[list[str], list[str]]:
+    """Split anomalies into (new, carried over), preserving input order.
+
+    Anomalies are recomputed over the whole review history every night, so the
+    same unparseable post is re-flagged indefinitely. Repeating an unchanged list
+    nightly is how a channel becomes noise.
+    """
+    seen = set(already_reported)
+    new = [a for a in anomalies if a not in seen]
+    carried = [a for a in anomalies if a in seen]
+    return new, carried
+
+
 def review_anomaly_alert(
     anomalies: list[str],
     *,
@@ -434,13 +452,44 @@ def review_anomaly_alert(
     """
     if not anomalies:
         return None
-    inline = "\n".join(f"  • {a}" for a in anomalies[:max_shown])
+
+    # Report each anomaly once. A best-effort memory: if the state read or write
+    # fails we fall back to reporting everything, which is the old behaviour —
+    # noisy, but never silently drops a genuine new anomaly.
+    already: list[str] = []
+    try:
+        from skills.bhaga_config.state_adapter import get_notify_state  # noqa: PLC0415
+
+        already = get_notify_state(_ANOMALY_STATE_KEY)
+    except Exception:  # noqa: BLE001
+        already = []
+
+    new, carried = partition_anomalies(anomalies, already)
+    if not new:
+        print(
+            f"[notify] {len(carried)} review anomal(ies) unchanged since the last "
+            f"report — no Slack message."
+        )
+        return None
+
+    try:
+        from skills.bhaga_config.state_adapter import set_notify_state  # noqa: PLC0415
+
+        set_notify_state(_ANOMALY_STATE_KEY, anomalies)
+    except Exception:  # noqa: BLE001
+        pass
+
+    inline = "\n".join(f"  • {a}" for a in new[:max_shown])
     overflow = ""
-    if len(anomalies) > max_shown:
-        overflow = f"\n_…and {len(anomalies) - max_shown} more (see `BHAGA Review Raw > unparseable` tab)._"
+    if len(new) > max_shown:
+        overflow = f"\n_…and {len(new) - max_shown} more (see `BHAGA Review Raw > unparseable` tab)._"
+    carried_note = (
+        f"\n_({len(carried)} previously-reported anomal(ies) still open.)_"
+        if carried else ""
+    )
     body = (
-        f"🔍 BHAGA review anomalies ({len(anomalies)}) on {_host_tag()}:\n"
-        f"{inline}{overflow}"
+        f"🔍 BHAGA review anomalies ({len(new)} new) on {_host_tag()}:\n"
+        f"{inline}{overflow}{carried_note}"
     )
     return _safe_send(body)
 

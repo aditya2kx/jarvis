@@ -696,6 +696,12 @@ Firestore). Inspect the current state with `state_adapter.get_pipeline_halt()` (
 `since` / `scope` / `expires_at` / `refresh_date`, or `None` when healthy); pass
 `include_expired=True` to see a halt that has already aged out.
 
+**Notification memory.** `<collection>/_notify_state` (local: `~/.bhaga/state/notify_state.json`) is a
+sibling singleton recording what has already been reported, so a recurring condition is announced
+once instead of nightly. Today it holds `review_anomalies`: anomalies are recomputed over all review
+history every run, so without this the same unparseable post is re-DMed forever. A read failure
+falls back to reporting everything — noisy beats silently dropping a real anomaly.
+
 **Independent staleness alarm.** A run that dies, halts, or never starts cannot raise an alarm about
 itself, so the alarm lives on the morning `bhaga-team-pulse` kick (08:00 CT) instead: if
 `model_daily` has not advanced within 2 days it DMs the operator with the current window end and the

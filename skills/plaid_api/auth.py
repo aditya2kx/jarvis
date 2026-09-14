@@ -25,8 +25,32 @@ class PlaidAuthError(RuntimeError):
     """Raised when Plaid credentials cannot be loaded."""
 
 
+def _on_cloud_run() -> bool:
+    """True inside a Cloud Run service (K_SERVICE) or job (CLOUD_RUN_JOB)."""
+    return bool(os.environ.get("K_SERVICE") or os.environ.get("CLOUD_RUN_JOB"))
+
+
 def plaid_env() -> str:
-    return (os.environ.get("PLAID_ENV") or "sandbox").strip().lower()
+    """Resolve the Plaid environment.
+
+    Defaulting to sandbox on Cloud Run is a silent-wrong default: the credentials
+    come from Secret Manager, which only ever holds the production pair, so an
+    unset PLAID_ENV meant sending production keys to sandbox.plaid.com and
+    getting back ``INVALID_API_KEYS`` — an error that reads like an expired
+    credential and is actually a wrong host. That is exactly what the nightly
+    `bhaga-daily-refresh` job did: both Cloud Run *services* set PLAID_ENV
+    explicitly, the *job* never did, and it is the job that runs the plaid_sync
+    catch-up. Verified 2026-09-13: the stored keys authenticate against
+    production (HTTP 200) and are rejected by sandbox.
+
+    So on Cloud Run the default follows the credentials — production. Off Cloud
+    Run (laptop, tests) sandbox remains the safe default. An explicit PLAID_ENV
+    always wins.
+    """
+    explicit = (os.environ.get("PLAID_ENV") or "").strip().lower()
+    if explicit:
+        return explicit
+    return "production" if _on_cloud_run() else "sandbox"
 
 
 def api_base() -> str:

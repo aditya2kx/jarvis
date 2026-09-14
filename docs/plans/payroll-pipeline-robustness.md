@@ -402,15 +402,37 @@ Shipping the schema ahead of the capture buys nothing and invites code that read
 column which is null for every row. The exact-match refusal above closes the actual
 risk (a wrong-person match) today. Follow-up issue for the ID capture.
 
-## Milestone 6 — Hygiene
+## Milestone 6 — Hygiene · **Done 2026-09-13**
 
-- Plaid `INVALID_API_KEYS` — separate expired credential surfaced during diagnosis.
+- Plaid `INVALID_API_KEYS` — surfaced during diagnosis as an expired credential.
 - Deduplicate the repeating review-anomaly alert.
 
-Verify: `python3 -m skills.credentials.registry audit` reports no expired entries;
-two consecutive nightlies produce one review-anomaly Slack message, not N.
+Verify: two consecutive nightlies produce one review-anomaly Slack message, not N.
 
 Model routing: **Composer**.
+
+**The Plaid credential was never expired.** Probed live on 2026-09-13: the stored
+`plaid_client_id` / `plaid_secret` authenticate against `production.plaid.com`
+(HTTP 200) and are rejected by `sandbox.plaid.com` (`INVALID_API_KEYS`). The keys are
+fine; the *host* was wrong. `plaid_env()` defaulted to `sandbox` whenever `PLAID_ENV`
+was unset, while the credentials always come from Secret Manager, which only holds the
+production pair. Both Cloud Run **services** set `PLAID_ENV=production` explicitly; the
+**job** never did — and the job is what runs the nightly `plaid_sync` catch-up. So every
+night it sent production keys to sandbox and got back an error that reads exactly like
+an expired credential.
+
+Fixed in code rather than by editing job env, so it cannot regress the next time a
+surface is added: on Cloud Run (`K_SERVICE` / `CLOUD_RUN_JOB`) the default now follows
+the credentials — production — while off Cloud Run sandbox remains the safe default and
+an explicit `PLAID_ENV` always wins. **No rotation was needed, and none was done.**
+
+**Review-anomaly dedup.** Anomalies are recomputed over all review history nightly, so
+the same unparseable post was re-reported forever. `partition_anomalies()` splits new
+from carried-over against a remembered list (`state_adapter.get/set_notify_state`,
+the same sandbox-isolated singleton pattern as the breaker); the DM now fires only when
+something is genuinely new and notes how many previously-reported anomalies are still
+open. A state-read failure falls back to reporting everything — noisy beats silently
+dropping a real anomaly.
 
 ---
 

@@ -1,3 +1,15 @@
+## 2026-09-14 — A green deploy now means the new code is serving (Issues #294, #295)
+
+**Scope:** Found while verifying the #285 deploy. `bhaga-webhook` was serving an `i223-pr224` preview image from 2026-08-05: `gcloud run services update --image` creates a revision but will not move traffic off a **named-revision pin**, so #264 and #291 merged, built, deployed green, and never went live. Six weeks, four 0%-traffic revisions, and nothing in the Actions UI that looked different from a good run. The console workflow had already hit this in #240 and fixed it; `deploy.yml` never got the same step.
+
+**Key changes:** `deploy.yml` routes 100% traffic to latest after deploying the webhook, then **verifies** both units run `github.sha` — service by image digest (Cloud Run resolves tags to digests on the revision), job by tag — and fails the workflow with the un-pin command in the error. The pin was the cause; a green deploy serving old code was the defect, so the assertion matters more than the routing. `cloud/webhook/test_deploy_workflow.py` holds both workflows to the contract and pins step ordering (routing after deploy, verify after routing).
+
+Separately, enabling `BHAGA_SCOPED_MATERIALIZE` exposed #295: `daily_refresh` ingests raw across `gap_start..refresh_date` but handed the scoped model write only `refresh_date`. On a catch-up that lays fresh raw data under **stale model rows for every gap day but the last** — invisible, because each table still holds exactly one row per key. `ingested_dates()` now derives the scope from the ingest window and is widened, never narrowed, by `--square-from`/`--adp-to`.
+
+**Decision:** the scope-vs-ingest relationship is one-directional by construction — widening re-materializes identical values (computation is full-history either way), narrowing loses data. So overrides widen and a source window inside the gap is ignored, rather than the scope tracking each source exactly.
+
+**Evidence:** the verify block was dry-run against live infra both ways — passes on the current state (`bhaga-webhook-00199-rdr` digest `sha256:3a29ee…` == the image built from `c2d12b8`), and fails with the `::error::` on a simulated deploy of a SHA that never took traffic, which is precisely the Sep-13 run that reported success. All three Cloud Run services now track `latestRevision: True`. The #295 call-site guard was verified by reintroducing `--dates refresh_date.isoformat()` and watching it fail.
+
 ## 2026-09-13 — Pipeline stopped corrupting data, halting on itself, and hiding it (Issue #285)
 
 **Scope:** Nothing landed after 2026-09-06. Two manual Operator Console backfills on 09-07 raced a non-atomic delete-then-merge, doubling 389 `(date, employee)` keys in `model_tip_alloc_daily`. Tip-pool conservation caught it and tripped the breaker — correctly — but the breaker was untiered and never expired, so a model-layer fault also stopped Square and ADP ingest for a week while the Operator Console showed stale numbers as if healthy. Payroll was never wrong: `vw_model_payroll_period` reads `model_tip_alloc_period`, which stayed clean (144 compared / $0.00 delta).

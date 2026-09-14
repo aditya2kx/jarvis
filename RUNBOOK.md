@@ -482,7 +482,8 @@ confirmed via a DM to the submitting operator, not the modal (which just closes)
   (no static keys). This is the **only** prod deploy identity. A Cursor Cloud Agent does not
   inherit it — see [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md). 
 - Steps: build orchestrator + webhook images → push (`:<git-sha>` and `:latest`) → `gcloud run jobs
-  update bhaga-daily-refresh` + `gcloud run services update bhaga-webhook` to the new SHA.
+  update bhaga-daily-refresh` + `gcloud run services update bhaga-webhook` to the new SHA →
+  **route 100% traffic to latest** → **verify both units actually serve this commit**.
 - **Rollback:** `gh workflow run deploy.yml -f rollback_sha=<good-sha>` (re-points both units to a
   prior image SHA; skips the normal deploy steps).
 
@@ -491,6 +492,38 @@ confirmed via a DM to the submitting operator, not the modal (which just closes)
 gh run list --workflow=deploy.yml --limit 5
 gh run watch <run-id>
 ```
+
+### A green deploy is not proof the new code is serving (Issue #294)
+
+`gcloud run services update --image` creates a revision but does **not** move traffic when the
+service has traffic pinned to a named revision. `bhaga-webhook` was pinned to an `i223-pr224`
+preview on 2026-08-05 and served it for six weeks: #264 and #291 merged, built, deployed green,
+and never went live. Every run looked identical to a good one.
+
+Two steps now close this, mirroring what the console workflow adopted in #240:
+`Route 100% traffic to latest revision` (removes the cause) and `Verify deployed units run this
+commit` (fails the workflow if the serving revision's image digest is not the one built from
+`github.sha`). The job is checked by tag, the service by digest — Cloud Run resolves tags to
+digests on the revision.
+
+To check by hand, or if the verify step fails:
+
+```bash
+# What is actually serving? `latestRevision: True` = healthy; a bare revisionName = pinned.
+gcloud run services describe bhaga-webhook --region us-central1 \
+  --format='value(status.traffic)'
+
+# Un-pin (this is the fix the verify step's error message prints)
+gcloud run services update-traffic bhaga-webhook --to-latest --region us-central1
+
+# Audit every service at once
+for s in $(gcloud run services list --region us-central1 --format='value(metadata.name)'); do
+  echo "$s: $(gcloud run services describe "$s" --region us-central1 --format='value(status.traffic)')"
+done
+```
+
+A tagged preview URL (e.g. `pr234---operator-console-…`) is fine and can coexist; what breaks is a
+**100% split onto a named revision**. Prefer `--tag` for previews, never a traffic pin.
 
 ---
 

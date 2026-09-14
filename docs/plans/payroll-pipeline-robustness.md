@@ -685,4 +685,19 @@ Stated plainly: that capture was taken at 00:00:02, so the calendar had also rol
 it confirms the rendering but does not by itself separate the fix from midnight. The
 BQ table above and the unit tests are what pin the behaviour at the reported moment.
 
+The [hovered tooltip](https://github.com/aditya2kx/jarvis/releases/download/evidence-screenshots/labor-weekly-sep7-tooltip-actual-only-20260914-002617.png)
+on that same bar is the direct comparison:
+
+| | reported | after fix |
+|---|---|---|
+| Total (actual) | 152.9 | **181.2** |
+| Total (scheduled) | 31.4 | *absent* |
+| Total (combined) | 184.3 | *absent* |
+| Goal line | `87.8% of goal` | `86.3% of goal · 34.4% of sales` |
+
+The scheduled and combined rows are gone because no day in the week is a forecast any
+more. The Goal line gaining `· 34.4% of sales` is the same fix surfacing through
+`completedWeek = hasActual && !hasSched` — the chart now recognises the week as
+finished, which is precisely what the operator observed it failing to do.
+
 Model routing: **Composer**.

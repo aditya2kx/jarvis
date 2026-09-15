@@ -1219,6 +1219,42 @@ def _bq_raw_coverage_complete(refresh_date: datetime.date) -> bool:
         return False
 
 
+def _adp_timecard_loaded(store: str, refresh_date: datetime.date) -> bool:
+    """True iff BQ holds a load receipt for this date's ADP timecard.
+
+    The `adp_reports` Firestore marker says a scrape RAN; this says its export
+    was actually parsed into BQ. Only the receipt survives the container, so
+    only the receipt can safely suppress a re-scrape: on 2026-09-14 a scrape
+    succeeded, set the marker, and then the load failed, so the rerun skipped
+    ADP and loaded nothing while reporting success.
+
+    Gated on the timecard alone, not all four ADP exports: the timecard is the
+    one artifact every ADP run requires, while the schedule is forward-looking
+    and earnings/rates are pay-period cadenced behind `include_rates` —
+    demanding those would re-scrape, and re-prompt for OTP, nightly.
+
+    Returns False on any query error: re-scraping is idempotent, skipping is
+    not, so False is the safe direction.
+    """
+    if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":
+        return True  # non-BQ runs keep the legacy marker-only behavior
+    try:
+        from core.datastore import dataset, read_query
+
+        rows = read_query(
+            f"SELECT COUNT(*) AS n"
+            f" FROM `jarvis-bhaga-prod.{dataset()}.source_load_receipts`"
+            f" WHERE store = '{store}'"
+            f" AND refresh_date = DATE('{refresh_date.isoformat()}')"
+            f" AND source = 'adp_timecard'"
+        )
+        return bool(rows and int(rows[0]["n"]) > 0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp] WARN: load-receipt check failed, will re-scrape: {exc}",
+              file=sys.stderr)
+        return False
+
+
 def _scrape_markers_done(refresh_date: datetime.date) -> bool:
     """True when upstream scrape steps completed for this refresh_date."""
     return (
@@ -2519,6 +2555,8 @@ def _run_refresh(run_id: str) -> int:
                 "adp_liability",
                 "--skip",
                 "square_rollup",
+                "--refresh-date",
+                refresh_date.isoformat(),
             ],
             cwd=str(PROJECT_ROOT),
             check=True,
@@ -2576,6 +2614,8 @@ def _run_refresh(run_id: str) -> int:
                 "adp_liability",
                 "--skip",
                 "square_rollup",
+                "--refresh-date",
+                refresh_date.isoformat(),
             ],
             cwd=str(PROJECT_ROOT),
             check=True,
@@ -2925,7 +2965,15 @@ def _run_refresh(run_id: str) -> int:
     needs_square_txn = needs_square_scrape and not step_already_done(refresh_date, "square_transactions")
     needs_square_kds = needs_square_scrape and not args.skip_kds and not step_already_done(refresh_date, "square_kds")
     needs_square = needs_square_txn or needs_square_kds
-    needs_adp = not args.skip_timecard and not step_already_done(refresh_date, "adp_reports")
+    # Marker AND receipt: the Firestore marker proves a scrape ran, the BQ
+    # receipt proves its export actually landed. Requiring both means a marker
+    # that outlived its container-local files can no longer suppress the scrape,
+    # while a date that genuinely loaded still skips — so scrape frequency (and
+    # OTP exposure) is unchanged except in the broken case.
+    needs_adp = not args.skip_timecard and not (
+        step_already_done(refresh_date, "adp_reports")
+        and _adp_timecard_loaded(args.store, refresh_date)
+    )
     needs_review_fetch = not args.skip_reviews
 
     if not needs_square and not args.skip_square and not needs_square_scrape:
@@ -3037,6 +3085,14 @@ def _run_refresh(run_id: str) -> int:
             earnings_end=adp_window_to,
             earnings_custom_range=earnings_custom_range,
         )
+    elif not args.skip_timecard:
+        # Parity with run_step's SKIPPED line. Without this a marker-skipped ADP
+        # pipeline printed nothing at all, which is why the 2026-09-14 rerun's
+        # log gave no hint that ADP had been bypassed.
+        print(
+            f"\n[adp_pipeline] SKIPPED — adp_reports marker done AND BQ load "
+            f"receipt present for refresh_date={refresh_date.isoformat()}"
+        )
     if needs_review_fetch:
         _rev_since_override = args.reviews_since or args.window_from
         pipeline_specs["review_fetch"] = functools.partial(
@@ -3047,6 +3103,15 @@ def _run_refresh(run_id: str) -> int:
         )
 
     results = _execute_pipelines(pipeline_specs, serialize_otp=serialize_otp)
+
+    # Only a successful ADP pipeline in THIS execution guarantees exports on
+    # local disk, so only then may load_raw_bigquery treat their absence as a
+    # failure. An ADP pipeline that failed (unanswered OTP, login error) is a
+    # documented graceful skip that must still exit 0, and an ADP pipeline that
+    # was skipped had its data verified present in BQ by the scrape gate.
+    adp_exports_expected = bool(
+        getattr(results.get("adp"), "success", False)
+    )
 
     # Collect results from all pipelines (executor captured exceptions into
     # failed PipelineResults, so the contract is uniform here).
@@ -3202,7 +3267,9 @@ def _run_refresh(run_id: str) -> int:
             )
             return subprocess.run(
                 [sys.executable, "-m", "agents.bhaga.scripts.backfill_from_downloads",
-                 "--store", args.store, "--skip", "square"],
+                 "--store", args.store, "--skip", "square",
+                 "--refresh-date", refresh_date.isoformat()]
+                + (["--require-adp"] if adp_exports_expected else []),
                 cwd=str(PROJECT_ROOT), check=True,
                 env=bq_raw_env,
             )
@@ -3224,7 +3291,10 @@ def _run_refresh(run_id: str) -> int:
             # Gate: clear the scrape-done markers so the next retry re-scrapes
             # from upstream rather than trying to load absent local files.
             # (Cloud Run containers are ephemeral; local files vanish between runs.)
-            for _scrape_step in ("square", "adp"):
+            # These must be the names the markers are WRITTEN under
+            # (square_transactions / adp_reports); the earlier "square"/"adp"
+            # spelling matched nothing, so this recovery never once fired.
+            for _scrape_step in ("square_transactions", "adp_reports"):
                 if step_already_done(refresh_date, _scrape_step):
                     clear_step_done(refresh_date, _scrape_step)
                     print(f"  [load_raw_bigquery] cleared {_scrape_step}.done "

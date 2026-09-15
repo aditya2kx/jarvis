@@ -511,7 +511,7 @@ bundle → `load_raw_bigquery` path this PR changes (preference J5).
 | `agents/bhaga/scripts/README.md` | Correct the marker names in the recovery description (line 47 documents the wrong `square`/`adp` names); document `source_load_receipts` and the new `adp_inputs_absent` failure mode. |
 | `.cursor/rules/bhaga.mdc` | § Architecture: state that ADP scrape idempotency is BQ-receipt-authoritative, Firestore marker advisory. § Operational rules: the trusted-device claim becomes true only with `BHAGA_SESSION_PERSIST` + the `_session/` object. |
 | `agents/bhaga/scripts/status.py` | Add `source_load_receipts` to the freshness targets so `status` answers "did ADP land?" directly. |
-| `PROGRESS.md` | Dated entry for the incident + fix. Lands via its own follow-up PR, never a direct main push. |
+| `PROGRESS.md` | Dated entry for the incident + fix, in this PR (still via PR — never a direct main push). |
 
 ## Branch / PR mechanics
 

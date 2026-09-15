@@ -44,8 +44,16 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    via `schedule_backend.build_schedule_records` / `build_employee_schedule_records`). Square tables (`square_transactions`,
    `square_daily_rollup`, `square_item_lines`, `square_item_daily`, `square_kds_daily`,
    `square_kds_tickets`) are populated in step 2.
-   If `load_raw_bigquery` fails, `square.done` and `adp.done` markers are **cleared** so the next
-   retry re-runs fresh data (retry-skips-rescrape guarantee).
+   If `load_raw_bigquery` fails, the `square_transactions.done` and `adp_reports.done` markers are
+   **cleared** so the next retry re-runs fresh data (retry-skips-rescrape guarantee). Those are the
+   names the markers are actually written under — until Issue #305 the clear loop used `square`/`adp`
+   and therefore never fired once.
+   An ADP load is **never** allowed to report success on an empty directory: with `--require-adp`
+   (set only when the ADP pipeline succeeded in the same execution) a load that finds no ADP export
+   exits 1 with a `BREADCRUMB adp_inputs_absent` line, rather than writing `load_raw_bigquery.done`
+   over a no-op. Without the flag an empty ADP load stays a graceful skip (unanswered OTP).
+   Each ADP export that parses writes a `source_load_receipts` row — the durable BQ proof the scrape
+   gate consults (see step 3 below).
 4b. **Render raw Sheets from BQ** (`render_raw_sheet_from_bq.py`, non-fatal): inverse-maps each BQ raw
    table row → Sheet-header dict and calls `write_raw_*` upsert functions. Preserves historical rows
    outside the `--since` window. Reviews tab rendered separately after `process_reviews`.

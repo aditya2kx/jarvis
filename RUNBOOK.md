@@ -372,8 +372,34 @@ gcloud secrets versions add <name> --data-file=- --project jarvis-bhaga-prod
 ### Default behaviour (inline autostart, since PR #94)
 
 The nightly job **no longer sends a READY-handshake Slack message before starting**. It proceeds
-directly to the ADP/Square scrapes. If ADP's browser session is trusted (the usual case), no OTP
-challenge fires at all.
+directly to the ADP/Square scrapes. When the previous run's ADP session is restored successfully, ADP
+recognises the device and no OTP challenge fires.
+
+### ADP trusted-device session (`_session/adp-palmetto.json`)
+
+`download_adp_bundle` restores the previous run's cookie jar into the browser context before login
+and re-uploads it immediately after `_ensure_logged_in` succeeds — including after a login that just
+satisfied a 2FA challenge, since that is the jar carrying ADP's device-trust cookie. Gated on
+`BHAGA_SESSION_PERSIST=1` (already set on the job); durable copy lives at
+`gs://bhaga-scrape-cache/_session/adp-palmetto.json`.
+
+Confirm it is working:
+
+```bash
+# Object should exist and its timestamp should advance on every run
+gsutil ls -l gs://bhaga-scrape-cache/_session/adp-palmetto.json
+
+# A healthy run logs this; its absence means every login starts from a fresh jar
+gcloud logging read 'resource.type="cloud_run_job" textPayload:"restoring trusted-device session"' \
+  --project=jarvis-bhaga-prod --freshness=2d --format="value(timestamp,textPayload)"
+```
+
+Before Issue #305 the whole mechanism was **inert** — `upload_session`/`download_session` had zero
+callers and no ADP session object had ever existed — so every ADP login presented a fresh cookie jar
+and was fully exposed whenever ADP's risk engine chose to challenge (3 times in the 45 days to
+2026-09-15). If OTP asks start recurring nightly, check the object above first: a missing or stale
+`adp-palmetto.json` means the persist step is failing (look for
+`WARN: session persist failed`).
 
 If ADP *does* challenge for a 2FA code:
 
@@ -632,6 +658,30 @@ gcloud run jobs execute bhaga-daily-refresh \
 
 > Deleting the entire `runs/YYYY-MM-DD` doc forces a full re-run for that date. Writes stay idempotent
 > (upsert by natural key), so re-running is safe — it overwrites, never duplicates.
+
+#### Forcing an ADP **re-scrape** needs the BQ receipt gone too
+
+Clearing `adp_reports` alone is **not** enough. Since Issue #305 the ADP scrape gate requires the
+Firestore marker **and** a `source_load_receipts` row proving the export actually landed in BQ:
+
+```sql
+DELETE FROM `jarvis-bhaga-prod.bhaga.source_load_receipts`
+WHERE store = 'palmetto'
+  AND refresh_date = DATE 'YYYY-MM-DD'
+  AND source = 'adp_timecard';
+```
+
+Why the gate needs both: the marker records that a scrape **ran**, but the exports it produced live
+in the container's `extracted/downloads/` and are never uploaded to GCS. On 2026-09-14 a nightly
+scraped ADP, set the marker, then died on a BQ MERGE — so the rerun saw a "done" marker, skipped the
+scrape, found an empty directory in its fresh container, and reported success having loaded nothing.
+The receipt is the only signal that survives the container.
+
+A `rows_upserted = 0` receipt is still a receipt (a store-closed day parses a timecard with no
+shifts) — do not delete it expecting a re-scrape to add rows.
+
+Also clear the downstream markers (`load_raw_bigquery`, `materialize_model_bq`, `process_reviews`)
+or the re-scraped files are parsed and then discarded by an already-done model step.
 
 ### Auto-rerun fixed dates on deploy (Retry-Dates trailer)
 

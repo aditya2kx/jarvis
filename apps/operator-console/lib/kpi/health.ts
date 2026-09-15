@@ -3,7 +3,7 @@ import {
   laborDaily,
   storeConfig,
   orderQualityDaily,
-  baseRunway,
+  inventoryStockLevels,
   plaidSpendByCategory,
   plaidMoneyInTotal,
   type LaborDailyRow,
@@ -11,6 +11,7 @@ import {
 } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { chicagoTodayIso, isMonthLike, type DateWindow } from "@/lib/filters/range";
+import { RISKY_DAYS_LEFT } from "@/lib/inventory/daysLeft";
 import type { GoalKey } from "@/lib/bq/writes";
 import type { GoalStatus } from "@/lib/kpi/health-types";
 import type { LaborLens } from "@/lib/kpi/labor-lens";
@@ -125,11 +126,11 @@ export async function loadHealthScorecard(
   _opts: { laborLens?: LaborLens } = {},
 ): Promise<HealthScorecard> {
   // laborLens retained for API compat; Home no longer shows schedule/blended (#189).
-  const [rows, config, quality, runway, plaidCats, moneyIn] = await Promise.all([
+  const [rows, config, quality, stock, plaidCats, moneyIn] = await Promise.all([
     laborDaily(win),
     storeConfig(DEFAULT_STORE),
     orderQualityDaily(win),
-    baseRunway(),
+    inventoryStockLevels(DEFAULT_STORE),
     plaidSpendByCategory(win).catch(() => []),
     plaidMoneyInTotal(win).catch(() => 0),
   ]);
@@ -158,7 +159,7 @@ export async function loadHealthScorecard(
   const bankLabor$ = payrollCat?.spend ?? 0;
 
   const prepP95 = avgPrepP95Min(quality);
-  const riskyCount = countRiskyBases(runway);
+  const riskyCount = countRiskyBases(stock);
 
   const gCash = periodGoal(config, win, "goal_cash_flow_weekly", "goal_cash_flow_monthly");
   const gSales = periodGoal(config, win, "goal_net_sales_weekly", "goal_net_sales_monthly");
@@ -422,7 +423,7 @@ export async function loadHealthScorecard(
       rawGoal: goalRaw(config, "goal_bases_at_risk_max"),
       lowerIsBetter: true,
       deltaFormatted: deltaLabel(riskyCount, goalRiskyMax, true, "number"),
-      info: "Count of bases with Status=Risky on Inventory Base runway. Goal is usually 0.",
+      info: `Count of bases with ${RISKY_DAYS_LEFT} or fewer days left at current usage and no restocking (Inventory Days left). Goal is usually 0.`,
     }),
   ];
 

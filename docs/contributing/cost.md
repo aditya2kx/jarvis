@@ -19,6 +19,34 @@ The `pr-cost-gate.yml` CI check reads BQ — zero build cost is a hard failure.
 
 View cost data: https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jarvis-development
 
+### How build cost is attributed to a PR
+
+The Cursor usage API is account-global and carries no conversation id, so
+`capture-build` has to decide which events belong to this PR. Two signals are
+combined, and it helps to know what each one is for:
+
+- **The caller's window** — `[session_started_at, now]`, seeded by
+  `start_pr_session.py`. This bounds attribution; widening never escapes it.
+- **The conversation's edit window** — from `ai_code_hashes`. This is only a
+  *disambiguator* between chat spaces running in parallel.
+
+The two are skewed by construction: usage events are cumulative per-model rows
+stamped near the session's first request, while edits land much later (56 min on
+PR #298, against a 5 min pad). Intersecting them therefore returned nothing and
+the gate saw `$0` — with `validate` simultaneously demanding a `conversation`
+attribution mode that `capture-build` could no longer reach.
+
+So `filter_events_for_conversations` widens to the caller's window **when every
+edit-active conversation in that window is bound** — there is nothing left to
+disambiguate. If an unbound conversation was also editing, the strict edit window
+still applies, because billing another chat space's cost to this PR is the
+failure mode worth protecting against. The model-tier check applies either way,
+which is what keeps a stray `composer-2.5` background request out of an
+Opus-only conversation's total.
+
+If the gate reports `$0`, check whether a second chat space was editing in the
+same window before reaching for `record-build`.
+
 ## Model routing
 Use the cheapest model that does the job well.  Escalate only when stuck.
 

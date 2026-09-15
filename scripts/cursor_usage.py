@@ -351,11 +351,21 @@ def filter_events_for_conversations(
     A conversation that used both Opus (planning) and Sonnet (execution) keeps
     events from both tiers; the old dominant-model filter silently dropped the
     minority tier based on an arbitrary string-length comparison.
+
+    The edit window is only a disambiguator. The usage API reports cumulative
+    per-model rows stamped at roughly the session's first request, while edits
+    land much later — a systematic skew far wider than the 5 min pad (56 min on
+    PR #298), so intersecting the two windows returned nothing and the gate saw
+    $0. When every edit-active conversation in the window is bound there is
+    nothing to disambiguate, so the caller's window is used as-is. With an
+    unbound conversation also active the strict edit window still applies:
+    over-attributing another chat space's cost is the failure this guards.
     """
     if not conversation_ids:
         return events
     profiles = conversation_profiles(start_ms, end_ms, db=db)
     bound = {cid: profiles[cid] for cid in conversation_ids if cid in profiles}
+    exclusive = bool(bound) and set(profiles) <= set(conversation_ids)
     if not bound:
         # Bound ids may predate edits in window — widen profile lookup to full range.
         for cid in conversation_ids:
@@ -386,8 +396,11 @@ def filter_events_for_conversations(
             continue
         candidates: list[tuple[str, int]] = []
         for cid, prof in bound.items():
-            lo = max(start_ms, prof["min_ts"] - _CONVERSATION_EVENT_PAD_MS)
-            hi = min(end_ms, prof["max_ts"] + _CONVERSATION_EVENT_PAD_MS)
+            if exclusive:
+                lo, hi = start_ms, end_ms
+            else:
+                lo = max(start_ms, prof["min_ts"] - _CONVERSATION_EVENT_PAD_MS)
+                hi = min(end_ms, prof["max_ts"] + _CONVERSATION_EVENT_PAD_MS)
             if ts < lo or ts > hi:
                 continue
             if not _model_in_conversation(e.get("model"), prof.get("models") or []):

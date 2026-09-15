@@ -15,7 +15,8 @@ import {
   statusFor,
   weeklyHoursGoalForWindow,
 } from "@/lib/kpi/scorecard-math";
-import type { BaseRunwayRow, OrderQualityDailyRow } from "@/lib/bq/queries";
+import { RISKY_DAYS_LEFT } from "@/lib/inventory/daysLeft";
+import type { OrderQualityDailyRow } from "@/lib/bq/queries";
 
 describe("fractionToPercentInput", () => {
   it("converts a store_config fraction to a whole-percent display value", () => {
@@ -141,13 +142,24 @@ describe("paceFor / statusFor (Issue #158)", () => {
 });
 
 describe("countRiskyBases", () => {
-  it("counts Status=Risky rows", () => {
+  it("counts bases at or below the burn-down threshold", () => {
     const rows = [
-      { Status: "Risky" },
-      { Status: "Fine" },
-      { Status: "Risky" },
-    ] as unknown as BaseRunwayRow[];
+      { "Days left": 1.5 },
+      { "Days left": RISKY_DAYS_LEFT },
+      { "Days left": 12 },
+    ];
     expect(countRiskyBases(rows)).toBe(2);
+  });
+
+  it("does not count a base with unknown days left", () => {
+    // A base with no usage history divides by zero upstream and arrives null.
+    // Counting it as at-risk would put a permanent false alarm on Home.
+    expect(countRiskyBases([{ "Days left": null }])).toBe(0);
+  });
+
+  it("accepts an explicit threshold", () => {
+    expect(countRiskyBases([{ "Days left": 6 }], 7)).toBe(1);
+    expect(countRiskyBases([{ "Days left": 6 }], 4)).toBe(0);
   });
 });
 

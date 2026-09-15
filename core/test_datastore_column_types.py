@@ -9,6 +9,17 @@ ADP's Payroll Liability body omitted the FUTA line, so ``er_futa`` was None in
 every row of the batch. With nothing to infer from, typing fell back to STRING
 and the MERGE was rejected against a FLOAT64 column — a nullable column doing
 exactly what nullable means, failing the whole pipeline step.
+
+Regression for the prod nightly failure of 2026-09-14 (Issue #297):
+
+    400 Type not found: FLOAT at [1:224]
+
+Reading the type off the table fixed the STRING fallback but introduced a second
+spelling bug: the table API returns the LEGACY names (FLOAT, INTEGER, BOOLEAN,
+RECORD) and only BOOLEAN was normalised, so ``CAST(NULL AS FLOAT)`` reached
+BigQuery, which has no such type. The fixtures below therefore use the legacy
+spellings — the earlier ones said FLOAT64, a schema BigQuery never returns, which
+is exactly why CI stayed green while the nightly died.
 """
 
 from __future__ import annotations
@@ -24,6 +35,14 @@ from core import datastore
 
 
 class _Field:
+    """``field_type`` must use the LEGACY spelling.
+
+    ``client.get_table().schema`` reports FLOAT / INTEGER / BOOLEAN / RECORD, not
+    the FLOAT64 / INT64 / BOOL / STRUCT spellings GoogleSQL requires in SQL text.
+    Fixtures that use the GoogleSQL names test a schema BigQuery never returns —
+    which is how the 2026-09-14 nightly failure shipped green.
+    """
+
     def __init__(self, name: str, field_type: str):
         self.name = name
         self.field_type = field_type
@@ -50,8 +69,9 @@ class _FakeClient:
 LIABILITY_SCHEMA = [
     _Field("check_date", "DATE"),
     _Field("payroll_label", "STRING"),
-    _Field("er_futa", "FLOAT64"),
+    _Field("er_futa", "FLOAT"),
     _Field("is_final", "BOOLEAN"),
+    _Field("shift_count", "INTEGER"),
 ]
 
 
@@ -70,6 +90,28 @@ class TestTableColumnTypes(unittest.TestCase):
         client = _FakeClient(LIABILITY_SCHEMA)
         types = datastore.table_column_types(client, "`proj.ds.adp_payroll_liability`")
         self.assertEqual(types["is_final"], "BOOL")
+
+    def test_every_legacy_spelling_is_normalised(self):
+        """Only BOOLEAN was mapped, so FLOAT reached SQL text and BQ rejected it."""
+        client = _FakeClient([
+            _Field("f", "FLOAT"), _Field("i", "INTEGER"),
+            _Field("b", "BOOLEAN"), _Field("r", "RECORD"),
+        ])
+        types = datastore.table_column_types(client, "`proj.ds.t`")
+        self.assertEqual(
+            types, {"f": "FLOAT64", "i": "INT64", "b": "BOOL", "r": "STRUCT"},
+        )
+
+    def test_googlesql_spellings_pass_through_untouched(self):
+        """The mapping must not rewrite types that are already correct."""
+        client = _FakeClient([
+            _Field("d", "DATE"), _Field("t", "TIMESTAMP"),
+            _Field("s", "STRING"), _Field("n", "NUMERIC"),
+        ])
+        types = datastore.table_column_types(client, "`proj.ds.t`")
+        self.assertEqual(
+            types, {"d": "DATE", "t": "TIMESTAMP", "s": "STRING", "n": "NUMERIC"},
+        )
 
     def test_backticks_are_stripped_before_lookup(self):
         client = _FakeClient(LIABILITY_SCHEMA)

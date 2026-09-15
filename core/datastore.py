@@ -608,6 +608,16 @@ def assert_unique_natural_key(table_name: str, key_cols: list[str]) -> None:
 
 _SCHEMA_TYPE_CACHE: dict[str, dict[str, str]] = {}
 
+# The table API reports legacy type names; GoogleSQL accepts only these spellings
+# in SQL text such as `CAST(NULL AS <type>)`. INTEGER happens to be accepted as a
+# CAST alias, but that is luck rather than contract, so the whole set is mapped.
+_LEGACY_BQ_TYPES = {
+    "FLOAT": "FLOAT64",
+    "INTEGER": "INT64",
+    "BOOLEAN": "BOOL",
+    "RECORD": "STRUCT",
+}
+
 
 def table_column_types(client, fq_table: str) -> dict[str, str]:
     """``{column: bq_type}`` as the table itself declares them.
@@ -629,7 +639,7 @@ def table_column_types(client, fq_table: str) -> dict[str, str]:
         return _SCHEMA_TYPE_CACHE[key]
     try:
         schema = client.get_table(key).schema
-        types = {f.name: ("BOOL" if f.field_type == "BOOLEAN" else f.field_type)
+        types = {f.name: _LEGACY_BQ_TYPES.get(f.field_type, f.field_type)
                  for f in schema}
     except Exception:  # noqa: BLE001 — typing is best-effort; see docstring
         logger.debug("schema lookup failed for %s", key, exc_info=True)

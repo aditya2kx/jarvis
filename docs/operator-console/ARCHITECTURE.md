@@ -167,7 +167,7 @@ flowchart TD
 | **Labor** | Square from `vw_model_labor_daily`; labor $ / % `vw_labor_daily_live`; `adp_scheduled_shifts` (actual vs schedule, concurrent, coverage); Sync scheduled → `BHAGA_ADP_SCHEDULE_ONLY`; Sync clocked hours → `BHAGA_ADP_TIMECARD_ONLY` | Sync scheduled/clocked; weekly hours goal → `store_config.goal_labor_hours_week` (same as Home) |
 | **Order Quality** | `vw_kds_per_item_min` (grain percentiles + avg), live by-source from `square_kds_tickets` | — |
 | **Payroll & People** | `vw_model_payroll_period` (+ per-review), `training_shifts` (tip exemptions), `adp_shifts`, `employee_perks`; period status = unpaid / submitted (`adp_payroll_liability` check date) / paid (`adp_total_paid`) | `training_shifts` (batch tip exemptions + recompute), recognition bonuses, `employee_perks` (reimbursements; `pay_period` `''` or dated), `employee_aliases`; Sync clocked hours (`BHAGA_ADP_TIMECARD_ONLY`); ADP Preview only while unpaid and not submitted |
-| **Inventory / Ordering** | `vw_order_assistant_table`, `vw_inventory_order_assistant`, `vw_order_reco_combined`, `vw_order_reco_next_dates`, `vw_inventory_base_runway`, `inventory_restock_schedule/orders`; **Ordered tubs (Actuals)** = header Period-filtered `inventory_restock_orders` (no estimates; reco/runway/usage ignore Period) | `inventory_restock_schedule`, `inventory_restock_orders` (+ trigger `refresh_order_reco`), `order_reco_max_tubs` → `store_config` |
+| **Inventory / Ordering** | `vw_order_assistant_table`, `vw_inventory_order_assistant`, `vw_order_reco_combined`, `vw_order_reco_next_dates`, `inventory_restock_schedule/orders`; **Ordered tubs (Actuals)** = header Period-filtered `inventory_restock_orders` (no estimates; reco/usage ignore Period) | `inventory_restock_schedule`, `inventory_restock_orders` (+ trigger `refresh_order_reco`), `order_reco_max_tubs` → `store_config` |
 | **Pipeline Health** | Firestore run state, per-view `refresh_date`, `status.py` logic | (optional) trigger refresh |
 | **Automations** | `automations`, `automation_posts`, `model_review_bonus_period` (selected `?period=` leaderboard + `materialized_at_utc` freshness; schedule still open-period) | MERGE `automations`; Preview/Post once compose from Payroll period filter rollup (no once/day cap on manual Post); Gemini single-message vary (multi-draft rejected); Post once → ClickUp + INSERT `automation_posts`; morning webhook still once/CT-day |
 
@@ -251,13 +251,14 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
   cell or header pencil → right Sheet listing **all bases** (same pattern as Order Tubs)
   → Apply once → sticky `inventory_current_qty_overrides` MERGEs (COALESCE into
   `vw_inventory_order_assistant`) → **inline** `refresh_order_reco` so On hand / Order
-  tubs / Days left / Base runway converge before the Sheet closes (not async-enqueue).
+  tubs / Days left converge before the Sheet closes (not async-enqueue).
   Reset all clears overrides so ClickUp closings win again.
 - **Per-date column group ×N** (live dates from `vw_order_reco_next_dates`,
   capped by `order_reco_max_slots` default 4 — migration 052; includes
   **today** until a base closing for today exists — migration 051): `On Hand
   at Restock`, `Order Tubs`, `Order Weight (lbs)`, `After Restock`, `Days Left
-  After Restock`, and a **Source badge** (`Estimated` / `Manual` / `Actuals`).
+  After Restock` (header **Days left after**, to distinguish it from the
+  burn-down `Days left` identity column), and a **Source badge** (`Estimated` / `Manual` / `Actuals`).
   `Manual` is a per-base pin on an Estimated date (`inventory_order_tub_overrides`,
   migration 055) — does not flip the date to Actuals. Console
   pivots `inventory_order_reco` long-format so adding another registered
@@ -281,18 +282,21 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
   **Move date** (rekey schedule + Actuals/Manual pins `from → to`, then refresh
   dual-date reco) and **Remove date** (delete schedule + Actuals + overrides after
   confirm).
-- **Base runway table** (Issue #164, `vw_inventory_base_runway`): urgency view
-  at the top of Inventory / Ordering. Columns: Base, Stock, Vel/day, Days left
-  (burn-down from today, ignores future restocks), **Stockout 1 / Restock 1 /
-  Qty 1 / Status 1** and **Stockout 2 / Restock 2 / Qty 2 / Status 2**. Restock
-  dates are **Actuals only** (up to two future `inventory_restock_orders`
-  dates per base — estimated schedule dates do not appear). Stockout 2 chains
-  after Restock 1 Actuals qty. Status is **Risky** when that slot’s restock is
-  empty or stockout is before the restock date; **Fine** when restock arrives
-  on or before stockout. Rows highlight when Status 1 or Status 2 is Risky.
-  Default sort: Days left ascending. Dual-date reco below remains the source
-  for order tubs / weight / Estimated vs Actuals (and still shows Estimated
-  schedule dates).
+- **Days left** (burn-down): fixed identity column after `Avg per day`, shown
+  whether or not a delivery date is registered. `ROUND(Current Qty / Avg per
+  day, 1)`, derived in `orderRecoSlots()` from the two columns beside it so the
+  row divides out on screen (`inventory_order_reco` is materialized while
+  `vw_inventory_order_assistant` is live, so a join could disagree). Answers
+  “how long do we last with no restocking at all”, which `Days Left After
+  Restock` cannot — that one assumes the order arrives. Thresholds
+  (`lib/inventory/daysLeft.ts`): warn ≤ 7, bad ≤ 4, `lower-bad`.
+- **Base runway table removed** (was Issue #164, `vw_inventory_base_runway`).
+  Its `Days left` is the column above; Stockout 1/2, Restock 1/2, Qty 1/2 and
+  Status 1/2 were dropped as noise. Home’s **Bases at risk** now counts bases
+  at or below the bad threshold from `vw_inventory_order_assistant` instead of
+  `Status = 'Risky'` — a filter that had matched nothing since migration 036
+  split the column, so the metric read 0 regardless of stock. The view still
+  exists in BQ with no reader.
 - **Capacity control** bound to `order_reco_max_tubs` (default 120); editing it
   recomputes the recommendation.
 

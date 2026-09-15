@@ -1801,6 +1801,8 @@ export interface OrderRecoSlotLongRow {
   delivery_date: string;
   "Current Qty": number;
   "Avg per day": number;
+  /** Burn-down days left (no restock), unlike `Days Left After Restock`. */
+  "Days left": number | null;
   "On Hand at Restock": number | null;
   "Order Tubs": number | null;
   "Order Weight lbs": number | null;
@@ -1819,6 +1821,13 @@ export function orderRecoSlots(): Promise<OrderRecoSlotLongRow[]> {
        CAST(r.delivery_date AS STRING) AS delivery_date,
        r.\`Current Qty\`,
        r.\`Avg per day\`,
+       -- Burn-down days left: no restock assumed. Derived from the two columns
+       -- displayed beside it rather than joined from vw_inventory_order_assistant,
+       -- so the row stays internally consistent — inventory_order_reco is
+       -- materialized and the view is live, so a join could show a Days left that
+       -- does not divide out of the Current Qty on screen.
+       ROUND(SAFE_DIVIDE(r.\`Current Qty\`, NULLIF(r.\`Avg per day\`, 0)), 1)
+         AS \`Days left\`,
        r.\`On Hand at Restock\`,
        r.\`Order Tubs\`,
        r.\`Order Weight lbs\`,
@@ -1999,27 +2008,11 @@ export function restockActuals(
   );
 }
 
-// vw_inventory_base_runway (migration 036, Issue #164) — dual restock slots
-// matching Next delivery; Actuals-only Status 1/2; Stockout 2 chains via D1.
-export interface BaseRunwayRow {
-  Base: string;
-  Stock: number;
-  "Vel per day": number;
-  "Days left": number | null;
-  "Stockout 1": string | null;
-  "Restock 1": string | null;
-  "Qty 1": number | null;
-  "Status 1": "Risky" | "Fine";
-  "Stockout 2": string | null;
-  "Restock 2": string | null;
-  "Qty 2": number | null;
-  "Status 2": "Risky" | "Fine";
-  [key: string]: unknown;
-}
-
-export function baseRunway(): Promise<BaseRunwayRow[]> {
-  return q<BaseRunwayRow>(`SELECT * FROM ${fq("vw_inventory_base_runway")}`);
-}
+// The Base runway table (migration 036, Issue #164) was removed from /inventory:
+// its burn-down `Days left` is now a column on the reco table, which already
+// carries Current Qty and Avg/day, and Stockout/Status were dropped as noise.
+// `vw_inventory_base_runway` is left in BQ with no console reader — see the
+// follow-up issue for dropping the view.
 
 // training_shifts / tip exemptions (migration 020 + 038 windows — Issue #167).
 export interface TrainingShiftRow {

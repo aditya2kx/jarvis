@@ -10,6 +10,8 @@ export type OrderRecoSlotLongRow = {
   delivery_date: string;
   "Current Qty": number;
   "Avg per day": number;
+  /** Burn-down days left (no restock). Same value on every slot row for an item. */
+  "Days left": number | null;
   "On Hand at Restock": number | null;
   "Order Tubs": number | null;
   "Order Weight lbs": number | null;
@@ -57,6 +59,9 @@ export function pivotOrderRecoSlots(
         Item: r.Item,
         "Current Qty": r["Current Qty"],
         "Avg per day": r["Avg per day"],
+        // Item-level, not slot-level: burn-down ignores restocks, so it is the
+        // same on every slot row and must not be suffixed like "Days Left N".
+        "Days left": r["Days left"] == null ? null : Number(r["Days left"]),
         _ord: r._ord,
       };
       byItem.set(r.Item, row);

@@ -25,6 +25,11 @@ unit fixture reproduces exactly (red before, green after). The post-merge prod r
 OTP-gated sandbox `full-live` adds latency without adding signal at this scope. Operator
 chose this tier explicitly over `sandbox-live` and over `sandbox-e2e`.
 
+The waiver covers the BigQuery type fix and the cost-attribution fix only. Milestone 5 adds
+an Operator Console change, which **cannot** be waived to unit-only
+(`check_evidence_readiness.py`): it carries a viewable https screenshot of `/inventory`
+rendered against live BigQuery.
+
 Scope, as the operator set it: **option A only** — the minimal unblocking fix, so a rerun of
 `2026-09-14` can happen immediately. The three hardening items surfaced during jam
 (per-table isolation, real error breadcrumbs, a mechanical type-name gate) are **out of
@@ -233,6 +238,70 @@ Pass criteria, each independently checkable:
    `status='success'`. This is the scenario that actually broke, so an operator-triggered
    rerun alone is not sufficient proof.
 
+## Milestone 5 — Inventory: burn-down Days left, remove Base runway (Sonnet 5 medium thinking)
+
+Operator requirement, raised mid-session 2026-09-15: *"for Next delivery table, I thought we
+had columns like current qty, avg/day, days left (missing) and then next delivery date. I
+want to see how many days we would last without any restocking. in which case we don't need
+base runway table and can remove it."* The operator explicitly directed it into this PR
+rather than a new worktree, overriding `new-requirement-intake.mdc` after the trade-off
+(delays the outage fix, mixes concerns, one more paid review) was surfaced.
+
+Decisions taken at that gate: **Days left only** — Stockout 1/2, Restock 1/2, Qty 1/2 and
+Status 1/2 are dropped as noise; Home's **Bases at risk** is rewired rather than deleted.
+
+Diagnosis that shaped it: burn-down `Days left` already existed in
+`vw_inventory_order_assistant.days_left` and in the Base runway table, and
+`OrderRecoTable.tsx` already rendered it — but **only** when `dates.length === 0`. With a
+delivery date registered, the only `Days left` on the reco table was
+`Days Left After Restock`, which assumes the order arrives. So the operator's "missing"
+column was real: the no-restock figure was one table away, not on the row it belonged to.
+
+| Change | File | Symbol |
+|---|---|---|
+| `Days left` = `ROUND(SAFE_DIVIDE(\`Current Qty\`, NULLIF(\`Avg per day\`,0)),1)` | `apps/operator-console/lib/bq/queries.ts` | `orderRecoSlots()`, `OrderRecoSlotLongRow` |
+| Carry it item-level through the pivot (never suffixed `Days left N`) | `lib/inventory/orderRecoPivot.ts` | `pivotOrderRecoSlots`, `OrderRecoSlotLongRow` |
+| Always-on `Days left` column after `Avg/day` | `components/inventory/OrderRecoTable.tsx` | `columns` |
+| Per-slot header `Days left` → `Days left after` | `components/inventory/OrderRecoTable.tsx` | `columns` |
+| Remove Base runway block, `runwayColumns`, `baseRunway()` call | `app/inventory/page.tsx` | `InventoryPage` |
+| Remove `BaseRunwayRow` / `baseRunway()` | `lib/bq/queries.ts` | — |
+| `Bases at risk` from burn-down threshold; fixes the always-0 bug | `lib/kpi/scorecard-math.ts`, `lib/kpi/health.ts` | `countRiskyBases`, `loadHealthScorecard` |
+| Single source for the threshold | `lib/inventory/daysLeft.ts` (new) | `DAYS_LEFT_THRESHOLDS`, `RISKY_DAYS_LEFT` |
+| Delete orphaned helpers | `lib/inventory/runway.ts`, `__tests__/runway.test.ts` | — |
+
+Derived, not joined: `inventory_order_reco` is materialized while
+`vw_inventory_order_assistant` is live, so joining `days_left` could render a value that does
+not divide out of the `Current Qty` beside it. Deriving from the two displayed columns keeps
+the row internally consistent.
+
+**Second bug found and fixed:** `countRiskyBases` filtered `Status === "Risky"`, but
+migration 036 split that into `Status 1` / `Status 2`. The filter had matched nothing since
+Issue #164, so Home reported **0 bases at risk regardless of stock**. Now derived from
+burn-down days left, so it survives the view's removal.
+
+UX polish (user-preferences Design #27, readiness item 11): reuses the shadcn `DataTable`
+with `meta.format.thresholds` (`warn: 7`, `bad: 4`, `lower-bad`) for the same amber/red
+treatment the removed table used; `Badge` for Source unchanged; sort affordances unchanged.
+The first capture revealed two columns both headed `Days left` — fixed by renaming the
+per-slot one to `Days left after`, beside the existing `After restock` column.
+
+```bash
+cd apps/operator-console && ./node_modules/.bin/tsc --noEmit && npm run lint && npm test
+BYPASS_IAP_EMAIL=operator@mypalmetto.co npm run dev &
+python3 apps/operator-console/scripts/capture_evidence.py --path /inventory \
+  --label i297-inventory-days-left --width 1600
+```
+
+Pass criteria:
+
+1. `tsc --noEmit` clean for touched files; `npm test` green (468 tests); no new lint findings.
+2. `/inventory` returns 200 against live BQ with no `Data unavailable` banner — proves the new
+   `SAFE_DIVIDE` column parses and the removed `baseRunway()` left no dangling reference.
+3. Rendered page contains no `Base runway` / `Vel/day`, and `Days left` + `Days left after`
+   are distinct headers.
+4. Home renders `Bases at risk` from the new source with the updated tooltip text.
+5. Screenshot uploaded to an https URL and verified to render (preference 18).
+
 ### Scenario evidence enumerated for PR §4
 
 | Scenario | How it is exercised | Expected |
@@ -244,6 +313,10 @@ Pass criteria, each independently checkable:
 | Schema unreadable (degrade, not fail) | existing `test_unreadable_schema_degrades_instead_of_raising` | returns `{}`, typing falls back to inference |
 | Recovery of the lost date | prod rerun of `2026-09-14` | `status` exits 0 |
 | Unattended regression | `2026-09-15` nightly | `success` |
+| Inventory with a delivery date registered | `/inventory` live, `2026-09-18` on the books | `Days left` column present; no Base runway |
+| Inventory with no delivery date | `stockOnlyRows` unit test (pre-existing) | `Days left` still the only actionable column |
+| Base with no usage history | `pivotOrderRecoSlots` null test | `Days left` stays null, not 0 |
+| Home Bases at risk | `/home` live + `countRiskyBases` unit tests | counts by threshold, no longer always 0 |
 
 ## Invariants preserved
 
@@ -267,14 +340,19 @@ Pass criteria, each independently checkable:
 either gets a type BigQuery accepts and writes correct values, or it raises a 400 and fails
 loudly — there is no path where a wrong number lands silently. A flag would also be
 self-defeating, since the flagged-off branch is precisely the broken one. No
-`FEATURE_FLAGS.md` entry needed. No Operator Console UI in scope, so the UX-polish bar
-(user-preferences Design #27) is N/A.
+`FEATURE_FLAGS.md` entry needed.
+
+Milestone 5 is also unflagged: `Days left` is a displayed division of two columns already on
+the row, so a wrong value is visible rather than silent, and the removed table had no writes.
+The UX-polish bar (user-preferences Design #27) applies and is covered in that milestone.
 
 ## Docs lock-step
 
 Per `.cursor/rules/doc-maintenance.mdc`, `core/datastore.py` is not in the coupling table and
 this change has no behavioral surface in `RUNBOOK.md`, `agents/bhaga/scripts/README.md`, or
-`DOMAIN.md` — it is an internal type mapping. `PROGRESS.md` gets a dated entry, but per
+`DOMAIN.md` — it is an internal type mapping. Milestone 5 does touch a documented surface:
+`docs/operator-console/ARCHITECTURE.md` §6 (Inventory layout, the Base runway bullet, and the
+per-screen view table) is updated in lock-step. `PROGRESS.md` gets a dated entry, but per
 `pr-workflow.mdc` that lands via its own follow-up PR after the retrospective, never a
 direct main push. `python3 scripts/check_doc_freshness.py --base origin/main` is the
 mechanical confirmation and runs in Milestone 2.
@@ -299,6 +377,7 @@ mechanical confirmation and runs in Milestone 2.
 | M1 — the fix + tests | Sonnet 5 medium thinking | small, well-specified edit in two cited files |
 | M2 — CI mirror green | Sonnet 5 medium thinking | mechanical; no design decisions |
 | M3 — prod rerun + verify | Opus 4.8 thinking medium | prod operation with live data; judgement on the rerun verdict |
+| M5 — inventory Days left | Sonnet 5 medium thinking | column move + table removal in cited files; the only judgement calls (derive vs join, header collision) were settled by the live capture |
 
 One chat per PR; this plan and implementation share the jam chat's space for cost
 attribution.
@@ -320,6 +399,9 @@ attribution.
 3. **Mechanical gate on type-name spelling** — a `verify.py` check rejecting legacy BigQuery
    type names in SQL-text `CAST` construction, per preference 19 (prefer a deterministic
    check over only recording a preference).
+4. **Drop `vw_inventory_base_runway`** — Milestone 5 removed its last reader, so the view and
+   migrations 035/036's `core/test_migration_03{5,6}_*.py` are now dead weight. Dropping a
+   prod view is a deliberate schema mutation and does not belong in an outage-fix PR.
 
 Separately, the same run logged four non-fatal `pay_info` scrape failures
 (`Alvarez, Sebastian`, `Flores, Juan`, `Urrutia, Emely` on Playwright timeouts;

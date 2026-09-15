@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { PencilIcon } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { DataTable, type Thresholds } from "@/components/tables/DataTable";
+import { DataTable } from "@/components/tables/DataTable";
 import { Badge } from "@/components/ui/badge";
 import {
   EstimateTubsDrawer,
@@ -17,10 +17,9 @@ import {
   normalizeDeliveryDate,
   type OrderRecoPivotedRow,
 } from "@/lib/inventory/orderRecoPivot";
+import { DAYS_LEFT_THRESHOLDS } from "@/lib/inventory/daysLeft";
 import { formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
-
-const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-bad" };
 
 /**
  * Dual-date reco table with Order Tubs click → batch estimate drawer (Issue #225)
@@ -128,21 +127,20 @@ export function OrderRecoTable({
         header: "Avg/day",
         meta: { format: { kind: "number", digits: 2 } },
       },
-    ];
-
-    // With no delivery date there are no order columns to show, so Days left is
-    // the only thing left that can be acted on — and it is the urgent one. When
-    // dates exist it stays out of the way: each slot already carries its own
-    // "Days Left N" after that restock.
-    if (dates.length === 0) {
-      cols.push({
+      // How long the store lasts with no restocking at all. Shown whether or not
+      // a delivery date is registered: the per-slot "Days left" columns are
+      // post-restock and assume the order arrives, so they cannot answer "how
+      // long do we have if nothing shows up" — which is what decides whether a
+      // delivery date needs to move. This replaces the Base runway table, whose
+      // Days left column was the same burn-down figure.
+      {
         accessorKey: "Days left",
         header: "Days left",
         meta: {
           format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS },
         },
-      });
-    }
+      },
+    ];
 
     dates.forEach((raw, i) => {
       const slot = i + 1;
@@ -230,7 +228,10 @@ export function OrderRecoTable({
         },
         {
           accessorKey: `Days Left ${slot}`,
-          header: "Days left",
+          // Not "Days left": the burn-down column of that name is now always
+          // present, and two identical headers in one table is unreadable.
+          // Sits beside "After restock", so "after" reads as after this delivery.
+          header: "Days left after",
           meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
         },
         {

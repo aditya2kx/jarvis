@@ -123,6 +123,11 @@ BQ_TARGETS: list[Target] = [
     # migration 053 (Issue #218): hour_kind (shift|pto|mixed) on same table — paid PTO
     # counts toward scheduled hours; console Exclude PTO filters hour_kind=pto.
     Target("adp_scheduled_shifts", "date"),
+    # migration 070 (Issue #305): durable proof that each ADP export was parsed
+    # into BQ. This is the table the scrape gate consults, so it is the direct
+    # answer to "did ADP actually land for this date?" — a missing row means the
+    # next run re-scrapes, regardless of what the Firestore marker claims.
+    Target("source_load_receipts", "refresh_date"),
     # migration 040 (Issue #166): adp_payroll_liability is a sparse paycheck
     # calibration snapshot (check_date), not a nightly freshness signal —
     # intentionally NOT a BQ_TARGETS entry (same class as store_config /

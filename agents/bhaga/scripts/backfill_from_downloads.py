@@ -119,6 +119,82 @@ def aggregate_square_daily(records: list[dict]) -> list[dict]:
     return sorted(by_day.values(), key=lambda b: b["date_local"])
 
 
+_ADP_SOURCES = ("adp_shifts", "adp_schedule", "adp_liability", "adp_rates")
+
+
+def adp_sources_requested(skip: list[str]) -> set[str]:
+    """ADP sources this invocation was asked to load."""
+    return {s for s in _ADP_SOURCES if s not in skip}
+
+
+def record_load_receipt(
+    source: str,
+    *,
+    store: str,
+    refresh_date: datetime.date | None,
+    rows: int,
+    loaded_sources: set[str],
+    dry_run: bool = False,
+) -> None:
+    """Durable BQ proof that `source`'s export was parsed and upserted.
+
+    Written even when rows == 0: a store-closed day parses a timecard with no
+    shifts, and the receipt is what keeps the scrape gate from firing again the
+    next night (and re-prompting for ADP OTP). Never raises — a receipt-write
+    failure must not discard data that already landed, and the gate re-scrapes
+    on a missing receipt, which is idempotent.
+
+    `loaded_sources` is always updated even when no receipt is written, because
+    the empty-load guard needs to know the export was physically present.
+    """
+    loaded_sources.add(source)
+    if dry_run or refresh_date is None:
+        return
+    try:
+        # Deliberately the unwrapped datastore call: the module-level load_rows
+        # injects replace=True in --replace mode, which would TRUNCATE this
+        # table and destroy every other date's receipt.
+        _ds_load_rows(
+            "source_load_receipts",
+            [{
+                "store": store,
+                "refresh_date": refresh_date.isoformat(),
+                "source": source,
+                "rows_upserted": rows,
+                "loaded_at_utc": datetime.datetime.now(datetime.UTC).isoformat(),
+                "run_id": os.environ.get("BHAGA_RUN_ID"),
+            }],
+            merge_keys=["store", "refresh_date", "source"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN: load receipt for {source} failed (non-fatal): "
+              f"{type(exc).__name__}: {exc}")
+
+
+def adp_inputs_absent(
+    skip: list[str], loaded_sources: set[str], *, require_adp: bool = False,
+) -> bool:
+    """True when ADP exports were expected on disk but not one was found.
+
+    `require_adp` is passed only when the ADP pipeline SUCCEEDED in the same
+    execution, which is the only state that guarantees exports are on local
+    disk. Without it an empty ADP load is legitimate and must still exit 0:
+
+      * the ADP pipeline failed — an unanswered OTP is a documented graceful
+        skip (`bhaga.mdc`: "On no reply: ADP step is gracefully skipped, run
+        exits 0, next nightly retries");
+      * the ADP pipeline was skipped — the scrape gate only skips once a BQ
+        load receipt proves the data already landed, so there is nothing to do.
+
+    Deliberately "none of them" rather than "any missing", so a single
+    legitimately-absent export — no schedule published yet, rates not due this
+    cadence — does not fail the nightly.
+    """
+    if not require_adp:
+        return False
+    return bool(adp_sources_requested(skip)) and not loaded_sources
+
+
 def main() -> int:
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--store", required=True)
@@ -131,6 +207,18 @@ def main() -> int:
     )
     cli.add_argument("--dry-run", action="store_true",
         help="Parse and aggregate but do NOT write to BigQuery.")
+    cli.add_argument(
+        "--refresh-date", default=None,
+        help="YYYY-MM-DD business date this load belongs to. When given, each "
+             "ADP source that parses and upserts writes a source_load_receipts "
+             "row, which is what the scrape gate consults to decide whether ADP "
+             "already landed for the date.")
+    cli.add_argument(
+        "--require-adp", action="store_true",
+        help="Fail (exit 1) if no ADP export is found. Set by daily_refresh "
+             "only when the ADP pipeline succeeded in the same execution, so "
+             "the exports are known to be on disk; without it an empty ADP "
+             "load is a legitimate graceful skip.")
     cli.add_argument(
         "--replace", action="store_true",
         default=os.environ.get("BHAGA_RAW_REPLACE", "").strip() in ("1", "true", "yes"),
@@ -181,6 +269,23 @@ def main() -> int:
         return True
 
     summaries: list[dict] = []
+    refresh_date = (
+        datetime.date.fromisoformat(args.refresh_date) if args.refresh_date else None
+    )
+    # Which ADP sources actually had an export to parse. A requested source that
+    # leaves no entry here means its file was absent from DOWNLOADS, which in a
+    # Cloud Run container means the scrape ran in an earlier, now-dead execution.
+    loaded_sources: set[str] = set()
+
+    def _record_load_receipt(source: str, *, rows: int) -> None:
+        record_load_receipt(
+            source,
+            store=args.store,
+            refresh_date=refresh_date,
+            rows=rows,
+            loaded_sources=loaded_sources,
+            dry_run=args.dry_run,
+        )
 
     # ── ADP shifts + punches ──────────────────────────────────────
     if "adp_shifts" not in args.skip or "adp_punches" not in args.skip:
@@ -209,6 +314,10 @@ def main() -> int:
             punches = [p for p in punches if _in_window(p["date"])]
             shifts = shift_backend.aggregate_by_day(punches)
             print(f"  parsed: {len(punches)} punches, {len(shifts)} shift-days")
+            # Receipt keyed on the export being present and parsed, not on any
+            # one sub-table being written — --skip adp_shifts must not suppress
+            # the proof that the timecard itself landed.
+            _record_load_receipt("adp_timecard", rows=len(shifts))
 
             if "adp_shifts" not in args.skip:
                 bq_rows = [map_adp_shift(r) for r in shifts]
@@ -243,6 +352,7 @@ def main() -> int:
             payload = json.loads(schedule_json.read_text())
             scraped_at = payload.get("scraped_at_utc")
             records = schedule_backend.build_schedule_records(payload.get("weeks", []))
+            _record_load_receipt("adp_schedule", rows=len(records))
             now_utc = datetime.datetime.utcnow().isoformat() + "Z"
             bq_rows = [
                 {
@@ -347,6 +457,7 @@ def main() -> int:
                 rec["scraped_at_utc"] = scraped_at
                 rec["materialized_at_utc"] = now_utc
                 bq_rows.append(rec)
+            _record_load_receipt("adp_liability", rows=len(bq_rows))
             if args.dry_run:
                 print(f"  DRY: would load {len(bq_rows)} liability rows into BQ")
             elif bq_rows:
@@ -372,6 +483,7 @@ def main() -> int:
             earnings = compensation_backend.parse_xlsx(earnings_xlsx, employee_aliases=aliases)
             rates = compensation_backend.infer_wage_rates(earnings, excluded_employees=excluded)
             print(f"  inferred rates for {len(rates)} employees")
+            _record_load_receipt("adp_rates", rows=len(rates))
 
             # Roster stubs: ensure employees absent from current ADP download
             # still have a wage_rates row (covers former employees whose
@@ -599,6 +711,15 @@ def main() -> int:
     print("=" * 60)
     print("SUMMARY (BigQuery upserts)")
     print(json.dumps(summaries, indent=2))
+
+    requested = adp_sources_requested(args.skip)
+    if adp_inputs_absent(args.skip, loaded_sources, require_adp=args.require_adp):
+        print(
+            "BREADCRUMB adp_inputs_absent — requested "
+            f"{sorted(requested)} but no ADP export was present in "
+            f"{DOWNLOADS}; refusing to report success on an empty load"
+        )
+        return 1
     return 0
 
 

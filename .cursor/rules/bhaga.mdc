@@ -31,6 +31,12 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 - **State / idempotency:** Firestore `runs/<YYYY-MM-DD>` holds per-step completion markers
   (`skills/bhaga_config/state_adapter.py`). Re-running a date skips steps already marked done; to
   force a step, clear its marker (see `RUNBOOK.md` § Common tasks → force-rerun).
+- **A marker alone may never gate a scrape whose artifacts are ephemeral.** A marker records that a
+  step **ran**; the exports it produced live in the container's `extracted/downloads/` and die with
+  it. So the ADP scrape gate requires the `adp_reports` marker **and** a `source_load_receipts` row
+  proving the export reached BQ — BQ is authoritative, the marker is advisory. A receipt-query
+  failure must return "not loaded" (re-scraping is idempotent; skipping is not). This is the
+  2026-09-14 class: marker done + artifacts gone = a green run that loaded nothing.
 - **Deploy:** push to `main` → `.github/workflows/deploy.yml` builds + deploys the image. **Local
   edits do nothing in prod until pushed and redeployed.**
 
@@ -142,9 +148,15 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 ## Operational rules
 
 - **OTP via Slack, never the IDE.** ADP 2FA codes are requested inline via the Firestore+webhook
-  round-trip (only when ADP actually challenges; most nights the trusted-device session clears it
-  silently). The operator is not at a laptop. Announce any action that fires an SMS/email before
-  triggering it.
+  round-trip (only when ADP actually challenges). The operator is not at a laptop. Announce any
+  action that fires an SMS/email before triggering it.
+- **The ADP trusted-device session must stay wired.** `download_adp_bundle` restores
+  `_session/adp-palmetto.json` from GCS into the browser context and re-uploads it right after a
+  successful login (`BHAGA_SESSION_PERSIST=1`). Without that round-trip every ADP login presents a
+  fresh cookie jar and is exposed whenever ADP's risk engine challenges — which is the state Issue
+  #305 found: `upload_session`/`download_session` existed with **zero callers** and no ADP session
+  object had ever been written. `storage_state` being accepted by `launch_persistent` is not
+  evidence it is used; grep for a caller.
 - **Square scrape/OTP login is serialized across Cloud Run executions, not just within a container.**
   `_acquire_scrape_lock` uses a TTL-based Firestore distributed lock (`runs/_lock_scrape-square-<store>`,
   default 1 h TTL). A second execution that tries to scrape while a first is in flight receives

@@ -44,6 +44,8 @@ _PEOPLE_SEARCH_PLACEHOLDER_RE = re.compile(
     r"Search\s+(people|for an employee)",
     re.IGNORECASE,
 )
+_RATE_FLOOR_DOLLARS = 7.25    # federal minimum; no Palmetto rate is legitimately below this
+_RATE_CEILING_DOLLARS = 100.0
 
 
 def load_selectors() -> dict:
@@ -76,9 +78,12 @@ def parse_hourly_pay_rate(body_text: str, *, input_values: Optional[list[str]] =
         if m:
             rate = float(m.group(1).replace(",", ""))
             break
-        m2 = re.search(r"\$?\s*([\d,]+\.\d{2,4})", blob)
-        if m2 and ("hour" in blob.lower() or "pay" in blob.lower() or blob.strip().startswith("$")):
-            rate = float(m2.group(1).replace(",", ""))
+        # Anchored: the blob must be *only* a number, which is true of an
+        # <input> whose whole value is the rate and of nothing else. An
+        # unanchored search here took the first decimal anywhere on the page and
+        # on 2026-09-15 handed three employees the same 1.25 page artifact.
+        if re.fullmatch(r"\$?\s*([\d,]+\.\d{2,4})\s*", blob):
+            rate = float(blob.strip().lstrip("$").replace(",", ""))
             break
     if rate is None and body_text:
         m3 = re.search(
@@ -676,8 +681,14 @@ def prepare_pay_info_writes(
         if prev_wage is not None and abs(float(prev_wage) - float(wage)) > 0.005:
             old_f = float(prev_wage)
             new_f = float(wage)
-            # Token hourlies on salaried Payroll-info pages (Lindsay $25 → $1.25).
-            if old_f > 0 and new_f < 0.5 * old_f:
+            # A scraped rate outside the band, or more than a doubling/halving of
+            # the known one, is a page artifact rather than a raise — the 1.25
+            # that arrived for Browning, Garcia and Krause on 2026-09-15 was one
+            # number read off three different pages, and only Krause was
+            # salaried. A missing rate is recoverable from earnings; a wrong one
+            # is silently wrong pay, so refuse and keep the old value.
+            implausible = not (_RATE_FLOOR_DOLLARS <= new_f <= _RATE_CEILING_DOLLARS)
+            if old_f > 0 and (implausible or new_f < 0.5 * old_f or new_f > 2.0 * old_f):
                 print(
                     f"[pay_info] BREADCRUMB refused_rate_drop name={key} "
                     f"old={old_f} new={new_f}"

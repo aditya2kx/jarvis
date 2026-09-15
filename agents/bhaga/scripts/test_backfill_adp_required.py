@@ -142,6 +142,25 @@ class TestReceiptsBypassReplaceTruncation(unittest.TestCase):
             bfd._REPLACE_TABLES = False
         self.assertNotIn("replace", load.call_args.kwargs)
 
+    def test_the_wrapper_would_have_truncated_it(self):
+        """The bypass is load-bearing, not incidental.
+
+        Asserting only that `record_load_receipt` omits `replace` is vacuous —
+        it calls `_ds_load_rows` directly, so `replace` could never appear no
+        matter what `_REPLACE_TABLES` said. What makes the bypass necessary is
+        that the module wrapper WOULD have injected it for this same call, so
+        pin that: if this assertion ever fails the wrapper stopped truncating
+        and the bypass (plus the test above) is dead weight.
+        """
+        try:
+            bfd._REPLACE_TABLES = True
+            with mock.patch.object(bfd, "_ds_load_rows") as load:
+                bfd.load_rows("source_load_receipts", [{"store": "palmetto"}],
+                              merge_keys=["store", "refresh_date", "source"])
+        finally:
+            bfd._REPLACE_TABLES = False
+        self.assertTrue(load.call_args.kwargs.get("replace"))
+
 
 if __name__ == "__main__":
     unittest.main()

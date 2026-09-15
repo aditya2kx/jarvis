@@ -322,6 +322,12 @@ def main() -> int:
             # Receipt keyed on the export being present and parsed, not on any
             # one sub-table being written — --skip adp_shifts must not suppress
             # the proof that the timecard itself landed.
+            #
+            # Written BEFORE the upsert below, which is safe only because the
+            # gate requires the marker AND the receipt: if that upsert throws,
+            # the step fails and adp_reports is cleared, so the orphan receipt
+            # cannot suppress the next scrape on its own. Do not make the gate
+            # receipt-only without also moving this after the upsert.
             _record_load_receipt("adp_timecard", rows=len(shifts))
 
             if "adp_shifts" not in args.skip:

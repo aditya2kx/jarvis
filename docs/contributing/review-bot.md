@@ -68,6 +68,28 @@ on each inline thread separately.
 Every completed push triggers a paid Claude Opus review (~$2–4).  Serial fix-one-push
 cycles mean N pushes = N paid reviews.  Batch all fixes into one push = 1 paid review.
 
+### The turn budget, and why a green check can mean "unreviewed"
+
+The review runs with `--max-turns 30` (raised from 14 after PR #298).  Reviewing A–F
+over a large diff costs turns; when the budget runs out the run ends
+`error_max_turns`, posts its cost comment, and posts **no verdict**.
+
+Running out used to pass every gate: `Verify Claude review ran` only checked that an
+execution file existed (one exists even for an aborted run), and both the verdict and
+evidence-confidence gates exited 0 when they could not find a verdict.  A green
+`Claude review` therefore meant *either* "no issues" *or* "no review".  On PR #298 it
+meant the latter, and `pr_triage.py` compounded it by quoting the **previous** push's
+verdict, which predated every file in the commit.
+
+Both paths now fail closed: an aborted run fails `Verify Claude review ran`, and a
+missing or unreadable verdict fails the verdict gate.  If `error_max_turns` recurs even
+at 30 turns, the diff is too large to review in one pass — **split the PR** rather than
+raising the cap again.
+
+Note `pr_triage.py` reports the latest claude[bot] verdict on the PR, not one scoped to
+the head SHA.  After a push, confirm the verdict comment is newer than the commit before
+treating it as a review of that commit.
+
 **Step 1 — collect all signals in one pass:**
 ```bash
 python3 scripts/pr_triage.py --pr N

@@ -1239,11 +1239,11 @@ def _adp_timecard_loaded(store: str, refresh_date: datetime.date) -> bool:
     if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":
         return True  # non-BQ runs keep the legacy marker-only behavior
     try:
-        from core.datastore import dataset, read_query
+        from core.datastore import fq, read_query
 
         rows = read_query(
             f"SELECT COUNT(*) AS n"
-            f" FROM `jarvis-bhaga-prod.{dataset()}.source_load_receipts`"
+            f" FROM {fq('source_load_receipts')}"
             f" WHERE store = '{store}'"
             f" AND refresh_date = DATE('{refresh_date.isoformat()}')"
             f" AND source = 'adp_timecard'"

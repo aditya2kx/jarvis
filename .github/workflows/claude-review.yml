@@ -291,14 +291,21 @@ jobs:
           # exited 0 while two claude[bot] comments existed, so a transient API
           # failure was indistinguishable from a clean review.
           python3 - <<'PYEOF'
-          import json, subprocess, sys, re
+          import json, os, subprocess, sys, re
+
+          # PR number comes from os.environ, NOT "$PR_NUMBER": this heredoc is
+          # quoted (<<'PYEOF'), so the shell does not expand it and the literal
+          # string reached gh, 404ing every run. Actions substitutes
+          # ${{ github.repository }} before the shell sees it, so that is fine.
+          repo = os.environ["GITHUB_REPOSITORY"]
+          pr_number = os.environ["PR_NUMBER"]
 
           # --paginate emits one JSON array per page; --jq '.[]' unrolls each
           # page to one object per line so pages concatenate into flat NDJSON
           # regardless of comment count (a single-page fetch silently missed
           # comments beyond page 1 on PRs with 30+ comments).
           result = subprocess.run(
-              ["gh", "api", "--paginate", f"repos/${{ github.repository }}/issues/$PR_NUMBER/comments",
+              ["gh", "api", "--paginate", f"repos/{repo}/issues/{pr_number}/comments",
                "--jq", ".[]"],
               capture_output=True, text=True
           )

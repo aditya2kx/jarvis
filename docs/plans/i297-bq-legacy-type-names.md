@@ -161,7 +161,48 @@ python3 scripts/check_doc_freshness.py --base origin/main
 Pass criterion: `verify.py --full` exits 0 (this is the same gate the `pre-push` hook runs),
 and `check_doc_freshness.py` reports no unmet coupling.
 
-## Milestone 3 — Prod rerun of 2026-09-14 and regression watch (Opus 4.8 thinking medium)
+## Milestone 3 — Unblock the cost gate: conversation attribution (Sonnet 5 medium thinking)
+
+**Added mid-flight with operator approval**, after the gate turned out to be
+unsatisfiable rather than merely unsatisfied (operator: "fix_here"). Scope A stands for
+the pipeline fix; this is a dev-tooling defect discovered while babysitting this PR.
+
+`scripts/cursor_usage.py::filter_events_for_conversations` intersected the usage-event
+window with the `ai_code_hashes` edit window. Those are skewed by construction — usage
+events are cumulative per-model rows stamped near the session's first request, edits land
+later (56 min here, against `_CONVERSATION_EVENT_PAD_MS` of 5 min) — so the intersection
+was empty, `capture-build` raised its hard `$0` failure, and `validate`
+(`scripts/pr_cost_ledger.py:867`) demanded an `attribution_mode=conversation` that could
+never be set. Measured on this PR:
+
+| Source | Window (UTC) |
+|---|---|
+| usage events | 12:42:19, 12:42:41 |
+| conversation profile (edits) | 13:38:42 → 13:45:15 |
+
+The edit window is only a *disambiguator* between parallel chat spaces. When every
+edit-active conversation in the caller's window is bound there is nothing to disambiguate,
+so the caller's window is used as-is; with an unbound conversation also active the strict
+edit window holds, since over-attributing another chat's cost is the real risk. The
+model-tier check is unchanged, which correctly keeps a stray `composer-2.5` background
+request out of this Opus-only conversation.
+
+Filed as #302 before the operator expanded scope to fix it here.
+
+**Verify (copy-paste):**
+
+```bash
+python3 -m pytest scripts/test_cursor_usage.py -q
+python3 scripts/pr_cost_ledger.py capture-build --pr 298
+python3 scripts/pr_cost_ledger.py validate --pr 298 --require-build
+```
+
+Pass criteria: new `TestUsageEditWindowSkew` green (and the two widening tests red when
+`scripts/cursor_usage.py` is stashed); `capture-build` reports `[conversation]` attribution
+with non-zero cost; `validate` prints `[OK]`. Docs lock-step: `docs/contributing/cost.md`
+gains an attribution section (`check_doc_freshness.py` couples `scripts/cursor_usage.py` to it).
+
+## Milestone 4 — Prod rerun of 2026-09-14 and regression watch (Opus 4.8 thinking medium)
 
 Post-merge only. Reruns the single genuinely failed date. **`2026-09-15` is deliberately not
 rerun**: today's business day is not over, so a rerun now would load a partial day, and the

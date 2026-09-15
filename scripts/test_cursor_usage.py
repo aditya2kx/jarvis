@@ -361,6 +361,105 @@ class TestConversationAttribution(unittest.TestCase):
         self.assertTrue(U._model_in_conversation("claude-opus-4-8", []))
 
 
+class TestUsageEditWindowSkew(unittest.TestCase):
+    """Regression for PR #298: `capture-build` could never satisfy the cost gate.
+
+    The usage API reports cumulative per-model rows stamped near the session's
+    first request, while `ai_code_hashes` edits land much later. On PR #298 the
+    skew was 56 min against a 5 min pad, so intersecting the two windows dropped
+    every event, `capture-build` raised its hard $0 failure, and `validate`
+    demanded a `conversation` attribution mode that could not be reached.
+    """
+
+    # Realistic epoch-ms: the pad is 5 min, so the skew has to be larger to bite.
+    SESSION_START = 1789476000000          # 12:40:00Z — caller window opens
+    USAGE_TS = 1789476139000               # 12:42:19Z — usage event
+    EDIT_MIN = 1789479522000               # 13:38:42Z — first edit (+56 min)
+    EDIT_MAX = 1789479915000               # 13:45:15Z — last edit
+    SESSION_END = 1789480000000            # 13:46:40Z — caller window closes
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self.db = Path(self._tmpdir) / "ai.db"
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "create table ai_code_hashes (hash text, conversationId text, model text, timestamp integer)"
+        )
+        con.executemany(
+            "insert into ai_code_hashes values (?,?,?,?)",
+            [
+                ("h1", "conv-ours", "claude-opus-5", self.EDIT_MIN),
+                ("h2", "conv-ours", "claude-opus-5", self.EDIT_MAX),
+            ],
+        )
+        con.commit()
+        con.close()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _filter(self, events, bound):
+        return U.filter_events_for_conversations(
+            events, bound, self.SESSION_START, self.SESSION_END, db=self.db,
+        )
+
+    def test_event_before_the_edit_window_is_attributed(self):
+        events = [{"ts_ms": self.USAGE_TS, "model": "claude-opus-5-thinking-medium",
+                   "tokens": 10716657, "cost_usd": 8.5774}]
+        out = self._filter(events, ["conv-ours"])
+        self.assertEqual(len(out), 1, "the only bound conversation must claim the event")
+        self.assertEqual(out[0]["cost_usd"], 8.5774)
+        self.assertEqual(out[0]["conversation_id"], "conv-ours")
+
+    def test_widening_does_not_defeat_the_model_tier_check(self):
+        """PR #298's window also held a composer-2.5 event from another process;
+        the conversation only ever used Opus, so that cost is not this PR's."""
+        events = [{"ts_ms": self.USAGE_TS, "model": "composer-2.5",
+                   "tokens": 1520242, "cost_usd": 0.3673}]
+        self.assertEqual(
+            self._filter(events, ["conv-ours"]), [],
+            "composer event must not attach to an opus-only conversation",
+        )
+
+    def test_another_active_unbound_conversation_keeps_the_window_strict(self):
+        """The over-attribution guard. With a second chat space editing in the
+        same window, widening would silently bill its cost to this PR."""
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "insert into ai_code_hashes values (?,?,?,?)",
+            ("h3", "conv-other", "claude-opus-5", self.EDIT_MIN + 1000),
+        )
+        con.commit()
+        con.close()
+        events = [{"ts_ms": self.USAGE_TS, "model": "claude-opus-5-thinking-medium",
+                   "tokens": 10716657, "cost_usd": 8.5774}]
+        self.assertEqual(
+            self._filter(events, ["conv-ours"]), [],
+            "conv-other was active and unbound — the strict edit window must hold",
+        )
+
+    def test_binding_every_active_conversation_widens_again(self):
+        """Ambiguity is what blocks widening, not the mere count of conversations."""
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "insert into ai_code_hashes values (?,?,?,?)",
+            ("h3", "conv-other", "claude-opus-5", self.EDIT_MIN + 1000),
+        )
+        con.commit()
+        con.close()
+        events = [{"ts_ms": self.USAGE_TS, "model": "claude-opus-5-thinking-medium",
+                   "tokens": 10716657, "cost_usd": 8.5774}]
+        out = self._filter(events, ["conv-ours", "conv-other"])
+        self.assertEqual(len(out), 1)
+
+    def test_events_outside_the_caller_window_are_never_attributed(self):
+        """Widening stops at the caller's window; it is not unbounded."""
+        events = [{"ts_ms": self.SESSION_START - 60_000, "model": "claude-opus-5-thinking-medium",
+                   "tokens": 1, "cost_usd": 99.0}]
+        self.assertEqual(self._filter(events, ["conv-ours"]), [])
+
+
 class TestWindowFromTranscript(unittest.TestCase):
     def test_brackets_timestamps_with_pads(self):
         import tempfile

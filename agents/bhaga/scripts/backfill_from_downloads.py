@@ -119,11 +119,16 @@ def aggregate_square_daily(records: list[dict]) -> list[dict]:
     return sorted(by_day.values(), key=lambda b: b["date_local"])
 
 
+# --skip flag names, NOT receipt source names: the timecard is `adp_shifts`
+# here but `adp_timecard` in source_load_receipts. The two namespaces are
+# deliberately not unioned or compared element-wise anywhere — adp_inputs_absent
+# only asks whether loaded_sources is empty. Compare them and the timecard will
+# look permanently absent.
 _ADP_SOURCES = ("adp_shifts", "adp_schedule", "adp_liability", "adp_rates")
 
 
 def adp_sources_requested(skip: list[str]) -> set[str]:
-    """ADP sources this invocation was asked to load."""
+    """ADP sources this invocation was asked to load (--skip flag names)."""
     return {s for s in _ADP_SOURCES if s not in skip}
 
 

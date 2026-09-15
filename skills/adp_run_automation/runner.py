@@ -55,6 +55,12 @@ from skills.credentials import registry as cred_registry
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 STORE_PROFILES = PROJECT_ROOT / "agents" / "bhaga" / "knowledge-base" / "store-profiles"
 
+# Trusted-device session: ADP challenges for 2FA whenever its risk engine
+# decides to, and a container that presents no prior cookie jar is fully exposed
+# each time. Persisting the post-login jar to GCS between runs is what makes the
+# next run a recognised device. Local path is scratch; GCS is the durable copy.
+ADP_SESSION_LOCAL = DOWNLOADS_DIR.parent / "adp-session.json"
+
 # ADP retired the bare https://runpayroll.adp.com entry point (2026-06-28): it now
 # server-redirects to https://sorry.adp.com/sorry/. The live login flow is reachable
 # via /enrollment.aspx, which routes through ADP's federation redirector to the
@@ -1999,6 +2005,42 @@ def download_payroll_liability(
 # ── Bundle: one browser session, one login, both scrapes ───────────
 
 
+def _session_persist_enabled() -> bool:
+    return os.environ.get("BHAGA_SESSION_PERSIST", "").strip() in ("1", "true", "yes")
+
+
+def _restore_adp_session(*, store: str) -> Optional[str]:
+    """Local path to a restored ADP storage_state, or None for a fresh jar."""
+    if not _session_persist_enabled():
+        return None
+    from agents.bhaga.scripts.gcs_cache import download_session
+
+    ADP_SESSION_LOCAL.parent.mkdir(parents=True, exist_ok=True)
+    if download_session(ADP_SESSION_LOCAL, portal="adp", store=store):
+        return str(ADP_SESSION_LOCAL)
+    return None
+
+
+def _persist_adp_session(ctx, *, store: str) -> None:
+    """Save the post-login cookie jar so the next run is a trusted device.
+
+    Called after every successful login, including one that just satisfied a 2FA
+    challenge — that is precisely the jar carrying ADP's device-trust cookie.
+    Never raises: losing a session costs one extra login next run, and must not
+    fail a run whose data already landed.
+    """
+    if not _session_persist_enabled():
+        return
+    try:
+        from agents.bhaga.scripts.gcs_cache import upload_session
+
+        ctx.storage_state(path=str(ADP_SESSION_LOCAL))
+        upload_session(ADP_SESSION_LOCAL, portal="adp", store=store)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_bundle] WARN: session persist failed (non-fatal): "
+              f"{type(exc).__name__}: {exc}")
+
+
 def download_adp_bundle(
     *,
     store: str = "palmetto",
@@ -2136,8 +2178,13 @@ def download_adp_bundle(
         headed=headed,
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
+        storage_state=_restore_adp_session(store=store),
     ) as (ctx, page):
         _ensure_logged_in(page, store=store)
+        # Save here rather than at block exit: a later component (timecard,
+        # schedule, liability) can fail, and a partial run should still leave
+        # the next one a trusted device.
+        _persist_adp_session(ctx, store=store)
         dashboard_url = page.url
         print(f"[adp_bundle] dashboard_url={dashboard_url}")
 

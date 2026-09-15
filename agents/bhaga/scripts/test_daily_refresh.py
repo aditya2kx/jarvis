@@ -33,6 +33,7 @@ import ast
 import datetime
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -1958,6 +1959,108 @@ class TestClearAdpReportsIfShiftsMissing(unittest.TestCase):
              mock.patch.object(dr, "clear_step_done") as clear:
             self.assertFalse(dr.clear_adp_reports_if_shifts_missing(self.RD))
         clear.assert_not_called()
+
+
+class TestAdpTimecardLoaded(unittest.TestCase):
+    """Issue #305: the scrape gate must believe BQ, not a Firestore marker.
+
+    A marker records that a scrape RAN; the receipt records that its export
+    landed in BQ. Only the receipt survives the Cloud Run container, so on
+    2026-09-14 a marker-only gate skipped ADP and loaded nothing while still
+    reporting success.
+    """
+
+    RD = datetime.date(2026, 9, 14)
+
+    def _with_bq(self):
+        return mock.patch.dict(os.environ, {"BHAGA_DATASTORE": "bigquery"})
+
+    def test_receipt_present_is_loaded(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with self._with_bq(), \
+             mock.patch("core.datastore.read_query", return_value=[{"n": 1}]), \
+             mock.patch("core.datastore.dataset", return_value="bhaga"):
+            self.assertTrue(dr._adp_timecard_loaded("palmetto", self.RD))
+
+    def test_no_receipt_is_not_loaded(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with self._with_bq(), \
+             mock.patch("core.datastore.read_query", return_value=[{"n": 0}]), \
+             mock.patch("core.datastore.dataset", return_value="bhaga"):
+            self.assertFalse(dr._adp_timecard_loaded("palmetto", self.RD))
+
+    def test_zero_row_receipt_still_counts_as_loaded(self):
+        """A store-closed day parses a timecard with no shifts.
+
+        The receipt exists with rows_upserted=0, so the gate must treat the date
+        as loaded — otherwise every quiet day re-scrapes and re-prompts for OTP.
+        """
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with self._with_bq(), \
+             mock.patch("core.datastore.read_query", return_value=[{"n": 1}]), \
+             mock.patch("core.datastore.dataset", return_value="bhaga"):
+            self.assertTrue(dr._adp_timecard_loaded("palmetto", self.RD))
+
+    def test_query_error_falls_back_to_rescrape(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with self._with_bq(), \
+             mock.patch("core.datastore.read_query",
+                        side_effect=RuntimeError("BQ unavailable")), \
+             mock.patch("core.datastore.dataset", return_value="bhaga"):
+            self.assertFalse(dr._adp_timecard_loaded("palmetto", self.RD))
+
+    def test_non_bq_run_keeps_marker_only_behavior(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with mock.patch.dict(os.environ, {"BHAGA_DATASTORE": ""}):
+            self.assertTrue(dr._adp_timecard_loaded("palmetto", self.RD))
+
+
+class TestScrapeMarkerClearNames(unittest.TestCase):
+    """Issue #305: the load-failure recovery cleared names nothing ever writes.
+
+    Markers are written as square_transactions / adp_reports; the loop cleared
+    "square" / "adp", so it had never fired once in production.
+    """
+
+    def test_clear_loop_uses_the_written_marker_names(self):
+        src = pathlib.Path(__file__).with_name("daily_refresh.py").read_text()
+        self.assertIn('for _scrape_step in ("square_transactions", "adp_reports"):', src)
+        self.assertNotIn('for _scrape_step in ("square", "adp"):', src)
+
+    def test_written_names_match_cleared_names(self):
+        """Guard against the two lists drifting apart again."""
+        src = pathlib.Path(__file__).with_name("daily_refresh.py").read_text()
+        written = set(re.findall(r'mark_step_done\(refresh_date, "(\w+)"\)', src))
+        m = re.search(r'for _scrape_step in \(([^)]*)\):', src)
+        cleared = set(re.findall(r'"(\w+)"', m.group(1)))
+        self.assertTrue(
+            cleared <= written,
+            f"cleared markers {cleared - written} are never written",
+        )
+
+
+class TestRequireAdpWiring(unittest.TestCase):
+    """--require-adp may be passed only when ADP succeeded in this execution.
+
+    Any looser condition breaks the documented graceful skip: an unanswered OTP
+    leaves no exports on disk and must still exit 0.
+    """
+
+    def test_require_adp_is_gated_on_pipeline_success(self):
+        src = pathlib.Path(__file__).with_name("daily_refresh.py").read_text()
+        self.assertIn(
+            'adp_exports_expected = bool(\n        getattr(results.get("adp"), "success", False)\n    )',
+            src,
+        )
+        self.assertIn(
+            '+ (["--require-adp"] if adp_exports_expected else [])',
+            src,
+        )
 
 
 class TestTimecardOnlyEarlyExit(unittest.TestCase):

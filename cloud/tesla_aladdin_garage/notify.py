@@ -60,6 +60,30 @@ def notify_runtime_allowed() -> bool:
     return bool(os.environ.get("K_SERVICE", "").strip())
 
 
+_CRED_ENV = ("CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN")
+
+
+def notify_status() -> dict[str, Any]:
+    """What /health reports so the operator can see mail is wired without sending one.
+
+    The `GMAIL_*` → `GARAGE_GMAIL_*` rename (Issue #316) is the one change that
+    could silently stop all real mail: the sender would just log
+    `skip reason=notify_unconfigured` forever. `unscoped_present` catches a
+    rollout that still mounts the old names.
+    """
+    scoped = [k for k in _CRED_ENV if os.environ.get(f"GARAGE_GMAIL_{k}", "").strip()]
+    unscoped = [k for k in _CRED_ENV if os.environ.get(f"GMAIL_{k}", "").strip()]
+    return {
+        "runtime_allowed": notify_runtime_allowed(),
+        "credentials": "GARAGE_GMAIL_*",
+        "configured": len(scoped) == len(_CRED_ENV),
+        "missing": [f"GARAGE_GMAIL_{k}" for k in _CRED_ENV if k not in scoped],
+        # pup-watch's names. Set here means the rollout is stale, not that we use them.
+        "unscoped_present": bool(unscoped),
+        "to": os.environ.get("GARAGE_NOTIFY_TO") or DEFAULT_TO,
+    }
+
+
 def _fmt_m(value: Any) -> str:
     if value is None or value == "":
         return "unknown"
@@ -124,7 +148,15 @@ def send_garage_email(event: str, fields: dict[str, Any], *, to: Optional[str] =
     client_secret = os.environ.get("GARAGE_GMAIL_CLIENT_SECRET", "").strip()
     refresh = os.environ.get("GARAGE_GMAIL_REFRESH_TOKEN", "").strip()
     if not dest or not client_id or not client_secret or not refresh:
-        log.info("tesla-aladdin-garage skip reason=notify_unconfigured event=%s", event)
+        status = notify_status()
+        # warning, not info: a rollout that still mounts the bare GMAIL_* names
+        # would otherwise drop every real open mail silently (Issue #316).
+        log.warning(
+            "tesla-aladdin-garage skip reason=notify_unconfigured event=%s missing=%s unscoped_present=%s",
+            event,
+            ",".join(status["missing"]) or "recipient",
+            status["unscoped_present"],
+        )
         return False
     payload = dict(fields)
     if "tesla_cost_lines" not in payload:

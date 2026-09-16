@@ -56,7 +56,8 @@ Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON` (enter from `geo
 `gmail-client-secret`, `gmail-refresh-token` → `GARAGE_GMAIL_CLIENT_ID` /
 `GARAGE_GMAIL_CLIENT_SECRET` / `GARAGE_GMAIL_REFRESH_TOKEN`). The env names are
 service-scoped so pup-watch's bare `GMAIL_*` cannot drive this mailer, and there is no
-fallback to them (Issue #316).
+fallback to them (Issue #316). `GET /health` reports `notify.configured`, `notify.missing` and
+`notify.unscoped_present` so a stale rollout is visible without sending mail.
 
 ## HTTP
 

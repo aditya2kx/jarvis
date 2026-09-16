@@ -52,6 +52,10 @@ Two independent guards, because the event filter alone left three sends:
    (`notify.py:123-125`, `.github/workflows/tesla-aladdin-garage-deploy.yml:82`), with **no**
    fallback to the bare `GMAIL_*` that `cloud/pup_watch/notify.py` uses. Same Secret Manager
    secrets, separate env names — the two notifiers can no longer drive each other.
+4. `GET /health` → `notify` block (`app.py:91`, `notify.notify_status()`): `configured`,
+   `missing`, `unscoped_present`, `runtime_allowed`. The rename is the one change that could
+   silently stop all real mail, so the post-merge read-only `/health` proves it landed without
+   opening Big Peach; `skip reason=notify_unconfigured` is a warning, not info.
 
 ### Tests (`test_notify.py`)
 

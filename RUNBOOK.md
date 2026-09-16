@@ -2185,6 +2185,18 @@ acknowledgement of every accepted command, so neither person can silently switch
 monitoring off for the other. A fresh email with subject `pup start` works too,
 for the first session before any sighting mail exists.
 
+A bare **`start` is open-ended** — it watches until someone replies `stop`.
+`session_max_hours` (12h) bounds only `start 4h`-style sessions; open-ended ones
+are bounded by `session_absolute_max_hours` (7 days), and hitting that emails
+rather than going quiet. Leaving one on permanently is what breaks the free tier
+(~9,000 vCPU-s/day) — `stop` when he is home.
+
+Already-handled mail is tracked with a hidden Gmail label (`pupwatch-handled`),
+**not** the unread flag: Gmail pre-reads mail the operator sends himself, so an
+`is:unread` query ignored every command he issued (see PROGRESS 2026-09-16).
+Our own alerts are labelled but never marked read — the unread badge is the
+notification.
+
 Commands are accepted only from `PUPWATCH_NOTIFY_TO` senders that are provably
 who they claim: either the message carries Gmail's `SENT` label (only the account
 holder can produce one) or Gmail recorded `spf=pass` **and** `dkim=pass`. If a
@@ -2196,6 +2208,8 @@ command is ignored, the reason is in the logs:
 | `reason=control_command_stale` | Older than `control_max_age_minutes` (30) — an outage backlog must not start monitoring hours late | Resend it |
 | `reason=control_no_allowlist` | `PUPWATCH_NOTIFY_TO` is empty | Fix the deploy env |
 | `reason=control_no_gmail_token` / `control_poll` | Gmail creds or API problem; the poll fails soft so monitoring continues | Check the Gmail secrets; the token needs `gmail.modify`, not just send |
+| `reason=control_mark_handled` | The command ran but could not be labelled, so it may re-apply next tick | Check `gmail.modify`; re-applying `start`/`stop` is harmless, but investigate |
+| `reason=control_announce` | An automatic-stop notice could not be sent | Monitoring really did stop — check Gmail creds |
 
 No command found at all usually means the wording did not parse: it must be the
 **first** line, so "please stop" and "stopped raining" are deliberately not

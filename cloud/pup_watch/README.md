@@ -112,10 +112,19 @@ pup-watch email** — a sighting or an earlier acknowledgement — with one of:
 
 | Reply | Effect |
 |---|---|
-| `start` | Monitor for the rest of the day (up to `session_max_hours`) |
-| `start 4h` | Monitor for 4 hours (`4`, `4h`, `4 hours`, `1.5hr` all parse) |
+| `start` | **Keep monitoring until an explicit `stop`.** No end time |
+| `start 4h` | Monitor for 4 hours, then stop on its own (`4`, `4h`, `4 hours`, `1.5hr` all parse, capped at `session_max_hours`) |
 | `stop` | Stop monitoring |
 | `status` | Whether monitoring is on, until when, and when it last alerted |
+
+A bare `start` is open-ended because the operator does not know in advance when
+the pup comes home. `session_max_hours` bounds only *fixed-length* sessions; an
+open-ended one is bounded instead by `session_absolute_max_hours` (default 7
+days), which exists purely so a session nobody stops cannot poll forever. If it
+ever fires it **emails** — overruling "until I say stop" must not look like
+silence. Note that a duration given *wrongly* (`start soon`) falls back to the
+bounded ceiling rather than becoming open-ended: fumbling the syntax should not
+be rewarded with an unbounded session.
 
 The command must be the **first line** you type. A chatty reply like "stopped
 raining, he loved it" is deliberately not a command. `pup stop` also works, so a
@@ -133,11 +142,21 @@ the dog camera" is not an acceptable failure mode:
    writes `Authentication-Results` itself on delivery.
 3. **The command parses strictly**, as the first unquoted line.
 
-Consumption is idempotent because it is the Gmail unread flag that is cleared,
-not state of our own that could drift: a command fires exactly once, even if the
-acknowledgement email fails. Commands older than `control_max_age_minutes`
-(default 30) are discarded unactioned, so a reply found after an outage cannot
-start monitoring hours later.
+Consumption is idempotent via a hidden Gmail label we own (`pupwatch-handled`),
+so a command fires exactly once even if the acknowledgement email fails.
+
+That label replaced an earlier design that keyed off the **unread** flag, which
+did not work at all and is worth understanding before anyone "simplifies" it
+back: **Gmail marks a message you compose yourself as already read.** The
+operator replies from the same mailbox the alerts are sent from, so his replies
+arrive with no `UNREAD` label — `is:unread` never matched them, and every command
+he sent was ignored with no ack and not even a rejection in the logs. Mail sent
+through the API *does* arrive unread, which is exactly why the pre-merge evidence
+passed while the real thing was broken. Read state is a property of who sent the
+message and how; a label we set ourselves is not.
+
+Commands older than `control_max_age_minutes` (default 30) are discarded
+unactioned, so a reply found after an outage cannot start monitoring hours later.
 
 The one asymmetry worth knowing: **`start` must work when nothing is running**,
 which is why the mailbox is polled *before* the session check and therefore on
@@ -184,6 +203,10 @@ Nth idle tick instead of every one.
 Measured: one active poll takes ~10s wall time, dominated by the 8s frame-grab
 window. At 8h/day for 22 days/month that is roughly 105,000 vCPU-seconds
 against the 180,000 free allowance, and ~211,000 GiB-seconds against 360,000.
+**An open-ended session left running is the case that breaks this**: polling the
+full 15h window every day is ~9,000 vCPU-seconds/day, i.e. past the free
+allowance in under three weeks. That is the trade for `start` meaning "until I
+say stop", and `session_absolute_max_hours` is the backstop rather than the plan.
 Adding the idle-tick control poll on top leaves the total inside the free tier
 but no longer with comfortable room — so if session hours grow a lot, check this
 before assuming it is still free.
@@ -225,6 +248,12 @@ tight.
   `pup-watch fail reason=control_email_unauthenticated`, and the escape hatch is
   `control_require_email_auth: false` in the Firestore config — which drops the
   guarantee back to "allowlisted `From`", so prefer diagnosing the header.
-- **Acknowledgement mail stays unread.** It is skipped by the `X-PupWatch`
-  header rather than by being marked read, so the inbox accumulates unread acks.
-  Cosmetic, and cheaper than another API call per command.
+- **Acknowledgement and sighting mail stays unread by design.** Our own mail is
+  labelled `pupwatch-handled` so it drops out of the next query, but its read
+  state is never touched: the unread badge *is* the notification, and clearing it
+  would hide the alert on the phone it was just sent to.
+- **An open-ended session is not free.** Continuous monitoring means an active
+  poll (~10s) every minute of the scheduler window: ~900 polls/day ≈ 9,000
+  vCPU-seconds/day, which passes 180,000 free vCPU-seconds/month in under three
+  weeks. Fine for a boarding stay; not something to leave on permanently. `stop`
+  when he is home, and `session_absolute_max_hours` is the backstop.

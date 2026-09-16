@@ -13,9 +13,13 @@ switch off the dog camera" is not an acceptable failure mode:
   2. SPF **and** DKIM pass in Gmail's own Authentication-Results header
   3. the command is the first unquoted line, matched strictly
 
-Marking the message read is what makes this idempotent: a command is consumed
-exactly once, and the read/unread flag lives in Gmail rather than in state we
-have to keep consistent ourselves.
+Idempotency comes from a Gmail label we own (`pupwatch-handled`), not from the
+read/unread flag. That was the first design and it silently ignored every
+command the operator sent: **Gmail marks a message you compose yourself as
+already read**, so his replies never matched `is:unread` and were never even
+considered. API-sent mail *does* arrive unread, which is why the live evidence
+for PR #318 passed while the real thing did not work. A label we set ourselves
+has no such hidden dependency on who sent the message or how.
 """
 
 from __future__ import annotations
@@ -146,9 +150,42 @@ def _api(access: str, path: str, *, method: str = "GET", payload: Optional[dict]
         raise RuntimeError(f"gmail_{method.lower()} status={e.code} path={path} body={detail}") from e
 
 
-def _mark_read(access: str, message_id: str) -> None:
-    _api(access, f"messages/{message_id}/modify", method="POST",
-         payload={"removeLabelIds": ["UNREAD"]})
+HANDLED_LABEL = "pupwatch-handled"
+_label_id_cache: dict[str, str] = {}
+
+
+def handled_label_id(access: str) -> str:
+    """Id of our bookkeeping label, creating it on first use.
+
+    Hidden from both label and message lists: it is our state, not something the
+    operator should see decorating his mail.
+    """
+    if HANDLED_LABEL in _label_id_cache:
+        return _label_id_cache[HANDLED_LABEL]
+    for label in (_api(access, "labels").get("labels") or ()):
+        if label.get("name") == HANDLED_LABEL:
+            _label_id_cache[HANDLED_LABEL] = label["id"]
+            return label["id"]
+    created = _api(access, "labels", method="POST", payload={
+        "name": HANDLED_LABEL,
+        "labelListVisibility": "labelHide",
+        "messageListVisibility": "hide",
+    })
+    _label_id_cache[HANDLED_LABEL] = created["id"]
+    return created["id"]
+
+
+def _mark_handled(access: str, message_id: str, *, mark_read: bool) -> None:
+    """Record that we have finished with this message.
+
+    `mark_read` only for messages we actually acted on. Never for our own
+    sighting mail: the unread badge IS the notification, and clearing it would
+    hide the alert on the phone it was just sent to.
+    """
+    payload: dict[str, Any] = {"addLabelIds": [handled_label_id(access)]}
+    if mark_read:
+        payload["removeLabelIds"] = ["UNREAD"]
+    _api(access, f"messages/{message_id}/modify", method="POST", payload=payload)
 
 
 def find_commands(access: str, *, settings: Settings, now: float) -> list[Command]:
@@ -158,8 +195,11 @@ def find_commands(access: str, *, settings: Settings, now: float) -> list[Comman
         log.info("pup-watch skip reason=control_no_allowlist")
         return []
 
+    # NOT `is:unread`: Gmail pre-reads mail the account sends itself, which is
+    # precisely how the operator replies. Anything we have already looked at
+    # carries our own label instead.
     listing = _api(access, "messages?" + urllib.parse.urlencode({
-        "q": "is:unread in:inbox newer_than:1d",
+        "q": f"in:inbox newer_than:1d -label:{HANDLED_LABEL}",
         "maxResults": 10,
     }))
     out: list[Command] = []
@@ -171,6 +211,8 @@ def find_commands(access: str, *, settings: Settings, now: float) -> list[Comman
             # Mail we generated — it lands in INBOX because we are a recipient.
             # Deliberately NOT keyed on the SENT label: the operator sends from
             # this same mailbox, so his own replies are SENT+INBOX too.
+            # Labelled (never marked read) so it drops out of the next query.
+            _mark_handled(access, stub["id"], mark_read=False)
             continue
         sender = sender_address(hdrs.get("from", ""))
         subject = hdrs.get("subject", "")
@@ -188,7 +230,7 @@ def find_commands(access: str, *, settings: Settings, now: float) -> list[Comman
                 and not email_authenticated(hdrs.get("authentication-results", ""))):
             log.error("pup-watch fail reason=control_email_unauthenticated sender=%s id=%s",
                       sender, stub["id"])
-            _mark_read(access, stub["id"])
+            _mark_handled(access, stub["id"], mark_read=True)
             continue
 
         received: Optional[float] = None
@@ -209,16 +251,31 @@ def find_commands(access: str, *, settings: Settings, now: float) -> list[Comman
             # hours later; consume it so it cannot fire tomorrow either.
             log.info("pup-watch skip reason=control_command_stale sender=%s age_min=%.1f",
                      sender, (now - received) / 60.0)
-            _mark_read(access, stub["id"])
+            _mark_handled(access, stub["id"], mark_read=True)
             continue
 
         parsed = parse_command(_first_unquoted_line(plain_text(payload))) or parse_command(subject)
         if not parsed:
+            # Ordinary mail from an allowlisted sender. Label it so we stop
+            # re-reading it every minute, but leave it unread — it is his mail.
+            _mark_handled(access, stub["id"], mark_read=False)
             continue
         action, hours = parsed
         out.append(Command(action=action, hours=hours, sender=sender,
                            message_id=stub["id"], subject=subject, received_ts=received))
     return out
+
+
+def announce(summary: str, *, requested_by: str = "pup-watch itself") -> None:
+    """Email a state change nobody asked for (e.g. an automatic stop).
+
+    Never raises: an un-sendable notice must not break the poll that noticed it.
+    """
+    try:
+        _confirm(notify.access_token(),
+                 Command("status", None, requested_by, "", "", None), summary)
+    except Exception as e:  # noqa: BLE001
+        log.error("pup-watch fail reason=control_announce err=%r", e)
 
 
 def _confirm(access: str, cmd: Command, summary: str) -> None:
@@ -236,8 +293,8 @@ def _confirm(access: str, cmd: Command, summary: str) -> None:
             f"Requested by: {cmd.sender}",
             "",
             "Reply to any pup-watch email with:",
-            "  start        — monitor for the rest of the day",
-            "  start 4h     — monitor for 4 hours",
+            "  start        — keep watching until you reply stop",
+            "  start 4h     — watch for 4 hours, then stop on its own",
             "  stop         — stop monitoring",
             "  status       — what is happening right now",
         ]),
@@ -253,6 +310,8 @@ def apply(cmd: Command, *, settings: Settings, now: float) -> str:
         result = sessions.start(hours=cmd.hours, by=f"email:{cmd.sender}",
                                 settings=settings, now=now)
         hrs = result["hours"]
+        if hrs is None:
+            return "monitoring started — it will keep watching until you reply stop"
         return f"monitoring started for {hrs:.2g}h (until {notify.local_time(now + hrs * 3600)})"
     if cmd.action == "stop":
         sessions.stop(by=f"email:{cmd.sender}", now=now)
@@ -262,7 +321,10 @@ def apply(cmd: Command, *, settings: Settings, now: float) -> str:
     if not session.get("active"):
         return "monitoring is OFF"
     until = session.get("stop_after_ts")
-    tail = f", until {notify.local_time(float(until))}" if until else ""
+    if until:
+        tail = f", until {notify.local_time(float(until))}"
+    else:
+        tail = ", until you reply stop"
     last = state.get("last_notified_ts")
     seen = f"; last alert {notify.local_time(float(last))}" if last else "; no alert yet today"
     return f"monitoring is ON{tail}{seen}"
@@ -292,12 +354,12 @@ def poll_commands(*, settings: Settings, now: Optional[float] = None) -> list[di
         except Exception as e:  # noqa: BLE001
             log.error("pup-watch fail reason=control_apply action=%s err=%r", cmd.action, e)
             continue
-        # Consume before acknowledging: a failed ack is noise, but a command
-        # left unread would re-fire on the next tick a minute later.
+        # Consume before acknowledging: a failed ack is noise, but an unconsumed
+        # command would re-fire on the next tick a minute later.
         try:
-            _mark_read(access, cmd.message_id)
+            _mark_handled(access, cmd.message_id, mark_read=True)
         except Exception as e:  # noqa: BLE001
-            log.error("pup-watch fail reason=control_mark_read err=%r", e)
+            log.error("pup-watch fail reason=control_mark_handled err=%r", e)
         log.info("pup-watch control action=%s sender=%s result=%s", cmd.action, cmd.sender, summary)
         applied.append({"action": cmd.action, "sender": cmd.sender, "result": summary})
         try:

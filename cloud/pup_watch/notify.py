@@ -103,7 +103,7 @@ def body(fields: dict[str, Any]) -> str:
         # on a phone at daycare, where nobody is going to run curl.
         "Reply to this email to control monitoring:",
         "  stop      stop watching",
-        "  start     watch for the rest of the day  (or 'start 4h')",
+        "  start     keep watching until you reply stop  (or 'start 4h')",
         "  status    is it on, and when did it last alert",
         "Put the word on the first line. Both of us are told when it changes.",
     ]

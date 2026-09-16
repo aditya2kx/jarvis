@@ -71,6 +71,14 @@ def session_active(session: dict, *, now: float, settings: Settings) -> tuple[bo
         stop_after_f = None
     if stop_after_f is not None and now >= stop_after_f:
         return False, "session_expired_stop_after"
+    # An open-ended session ("start" with no duration) runs until an explicit
+    # stop, so session_max_hours must not cut it short. It still gets a far
+    # outer bound, because a forgotten open-ended session polls every minute of
+    # every day and that does leave the free tier — see README § Cost model.
+    if session.get("open_ended"):
+        if started_f is not None and (now - started_f) > settings.session_absolute_max_hours * 3600:
+            return False, "session_expired_absolute_max"
+        return True, "active"
     if started_f is not None and (now - started_f) > settings.session_max_hours * 3600:
         return False, "session_expired_max_hours"
     return True, "active"
@@ -163,6 +171,13 @@ def tick(*, now: Optional[float] = None) -> dict[str, Any]:
         if session.get("active") and why.startswith("session_expired"):
             persist.save_session({"active": False, "stopped_ts": now, "stopped_by": why})
             log.info("pup-watch session_auto_stopped reason=%s", why)
+            if why == "session_expired_absolute_max":
+                # He asked for "until I say stop", so the one case where we
+                # overrule him must be said out loud, not discovered as silence.
+                control.announce(
+                    f"monitoring auto-stopped after "
+                    f"{settings.session_absolute_max_hours / 24:.0f} days without a stop"
+                    " — reply start to resume")
         return {"polled": False, "reason": why, "commands": commands}
 
     cameras = load_cameras()

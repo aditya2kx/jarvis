@@ -2,9 +2,14 @@
 
 Unlike tesla-aladdin-garage this service does **not** run a background thread or
 hold a warm instance. Cloud Scheduler POSTs /tick once a minute; when no
-monitoring session is open the handler returns in about a millisecond. That is
-what keeps the whole thing inside the Cloud Run free tier, and it is only
-possible because a 60s notification delay is acceptable here.
+monitoring session is open the handler does almost nothing. That is what keeps
+the whole thing inside the Cloud Run free tier, and it is only possible because
+a 60s notification delay is acceptable here.
+
+An idle tick costs ~1s rather than the ~1ms it did before email control, because
+the mailbox has to be read even while monitoring is off — otherwise an emailed
+`start` could never wake the service. That is ~16% of the free tier spent idling;
+see README § Cost model before assuming there is still room.
 """
 
 from __future__ import annotations

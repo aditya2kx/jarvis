@@ -2,6 +2,8 @@
 
 Ordered cheapest-stage-first so the expensive stages almost never run:
 
+    control poll   ->  ~1s, EVERY tick, so an emailed `start` can wake an
+                       idle service; this is why an idle tick is not free
     session check  ->  ~1ms, and skips everything when monitoring is off
     frame grab     ->  ~1s
     local detector ->  ~270ms per pass, only on grabbed frames

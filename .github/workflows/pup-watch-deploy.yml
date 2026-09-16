@@ -82,9 +82,12 @@ jobs:
             --set-env-vars "GCP_PROJECT=${{ env.PROJECT_ID }},PUPWATCH_PERSIST=1,PUPWATCH_FIRESTORE_DB=${{ env.FIRESTORE_DB }},PUPWATCH_MODEL_PATH=/app/models/detector.onnx,PUPWATCH_ORT_THREADS=2,PUPWATCH_REFERENCE_URIS=${{ vars.PUPWATCH_REFERENCE_URIS }},PUPWATCH_NOTIFY_TO=${{ secrets.PUPWATCH_NOTIFY_TO }}" \
             --set-secrets "PUPWATCH_ADMIN_TOKEN=pupwatch-admin-token:latest,PUPWATCH_GEMINI_TOKEN=pupwatch-gemini-token:latest,GMAIL_CLIENT_ID=gmail-client-id:latest,GMAIL_CLIENT_SECRET=gmail-client-secret:latest,GMAIL_REFRESH_TOKEN=gmail-refresh-token:latest"
 
-      # One heartbeat a minute during plausible daycare hours. The handler
-      # returns in ~1ms when no session is open, so an idle day is effectively
-      # free; the operator's start/stop is what actually enables detection.
+      # One heartbeat a minute during plausible daycare hours. Detection only
+      # runs while a session is open, so an idle day stays inside the free tier
+      # — but not by as much as it looks: since email control landed, every idle
+      # tick reads the mailbox (~1s, ~16% of the free tier over a month) so that
+      # replying `start` can wake the service. See cloud/pup_watch/README.md
+      # § Cost model before adding hours or shortening this schedule.
       - name: Ensure Cloud Scheduler tick
         run: |
           URL=$(gcloud run services describe ${{ env.SERVICE }} \

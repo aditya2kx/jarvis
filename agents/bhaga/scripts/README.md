@@ -262,6 +262,14 @@ BigQuery is the **source of truth**. Operator Console reads BQ views. BHAGA Graf
 
 > **Current Qty overrides (migration 058, Issue #240):** `inventory_current_qty_overrides` + COALESCE into `vw_inventory_order_assistant.latest_reading`. Console `/inventory` Current Qty Sheet → MERGE/clear → `refresh_order_reco`. Not model_* / Grafana — no new `BQ_TARGETS`/`GRAFANA_VIEWS` (same class as 055); freshness via reco refresh. Deploy workflow also forces `update-traffic --to-latest` so sticky tags cannot leave new revisions at 0%.
 >
+> **Solo-shift hours (migration 071, Issue #309):** `model_solo_hours_daily` (employee × date) +
+> `vw_solo_hours_daily` / `vw_solo_hours_period`. The interval math is a pure module,
+> `skills/bhaga_labor/solo_shift.py`; `materialize_model_bq.py` reads punches via
+> `datastore_reader.read_punches_bq()` and writes with `replace_scope=True` (per-employee merge key,
+> invariant 9). Thresholds and the eligible/premium rates come from `store_config`, never literals.
+> `solo_hours + team_hours = total_hours` is asserted in unit tests. Additive only — no existing
+> labor-cost or tip-allocation column changes.
+>
 > **ADP Preview runs (migration 065–066, Issue #251):** `payroll_draft_runs` stores last Start→Preview `status` + `preview_hours` / `preview_gross` per biweek. Console `/payroll` shows **Run ADP Preview** or **Preview done** (hours + total pay vs last Preview). No Preview URL — ADP session hashes 404. Paid periods still use **Open ADP payroll**. Not model_* / Grafana — no new `BQ_TARGETS`/`GRAFANA_VIEWS`.
 
 Three supported ways to add information. Recipes A & B keep the raw → model contract intact (read raw

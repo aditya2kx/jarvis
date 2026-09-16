@@ -9,6 +9,7 @@ challenged. These cover the wiring that makes the next run a trusted device.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import unittest
@@ -80,24 +81,96 @@ class TestPersistAdpSession(unittest.TestCase):
             runner._persist_adp_session(ctx, store="palmetto")
 
 
-class TestBundleWiring(unittest.TestCase):
-    """The bundle session is the nightly's single ADP login.
+class TestAdpSession(unittest.TestCase):
+    """``adp_session`` is the single ADP entry point.
 
-    Guards against the wiring silently reverting to the state this issue found:
-    the parameter and the helpers existing with nothing connecting them.
+    Restore/persist used to be wired only into ``download_adp_bundle``, so the
+    payroll draft, pay-info scrape and payroll-home dump each paid their own 2FA
+    SMS. The sequence now lives in one context manager.
     """
 
-    def test_bundle_passes_storage_state_and_saves_after_login(self):
-        src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runner.py")
-        with open(src) as fh:
-            text = fh.read()
-        bundle = text.split("def download_adp_bundle", 1)[1]
-        self.assertIn("storage_state=_restore_adp_session(store=store)", bundle)
-        # Saved right after login, not at block exit: a later component can
-        # fail and the next run should still get a trusted device.
-        login = bundle.index("_ensure_logged_in(page, store=store)")
-        persist = bundle.index("_persist_adp_session(ctx, store=store)")
-        self.assertLess(login, persist)
+    def _drive(self):
+        """Enter/exit adp_session with the browser and login stubbed out."""
+        ctx, page = mock.Mock(), mock.Mock()
+        calls: list[str] = []
+
+        @contextlib.contextmanager
+        def fake_launch(**kwargs):
+            calls.append(f"launch:{kwargs.get('storage_state')}")
+            yield ctx, page
+
+        with mock.patch.object(runner, "launch_persistent", fake_launch), \
+             mock.patch.object(runner, "_restore_adp_session",
+                               side_effect=lambda **k: calls.append("restore") or "/tmp/s.json"), \
+             mock.patch.object(runner, "_ensure_logged_in",
+                               side_effect=lambda *a, **k: calls.append("login")), \
+             mock.patch.object(runner, "_persist_adp_session",
+                               side_effect=lambda *a, **k: calls.append("persist")):
+            with runner.adp_session(store="palmetto", headed=False) as (c, p):
+                calls.append("body")
+                self.assertIs(c, ctx)
+                self.assertIs(p, page)
+        return calls
+
+    def test_restores_then_logs_in_then_persists_before_the_body(self):
+        calls = self._drive()
+        self.assertEqual(
+            calls,
+            ["restore", "launch:/tmp/s.json", "login", "persist", "body"],
+        )
+
+    def test_persists_before_the_body_so_a_partial_run_still_leaves_trust(self):
+        """Persisting at block exit would lose the jar whenever the caller's
+        body raises — which is exactly when a retry is about to need it."""
+        ctx, page = mock.Mock(), mock.Mock()
+
+        @contextlib.contextmanager
+        def fake_launch(**kwargs):
+            yield ctx, page
+
+        with mock.patch.object(runner, "launch_persistent", fake_launch), \
+             mock.patch.object(runner, "_restore_adp_session", return_value=None), \
+             mock.patch.object(runner, "_ensure_logged_in"), \
+             mock.patch.object(runner, "_persist_adp_session") as persist:
+            with self.assertRaises(RuntimeError):
+                with runner.adp_session(store="palmetto", headed=False):
+                    raise RuntimeError("scrape blew up")
+        persist.assert_called_once()
+
+
+class TestEveryAdpEntryPointIsWired(unittest.TestCase):
+    """Mechanical gate: no ADP browser may be launched outside ``adp_session``.
+
+    A reviewer cannot be expected to notice a new ``launch_persistent(portal="adp")``
+    that forgets restore/persist; the symptom is only an extra OTP SMS at 3am. This
+    fails the build instead.
+    """
+
+    SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
+
+    def test_no_direct_adp_launch_outside_the_session_helper(self):
+        offenders: list[str] = []
+        for name in sorted(os.listdir(self.SKILL_DIR)):
+            if not name.endswith(".py") or name.startswith("test_"):
+                continue
+            path = os.path.join(self.SKILL_DIR, name)
+            with open(path) as fh:
+                lines = fh.readlines()
+            for i, line in enumerate(lines, start=1):
+                if 'portal="adp"' not in line:
+                    continue
+                # Legitimate uses: the session helper's own launch, and the
+                # GCS upload/download of the jar (portal is a path segment).
+                window = "".join(lines[max(0, i - 40):i])
+                if "def adp_session" in window or "_session(ADP_SESSION_LOCAL" in line:
+                    continue
+                offenders.append(f"{name}:{i}: {line.strip()}")
+        self.assertEqual(
+            offenders, [],
+            "launch ADP through runner.adp_session() so the trusted-device jar is "
+            "restored and re-saved; direct launches pay a fresh 2FA SMS:\n"
+            + "\n".join(offenders),
+        )
 
 
 if __name__ == "__main__":

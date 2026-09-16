@@ -289,6 +289,53 @@ export function laborHoursPerPerson(win: DateWindow): Promise<LaborHoursPerPerso
 }
 
 /**
+ * Solo vs team hours per person over the console Period (Issue #309).
+ *
+ * "Solo" is time an employee was the only person punched in, computed from punch
+ * occupancy by the nightly materializer — never recomputed here, so the number
+ * on this page is the same number payroll pays from.
+ *
+ * Windowed by date over the day-grain table rather than reading
+ * `vw_solo_hours_period`, so this panel follows the page's Period filter like
+ * every other labor query. `vw_solo_hours_period` stays the pay-period source
+ * for the ADP hand-off, where pay-period boundaries are what matter.
+ *
+ * `premium_cents` is integer cents (DOMAIN.md money convention) — format with
+ * `formatCents`, never `formatDollars`.
+ */
+export interface LaborSoloHoursRow {
+  employee: string;
+  solo_hours: number;
+  team_hours: number;
+  total_hours: number;
+  base_rate_dollars: number | null;
+  eligible: boolean;
+  premium_cents: number;
+  [key: string]: unknown;
+}
+
+export function laborSoloHoursPerPerson(
+  win: DateWindow,
+): Promise<LaborSoloHoursRow[]> {
+  return q<LaborSoloHoursRow>(
+    `SELECT
+       employee,
+       ROUND(SUM(solo_minutes) / 60.0, 2)  AS solo_hours,
+       ROUND(SUM(team_minutes) / 60.0, 2)  AS team_hours,
+       ROUND(SUM(total_minutes) / 60.0, 2) AS total_hours,
+       ANY_VALUE(base_rate_dollars)        AS base_rate_dollars,
+       LOGICAL_OR(eligible)                AS eligible,
+       SUM(premium_cents)                  AS premium_cents
+     FROM ${fq("model_solo_hours_daily")}
+     WHERE date BETWEEN @start AND @end
+     GROUP BY employee
+     HAVING total_hours > 0
+     ORDER BY solo_hours DESC, employee`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+/**
  * Average concurrent staff on each day (Issue #213).
  *
  * Per bucket (PT / FT): Σ hours ÷ (first in → last out) **within that bucket**

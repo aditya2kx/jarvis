@@ -6,12 +6,14 @@ import unittest
 from unittest.mock import patch
 
 from skills.adp_run_automation.payroll_draft_backend import (
+    _aggregate_grid_rows,
     abort_if_forbidden_label,
     combine_preview_totals,
     header_index,
     hours_guardrail_failures,
     packet_from_view_rows,
     run_draft,
+    solo_premium_keying_lines,
     wage_guardrail_failures,
 )
 
@@ -219,6 +221,132 @@ class TestGuardrails(unittest.TestCase):
         self.assertEqual(out["preview_url"], live["preview_url"])
         self.assertEqual(out["preview_hours"], 458.97)
         self.assertEqual(out["preview_gross"], 8999.06)
+
+
+class TestSoloPremiumHours(unittest.TestCase):
+    """#309: which regular hours move to the $16.25 rate."""
+
+    def _row(self, **over) -> dict:
+        row = {
+            "employee": "Willingham, Brooke",
+            "labor_type": "Part-time",
+            "hours_worked": 34.75,
+            "ot_hours": 0,
+            "wage_rate_dollars": 15.25,
+            "review_bonus": 0,
+            "recognition_bonus": 0,
+            "perks": 0,
+        }
+        row.update(over)
+        return row
+
+    def test_eligible_employee_carries_solo_hours(self):
+        pkt = packet_from_view_rows([self._row(solo_hours=4.75, solo_eligible=True)])
+        self.assertEqual(pkt[0].solo_premium_hours, 4.75)
+
+    def test_ineligible_employee_gets_no_premium_hours(self):
+        """Someone already at $16.25 accrues solo hours but no premium."""
+        pkt = packet_from_view_rows([
+            self._row(wage_rate_dollars=16.25, solo_hours=6.0, solo_eligible=False)
+        ])
+        self.assertEqual(pkt[0].solo_premium_hours, 0.0)
+
+    def test_absent_solo_data_defaults_to_zero(self):
+        """No solo view (or a name that did not match) must not block a draft."""
+        pkt = packet_from_view_rows([self._row()])
+        self.assertEqual(pkt[0].solo_premium_hours, 0.0)
+
+    def test_premium_hours_never_exceed_regular_hours(self):
+        pkt = packet_from_view_rows([
+            self._row(hours_worked=3.0, solo_hours=4.75, solo_eligible=True)
+        ])
+        self.assertEqual(pkt[0].solo_premium_hours, 3.0)
+
+    def test_premium_hours_exclude_overtime(self):
+        """OT is split out of regular, so the clamp is against regular alone."""
+        pkt = packet_from_view_rows([
+            self._row(hours_worked=42.0, ot_hours=2.0, solo_hours=41.0,
+                      solo_eligible=True)
+        ])
+        self.assertEqual(pkt[0].regular_hours, 40.0)
+        self.assertEqual(pkt[0].solo_premium_hours, 40.0)
+
+    def test_keying_lines_split_base_and_premium_hours(self):
+        pkt = packet_from_view_rows([self._row(solo_hours=4.75, solo_eligible=True)])
+        self.assertEqual(
+            solo_premium_keying_lines(pkt),
+            ["Willingham, Brooke: rate-1 30.0h, rate-2 4.75h"],
+        )
+
+    def test_keying_lines_skip_employees_with_no_premium(self):
+        pkt = packet_from_view_rows([
+            self._row(solo_hours=0, solo_eligible=True),
+            self._row(employee="Flores, Juan", solo_hours=2.5, solo_eligible=True),
+        ])
+        self.assertEqual(len(solo_premium_keying_lines(pkt)), 1)
+
+
+def grid_row(employee: str, *, row_index: str, rate: float, reg: float = 0.0,
+             pers: float = 0.0, hol: float = 0.0, ot: float = 0.0) -> dict:
+    return {
+        "employee": employee, "row_index": row_index, "rate": rate,
+        "reg": reg, "pers": pers, "hol": hol, "ot": ot,
+    }
+
+
+class TestTwoRateGridRows(unittest.TestCase):
+    """Solo-shift pay (#309) puts one employee on two Enter-payroll rows."""
+
+    NAME = "Willingham, Brooke"
+
+    def test_hours_sum_across_an_employees_line_items(self):
+        agg = _aggregate_grid_rows([
+            grid_row(self.NAME, row_index="4", rate=15.25, reg=30.0),
+            grid_row(self.NAME, row_index="5", rate=16.25, reg=4.75),
+        ])
+        self.assertEqual(agg[self.NAME]["hours"], 34.75)
+        self.assertEqual(agg[self.NAME]["reg"], 34.75)
+
+    def test_reported_rate_stays_the_base_not_the_premium(self):
+        agg = _aggregate_grid_rows([
+            grid_row(self.NAME, row_index="5", rate=16.25, reg=4.75),
+            grid_row(self.NAME, row_index="4", rate=15.25, reg=30.0),
+        ])
+        self.assertEqual(agg[self.NAME]["rate"], 15.25)
+
+    def test_every_line_item_is_addressable_by_row_index(self):
+        """The zeroing pass needs each row, or a stale premium row still pays."""
+        agg = _aggregate_grid_rows([
+            grid_row(self.NAME, row_index="4", rate=15.25, reg=30.0),
+            grid_row(self.NAME, row_index="5", rate=16.25, reg=4.75),
+        ])
+        self.assertEqual(
+            [r["row_index"] for r in agg[self.NAME]["rows"]], ["4", "5"]
+        )
+
+    def test_ot_and_other_earnings_also_sum(self):
+        agg = _aggregate_grid_rows([
+            grid_row(self.NAME, row_index="4", rate=15.25, reg=38.0, hol=8.0),
+            grid_row(self.NAME, row_index="5", rate=16.25, reg=4.0, ot=2.0),
+        ])
+        rec = agg[self.NAME]
+        self.assertEqual(rec["reg"], 42.0)
+        self.assertEqual(rec["hol"], 8.0)
+        self.assertEqual(rec["ot"], 2.0)
+        self.assertEqual(rec["hours"], 52.0)
+
+    def test_single_rate_employees_are_unchanged(self):
+        agg = _aggregate_grid_rows([
+            grid_row("Flores, Juan", row_index="1", rate=15.25, reg=20.0),
+            grid_row("Garcia, Jacob", row_index="2", rate=15.25, reg=18.5),
+        ])
+        self.assertEqual(agg["Flores, Juan"]["hours"], 20.0)
+        self.assertEqual(agg["Garcia, Jacob"]["hours"], 18.5)
+        self.assertEqual(len(agg["Flores, Juan"]["rows"]), 1)
+
+    def test_rows_without_a_name_are_dropped(self):
+        agg = _aggregate_grid_rows([grid_row("", row_index="9", rate=0.0, reg=5.0)])
+        self.assertEqual(agg, {})
 
 
 class TestPreviewTotals(unittest.TestCase):

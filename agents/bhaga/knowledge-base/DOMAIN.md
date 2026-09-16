@@ -307,6 +307,28 @@ Frozen `model_labor_daily` dollars are not a presentation source (Issue #267).
 - **`kds_pct_items_over_goal`** — share of items slower than the goal (config
   `forecast_target_completion_time_per_item_sec`, default 420s = 7 min).
 
+**Solo-shift hours (`model_solo_hours_daily`, Issue #309)** — grain is employee × date
+- **`solo_minutes` / `solo_hours`** — minutes an employee was the **only** person punched in,
+  counting only contiguous runs at or above `solo_shift_min_block_minutes`. Occupancy counts every
+  punched employee including the salaried manager: being excluded from the tip pool or from labor %
+  says nothing about whether a colleague is physically in the shop.
+- **`team_minutes` / `team_hours`** — everything else, including sub-threshold solo slivers. Those
+  are folded in rather than dropped, which is what makes `solo + team == total` hold exactly.
+- **`eligible`** — base rate equals `solo_shift_eligible_base_rate_dollars` **and** the date is on or
+  after `solo_shift_effective_date`. Someone already above the eligible rate accrues solo hours with
+  `premium_cents = 0`; they are not paid twice for the same policy.
+- **`premium_cents`** — integer cents (never a float column): `solo_minutes × (premium_rate −
+  eligible_base_rate) ÷ 60`. This is an **additive** number: `total_labor_cost` and tip allocation are
+  untouched by it.
+- Views: **`vw_solo_hours_daily`** (day-grain coverage, where `single_cover_minutes` is time the shop
+  ran on one person counted once for the day) and **`vw_solo_hours_period`** (pay-period rollup — the
+  hand-off to ADP payroll entry).
+- Pay basis is **actuals, never the schedule**. A schedule basis would pay for shifts that were
+  never worked and miss the call-out coverage the policy exists for.
+- The four tunables live in `bhaga.store_config`, not in code: `solo_shift_min_block_minutes`,
+  `solo_shift_eligible_base_rate_dollars`, `solo_shift_premium_rate_dollars`,
+  `solo_shift_effective_date`.
+
 ---
 
 ## 5. Tip allocation (pool-by-day fairness) — `tip_alloc_daily` / `tip_alloc_period`

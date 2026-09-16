@@ -83,6 +83,11 @@ export type ColumnFormat =
   | { kind: "pct"; digits?: number; thresholds?: Thresholds }
   | { kind: "number"; digits?: number; minDigits?: number; thresholds?: Thresholds }
   | { kind: "status" }
+  // Boolean as a badge. Distinct from "status" because that treats any
+  // unrecognized string as destructive-red, which is wrong for a flag whose
+  // false case is ordinary rather than a fault (e.g. solo-premium eligibility,
+  // Issue #309).
+  | { kind: "flag"; trueLabel: string; falseLabel?: string }
   | { kind: "source" }
   | { kind: "perks"; reasonKey?: string }
   | { kind: "adp_diff"; paidKey: string };
@@ -203,6 +208,15 @@ function renderFormatted(
     case "status":
       if (value == null || value === "") return null; // no slot 2 yet (Status 2)
       return <Badge variant={statusVariant(value as string)}>{value as string}</Badge>;
+    case "flag": {
+      if (value == null) return null;
+      if (!value) {
+        return format.falseLabel ? (
+          <span className="text-muted-foreground">{format.falseLabel}</span>
+        ) : null;
+      }
+      return <Badge variant="secondary">{format.trueLabel}</Badge>;
+    }
     case "source": {
       const v = value as "Estimated" | "Manual" | "Actuals" | null | undefined;
       if (!v) return null; // no second date registered yet (vw_order_reco_combined §Source 2)

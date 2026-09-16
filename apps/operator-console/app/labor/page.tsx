@@ -9,10 +9,11 @@ import {
   laborHoursPerPerson,
   laborScheduledHoursByGrain,
   laborScheduledShiftDays,
+  laborSoloHoursPerPerson,
   storeConfig,
 } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
-import { dateSortKey } from "@/lib/format";
+import { dateSortKey, formatCents } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { LaborHoursChart } from "@/components/labor/LaborHoursChart";
@@ -72,12 +73,16 @@ import {
   showChartSchedule,
   showCoverageSchedule,
 } from "@/lib/labor/schedule-fetch-gates";
+import { summarizeSoloHours } from "@/lib/labor/solo-hours";
+import type { ColumnDef } from "@tanstack/react-table";
+import { DataTable } from "@/components/tables/DataTable";
 import type {
   LaborActualShiftDayRow,
   LaborConcurrentRow,
   LaborDailyRow,
   LaborScheduledHoursRow,
   LaborScheduledShiftDayRow,
+  LaborSoloHoursRow,
 } from "@/lib/bq/queries";
 
 export const dynamic = "force-dynamic";
@@ -149,6 +154,7 @@ export default async function LaborPage({
   let hoursScrapedAt: string | null = null;
   let coverageActuals: LaborActualShiftDayRow[] = [];
   let coverageScheduled: LaborScheduledShiftDayRow[] = [];
+  let soloRows: LaborSoloHoursRow[] = [];
   let error: string | undefined;
   try {
     // When Period includes today, extend charts through the latest ADP scheduled
@@ -190,6 +196,7 @@ export default async function LaborPage({
       scraped,
       hoursScraped,
       actualShiftDays,
+      solo,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -211,7 +218,13 @@ export default async function LaborPage({
       adpScheduleScrapedAt().catch(() => null),
       adpHoursScrapedAt().catch(() => null),
       punchWin ? laborActualShiftDays(punchWin).catch(() => []) : Promise.resolve([]),
+      // Solo hours are punch-derived, so they only exist for days already
+      // ingested — same window as the other actuals, never the schedule window.
+      punchWin
+        ? laborSoloHoursPerPerson(punchWin).catch(() => [])
+        : Promise.resolve([]),
     ]);
+    soloRows = solo;
     rows = labor;
     concurrentRows = concurrent;
     scheduledHoursRows = schedHours;
@@ -327,6 +340,43 @@ export default async function LaborPage({
     employee: p.employee,
     hours: Number(p.hours.toFixed(1)),
   }));
+
+  // Solo hours are a pay input, so the table shows the split every employee is
+  // paid on rather than a single derived number: solo + team always equals total.
+  const soloColumns: ColumnDef<LaborSoloHoursRow>[] = [
+    { accessorKey: "employee", header: "Employee" },
+    {
+      accessorKey: "solo_hours",
+      header: "Solo hours",
+      meta: { format: { kind: "number", digits: 2, minDigits: 2 } },
+    },
+    {
+      accessorKey: "team_hours",
+      header: "Team hours",
+      meta: { format: { kind: "number", digits: 2, minDigits: 2 } },
+    },
+    {
+      accessorKey: "total_hours",
+      header: "Total hours",
+      meta: { format: { kind: "number", digits: 2, minDigits: 2 } },
+    },
+    {
+      accessorKey: "base_rate_dollars",
+      header: "Base rate",
+      meta: { format: { kind: "dollars" } },
+    },
+    {
+      accessorKey: "eligible",
+      header: "Premium",
+      meta: { format: { kind: "flag", trueLabel: "Eligible", falseLabel: "—" } },
+    },
+    {
+      accessorKey: "premium_cents",
+      header: "Premium owed",
+      meta: { format: { kind: "cents" } },
+    },
+  ];
+  const soloSummary = summarizeSoloHours(soloRows);
 
   const statPrefix = showStat && stat === "avg" ? "Average " : showStat ? "Total " : "";
   const statSubtitle =
@@ -558,6 +608,45 @@ export default async function LaborPage({
           {!personChartData.length ? (
             <p className="text-sm text-muted-foreground">No ADP shift hours in this Period.</p>
           ) : null}
+
+          <div className="flex flex-col gap-2">
+            <h2 className="text-sm font-medium text-muted-foreground">
+              Solo vs team hours — {win.start} → {win.end}
+            </h2>
+            {soloSummary.rows.length ? (
+              <>
+                <DataTable
+                  columns={soloColumns}
+                  data={soloSummary.rows}
+                  pinLeft={["employee"]}
+                />
+                <p className="text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">Solo</span> hours are
+                  minutes an employee was the only person punched in, in contiguous
+                  blocks of at least the configured minimum — solo + team always equals
+                  total. Only employees on the eligible base rate earn the premium;
+                  anyone already above it accrues solo hours with no premium owed.
+                  Premium owed is what moves to the higher rate in ADP for the pay
+                  period — key it from the{" "}
+                  <span className="font-medium text-foreground">Payroll</span> page,
+                  which is scoped to pay-period boundaries rather than this Period
+                  filter.
+                </p>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Nobody worked alone in this Period.
+              </p>
+            )}
+            {soloSummary.people > 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {soloSummary.soloHours.toFixed(2)} solo hours across{" "}
+                {soloSummary.people}{" "}
+                {soloSummary.people === 1 ? "person" : "people"} ·{" "}
+                {formatCents(soloSummary.premiumCents)} premium owed.
+              </p>
+            ) : null}
+          </div>
         </>
       )}
     </div>

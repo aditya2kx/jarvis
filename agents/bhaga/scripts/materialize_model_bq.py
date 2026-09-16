@@ -31,6 +31,7 @@ from core.datastore import load_rows
 from core.datastore_reader import (
     read_item_daily_bq,
     read_kds_daily_bq,
+    read_punches_bq,
     read_shifts_bq,
     read_transactions_bq,
     read_wage_rates_bq,
@@ -53,6 +54,11 @@ from agents.bhaga.scripts.update_model_sheet import (
     _read_training_shifts_from_sheet,
 )
 from skills.adp_run_automation.shift_backend import normalize_employee_name
+from skills.bhaga_labor.solo_shift import (
+    SoloConfig,
+    attribute_day,
+    intervals_from_punches,
+)
 from skills.store_profile import load_aliases, load_exclusions
 
 _PROJECT_DIR = pathlib.Path(__file__).resolve().parents[3]
@@ -68,6 +74,8 @@ _BOOL_COLS: dict[str, set[str]] = {
     "model_period_summary": {"is_open"},
     # Added by migration 004 (dashboard refactor)
     "model_review_bonus_period": {"is_open"},
+    # Added by migration 071 (solo-shift premium, Issue #309)
+    "model_solo_hours_daily": {"eligible"},
 }
 
 _DATE_COLS: dict[str, set[str]] = {
@@ -77,6 +85,7 @@ _DATE_COLS: dict[str, set[str]] = {
     "model_labor_period": {"pay_period_start", "pay_period_end"},
     "model_tip_alloc_period": {"period_start", "period_end"},
     "model_tip_alloc_daily": {"date", "period_start", "period_end"},
+    "model_solo_hours_daily": {"date"},
     "model_period_summary": {"period_start", "period_end"},
     # Added by migration 004 (dashboard refactor)
     "model_review_bonus_period": {"period_start", "period_end"},
@@ -93,6 +102,8 @@ _MERGE_KEYS: dict[str, list[str]] = {
     "model_period_summary": ["period_start"],
     # Added by migration 004 (dashboard refactor)
     "model_review_bonus_period": ["period_start", "employee"],
+    # Added by migration 071 (solo-shift premium, Issue #309)
+    "model_solo_hours_daily": ["date", "employee"],
 }
 
 # Per-employee model tables: any table whose merge key contains "employee".
@@ -280,6 +291,85 @@ def _load(table: str, dicts: list[dict], materialized_at: datetime.datetime, dry
     return loaded
 
 
+# Seeded once in bhaga.store_config; changing the policy is a config edit via
+# /bhaga-cloud config set, never a code deploy (user-preferences #29).
+_SOLO_CONFIG_DEFAULTS: dict[str, str] = {
+    "solo_shift_min_block_minutes": "15",
+    "solo_shift_eligible_base_rate_dollars": "15.25",
+    "solo_shift_premium_rate_dollars": "16.25",
+    "solo_shift_effective_date": "2026-09-07",
+}
+
+
+def load_solo_config(store: str) -> SoloConfig:
+    """Read the solo-premium tunables from bhaga.store_config.
+
+    Falls back to the seeded defaults per key so a missing row degrades to the
+    announced policy rather than to a silent zero premium.
+    """
+    from core.store_config import get_config  # noqa: PLC0415
+
+    def _val(key: str) -> str:
+        return get_config(store, key) or _SOLO_CONFIG_DEFAULTS[key]
+
+    return SoloConfig(
+        min_block_minutes=int(float(_val("solo_shift_min_block_minutes"))),
+        eligible_base_rate_cents=round(
+            float(_val("solo_shift_eligible_base_rate_dollars")) * 100
+        ),
+        premium_rate_cents=round(
+            float(_val("solo_shift_premium_rate_dollars")) * 100
+        ),
+        effective_date=_val("solo_shift_effective_date"),
+    )
+
+
+def build_solo_hours_rows(
+    *,
+    punches: list[dict],
+    wage_rates: list[dict],
+    aliases: dict[str, str],
+    config: SoloConfig,
+) -> list[list]:
+    """Header + one row per (date, employee) with the solo/team hour split.
+
+    Wage rates convert to integer cents before comparison so the eligibility
+    test is exact — a float ``== 15.25`` is a coin flip (invariant 4).
+    """
+    header = [
+        "date", "employee",
+        "solo_minutes", "team_minutes", "total_minutes",
+        "solo_hours", "team_hours", "total_hours",
+        "base_rate_dollars", "eligible", "premium_cents",
+    ]
+
+    base_rate_cents: dict[str, int] = {}
+    base_rate_dollars: dict[str, float] = {}
+    for r in wage_rates:
+        rate = r.get("wage_rate_dollars")
+        name = r.get("employee_name") or ""
+        if not name or rate in (None, ""):
+            continue
+        canonical = normalize_employee_name(str(name), aliases)
+        base_rate_cents[canonical] = round(float(rate) * 100)
+        base_rate_dollars[canonical] = float(rate)
+
+    rows: list[list] = [header]
+    grouped = intervals_from_punches(punches, aliases=aliases)
+    for date in sorted(grouped):
+        for r in attribute_day(date, grouped[date], base_rate_cents, config):
+            rows.append([
+                r.date, r.employee,
+                r.solo_minutes, r.team_minutes, r.total_minutes,
+                round(r.solo_minutes / 60.0, 4),
+                round(r.team_minutes / 60.0, 4),
+                round(r.total_minutes / 60.0, 4),
+                base_rate_dollars.get(r.employee, ""),
+                r.eligible, r.premium_cents,
+            ])
+    return rows
+
+
 def load_model_rows(
     table: str,
     header_rows: list[list],
@@ -459,6 +549,9 @@ def materialize(
     aliases = load_aliases(store)
     excluded = set(load_exclusions(store)["permanent"])
     shifts = read_shifts_bq()
+    # Punch grain (not the adp_shifts day rollup) — solo attribution needs the
+    # individual in/out intervals to see coverage gaps inside a day.
+    punches = read_punches_bq()
     txns = read_transactions_bq()
     wage_rates = read_wage_rates_bq()
     # Item + KDS daily rollups feed the per-item operations metrics on
@@ -467,7 +560,8 @@ def materialize(
     # left model_labor_daily.items_sold empty for every row).
     items_by_date = {r["date_local"]: r for r in read_item_daily_bq()}
     kds_by_date = {r["date_local"]: r for r in read_kds_daily_bq()}
-    print(f"  shifts={len(shifts)} txns={len(txns)} wage_rates={len(wage_rates)} "
+    print(f"  shifts={len(shifts)} punches={len(punches)} txns={len(txns)} "
+          f"wage_rates={len(wage_rates)} "
           f"item_days={len(items_by_date)} kds_days={len(kds_by_date)}")
 
     # Defensive breadcrumb: the model is derived from Square transactions, so an
@@ -624,6 +718,12 @@ def materialize(
     period_rows = build_tip_alloc_period_rows(period_results)
     day_alloc_rows = build_tip_alloc_daily_rows(period_results, daily_summary)
     summary_rows = build_period_summary_rows(period_results)
+    solo_rows = build_solo_hours_rows(
+        punches=punches,
+        wage_rates=wage_rates,
+        aliases=aliases,
+        config=load_solo_config(store),
+    )
 
     # ── Resolve the write scope ──────────────────────────────────────────────
     scopes = touched_scope(dates, periods) if dates else {}
@@ -655,6 +755,14 @@ def materialize(
         store, training_shifts, dry_run=dry_run, only_dates=scopes.get("model_tip_alloc_daily")
     )
     load_model_rows("model_period_summary", summary_rows, dry_run=dry_run, materialized_at=materialized_at, scope=scopes.get("model_period_summary"))
+    # Solo-shift premium (Issue #309). replace_scope clears each rebuilt date
+    # before the MERGE so an employee who drops off a day leaves no ghost row
+    # claiming premium hours (bhaga.mdc invariant 9).
+    load_model_rows(
+        "model_solo_hours_daily", solo_rows,
+        dry_run=dry_run, materialized_at=materialized_at,
+        replace_scope=True, scope=scopes.get("model_solo_hours_daily"),
+    )
 
     # ── Load forecast (future window + gap-fill backfill; non-fatal) ─────────
     # Future rows (today+1..today+N): MERGE on date — always reflects the current

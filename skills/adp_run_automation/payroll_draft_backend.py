@@ -38,6 +38,11 @@ class PayrollPacketRow:
     misc_reimbursement_dollars: float
     tips_dollars: float = 0.0
     est_wages_dollars: float | None = None
+    # Hours to pay at the solo-shift premium rate rather than the base rate
+    # (#309). A subset of regular_hours, not an addition to them: it is 0 for
+    # anyone ineligible, so it is always exactly what belongs on an ADP rate-2
+    # line item.
+    solo_premium_hours: float = 0.0
 
 
 def abort_if_forbidden_label(label: str) -> None:
@@ -60,6 +65,58 @@ def abort_if_forbidden_label(label: str) -> None:
             f"[adp_payroll_draft] BREADCRUMB forbid_click label={label!r} "
             "never Approve/Submit/Save"
         )
+
+
+def solo_premium_keying_lines(packet: list["PayrollPacketRow"]) -> list[str]:
+    """The rate-2 line items an operator must key into ADP Enter payroll (#309).
+
+    BHAGA does not type hours into ADP, so this is the handoff: for each eligible
+    employee, how many of their regular hours move from the base rate to the
+    premium rate. Base hours shrink by exactly the premium hours, which is what
+    keeps total paid hours equal to the imported timecard.
+    """
+    lines: list[str] = []
+    for row in packet:
+        solo = round(float(row.solo_premium_hours or 0), 2)
+        if solo <= 0:
+            continue
+        lines.append(
+            f"{row.employee}: rate-1 {round(row.regular_hours - solo, 2)}h, "
+            f"rate-2 {solo}h"
+        )
+    return lines
+
+
+def _print_solo_premium_keying(packet: list["PayrollPacketRow"]) -> None:
+    lines = solo_premium_keying_lines(packet)
+    if not lines:
+        print("[adp_payroll_draft] solo_premium none eligible this period")
+        return
+    total = round(sum(float(r.solo_premium_hours or 0) for r in packet), 2)
+    print(
+        f"[adp_payroll_draft] BREADCRUMB solo_premium_keying n={len(lines)} "
+        f"hours={total} (split each employee's Regular hours across two rates)"
+    )
+    for line in lines:
+        print(f"  {line}")
+
+
+def _solo_premium_hours(row: dict[str, Any], *, regular_hours: float) -> float:
+    """Eligible solo hours for one employee-period, clamped to regular hours.
+
+    ``solo_eligible`` is decided upstream in the model, so a false value here
+    means no premium at all rather than a zero-hour premium line.
+
+    The clamp matters because solo hours and paid hours come from different
+    places: solo minutes are punch-derived, while regular hours come from the
+    payroll view after OT is split out. Rounding or a late punch edit could make
+    solo exceed regular, and keying more premium hours than the employee is paid
+    for would overstate the paycheck.
+    """
+    if not row.get("solo_eligible"):
+        return 0.0
+    solo = float(row.get("solo_hours") or 0)
+    return round(min(solo, regular_hours), 2)
 
 
 def packet_from_view_rows(rows: list[dict[str, Any]]) -> list[PayrollPacketRow]:
@@ -97,6 +154,7 @@ def packet_from_view_rows(rows: list[dict[str, Any]]) -> list[PayrollPacketRow]:
                 misc_reimbursement_dollars=round(float(r.get("perks") or 0), 2),
                 tips_dollars=round(float(r.get("tips_allocated") or 0), 2),
                 est_wages_dollars=est,
+                solo_premium_hours=_solo_premium_hours(r, regular_hours=max(hours - ot, 0)),
             )
         )
     return out
@@ -248,12 +306,15 @@ def run_draft(
     }
     print("[adp_payroll_draft] packet (compare to /payroll):")
     for row in result["packet"]:
+        solo = float(row.get("solo_premium_hours") or 0)
         print(
             f"  {row['employee']}: reg={row['regular_hours']} ot={row['ot_hours']} "
             f"rate={row['wage_rate']} wages={row.get('est_wages_dollars')} "
             f"tips={row.get('tips_dollars')} bonus={row['bonus_dollars']} "
             f"perk={row['misc_reimbursement_dollars']}"
+            + (f" solo_premium_hours={solo}" if solo > 0 else "")
         )
+    _print_solo_premium_keying(packet)
     if dry_run:
         print(
             f"[adp_payroll_draft] dry_run store={store} "
@@ -394,14 +455,45 @@ def _load_view_rows(period_start: str, period_end: str) -> list[dict[str, Any]]:
         "ORDER BY employee"
     )
     rows = read_query(sql)
-    if rows:
+    if not rows:
+        # Open-period view often ends before the ADP biweek Sunday.
+        rows = read_query(
+            f"SELECT * FROM {fq('vw_model_payroll_period')} "
+            f"WHERE period_start = DATE '{period_start}' "
+            "ORDER BY employee"
+        )
+    return _merge_solo_hours(rows, period_start)
+
+
+def _merge_solo_hours(
+    rows: list[dict[str, Any]], period_start: str
+) -> list[dict[str, Any]]:
+    """Attach solo-shift hours (#309) to payroll rows, keyed on canonical name.
+
+    Joined in Python rather than folded into ``vw_model_payroll_period`` so the
+    payroll view keeps one owner. A missing or empty solo view leaves every row
+    untouched: no solo data must never block a payroll draft, since the base
+    hours are correct without it.
+    """
+    from core.datastore import fq, read_query
+
+    try:
+        solo = read_query(
+            f"SELECT employee, solo_hours, eligible FROM {fq('vw_solo_hours_period')} "
+            f"WHERE period_start = DATE '{period_start}'"
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_payroll_draft] BREADCRUMB solo_hours_unavailable {exc}")
         return rows
-    # Open-period view often ends before the ADP biweek Sunday.
-    return read_query(
-        f"SELECT * FROM {fq('vw_model_payroll_period')} "
-        f"WHERE period_start = DATE '{period_start}' "
-        "ORDER BY employee"
-    )
+
+    by_name = {name_key(str(s.get("employee") or "")): s for s in solo or []}
+    for row in rows:
+        match = by_name.get(name_key(str(row.get("employee") or "")))
+        if not match:
+            continue
+        row["solo_hours"] = match.get("solo_hours")
+        row["solo_eligible"] = match.get("eligible")
+    return rows
 
 
 def _iso(s: str) -> bool:
@@ -508,18 +600,10 @@ def collect_payroll_home_dump(page) -> dict[str, Any]:
 
 def dump_payroll_home_history(*, store: str = "palmetto") -> dict[str, Any]:
     """Login → Payroll Home → print tiles/links. Never Start or Approve."""
-    from skills.adp_run_automation.runner import (  # noqa: PLC0415
-        _ensure_logged_in,
-        launch_persistent,
-    )
+    from skills.adp_run_automation.runner import adp_session  # noqa: PLC0415
 
     headed = _adp_headed()
-    with launch_persistent(
-        portal="adp",
-        headed=headed,
-        slow_mo_ms=0,
-    ) as (_ctx, page):
-        _ensure_logged_in(page, store=store)
+    with adp_session(store=store, headed=headed, slow_mo_ms=0) as (_ctx, page):
         _open_payroll_home(page)
         page.wait_for_timeout(2_000)
         dump = collect_payroll_home_dump(page)
@@ -647,8 +731,13 @@ def _click_start_if_present(page) -> bool:
     return True
 
 
-def _ag_enter_page_hours(page) -> dict[str, dict[str, float]]:
-    """Paid hours on Enter payroll AG Grid: Regular + Personal + Holiday + OT."""
+def _ag_grid_rows(page) -> list[dict]:
+    """One entry per visible Enter-payroll grid row, in grid order.
+
+    Deliberately does not collapse by employee: solo-shift pay (#309) gives one
+    employee two rows on the same check, and the caller needs each row's
+    ``row_index`` to address it.
+    """
     raw = page.evaluate(
         """() => {
           const num = (t) => {
@@ -656,7 +745,7 @@ def _ag_enter_page_hours(page) -> dict[str, dict[str, float]]:
             const n = parseFloat(s);
             return Number.isFinite(n) ? n : 0;
           };
-          const out = {};
+          const out = [];
           for (const row of document.querySelectorAll(
             '.ag-pinned-left-cols-container [role="row"]'
           )) {
@@ -672,32 +761,68 @@ def _ag_enter_page_hours(page) -> dict[str, dict[str, float]]:
               const el = body && body.querySelector('[col-id="' + id + '"]');
               return el ? num(el.innerText) : 0;
             };
-            const rateTxt = (row.innerText || '');
-            const rateM = rateTxt.match(/\\$?([0-9]+\\.[0-9]+)/);
-            const reg = cell('REGH');
-            const pers = cell('PERSH');
-            const hol = cell('HOLH');
-            const ot = cell('OVTH') + cell('NQOVTH');
-            out[name.split('\\n')[0].trim()] = {
-              hours: Math.round((reg + pers + hol + ot) * 100) / 100,
-              reg, pers, hol, ot,
+            const rateM = (row.innerText || '').match(/\\$?([0-9]+\\.[0-9]+)/);
+            out.push({
+              employee: name.split('\\n')[0].trim(),
+              row_index: idx,
               rate: rateM ? parseFloat(rateM[1]) : 0,
-            };
+              reg: cell('REGH'),
+              pers: cell('PERSH'),
+              hol: cell('HOLH'),
+              ot: cell('OVTH') + cell('NQOVTH'),
+            });
           }
           return out;
         }"""
     )
-    return raw or {}
+    return raw or []
+
+
+def _aggregate_grid_rows(rows: list[dict]) -> dict[str, dict]:
+    """Fold grid rows into one paid-hours record per employee.
+
+    An employee owns more than one row once they are paid at two rates: solo
+    hours at $16.25 sit on their own line item next to team hours at $15.25.
+    Keying by name and assigning kept only the last row, which understated
+    hours for the guardrail comparison and hid stale rows from the zeroing pass.
+
+    ``rate`` reports the lowest rate seen so it stays the base rate rather than
+    drifting up to the premium; ``rows`` keeps every line item for diagnosis and
+    for addressing cells by ``row_index``.
+    """
+    out: dict[str, dict] = {}
+    for row in rows:
+        employee = row.get("employee") or ""
+        if not employee:
+            continue
+        rec = out.setdefault(
+            employee,
+            {"hours": 0.0, "reg": 0.0, "pers": 0.0, "hol": 0.0, "ot": 0.0,
+             "rate": 0.0, "rows": []},
+        )
+        for key in ("reg", "pers", "hol", "ot"):
+            rec[key] = round(rec[key] + float(row.get(key) or 0), 2)
+        rec["hours"] = round(rec["reg"] + rec["pers"] + rec["hol"] + rec["ot"], 2)
+        rate = float(row.get("rate") or 0)
+        if rate > 0 and (rec["rate"] <= 0 or rate < rec["rate"]):
+            rec["rate"] = rate
+        rec["rows"].append(row)
+    return out
+
+
+def _ag_enter_page_hours(page) -> dict[str, dict]:
+    """Paid hours on Enter payroll AG Grid: Regular + Personal + Holiday + OT."""
+    return _aggregate_grid_rows(_ag_grid_rows(page))
 
 
 def _paginate_timecard_hours(page) -> dict[str, float]:
-    merged: dict[str, float] = {}
-    detail: dict[str, dict[str, float]] = {}
+    # Collect by AG Grid row-index, which is absolute across pages, so a page
+    # re-read cannot double-count an employee's hours and a two-rate employee
+    # whose line items straddle a page boundary still sums to their true total.
+    seen: dict[str, dict] = {}
     for _ in range(6):
-        page_map = _ag_enter_page_hours(page)
-        for name, rec in page_map.items():
-            detail[name] = rec
-            merged[name] = float(rec.get("hours") or 0)
+        for row in _ag_grid_rows(page):
+            seen[str(row.get("row_index"))] = row
         nxt = page.locator("[data-test-id='pagination-chevron-right']").first
         try:
             if nxt.is_visible() and nxt.is_enabled():
@@ -717,8 +842,9 @@ def _paginate_timecard_hours(page) -> dict[str, float]:
                 break
         except Exception:  # noqa: BLE001
             break
+    detail = _aggregate_grid_rows(list(seen.values()))
     print(f"[adp_payroll_draft] ag_enter_hours {detail}")
-    return merged
+    return {name: float(rec.get("hours") or 0) for name, rec in detail.items()}
 
 
 def _preview_pay_rows(page) -> dict[str, dict[str, float]]:
@@ -981,18 +1107,28 @@ def _zero_hours_not_on_console(page, ours: dict[str, float]) -> int:
                 continue
             print(
                 f"[adp_payroll_draft] BREADCRUMB zero_stale_hours {name!r} "
-                f"adp={ah} our={oh}"
+                f"adp={ah} our={oh} line_items={len(rec.get('rows') or [])}"
             )
-            for col_id, key in (
-                ("REGH", "reg"),
-                ("PERSH", "pers"),
-                ("HOLH", "hol"),
-            ):
-                if float(rec.get(key) or 0) > 0:
-                    _fill_grid_amount(page, employee=name, col_id=col_id, amount=0.0)
-            if float(rec.get("ot") or 0) > 0:
-                _fill_grid_amount(page, employee=name, col_id="OVTH", amount=0.0)
-                _fill_grid_amount(page, employee=name, col_id="NQOVTH", amount=0.0)
+            # Every line item, not just the first: a two-rate employee's premium
+            # row would otherwise survive the clear and still get paid.
+            for line in rec.get("rows") or []:
+                idx = line.get("row_index")
+                for col_id, key in (
+                    ("REGH", "reg"),
+                    ("PERSH", "pers"),
+                    ("HOLH", "hol"),
+                ):
+                    if float(line.get(key) or 0) > 0:
+                        _fill_grid_amount(
+                            page, employee=name, col_id=col_id,
+                            amount=0.0, row_index=idx,
+                        )
+                if float(line.get("ot") or 0) > 0:
+                    for col_id in ("OVTH", "NQOVTH"):
+                        _fill_grid_amount(
+                            page, employee=name, col_id=col_id,
+                            amount=0.0, row_index=idx,
+                        )
             zeroed += 1
         nxt = page.locator("[data-test-id='pagination-chevron-right']").first
         try:
@@ -1189,9 +1325,21 @@ def _ensure_ag_col_visible(page, col_id: str) -> bool:
     return bool(isinstance(info, dict) and info.get("ok"))
 
 
-def _fill_grid_amount(page, *, employee: str, col_id: str, amount: float) -> bool:
-    """Playwright-dblclick the AG Grid body cell (pinned names, center money)."""
-    idx = _row_index_for_employee(page, employee)
+def _fill_grid_amount(
+    page,
+    *,
+    employee: str,
+    col_id: str,
+    amount: float,
+    row_index: str | None = None,
+) -> bool:
+    """Playwright-dblclick the AG Grid body cell (pinned names, center money).
+
+    ``row_index`` addresses one specific line item. Without it the name lookup
+    returns the employee's first row, which is wrong for anyone paid at two
+    rates.
+    """
+    idx = row_index if row_index is not None else _row_index_for_employee(page, employee)
     if idx is None:
         print(f"[adp_payroll_draft] no_cell {employee} {col_id} {{'ok': False, 'why': 'no_name'}}")
         return False
@@ -1388,10 +1536,7 @@ def run_live_preview(
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from skills.adp_run_automation.runner import (  # noqa: PLC0415
-        _ensure_logged_in,
-        launch_persistent,
-    )
+    from skills.adp_run_automation.runner import adp_session  # noqa: PLC0415
 
     packet = packet or []
     today = datetime.now(ZoneInfo("America/Chicago")).date().isoformat()
@@ -1410,12 +1555,11 @@ def run_live_preview(
         "(set BHAGA_ADP_HEADED=1 for a visible browser)"
     )
 
-    with launch_persistent(
-        portal="adp",
+    with adp_session(
+        store=store,
         headed=headed,
         slow_mo_ms=50 if headed else 0,
     ) as (_ctx, page):
-        _ensure_logged_in(page, store=store)
         _open_payroll_home(page)
         payroll_home_url = page.url
         shots.append(screenshot_preview(page, "home"))

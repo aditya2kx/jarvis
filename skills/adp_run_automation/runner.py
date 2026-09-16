@@ -31,6 +31,7 @@ ADP quirks accounted for:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import json
 import math
@@ -1039,13 +1040,12 @@ def download_timecard(
         print(f"[adp_timecard] SKIP browser — fresh Timecard XLSX already on disk: {expected}")
         return expected
 
-    with launch_persistent(
-        portal="adp",
+    with adp_session(
+        store=store,
         headed=headed,
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
-        _ensure_logged_in(page, store=store)
         path = _timecard_within_session(page, target_date=target_date, store=store)
         _write_target_meta(path, target_date)
         return path
@@ -1212,13 +1212,12 @@ def download_earnings(
     profile = _load_store_profile(store)
     report_name = profile["adp_run"].get("wage_rate_report_name", "Earnings and Hours V1")
 
-    with launch_persistent(
-        portal="adp",
+    with adp_session(
+        store=store,
         headed=headed,
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
-        _ensure_logged_in(page, store=store)
         path = _earnings_within_session(
             page, store=store, start=start, end=end, use_custom_range=True,
         )
@@ -1930,13 +1929,12 @@ def download_schedule(
         print(f"[adp_schedule] SKIP browser — fresh Schedule JSON already on disk: {expected}")
         return expected
 
-    with launch_persistent(
-        portal="adp",
+    with adp_session(
+        store=store,
         headed=headed,
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
-        _ensure_logged_in(page, store=store)
         payloads = _schedule_within_session(page, weeks=weeks)
         return _write_schedule_json(payloads, store=store)
 
@@ -1957,13 +1955,12 @@ def download_payroll_liability(
         print(f"[adp_liability] SKIP browser — fresh file: {out}")
         return out
 
-    with launch_persistent(
-        portal="adp",
+    with adp_session(
+        store=store,
         headed=headed,
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
-        _ensure_logged_in(page, store=store)
         page.wait_for_timeout(2000)
         page.evaluate(
             """() => {
@@ -2039,6 +2036,45 @@ def _persist_adp_session(ctx, *, store: str) -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"[adp_bundle] WARN: session persist failed (non-fatal): "
               f"{type(exc).__name__}: {exc}")
+
+
+@contextlib.contextmanager
+def adp_session(
+    *,
+    store: str,
+    headed: bool = True,
+    slow_mo_ms: int = 0,
+    keep_open_on_error: bool = False,
+):
+    """A logged-in ADP page that restores and re-saves the trusted-device jar.
+
+    Every ADP entry point must go through here. Restore/persist used to be wired
+    only into ``download_adp_bundle``, so the payroll draft, the pay-info scrape
+    and the payroll-home dump each started from a fresh cookie jar and paid their
+    own 2FA SMS — one operator interruption per entry point instead of per burst.
+    Folding the sequence into one context manager makes that impossible to forget
+    rather than merely documented.
+
+    Persist happens immediately after login, not at block exit: the caller's body
+    may fail partway, and a partial run should still leave the next one a
+    recognised device.
+
+    This buys session *reuse*, not durable device trust. ADP's only auth cookie
+    (``SMSESSION``) is a session cookie, and ADP's admin step-up is a risk engine
+    with no remember-device option and no authenticator factor (verified against
+    the live flow 2026-09-15). So a burst of runs costs one code instead of N, but
+    a run after ADP's idle window will still be challenged.
+    """
+    with launch_persistent(
+        portal="adp",
+        headed=headed,
+        slow_mo_ms=slow_mo_ms,
+        keep_open_on_error=keep_open_on_error,
+        storage_state=_restore_adp_session(store=store),
+    ) as (ctx, page):
+        _ensure_logged_in(page, store=store)
+        _persist_adp_session(ctx, store=store)
+        yield ctx, page
 
 
 def download_adp_bundle(
@@ -2173,18 +2209,12 @@ def download_adp_bundle(
     print(f"[adp_bundle] needs_timecard={needs_timecard} needs_earnings={needs_earnings} "
           f"needs_schedule={needs_schedule}; opening single browser session (one login, one OTP cost).")
 
-    with launch_persistent(
-        portal="adp",
+    with adp_session(
+        store=store,
         headed=headed,
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
-        storage_state=_restore_adp_session(store=store),
     ) as (ctx, page):
-        _ensure_logged_in(page, store=store)
-        # Save here rather than at block exit: a later component (timecard,
-        # schedule, liability) can fail, and a partial run should still leave
-        # the next one a trusted device.
-        _persist_adp_session(ctx, store=store)
         dashboard_url = page.url
         print(f"[adp_bundle] dashboard_url={dashboard_url}")
 

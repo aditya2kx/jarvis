@@ -1,7 +1,9 @@
 # Aladdin Connect skill
 
 Genie Aladdin Connect via Cognito `USER_PASSWORD_AUTH` + `api.smartgarage.systems`.
-Device calls use the Cognito **AccessToken** (IdToken returns 401).
+Device calls use the Cognito **AccessToken** (IdToken returns 401). Access tokens
+last **24 h**; the client re-logins before expiry (`TOKEN_SKEW_S`) and once on a
+401, so a long-lived process does not need a redeploy to recover.
 
 ## Env
 

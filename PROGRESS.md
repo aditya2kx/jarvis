@@ -1,3 +1,13 @@
+## 2026-09-16 — Garage open failed after 24 h: Aladdin token never refreshed (Issue #310)
+
+**Scope:** Two geofence crossings (267 m, enter 300 m) were detected but Big Peach did not open — failure emails showed `HTTP 401 https://api.smartgarage.systems/devices`. Tesla/telemetry were fine; Aladdin Cognito AccessTokens last exactly 24 h and the always-on Cloud Run process cached one login for the whole instance lifetime. Opens succeeded until ~09-15 03:50 UTC, then every enter 401'd.
+
+**Key changes:** `skills/aladdin_connect` tracks `_access_exp` from Cognito `ExpiresIn`, re-logins before expiry (`TOKEN_SKEW_S=300`), and on a single 401 clears the token and retries once (never on 5xx — door may have moved).
+
+**Decision:** re-login with `USER_PASSWORD_AUTH` rather than adding `REFRESH_TOKEN_AUTH` — credentials are always in env on this surface; a second grant path bought nothing.
+
+**Evidence:** unit regression pin for a 25 h stale token; live read-only forced-expiry `list_devices` + `resolve_door` (no `OPEN_DOOR`); post-merge §4 command checks the >24 h boundary on #310.
+
 ## 2026-09-15 — A step marker can no longer outlive the files it describes (Issue #305)
 
 **Scope:** Found while post-merge-verifying #298. The rerun of `2026-09-14` reported `status=success` having loaded **zero** ADP rows. The nightly had scraped ADP, written the `adp_reports` marker to Firestore, then died on the `FLOAT` MERGE; markers persist, but the exports they describe live in the container's `extracted/downloads/` and die with it. So the rerun saw "done", skipped the scrape, found an empty directory, upserted nothing, exited 0 — and `load_raw_bigquery.done` was written on top. The two guards that exist for this both missed: the recovery loop cleared `("square", "adp")` when the markers are written as `square_transactions`/`adp_reports`, so it had **never fired once**; and `clear_adp_reports_if_shifts_missing` only triggers at exactly zero shifts, while 09-14 had 3 stale partial rows.

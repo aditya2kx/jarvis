@@ -12,6 +12,7 @@ import hmac
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Optional
@@ -23,6 +24,8 @@ COGNITO_CLIENT_ID = "27iic8c3bvslqngl3hso83t74b"
 COGNITO_CLIENT_SECRET = "7bokto0ep96055k42fnrmuth84k7jdcjablestb7j53o8lp63v5"
 COGNITO_URL = "https://cognito-idp.us-east-2.amazonaws.com/"
 API_BASE = "https://api.smartgarage.systems"
+# Cognito issues 24 h access tokens. Re-login before expiry rather than after a 401.
+TOKEN_SKEW_S = 300.0
 
 # AIOAladdinConnect / Genie: 1=open 2=opening 3=closed 4=closing
 _OPEN_STATUSES = {1, 2, "1", "2", "open", "opening", "OPEN", "OPENING"}
@@ -77,6 +80,7 @@ class AladdinConnectClient:
         self.dry_run = dry_run
         self._id_token = ""
         self._access_token = ""
+        self._access_exp = 0.0
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "AladdinConnectClient":
@@ -103,12 +107,13 @@ class AladdinConnectClient:
         result = data.get("AuthenticationResult") or {}
         self._id_token = result.get("IdToken") or ""
         self._access_token = result.get("AccessToken") or ""
+        self._access_exp = time.time() + float(result.get("ExpiresIn") or 3600)
         # api.smartgarage.systems 401s IdToken; AccessToken is required.
         if not self._access_token:
             raise AladdinError("tesla-aladdin-garage fail reason=aladdin_login_no_token")
 
     def _token(self) -> str:
-        if not self._access_token:
+        if not self._access_token or time.time() >= self._access_exp - TOKEN_SKEW_S:
             self.login()
         return self._access_token
 
@@ -175,7 +180,14 @@ class AladdinConnectClient:
             return {"ok": True, "dry_run": True, "device_id": device_id, "door_index": door_index}
         return self._api("POST", path, payload={"command": "OPEN_DOOR"})
 
-    def _api(self, method: str, path: str, payload: Optional[dict] = None) -> dict:
+    def _api(
+        self,
+        method: str,
+        path: str,
+        payload: Optional[dict] = None,
+        *,
+        allow_relogin: bool = True,
+    ) -> dict:
         url = API_BASE + path
         body = json.dumps(payload).encode() if payload is not None else None
         headers = {
@@ -183,7 +195,17 @@ class AladdinConnectClient:
             "Content-Type": "application/json",
             "User-Agent": "okhttp/4.10.0",
         }
-        raw = _http(method, url, headers=headers, payload=body)
+        try:
+            raw = _http(method, url, headers=headers, payload=body)
+        except AladdinError as e:
+            # 401 = auth rejected before the device acted, so no door moved: safe to retry.
+            # Never retry any other status — a 5xx or timeout may have opened the door.
+            if e.status == 401 and allow_relogin:
+                log.info("tesla-aladdin-garage aladdin_relogin reason=401 path=%s", path)
+                self._access_token = ""
+                self._access_exp = 0.0
+                return self._api(method, path, payload, allow_relogin=False)
+            raise
         if not raw:
             return {"ok": True}
         try:

@@ -36,6 +36,13 @@ _SUBJECTS = {
 }
 
 
+def should_email(event: str, fields: dict[str, Any]) -> bool:
+    """Gmail only for a real (non-simulated) Aladdin open command."""
+    if fields.get("simulated"):
+        return False
+    return event == "opened"
+
+
 def _fmt_m(value: Any) -> str:
     if value is None or value == "":
         return "unknown"
@@ -83,6 +90,13 @@ def email_body(event: str, fields: dict[str, Any]) -> str:
 
 def send_garage_email(event: str, fields: dict[str, Any], *, to: Optional[str] = None) -> bool:
     """Send one notify email. Returns False if skipped or send failed."""
+    if not should_email(event, fields):
+        log.info(
+            "tesla-aladdin-garage skip reason=notify_quiet event=%s simulated=%s",
+            event,
+            bool(fields.get("simulated")),
+        )
+        return False
     dest = (to or os.environ.get("GARAGE_NOTIFY_TO") or DEFAULT_TO).strip()
     client_id = os.environ.get("GMAIL_CLIENT_ID", "").strip()
     client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "").strip()

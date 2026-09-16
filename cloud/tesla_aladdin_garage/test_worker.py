@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from cloud.tesla_aladdin_garage import persist
+from cloud.tesla_aladdin_garage.notify import should_email
 from cloud.tesla_aladdin_garage.worker import GarageWorker, WorkerConfig
 
 VIN = "7SAYGAEE2TF605512"
@@ -71,6 +72,7 @@ def test_already_open_skips_command_and_notifies():
     assert notes[-1][1]["enter_m"] == 400
     assert notes[-1][1]["distance_m"] is not None
     assert notes[-1][1]["distance_m"] < 400
+    assert should_email(notes[-1][0], notes[-1][1]) is False
 
 
 def test_open_notifies():
@@ -146,6 +148,24 @@ def test_missing_token_asks_reauth():
 def test_simulate_enter_opens_dry_run():
     tesla, aladdin = _tesla(*HOME), _aladdin()
     w = GarageWorker(_cfg(dry_run=True), tesla, aladdin)
+    assert w.simulate_enter() == "opened_dry_run"
+    aladdin.open_door.assert_called_once()
+
+
+def test_simulate_skipped_when_tesla_already_inside():
+    tesla, aladdin = _tesla(*HOME), _aladdin()
+    notes = []
+    w = GarageWorker(_cfg(), tesla, aladdin, notify=lambda ev, fields: notes.append(ev))
+    w.state.last_distance_m = 18.0
+    assert w.simulate_enter() == "skip_already_inside"
+    aladdin.open_door.assert_not_called()
+    assert notes == []
+
+
+def test_simulate_opens_when_no_live_fix():
+    tesla, aladdin = _tesla(*HOME), _aladdin()
+    w = GarageWorker(_cfg(dry_run=True), tesla, aladdin)
+    assert w.state.last_distance_m is None
     assert w.simulate_enter() == "opened_dry_run"
     aladdin.open_door.assert_called_once()
 
@@ -295,6 +315,55 @@ def test_from_env_reads_telemetry_port():
         cfg = WorkerConfig.from_env()
     assert cfg.telemetry_port == 8443
     assert cfg.telemetry_host == "35.239.192.226.sslip.io"
+
+
+def test_restore_last_open_ts_cooldown(monkeypatch):
+    tesla, aladdin = _tesla(29.472, HOME[1]), _aladdin()
+    monkeypatch.setattr(
+        "cloud.tesla_aladdin_garage.persist.load_state",
+        lambda: {"last_open_ts": 0.0, "last_distance_m": 18.0},
+    )
+    now = [10.0]
+    w = GarageWorker(_cfg(), tesla, aladdin, now=lambda: now[0])
+    assert w.state.last_open_ts == 0.0
+    assert w.geofence.inside is True
+    assert w.tick() == "exit"
+    tesla.vehicle_location.return_value = {
+        "latitude": HOME[0],
+        "longitude": HOME[1],
+        "shift_state": "D",
+    }
+    now[0] = 20
+    assert w.tick() == "skip_cooldown"
+    aladdin.open_door.assert_not_called()
+
+
+def test_open_error_sets_cooldown():
+    tesla, aladdin = _tesla(29.472, HOME[1]), _aladdin()
+    aladdin.resolve_door.side_effect = RuntimeError("HTTP 401")
+    now = [0.0]
+    w = GarageWorker(_cfg(), tesla, aladdin, now=lambda: now[0])
+    assert w.tick() == "outside"
+    tesla.vehicle_location.return_value = {
+        "latitude": HOME[0],
+        "longitude": HOME[1],
+        "shift_state": "D",
+    }
+    assert w.tick() == "open_error"
+    tesla.vehicle_location.return_value = {
+        "latitude": 29.472,
+        "longitude": HOME[1],
+        "shift_state": "D",
+    }
+    now[0] = 10
+    w.tick()
+    tesla.vehicle_location.return_value = {
+        "latitude": HOME[0],
+        "longitude": HOME[1],
+        "shift_state": "D",
+    }
+    now[0] = 20
+    assert w.tick() == "skip_cooldown"
 
 
 def test_heartbeat_updates_last_poll_ts():

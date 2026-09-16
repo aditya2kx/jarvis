@@ -125,8 +125,29 @@ class GarageWorker:
         overlay = persist.load_config()
         if overlay:
             self.apply_overlay(overlay)
+        self._restore_state(persist.load_state())
         if getattr(tesla, "on_billable", None) is None:
             tesla.on_billable = persist.record_billable
+
+    def _restore_state(self, stored: dict) -> None:
+        """Cooldown + inside/outside must survive Cloud Run restarts."""
+        if not stored:
+            return
+        dist = stored.get("last_distance_m")
+        if dist is not None:
+            try:
+                self.state.last_distance_m = float(dist)
+            except (TypeError, ValueError):
+                self.state.last_distance_m = None
+            if self.state.last_distance_m is not None:
+                self.geofence.inside = self.state.last_distance_m <= self.cfg.enter_m
+                self.state.last_event = "inside" if self.geofence.inside else "outside"
+        ts = stored.get("last_open_ts")
+        if ts is not None:
+            try:
+                self.state.last_open_ts = float(ts)
+            except (TypeError, ValueError):
+                pass
 
     def apply_overlay(self, overlay: dict) -> None:
         self.cfg.apply_overlay(overlay)
@@ -148,6 +169,7 @@ class GarageWorker:
             "last_poll_ts": self.state.last_poll_ts,
             "polls": self.state.polls,
             "opens": self.state.opens,
+            "last_open_ts": self.state.last_open_ts,
             "needs_reauth": self.state.needs_reauth,
             "enter_m": self.cfg.enter_m,
             "dry_run": self.cfg.dry_run,
@@ -318,6 +340,14 @@ class GarageWorker:
 
     def simulate_enter(self) -> str:
         """Force outside → enter → maybe open. Used for live evidence without driving."""
+        tesla_m = self.state.last_distance_m
+        if tesla_m is not None and tesla_m <= self.cfg.enter_m:
+            log.info(
+                "tesla-aladdin-garage skip reason=simulate_already_inside dist_m=%s enter_m=%s",
+                tesla_m,
+                self.cfg.enter_m,
+            )
+            return "skip_already_inside"
         outside_m = self.cfg.enter_m + self.cfg.hysteresis_m + 50.0
         olat, olon = offset_point(self.cfg.home_lat, self.cfg.home_lon, outside_m, 0.0)
         self.geofence.inside = None
@@ -327,7 +357,6 @@ class GarageWorker:
             first,
             self.geofence.distance_m(olat, olon),
         )
-        tesla_m = self.state.last_distance_m
         event = self.geofence.observe(self.cfg.home_lat, self.cfg.home_lon)
         self.state.last_event = event
         # Keep last live Tesla metres for the email (0 would be the fake home pin).
@@ -406,6 +435,7 @@ class GarageWorker:
         except Exception as e:
             self.state.aladdin_ok = False
             self.state.last_error = str(e)
+            self.state.last_open_ts = now
             log.error("tesla-aladdin-garage fail reason=aladdin_open err=%s", e)
             self._emit("open_error", detail=str(e))
             return "open_error"

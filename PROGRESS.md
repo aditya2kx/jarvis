@@ -1,3 +1,55 @@
+## 2026-09-16 — Garage open failed after 24 h: Aladdin token never refreshed (Issue #310)
+
+**Scope:** Two geofence crossings (267 m, enter 300 m) were detected but Big Peach did not open — failure emails showed `HTTP 401 https://api.smartgarage.systems/devices`. Tesla/telemetry were fine; Aladdin Cognito AccessTokens last exactly 24 h and the always-on Cloud Run process cached one login for the whole instance lifetime. Opens succeeded until ~09-15 03:50 UTC, then every enter 401'd.
+
+**Key changes:** `skills/aladdin_connect` tracks `_access_exp` from Cognito `ExpiresIn`, re-logins before expiry (`TOKEN_SKEW_S=300`), and on a single 401 clears the token and retries once (never on 5xx — door may have moved).
+
+**Decision:** re-login with `USER_PASSWORD_AUTH` rather than adding `REFRESH_TOKEN_AUTH` — credentials are always in env on this surface; a second grant path bought nothing.
+
+**Evidence:** unit regression pin for a 25 h stale token; live read-only forced-expiry `list_devices` + `resolve_door` (no `OPEN_DOOR`); post-merge §4 command checks the >24 h boundary on #310.
+
+## 2026-09-15 — A step marker can no longer outlive the files it describes (Issue #305)
+
+**Scope:** Found while post-merge-verifying #298. The rerun of `2026-09-14` reported `status=success` having loaded **zero** ADP rows. The nightly had scraped ADP, written the `adp_reports` marker to Firestore, then died on the `FLOAT` MERGE; markers persist, but the exports they describe live in the container's `extracted/downloads/` and die with it. So the rerun saw "done", skipped the scrape, found an empty directory, upserted nothing, exited 0 — and `load_raw_bigquery.done` was written on top. The two guards that exist for this both missed: the recovery loop cleared `("square", "adp")` when the markers are written as `square_transactions`/`adp_reports`, so it had **never fired once**; and `clear_adp_reports_if_shifts_missing` only triggers at exactly zero shifts, while 09-14 had 3 stale partial rows.
+
+**Key changes:** the ADP scrape gate now requires the Firestore marker **and** a `source_load_receipts` row (migration 070) proving the export reached BQ — BQ authoritative, marker advisory. A receipt is written even at `rows_upserted=0`, which is what stops a store-closed day from re-scraping (and re-prompting for OTP) nightly; a receipt-query error returns "not loaded" because re-scraping is idempotent and skipping is not. `--require-adp` makes an empty ADP load exit 1 with a `BREADCRUMB adp_inputs_absent`, passed only when the ADP pipeline succeeded in the same execution so an unanswered OTP stays the documented graceful skip. Marker names in the recovery loop fixed, and a marker-skipped ADP pipeline now prints a `SKIPPED` line like `run_step` does — its silence was why the incident was invisible in the log.
+
+Separately, ADP trusted-device session reuse turned out to be **dead code**: `upload_session`/`download_session` had zero callers, `launch_persistent`'s `storage_state` was passed by nobody, and no `_session/adp-palmetto.json` had ever existed — so every ADP login presented a fresh cookie jar (2FA fired 3 times in 45 days, twice inside 24 h). Now restored before login and re-uploaded right after it succeeds, including after a login that just satisfied a challenge, since that is the jar carrying the device-trust cookie.
+
+And `parse_hourly_pay_rate`'s fallback took the first decimal **anywhere** on the page, gated only on the blob containing "hour" or "pay" — it handed three employees the same `1.25` OT multiplier as a wage rate. No bad pay landed (the drop guard held, all three fell back to `rate_source=earnings`), but that guard only refused sub-50% values, so a bogus rate between 50–100% of the previous one, or above it, would have been written silently.
+
+**Decision:** kept the `adp_reports` marker rather than replacing it. It still carries per-component granularity for the wrapper and recovery paths, and two mechanisms disagreeing is the bug class being fixed — so BQ became authoritative for the gate while the marker stayed advisory, rather than ripping out a marker that four other call sites read.
+
+**Evidence:** 1150 unit tests green; the marker-name and gate tests fail against the pre-fix code by construction. `2026-09-14` was re-run live after clearing the stale markers: real scrape, 104 shifts / 185 punches / 56 scheduled days / 256 earnings rows, and `adp_payroll_liability` advanced 2026-08-28 → 2026-09-11, so the MERGE that threw `400 Type not found: FLOAT` finally executed against the live prod schema. The OTP half needs two consecutive prod runs logging `restoring trusted-device session` with no challenge; the first post-merge run seeds the jar.
+
+## 2026-09-14 — A green deploy now means the new code is serving (Issues #294, #295)
+
+**Scope:** Found while verifying the #285 deploy. `bhaga-webhook` was serving an `i223-pr224` preview image from 2026-08-05: `gcloud run services update --image` creates a revision but will not move traffic off a **named-revision pin**, so #264 and #291 merged, built, deployed green, and never went live. Six weeks, four 0%-traffic revisions, and nothing in the Actions UI that looked different from a good run. The console workflow had already hit this in #240 and fixed it; `deploy.yml` never got the same step.
+
+**Key changes:** `deploy.yml` routes 100% traffic to latest after deploying the webhook, then **verifies** both units run `github.sha` — service by image digest (Cloud Run resolves tags to digests on the revision), job by tag — and fails the workflow with the un-pin command in the error. The pin was the cause; a green deploy serving old code was the defect, so the assertion matters more than the routing. `cloud/webhook/test_deploy_workflow.py` holds both workflows to the contract and pins step ordering (routing after deploy, verify after routing).
+
+Separately, enabling `BHAGA_SCOPED_MATERIALIZE` exposed #295: `daily_refresh` ingests raw across `gap_start..refresh_date` but handed the scoped model write only `refresh_date`. On a catch-up that lays fresh raw data under **stale model rows for every gap day but the last** — invisible, because each table still holds exactly one row per key. `ingested_dates()` now derives the scope from the ingest window and is widened, never narrowed, by `--square-from`/`--adp-to`.
+
+**Decision:** the scope-vs-ingest relationship is one-directional by construction — widening re-materializes identical values (computation is full-history either way), narrowing loses data. So overrides widen and a source window inside the gap is ignored, rather than the scope tracking each source exactly.
+
+**Evidence:** the verify block was dry-run against live infra both ways — passes on the current state (`bhaga-webhook-00199-rdr` digest `sha256:3a29ee…` == the image built from `c2d12b8`), and fails with the `::error::` on a simulated deploy of a SHA that never took traffic, which is precisely the Sep-13 run that reported success. All three Cloud Run services now track `latestRevision: True`. The #295 call-site guard was verified by reintroducing `--dates refresh_date.isoformat()` and watching it fail.
+
+## 2026-09-13 — Pipeline stopped corrupting data, halting on itself, and hiding it (Issue #285)
+
+**Scope:** Nothing landed after 2026-09-06. Two manual Operator Console backfills on 09-07 raced a non-atomic delete-then-merge, doubling 389 `(date, employee)` keys in `model_tip_alloc_daily`. Tip-pool conservation caught it and tripped the breaker — correctly — but the breaker was untiered and never expired, so a model-layer fault also stopped Square and ADP ingest for a week while the Operator Console showed stale numbers as if healthy. Payroll was never wrong: `vw_model_payroll_period` reads `model_tip_alloc_period`, which stayed clean (144 compared / $0.00 delta).
+
+**Key changes:** `merge_rows_scoped` makes the model write one atomic `MERGE` (`WHEN NOT MATCHED BY SOURCE THEN DELETE`) plus `assert_unique_natural_key`, so concurrency can no longer duplicate; console + multi-date Slack refresh serialize on a resource-keyed busy guard. `touched_scope` + `--dates` scope a recompute to the grain units a date actually touches (aggregates rebuilt whole), behind `BHAGA_SCOPED_MATERIALIZE`, default off. Halts gained `scope` (`model` skips model writes, raw ingest continues) and a TTL that auto-resumes with an alarm; `HealthBanner` puts halt + data age on every console page; independent staleness alarm fires when the model stops advancing. ADP scraper handles the Session Timeout modal (`div.message-box-outer`, `Ok` never `Cancel`), clears the Directory Active filter (Flores is Terminated — he was never in the list), refuses ambiguous matches (`Johnson, Dolce` vs `Johnson, Dolce J`), and alerts on `remaining_gaps` instead of scrape mechanism. Plaid's `INVALID_API_KEYS` was not an expired key: the Cloud Run *job* never set `PLAID_ENV`, so production secrets went to sandbox — no rotation needed.
+
+**Decision:** raw reads stay unbounded. Scoping the write is a correctness fix (skipped rows are byte-identical); scoping the read would recompute week/period aggregates from partial inputs. Cost, not correctness — its own change.
+
+**Evidence:** once the breaker was cleared the 21:30 CDT cron closed the 09-07→09-13 gap unaided (`bhaga-daily-refresh-mvsvx`, exit 0, 614.7s, conservation 180 dates / 0c residual). `model_tip_alloc_daily` now 814 rows / 814 distinct keys through 09-13 — the dedupe survived a full regeneration from raw.
+
+## 2026-09-13 — Garage radius becomes runtime config, set to 300 m (Issue #286)
+
+**Scope:** Operator asked to drop the enter radius 500 → 300 m and pushed back that a threshold change should not need a code deploy. Revises #280: that PR removed the runtime knob to end a three-writer ambiguity, which made every threshold tweak an image build + Cloud Run rollout.
+
+**Key changes:** Firestore `config.enter_m` is now the authority, `geofence.json` (300 / 80) is the bootstrap seed, env stays ignored; `/health` reports `enter_m_source`. `POST /config` accepts radii with bounds validation (`400 invalid_radii`, 50–2000 m) and returns `503 config_not_persisted` when the Firestore write fails, so an unpersisted change is never reported as applied. Removed `clear_geofence_overlay()` — it would erase operator config on every restart. `LOCATION_MIN_DELTA_M` 80 → 40 m, hoisted to workflow-scope env so the signed-config step (which reads the runner env, not Cloud Run's) actually sends it; it stays deploy-time because the Tesla-side push needs the GCE command proxy.
+
 ## 2026-08-27 — Garage enter radius: `geofence.json` SoT at 500 m (Issue #280)
 
 **Scope:** Firestore overlay (`named-db-seed` 200 m) beat Cloud Run env 800 m. One file is the only writer.

@@ -102,14 +102,19 @@ export async function applyTipExemptionsAction(
     await applyTipExemptions(DEFAULT_STORE, drafts, by);
     // One FORCE_MODEL job rematerializes tip alloc for all touched dates —
     // do not fire N concurrent jobs (races + Slack tip-pool failure spam).
-    const recomputed = await triggerModelRecompute(drafts.map((d) => d.date));
+    const { started, touched, blockedReason } = await triggerModelRecompute(
+      drafts.map((d) => d.date),
+    );
     revalidatePath("/payroll");
+    const blocked = blockedReason === "already-running";
     return okAck({
-      data: { recomputed },
-      queued: recomputed.length ? ["model-recompute"] : undefined,
-      message: recomputed.length
-        ? `Updated ${drafts.length} exemption(s); model recompute queued for ${recomputed.join(", ")}.`
-        : `Updated ${drafts.length} exemption(s).`,
+      data: { recomputed: started ? touched : [] },
+      queued: started ? ["model-recompute"] : undefined,
+      message: started
+        ? `Updated ${drafts.length} exemption(s); model recompute queued for ${touched.join(", ")}.`
+        : blocked
+          ? `Updated ${drafts.length} exemption(s). Model recompute NOT queued — a refresh is already running. Re-apply once it finishes.`
+          : `Updated ${drafts.length} exemption(s).`,
     });
   } catch (e) {
     return failAck(e);

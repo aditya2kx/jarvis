@@ -546,6 +546,34 @@ export interface LaborScheduledHoursRow {
   [key: string]: unknown;
 }
 
+/**
+ * Latest date that actually has clocked hours, or null if none.
+ *
+ * The chart used to hand off from actual to scheduled at "yesterday", on the
+ * assumption that today's punches are never in yet. That assumption expires
+ * every evening once the nightly ADP ingest lands: on 2026-09-13 BQ held 28.3
+ * clocked hours for the day while the chart drew 31.4 *scheduled* hours in
+ * their place, hiding real data behind a forecast and overstating the finished
+ * week by 3.0 hours. Ask the data where it ends instead of assuming.
+ */
+export async function laborActualsThrough(): Promise<string | null> {
+  const rows = await q<{ through: string | null }>(
+    `SELECT CAST(MAX(date) AS STRING) AS through
+     FROM ${fq("vw_labor_daily_live")}
+     WHERE IFNULL(hourly_hours, 0) + IFNULL(fulltime_hours, 0) > 0`,
+  );
+  return rows[0]?.through ?? null;
+}
+
+/**
+ * Scheduled hours per bucket. `win.start` is the authoritative handoff point —
+ * see `scheduleTakesOverFrom`.
+ *
+ * This used to also filter `s.date >= CURRENT_DATE('America/Chicago')`. Two
+ * boundaries for one decision is how they drift apart: the caller moved its
+ * window past today while the SQL kept re-admitting today's schedule on top of
+ * the actuals already counted for it.
+ */
 export function laborScheduledHoursByGrain(
   win: DateWindow,
   grain: Grain,
@@ -575,7 +603,6 @@ export function laborScheduledHoursByGrain(
      LEFT JOIN ${fq("adp_wage_rates")} w
        ON w.employee_id = s.employee_id
      WHERE s.date BETWEEN @start AND @end
-       AND s.date >= CURRENT_DATE('America/Chicago')
        AND IFNULL(s.scheduled_hours, 0) > 0
        ${ptoClause}
      GROUP BY date
@@ -1774,6 +1801,8 @@ export interface OrderRecoSlotLongRow {
   delivery_date: string;
   "Current Qty": number;
   "Avg per day": number;
+  /** Burn-down days left (no restock), unlike `Days Left After Restock`. */
+  "Days left": number | null;
   "On Hand at Restock": number | null;
   "Order Tubs": number | null;
   "Order Weight lbs": number | null;
@@ -1792,6 +1821,13 @@ export function orderRecoSlots(): Promise<OrderRecoSlotLongRow[]> {
        CAST(r.delivery_date AS STRING) AS delivery_date,
        r.\`Current Qty\`,
        r.\`Avg per day\`,
+       -- Burn-down days left: no restock assumed. Derived from the two columns
+       -- displayed beside it rather than joined from vw_inventory_order_assistant,
+       -- so the row stays internally consistent — inventory_order_reco is
+       -- materialized and the view is live, so a join could show a Days left that
+       -- does not divide out of the Current Qty on screen.
+       ROUND(SAFE_DIVIDE(r.\`Current Qty\`, NULLIF(r.\`Avg per day\`, 0)), 1)
+         AS \`Days left\`,
        r.\`On Hand at Restock\`,
        r.\`Order Tubs\`,
        r.\`Order Weight lbs\`,
@@ -1817,6 +1853,41 @@ export function orderRecoSlots(): Promise<OrderRecoSlotLongRow[]> {
        ON r.delivery_date = d.delivery_date
      WHERE r.store = 'palmetto'
      ORDER BY r._ord ASC, r.\`Current Qty\` DESC, r.Slot ASC`,
+  );
+}
+
+export interface InventoryStockRow {
+  Item: string;
+  "Current Qty": number;
+  "Avg per day": number;
+  "Days left": number | null;
+  _ord: number;
+}
+
+/**
+ * Stock level and burn rate per base, independent of any delivery date.
+ *
+ * `orderRecoSlots` INNER JOINs the live delivery dates, and `refresh_order_reco`
+ * clears `inventory_order_reco` outright when none are registered — so with no
+ * date on the books the page had nothing to show and rendered an empty table.
+ * But how much stock is on hand and how fast it is going are facts about the
+ * store, not about an order: on 2026-09-13, with no date registered since
+ * 09-08, the blanked page was withholding "Açaí: 5.9 days left".
+ *
+ * This is the same source the reco itself builds on, read directly.
+ */
+export function inventoryStockLevels(store: string): Promise<InventoryStockRow[]> {
+  return q<InventoryStockRow>(
+    `SELECT
+       item AS Item,
+       current_qty AS \`Current Qty\`,
+       avg_daily_usage AS \`Avg per day\`,
+       days_left AS \`Days left\`,
+       0 AS _ord
+     FROM ${fq("vw_inventory_order_assistant")}
+     WHERE store = @store AND category = 'base'
+     ORDER BY \`Days left\` ASC NULLS LAST, \`Current Qty\` DESC`,
+    { store },
   );
 }
 
@@ -1937,27 +2008,11 @@ export function restockActuals(
   );
 }
 
-// vw_inventory_base_runway (migration 036, Issue #164) — dual restock slots
-// matching Next delivery; Actuals-only Status 1/2; Stockout 2 chains via D1.
-export interface BaseRunwayRow {
-  Base: string;
-  Stock: number;
-  "Vel per day": number;
-  "Days left": number | null;
-  "Stockout 1": string | null;
-  "Restock 1": string | null;
-  "Qty 1": number | null;
-  "Status 1": "Risky" | "Fine";
-  "Stockout 2": string | null;
-  "Restock 2": string | null;
-  "Qty 2": number | null;
-  "Status 2": "Risky" | "Fine";
-  [key: string]: unknown;
-}
-
-export function baseRunway(): Promise<BaseRunwayRow[]> {
-  return q<BaseRunwayRow>(`SELECT * FROM ${fq("vw_inventory_base_runway")}`);
-}
+// The Base runway table (migration 036, Issue #164) was removed from /inventory:
+// its burn-down `Days left` is now a column on the reco table, which already
+// carries Current Qty and Avg/day, and Stockout/Status were dropped as noise.
+// `vw_inventory_base_runway` is left in BQ with no console reader — see the
+// follow-up issue for dropping the view.
 
 // training_shifts / tip exemptions (migration 020 + 038 windows — Issue #167).
 export interface TrainingShiftRow {

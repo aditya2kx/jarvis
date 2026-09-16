@@ -55,6 +55,46 @@ can gate on a stale round's verdict/score instead of the latest one. The fix:
 so pages concatenate into flat NDJSON) piped into `jq -s '...'` for the actual
 `select`/`last` logic (`--slurp` is not combinable with `--jq` in `gh api`).
 
+### Interpolating the PR number into the gate's `gh api` path
+
+The verdict gate's body is a **quoted** heredoc (`python3 - <<'PYEOF'`), so the
+shell performs no expansion inside it. `$PR_NUMBER` therefore reached `gh` as a
+literal four-character string and every request 404'd:
+
+```
+##[error]Could not read PR comments, so the Claude verdict is unknown.
+gh: Not Found (HTTP 404)
+```
+
+Read the value from `os.environ` instead. `${{ github.repository }}` in the same
+path was fine — Actions substitutes its expressions before the shell ever runs —
+which is what made the bug look selective. Because the gate fails closed, no
+unreviewed PR was waved through; the cost was that a genuine `REQUEST CHANGES`
+was indistinguishable from an API outage.
+
+Anything the gate needs inside that heredoc must come from `env:` and be read
+with `os.environ`, or the heredoc must be unquoted (which then requires escaping
+every `$` in the Python body — don't).
+
+## Bootstrap mode: a PR that edits this workflow is never reviewed
+
+The "Detect workflow bootstrap" step sets `is_bootstrap=true` when the PR's diff
+touches `.github/workflows/claude-review.yml`, and that flag gates **every**
+review step *and* both the verdict and evidence-confidence gates. The
+`Claude review` check then goes **green in ~10 seconds having reviewed nothing**.
+
+This exists because `anthropics/claude-code-action` only runs when the workflow
+is byte-identical to `main`, so it is not a bug — but it has a sharp consequence:
+
+> **Never bundle a `claude-review.yml` change with substantive code.** The whole
+> PR ships unreviewed, and the green check makes that invisible.
+
+Land the workflow change in its own PR (it will be bootstrap-green, which is
+correct for a workflow-only diff), merge it, then rebase the code PR onto the new
+`main` so it gets a working gate and a real review. Issue #306 hit exactly this:
+a one-line gate fix was initially bundled with the ADP receipts work, which would
+have silently skipped review of that entire change set.
+
 ## Responding to comments
 The agent **must reply to every inline comment** — either "fixed in <sha>" or
 "won't fix because <reason>".  `check_pr_review_replies.py --pr N` is the gate;
@@ -67,6 +107,28 @@ on each inline thread separately.
 
 Every completed push triggers a paid Claude Opus review (~$2–4).  Serial fix-one-push
 cycles mean N pushes = N paid reviews.  Batch all fixes into one push = 1 paid review.
+
+### The turn budget, and why a green check can mean "unreviewed"
+
+The review runs with `--max-turns 30` (raised from 14 after PR #298).  Reviewing A–F
+over a large diff costs turns; when the budget runs out the run ends
+`error_max_turns`, posts its cost comment, and posts **no verdict**.
+
+Running out used to pass every gate: `Verify Claude review ran` only checked that an
+execution file existed (one exists even for an aborted run), and both the verdict and
+evidence-confidence gates exited 0 when they could not find a verdict.  A green
+`Claude review` therefore meant *either* "no issues" *or* "no review".  On PR #298 it
+meant the latter, and `pr_triage.py` compounded it by quoting the **previous** push's
+verdict, which predated every file in the commit.
+
+Both paths now fail closed: an aborted run fails `Verify Claude review ran`, and a
+missing or unreadable verdict fails the verdict gate.  If `error_max_turns` recurs even
+at 30 turns, the diff is too large to review in one pass — **split the PR** rather than
+raising the cap again.
+
+Note `pr_triage.py` reports the latest claude[bot] verdict on the PR, not one scoped to
+the head SHA.  After a push, confirm the verdict comment is newer than the commit before
+treating it as a review of that commit.
 
 **Step 1 — collect all signals in one pass:**
 ```bash

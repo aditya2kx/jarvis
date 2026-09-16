@@ -6,16 +6,18 @@ Geofence Dhanno → open **Big Peach** via Aladdin Connect.
 
 - Prefer Tesla Fleet Telemetry **push** (HTTP ingest at `POST /telemetry`). REST `vehicle_data` polling is off when `TESLA_TELEMETRY=1` and `POLL_INTERVAL_S=0`.
 - Tesla has no geofence webhook. The car (when awake) streams `Location` over mTLS to a self-hosted [fleet-telemetry](https://github.com/teslamotors/fleet-telemetry) host (`TESLA_TELEMETRY_HOST`:`TESLA_TELEMETRY_PORT`, live 8443). Nginx serves the Tesla public key on :443. That process POSTs JSON here. Cloud Run cannot terminate vehicle mTLS.
-- `Location.minimum_delta` is 80 m (env `LOCATION_MIN_DELTA_M`). Enter / hysteresis: **`geofence.json` only** (500 m / 80 m, exit 580 m).
+- `Location.minimum_delta` is 40 m (`LOCATION_MIN_DELTA_M`, workflow scope in the deploy YAML). **Deploy-time only** — the Tesla-side push needs the GCE command proxy, so changing it requires a deploy.
+- Enter / hysteresis: **300 m / 80 m, exit 380 m**. Runtime config — change with `POST /config`, no deploy.
 - Optional REST fallback: set `POLL_INTERVAL_S>0`. `vehicle_data?endpoints=location_data;drive_state` (semicolon).
 - **Never** `wake_up` / vehicle commands.
-- Home `29.464083,-95.517465`. Enter radius is `cloud/tesla_aladdin_garage/geofence.json` (not Cloud Run env, not Firestore overlay). `POST /config` with `enter_m` returns 409.
+- Home `29.464083,-95.517465`. Radius precedence, highest first: **Firestore** `config.enter_m` (set via `POST /config`) → `cloud/tesla_aladdin_garage/geofence.json` (bootstrap seed) → dataclass default. `GEOFENCE_ENTER_M` env is ignored at every level. `/health` reports `enter_m_source` so the live authority is always visible.
+- `POST /config` validates radii (`enter_m` 50–2000 m, `hysteresis_m` 0–500 m → `400 invalid_radii`) and returns `503 config_not_persisted` if the Firestore write fails, so an unpersisted change is never reported as applied.
 - First fix inside the fence does **not** open (already home).
 - Cooldown 600 s. `ALADDIN_DRY_RUN=0` is live.
 - Single Cloud Run instance, CPU always allocated.
-- Last event/error/poll + Tesla usage counters in Firestore **named database `garage`** (`GARAGE_FIRESTORE_DB=garage`), collection `tesla_aladdin_garage/{config,state,tesla_usage}`. Do not use `(default)` on Cloud Run — REST double-encodes it to `%28default%29` (400). Worker deletes stale `config.enter_m` overlay on boot.
+- Last event/error/poll + Tesla usage counters in Firestore **named database `garage`** (`GARAGE_FIRESTORE_DB=garage`), collection `tesla_aladdin_garage/{config,state,tesla_usage}`. Do not use `(default)` on Cloud Run — REST double-encodes it to `%28default%29` (400). The `config` doc holds the live radius; the worker loads it on boot and never erases it.
 - Admin token (`GARAGE_ADMIN_TOKEN` / `X-Garage-Token`) required for `/tick`, `/location`, `/simulate/enter`, `/config`, `/telemetry`, `/telemetry/configure`.
-- Aladdin `/devices` uses Cognito **AccessToken** (IdToken is 401). Cloud Run SA must have `secretVersionAdder` on `tesla-fleet-refresh-token` so `/oauth/tesla` survives a revision restart.
+- Aladdin `/devices` uses Cognito **AccessToken** (IdToken is 401). Cognito access tokens last **24 h**; the client re-logins before expiry and once on a 401, so the always-on Cloud Run instance no longer needs a redeploy to recover after a day. Cloud Run SA must have `secretVersionAdder` on `tesla-fleet-refresh-token` so `/oauth/tesla` survives a revision restart.
 - If Big Peach is **already open**, skip `OPEN_DOOR` and email `aditya.2ky@gmail.com` (Tesla metres-from-home in the subject). Same email on open and on Aladdin failure. Body includes Tesla Fleet month spend vs the **$10 developer discount** (`TESLA_MONTH_BUDGET_USD`; Jarvis-counted Data/streaming, Tesla portal is authoritative). Needs Gmail OAuth secrets for that mailbox (`GMAIL_*`); without them the worker still opens, it just logs `notify_unconfigured`.
 
 ## Env / secrets
@@ -48,7 +50,7 @@ Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON` (enter from `geo
 `GARAGE_NOTIFY_TO=aditya.2ky@gmail.com`, `TESLA_TELEMETRY=1`, `POLL_INTERVAL_S=0`,
 `TESLA_TELEMETRY_HOST` (fleet-telemetry hostname cars connect to; empty = ingest-only),
 `TESLA_TELEMETRY_PORT=8443`,
-`LOCATION_MIN_DELTA_M=80`, `TESLA_MONTH_BUDGET_USD=10`, `GARAGE_FIRESTORE_DB=garage`. Gmail OAuth is Secret Manager only (`gmail-client-id`,
+`LOCATION_MIN_DELTA_M=40`, `TESLA_MONTH_BUDGET_USD=10`, `GARAGE_FIRESTORE_DB=garage`. Gmail OAuth is Secret Manager only (`gmail-client-id`,
 `gmail-client-secret`, `gmail-refresh-token` → `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` /
 `GMAIL_REFRESH_TOKEN`).
 
@@ -56,10 +58,10 @@ Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON` (enter from `geo
 
 | Path | Auth | Purpose |
 |---|---|---|
-| `GET /health` | no | polls, last_event, enter_m, needs_reauth, persisted state |
+| `GET /health` | no | polls, last_event, enter_m, `enter_m_source`, needs_reauth, persisted state |
 | `GET /location` | admin | live Tesla lat/lon + metres from home (does not open) |
 | `POST /simulate/enter` | admin | fake outside→enter then **open Big Peach** |
-| `POST /config` | admin | `cooldown_s` / `poll_s` only; `enter_m` → 409 |
+| `POST /config` | admin | `enter_m` / `hysteresis_m` / `cooldown_s` / `poll_s`; applies immediately and persists. `400 invalid_radii` out of bounds, `503 config_not_persisted` if Firestore write fails |
 | `POST /telemetry` | admin | fleet-telemetry HTTP-dispatcher JSON → same geofence. Golden samples: `testdata/dispatcher_{outside,enter}.json` (teslamotors PR #91 shape). |
 | `POST /telemetry/configure` | admin | skip unless `TESLA_COMMAND_PROXY_URL` (Cloud Run: use GCE `gce_signed_telemetry_config`) |
 | `GET /oauth/tesla` | no | operator browser re-auth |

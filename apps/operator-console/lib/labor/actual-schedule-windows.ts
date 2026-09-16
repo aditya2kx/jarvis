@@ -10,16 +10,39 @@ export function periodIncludesToday(win: DateWindow, todayIso = chicagoTodayIso(
 }
 
 /**
- * Actual punches window: through yesterday only when Period reaches today+.
- * Returns null when the Period is entirely today-or-later.
+ * First day scheduled hours may stand in for actuals.
+ *
+ * "Tomorrow" once today's punches have landed, otherwise today — never earlier.
+ * The split has to follow the data, not the calendar: hours are ingested each
+ * evening, so from then until midnight a day has real clocked hours *and* a
+ * schedule, and picking the schedule means drawing a forecast over a fact. On
+ * 2026-09-13 that showed the finished week of Sep 7 as 184.3 combined hours
+ * (152.9 actual + 31.4 scheduled) when the truth already in BQ was 181.3, with
+ * Sunday's 28.3 clocked hours hidden behind its 31.4-hour schedule.
+ *
+ * Clamped at today so a lagging ingest cannot pull the handoff backwards and
+ * paint schedule over days that are simply awaiting their punches.
+ */
+export function scheduleTakesOverFrom(
+  todayIso: string,
+  actualsThroughIso: string | null | undefined,
+): string {
+  if (!actualsThroughIso) return todayIso;
+  const dayAfter = shiftCalendarDate(actualsThroughIso, "day", 1);
+  return dayAfter > todayIso ? dayAfter : todayIso;
+}
+
+/**
+ * Actual punches window: through the day before `boundaryIso` when the Period
+ * reaches it. Returns null when the Period is entirely boundary-or-later.
  */
 export function actualPunchWindow(
   win: DateWindow,
-  todayIso = chicagoTodayIso(),
+  boundaryIso = chicagoTodayIso(),
 ): DateWindow | null {
-  if (win.start >= todayIso) return null;
-  const yesterday = shiftCalendarDate(todayIso, "day", -1);
-  const end = win.end < todayIso ? win.end : yesterday;
+  if (win.start >= boundaryIso) return null;
+  const lastActualDay = shiftCalendarDate(boundaryIso, "day", -1);
+  const end = win.end < boundaryIso ? win.end : lastActualDay;
   if (end < win.start) return null;
   return { ...win, start: win.start, end, preset: "custom", label: win.label };
 }
@@ -52,18 +75,21 @@ export function laborChartWindow(
 }
 
 /**
- * Scheduled shifts window: from Chicago today through Period end, extended to
- * the ADP schedule horizon when Period includes today.
- * Returns null when the Period ends before today.
+ * Scheduled shifts window: from `boundaryIso` through Period end, extended to
+ * the ADP schedule horizon when the Period reaches it.
+ *
+ * Returns null when the Period ends before the boundary — which is the case
+ * every evening once the day's punches land: nothing in the Period is still a
+ * forecast, so no schedule is drawn.
  */
 export function scheduledShiftWindow(
   win: DateWindow,
-  todayIso = chicagoTodayIso(),
+  boundaryIso = chicagoTodayIso(),
   scheduleHorizonEnd: string | null = null,
 ): DateWindow | null {
-  if (win.end < todayIso) return null;
-  const start = win.start > todayIso ? win.start : todayIso;
-  const end = periodIncludesToday(win, todayIso)
+  if (win.end < boundaryIso) return null;
+  const start = win.start > boundaryIso ? win.start : boundaryIso;
+  const end = periodIncludesToday(win, boundaryIso)
     ? extendEndForScheduleHorizon(win.end, scheduleHorizonEnd)
     : win.end;
   if (start > end) return null;

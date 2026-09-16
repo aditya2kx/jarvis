@@ -17,6 +17,7 @@ import os
 import pathlib
 import re
 import sys
+import time
 from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
@@ -43,6 +44,8 @@ _PEOPLE_SEARCH_PLACEHOLDER_RE = re.compile(
     r"Search\s+(people|for an employee)",
     re.IGNORECASE,
 )
+_RATE_FLOOR_DOLLARS = 7.25    # federal minimum; no Palmetto rate is legitimately below this
+_RATE_CEILING_DOLLARS = 100.0
 
 
 def load_selectors() -> dict:
@@ -75,9 +78,12 @@ def parse_hourly_pay_rate(body_text: str, *, input_values: Optional[list[str]] =
         if m:
             rate = float(m.group(1).replace(",", ""))
             break
-        m2 = re.search(r"\$?\s*([\d,]+\.\d{2,4})", blob)
-        if m2 and ("hour" in blob.lower() or "pay" in blob.lower() or blob.strip().startswith("$")):
-            rate = float(m2.group(1).replace(",", ""))
+        # Anchored: the blob must be *only* a number, which is true of an
+        # <input> whose whole value is the rate and of nothing else. An
+        # unanchored search here took the first decimal anywhere on the page and
+        # on 2026-09-15 handed three employees the same 1.25 page artifact.
+        if re.fullmatch(r"\$?\s*([\d,]+\.\d{2,4})\s*", blob):
+            rate = float(blob.strip().lstrip("$").replace(",", ""))
             break
     if rate is None and body_text:
         m3 = re.search(
@@ -125,7 +131,45 @@ def rate_record(
     }
 
 
+def dismiss_blocking_modals(page) -> bool:
+    """Dismiss ADP's Session Timeout dialog. Returns True if one was dismissed.
+
+    Found live on 2026-09-13: after an idle stretch ADP renders
+    ``div.message-box-outer`` — position:fixed, z-index 20000, covering the whole
+    viewport — reading "Your session is about to be timed out. Click OK now to
+    continue working, or Cancel to sign out." It intercepts pointer events, so
+    every click fails with the exact signature we had been seeing nightly:
+    ``TimeoutError: Locator.click: Timeout 10000ms exceeded``.
+
+    Two things make it worth its own handler. Escape does not close it — it is a
+    custom Ok/Cancel dialog, and ``_close_overlays`` only pressed Escape. And left
+    unanswered it eventually signs the session out, so one employee's timeout
+    poisons every employee after them in the loop, which is why the failures
+    arrived in clusters rather than singly.
+
+    Clicks **Ok** to extend the session. Never Cancel — Cancel signs out.
+    """
+    try:
+        return bool(page.evaluate(
+            """() => {
+              const box = document.querySelector('div.message-box-outer');
+              if (!box || box.offsetParent === null) return false;
+              const btns = [...box.querySelectorAll('button,sdf-button,a')];
+              // Match Ok exactly. Never Cancel: it signs the session out.
+              const ok = btns.find(b => /^\\s*ok\\s*$/i.test(b.innerText || ''));
+              if (!ok) return false;
+              ok.click();
+              return true;
+            }"""
+        ))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _close_overlays(page) -> None:
+    if dismiss_blocking_modals(page):
+        print("[pay_info] dismissed ADP Session Timeout modal (clicked Ok)")
+        page.wait_for_timeout(500)
     try:
         page.keyboard.press("Escape")
         page.wait_for_timeout(300)
@@ -133,6 +177,76 @@ def _close_overlays(page) -> None:
         page.wait_for_timeout(200)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _click_through_modals(locator, *, page, timeout: int = 10_000) -> None:
+    """Click ``locator``, retrying once after dismissing a blocking modal.
+
+    The Session Timeout dialog can appear between any two actions, so a single
+    up-front check is not enough — the retry has to happen at the click itself.
+    """
+    try:
+        locator.click(force=True, timeout=timeout)
+        return
+    except Exception:
+        if not dismiss_blocking_modals(page):
+            raise
+        print("[pay_info] click blocked by Session Timeout modal — dismissed, retrying")
+        page.wait_for_timeout(500)
+        locator.click(force=True, timeout=timeout)
+
+
+def clear_directory_status_filter(page) -> bool:
+    """Include Terminated + Leave of absence in the People Directory list.
+
+    The Status filter defaults to Active only, so terminated employees are
+    structurally invisible to a Directory search no matter how long it waits —
+    this is why ``Flores, Juan`` failed every single night rather than
+    intermittently. Enabling the other statuses took the roster from 14 to 20 in
+    the 2026-09-13 spike.
+
+    Employment status is the wrong filter for this job regardless: a terminated
+    employee still has hours in their final pay period, and hours are what
+    require a rate. ``Flores, Juan`` and ``Urrutia, Emely`` are both terminated
+    and both appear in the last-60-day punch roster.
+
+    Returns True if the filter was opened and adjusted.
+    """
+    try:
+        trigger = page.locator('[data-test-id="filter-button"]').first
+        if not trigger.count():
+            return False
+        _click_through_modals(trigger, page=page, timeout=8_000)
+        page.wait_for_timeout(1200)
+        changed = page.evaluate(
+            """() => {
+              let n = 0;
+              const wanted = /terminated|leave of absence/i;
+              const boxes = [...document.querySelectorAll(
+                'input[type="checkbox"], sdf-checkbox'
+              )];
+              for (const b of boxes) {
+                const label = (
+                  b.getAttribute('aria-label') || b.getAttribute('label') ||
+                  (b.labels && b.labels[0] && b.labels[0].innerText) ||
+                  (b.closest('label') && b.closest('label').innerText) || ''
+                );
+                if (!wanted.test(label)) continue;
+                const checked = b.checked ?? b.hasAttribute('checked');
+                if (!checked) { b.click(); n++; }
+              }
+              return n;
+            }"""
+        )
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(1200)
+        if changed:
+            print(f"[pay_info] directory status filter: enabled {changed} extra status(es)")
+        return bool(changed)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[pay_info] status-filter clear failed (non-fatal): "
+              f"{type(exc).__name__}: {exc}")
+        return False
 
 
 def _open_people_home(page) -> None:
@@ -145,10 +259,11 @@ def _open_people_home(page) -> None:
         directory = page.get_by_text(re.compile(r"^Directory$", re.I))
     if directory.count():
         try:
-            directory.first.click(force=True, timeout=8_000)
+            _click_through_modals(directory.first, page=page, timeout=8_000)
             page.wait_for_timeout(3000)
         except Exception:  # noqa: BLE001
             pass
+    clear_directory_status_filter(page)
 
 
 def _people_search_box(page):
@@ -182,6 +297,81 @@ def _people_search_box(page):
     return fallback.first
 
 
+class AmbiguousEmployeeError(RuntimeError):
+    """More than one Directory record could be the person we searched for."""
+
+
+def select_directory_match(candidates: list[str], search_name: str) -> str:
+    """Pick the one Directory row that IS ``search_name``, or refuse.
+
+    Exact match only. ``Johnson, Dolce`` and ``Johnson, Dolce J`` are two
+    different people who both exist in this Directory, and our punch roster
+    carries the first — a substring or first-hit match would attach one person's
+    wage rate to the other. A missing rate is recoverable from the earnings
+    report; a wrong rate is silently wrong pay.
+    """
+    norm = search_name.strip().casefold()
+    exact = [c for c in candidates if c.strip().casefold() == norm]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        raise AmbiguousEmployeeError(
+            f"{search_name!r} matches {len(exact)} Directory records exactly — "
+            f"cannot tell them apart by name: {exact}"
+        )
+    near = [c for c in candidates if norm in c.strip().casefold()]
+    if near:
+        raise AmbiguousEmployeeError(
+            f"no Directory record is exactly {search_name!r}; closest are {near}. "
+            f"Refusing to guess — a wrong match writes the wrong wage rate."
+        )
+    raise LookupError(f"{search_name!r} not found in the Directory")
+
+
+def _directory_candidates(page) -> list[str]:
+    """Names of the currently-listed Directory rows.
+
+    Rows carry ``aria-label="Go to the profile page for <Name>"`` and
+    ``data-test-id="active-name-cell-button"``; neither exposes an ADP associate
+    ID, so the name is all we have to match on today (see the identity note in
+    docs/plans/payroll-pipeline-robustness.md).
+    """
+    try:
+        return page.evaluate(
+            """() => {
+              const out = [];
+              const nodes = document.querySelectorAll(
+                '[aria-label^="Go to the profile page for"]'
+              );
+              for (const n of nodes) {
+                const m = (n.getAttribute('aria-label') || '')
+                  .replace(/^Go to the profile page for\\s*/i, '').trim();
+                if (m) out.push(m);
+              }
+              return out;
+            }"""
+        ) or []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _wait_for_directory_results(page, needle: str, *, timeout_ms: int = 15_000) -> None:
+    """Wait until the Directory list reflects the search, then settle.
+
+    Polls for a row matching ``needle`` instead of sleeping a fixed interval.
+    Returns quietly on timeout — the caller's own locator produces the better
+    error message, and a slow-but-present list still works.
+    """
+    deadline = time.time() + timeout_ms / 1000
+    while time.time() < deadline:
+        if any(needle.casefold() in c.casefold() for c in _directory_candidates(page)):
+            page.wait_for_timeout(400)  # let row handlers bind
+            return
+        if dismiss_blocking_modals(page):
+            print("[pay_info] dismissed Session Timeout modal while awaiting results")
+        page.wait_for_timeout(300)
+
+
 def scrape_one_pay_info(page, canonical_name: str, *, dashboard_url: str) -> dict:
     """People → directory search → Manage pay info / Payroll info; return rate fields.
 
@@ -199,7 +389,18 @@ def scrape_one_pay_info(page, canonical_name: str, *, dashboard_url: str) -> dic
     search = _people_search_box(page)
     search.click(force=True)
     search.fill(last_name)
-    page.wait_for_timeout(2500)
+    # Wait for the roster to actually render rather than sleeping a fixed 2.5 s
+    # and hoping. The old sleep raced ADP's async list on a slow response, which
+    # is indistinguishable at the call site from "this person does not exist".
+    _wait_for_directory_results(page, last_name)
+
+    candidates = _directory_candidates(page)
+    if candidates:
+        # Guard the live collision: the Directory holds both `Johnson, Dolce`
+        # (Terminated) and `Johnson, Dolce J` (Active). Now that the status
+        # filter is cleared, a substring match would silently pick the wrong
+        # person, and a wrong wage rate is worse than a missing one.
+        select_directory_match(candidates, search_name)
 
     mpi = page.get_by_text("Manage pay info", exact=False)
     if mpi.count():
@@ -218,7 +419,7 @@ def scrape_one_pay_info(page, canonical_name: str, *, dashboard_url: str) -> dic
         link = page.get_by_role("link", name=re.compile(re.escape(search_name), re.I))
         if link.count() == 0:
             link = page.get_by_text(re.compile(re.escape(search_name), re.I))
-        link.first.click(force=True, timeout=10_000)
+        _click_through_modals(link.first, page=page, timeout=10_000)
         page.wait_for_timeout(4000)
 
     page.evaluate(
@@ -285,6 +486,28 @@ def scrape_one_pay_info(page, canonical_name: str, *, dashboard_url: str) -> dic
     }
 
 
+def _capture_pay_info_failure(page, name: str) -> list[str]:
+    """Save screenshot + DOM for a failed scrape to durable GCS evidence.
+
+    Previously this wrote a PNG to ``~/.bhaga/state/screenshots`` — a path that
+    does not survive a Cloud Run execution, which is why no evidence exists for
+    any failure since 2026-08-24 despite the code appearing to capture it.
+    Routing through the shared ``_capture_failure_evidence`` puts the artifacts
+    in ``gs://<cache>/<date>/evidence/`` with a greppable breadcrumb, so a
+    nightly failure is diagnosable from logs + GCS without reproducing it.
+    """
+    try:
+        from skills._browser_runtime.runtime import (  # noqa: PLC0415
+            _capture_failure_evidence,
+        )
+
+        slug = name.replace(",", "").replace(" ", "_")
+        return _capture_failure_evidence(page, portal=f"adp-pay-info-{slug}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[pay_info] evidence capture failed: {type(exc).__name__}: {exc}")
+        return []
+
+
 def scrape_pay_info_rates(
     page,
     names: list[str],
@@ -314,20 +537,11 @@ def scrape_pay_info_rates(
         except Exception as exc:  # noqa: BLE001
             errors[name] = f"{type(exc).__name__}: {exc}"
             print(f"[pay_info] FAIL {name}: {errors[name]}")
-            try:
-                ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-                shot = (
-                    pathlib.Path.home()
-                    / ".bhaga"
-                    / "state"
-                    / "screenshots"
-                    / f"adp-pay-info-fail-{name.replace(',', '').replace(' ', '_')}-{ts}.png"
-                )
-                shot.parent.mkdir(parents=True, exist_ok=True)
-                page.screenshot(path=str(shot), full_page=True)
-                print(f"[pay_info] breadcrumb screenshot → {shot}")
-            except Exception:  # noqa: BLE001
-                pass
+            _capture_pay_info_failure(page, name)
+            # The modal poisons everyone after it in the loop, so clear it now
+            # rather than letting the next employee inherit the same block.
+            if dismiss_blocking_modals(page):
+                print("[pay_info] dismissed Session Timeout modal after failure")
     if errors:
         print(f"[pay_info] {len(errors)} failure(s): {errors}")
     return out, errors
@@ -467,8 +681,14 @@ def prepare_pay_info_writes(
         if prev_wage is not None and abs(float(prev_wage) - float(wage)) > 0.005:
             old_f = float(prev_wage)
             new_f = float(wage)
-            # Token hourlies on salaried Payroll-info pages (Lindsay $25 → $1.25).
-            if old_f > 0 and new_f < 0.5 * old_f:
+            # A scraped rate outside the band, or more than a doubling/halving of
+            # the known one, is a page artifact rather than a raise — the 1.25
+            # that arrived for Browning, Garcia and Krause on 2026-09-15 was one
+            # number read off three different pages, and only Krause was
+            # salaried. A missing rate is recoverable from earnings; a wrong one
+            # is silently wrong pay, so refuse and keep the old value.
+            implausible = not (_RATE_FLOOR_DOLLARS <= new_f <= _RATE_CEILING_DOLLARS)
+            if old_f > 0 and (implausible or new_f < 0.5 * old_f or new_f > 2.0 * old_f):
                 print(
                     f"[pay_info] BREADCRUMB refused_rate_drop name={key} "
                     f"old={old_f} new={new_f}"
@@ -597,7 +817,22 @@ def report_pay_info_issues(
     attempted: int = 0,
     scraped_ok: int = 0,
 ) -> None:
-    """Breadcrumb + Slack warning. Never raises; never fails the nightly."""
+    """Breadcrumb always; Slack only when someone actually ends up without a rate.
+
+    There are two independent ways to get a wage rate — the People profile and
+    the earnings report — and the whole point of having two is that either one
+    can fail without anyone being worse off. Alerting on ``scrape_errors``
+    reported the *mechanism* failing, so BHAGA DMed a "Failed scrapes" alert
+    every night from August onward for two employees who had valid rates the
+    entire time via ``rate_source = earnings``. An alert that is wrong every
+    night trains you to ignore it, which is how the real 2026-09-07 failure sat
+    unread for six days.
+
+    ``remaining_gaps`` (from ``gap_names_from_bq``) is the outcome: punchers who
+    have no rate from *any* source. That, and a flow error that prevented the
+    check from running at all, are worth waking someone for. A scrape failure on
+    its own is a breadcrumb.
+    """
     scrape_errors = scrape_errors or {}
     remaining_gaps = remaining_gaps or []
     if not scrape_errors and not remaining_gaps and not flow_error:
@@ -608,6 +843,13 @@ def report_pay_info_issues(
         f"scrape_fail={len(scrape_errors)} gaps={remaining_gaps} "
         f"flow={flow_error or ''}"
     )
+    if not remaining_gaps and not flow_error:
+        print(
+            f"[pay_info] {len(scrape_errors)} scrape failure(s) but every puncher "
+            f"has a rate — breadcrumb only, no Slack alert: "
+            f"{sorted(scrape_errors)}"
+        )
+        return
     try:
         from agents.bhaga.notify import wage_rate_flow_alert  # noqa: PLC0415
 

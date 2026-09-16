@@ -1,6 +1,6 @@
 import {
-  baseRunway,
   estimatedScheduleDates,
+  inventoryStockLevels,
   nextDates,
   orderRecoRefreshedAt,
   orderRecoSlots,
@@ -8,7 +8,6 @@ import {
   scheduledRestockDates,
   storeConfig,
   usageDayAudit,
-  type BaseRunwayRow,
   type UsageDayAuditRow,
 } from "@/lib/bq/queries";
 import { ensureOrderRecoFresh } from "@/lib/bq/writes";
@@ -21,6 +20,7 @@ import {
   pivotOrderRecoSlots,
   rowsForPaintGeneration,
   selectPaintGeneration,
+  stockOnlyRows,
   type OrderRecoPivotedRow,
 } from "@/lib/inventory/orderRecoPivot";
 import {
@@ -31,7 +31,6 @@ import {
 import { RANGE_PRESETS, wantsCustom } from "@/lib/filters/range";
 import { resolvePageRange } from "@/lib/filters/period";
 import { ACTIVE_BASES, type RestockRow } from "@/lib/restock/parse";
-import { DataTable, type Thresholds } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { RestockImportDrawer } from "@/components/drawers/RestockImportDrawer";
 import { CapacityEdit } from "@/components/drawers/CapacityEdit";
@@ -41,7 +40,6 @@ import { OrderedTubsActualsTable } from "@/components/inventory/OrderedTubsActua
 import { InventoryRecoFreshness } from "@/components/inventory/InventoryRecoFreshness";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
-import type { ColumnDef } from "@tanstack/react-table";
 
 function buildEstimateByDate(
   slotRows: { Item: string; delivery_date: string; "Order Tubs": number | null }[],
@@ -66,8 +64,6 @@ function buildEstimateByDate(
 
 export const dynamic = "force-dynamic";
 
-const DAYS_LEFT_THRESHOLDS: Thresholds = { warn: 7, bad: 4, direction: "lower-bad" };
-
 export default async function InventoryPage({
   searchParams,
 }: {
@@ -80,7 +76,6 @@ export default async function InventoryPage({
     win.preset === "custom" ? { from: win.start, to: win.end } : {};
 
   let rows: OrderRecoPivotedRow[] = [];
-  let runwayRows: BaseRunwayRow[] = [];
   let auditRows: UsageDayAuditRow[] = [];
   let actualsRows: RestockActualsPivotedRow[] = [];
   let dates: string[] = [];
@@ -93,6 +88,8 @@ export default async function InventoryPage({
   let recoQueued = false;
   let recoBaseline: string | null = null;
   let recoPending = false;
+  /** Showing stock/burn only, because no delivery date is registered. */
+  let stockOnly = false;
   try {
     // Prod: enqueue Cloud Run when stale. Local BYPASS_IAP: refresh inline so
     // Inventory columns match schedule without waiting on a job.
@@ -109,12 +106,11 @@ export default async function InventoryPage({
         : {},
     );
     recoQueued = ensure.status === "queued";
-    const [slotRows, nd, config, runway, estimated, scheduled, audit, actuals] =
+    const [slotRows, nd, config, estimated, scheduled, audit, actuals] =
       await Promise.all([
         orderRecoSlots(),
         nextDates(),
         storeConfig(DEFAULT_STORE),
-        baseRunway(),
         estimatedScheduleDates(DEFAULT_STORE),
         scheduledRestockDates(DEFAULT_STORE),
         usageDayAudit(DEFAULT_STORE),
@@ -127,13 +123,20 @@ export default async function InventoryPage({
     recoPending = paint.pending || recoQueued;
     const paintRows = rowsForPaintGeneration(slotRows, paint);
     rows = pivotOrderRecoSlots(dates, paintRows);
-    runwayRows = runway;
     auditRows = audit;
     estimatedDates = estimated.map((d) => normalizeDeliveryDate(d.delivery_date)).filter(Boolean);
     scheduledDates = scheduled.map((d) => ({
       delivery_date: normalizeDeliveryDate(d.delivery_date),
       has_actuals: Boolean(d.has_actuals),
     }));
+    // No delivery date on the books: the ordering columns are undefined, but
+    // stock and burn rate are not. Fall back to them rather than rendering an
+    // empty table — a blank page looks like "nothing to do" at exactly the
+    // moment a base may be days from running out.
+    if (dates.length === 0) {
+      rows = stockOnlyRows(await inventoryStockLevels(DEFAULT_STORE));
+      stockOnly = rows.length > 0;
+    }
     estimateByDate = buildEstimateByDate(paintRows);
     const maxTubsRow = config.find((c) => c.key === "order_reco_max_tubs");
     maxTubs = maxTubsRow ? Number(maxTubsRow.value) : undefined;
@@ -141,29 +144,16 @@ export default async function InventoryPage({
     error = e instanceof Error ? e.message : String(e);
   }
 
-  const runwayColumns: ColumnDef<BaseRunwayRow>[] = [
-    { accessorKey: "Base", header: "Base" },
-    { accessorKey: "Stock", header: "Stock", meta: { format: { kind: "number", digits: 1 } } },
-    { accessorKey: "Vel per day", header: "Vel/day", meta: { format: { kind: "number", digits: 2 } } },
-    {
-      accessorKey: "Days left",
-      header: "Days left",
-      meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
-    },
-    { accessorKey: "Stockout 1", header: "Stockout 1", meta: { format: { kind: "date" } } },
-    { accessorKey: "Restock 1", header: "Restock 1", meta: { format: { kind: "date" } } },
-    { accessorKey: "Qty 1", header: "Qty 1", meta: { format: { kind: "number", digits: 1 } } },
-    { accessorKey: "Status 1", header: "Status 1", meta: { format: { kind: "status" } } },
-    { accessorKey: "Stockout 2", header: "Stockout 2", meta: { format: { kind: "date" } } },
-    { accessorKey: "Restock 2", header: "Restock 2", meta: { format: { kind: "date" } } },
-    { accessorKey: "Qty 2", header: "Qty 2", meta: { format: { kind: "number", digits: 1 } } },
-    { accessorKey: "Status 2", header: "Status 2", meta: { format: { kind: "status" } } },
-  ];
-
+  // Say what is missing AND what still holds. The bare "No delivery date
+  // registered yet." over an empty table read as "no data", when in fact
+  // current stock and burn rate were known the whole time.
   const nextDeliveryLabel =
-    liveDates.length === 0
-      ? "No delivery date registered yet."
-      : `Next delivery: ${liveDates.join(" · then ")}`;
+    liveDates.length > 0
+      ? `Next delivery: ${liveDates.join(" · then ")}`
+      : stockOnly
+        ? "No delivery date registered yet — showing current stock and burn rate. " +
+          "Register a delivery date to get order quantities."
+        : "No delivery date registered yet.";
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-4">
@@ -212,36 +202,25 @@ export default async function InventoryPage({
               baselineRefreshedAt={recoBaseline}
             />
           ) : null}
-          <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">Base runway</h2>
-            <p className="mb-2 text-xs text-muted-foreground">
-              Days left and Stockout 1 are burn-down from today (ignore future restocks).
-              Restock 1/2 show uploaded Actuals only (up to two future Actuals dates per base) —
-              estimated schedule dates do not appear here. Stockout 2 assumes Restock 1 Actuals
-              qty arrived on that date. Status is Risky when that slot&apos;s restock is empty or
-              stockout is before the restock date; Fine when restock arrives on or before stockout.
-              Rows highlight when Status 1 or Status 2 is Risky.
-            </p>
-            <DataTable
-              columns={runwayColumns}
-              data={runwayRows}
-              pinLeft={["Base"]}
-              initialSorting={[{ id: "Days left", desc: false }]}
-              rowHighlight={[
-                { accessorKey: "Status 1", equals: "Risky", className: "bg-destructive/5" },
-                { accessorKey: "Status 2", equals: "Risky", className: "bg-destructive/5" },
-              ]}
-            />
-          </div>
-
           <p className="text-sm text-muted-foreground">{nextDeliveryLabel}</p>
-          <p className="text-xs text-muted-foreground">
-            Order weight (lbs) = Order tubs × per-tub weight (Açaí 18 lbs; other bases 20 lbs;
-            Blade is direct-delivery / not weighed). TOTAL includes +50 lbs per pallet (40
-            tubs/pallet) — same as Grafana Order Assistant. Click an Order tubs cell (or the
-            pencil in the header) to edit that delivery: Estimated dates pin Manual values;
-            Actuals dates update uploaded Actuals. Apply once recomputes the recommendation.
-          </p>
+          {stockOnly ? (
+            <p className="text-xs text-muted-foreground">
+              Days left = Current Qty ÷ Avg/day, from the latest closing counts — how long
+              this base lasts with no restocking. Order quantities need a delivery date to
+              count back from, so those columns appear once one is registered.
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Days left = Current Qty ÷ Avg/day — how long this base lasts with no restocking
+              at all. Days left after is the same figure counted from a delivery, assuming
+              that order arrives. Order weight (lbs) = Order tubs × per-tub weight (Açaí 18 lbs;
+              other bases 20 lbs; Blade is direct-delivery / not weighed). TOTAL includes +50
+              lbs per pallet (40 tubs/pallet) — same as Grafana Order Assistant. Click an
+              Order tubs cell (or the pencil in the header) to edit that delivery: Estimated
+              dates pin Manual values; Actuals dates update uploaded Actuals. Apply once
+              recomputes the recommendation.
+            </p>
+          )}
           <OrderRecoTable
             dates={dates}
             estimatedDates={estimatedDates}
@@ -257,7 +236,7 @@ export default async function InventoryPage({
             <p className="mb-2 text-xs text-muted-foreground">
               Uploaded order quantities for delivery dates in {win.label} ({win.start} –{" "}
               {win.end}). Period is the header control (same as Sales / Labor). Estimates are
-              omitted. Reco, runway, and usage-by-day are not Period-filtered. Last 7 / 30 days
+              omitted. Reco and usage-by-day are not Period-filtered. Last 7 / 30 days
               end today, so a future delivery needs This month or Custom.
             </p>
             <OrderedTubsActualsTable rows={actualsRows} columns={restockActualsColumns()} />

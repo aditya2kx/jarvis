@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import unittest
 
+from unittest import mock
+
 from skills.adp_run_automation.pay_info_backend import (
     _PEOPLE_SEARCH_PLACEHOLDER_RE,
+    AmbiguousEmployeeError,
     directory_search_name,
+    dismiss_blocking_modals,
     parse_hourly_pay_rate,
     prepare_pay_info_writes,
     rate_record,
+    report_pay_info_issues,
+    select_directory_match,
 )
 
 
@@ -95,6 +101,95 @@ class TestPayInfoParse(unittest.TestCase):
         fills, changes = prepare_pay_info_writes(incoming, existing)
         self.assertEqual(fills, [])
         self.assertEqual(changes, [])
+
+
+class TestSelectDirectoryMatch(unittest.TestCase):
+    """A wrong wage rate is worse than a missing one — refuse to guess."""
+
+    ROSTER = ["Johnson, Dolce", "Johnson, Dolce J", "Flores, Juan"]
+
+    def test_exact_match_wins_over_a_longer_name(self):
+        self.assertEqual(
+            select_directory_match(self.ROSTER, "Johnson, Dolce"), "Johnson, Dolce"
+        )
+
+    def test_matches_terminated_employee(self):
+        self.assertEqual(
+            select_directory_match(self.ROSTER, "Flores, Juan"), "Flores, Juan"
+        )
+
+    def test_refuses_a_near_match(self):
+        with self.assertRaises(AmbiguousEmployeeError):
+            select_directory_match(["Johnson, Dolce J"], "Johnson, Dolce")
+
+    def test_refuses_duplicate_exact_records(self):
+        with self.assertRaises(AmbiguousEmployeeError):
+            select_directory_match(["Ray, Alex", "ray, alex"], "Ray, Alex")
+
+    def test_absent_name_is_a_lookup_error(self):
+        with self.assertRaises(LookupError):
+            select_directory_match(self.ROSTER, "Nobody, Here")
+
+    def test_match_is_case_and_space_insensitive(self):
+        self.assertEqual(
+            select_directory_match(["  flores,  Juan  "], "Flores,  Juan"),
+            "  flores,  Juan  ",
+        )
+
+
+class TestDismissBlockingModals(unittest.TestCase):
+    def test_returns_false_when_page_evaluate_raises(self):
+        page = mock.Mock()
+        page.evaluate.side_effect = RuntimeError("detached")
+        self.assertFalse(dismiss_blocking_modals(page))
+
+    def test_reports_dismissal(self):
+        page = mock.Mock()
+        page.evaluate.return_value = True
+        self.assertTrue(dismiss_blocking_modals(page))
+
+    def test_targets_ok_by_exact_match(self):
+        """Cancel signs the session out, so the button match must be exact."""
+        page = mock.Mock()
+        page.evaluate.return_value = False
+        dismiss_blocking_modals(page)
+        js = page.evaluate.call_args[0][0]
+        self.assertIn("^\\s*ok\\s*$", js)
+        self.assertIn("div.message-box-outer", js)
+
+
+class TestReportPayInfoIssues(unittest.TestCase):
+    """Alert on the outcome (no rate anywhere), not on the mechanism."""
+
+    def _alerts(self, **kwargs) -> list:
+        sent = []
+        fake = mock.Mock()
+        fake.wage_rate_flow_alert = lambda **kw: sent.append(kw)
+        with mock.patch.dict(
+            "sys.modules", {"agents.bhaga.notify": fake}
+        ):
+            report_pay_info_issues(date="2026-09-13", **kwargs)
+        return sent
+
+    def test_scrape_failure_with_no_gap_is_breadcrumb_only(self):
+        # Flores + Majdinasab: pay_info failed, earnings already supplied a rate.
+        self.assertEqual(
+            self._alerts(scrape_errors={"Flores, Juan": "TimeoutError"}), []
+        )
+
+    def test_a_real_gap_alerts(self):
+        sent = self._alerts(
+            scrape_errors={"Flores, Juan": "TimeoutError"},
+            remaining_gaps=["Flores, Juan"],
+        )
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["remaining_gaps"], ["Flores, Juan"])
+
+    def test_flow_error_alerts_even_with_no_gaps(self):
+        self.assertEqual(len(self._alerts(flow_error="login failed")), 1)
+
+    def test_all_clear_is_silent(self):
+        self.assertEqual(self._alerts(), [])
 
 
 if __name__ == "__main__":

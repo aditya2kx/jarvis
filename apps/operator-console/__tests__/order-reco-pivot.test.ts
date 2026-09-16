@@ -14,6 +14,7 @@ function row(
     Slot: 1,
     "Current Qty": 1,
     "Avg per day": 1,
+    "Days left": 1,
     "On Hand at Restock": 1,
     "Order Tubs": 0,
     "Order Weight lbs": 0,
@@ -36,6 +37,7 @@ describe("pivotOrderRecoSlots", () => {
         delivery_date: "2026-08-03",
         "Current Qty": 10,
         "Avg per day": 2,
+        "Days left": 5,
         "On Hand at Restock": 10,
         "Order Tubs": 14,
         "Order Weight lbs": 252,
@@ -50,6 +52,7 @@ describe("pivotOrderRecoSlots", () => {
         delivery_date: "2026-08-10T00:00:00",
         "Current Qty": 10,
         "Avg per day": 2,
+        "Days left": 5,
         "On Hand at Restock": 8,
         "Order Tubs": 15,
         "Order Weight lbs": 270,
@@ -64,6 +67,7 @@ describe("pivotOrderRecoSlots", () => {
         delivery_date: "2026-08-17",
         "Current Qty": 10,
         "Avg per day": 2,
+        "Days left": 5,
         "On Hand at Restock": 5,
         "Order Tubs": 20,
         "Order Weight lbs": 400,
@@ -78,6 +82,7 @@ describe("pivotOrderRecoSlots", () => {
         delivery_date: "2026-08-03",
         "Current Qty": 83,
         "Avg per day": 10,
+        "Days left": 8.3,
         "On Hand at Restock": 83,
         "Order Tubs": 69,
         "Order Weight lbs": 1400,
@@ -108,6 +113,7 @@ describe("pivotOrderRecoSlots", () => {
         delivery_date: "2026-08-20",
         "Current Qty": 4,
         "Avg per day": 1,
+        "Days left": 4,
         "On Hand at Restock": 4,
         "Order Tubs": 0,
         "Order Weight lbs": 0,
@@ -119,6 +125,27 @@ describe("pivotOrderRecoSlots", () => {
     ]);
     expect(rows[0]["Source 1"]).toBe("Manual");
     expect(rows[0]["Order Tubs 1"]).toBe(0);
+  });
+
+  it("carries burn-down Days left as one item-level column, not per slot", () => {
+    const rows = pivotOrderRecoSlots(["2026-08-03", "2026-08-10"], [
+      row({ Item: "Açaí", Slot: 1, delivery_date: "2026-08-03", "Days left": 2.4 }),
+      row({ Item: "Açaí", Slot: 2, delivery_date: "2026-08-10", "Days left": 2.4 }),
+    ]);
+    expect(rows[0]["Days left"]).toBe(2.4);
+    // Burn-down ignores restocks, so suffixing it per slot would imply a
+    // per-delivery value and collide with the post-restock "Days Left N".
+    expect(rows[0]["Days left 1"]).toBeUndefined();
+    expect(rows[0]["Days left 2"]).toBeUndefined();
+  });
+
+  it("keeps Days left null when avg/day is unknown", () => {
+    const rows = pivotOrderRecoSlots(["2026-08-03"], [
+      row({ Item: "Ube", delivery_date: "2026-08-03", "Days left": null }),
+    ]);
+    // A base with no usage history divides by zero in BQ and arrives null.
+    // Coercing that to 0 would render as the most urgent base on the page.
+    expect(rows[0]["Days left"]).toBeNull();
   });
 
   it("normalizeDeliveryDate truncates timestamps", () => {

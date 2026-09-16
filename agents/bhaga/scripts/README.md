@@ -44,8 +44,16 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    via `schedule_backend.build_schedule_records` / `build_employee_schedule_records`). Square tables (`square_transactions`,
    `square_daily_rollup`, `square_item_lines`, `square_item_daily`, `square_kds_daily`,
    `square_kds_tickets`) are populated in step 2.
-   If `load_raw_bigquery` fails, `square.done` and `adp.done` markers are **cleared** so the next
-   retry re-runs fresh data (retry-skips-rescrape guarantee).
+   If `load_raw_bigquery` fails, the `square_transactions.done` and `adp_reports.done` markers are
+   **cleared** so the next retry re-runs fresh data (retry-skips-rescrape guarantee). Those are the
+   names the markers are actually written under — until Issue #305 the clear loop used `square`/`adp`
+   and therefore never fired once.
+   An ADP load is **never** allowed to report success on an empty directory: with `--require-adp`
+   (set only when the ADP pipeline succeeded in the same execution) a load that finds no ADP export
+   exits 1 with a `BREADCRUMB adp_inputs_absent` line, rather than writing `load_raw_bigquery.done`
+   over a no-op. Without the flag an empty ADP load stays a graceful skip (unanswered OTP).
+   Each ADP export that parses writes a `source_load_receipts` row — the durable BQ proof the scrape
+   gate consults (see step 3 below).
 4b. **Render raw Sheets from BQ** (`render_raw_sheet_from_bq.py`, non-fatal): inverse-maps each BQ raw
    table row → Sheet-header dict and calls `write_raw_*` upsert functions. Preserves historical rows
    outside the `--since` window. Reviews tab rendered separately after `process_reviews`.
@@ -53,6 +61,12 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
 6. **Materialize Model → BigQuery** (`materialize_model_bq` step): computes all model tabs from BQ
    raw data (shared `build_*` functions in `update_model_sheet.py`) and writes to `model_*` BQ tables.
    Includes post-build tip-pool conservation check.
+   **Scope = the ingest window, never just the refresh date.** `daily_refresh` passes `--dates` from
+   `ingested_dates(gap_start, refresh_date, extra_windows=…)`, which spans the whole gap the run
+   ingested and is widened (never narrowed) by `--square-from/--square-to` and `--adp-from/--adp-to`.
+   A scope narrower than the ingest leaves fresh raw data under stale model rows — silently, since
+   every table still holds exactly one row per key (Issue #295). Widening is safe: computation is
+   full-history regardless, so an unchanged day re-materializes to identical values.
 7. **BQ-internal verify** (`verify_model_bq()`): queries model BQ tables directly (row counts +
    KDS column check + semantic tip/ADP/review checks). Replaces Sheet-reading verify. No Sheet
    projection steps (deleted 2026-06-15 Sheets exit). **Recovery retrigger:** `_prepare_projection_recovery`
@@ -172,8 +186,10 @@ no session management, no OTP for Square. Token auto-refresh via `skills/square_
 Run executions for the same date can overlap (nightly scheduler + webhook READY-resume + manual
 `/bhaga refresh` + Slack retry delivery). The guard is layered:
 - `cloud/webhook/handler.py`: discards Slack-retry deliveries (`X-Slack-Retry-Num > 0`), stores seen
-  `event_id`s in Firestore `webhook_events/<event_id>` (5 min TTL), and checks `_is_already_running`
-  before calling `_trigger_cloud_run_job` (fail-open: listing errors allow the trigger).
+  `event_id`s in Firestore `webhook_events/<event_id>` (5 min TTL), and checks `_any_execution_running`
+  before calling `_trigger_cloud_run_job` (fail-open: listing errors allow the trigger). That check is
+  keyed on the job, not on `REFRESH_DATE`, because every execution rebuilds the shared model tables;
+  date ranges are dispatched one at a time via `_wait_for_job_idle`.
 - ADP's own runner acquires a TTL-based lock so a second execution fails fast with `ScrapeLockHeldError`.
 - `daily_refresh.py` classifies `ScrapeLockHeldError` via `_is_scrape_lock_held` and calls
   `notify.scrape_concurrency_alert`.
@@ -185,7 +201,7 @@ Run executions for the same date can overlap (nightly scheduler + webhook READY-
 | `verify_drilldown.py`, `verify_bq_parity.py`, `verify_against_historical_payroll.py` | Verification harnesses (parity vs historical payroll / BigQuery). |
 | `verify_prod_parity.py` | **Cloud-runnable e2e parity tool.** Diffs BQ (raw + model) against the prod Google Sheets for a full window: per-source row counts (BQ vs Sheet tabs, same date filter) plus key-joined, unit-aware value comparison (handles `%`/currency/bool normalization). Dataset is env-driven (`BHAGA_BQ_DATASET`), so it verifies prod `bhaga` or an isolated `bhaga_sandbox`. Needs Sheets auth (`BHAGA_SECRETS_BACKEND=gcp` or `BHAGA_IMPERSONATE_SA`) + `BHAGA_DATASTORE=bigquery`. |
 | `backfill_bigquery.py` | **One-shot historical backfill only.** Reads existing raw Sheets → writes BQ. NOT the nightly path. Use to bootstrap BQ raw tables from Sheet history or repair BQ after a migration/truncation. The nightly path is `backfill_from_downloads.py` (scrape files → BQ directly). **Issue #227 / migration 056:** `map_square_transaction` optionally copies fulfillment / ops-clock fields (`FULFILLMENT_BQ_FIELDS` from `skills.square_api.fulfillment`) when present on the parse record; legacy sheet-only rows leave those BQ columns NULL. |
-| `materialize_model_bq.py` | Rebuild the computed model from BQ raw data and write to `model_*` BigQuery tables via MERGE. Called by `materialize_model_bq` step in `daily_refresh`. Reuses the same `build_*_rows` functions as `update_model_sheet.py`. Used by the Grafana Cloud dashboard. **Requires the orchestrator SA to hold `roles/bigquery.jobUser` + `roles/bigquery.dataEditor`** (RUNBOOK §14) — without them every BQ job 403s. Guards an **empty BQ raw `square_transactions`** read with a precise `RuntimeError` breadcrumb instead of the old cryptic `max() iterable argument is empty` (run `backfill_bigquery` first). Access errors in `core.datastore.read_query` are re-raised (no longer swallowed into `[]`). Also exposes `load_model_rows()` as the canonical BQ-write helper (used by `process_reviews.py` and `render_model_sheet_from_bq.py`). **Ghost-row invariant (2026-06 hardening):** per-employee tables (`model_tip_alloc_daily/period`, `model_review_bonus_period`) use `replace_scope=True` in `load_model_rows`, which deletes rows for the rebuilt partition values before the MERGE so a dropped employee leaves no ghost. `_SCOPE_CLEAR_COL` drives this mapping; a meta-guard test in `test_materialize_model_bq.py` enforces it for any future per-employee table. **Name-normalization (2026-06 hardening):** `model_inputs.normalize_input_name(store, raw)` resolves any raw employee name to its canonical form via `employee_aliases`; raises `ValueError` on unknown names. `materialize()` applies this to `training_shifts` and `training_through` inputs before comparison. |
+| `materialize_model_bq.py` | Rebuild the computed model from BQ raw data and write to `model_*` BigQuery tables via MERGE. Called by `materialize_model_bq` step in `daily_refresh`. Reuses the same `build_*_rows` functions as `update_model_sheet.py`. Used by the Grafana Cloud dashboard. **Requires the orchestrator SA to hold `roles/bigquery.jobUser` + `roles/bigquery.dataEditor`** (RUNBOOK §14) — without them every BQ job 403s. Guards an **empty BQ raw `square_transactions`** read with a precise `RuntimeError` breadcrumb instead of the old cryptic `max() iterable argument is empty` (run `backfill_bigquery` first). Access errors in `core.datastore.read_query` are re-raised (no longer swallowed into `[]`). Also exposes `load_model_rows()` as the canonical BQ-write helper (used by `process_reviews.py` and `render_model_sheet_from_bq.py`). **Ghost-row invariant (2026-06 hardening):** per-employee tables (`model_tip_alloc_daily/period`, `model_review_bonus_period`) use `replace_scope=True` in `load_model_rows`, which deletes rows for the rebuilt partition values before the MERGE so a dropped employee leaves no ghost. `_SCOPE_CLEAR_COL` drives this mapping; a meta-guard test in `test_materialize_model_bq.py` enforces it for any future per-employee table. **Name-normalization (2026-06 hardening):** `model_inputs.normalize_input_name(store, raw)` resolves any raw employee name to its canonical form via `employee_aliases`; raises `ValueError` on unknown names. `materialize()` applies this to `training_shifts` and `training_through` inputs before comparison. **Write scoping (2026-09, `BHAGA_SCOPED_MATERIALIZE`):** `--dates <iso,…>` limits the write to the grain units those dates touch — `touched_scope()` maps each table to the days themselves, plus the *containing* ISO week and pay period for the week/period-grained aggregates, which are rebuilt as whole units. The computation is still full-history, so a scoped write is always a subset of the full write and never a differently-computed one; only the set of rows restamped changes. The conservation guard is scoped to the same periods, so a pre-existing defect in an untouched period can no longer halt a run that never wrote it. Off by default; `--dates` is ignored unless the flag is set. |
 | `render_raw_sheet_from_bq.py` | **Raw Sheet projector.** Reads each BQ raw table (windowed by `--since`; `wage_rates` always all), inverse-maps rows to Sheet-header dicts, and incrementally upserts via `write_raw_*` functions. Non-fatal nightly step. Reviews tab rendered after `process_reviews`. |
 | ~~`render_model_sheet_from_bq.py`~~ | **Deleted 2026-06-15 (Sheets exit).** Sheet projection no longer needed — model lives in BQ. |
 | ~~`reconcile_model.py`~~ | **Deleted 2026-06-15 (Sheets exit).** No Sheet to compare against. |

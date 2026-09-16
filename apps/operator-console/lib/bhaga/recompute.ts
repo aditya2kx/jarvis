@@ -85,20 +85,37 @@ function orderRecoOnlyEnv(store: string): { name: string; value: string }[] {
   ];
 }
 
+export type ModelRecomputeResult = {
+  started: boolean;
+  touched: string[];
+  /** Set when started is false so the caller can explain the no-op. */
+  blockedReason?: "already-running";
+};
+
 /**
  * Trigger one bhaga-daily-refresh recompute-only execution for a batch of dates.
  * Requires the operator-console runtime SA to hold run.developer on the job.
+ *
+ * No-ops when any bhaga-daily-refresh execution is still running. A recompute
+ * rebuilds shared model tables, so two overlapping executions race the scoped
+ * write regardless of which dates each was asked for — that is how 2026-09-07
+ * produced 389 duplicate rows from two console clicks 76 s apart.
  */
-export async function triggerModelRecompute(dates: string[]): Promise<string[]> {
+export async function triggerModelRecompute(
+  dates: string[],
+): Promise<ModelRecomputeResult> {
   const anchor = pickRecomputeAnchorDate(dates);
-  if (!anchor) return [];
+  if (!anchor) return { started: false, touched: [] };
 
   const touched = [...new Set(dates.filter(Boolean))].sort();
+  if (await hasRunningBhagaJob()) {
+    return { started: false, touched, blockedReason: "already-running" };
+  }
   await runJob(
     recomputeEnv(anchor),
     `triggerModelRecompute(anchor=${anchor}, touched=${touched.join(",")})`,
   );
-  return touched;
+  return { started: true, touched };
 }
 
 /**

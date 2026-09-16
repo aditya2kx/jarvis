@@ -191,7 +191,7 @@ Automation maturity: M0 manual prose → M1 scripted → M2 gate/hook → M3 sel
 | | Plan readiness gate | check_plan_readiness.py (evidence-tier declaration required) | gate | M2 | agent | M2 ✓ |
 | | Evidence readiness predictor | check_evidence_readiness.py (mirrors D2a rubric; exits 1 for pytest-only) | gate | M2 | agent | M2 ✓ |
 | | Lifecycle conformance | verify_lifecycle.py | gate | M2 | agent | M2 ✓ |
-| | Secret scan | verify.py (diff-based) | gate | M2 | agent | M2 ✓ |
+| | Secret scan | verify.py (diff-based; matches assignments, not the words — and skips its own definition sites) | gate | M2 | agent | M2 ✓ (#285) |
 | PR lifecycle | PR description | check_pr_description.py | CI gate | M2 | agent | M2 |
 | | Review replies | check_pr_review_replies.py | CI gate | M2 | agent | M2 |
 | | Babysit | babysit skill | skill | M1 | agent | M2 |

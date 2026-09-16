@@ -18,8 +18,45 @@ All three run in **one browser session / one login / one OTP** via
 **Wage-rate dual source (Issue #213 / #251):** Earnings Regular after payroll.
 Nightly Payroll info scrapes **all recent punchers** so raises land before the
 next check (OT / salaried flags from earnings are preserved). Per-employee
-failures Slack a warning and do not fail Timecard/tips.
+failures do not fail Timecard/tips.
 CLI: `python3 -m skills.adp_run_automation.pay_info_backend --from-bq-punchers --write-bq`.
+
+**Alert on outcome, not mechanism (2026-09).** `report_pay_info_issues` Slacks only
+when `remaining_gaps` (punchers with no rate from *any* source) is non-empty, or when
+a flow error stopped the check running. A scrape failure whose employee already has a
+rate via `rate_source = earnings` is a breadcrumb, not an alert — the point of having
+two sources is that either may fail harmlessly. The previous behaviour DMed a "Failed
+scrapes" alert every night from August for two employees who had valid rates
+throughout, and an alert that is wrong nightly is one you stop reading.
+
+**Directory gotchas (2026-09-13 live spike).**
+
+- **The Status filter defaults to Active only.** Terminated employees are invisible to
+  a Directory search no matter how long it waits — this is why `Flores, Juan` failed
+  every night rather than intermittently. `clear_directory_status_filter()` ticks
+  Terminated + Leave of absence before searching (roster 14 → 20). Filtering by
+  employment status is wrong by construction here: a terminated employee still has
+  hours in their final period, and hours are what require a rate.
+- **ADP fires a full-viewport "Session Timeout" modal on idle.**
+  `div.message-box-outer`, `position: fixed`, `z-index: 20000`. It intercepts pointer
+  events, producing exactly `TimeoutError: Locator.click: Timeout 10000ms exceeded`,
+  and Escape does not close it. `dismiss_blocking_modals()` clicks **Ok** — never
+  Cancel, which signs the session out. Because an unanswered modal poisons every
+  subsequent employee in the loop, it is re-checked at each click
+  (`_click_through_modals`) and after each failure, not only once up front.
+- **There is no ADP employee ID available yet.** `employee_id` in `adp_punches` is
+  identical to `canonical_name`; the Directory DOM exposes only
+  `aria-label="Go to the profile page for <Name>"`. With the status filter cleared,
+  `Johnson, Dolce` (Terminated) and `Johnson, Dolce J` (Active) both appear, so
+  `select_directory_match()` requires an **exact** name match and raises
+  `AmbiguousEmployeeError` rather than guessing — a missing rate is recoverable from
+  earnings, a wrong rate is silently wrong pay. Capturing ADP's associate ID from the
+  profile page is a follow-up.
+- **Failure evidence goes to GCS.** `_capture_pay_info_failure` routes through
+  `_browser_runtime._capture_failure_evidence` (`gs://<cache>/<date>/evidence/`). It
+  previously wrote to `~/.bhaga/state/screenshots`, a path that does not survive a
+  Cloud Run execution — which is why no evidence exists for any failure since
+  2026-08-24 despite the code appearing to capture it.
 
 **Team Schedule scrape** (added 2026-06-10): ADP exposes NO structured export
 for the schedule (Actions → "Print schedule" only opens the browser's native

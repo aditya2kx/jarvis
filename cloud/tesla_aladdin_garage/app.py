@@ -13,6 +13,7 @@ from typing import Optional
 from flask import Flask, jsonify, redirect, request
 
 from cloud.tesla_aladdin_garage import persist
+from cloud.tesla_aladdin_garage.geofence import validate_radii
 from cloud.tesla_aladdin_garage.telemetry import extract_location_fixes
 from cloud.tesla_aladdin_garage.worker import GarageWorker, WorkerConfig
 from skills.aladdin_connect.client import AladdinConnectClient
@@ -79,6 +80,7 @@ def health():
             "dry_run": w.cfg.dry_run,
             "enter_m": w.cfg.enter_m,
             "hysteresis_m": w.cfg.hysteresis_m,
+            "enter_m_source": w.cfg.enter_m_source,
             "needs_reauth": st.needs_reauth or w.tesla.needs_user_auth(),
             "last_event": st.last_event,
             "last_distance_m": st.last_distance_m,
@@ -116,17 +118,27 @@ def config():
     if denied:
         return denied
     body = request.get_json(silent=True) or {}
-    if "enter_m" in body or "hysteresis_m" in body:
-        return jsonify({"ok": False, "error": "geofence_file_sot"}), 409
-    overlay = {k: body[k] for k in ("cooldown_s", "poll_s") if k in body}
-    persist.save_config(overlay)
-    get_worker().apply_overlay(overlay)
     w = get_worker()
+    overlay = {
+        k: body[k] for k in ("enter_m", "hysteresis_m", "cooldown_s", "poll_s") if k in body
+    }
+    try:
+        validate_radii(
+            float(overlay.get("enter_m", w.cfg.enter_m)),
+            float(overlay.get("hysteresis_m", w.cfg.hysteresis_m)),
+        )
+    except (TypeError, ValueError) as e:
+        return jsonify({"ok": False, "error": "invalid_radii", "detail": str(e)}), 400
+    # Persist before applying: a radius that only lives in memory reverts on restart.
+    if not persist.save_config(overlay):
+        return jsonify({"ok": False, "error": "config_not_persisted"}), 503
+    w.apply_overlay(overlay)
     return jsonify(
         {
             "ok": True,
             "enter_m": w.cfg.enter_m,
             "hysteresis_m": w.cfg.hysteresis_m,
+            "enter_m_source": w.cfg.enter_m_source,
             "cooldown_s": w.cfg.cooldown_s,
             "poll_s": w.cfg.poll_s,
         }

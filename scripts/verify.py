@@ -33,6 +33,16 @@ class Gate(NamedTuple):
     modes: set  # {"fast"} or {"full"} or {"fast", "full"}
 
 
+# The scanner's own pattern, its tests, and the doc that quotes it must contain
+# secret-shaped text to do their jobs; scanning them only ever reports themselves.
+SECRET_SCAN_EXCLUDES = [
+    "--",
+    ".",
+    ":(exclude)scripts/verify.py",
+    ":(exclude)scripts/test_verify.py",
+    ":(exclude)docs/contributing/push-gotchas.md",
+]
+
 # Gates whose argv contains {PR} are skipped when no PR is open.
 # Gates whose argv contains {PLAN} are skipped when --plan is not supplied.
 GATES: list[Gate] = [
@@ -40,13 +50,13 @@ GATES: list[Gate] = [
     # so pattern references in source code don't produce false positives.
     Gate(
         name="secret-scan-staged",
-        argv=["git", "diff", "--cached", "--unified=0"],
+        argv=["git", "diff", "--cached", "--unified=0", *SECRET_SCAN_EXCLUDES],
         hard=True,
         modes={"fast"},
     ),
     Gate(
         name="secret-scan-full",
-        argv=["git", "diff", "origin/main", "--unified=0"],
+        argv=["git", "diff", "origin/main", "--unified=0", *SECRET_SCAN_EXCLUDES],
         hard=True,
         modes={"full"},
     ),
@@ -145,7 +155,13 @@ CI_SCRIPT_NAMES: frozenset[str] = frozenset([
 ])
 
 # Secret pattern from CONTRIBUTING.md § "Pushing & opening PRs"
-SECRET_PATTERN = r"AIza|sk-[A-Za-z0-9]{20}|-----BEGIN|password\s*[:=]|api[_-]?key"
+# The api-key arm requires an assignment, like the password arm beside it: a leak is
+# `api_key = "..."`, not the words. Without it the gate fires on any prose containing
+# an API_KEY-shaped identifier — e.g. Plaid's INVALID_API_KEYS error code — and a gate
+# that cries wolf on documentation is a gate people learn to wave through.
+SECRET_PATTERN = (
+    r"AIza|sk-[A-Za-z0-9]{20}|-----BEGIN|password\s*[:=]|api[_-]?key[\"'\s]*[:=]"
+)
 
 
 # ---------------------------------------------------------------------------

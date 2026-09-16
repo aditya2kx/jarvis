@@ -1,4 +1,5 @@
-import type { BaseRunwayRow, OrderQualityDailyRow } from "@/lib/bq/queries";
+import type { OrderQualityDailyRow } from "@/lib/bq/queries";
+import { RISKY_DAYS_LEFT } from "@/lib/inventory/daysLeft";
 import type { GoalStatus } from "@/lib/kpi/health-types";
 
 export type { GoalStatus };
@@ -42,9 +43,22 @@ export function rollupStatus(statuses: GoalStatus[]): GoalStatus {
   return worst;
 }
 
-/** Count of Risky rows in the Base runway view (Issue #158). */
-export function countRiskyBases(rows: BaseRunwayRow[]): number {
-  return rows.filter((r) => r.Status === "Risky").length;
+/**
+ * Count of bases within `threshold` burn-down days of running out (Issue #158).
+ *
+ * Originally read `Status === "Risky"` off the Base runway view. Migration 036
+ * split that column into `Status 1` / `Status 2`, so the filter silently matched
+ * nothing and this reported 0 regardless of stock. Now derived from burn-down
+ * days left, which survives the Base runway table's removal.
+ */
+export function countRiskyBases(
+  rows: { "Days left": number | null }[],
+  threshold: number = RISKY_DAYS_LEFT,
+): number {
+  return rows.filter((r) => {
+    const d = r["Days left"];
+    return d != null && Number(d) <= threshold;
+  }).length;
 }
 
 /** Mean KDS per-item p95 minutes over the window (Issue #158). */

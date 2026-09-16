@@ -6,7 +6,9 @@ import hashlib
 import hmac
 import json
 import os
+import sys
 import time
+import types
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -104,6 +106,10 @@ def _sync_dispatch(monkeypatch):
 
     monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: fn(*a))
     monkeypatch.setattr(handler, "_post_response_url", _capture_post)
+    # The multi-date worker serializes on real Cloud Run state; in unit tests the
+    # job is always "idle" so dates dispatch without touching the API (a real call
+    # would also import google.cloud.run_v2 and break sys.modules patching later).
+    monkeypatch.setattr(handler, "_wait_for_job_idle", lambda job, **kw: True)
     return posted
 
 
@@ -1623,7 +1629,7 @@ class TestSlackRetryDedup:
 
 
 class TestAlreadyRunningGuard:
-    """_trigger_cloud_run_job must skip if a non-terminal execution already exists."""
+    """_trigger_cloud_run_job must skip if the job has any non-terminal execution."""
 
     def _mock_run_v2(self):
         """Return a mock run_v2 module that can be injected into sys.modules."""
@@ -1634,32 +1640,58 @@ class TestAlreadyRunningGuard:
         return mock_rv2
 
     def test_trigger_skips_when_already_running(self):
-        """When _is_already_running returns True, run_job is not called."""
+        """When the job is busy, run_job is not called — regardless of date."""
         import sys
         mock_rv2 = self._mock_run_v2()
-        with patch.object(handler, "_is_already_running", return_value=True) as mock_check, \
+        with patch.object(handler, "_any_execution_running", return_value=True) as mock_check, \
              patch.dict(sys.modules, {"google.cloud.run_v2": mock_rv2}):
-            handler._trigger_cloud_run_job("2026-06-09", job_name="projects/p/jobs/bhaga")
+            started = handler._trigger_cloud_run_job(
+                "2026-06-09", job_name="projects/p/jobs/bhaga"
+            )
+        assert started is False
         mock_rv2.JobsClient.return_value.run_job.assert_not_called()
-        mock_check.assert_called_once_with("projects/p/jobs/bhaga", "2026-06-09")
+        # Resource-keyed: the guard is asked about the job, not the date.
+        mock_check.assert_called_once_with("projects/p/jobs/bhaga")
 
     def test_trigger_fires_when_not_running(self):
-        """When _is_already_running returns False, run_job is called."""
+        """When the job is idle, run_job is called."""
         import sys
         mock_rv2 = self._mock_run_v2()
-        with patch.object(handler, "_is_already_running", return_value=False), \
+        with patch.object(handler, "_any_execution_running", return_value=False), \
              patch.dict(sys.modules, {"google.cloud.run_v2": mock_rv2}):
-            handler._trigger_cloud_run_job("2026-06-09", job_name="projects/p/jobs/bhaga")
+            started = handler._trigger_cloud_run_job(
+                "2026-06-09", job_name="projects/p/jobs/bhaga"
+            )
+        assert started is True
         mock_rv2.JobsClient.return_value.run_job.assert_called_once()
 
     def test_trigger_fires_when_already_running_check_errors(self):
-        """Fail-open: _is_already_running returns False on any API error."""
+        """Fail-open: the busy check returns False on any API error."""
         import sys
         mock_rv2 = self._mock_run_v2()
         mock_rv2.ExecutionsClient.return_value.list_executions.side_effect = Exception("api error")
         with patch.dict(sys.modules, {"google.cloud.run_v2": mock_rv2}):
-            result = handler._is_already_running("projects/p/jobs/bhaga", "2026-06-09")
+            result = handler._any_execution_running("projects/p/jobs/bhaga")
         assert result is False  # fail-open: allow trigger
+
+    def test_trigger_blocked_by_execution_for_a_different_date(self):
+        """A run for another date still blocks: both rebuild the same model tables.
+
+        Regression for 2026-09-07, when the date-keyed guard let two dates run
+        concurrently and race the model write.
+        """
+        import sys
+        mock_rv2 = self._mock_run_v2()
+        running = MagicMock()
+        running.completion_time = None
+        running.conditions = []
+        mock_rv2.ExecutionsClient.return_value.list_executions.return_value = [running]
+        with patch.dict(sys.modules, {"google.cloud.run_v2": mock_rv2}):
+            started = handler._trigger_cloud_run_job(
+                "2026-09-08", job_name="projects/p/jobs/bhaga"
+            )
+        assert started is False
+        mock_rv2.JobsClient.return_value.run_job.assert_not_called()
 
     def test_no_job_name_skips_trigger(self):
         """Without CLOUD_RUN_JOB_NAME env var set, no trigger fires."""
@@ -1667,7 +1699,7 @@ class TestAlreadyRunningGuard:
         mock_rv2 = self._mock_run_v2()
         old = os.environ.pop("CLOUD_RUN_JOB_NAME", None)
         try:
-            with patch.object(handler, "_is_already_running") as mock_check, \
+            with patch.object(handler, "_any_execution_running") as mock_check, \
                  patch.dict(sys.modules, {"google.cloud.run_v2": mock_rv2}):
                 handler._trigger_cloud_run_job("2026-06-09")
             mock_check.assert_not_called()
@@ -1681,7 +1713,7 @@ class TestAlreadyRunningGuard:
         # BHAGA_OTP_FORCE_REQUEST — the default gate mode handles the OTP inline.
         import sys
         mock_rv2 = self._mock_run_v2()
-        with patch.object(handler, "_is_already_running", return_value=False), \
+        with patch.object(handler, "_any_execution_running", return_value=False), \
              patch.dict(sys.modules, {"google.cloud.run_v2": mock_rv2}):
             handler._trigger_cloud_run_job("2026-06-14", job_name="projects/p/jobs/bhaga")
         names = {
@@ -2041,4 +2073,146 @@ class TestTeamPulseKick:
             )
         assert resp.status_code == 200
         assert resp.get_json()["status"] == "accepted"
-        assert len(called) == 1
+        # The morning kick carries the staleness alarm alongside the pulse.
+        assert [f.__name__ for f in called] == [
+            "_run_team_pulse_job",
+            "_run_staleness_alarm",
+        ]
+
+
+class TestStalenessAlarm:
+    """The alarm must fire from a beat the nightly cannot silence."""
+
+    def test_quiet_when_data_is_current(self, monkeypatch):
+        monkeypatch.setattr(
+            handler, "_data_window_age_days", lambda: ("2026-09-13", 0)
+        )
+        sent = []
+        monkeypatch.setitem(
+            sys.modules,
+            "agents.bhaga.notify",
+            types.SimpleNamespace(staleness_alarm=lambda **kw: sent.append(kw)),
+        )
+        handler._run_staleness_alarm()
+        assert sent == []
+
+    def test_fires_when_the_window_stops_advancing(self, monkeypatch):
+        monkeypatch.setattr(
+            handler, "_data_window_age_days", lambda: ("2026-09-06", 7)
+        )
+        sent = []
+        monkeypatch.setitem(
+            sys.modules,
+            "agents.bhaga.notify",
+            types.SimpleNamespace(staleness_alarm=lambda **kw: sent.append(kw)),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "skills.bhaga_config.state_adapter",
+            types.SimpleNamespace(
+                get_pipeline_halt=lambda **kw: {"reason": "tip pool NOT conserved"}
+            ),
+        )
+        handler._run_staleness_alarm()
+        assert sent == [{
+            "data_window_end": "2026-09-06",
+            "age_days": 7,
+            "halt_reason": "tip pool NOT conserved",
+        }]
+
+    def test_fires_when_the_model_is_empty(self, monkeypatch):
+        monkeypatch.setattr(handler, "_data_window_age_days", lambda: (None, None))
+        sent = []
+        monkeypatch.setitem(
+            sys.modules,
+            "agents.bhaga.notify",
+            types.SimpleNamespace(staleness_alarm=lambda **kw: sent.append(kw)),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "skills.bhaga_config.state_adapter",
+            types.SimpleNamespace(get_pipeline_halt=lambda **kw: None),
+        )
+        handler._run_staleness_alarm()
+        assert sent and sent[0]["data_window_end"] is None
+
+    def test_rejects_a_bad_token(self):
+        with app.test_client() as client:
+            resp = client.post(
+                "/staleness-check", json={}, headers={"X-Team-Pulse-Token": "nope"}
+            )
+        assert resp.status_code == 403
+
+
+# ===========================================================================
+# Multi-date refresh must be SEQUENTIAL (2026-09-13)
+# ===========================================================================
+
+
+class TestMultiDateSerialization:
+    """A date range must not launch overlapping executions.
+
+    Every execution rebuilds the shared model tables, so concurrent runs race the
+    scoped write. Firing a range all at once is the same defect that produced 389
+    duplicate rows on 2026-09-07 — just at seven-job scale instead of two.
+    """
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_waits_for_idle_between_dates(self, mock_decide, mock_trigger, monkeypatch):
+        monkeypatch.setenv("CLOUD_RUN_JOB_NAME", "projects/p/locations/l/jobs/j")
+        calls: list[str] = []
+        monkeypatch.setattr(handler, "_post_response_url", lambda url, payload: None)
+        monkeypatch.setattr(
+            handler,
+            "_wait_for_job_idle",
+            lambda job, **kw: calls.append("wait") or True,
+        )
+        def _record(d, e, job_name=None):
+            calls.append(f"run:{d}")
+            return True  # the real trigger returns "did it start?"
+
+        mock_trigger.side_effect = _record
+
+        handler._run_refresh_worker(
+            ["2026-09-07", "2026-09-08", "2026-09-09"], False, "https://hook"
+        )
+
+        assert calls == [
+            "run:2026-09-07",
+            "wait",
+            "run:2026-09-08",
+            "wait",
+            "run:2026-09-09",
+        ], calls
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env", return_value=False)
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_reports_when_the_busy_guard_refuses_the_trigger(
+        self, mock_decide, mock_trigger, monkeypatch
+    ):
+        """A refused trigger must say so, not imply the date was queued."""
+        monkeypatch.setenv("CLOUD_RUN_JOB_NAME", "projects/p/locations/l/jobs/j")
+        posted = _sync_dispatch(monkeypatch)
+
+        handler._run_refresh_worker(["2026-09-07", "2026-09-08"], False, "https://hook")
+
+        assert mock_trigger.call_count == 1  # stopped after the refusal
+        assert "not started — job busy" in posted[0]["text"]
+
+    @patch.object(handler, "_trigger_cloud_run_job_with_env")
+    @patch.object(handler, "_decide_recompute", return_value=False)
+    def test_stops_when_previous_run_never_goes_idle(
+        self, mock_decide, mock_trigger, monkeypatch
+    ):
+        monkeypatch.setenv("CLOUD_RUN_JOB_NAME", "projects/p/locations/l/jobs/j")
+        posted = _sync_dispatch(monkeypatch)
+        # Override the helper's "always idle" default: this case is the job that
+        # never frees up, so the worker must stop instead of piling on.
+        monkeypatch.setattr(handler, "_wait_for_job_idle", lambda job, **kw: False)
+
+        handler._run_refresh_worker(["2026-09-07", "2026-09-08"], False, "https://hook")
+
+        # Only the first date launched; the second is reported as skipped.
+        assert mock_trigger.call_count == 1
+        assert "skipped" in posted[0]["text"]

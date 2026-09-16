@@ -261,58 +261,83 @@ class TestReplaceMode(unittest.TestCase):
 
 
 class TestReplaceScopeMode(unittest.TestCase):
-    """load_model_rows(replace_scope=True) deletes only the rebuilt partition before MERGE."""
+    """load_model_rows(replace_scope=True) evicts + upserts in ONE atomic MERGE.
+
+    Previously this was a DELETE job followed by a MERGE job. Two concurrent
+    recomputes could interleave between them and each insert a full copy of the
+    batch — the cause of the 389 duplicate keys found in model_tip_alloc_daily on
+    2026-09-07. The contract is now "exactly one atomic scoped merge, no
+    standalone DELETE".
+    """
 
     def _run_scope_clear(self, table: str, scope_col: str, scope_val: str):
         import core.datastore as ds
         m = _load_module()
-        delete_sql = []
-        loaded = []
+        calls = []
+        raw_sql = []
 
-        def fake_read_query(sql):
-            if sql.strip().upper().startswith("DELETE"):
-                delete_sql.append(sql)
-            return []
-
-        def fake_load_rows(tbl, rows, *, merge_keys, column_bq_types=None):
-            loaded.append((tbl, len(rows)))
+        def fake_merge_rows_scoped(tbl, rows, *, merge_keys, scope_col, column_bq_types=None):
+            calls.append(
+                {"table": tbl, "rows": rows, "merge_keys": merge_keys, "scope_col": scope_col}
+            )
             return len(rows)
 
-        employee_col = "employee"
-        header = [scope_col, employee_col]
-        rows = [header, [scope_val, "Alice"]]
+        def fake_read_query(sql):
+            raw_sql.append(sql)
+            return []
 
-        with mock.patch.object(ds, "read_query", fake_read_query), \
-             mock.patch.object(m, "load_rows", fake_load_rows), \
+        with mock.patch.object(ds, "merge_rows_scoped", fake_merge_rows_scoped), \
+             mock.patch.object(ds, "assert_unique_natural_key", lambda *a, **k: None), \
+             mock.patch.object(ds, "read_query", fake_read_query), \
              mock.patch.object(m, "_col_type_hints", return_value={}):
-            n = m.load_model_rows(table, rows, replace_scope=True)
+            n = m.load_model_rows(
+                table, [[scope_col, "employee"], [scope_val, "Alice"]], replace_scope=True
+            )
 
         self.assertEqual(n, 1)
-        self.assertEqual(len(delete_sql), 1, f"expected exactly one DELETE for {table}")
-        self.assertIn(table, delete_sql[0])
-        self.assertIn(scope_col, delete_sql[0])
-        self.assertIn(scope_val, delete_sql[0])
-        # Must NOT delete WHERE TRUE (that's replace=True; scope-clear is partial)
-        self.assertNotIn("WHERE TRUE", delete_sql[0].upper())
-        return delete_sql, loaded
+        self.assertEqual(len(calls), 1, f"expected exactly one atomic merge for {table}")
+        self.assertEqual(calls[0]["table"], table)
+        self.assertEqual(calls[0]["scope_col"], scope_col)
+        self.assertIn("employee", calls[0]["merge_keys"])
+        for sql in raw_sql:
+            self.assertFalse(
+                sql.strip().upper().startswith("DELETE"),
+                f"standalone DELETE reintroduces the race: {sql}",
+            )
+        return calls, raw_sql
 
     def test_scope_clear_tip_alloc_daily(self):
         self._run_scope_clear("model_tip_alloc_daily", "date", "2026-06-19")
 
     def test_scope_clear_strips_sheet_apostrophe_prefix(self):
-        """Sheet text-force prefix must not double-quote the DELETE IN list."""
-        delete_sql, _ = self._run_scope_clear(
-            "model_tip_alloc_daily", "date", "'2026-06-19"
-        )
-        sql = delete_sql[0]
-        self.assertIn("'2026-06-19'", sql)
-        self.assertNotIn("''2026", sql)
+        """Sheet text-force prefix must be coerced away before it reaches the scope list."""
+        calls, _ = self._run_scope_clear("model_tip_alloc_daily", "date", "'2026-06-19")
+        scope_vals = {str(r["date"]) for r in calls[0]["rows"]}
+        self.assertIn("2026-06-19", scope_vals)
+        self.assertNotIn("'2026-06-19", scope_vals)
 
     def test_scope_clear_tip_alloc_period(self):
         self._run_scope_clear("model_tip_alloc_period", "period_start", "2026-06-09")
 
     def test_scope_clear_review_bonus_period(self):
         self._run_scope_clear("model_review_bonus_period", "period_start", "2026-06-09")
+
+    def test_scope_clear_asserts_natural_key_uniqueness(self):
+        """A duplicate must fail the write itself, not surface hours later."""
+        import core.datastore as ds
+        m = _load_module()
+        with mock.patch.object(ds, "merge_rows_scoped", lambda *a, **k: 1), \
+             mock.patch.object(
+                 ds, "assert_unique_natural_key",
+                 mock.Mock(side_effect=RuntimeError("2 duplicate row(s)")),
+             ), \
+             mock.patch.object(m, "_col_type_hints", return_value={}):
+            with self.assertRaises(RuntimeError):
+                m.load_model_rows(
+                    "model_tip_alloc_daily",
+                    [["date", "employee"], ["2026-06-19", "Alice"]],
+                    replace_scope=True,
+                )
 
     def test_scope_clear_dry_run_skips_delete(self):
         import core.datastore as ds
@@ -340,21 +365,12 @@ class TestReplaceScopeMode(unittest.TestCase):
             ],
         }
 
-        def fake_read_query(sql):
-            # Handle scope-clear DELETE: remove matching rows from fake_store
-            import re
-            m_del = re.search(r"DELETE FROM `[^`]+\.(\w+)`\s+WHERE\s+(\w+)\s+IN\s+\(([^)]+)\)", sql, re.I)
-            if m_del:
-                tbl = m_del.group(1)
-                col = m_del.group(2)
-                vals = {v.strip().strip("'") for v in m_del.group(3).split(",")}
-                if tbl in fake_store:
-                    fake_store[tbl] = [r for r in fake_store[tbl] if str(r.get(col)) not in vals]
-            return []
-
-        def fake_load_rows(tbl, rows, *, merge_keys, column_bq_types=None):
-            # Simulate MERGE: upsert by merge_keys
+        def fake_merge_rows_scoped(tbl, rows, *, merge_keys, scope_col, column_bq_types=None):
+            """Simulate the atomic MERGE: upsert the batch, then evict any target
+            row inside the batch's scope that the batch did not supply."""
             existing = fake_store.setdefault(tbl, [])
+            batch_keys = {tuple(str(r.get(k)) for k in merge_keys) for r in rows}
+            scope_vals = {str(r[scope_col]) for r in rows if r.get(scope_col) is not None}
             for row in rows:
                 key = tuple(str(row.get(k)) for k in merge_keys)
                 for i, ex in enumerate(existing):
@@ -363,14 +379,20 @@ class TestReplaceScopeMode(unittest.TestCase):
                         break
                 else:
                     existing.append(row)
+            fake_store[tbl] = [
+                r
+                for r in existing
+                if str(r.get(scope_col)) not in scope_vals
+                or tuple(str(r.get(k)) for k in merge_keys) in batch_keys
+            ]
             return len(rows)
 
         # Rebuild for 2026-06-19 with only Alice (Bob excluded/dropped)
         header = ["date", "employee", "share_cents"]
         new_rows = [header, ["2026-06-19", "Alice", 3000]]
 
-        with mock.patch.object(ds, "read_query", fake_read_query), \
-             mock.patch.object(m, "load_rows", fake_load_rows), \
+        with mock.patch.object(ds, "merge_rows_scoped", fake_merge_rows_scoped), \
+             mock.patch.object(ds, "assert_unique_natural_key", lambda *a, **k: None), \
              mock.patch.object(m, "_col_type_hints", return_value={}):
             m.load_model_rows("model_tip_alloc_daily", new_rows, replace_scope=True)
 
@@ -451,6 +473,121 @@ class TestEvictWholeDayExemptTipAlloc(unittest.TestCase):
             m._evict_whole_day_exempt_tip_alloc("palmetto", {}, dry_run=True),
             0,
         )
+
+
+class TestTouchedScope(unittest.TestCase):
+    """touched_scope maps dates onto whole grain units, never partial ones."""
+
+    PERIODS = [
+        {"start": "2026-08-24", "end": "2026-09-06"},
+        {"start": "2026-09-07", "end": "2026-09-20"},
+    ]
+
+    def test_single_date_expands_to_containing_week_and_period(self):
+        m = _load_module()
+        scope = m.touched_scope(["2026-09-08"], self.PERIODS)  # a Tuesday
+        self.assertEqual(scope["model_daily"], {"2026-09-08"})
+        self.assertEqual(scope["model_tip_alloc_daily"], {"2026-09-08"})
+        # ISO week 37 of 2026 starts Monday 2026-09-07.
+        self.assertEqual(scope["model_labor_weekly"], {"2026-W37"})
+        # The containing pay period, as a whole unit — not the single day.
+        self.assertEqual(scope["model_period_summary"], {"2026-09-07"})
+        self.assertEqual(scope["model_labor_period"], {"2026-09-07"})
+        self.assertEqual(scope["model_tip_alloc_period"], {"2026-09-07"})
+
+    def test_dates_spanning_two_periods_take_both(self):
+        m = _load_module()
+        scope = m.touched_scope(["2026-09-06", "2026-09-07"], self.PERIODS)
+        self.assertEqual(scope["model_period_summary"], {"2026-08-24", "2026-09-07"})
+        # 2026-09-06 is the Sunday of ISO week 36; 09-07 opens week 37.
+        self.assertEqual(scope["model_labor_weekly"], {"2026-W36", "2026-W37"})
+
+    def test_date_outside_every_known_period_adds_no_period(self):
+        m = _load_module()
+        scope = m.touched_scope(["2026-12-25"], self.PERIODS)
+        self.assertEqual(scope["model_daily"], {"2026-12-25"})
+        self.assertEqual(scope["model_period_summary"], set())
+
+    def test_every_model_table_gets_a_scope(self):
+        m = _load_module()
+        scope = m.touched_scope(["2026-09-08"], self.PERIODS)
+        self.assertEqual(set(scope), set(m._MERGE_KEYS))
+
+
+class TestLoadModelRowsScope(unittest.TestCase):
+    """scope= filters the write to the named grain units and nothing else."""
+
+    HEADER_ROWS = [
+        ["date", "gross_sales"],
+        ["2026-09-07", "100"],
+        ["2026-09-08", "200"],
+        ["2026-09-09", "300"],
+    ]
+
+    def test_scope_filters_rows_before_write(self):
+        m = _load_module()
+        with mock.patch.object(m, "_load", return_value=1) as mock_load:
+            m.load_model_rows("model_daily", self.HEADER_ROWS, scope={"2026-09-08"})
+        written = mock_load.call_args[0][1]
+        self.assertEqual([r["date"] for r in written], ["2026-09-08"])
+
+    def test_no_scope_writes_every_row(self):
+        m = _load_module()
+        with mock.patch.object(m, "_load", return_value=3) as mock_load:
+            m.load_model_rows("model_daily", self.HEADER_ROWS)
+        self.assertEqual(len(mock_load.call_args[0][1]), 3)
+
+    def test_empty_scope_writes_nothing(self):
+        m = _load_module()
+        with mock.patch.object(m, "_load") as mock_load:
+            n = m.load_model_rows("model_daily", self.HEADER_ROWS, scope=set())
+        self.assertEqual(n, 0)
+        mock_load.assert_not_called()
+
+    def test_scope_uses_the_grain_column_not_the_date_column(self):
+        """Weekly rows are selected by iso_week; their date columns are irrelevant."""
+        m = _load_module()
+        header_rows = [
+            ["iso_week", "week_start", "hours"],
+            ["2026-W36", "2026-08-31", "10"],
+            ["2026-W37", "2026-09-07", "20"],
+        ]
+        with mock.patch.object(m, "_load", return_value=1) as mock_load:
+            m.load_model_rows("model_labor_weekly", header_rows, scope={"2026-W37"})
+        written = mock_load.call_args[0][1]
+        self.assertEqual([r["iso_week"] for r in written], ["2026-W37"])
+
+
+class TestScopedConservation(unittest.TestCase):
+    """A scoped run must not fail on a period it never wrote."""
+
+    def _period(self, start: str, *, balanced: bool) -> dict:
+        share = 5000 if balanced else 4000
+        return {
+            "start": start, "end": start, "is_open": False,
+            "per_period_ours": {"Alice": 5000},
+            "per_day_allocations": [
+                {"date": start, "employee": "Alice", "share_cents": share},
+            ],
+        }
+
+    def test_out_of_scope_defect_does_not_raise(self):
+        m = _load_module()
+        periods = [self._period("2026-06-16", balanced=False),
+                   self._period("2026-09-07", balanced=True)]
+        m._assert_conservation(periods, {"2026-09-07"})  # must not raise
+
+    def test_in_scope_defect_still_raises(self):
+        m = _load_module()
+        periods = [self._period("2026-09-07", balanced=False)]
+        with self.assertRaises(RuntimeError):
+            m._assert_conservation(periods, {"2026-09-07"})
+
+    def test_unscoped_run_still_checks_everything(self):
+        m = _load_module()
+        periods = [self._period("2026-06-16", balanced=False)]
+        with self.assertRaises(RuntimeError):
+            m._assert_conservation(periods)
 
 
 if __name__ == "__main__":

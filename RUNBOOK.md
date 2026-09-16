@@ -372,8 +372,34 @@ gcloud secrets versions add <name> --data-file=- --project jarvis-bhaga-prod
 ### Default behaviour (inline autostart, since PR #94)
 
 The nightly job **no longer sends a READY-handshake Slack message before starting**. It proceeds
-directly to the ADP/Square scrapes. If ADP's browser session is trusted (the usual case), no OTP
-challenge fires at all.
+directly to the ADP/Square scrapes. When the previous run's ADP session is restored successfully, ADP
+recognises the device and no OTP challenge fires.
+
+### ADP trusted-device session (`_session/adp-palmetto.json`)
+
+`download_adp_bundle` restores the previous run's cookie jar into the browser context before login
+and re-uploads it immediately after `_ensure_logged_in` succeeds — including after a login that just
+satisfied a 2FA challenge, since that is the jar carrying ADP's device-trust cookie. Gated on
+`BHAGA_SESSION_PERSIST=1` (already set on the job); durable copy lives at
+`gs://bhaga-scrape-cache/_session/adp-palmetto.json`.
+
+Confirm it is working:
+
+```bash
+# Object should exist and its timestamp should advance on every run
+gsutil ls -l gs://bhaga-scrape-cache/_session/adp-palmetto.json
+
+# A healthy run logs this; its absence means every login starts from a fresh jar
+gcloud logging read 'resource.type="cloud_run_job" textPayload:"restoring trusted-device session"' \
+  --project=jarvis-bhaga-prod --freshness=2d --format="value(timestamp,textPayload)"
+```
+
+Before Issue #305 the whole mechanism was **inert** — `upload_session`/`download_session` had zero
+callers and no ADP session object had ever existed — so every ADP login presented a fresh cookie jar
+and was fully exposed whenever ADP's risk engine chose to challenge (3 times in the 45 days to
+2026-09-15). If OTP asks start recurring nightly, check the object above first: a missing or stale
+`adp-palmetto.json` means the persist step is failing (look for
+`WARN: session persist failed`).
 
 If ADP *does* challenge for a 2FA code:
 
@@ -482,7 +508,8 @@ confirmed via a DM to the submitting operator, not the modal (which just closes)
   (no static keys). This is the **only** prod deploy identity. A Cursor Cloud Agent does not
   inherit it — see [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md). 
 - Steps: build orchestrator + webhook images → push (`:<git-sha>` and `:latest`) → `gcloud run jobs
-  update bhaga-daily-refresh` + `gcloud run services update bhaga-webhook` to the new SHA.
+  update bhaga-daily-refresh` + `gcloud run services update bhaga-webhook` to the new SHA →
+  **route 100% traffic to latest** → **verify both units actually serve this commit**.
 - **Rollback:** `gh workflow run deploy.yml -f rollback_sha=<good-sha>` (re-points both units to a
   prior image SHA; skips the normal deploy steps).
 
@@ -491,6 +518,38 @@ confirmed via a DM to the submitting operator, not the modal (which just closes)
 gh run list --workflow=deploy.yml --limit 5
 gh run watch <run-id>
 ```
+
+### A green deploy is not proof the new code is serving (Issue #294)
+
+`gcloud run services update --image` creates a revision but does **not** move traffic when the
+service has traffic pinned to a named revision. `bhaga-webhook` was pinned to an `i223-pr224`
+preview on 2026-08-05 and served it for six weeks: #264 and #291 merged, built, deployed green,
+and never went live. Every run looked identical to a good one.
+
+Two steps now close this, mirroring what the console workflow adopted in #240:
+`Route 100% traffic to latest revision` (removes the cause) and `Verify deployed units run this
+commit` (fails the workflow if the serving revision's image digest is not the one built from
+`github.sha`). The job is checked by tag, the service by digest — Cloud Run resolves tags to
+digests on the revision.
+
+To check by hand, or if the verify step fails:
+
+```bash
+# What is actually serving? `latestRevision: True` = healthy; a bare revisionName = pinned.
+gcloud run services describe bhaga-webhook --region us-central1 \
+  --format='value(status.traffic)'
+
+# Un-pin (this is the fix the verify step's error message prints)
+gcloud run services update-traffic bhaga-webhook --to-latest --region us-central1
+
+# Audit every service at once
+for s in $(gcloud run services list --region us-central1 --format='value(metadata.name)'); do
+  echo "$s: $(gcloud run services describe "$s" --region us-central1 --format='value(status.traffic)')"
+done
+```
+
+A tagged preview URL (e.g. `pr234---operator-console-…`) is fine and can coexist; what breaks is a
+**100% split onto a named revision**. Prefer `--tag` for previews, never a traffic pin.
 
 ---
 
@@ -600,6 +659,30 @@ gcloud run jobs execute bhaga-daily-refresh \
 > Deleting the entire `runs/YYYY-MM-DD` doc forces a full re-run for that date. Writes stay idempotent
 > (upsert by natural key), so re-running is safe — it overwrites, never duplicates.
 
+#### Forcing an ADP **re-scrape** needs the BQ receipt gone too
+
+Clearing `adp_reports` alone is **not** enough. Since Issue #305 the ADP scrape gate requires the
+Firestore marker **and** a `source_load_receipts` row proving the export actually landed in BQ:
+
+```sql
+DELETE FROM `jarvis-bhaga-prod.bhaga.source_load_receipts`
+WHERE store = 'palmetto'
+  AND refresh_date = DATE 'YYYY-MM-DD'
+  AND source = 'adp_timecard';
+```
+
+Why the gate needs both: the marker records that a scrape **ran**, but the exports it produced live
+in the container's `extracted/downloads/` and are never uploaded to GCS. On 2026-09-14 a nightly
+scraped ADP, set the marker, then died on a BQ MERGE — so the rerun saw a "done" marker, skipped the
+scrape, found an empty directory in its fresh container, and reported success having loaded nothing.
+The receipt is the only signal that survives the container.
+
+A `rows_upserted = 0` receipt is still a receipt (a store-closed day parses a timecard with no
+shifts) — do not delete it expecting a re-scrape to add rows.
+
+Also clear the downstream markers (`load_raw_bigquery`, `materialize_model_bq`, `process_reviews`)
+or the re-scraped files are parsed and then discarded by an already-done model step.
+
 ### Auto-rerun fixed dates on deploy (Retry-Dates trailer)
 
 When a PR fixes a broken date (e.g. the nightly for June 13 failed due to stale input data), add a
@@ -673,13 +756,39 @@ OTP-pending wait; `1` = a step/verification failure (the wrapper retries); `EXIT
 breaker is tripped and the run **refused to start** so it can't repeat known-bad output.
 
 The breaker is a GLOBAL flag (Firestore `<collection>/_pipeline_state`, local
-`~/.bhaga/state/pipeline_state.json`), NOT keyed by date. While tripped, fresh scheduled runs refuse
-and exit `EXIT_HALTED`; an in-flight OTP READY resume passes through (it's completing a handshake, not
-a fresh attempt). **To recover:** fix + deploy the regression, then re-run with `--ignore-halt` (or set
+`~/.bhaga/state/pipeline_state.json`), NOT keyed by date.
+
+**Scope (2026-09).** A halt carries a `scope`:
+
+| Scope | Effect | When |
+|---|---|---|
+| `model` (default) | Model writes are skipped; **raw Square/ADP ingest still runs.** | Every semantic-guard trip. The fault is in the computation, and refusing to collect raw data cannot fix a computation — on 2026-09-07 it cost six days of uncollected data that then had to be backfilled. |
+| `all` | The run refuses and exits `EXIT_HALTED`. | Faults that make ingest itself unsafe. |
+
+**TTL (2026-09).** A halt also carries `expires_at` (default 12 h; `ttl_hours=0` means never).
+Once expired it reads as not-halted, the next nightly resumes, and the expiry is **escalated** — a
+`pipeline_halt_expired` alert fires so an unattended auto-resume is never silent. A halt record
+written before TTLs existed (no `expires_at`) never expires, so an upgrade cannot un-halt a
+pipeline that is still broken.
+
+An in-flight OTP READY resume passes through a halt (it's completing a handshake, not a fresh
+attempt). **To recover:** fix + deploy the regression, then re-run with `--ignore-halt` (or set
 `BHAGA_IGNORE_HALT=1`) — **a fully-healthy verified run auto-clears the breaker.** To clear it manually
 without a run, use the sanctioned path `state_adapter.clear_pipeline_halt()` (never hand-edit
-Firestore). Inspect the current state with `state_adapter.get_pipeline_halt()` (returns the `reason` /
-`since` / `refresh_date` that tripped it, or `None` when healthy).
+Firestore). Inspect the current state with `state_adapter.get_pipeline_halt()` (returns `reason` /
+`since` / `scope` / `expires_at` / `refresh_date`, or `None` when healthy); pass
+`include_expired=True` to see a halt that has already aged out.
+
+**Notification memory.** `<collection>/_notify_state` (local: `~/.bhaga/state/notify_state.json`) is a
+sibling singleton recording what has already been reported, so a recurring condition is announced
+once instead of nightly. Today it holds `review_anomalies`: anomalies are recomputed over all review
+history every run, so without this the same unparseable post is re-DMed forever. A read failure
+falls back to reporting everything — noisy beats silently dropping a real anomaly.
+
+**Independent staleness alarm.** A run that dies, halts, or never starts cannot raise an alarm about
+itself, so the alarm lives on the morning `bhaga-team-pulse` kick (08:00 CT) instead: if
+`model_daily` has not advanced within 2 days it DMs the operator with the current window end and the
+breaker reason. `POST /staleness-check` (same `X-Team-Pulse-Token`) runs it on demand.
 
 `trigger_dated_refresh.py` (used by `Retry-Dates:` deploy trailers) always injects `BHAGA_IGNORE_HALT=1`
 so deploy-triggered retries automatically bypass the breaker — the fix is baked into the image by
@@ -1269,8 +1378,12 @@ duplicate SMS OTPs. This guard remains active for ADP. For Square there is no lo
 
 1. **Webhook dedup** — the Slack webhook (`cloud/webhook/handler.py`) discards Slack-retry deliveries
    (`X-Slack-Retry-Num > 0`) and stores event IDs in Firestore (`webhook_events/<event_id>`) with a
-   5-minute TTL. Before triggering a Cloud Run job it checks for a non-terminal execution of the same
-   date (`_is_already_running`; fail-open).
+   5-minute TTL. Before triggering a Cloud Run job it checks whether the job has **any** non-terminal
+   execution (`_any_execution_running`; fail-open). The lock is keyed on the resource, not on
+   `REFRESH_DATE`: every run rebuilds the shared model tables, so two dates conflict just as surely as
+   two triggers for one date. A multi-date range therefore runs sequentially — the webhook waits for
+   each execution to finish (`_wait_for_job_idle`) before starting the next, and reports any date it
+   could not start.
 
 **One-time setup (operator).** By least privilege the run SA has GCS read + object write but not
 project bucket-create, so create the sandbox cache bucket once and grant the SA object access:
@@ -1728,6 +1841,22 @@ Security tab's IAP checkbox — works fine without an org (reversing the earlier
 `docs/operator-console/PLAN.md` decisions log, 2026-07-05). Grafana **is retired for BHAGA Analytics** (Issue #276); the console is the operator UI
 (navigation, goal tracking, write-backs). Jarvis Development Grafana remains for PR cost.
 
+### Health banner (2026-09)
+
+Every page renders a server-derived health banner (`components/shell/HealthBanner.tsx` in the root
+layout, backed by `lib/bhaga/health.ts`). It shows the breaker state — including whether the halt is
+model-scoped, in which case raw ingest is still running — and, failing that, whether the data window
+has stopped advancing, naming the date the figures stop at. Derived on the server so it is identical
+for every viewer: pipeline health is a property of the system, not of a session. It is computed from
+the Firestore `_pipeline_state` doc (read over REST with ADC — the console has no Firestore SDK) plus
+`MAX(date)` from `model_daily`. A healthy system shows no banner; a failed health lookup says
+"unknown" rather than implying health. This exists because on 2026-09-07 the console rendered
+six-day-old numbers as though they were current.
+
+The payroll Tip Exemptions **Update** button is disabled while a `bhaga-daily-refresh` execution is
+live (`hasRunningBhagaJob()` at render), since applying exemptions queues a model recompute that the
+server would refuse anyway.
+
 Full design/build docs: [`docs/operator-console/`](docs/operator-console/) (`PLAN.md` — living plan
 + decisions log + milestones; `ARCHITECTURE.md`; `EXECUTION.md` — step-by-step; `COST.md`).
 App-level dev loop: [`apps/operator-console/README.md`](apps/operator-console/README.md).
@@ -1928,9 +2057,11 @@ A second copy would double-open the door.
 | VIN | `TESLA_VIN` (Dhanno) |
 | Partner domain | `35.239.192.226.sslip.io` (public key on :443; cars mTLS :8443) |
 | Door | Big Peach `ALADDIN_DEVICE_SERIAL=F0AD4E3E7403` / `ALADDIN_DOOR_INDEX=1` |
-| Home | `HOME_LAT` / `HOME_LON` · enter **500 m** from `cloud/tesla_aladdin_garage/geofence.json` (not env, not Firestore overlay) · hysteresis 80 m · cooldown 600 s |
+| Home | `HOME_LAT` / `HOME_LON` · enter **300 m** · hysteresis 80 m (exit 380 m) · cooldown 600 s. Radius is **runtime config**: Firestore `config.enter_m` wins, `cloud/tesla_aladdin_garage/geofence.json` is the bootstrap seed, `GEOFENCE_ENTER_M` env is ignored. `/health` reports `enter_m_source`. |
+| Telemetry delta | `LOCATION_MIN_DELTA_M=40` — metres between Location publishes. **Deploy-time only** (workflow-scope env in the deploy YAML, consumed by both the Cloud Run env and the signed-config step). Takes effect only when the "Signed fleet_telemetry_config" step reports `http=200`; that step is `continue-on-error`, so a green deploy alone does not prove it landed. |
 | Persist | Firestore named DB `garage` (`GARAGE_FIRESTORE_DB=garage`), collection `tesla_aladdin_garage`. BHAGA stays on `(default)`. Do **not** set `FIRESTORE_DB=(default)` on Cloud Run — REST double-encodes it to `400 Invalid database id %28default%29`. Usage falls back in-memory if persist fails. |
 | Live | `ALADDIN_DRY_RUN=0` |
+| Aladdin auth | Cognito AccessToken TTL **24 h**. Client re-logins before expiry and once on HTTP 401 (`skills/aladdin_connect`). Recurring `open_error` with `HTTP 401 .../devices` after #310 means a real credential problem, not expiry. |
 | Notify | `aditya.2ky@gmail.com` (`GARAGE_NOTIFY_TO`). Subject includes Tesla metres-from-home and Tesla Fleet month spend vs the **$10** developer discount (Jarvis-counted Data/streaming; Tesla has no usage API). Skip `OPEN_DOOR` if already open; still email. |
 | Admin | Secret `garage-admin-token` → header `X-Garage-Token` |
 
@@ -1944,7 +2075,13 @@ curl -sS "$URL/location" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN"
 # Simulate enter → OPEN Big Peach (live; cooldown 600 s)
 curl -sS -X POST "$URL/simulate/enter" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN"
 
-# Radius: edit cloud/tesla_aladdin_garage/geofence.json and deploy. POST /config {"enter_m": N} is 409.
+# Radius: no deploy needed. Applies immediately and survives restarts.
+curl -sS -X POST "$URL/config" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"enter_m": 300}'
+curl -sS "$URL/health"   # confirm enter_m + enter_m_source=firestore
+# 400 invalid_radii = outside 50-2000 m. 503 config_not_persisted = Firestore write failed,
+# the change did NOT stick; fix persistence before trusting the value.
+# geofence.json is only the seed for a fresh instance with no Firestore config.
 
 # Re-auth if needs_reauth=true (add the callback URL on the Tesla app first)
 open "$URL/oauth/tesla"

@@ -1,6 +1,7 @@
 name: Claude PR Review
 
-# Automated review by Claude Opus (medium thinking) on every PR to main (~$2–4/PR budget).
+# Automated review by Claude Opus (medium thinking) on every PR to main (~$2–4/PR budget;
+# the 30-turn cap is the ceiling, and a review that hits it now fails instead of passing).
 # DORMANT until the repo secret ANTHROPIC_API_KEY is set (the job no-ops without it),
 # so merging this workflow incurs no cost on its own. See CONTRIBUTING.md § Review bot.
 
@@ -194,7 +195,12 @@ jobs:
             Do not modify code. No chat reply — GitHub comments only.
           claude_args: |
             --model claude-opus-4-8
-            --max-turns 14
+            # 14 was sized for a single-concern PR and ran out on PR #298 (three
+            # concerns, 12-file console diff): the run ended `error_max_turns` at
+            # turn 15 having posted no verdict, and the gates below then let it
+            # through. Reviewing A–F over a large diff costs turns; running out is
+            # a silent non-review, which is worse than a slower review.
+            --max-turns 30
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Glob(review-context/**)"
 
       - name: Post review cost stats
@@ -226,16 +232,48 @@ jobs:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then
-            echo "Claude review produced an execution file."
-            exit 0
+          if [ -z "$EXECUTION_FILE" ] || [ ! -f "$EXECUTION_FILE" ]; then
+            if git diff --name-only "$BASE_SHA" HEAD -- .github/workflows/claude-review.yml | grep -q .; then
+              echo "::warning::Claude review skipped — claude-review.yml differs from main (workflow bootstrap). Cost comment explains; merge this PR, then the next PR gets a real review."
+              exit 0
+            fi
+            echo "::error::Claude review did not run (no execution file) and claude-review.yml was not changed — unexpected failure."
+            exit 1
           fi
-          if git diff --name-only "$BASE_SHA" HEAD -- .github/workflows/claude-review.yml | grep -q .; then
-            echo "::warning::Claude review skipped — claude-review.yml differs from main (workflow bootstrap). Cost comment explains; merge this PR, then the next PR gets a real review."
-            exit 0
-          fi
-          echo "::error::Claude review did not run (no execution file) and claude-review.yml was not changed — unexpected failure."
-          exit 1
+          echo "Claude review produced an execution file."
+          # An execution file exists even when the run aborted, so its presence alone
+          # does not mean a review happened: on PR #298 `error_max_turns` produced a
+          # cost comment, no verdict, and a green check. Read the run's own verdict.
+          # Kept at this indentation deliberately — YAML strips the block's common
+          # indent, so nesting these lines inside an `if` would feed indented source
+          # to `python3 -c` and raise IndentationError.
+          CONCLUSION="$(python3 -c '
+          import json, os, sys
+          try:
+              payload = json.loads(open(os.environ["EXECUTION_FILE"]).read())
+          except Exception as exc:
+              print(f"unreadable:{exc.__class__.__name__}")
+              sys.exit(0)
+          if not isinstance(payload, list):
+              print("unreadable:not_a_json_array")  # same contract as post_claude_review_cost.py
+              sys.exit(0)
+          for msg in payload:
+              if isinstance(msg, dict) and msg.get("type") == "result":
+                  print(msg.get("subtype") or "success")
+                  sys.exit(0)
+          print("no_result_message")
+          ')"
+          echo "Claude run conclusion: $CONCLUSION"
+          case "$CONCLUSION" in
+            success|unreadable:*|no_result_message)
+              # An unreadable or reshaped execution file should not block a PR on a
+              # parsing detail — the verdict gate below is the real backstop.
+              ;;
+            *)
+              echo "::error::Claude review aborted ($CONCLUSION) — no verdict was produced, so this PR is unreviewed. Re-run the job; if it recurs, the diff is too large for the turn budget and should be split."
+              exit 1
+              ;;
+          esac
 
       - name: Gate on Claude verdict (fail if REQUEST CHANGES)
         if: >
@@ -248,30 +286,43 @@ jobs:
         run: |
           # Fetch the most recent claude[bot] summary comment and check the verdict.
           # Fails if Claude posted REQUEST CHANGES — agent must fix + re-push.
-          # Passes silently if no Claude comment found (infra hiccup already caught above).
+          # Also fails if no verdict can be read at all: "no review" must not read as
+          # "no issues". On PR #298 this step logged "No Claude comments found" and
+          # exited 0 while two claude[bot] comments existed, so a transient API
+          # failure was indistinguishable from a clean review.
           python3 - <<'PYEOF'
-          import json, subprocess, sys, re
+          import json, os, subprocess, sys, re
+
+          # PR number comes from os.environ, NOT "$PR_NUMBER": this heredoc is
+          # quoted (<<'PYEOF'), so the shell does not expand it and the literal
+          # string reached gh, 404ing every run. Actions substitutes
+          # ${{ github.repository }} before the shell sees it, so that is fine.
+          repo = os.environ["GITHUB_REPOSITORY"]
+          pr_number = os.environ["PR_NUMBER"]
 
           # --paginate emits one JSON array per page; --jq '.[]' unrolls each
           # page to one object per line so pages concatenate into flat NDJSON
           # regardless of comment count (a single-page fetch silently missed
           # comments beyond page 1 on PRs with 30+ comments).
           result = subprocess.run(
-              ["gh", "api", "--paginate", f"repos/${{ github.repository }}/issues/$PR_NUMBER/comments",
+              ["gh", "api", "--paginate", f"repos/{repo}/issues/{pr_number}/comments",
                "--jq", ".[]"],
               capture_output=True, text=True
           )
           if result.returncode != 0 or not result.stdout.strip():
-              print("No Claude comments found — skipping verdict check.")
-              sys.exit(0)
+              print("::error::Could not read PR comments, so the Claude verdict is unknown.")
+              print(result.stderr.strip() or "(no stderr)")
+              print("Re-run the job. Passing here would mean 'unreviewed' looks like 'approved'.")
+              sys.exit(1)
 
           all_comments = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
           comments = [c for c in all_comments
                       if c.get("user", {}).get("login") == "claude[bot]"
                       or c.get("user", {}).get("login", "").startswith("claude")]
           if not comments:
-              print("No Claude summary comment found — skipping verdict check.")
-              sys.exit(0)
+              print("::error::No claude[bot] comment on this PR — the review did not post a verdict.")
+              print("Re-run the job. Passing here would mean 'unreviewed' looks like 'approved'.")
+              sys.exit(1)
 
           latest = comments[-1]["body"]
           first_lines = "\n".join(latest.splitlines()[:3]).upper()

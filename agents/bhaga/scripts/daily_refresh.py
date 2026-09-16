@@ -82,6 +82,7 @@ import traceback
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
@@ -205,6 +206,45 @@ def _read_data_window_end_from_sheet(
                 )
             return None, cell_was_empty
     return None, True
+
+
+def ingested_dates(
+    gap_start: datetime.date,
+    refresh_date: datetime.date,
+    extra_windows: Sequence[tuple[datetime.date | None, datetime.date | None]] = (),
+) -> list[str]:
+    """Every date this run could have rewritten raw data for.
+
+    The scoped model write (``BHAGA_SCOPED_MATERIALIZE``) only rebuilds the
+    grain units named here, so this list has to be at least as wide as the
+    ingest. It used to be just ``refresh_date`` while ingest covered the whole
+    gap window, which meant a catch-up run laid fresh raw data under stale model
+    rows for every day but the last — invisible, because each table still had
+    exactly one row per key (Issue #295).
+
+    Source-specific overrides (``--square-from``, ``--adp-from/--adp-to``, the
+    unified ``--from/--to``) can reach outside the gap window, so they *widen*
+    it here rather than being assumed to fall inside it. Widening is cheap: a
+    date whose raw data did not change re-materializes to the same values,
+    because the computation is full-history either way and only the write is
+    scoped. Narrowing is what loses data.
+
+    Pure function so the scope/ingest agreement can be unit-tested without
+    standing up Playwright/BQ/Slack.
+    """
+    start, end = gap_start, refresh_date
+    for win_start, win_end in extra_windows:
+        if win_start is not None and win_start < start:
+            start = win_start
+        if win_end is not None and win_end > end:
+            end = win_end
+    if end < start:
+        # An empty gap (nothing to scrape) still materializes the day it ran for.
+        return [refresh_date.isoformat()]
+    return [
+        (start + datetime.timedelta(days=offset)).isoformat()
+        for offset in range((end - start).days + 1)
+    ]
 
 
 def compute_gap_window(
@@ -1176,6 +1216,42 @@ def _bq_raw_coverage_complete(refresh_date: datetime.date) -> bool:
         return refresh_date in have
     except Exception as exc:  # noqa: BLE001
         print(f"[recovery] WARN: BQ coverage check failed: {exc}", file=sys.stderr)
+        return False
+
+
+def _adp_timecard_loaded(store: str, refresh_date: datetime.date) -> bool:
+    """True iff BQ holds a load receipt for this date's ADP timecard.
+
+    The `adp_reports` Firestore marker says a scrape RAN; this says its export
+    was actually parsed into BQ. Only the receipt survives the container, so
+    only the receipt can safely suppress a re-scrape: on 2026-09-14 a scrape
+    succeeded, set the marker, and then the load failed, so the rerun skipped
+    ADP and loaded nothing while reporting success.
+
+    Gated on the timecard alone, not all four ADP exports: the timecard is the
+    one artifact every ADP run requires, while the schedule is forward-looking
+    and earnings/rates are pay-period cadenced behind `include_rates` —
+    demanding those would re-scrape, and re-prompt for OTP, nightly.
+
+    Returns False on any query error: re-scraping is idempotent, skipping is
+    not, so False is the safe direction.
+    """
+    if os.environ.get("BHAGA_DATASTORE", "").lower() != "bigquery":
+        return True  # non-BQ runs keep the legacy marker-only behavior
+    try:
+        from core.datastore import fq, read_query
+
+        rows = read_query(
+            f"SELECT COUNT(*) AS n"
+            f" FROM {fq('source_load_receipts')}"
+            f" WHERE store = '{store}'"
+            f" AND refresh_date = DATE('{refresh_date.isoformat()}')"
+            f" AND source = 'adp_timecard'"
+        )
+        return bool(rows and int(rows[0]["n"]) > 0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp] WARN: load-receipt check failed, will re-scrape: {exc}",
+              file=sys.stderr)
         return False
 
 
@@ -2479,6 +2555,8 @@ def _run_refresh(run_id: str) -> int:
                 "adp_liability",
                 "--skip",
                 "square_rollup",
+                "--refresh-date",
+                refresh_date.isoformat(),
             ],
             cwd=str(PROJECT_ROOT),
             check=True,
@@ -2536,6 +2614,8 @@ def _run_refresh(run_id: str) -> int:
                 "adp_liability",
                 "--skip",
                 "square_rollup",
+                "--refresh-date",
+                refresh_date.isoformat(),
             ],
             cwd=str(PROJECT_ROOT),
             check=True,
@@ -2641,7 +2721,46 @@ def _run_refresh(run_id: str) -> int:
     # read as "bad output". An in-flight OTP READY resume is allowed through
     # (it's completing a handshake, not a fresh attempt); --ignore-halt /
     # BHAGA_IGNORE_HALT lets the operator run a fix (which auto-clears below).
-    halt = None if args.dry_run else _adapter_get_pipeline_halt()
+    halt = None if args.dry_run else _adapter_get_pipeline_halt(include_expired=True)
+
+    # An expired breaker resumes — but never silently. Clear it, say so, and let
+    # the run proceed; a breaker that holds unattended is the six-day outage.
+    if halt and halt.get("expired"):
+        print(f"[pipeline_halt] breaker EXPIRED (tripped {halt.get('since')}, "
+              f"TTL reached at {halt.get('expires_at')}) — auto-resuming.",
+              file=sys.stderr)
+        try:
+            failure_alert(
+                step="pipeline_halt_expired",
+                exception=RuntimeError(
+                    f"breaker expired without operator action: {halt.get('reason')}"
+                ),
+                date=refresh_date.isoformat(),
+                evidence_uri=None,
+                extra=(
+                    "The circuit breaker reached its TTL and auto-resumed. Nobody "
+                    "acted on the original fault, so the underlying defect may still "
+                    "be present — check the reason above against tonight's output."
+                ),
+            )
+        except Exception:  # noqa: BLE001, S110
+            pass
+        try:
+            _adapter_clear_pipeline_halt()
+        except Exception:  # noqa: BLE001, S110
+            pass
+        halt = None
+
+    # A model-scoped breaker stops model writes only. Raw ingest keeps running:
+    # refusing to collect Square/ADP data cannot fix a bad computation, and on
+    # 2026-09-07 it cost six days of raw data that then had to be backfilled.
+    if halt and not args.ignore_halt and halt.get("scope") != "all":
+        print(f"[pipeline_halt] breaker tripped at scope=model "
+              f"({halt.get('reason')}) — skipping model writes, CONTINUING raw "
+              f"ingest.", file=sys.stderr)
+        args.skip_model = True
+        halt = None
+
     if halt and not args.ignore_halt:
         pending = _adapter_get_pending_otp(refresh_date)
         otp_resume = bool(pending and pending.get("ready_received"))
@@ -2846,7 +2965,15 @@ def _run_refresh(run_id: str) -> int:
     needs_square_txn = needs_square_scrape and not step_already_done(refresh_date, "square_transactions")
     needs_square_kds = needs_square_scrape and not args.skip_kds and not step_already_done(refresh_date, "square_kds")
     needs_square = needs_square_txn or needs_square_kds
-    needs_adp = not args.skip_timecard and not step_already_done(refresh_date, "adp_reports")
+    # Marker AND receipt: the Firestore marker proves a scrape ran, the BQ
+    # receipt proves its export actually landed. Requiring both means a marker
+    # that outlived its container-local files can no longer suppress the scrape,
+    # while a date that genuinely loaded still skips — so scrape frequency (and
+    # OTP exposure) is unchanged except in the broken case.
+    needs_adp = not args.skip_timecard and not (
+        step_already_done(refresh_date, "adp_reports")
+        and _adp_timecard_loaded(args.store, refresh_date)
+    )
     needs_review_fetch = not args.skip_reviews
 
     if not needs_square and not args.skip_square and not needs_square_scrape:
@@ -2958,6 +3085,14 @@ def _run_refresh(run_id: str) -> int:
             earnings_end=adp_window_to,
             earnings_custom_range=earnings_custom_range,
         )
+    elif not args.skip_timecard:
+        # Parity with run_step's SKIPPED line. Without this a marker-skipped ADP
+        # pipeline printed nothing at all, which is why the 2026-09-14 rerun's
+        # log gave no hint that ADP had been bypassed.
+        print(
+            f"\n[adp_pipeline] SKIPPED — adp_reports marker done AND BQ load "
+            f"receipt present for refresh_date={refresh_date.isoformat()}"
+        )
     if needs_review_fetch:
         _rev_since_override = args.reviews_since or args.window_from
         pipeline_specs["review_fetch"] = functools.partial(
@@ -2968,6 +3103,15 @@ def _run_refresh(run_id: str) -> int:
         )
 
     results = _execute_pipelines(pipeline_specs, serialize_otp=serialize_otp)
+
+    # Only a successful ADP pipeline in THIS execution guarantees exports on
+    # local disk, so only then may load_raw_bigquery treat their absence as a
+    # failure. An ADP pipeline that failed (unanswered OTP, login error) is a
+    # documented graceful skip that must still exit 0, and an ADP pipeline that
+    # was skipped had its data verified present in BQ by the scrape gate.
+    adp_exports_expected = bool(
+        getattr(results.get("adp"), "success", False)
+    )
 
     # Collect results from all pipelines (executor captured exceptions into
     # failed PipelineResults, so the contract is uniform here).
@@ -3123,7 +3267,9 @@ def _run_refresh(run_id: str) -> int:
             )
             return subprocess.run(
                 [sys.executable, "-m", "agents.bhaga.scripts.backfill_from_downloads",
-                 "--store", args.store, "--skip", "square"],
+                 "--store", args.store, "--skip", "square",
+                 "--refresh-date", refresh_date.isoformat()]
+                + (["--require-adp"] if adp_exports_expected else []),
                 cwd=str(PROJECT_ROOT), check=True,
                 env=bq_raw_env,
             )
@@ -3145,7 +3291,10 @@ def _run_refresh(run_id: str) -> int:
             # Gate: clear the scrape-done markers so the next retry re-scrapes
             # from upstream rather than trying to load absent local files.
             # (Cloud Run containers are ephemeral; local files vanish between runs.)
-            for _scrape_step in ("square", "adp"):
+            # These must be the names the markers are WRITTEN under
+            # (square_transactions / adp_reports); the earlier "square"/"adp"
+            # spelling matched nothing, so this recovery never once fired.
+            for _scrape_step in ("square_transactions", "adp_reports"):
                 if step_already_done(refresh_date, _scrape_step):
                     clear_step_done(refresh_date, _scrape_step)
                     print(f"  [load_raw_bigquery] cleared {_scrape_step}.done "
@@ -3165,11 +3314,29 @@ def _run_refresh(run_id: str) -> int:
             "BHAGA_DATASTORE": "bigquery",
             "PYTHONUNBUFFERED": "1",
         }
+        # Scope the write to every date this run ingested, not just the day it
+        # ran for — a catch-up covering gap_start..refresh_date rewrites raw data
+        # for all of them, and a narrower scope leaves stale model rows on top of
+        # it (Issue #295). materialize_model_bq ignores --dates unless
+        # BHAGA_SCOPED_MATERIALIZE is set, so the default remains a full rebuild.
+        model_dates = ingested_dates(
+            gap_start,
+            refresh_date,
+            extra_windows=(
+                (square_from, square_to),
+                (adp_window_from, adp_window_to),
+            ),
+        )
+        print(f"[materialize_model_bq] scope: {len(model_dates)} date(s) "
+              f"{model_dates[0]}..{model_dates[-1]}")
+        bq_model_cmd = [
+            sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
+            "--store", args.store, "--dates", ",".join(model_dates),
+        ]
         ok, val = run_step(
             "materialize_model_bq",
             lambda: subprocess.run(
-                [sys.executable, "-m", "agents.bhaga.scripts.materialize_model_bq",
-                 "--store", args.store],
+                bq_model_cmd,
                 cwd=str(PROJECT_ROOT), check=True, env=bq_model_env,
             ),
             refresh_date=refresh_date,

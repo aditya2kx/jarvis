@@ -41,6 +41,40 @@ def test_scheduler_is_idempotent_across_deploys():
     assert "VERB=create" in text
 
 
+def test_scheduler_header_flag_matches_the_verb():
+    """`create` takes --headers; `update` takes --update-headers.
+
+    The first real deploy used the update spelling on the create path and died
+    with "unrecognized arguments: --update-headers" — invisible until the job
+    did not yet exist, i.e. exactly once, on the deploy that mattered.
+    """
+    cmds = _commands()
+    assert "VERB=create\n" in cmds.replace("            ", "").replace("  ", "") or "VERB=create" in cmds
+    assert "HEADER_FLAG=--headers" in cmds
+    assert "HEADER_FLAG=--update-headers" in cmds
+    # The literal update-only spelling must not be hardcoded on the shared call.
+    assert "--update-headers \"X-PupWatch-Token" not in cmds
+
+
+def test_env_vars_use_a_delimiter_that_survives_comma_separated_values():
+    """`--set-env-vars` splits on comma by default, but two values ARE lists.
+
+    PUPWATCH_REFERENCE_URIS (five gs:// paths) and PUPWATCH_NOTIFY_TO (two
+    addresses) both contain commas, so the default delimiter made gcloud read a
+    photo path as an env var name: "Bad syntax for dict arg". The "^|^" prefix
+    switches the delimiter. It must not be "@", which appears in the addresses.
+    """
+    cmds = _commands()
+    assert '--set-env-vars "^|^' in cmds, "must set a non-comma delimiter"
+    assert '--set-env-vars "^@^' not in cmds, "'@' collides with email addresses"
+    env_arg = cmds.split('--set-env-vars "^|^', 1)[1].split('"', 1)[0]
+    # Every pair must be pipe-separated, so no bare comma may separate keys.
+    for pair in env_arg.split("|"):
+        assert "=" in pair, f"not a KEY=VALUE pair: {pair!r}"
+    for required in ("PUPWATCH_REFERENCE_URIS=", "PUPWATCH_NOTIFY_TO="):
+        assert any(p.startswith(required) for p in env_arg.split("|")), required
+
+
 def test_tick_is_authenticated_with_the_admin_token():
     text = WF.read_text()
     assert "X-PupWatch-Token=" in text

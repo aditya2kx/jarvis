@@ -67,13 +67,69 @@ def abort_if_forbidden_label(label: str) -> None:
         )
 
 
-def solo_premium_keying_lines(packet: list["PayrollPacketRow"]) -> list[str]:
-    """The rate-2 line items an operator must key into ADP Enter payroll (#309).
+def solo_rate2_enabled() -> bool:
+    """Whether the draft keys the solo premium itself instead of printing it.
 
-    BHAGA does not type hours into ADP, so this is the handoff: for each eligible
-    employee, how many of their regular hours move from the base rate to the
-    premium rate. Base hours shrink by exactly the premium hours, which is what
-    keeps total paid hours equal to the imported timecard.
+    Off by default: the split rewrites Regular hours on a live payroll draft, so
+    a selector drift that filled the wrong row would produce a wrong paycheck
+    rather than an error. Flip it on per run once the live split has been proven
+    against the grid, and see ``docs/FEATURE_FLAGS.md``.
+    """
+    return os.environ.get("BHAGA_ADP_SOLO_RATE2", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def rate2_split(
+    *, adp_regular_hours: float, solo_hours: float
+) -> tuple[float, float]:
+    """Split ADP's Regular hours into (base hours, premium hours).
+
+    The premium is not extra hours — it is the same hours paid at a higher rate,
+    so the two legs must always re-sum to what the timecard imported. The clamp
+    is against ADP's Regular figure rather than the model's, because that is the
+    number actually in the cell being rewritten; if punches moved after the model
+    ran, keying more premium hours than ADP shows would inflate total hours and
+    trip the guardrail (or worse, pass and overpay).
+    """
+    reg = round(max(float(adp_regular_hours or 0), 0.0), 2)
+    solo = round(max(float(solo_hours or 0), 0.0), 2)
+    if solo <= 0 or reg <= 0:
+        return reg, 0.0
+    premium = min(solo, reg)
+    return round(reg - premium, 2), round(premium, 2)
+
+
+def _solo_premium_rate(store: str) -> float:
+    """The premium hourly rate from ``store_config`` (never hardcoded, pref #29).
+
+    Raises rather than defaulting: picking a rate for a live payroll draft off a
+    fallback constant is how a stale policy silently keeps getting paid.
+    """
+    from core.datastore import fq, read_query
+
+    rows = read_query(
+        f"SELECT SAFE_CAST(value AS FLOAT64) AS v FROM {fq('store_config')} "
+        f"WHERE store = '{store}' AND key = 'solo_shift_premium_rate_dollars'"
+    )
+    rate = float((rows or [{}])[0].get("v") or 0)
+    if rate <= 0:
+        raise RuntimeError(
+            "[adp_payroll_draft] BREADCRUMB solo_premium_rate_missing "
+            f"store={store} key=solo_shift_premium_rate_dollars"
+        )
+    return rate
+
+
+def solo_premium_keying_lines(packet: list["PayrollPacketRow"]) -> list[str]:
+    """The rate-2 line items to key into ADP Enter payroll (#309).
+
+    Printed as the handoff when ``BHAGA_ADP_SOLO_RATE2`` is off: for each
+    eligible employee, how many of their regular hours move from the base rate to
+    the premium rate. Base hours shrink by exactly the premium hours, which is
+    what keeps total paid hours equal to the imported timecard.
     """
     lines: list[str] = []
     for row in packet:
@@ -847,6 +903,239 @@ def _paginate_timecard_hours(page) -> dict[str, float]:
     return {name: float(rec.get("hours") or 0) for name, rec in detail.items()}
 
 
+def _open_row_action_menu(page, *, row_index: str) -> bool:
+    """Open the Enter-payroll row's "One-time overrides" overflow menu."""
+    return bool(
+        page.evaluate(
+            """(idx) => {
+              const row = document.querySelector(
+                '.ag-pinned-left-cols-container [role="row"][row-index="' + idx + '"]'
+              ) || document.querySelector(
+                '.ag-center-cols-container [role="row"][row-index="' + idx + '"]'
+              );
+              if (!row) return false;
+              // The overflow trigger is the action-menu-open button that is NOT the
+              // rate selector; the rate cell owns its own button with the same icon.
+              const btns = [...row.querySelectorAll('sdf-button, button')].filter(
+                (b) => !/available rates/i.test(
+                  (b.getAttribute('aria-label') || '') +
+                  (b.getAttribute('button-title') || '')
+                )
+              );
+              const btn = btns[btns.length - 1];
+              if (!btn) return false;
+              btn.scrollIntoView({ block: 'center' });
+              btn.click();
+              return true;
+            }""",
+            row_index,
+        )
+    )
+
+
+def _click_menu_item(page, label: str) -> bool:
+    """Click an item by visible text in whichever sdf-menu is currently open."""
+    abort_if_forbidden_label(label)
+    return bool(
+        page.evaluate(
+            """(label) => {
+              const want = label.toLowerCase();
+              const menus = [...document.querySelectorAll('sdf-menu, [role="menu"]')];
+              for (const menu of menus.reverse()) {
+                for (const item of menu.querySelectorAll(
+                  'sdf-menu-item, [role="menuitem"], li, button'
+                )) {
+                  const t = (item.innerText || '').replace(/\\s+/g, ' ').trim();
+                  if (t.toLowerCase() === want) {
+                    item.scrollIntoView({ block: 'center' });
+                    item.click();
+                    return true;
+                  }
+                }
+              }
+              return false;
+            }""",
+            label,
+        )
+    )
+
+
+def _select_available_rate(page, *, row_index: str, rate_dollars: float) -> bool:
+    """Pick a rate on one grid row via its "Select Available Rates" control.
+
+    The collapsed cell shows only the primary rate even when a second exists on
+    the employee's profile (verified live 2026-09-16: Willingham's cell read
+    ``$15.2500 / hr`` twice while the opened selector listed both $15.25 and
+    $16.25), so the rate must be chosen through the selector, never read off the
+    cell. Matching is on the dollars-and-cents prefix because ADP renders four
+    decimals (``$16.2500 / hr``).
+    """
+    opened = page.evaluate(
+        """(idx) => {
+          const row = document.querySelector(
+            '.ag-pinned-left-cols-container [role="row"][row-index="' + idx + '"]'
+          );
+          const cell = row && row.querySelector('[col-id="availableRates"]');
+          const btn = cell && cell.querySelector('sdf-button, button');
+          if (!btn) return false;
+          btn.scrollIntoView({ block: 'center' });
+          btn.click();
+          return true;
+        }""",
+        row_index,
+    )
+    if not opened:
+        print(f"[adp_payroll_draft] no_rate_selector row={row_index}")
+        return False
+    page.wait_for_timeout(600)
+    want = f"${rate_dollars:.2f}"
+    picked = page.evaluate(
+        """({ want }) => {
+          const nodes = [...document.querySelectorAll(
+            'sdf-menu-item, [role="menuitem"], [role="option"], li, button, div'
+          )];
+          for (const el of nodes.reverse()) {
+            const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+            if (!/\\/\\s*hr/i.test(t)) continue;
+            if (t.split('/')[0].trim().startsWith(want)) {
+              el.scrollIntoView({ block: 'center' });
+              el.click();
+              return t;
+            }
+          }
+          return '';
+        }""",
+        {"want": want},
+    )
+    print(
+        f"[adp_payroll_draft] rate_pick row={row_index} want={want} got={picked!r}",
+        flush=True,
+    )
+    return bool(picked)
+
+
+def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: float) -> dict:
+    """Key each eligible employee's premium hours onto a second rate line.
+
+    Sequence per employee, from the live grid probe: the row's overflow menu ->
+    "Add row" creates a second line item, its "Select Available Rates" control
+    picks the premium rate, the premium hours go in that row's Regular cell, and
+    the original row's Regular cell is reduced by the same amount.
+
+    Reducing the original row last matters: if the run dies mid-employee, total
+    paid hours are too high and the guardrail catches it, whereas reducing first
+    would leave hours missing and a short paycheck that still looks self
+    consistent.
+
+    Every employee is verified by re-reading the grid, and any mismatch is
+    reported rather than retried — a retry on a half-applied split would double
+    the premium line.
+    """
+    applied: list[str] = []
+    failed: list[str] = []
+    wanted = {
+        name_key(r.employee): round(float(r.solo_premium_hours or 0), 2)
+        for r in packet
+        if float(r.solo_premium_hours or 0) > 0
+    }
+    if not wanted:
+        return {"applied": [], "failed": [], "premium_hours": 0.0}
+
+    for _ in range(6):
+        for name, rec in _ag_enter_page_hours(page).items():
+            key = name_key(name)
+            solo = wanted.get(key)
+            if not solo or key in {name_key(a) for a in applied}:
+                continue
+            lines = rec.get("rows") or []
+            if len(lines) > 1:
+                # Already split (a rerun against the same draft). Leave it alone;
+                # adding a second premium row would pay the uplift twice.
+                print(
+                    f"[adp_payroll_draft] BREADCRUMB solo_rate2_skip_existing "
+                    f"{name!r} line_items={len(lines)}"
+                )
+                applied.append(name)
+                continue
+            base_idx = str(lines[0].get("row_index"))
+            base_reg = float(lines[0].get("reg") or 0)
+            keep, premium = rate2_split(
+                adp_regular_hours=base_reg, solo_hours=solo
+            )
+            if premium <= 0:
+                continue
+            try:
+                if not _open_row_action_menu(page, row_index=base_idx):
+                    raise RuntimeError("no_row_menu")
+                page.wait_for_timeout(600)
+                if not _click_menu_item(page, "Add row"):
+                    raise RuntimeError("no_add_row")
+                page.wait_for_timeout(1_500)
+
+                new_idx = _new_row_index_for(page, employee=name, exclude=base_idx)
+                if new_idx is None:
+                    raise RuntimeError("no_new_row")
+                if not _select_available_rate(
+                    page, row_index=new_idx, rate_dollars=premium_rate
+                ):
+                    raise RuntimeError("no_rate_pick")
+                page.wait_for_timeout(600)
+                _fill_grid_amount(
+                    page, employee=name, col_id="REGH",
+                    amount=premium, row_index=new_idx,
+                )
+                _fill_grid_amount(
+                    page, employee=name, col_id="REGH",
+                    amount=keep, row_index=base_idx,
+                )
+                page.wait_for_timeout(600)
+                after = _ag_enter_page_hours(page).get(name) or {}
+                total_ok = abs(float(after.get("reg") or 0) - base_reg) < 0.011
+                if not total_ok:
+                    raise RuntimeError(
+                        f"total_changed before={base_reg} after={after.get('reg')}"
+                    )
+                applied.append(name)
+                print(
+                    f"[adp_payroll_draft] BREADCRUMB solo_rate2_applied {name!r} "
+                    f"rate1={keep} rate2={premium} total={base_reg}",
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                failed.append(f"{name}: {exc}")
+                print(
+                    f"[adp_payroll_draft] BREADCRUMB solo_rate2_failed {name!r} "
+                    f"{type(exc).__name__}: {exc} — CHECK THE DRAFT IN ADP",
+                    flush=True,
+                )
+        nxt = page.locator("[data-test-id='pagination-chevron-right']").first
+        try:
+            if nxt.is_visible() and nxt.is_enabled():
+                nxt.click()
+                page.wait_for_timeout(1_000)
+                continue
+        except Exception:  # noqa: BLE001
+            break
+        break
+
+    return {
+        "applied": applied,
+        "failed": failed,
+        "premium_hours": round(sum(wanted.values()), 2),
+    }
+
+
+def _new_row_index_for(page, *, employee: str, exclude: str) -> str | None:
+    """The row-index of an employee's newly added line item."""
+    for row in _ag_grid_rows(page):
+        if name_key(row.get("employee") or "") != name_key(employee):
+            continue
+        idx = str(row.get("row_index"))
+        if idx != exclude:
+            return idx
+    return None
+
+
 def _preview_pay_rows(page) -> dict[str, dict[str, float]]:
     raw = page.evaluate(
         """() => {
@@ -1604,6 +1893,31 @@ def run_live_preview(
                 )
             for lab in _visible_action_labels(page):
                 print(f"[adp_payroll_draft] after_import control {lab!r}")
+            if fill_ok and solo_rate2_enabled():
+                # Only after the hours guardrail passed: the split rewrites the
+                # Regular cell, and doing that on a grid we already know disagrees
+                # with the console would compound one wrong number with another.
+                rate2 = _apply_solo_rate2(
+                    page, packet, premium_rate=_solo_premium_rate(store)
+                )
+                print(
+                    f"[adp_payroll_draft] BREADCRUMB solo_rate2 "
+                    f"applied={len(rate2['applied'])} failed={len(rate2['failed'])} "
+                    f"hours={rate2['premium_hours']}"
+                )
+                if rate2["failed"]:
+                    guardrail_fails = guardrail_fails + [
+                        f"solo_rate2:{f}" for f in rate2["failed"]
+                    ]
+                shots.append(screenshot_preview(page, "after-solo-rate2"))
+            elif fill_ok and any(
+                float(r.solo_premium_hours or 0) > 0 for r in packet
+            ):
+                print(
+                    "[adp_payroll_draft] BREADCRUMB solo_rate2_off "
+                    "set BHAGA_ADP_SOLO_RATE2=1 to key it automatically; "
+                    "the rate-1/rate-2 lines are printed above for manual keying"
+                )
             if fill_ok:
                 nfill = _fill_money_lines(page, packet)
                 print(f"[adp_payroll_draft] filled_fields={nfill}")

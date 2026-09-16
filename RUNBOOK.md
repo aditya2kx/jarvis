@@ -212,9 +212,22 @@ gcloud scheduler jobs describe bhaga-payroll-draft --location=us-central1
 
 ### Solo-shift premium — keying the second rate into ADP (Issue #309)
 
-Employees on the eligible base rate earn a higher rate for hours they worked **alone**. BHAGA
-computes those hours; it does **not** type hours into ADP (invariant 6), so the second rate is keyed
-by the operator during the normal payroll review.
+Employees on the eligible base rate earn a higher rate for hours they worked **alone**. BHAGA computes
+those hours. There are two ways they reach ADP:
+
+| | `BHAGA_ADP_SOLO_RATE2=1` | default (flag off) |
+|---|---|---|
+| Who keys the rate-2 line | the payroll draft | the operator |
+| When | after the hours guardrail passes, before Preview | during the normal payroll review |
+| Failure mode | reported per employee (`BREADCRUMB solo_rate2_failed`), never retried | none — nothing is typed |
+
+The flag is **off** by default because this is the only path that rewrites *hours* on a live draft
+(every other fill is a money column), so a selector drift pays the wrong number rather than erroring.
+Approve/Submit/Save remain forbidden either way — the operator still submits.
+
+**The sync check is the same in both cases.** Console `Est. total` includes the premium, so if the
+rate-2 lines never landed in ADP, `Total pay` will read short of the ADP Preview gross by exactly the
+premium and `/payroll` flags it under the headline. A green match means ADP has the premium.
 
 The four tunables live in `bhaga.store_config` — change them with `/bhaga-cloud config set`, never a
 code deploy (user-preferences #29):
@@ -241,7 +254,8 @@ that is the screen to key from — and the **Labor** page has the day-grain "Sol
 `Solo hrs` there is already clamped to regular (non-OT) hours, so it is the rate-2 number verbatim.
 Solo premium is included in `Est. total` but not in `Est. wages`, which stays hours × base rate.
 
-In ADP **Enter payroll**, for each listed employee:
+To key it manually (or to check what the automation did), in ADP **Enter payroll**, for each listed
+employee:
 
 1. Confirm the premium rate exists on their profile: People → Payroll info → **Add Pay Rate**. This
    is a one-time setup per employee; ADP shows it in the grid as **Available Rates**.
@@ -253,8 +267,11 @@ In ADP **Enter payroll**, for each listed employee:
    equal the imported timecard. The breadcrumb above prints both numbers so this is a transcription,
    not a calculation.
 
-Verified against the live grid 2026-09-15: an employee with two rates shows a `Select Available Rates`
-control listing both, and `Add row` produces the second line item.
+Verified against the live grid 2026-09-15/16: an employee with two rates shows a `Select Available
+Rates` control listing both, and `Add row` produces the second line item. Note the collapsed cell shows
+only the **primary** rate even when a second is saved on the profile — Willingham's cell read
+`$15.2500 / hr` twice while the opened selector listed both `$15.2500` and `$16.2500`. So confirm the
+rate through the selector, never by reading the cell.
 
 > Two-rate weeks that cross 40h need FLSA weighted-average overtime, which BHAGA's *estimate* does not
 > yet compute — tracked in issue #315. ADP itself computes the real paycheck, so this affects the

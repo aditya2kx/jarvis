@@ -12,8 +12,10 @@ from skills.adp_run_automation.payroll_draft_backend import (
     header_index,
     hours_guardrail_failures,
     packet_from_view_rows,
+    rate2_split,
     run_draft,
     solo_premium_keying_lines,
+    solo_rate2_enabled,
     wage_guardrail_failures,
 )
 
@@ -292,6 +294,185 @@ def grid_row(employee: str, *, row_index: str, rate: float, reg: float = 0.0,
         "employee": employee, "row_index": row_index, "rate": rate,
         "reg": reg, "pers": pers, "hol": hol, "ot": ot,
     }
+
+
+class TestRate2Split(unittest.TestCase):
+    """#309: splitting ADP's Regular hours across the base and premium rates."""
+
+    def test_the_two_legs_always_resum_to_adps_regular_hours(self):
+        keep, premium = rate2_split(adp_regular_hours=34.75, solo_hours=4.75)
+        self.assertEqual((keep, premium), (30.0, 4.75))
+        self.assertAlmostEqual(keep + premium, 34.75, places=2)
+
+    def test_no_solo_hours_leaves_regular_untouched(self):
+        self.assertEqual(rate2_split(adp_regular_hours=20.0, solo_hours=0), (20.0, 0.0))
+
+    def test_solo_above_adps_regular_is_clamped_not_added(self):
+        # Punches moved after the model ran. Keying 36h of premium against 30h of
+        # Regular would inflate total paid hours; the premium absorbs all 30.
+        keep, premium = rate2_split(adp_regular_hours=30.0, solo_hours=36.0)
+        self.assertEqual((keep, premium), (0.0, 30.0))
+        self.assertAlmostEqual(keep + premium, 30.0, places=2)
+
+    def test_zero_regular_never_produces_a_premium_line(self):
+        self.assertEqual(rate2_split(adp_regular_hours=0, solo_hours=5), (0.0, 0.0))
+
+    def test_negative_inputs_are_floored(self):
+        self.assertEqual(rate2_split(adp_regular_hours=-4, solo_hours=-2), (0.0, 0.0))
+
+
+class TestSoloRate2Flag(unittest.TestCase):
+    """The split rewrites live payroll hours, so it must be opt-in."""
+
+    def test_off_by_default(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(solo_rate2_enabled())
+
+    def test_on_only_for_truthy_values(self):
+        for val, want in (
+            ("1", True), ("true", True), ("YES", True),
+            ("0", False), ("", False), ("no", False),
+        ):
+            with patch.dict("os.environ", {"BHAGA_ADP_SOLO_RATE2": val}, clear=True):
+                self.assertIs(solo_rate2_enabled(), want, val)
+
+
+class TestApplySoloRate2(unittest.TestCase):
+    """#309: the live grid sequence that moves hours onto the premium rate."""
+
+    MOD = "skills.adp_run_automation.payroll_draft_backend"
+    NAME = "Willingham, Brooke"
+
+    class _Page:
+        """Enough of a Playwright page for the orchestrator: no next page."""
+
+        def wait_for_timeout(self, _ms):
+            return None
+
+        def locator(self, _sel):
+            class _L:
+                first = None
+
+                def __getattr__(self, _n):
+                    raise RuntimeError("no pagination in this fixture")
+
+            return _L()
+
+    def _packet(self, solo=4.75):
+        rows = [{
+            "employee": self.NAME,
+            "labor_type": "Part-time",
+            "hours_worked": 34.75,
+            "ot_hours": 0,
+            "wage_rate_dollars": 15.25,
+            "tips_allocated": 0,
+            "review_bonus": 0,
+            "recognition_bonus": 0,
+            "perks": 0,
+            "solo_hours": solo,
+            "solo_eligible": True,
+        }]
+        with patch(f"{self.MOD}._merge_solo_hours", side_effect=lambda r, _p: r):
+            return packet_from_view_rows(rows)
+
+    def _run(self, grid_states, **over):
+        """Run the orchestrator against a scripted sequence of grid reads."""
+        calls: list[tuple] = []
+        states = list(grid_states)
+
+        def _grid(_page):
+            return states.pop(0) if len(states) > 1 else states[0]
+
+        def _fill(page, *, employee, col_id, amount, row_index=None):
+            calls.append(("fill", row_index, amount))
+            return True
+
+        patches = {
+            "_ag_enter_page_hours": _grid,
+            "_open_row_action_menu": lambda p, *, row_index: calls.append(
+                ("menu", row_index)
+            ) is None,
+            "_click_menu_item": lambda p, label: calls.append(("item", label)) is None,
+            "_new_row_index_for": lambda p, *, employee, exclude: "5",
+            "_select_available_rate": lambda p, *, row_index, rate_dollars: calls.append(
+                ("rate", row_index, rate_dollars)
+            ) is None,
+            "_fill_grid_amount": _fill,
+            **over,
+        }
+        with patch.multiple(self.MOD, **{k: v for k, v in patches.items()}):
+            from skills.adp_run_automation.payroll_draft_backend import (
+                _apply_solo_rate2,
+            )
+
+            out = _apply_solo_rate2(
+                self._Page(), self._packet(), premium_rate=16.25
+            )
+        return out, calls
+
+    def _one_row_grid(self, reg=34.75):
+        return {self.NAME: {
+            "reg": reg, "hours": reg, "ot": 0.0, "rate": 15.25,
+            "rows": [{"row_index": "4", "reg": reg, "ot": 0.0}],
+        }}
+
+    def test_premium_row_is_filled_before_the_base_row_is_reduced(self):
+        # Order matters on a crash: hours too high trips the guardrail, whereas
+        # reducing first would leave a short paycheck that looks self-consistent.
+        out, calls = self._run([self._one_row_grid(), self._one_row_grid()])
+        fills = [c for c in calls if c[0] == "fill"]
+        self.assertEqual(fills, [("fill", "5", 4.75), ("fill", "4", 30.0)])
+        self.assertEqual(out["applied"], [self.NAME])
+        self.assertEqual(out["failed"], [])
+
+    def test_adds_the_row_then_picks_the_premium_rate_on_it(self):
+        _out, calls = self._run([self._one_row_grid(), self._one_row_grid()])
+        self.assertEqual(calls[0], ("menu", "4"))
+        self.assertEqual(calls[1], ("item", "Add row"))
+        self.assertEqual(calls[2], ("rate", "5", 16.25))
+
+    def test_an_already_split_employee_is_skipped_not_split_again(self):
+        # Rerunning against the same draft must not pay the uplift twice.
+        already = {self.NAME: {
+            "reg": 34.75, "hours": 34.75, "ot": 0.0, "rate": 15.25,
+            "rows": [
+                {"row_index": "4", "reg": 30.0, "ot": 0.0},
+                {"row_index": "5", "reg": 4.75, "ot": 0.0},
+            ],
+        }}
+        out, calls = self._run([already])
+        self.assertEqual(out["failed"], [])
+        self.assertEqual([c for c in calls if c[0] == "fill"], [])
+
+    def test_a_changed_total_is_reported_as_a_failure(self):
+        # Verification re-reads the grid; 34.75 -> 39.50 means the base row was
+        # never reduced, so the employee would be overpaid.
+        broken = {self.NAME: {
+            "reg": 39.50, "hours": 39.50, "ot": 0.0, "rate": 15.25,
+            "rows": [{"row_index": "4", "reg": 39.50, "ot": 0.0}],
+        }}
+        out, _calls = self._run([self._one_row_grid(), broken])
+        self.assertEqual(out["applied"], [])
+        self.assertEqual(len(out["failed"]), 1)
+        self.assertIn("total_changed", out["failed"][0])
+
+    def test_a_missing_add_row_item_fails_without_touching_hours(self):
+        out, calls = self._run(
+            [self._one_row_grid(), self._one_row_grid()],
+            _click_menu_item=lambda p, label: False,
+        )
+        self.assertEqual(out["applied"], [])
+        self.assertIn("no_add_row", out["failed"][0])
+        self.assertEqual([c for c in calls if c[0] == "fill"], [])
+
+    def test_nobody_eligible_is_a_no_op(self):
+        with patch(f"{self.MOD}._merge_solo_hours", side_effect=lambda r, _p: r):
+            from skills.adp_run_automation.payroll_draft_backend import (
+                _apply_solo_rate2,
+            )
+
+            out = _apply_solo_rate2(self._Page(), [], premium_rate=16.25)
+        self.assertEqual(out, {"applied": [], "failed": [], "premium_hours": 0.0})
 
 
 class TestTwoRateGridRows(unittest.TestCase):

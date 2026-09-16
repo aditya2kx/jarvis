@@ -1,4 +1,14 @@
-## 2026-09-16 — Garage open failed after 24 h: Aladdin token never refreshed (Issue #310)
+## 2026-09-16 — Garage Gmail quiet while Tesla is already home (Issue #316)
+
+**Scope:** Burst of Big Peach emails (simulated 530 m, 0 m home pin, already-open, Aladdin 401 retries) while Dhanno was parked. Inbox was unusable.
+
+**Key changes:** Gmail only on a real live `opened`. `/simulate/enter` with last Tesla metres already inside the fence is `skip_already_inside`. Firestore persists `last_open_ts` so cooldown survives Cloud Run restart. `open_error` arms cooldown; already-open / simulate / errors stay in Cloud Logging.
+
+**Decision:** keep one email for a real door command; do not mail evidence/simulate or auth-retry noise.
+
+**Evidence:** 40 garage unit tests; `should_email` matrix; no live `simulate/enter` (opens Big Peach).
+
+
 
 **Scope:** Two geofence crossings (267 m, enter 300 m) were detected but Big Peach did not open — failure emails showed `HTTP 401 https://api.smartgarage.systems/devices`. Tesla/telemetry were fine; Aladdin Cognito AccessTokens last exactly 24 h and the always-on Cloud Run process cached one login for the whole instance lifetime. Opens succeeded until ~09-15 03:50 UTC, then every enter 401'd.
 

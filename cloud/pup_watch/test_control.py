@@ -1,0 +1,355 @@
+import base64
+from email.utils import formatdate
+
+import pytest
+
+from cloud.pup_watch import control, notify, persist, worker
+from cloud.pup_watch.config import Settings
+
+NOW = 1_700_000_000.0
+ME = "owner@example.com"
+PARTNER = "partner@example.com"
+GOOD_AUTH = "mx.google.com; spf=pass smtp.mailfrom=owner@example.com; dkim=pass header.i=@example.com"
+
+
+@pytest.fixture(autouse=True)
+def _recipients(monkeypatch):
+    monkeypatch.setenv("PUPWATCH_NOTIFY_TO", f"{ME},{PARTNER}")
+
+
+@pytest.fixture
+def store(monkeypatch):
+    """In-memory stand-in for the Firestore docs."""
+    docs = {"config": {}, "session": {}, "state": {}}
+    monkeypatch.setattr(persist, "_load", lambda doc: dict(docs.get(doc, {})))
+    monkeypatch.setattr(persist, "_save", lambda doc, payload: docs[doc].update(payload))
+    return docs
+
+
+def _b64(text: str) -> str:
+    return base64.urlsafe_b64encode(text.encode()).decode()
+
+
+def _message(body, *, sender=ME, subject="Re: Pup is out in the S/M YARD",
+             auth=GOOD_AUTH, labels=("INBOX", "UNREAD"), ts=NOW, ours=False):
+    headers = [
+        {"name": "From", "value": f"Someone <{sender}>"},
+        {"name": "Subject", "value": subject},
+        {"name": "Authentication-Results", "value": auth},
+        {"name": "Date", "value": formatdate(ts)},
+    ]
+    if ours:
+        headers.append({"name": notify.MARKER_HEADER, "value": "1"})
+    return {
+        "id": "m1",
+        "labelIds": list(labels),
+        "internalDate": str(int(ts * 1000)),
+        "payload": {
+            "mimeType": "text/plain",
+            "body": {"data": _b64(body)},
+            "headers": headers,
+        },
+    }
+
+
+class FakeGmail:
+    """Records modify calls so idempotency is observable."""
+
+    def __init__(self, messages):
+        self.messages = messages
+        self.marked_read = []
+
+    def api(self, access, path, *, method="GET", payload=None):
+        if path.startswith("messages?"):
+            return {"messages": [{"id": m["id"]} for m in self.messages]}
+        if "/modify" in path:
+            self.marked_read.append(path.split("/")[1])
+            return {}
+        mid = path.split("/")[1].split("?")[0]
+        return next(m for m in self.messages if m["id"] == mid)
+
+
+@pytest.fixture
+def gmail(monkeypatch):
+    def install(messages):
+        fake = FakeGmail(messages)
+        monkeypatch.setattr(control, "_api", fake.api)
+        monkeypatch.setattr(notify, "access_token", lambda: "tok")
+        monkeypatch.setattr(control, "_confirm", lambda access, cmd, summary: None)
+        return fake
+    return install
+
+
+# --- command parsing -------------------------------------------------------
+
+@pytest.mark.parametrize("text,expected", [
+    ("start", ("start", None)),
+    ("Start", ("start", None)),
+    ("STOP", ("stop", None)),
+    ("status", ("status", None)),
+    ("start 4h", ("start", 4.0)),
+    ("start 2 hours", ("start", 2.0)),
+    ("start 1.5hr", ("start", 1.5)),
+    ("pup stop", ("stop", None)),
+    ("pup-watch start", None),  # only "pup " / "pup-" prefix, not the full name
+])
+def test_parse_command_variants(text, expected):
+    assert control.parse_command(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "stopped raining, he loved it",
+    "please stop monitoring",
+    "I want to start thinking about dinner",
+    "",
+    "thanks!",
+])
+def test_parse_command_ignores_prose_that_merely_contains_a_keyword(text):
+    """A bare keyword anywhere in a chatty reply must not control the system."""
+    assert control.parse_command(text) is None
+
+
+def test_first_unquoted_line_skips_gmails_quoted_reply():
+    body = "\n".join([
+        "", "stop", "",
+        "On Wed, Sep 16, 2026 at 10:15 AM Someone wrote:",
+        "> Spotted at: 10:15:25 AM CDT",
+        "> start",
+    ])
+    assert control._first_unquoted_line(body) == "stop"
+
+
+def test_quoted_command_alone_is_not_a_command():
+    """The quoted original must not re-trigger what it originally reported."""
+    body = "On Wed wrote:\n> start 9h\n"
+    assert control.parse_command(control._first_unquoted_line(body)) is None
+
+
+def test_plain_text_walks_multipart():
+    payload = {"mimeType": "multipart/alternative", "parts": [
+        {"mimeType": "text/html", "body": {"data": _b64("<b>stop</b>")}},
+        {"mimeType": "text/plain", "body": {"data": _b64("stop")}},
+    ]}
+    assert control.plain_text(payload) == "stop"
+
+
+# --- authentication gates --------------------------------------------------
+
+@pytest.mark.parametrize("header,ok", [
+    (GOOD_AUTH, True),
+    ("spf=pass; dkim=fail", False),
+    ("spf=softfail; dkim=pass", False),
+    ("", False),
+    ("spf=pass", False),
+])
+def test_email_authenticated_requires_both_spf_and_dkim(header, ok):
+    assert control.email_authenticated(header) is ok
+
+
+def test_sender_address_extracts_and_lowercases():
+    assert control.sender_address("Adi <Owner@Example.COM>") == "owner@example.com"
+    assert control.sender_address("owner@example.com") == "owner@example.com"
+
+
+def test_stranger_cannot_control_monitoring(store, gmail):
+    fake = gmail([_message("start", sender="attacker@evil.example.com")])
+    assert control.find_commands("tok", settings=Settings(), now=NOW) == []
+
+
+def test_spoofed_sender_without_dkim_is_refused_and_consumed(store, gmail):
+    """Anyone can forge From; only Gmail can write Authentication-Results."""
+    fake = gmail([_message("stop", auth="spf=fail; dkim=fail")])
+    assert control.find_commands("tok", settings=Settings(), now=NOW) == []
+    # Consumed, so it cannot be retried a minute later.
+    assert fake.marked_read == ["m1"]
+
+
+def test_auth_gate_can_be_relaxed_for_tests_only(store, gmail):
+    gmail([_message("stop", auth="")])
+    found = control.find_commands(
+        "tok", settings=Settings(control_require_email_auth=False), now=NOW)
+    assert [c.action for c in found] == ["stop"]
+
+
+def test_our_own_sighting_email_is_ignored(store, gmail):
+    """Our mail lands in INBOX too — it must never look like a command."""
+    gmail([_message("start", labels=("INBOX", "UNREAD", "SENT"), ours=True)])
+    assert control.find_commands("tok", settings=Settings(), now=NOW) == []
+
+
+def test_operator_reply_from_the_sending_mailbox_still_counts(store, gmail):
+    """Regression: the operator sends FROM the notification mailbox, so his own
+    reply is labelled SENT+INBOX. Keying "ignore our own mail" on the SENT label
+    would have silently dropped every command he issued."""
+    gmail([_message("stop", labels=("INBOX", "UNREAD", "SENT"), ours=False)])
+    found = control.find_commands("tok", settings=Settings(), now=NOW)
+    assert [c.action for c in found] == ["stop"]
+
+
+def test_self_sent_mail_needs_no_spf_because_gmail_writes_none(store, gmail):
+    """Measured 2026-09-16: Gmail adds no Authentication-Results to mail an
+    account sends to itself, so an SPF/DKIM-only gate refused the operator's own
+    command. The SENT label is the stronger proof — only the account holder can
+    produce one."""
+    gmail([_message("stop", auth="", labels=("INBOX", "UNREAD", "SENT"))])
+    found = control.find_commands("tok", settings=Settings(), now=NOW)
+    assert [c.action for c in found] == ["stop"]
+
+
+def test_sent_label_exemption_does_not_extend_to_strangers(store, gmail):
+    """An unauthenticated stranger must not benefit from the SENT exemption —
+    the allowlist is checked first, and SENT is unforgeable from outside."""
+    gmail([_message("stop", sender="attacker@evil.example.com", auth="",
+                    labels=("INBOX", "UNREAD", "SENT"))])
+    assert control.find_commands("tok", settings=Settings(), now=NOW) == []
+
+
+def test_outgoing_mail_carries_the_marker_header():
+    msg = notify.build_message([ME], ME, "Pup is out", "body")
+    assert msg[notify.MARKER_HEADER] == "1"
+
+
+def test_stale_command_is_skipped_and_consumed(store, gmail):
+    fake = gmail([_message("start")])
+    found = control.find_commands("tok", settings=Settings(), now=NOW + 3600)
+    assert found == []
+    assert fake.marked_read == ["m1"]
+
+
+def test_date_header_without_a_timezone_is_read_as_utc(store, gmail):
+    """A "-0000" Date parses naive; assuming local time skews staleness by the
+    UTC offset, which on this laptop silently un-stales a 6h-old command."""
+    msg = _message("start")
+    for h in msg["payload"]["headers"]:
+        if h["name"] == "Date":
+            h["value"] = formatdate(NOW)  # ends in "-0000"
+    fake = gmail([msg])
+    assert control.find_commands("tok", settings=Settings(), now=NOW + 3600) == []
+    assert fake.marked_read == ["m1"]
+
+
+def test_partner_can_also_control(store, gmail):
+    gmail([_message("stop", sender=PARTNER)])
+    found = control.find_commands("tok", settings=Settings(), now=NOW)
+    assert [(c.action, c.sender) for c in found] == [("stop", PARTNER)]
+
+
+def test_no_allowlist_means_no_control(store, gmail, monkeypatch):
+    monkeypatch.setenv("PUPWATCH_NOTIFY_TO", "")
+    gmail([_message("stop")])
+    assert control.find_commands("tok", settings=Settings(), now=NOW) == []
+
+
+# --- applying commands -----------------------------------------------------
+
+def test_apply_start_opens_a_session(store):
+    summary = control.apply(
+        control.Command("start", 3.0, ME, "m1", "s", NOW), settings=Settings(), now=NOW)
+    assert store["session"]["active"] is True
+    assert store["session"]["stop_after_ts"] == NOW + 3 * 3600
+    assert store["session"]["started_by"] == f"email:{ME}"
+    assert "started" in summary
+
+
+def test_apply_start_is_capped_at_session_max_hours(store):
+    control.apply(control.Command("start", 999.0, ME, "m1", "s", NOW),
+                  settings=Settings(), now=NOW)
+    assert store["session"]["stop_after_ts"] == NOW + Settings().session_max_hours * 3600
+
+
+def test_apply_stop_closes_the_session(store):
+    store["session"].update({"active": True})
+    summary = control.apply(control.Command("stop", None, ME, "m1", "s", NOW),
+                            settings=Settings(), now=NOW)
+    assert store["session"]["active"] is False
+    assert store["session"]["stopped_by"] == f"email:{ME}"
+    assert summary == "monitoring stopped"
+
+
+def test_apply_status_reports_off_then_on(store):
+    off = control.apply(control.Command("status", None, ME, "m1", "s", NOW),
+                        settings=Settings(), now=NOW)
+    assert off == "monitoring is OFF"
+    store["session"].update({"active": True, "stop_after_ts": NOW + 3600})
+    on = control.apply(control.Command("status", None, ME, "m1", "s", NOW),
+                       settings=Settings(), now=NOW)
+    assert on.startswith("monitoring is ON")
+    assert "no alert yet" in on
+
+
+def test_apply_start_clears_the_previous_outings_cooldown(store):
+    store["state"].update({"episode_active": True, "last_notified_ts": NOW - 60})
+    control.apply(control.Command("start", None, ME, "m1", "s", NOW),
+                  settings=Settings(), now=NOW)
+    assert store["state"]["episode_active"] is False
+    assert store["state"]["last_notified_ts"] is None
+
+
+# --- end-to-end through poll_commands --------------------------------------
+
+def test_poll_commands_consumes_exactly_once(store, gmail):
+    fake = gmail([_message("start 2h")])
+    applied = control.poll_commands(settings=Settings(), now=NOW)
+    assert [a["action"] for a in applied] == ["start"]
+    assert fake.marked_read == ["m1"]
+    assert store["session"]["active"] is True
+
+
+def test_poll_commands_disabled_by_config(store, gmail):
+    fake = gmail([_message("start")])
+    assert control.poll_commands(settings=Settings(control_email_enabled=False), now=NOW) == []
+    assert store["session"] == {}
+
+
+def test_poll_commands_survives_a_gmail_outage(store, monkeypatch):
+    monkeypatch.setattr(notify, "access_token", lambda: "tok")
+    monkeypatch.setattr(control, "_api", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert control.poll_commands(settings=Settings(), now=NOW) == []
+
+
+def test_poll_commands_without_gmail_credentials_is_silent(store, monkeypatch):
+    for k in ("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    assert control.poll_commands(settings=Settings(), now=NOW) == []
+
+
+def test_failed_acknowledgement_does_not_undo_the_command(store, gmail, monkeypatch):
+    gmail([_message("stop")])
+    store["session"].update({"active": True})
+    monkeypatch.setattr(control, "_confirm",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("smtp down")))
+    # poll_commands documents that it never raises: one tick must not be aborted
+    # by a failed acknowledgement, or a stop would look like it did not happen.
+    applied = control.poll_commands(settings=Settings(), now=NOW)
+    assert [a["action"] for a in applied] == ["stop"]
+    # The stop already happened; the ack is the only thing that failed.
+    assert store["session"]["active"] is False
+
+
+def test_confirmation_goes_to_both_recipients(store, monkeypatch):
+    sent = {}
+    monkeypatch.setattr(notify, "gmail_send", lambda access, msg: sent.update({"msg": msg}))
+    control._confirm("tok", control.Command("stop", None, ME, "m1", "s", NOW), "monitoring stopped")
+    assert sent["msg"]["to"] == f"{ME}, {PARTNER}"
+    assert "monitoring stopped" in sent["msg"]["subject"]
+
+
+# --- the reason this runs before the session check -------------------------
+
+def test_emailed_start_wakes_an_idle_tick(store, gmail, monkeypatch):
+    """The whole point: "start" must work when nothing is running."""
+    gmail([_message("start 1h")])
+    monkeypatch.setattr(worker, "evaluate_camera",
+                        lambda camera, settings: worker.CameraResult(camera=camera.name))
+    out = worker.tick(now=NOW)
+    assert [c["action"] for c in out["commands"]] == ["start"]
+    assert out["polled"] is True          # the same tick already monitors
+    assert store["session"]["active"] is True
+
+
+def test_emailed_stop_takes_effect_on_the_same_tick(store, gmail):
+    store["session"].update({"active": True, "started_ts": NOW, "stop_after_ts": NOW + 3600})
+    gmail([_message("stop")])
+    out = worker.tick(now=NOW)
+    assert out["polled"] is False
+    assert out["reason"] == "no_active_session"

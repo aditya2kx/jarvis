@@ -1,0 +1,7 @@
+flask==3.0.3
+gunicorn==22.0.0
+google-cloud-firestore==2.16.1
+google-cloud-storage==2.16.0
+onnxruntime==1.29.0
+pillow==10.4.0
+numpy==2.1.3

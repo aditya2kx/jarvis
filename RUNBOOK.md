@@ -235,8 +235,13 @@ python3 -m skills.adp_run_automation.payroll_draft_backend \
 #   <Employee>: rate-1 <base hours>h, rate-2 <solo hours>h
 ```
 
-The same split is on the console Labor page ("Solo vs team hours") and comes from
-`vw_solo_hours_period`. In ADP **Enter payroll**, for each listed employee:
+The console shows the same numbers, both from `vw_solo_hours_period`: **Payroll & People** has a
+`Solo premium` headline plus per-employee `Solo hrs` / `Solo premium` columns for the selected period —
+that is the screen to key from — and the **Labor** page has the day-grain "Solo vs team hours" split.
+`Solo hrs` there is already clamped to regular (non-OT) hours, so it is the rate-2 number verbatim.
+Solo premium is included in `Est. total` but not in `Est. wages`, which stays hours × base rate.
+
+In ADP **Enter payroll**, for each listed employee:
 
 1. Confirm the premium rate exists on their profile: People → Payroll info → **Add Pay Rate**. This
    is a one-time setup per employee; ADP shows it in the grid as **Available Rates**.

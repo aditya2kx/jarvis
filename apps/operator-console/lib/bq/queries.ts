@@ -1654,6 +1654,70 @@ export interface PayrollPeriodRow {
   [key: string]: unknown;
 }
 
+/** Per-employee solo-shift premium for one pay period (migration 071, #309). */
+export interface PayrollSoloPremiumRow {
+  employee: string;
+  /** Authoritative grain (bhaga.mdc invariant 11); hours are derived from it. */
+  solo_minutes: number;
+  solo_hours: number;
+  team_hours: number;
+  total_hours: number;
+  base_rate_dollars: number | null;
+  eligible: boolean;
+  premium_cents: number;
+  [key: string]: unknown;
+}
+
+/**
+ * Solo hours + premium owed for a pay period, at the grain payroll is keyed at.
+ *
+ * Reads `vw_solo_hours_period` rather than re-rolling the daily table so the
+ * console and the RUNBOOK keying command cannot disagree: the view assigns each
+ * day to the latest `pay_period_start` at or before it and deliberately ignores
+ * `pay_period_end`, which on an open period is truncated to the model's data
+ * window and would drop the most recently worked solo hours.
+ */
+export function payrollSoloPremium(
+  periodStart: string,
+): Promise<PayrollSoloPremiumRow[]> {
+  return q<PayrollSoloPremiumRow>(
+    `SELECT
+       employee, solo_minutes, solo_hours, team_hours, total_hours,
+       base_rate_dollars, eligible, premium_cents
+     FROM ${fq("vw_solo_hours_period")}
+     WHERE period_start = @periodStart
+     ORDER BY solo_hours DESC, employee`,
+    { periodStart: dateParam(periodStart) },
+  );
+}
+
+/**
+ * Solo premium uplift in dollars per hour, from `store_config` (#309).
+ *
+ * Read live rather than hardcoded because the rates are operator tunables
+ * (user-preferences #29) — a policy change must not need a console deploy.
+ * Returns null when either key is unset, which makes the caller fall back to
+ * the stored per-day cents instead of inventing a rate.
+ */
+export async function soloPremiumDeltaDollars(
+  store: string,
+): Promise<number | null> {
+  const rows = await q<{ key: string; value: number | null }>(
+    `SELECT key, SAFE_CAST(value AS FLOAT64) AS value
+     FROM ${fq("store_config")}
+     WHERE store = @store
+       AND key IN ('solo_shift_premium_rate_dollars',
+                   'solo_shift_eligible_base_rate_dollars')`,
+    { store },
+  );
+  const get = (k: string) => rows.find((r) => r.key === k)?.value ?? null;
+  const premium = get("solo_shift_premium_rate_dollars");
+  const base = get("solo_shift_eligible_base_rate_dollars");
+  if (premium == null || base == null) return null;
+  const delta = premium - base;
+  return delta > 0 ? delta : null;
+}
+
 export function payrollPeriod(periods = 2): Promise<PayrollPeriodRow[]> {
   return q<PayrollPeriodRow>(
     `SELECT * FROM ${fq("vw_model_payroll_period")}

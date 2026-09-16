@@ -624,10 +624,14 @@ export default async function LaborPage({
                   <span className="font-medium text-foreground">Solo</span> hours are
                   minutes an employee was the only person punched in, in contiguous
                   blocks of at least the configured minimum — solo + team always equals
-                  total. Only employees on the eligible base rate earn the premium;
-                  anyone already above it accrues solo hours with no premium owed.
-                  Premium owed is what moves to the higher rate in ADP for the pay
-                  period — key it from the{" "}
+                  total. Solo hours accrue for everyone, but{" "}
+                  <span className="font-medium text-foreground">Premium</span> is only
+                  marked when the employee is on the eligible base rate{" "}
+                  <em>and</em> the hours fall on or after the policy&apos;s effective
+                  date — so someone on the eligible rate can still show no premium for
+                  solo hours worked before it, and anyone already above the rate never
+                  earns one. Premium owed is what moves to the higher rate in ADP for
+                  the pay period — key it from the{" "}
                   <span className="font-medium text-foreground">Payroll</span> page,
                   which is scoped to pay-period boundaries rather than this Period
                   filter.

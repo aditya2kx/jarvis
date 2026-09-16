@@ -29,8 +29,19 @@ Agreed decisions:
 
 Wording: `solo_hours` / `team_hours`, with `solo_hours + team_hours == total_hours`.
 
-Baseline measured from prod during jam (reproduce exactly in M2): **14.75 eligible solo
-hours → $14.76 premium** for 2026-09-07..2026-09-20 (9 of 14 days punched).
+Baseline measured from prod during jam: 14.75 eligible solo hours → $14.76 premium for
+2026-09-07..2026-09-20 (9 of 14 days punched).
+
+**Corrected during M2 to 12.23 eligible solo hours → $12.23 premium.** The jam figure was
+an ad-hoc estimate taken before D3 was applied — it did not count the manager toward
+occupancy. Worked example, 2026-09-14: Huynh punched 08:55–11:37 (2.70h) while Krause was
+in 06:30–15:15, covering the whole shift. The jam query scored those 2.70h as solo; under
+D3 Huynh was never alone, so she earns 0 solo minutes that day. Applying D3 alone accounts
+for roughly 12h of the difference across the cycle (ignoring the manager yields 24.42h);
+the 15-minute minimum block accounts for a further 0.65h (12.88h → 12.23h).
+
+The **shipped** number is the correct one. M2's pass criterion is therefore 12.23h /
+$12.23, not the jam figure, and the reconciliation identity must hold with zero breaches.
 
 ## Why the data supports this
 
@@ -358,8 +369,8 @@ python3 scripts/verify.py --full
 ```
 
 **Pass criterion:** all of the above green, plus prod reproduction — shipped code returns
-**14.75 eligible solo hours / $14.76** for 2026-09-07..2026-09-20, and this returns zero
-rows:
+**12.23 eligible solo hours / $12.23** for 2026-09-07..2026-09-20 (see the corrected
+baseline above; the jam figure predated D3), and this returns zero rows:
 
 ```bash
 python3 -c "

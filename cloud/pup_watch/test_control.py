@@ -318,8 +318,10 @@ def test_failed_acknowledgement_does_not_undo_the_command(store, gmail, monkeypa
     store["session"].update({"active": True})
     monkeypatch.setattr(control, "_confirm",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("smtp down")))
-    with pytest.raises(RuntimeError):
-        control.poll_commands(settings=Settings(), now=NOW)
+    # poll_commands documents that it never raises: one tick must not be aborted
+    # by a failed acknowledgement, or a stop would look like it did not happen.
+    applied = control.poll_commands(settings=Settings(), now=NOW)
+    assert [a["action"] for a in applied] == ["stop"]
     # The stop already happened; the ack is the only thing that failed.
     assert store["session"]["active"] is False
 

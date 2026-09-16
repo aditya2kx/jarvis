@@ -300,5 +300,8 @@ def poll_commands(*, settings: Settings, now: Optional[float] = None) -> list[di
             log.error("pup-watch fail reason=control_mark_read err=%r", e)
         log.info("pup-watch control action=%s sender=%s result=%s", cmd.action, cmd.sender, summary)
         applied.append({"action": cmd.action, "sender": cmd.sender, "result": summary})
-        _confirm(access, cmd, summary)
+        try:
+            _confirm(access, cmd, summary)
+        except Exception as e:  # noqa: BLE001 — the command already took effect
+            log.error("pup-watch fail reason=control_ack err=%r", e)
     return applied

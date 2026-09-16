@@ -17,6 +17,15 @@ FIELDS = {
 }
 
 
+def test_body_tells_the_operator_they_can_just_reply():
+    """The email is read on a phone at daycare; curl is not an option there."""
+    text = notify.body({"seen_ts": 1_700_000_000.0, "camera": "sm-yard",
+                        "dogs": 1, "persons": 0, "hits": 4, "frames": 4})
+    assert "Reply to this email" in text
+    for word in ("stop", "start", "status"):
+        assert f"  {word}" in text
+
+
 def test_build_message_puts_both_recipients_on_one_to_header():
     msg = notify.build_message(
         ["a@example.com", "b@example.com"], "a@example.com", "subj", "text"

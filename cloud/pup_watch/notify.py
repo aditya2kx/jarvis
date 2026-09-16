@@ -99,7 +99,13 @@ def body(fields: dict[str, Any]) -> str:
         "You will not get another email for this visit until he has been out of",
         "sight for a while, so this is one email per outing rather than per minute.",
         "",
-        "Stop monitoring:  POST /session/stop  (see cloud/pup_watch/README.md)",
+        # The reply path is the point of this email being an email: it is read
+        # on a phone at daycare, where nobody is going to run curl.
+        "Reply to this email to control monitoring:",
+        "  stop      stop watching",
+        "  start     watch for the rest of the day  (or 'start 4h')",
+        "  status    is it on, and when did it last alert",
+        "Put the word on the first line. Both of us are told when it changes.",
     ]
     return "\n".join(lines)
 

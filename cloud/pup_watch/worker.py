@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from . import episode, identify, notify, persist, stream, vision
+from . import control, episode, identify, notify, persist, stream, vision
 from .config import COCO_DOG, Camera, Settings, load_cameras, settings_with_overlay
 
 log = logging.getLogger("pup_watch")
@@ -151,6 +151,9 @@ def tick(*, now: Optional[float] = None) -> dict[str, Any]:
     """One scheduled poll across every configured camera."""
     now = time.time() if now is None else now
     settings = settings_with_overlay(persist.load_config())
+    # Before the session check, not after: an emailed "start" has to be able to
+    # wake a service that is currently doing nothing.
+    commands = control.poll_commands(settings=settings, now=now)
     session = persist.load_session()
 
     active, why = session_active(session, now=now, settings=settings)
@@ -158,7 +161,7 @@ def tick(*, now: Optional[float] = None) -> dict[str, Any]:
         if session.get("active") and why.startswith("session_expired"):
             persist.save_session({"active": False, "stopped_ts": now, "stopped_by": why})
             log.info("pup-watch session_auto_stopped reason=%s", why)
-        return {"polled": False, "reason": why}
+        return {"polled": False, "reason": why, "commands": commands}
 
     cameras = load_cameras()
     only = session.get("cameras")
@@ -227,6 +230,7 @@ def tick(*, now: Optional[float] = None) -> dict[str, Any]:
     return {
         "polled": True,
         "notified": notified,
+        "commands": commands,
         "cameras": [r.to_log() for r in results],
         "state": {k: state.get(k) for k in ("episode_active", "last_seen_ts", "last_notified_ts")},
     }

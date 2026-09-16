@@ -96,7 +96,7 @@ def test_send_sends_once_to_both_and_returns_true(monkeypatch):
     monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh")
     monkeypatch.setattr(notify, "_access_token", lambda *a: "token")
     sent = []
-    monkeypatch.setattr(notify, "_gmail_send", lambda access, msg: sent.append(msg))
+    monkeypatch.setattr(notify, "gmail_send", lambda access, msg: sent.append(msg))
     assert notify.send_sighting(FIELDS, image=b"\xff\xd8jpeg") is True
     assert len(sent) == 1
     assert sent[0]["to"] == "a@example.com, b@example.com"

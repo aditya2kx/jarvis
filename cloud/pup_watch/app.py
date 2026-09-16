@@ -16,7 +16,7 @@ from typing import Any
 
 from flask import Flask, jsonify, request
 
-from . import persist, worker
+from . import persist, sessions, worker
 from .config import load_cameras, notify_recipients, settings_with_overlay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -88,42 +88,22 @@ def session_start():
     payload = request.get_json(silent=True) or {}
     now = time.time()
     settings = settings_with_overlay(persist.load_config())
-    try:
-        hours = float(payload.get("hours") or settings.session_max_hours)
-    except (TypeError, ValueError):
-        hours = settings.session_max_hours
-    hours = max(0.25, min(hours, settings.session_max_hours))
     cameras = payload.get("cameras")
-    session = {
-        "active": True,
-        "started_ts": now,
-        "started_by": str(payload.get("by") or "operator"),
-        "stop_after_ts": now + hours * 3600,
-        "cameras": [str(c) for c in cameras] if isinstance(cameras, list) and cameras else None,
-        "stopped_ts": None,
-    }
-    persist.save_session(session)
-    # Clear episode bookkeeping so a fresh session can notify immediately
-    # instead of inheriting the previous outing's cooldown.
-    persist.save_state({
-        "episode_active": False,
-        "episode_started_ts": None,
-        "episode_ended_ts": None,
-        "last_seen_ts": None,
-        "last_notified_ts": None,
-    })
-    log.info("pup-watch session_started hours=%.2f cameras=%s", hours, session["cameras"])
-    return jsonify({"ok": True, "session": session, "hours": hours})
+    result = sessions.start(
+        hours=payload.get("hours"),
+        by=str(payload.get("by") or "operator"),
+        cameras=[str(c) for c in cameras] if isinstance(cameras, list) and cameras else None,
+        settings=settings,
+        now=now,
+    )
+    return jsonify({"ok": True, **result})
 
 
 @app.post("/session/stop")
 def session_stop():
     if not _authorised(request):
         return _deny()
-    now = time.time()
-    persist.save_session({"active": False, "stopped_ts": now, "stopped_by": "operator"})
-    log.info("pup-watch session_stopped")
-    return jsonify({"ok": True, "active": False})
+    return jsonify({"ok": True, **sessions.stop(by="operator", now=time.time())})
 
 
 if __name__ == "__main__":  # pragma: no cover — local dev only

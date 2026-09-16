@@ -263,7 +263,7 @@ def test_tick_without_session_does_no_work(store, monkeypatch):
     called = {"n": 0}
     monkeypatch.setattr(stream, "resolve_stream", lambda *a, **k: called.__setitem__("n", 1))
     out = worker.tick(now=NOW)
-    assert out == {"polled": False, "reason": "no_active_session"}
+    assert out == {"polled": False, "reason": "no_active_session", "commands": []}
     assert called["n"] == 0
 
 

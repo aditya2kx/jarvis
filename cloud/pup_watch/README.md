@@ -10,7 +10,12 @@ this worker can be both accurate and free.
 - **Camera:** public ipcamlive stream, no credentials. Source of truth for which
   yards to watch is [`cameras.json`](cameras.json).
 - **Latency:** up to 60s (one Cloud Scheduler tick).
-- **Cost:** $0/month inside the Cloud Run + Cloud Scheduler free tiers.
+- **Control:** reply `start`, `start 4h`, `stop` or `status` to any pup-watch
+  email — see [Controlling it by email](#controlling-it-by-email).
+- **Cost:** $0/month inside the Cloud Run + Cloud Scheduler free tiers, now at
+  roughly 16% of them rather than ~0: the mailbox poll makes every idle tick
+  cost ~1s of CPU instead of ~1ms (900 ticks/day × ~1.05s ≈ 28k of the 180k
+  free vCPU-seconds/month, measured 2026-09-16).
 - **Deploy:** [`.github/workflows/pup-watch-deploy.yml`](../../.github/workflows/pup-watch-deploy.yml)
 
 ## Pipeline
@@ -19,6 +24,7 @@ Ordered cheapest-first, so the expensive stages almost never run.
 
 | Stage | Cost | What it does |
 |---|---|---|
+| Control poll (`control.py`) | ~1s, every tick | Reads the mailbox for a start/stop reply |
 | Session check | ~1ms | Returns immediately unless monitoring is on |
 | Frame grab (`stream.py`) | ~8s wall | 4 frames, 2s apart, via ffmpeg from the HLS playlist |
 | Detection (`vision.py`) | ~270ms × 3 per frame | Full frame + 2 yard tiles; counts dogs and people |
@@ -98,6 +104,47 @@ A session auto-expires at `stop_after_ts`, and in any case after
 `session_max_hours`, so a forgotten session stops polling instead of running
 until the end of time.
 
+## Controlling it by email
+
+curl-with-a-token is not usable from a phone at daycare drop-off, so every tick
+also reads the notification mailbox and acts on a reply. **Reply to any
+pup-watch email** — a sighting or an earlier acknowledgement — with one of:
+
+| Reply | Effect |
+|---|---|
+| `start` | Monitor for the rest of the day (up to `session_max_hours`) |
+| `start 4h` | Monitor for 4 hours (`4`, `4h`, `4 hours`, `1.5hr` all parse) |
+| `stop` | Stop monitoring |
+| `status` | Whether monitoring is on, until when, and when it last alerted |
+
+The command must be the **first line** you type. A chatty reply like "stopped
+raining, he loved it" is deliberately not a command. `pup stop` also works, so a
+fresh email (not a reply) can bootstrap the very first session before any
+sighting mail exists. Every accepted command is acknowledged by email to **both**
+recipients, so one person cannot silently switch monitoring off for the other.
+
+Three gates must all pass, because "anyone who learns the address can switch off
+the dog camera" is not an acceptable failure mode:
+
+1. **Sender is in `PUPWATCH_NOTIFY_TO`.** Nobody else can command it.
+2. **The message is provably from that person.** Either it carries the `SENT`
+   label — only the account holder can produce one — or Gmail recorded
+   `spf=pass` *and* `dkim=pass`. A forged `From` alone gets nothing: Gmail
+   writes `Authentication-Results` itself on delivery.
+3. **The command parses strictly**, as the first unquoted line.
+
+Consumption is idempotent because it is the Gmail unread flag that is cleared,
+not state of our own that could drift: a command fires exactly once, even if the
+acknowledgement email fails. Commands older than `control_max_age_minutes`
+(default 30) are discarded unactioned, so a reply found after an outage cannot
+start monitoring hours later.
+
+The one asymmetry worth knowing: **`start` must work when nothing is running**,
+which is why the mailbox is polled *before* the session check and therefore on
+every idle tick. That is the entire reason idle ticks now cost ~1s instead of
+~1ms (see [Cost model](#cost-model)). Set `control_email_enabled: false` in the
+Firestore config to turn the whole path off without a redeploy.
+
 ## Configuration
 
 Runtime knobs come from Firestore (`pup_watch/config` in the named `pupwatch`
@@ -108,6 +155,7 @@ does not need a redeploy. Unknown or unparseable keys are ignored.
 |---|---|
 | `PUPWATCH_NOTIFY_TO` | Comma-separated recipients. **Never** committed — personal addresses |
 | `PUPWATCH_ADMIN_TOKEN` | Required; the service refuses all control endpoints without it |
+| `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` / `GMAIL_REFRESH_TOKEN` | Sends alerts **and** reads start/stop replies. Needs `gmail.modify`, not just send: marking a command read is what makes it fire once |
 | `PUPWATCH_GEMINI_TOKEN` | Identity confirmation. Use a **paid** key: free-tier prompts are used for training, and these frames contain other people's dogs and daycare staff |
 | `PUPWATCH_REFERENCE_URIS` | Comma-separated `gs://` (or local) reference photos of the pup |
 | `PUPWATCH_PERSIST` | `1` to use Firestore; otherwise state is a no-op |
@@ -121,13 +169,24 @@ adding more should not require a redeploy.
 The design decision that dominates cost is **not** the ML — it is whether a
 container sits warm. Unlike `tesla-aladdin-garage` (`--min-instances 1`,
 `--no-cpu-throttling`), pup-watch scales to zero and is woken by Cloud
-Scheduler once a minute. An idle tick returns in about a millisecond.
+Scheduler once a minute.
+
+An idle tick used to return in about a millisecond. It now costs **~1.05s**
+(measured 2026-09-16), because email control means checking the mailbox even
+while monitoring is off — a token refresh plus a `messages.list`. At the
+scheduler's 900 ticks/day that is ~28,000 of the 180,000 free vCPU-seconds per
+month, and ~57,000 of the 360,000 free GiB-seconds: about 16% of the free tier
+consumed doing nothing. That is a deliberate trade — being able to text the
+system from the daycare parking lot is worth more than the headroom — but it is
+the number to revisit first if cost ever bites, by polling the mailbox on every
+Nth idle tick instead of every one.
 
 Measured: one active poll takes ~10s wall time, dominated by the 8s frame-grab
 window. At 8h/day for 22 days/month that is roughly 105,000 vCPU-seconds
 against the 180,000 free allowance, and ~211,000 GiB-seconds against 360,000.
-Free, with headroom, but not by an order of magnitude — so if session hours grow
-a lot, check this before assuming it is still free.
+Adding the idle-tick control poll on top leaves the total inside the free tier
+but no longer with comfortable room — so if session hours grow a lot, check this
+before assuming it is still free.
 
 Pulling video is **ingress**, which Google does not bill, so stream volume is
 free regardless.
@@ -157,3 +216,15 @@ tight.
 - **Accuracy numbers above are from composites**, because the yard was empty
   when this was built. A labelled capture during real daycare hours is still
   needed to quote true precision/recall.
+- **Email control is proven for the owning mailbox only.** Commands sent from
+  the notification mailbox to itself were verified end-to-end on 2026-09-16
+  (`start 3h` and `stop`, real Gmail, real Firestore). A reply from the *second*
+  recipient takes the SPF/DKIM branch instead of the `SENT` branch; Gmail-to-Gmail
+  mail normally passes both, but that has not been observed here yet. If her
+  replies are ignored, the log line is
+  `pup-watch fail reason=control_email_unauthenticated`, and the escape hatch is
+  `control_require_email_auth: false` in the Firestore config — which drops the
+  guarantee back to "allowlisted `From`", so prefer diagnosing the header.
+- **Acknowledgement mail stays unread.** It is skipped by the `X-PupWatch`
+  header rather than by being marked read, so the inbox accumulates unread acks.
+  Cosmetic, and cheaper than another API call per command.

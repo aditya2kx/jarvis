@@ -66,6 +66,18 @@ class Settings:
     # A forgotten session stops polling instead of running forever.
     session_max_hours: float = 12.0
 
+    # --- email-reply control ---
+    # Replying "stop" to a sighting email is the operator's phone-friendly path,
+    # so the mailbox is checked every tick — including while monitoring is off,
+    # which is the only way "start" can work from an idle service.
+    control_email_enabled: bool = True
+    # Require SPF+DKIM to pass. Off only for tests; a spoofable From must not be
+    # able to switch off the dog camera.
+    control_require_email_auth: bool = True
+    # A command discovered long after it was sent (outage, backlog) must not
+    # silently start monitoring hours later.
+    control_max_age_minutes: int = 30
+
     # --- identity confirmation ---
     require_gemini_confirm: bool = True
     # gemini-2.5-flash-lite is retired for new API keys (404 "no longer
@@ -90,7 +102,11 @@ _NUMERIC_OVERLAY_KEYS = {
     "notify_cooldown_minutes",
     "session_max_hours",
     "gemini_confidence_min",
+    "control_max_age_minutes",
 }
+
+_BOOL_OVERLAY_KEYS = ("require_gemini_confirm", "control_email_enabled",
+                      "control_require_email_auth")
 
 
 def load_cameras(path: Path | None = None) -> list[Camera]:
@@ -125,8 +141,9 @@ def settings_with_overlay(overlay: dict[str, Any] | None) -> Settings:
             patch[key] = type(current)(overlay[key])
         except (TypeError, ValueError):
             continue
-    if isinstance(overlay.get("require_gemini_confirm"), bool):
-        patch["require_gemini_confirm"] = overlay["require_gemini_confirm"]
+    for key in _BOOL_OVERLAY_KEYS:
+        if isinstance(overlay.get(key), bool):
+            patch[key] = overlay[key]
     if isinstance(overlay.get("gemini_model"), str) and overlay["gemini_model"].strip():
         patch["gemini_model"] = overlay["gemini_model"].strip()
     return replace(base, **patch)

@@ -70,6 +70,18 @@ def test_overlay_can_disable_gemini_confirmation():
     assert config.settings_with_overlay({"require_gemini_confirm": "no"}).require_gemini_confirm is True
 
 
+def test_default_gemini_model_is_not_the_retired_one():
+    # gemini-2.5-flash-lite 404s for new API keys ("no longer available to new
+    # users"). The identity stage fails open, so a revert here would silently
+    # degrade to alerting on any lone cream dog rather than erroring loudly.
+    assert config.Settings().gemini_model == "gemini-3.5-flash-lite"
+
+
+def test_overlay_can_retarget_the_gemini_model():
+    # The next retirement must be fixable from Firestore, not a redeploy.
+    assert config.settings_with_overlay({"gemini_model": "gemini-3.6-flash"}).gemini_model == "gemini-3.6-flash"
+
+
 def test_recipients_parse_both_addresses(monkeypatch):
     monkeypatch.setenv("PUPWATCH_NOTIFY_TO", "a@example.com, b@example.com")
     assert config.notify_recipients() == ["a@example.com", "b@example.com"]

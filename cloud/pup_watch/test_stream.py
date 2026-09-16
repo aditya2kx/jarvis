@@ -1,6 +1,7 @@
 """Playlist resolution from the camera alias, and frame-grab failure handling."""
 
 import json
+import shutil
 
 import pytest
 
@@ -82,7 +83,9 @@ def test_grab_frames_rejects_empty_playlist():
 
 
 def test_grab_frames_raises_when_ffmpeg_writes_nothing(monkeypatch, tmp_path):
-    monkeypatch.setenv("PUPWATCH_FFMPEG", "/bin/true")
+    # `true` lives in /bin on Linux and /usr/bin on macOS — resolve it instead
+    # of hardcoding, so the suite runs on the operator's laptop too.
+    monkeypatch.setenv("PUPWATCH_FFMPEG", shutil.which("true") or "/bin/true")
     with pytest.raises(stream.StreamUnavailable) as e:
         stream.grab_frames("https://example.invalid/stream.m3u8", count=2, timeout_s=5)
     assert "ffmpeg_no_frames" in str(e.value)

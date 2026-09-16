@@ -68,7 +68,10 @@ class Settings:
 
     # --- identity confirmation ---
     require_gemini_confirm: bool = True
-    gemini_model: str = "gemini-2.5-flash-lite"
+    # gemini-2.5-flash-lite is retired for new API keys (404 "no longer
+    # available to new users"), which fails open and alerts on any lone cream
+    # dog. Firestore can overlay `gemini_model` when this one retires too.
+    gemini_model: str = "gemini-3.5-flash-lite"
     gemini_confidence_min: float = 0.55
 
 

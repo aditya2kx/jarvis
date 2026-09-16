@@ -2177,15 +2177,31 @@ curl -sS -X POST "$URL/tick" -H "X-PupWatch-Token: $TOKEN"
 Sessions auto-expire at `stop_after_ts` and in any case after
 `session_max_hours`, so a forgotten session stops polling.
 
-Deploy config it needs (one-time):
+Deploy config it needs — **all provisioned 2026-09-16**, listed so it can be
+rebuilt from scratch:
 
 | Where | Name | Why |
 |---|---|---|
 | Secret Manager | `pupwatch-admin-token` | Control endpoints + Scheduler header. Service refuses everything if unset |
-| Secret Manager | `pupwatch-gemini-token` | Identity re-ID. Use a **paid** key — free-tier prompts are used for training and these frames contain other people's dogs and staff |
+| Secret Manager | `pupwatch-gemini-token` | Identity re-ID. API key `pupwatch-gemini-reid-v2`, restricted to `generativelanguage.googleapis.com` on the billed project — **paid tier**, because free-tier prompts are used for training and these frames contain other people's dogs and staff |
 | GH repo secret | `PUPWATCH_NOTIFY_TO` | Comma-separated recipients. Kept out of git because they are personal addresses |
-| GH repo variable | `PUPWATCH_REFERENCE_URIS` | `gs://` reference photos of the pup |
-| Reused | `gmail-client-id` / `gmail-client-secret` / `gmail-refresh-token` | Same Gmail OAuth as tesla-aladdin-garage |
+| GH repo variable | `PUPWATCH_REFERENCE_URIS` | Five `gs://jarvis-pupwatch-refs/chai-*.png` reference photos (private bucket, public-access-prevention on) |
+| Reused | `gmail-client-id` / `gmail-client-secret` / `gmail-refresh-token` | Same Gmail OAuth as tesla-aladdin-garage (`aditya.2ky@gmail.com`) |
+
+`bhaga-orchestrator@` holds `secretAccessor` on both secrets and
+`objectViewer` on the refs bucket.
+
+Two caveats worth knowing before you trust an alert:
+
+- **The Gemini model name expires.** `gemini-2.5-flash-lite` was retired for new
+  API keys mid-flight and returned `404 … no longer available to new users`,
+  which fails open. If `/health` is fine but every poll logs
+  `reason=gemini_confirm`, overlay `gemini_model` in `pup_watch/config` (no
+  redeploy) rather than editing code.
+- **Re-ID does not identify *him*, only "a cream Golden".** Measured against a
+  different English cream Golden it answered `is_pup=True` at 0.99. Fail-open
+  means the failure mode is a false alert, never a miss — so treat the
+  one-dog-in-the-yard veto as the real signal.
 
 Triage a quiet watch:
 

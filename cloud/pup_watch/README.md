@@ -142,8 +142,16 @@ tight.
 
 - **Night / IR.** In IR the image is grayscale and the cream gate stops meaning
   anything. Daycare hours are daytime, so this is accepted rather than solved.
-- **Another cream dog let out alone.** The local stages cannot tell them apart;
-  this is exactly what the Gemini re-ID stage is for.
+- **Another cream dog let out alone.** The local stages cannot tell them apart,
+  and — measured 2026-09-16 against a different English cream Golden composited
+  into a real yard frame at 110px — **neither can the Gemini re-ID stage**: it
+  returned `is_pup=True` at 0.99 confidence for the wrong dog, citing coat, ear
+  shape and build. At camera-crop resolution it confirms "a cream Golden", not
+  "*this* cream Golden". Because the stage fails open, this can only cause a
+  false alert, never a missed one. Treat the lone-dog veto as the real signal
+  until re-ID is either fed higher-resolution crops or given a discriminating
+  cue (his collar/harness is currently a confound, not a help — Gemini cited a
+  "similar harness" when matching the wrong dog).
 - **Occlusion.** The gazebo, playhouse and ramps hide dogs. Mitigated by
   sampling 4 spaced frames per poll and many polls per visit.
 - **Accuracy numbers above are from composites**, because the yard was empty

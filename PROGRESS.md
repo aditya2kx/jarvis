@@ -1,3 +1,19 @@
+## 2026-09-16 — pup-watch: email when Chai is out alone in the daycare yard (Issue #292)
+
+**Scope:** New scale-to-zero cloud worker on the public ipcamlive daycare stream, built 08-28 (PR #283) and landed today ahead of his first boarding. He is only ever let out alone, so "exactly one dog in the yard" is the primary signal rather than a proxy; people in frame never suppress an alert.
+
+**Key changes:** `cloud/pup_watch/` (HLS frame grab → tiled ONNX detection → cream gate → Gemini re-ID → episode state machine → multi-recipient Gmail with the annotated frame); `pup-watch-deploy.yml` + Cloud Scheduler `* 6-20 * * *` America/Chicago; state in named `pupwatch` Firestore DB. Recipients/reference photos stay out of git (repo secret + GCS).
+
+**Provisioned this session** (none of it existed, so the PR could not have worked as merged): `pupwatch-admin-token` + `pupwatch-gemini-token` in Secret Manager, a dedicated paid Gemini key restricted to `generativelanguage.googleapis.com`, `PUPWATCH_NOTIFY_TO` repo secret, five reference photos in `gs://jarvis-pupwatch-refs` + `PUPWATCH_REFERENCE_URIS`, the named `pupwatch` Firestore database, and `bhaga-orchestrator` IAM on all of it.
+
+**Two bugs only live evidence could find.** `gemini-2.5-flash-lite` is **retired for new API keys** (404 "no longer available to new users") — every identity check would have errored, failed open, and alerted on any lone cream dog; default moved to `gemini-3.5-flash-lite`, overlayable from Firestore, with a regression test. And the re-ID stage **does not discriminate**: given a *different* English cream Golden at 110 px it returned `is_pup=True` at 0.99 confidence, citing coat, ear shape and even a "similar harness". README's "another cream dog is exactly what re-ID is for" was false and is corrected; since the stage fails open this can only cause a false alert, never a miss.
+
+**Evidence:** real Gmail send end-to-end — `notify sent recipients=2`, message present in the inbox with the correct `America/Chicago` timestamp and the annotated frame attached. `worker.tick()` twice against the **real named `pupwatch` Firestore database**: `episode_started notified=True`, then `already_in_episode notified=False` 60 s later — exactly one email per visit. Live camera re-verified today (stream id had rotated, proving alias resolution was the right call; `dogs=0 persons=1` on a real occupied-by-staff yard). Chai composited into today's live frame at 60/85/110 px → `lone_cream_dog` 3/3, cream 60–62% vs a 30% threshold. Detector weights re-downloaded and the pinned SHA256 still matches. 394 `cloud/` tests green.
+
+**Deliberately not built:** occupancy/motion pre-gate — measured cost is already inside the free tier (~105k of 180k vCPU-s/mo at 8 h/day), and a motion gate risks missing a dog lying still. First lever if session hours grow.
+
+**Open:** all accuracy numbers remain composite-based; labelled precision/recall needs a real session. Re-ID discrimination is unsolved (higher-res crops or a distinguishing cue). Night/IR breaks the cream gate (accepted — daycare is daytime).
+
 ## 2026-09-16 — Garage open failed after 24 h: Aladdin token never refreshed (Issue #310)
 
 **Scope:** Two geofence crossings (267 m, enter 300 m) were detected but Big Peach did not open — failure emails showed `HTTP 401 https://api.smartgarage.systems/devices`. Tesla/telemetry were fine; Aladdin Cognito AccessTokens last exactly 24 h and the always-on Cloud Run process cached one login for the whole instance lifetime. Opens succeeded until ~09-15 03:50 UTC, then every enter 401'd.
@@ -49,18 +65,6 @@ Separately, enabling `BHAGA_SCOPED_MATERIALIZE` exposed #295: `daily_refresh` in
 **Scope:** Operator asked to drop the enter radius 500 → 300 m and pushed back that a threshold change should not need a code deploy. Revises #280: that PR removed the runtime knob to end a three-writer ambiguity, which made every threshold tweak an image build + Cloud Run rollout.
 
 **Key changes:** Firestore `config.enter_m` is now the authority, `geofence.json` (300 / 80) is the bootstrap seed, env stays ignored; `/health` reports `enter_m_source`. `POST /config` accepts radii with bounds validation (`400 invalid_radii`, 50–2000 m) and returns `503 config_not_persisted` when the Firestore write fails, so an unpersisted change is never reported as applied. Removed `clear_geofence_overlay()` — it would erase operator config on every restart. `LOCATION_MIN_DELTA_M` 80 → 40 m, hoisted to workflow-scope env so the signed-config step (which reads the runner env, not Cloud Run's) actually sends it; it stays deploy-time because the Tesla-side push needs the GCE command proxy.
-## 2026-08-28 — pup-watch: email when the pup is out alone in the daycare yard
-
-**Scope:** New scale-to-zero cloud worker on the public ipcamlive daycare stream. The pup is only ever let out alone, so "exactly one dog in the yard" is the primary signal rather than a proxy; people in frame never suppress an alert.
-
-**Key changes:** `cloud/pup_watch/` (HLS frame grab → tiled ONNX detection → cream gate → Gemini re-ID → episode state machine → multi-recipient Gmail with the annotated frame); `pup-watch-deploy.yml` + Cloud Scheduler `* 6-20 * * *` America/Chicago; state in named `pupwatch` Firestore DB. Recipients/reference photos stay out of git (repo secret + GCS).
-
-**Evidence:** live end-to-end run against the real camera resolved the playlist from the alias, pulled 4 frames, ran 12 inference passes and correctly reported 0 dogs on the empty yard (best `person` score 0.018). Pup composited into that real frame at 12 position/size combinations: **12/12** `lone_cream_dog`, cream fraction 48–60% vs a 30% threshold. Tiling is what carries far-field recall; a 9 MB nano detector failed in the 55–70 px band and was rejected. 124 unit tests.
-
-**Deliberately not built:** occupancy/motion pre-gate — measured cost is already inside the free tier (~105k of 180k vCPU-s/mo at 8 h/day), and a motion gate risks missing a dog lying still. First lever if session hours grow.
-
-**Open:** composite-based accuracy is not the same as labelled daycare-hours capture; precision/recall still needs a real session. Night/IR breaks the cream gate (accepted — daycare is daytime).
-
 ## 2026-08-27 — Garage enter radius: `geofence.json` SoT at 500 m (Issue #280)
 
 **Scope:** Firestore overlay (`named-db-seed` 200 m) beat Cloud Run env 800 m. One file is the only writer.

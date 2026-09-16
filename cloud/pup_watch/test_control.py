@@ -1,4 +1,5 @@
 import base64
+import urllib.parse
 from email.utils import formatdate
 
 import pytest
@@ -72,16 +73,39 @@ class FakeGmail:
             return {"id": self.LABEL_ID}
         if path.startswith("messages?"):
             self.queries.append(path)
-            return {"messages": [{"id": m["id"]} for m in self.messages]}
+            return {"messages": [{"id": m["id"]} for m in self._search(path)]}
         if "/modify" in path:
             mid = path.split("/")[1]
+            msg = next(m for m in self.messages if m["id"] == mid)
             if self.LABEL_ID in (payload or {}).get("addLabelIds", []):
                 self.handled.append(mid)
+                msg["labelIds"] = list(msg.get("labelIds") or ()) + [self.LABEL_ID]
             if "UNREAD" in (payload or {}).get("removeLabelIds", []):
                 self.marked_read.append(mid)
+                msg["labelIds"] = [l for l in (msg.get("labelIds") or ()) if l != "UNREAD"]
             return {}
         mid = path.split("/")[1].split("?")[0]
         return next(m for m in self.messages if m["id"] == mid)
+
+    def _search(self, path):
+        """Honour the query's label operators.
+
+        A fake that returns everything regardless of `q` is how the is:unread
+        bug reached production: the real Gmail filtered the operator's replies
+        out and the fake did not. Anything asserting on discovery has to model
+        the filter it depends on.
+        """
+        q = urllib.parse.unquote_plus(urllib.parse.parse_qs(
+            path.split("?", 1)[1]).get("q", [""])[0])
+        out = []
+        for m in self.messages:
+            labels = set(m.get("labelIds") or ())
+            if "is:unread" in q and "UNREAD" not in labels:
+                continue
+            if f"-label:{control.HANDLED_LABEL}" in q and self.LABEL_ID in labels:
+                continue
+            out.append(m)
+        return out
 
 
 @pytest.fixture(autouse=True)

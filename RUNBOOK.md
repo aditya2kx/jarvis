@@ -2138,3 +2138,115 @@ curl -sS -X POST "$URL/telemetry" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN" \
   -d '{"vin":"'"$TESLA_VIN"'","latitude":29.464,"longitude":-95.517}'
 ```
 
+
+## pup-watch (daycare yard → email)
+
+Emails when the pup is let out **alone** in the daycare yard. He is only ever
+put out on his own, so "exactly one dog in the yard" is the primary signal, not
+a proxy. People in the yard are expected and never suppress an alert.
+
+Full design, thresholds and the measurements behind them:
+`cloud/pup_watch/README.md`.
+
+Unlike `tesla-aladdin-garage` this service is **scale-to-zero** — no
+`--min-instances`, no `--no-cpu-throttling`. Cloud Scheduler job
+`pup-watch-tick` POSTs `/tick` once a minute (`* 6-20 * * *`, America/Chicago)
+and the handler does almost nothing unless a monitoring session is open. That is
+what keeps it inside the Cloud Run free tier; the cost is up to 60s of
+notification delay. Since email control landed, an idle tick costs ~1s rather
+than ~1ms (it reads the mailbox so that an emailed `start` can wake an idle
+service) — still free, but now ~16% of the free tier instead of ~0%.
+
+State lives in the **named `pupwatch` Firestore database** (`pup_watch/session`,
+`pup_watch/state`, `pup_watch/config`) — never BHAGA's `(default)`.
+
+```bash
+URL=$(gcloud run services describe pup-watch --region us-central1 \
+  --project jarvis-bhaga-prod --format='value(status.url)')
+TOKEN=$(gcloud secrets versions access latest --secret=pupwatch-admin-token \
+  --project jarvis-bhaga-prod)
+
+# Start / status / stop
+curl -sS -X POST "$URL/session/start" -H "X-PupWatch-Token: $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"hours": 9}'
+curl -sS "$URL/session" -H "X-PupWatch-Token: $TOKEN"
+curl -sS -X POST "$URL/session/stop" -H "X-PupWatch-Token: $TOKEN"
+
+# Force one poll now instead of waiting for the tick
+curl -sS -X POST "$URL/tick" -H "X-PupWatch-Token: $TOKEN"
+```
+
+Sessions auto-expire at `stop_after_ts` and in any case after
+`session_max_hours`, so a forgotten session stops polling.
+
+**From a phone, skip all of the above: reply to any pup-watch email.** First
+line `start`, `start 4h`, `stop` or `status`. Both recipients get an emailed
+acknowledgement of every accepted command, so neither person can silently switch
+monitoring off for the other. A fresh email with subject `pup start` works too,
+for the first session before any sighting mail exists.
+
+Commands are accepted only from `PUPWATCH_NOTIFY_TO` senders that are provably
+who they claim: either the message carries Gmail's `SENT` label (only the account
+holder can produce one) or Gmail recorded `spf=pass` **and** `dkim=pass`. If a
+command is ignored, the reason is in the logs:
+
+| Log line | Meaning | Fix |
+|---|---|---|
+| `reason=control_email_unauthenticated` | Failed the SPF/DKIM branch — expected for a non-owner sender whose mail Gmail did not authenticate | Check the `Authentication-Results` header. Last resort: overlay `control_require_email_auth: false` in `pup_watch/config`, which weakens the guarantee to "allowlisted `From`" |
+| `reason=control_command_stale` | Older than `control_max_age_minutes` (30) — an outage backlog must not start monitoring hours late | Resend it |
+| `reason=control_no_allowlist` | `PUPWATCH_NOTIFY_TO` is empty | Fix the deploy env |
+| `reason=control_no_gmail_token` / `control_poll` | Gmail creds or API problem; the poll fails soft so monitoring continues | Check the Gmail secrets; the token needs `gmail.modify`, not just send |
+
+No command found at all usually means the wording did not parse: it must be the
+**first** line, so "please stop" and "stopped raining" are deliberately not
+commands. Nothing is silently double-applied — a command is consumed by clearing
+its Gmail unread flag, so it fires exactly once even if the acknowledgement fails.
+
+Turn the whole path off without a redeploy with `control_email_enabled: false`
+in `pup_watch/config`.
+
+Deploy config it needs — **all provisioned 2026-09-16**, listed so it can be
+rebuilt from scratch:
+
+| Where | Name | Why |
+|---|---|---|
+| Secret Manager | `pupwatch-admin-token` | Control endpoints + Scheduler header. Service refuses everything if unset |
+| Secret Manager | `pupwatch-gemini-token` | Identity re-ID. API key `pupwatch-gemini-reid-v2`, restricted to `generativelanguage.googleapis.com` on the billed project — **paid tier**, because free-tier prompts are used for training and these frames contain other people's dogs and staff |
+| GH repo secret | `PUPWATCH_NOTIFY_TO` | Comma-separated recipients. Kept out of git because they are personal addresses |
+| GH repo variable | `PUPWATCH_REFERENCE_URIS` | Five `gs://jarvis-pupwatch-refs/chai-*.png` reference photos (private bucket, public-access-prevention on) |
+| Reused | `gmail-client-id` / `gmail-client-secret` / `gmail-refresh-token` | Same Gmail OAuth as tesla-aladdin-garage (`aditya.2ky@gmail.com`). Sends alerts **and** reads start/stop replies — verified 2026-09-16 to carry `gmail.modify`, which the read/mark-read path needs |
+
+`bhaga-orchestrator@` holds `secretAccessor` on both secrets and
+`objectViewer` on the refs bucket.
+
+Three caveats worth knowing before you trust an alert:
+
+- **The Gemini model name expires.** `gemini-2.5-flash-lite` was retired for new
+  API keys mid-flight and returned `404 … no longer available to new users`,
+  which fails open. If `/health` is fine but every poll logs
+  `reason=gemini_confirm`, overlay `gemini_model` in `pup_watch/config` (no
+  redeploy) rather than editing code.
+- **Re-ID does not identify *him*, only "a cream Golden".** Measured against a
+  different English cream Golden it answered `is_pup=True` at 0.99. Fail-open
+  means the failure mode is a false alert, never a miss — so treat the
+  one-dog-in-the-yard veto as the real signal.
+- **Email control is proven for the owning mailbox only.** `start 3h` and `stop`
+  from `aditya.2ky@gmail.com` were verified end-to-end 2026-09-16 against real
+  Gmail and real Firestore. A reply from the second recipient takes the SPF/DKIM
+  branch, which has not been observed here yet — if her commands are ignored,
+  see the `control_email_unauthenticated` row above.
+
+Triage a quiet watch:
+
+```bash
+# Is monitoring even on, and did the last tick see anything?
+curl -sS "$URL/health"
+gcloud logging read \
+  'resource.labels.service_name="pup-watch" AND textPayload:"pup-watch poll"' \
+  --project jarvis-bhaga-prod --limit 20 --format='value(textPayload)'
+```
+
+Every poll logs one greppable line with `camera`, `seen`, `hits/frames`,
+`dogs`, `persons`, `decision` and `reason`, which is enough to tell "camera
+offline" from "dog seen but identity rejected" from "already emailed this
+visit" without reproducing anything locally.

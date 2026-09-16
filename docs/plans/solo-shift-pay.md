@@ -458,12 +458,26 @@ python3 scripts/verify.py --full
 python3 scripts/check_doc_freshness.py --base origin/main
 ```
 
-Then sandbox e2e (never prod sheets — `.cursor/rules/bhaga-principles.mdc`):
+Then the live sandbox scenario (never prod sheets — `.cursor/rules/bhaga-principles.mdc`).
+This runs **in CI, not on the laptop**: `full-live` belongs to `sandbox_scenarios.py`, and
+both it and `sandbox_e2e.py` authenticate via the WIF service account. A laptop
+`config.yaml` has no `accounts:` section since the Sheets-OAuth exit, so a local
+invocation dies in `provision()` before it reaches any scenario logic.
 
-```bash
-BHAGA_BQ_DATASET=bhaga_sandbox python3 agents/bhaga/scripts/sandbox_e2e.py \
-  --store palmetto --scenario full-live
+Arm it by committing the scenario to `.github/sandbox-live.yml` **and** adding the
+`sandbox-live` label to the PR (`sandbox-live-run.yml` requires both):
+
+```yaml
+scenarios:
+  - name: full-live
+    date: "2026-09-08"
 ```
+
+`2026-09-08` is the highest-signal date in the effective cycle — 4.8 eligible solo
+hours across 2 people, the largest single-day premium in 2026-09-07..2026-09-20.
+
+The label is single-shot: the `delabel` job strips it after the run, and
+`.github/sandbox-live.yml` must go back to `scenarios: []` before merge.
 
 **Pass criterion:** lint/test/build green; sandbox `full-live` green; screenshots captured
 via `apps/operator-console/scripts/capture_evidence.py` (user-preferences B4) and rendering

@@ -1,4 +1,13 @@
-# Idle. Live sandbox is opt-in: add the `sandbox-live` label AND list scenarios
-# here for that PR only. Empty this back to `scenarios: []` before merge.
-# It is not a required check — do not leave a leftover full-live date armed.
-scenarios: []
+# Sandbox live run config — Issue #309: solo-shift premium ($15.25 → $16.25).
+#
+# full-live: exercises the full Square + ADP pipeline against the sandbox for a date
+# inside the effective cycle, proving the solo-hours materialization runs end-to-end on
+# real punches rather than only in unit tests. 2026-09-08 carries the cycle's largest
+# eligible premium (4.8 solo hours across 2 people), so a regression in the occupancy
+# walk or the eligibility gate shows up as a changed number rather than a silent zero.
+#
+# Empty this back to `scenarios: []` before merge — a leftover armed date re-runs a
+# live ADP scrape on every push.
+scenarios:
+  - name: full-live
+    date: "2026-09-08"

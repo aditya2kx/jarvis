@@ -55,6 +55,17 @@
 **Also:** `pupwatch-admin-token` rotated to version 2 (version 1 disabled) because a failing gcloud invocation echoed it into a session transcript. PR #283 was closed and re-opened as #318 because it was authored by `aditya2kx`: the `Protect Master` ruleset's `require_extra_approval_for_unattributed_changes` plus unattributed `Cursor Agent` commits forced `REVIEW_REQUIRED`, and GitHub forbids self-approval — gate proposed in #321.
 
 **Open:** all accuracy numbers remain composite-based; labelled precision/recall needs a real session. Re-ID discrimination is unsolved (higher-res crops or a distinguishing cue). Night/IR breaks the cream gate (accepted — daycare is daytime). Email control is proven only for the owning mailbox — a reply from the second recipient takes the untested SPF/DKIM branch. Slack control was scoped out (email only).
+## 2026-09-16 — Solo-shift premium: $15.25 → $16.25 for hours worked alone (Issue #309)
+
+**Scope:** Announced to staff as effective this cycle (2026-09-07..2026-09-20), so the model had to attribute hours already worked, not just future ones. Solo is decided by minute-by-minute occupancy over `adp_punches`: a minute is solo when exactly one person is clocked in, and a manager on the clock counts toward occupancy (D3) — being supervised is not working alone. Runs shorter than the 15-minute minimum block are team time, which keeps punch-overlap noise at shift handoff from paying a premium.
+
+**Key changes:** `skills/bhaga_labor/solo_shift.py` is the pure occupancy walk; migration 071 adds `model_solo_hours_daily` plus daily/period views; the console Labor page gains a solo/team/total panel with eligibility and premium owed. All four tunables (minimum block, eligible rate, premium rate, effective date) live in `store_config`, so the policy moves without a deploy (preference 29).
+
+Two latent defects surfaced while wiring the payroll path, both of which would have produced wrong pay rather than an error. Rate inference took `rate_history[0]`, so the first premium check would have been read back as a $16.25 **base** rate — the premium would have silently ended eligibility for everyone it just paid. It now takes the floor of the newest check date. And `_ag_enter_page_hours` keyed the ADP grid by employee name, so a second rate line overwrote the first: total hours were understated for the guardrail comparison, and a stale premium row could survive the zeroing pass. Grid rows are now aggregated per employee and addressed individually by `row_index`.
+
+**Decision:** premium hours are keyed as a second ADP rate line by the operator, not written by automation — ADP RUN stays read-only for payroll submission (invariant 6), and the grid probe confirmed a rate-2 line is a manual per-employee selection. `RUNBOOK.md` carries the exact rate-1/rate-2 hours command. FLSA weighted-average overtime on mixed-rate weeks is deferred to #315; no eligible employee hit overtime this cycle.
+
+**Evidence:** 12.23 eligible solo hours / $12.23 premium for the cycle, reconciled per-date against prod (2026-09-08 is the largest single day at 4.8 h across 2 people). This corrects the 14.75 h jam estimate, which predated the manager-occupancy rule and the minimum-block threshold. Unit coverage per named scenario, migration regression pin for the open-period `pay_period_end` truncation, `full-live` armed on 2026-09-08, and operator sign-off on the Labor page at localhost before the PR.
 
 ## 2026-09-16 — Garage open failed after 24 h: Aladdin token never refreshed (Issue #310)
 

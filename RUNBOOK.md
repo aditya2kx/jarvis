@@ -2061,6 +2061,7 @@ A second copy would double-open the door.
 | Telemetry delta | `LOCATION_MIN_DELTA_M=40` — metres between Location publishes. **Deploy-time only** (workflow-scope env in the deploy YAML, consumed by both the Cloud Run env and the signed-config step). Takes effect only when the "Signed fleet_telemetry_config" step reports `http=200`; that step is `continue-on-error`, so a green deploy alone does not prove it landed. |
 | Persist | Firestore named DB `garage` (`GARAGE_FIRESTORE_DB=garage`), collection `tesla_aladdin_garage`. BHAGA stays on `(default)`. Do **not** set `FIRESTORE_DB=(default)` on Cloud Run — REST double-encodes it to `400 Invalid database id %28default%29`. Usage falls back in-memory if persist fails. |
 | Live | `ALADDIN_DRY_RUN=0` |
+| Aladdin auth | Cognito AccessToken TTL **24 h**. Client re-logins before expiry and once on HTTP 401 (`skills/aladdin_connect`). Recurring `open_error` with `HTTP 401 .../devices` after #310 means a real credential problem, not expiry. |
 | Notify | `aditya.2ky@gmail.com` (`GARAGE_NOTIFY_TO`). Subject includes Tesla metres-from-home and Tesla Fleet month spend vs the **$10** developer discount (Jarvis-counted Data/streaming; Tesla has no usage API). Skip `OPEN_DOOR` if already open; still email. |
 | Admin | Secret `garage-admin-token` → header `X-Garage-Token` |
 

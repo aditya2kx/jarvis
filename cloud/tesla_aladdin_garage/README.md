@@ -17,7 +17,7 @@ Geofence Dhanno → open **Big Peach** via Aladdin Connect.
 - Single Cloud Run instance, CPU always allocated.
 - Last event/error/poll + Tesla usage counters in Firestore **named database `garage`** (`GARAGE_FIRESTORE_DB=garage`), collection `tesla_aladdin_garage/{config,state,tesla_usage}`. Do not use `(default)` on Cloud Run — REST double-encodes it to `%28default%29` (400). The `config` doc holds the live radius; the worker loads it on boot and never erases it.
 - Admin token (`GARAGE_ADMIN_TOKEN` / `X-Garage-Token`) required for `/tick`, `/location`, `/simulate/enter`, `/config`, `/telemetry`, `/telemetry/configure`.
-- Aladdin `/devices` uses Cognito **AccessToken** (IdToken is 401). Cloud Run SA must have `secretVersionAdder` on `tesla-fleet-refresh-token` so `/oauth/tesla` survives a revision restart.
+- Aladdin `/devices` uses Cognito **AccessToken** (IdToken is 401). Cognito access tokens last **24 h**; the client re-logins before expiry and once on a 401, so the always-on Cloud Run instance no longer needs a redeploy to recover after a day. Cloud Run SA must have `secretVersionAdder` on `tesla-fleet-refresh-token` so `/oauth/tesla` survives a revision restart.
 - If Big Peach is **already open**, skip `OPEN_DOOR` and email `aditya.2ky@gmail.com` (Tesla metres-from-home in the subject). Same email on open and on Aladdin failure. Body includes Tesla Fleet month spend vs the **$10 developer discount** (`TESLA_MONTH_BUDGET_USD`; Jarvis-counted Data/streaming, Tesla portal is authoritative). Needs Gmail OAuth secrets for that mailbox (`GMAIL_*`); without them the worker still opens, it just logs `notify_unconfigured`.
 
 ## Env / secrets

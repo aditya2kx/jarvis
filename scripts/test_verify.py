@@ -337,7 +337,7 @@ class TestSecretScan(unittest.TestCase):
         self.assertIn("password", v.SECRET_PATTERN)
 
     def _matches(self, line: str) -> bool:
-        return bool(re.search(v.SECRET_PATTERN, line, re.IGNORECASE))
+        return v.line_has_secret(line)
 
     def test_real_leaks_still_match(self):
         for line in [
@@ -360,6 +360,17 @@ class TestSecretScan(unittest.TestCase):
         ]:
             with self.subTest(line=line):
                 self.assertFalse(self._matches(line))
+
+    def test_secret_manager_references_do_not_match(self):
+        """`KEY=secret-name:latest` names a version; the value stays in Secret Manager."""
+        for line in [
+            '+            --set-secrets "ALADDIN_PASSWORD=aladdin-connect-password:latest,'
+            'GARAGE_GMAIL_CLIENT_SECRET=gmail-client-secret:latest"',
+            "+  --set-secrets ADP_PASSWORD=adp-password:7",
+        ]:
+            with self.subTest(line=line):
+                self.assertFalse(self._matches(line))
+        self.assertTrue(self._matches("+  ALADDIN_PASSWORD=hunter2"))
 
     def test_secret_scan_uses_git_diff(self):
         """secret-scan gates must use 'git diff' (diff-based, not whole-repo scan)."""

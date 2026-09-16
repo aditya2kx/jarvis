@@ -1,8 +1,13 @@
 """Gmail notify for garage geofence events. Fail-open: log and continue.
 
-Cloud Run mounts GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN
-for **aditya.2ky@gmail.com** (never Palmetto / store Gmail).
-To and From default to that address (GARAGE_NOTIFY_TO).
+Cloud Run mounts GARAGE_GMAIL_CLIENT_ID / GARAGE_GMAIL_CLIENT_SECRET /
+GARAGE_GMAIL_REFRESH_TOKEN for **aditya.2ky@gmail.com** (never Palmetto / store
+Gmail). To and From default to that address (GARAGE_NOTIFY_TO).
+
+The names are garage-scoped on purpose: `cloud/pup_watch` mails the same
+operator from the bare `GMAIL_*` names, and sharing them meant a pup-watch shell
+could drive this mailer (Issue #316). There is deliberately **no** fallback to
+`GMAIL_*` — that fallback is the coupling.
 """
 
 from __future__ import annotations
@@ -46,9 +51,9 @@ def should_email(event: str, fields: dict[str, Any]) -> bool:
 def notify_runtime_allowed() -> bool:
     """Only the deployed service may email.
 
-    Cloud Run always sets `K_SERVICE`. A laptop or CI shell that exported the
-    `GMAIL_*` secrets does not, so the unit suite and any ad-hoc script stay
-    silent instead of mailing the operator. `GARAGE_NOTIFY_FORCE=1` overrides.
+    Cloud Run always sets `K_SERVICE`. A laptop or CI shell that exported Gmail
+    secrets does not, so the unit suite and any ad-hoc script stay silent
+    instead of mailing the operator. `GARAGE_NOTIFY_FORCE=1` overrides.
     """
     if os.environ.get("GARAGE_NOTIFY_FORCE") == "1":
         return True
@@ -115,9 +120,9 @@ def send_garage_email(event: str, fields: dict[str, Any], *, to: Optional[str] =
         )
         return False
     dest = (to or os.environ.get("GARAGE_NOTIFY_TO") or DEFAULT_TO).strip()
-    client_id = os.environ.get("GMAIL_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "").strip()
-    refresh = os.environ.get("GMAIL_REFRESH_TOKEN", "").strip()
+    client_id = os.environ.get("GARAGE_GMAIL_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("GARAGE_GMAIL_CLIENT_SECRET", "").strip()
+    refresh = os.environ.get("GARAGE_GMAIL_REFRESH_TOKEN", "").strip()
     if not dest or not client_id or not client_secret or not refresh:
         log.info("tesla-aladdin-garage skip reason=notify_unconfigured event=%s", event)
         return False

@@ -45,20 +45,28 @@ Two independent guards, because the event filter alone left three sends:
 1. `notify.py` `notify_runtime_allowed()` — require `K_SERVICE` (always set by Cloud Run) or
    `GARAGE_NOTIFY_FORCE=1`; `send_garage_email` returns False with
    `skip reason=notify_not_deployed` before any Gmail OAuth.
-2. `cloud/tesla_aladdin_garage/conftest.py` — autouse fixture deleting `GMAIL_CLIENT_ID`,
-   `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `GARAGE_NOTIFY_TO`, `GARAGE_NOTIFY_FORCE`,
-   `K_SERVICE` for every test in the package.
+2. `cloud/tesla_aladdin_garage/conftest.py` — autouse fixture deleting the garage and
+   pup-watch Gmail names plus `GARAGE_NOTIFY_TO`, `GARAGE_NOTIFY_FORCE`, `K_SERVICE` for
+   every test in the package.
+3. Garage-scoped credential env: `GARAGE_GMAIL_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN`
+   (`notify.py:123-125`, `.github/workflows/tesla-aladdin-garage-deploy.yml:82`), with **no**
+   fallback to the bare `GMAIL_*` that `cloud/pup_watch/notify.py` uses. Same Secret Manager
+   secrets, separate env names — the two notifiers can no longer drive each other.
 
 ### Tests (`test_notify.py`)
 
 - `test_runtime_gate_requires_cloud_run`
 - `test_real_open_never_sends_off_cloud_run` — credentials present, `K_SERVICE` absent, Gmail
   helpers raise if reached.
+- `test_pup_watch_credentials_do_not_drive_the_garage` — bare `GMAIL_*` set on Cloud Run,
+  Gmail helpers raise if reached.
+- `test_deploy_workflow.py::test_gmail_secrets_are_garage_scoped` — the rollout maps the
+  shared secrets onto `GARAGE_GMAIL_*` and never the bare names.
 
 ### Verify
 
 ```bash
-GMAIL_CLIENT_ID=dummy GMAIL_CLIENT_SECRET=dummy GMAIL_REFRESH_TOKEN=dummy \
+GARAGE_GMAIL_CLIENT_ID=dummy GARAGE_GMAIL_CLIENT_SECRET=dummy GARAGE_GMAIL_REFRESH_TOKEN=dummy \
   python3 -m pytest cloud/tesla_aladdin_garage/ -q -o log_cli=true -o log_cli_level=ERROR \
   2>&1 | rg -c 'fail reason=notify'
 ```

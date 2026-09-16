@@ -40,7 +40,8 @@ printf 'pending-reauth' | python3 scripts/secret_manager_put.py --secret tesla-f
 python3 -c "import secrets; print(secrets.token_urlsafe(32))" > /tmp/garage-admin.token
 python3 scripts/secret_manager_put.py --secret garage-admin-token --data-file /tmp/garage-admin.token
 rm /tmp/garage-admin.token
-# Gmail OAuth for aditya.2ky@gmail.com (never Palmetto). Deploy mounts these as GMAIL_*.
+# Gmail OAuth for aditya.2ky@gmail.com (never Palmetto). Deploy mounts these as GARAGE_GMAIL_*
+# (garage-scoped: cloud/pup_watch mails the same operator from the bare GMAIL_* names).
 python3 scripts/secret_manager_put.py --secret gmail-client-id --from-env GMAIL_CLIENT_ID
 python3 scripts/secret_manager_put.py --secret gmail-client-secret --from-env GMAIL_CLIENT_SECRET
 python3 scripts/secret_manager_put.py --secret gmail-refresh-token --from-env GMAIL_REFRESH_TOKEN
@@ -52,8 +53,10 @@ Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON` (enter from `geo
 `TESLA_TELEMETRY_HOST` (fleet-telemetry hostname cars connect to; empty = ingest-only),
 `TESLA_TELEMETRY_PORT=8443`,
 `LOCATION_MIN_DELTA_M=40`, `TESLA_MONTH_BUDGET_USD=10`, `GARAGE_FIRESTORE_DB=garage`. Gmail OAuth is Secret Manager only (`gmail-client-id`,
-`gmail-client-secret`, `gmail-refresh-token` → `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` /
-`GMAIL_REFRESH_TOKEN`).
+`gmail-client-secret`, `gmail-refresh-token` → `GARAGE_GMAIL_CLIENT_ID` /
+`GARAGE_GMAIL_CLIENT_SECRET` / `GARAGE_GMAIL_REFRESH_TOKEN`). The env names are
+service-scoped so pup-watch's bare `GMAIL_*` cannot drive this mailer, and there is no
+fallback to them (Issue #316).
 
 ## HTTP
 

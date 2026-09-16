@@ -10,6 +10,11 @@ from __future__ import annotations
 import pytest
 
 _GMAIL_ENV = (
+    "GARAGE_GMAIL_CLIENT_ID",
+    "GARAGE_GMAIL_CLIENT_SECRET",
+    "GARAGE_GMAIL_REFRESH_TOKEN",
+    # pup-watch's names: stripped too, so a shell that sourced its env cannot
+    # reach this mailer even if the garage ever grew a fallback.
     "GMAIL_CLIENT_ID",
     "GMAIL_CLIENT_SECRET",
     "GMAIL_REFRESH_TOKEN",

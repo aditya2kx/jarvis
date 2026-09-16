@@ -1,12 +1,12 @@
 ## 2026-09-16 — Garage Gmail quiet while Tesla is already home (Issue #316)
 
-**Scope:** Burst of Big Peach emails (simulated 530 m, 0 m home pin, already-open, Aladdin 401 retries) while Dhanno was parked. Inbox was unusable.
+**Scope:** Repeating 6-email bursts (3× "0 m from home (enter 400 m)", 2× simulated 530 m, 1× enter 300 m) while Dhanno was parked at 18 m. Prod Cloud Run logged none of them. `enter_m=400` exists nowhere in prod config — only in `test_worker.py`'s `_cfg()`, and 530 m is exactly `400 + 80 + 50` from `simulate_enter`. **Root cause: `GarageWorker` defaults `notify` to the live `send_garage_email`, and the open-path tests never stub it — so the garage unit suite mailed the operator on every run in a shell that had sourced `local/tesla-aladdin-garage.env`** (the README's own setup step). Reproduced: 3 live send attempts per `pytest cloud/tesla_aladdin_garage/` run.
 
-**Key changes:** Gmail only on a real live `opened`. `/simulate/enter` with last Tesla metres already inside the fence is `skip_already_inside`. Firestore persists `last_open_ts` so cooldown survives Cloud Run restart. `open_error` arms cooldown; already-open / simulate / errors stay in Cloud Logging.
+**Key changes:** `send_garage_email` requires `K_SERVICE` (Cloud Run) or `GARAGE_NOTIFY_FORCE=1`, so only the deployed service can mail; `conftest.py` strips `GMAIL_*` for every garage test. Gmail only on a real live `opened`. `/simulate/enter` with last Tesla metres already inside the fence is `skip_already_inside`. Firestore persists `last_open_ts` so cooldown survives Cloud Run restart. `open_error` arms cooldown; already-open / simulate / errors stay in Cloud Logging.
 
-**Decision:** keep one email for a real door command; do not mail evidence/simulate or auth-retry noise.
+**Decision:** gate on the runtime (`K_SERVICE`) rather than only filtering event types — the first cut filtered simulate/already-open/open_error but left three real `opened` sends, which were the "0 m from home" mails. Keep one email for a real door command; do not mail evidence/simulate or auth-retry noise.
 
-**Evidence:** 40 garage unit tests; `should_email` matrix; no live `simulate/enter` (opens Big Peach).
+**Evidence:** 78 garage unit tests; `should_email` matrix; the reproduction (`GMAIL_*=dummy pytest cloud/tesla_aladdin_garage/`) goes 3 live send attempts → 0, and stays 0 even with `K_SERVICE` forced into the suite. No live `simulate/enter` (opens Big Peach).
 
 
 

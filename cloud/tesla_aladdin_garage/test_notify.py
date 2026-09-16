@@ -3,6 +3,7 @@
 from cloud.tesla_aladdin_garage.notify import (
     email_body,
     email_subject,
+    notify_runtime_allowed,
     send_garage_email,
     should_email,
 )
@@ -42,6 +43,7 @@ def test_should_email_only_real_opened():
 
 
 def test_send_skips_simulated_even_when_gmail_configured(monkeypatch):
+    monkeypatch.setenv("K_SERVICE", "tesla-aladdin-garage")
     monkeypatch.setenv("GMAIL_CLIENT_ID", "id")
     monkeypatch.setenv("GMAIL_CLIENT_SECRET", "secret")
     monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh")
@@ -56,3 +58,35 @@ def test_send_skips_simulated_even_when_gmail_configured(monkeypatch):
         {"enter_m": 400, "distance_m": 0, "simulated": True},
     ) is False
     assert send_garage_email("open_error", {"enter_m": 300, "distance_m": 267}) is False
+
+
+def test_runtime_gate_requires_cloud_run(monkeypatch):
+    """Issue #316: the unit suite emailed the operator from a laptop shell."""
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    monkeypatch.delenv("GARAGE_NOTIFY_FORCE", raising=False)
+    assert notify_runtime_allowed() is False
+    monkeypatch.setenv("K_SERVICE", "tesla-aladdin-garage")
+    assert notify_runtime_allowed() is True
+    monkeypatch.delenv("K_SERVICE")
+    monkeypatch.setenv("GARAGE_NOTIFY_FORCE", "1")
+    assert notify_runtime_allowed() is True
+
+
+def test_real_open_never_sends_off_cloud_run(monkeypatch):
+    """A live `opened` with credentials present is still silent on a laptop."""
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    monkeypatch.setenv("GMAIL_CLIENT_ID", "id")
+    monkeypatch.setenv("GMAIL_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh")
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("gmail must not send off Cloud Run")
+
+    monkeypatch.setattr("cloud.tesla_aladdin_garage.notify._access_token", boom)
+    monkeypatch.setattr("cloud.tesla_aladdin_garage.notify._gmail_send", boom)
+    monkeypatch.setattr(
+        "cloud.tesla_aladdin_garage.notify.month_tesla_cost", lambda: boom()
+    )
+    assert send_garage_email(
+        "opened", {"enter_m": 400, "distance_m": 0, "simulated": False}
+    ) is False

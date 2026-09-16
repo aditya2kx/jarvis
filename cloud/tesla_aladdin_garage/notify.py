@@ -43,6 +43,18 @@ def should_email(event: str, fields: dict[str, Any]) -> bool:
     return event == "opened"
 
 
+def notify_runtime_allowed() -> bool:
+    """Only the deployed service may email.
+
+    Cloud Run always sets `K_SERVICE`. A laptop or CI shell that exported the
+    `GMAIL_*` secrets does not, so the unit suite and any ad-hoc script stay
+    silent instead of mailing the operator. `GARAGE_NOTIFY_FORCE=1` overrides.
+    """
+    if os.environ.get("GARAGE_NOTIFY_FORCE") == "1":
+        return True
+    return bool(os.environ.get("K_SERVICE", "").strip())
+
+
 def _fmt_m(value: Any) -> str:
     if value is None or value == "":
         return "unknown"
@@ -90,6 +102,11 @@ def email_body(event: str, fields: dict[str, Any]) -> str:
 
 def send_garage_email(event: str, fields: dict[str, Any], *, to: Optional[str] = None) -> bool:
     """Send one notify email. Returns False if skipped or send failed."""
+    if not notify_runtime_allowed():
+        log.info(
+            "tesla-aladdin-garage skip reason=notify_not_deployed event=%s", event
+        )
+        return False
     if not should_email(event, fields):
         log.info(
             "tesla-aladdin-garage skip reason=notify_quiet event=%s simulated=%s",

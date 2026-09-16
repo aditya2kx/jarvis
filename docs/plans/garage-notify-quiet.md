@@ -4,7 +4,25 @@ Consulted: [CONTRIBUTING.md](CONTRIBUTING.md) (dev loop + evidence), [RUNBOOK.md
 
 Jam + §4: operator in this chat 2026-09-16 — Tesla already home, 5–8 emails; “investigate and fix in the same workspace”; “sick of getting new emails.”
 
-## Root cause
+## Root cause (established 2026-09-16, after the first cut missed it)
+
+**The garage unit suite was the sender.** `GarageWorker.__init__` defaults
+`self._notify = notify or send_garage_email` (`worker.py:121`), and the open-path tests
+(`test_enter_opens_dry_run`, `test_cooldown_skips_second_open`,
+`test_observe_fix_from_telemetry_opens_without_rest_poll`, plus the two `simulate_enter`
+tests) construct `GarageWorker(_cfg(), tesla, aladdin)` with no `notify=` stub. Any shell
+that had run the README's own `set -a && source local/tesla-aladdin-garage.env` therefore
+mailed the operator on every `pytest` / `verify.py --full`.
+
+Fingerprints that pin it: `enter_m=400` is `test_worker.py:20`'s `_cfg()` and appears in no
+prod config (prod is 300 from Firestore, seed 500/300); `530 m` is exactly
+`enter_m + hysteresis + 50` from `simulate_enter`; `0 m` is the HOME pin the tests open at;
+prod Cloud Run logged none of the bursts. Reproduced and measured:
+`GMAIL_*=dummy python3 -m pytest cloud/tesla_aladdin_garage/` → **3** `fail reason=notify`
+live-send attempts (the three real `opened` sends the event filter alone does not stop).
+
+The secondary noise below (simulate, already-open, `open_error` re-mails on the #310 401s)
+is real but was never the bulk of the volume.
 
 Inbox dump at 15:18 UTC 2026-09-16 was **not** a drive:
 
@@ -19,6 +37,33 @@ Evidence tier: unit-only
 waiver: garage has no BHAGA sandbox; live `POST /simulate/enter` opens Big Peach and is the noise source — excluded. Post-merge: read-only `/health` + Cloud Logging `skip reason=notify_quiet` / `simulate_already_inside`. Never send a live simulate.
 
 Feature flag: **none**. Notify policy cannot silently produce wrong BHAGA numbers. No Operator Console UI.
+
+## Milestone 0 — Only the deployed service may email (Composer)
+
+Two independent guards, because the event filter alone left three sends:
+
+1. `notify.py` `notify_runtime_allowed()` — require `K_SERVICE` (always set by Cloud Run) or
+   `GARAGE_NOTIFY_FORCE=1`; `send_garage_email` returns False with
+   `skip reason=notify_not_deployed` before any Gmail OAuth.
+2. `cloud/tesla_aladdin_garage/conftest.py` — autouse fixture deleting `GMAIL_CLIENT_ID`,
+   `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `GARAGE_NOTIFY_TO`, `GARAGE_NOTIFY_FORCE`,
+   `K_SERVICE` for every test in the package.
+
+### Tests (`test_notify.py`)
+
+- `test_runtime_gate_requires_cloud_run`
+- `test_real_open_never_sends_off_cloud_run` — credentials present, `K_SERVICE` absent, Gmail
+  helpers raise if reached.
+
+### Verify
+
+```bash
+GMAIL_CLIENT_ID=dummy GMAIL_CLIENT_SECRET=dummy GMAIL_REFRESH_TOKEN=dummy \
+  python3 -m pytest cloud/tesla_aladdin_garage/ -q -o log_cli=true -o log_cli_level=ERROR \
+  2>&1 | rg -c 'fail reason=notify'
+```
+
+Pass: `0` (was `3`), and still `0` with `K_SERVICE=tesla-aladdin-garage` forced in.
 
 ## Milestone 1 — Quiet Gmail (Composer)
 

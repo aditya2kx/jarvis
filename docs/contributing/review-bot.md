@@ -141,6 +141,25 @@ This enumerates every blocking signal:
 - **merge_status** — BEHIND base or DIRTY (merge conflict) flags.
 - **claude_verdict** — latest Claude bot verdict + evidence-confidence score. The blocking floor is 95% by default, lowered to 80% when the PR carries `Evidence tier: unit-only (waiver: ...)` in its body or an `evidence-waiver` label (mirrors `check_evidence_confidence.py`).
 
+### The waiver reaches the reviewer, not just the gate
+
+An active waiver (`evidence-waiver` label, or `Evidence tier: unit-only (waiver: <reason>)` in
+the body) is resolved **before** the review by the `Resolve evidence-waiver state` step, which
+calls `check_evidence_confidence.py --print-waiver` so detection lives in exactly one place, and
+passes the result into the prompt as `EVIDENCE WAIVER ACTIVE FOR THIS PR: true|false`.
+
+With the waiver active the reviewer must not return REQUEST CHANGES when a score ≥ 80% is its
+only blocking finding; it scores honestly, still lists what the evidence does not prove, and
+approves. Without it, < 95% blocks as before.
+
+This exists because the waiver used to be half-wired: `check_evidence_confidence.py` accepted
+82% under a waiver while the prompt still said "< 95% is BLOCKING" and the verdict gate grepped
+`REQUEST CHANGES`, so a waived PR could not merge at all — two gates reading one number and
+disagreeing (#316 / PR #317, where the reviewer reported no defect of any kind). A waiver covers
+**evidence depth only**. Correctness bugs, security/PII leaks, data loss, missing tests for new
+behavior, invariant violations and unproven backward-incompatible changes stay blocking, and the
+verdict gate itself is unchanged.
+
 Add `--json` to get machine-readable output including all sections.
 
 **Step 2 — fix everything before pushing:**

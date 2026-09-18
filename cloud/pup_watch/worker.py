@@ -181,6 +181,12 @@ def tick(*, now: Optional[float] = None) -> dict[str, Any]:
                     f"monitoring auto-stopped after "
                     f"{settings.session_absolute_max_hours / 24:.0f} days without a stop"
                     " — reply start to resume")
+            elif why == "session_expired_max_hours":
+                # A fixed-length session can also lapse without anyone naming a
+                # window, so do not tell him he chose one.
+                control.announce(f"monitoring stopped — it had been on for over "
+                                 f"{settings.session_max_hours:.0f}h without a stop"
+                                 " — reply start to resume")
             else:
                 control.announce("monitoring stopped — the time window it was "
                                  "started with is up — reply start to resume")

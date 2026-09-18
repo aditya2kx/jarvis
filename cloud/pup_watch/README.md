@@ -1,11 +1,22 @@
 # pup-watch
 
-Emails when the pup is let out **alone** in the daycare yard.
+Emails when a dog is out **alone** in either watched daycare yard.
 
 He is a white English Cream Golden Retriever, 80 lb, and the daycare only ever
-puts him out on his own — groups of dogs are never him. That turns "how many
-dogs are in the yard" from a weak proxy into the primary signal, and it is why
-this worker can be both accurate and free.
+puts him out on his own — a yard holding a group of dogs is never him. That turns
+"how many dogs are in the yard" from a weak proxy into the primary signal, and it
+is why this worker can be both accurate and free.
+
+**One dog in view is the trigger; everything else only describes it.** People in
+the yard never matter (a handler standing with him is the normal case), and
+neither coat colour nor the Gemini identity check can cancel an email — they are
+reported in it. This is deliberate, on operator instruction (2026-09-18): *"if
+there's only 1 dog in any of those yards, I want to be notified. you can
+additionally say if it looks like chai or not."* Both of the gates that used to
+be able to suppress a sighting were measured as unreliable — the cream threshold
+fails in bad light, and Gemini cannot separate him from similar cream dogs at
+crop resolution — so both now annotate instead of veto. Missing him is expensive;
+an email saying "a dog is out, probably not him" costs a glance.
 
 - **Camera:** public ipcamlive stream, no credentials. Source of truth for which
   yards to watch is [`cameras.json`](cameras.json).
@@ -28,20 +39,26 @@ Ordered cheapest-first, so the expensive stages almost never run.
 | Session check | ~1ms | Returns immediately unless monitoring is on |
 | Frame grab (`stream.py`) | ~8s wall | 4 frames, 2s apart, via ffmpeg from the HLS playlist |
 | Detection (`vision.py`) | ~270ms × 3 per frame | Full frame + 2 yard tiles; counts dogs and people |
-| Cream gate (`vision.py`) | ~1ms | Is the dog's box bright and desaturated? |
-| Identity (`identify.py`) | 1 API call | Gemini re-ID against reference photos — candidates only |
+| Coat check (`vision.py`) | ~1ms | Is the dog's box bright and desaturated? **Reported, not required** |
+| Identity (`identify.py`) | 1 API call | Gemini re-ID against reference photos. **Advisory** — the email says "looks like Chai" or "does not", and sends either way |
 | Episode (`episode.py`) | ~0 | One email per visit, not per poll |
 | Email (`notify.py`) | 1 API call | Both recipients, annotated frame attached |
 
-Two rules are hard vetoes rather than score adjustments:
+Exactly one rule is a hard veto:
 
-- **More than one dog ⇒ not him.** He is only ever out alone.
+- **More than one dog ⇒ not him.** He is only ever out alone, so a group yard in
+  group play is not a sighting. This is the whole precision story.
+
+Everything else is advice carried into the email:
+
 - **People do not matter.** Staff in the yard is normal and never suppresses an alert.
-
-And one deliberate fail-open: if the identity check is *inconclusive* (no API
-key, no reference photos, API error) the sighting still goes through. Only a
-*confident* "different dog" vetoes it. Silently swallowing real sightings
-because a dependency is unconfigured is the worse failure here.
+- **Coat colour does not gate.** A lone dog that does not read as cream still
+  emails, with `Cream-coat match: N%` stated.
+- **Identity does not gate.** A confident "different dog" no longer cancels the
+  email; it changes the subject to "A dog is out alone … — may not be him (N%)".
+  An *inconclusive* check (no API key, no reference photos, API error) says "could
+  not tell". Silently swallowing real sightings — whether because a dependency is
+  unconfigured or because an unreliable check guessed wrong — is the worse failure.
 
 ## Why these thresholds
 
@@ -112,10 +129,22 @@ pup-watch email** — a sighting or an earlier acknowledgement — with one of:
 
 | Reply | Effect |
 |---|---|
-| `start` | Monitor for the rest of the day (up to `session_max_hours`) |
-| `start 4h` | Monitor for 4 hours (`4`, `4h`, `4 hours`, `1.5hr` all parse) |
+| `start` | **Keep monitoring until an explicit `stop`.** No end time |
+| `start 4h` | Monitor for 4 hours, then stop on its own (`4`, `4h`, `4 hours`, `1.5hr` all parse, capped at `session_max_hours`) |
 | `stop` | Stop monitoring |
 | `status` | Whether monitoring is on, until when, and when it last alerted |
+
+A bare `start` is open-ended because the operator does not know in advance when
+the pup comes home. `session_max_hours` bounds only *fixed-length* sessions; an
+open-ended one is bounded instead by `session_absolute_max_hours` (default 7
+days), which exists purely so a session nobody stops cannot poll forever. If it
+ever fires it **emails** — as does *every* automatic stop, without exception:
+monitoring once expired itself at 6am in silence and the operator only found out
+a day later, after his pup had been out in an unwatched yard. A watcher that has
+stopped looks exactly like one that is working and seeing nothing, so a stop it
+decides on its own is only safe if it is announced. Note that a duration given *wrongly* (`start soon`) falls back to the
+bounded ceiling rather than becoming open-ended: fumbling the syntax should not
+be rewarded with an unbounded session.
 
 The command must be the **first line** you type. A chatty reply like "stopped
 raining, he loved it" is deliberately not a command. `pup stop` also works, so a
@@ -133,11 +162,21 @@ the dog camera" is not an acceptable failure mode:
    writes `Authentication-Results` itself on delivery.
 3. **The command parses strictly**, as the first unquoted line.
 
-Consumption is idempotent because it is the Gmail unread flag that is cleared,
-not state of our own that could drift: a command fires exactly once, even if the
-acknowledgement email fails. Commands older than `control_max_age_minutes`
-(default 30) are discarded unactioned, so a reply found after an outage cannot
-start monitoring hours later.
+Consumption is idempotent via a hidden Gmail label we own (`pupwatch-handled`),
+so a command fires exactly once even if the acknowledgement email fails.
+
+That label replaced an earlier design that keyed off the **unread** flag, which
+did not work at all and is worth understanding before anyone "simplifies" it
+back: **Gmail marks a message you compose yourself as already read.** The
+operator replies from the same mailbox the alerts are sent from, so his replies
+arrive with no `UNREAD` label — `is:unread` never matched them, and every command
+he sent was ignored with no ack and not even a rejection in the logs. Mail sent
+through the API *does* arrive unread, which is exactly why the pre-merge evidence
+passed while the real thing was broken. Read state is a property of who sent the
+message and how; a label we set ourselves is not.
+
+Commands older than `control_max_age_minutes` (default 30) are discarded
+unactioned, so a reply found after an outage cannot start monitoring hours later.
 
 The one asymmetry worth knowing: **`start` must work when nothing is running**,
 which is why the mailbox is polled *before* the session check and therefore on
@@ -184,6 +223,10 @@ Nth idle tick instead of every one.
 Measured: one active poll takes ~10s wall time, dominated by the 8s frame-grab
 window. At 8h/day for 22 days/month that is roughly 105,000 vCPU-seconds
 against the 180,000 free allowance, and ~211,000 GiB-seconds against 360,000.
+**An open-ended session left running is the case that breaks this**: polling the
+full 15h window every day is ~9,000 vCPU-seconds/day, i.e. past the free
+allowance in under three weeks. That is the trade for `start` meaning "until I
+say stop", and `session_absolute_max_hours` is the backstop rather than the plan.
 Adding the idle-tick control poll on top leaves the total inside the free tier
 but no longer with comfortable room — so if session hours grow a lot, check this
 before assuming it is still free.
@@ -206,8 +249,8 @@ tight.
   into a real yard frame at 110px — **neither can the Gemini re-ID stage**: it
   returned `is_pup=True` at 0.99 confidence for the wrong dog, citing coat, ear
   shape and build. At camera-crop resolution it confirms "a cream Golden", not
-  "*this* cream Golden". Because the stage fails open, this can only cause a
-  false alert, never a missed one. Treat the lone-dog veto as the real signal
+  "*this* cream Golden". Since 2026-09-18 the stage cannot veto at all, so it can
+  only mislabel an email, never withhold one. Treat the lone-dog veto as the real signal
   until re-ID is either fed higher-resolution crops or given a discriminating
   cue (his collar/harness is currently a confound, not a help — Gemini cited a
   "similar harness" when matching the wrong dog).
@@ -225,6 +268,12 @@ tight.
   `pup-watch fail reason=control_email_unauthenticated`, and the escape hatch is
   `control_require_email_auth: false` in the Firestore config — which drops the
   guarantee back to "allowlisted `From`", so prefer diagnosing the header.
-- **Acknowledgement mail stays unread.** It is skipped by the `X-PupWatch`
-  header rather than by being marked read, so the inbox accumulates unread acks.
-  Cosmetic, and cheaper than another API call per command.
+- **Acknowledgement and sighting mail stays unread by design.** Our own mail is
+  labelled `pupwatch-handled` so it drops out of the next query, but its read
+  state is never touched: the unread badge *is* the notification, and clearing it
+  would hide the alert on the phone it was just sent to.
+- **An open-ended session is not free.** Continuous monitoring means an active
+  poll (~10s) every minute of the scheduler window: ~900 polls/day ≈ 9,000
+  vCPU-seconds/day, which passes 180,000 free vCPU-seconds/month in under three
+  weeks. Fine for a boarding stay; not something to leave on permanently. `stop`
+  when he is home, and `session_absolute_max_hours` is the backstop.

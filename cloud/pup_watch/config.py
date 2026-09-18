@@ -66,6 +66,12 @@ class Settings:
     # A forgotten session stops polling instead of running forever.
     session_max_hours: float = 12.0
 
+    # Outer bound for an open-ended session. It must never be the thing that
+    # ends a normal outing — it exists so a session the operator forgets to stop
+    # cannot poll every minute of every day indefinitely. Hitting it emails him
+    # rather than going quiet.
+    session_absolute_max_hours: float = 168.0  # 7 days
+
     # --- email-reply control ---
     # Replying "stop" to a sighting email is the operator's phone-friendly path,
     # so the mailbox is checked every tick — including while monitoring is off,
@@ -101,6 +107,7 @@ _NUMERIC_OVERLAY_KEYS = {
     "absence_minutes",
     "notify_cooldown_minutes",
     "session_max_hours",
+    "session_absolute_max_hours",
     "gemini_confidence_min",
     "control_max_age_minutes",
 }

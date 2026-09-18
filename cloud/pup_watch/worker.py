@@ -71,6 +71,14 @@ def session_active(session: dict, *, now: float, settings: Settings) -> tuple[bo
         stop_after_f = None
     if stop_after_f is not None and now >= stop_after_f:
         return False, "session_expired_stop_after"
+    # An open-ended session ("start" with no duration) runs until an explicit
+    # stop, so session_max_hours must not cut it short. It still gets a far
+    # outer bound, because a forgotten open-ended session polls every minute of
+    # every day and that does leave the free tier — see README § Cost model.
+    if session.get("open_ended"):
+        if started_f is not None and (now - started_f) > settings.session_absolute_max_hours * 3600:
+            return False, "session_expired_absolute_max"
+        return True, "active"
     if started_f is not None and (now - started_f) > settings.session_max_hours * 3600:
         return False, "session_expired_max_hours"
     return True, "active"
@@ -111,7 +119,7 @@ def evaluate_camera(camera: Camera, settings: Settings) -> CameraResult:
             continue
         result.dogs = max(result.dogs, len(verdict.dogs))
         result.persons = max(result.persons, len(verdict.persons))
-        if not verdict.lone_cream_dog:
+        if not verdict.lone_dog:
             result.reason = result.reason or verdict.reason
             continue
         result.hits += 1
@@ -129,7 +137,7 @@ def evaluate_camera(camera: Camera, settings: Settings) -> CameraResult:
         result.reason = f"insufficient_hits {result.hits}/{settings.min_hits_per_poll} last={detail}"
         return result
 
-    result.reason = "lone_cream_dog"
+    result.reason = "lone_dog"
     result.seen = True
 
     if settings.require_gemini_confirm and result.best_frame is not None and result.best_detections:
@@ -139,13 +147,13 @@ def evaluate_camera(camera: Camera, settings: Settings) -> CameraResult:
             ident = identify.confirm_pup(
                 crop, model=settings.gemini_model, confidence_min=settings.gemini_confidence_min
             )
+            # Advisory, never a veto. The operator's rule is "if there is only
+            # one dog in any of those yards, I want to be notified — you can
+            # additionally say whether it looks like Chai". Identity that can
+            # silently cancel the email is the failure mode he cares about,
+            # since Gemini cannot reliably separate him from similar cream dogs
+            # at this crop size (README § Known limits).
             result.identity = ident
-            if ident.conclusive and not ident.is_pup:
-                # A confident "different dog" overrides the local stages; an
-                # inconclusive check (no key, no refs, API error) must not
-                # silently suppress a real sighting.
-                result.seen = False
-                result.reason = f"identity_rejected confidence={ident.confidence:.2f}"
     return result
 
 
@@ -163,6 +171,25 @@ def tick(*, now: Optional[float] = None) -> dict[str, Any]:
         if session.get("active") and why.startswith("session_expired"):
             persist.save_session({"active": False, "stopped_ts": now, "stopped_by": why})
             log.info("pup-watch session_auto_stopped reason=%s", why)
+            # EVERY automatic stop is announced, no exceptions. Monitoring once
+            # expired itself at 6am and said nothing; the operator found out by
+            # noticing no alerts for a day his pup had been out. A watcher that
+            # can stop without saying so is indistinguishable from one that is
+            # working and seeing nothing, which is the whole value gone.
+            if why == "session_expired_absolute_max":
+                control.announce(
+                    f"monitoring auto-stopped after "
+                    f"{settings.session_absolute_max_hours / 24:.0f} days without a stop"
+                    " — reply start to resume")
+            elif why == "session_expired_max_hours":
+                # A fixed-length session can also lapse without anyone naming a
+                # window, so do not tell him he chose one.
+                control.announce(f"monitoring stopped — it had been on for over "
+                                 f"{settings.session_max_hours:.0f}h without a stop"
+                                 " — reply start to resume")
+            else:
+                control.announce("monitoring stopped — the time window it was "
+                                 "started with is up — reply start to resume")
         return {"polled": False, "reason": why, "commands": commands}
 
     cameras = load_cameras()
@@ -198,6 +225,7 @@ def tick(*, now: Optional[float] = None) -> dict[str, Any]:
             fields: dict[str, Any] = {
                 "camera": result.camera,
                 "camera_label": result.label,
+                "camera_url": stream.PAGE_URL.format(alias=camera.alias),
                 "seen_ts": now,
                 "dogs": result.dogs,
                 "persons": result.persons,
@@ -208,6 +236,7 @@ def tick(*, now: Optional[float] = None) -> dict[str, Any]:
             }
             if result.identity is not None:
                 if result.identity.conclusive:
+                    fields["identity_is_pup"] = result.identity.is_pup
                     fields["identity_confidence"] = result.identity.confidence
                     fields["identity_notes"] = result.identity.notes
                 else:

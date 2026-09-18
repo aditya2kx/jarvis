@@ -35,7 +35,7 @@ def test_health_needs_no_token(client, store):
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["service"] == "pup-watch"
-    assert body["cameras"] == ["sm-yard"]
+    assert body["cameras"] == ["sm-yard", "b-yard"]
     assert body["monitoring"] is False
 
 

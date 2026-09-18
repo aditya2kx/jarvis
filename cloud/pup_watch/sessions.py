@@ -26,16 +26,26 @@ def start(
     now: Optional[float] = None,
 ) -> dict[str, Any]:
     now = time.time() if now is None else now
-    try:
-        wanted = float(hours) if hours is not None else settings.session_max_hours
-    except (TypeError, ValueError):
-        wanted = settings.session_max_hours
-    wanted = max(0.25, min(wanted, settings.session_max_hours))
+    # No duration means "keep watching until I say stop" — the operator's
+    # default, since he does not know in advance when the pup comes home. A
+    # duration is still honoured when given, and is still capped.
+    if hours is None:
+        wanted = None
+    else:
+        try:
+            wanted = float(hours)
+        except (TypeError, ValueError):
+            # Asking for a duration and getting it wrong must not be rewarded
+            # with an unbounded session — fall back to the bounded ceiling.
+            wanted = settings.session_max_hours
+    if wanted is not None:
+        wanted = max(0.25, min(wanted, settings.session_max_hours))
     session = {
         "active": True,
         "started_ts": now,
         "started_by": str(by),
-        "stop_after_ts": now + wanted * 3600,
+        "open_ended": wanted is None,
+        "stop_after_ts": None if wanted is None else now + wanted * 3600,
         "cameras": [str(c) for c in cameras] if cameras else None,
         "stopped_ts": None,
     }
@@ -49,7 +59,8 @@ def start(
         "last_seen_ts": None,
         "last_notified_ts": None,
     })
-    log.info("pup-watch session_started hours=%.2f by=%s cameras=%s", wanted, by, session["cameras"])
+    log.info("pup-watch session_started hours=%s by=%s cameras=%s",
+             "open-ended" if wanted is None else f"{wanted:.2f}", by, session["cameras"])
     return {"session": session, "hours": wanted}
 
 

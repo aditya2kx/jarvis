@@ -2141,9 +2141,21 @@ curl -sS -X POST "$URL/telemetry" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN" \
 
 ## pup-watch (daycare yard → email)
 
-Emails when the pup is let out **alone** in the daycare yard. He is only ever
-put out on his own, so "exactly one dog in the yard" is the primary signal, not
-a proxy. People in the yard are expected and never suppress an alert.
+Emails when a dog is out **alone** in either watched daycare yard. He is only
+ever put out on his own, so "exactly one dog in the yard" is the primary signal,
+not a proxy. People in the yard are expected and never suppress an alert.
+
+**Two yards are watched** (`cloud/pup_watch/cameras.json`): `sm-yard` (S/M YARD,
+alias `5ee276849d4bf`) and `b-yard` (Montrose outside-big group yard, alias
+`5ee27f3358677`). Every sighting email names the yard and links it, so "which
+camera" never needs looking up. The big yard normally holds a dozen dogs, so the
+one-dog veto keeps it quiet during group play and it alerts when a single dog is
+left out there.
+
+Coat colour and the Gemini identity check are **advisory** — they annotate the
+email ("looks like Chai" / "does not look like Chai" / "could not tell") and
+cannot suppress it. Only the dog count can. So a wrongly-labelled email is
+possible by design; a silently-withheld one is not.
 
 Full design, thresholds and the measurements behind them:
 `cloud/pup_watch/README.md`.
@@ -2185,6 +2197,23 @@ acknowledgement of every accepted command, so neither person can silently switch
 monitoring off for the other. A fresh email with subject `pup start` works too,
 for the first session before any sighting mail exists.
 
+A bare **`start` is open-ended** — it watches until someone replies `stop`.
+`session_max_hours` (12h) bounds only `start 4h`-style sessions; open-ended ones
+are bounded by `session_absolute_max_hours` (7 days). **Every** automatic stop
+emails both recipients — if monitoring is off, nobody has to guess.
+
+If monitoring ever needs to outlive the deployed ceiling *without* a deploy,
+`session_max_hours` is a runtime overlay: write it to the Firestore `config` doc
+(`persist.save_config({"session_max_hours": 168.0})`) and the next tick picks it
+up. That is how prod was restored on 2026-09-18 while #322 was still unmerged. Leaving one on permanently is what breaks the free tier
+(~9,000 vCPU-s/day) — `stop` when he is home.
+
+Already-handled mail is tracked with a hidden Gmail label (`pupwatch-handled`),
+**not** the unread flag: Gmail pre-reads mail the operator sends himself, so an
+`is:unread` query ignored every command he issued (see PROGRESS 2026-09-16).
+Our own alerts are labelled but never marked read — the unread badge is the
+notification.
+
 Commands are accepted only from `PUPWATCH_NOTIFY_TO` senders that are provably
 who they claim: either the message carries Gmail's `SENT` label (only the account
 holder can produce one) or Gmail recorded `spf=pass` **and** `dkim=pass`. If a
@@ -2196,6 +2225,8 @@ command is ignored, the reason is in the logs:
 | `reason=control_command_stale` | Older than `control_max_age_minutes` (30) — an outage backlog must not start monitoring hours late | Resend it |
 | `reason=control_no_allowlist` | `PUPWATCH_NOTIFY_TO` is empty | Fix the deploy env |
 | `reason=control_no_gmail_token` / `control_poll` | Gmail creds or API problem; the poll fails soft so monitoring continues | Check the Gmail secrets; the token needs `gmail.modify`, not just send |
+| `reason=control_mark_handled` | The command ran but could not be labelled, so it may re-apply next tick | Check `gmail.modify`; re-applying `start`/`stop` is harmless, but investigate |
+| `reason=control_announce` | An automatic-stop notice could not be sent | Monitoring really did stop — check Gmail creds |
 
 No command found at all usually means the wording did not parse: it must be the
 **first** line, so "please stop" and "stopped raining" are deliberately not

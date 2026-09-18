@@ -416,6 +416,19 @@ def test_every_automatic_stop_is_announced(store, monkeypatch):
     assert said and "reply start" in said[0]
 
 
+def test_a_session_that_merely_ran_long_is_not_told_it_chose_a_window(store, monkeypatch):
+    """The max_hours branch fires for sessions nobody gave a window to (including
+    every session written before open_ended existed), so it must not claim one."""
+    said = []
+    monkeypatch.setattr(control, "announce", lambda summary, **k: said.append(summary))
+    s = Settings()
+    store["session"].update({"active": True, "started_ts": NOW, "stop_after_ts": None})
+    out = worker.tick(now=NOW + (s.session_max_hours + 1) * 3600)
+    assert out["reason"] == "session_expired_max_hours"
+    assert said and "had been on for over" in said[0]
+    assert "window" not in said[0]
+
+
 def test_a_duration_is_still_honoured_and_bounded(store):
     summary = control.apply(control.Command("start", 4.0, ME, "m1", "s", NOW),
                             settings=Settings(), now=NOW)

@@ -1,3 +1,13 @@
+## 2026-09-18 — The evidence waiver was half-wired, so a waived PR could never merge (Issue #324)
+
+**Scope:** `evidence-waiver` lowered one gate's floor but not the other's verdict. `check_evidence_confidence.py` accepted PR #317 at 82% against a waived 80% floor, while the review prompt still said "< 95% is BLOCKING" and the *Gate on Claude verdict* step grepped `REQUEST CHANGES` out of the newest review — two gates reading the same number and disagreeing, so a waived PR was unmergeable by construction even though the reviewer stated plainly it found no correctness bug, no invariant violation and no secret leak.
+
+**Key changes:** a `Resolve evidence-waiver state` step calls `check_evidence_confidence.py --print-waiver` (new flag) and passes `EVIDENCE WAIVER ACTIVE FOR THIS PR: true|false` into the prompt, so the reviewer knows what the numeric gate already knows. Detection stays in the script — the workflow reads it, never re-implements it. With the waiver active the reviewer must not return `REQUEST CHANGES` when a score ≥ 80% is its only blocking finding; it still scores honestly and still lists what the evidence does not prove. **The verdict gate itself is unchanged**, and a waiver covers *evidence depth only* — correctness bugs, security/PII leaks, data loss, missing tests for new behavior, invariant violations and unproven backward-incompatible changes all stay blocking.
+
+**Process note worth more than the fix:** this work was written on 2026-09-16, the issue was closed as "completed", and the diff then sat **uncommitted in a worktree** for two days while #317 — the PR it unblocks — stayed red. #317 is itself the fix for garage email noise, which recurred on 09-18 and was reported as a Tesla regression. Two separate incidents in one week traced to finished-but-unlanded work, so "closed as completed" now has to mean merged, not written.
+
+**Evidence:** 21 `scripts/test_check_evidence_confidence.py` tests green; `--print-waiver` returns `true` against live PR #317 (which carries the label) and the numeric gate still fails an unwaived PR below 95%.
+
 ## 2026-09-16 — pup-watch: email when Chai is out alone in the daycare yard (Issue #292)
 
 **Scope:** New scale-to-zero cloud worker on the public ipcamlive daycare stream, built 08-28 (PR #283) and landed today ahead of his first boarding. He is only ever let out alone, so "exactly one dog in the yard" is the primary signal rather than a proxy; people in frame never suppress an alert.

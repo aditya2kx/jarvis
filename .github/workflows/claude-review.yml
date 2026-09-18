@@ -111,6 +111,26 @@ jobs:
             --has-prior-review "${{ steps.prior.outputs.has_prior }}" \
             --out-dir review-context
 
+      # The reviewer has to know the waiver is active, or it blocks on a score the
+      # numeric gate below already accepts: check_evidence_confidence.py drops the
+      # floor to 80% when waived, while the prompt said "<95% is BLOCKING" and the
+      # verdict gate greps REQUEST CHANGES — a waived PR was unmergeable by
+      # construction (#316/#317: numeric gate passed 82%, verdict gate failed 82%,
+      # no code defect found). Detection stays in the script; this only reads it.
+      - name: Resolve evidence-waiver state
+        id: waiver
+        if: >
+          github.event_name == 'pull_request' &&
+          steps.gate.outputs.enabled == 'true' &&
+          steps.bootstrap.outputs.is_bootstrap != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          ACTIVE="$(python3 scripts/check_evidence_confidence.py --print-waiver)"
+          echo "active=$ACTIVE" >> "$GITHUB_OUTPUT"
+          echo "evidence-waiver active: $ACTIVE"
+
       - name: Claude Opus review (medium thinking)
         id: claude
         if: >
@@ -165,6 +185,21 @@ jobs:
                the additional evidence before merge. Note: a separate CI step parses
                the numeric score directly from your summary comment and fails if below
                95 — write the score accurately.
+
+            EVIDENCE WAIVER ACTIVE FOR THIS PR: ${{ steps.waiver.outputs.active }}
+            When that value is `true`, the operator has already accepted unit-only
+            evidence for this change (an `evidence-waiver` label, or an explicit
+            `Evidence tier: unit-only (waiver: <reason>)` in the PR body), and the
+            effective confidence floor is 80%, not 95%. In that case:
+            - Do NOT return REQUEST CHANGES when a score >= 80% is your only blocking
+              finding. Say APPROVE and note the waived gap under "Evidence gaps".
+            - Still score honestly and still list what the evidence does not prove.
+            - Everything else in the SEVERITY POLICY stays blocking, unchanged: a
+              correctness bug, security/PII leak, data loss, a missing or broken test
+              for new behavior, a BHAGA-invariant violation, or an unproven
+              backward-incompatible change. A waiver covers *evidence depth only* —
+              it never excuses a defect.
+            When that value is `false` or empty, ignore this paragraph: < 95% blocks.
 
             SEVERITY POLICY (converge — do NOT nitpick-loop):
             Classify every finding as BLOCKING or OPTIONAL.

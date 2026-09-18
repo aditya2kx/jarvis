@@ -2062,7 +2062,8 @@ A second copy would double-open the door.
 | Persist | Firestore named DB `garage` (`GARAGE_FIRESTORE_DB=garage`), collection `tesla_aladdin_garage`. BHAGA stays on `(default)`. Do **not** set `FIRESTORE_DB=(default)` on Cloud Run — REST double-encodes it to `400 Invalid database id %28default%29`. Usage falls back in-memory if persist fails. |
 | Live | `ALADDIN_DRY_RUN=0` |
 | Aladdin auth | Cognito AccessToken TTL **24 h**. Client re-logins before expiry and once on HTTP 401 (`skills/aladdin_connect`). Recurring `open_error` with `HTTP 401 .../devices` after #310 means a real credential problem, not expiry. |
-| Notify | `aditya.2ky@gmail.com` (`GARAGE_NOTIFY_TO`). Subject includes Tesla metres-from-home and Tesla Fleet month spend vs the **$10** developer discount (Jarvis-counted Data/streaming; Tesla has no usage API). Skip `OPEN_DOOR` if already open; still email. |
+| Notify | `aditya.2ky@gmail.com` (`GARAGE_NOTIFY_TO`). **Only the deployed service emails** — `K_SERVICE` (Cloud Run) or `GARAGE_NOTIFY_FORCE=1` required, else `skip reason=notify_not_deployed`. A repeat of "0 m from home (enter 400 m)" mail means someone ran the garage unit suite in a shell with `GARAGE_GMAIL_*` exported (Issue #316), not a real crossing. **Email only** a real live `opened`. Simulated enter, already-open, and `open_error` are log-only (`skip reason=notify_quiet`). Simulate while Tesla is already inside the fence is `skip_already_inside` (no open, no mail). Subject of the remaining mail includes Tesla metres-from-home and Tesla Fleet month spend vs the **$10** developer discount (Jarvis-counted Data/streaming; Tesla has no usage API). |
+| Notify creds | `GARAGE_GMAIL_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN` (from `gmail-client-id`, `gmail-client-secret`, `gmail-refresh-token`). Garage-scoped on purpose: pup-watch mails from the bare `GMAIL_*` names, and the garage has **no** fallback to them, so neither service's shell can drive the other's mailer (Issue #316). `GET /health` → `notify.configured` / `notify.unscoped_present` reports which names the live revision actually mounted — `configured: false` with `unscoped_present: true` means a stale rollout is still passing the bare names and no real open will mail (also logged as `skip reason=notify_unconfigured`). |
 | Admin | Secret `garage-admin-token` → header `X-Garage-Token` |
 
 ```bash
@@ -2072,7 +2073,8 @@ curl -sS "$URL/health"
 # Live Tesla distance from home (does not open the door)
 curl -sS "$URL/location" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN"
 
-# Simulate enter → OPEN Big Peach (live; cooldown 600 s)
+# Simulate enter → OPEN Big Peach (live; cooldown 600 s; no Gmail).
+# If last Tesla metres are already ≤ enter_m this returns skip_already_inside (no open).
 curl -sS -X POST "$URL/simulate/enter" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN"
 
 # Radius: no deploy needed. Applies immediately and survives restarts.

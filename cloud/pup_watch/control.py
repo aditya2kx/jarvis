@@ -151,6 +151,10 @@ def _api(access: str, path: str, *, method: str = "GET", payload: Optional[dict]
 
 
 HANDLED_LABEL = "pupwatch-handled"
+# Markers stamped by other Jarvis systems that share this mailbox. Named rather
+# than imported: those systems ship as separate containers, so pup-watch must not
+# depend on their code. Keep in sync with tesla_aladdin_garage/notify.py.
+FOREIGN_MARKER_HEADERS = ("x-jarvis-garage",)
 _label_id_cache: dict[str, str] = {}
 
 
@@ -207,6 +211,15 @@ def find_commands(access: str, *, settings: Settings, now: float) -> list[Comman
         msg = _api(access, f"messages/{stub['id']}?format=full")
         payload = msg.get("payload") or {}
         hdrs = _headers(payload)
+        if any(hdrs.get(h) for h in FOREIGN_MARKER_HEADERS):
+            # Another Jarvis system's notification, sharing this mailbox. It is
+            # from an allowlisted sender (itself), so without this it would fall
+            # through to the command parse — one unlucky subject line away from
+            # switching monitoring off. Labelled, not read: bursts of garage mail
+            # would otherwise fill the 10-message window and crowd out a real
+            # command. Left unread so it still shows up as new mail for him.
+            _mark_handled(access, stub["id"], mark_read=False)
+            continue
         if hdrs.get(notify.MARKER_HEADER.lower()):
             # Mail we generated — it lands in INBOX because we are a recipient.
             # Deliberately NOT keyed on the SENT label: the operator sends from

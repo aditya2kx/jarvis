@@ -1,8 +1,13 @@
 """Gmail notify for garage geofence events. Fail-open: log and continue.
 
-Cloud Run mounts GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN
-for **aditya.2ky@gmail.com** (never Palmetto / store Gmail).
-To and From default to that address (GARAGE_NOTIFY_TO).
+Cloud Run mounts GARAGE_GMAIL_CLIENT_ID / GARAGE_GMAIL_CLIENT_SECRET /
+GARAGE_GMAIL_REFRESH_TOKEN for **aditya.2ky@gmail.com** (never Palmetto / store
+Gmail). To and From default to that address (GARAGE_NOTIFY_TO).
+
+The names are garage-scoped on purpose: `cloud/pup_watch` mails the same
+operator from the bare `GMAIL_*` names, and sharing them meant a pup-watch shell
+could drive this mailer (Issue #316). There is deliberately **no** fallback to
+`GMAIL_*` — that fallback is the coupling.
 """
 
 from __future__ import annotations
@@ -28,12 +33,61 @@ log = logging.getLogger("tesla_aladdin_garage")
 DEFAULT_TO = "aditya.2ky@gmail.com"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_SEND = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+# Identifies garage mail in the mailbox it shares with pup-watch. Scoping the
+# *credentials* stops this service mailing from a pup-watch shell; this header is
+# the other direction — pup-watch reads that mailbox for start/stop replies, so it
+# needs to recognise garage mail and leave it alone. Keep in sync with
+# cloud/pup_watch/control.py FOREIGN_MARKER_HEADERS.
+MARKER_HEADER = "X-Jarvis-Garage"
 
 _SUBJECTS = {
     "opened": "Big Peach opened",
     "skip_already_open": "Big Peach already open — no command",
     "open_error": "Big Peach open FAILED",
 }
+
+
+def should_email(event: str, fields: dict[str, Any]) -> bool:
+    """Gmail only for a real (non-simulated) Aladdin open command."""
+    if fields.get("simulated"):
+        return False
+    return event == "opened"
+
+
+def notify_runtime_allowed() -> bool:
+    """Only the deployed service may email.
+
+    Cloud Run always sets `K_SERVICE`. A laptop or CI shell that exported Gmail
+    secrets does not, so the unit suite and any ad-hoc script stay silent
+    instead of mailing the operator. `GARAGE_NOTIFY_FORCE=1` overrides.
+    """
+    if os.environ.get("GARAGE_NOTIFY_FORCE") == "1":
+        return True
+    return bool(os.environ.get("K_SERVICE", "").strip())
+
+
+_CRED_ENV = ("CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN")
+
+
+def notify_status() -> dict[str, Any]:
+    """What /health reports so the operator can see mail is wired without sending one.
+
+    The `GMAIL_*` → `GARAGE_GMAIL_*` rename (Issue #316) is the one change that
+    could silently stop all real mail: the sender would just log
+    `skip reason=notify_unconfigured` forever. `unscoped_present` catches a
+    rollout that still mounts the old names.
+    """
+    scoped = [k for k in _CRED_ENV if os.environ.get(f"GARAGE_GMAIL_{k}", "").strip()]
+    unscoped = [k for k in _CRED_ENV if os.environ.get(f"GMAIL_{k}", "").strip()]
+    return {
+        "runtime_allowed": notify_runtime_allowed(),
+        "credentials": "GARAGE_GMAIL_*",
+        "configured": len(scoped) == len(_CRED_ENV),
+        "missing": [f"GARAGE_GMAIL_{k}" for k in _CRED_ENV if k not in scoped],
+        # pup-watch's names. Set here means the rollout is stale, not that we use them.
+        "unscoped_present": bool(unscoped),
+        "to": os.environ.get("GARAGE_NOTIFY_TO") or DEFAULT_TO,
+    }
 
 
 def _fmt_m(value: Any) -> str:
@@ -83,12 +137,32 @@ def email_body(event: str, fields: dict[str, Any]) -> str:
 
 def send_garage_email(event: str, fields: dict[str, Any], *, to: Optional[str] = None) -> bool:
     """Send one notify email. Returns False if skipped or send failed."""
+    if not notify_runtime_allowed():
+        log.info(
+            "tesla-aladdin-garage skip reason=notify_not_deployed event=%s", event
+        )
+        return False
+    if not should_email(event, fields):
+        log.info(
+            "tesla-aladdin-garage skip reason=notify_quiet event=%s simulated=%s",
+            event,
+            bool(fields.get("simulated")),
+        )
+        return False
     dest = (to or os.environ.get("GARAGE_NOTIFY_TO") or DEFAULT_TO).strip()
-    client_id = os.environ.get("GMAIL_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "").strip()
-    refresh = os.environ.get("GMAIL_REFRESH_TOKEN", "").strip()
+    client_id = os.environ.get("GARAGE_GMAIL_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("GARAGE_GMAIL_CLIENT_SECRET", "").strip()
+    refresh = os.environ.get("GARAGE_GMAIL_REFRESH_TOKEN", "").strip()
     if not dest or not client_id or not client_secret or not refresh:
-        log.info("tesla-aladdin-garage skip reason=notify_unconfigured event=%s", event)
+        status = notify_status()
+        # warning, not info: a rollout that still mounts the bare GMAIL_* names
+        # would otherwise drop every real open mail silently (Issue #316).
+        log.warning(
+            "tesla-aladdin-garage skip reason=notify_unconfigured event=%s missing=%s unscoped_present=%s",
+            event,
+            ",".join(status["missing"]) or "recipient",
+            status["unscoped_present"],
+        )
         return False
     payload = dict(fields)
     if "tesla_cost_lines" not in payload:
@@ -130,6 +204,7 @@ def _gmail_send(access: str, to: str, from_addr: str, subject: str, text: str) -
     msg["to"] = to
     msg["from"] = from_addr
     msg["subject"] = subject
+    msg[MARKER_HEADER] = "1"
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
     payload = json.dumps({"raw": raw}).encode()
     req = urllib.request.Request(

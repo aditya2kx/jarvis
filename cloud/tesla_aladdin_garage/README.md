@@ -18,7 +18,8 @@ Geofence Dhanno → open **Big Peach** via Aladdin Connect.
 - Last event/error/poll + Tesla usage counters in Firestore **named database `garage`** (`GARAGE_FIRESTORE_DB=garage`), collection `tesla_aladdin_garage/{config,state,tesla_usage}`. Do not use `(default)` on Cloud Run — REST double-encodes it to `%28default%29` (400). The `config` doc holds the live radius; the worker loads it on boot and never erases it.
 - Admin token (`GARAGE_ADMIN_TOKEN` / `X-Garage-Token`) required for `/tick`, `/location`, `/simulate/enter`, `/config`, `/telemetry`, `/telemetry/configure`.
 - Aladdin `/devices` uses Cognito **AccessToken** (IdToken is 401). Cognito access tokens last **24 h**; the client re-logins before expiry and once on a 401, so the always-on Cloud Run instance no longer needs a redeploy to recover after a day. Cloud Run SA must have `secretVersionAdder` on `tesla-fleet-refresh-token` so `/oauth/tesla` survives a revision restart.
-- If Big Peach is **already open**, skip `OPEN_DOOR` and email `aditya.2ky@gmail.com` (Tesla metres-from-home in the subject). Same email on open and on Aladdin failure. Body includes Tesla Fleet month spend vs the **$10 developer discount** (`TESLA_MONTH_BUDGET_USD`; Jarvis-counted Data/streaming, Tesla portal is authoritative). Needs Gmail OAuth secrets for that mailbox (`GMAIL_*`); without them the worker still opens, it just logs `notify_unconfigured`.
+- Gmail sends **only from the deployed service** — `send_garage_email` requires `K_SERVICE` (set by Cloud Run) or `GARAGE_NOTIFY_FORCE=1`, so a laptop/CI shell that sourced `local/tesla-aladdin-garage.env` logs `skip reason=notify_not_deployed` instead of mailing the operator. `conftest.py` also strips `GMAIL_*` for every garage test. Both guards exist because the unit suite emailed the operator on every `verify.py --full` (Issue #316): `GarageWorker` defaults `notify` to the live sender, and the open-path tests do not stub it.
+- Gmail (`aditya.2ky@gmail.com`) only for a **real** `opened` (Aladdin command sent, not simulated). Already-open, `open_error`, and `/simulate/enter` stay in Cloud Logging (`skip reason=notify_quiet`). Simulate while last live Tesla metres are already ≤ enter_m returns `skip_already_inside` and does **not** open. Body of the remaining open email includes Tesla Fleet month spend vs the **$10 developer discount** (`TESLA_MONTH_BUDGET_USD`; Jarvis-counted Data/streaming, Tesla portal is authoritative). Needs Gmail OAuth secrets for that mailbox (`GMAIL_*`); without them the worker still opens, it just logs `notify_unconfigured`.
 
 ## Env / secrets
 
@@ -39,7 +40,8 @@ printf 'pending-reauth' | python3 scripts/secret_manager_put.py --secret tesla-f
 python3 -c "import secrets; print(secrets.token_urlsafe(32))" > /tmp/garage-admin.token
 python3 scripts/secret_manager_put.py --secret garage-admin-token --data-file /tmp/garage-admin.token
 rm /tmp/garage-admin.token
-# Gmail OAuth for aditya.2ky@gmail.com (never Palmetto). Deploy mounts these as GMAIL_*.
+# Gmail OAuth for aditya.2ky@gmail.com (never Palmetto). Deploy mounts these as GARAGE_GMAIL_*
+# (garage-scoped: cloud/pup_watch mails the same operator from the bare GMAIL_* names).
 python3 scripts/secret_manager_put.py --secret gmail-client-id --from-env GMAIL_CLIENT_ID
 python3 scripts/secret_manager_put.py --secret gmail-client-secret --from-env GMAIL_CLIENT_SECRET
 python3 scripts/secret_manager_put.py --secret gmail-refresh-token --from-env GMAIL_REFRESH_TOKEN
@@ -51,8 +53,20 @@ Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON` (enter from `geo
 `TESLA_TELEMETRY_HOST` (fleet-telemetry hostname cars connect to; empty = ingest-only),
 `TESLA_TELEMETRY_PORT=8443`,
 `LOCATION_MIN_DELTA_M=40`, `TESLA_MONTH_BUDGET_USD=10`, `GARAGE_FIRESTORE_DB=garage`. Gmail OAuth is Secret Manager only (`gmail-client-id`,
-`gmail-client-secret`, `gmail-refresh-token` → `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` /
-`GMAIL_REFRESH_TOKEN`).
+`gmail-client-secret`, `gmail-refresh-token` → `GARAGE_GMAIL_CLIENT_ID` /
+`GARAGE_GMAIL_CLIENT_SECRET` / `GARAGE_GMAIL_REFRESH_TOKEN`). The env names are
+service-scoped so pup-watch's bare `GMAIL_*` cannot drive this mailer, and there is no
+fallback to them (Issue #316). `GET /health` reports `notify.configured`, `notify.missing` and
+`notify.unscoped_present` so a stale rollout is visible without sending mail.
+
+Outgoing mail carries `X-Jarvis-Garage`. The mailbox is shared with `cloud/pup_watch`,
+which polls it for `start`/`stop` replies; the marker is how it tells garage mail from a
+command (`FOREIGN_MARKER_HEADERS` there). Scoped credentials keep the two from mailing
+*as* each other; the marker keeps them from *reading* each other.
+
+Tests can never mail the operator: the root `conftest.py` strips every outbound
+credential (including `K_SERVICE` and `GARAGE_NOTIFY_FORCE`, which would otherwise
+re-open the runtime gate), on top of this package's own `conftest.py`.
 
 ## HTTP
 
@@ -60,13 +74,13 @@ Public env: `TESLA_VIN`, `TESLA_PARTNER_DOMAIN`, `HOME_LAT/LON` (enter from `geo
 |---|---|---|
 | `GET /health` | no | polls, last_event, enter_m, `enter_m_source`, needs_reauth, persisted state |
 | `GET /location` | admin | live Tesla lat/lon + metres from home (does not open) |
-| `POST /simulate/enter` | admin | fake outside→enter then **open Big Peach** |
+| `POST /simulate/enter` | admin | fake outside→enter then **open Big Peach** (no-op `skip_already_inside` if last Tesla metres already inside; **no Gmail**) |
 | `POST /config` | admin | `enter_m` / `hysteresis_m` / `cooldown_s` / `poll_s`; applies immediately and persists. `400 invalid_radii` out of bounds, `503 config_not_persisted` if Firestore write fails |
 | `POST /telemetry` | admin | fleet-telemetry HTTP-dispatcher JSON → same geofence. Golden samples: `testdata/dispatcher_{outside,enter}.json` (teslamotors PR #91 shape). |
 | `POST /telemetry/configure` | admin | skip unless `TESLA_COMMAND_PROXY_URL` (Cloud Run: use GCE `gce_signed_telemetry_config`) |
 | `GET /oauth/tesla` | no | operator browser re-auth |
 
-Logs: grep `tesla-aladdin-garage`. Skip reasons: `cooldown`, `no_fix`, `vehicle_unavailable`, `telemetry_config_needs_proxy`.
+Logs: grep `tesla-aladdin-garage`. Skip reasons: `cooldown`, `no_fix`, `vehicle_unavailable`, `telemetry_config_needs_proxy`, `notify_quiet`, `notify_not_deployed`, `simulate_already_inside`.
 Heartbeat still logs `tesla-aladdin-garage poll` every 20 s when REST poll is off so the stale-poll metric stays valid.
 Stale-poll metric: `tesla_aladdin_garage_poll` (deploy job tries to ensure it; IAM miss is non-fatal).
 

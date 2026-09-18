@@ -1,11 +1,22 @@
 # pup-watch
 
-Emails when the pup is let out **alone** in the daycare yard.
+Emails when a dog is out **alone** in either watched daycare yard.
 
 He is a white English Cream Golden Retriever, 80 lb, and the daycare only ever
-puts him out on his own — groups of dogs are never him. That turns "how many
-dogs are in the yard" from a weak proxy into the primary signal, and it is why
-this worker can be both accurate and free.
+puts him out on his own — a yard holding a group of dogs is never him. That turns
+"how many dogs are in the yard" from a weak proxy into the primary signal, and it
+is why this worker can be both accurate and free.
+
+**One dog in view is the trigger; everything else only describes it.** People in
+the yard never matter (a handler standing with him is the normal case), and
+neither coat colour nor the Gemini identity check can cancel an email — they are
+reported in it. This is deliberate, on operator instruction (2026-09-18): *"if
+there's only 1 dog in any of those yards, I want to be notified. you can
+additionally say if it looks like chai or not."* Both of the gates that used to
+be able to suppress a sighting were measured as unreliable — the cream threshold
+fails in bad light, and Gemini cannot separate him from similar cream dogs at
+crop resolution — so both now annotate instead of veto. Missing him is expensive;
+an email saying "a dog is out, probably not him" costs a glance.
 
 - **Camera:** public ipcamlive stream, no credentials. Source of truth for which
   yards to watch is [`cameras.json`](cameras.json).
@@ -28,20 +39,26 @@ Ordered cheapest-first, so the expensive stages almost never run.
 | Session check | ~1ms | Returns immediately unless monitoring is on |
 | Frame grab (`stream.py`) | ~8s wall | 4 frames, 2s apart, via ffmpeg from the HLS playlist |
 | Detection (`vision.py`) | ~270ms × 3 per frame | Full frame + 2 yard tiles; counts dogs and people |
-| Cream gate (`vision.py`) | ~1ms | Is the dog's box bright and desaturated? |
-| Identity (`identify.py`) | 1 API call | Gemini re-ID against reference photos — candidates only |
+| Coat check (`vision.py`) | ~1ms | Is the dog's box bright and desaturated? **Reported, not required** |
+| Identity (`identify.py`) | 1 API call | Gemini re-ID against reference photos. **Advisory** — the email says "looks like Chai" or "does not", and sends either way |
 | Episode (`episode.py`) | ~0 | One email per visit, not per poll |
 | Email (`notify.py`) | 1 API call | Both recipients, annotated frame attached |
 
-Two rules are hard vetoes rather than score adjustments:
+Exactly one rule is a hard veto:
 
-- **More than one dog ⇒ not him.** He is only ever out alone.
+- **More than one dog ⇒ not him.** He is only ever out alone, so a group yard in
+  group play is not a sighting. This is the whole precision story.
+
+Everything else is advice carried into the email:
+
 - **People do not matter.** Staff in the yard is normal and never suppresses an alert.
-
-And one deliberate fail-open: if the identity check is *inconclusive* (no API
-key, no reference photos, API error) the sighting still goes through. Only a
-*confident* "different dog" vetoes it. Silently swallowing real sightings
-because a dependency is unconfigured is the worse failure here.
+- **Coat colour does not gate.** A lone dog that does not read as cream still
+  emails, with `Cream-coat match: N%` stated.
+- **Identity does not gate.** A confident "different dog" no longer cancels the
+  email; it changes the subject to "A dog is out alone … — may not be him (N%)".
+  An *inconclusive* check (no API key, no reference photos, API error) says "could
+  not tell". Silently swallowing real sightings — whether because a dependency is
+  unconfigured or because an unreliable check guessed wrong — is the worse failure.
 
 ## Why these thresholds
 
@@ -232,8 +249,8 @@ tight.
   into a real yard frame at 110px — **neither can the Gemini re-ID stage**: it
   returned `is_pup=True` at 0.99 confidence for the wrong dog, citing coat, ear
   shape and build. At camera-crop resolution it confirms "a cream Golden", not
-  "*this* cream Golden". Because the stage fails open, this can only cause a
-  false alert, never a missed one. Treat the lone-dog veto as the real signal
+  "*this* cream Golden". Since 2026-09-18 the stage cannot veto at all, so it can
+  only mislabel an email, never withhold one. Treat the lone-dog veto as the real signal
   until re-ID is either fed higher-resolution crops or given a discriminating
   cue (his collar/harness is currently a confound, not a help — Gemini cited a
   "similar harness" when matching the wrong dog).

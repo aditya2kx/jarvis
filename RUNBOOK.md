@@ -2141,9 +2141,21 @@ curl -sS -X POST "$URL/telemetry" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN" \
 
 ## pup-watch (daycare yard → email)
 
-Emails when the pup is let out **alone** in the daycare yard. He is only ever
-put out on his own, so "exactly one dog in the yard" is the primary signal, not
-a proxy. People in the yard are expected and never suppress an alert.
+Emails when a dog is out **alone** in either watched daycare yard. He is only
+ever put out on his own, so "exactly one dog in the yard" is the primary signal,
+not a proxy. People in the yard are expected and never suppress an alert.
+
+**Two yards are watched** (`cloud/pup_watch/cameras.json`): `sm-yard` (S/M YARD,
+alias `5ee276849d4bf`) and `b-yard` (Montrose outside-big group yard, alias
+`5ee27f3358677`). Every sighting email names the yard and links it, so "which
+camera" never needs looking up. The big yard normally holds a dozen dogs, so the
+one-dog veto keeps it quiet during group play and it alerts when a single dog is
+left out there.
+
+Coat colour and the Gemini identity check are **advisory** — they annotate the
+email ("looks like Chai" / "does not look like Chai" / "could not tell") and
+cannot suppress it. Only the dog count can. So a wrongly-labelled email is
+possible by design; a silently-withheld one is not.
 
 Full design, thresholds and the measurements behind them:
 `cloud/pup_watch/README.md`.

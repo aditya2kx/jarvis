@@ -81,13 +81,13 @@ CREAM = (238, 232, 214)
 DARK_DOG = (60, 48, 40)
 
 
-def test_lone_cream_dog_passes():
+def test_lone_dog_passes():
     box = (300, 300, 340, 380)
     im = _paint(_yard(), box, CREAM)
     vision.set_session(FakeSession([(*box, 0.71, COCO_DOG)]))
     v = vision.analyse_frame(im, settings=S)
-    assert v.lone_cream_dog is True
-    assert v.reason == "lone_cream_dog"
+    assert v.lone_dog is True
+    assert v.reason == "lone_dog"
     assert len(v.dogs) == 1
     assert v.best_dog.score == pytest.approx(0.71, abs=1e-3)
 
@@ -102,7 +102,7 @@ def test_people_present_does_not_block_a_sighting():
         (100, 250, 140, 400, 0.60, COCO_PERSON),
     ]))
     v = vision.analyse_frame(im, settings=S)
-    assert v.lone_cream_dog is True
+    assert v.lone_dog is True
     assert len(v.persons) == 2
 
 
@@ -112,17 +112,22 @@ def test_two_dogs_is_a_hard_veto():
     im = _paint(_paint(_yard(), a, CREAM), b, CREAM)
     vision.set_session(FakeSession([(*a, 0.80, COCO_DOG), (*b, 0.75, COCO_DOG)]))
     v = vision.analyse_frame(im, settings=S)
-    assert v.lone_cream_dog is False
+    assert v.lone_dog is False
     assert "multiple_dogs" in v.reason
 
 
-def test_dark_dog_is_rejected_by_the_cream_gate():
+def test_dark_dog_still_counts_but_is_flagged_not_cream():
+    """Coat colour is advice, not a gate. The operator asked to hear about ANY
+    lone dog in the yard -- a cream threshold that can cancel the email means
+    missing his pup whenever the light is against us, which is the expensive
+    direction to be wrong in. The email says it did not look cream."""
     box = (300, 300, 340, 380)
     im = _paint(_yard(), box, DARK_DOG)
     vision.set_session(FakeSession([(*box, 0.90, COCO_DOG)]))
     v = vision.analyse_frame(im, settings=S)
-    assert v.lone_cream_dog is False
-    assert "dog_not_cream" in v.reason
+    assert v.lone_dog is True
+    assert "not_cream" in v.reason
+    assert v.cream is not None and v.cream.fraction < S.cream_pixel_fraction_min
 
 
 def test_low_score_detection_ignored():
@@ -143,7 +148,7 @@ def test_tiny_box_ignored_even_when_confident():
 def test_empty_yard_yields_no_dog():
     vision.set_session(FakeSession([]))
     v = vision.analyse_frame(_yard(), settings=S)
-    assert (v.reason, v.lone_cream_dog, v.dogs) == ("no_dog", False, ())
+    assert (v.reason, v.lone_dog, v.dogs) == ("no_dog", False, ())
 
 
 def test_tiling_runs_extra_passes_and_dedupes_to_one_dog():
@@ -156,7 +161,7 @@ def test_tiling_runs_extra_passes_and_dedupes_to_one_dog():
     v = vision.analyse_frame(im, settings=S, regions=regions)
     assert fake.calls == 3  # full frame + two tiles
     assert len(v.dogs) == 1
-    assert v.lone_cream_dog is True
+    assert v.lone_dog is True
 
 
 def test_tiled_box_maps_back_to_full_frame_coordinates():
@@ -218,16 +223,21 @@ def test_cream_stats_honours_a_passed_in_settings_override():
 
 
 def test_analyse_frame_applies_the_overlaid_cream_thresholds():
-    """End-to-end: a custom Settings must change the lone_cream_dog verdict."""
+    """End-to-end: a custom Settings still changes how the coat is *described*,
+    it just no longer changes whether the sighting counts."""
     box = (300, 300, 340, 380)
     dim = (140, 130, 120)
     im = _paint(_yard(), box, dim)
     vision.set_session(FakeSession([(*box, 0.71, COCO_DOG)]))
-    assert vision.analyse_frame(im, settings=S).lone_cream_dog is False
+    strict = vision.analyse_frame(im, settings=S)
+    assert strict.lone_dog is True
+    assert "not_cream" in strict.reason
 
     loose = Settings(cream_brightness_min=100.0, cream_saturation_max=150.0, cream_pixel_fraction_min=0.30)
     vision.set_session(FakeSession([(*box, 0.71, COCO_DOG)]))
-    assert vision.analyse_frame(im, settings=loose).lone_cream_dog is True
+    relaxed = vision.analyse_frame(im, settings=loose)
+    assert relaxed.lone_dog is True
+    assert relaxed.reason == "lone_dog"
 
 
 def test_crop_detection_upscales_small_crops_for_the_identity_check():

@@ -64,7 +64,7 @@ class FrameVerdict:
     dogs: tuple[Detection, ...]
     persons: tuple[Detection, ...]
     cream: Optional[CreamStats]
-    lone_cream_dog: bool
+    lone_dog: bool
     reason: str
 
     @property
@@ -217,12 +217,13 @@ def analyse_frame(
 
     best = max(dogs, key=lambda d: d.score)
     stats = cream_stats(im, best.box, settings)
-    if not stats.passes(settings):
-        return FrameVerdict(
-            tuple(dogs), tuple(persons), stats, False,
-            f"dog_not_cream fraction={stats.fraction:.2f}",
-        )
-    return FrameVerdict(tuple(dogs), tuple(persons), stats, True, "lone_cream_dog")
+    # Coat colour is measured and reported, not required. The operator's rule is
+    # that a single dog in any of these yards is worth an email, and whether it
+    # looks like his is for the email to say -- a cream threshold that can cancel
+    # the email just means missing him whenever the light is wrong. People never
+    # veto either: a handler standing with him is the ordinary case.
+    reason = "lone_dog" if stats.passes(settings) else f"lone_dog not_cream fraction={stats.fraction:.2f}"
+    return FrameVerdict(tuple(dogs), tuple(persons), stats, True, reason)
 
 
 def crop_detection(frame: bytes | Any, box: Box, *, pad: float = 0.18) -> bytes:

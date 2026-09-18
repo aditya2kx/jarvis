@@ -119,7 +119,7 @@ def evaluate_camera(camera: Camera, settings: Settings) -> CameraResult:
             continue
         result.dogs = max(result.dogs, len(verdict.dogs))
         result.persons = max(result.persons, len(verdict.persons))
-        if not verdict.lone_cream_dog:
+        if not verdict.lone_dog:
             result.reason = result.reason or verdict.reason
             continue
         result.hits += 1
@@ -137,7 +137,7 @@ def evaluate_camera(camera: Camera, settings: Settings) -> CameraResult:
         result.reason = f"insufficient_hits {result.hits}/{settings.min_hits_per_poll} last={detail}"
         return result
 
-    result.reason = "lone_cream_dog"
+    result.reason = "lone_dog"
     result.seen = True
 
     if settings.require_gemini_confirm and result.best_frame is not None and result.best_detections:
@@ -147,13 +147,13 @@ def evaluate_camera(camera: Camera, settings: Settings) -> CameraResult:
             ident = identify.confirm_pup(
                 crop, model=settings.gemini_model, confidence_min=settings.gemini_confidence_min
             )
+            # Advisory, never a veto. The operator's rule is "if there is only
+            # one dog in any of those yards, I want to be notified — you can
+            # additionally say whether it looks like Chai". Identity that can
+            # silently cancel the email is the failure mode he cares about,
+            # since Gemini cannot reliably separate him from similar cream dogs
+            # at this crop size (README § Known limits).
             result.identity = ident
-            if ident.conclusive and not ident.is_pup:
-                # A confident "different dog" overrides the local stages; an
-                # inconclusive check (no key, no refs, API error) must not
-                # silently suppress a real sighting.
-                result.seen = False
-                result.reason = f"identity_rejected confidence={ident.confidence:.2f}"
     return result
 
 
@@ -219,6 +219,7 @@ def tick(*, now: Optional[float] = None) -> dict[str, Any]:
             fields: dict[str, Any] = {
                 "camera": result.camera,
                 "camera_label": result.label,
+                "camera_url": stream.PAGE_URL.format(alias=camera.alias),
                 "seen_ts": now,
                 "dogs": result.dogs,
                 "persons": result.persons,
@@ -229,6 +230,7 @@ def tick(*, now: Optional[float] = None) -> dict[str, Any]:
             }
             if result.identity is not None:
                 if result.identity.conclusive:
+                    fields["identity_is_pup"] = result.identity.is_pup
                     fields["identity_confidence"] = result.identity.confidence
                     fields["identity_notes"] = result.identity.notes
                 else:

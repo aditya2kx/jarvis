@@ -7,15 +7,18 @@ import pytest
 from cloud.pup_watch import config
 
 
-def test_shipped_cameras_json_includes_the_sm_yard():
+def test_shipped_cameras_json_lists_both_watched_yards():
     cams = config.load_cameras()
-    assert [c.name for c in cams] == ["sm-yard"]
-    cam = cams[0]
-    assert cam.alias == "5ee276849d4bf"
-    assert cam.label == "S/M YARD"
+    assert [c.name for c in cams] == ["sm-yard", "b-yard"]
+    by_name = {c.name: c for c in cams}
+    assert by_name["sm-yard"].alias == "5ee276849d4bf"
+    assert by_name["sm-yard"].label == "S/M YARD"
+    assert by_name["b-yard"].alias == "5ee27f3358677"
     # Tiling is what carries recall at the far fence; regions must be present.
-    assert len(cam.yard_regions) == 2
-    assert all(len(r) == 4 for r in cam.yard_regions)
+    for cam in cams:
+        assert len(cam.yard_regions) == 2
+        assert all(len(r) == 4 for r in cam.yard_regions)
+
 
 
 def test_multiple_cameras_are_supported(tmp_path):

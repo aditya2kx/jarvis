@@ -33,6 +33,12 @@ log = logging.getLogger("tesla_aladdin_garage")
 DEFAULT_TO = "aditya.2ky@gmail.com"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_SEND = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+# Identifies garage mail in the mailbox it shares with pup-watch. Scoping the
+# *credentials* stops this service mailing from a pup-watch shell; this header is
+# the other direction — pup-watch reads that mailbox for start/stop replies, so it
+# needs to recognise garage mail and leave it alone. Keep in sync with
+# cloud/pup_watch/control.py FOREIGN_MARKER_HEADERS.
+MARKER_HEADER = "X-Jarvis-Garage"
 
 _SUBJECTS = {
     "opened": "Big Peach opened",
@@ -198,6 +204,7 @@ def _gmail_send(access: str, to: str, from_addr: str, subject: str, text: str) -
     msg["to"] = to
     msg["from"] = from_addr
     msg["subject"] = subject
+    msg[MARKER_HEADER] = "1"
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
     payload = json.dumps({"raw": raw}).encode()
     req = urllib.request.Request(

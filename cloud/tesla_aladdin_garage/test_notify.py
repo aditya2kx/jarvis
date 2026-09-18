@@ -1,5 +1,10 @@
 """Notify is a no-op without Gmail env; does not raise."""
 
+import base64
+import json
+
+from cloud.pup_watch import control
+from cloud.tesla_aladdin_garage import notify
 from cloud.tesla_aladdin_garage.notify import (
     email_body,
     email_subject,
@@ -17,6 +22,37 @@ def test_notify_skips_when_unconfigured(monkeypatch):
     ):
         monkeypatch.delenv(key, raising=False)
     assert send_garage_email("opened", {"enter_m": 400, "distance_m": 187}) is False
+
+
+def test_pup_watch_knows_this_services_marker():
+    """Scoped credentials stop a pup-watch shell mailing *from* here. The marker is
+    the other direction: pup-watch reads this same mailbox for start/stop replies,
+    and garage mail arrives from the allowlisted address, so without the marker it
+    reaches the command parser."""
+    assert notify.MARKER_HEADER.lower() in control.FOREIGN_MARKER_HEADERS
+
+
+def test_outgoing_mail_actually_carries_the_marker(monkeypatch):
+    sent = {}
+
+    class Resp:
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(req, timeout=0):
+        sent["raw"] = json.loads(req.data.decode())["raw"]
+        return Resp()
+
+    monkeypatch.setattr(notify.urllib.request, "urlopen", urlopen)
+    notify._gmail_send("tok", "to@example.com", "from@example.com", "subj", "body")
+    raw = base64.urlsafe_b64decode(sent["raw"]).decode()
+    assert f"{notify.MARKER_HEADER}: 1" in raw
 
 
 def test_subject_and_body_include_tesla_distance():

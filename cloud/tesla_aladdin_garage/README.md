@@ -59,6 +59,15 @@ service-scoped so pup-watch's bare `GMAIL_*` cannot drive this mailer, and there
 fallback to them (Issue #316). `GET /health` reports `notify.configured`, `notify.missing` and
 `notify.unscoped_present` so a stale rollout is visible without sending mail.
 
+Outgoing mail carries `X-Jarvis-Garage`. The mailbox is shared with `cloud/pup_watch`,
+which polls it for `start`/`stop` replies; the marker is how it tells garage mail from a
+command (`FOREIGN_MARKER_HEADERS` there). Scoped credentials keep the two from mailing
+*as* each other; the marker keeps them from *reading* each other.
+
+Tests can never mail the operator: the root `conftest.py` strips every outbound
+credential (including `K_SERVICE` and `GARAGE_NOTIFY_FORCE`, which would otherwise
+re-open the runtime gate), on top of this package's own `conftest.py`.
+
 ## HTTP
 
 | Path | Auth | Purpose |

@@ -171,13 +171,19 @@ def tick(*, now: Optional[float] = None) -> dict[str, Any]:
         if session.get("active") and why.startswith("session_expired"):
             persist.save_session({"active": False, "stopped_ts": now, "stopped_by": why})
             log.info("pup-watch session_auto_stopped reason=%s", why)
+            # EVERY automatic stop is announced, no exceptions. Monitoring once
+            # expired itself at 6am and said nothing; the operator found out by
+            # noticing no alerts for a day his pup had been out. A watcher that
+            # can stop without saying so is indistinguishable from one that is
+            # working and seeing nothing, which is the whole value gone.
             if why == "session_expired_absolute_max":
-                # He asked for "until I say stop", so the one case where we
-                # overrule him must be said out loud, not discovered as silence.
                 control.announce(
                     f"monitoring auto-stopped after "
                     f"{settings.session_absolute_max_hours / 24:.0f} days without a stop"
                     " — reply start to resume")
+            else:
+                control.announce("monitoring stopped — the time window it was "
+                                 "started with is up — reply start to resume")
         return {"polled": False, "reason": why, "commands": commands}
 
     cameras = load_cameras()

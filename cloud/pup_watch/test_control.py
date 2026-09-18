@@ -400,6 +400,22 @@ def test_hitting_the_outer_bound_emails_instead_of_going_quiet(store, monkeypatc
     assert said and "auto-stopped" in said[0] and "reply start" in said[0]
 
 
+def test_every_automatic_stop_is_announced(store, monkeypatch):
+    """Observed 2026-09-18: an open-ended session hit the 12h ceiling at 6am,
+    stopped, and said nothing. The operator discovered it a day later, by which
+    point his pup had been out in the yard unwatched. Silence is the failure —
+    a stopped watcher looks exactly like a working one that has seen nothing.
+    """
+    said = []
+    monkeypatch.setattr(control, "announce", lambda summary, **k: said.append(summary))
+    store["session"].update({"active": True, "open_ended": False, "started_ts": NOW,
+                             "stop_after_ts": NOW + 3600})
+    out = worker.tick(now=NOW + 7200)          # an hour past its own end time
+    assert out["reason"] == "session_expired_stop_after"
+    assert store["session"]["active"] is False
+    assert said and "reply start" in said[0]
+
+
 def test_a_duration_is_still_honoured_and_bounded(store):
     summary = control.apply(control.Command("start", 4.0, ME, "m1", "s", NOW),
                             settings=Settings(), now=NOW)

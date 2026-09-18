@@ -121,8 +121,11 @@ A bare `start` is open-ended because the operator does not know in advance when
 the pup comes home. `session_max_hours` bounds only *fixed-length* sessions; an
 open-ended one is bounded instead by `session_absolute_max_hours` (default 7
 days), which exists purely so a session nobody stops cannot poll forever. If it
-ever fires it **emails** — overruling "until I say stop" must not look like
-silence. Note that a duration given *wrongly* (`start soon`) falls back to the
+ever fires it **emails** — as does *every* automatic stop, without exception:
+monitoring once expired itself at 6am in silence and the operator only found out
+a day later, after his pup had been out in an unwatched yard. A watcher that has
+stopped looks exactly like one that is working and seeing nothing, so a stop it
+decides on its own is only safe if it is announced. Note that a duration given *wrongly* (`start soon`) falls back to the
 bounded ceiling rather than becoming open-ended: fumbling the syntax should not
 be rewarded with an unbounded session.
 

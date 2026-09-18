@@ -2187,8 +2187,13 @@ for the first session before any sighting mail exists.
 
 A bare **`start` is open-ended** — it watches until someone replies `stop`.
 `session_max_hours` (12h) bounds only `start 4h`-style sessions; open-ended ones
-are bounded by `session_absolute_max_hours` (7 days), and hitting that emails
-rather than going quiet. Leaving one on permanently is what breaks the free tier
+are bounded by `session_absolute_max_hours` (7 days). **Every** automatic stop
+emails both recipients — if monitoring is off, nobody has to guess.
+
+If monitoring ever needs to outlive the deployed ceiling *without* a deploy,
+`session_max_hours` is a runtime overlay: write it to the Firestore `config` doc
+(`persist.save_config({"session_max_hours": 168.0})`) and the next tick picks it
+up. That is how prod was restored on 2026-09-18 while #322 was still unmerged. Leaving one on permanently is what breaks the free tier
 (~9,000 vCPU-s/day) — `stop` when he is home.
 
 Already-handled mail is tracked with a hidden Gmail label (`pupwatch-handled`),

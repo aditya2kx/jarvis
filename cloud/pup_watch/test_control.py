@@ -1,9 +1,10 @@
 import base64
+import urllib.parse
 from email.utils import formatdate
 
 import pytest
 
-from cloud.pup_watch import control, notify, persist, worker
+from cloud.pup_watch import control, notify, persist, sessions, worker
 from cloud.pup_watch.config import Settings
 
 NOW = 1_700_000_000.0
@@ -53,20 +54,65 @@ def _message(body, *, sender=ME, subject="Re: Pup is out in the S/M YARD",
 
 
 class FakeGmail:
-    """Records modify calls so idempotency is observable."""
+    """Records modify calls so consumption is observable."""
+
+    LABEL_ID = "Label_99"
 
     def __init__(self, messages):
         self.messages = messages
-        self.marked_read = []
+        self.handled = []      # ids we labelled as handled
+        self.marked_read = []  # ids whose UNREAD we cleared
+        self.queries = []
+        self.labels_created = 0
 
     def api(self, access, path, *, method="GET", payload=None):
+        if path == "labels" and method == "GET":
+            return {"labels": [{"id": self.LABEL_ID, "name": control.HANDLED_LABEL}]}
+        if path == "labels" and method == "POST":
+            self.labels_created += 1
+            return {"id": self.LABEL_ID}
         if path.startswith("messages?"):
-            return {"messages": [{"id": m["id"]} for m in self.messages]}
+            self.queries.append(path)
+            return {"messages": [{"id": m["id"]} for m in self._search(path)]}
         if "/modify" in path:
-            self.marked_read.append(path.split("/")[1])
+            mid = path.split("/")[1]
+            msg = next(m for m in self.messages if m["id"] == mid)
+            if self.LABEL_ID in (payload or {}).get("addLabelIds", []):
+                self.handled.append(mid)
+                msg["labelIds"] = list(msg.get("labelIds") or ()) + [self.LABEL_ID]
+            if "UNREAD" in (payload or {}).get("removeLabelIds", []):
+                self.marked_read.append(mid)
+                msg["labelIds"] = [l for l in (msg.get("labelIds") or ()) if l != "UNREAD"]
             return {}
         mid = path.split("/")[1].split("?")[0]
         return next(m for m in self.messages if m["id"] == mid)
+
+    def _search(self, path):
+        """Honour the query's label operators.
+
+        A fake that returns everything regardless of `q` is how the is:unread
+        bug reached production: the real Gmail filtered the operator's replies
+        out and the fake did not. Anything asserting on discovery has to model
+        the filter it depends on.
+        """
+        q = urllib.parse.unquote_plus(urllib.parse.parse_qs(
+            path.split("?", 1)[1]).get("q", [""])[0])
+        out = []
+        for m in self.messages:
+            labels = set(m.get("labelIds") or ())
+            if "is:unread" in q and "UNREAD" not in labels:
+                continue
+            if f"-label:{control.HANDLED_LABEL}" in q and self.LABEL_ID in labels:
+                continue
+            out.append(m)
+        return out
+
+
+@pytest.fixture(autouse=True)
+def _clear_label_cache():
+    control._label_id_cache.clear()
+    yield
+    control._label_id_cache.clear()
 
 
 @pytest.fixture
@@ -161,6 +207,7 @@ def test_spoofed_sender_without_dkim_is_refused_and_consumed(store, gmail):
     fake = gmail([_message("stop", auth="spf=fail; dkim=fail")])
     assert control.find_commands("tok", settings=Settings(), now=NOW) == []
     # Consumed, so it cannot be retried a minute later.
+    assert fake.handled == ["m1"]
     assert fake.marked_read == ["m1"]
 
 
@@ -213,7 +260,7 @@ def test_stale_command_is_skipped_and_consumed(store, gmail):
     fake = gmail([_message("start")])
     found = control.find_commands("tok", settings=Settings(), now=NOW + 3600)
     assert found == []
-    assert fake.marked_read == ["m1"]
+    assert fake.handled == ["m1"]
 
 
 def test_date_header_without_a_timezone_is_read_as_utc(store, gmail):
@@ -225,7 +272,7 @@ def test_date_header_without_a_timezone_is_read_as_utc(store, gmail):
             h["value"] = formatdate(NOW)  # ends in "-0000"
     fake = gmail([msg])
     assert control.find_commands("tok", settings=Settings(), now=NOW + 3600) == []
-    assert fake.marked_read == ["m1"]
+    assert fake.handled == ["m1"]
 
 
 def test_partner_can_also_control(store, gmail):
@@ -242,6 +289,68 @@ def test_no_allowlist_means_no_control(store, gmail, monkeypatch):
 
 # --- applying commands -----------------------------------------------------
 
+# --- the bug that made this feature not work at all --------------------------
+
+def test_a_command_the_operator_already_read_is_still_found(store, gmail):
+    """THE regression. Gmail marks mail you compose yourself as already read, so
+    the operator's own replies arrive WITHOUT the UNREAD label. The original
+    `is:unread` query therefore ignored every command he ever sent, silently —
+    no ack, not even a rejection log. Observed 2026-09-16 on a real reply:
+    labels ['IMPORTANT', 'SENT', 'INBOX'].
+    """
+    gmail([_message("start", labels=("IMPORTANT", "SENT", "INBOX"))])
+    found = control.find_commands("tok", settings=Settings(), now=NOW)
+    assert [c.action for c in found] == ["start"]
+
+
+def test_discovery_does_not_filter_on_read_state(store, gmail):
+    """Belt and braces: the query itself must never mention is:unread again."""
+    fake = gmail([_message("start")])
+    control.find_commands("tok", settings=Settings(), now=NOW)
+    q = fake.queries[0]
+    assert "unread" not in q.lower()
+    assert f"-label%3A{control.HANDLED_LABEL}" in q or f"-label:{control.HANDLED_LABEL}" in q
+
+
+def test_ordinary_mail_is_labelled_but_left_unread(store, gmail):
+    """A normal email from him is not a command. Stop re-reading it every 60s,
+    but do not touch its read state — it is his mail, not ours."""
+    fake = gmail([_message("thanks, he looked happy!", subject="Re: something")])
+    assert control.find_commands("tok", settings=Settings(), now=NOW) == []
+    assert fake.handled == ["m1"]
+    assert fake.marked_read == []
+
+
+def test_our_own_sighting_mail_is_labelled_but_never_marked_read(store, gmail):
+    """The unread badge IS the notification; clearing it would hide the alert."""
+    fake = gmail([_message("Spotted at: 10:15", ours=True)])
+    assert control.find_commands("tok", settings=Settings(), now=NOW) == []
+    assert fake.handled == ["m1"]
+    assert fake.marked_read == []
+
+
+def test_handled_label_is_created_once_and_hidden(store, monkeypatch):
+    calls = []
+
+    def api(access, path, *, method="GET", payload=None):
+        calls.append((path, method, payload))
+        if path == "labels" and method == "GET":
+            return {"labels": []}          # does not exist yet
+        if path == "labels" and method == "POST":
+            return {"id": "Label_new"}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(control, "_api", api)
+    assert control.handled_label_id("tok") == "Label_new"
+    assert control.handled_label_id("tok") == "Label_new"   # cached
+    creates = [c for c in calls if c[0] == "labels" and c[1] == "POST"]
+    assert len(creates) == 1
+    assert creates[0][2]["labelListVisibility"] == "labelHide"
+    assert creates[0][2]["messageListVisibility"] == "hide"
+
+
+# --- applying commands -------------------------------------------------------
+
 def test_apply_start_opens_a_session(store):
     summary = control.apply(
         control.Command("start", 3.0, ME, "m1", "s", NOW), settings=Settings(), now=NOW)
@@ -249,6 +358,97 @@ def test_apply_start_opens_a_session(store):
     assert store["session"]["stop_after_ts"] == NOW + 3 * 3600
     assert store["session"]["started_by"] == f"email:{ME}"
     assert "started" in summary
+
+
+def test_bare_start_runs_until_an_explicit_stop(store):
+    """Operator's requirement: "start should mean keep monitoring till I send
+    stop". No end time, and session_max_hours must not quietly cut it off."""
+    summary = control.apply(control.Command("start", None, ME, "m1", "s", NOW),
+                            settings=Settings(), now=NOW)
+    assert store["session"]["open_ended"] is True
+    assert store["session"]["stop_after_ts"] is None
+    assert "until you reply stop" in summary
+
+    s = Settings()
+    # Well past session_max_hours, which bounds only fixed-length sessions.
+    later = NOW + (s.session_max_hours + 48) * 3600
+    active, why = worker.session_active(store["session"], now=later, settings=s)
+    assert (active, why) == (True, "active")
+
+
+def test_open_ended_session_still_has_a_far_outer_bound(store):
+    """A forgotten open-ended session polls every minute of every day, which
+    does leave the free tier — so there is a last-resort stop."""
+    control.apply(control.Command("start", None, ME, "m1", "s", NOW),
+                  settings=Settings(), now=NOW)
+    s = Settings()
+    past = NOW + (s.session_absolute_max_hours + 1) * 3600
+    active, why = worker.session_active(store["session"], now=past, settings=s)
+    assert (active, why) == (False, "session_expired_absolute_max")
+
+
+def test_hitting_the_outer_bound_emails_instead_of_going_quiet(store, monkeypatch):
+    """Overruling "until I say stop" must be announced, not discovered as silence."""
+    said = []
+    monkeypatch.setattr(control, "announce", lambda summary, **k: said.append(summary))
+    store["session"].update({"active": True, "open_ended": True, "started_ts": NOW,
+                             "stop_after_ts": None})
+    past = NOW + (Settings().session_absolute_max_hours + 1) * 3600
+    out = worker.tick(now=past)
+    assert out["reason"] == "session_expired_absolute_max"
+    assert store["session"]["active"] is False
+    assert said and "auto-stopped" in said[0] and "reply start" in said[0]
+
+
+def test_every_automatic_stop_is_announced(store, monkeypatch):
+    """Observed 2026-09-18: an open-ended session hit the 12h ceiling at 6am,
+    stopped, and said nothing. The operator discovered it a day later, by which
+    point his pup had been out in the yard unwatched. Silence is the failure —
+    a stopped watcher looks exactly like a working one that has seen nothing.
+    """
+    said = []
+    monkeypatch.setattr(control, "announce", lambda summary, **k: said.append(summary))
+    store["session"].update({"active": True, "open_ended": False, "started_ts": NOW,
+                             "stop_after_ts": NOW + 3600})
+    out = worker.tick(now=NOW + 7200)          # an hour past its own end time
+    assert out["reason"] == "session_expired_stop_after"
+    assert store["session"]["active"] is False
+    assert said and "reply start" in said[0]
+
+
+def test_a_session_that_merely_ran_long_is_not_told_it_chose_a_window(store, monkeypatch):
+    """The max_hours branch fires for sessions nobody gave a window to (including
+    every session written before open_ended existed), so it must not claim one."""
+    said = []
+    monkeypatch.setattr(control, "announce", lambda summary, **k: said.append(summary))
+    s = Settings()
+    store["session"].update({"active": True, "started_ts": NOW, "stop_after_ts": None})
+    out = worker.tick(now=NOW + (s.session_max_hours + 1) * 3600)
+    assert out["reason"] == "session_expired_max_hours"
+    assert said and "had been on for over" in said[0]
+    assert "window" not in said[0]
+
+
+def test_a_duration_is_still_honoured_and_bounded(store):
+    summary = control.apply(control.Command("start", 4.0, ME, "m1", "s", NOW),
+                            settings=Settings(), now=NOW)
+    assert store["session"]["open_ended"] is False
+    assert store["session"]["stop_after_ts"] == NOW + 4 * 3600
+    assert "4h" in summary
+
+
+def test_an_unparseable_duration_does_not_become_forever(store):
+    """Absent duration means open-ended; a duration given wrong does not."""
+    sessions.start(hours="soon", by="test", settings=Settings(), now=NOW)
+    assert store["session"]["open_ended"] is False
+    assert store["session"]["stop_after_ts"] == NOW + Settings().session_max_hours * 3600
+
+
+def test_status_reports_an_open_ended_session_as_such(store):
+    store["session"].update({"active": True, "open_ended": True, "stop_after_ts": None})
+    out = control.apply(control.Command("status", None, ME, "m1", "s", NOW),
+                        settings=Settings(), now=NOW)
+    assert "monitoring is ON, until you reply stop" in out
 
 
 def test_apply_start_is_capped_at_session_max_hours(store):
@@ -291,6 +491,7 @@ def test_poll_commands_consumes_exactly_once(store, gmail):
     fake = gmail([_message("start 2h")])
     applied = control.poll_commands(settings=Settings(), now=NOW)
     assert [a["action"] for a in applied] == ["start"]
+    assert fake.handled == ["m1"]
     assert fake.marked_read == ["m1"]
     assert store["session"]["active"] is True
 

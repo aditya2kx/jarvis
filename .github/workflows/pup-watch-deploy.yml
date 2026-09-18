@@ -67,6 +67,13 @@ jobs:
       # this cost real money, and a <=60s notification delay is acceptable here.
       # Recipients come from a repo secret, never from this file — they are
       # personal addresses and the repo keeps PII out of git.
+      #
+      # The "^|^" prefix on --set-env-vars changes gcloud's delimiter from comma
+      # to pipe. Two of these values are themselves comma-separated lists (the
+      # reference photo URIs and the recipient addresses), so with the default
+      # delimiter gcloud parsed "gs://…/chai-02-doorway-lookup.png" as an env var
+      # name and the deploy failed with "Bad syntax for dict arg". Pipe is safe
+      # where "@" is not: the recipients contain "@".
       - name: Deploy Cloud Run
         run: |
           gcloud run deploy ${{ env.SERVICE }} \
@@ -79,7 +86,7 @@ jobs:
             --cpu 1 \
             --timeout 300 \
             --service-account bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
-            --set-env-vars "GCP_PROJECT=${{ env.PROJECT_ID }},PUPWATCH_PERSIST=1,PUPWATCH_FIRESTORE_DB=${{ env.FIRESTORE_DB }},PUPWATCH_MODEL_PATH=/app/models/detector.onnx,PUPWATCH_ORT_THREADS=2,PUPWATCH_REFERENCE_URIS=${{ vars.PUPWATCH_REFERENCE_URIS }},PUPWATCH_NOTIFY_TO=${{ secrets.PUPWATCH_NOTIFY_TO }}" \
+            --set-env-vars "^|^GCP_PROJECT=${{ env.PROJECT_ID }}|PUPWATCH_PERSIST=1|PUPWATCH_FIRESTORE_DB=${{ env.FIRESTORE_DB }}|PUPWATCH_MODEL_PATH=/app/models/detector.onnx|PUPWATCH_ORT_THREADS=2|PUPWATCH_REFERENCE_URIS=${{ vars.PUPWATCH_REFERENCE_URIS }}|PUPWATCH_NOTIFY_TO=${{ secrets.PUPWATCH_NOTIFY_TO }}" \
             --set-secrets "PUPWATCH_ADMIN_TOKEN=pupwatch-admin-token:latest,PUPWATCH_GEMINI_TOKEN=pupwatch-gemini-token:latest,GMAIL_CLIENT_ID=gmail-client-id:latest,GMAIL_CLIENT_SECRET=gmail-client-secret:latest,GMAIL_REFRESH_TOKEN=gmail-refresh-token:latest"
 
       # One heartbeat a minute during plausible daycare hours. Detection only
@@ -95,11 +102,18 @@ jobs:
             --format='value(status.url)')
           TOKEN=$(gcloud secrets versions access latest \
             --secret=pupwatch-admin-token --project ${{ env.PROJECT_ID }})
+          # `create` and `update` disagree on the header flag: create takes
+          # --headers, update takes --update-headers. Using the update spelling
+          # on create fails with "unrecognized arguments: --update-headers",
+          # which is what happened on the very first deploy — the job did not
+          # exist yet, so only the create path ran, and only that path was wrong.
           if gcloud scheduler jobs describe ${{ env.SCHEDULER_JOB }} \
                --location ${{ env.REGION }} --project ${{ env.PROJECT_ID }} >/dev/null 2>&1; then
             VERB=update
+            HEADER_FLAG=--update-headers
           else
             VERB=create
+            HEADER_FLAG=--headers
           fi
           gcloud scheduler jobs $VERB http ${{ env.SCHEDULER_JOB }} \
             --location ${{ env.REGION }} \
@@ -108,7 +122,7 @@ jobs:
             --time-zone "America/Chicago" \
             --uri "${URL}/tick" \
             --http-method POST \
-            --update-headers "X-PupWatch-Token=${TOKEN}" \
+            "$HEADER_FLAG" "X-PupWatch-Token=${TOKEN}" \
             --attempt-deadline 120s \
             --max-retry-attempts 1 \
             --quiet

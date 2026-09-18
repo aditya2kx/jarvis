@@ -13,7 +13,9 @@ FIELDS = {
     "dog_box_px": 72,
     "cream_fraction": 0.81,
     "identity_confidence": 0.92,
+    "identity_is_pup": True,
     "identity_notes": "cream coat, golden build",
+    "camera_url": "https://x.ipcamlive.com/5ee276849d4bf",
 }
 
 
@@ -47,12 +49,43 @@ def test_build_message_without_image_has_no_attachment():
 
 
 def test_subject_names_the_yard_and_match_confidence():
-    assert notify.subject(FIELDS) == "Pup is out in the S/M YARD (match 92%)"
+    assert notify.subject(FIELDS) == "Pup is out in the S/M YARD — looks like him (92%)"
+
+
+def test_subject_hedges_when_the_check_disagrees():
+    """It is still sent -- one dog out is the trigger -- but the subject must not
+    claim it is him when the identity check said otherwise."""
+    fields = {**FIELDS, "identity_is_pup": False, "identity_confidence": 0.88}
+    assert notify.subject(fields) == "A dog is out alone in the S/M YARD — may not be him (88%)"
+
+
+def test_subject_names_whichever_yard_fired():
+    fields = {**FIELDS, "camera": "b-yard", "camera_label": "B YARD (Montrose, outside big)"}
+    assert "B YARD (Montrose, outside big)" in notify.subject(fields)
+
+
+def test_body_links_the_yard_that_fired():
+    """With two yards watched, "which one" is the first question, and the answer
+    is only useful if it is tappable from the phone the email is read on."""
+    text = notify.body({**FIELDS, "camera": "b-yard", "camera_label": "B YARD",
+                        "camera_url": "https://x.ipcamlive.com/5ee27f3358677"})
+    assert "Camera: B YARD" in text
+    assert "Watch this yard live: https://x.ipcamlive.com/5ee27f3358677" in text
+
+
+def test_body_states_the_identity_verdict_both_ways():
+    yes = notify.body(FIELDS)
+    assert "Does it look like Chai? looks like Chai — 92% confident" in yes
+    no = notify.body({**FIELDS, "identity_is_pup": False, "identity_confidence": 0.88})
+    assert "Does it look like Chai? does not look like Chai — 88% confident" in no
+    # The hedge has to be explicit: a wrong "not him" must not stop him looking.
+    assert "only advice" in no and "one dog is out" in no
 
 
 def test_subject_without_identity_confidence_omits_the_match():
-    fields = {k: v for k, v in FIELDS.items() if k != "identity_confidence"}
-    assert notify.subject(fields) == "Pup is out in the S/M YARD"
+    fields = {k: v for k, v in FIELDS.items()
+              if k not in ("identity_confidence", "identity_is_pup")}
+    assert notify.subject(fields) == "A dog is out alone in the S/M YARD"
 
 
 def test_body_reports_the_evidence_that_fired():
@@ -72,10 +105,11 @@ def test_body_renders_local_time_not_utc():
 
 
 def test_body_surfaces_a_skipped_identity_check():
-    fields = {k: v for k, v in FIELDS.items() if k != "identity_confidence"}
+    fields = {k: v for k, v in FIELDS.items()
+              if k not in ("identity_confidence", "identity_is_pup")}
     fields["identity_skipped"] = "no_token"
     text = notify.body(fields)
-    assert "Identity check skipped: no_token" in text
+    assert "Does it look like Chai? could not tell: no_token" in text
 
 
 def test_body_tolerates_missing_optional_fields():

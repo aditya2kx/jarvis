@@ -64,10 +64,19 @@ def access_token() -> str:
 
 
 def subject(fields: dict[str, Any]) -> str:
-    conf = fields.get("identity_confidence")
-    tail = f" (match {float(conf):.0%})" if isinstance(conf, (int, float)) and conf else ""
+    """Say what was actually seen, and hedge exactly as much as we should.
+
+    A single dog in the yard is the trigger; identity is advisory, so the subject
+    must not assert it is him when the check said otherwise or never ran.
+    """
     yard = fields.get("camera_label") or fields.get("camera") or "yard"
-    return f"Pup is out in the {yard}{tail}"
+    conf = fields.get("identity_confidence")
+    pct = f" ({float(conf):.0%})" if isinstance(conf, (int, float)) and conf else ""
+    if fields.get("identity_is_pup") is True:
+        return f"Pup is out in the {yard} — looks like him{pct}"
+    if fields.get("identity_is_pup") is False:
+        return f"A dog is out alone in the {yard} — may not be him{pct}"
+    return f"A dog is out alone in the {yard}"
 
 
 def body(fields: dict[str, Any]) -> str:
@@ -75,24 +84,36 @@ def body(fields: dict[str, Any]) -> str:
     lines = [
         f"Spotted at: {_local(float(seen_ts))}" if seen_ts else "Spotted just now",
         f"Camera: {fields.get('camera_label') or fields.get('camera', '')}",
+    ]
+    # With more than one yard on watch, "which one" is the first thing asked on
+    # opening the email, and the answer is only useful if it is tappable.
+    if fields.get("camera_url"):
+        lines.append(f"Watch this yard live: {fields['camera_url']}")
+    lines += [
         "",
-        f"Dogs in yard: {fields.get('dogs', '?')} (he is only ever let out alone)",
-        f"People in yard: {fields.get('persons', '?')}",
+        f"Dogs in yard: {fields.get('dogs', '?')} — one dog out is what triggers this email",
+        f"People in yard: {fields.get('persons', '?')} (people never affect the decision)",
         f"Frames agreeing this poll: {fields.get('hits', '?')} of {fields.get('frames', '?')}",
     ]
     if fields.get("dog_box_px"):
-        lines.append(f"His height in frame: {fields['dog_box_px']} px")
+        lines.append(f"Dog height in frame: {fields['dog_box_px']} px")
     if fields.get("cream_fraction") is not None:
         lines.append(f"Cream-coat match: {float(fields['cream_fraction']):.0%} of the box")
     ident = fields.get("identity_notes")
+    is_pup = fields.get("identity_is_pup")
     if fields.get("identity_confidence") is not None:
+        verdict = "looks like Chai" if is_pup else "does not look like Chai"
         lines += [
             "",
-            f"Identity check: {float(fields['identity_confidence']):.0%} confident it is him"
-            + (f" — {ident}" if ident else ""),
+            f"Does it look like Chai? {verdict}"
+            f" — {float(fields['identity_confidence']):.0%} confident"
+            + (f", {ident}" if ident else ""),
+            # Said plainly, because a wrong "not him" must not stop him looking.
+            "This is only advice. The email is sent because one dog is out,",
+            "whatever this check thinks — so open the photo and judge for yourself.",
         ]
     elif fields.get("identity_skipped"):
-        lines += ["", f"Identity check skipped: {fields['identity_skipped']}"]
+        lines += ["", f"Does it look like Chai? could not tell: {fields['identity_skipped']}"]
     lines += [
         "",
         "The attached frame shows the detection boxes that triggered this email.",
@@ -103,7 +124,7 @@ def body(fields: dict[str, Any]) -> str:
         # on a phone at daycare, where nobody is going to run curl.
         "Reply to this email to control monitoring:",
         "  stop      stop watching",
-        "  start     watch for the rest of the day  (or 'start 4h')",
+        "  start     keep watching until you reply stop  (or 'start 4h')",
         "  status    is it on, and when did it last alert",
         "Put the word on the first line. Both of us are told when it changes.",
     ]

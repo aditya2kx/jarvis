@@ -92,8 +92,8 @@ def _verdict(lone, *, dogs=1, persons=0, cream=0.8, score=0.7, reason=""):
         dogs=dog_dets,
         persons=person_dets,
         cream=vision.CreamStats(cream, 200.0, 30.0),
-        lone_cream_dog=lone,
-        reason=reason or ("lone_cream_dog" if lone else "no_dog"),
+        lone_dog=lone,
+        reason=reason or ("lone_dog" if lone else "no_dog"),
     )
 
 
@@ -185,7 +185,13 @@ def test_person_count_is_reported_but_never_blocks(monkeypatch):
 
 # --------------------------- identity veto ---------------------------
 
-def test_confident_wrong_dog_vetoes_the_sighting(monkeypatch):
+def test_confident_wrong_dog_still_notifies_but_says_so(monkeypatch):
+    """Identity never cancels the email. The operator's rule: "if there's only 1
+    dog in any of those yards, I want to be notified -- you can additionally say
+    if it looks like chai or not." Gemini cannot reliably separate him from
+    similar cream dogs at this crop size, so letting it veto means trusting a
+    check we have measured as unreliable to decide he is not worth telling about.
+    """
     _stub_stream(monkeypatch, frames=2)
     _stub_analyse(monkeypatch, [_verdict(True), _verdict(True)])
     monkeypatch.setattr(
@@ -193,8 +199,12 @@ def test_confident_wrong_dog_vetoes_the_sighting(monkeypatch):
         lambda crop, **kw: identify.Identification(False, 0.95, 1, coat="black"),
     )
     result = worker.evaluate_camera(CAM, S)
-    assert result.seen is False
-    assert "identity_rejected" in result.reason
+    assert result.seen is True
+    assert result.reason == "lone_dog"
+    # ...and the disagreement is carried, not dropped, so the email can say it.
+    assert result.identity is not None
+    assert result.identity.is_pup is False
+    assert result.identity.confidence == 0.95
 
 
 def test_confirmed_pup_passes_through(monkeypatch):

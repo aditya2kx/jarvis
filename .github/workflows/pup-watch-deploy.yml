@@ -76,6 +76,12 @@ jobs:
       # where "@" is not: the recipients contain "@".
       - name: Deploy Cloud Run
         run: |
+          # --cpu 4 is a coverage requirement, not a luxury. Detection is ~12
+          # inference passes per camera; measured on 1 vCPU a two-camera tick took
+          # 100-120s against the 60s schedule, so ticks overlapped, Cloud Run
+          # aborted them ("no available instance") and b-yard was starved of polls.
+          # At 4 vCPU the same tick measured 52s. Keep --cpu and PUPWATCH_ORT_THREADS
+          # equal -- 1 vCPU with ORT_THREADS=2 was oversubscribed against itself.
           gcloud run deploy ${{ env.SERVICE }} \
             --image ${{ env.REGISTRY }}/pup-watch:${{ github.sha }} \
             --region ${{ env.REGION }} \
@@ -83,10 +89,10 @@ jobs:
             --allow-unauthenticated \
             --max-instances 1 \
             --memory 2Gi \
-            --cpu 1 \
+            --cpu 4 \
             --timeout 300 \
             --service-account bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
-            --set-env-vars "^|^GCP_PROJECT=${{ env.PROJECT_ID }}|PUPWATCH_PERSIST=1|PUPWATCH_FIRESTORE_DB=${{ env.FIRESTORE_DB }}|PUPWATCH_MODEL_PATH=/app/models/detector.onnx|PUPWATCH_ORT_THREADS=2|PUPWATCH_REFERENCE_URIS=${{ vars.PUPWATCH_REFERENCE_URIS }}|PUPWATCH_NOTIFY_TO=${{ secrets.PUPWATCH_NOTIFY_TO }}" \
+            --set-env-vars "^|^GCP_PROJECT=${{ env.PROJECT_ID }}|PUPWATCH_PERSIST=1|PUPWATCH_FIRESTORE_DB=${{ env.FIRESTORE_DB }}|PUPWATCH_MODEL_PATH=/app/models/detector.onnx|PUPWATCH_ORT_THREADS=4|PUPWATCH_REFERENCE_URIS=${{ vars.PUPWATCH_REFERENCE_URIS }}|PUPWATCH_NOTIFY_TO=${{ secrets.PUPWATCH_NOTIFY_TO }}" \
             --set-secrets "PUPWATCH_ADMIN_TOKEN=pupwatch-admin-token:latest,PUPWATCH_GEMINI_TOKEN=pupwatch-gemini-token:latest,GMAIL_CLIENT_ID=gmail-client-id:latest,GMAIL_CLIENT_SECRET=gmail-client-secret:latest,GMAIL_REFRESH_TOKEN=gmail-refresh-token:latest"
 
       # One heartbeat a minute during plausible daycare hours. Detection only

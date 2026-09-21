@@ -32,7 +32,8 @@ def _b64(text: str) -> str:
 
 
 def _message(body, *, sender=ME, subject="Re: Pup is out in the S/M YARD",
-             auth=GOOD_AUTH, labels=("INBOX", "UNREAD"), ts=NOW, ours=False):
+             auth=GOOD_AUTH, labels=("INBOX", "UNREAD"), ts=NOW, ours=False,
+             foreign=False):
     headers = [
         {"name": "From", "value": f"Someone <{sender}>"},
         {"name": "Subject", "value": subject},
@@ -41,6 +42,8 @@ def _message(body, *, sender=ME, subject="Re: Pup is out in the S/M YARD",
     ]
     if ours:
         headers.append({"name": notify.MARKER_HEADER, "value": "1"})
+    if foreign:
+        headers.append({"name": "X-Jarvis-Garage", "value": "1"})
     return {
         "id": "m1",
         "labelIds": list(labels),
@@ -222,6 +225,19 @@ def test_our_own_sighting_email_is_ignored(store, gmail):
     """Our mail lands in INBOX too — it must never look like a command."""
     gmail([_message("start", labels=("INBOX", "UNREAD", "SENT"), ours=True)])
     assert control.find_commands("tok", settings=Settings(), now=NOW) == []
+
+
+def test_another_jarvis_systems_mail_is_never_read_as_a_command(store, gmail):
+    """The garage worker shares this mailbox and mails from the same address, so
+    it clears the allowlist. A garage subject that happened to start with a
+    command word would otherwise switch monitoring off on its own."""
+    fake = gmail([_message("stop", subject="Big Peach opened — Tesla 0 m from home",
+                           foreign=True)])
+    assert control.find_commands("tok", settings=Settings(), now=NOW) == []
+    # Labelled so a burst of garage mail cannot crowd a real command out of the
+    # 10-message window, but left unread: it is his mail to read.
+    assert fake.handled == ["m1"]
+    assert fake.marked_read == []
 
 
 def test_operator_reply_from_the_sending_mailbox_still_counts(store, gmail):

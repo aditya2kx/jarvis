@@ -182,3 +182,36 @@ def test_telemetry_official_dispatcher_enter():
     assert body["event"] in ("enter", "opened_dry_run")
     tesla.vehicle_location.assert_not_called()
     aladdin.open_door.assert_called_once()
+
+
+def test_health_reports_scoped_notify_credentials(monkeypatch):
+    """Issue #316: the GARAGE_GMAIL_* rename could silently kill all real mail, so
+    /health names the credential source a rollout actually mounted."""
+    garage_app._worker = _config_worker()
+    garage_app._worker.tesla.partner_domain = "example.test"
+    monkeypatch.setenv("K_SERVICE", "tesla-aladdin-garage")
+    monkeypatch.setenv("GARAGE_GMAIL_CLIENT_ID", "id")
+    monkeypatch.setenv("GARAGE_GMAIL_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("GARAGE_GMAIL_REFRESH_TOKEN", "refresh")
+    with patch.object(garage_app.persist, "load_state", return_value={}):
+        notify = _client().get("/health").get_json()["notify"]
+    assert notify["credentials"] == "GARAGE_GMAIL_*"
+    assert notify["configured"] is True
+    assert notify["runtime_allowed"] is True
+    assert notify["missing"] == []
+    assert notify["unscoped_present"] is False
+
+
+def test_health_flags_a_stale_rollout_still_mounting_bare_gmail(monkeypatch):
+    garage_app._worker = _config_worker()
+    garage_app._worker.tesla.partner_domain = "example.test"
+    monkeypatch.setenv("GMAIL_CLIENT_ID", "pupwatch-id")
+    with patch.object(garage_app.persist, "load_state", return_value={}):
+        notify = _client().get("/health").get_json()["notify"]
+    assert notify["configured"] is False
+    assert notify["unscoped_present"] is True
+    assert notify["missing"] == [
+        "GARAGE_GMAIL_CLIENT_ID",
+        "GARAGE_GMAIL_CLIENT_SECRET",
+        "GARAGE_GMAIL_REFRESH_TOKEN",
+    ]

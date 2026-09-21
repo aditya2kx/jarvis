@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from typing import NamedTuple
@@ -162,6 +163,15 @@ CI_SCRIPT_NAMES: frozenset[str] = frozenset([
 SECRET_PATTERN = (
     r"AIza|sk-[A-Za-z0-9]{20}|-----BEGIN|password\s*[:=]|api[_-]?key[\"'\s]*[:=]"
 )
+
+# `--set-secrets ALADDIN_PASSWORD=aladdin-connect-password:latest` names a Secret
+# Manager version; the value never enters git. Drop those references before
+# matching, or every Cloud Run env edit trips `password=`.
+SECRET_REF = re.compile(r"[A-Z0-9_]+=[a-z0-9-]+:(latest|\d+)")
+
+
+def line_has_secret(line: str) -> bool:
+    return bool(re.search(SECRET_PATTERN, SECRET_REF.sub("", line), re.IGNORECASE))
 
 
 # ---------------------------------------------------------------------------
@@ -316,10 +326,9 @@ def run(mode: str, plan_path: str | None, strict: bool) -> int:
             if not diff_text.strip():
                 results.append((gate.name, "PASS", is_hard))
                 continue
-            import re as _re
             hits = [line for line in diff_text.splitlines()
                     if line.startswith("+") and not line.startswith("+++")
-                    and _re.search(SECRET_PATTERN, line, _re.IGNORECASE)]
+                    and line_has_secret(line)]
             if hits:
                 print(f"\n[{gate.name}] Potential secrets in diff:")
                 for h in hits[:10]:

@@ -175,6 +175,50 @@ def _solo_premium_hours(row: dict[str, Any], *, regular_hours: float) -> float:
     return round(min(solo, regular_hours), 2)
 
 
+def solo_premium_uplift_dollars(
+    *, solo_hours: float, wage_rate: float | None, premium_rate: float
+) -> float:
+    """What the premium adds to a paycheck over pricing every hour at base.
+
+    The expected-Gross figure prices all regular hours at the base rate, so once
+    the premium is keyed it reads low by exactly this much — live 2026-09-21 that
+    was five "gross_mismatch" lines whose deltas were the five premiums, ADP being
+    right in every one. Reporting a known difference as a discrepancy is worse
+    than not reporting it: it trains the operator to scroll past the summary.
+    """
+    if not solo_hours or wage_rate is None or premium_rate <= wage_rate:
+        return 0.0
+    uplift = Decimal(str(solo_hours)) * (
+        Decimal(str(premium_rate)) - Decimal(str(wage_rate))
+    )
+    return float(uplift.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def expected_gross_dollars(row: "PayrollPacketRow", *, premium_rate: float) -> float:
+    """ADP Preview Gross we expect for one employee: wages + premium + additions.
+
+    One definition for both the per-employee line and the summary tally, which
+    had drifted into two copies of the same sum.
+    """
+    uplift = (
+        solo_premium_uplift_dollars(
+            solo_hours=row.solo_premium_hours or 0,
+            wage_rate=row.wage_rate,
+            premium_rate=premium_rate,
+        )
+        if premium_rate > 0
+        else 0.0
+    )
+    return round(
+        (row.est_wages_dollars or 0)
+        + uplift
+        + row.tips_dollars
+        + row.bonus_dollars
+        + row.misc_reimbursement_dollars,
+        2,
+    )
+
+
 def packet_from_view_rows(rows: list[dict[str, Any]]) -> list[PayrollPacketRow]:
     out: list[PayrollPacketRow] = []
     for r in rows:
@@ -1970,6 +2014,8 @@ def _print_hours_wages_compare(
     packet: list[PayrollPacketRow],
     adp_hours: dict[str, float],
     preview: dict[str, dict[str, float]],
+    *,
+    premium_rate: float = 0.0,
 ) -> None:
     print("[adp_payroll_draft] COMPARE hours (console vs ADP Enter) and wages vs Preview Gross")
     print(
@@ -1984,13 +2030,9 @@ def _print_hours_wages_compare(
         pr = prev_k.get(key, (None, {}))[1] or {}
         ph = pr.get("hours")
         pg = pr.get("gross")
-        ours_total = round(
-            (row.est_wages_dollars or 0)
-            + row.tips_dollars
-            + row.bonus_dollars
-            + row.misc_reimbursement_dollars,
-            2,
-        )
+        # Expected Gross must price the premium hours at the premium, exactly as
+        # the keyed rate-2 line does, or every premium reads as a discrepancy.
+        ours_total = expected_gross_dollars(row, premium_rate=premium_rate)
         h_ok = ah is not None and abs(ours_h - ah) <= HOURS_TOLERANCE_HOURS
         w_ok = (
             pg is not None
@@ -2018,13 +2060,7 @@ def _print_hours_wages_compare(
         if (prev_k.get(name_key(row.employee), (None, {}))[1] or {}).get("gross")
         is not None
         and abs(
-            round(
-                (row.est_wages_dollars or 0)
-                + row.tips_dollars
-                + row.bonus_dollars
-                + row.misc_reimbursement_dollars,
-                2,
-            )
+            expected_gross_dollars(row, premium_rate=premium_rate)
             - float((prev_k.get(name_key(row.employee), (None, {}))[1] or {}).get("gross"))
         )
         <= WAGE_TOLERANCE_DOLLARS
@@ -2705,7 +2741,12 @@ def run_live_preview(
                 except Exception:  # noqa: BLE001
                     break
                 break
-            _print_hours_wages_compare(packet, adp_hours, preview_rows)
+            _print_hours_wages_compare(
+                packet, adp_hours, preview_rows,
+                premium_rate=(
+                    _solo_premium_rate(store) if solo_rate2_enabled() else 0.0
+                ),
+            )
             footer = _preview_footer_totals(page)
             ph, pg = combine_preview_totals(preview_rows, footer)
             preview_hours, preview_gross = ph, pg

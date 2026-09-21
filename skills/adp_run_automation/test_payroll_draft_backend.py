@@ -11,7 +11,9 @@ from skills.adp_run_automation.payroll_draft_backend import (
     _paginate_timecard_hours,
     abort_if_forbidden_label,
     classify_rate2_state,
+    expected_gross_dollars,
     extra_rate_line_hours,
+    solo_premium_uplift_dollars,
     combine_preview_totals,
     header_index,
     hours_guardrail_failures,
@@ -1100,6 +1102,93 @@ class TestAPunchEditStrandsTheRate2Line(unittest.TestCase):
             want_total=self.WANT_TOTAL, premium_rate=16.25,
         )
         self.assertEqual(plan.verdict, "already_split")
+
+
+class TestExpectedGrossIncludesThePremium(unittest.TestCase):
+    """Expected Gross must price premium hours at the premium.
+
+    Live 2026-09-21: every hour was priced at base, so the five employees who had
+    a premium keyed each reported a gross_mismatch whose delta was exactly their
+    premium. ADP was right in all five. A summary that cries wolf on known-good
+    numbers is worse than no summary.
+    """
+
+    def _row(self, *, rate=15.25, solo=0.0, wages=0.0, tips=0.0,
+             bonus=0.0, perks=0.0):
+        rows = [{
+            "employee": "Garcia, Jacob", "labor_type": "Part-time",
+            "hours_worked": 53.13, "ot_hours": 0, "wage_rate_dollars": rate,
+            "tips_allocated": tips, "review_bonus": bonus,
+            "recognition_bonus": 0, "perks": perks,
+            "solo_hours": solo, "solo_eligible": solo > 0,
+            "est_gross_pay": wages,
+        }]
+        with patch(
+            "skills.adp_run_automation.payroll_draft_backend._merge_solo_hours",
+            side_effect=lambda r, _p: r,
+        ):
+            return packet_from_view_rows(rows)[0]
+
+    def test_the_uplift_is_the_rate_difference_not_the_premium_rate(self):
+        self.assertEqual(
+            solo_premium_uplift_dollars(
+                solo_hours=5.25, wage_rate=15.25, premium_rate=16.25
+            ),
+            5.25,
+        )
+
+    def test_the_five_live_deltas_are_reproduced(self):
+        """Each employee's ADP-minus-ours delta, from the 2026-09-21 preview."""
+        for solo, delta in (
+            (5.25, 5.25),   # Garcia
+            (4.13, 4.13),   # Huynh
+            (1.55, 1.55),   # Guerrero
+            (1.98, 1.98),   # Perales
+            (1.12, 1.12),   # Priyosha
+        ):
+            self.assertEqual(
+                solo_premium_uplift_dollars(
+                    solo_hours=solo, wage_rate=15.25, premium_rate=16.25
+                ),
+                delta,
+            )
+
+    def test_an_employee_already_at_the_premium_rate_gets_no_uplift(self):
+        """Johnson/Ortiz base at $16.25 — there is no premium to add."""
+        self.assertEqual(
+            solo_premium_uplift_dollars(
+                solo_hours=4.0, wage_rate=16.25, premium_rate=16.25
+            ),
+            0.0,
+        )
+
+    def test_no_solo_hours_means_no_uplift(self):
+        self.assertEqual(
+            solo_premium_uplift_dollars(
+                solo_hours=0.0, wage_rate=15.25, premium_rate=16.25
+            ),
+            0.0,
+        )
+
+    def test_expected_gross_adds_the_premium_to_wages_and_additions(self):
+        row = self._row(solo=5.25, wages=810.23, tips=138.53)
+        self.assertEqual(
+            expected_gross_dollars(row, premium_rate=16.25), 954.01
+        )
+
+    def test_with_the_premium_off_expected_gross_stays_at_base(self):
+        """Feature off means ADP has no rate-2 line, so neither should we."""
+        row = self._row(solo=5.25, wages=810.23, tips=138.53)
+        self.assertEqual(expected_gross_dollars(row, premium_rate=0.0), 948.76)
+
+    def test_the_summary_tally_uses_the_same_definition_as_the_lines(self):
+        """The drift this consolidates: two copies of one sum."""
+        import inspect
+        from skills.adp_run_automation.payroll_draft_backend import (
+            _print_hours_wages_compare,
+        )
+        src = inspect.getsource(_print_hours_wages_compare)
+        self.assertEqual(src.count("expected_gross_dollars(row, premium_rate="), 2)
 
 
 class TestRate2RowsCanStraddleAGridPage(unittest.TestCase):

@@ -13,7 +13,7 @@ import re
 import sys
 from dataclasses import dataclass, asdict
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any
+from typing import Any, NamedTuple
 
 _APPROVE_DENY = (
     "approve",
@@ -1208,6 +1208,76 @@ def _select_available_rate(page, *, row_index: str, rate_dollars: float) -> bool
     return bool(picked)
 
 
+class Rate2Plan(NamedTuple):
+    """What to do about one employee's existing grid rows.
+
+    ``verdict`` is one of ``split`` (go ahead), ``already_split`` (leave it),
+    ``suspect`` (report, touch nothing).
+    """
+
+    verdict: str
+    base_index: str = ""
+    base_hours: float = 0.0
+    #: An existing empty rate line to reuse rather than adding another.
+    reuse_index: str | None = None
+    why: str = ""
+
+
+def _row_is_empty(row: dict) -> bool:
+    return all(
+        abs(float(row.get(k) or 0)) < 0.005 for k in ("reg", "pers", "hol", "ot")
+    )
+
+
+def classify_rate2_state(
+    lines: list[dict], *, solo_hours: float, want_total: float | None
+) -> Rate2Plan:
+    """Decide whether an employee still needs the premium split, from their rows.
+
+    Three things can be true of a live draft, and conflating them is how money
+    goes wrong:
+
+    * one funded row carrying all the hours — split it;
+    * two funded rows that already reproduce the split — leave it alone, since
+      re-splitting pays the uplift twice;
+    * anything else — report it. A failed run can leave rows that are present but
+      wrong, and "more than one row" is not evidence of a *correct* one.
+
+    Empty rate lines are debris from a failed attempt, not pay. They are reused
+    rather than deleted or added to, so repeated attempts cannot make the mess
+    grow and no destructive delete path is needed.
+    """
+    funded = [r for r in lines if not _row_is_empty(r)]
+    empty = [r for r in lines if _row_is_empty(r)]
+    total = round(sum(float(r.get("reg") or 0) for r in funded), 2)
+
+    if want_total is None:
+        return Rate2Plan("suspect", why=f"no_expected_total lines={len(lines)}")
+    if abs(total - want_total) >= 0.011:
+        return Rate2Plan(
+            "suspect",
+            why=f"total={total} want_total={want_total} lines={len(lines)}",
+        )
+    if len(funded) == 2:
+        if any(abs(float(r.get("reg") or 0) - solo_hours) < 0.011 for r in funded):
+            return Rate2Plan("already_split")
+        return Rate2Plan(
+            "suspect",
+            why=f"two_funded_rows_without_solo_line solo={solo_hours} total={total}",
+        )
+    if len(funded) != 1:
+        return Rate2Plan(
+            "suspect", why=f"funded_rows={len(funded)} lines={len(lines)}"
+        )
+    base = funded[0]
+    return Rate2Plan(
+        "split",
+        base_index=str(base.get("row_index")),
+        base_hours=float(base.get("reg") or 0),
+        reuse_index=str(empty[0].get("row_index")) if empty else None,
+    )
+
+
 def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: float) -> dict:
     """Key each eligible employee's premium hours onto a second rate line.
 
@@ -1266,84 +1336,79 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
             # half-applied split, which would double the premium line.
             solo = wanted[key]
             lines = rec.get("rows") or []
-            if len(lines) > 1:
-                # Already split (a rerun against the same draft). Adding a second
-                # premium row would pay the uplift twice, so never re-split —
-                # but do not take the existing split on trust either. A failed
-                # earlier run can leave rows that are present but wrong (live
-                # 2026-09-21), and "more than one row" is not evidence of a
-                # *correct* one. Accept only a split that reproduces exactly what
-                # we would have keyed; anything else is reported for a human.
-                total = round(sum(float(r.get("reg") or 0) for r in lines), 2)
-                want_total = expected_total.get(key)
-                has_premium_line = any(
-                    abs(float(r.get("reg") or 0) - solo) < 0.011 for r in lines
+            want_total = expected_total.get(key)
+            plan = classify_rate2_state(
+                lines, solo_hours=solo, want_total=want_total
+            )
+            if plan.verdict == "already_split":
+                print(
+                    f"[adp_payroll_draft] BREADCRUMB solo_rate2_skip_existing "
+                    f"{name!r} line_items={len(lines)} solo={solo}"
                 )
-                if (
-                    len(lines) == 2
-                    and want_total is not None
-                    and abs(total - want_total) < 0.011
-                    and has_premium_line
-                ):
-                    print(
-                        f"[adp_payroll_draft] BREADCRUMB solo_rate2_skip_existing "
-                        f"{name!r} line_items={len(lines)} total={total} solo={solo}"
-                    )
-                    applied.append(name)
-                else:
-                    failed.append(
-                        f"{name}: unexpected_existing_split lines={len(lines)} "
-                        f"total={total} want_total={want_total} solo={solo}"
-                    )
-                    print(
-                        "[adp_payroll_draft] BREADCRUMB solo_rate2_failed "
-                        f"{name!r} unexpected_existing_split lines={len(lines)} "
-                        f"total={total} want_total={want_total} solo={solo} "
-                        "— CHECK THE DRAFT IN ADP",
-                        flush=True,
-                    )
+                applied.append(name)
                 continue
-            base_idx = str(lines[0].get("row_index"))
-            base_reg = float(lines[0].get("reg") or 0)
+            if plan.verdict == "suspect":
+                failed.append(f"{name}: unexpected_existing_split {plan.why}")
+                print(
+                    "[adp_payroll_draft] BREADCRUMB solo_rate2_failed "
+                    f"{name!r} unexpected_existing_split {plan.why} "
+                    "— CHECK THE DRAFT IN ADP",
+                    flush=True,
+                )
+                continue
+            base_idx = plan.base_index
+            base_reg = plan.base_hours
             keep, premium = rate2_split(
                 adp_regular_hours=base_reg, solo_hours=solo
             )
             if premium <= 0:
                 continue
             try:
-                rows_before = len(_ag_grid_rows(page))
-                if not _open_row_action_menu(page, row_index=base_idx):
-                    raise RuntimeError("no_row_menu")
-                page.wait_for_timeout(600)
-                if not _click_menu_item(
-                    page,
-                    "Add row",
-                    test_id="optionsAddRowButton",
-                    row_index=base_idx,
-                ):
-                    raise RuntimeError("no_add_row")
-                page.wait_for_timeout(1_500)
-                _dismiss_adp_error_dialog(page)
-                # Distinguish "no row appeared" from "a row appeared on someone
-                # else", which is what a document-wide menu lookup used to do and
-                # which otherwise reads identically from this employee's side.
-                grew = len(_ag_grid_rows(page)) - rows_before
-                mine = _employee_line_count(page, name)
-                if grew > 0 and mine < 2:
-                    raise RuntimeError(
-                        f"add_row_landed_elsewhere grew={grew} mine={mine}"
+                if plan.reuse_index is not None:
+                    # An earlier failed run can leave empty rate lines behind.
+                    # Reuse one instead of adding another: deleting rows is a
+                    # destructive path we do not need, and adding more would let
+                    # the debris grow on every attempt.
+                    print(
+                        f"[adp_payroll_draft] BREADCRUMB solo_rate2_reusing_empty_row "
+                        f"{name!r} row={plan.reuse_index}"
                     )
+                    base_now, new_now = base_idx, plan.reuse_index
+                else:
+                    rows_before = len(_ag_grid_rows(page))
+                    if not _open_row_action_menu(page, row_index=base_idx):
+                        raise RuntimeError("no_row_menu")
+                    page.wait_for_timeout(600)
+                    if not _click_menu_item(
+                        page,
+                        "Add row",
+                        test_id="optionsAddRowButton",
+                        row_index=base_idx,
+                    ):
+                        raise RuntimeError("no_add_row")
+                    page.wait_for_timeout(1_500)
+                    _dismiss_adp_error_dialog(page)
+                    # Distinguish "no row appeared" from "a row appeared on
+                    # someone else", which is what a document-wide menu lookup
+                    # used to do and which otherwise reads identically from this
+                    # employee's side.
+                    grew = len(_ag_grid_rows(page)) - rows_before
+                    mine = _employee_line_count(page, name)
+                    if grew > 0 and mine < 2:
+                        raise RuntimeError(
+                            f"add_row_landed_elsewhere grew={grew} mine={mine}"
+                        )
 
-                # Re-resolve BOTH indices from the post-insert grid. The original
-                # row can move too, so neither the remembered base index nor
-                # "whatever is not the base index" is trustworthy afterwards.
-                base_now, new_now = _rate2_row_indices(
-                    page, employee=name, base_reg=base_reg
-                )
-                if new_now is None or base_now is None:
-                    raise RuntimeError(
-                        f"no_new_row lines={_employee_line_count(page, name)}"
+                    # Re-resolve BOTH indices from the post-insert grid. The
+                    # original row can move too, so neither the remembered base
+                    # index nor "whatever is not the base index" is trustworthy.
+                    base_now, new_now = _rate2_row_indices(
+                        page, employee=name, base_reg=base_reg
                     )
+                    if new_now is None or base_now is None:
+                        raise RuntimeError(
+                            f"no_new_row lines={_employee_line_count(page, name)}"
+                        )
                 if not _select_available_rate(
                     page, row_index=new_now, rate_dollars=premium_rate
                 ):

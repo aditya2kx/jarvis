@@ -10,6 +10,7 @@ from skills.adp_run_automation.payroll_draft_backend import (
     _attribute_grid_rows,
     _paginate_timecard_hours,
     abort_if_forbidden_label,
+    classify_rate2_state,
     combine_preview_totals,
     header_index,
     hours_guardrail_failures,
@@ -797,6 +798,26 @@ class TestApplySoloRate2(unittest.TestCase):
         # The rate is picked on the re-resolved new row too, not the stale one.
         self.assertIn(("rate", "8", 16.25), calls)
 
+    def test_a_leftover_empty_row_is_reused_without_adding_another(self):
+        """Live Alvarez shape. Reuse keeps repeated attempts from piling up rows."""
+        with_debris = {self.NAME: {
+            "reg": 34.75, "hours": 34.75, "ot": 0.0, "rate": 15.25,
+            "rows": [
+                {"row_index": "4", "reg": 34.75, "pers": 0.0, "hol": 0.0, "ot": 0.0},
+                {"row_index": "5", "reg": 0.0, "pers": 0.0, "hol": 0.0, "ot": 0.0},
+            ],
+        }}
+        out, calls = self._run([with_debris])
+        self.assertEqual(out["failed"], [])
+        self.assertEqual(out["applied"], [self.NAME])
+        # No menu, no Add row — the empty line is already there.
+        self.assertEqual([c for c in calls if c[0] in {"menu", "item"}], [])
+        self.assertEqual(
+            [c for c in calls if c[0] == "fill"],
+            [("fill", "5", 4.75), ("fill", "4", 30.0)],
+        )
+        self.assertIn(("rate", "5", 16.25), calls)
+
     def test_one_employees_failure_does_not_get_retried(self):
         """A retry on a half-applied split would pay the premium twice."""
         out, calls = self._run(
@@ -837,6 +858,79 @@ class TestApplySoloRate2(unittest.TestCase):
 
             out = _apply_solo_rate2(self._Page(), [], premium_rate=16.25)
         self.assertEqual(out, {"applied": [], "failed": [], "premium_hours": 0.0})
+
+
+class TestClassifyRate2State(unittest.TestCase):
+    """What an employee's existing rows mean for the premium split."""
+
+    def row(self, idx, reg=0.0, ot=0.0):
+        return {"row_index": idx, "reg": reg, "pers": 0.0, "hol": 0.0, "ot": ot}
+
+    def test_a_single_funded_row_is_split(self):
+        plan = classify_rate2_state(
+            [self.row("0", reg=9.2)], solo_hours=1.37, want_total=9.2
+        )
+        self.assertEqual(plan.verdict, "split")
+        self.assertEqual((plan.base_index, plan.base_hours), ("0", 9.2))
+        self.assertIsNone(plan.reuse_index)
+
+    def test_leftover_empty_rows_are_reused_not_added_to(self):
+        """The live Alvarez shape: 4 empty rows from failed Add-row attempts.
+
+        Reuse keeps the attempt idempotent — otherwise every run leaves another
+        empty line behind, which is exactly how it got to four.
+        """
+        plan = classify_rate2_state(
+            [self.row("0", reg=9.2), self.row("1"), self.row("2"),
+             self.row("3"), self.row("4")],
+            solo_hours=1.37, want_total=9.2,
+        )
+        self.assertEqual(plan.verdict, "split")
+        self.assertEqual(plan.base_index, "0")
+        self.assertEqual(plan.reuse_index, "1")
+
+    def test_a_correct_existing_split_is_left_alone(self):
+        plan = classify_rate2_state(
+            [self.row("0", reg=28.55), self.row("1", reg=0.97)],
+            solo_hours=0.97, want_total=29.52,
+        )
+        self.assertEqual(plan.verdict, "already_split")
+
+    def test_two_funded_rows_that_are_not_our_split_are_suspect(self):
+        plan = classify_rate2_state(
+            [self.row("0", reg=20.0), self.row("1", reg=9.52)],
+            solo_hours=0.97, want_total=29.52,
+        )
+        self.assertEqual(plan.verdict, "suspect")
+        self.assertIn("two_funded_rows_without_solo_line", plan.why)
+
+    def test_hours_that_do_not_add_up_are_suspect(self):
+        plan = classify_rate2_state(
+            [self.row("0", reg=41.65)], solo_hours=11.48, want_total=53.13
+        )
+        self.assertEqual(plan.verdict, "suspect")
+        self.assertIn("want_total=53.13", plan.why)
+
+    def test_empty_rows_do_not_count_toward_the_total(self):
+        """Debris must not make a correct total look wrong."""
+        plan = classify_rate2_state(
+            [self.row("0", reg=9.2), self.row("1")],
+            solo_hours=1.37, want_total=9.2,
+        )
+        self.assertEqual(plan.verdict, "split")
+
+    def test_a_row_with_only_overtime_is_funded_not_debris(self):
+        plan = classify_rate2_state(
+            [self.row("0", reg=40.0), self.row("1", ot=3.0)],
+            solo_hours=2.0, want_total=40.0,
+        )
+        self.assertEqual(plan.verdict, "suspect")
+
+    def test_an_unknown_expected_total_is_never_split_blind(self):
+        plan = classify_rate2_state(
+            [self.row("0", reg=9.2)], solo_hours=1.37, want_total=None
+        )
+        self.assertEqual(plan.verdict, "suspect")
 
 
 class TestRowMenuClicksAreVisibilityGated(unittest.TestCase):

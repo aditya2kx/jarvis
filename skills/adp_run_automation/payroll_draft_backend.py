@@ -1146,6 +1146,13 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
     if not wanted:
         return {"applied": [], "failed": [], "premium_hours": 0.0}
 
+    # Regular hours we expect each employee's rate lines to add back up to, used
+    # to audit a split that already exists rather than assuming it is ours.
+    expected_total = {
+        name_key(r.employee): round(float(r.regular_hours or 0), 2)
+        for r in packet
+    }
+
     done: set[str] = set()
     for _ in range(6):
         # One employee per *fresh* grid read. "Add row" renumbers every row below
@@ -1171,13 +1178,41 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
             solo = wanted[key]
             lines = rec.get("rows") or []
             if len(lines) > 1:
-                # Already split (a rerun against the same draft). Leave it alone;
-                # adding a second premium row would pay the uplift twice.
-                print(
-                    f"[adp_payroll_draft] BREADCRUMB solo_rate2_skip_existing "
-                    f"{name!r} line_items={len(lines)}"
+                # Already split (a rerun against the same draft). Adding a second
+                # premium row would pay the uplift twice, so never re-split —
+                # but do not take the existing split on trust either. A failed
+                # earlier run can leave rows that are present but wrong (live
+                # 2026-09-21), and "more than one row" is not evidence of a
+                # *correct* one. Accept only a split that reproduces exactly what
+                # we would have keyed; anything else is reported for a human.
+                total = round(sum(float(r.get("reg") or 0) for r in lines), 2)
+                want_total = expected_total.get(key)
+                has_premium_line = any(
+                    abs(float(r.get("reg") or 0) - solo) < 0.011 for r in lines
                 )
-                applied.append(name)
+                if (
+                    len(lines) == 2
+                    and want_total is not None
+                    and abs(total - want_total) < 0.011
+                    and has_premium_line
+                ):
+                    print(
+                        f"[adp_payroll_draft] BREADCRUMB solo_rate2_skip_existing "
+                        f"{name!r} line_items={len(lines)} total={total} solo={solo}"
+                    )
+                    applied.append(name)
+                else:
+                    failed.append(
+                        f"{name}: unexpected_existing_split lines={len(lines)} "
+                        f"total={total} want_total={want_total} solo={solo}"
+                    )
+                    print(
+                        "[adp_payroll_draft] BREADCRUMB solo_rate2_failed "
+                        f"{name!r} unexpected_existing_split lines={len(lines)} "
+                        f"total={total} want_total={want_total} solo={solo} "
+                        "— CHECK THE DRAFT IN ADP",
+                        flush=True,
+                    )
                 continue
             base_idx = str(lines[0].get("row_index"))
             base_reg = float(lines[0].get("reg") or 0)

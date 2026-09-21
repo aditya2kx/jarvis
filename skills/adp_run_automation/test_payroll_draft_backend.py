@@ -576,7 +576,53 @@ class TestApplySoloRate2(unittest.TestCase):
         }}
         out, calls = self._run([already])
         self.assertEqual(out["failed"], [])
+        self.assertEqual(out["applied"], [self.NAME])
         self.assertEqual([c for c in calls if c[0] == "fill"], [])
+
+    def test_an_existing_split_with_the_wrong_total_is_not_taken_on_trust(self):
+        """"Two rows" is not evidence of a *correct* two rows.
+
+        A failed earlier run can leave rows that are present but wrong (live
+        2026-09-21). Accepting them silently would pay those numbers.
+        """
+        wrong = {self.NAME: {
+            "reg": 45.0, "hours": 45.0, "ot": 0.0, "rate": 15.25,
+            "rows": [
+                {"row_index": "4", "reg": 41.65, "ot": 0.0},
+                {"row_index": "5", "reg": 3.35, "ot": 0.0},
+            ],
+        }}
+        out, calls = self._run([wrong])
+        self.assertEqual(out["applied"], [])
+        self.assertIn("unexpected_existing_split", out["failed"][0])
+        # Reported, never "repaired": no hours are written on a suspect split.
+        self.assertEqual([c for c in calls if c[0] == "fill"], [])
+
+    def test_an_existing_split_totalling_right_but_on_wrong_hours_fails(self):
+        """Right total, wrong division — neither row carries the solo hours."""
+        skewed = {self.NAME: {
+            "reg": 34.75, "hours": 34.75, "ot": 0.0, "rate": 15.25,
+            "rows": [
+                {"row_index": "4", "reg": 20.0, "ot": 0.0},
+                {"row_index": "5", "reg": 14.75, "ot": 0.0},
+            ],
+        }}
+        out, _calls = self._run([skewed])
+        self.assertEqual(out["applied"], [])
+        self.assertIn("unexpected_existing_split", out["failed"][0])
+
+    def test_three_line_items_is_always_suspect(self):
+        triple = {self.NAME: {
+            "reg": 34.75, "hours": 34.75, "ot": 0.0, "rate": 15.25,
+            "rows": [
+                {"row_index": "4", "reg": 25.25, "ot": 0.0},
+                {"row_index": "5", "reg": 4.75, "ot": 0.0},
+                {"row_index": "6", "reg": 4.75, "ot": 0.0},
+            ],
+        }}
+        out, _calls = self._run([triple])
+        self.assertEqual(out["applied"], [])
+        self.assertIn("unexpected_existing_split", out["failed"][0])
 
     def test_a_changed_total_is_reported_as_a_failure(self):
         # Verification re-reads the grid; 34.75 -> 39.50 means the base row was

@@ -242,7 +242,7 @@ and a drifted premium is *understated*, not absent, which reads exactly like a q
 surfaces compare, per date, the worked minutes in `model_solo_hours_daily` against those in
 `adp_punches`:
 
-- `/payroll` marks the **Solo premium** card stale and names the affected dates.
+- `/payroll` marks the **Solo wages** card stale and names the affected dates.
 - The draft prints `BREADCRUMB solo_hours_stale` and refuses to key rate-2 (`solo_rate2_skipped
   why=solo_hours_stale`), even with the flag on.
 
@@ -281,11 +281,17 @@ python3 -m skills.adp_run_automation.payroll_draft_backend \
 #   <Employee>: rate-1 <base hours>h, rate-2 <solo hours>h
 ```
 
-The console shows the same numbers, both from `vw_solo_hours_period`: **Payroll & People** has a
-`Solo premium` headline plus per-employee `Solo hrs` / `Solo premium` columns for the selected period —
-that is the screen to key from — and the **Labor** page has the day-grain "Solo vs team hours" split.
-`Solo hrs` there is already clamped to regular (non-OT) hours, so it is the rate-2 number verbatim.
-Solo premium is included in `Est. total` but not in `Est. wages`, which stays hours × base rate.
+The console shows the same numbers, both from `vw_solo_hours_period`: **Payroll & People** headlines
+`Wages` (blended, with the effective $/h) split into `Primary wages` and `Solo wages`, plus
+per-employee `Solo hrs` / `Primary wages` / `Solo wages` columns for the selected period — that is the
+screen to key from — and the **Labor** page has the day-grain "Solo vs team hours" split. `Solo hrs`
+there is already clamped to regular (non-OT) hours, so it is the rate-2 number verbatim.
+
+**`Solo wages` is the rate-2 line amount** (solo hours × premium rate), which is what ADP shows for
+that line — not the $1.00/h uplift. The uplift is the `over base` hint on the same card, and at a
+$1.00/h premium it equals the hours, so the two are easy to confuse: 18.47 solo hours read as
+**$300.13** of solo wages and **$18.47** over base. `Est. wages` is the two lines added together, so it
+is a blended-rate figure whenever solo hours exist; overtime sits in `Primary wages` until #315.
 
 To key it manually (or to check what the automation did), in ADP **Enter payroll**, for each listed
 employee:

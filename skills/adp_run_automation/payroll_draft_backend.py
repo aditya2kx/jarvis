@@ -408,6 +408,7 @@ def run_draft(
             period_start=period_start,
             period_end=period_end,
             delete_after=not keep_draft,
+            solo_gap=solo_gap,
         )
     except Exception as exc:
         record_payroll_draft_run(
@@ -940,13 +941,38 @@ def _ag_enter_page_hours(page) -> dict[str, dict]:
 
 
 def _paginate_timecard_hours(page) -> dict[str, float]:
-    # Collect by AG Grid row-index, which is absolute across pages, so a page
-    # re-read cannot double-count an employee's hours and a two-rate employee
-    # whose line items straddle a page boundary still sums to their true total.
-    seen: dict[str, dict] = {}
-    for _ in range(6):
-        for row in _ag_grid_rows(page):
-            seen[str(row.get("row_index"))] = row
+    # Collect by (page ordinal, row-index). AG Grid restarts `row-index` at 0 on
+    # every page, so row-index alone is NOT a stable key across pages: page 2's
+    # rows silently overwrite page 1's first N. Caught 2026-09-21 on a 15-person
+    # roster at 10/page — the 4 rows of page 2 displaced Alvarez/Browning/Garcia/
+    # Guerrero, and the 3 of them with hours read as absent, failing the hours
+    # guardrail with n=3 and blocking the rate-2 split. ADP itself was correct:
+    # every one of the three reconciled exactly at Preview.
+    #
+    # The page ordinal keeps the two properties this key needs: re-reading the
+    # same page cannot double-count (same keys overwrite), and a two-rate
+    # employee's separate line items stay separate.
+    # Paging is what makes the ordinal safe, so a page that does not actually
+    # advance must stop the walk: otherwise the same rows are banked again under
+    # a fresh ordinal and every hour on them counts twice. Overstated hours would
+    # pass nothing downstream but they would fail the guardrail for the wrong
+    # reason, hiding a selector drift behind a plausible-looking mismatch.
+    seen: dict[tuple[int, str], dict] = {}
+    last_sig: tuple | None = None
+    for page_no in range(6):
+        rows = _ag_grid_rows(page)
+        sig = tuple(
+            (r.get("employee"), str(r.get("row_index")), r.get("reg")) for r in rows
+        )
+        if sig == last_sig:
+            print(
+                "[adp_payroll_draft] BREADCRUMB grid_page_did_not_advance "
+                f"page={page_no} rows={len(rows)} (stopping; hours read so far kept)"
+            )
+            break
+        last_sig = sig
+        for row in rows:
+            seen[(page_no, str(row.get("row_index")))] = row
         nxt = page.locator("[data-test-id='pagination-chevron-right']").first
         try:
             if nxt.is_visible() and nxt.is_enabled():
@@ -1120,12 +1146,29 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
     if not wanted:
         return {"applied": [], "failed": [], "premium_hours": 0.0}
 
+    done: set[str] = set()
     for _ in range(6):
-        for name, rec in _ag_enter_page_hours(page).items():
+        # One employee per *fresh* grid read. "Add row" renumbers every row below
+        # the insert, so a snapshot taken before the first insert addresses the
+        # wrong rows for everyone after it. Live 2026-09-21: Alvarez's insert
+        # shifted the grid, Garcia's stale base index then pointed at another
+        # employee's row, and the run wrote 41.65 h somewhere it did not belong.
+        # Re-reading before every mutation is the only index that stays true.
+        while True:
+            _dismiss_adp_error_dialog(page)
+            page_map = _ag_enter_page_hours(page)
+            todo = [
+                (n, r)
+                for n, r in page_map.items()
+                if name_key(n) in wanted and name_key(n) not in done
+            ]
+            if not todo:
+                break
+            name, rec = todo[0]
             key = name_key(name)
-            solo = wanted.get(key)
-            if not solo or key in {name_key(a) for a in applied}:
-                continue
+            done.add(key)  # one attempt each, success or not: never retry a
+            # half-applied split, which would double the premium line.
+            solo = wanted[key]
             lines = rec.get("rows") or []
             if len(lines) > 1:
                 # Already split (a rerun against the same draft). Leave it alone;
@@ -1152,29 +1195,44 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
                 ):
                     raise RuntimeError("no_add_row")
                 page.wait_for_timeout(1_500)
+                _dismiss_adp_error_dialog(page)
 
-                new_idx = _new_row_index_for(page, employee=name, exclude=base_idx)
-                if new_idx is None:
-                    raise RuntimeError("no_new_row")
+                # Re-resolve BOTH indices from the post-insert grid. The original
+                # row can move too, so neither the remembered base index nor
+                # "whatever is not the base index" is trustworthy afterwards.
+                base_now, new_now = _rate2_row_indices(
+                    page, employee=name, base_reg=base_reg
+                )
+                if new_now is None or base_now is None:
+                    raise RuntimeError(
+                        f"no_new_row lines={_employee_line_count(page, name)}"
+                    )
                 if not _select_available_rate(
-                    page, row_index=new_idx, rate_dollars=premium_rate
+                    page, row_index=new_now, rate_dollars=premium_rate
                 ):
                     raise RuntimeError("no_rate_pick")
                 page.wait_for_timeout(600)
+                # Premium first, base reduced second: a crash between the two
+                # leaves total hours too high, which the guardrail catches, rather
+                # than too low, which looks like a self-consistent short paycheck.
                 _fill_grid_amount(
                     page, employee=name, col_id="REGH",
-                    amount=premium, row_index=new_idx,
+                    amount=premium, row_index=new_now,
                 )
                 _fill_grid_amount(
                     page, employee=name, col_id="REGH",
-                    amount=keep, row_index=base_idx,
+                    amount=keep, row_index=base_now,
                 )
                 page.wait_for_timeout(600)
-                after = _ag_enter_page_hours(page).get(name) or {}
-                total_ok = abs(float(after.get("reg") or 0) - base_reg) < 0.011
-                if not total_ok:
+                after_rows = _employee_rows(page, name)
+                after_total = round(sum(float(r.get("reg") or 0) for r in after_rows), 2)
+                if len(after_rows) != 2:
                     raise RuntimeError(
-                        f"total_changed before={base_reg} after={after.get('reg')}"
+                        f"expected_2_line_items got={len(after_rows)}"
+                    )
+                if abs(after_total - base_reg) >= 0.011:
+                    raise RuntimeError(
+                        f"total_changed before={base_reg} after={after_total}"
                     )
                 applied.append(name)
                 print(
@@ -1204,6 +1262,43 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
         "failed": failed,
         "premium_hours": round(sum(wanted.values()), 2),
     }
+
+
+def _employee_rows(page, employee: str) -> list[dict]:
+    """Every line item currently on screen for one employee, from a fresh read."""
+    want = name_key(employee)
+    return [
+        r for r in _ag_grid_rows(page)
+        if name_key(r.get("employee") or "") == want
+    ]
+
+
+def _employee_line_count(page, employee: str) -> int:
+    return len(_employee_rows(page, employee))
+
+
+def _rate2_row_indices(
+    page, *, employee: str, base_reg: float
+) -> tuple[str | None, str | None]:
+    """Locate (original, newly-added) row indices after an "Add row".
+
+    Identified by content, not position: the original is the row still carrying
+    the pre-split Regular hours, the new one is the empty row. Position is not
+    usable because the insert renumbers rows, and "the index that is not the old
+    base index" silently resolves to the original when the insert lands above it.
+    """
+    rows = _employee_rows(page, employee)
+    if len(rows) != 2:
+        return (None, None)
+    base = next(
+        (r for r in rows if abs(float(r.get("reg") or 0) - base_reg) < 0.011), None
+    )
+    if base is None:
+        return (None, None)
+    new = next((r for r in rows if r is not base), None)
+    if new is None:
+        return (None, None)
+    return (str(base.get("row_index")), str(new.get("row_index")))
 
 
 def _new_row_index_for(page, *, employee: str, exclude: str) -> str | None:
@@ -1896,6 +1991,7 @@ def run_live_preview(
     period_start: str = "",
     period_end: str = "",
     delete_after: bool = False,
+    solo_gap: list[str] | None = None,
 ) -> dict[str, Any]:
     """Login → Run payroll → hours guardrail → Import/fill → Preview → leave draft.
 

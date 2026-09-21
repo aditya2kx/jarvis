@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from skills.adp_run_automation.payroll_draft_backend import (
     _aggregate_grid_rows,
+    _paginate_timecard_hours,
     abort_if_forbidden_label,
     combine_preview_totals,
     header_index,
@@ -296,6 +297,124 @@ def grid_row(employee: str, *, row_index: str, rate: float, reg: float = 0.0,
     }
 
 
+class FakePaginatedGrid:
+    """An AG Grid whose ``row-index`` restarts at 0 on every page, as ADP's does.
+
+    The pages are read through the real ``_paginate_timecard_hours`` walk, so the
+    fake only has to serve rows and honour the next/prev chevrons.
+    """
+
+    def __init__(self, pages: list[list[dict]], *, advances: bool = True):
+        self.pages = pages
+        self.advances = advances
+        self.i = 0
+
+    # -- page object surface used by the walk ---------------------------------
+    def locator(self, selector: str):
+        forward = "chevron-right" in selector
+        return FakeChevron(self, forward=forward)
+
+    def wait_for_timeout(self, _ms):
+        return None
+
+    def rows(self) -> list[dict]:
+        return self.pages[self.i]
+
+
+class FakeChevron:
+    def __init__(self, grid: FakePaginatedGrid, *, forward: bool):
+        self.grid = grid
+        self.forward = forward
+
+    @property
+    def first(self):
+        return self
+
+    def is_visible(self):
+        return True
+
+    def is_enabled(self):
+        if self.forward:
+            return self.grid.i < len(self.grid.pages) - 1
+        return self.grid.i > 0
+
+    def click(self):
+        if not self.grid.advances:
+            return  # simulates a chevron that looks live but does not page
+        self.grid.i += 1 if self.forward else -1
+
+
+class TestGridPaginationAcrossPages(unittest.TestCase):
+    """#309 regression: row-index is page-relative, so it cannot key the walk.
+
+    Live 2026-09-21: a 15-person roster at 10/page had page 2's four rows
+    overwrite page 1's first four. The three of those with hours read as absent,
+    the hours guardrail failed n=3, and the rate-2 split was skipped — while ADP
+    itself was correct (all three reconciled exactly at Preview).
+    """
+
+    # Page 2's indices restart at 0 and collide with page 1's 0..3.
+    PAGE_1 = [
+        grid_row("Alvarez, Sebastian", row_index="0", rate=15.25, reg=9.2),
+        grid_row("Browning, Skyler", row_index="1", rate=15.25, reg=0.0),
+        grid_row("Garcia, Jacob", row_index="2", rate=15.25, reg=53.13),
+        grid_row("Guerrero, Amy", row_index="3", rate=15.25, reg=29.35),
+        grid_row("Huynh, Hillary", row_index="4", rate=15.25, reg=29.52),
+    ]
+    PAGE_2 = [
+        grid_row("Pascone, Kayah A", row_index="0", rate=16.25, reg=0.0),
+        grid_row("Perales, Elizabeth", row_index="1", rate=15.25, reg=25.2),
+        grid_row("Priyosha, Jarin", row_index="2", rate=15.25, reg=18.83),
+        grid_row("Willingham, Brooke", row_index="3", rate=15.25, reg=6.93),
+    ]
+
+    def _walk(self, pages, **kw):
+        grid = FakePaginatedGrid(pages, **kw)
+        with patch(
+            "skills.adp_run_automation.payroll_draft_backend._ag_grid_rows",
+            side_effect=lambda _p: grid.rows(),
+        ):
+            return _paginate_timecard_hours(grid)
+
+    def test_no_employee_is_lost_to_a_row_index_collision(self):
+        hours = self._walk([self.PAGE_1, self.PAGE_2])
+        self.assertEqual(len(hours), 9)
+        # The three that vanished live, with the hours ADP actually had.
+        self.assertEqual(hours["Alvarez, Sebastian"], 9.2)
+        self.assertEqual(hours["Garcia, Jacob"], 53.13)
+        self.assertEqual(hours["Guerrero, Amy"], 29.35)
+        # ...and page 2 is still read.
+        self.assertEqual(hours["Willingham, Brooke"], 6.93)
+
+    def test_the_walk_returns_to_the_first_page(self):
+        grid = FakePaginatedGrid([self.PAGE_1, self.PAGE_2])
+        with patch(
+            "skills.adp_run_automation.payroll_draft_backend._ag_grid_rows",
+            side_effect=lambda _p: grid.rows(),
+        ):
+            _paginate_timecard_hours(grid)
+        self.assertEqual(grid.i, 0, "later passes address rows on page 1")
+
+    def test_a_chevron_that_does_not_advance_cannot_double_count(self):
+        """The page ordinal is only safe while the page really turns."""
+        hours = self._walk([self.PAGE_1, self.PAGE_2], advances=False)
+        self.assertEqual(hours["Garcia, Jacob"], 53.13)
+        self.assertNotIn("Willingham, Brooke", hours)
+
+    def test_a_single_page_roster_still_reads(self):
+        hours = self._walk([self.PAGE_1])
+        self.assertEqual(hours["Huynh, Hillary"], 29.52)
+        self.assertEqual(len(hours), 5)
+
+    def test_two_rate_line_items_still_sum_across_a_page_boundary(self):
+        """The key must stay per-row, not per-employee: #309 pays on two lines."""
+        split_p1 = self.PAGE_1 + [
+            grid_row("Willingham, Brooke", row_index="5", rate=15.25, reg=2.18)
+        ]
+        hours = self._walk([split_p1, self.PAGE_2])
+        self.assertAlmostEqual(hours["Willingham, Brooke"], 9.11, places=2)
+
+
 class TestRate2Split(unittest.TestCase):
     """#309: splitting ADP's Regular hours across the base and premium rates."""
 
@@ -375,8 +494,12 @@ class TestApplySoloRate2(unittest.TestCase):
         with patch(f"{self.MOD}._merge_solo_hours", side_effect=lambda r, _p: r):
             return packet_from_view_rows(rows)
 
-    def _run(self, grid_states, **over):
-        """Run the orchestrator against a scripted sequence of grid reads."""
+    def _run(self, grid_states, after_rows=None, **over):
+        """Run the orchestrator against a scripted sequence of grid reads.
+
+        ``after_rows`` is what the post-split verification read returns; it
+        defaults to a correct two-line split of the first state's hours.
+        """
         calls: list[tuple] = []
         states = list(grid_states)
 
@@ -387,15 +510,24 @@ class TestApplySoloRate2(unittest.TestCase):
             calls.append(("fill", row_index, amount))
             return True
 
+        if after_rows is None:
+            after_rows = [
+                {"employee": self.NAME, "row_index": "4", "reg": 30.0, "ot": 0.0},
+                {"employee": self.NAME, "row_index": "5", "reg": 4.75, "ot": 0.0},
+            ]
+
         patches = {
             "_ag_enter_page_hours": _grid,
+            "_dismiss_adp_error_dialog": lambda _p: False,
             "_open_row_action_menu": lambda p, *, row_index: calls.append(
                 ("menu", row_index)
             ) is None,
             "_click_menu_item": lambda p, label, *, test_id="": calls.append(
                 ("item", label)
             ) is None,
-            "_new_row_index_for": lambda p, *, employee, exclude: "5",
+            "_rate2_row_indices": lambda p, *, employee, base_reg: ("4", "5"),
+            "_employee_rows": lambda p, employee: list(after_rows),
+            "_employee_line_count": lambda p, employee: len(after_rows),
             "_select_available_rate": lambda p, *, row_index, rate_dollars: calls.append(
                 ("rate", row_index, rate_dollars)
             ) is None,
@@ -449,14 +581,58 @@ class TestApplySoloRate2(unittest.TestCase):
     def test_a_changed_total_is_reported_as_a_failure(self):
         # Verification re-reads the grid; 34.75 -> 39.50 means the base row was
         # never reduced, so the employee would be overpaid.
-        broken = {self.NAME: {
-            "reg": 39.50, "hours": 39.50, "ot": 0.0, "rate": 15.25,
-            "rows": [{"row_index": "4", "reg": 39.50, "ot": 0.0}],
-        }}
-        out, _calls = self._run([self._one_row_grid(), broken])
+        out, _calls = self._run(
+            [self._one_row_grid()],
+            after_rows=[
+                {"employee": self.NAME, "row_index": "4", "reg": 34.75, "ot": 0.0},
+                {"employee": self.NAME, "row_index": "5", "reg": 4.75, "ot": 0.0},
+            ],
+        )
         self.assertEqual(out["applied"], [])
         self.assertEqual(len(out["failed"]), 1)
         self.assertIn("total_changed", out["failed"][0])
+
+    def test_a_split_that_did_not_produce_two_lines_is_a_failure(self):
+        """One line back means the insert vanished; never call that applied."""
+        out, _calls = self._run(
+            [self._one_row_grid()],
+            after_rows=[
+                {"employee": self.NAME, "row_index": "4", "reg": 30.0, "ot": 0.0}
+            ],
+        )
+        self.assertEqual(out["applied"], [])
+        self.assertIn("expected_2_line_items", out["failed"][0])
+
+    def test_rows_are_re_resolved_after_the_insert_not_remembered(self):
+        """The live 2026-09-21 defect: Add row renumbers every row below it.
+
+        A stale base index pointed at a different employee's row and 41.65 h were
+        written there. Both indices must come from the post-insert grid, so the
+        fills must use what `_rate2_row_indices` returns — here deliberately
+        different from the pre-insert index.
+        """
+        out, calls = self._run(
+            [self._one_row_grid()],
+            _rate2_row_indices=lambda p, *, employee, base_reg: ("7", "8"),
+            after_rows=[
+                {"employee": self.NAME, "row_index": "7", "reg": 30.0, "ot": 0.0},
+                {"employee": self.NAME, "row_index": "8", "reg": 4.75, "ot": 0.0},
+            ],
+        )
+        fills = [c for c in calls if c[0] == "fill"]
+        self.assertEqual(fills, [("fill", "8", 4.75), ("fill", "7", 30.0)])
+        self.assertEqual(out["failed"], [])
+        # The rate is picked on the re-resolved new row too, not the stale one.
+        self.assertIn(("rate", "8", 16.25), calls)
+
+    def test_one_employees_failure_does_not_get_retried(self):
+        """A retry on a half-applied split would pay the premium twice."""
+        out, calls = self._run(
+            [self._one_row_grid()],
+            _open_row_action_menu=lambda p, *, row_index: False,
+        )
+        self.assertEqual(len(out["failed"]), 1)
+        self.assertEqual([c for c in calls if c[0] == "fill"], [])
 
     def test_a_missing_add_row_item_fails_without_touching_hours(self):
         out, calls = self._run(
@@ -489,6 +665,42 @@ class TestApplySoloRate2(unittest.TestCase):
 
             out = _apply_solo_rate2(self._Page(), [], premium_rate=16.25)
         self.assertEqual(out, {"applied": [], "failed": [], "premium_hours": 0.0})
+
+
+class TestSoloGapIsWiredIntoThePreview(unittest.TestCase):
+    """#309: the staleness gate lives in a different function than the check.
+
+    Live 2026-09-21: `solo_gap` was computed in `run_draft` but read inside
+    `run_live_preview`, so the gate raised `NameError: name 'solo_gap' is not
+    defined` the first time a run got past the hours guardrail — after keying the
+    money columns, killing the Preview. A gate that cannot be evaluated is worse
+    than no gate: it failed on the one path it was built to protect.
+    """
+
+    def test_run_live_preview_accepts_solo_gap(self):
+        import inspect
+
+        from skills.adp_run_automation.payroll_draft_backend import run_live_preview
+
+        self.assertIn(
+            "solo_gap", inspect.signature(run_live_preview).parameters,
+        )
+
+    def test_run_draft_passes_solo_gap_through(self):
+        import inspect
+
+        from skills.adp_run_automation import payroll_draft_backend as mod
+
+        src = inspect.getsource(mod.run_draft)
+        self.assertIn("solo_gap=solo_gap", src)
+
+    def test_the_gate_reads_a_bound_name(self):
+        """Compile-level proof: no free variable named solo_gap in the preview."""
+        from skills.adp_run_automation import payroll_draft_backend as mod
+
+        code = mod.run_live_preview.__code__
+        names = set(code.co_varnames) | set(code.co_names)
+        self.assertIn("solo_gap", code.co_varnames, f"not a local; names={names}")
 
 
 class TestSoloCoverageGap(unittest.TestCase):

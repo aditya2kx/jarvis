@@ -59,6 +59,16 @@ def test_signed_config_step_sees_location_delta():
     assert "TESLA_MONTH_BUDGET_USD=10" in text
 
 
+def test_gmail_secrets_are_garage_scoped():
+    """Issue #316: pup-watch mails from bare GMAIL_*; sharing the env names let one
+    service's credentials drive the other's mailer. Same Secret Manager secrets,
+    service-scoped env names."""
+    text = WF.read_text()
+    for suffix in ("CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN"):
+        assert f"GARAGE_GMAIL_{suffix}=gmail-{suffix.lower().replace('_', '-')}" in text
+    assert not re.search(r"(?<!GARAGE_)GMAIL_CLIENT_ID=", text)
+
+
 def test_garage_requirements_pin_grpcio():
     req = (ROOT / "cloud/tesla_aladdin_garage/requirements.txt").read_text()
     assert "grpcio>=" in req

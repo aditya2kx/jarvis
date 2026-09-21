@@ -76,6 +76,14 @@ python3 scripts/verify.py --full     # everything: full pytest + PR gates (if PR
 The pre-push git hook runs `--full` automatically.  See
 [docs/contributing/local-loop.md](docs/contributing/local-loop.md).
 
+**Tests can never send a real notification**, even in a shell that has production
+credentials exported for evidence gathering — the root `conftest.py` strips every
+outbound credential from every test's environment. It exists because a suite run in
+such a shell mailed the operator six garage alerts, twice, two days apart (Issue
+#316). If you add an outbound channel, add its env vars to `LIVE_CREDENTIAL_ENV`
+there; `test_no_live_notifications.py` fails if a notifier reads a credential the
+guard does not strip.
+
 ## Deep references
 | Topic | Doc |
 |---|---|

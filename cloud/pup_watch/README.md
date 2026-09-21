@@ -179,6 +179,17 @@ message and how; a label we set ourselves is not.
 Commands older than `control_max_age_minutes` (default 30) are discarded
 unactioned, so a reply found after an outage cannot start monitoring hours later.
 
+**This mailbox is shared with `cloud/tesla_aladdin_garage`**, which mails the same
+address from the same account — so its alerts clear the allowlist and used to reach
+the command parser, one unlucky subject line away from switching monitoring off.
+Garage mail is stamped `X-Jarvis-Garage` and skipped before parsing
+(`FOREIGN_MARKER_HEADERS`); pup-watch's own mail is stamped `X-PupWatch`. Both are
+labelled `pupwatch-handled` but never marked read: the unread badge is the
+notification, and labelling stops a burst of garage mail from crowding a real
+command out of the 10-message query window. Credentials are separate in the other
+direction — the garage reads `GARAGE_GMAIL_*`, pup-watch the bare `GMAIL_*`, with no
+fallback between them (Issue #316).
+
 The one asymmetry worth knowing: **`start` must work when nothing is running**,
 which is why the mailbox is polled *before* the session check and therefore on
 every idle tick. That is the entire reason idle ticks now cost ~1s instead of

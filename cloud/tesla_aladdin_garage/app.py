@@ -14,6 +14,7 @@ from flask import Flask, jsonify, redirect, request
 
 from cloud.tesla_aladdin_garage import persist
 from cloud.tesla_aladdin_garage.geofence import validate_radii
+from cloud.tesla_aladdin_garage.notify import notify_status
 from cloud.tesla_aladdin_garage.telemetry import extract_location_fixes
 from cloud.tesla_aladdin_garage.worker import GarageWorker, WorkerConfig
 from skills.aladdin_connect.client import AladdinConnectClient
@@ -89,6 +90,7 @@ def health():
             "last_error": st.last_error,
             "partner_domain": w.tesla.partner_domain,
             "persisted": stored,
+            "notify": notify_status(),
             "telemetry": w.cfg.telemetry,
             "poll_s": w.cfg.poll_s,
         }

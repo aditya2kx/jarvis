@@ -775,7 +775,7 @@ class TestApplySoloRate2(unittest.TestCase):
             line_count_after_add=2,
         )
         self.assertEqual(out["applied"], [])
-        self.assertIn("expected_2_line_items", out["failed"][0])
+        self.assertIn("expected_2_funded_lines", out["failed"][0])
 
     def test_rows_are_re_resolved_after_the_insert_not_remembered(self):
         """The live 2026-09-21 defect: Add row renumbers every row below it.
@@ -1053,10 +1053,28 @@ class TestRowMenuClicksAreVisibilityGated(unittest.TestCase):
 
         return inspect.getsource(getattr(mod, fn_name))
 
-    def test_menu_item_click_requires_a_rendered_element(self):
+    def test_menu_item_click_tries_the_row_before_the_document(self):
+        """Row scoping is proof of correctness; visibility is the fallback's proof."""
         src = self._src("_click_menu_item")
-        self.assertIn("visible(", src)
+        self.assertIn("filter(visible)", src)
+        self.assertIn("_JS_VISIBLE", src)
         self.assertIn("rowIndex", src)
+        # The ladder must reach the row before any document-wide strategy.
+        for earlier, later in (
+            ("'row_visible'", "'row_any'"),
+            ("'row_any'", "'doc_by_row'"),
+            ("'doc_by_row'", "'doc_visible'"),
+        ):
+            self.assertLess(
+                src.index(earlier), src.index(later),
+                f"{earlier} must be tried before {later}",
+            )
+
+    def test_a_miss_reports_what_it_saw(self):
+        """Diagnostics in the failure path, so a retry needs no extra login."""
+        src = self._src("_click_menu_item")
+        self.assertIn("menu_item_miss", src)
+        self.assertIn("candidates", src)
 
     def test_menu_item_click_has_no_bare_document_lookup_by_test_id(self):
         """The unscoped, unguarded test-id lookup is the exact bug; keep it gone.

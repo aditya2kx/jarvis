@@ -985,6 +985,20 @@ def _ag_enter_page_hours(page) -> dict[str, dict]:
     return _aggregate_grid_rows(_ag_grid_rows(page))
 
 
+def _grid_rewind(page) -> None:
+    """Page the Enter-payroll grid back to the first page."""
+    prev = page.locator("[data-test-id='pagination-chevron-left']").first
+    for _ in range(6):
+        try:
+            if prev.is_visible() and prev.is_enabled():
+                prev.click()
+                page.wait_for_timeout(400)
+            else:
+                return
+        except Exception:  # noqa: BLE001
+            return
+
+
 def _paginate_timecard_hours(page) -> dict[str, float]:
     # Collect by (page ordinal, row-index). AG Grid restarts `row-index` at 0 on
     # every page, so row-index alone is NOT a stable key across pages: page 2's
@@ -1002,6 +1016,11 @@ def _paginate_timecard_hours(page) -> dict[str, float]:
     # a fresh ordinal and every hour on them counts twice. Overstated hours would
     # pass nothing downstream but they would fail the guardrail for the wrong
     # reason, hiding a selector drift behind a plausible-looking mismatch.
+    # Rewind first, not only afterwards: this is called again after the rate-2
+    # split, which leaves the grid on the last page. Starting there banked only
+    # that page and reported 3 of 15 employees as the whole roster (live
+    # 2026-09-21), turning a clean grid into 10 guardrail failures.
+    _grid_rewind(page)
     seen: dict[tuple[int, str], dict] = {}
     last_sig: tuple | None = None
     for page_no in range(6):
@@ -1027,16 +1046,7 @@ def _paginate_timecard_hours(page) -> dict[str, float]:
         except Exception:  # noqa: BLE001
             break
         break
-    prev = page.locator("[data-test-id='pagination-chevron-left']").first
-    for _ in range(4):
-        try:
-            if prev.is_visible() and prev.is_enabled():
-                prev.click()
-                page.wait_for_timeout(400)
-            else:
-                break
-        except Exception:  # noqa: BLE001
-            break
+    _grid_rewind(page)
     detail = _aggregate_grid_rows(list(seen.values()))
     print(f"[adp_payroll_draft] ag_enter_hours {detail}")
     return {name: float(rec.get("hours") or 0) for name, rec in detail.items()}
@@ -1097,20 +1107,16 @@ def _click_menu_item(
     2026-09-21 the empty rows piled up on Alvarez (page 1, index 0) and Krause
     (page 2, index 0) while the employees we targeted never got one.
 
-    So: prefer the opened row's own subtree, and in every case require the
-    element to be *rendered*. A closed menu's items are present but have no
-    client rects, which is what distinguishes them from the menu just opened.
+    So it walks a ladder, most specific first. Inside the opened row's subtree,
+    a match is correct by construction. Away from it, the element must be
+    *rendered*: a closed menu's items are present but have no client rects, which
+    is what tells them apart from the menu just opened. A miss logs what it saw,
+    so diagnosing the next drift costs no extra ADP login.
     """
     abort_if_forbidden_label(label)
-    return bool(
-        page.evaluate(
-            """({ label, testId, rowIndex }) => {
+    out = page.evaluate(
+        """({ label, testId, rowIndex }) => {
               %s
-              const clickIt = (el) => {
-                el.scrollIntoView({ block: 'center' });
-                el.click();
-                return true;
-              };
               const want = label.toLowerCase();
               const sel = 'sdf-menu-item, [role="menuitem"], [role="option"], '
                 + 'li, button, sdf-button';
@@ -1120,34 +1126,77 @@ def _click_menu_item(
                 const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
                 return t.toLowerCase() === want;
               };
-              const search = (root) => {
+              const find = (root) => {
                 const pool = [...root.querySelectorAll(sel)];
                 if (testId) {
                   for (const el of root.querySelectorAll(
                     '[data-test-id="' + testId + '"]'
                   )) pool.unshift(el);
                 }
-                for (const el of pool) {
-                  if (hit(el) && visible(el)) return el;
-                }
-                return null;
+                return pool.filter(hit);
               };
-              if (rowIndex !== '') {
-                const row = document.querySelector(
-                  '.ag-pinned-left-cols-container [role="row"][row-index="'
-                  + rowIndex + '"]'
-                );
-                const inRow = row && search(row);
-                if (inRow) return clickIt(inRow);
+              const rowOf = (el) => {
+                const r = el.closest('[role="row"]');
+                return r ? r.getAttribute('row-index') : null;
+              };
+              const row = rowIndex === '' ? null : document.querySelector(
+                '.ag-pinned-left-cols-container [role="row"][row-index="'
+                + rowIndex + '"]'
+              );
+              // Strategy ladder, most specific first. Scoping to the row is
+              // already proof of correctness, so visibility is not required
+              // there; away from the row it is the only thing that tells the
+              // open menu apart from the 14 closed ones.
+              const ladder = [];
+              if (row) {
+                ladder.push(['row_visible', find(row).filter(visible)]);
+                ladder.push(['row_any', find(row)]);
               }
-              // The menu may portal out of the row; fall back to any rendered
-              // match, which is still only ever the open menu.
-              const anywhere = search(document);
-              return anywhere ? clickIt(anywhere) : false;
+              const all = find(document);
+              if (rowIndex !== '') {
+                ladder.push([
+                  'doc_by_row', all.filter((el) => rowOf(el) === rowIndex),
+                ]);
+              }
+              ladder.push(['doc_visible', all.filter(visible)]);
+              for (const [how, found] of ladder) {
+                if (found.length) {
+                  found[0].scrollIntoView({ block: 'center' });
+                  found[0].click();
+                  return { clicked: true, how, n: found.length };
+                }
+              }
+              // Nothing clicked: describe what is there so the next run does not
+              // need another login to find out.
+              return {
+                clicked: false,
+                how: 'none',
+                candidates: all.slice(0, 6).map((el) => ({
+                  tag: el.tagName,
+                  testId: el.getAttribute && el.getAttribute('data-test-id'),
+                  row: rowOf(el),
+                  rects: el.getClientRects().length,
+                  ariaHidden: el.getAttribute && el.getAttribute('aria-hidden'),
+                  display: getComputedStyle(el).display,
+                  text: (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 40),
+                })),
+                rowFound: Boolean(row),
+                openMenus: [...document.querySelectorAll(
+                  'sdf-menu, [role="menu"], sdf-action-menu'
+                )].filter(visible).length,
+              };
             }""" % _JS_VISIBLE,
-            {"label": label, "testId": test_id, "rowIndex": row_index},
-        )
+        {"label": label, "testId": test_id, "rowIndex": row_index},
     )
+    if not (out or {}).get("clicked"):
+        print(f"[adp_payroll_draft] menu_item_miss {label!r} row={row_index} {out}")
+        return False
+    if out.get("how") != "row_visible":
+        print(
+            f"[adp_payroll_draft] menu_item_hit {label!r} row={row_index} "
+            f"via={out.get('how')} n={out.get('n')}"
+        )
+    return True
 
 
 def _select_available_rate(page, *, row_index: str, rate_dollars: float) -> bool:
@@ -1201,6 +1250,31 @@ def _select_available_rate(page, *, row_index: str, rate_dollars: float) -> bool
         }""" % _JS_VISIBLE,
         {"want": want},
     )
+    if not picked:
+        # Which rates the selector actually offers. A rate that is not on the
+        # employee's ADP profile can never be picked here, so this distinguishes
+        # "our selector drifted" from "this employee has no second rate yet".
+        offered = page.evaluate(
+            """() => {
+              %s
+              const out = [];
+              for (const el of document.querySelectorAll(
+                'sdf-menu-item, [role="menuitem"], [role="option"], li, button, div'
+              )) {
+                const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                if (!/\\/\\s*hr/i.test(t)) continue;
+                if (t.length > 40) continue;
+                out.push({ text: t, rects: el.getClientRects().length,
+                           shown: visible(el) });
+              }
+              return out.slice(0, 10);
+            }""" % _JS_VISIBLE
+        )
+        print(
+            f"[adp_payroll_draft] rate_pick_miss row={row_index} want={want} "
+            f"offered={offered}",
+            flush=True,
+        )
     print(
         f"[adp_payroll_draft] rate_pick row={row_index} want={want} got={picked!r}",
         flush=True,
@@ -1502,11 +1576,32 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
                     amount=keep, row_index=base_now,
                 )
                 page.wait_for_timeout(600)
-                after_rows = _employee_rows(page, name)
-                after_total = round(sum(float(r.get("reg") or 0) for r in after_rows), 2)
+                # Count only rows that carry hours. Leftover empty rate lines are
+                # debris, and counting them failed Perales at exactly the moment
+                # her split had in fact landed correctly (live 2026-09-21).
+                #
+                # Read more than once: AG Grid repaints asynchronously after a
+                # cell edit, and a continuation row mid-repaint has no body cells,
+                # so it reads as absent. That is what failed Huynh with
+                # "total_changed before=29.52 after=28.55" on a split that had
+                # actually landed — the 0.97 row simply had not painted yet.
+                after_rows: list[dict] = []
+                after_total = 0.0
+                for attempt in range(3):
+                    after_rows = [
+                        r for r in _employee_rows(page, name) if not _row_is_empty(r)
+                    ]
+                    after_total = round(
+                        sum(float(r.get("reg") or 0) for r in after_rows), 2
+                    )
+                    if len(after_rows) == 2 and abs(after_total - base_reg) < 0.011:
+                        break
+                    if attempt < 2:
+                        page.wait_for_timeout(900)
                 if len(after_rows) != 2:
                     raise RuntimeError(
-                        f"expected_2_line_items got={len(after_rows)}"
+                        f"expected_2_funded_lines got={len(after_rows)} "
+                        f"total={after_total}"
                     )
                 if abs(after_total - base_reg) >= 0.011:
                     raise RuntimeError(

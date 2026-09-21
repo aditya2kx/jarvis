@@ -23,10 +23,11 @@ an email saying "a dog is out, probably not him" costs a glance.
 - **Latency:** up to 60s (one Cloud Scheduler tick).
 - **Control:** reply `start`, `start 4h`, `stop` or `status` to any pup-watch
   email — see [Controlling it by email](#controlling-it-by-email).
-- **Cost:** $0/month inside the Cloud Run + Cloud Scheduler free tiers, now at
-  roughly 16% of them rather than ~0: the mailbox poll makes every idle tick
-  cost ~1s of CPU instead of ~1ms (900 ticks/day × ~1.05s ≈ 28k of the 180k
-  free vCPU-seconds/month, measured 2026-09-16).
+- **Cost:** free while idle-ish, **not** free while watching. Idle ticks eat ~63%
+  of the monthly free vCPU allowance on their own, and one full day with a session
+  open exceeds the whole monthly allowance (~$1.30/day beyond it). Corrected
+  2026-09-18 after measuring in Cloud Run rather than on a laptop — see
+  [Cost model](#cost-model).
 - **Deploy:** [`.github/workflows/pup-watch-deploy.yml`](../../.github/workflows/pup-watch-deploy.yml)
 
 ## Pipeline
@@ -221,26 +222,40 @@ container sits warm. Unlike `tesla-aladdin-garage` (`--min-instances 1`,
 `--no-cpu-throttling`), pup-watch scales to zero and is woken by Cloud
 Scheduler once a minute.
 
-An idle tick used to return in about a millisecond. It now costs **~1.05s**
-(measured 2026-09-16), because email control means checking the mailbox even
-while monitoring is off — a token refresh plus a `messages.list`. At the
-scheduler's 900 ticks/day that is ~28,000 of the 180,000 free vCPU-seconds per
-month, and ~57,000 of the 360,000 free GiB-seconds: about 16% of the free tier
-consumed doing nothing. That is a deliberate trade — being able to text the
-system from the daycare parking lot is worth more than the headroom — but it is
-the number to revisit first if cost ever bites, by polling the mailbox on every
-Nth idle tick instead of every one.
+> **This section was wrong until 2026-09-18 and the correction is large.** The
+> earlier numbers came from timing the pipeline on a laptop; Cloud Run bills
+> `vCPU count × wall time`, and on its slower vCPUs the detector is ~5x slower
+> than measured locally. Both mistakes pushed the estimate down by roughly an
+> order of magnitude. **pup-watch is no longer free while monitoring is on.**
 
-Measured: one active poll takes ~10s wall time, dominated by the 8s frame-grab
-window. At 8h/day for 22 days/month that is roughly 105,000 vCPU-seconds
-against the 180,000 free allowance, and ~211,000 GiB-seconds against 360,000.
-**An open-ended session left running is the case that breaks this**: polling the
-full 15h window every day is ~9,000 vCPU-seconds/day, i.e. past the free
-allowance in under three weeks. That is the trade for `start` meaning "until I
-say stop", and `session_absolute_max_hours` is the backstop rather than the plan.
-Adding the idle-tick control poll on top leaves the total inside the free tier
-but no longer with comfortable room — so if session hours grow a lot, check this
-before assuming it is still free.
+An idle tick returns in **~1.05s** — email control means checking the mailbox even
+while monitoring is off (token refresh plus a `messages.list`). Since the service
+now runs on 4 vCPU that bills as ~4.2 vCPU-seconds, so 900 idle ticks/day is
+~113,000 of the 180,000 free vCPU-seconds per month: **~63% of the free tier
+consumed doing nothing.** Being able to text the system from the daycare parking
+lot is worth real money, but this is now the first number to attack — polling the
+mailbox on every Nth idle tick would cut it proportionally.
+
+An **active** two-camera poll measured **52s wall** in Cloud Run (2026-09-18), not
+the ~10s measured on a laptop. Detection is ~12 inference passes per camera and
+dominates; the 8s frame grab is no longer the main term. That bills as ~208
+vCPU-seconds per tick:
+
+| | per tick | a full 15h day active |
+|---|---|---|
+| vCPU-seconds | ~208 | ~187,000 — **more than the whole monthly free allowance** |
+| GiB-seconds | ~104 | ~94,000 of 360,000/month |
+
+So **one day of continuous monitoring exhausts the monthly vCPU free tier**, and
+beyond it the rate is roughly **$1.30/day** while a session is open. A boarding
+day or two a month stays in the noise; `start` left on permanently is ~$40/month.
+This is the real reason `stop` matters and `session_absolute_max_hours` exists.
+
+Why 4 vCPU anyway, given it multiplies the bill: on 1 vCPU a two-camera tick took
+100-120s against a 60s schedule, so ticks overlapped, Cloud Run aborted them
+("no available instance") and the second yard was starved of polls. Correctness
+first. The cheaper fix is a smaller detector — yolov9-c is 130MB and most of the
+52s — which is tracked as a follow-up rather than guessed at here.
 
 Pulling video is **ingress**, which Google does not bill, so stream volume is
 free regardless.

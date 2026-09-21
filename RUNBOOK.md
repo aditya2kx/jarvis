@@ -2208,8 +2208,18 @@ emails both recipients — if monitoring is off, nobody has to guess.
 If monitoring ever needs to outlive the deployed ceiling *without* a deploy,
 `session_max_hours` is a runtime overlay: write it to the Firestore `config` doc
 (`persist.save_config({"session_max_hours": 168.0})`) and the next tick picks it
-up. That is how prod was restored on 2026-09-18 while #322 was still unmerged. Leaving one on permanently is what breaks the free tier
-(~9,000 vCPU-s/day) — `stop` when he is home.
+up. That is how prod was restored on 2026-09-18 while #322 was still unmerged. Leaving one on permanently is what breaks the free tier,
+by more than previously documented: an active two-camera tick measures ~52s wall
+on 4 vCPU = ~208 vCPU-seconds, so **one full day with a session open exceeds the
+entire monthly free vCPU allowance** and costs ~$1.30/day after that. `stop` when
+he is home. (Corrected 2026-09-18; the earlier figure was laptop-timed and ~10x
+optimistic.)
+
+The service runs **4 vCPU with `PUPWATCH_ORT_THREADS=4`** and the two must stay
+equal. On 1 vCPU a two-camera tick took 100-120s against the 60s schedule, so
+ticks overlapped, Cloud Run logged `The request was aborted because there was no
+available instance`, and `b-yard` was starved of polls. If you ever see that
+warning, check `--cpu` against tick latency first.
 
 Already-handled mail is tracked with a hidden Gmail label (`pupwatch-handled`),
 **not** the unread flag: Gmail pre-reads mail the operator sends himself, so an

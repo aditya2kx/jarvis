@@ -1,5 +1,6 @@
 """The deploy config is where the cost model actually lives — pin it in a test."""
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -136,3 +137,38 @@ def test_detector_weights_are_fetched_at_build_time_and_checksummed():
 
 def test_ffmpeg_is_installed_in_the_image():
     assert "ffmpeg" in DOCKERFILE.read_text()
+
+
+def test_cpu_is_enough_for_two_cameras_and_matches_the_thread_count():
+    """Prod regression, 2026-09-18: with `--cpu 1` a two-camera tick measured
+    100-120s against a 60s schedule, so ticks overlapped, Cloud Run aborted them
+    ("no available instance") and `b-yard` was starved of polls. At 4 vCPU the
+    same tick measured 52s.
+
+    The pairing matters as much as the number: the deploy asked for 1 vCPU while
+    telling onnxruntime to use 2 threads, so the detector was oversubscribed
+    against itself. Whoever changes one must change the other.
+    """
+    text = _commands()
+    cpu = re.search(r"--cpu (\d+)", text)
+    threads = re.search(r"PUPWATCH_ORT_THREADS=(\d+)", text)
+    assert cpu and threads, "deploy must pin both --cpu and PUPWATCH_ORT_THREADS"
+    assert int(cpu.group(1)) >= 4, "two cameras do not fit in the 60s tick below 4 vCPU"
+    assert cpu.group(1) == threads.group(1), (
+        f"--cpu {cpu.group(1)} but ORT_THREADS={threads.group(1)}; "
+        "oversubscribing the detector is what made ticks overlap"
+    )
+
+
+def test_no_comment_hides_inside_the_deploy_continuation():
+    """A `#` line between backslash-continued arguments comments out the rest of
+    the command. The explanation for --cpu was briefly written that way while
+    fixing the above, and this workflow has already shipped two deploy-breaking
+    argument bugs, so the shape is worth pinning rather than remembering.
+    """
+    lines = WF.read_text().splitlines()
+    for i, line in enumerate(lines[:-1]):
+        if line.rstrip().endswith("\\") and lines[i + 1].lstrip().startswith("#"):
+            raise AssertionError(
+                f"line {i + 2} is a comment inside a continued command: {lines[i + 1]!r}"
+            )
